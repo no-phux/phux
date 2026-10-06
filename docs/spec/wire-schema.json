@@ -1,0 +1,543 @@
+{
+  "description": [
+    "Machine-readable schema of the phux terminal wire codec (ADR-0117): every frame's type byte and, for each top-level TLV field of its body, the field id, name, value type, and presence.",
+    "The prose spec in docs/spec/ is normative and this file mirrors it (appendix-encoding.md section 3). The reference codec is checked against this file on every test run.",
+    "Every top-level field is `field_id: varint || wire_type: u8 (always 4, BYTES) || varint length || value` (appendix-encoding.md section 1). Decoders match fields by id, in any order, and skip unknown ids by length.",
+    "`type` is the encoding of the value inside the TLV length; `types` defines each name. A top-level `str` or `bytes` is the raw value with no inner length prefix; strings and byte strings nested inside a positional record carry a u32 big-endian length prefix (appendix-encoding.md section 2.1).",
+    "`presence`: `required` means a decoder rejects the frame without the field; `optional` means the field may be absent and the decoder applies the default the prose spec documents.",
+    "`retired` lists ids inside a frame's range that are allocated to no field and must never be reused. Field-tagged records nested inside positional values (the SessionSnapshot extension block, field-tagged AgentEvent bodies) are specified in the prose only.",
+    "Regenerate after an intended codec change with `PHUX_UPDATE_WIRE_SCHEMA=1 cargo nextest run -p phux-protocol wire_schema_matches`, then set the `type` of any new field (written as `?`)."
+  ],
+  "types": {
+    "ActorRef": "positional record: u32 client id, then optional credential id str and optional client name str (L1.md section 7)",
+    "AgentEvent": "positional tagged union: event tag, then its body (L1.md section 7.1)",
+    "AttachTarget": "positional tagged union (L1.md section 8)",
+    "BootstrapCodec": "positional tagged union (L1.md section 4.3)",
+    "BootstrapProfile": "positional tagged union (proto.md section 6.2)",
+    "ClientCapabilities": "positional record in a fixed field order (proto.md section 6.2)",
+    "Command": "positional tagged union keyed by the command tag (L1.md section 5)",
+    "CommandResult": "positional tagged union (L1.md section 5)",
+    "DirectoryEntryList": "u32 count, then that many (name: u32-prefixed str, flags: u8) rows (L3.md section 4)",
+    "Env": "u32 count, then that many (key, value) pairs of u32-prefixed UTF-8 strings",
+    "GridSize": "4 bytes: cols u16 then rows u16, big-endian",
+    "KeyEvent": "positional record (input.md section 2)",
+    "MouseEvent": "positional record (input.md section 3)",
+    "MoveResult": "positional tagged union (L1.md section 3.1)",
+    "PasteEvent": "positional record: trust u8, then u32-prefixed bytes (input.md section 5)",
+    "PathRowList": "u32 count, then that many (path: u32-prefixed str, kind: u8) rows (L3.md section 5)",
+    "ResourceId": "positional tagged union: u8 tag; 0 = local, then u32 id; 1 = satellite, then host str and u32 id",
+    "Scope": "positional tagged union: u8 tag, then a ResourceId, a u32 group id, or nothing (L3.md section 1)",
+    "ServerCapabilities": "positional record: layers u8, then optional trailing feature words (proto.md section 6.2)",
+    "SessionSnapshot": "positional record ending in a field-tagged extension block (L1.md sections 8 and 9.1)",
+    "SpawnResult": "positional tagged union (L1.md section 3.1)",
+    "SshOrigin": "positional record: client address str, client port u16, has-server u8, then server address str and port u16 when present (proto.md section 6.1)",
+    "StringList": "u32 count, then that many u32-prefixed UTF-8 strings",
+    "ViewportInfo": "positional record (L1.md sections 8 and 9.2)",
+    "bool": "1 byte: 0 = false, 1 = true",
+    "bytes": "raw opaque bytes filling the field; no inner length prefix",
+    "bytes16": "exactly 16 opaque bytes (ServerInstance, IdempotencyKey)",
+    "i32": "4 bytes, two's complement, big-endian",
+    "str": "raw UTF-8 filling the field; no inner length prefix",
+    "u16": "2 bytes, unsigned, big-endian",
+    "u32": "4 bytes, unsigned, big-endian",
+    "u64": "8 bytes, unsigned, big-endian",
+    "u8": "1 byte, unsigned; enum tags are u8, with values in the prose spec"
+  },
+  "frames": [
+    {
+      "name": "HELLO",
+      "type_byte": 1,
+      "retired": [7,8],
+      "fields": [
+        {"id":1,"name":"CLIENT_NAME","type":"str","presence":"required"},
+        {"id":2,"name":"PROTOCOL_MAJOR","type":"u16","presence":"required"},
+        {"id":3,"name":"PROTOCOL_MINOR","type":"u16","presence":"required"},
+        {"id":4,"name":"PROTOCOL_PATCH","type":"u16","presence":"required"},
+        {"id":5,"name":"CLIENT_CAPS","type":"ClientCapabilities","presence":"required"},
+        {"id":6,"name":"COMPRESSION","type":"u8","presence":"optional"},
+        {"id":9,"name":"SSH_ORIGIN","type":"SshOrigin","presence":"optional"},
+        {"id":10,"name":"QUIC_STREAMS","type":"bool","presence":"optional"}
+      ]
+    },
+    {
+      "name": "ATTACH",
+      "type_byte": 2,
+      "fields": [
+        {"id":1,"name":"TARGET","type":"AttachTarget","presence":"required"},
+        {"id":2,"name":"VIEWPORT","type":"ViewportInfo","presence":"required"},
+        {"id":3,"name":"REQUEST_SCROLLBACK","type":"bool","presence":"optional"},
+        {"id":4,"name":"SCROLLBACK_LIMIT_LINES","type":"u32","presence":"optional"},
+        {"id":5,"name":"ATTACH_ID","type":"u32","presence":"required"},
+        {"id":6,"name":"ROLE_POLICY","type":"u8","presence":"optional"}
+      ]
+    },
+    {
+      "name": "DETACH",
+      "type_byte": 3,
+      "fields": []
+    },
+    {
+      "name": "INPUT_KEY",
+      "type_byte": 16,
+      "fields": [
+        {"id":1,"name":"TERMINAL_ID","type":"ResourceId","presence":"required"},
+        {"id":2,"name":"EVENT","type":"KeyEvent","presence":"required"}
+      ]
+    },
+    {
+      "name": "INPUT_PASTE",
+      "type_byte": 17,
+      "fields": [
+        {"id":1,"name":"TERMINAL_ID","type":"ResourceId","presence":"required"},
+        {"id":2,"name":"EVENT","type":"PasteEvent","presence":"required"}
+      ]
+    },
+    {
+      "name": "INPUT_MOUSE",
+      "type_byte": 18,
+      "fields": [
+        {"id":1,"name":"TERMINAL_ID","type":"ResourceId","presence":"required"},
+        {"id":2,"name":"EVENT","type":"MouseEvent","presence":"required"}
+      ]
+    },
+    {
+      "name": "INPUT_FOCUS",
+      "type_byte": 20,
+      "fields": [
+        {"id":1,"name":"TERMINAL_ID","type":"ResourceId","presence":"required"},
+        {"id":2,"name":"EVENT","type":"u8","presence":"required"}
+      ]
+    },
+    {
+      "name": "HISTORY_REQUEST",
+      "type_byte": 22,
+      "fields": [
+        {"id":1,"name":"TERMINAL_ID","type":"ResourceId","presence":"required"},
+        {"id":2,"name":"STREAM_ID","type":"u64","presence":"required"},
+        {"id":3,"name":"BOOTSTRAP_ID","type":"u64","presence":"required"},
+        {"id":4,"name":"CURSOR","type":"bytes","presence":"required"},
+        {"id":5,"name":"MAX_BYTES","type":"u32","presence":"required"},
+        {"id":6,"name":"MAX_ROWS","type":"u32","presence":"required"}
+      ]
+    },
+    {
+      "name": "INPUT_TERMINAL_REPLY",
+      "type_byte": 23,
+      "fields": [
+        {"id":1,"name":"TERMINAL_ID","type":"ResourceId","presence":"required"},
+        {"id":2,"name":"BYTES","type":"bytes","presence":"required"}
+      ]
+    },
+    {
+      "name": "VIEWPORT_RESIZE",
+      "type_byte": 32,
+      "fields": [
+        {"id":1,"name":"VIEWPORT","type":"ViewportInfo","presence":"required"}
+      ]
+    },
+    {
+      "name": "FRAME_ACK",
+      "type_byte": 33,
+      "fields": [
+        {"id":1,"name":"TERMINAL_ID","type":"ResourceId","presence":"required"},
+        {"id":2,"name":"SEQ","type":"u64","presence":"required"},
+        {"id":3,"name":"STREAM_ID","type":"u64","presence":"required"},
+        {"id":4,"name":"BOOTSTRAP_ID","type":"u64","presence":"required"}
+      ]
+    },
+    {
+      "name": "SPAWN_RESOURCE",
+      "type_byte": 34,
+      "fields": [
+        {"id":1,"name":"REQUEST_ID","type":"u32","presence":"optional"},
+        {"id":2,"name":"GROUP","type":"u32","presence":"optional"},
+        {"id":3,"name":"COMMAND","type":"StringList","presence":"optional"},
+        {"id":4,"name":"CWD","type":"str","presence":"optional"},
+        {"id":5,"name":"ENV","type":"Env","presence":"optional"},
+        {"id":6,"name":"TERM","type":"str","presence":"optional"},
+        {"id":7,"name":"SATELLITE","type":"str","presence":"optional"},
+        {"id":8,"name":"OWNER_TERMINAL","type":"ResourceId","presence":"optional"},
+        {"id":9,"name":"AGENT_SESSION","type":"bytes","presence":"optional"},
+        {"id":10,"name":"INITIAL_SIZE","type":"GridSize","presence":"optional"},
+        {"id":11,"name":"KIND","type":"u8","presence":"optional"},
+        {"id":12,"name":"PARENT","type":"ResourceId","presence":"optional"},
+        {"id":13,"name":"PROVIDER","type":"str","presence":"optional"},
+        {"id":14,"name":"NATIVE_ID","type":"str","presence":"optional"},
+        {"id":15,"name":"BIND_INSTANCE","type":"bool","presence":"optional"},
+        {"id":16,"name":"RETAIN_SECS","type":"u32","presence":"optional"},
+        {"id":17,"name":"IDEMPOTENCY_KEY","type":"bytes16","presence":"optional"}
+      ]
+    },
+    {
+      "name": "RESIZE_TERMINAL",
+      "type_byte": 35,
+      "fields": [
+        {"id":1,"name":"TERMINAL_ID","type":"ResourceId","presence":"required"},
+        {"id":2,"name":"COLS","type":"u16","presence":"optional"},
+        {"id":3,"name":"ROWS","type":"u16","presence":"optional"}
+      ]
+    },
+    {
+      "name": "MOVE_RESOURCE",
+      "type_byte": 42,
+      "fields": [
+        {"id":1,"name":"REQUEST_ID","type":"u32","presence":"optional"},
+        {"id":2,"name":"TERMINAL","type":"ResourceId","presence":"required"},
+        {"id":3,"name":"OWNER_TERMINAL","type":"ResourceId","presence":"required"}
+      ]
+    },
+    {
+      "name": "COMMAND",
+      "type_byte": 49,
+      "fields": [
+        {"id":1,"name":"REQUEST_ID","type":"u32","presence":"optional"},
+        {"id":2,"name":"COMMAND","type":"Command","presence":"required"}
+      ]
+    },
+    {
+      "name": "SUBSCRIBE_EVENTS",
+      "type_byte": 65,
+      "fields": [
+        {"id":1,"name":"TERMINAL","type":"ResourceId","presence":"optional"},
+        {"id":2,"name":"AFTER_SEQ","type":"u64","presence":"optional"}
+      ]
+    },
+    {
+      "name": "GET_METADATA",
+      "type_byte": 80,
+      "fields": [
+        {"id":1,"name":"REQUEST_ID","type":"u32","presence":"optional"},
+        {"id":2,"name":"SCOPE","type":"Scope","presence":"required"},
+        {"id":3,"name":"KEY","type":"str","presence":"required"}
+      ]
+    },
+    {
+      "name": "SET_METADATA",
+      "type_byte": 81,
+      "fields": [
+        {"id":1,"name":"REQUEST_ID","type":"u32","presence":"optional"},
+        {"id":2,"name":"SCOPE","type":"Scope","presence":"required"},
+        {"id":3,"name":"KEY","type":"str","presence":"required"},
+        {"id":4,"name":"VALUE","type":"bytes","presence":"optional"}
+      ]
+    },
+    {
+      "name": "DELETE_METADATA",
+      "type_byte": 82,
+      "fields": [
+        {"id":1,"name":"REQUEST_ID","type":"u32","presence":"optional"},
+        {"id":2,"name":"SCOPE","type":"Scope","presence":"required"},
+        {"id":3,"name":"KEY","type":"str","presence":"required"}
+      ]
+    },
+    {
+      "name": "LIST_METADATA",
+      "type_byte": 83,
+      "fields": [
+        {"id":1,"name":"REQUEST_ID","type":"u32","presence":"optional"},
+        {"id":2,"name":"SCOPE","type":"Scope","presence":"required"}
+      ]
+    },
+    {
+      "name": "SUBSCRIBE_METADATA",
+      "type_byte": 84,
+      "fields": [
+        {"id":1,"name":"SCOPE","type":"Scope","presence":"required"},
+        {"id":2,"name":"KEY","type":"str","presence":"required"}
+      ]
+    },
+    {
+      "name": "LIST_DIRECTORY",
+      "type_byte": 85,
+      "fields": [
+        {"id":1,"name":"REQUEST_ID","type":"u32","presence":"optional"},
+        {"id":2,"name":"PATH","type":"str","presence":"optional"},
+        {"id":3,"name":"HOST","type":"str","presence":"optional"}
+      ]
+    },
+    {
+      "name": "PATH_QUERY",
+      "type_byte": 86,
+      "fields": [
+        {"id":1,"name":"REQUEST_ID","type":"u32","presence":"required"},
+        {"id":2,"name":"ROOT","type":"str","presence":"required"},
+        {"id":3,"name":"QUERY","type":"str","presence":"required"},
+        {"id":4,"name":"RECURSIVE","type":"bool","presence":"required"},
+        {"id":5,"name":"HOST","type":"str","presence":"optional"}
+      ]
+    },
+    {
+      "name": "PING",
+      "type_byte": 127,
+      "fields": [
+        {"id":1,"name":"NONCE","type":"u64","presence":"required"}
+      ]
+    },
+    {
+      "name": "HELLO_OK",
+      "type_byte": 128,
+      "fields": [
+        {"id":1,"name":"PROTOCOL_MAJOR","type":"u16","presence":"required"},
+        {"id":2,"name":"PROTOCOL_MINOR","type":"u16","presence":"required"},
+        {"id":3,"name":"PROTOCOL_PATCH","type":"u16","presence":"required"},
+        {"id":4,"name":"SERVER_CAPS","type":"ServerCapabilities","presence":"required"},
+        {"id":5,"name":"SERVER_ID","type":"bytes","presence":"required"},
+        {"id":6,"name":"SELECTED_PROFILE","type":"BootstrapProfile","presence":"required"},
+        {"id":7,"name":"MAX_CHUNK_BYTES","type":"u32","presence":"required"},
+        {"id":8,"name":"MAX_HISTORY_PAGE_BYTES","type":"u32","presence":"required"},
+        {"id":9,"name":"COMPRESSION","type":"u8","presence":"optional"}
+      ]
+    },
+    {
+      "name": "ATTACHED",
+      "type_byte": 129,
+      "fields": [
+        {"id":1,"name":"SNAPSHOT","type":"SessionSnapshot","presence":"required"},
+        {"id":2,"name":"INITIAL_CLIENT_ID","type":"u32","presence":"required"},
+        {"id":3,"name":"ATTACH_ID","type":"u32","presence":"required"}
+      ]
+    },
+    {
+      "name": "DETACHED",
+      "type_byte": 130,
+      "fields": [
+        {"id":1,"name":"REASON","type":"u8","presence":"optional"},
+        {"id":2,"name":"MESSAGE","type":"str","presence":"optional"}
+      ]
+    },
+    {
+      "name": "ATTACH_READY",
+      "type_byte": 131,
+      "fields": [
+        {"id":1,"name":"ATTACH_ID","type":"u32","presence":"required"}
+      ]
+    },
+    {
+      "name": "RESOURCE_OUTPUT",
+      "type_byte": 144,
+      "fields": [
+        {"id":1,"name":"TERMINAL_ID","type":"ResourceId","presence":"required"},
+        {"id":2,"name":"SEQ","type":"u64","presence":"required"},
+        {"id":3,"name":"BYTES","type":"bytes","presence":"required"},
+        {"id":4,"name":"STREAM_ID","type":"u64","presence":"required"},
+        {"id":5,"name":"BOOTSTRAP_ID","type":"u64","presence":"required"}
+      ]
+    },
+    {
+      "name": "BOOTSTRAP_BEGIN",
+      "type_byte": 147,
+      "fields": [
+        {"id":1,"name":"TERMINAL_ID","type":"ResourceId","presence":"required"},
+        {"id":2,"name":"STREAM_ID","type":"u64","presence":"required"},
+        {"id":3,"name":"BOOTSTRAP_ID","type":"u64","presence":"required"},
+        {"id":4,"name":"CODEC","type":"BootstrapCodec","presence":"required"},
+        {"id":5,"name":"COLS","type":"u16","presence":"required"},
+        {"id":6,"name":"ROWS","type":"u16","presence":"required"},
+        {"id":7,"name":"OUTPUT_MODE","type":"u8","presence":"required"},
+        {"id":8,"name":"BASE_SEQ","type":"u64","presence":"required"}
+      ]
+    },
+    {
+      "name": "BOOTSTRAP_CHUNK",
+      "type_byte": 148,
+      "fields": [
+        {"id":1,"name":"TERMINAL_ID","type":"ResourceId","presence":"required"},
+        {"id":2,"name":"STREAM_ID","type":"u64","presence":"required"},
+        {"id":3,"name":"BOOTSTRAP_ID","type":"u64","presence":"required"},
+        {"id":4,"name":"CHUNK_SEQ","type":"u32","presence":"required"},
+        {"id":5,"name":"PAYLOAD","type":"bytes","presence":"required"}
+      ]
+    },
+    {
+      "name": "BOOTSTRAP_READY",
+      "type_byte": 149,
+      "fields": [
+        {"id":1,"name":"TERMINAL_ID","type":"ResourceId","presence":"required"},
+        {"id":2,"name":"STREAM_ID","type":"u64","presence":"required"},
+        {"id":3,"name":"BOOTSTRAP_ID","type":"u64","presence":"required"},
+        {"id":4,"name":"HISTORY_CURSOR","type":"bytes","presence":"optional"}
+      ]
+    },
+    {
+      "name": "HISTORY_PAGE",
+      "type_byte": 150,
+      "fields": [
+        {"id":1,"name":"TERMINAL_ID","type":"ResourceId","presence":"required"},
+        {"id":2,"name":"STREAM_ID","type":"u64","presence":"required"},
+        {"id":3,"name":"BOOTSTRAP_ID","type":"u64","presence":"required"},
+        {"id":4,"name":"CURSOR","type":"bytes","presence":"required"},
+        {"id":5,"name":"NEXT_CURSOR","type":"bytes","presence":"optional"},
+        {"id":6,"name":"PAYLOAD","type":"bytes","presence":"required"},
+        {"id":7,"name":"PAGE_SEQ","type":"u64","presence":"required"},
+        {"id":8,"name":"ROWS","type":"u32","presence":"required"}
+      ]
+    },
+    {
+      "name": "BOOTSTRAP_TOMBSTONE",
+      "type_byte": 151,
+      "fields": [
+        {"id":1,"name":"TERMINAL_ID","type":"ResourceId","presence":"required"},
+        {"id":2,"name":"STREAM_ID","type":"u64","presence":"required"},
+        {"id":3,"name":"BOOTSTRAP_ID","type":"u64","presence":"required"},
+        {"id":4,"name":"REASON","type":"u8","presence":"required"},
+        {"id":5,"name":"LAST_VALID_SEQ","type":"u64","presence":"required"}
+      ]
+    },
+    {
+      "name": "HISTORY_TOMBSTONE",
+      "type_byte": 152,
+      "fields": [
+        {"id":1,"name":"TERMINAL_ID","type":"ResourceId","presence":"required"},
+        {"id":2,"name":"STREAM_ID","type":"u64","presence":"required"},
+        {"id":3,"name":"BOOTSTRAP_ID","type":"u64","presence":"required"},
+        {"id":4,"name":"CURSOR","type":"bytes","presence":"required"},
+        {"id":5,"name":"REASON","type":"u8","presence":"required"}
+      ]
+    },
+    {
+      "name": "HISTORY_REJECTED",
+      "type_byte": 153,
+      "fields": [
+        {"id":1,"name":"TERMINAL_ID","type":"ResourceId","presence":"required"},
+        {"id":2,"name":"STREAM_ID","type":"u64","presence":"required"},
+        {"id":3,"name":"BOOTSTRAP_ID","type":"u64","presence":"required"},
+        {"id":4,"name":"CURSOR","type":"bytes","presence":"required"},
+        {"id":5,"name":"REASON","type":"u8","presence":"required"},
+        {"id":6,"name":"REQUIRED_BYTES","type":"u32","presence":"required"},
+        {"id":7,"name":"REQUIRED_ROWS","type":"u32","presence":"required"}
+      ]
+    },
+    {
+      "name": "FRAME_COMPRESSED",
+      "type_byte": 154,
+      "fields": [
+        {"id":1,"name":"ALGORITHM","type":"u8","presence":"required"},
+        {"id":2,"name":"UNCOMPRESSED_LEN","type":"u32","presence":"required"},
+        {"id":3,"name":"PAYLOAD","type":"bytes","presence":"required"}
+      ]
+    },
+    {
+      "name": "RESOURCE_CLOSED",
+      "type_byte": 161,
+      "fields": [
+        {"id":1,"name":"TERMINAL_ID","type":"ResourceId","presence":"required"},
+        {"id":2,"name":"EXIT_STATUS","type":"i32","presence":"optional"},
+        {"id":3,"name":"REASON","type":"u8","presence":"optional"},
+        {"id":4,"name":"SIGNAL","type":"i32","presence":"optional"}
+      ]
+    },
+    {
+      "name": "RESOURCE_SPAWNED",
+      "type_byte": 162,
+      "fields": [
+        {"id":1,"name":"REQUEST_ID","type":"u32","presence":"optional"},
+        {"id":2,"name":"RESULT","type":"SpawnResult","presence":"required"},
+        {"id":3,"name":"INSTANCE","type":"bytes16","presence":"optional"},
+        {"id":4,"name":"REPLAYED","type":"bool","presence":"optional"}
+      ]
+    },
+    {
+      "name": "RESOURCE_MOVED",
+      "type_byte": 168,
+      "fields": [
+        {"id":1,"name":"REQUEST_ID","type":"u32","presence":"optional"},
+        {"id":2,"name":"RESULT","type":"MoveResult","presence":"required"}
+      ]
+    },
+    {
+      "name": "BELL",
+      "type_byte": 176,
+      "fields": [
+        {"id":1,"name":"TERMINAL_ID","type":"ResourceId","presence":"required"}
+      ]
+    },
+    {
+      "name": "EVENT",
+      "type_byte": 179,
+      "fields": [
+        {"id":1,"name":"TERMINAL","type":"ResourceId","presence":"optional"},
+        {"id":2,"name":"EVENT","type":"AgentEvent","presence":"required"},
+        {"id":3,"name":"SEQ","type":"u64","presence":"optional"},
+        {"id":4,"name":"TS_MS","type":"u64","presence":"optional"},
+        {"id":5,"name":"ACTOR","type":"ActorRef","presence":"optional"},
+        {"id":6,"name":"OPERATION_ID","type":"bytes16","presence":"optional"}
+      ]
+    },
+    {
+      "name": "ERROR",
+      "type_byte": 193,
+      "fields": [
+        {"id":1,"name":"REQUEST_ID","type":"u32","presence":"optional"},
+        {"id":2,"name":"CODE","type":"u16","presence":"required"},
+        {"id":3,"name":"MESSAGE","type":"str","presence":"required"}
+      ]
+    },
+    {
+      "name": "COMMAND_RESULT",
+      "type_byte": 194,
+      "fields": [
+        {"id":1,"name":"REQUEST_ID","type":"u32","presence":"optional"},
+        {"id":2,"name":"RESULT","type":"CommandResult","presence":"required"}
+      ]
+    },
+    {
+      "name": "METADATA_CHANGED",
+      "type_byte": 208,
+      "fields": [
+        {"id":1,"name":"SCOPE","type":"Scope","presence":"required"},
+        {"id":2,"name":"KEY","type":"str","presence":"required"},
+        {"id":3,"name":"VALUE","type":"bytes","presence":"optional"},
+        {"id":4,"name":"ACTOR","type":"ActorRef","presence":"optional"}
+      ]
+    },
+    {
+      "name": "METADATA_VALUE",
+      "type_byte": 209,
+      "fields": [
+        {"id":1,"name":"REQUEST_ID","type":"u32","presence":"optional"},
+        {"id":2,"name":"VALUE","type":"bytes","presence":"optional"}
+      ]
+    },
+    {
+      "name": "METADATA_KEYS",
+      "type_byte": 210,
+      "fields": [
+        {"id":1,"name":"REQUEST_ID","type":"u32","presence":"optional"},
+        {"id":2,"name":"KEYS","type":"StringList","presence":"optional"}
+      ]
+    },
+    {
+      "name": "DIRECTORY_LISTING",
+      "type_byte": 211,
+      "fields": [
+        {"id":1,"name":"REQUEST_ID","type":"u32","presence":"optional"},
+        {"id":2,"name":"PATH","type":"str","presence":"optional"},
+        {"id":3,"name":"PARENT","type":"str","presence":"optional"},
+        {"id":4,"name":"ENTRIES","type":"DirectoryEntryList","presence":"optional"},
+        {"id":5,"name":"TRUNCATED","type":"bool","presence":"optional"},
+        {"id":6,"name":"ERROR","type":"u8","presence":"optional"},
+        {"id":7,"name":"MESSAGE","type":"str","presence":"optional"}
+      ]
+    },
+    {
+      "name": "PATH_RESULTS",
+      "type_byte": 212,
+      "fields": [
+        {"id":1,"name":"REQUEST_ID","type":"u32","presence":"required"},
+        {"id":2,"name":"ROOT","type":"str","presence":"required"},
+        {"id":3,"name":"PARENT","type":"str","presence":"optional"},
+        {"id":4,"name":"ROWS","type":"PathRowList","presence":"optional"},
+        {"id":5,"name":"STATUS","type":"u8","presence":"optional"},
+        {"id":6,"name":"ERROR","type":"u8","presence":"optional"},
+        {"id":7,"name":"MESSAGE","type":"str","presence":"optional"}
+      ]
+    },
+    {
+      "name": "PONG",
+      "type_byte": 255,
+      "fields": [
+        {"id":1,"name":"NONCE","type":"u64","presence":"required"}
+      ]
+    }
+  ]
+}
