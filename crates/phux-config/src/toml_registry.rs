@@ -1,10 +1,11 @@
 //! Comment-preserving `[[remote]]` / `[[satellites]]` registry edits
 //! (ADR-0038, ADR-0055) for the CLI and native embedders.
 //!
-//! [`edit_document`] holds a sibling advisory lock across read, modify, and
-//! publish, refusing a busy writer immediately. Publication is atomic, follows
-//! symlinks, and refuses when the file changed since it was read; that check
-//! is not an atomic CAS against editors that do not take the lock.
+//! [`edit_document`] resolves one target for its sibling advisory lock, read,
+//! modify and publish, refusing a busy writer immediately even through a
+//! symlink alias. Dangling file symlinks are refused rather than replaced.
+//! Publication is atomic and refuses when the file changed since it was read;
+//! that check is not an atomic CAS against editors that do not take the lock.
 use std::path::{Path, PathBuf};
 
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
@@ -76,21 +77,44 @@ impl RegistryEdit {
     }
 }
 
-/// Begin a shared registry mutation, acquiring its lock before reading anything.
+/// Begin a shared registry mutation, acquiring its lock before reading contents.
 /// # Errors
 /// Refuses busy writers, malformed documents and filesystem errors.
 pub fn edit_document(path: &Path) -> Result<RegistryEdit, String> {
-    let lock = lock_registry(path)?;
-    let original = read_text(path)?;
+    crate::production::refuse_dev_on_production_state(path)?;
+    let path = registry_target(path)?;
+    let lock = lock_registry(&path)?;
+    let original = read_text(&path)?;
     let document = original
         .parse::<DocumentMut>()
         .map_err(|err| format!("could not parse {}: {err}", path.display()))?;
     Ok(RegistryEdit {
-        path: path.to_path_buf(),
+        path,
         document,
         original,
         _lock: lock,
     })
+}
+
+/// Existing files use their real target; new files use a real parent plus
+/// their filename. Never treat a dangling file symlink as an independent file.
+fn registry_target(path: &Path) -> Result<PathBuf, String> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| "registry has no file name".to_owned())?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    let resolved = match std::fs::symlink_metadata(path) {
+        Ok(_) => std::fs::canonicalize(path),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::canonicalize(parent).map(|parent| parent.join(name))
+        }
+        Err(err) => Err(err),
+    };
+    resolved.map_err(|err| format!("could not resolve registry {}: {err}", path.display()))
 }
 
 fn lock_registry(path: &Path) -> Result<std::fs::File, String> {
@@ -99,7 +123,6 @@ fn lock_registry(path: &Path) -> Result<std::fs::File, String> {
     let parent = path
         .parent()
         .ok_or_else(|| "registry has no parent directory".to_owned())?;
-    std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     let mut name = path
         .file_name()
         .ok_or_else(|| "registry has no file name".to_owned())?
@@ -348,6 +371,89 @@ mod tests {
         let after = std::fs::read_to_string(path).expect("read");
         assert!(after.contains("name='b'"));
         assert!(!after.contains("name='a'"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_and_real_path_writers_cannot_interleave_during_publication() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real = dir.path().join("real.toml");
+        let alias = dir.path().join("config.toml");
+        std::os::unix::fs::symlink(&real, &alias).expect("symlink");
+        let raw =
+            "[[remote]]\nname='a'\nendpoint='ssh://a'\n[[remote]]\nname='b'\nendpoint='ssh://b'\n";
+        for (outer, competing) in [(&alias, &real), (&real, &alias)] {
+            std::fs::write(&real, raw).expect("seed");
+            let nested_succeeded = std::rc::Rc::new(std::cell::Cell::new(false));
+            let observed = nested_succeeded.clone();
+            let competing = competing.clone();
+            super::BEFORE_PUBLISH.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(move || {
+                    observed.set(
+                        super::forget_machine(&competing, raw, "remote", "b", "ssh://b").is_ok(),
+                    );
+                }));
+            });
+            super::forget_machine(outer, raw, "remote", "a", "ssh://a").expect("outer forget");
+            assert!(
+                !nested_succeeded.get(),
+                "alias writer committed after the other writer's checked publication"
+            );
+            let after = std::fs::read_to_string(&real).expect("read");
+            assert!(after.contains("name='b'"));
+            assert!(!after.contains("name='a'"));
+            assert!(
+                std::fs::symlink_metadata(&alias)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+            // The refused writer can refresh and retry after the owner commits.
+            super::forget_machine(&alias, &after, "remote", "b", "ssh://b").expect("retry");
+            assert!(!std::fs::read_to_string(&real).unwrap().contains("name='b'"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_registry_symlink_is_refused_without_replacing_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real = dir.path().join("missing.toml");
+        let alias = dir.path().join("config.toml");
+        std::os::unix::fs::symlink(&real, &alias).expect("symlink");
+        assert!(
+            super::edit_document(&alias).is_err(),
+            "a dangling alias must not become a separate transaction target"
+        );
+        assert!(
+            std::fs::symlink_metadata(&alias)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(!real.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_registry_through_parent_alias_retains_one_transaction_target() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).expect("real parent");
+        let alias = dir.path().join("alias");
+        std::os::unix::fs::symlink(&real, &alias).expect("parent alias");
+        let path = real.join("nested/config.toml");
+        let aliased_path = alias.join("nested/config.toml");
+        let mut first = super::edit_document(&aliased_path).expect("new aliased registry");
+        assert!(super::edit_document(&path).is_err(), "real path contends");
+        first["first"] = toml_edit::value(1);
+        first.commit().expect("publish");
+        let second = super::edit_document(&path).expect("released after publication");
+        assert_eq!(second["first"].as_integer(), Some(1));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            std::fs::read_to_string(&aliased_path).unwrap()
+        );
     }
 
     #[test]

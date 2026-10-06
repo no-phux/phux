@@ -32,7 +32,9 @@ const TOO_MANY_LINES: &[(&str, &str)] = &[("attach/driver/loop_state.rs", "new")
 /// `(file, max lines)` for the driver files the jx39 epic shrank.
 const FILE_LINES: &[(&str, usize)] = &[
     ("attach/driver/main_loop.rs", 200),
-    ("attach/driver/loop_state.rs", 3650),
+    // 3650 at the restored jx39 guard. #1010 (per-tile cell pixels) and
+    // #1031 (dropping terminal-reply plumbing) landed the file at 3653.
+    ("attach/driver/loop_state.rs", 3653),
     // 2250 at jx39.7; 7a5db74ee (history-unavailable badge) and 8fdaca2ea
     // (overlay plugin panes) grew it while this guard was accidentally
     // deleted (248598c2b), so the budget pins the shipped size.
