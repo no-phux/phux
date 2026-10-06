@@ -242,3 +242,35 @@ jobs:
           mode: write
           workflow: .github/workflows/ci.yml
           coverage: phux=${{ needs.changes.outputs.phux_needed }},integrations=${{ needs.changes.outputs.integrations_needed }}
+
+  # setup-rust-lane's mbx action saves one immutable entry per lane on every
+  # push to main (about 0.4 GB check + 1.9 GB test compressed). Restores take
+  # only the newest, so the older ones would pile up until LRU eviction pushed
+  # out other workflows' caches from the shared 10 GB. Keep the newest entry
+  # per lane and delete the rest once both lanes have finished saving.
+  prune-build-cache:
+    name: prune superseded mbx cache entries
+    needs: [check, test]
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: keep the newest entry per lane
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for lane in check test; do
+            mapfile -t stale < <(gh api --paginate \
+              "repos/${GITHUB_REPOSITORY}/actions/caches?ref=refs/heads/main&key=linux-arm64-mbx-phux-${lane}-&sort=created_at&direction=desc&per_page=100" \
+              --jq '.actions_caches[].id' | tail -n +2)
+            for id in "${stale[@]:-}"; do
+              [ -n "${id}" ] || continue
+              echo "deleting superseded ${lane} entry ${id}"
+              # A 404 means another main run already pruned it.
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/${id}" --silent || true
+              sleep 1
+            done
+          done

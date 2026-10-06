@@ -71,6 +71,20 @@ class RunnerPolicyTests(unittest.TestCase):
             body = (WORKFLOWS / workflow).read_text()
             self.assertNotIn("mr-boxington-action", body)
 
+    def test_main_prunes_superseded_build_cache_entries(self):
+        """Every main push saves a fresh multi-GB mbx entry per lane.
+
+        Restores take only the newest, so ci.yml deletes the older ones after
+        a main run instead of letting them evict other workflows' caches.
+        """
+        ci = (WORKFLOWS / "ci.yml").read_text()
+        prune = ci.split("\n  prune-build-cache:\n", 1)[1]
+        self.assertIn("github.event_name == 'push' && github.ref == 'refs/heads/main'", prune)
+        self.assertIn("needs: [check, test]", prune)
+        self.assertIn("actions: write", prune)
+        self.assertIn("key=linux-arm64-mbx-phux-${lane}-", prune)
+        self.assertIn("tail -n +2", prune)
+
     def test_linux_release_keeps_glibc_2204_userspace_without_retired_runners(self):
         for name, body in (("release.yml", RELEASE), ("next-release.yml", NEXT_RELEASE)):
             with self.subTest(workflow=name):
