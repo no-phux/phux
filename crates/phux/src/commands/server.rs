@@ -609,6 +609,11 @@ pub(crate) fn maybe_auto_spawn_server(
 
     // Best-effort: fall back to /dev/null if the log cannot be opened.
     let log = open_server_log(&log_path).ok();
+    // Where this daemon's output starts in the shared, append-only log.
+    let log_offset = log
+        .as_ref()
+        .and_then(|file| file.metadata().ok())
+        .map(|metadata| metadata.len());
 
     let mut cmd = std::process::Command::new(current_exe);
     cmd.arg("server")
@@ -646,18 +651,80 @@ pub(crate) fn maybe_auto_spawn_server(
         }
     }
 
-    let _child = ensure::spawn_daemon(&mut cmd)?;
+    // `--daemonize` only calls `setsid`, so this is the server process itself.
+    // It is dropped (not killed) once accepting: it owns its own lifecycle.
+    let mut child = ensure::spawn_daemon(&mut cmd)?;
 
-    wait_until_accepting(socket_path, "auto-spawned server", &log_path)
+    wait_until_accepting(socket_path, "auto-spawned server", &log_path, || {
+        // `try_wait` is a non-blocking `waitpid`: watching the daemon this way
+        // cannot change its lifetime, unlike another connect.
+        let status = child.try_wait().ok().flatten()?;
+        Some(early_exit_error(socket_path, status, &log_path, log_offset))
+    })
+}
+
+/// The error for a spawned server that exited before accepting: its exit
+/// status and the tail of what it wrote to the log (its bind or config error).
+fn early_exit_error(
+    socket_path: &Path,
+    status: std::process::ExitStatus,
+    log_path: &Path,
+    log_offset: Option<u64>,
+) -> std::io::Error {
+    let output = log_offset
+        .and_then(|offset| startup_output(log_path, offset))
+        .map(|tail| format!(": {tail}"))
+        .unwrap_or_default();
+    std::io::Error::other(format!(
+        "auto-spawned server exited before accepting on {} ({status}){output} (see {})",
+        socket_path.display(),
+        log_path.display(),
+    ))
+}
+
+/// The last few lines a spawned server appended to its log from `offset`.
+fn startup_output(log_path: &Path, offset: u64) -> Option<String> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    /// Enough for the fatal line and its context, not a whole crash dump.
+    const MAX_LINES: usize = 3;
+    const MAX_BYTES: u64 = 16 * 1024;
+    let mut file = std::fs::File::open(log_path).ok()?;
+    let len = file.metadata().ok()?.len();
+    file.seek(SeekFrom::Start(offset.max(len.saturating_sub(MAX_BYTES))))
+        .ok()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let tail = lines[lines.len().saturating_sub(MAX_LINES)..].join("; ");
+    (!tail.is_empty()).then_some(tail)
 }
 
 /// Block until `socket_path` accepts (not merely exists), or the auto-spawn
-/// deadline passes. `what` names what is being waited on.
-fn wait_until_accepting(socket_path: &Path, what: &str, log_path: &Path) -> std::io::Result<()> {
+/// deadline passes. `what` names what is being waited on. `exited` reports a
+/// server that died before accepting, which fails the wait at once instead of
+/// at the deadline.
+fn wait_until_accepting(
+    socket_path: &Path,
+    what: &str,
+    log_path: &Path,
+    mut exited: impl FnMut() -> Option<std::io::Error>,
+) -> std::io::Result<()> {
     let deadline = Instant::now() + AUTO_SPAWN_SOCKET_TIMEOUT;
     loop {
         if socket::probe(socket_path) == SocketState::Live {
             return Ok(());
+        }
+        if let Some(err) = exited() {
+            // A loser of a bind race exits because another server is live.
+            if socket::probe(socket_path) == SocketState::Live {
+                return Ok(());
+            }
+            return Err(err);
         }
         if Instant::now() >= deadline {
             return Err(std::io::Error::new(
@@ -756,6 +823,8 @@ fn ensure_server_with(
             socket_path,
             "the supervised server",
             &phux_server::telemetry::server_log_path(),
+            // The init system owns this process; there is no child to watch.
+            || None,
         );
         drop(guard);
         return result.map(|()| EnsureDisposition::SupervisedStarted);
