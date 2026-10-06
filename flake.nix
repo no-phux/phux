@@ -168,6 +168,53 @@
               };
             };
 
+        # Zig on Linux is the official ziglang.org release, verified against
+        # the digests in .config/zig-toolchain.json (the same archives
+        # scripts/install-zig.sh and the site builder install). nixpkgs'
+        # zig_0_16 rebuilt on the GCC 16 / glibc 2.44 stdenv emits corrupt
+        # ELF objects: some section symbols come out with st_shndx = SHN_UNDEF,
+        # a different random subset on every run. libghostty-vt's compiler_rt.o
+        # then fails the Rust link with mold "undefined symbol: " (empty name).
+        # The release binary is statically linked and built by Zig's own
+        # bootstrap, so no nixpkgs stdenv can reach it. macOS keeps nixpkgs'
+        # clang-built Zig, which is unaffected.
+        zigPins = builtins.fromJSON (builtins.readFile ./.config/zig-toolchain.json);
+        zigPinned =
+          if pkgs.stdenv.hostPlatform.isLinux then
+            let
+              pin =
+                zigPins.archives.${system}
+                  or (throw "flake.nix: .config/zig-toolchain.json pins no Zig archive for ${system}");
+            in
+            pkgs.stdenvNoCC.mkDerivation {
+              pname = "zig";
+              version = zigPins.version;
+              src = pkgs.fetchurl {
+                url = "https://ziglang.org/download/${zigPins.version}/${pin.archive}";
+                sha256 = pin.sha256;
+              };
+              dontConfigure = true;
+              dontBuild = true;
+              dontStrip = true;
+              dontPatchELF = true;
+              installPhase = ''
+                runHook preInstall
+                mkdir -p $out/bin $out/libexec
+                cp -r . $out/libexec/zig
+                # Zig finds its lib/ next to its real path, so a symlink works.
+                ln -s $out/libexec/zig/zig $out/bin/zig
+                runHook postInstall
+              '';
+              meta = {
+                homepage = "https://ziglang.org";
+                description = "Zig compiler (official release binary)";
+                license = pkgs.lib.licenses.mit;
+                mainProgram = "zig";
+              };
+            }
+          else
+            pkgs.zig_0_16;
+
         # mbx (jdx/mr-boxington): the Cargo wrapper behind the shared build
         # cache. mise.toml is the source of truth for the release, same
         # contract as bun and usage. The shellHook puts libexec/mbx (a `cargo`
@@ -242,7 +289,7 @@
           packages = [
             toolchain
             # libghostty-vt-sys requires the exact Zig 0.16.0 toolchain.
-            pkgs.zig_0_16
+            zigPinned
             pkgs.pkg-config
             # Developer ergonomics.
             pkgs.just

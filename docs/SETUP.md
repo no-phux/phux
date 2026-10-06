@@ -179,6 +179,9 @@ use Python 3.11+ and Node.
 is a mirror for shell setup, not the source of truth for everything in it.
 `rust-toolchain.toml` remains Cargo/rustup's authoritative Rust input and
 `.config/zig-toolchain.json` remains the verified Zig release-and-digest input.
+On Linux `flake.nix` installs Zig from those archives rather than nixpkgs'
+`zig_0_16`, whose GCC 16 build emits corrupt ELF section symbols that break
+the libghostty link; macOS keeps nixpkgs' Zig.
 Bun, the usage CLI, and mbx are the exceptions in the other direction: `flake.nix`
 reads those pins from `mise.toml` directly and fetches the GitHub release
 until nixpkgs matches. The usage CLI is the same 6.12.x train as the
