@@ -1155,9 +1155,13 @@ fn str_u8_list(dec: &mut Decoder<'_>) -> Result<(), crate::wire::DecodeError> {
 // ---------------------------------------------------------------------------
 
 fn schema_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(SCHEMA_PATH)
+    // Read at run time, not `env!`: a baked checkout path defeats the shared
+    // build cache (scripts/check-cache-portable.sh).
+    PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR"),
+    )
+    .join("../..")
+    .join(SCHEMA_PATH)
 }
 
 fn committed() -> (String, Schema) {
