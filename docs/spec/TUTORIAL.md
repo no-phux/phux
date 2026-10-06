@@ -53,7 +53,7 @@ Client sends (frame type 0x01):
       output_mode: Raw,            // synthesized-profile preference only
       default_colors: None,
       bootstrap_profiles: 0x0e,    // synth raw/state-sync + native-v2 offer
-      native_codecs: 1 << 3,       // exact LibghosttySnapshotV1 capability
+      native_codecs: 1 << 4,       // exact LibghosttySnapshotV1 capability
       native_features: 0x0000000f, // all four required native features
       max_chunk_bytes: 262144,
       max_history_page_bytes: 1048576,
@@ -184,7 +184,7 @@ Chunks may split engine records. The client decodes into staging and publishes
 atomically at matching READY. History, when requested, is pulled in bounded
 pages afterward and never blocks live output or ATTACH_READY.
 
-**Why it matters:** READY gives the client authenticated active state before
+**Why it matters:** READY gives the client validated active state before
 history without pausing the PTY or adding a bootstrap-ACK round trip.
 
 ---
