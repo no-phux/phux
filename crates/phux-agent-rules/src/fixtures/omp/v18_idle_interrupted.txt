@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+
+
+Ask tool was cancelled by the user
+
+
+ Use the bash tool to run exactly: sleep 30 && echo finished
+
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ $ sleep 30 && echo finished                                                  │
+├─── Output ───────────────────────────────────────────────────────────────────┤
+│ Command aborted                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+  F5 to retry
+ 󰵗  󰪣 GPT-6.1-Sol   …scratchpad/omp18/work   master  󰙺 0.03 ─0.9%─󰁨922K─
+╰─

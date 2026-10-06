@@ -1176,6 +1176,15 @@ match = { contains = "thinking" }
     ];
     const CLAUDE_QUIET: &str = "\u{2733} phux";
 
+    /// Every OMP title spinner frame: braille (default), dots, pulse, line,
+    /// and the static WSL/Windows separator.
+    const OMP_WORKING_SEPARATORS: [&str; 26] = [
+        "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}",
+        "\u{2827}", "\u{2807}", "\u{280f}", "\u{2801}", "\u{2802}", "\u{2804}", "\u{2820}",
+        "\u{2810}", "\u{2808}", "\u{25cb}", "\u{25d4}", "\u{25d1}", "\u{25d5}", "\u{25cf}", "-",
+        "\\", "|", "/", ":",
+    ];
+
     /// `kind | title | progress | screen | want`, one golden case per line.
     /// `screen` is a fixture path or an `@name` from [`named_screen`]; `want`
     /// is `<state> <rule>`, `nothing` (the fail-safe decides), `not-blocked`,
@@ -1217,6 +1226,32 @@ omp |  |  | omp/idle_prompt.txt | nothing
 omp |  |  | omp/working.txt | working bottom-running-status
 omp |  |  | omp/blocked_tool_approval.txt | blocked tool-approval-dialog
 omp |  |  | @omp-dialog-above-idle | not-blocked
+omp | \u{3c0} > work |  | omp/v18_idle_new_session.txt | nothing
+omp | \u{3c0} > Run sleep and echo finished |  | omp/v18_idle_prompt.txt | nothing
+omp | \u{3c0} > Run sleep and echo finished |  | omp/v18_idle_interrupted.txt | nothing
+omp | \u{3c0} \u{2807} work |  | omp/v18_working_thinking.txt | working title-working-spinner
+omp | \u{3c0} \u{2839} Run sleep then echo finished |  | omp/v18_working.txt | working title-working-spinner
+omp | \u{3c0} \u{280f} Run sleep and echo command |  | omp/v18_working_queued.txt | working title-working-spinner
+omp | \u{3c0} ! Run sleep and echo finished |  | omp/v18_blocked_tool_approval.txt | blocked title-attention
+omp | \u{3c0} ! Run sleep and echo finished |  | omp/v18_blocked_ask.txt | blocked title-attention
+omp | \u{3c0} > Run sleep then echo finished |  | omp/v18_field_idle_prompt.txt | nothing
+omp | \u{3c0} \u{2819} work |  | omp/v18_field_working_thinking.txt | working title-working-spinner
+omp | \u{3c0} \u{2826} Run sleep and echo finished |  | omp/v18_field_working.txt | working title-working-spinner
+omp | \u{3c0} ! Run sleep then echo finished |  | omp/v18_field_blocked_tool_approval.txt | blocked title-attention
+omp |  |  | omp/v18_idle_new_session.txt | nothing
+omp |  |  | omp/v18_idle_prompt.txt | nothing
+omp |  |  | omp/v18_idle_interrupted.txt | nothing
+omp |  |  | omp/v18_field_idle_prompt.txt | nothing
+omp |  |  | omp/v18_working_thinking.txt | working status-spinner-elapsed
+omp |  |  | omp/v18_working.txt | working status-spinner-elapsed
+omp |  |  | omp/v18_working_queued.txt | working status-spinner-elapsed
+omp |  |  | omp/v18_field_working_thinking.txt | working status-spinner-elapsed
+omp | \u{3c0}: Run sleep and echo finished |  | omp/v18_field_working.txt | working status-spinner-elapsed
+omp |  |  | omp/v18_blocked_tool_approval.txt | blocked tool-approval-dialog
+omp |  |  | omp/v18_field_blocked_tool_approval.txt | blocked tool-approval-dialog
+omp |  |  | omp/v18_blocked_ask.txt | nothing
+omp | \u{3c0} > Run sleep and echo finished |  | @omp18-dialog-above-idle | not-blocked
+omp |  |  | @omp18-dialog-above-idle | not-blocked
 ";
 
     /// Synthetic screens built from, or around, the captures.
@@ -1263,6 +1298,11 @@ omp |  |  | @omp-dialog-above-idle | not-blocked
             "omp-dialog-above-idle" => [
                 golden("omp/blocked_tool_approval.txt"),
                 golden("omp/idle_prompt.txt"),
+            ]
+            .concat(),
+            "omp18-dialog-above-idle" => [
+                golden("omp/v18_blocked_tool_approval.txt"),
+                golden("omp/v18_idle_prompt.txt"),
             ]
             .concat(),
             other => panic!("unknown screen @{other}"),
@@ -1323,6 +1363,37 @@ omp |  |  | @omp-dialog-above-idle | not-blocked
             .map(|cp| format!("{cp} tmp"))
             .to_vec(),
             busy,
+        ));
+        // OMP's title contract (17.1.2 and 18.6.1 source): `π <sep> <label>`,
+        // with every `tui.titleSpinner` frame and the static `:` as working.
+        cases.extend(sweep(
+            "omp",
+            "omp/v18_idle_prompt.txt",
+            OMP_WORKING_SEPARATORS
+                .iter()
+                .flat_map(|sep| [format!("\u{3c0} {sep} label"), format!("\u{3c0} {sep}")])
+                .collect(),
+            "working title-working-spinner",
+        ));
+        cases.extend(sweep(
+            "omp",
+            "omp/v18_idle_prompt.txt",
+            [
+                "\u{3c0} > label",
+                "\u{3c0} >",
+                "\u{3c0}: label",
+                "\u{3c0}",
+                "custom title",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
+            "nothing",
+        ));
+        cases.extend(sweep(
+            "omp",
+            "omp/v18_idle_prompt.txt",
+            ["\u{3c0} ! label", "\u{3c0} !"].map(str::to_owned).to_vec(),
+            "blocked title-attention",
         ));
         let grok_titles = |text: &str| text.lines().map(str::to_owned).collect();
         cases.extend(sweep(
