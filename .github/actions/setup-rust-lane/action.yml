@@ -85,5 +85,7 @@ runs:
       with:
         backend: github
         github-cache-mode: objects
-        isolate-objects-cache: "true"
+        # Not `isolate-objects-cache`: v1.7.1's post step cannot delete the
+        # isolated store, because mbx marks its shared OUT_DIR copies
+        # read-only (EACCES), and that failure skips the save.
         cache-generation: ${{ steps.mbx-env.outputs.generation }}
