@@ -336,11 +336,27 @@
               fi
             ''
             + ''
-              export PATH="''${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+              # CARGO_HOME/bin holds `just install-dev`'s phux, which should
+              # beat a `curl | sh` install in ~/.local/bin. It goes after this
+              # shell's own store paths, not before them: it also holds
+              # rustup's cargo/rustc proxies and cargo-installed tools, and
+              # ahead of the pinned toolchain they made the shell run whatever
+              # rustup or an inherited RUSTUP_TOOLCHAIN picked (Rust 1.98.1
+              # after the 1.99.0 bump) instead of rust-toolchain.toml's.
+              phux_store_path= phux_rest_path= phux_ifs=$IFS
+              IFS=:
+              for phux_entry in $PATH; do
+                case $phux_entry in
+                  /nix/store/*) phux_store_path=''${phux_store_path:+$phux_store_path:}$phux_entry ;;
+                  *) phux_rest_path=''${phux_rest_path:+$phux_rest_path:}$phux_entry ;;
+                esac
+              done
+              IFS=$phux_ifs
+              export PATH="$phux_store_path:''${CARGO_HOME:-$HOME/.cargo}/bin:$phux_rest_path"
+              unset phux_store_path phux_rest_path phux_ifs phux_entry RUSTUP_TOOLCHAIN
             ''
-            # After the CARGO_HOME prepend, so a rustup `cargo` there cannot
-            # shadow the wrapper; the wrapper delegates to the next `cargo` on
-            # PATH. Hosted CI keeps plain Cargo: its lanes are budgeted around
+            # First on PATH; the wrapper delegates to the next `cargo`, the
+            # pinned toolchain's. Hosted CI keeps plain Cargo: its lanes are budgeted around
             # sccache and rust-cache (.github/actions/setup-rust-lane), and a
             # second cache layer there is a separate decision. PHUX_NO_MBX=1
             # opts a local shell out the same way.
