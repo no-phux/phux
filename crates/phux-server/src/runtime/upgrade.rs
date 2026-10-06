@@ -1111,26 +1111,18 @@ mod tests {
                     try_append(&append, "{\"type\":\"stop\"}").await,
                     Err(crate::resource::agent_session::AppendRejection::Overflow(_))
                 ));
+                let bootstrap = seal.bootstraps[0].clone();
                 drop(seal);
-                // Drop only queues the unseal. The actor's `select` may take
-                // the append first, which is the same sealed refusal a client
-                // retries; that refusal consumes no sequence.
-                let next = {
-                    let mut accepted = None;
-                    for _ in 0..8 {
-                        match try_append(&append, "{\"type\":\"stop\"}").await {
-                            Ok(value) => {
-                                accepted = Some(value);
-                                break;
-                            }
-                            Err(crate::resource::agent_session::AppendRejection::Overflow(_)) => {
-                                tokio::task::yield_now().await;
-                            }
-                            Err(rejection) => panic!("unseal retry saw {rejection:?}"),
-                        }
-                    }
-                    accepted.expect("dropping the seal unseals the stream")
-                };
+                // Drop queues unseal; appends use a different mailbox. An
+                // ordinary bootstrap on the same FIFO acknowledges that the
+                // queued unseal was applied, without depending on select order.
+                let (reply, received) = oneshot::channel();
+                bootstrap
+                    .send(BootstrapRequest { reply, seal: None })
+                    .await
+                    .unwrap();
+                assert_eq!(received.await.unwrap().base_seq, 1);
+                let next = append_records(&append, "{\"type\":\"stop\"}").await;
                 assert_eq!(next.first_seq, 2, "the refusal consumed no sequence");
             })
             .await;
