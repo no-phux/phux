@@ -1322,8 +1322,9 @@ Usage: phux host <SUBCOMMAND>
 Commands:
   add      Add a machine so `phux attach NAME` reaches it.
   attach   Attach to a registered remote host (same as `phux attach NAME`).
-  disable  Disable a satellite on the hub's next start without forgetting it.
-  enable   Enable a satellite for the local hub on its next start.
+  disable  Disable a satellite without forgetting it; a running hub drops its
+           link.
+  enable   Enable a satellite; a running local hub dials it now.
   ls       List registered machines from both registries. [aliases: list]
   rename   Rename a registered machine without changing its route or
            credentials.
@@ -1429,7 +1430,7 @@ Global flags:
 ## `phux host disable`
 
 ```text
-Disable a satellite on the hub's next start without forgetting it.
+Disable a satellite without forgetting it; a running hub drops its link.
 
 Usage: phux host disable [--json] <NAME>
 
@@ -1449,7 +1450,7 @@ Global flags:
 ## `phux host enable`
 
 ```text
-Enable a satellite for the local hub on its next start.
+Enable a satellite; a running local hub dials it now.
 
 Usage: phux host enable [--json] <NAME>
 

@@ -37,6 +37,7 @@ mod detach_fence;
 mod event_restamp;
 mod link_gap;
 mod list_directory;
+mod live_reload;
 mod path_query;
 mod retain_on_exit;
 mod satellite_spawn;

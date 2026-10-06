@@ -742,6 +742,11 @@ impl HubRelays {
         self.lock().insert(handle.host.clone(), handle);
     }
 
+    /// Drop `host`'s handle (a registry reload stopped its link).
+    pub(crate) fn remove(&self, host: &SatelliteHost) {
+        self.lock().remove(host);
+    }
+
     /// The relay handle for `host`, if the hub dials that satellite.
     pub(crate) fn get(&self, host: &SatelliteHost) -> Option<RelayHandle> {
         self.lock().get(host).cloned()

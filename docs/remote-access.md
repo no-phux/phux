@@ -158,8 +158,15 @@ without it they refuse to guess. Enable/disable apply only to satellites.
 Renaming changes the local registry label, not the machine's hostname, service,
 session names, or the path to its token file. The original SSH destination is
 kept so attach repair still reaches the same machine.
-The hub reads satellite entries at startup: after enabling, disabling, or
-renaming a satellite, restart the hub for the change to affect live routes.
+A running hub picks up satellite edits without a restart. Every satellite
+`add`, `rm`, `rename`, `enable`, and `disable` rings the config-reload
+doorbell (as `phux config reload` does). The hub then re-reads
+`[[satellites]]`: it dials new entries, stops removed ones, redials changed
+ones, and leaves every other link and pane alone. The command prints what
+happened, and `--json` carries it as `hub_reload`: `signalled`, `no_server`,
+or `failed`. A server started without `--hub` ignores the registry. When
+`host add --role satellite` patches `--hub` into its service unit, that
+server starts dialing after its next restart.
 
 `--role satellite` uses the same steps to register a peer this hub dials for
 its users instead of a server you attach to. `--ssh-only` registers an

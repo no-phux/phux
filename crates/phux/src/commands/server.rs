@@ -456,8 +456,16 @@ pub(crate) fn run_server(
         server = server.connectors(connector_entries, connect);
     }
     // Hub mode (ADR-0007): the runtime validates the satellite registry.
+    // The config-reload doorbell re-reads `[[satellites]]` the same way, so
+    // `phux host add --role satellite` reaches a running hub (phux-lpn7.2).
     if hub {
-        server = server.hub(satellites);
+        server = server
+            .hub(satellites)
+            .hub_reload(phux_server::SatelliteSource::new(|| {
+                config_loader::load()
+                    .map(|config| config.satellites)
+                    .map_err(|err| err.to_string())
+            }));
     }
     // Every start consumes (resume) or discards the upgrade handoff.
     server = match resume {

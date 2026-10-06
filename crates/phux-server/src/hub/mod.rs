@@ -5,7 +5,8 @@
 //! [`SatelliteHost`] that tags `ResourceId::Satellite` on the wire. [`link`]
 //! dials and supervises each satellite; [`relay`] routes frames over the
 //! links, rewriting ids to the satellite's `Local` space and back. A
-//! non-hub server never reads the registry ([`resolve_hub_table`]).
+//! non-hub server never reads the registry ([`resolve_hub_table`]); a hub
+//! re-reads it on the config-reload doorbell ([`reload_satellites`]).
 
 pub mod link;
 pub(crate) mod metadata_mirror;
@@ -180,6 +181,117 @@ impl HubTable {
     /// Iterate the table in deterministic (name) order.
     pub fn iter(&self) -> impl Iterator<Item = (&SatelliteHost, &HubEntry)> {
         self.entries.iter()
+    }
+
+    /// What moving from `self` to `next` adds, removes, and changes. An
+    /// entry whose endpoint or auth material differs is `changed` (its link
+    /// redials); an identical entry appears nowhere (its link is untouched).
+    #[must_use]
+    pub fn diff(&self, next: &Self) -> TableDiff {
+        let mut diff = TableDiff::default();
+        for (host, entry) in &self.entries {
+            match next.entries.get(host) {
+                None => diff.removed.push(host.clone()),
+                Some(new) if new != entry => diff.changed.push(host.clone()),
+                Some(_) => {}
+            }
+        }
+        diff.added = next
+            .entries
+            .keys()
+            .filter(|host| !self.entries.contains_key(*host))
+            .cloned()
+            .collect();
+        diff
+    }
+}
+
+/// The link changes one registry reload makes, each list in name order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TableDiff {
+    /// Newly enabled or registered satellites: dialed.
+    pub added: Vec<SatelliteHost>,
+    /// Disabled or forgotten satellites: their links stop.
+    pub removed: Vec<SatelliteHost>,
+    /// Satellites whose endpoint or auth material changed: redialed.
+    pub changed: Vec<SatelliteHost>,
+}
+
+impl TableDiff {
+    /// `true` when the reload changes no link.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty() && self.changed.is_empty()
+    }
+}
+
+/// Re-reads the `[[satellites]]` registry for a live hub reload. The binary
+/// passes the same config load it starts from; errors are logged and the
+/// running table is kept.
+#[derive(Clone)]
+pub struct SatelliteSource(std::sync::Arc<SatelliteReader>);
+
+type SatelliteReader = dyn Fn() -> Result<Vec<SatelliteConfigEntry>, String> + Send + Sync;
+
+impl SatelliteSource {
+    /// Wrap the function a reload calls to re-read the registry.
+    pub fn new(
+        read: impl Fn() -> Result<Vec<SatelliteConfigEntry>, String> + Send + Sync + 'static,
+    ) -> Self {
+        Self(std::sync::Arc::new(read))
+    }
+
+    fn read(&self) -> Result<Vec<SatelliteConfigEntry>, String> {
+        (self.0)()
+    }
+}
+
+impl core::fmt::Debug for SatelliteSource {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("SatelliteSource(..)")
+    }
+}
+
+/// Re-read the satellite registry into a running hub and apply the
+/// difference: dial added satellites, stop removed ones, redial changed
+/// ones, and leave every other link, relay session, and local pane alone.
+/// Rung by the `phux.config.reload/v1` doorbell. A no-op off-hub or without
+/// a [`SatelliteSource`]; a registry that fails to read or validate keeps
+/// the running table.
+pub(crate) fn reload_satellites(state: &crate::state::SharedState) {
+    let Some(source) = state.with(crate::state::ServerState::hub_satellite_source) else {
+        return;
+    };
+    let next = match source
+        .read()
+        .and_then(|entries| HubTable::from_registry(&entries).map_err(|err| err.to_string()))
+    {
+        Ok(next) => next,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "hub: satellite registry reload failed; keeping the running satellites"
+            );
+            return;
+        }
+    };
+    let diff = state.with_mut(|s| s.hub_replace_table(next, state));
+    log_reload(&diff);
+}
+
+fn log_reload(diff: &TableDiff) {
+    if diff.is_empty() {
+        tracing::info!("hub: satellite registry reloaded; no link changed");
+        return;
+    }
+    for host in &diff.added {
+        tracing::info!(satellite = %host, "hub: satellite added by reload; dialing");
+    }
+    for host in &diff.removed {
+        tracing::info!(satellite = %host, "hub: satellite removed by reload; link stopped");
+    }
+    for host in &diff.changed {
+        tracing::info!(satellite = %host, "hub: satellite changed by reload; redialing");
     }
 }
 
@@ -479,6 +591,46 @@ mod tests {
             Some(&SatelliteTarget::Wss {
                 url: "wss://sandbox:8787".to_owned(),
             })
+        );
+    }
+
+    #[test]
+    fn diff_names_added_removed_and_changed_links_only() {
+        let before = HubTable::from_registry(&[
+            entry("kept", "quic://kept:1", true),
+            entry("moved", "quic://old:1", true),
+            entry("parked", "quic://parked:1", true),
+            entry("gone", "quic://gone:1", true),
+        ])
+        .unwrap();
+        let mut repinned = entry("repinned", "quic://pin:1", true);
+        let pinned_before = HubTable::from_registry(std::slice::from_ref(&repinned)).unwrap();
+        repinned.cert_fingerprint = Some("AB:CD".to_owned());
+        let after = HubTable::from_registry(&[
+            entry("kept", "quic://kept:1", true),
+            entry("moved", "quic://new:1", true),
+            entry("parked", "quic://parked:1", false),
+            entry("fresh", "ssh://fresh", true),
+        ])
+        .unwrap();
+        let host = |name: &str| SatelliteHost::new(name);
+        assert_eq!(
+            before.diff(&after),
+            TableDiff {
+                added: vec![host("fresh")],
+                removed: vec![host("gone"), host("parked")],
+                changed: vec![host("moved")],
+            }
+        );
+        assert!(after.diff(&after).is_empty());
+        let pinned_after = HubTable::from_registry(&[repinned]).unwrap();
+        assert_eq!(
+            pinned_before.diff(&pinned_after).changed,
+            [host("repinned")]
+        );
+        assert_eq!(
+            HubTable::default().diff(&after).added,
+            [host("fresh"), host("kept"), host("moved")]
         );
     }
 

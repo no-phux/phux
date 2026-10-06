@@ -18,6 +18,34 @@ impl ServerState {
         self.hub.set_relays(relays);
     }
 
+    /// Install the running link supervisors and the registry source a live
+    /// reload re-reads (hub startup).
+    pub(crate) fn set_hub_links(
+        &mut self,
+        links: crate::hub::link::HubLinks,
+        source: Option<crate::hub::SatelliteSource>,
+    ) {
+        self.hub.set_links(links, source);
+    }
+
+    /// The registry source [`crate::hub::reload_satellites`] re-reads;
+    /// `None` off-hub or when the embedder supplied none.
+    #[must_use]
+    pub(crate) fn hub_satellite_source(&self) -> Option<crate::hub::SatelliteSource> {
+        self.hub.source()
+    }
+
+    /// Swap in a reloaded satellite table, starting, stopping, or redialing
+    /// only the links that differ. `journal` is this state's own handle,
+    /// cloned into each new link.
+    pub(crate) fn hub_replace_table(
+        &mut self,
+        next: crate::hub::HubTable,
+        journal: &super::SharedState,
+    ) -> crate::hub::TableDiff {
+        self.hub.replace_table(next, journal)
+    }
+
     /// The relay for `host`; `None` off-hub or for an unknown host.
     #[must_use]
     pub(crate) fn hub_relay(

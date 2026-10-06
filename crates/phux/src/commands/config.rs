@@ -342,9 +342,6 @@ fn reload_refusal(path: &Path) -> Option<String> {
 /// here and signals nothing), then ring the `phux.config.reload/v1` doorbell
 /// with a fresh nonce; each client re-reads its own file.
 fn run_config_reload(socket: Option<PathBuf>) -> ExitCode {
-    use phux_client::attach::connection::Connection;
-    use phux_protocol::wire::frame::{CONFIG_RELOAD_KEY, FrameKind, Scope};
-
     // 1. Validate locally with the build the clients run on reload.
     let config_path = config_loader::config_path();
     if let Some(err) = reload_refusal(&config_path) {
@@ -353,57 +350,79 @@ fn run_config_reload(socket: Option<PathBuf>) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    // 2. Ring the doorbell. The nonce only has to differ from the
-    // previous value (the server dedups equal-bytes SETs).
+    // 2. Ring the doorbell.
     let socket_path = socket.unwrap_or_else(phux_server::runtime::default_socket_path);
     let rt = match super::cli_runtime() {
         Ok(rt) => rt,
         Err(code) => return code,
     };
-    rt.block_on(async move {
-        let mut conn = match Connection::connect(&socket_path).await {
-            Ok(conn) => conn,
-            Err(err) => return super::report_no_server(&err, &socket_path, "config reload"),
-        };
-        let nonce = format!(
-            "{}-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos()),
-            std::process::id(),
-        );
-        if let Err(err) = conn
-            .send(&FrameKind::SetMetadata {
-                request_id: 1,
-                scope: Scope::Global,
-                key: CONFIG_RELOAD_KEY.to_owned(),
-                value: nonce.into_bytes(),
-            })
-            .await
-        {
-            return super::report_no_server(&err, &socket_path, "config reload");
+    match rt.block_on(ring_config_reload(&socket_path)) {
+        Ok(()) => {
+            outln!("config OK; reload signalled to attached clients and a running hub");
+            ExitCode::SUCCESS
         }
-        // Read-back as a flush barrier (`SET_METADATA` has no reply), via
-        // `request_metadata` so a correlated ERROR cannot hang it.
-        let reply = match conn
-            .request_metadata(2, Scope::Global, CONFIG_RELOAD_KEY.to_owned())
-            .await
-        {
-            Ok(reply) => reply,
-            Err(err) => return super::report_no_server(&err, &socket_path, "config reload"),
-        };
-        drop(conn);
-        // `handle_get_metadata` (`crates/phux-server/src/runtime/client.rs`)
-        // answers with METADATA_VALUE and pushes nothing of its own, and this
-        // connection is a fresh one-shot that never attached or subscribed —
-        // nothing can fan out onto it. A non-empty discard is logged.
-        if let Err(refusal) = reply.into_result_ignoring_interleaved() {
+        Err(ReloadRingError::NoServer(err)) => {
+            super::report_no_server(&err, &socket_path, "config reload")
+        }
+        Err(ReloadRingError::Unconfirmed(refusal)) => {
             eprintln!("phux: config reload could not be confirmed: {refusal}");
-            return ExitCode::FAILURE;
+            ExitCode::FAILURE
         }
-        outln!("config OK; reload signalled to attached clients");
-        ExitCode::SUCCESS
+    }
+}
+
+/// Why [`ring_config_reload`] did not confirm the doorbell.
+#[derive(Debug)]
+pub(crate) enum ReloadRingError {
+    /// No server answered at the socket.
+    NoServer(phux_client::attach::AttachError),
+    /// The server answered the read-back with a refusal.
+    Unconfirmed(String),
+}
+
+/// Ring the `phux.config.reload/v1` doorbell on the server at `socket_path`
+/// with a fresh nonce and wait for the read-back. The server handles a
+/// connection's frames in order, so `Ok` also means a hub has already
+/// re-read its `[[satellites]]` (L3 §3.8).
+pub(crate) async fn ring_config_reload(socket_path: &Path) -> Result<(), ReloadRingError> {
+    use phux_client::attach::connection::Connection;
+    use phux_protocol::wire::frame::{CONFIG_RELOAD_KEY, FrameKind, Scope};
+
+    let mut conn = Connection::connect(socket_path)
+        .await
+        .map_err(ReloadRingError::NoServer)?;
+    // The nonce only has to differ from the previous value (the server
+    // dedups equal-bytes SETs).
+    let nonce = format!(
+        "{}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos()),
+        std::process::id(),
+    );
+    conn.send(&FrameKind::SetMetadata {
+        request_id: 1,
+        scope: Scope::Global,
+        key: CONFIG_RELOAD_KEY.to_owned(),
+        value: nonce.into_bytes(),
     })
+    .await
+    .map_err(ReloadRingError::NoServer)?;
+    // Read-back as a flush barrier (`SET_METADATA` has no reply), via
+    // `request_metadata` so a correlated ERROR cannot hang it.
+    let reply = conn
+        .request_metadata(2, Scope::Global, CONFIG_RELOAD_KEY.to_owned())
+        .await
+        .map_err(ReloadRingError::NoServer)?;
+    drop(conn);
+    // `handle_get_metadata` (`crates/phux-server/src/runtime/client.rs`)
+    // answers with METADATA_VALUE and pushes nothing of its own, and this
+    // connection is a fresh one-shot that never attached or subscribed —
+    // nothing can fan out onto it. A non-empty discard is logged.
+    reply
+        .into_result_ignoring_interleaved()
+        .map(drop)
+        .map_err(|refusal| ReloadRingError::Unconfirmed(refusal.to_string()))
 }
 
 pub(super) struct LoadedPlugin {
