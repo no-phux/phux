@@ -918,7 +918,18 @@ class PhuxCli {
     }
     args.push("--json");
     this.pushSocket(args);
-    return this.jsonCommand("agent emit", args, options, parseAgentEmitResult);
+    const started = Date.now();
+    for (let attempt = 0;; attempt += 1) {
+      try {
+        return await this.jsonCommand("agent emit", args, options, parseAgentEmitResult);
+      } catch (error) {
+        const delay = Math.min(UPGRADE_RETRY_BASE_MS * 2 ** attempt, UPGRADE_RETRY_MAX_DELAY_MS);
+        if (!isUpgradeSealRefusal(error) || Date.now() - started + delay > UPGRADE_RETRY_BUDGET_MS) {
+          throw error;
+        }
+        await sleep(delay, options.signal);
+      }
+    }
   }
   async agentSessionClose(target, options = {}) {
     if (target.trim().length === 0)
@@ -1410,6 +1421,38 @@ function requirePositiveInteger(value, name) {
 function hasAgentSessionCli(cli) {
   const candidate = cli;
   return typeof candidate.agentSessionOpen === "function" && typeof candidate.agentEmit === "function" && typeof candidate.agentSessionClose === "function";
+}
+var UPGRADE_RETRY_BUDGET_MS = 3000;
+var UPGRADE_RETRY_BASE_MS = 50;
+var UPGRADE_RETRY_MAX_DELAY_MS = 800;
+function isUpgradeSealRefusal(error) {
+  if (!(error instanceof PhuxError) || error.code !== "command_failed")
+    return false;
+  const detail = error.cliError?.["error"];
+  if (detail === null || typeof detail !== "object" || Array.isArray(detail))
+    return false;
+  const { code, message } = detail;
+  return code === "overflow" && typeof message === "string" && /server is upgrading/.test(message);
+}
+function sleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted === true) {
+      reject(abortedRetry());
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(abortedRetry());
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+function abortedRetry() {
+  return new PhuxError("aborted", "phux agent emit was aborted while waiting out a server upgrade");
 }
 function isAgentSessionUnsupported(error) {
   if (!(error instanceof PhuxError) || error.code !== "command_failed")
