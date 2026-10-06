@@ -263,8 +263,9 @@ never match, and nothing else makes that visible (the detector fails safe to
 `idle`, silently).
 
 The capture is `phux snapshot --json` output or a plain text screen, one
-viewport row per line; `-` reads stdin. A capture carries no OSC title, so pass
-`--title` to exercise title-scoped rules.
+viewport row per line; `-` reads stdin. A JSON capture carries the pane's OSC
+title; a text one does not, so pass `--title` to exercise title-scoped rules
+against it (or to override the captured title).
 
 Usage: phux agent explain [FLAGS] [TARGET]
 
@@ -281,7 +282,8 @@ Flags:
                          is no foreground process group to identify the agent
                          from.
       --title <TEXT>     OSC 0/2 title to evaluate `title`-scoped rules against.
-                         Captures do not carry one, so it defaults to empty.
+                         Overrides a JSON capture's own title; defaults to it,
+                         else to empty.
       --format <FORMAT>  How to read `--file`. `auto` picks JSON when the first
                          non-whitespace byte is `{`.
                          [possible values: auto, json, text]
