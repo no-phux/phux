@@ -14,19 +14,19 @@ ARG PHUX_LOCK_SHA256=5f13c87238a6e34d8a7899a73ec08a3d25b8fac8df9e3b05f1c06feff67
 ARG PHUX_PATCHED_LOCK_SHA256=981bf9446648c7b1de181b8300c4b2f21c031bc40fc9105642396906e1b6310a
 ARG ZIG_VERSION=0.16.0
 ARG ZIG_SOURCE_SHA256=70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
-ARG LIBGHOSTTY_REVISION=1cc00f3a0aeb77b851604d027518c9f66212029b
-ARG LIBGHOSTTY_SOURCE_SHA256=ba4389ca1c02d26bfd971a4e725fa56e5ddc185df798a535d137f95171ffa12e
-ARG GHOSTTY_REVISION=03c6f818eaeadf76e66dda99ab5529c9b47fa15c
-ARG GHOSTTY_SOURCE_SHA256=3d5ca7cc063c993d16ddb00c5635e99e48767861ff9a1ba33f0b5ff2764ad7a5
+ARG LIBGHOSTTY_REVISION=65102309fe779f500455b30166f7e64cc11db900
+ARG LIBGHOSTTY_SOURCE_SHA256=64113f8e6507fcf1150f69ebad373faa630e215382b78ce5a1dacdcfb2b38926
+ARG GHOSTTY_REVISION=29d5e622ea1e39b32ed31afa2f79de6bf20a3e73
+ARG GHOSTTY_SOURCE_SHA256=6f7cf5e640a186b1d926ef945886603d6e2a3598dc2573c73f6f222bae448726
 
 ADD --checksum=sha256:af8fc0341d308eb749eef58ce183fa49080cbf03b19fa95370c0dd02dc71f649 \
     https://github.com/no-phux/phux/archive/3fd6e29772f173ccfb420954e03e2efe557a4b72.tar.gz /tmp/phux.tar.gz
 ADD --checksum=sha256:70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00 \
     https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz /tmp/zig.tar.xz
-ADD --checksum=sha256:ba4389ca1c02d26bfd971a4e725fa56e5ddc185df798a535d137f95171ffa12e \
-    https://github.com/phall1/libghostty-rs/archive/1cc00f3a0aeb77b851604d027518c9f66212029b.tar.gz /tmp/libghostty.tar.gz
-ADD --checksum=sha256:3d5ca7cc063c993d16ddb00c5635e99e48767861ff9a1ba33f0b5ff2764ad7a5 \
-    https://github.com/phall1/ghostty/archive/03c6f818eaeadf76e66dda99ab5529c9b47fa15c.tar.gz /tmp/ghostty.tar.gz
+ADD --checksum=sha256:64113f8e6507fcf1150f69ebad373faa630e215382b78ce5a1dacdcfb2b38926 \
+    https://github.com/phall1/libghostty-rs/archive/65102309fe779f500455b30166f7e64cc11db900.tar.gz /tmp/libghostty.tar.gz
+ADD --checksum=sha256:6f7cf5e640a186b1d926ef945886603d6e2a3598dc2573c73f6f222bae448726 \
+    https://github.com/phall1/ghostty/archive/29d5e622ea1e39b32ed31afa2f79de6bf20a3e73.tar.gz /tmp/ghostty.tar.gz
 # x-release-please-start-version
 RUN test "$PHUX_VERSION" = "0.51.0"
 # x-release-please-end
@@ -34,10 +34,10 @@ RUN test "$PHUX_REVISION" = "3fd6e29772f173ccfb420954e03e2efe557a4b72" \
     && test "$PHUX_SOURCE_SHA256" = "af8fc0341d308eb749eef58ce183fa49080cbf03b19fa95370c0dd02dc71f649" \
     && test "$ZIG_VERSION" = "0.16.0" \
     && test "$ZIG_SOURCE_SHA256" = "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00" \
-    && test "$LIBGHOSTTY_REVISION" = "1cc00f3a0aeb77b851604d027518c9f66212029b" \
-    && test "$LIBGHOSTTY_SOURCE_SHA256" = "ba4389ca1c02d26bfd971a4e725fa56e5ddc185df798a535d137f95171ffa12e" \
-    && test "$GHOSTTY_REVISION" = "03c6f818eaeadf76e66dda99ab5529c9b47fa15c" \
-    && test "$GHOSTTY_SOURCE_SHA256" = "3d5ca7cc063c993d16ddb00c5635e99e48767861ff9a1ba33f0b5ff2764ad7a5" \
+    && test "$LIBGHOSTTY_REVISION" = "65102309fe779f500455b30166f7e64cc11db900" \
+    && test "$LIBGHOSTTY_SOURCE_SHA256" = "64113f8e6507fcf1150f69ebad373faa630e215382b78ce5a1dacdcfb2b38926" \
+    && test "$GHOSTTY_REVISION" = "29d5e622ea1e39b32ed31afa2f79de6bf20a3e73" \
+    && test "$GHOSTTY_SOURCE_SHA256" = "6f7cf5e640a186b1d926ef945886603d6e2a3598dc2573c73f6f222bae448726" \
     && mkdir /src /opt/zig /libghostty /ghostty \
     && tar --extract --gzip --file /tmp/phux.tar.gz --directory /src --strip-components=1 \
     && tar --extract --xz --file /tmp/zig.tar.xz --directory /opt/zig --strip-components=1 \
