@@ -350,11 +350,12 @@ impl SelectList {
         modal_area.height.saturating_sub(CHROME_ROWS) as usize
     }
 
-    /// The scrollbar track: the right border column beside the list rows.
+    /// The scrollbar track: the right border column beside the list rows,
+    /// which start under the top border and the query line.
     fn scrollbar_track(modal_area: Rect) -> Rect {
         Rect::new(
             modal_area.x + modal_area.width.saturating_sub(1),
-            modal_area.y.saturating_add(3),
+            modal_area.y.saturating_add(CHROME_ROWS - 1),
             1,
             u16::try_from(Self::list_height(modal_area)).unwrap_or(u16::MAX),
         )
@@ -940,6 +941,28 @@ mod tests {
         // Only an overflowing list paints a scrollbar.
         assert!(render_to_string(&long_list(40), 40, 16).contains('█'));
         assert!(!render_to_string(&long_list(3), 40, 16).contains('█'));
+    }
+
+    /// The scrollbar runs beside the list rows only: the thumb starts on the
+    /// first list row, and the bottom border keeps its corner.
+    #[test]
+    fn scrollbar_spans_the_list_rows_and_spares_the_border() {
+        let sl = long_list(40);
+        let area = Rect::new(0, 0, 40, 16);
+        let modal = SelectList::modal_area(area, ChromeBreakpoints::default());
+        let buf = render_buf(&sl, 40, 16);
+        let right = modal.x + modal.width - 1;
+        let bottom = modal.y + modal.height - 1;
+        assert_eq!(
+            buf[(right, modal.y + 2)].symbol(),
+            "█",
+            "thumb on the first list row"
+        );
+        assert_eq!(
+            buf[(right, bottom)].symbol(),
+            "┘",
+            "bottom-right corner survives"
+        );
     }
 
     #[test]

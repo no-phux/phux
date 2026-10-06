@@ -49,9 +49,8 @@ impl ToastOverlay {
     }
 }
 
-impl RenderOverlay for ToastOverlay {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
-        let modal_area = self.bounds(area).unwrap_or(area);
+impl ToastOverlay {
+    fn modal(&self) -> Modal<'_> {
         // Styled, not raw: body text inheriting the terminal foreground is
         // invisible on the `surface` fill of a light terminal.
         let body: Vec<Line<'_>> = self
@@ -64,14 +63,27 @@ impl RenderOverlay for ToastOverlay {
                 ))
             })
             .collect();
-        Modal::new(&self.theme, self.title.clone(), body)
-            .wrap(true)
-            .render_into(modal_area, buf);
+        Modal::new(&self.theme, self.title.clone(), body).wrap(true)
+    }
+}
+
+impl RenderOverlay for ToastOverlay {
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        let modal_area = self.bounds(area).unwrap_or(area);
+        self.modal().render_into(modal_area, buf);
     }
 
     fn bounds(&self, area: Rect) -> Option<Rect> {
-        // 50% of the viewport, min 32x6, clamped to the outer rect.
-        Some(centered_panel(area, 5, 32, 6, self.breakpoints))
+        // 50% of the viewport, min 32 wide, clamped to the outer rect; then
+        // only as tall as the wrapped body needs, so a short notice is not a
+        // mostly-empty box. A row-starved viewport keeps the full-bleed panel.
+        let panel = centered_panel(area, 5, 32, 6, self.breakpoints);
+        if self.breakpoints.is_row_starved(area.height) {
+            return Some(panel);
+        }
+        let height = self.modal().height_for(panel.width).min(panel.height);
+        let y = area.y + area.height.saturating_sub(height) / 2;
+        Some(Rect { y, height, ..panel })
     }
 
     fn set_breakpoints(&mut self, bp: ChromeBreakpoints) {
@@ -172,9 +184,24 @@ mod tests {
             .bounds(Rect::new(0, 0, 100, 40))
             .expect("toast is bounded");
         assert!(b.width >= 32 && b.width <= 100);
-        assert!(b.height >= 6 && b.height <= 40);
+        assert!(b.height >= 2 && b.height <= 40);
         // Tiny viewport still yields a rect inside it.
         let tiny = toast.bounds(Rect::new(0, 0, 20, 6)).expect("bounded");
         assert!(tiny.width <= 20 && tiny.height <= 6);
+    }
+
+    /// A short notice is only as tall as its body plus borders, centered;
+    /// a long one still stops at half the viewport.
+    #[test]
+    fn bounds_fit_the_body_and_cap_at_half_the_viewport() {
+        let outer = Rect::new(0, 0, 100, 40);
+        let short = ToastOverlay::new("t", vec!["one".into(), "two".into()], &Theme::default());
+        let b = short.bounds(outer).expect("bounded");
+        assert_eq!(b.height, 4, "two body rows plus two borders");
+        assert_eq!(b.y, (40 - 4) / 2, "vertically centered");
+
+        let long = ToastOverlay::new("t", vec!["line".into(); 100], &Theme::default());
+        let b = long.bounds(outer).expect("bounded");
+        assert_eq!(b.height, 20, "capped at half the viewport");
     }
 }

@@ -54,6 +54,17 @@ impl<'a> Modal<'a> {
 
     /// Paint the modal into `area` (the already-centered modal rect).
     pub fn render_into(&self, area: Rect, buf: &mut Buffer) {
+        self.paragraph().render(area, buf);
+    }
+
+    /// Rows this modal needs at `width` to show its whole body, borders
+    /// included, wrapping exactly as [`Self::render_into`] does.
+    #[must_use]
+    pub fn height_for(&self, width: u16) -> u16 {
+        u16::try_from(self.paragraph().line_count(width)).unwrap_or(u16::MAX)
+    }
+
+    fn paragraph(&self) -> Paragraph<'a> {
         let block = Block::default()
             .borders(Borders::ALL)
             // Fill with the theme surface: the pane cells behind cannot be
@@ -68,11 +79,12 @@ impl<'a> Modal<'a> {
             .title_alignment(Alignment::Left)
             .padding(Padding::horizontal(MODAL_PAD));
 
-        let mut para = Paragraph::new(self.body.clone()).block(block);
+        let para = Paragraph::new(self.body.clone()).block(block);
         if self.wrap {
-            para = para.wrap(Wrap { trim: false });
+            para.wrap(Wrap { trim: false })
+        } else {
+            para
         }
-        para.render(area, buf);
     }
 }
 
