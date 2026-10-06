@@ -394,11 +394,9 @@ fn bind_session(req: Binding<'_>) -> ExitCode {
         Err(code) => return code,
     };
 
-    // Auto-spawn under the default session name, not the worktree's: the
-    // seed session must not collide with the one we are about to create.
-    if let Err(err) =
-        super::server::ensure_server(&socket_path, super::DEFAULT_SESSION_NAME, None, json)
-    {
+    // Auto-spawn unseeded (ADR-0105): the session we are about to create is
+    // the only one, rather than one beside a stray `default` seed.
+    if let Err(err) = super::server::ensure_server_unseeded(&socket_path, json) {
         // Under `--json` the failure stays off stderr, which carries only the
         // error document; the verb reports it there when the dial fails.
         if json {

@@ -13,7 +13,7 @@ use phux_protocol::wire::frame::AttachTarget;
 
 use crate::commands::server_target::{ServerSpec, ServerTarget};
 use crate::commands::{
-    DEFAULT_SESSION_NAME, attach::client_cwd, attach::configured_session_name_template,
+    attach::client_cwd, attach::configured_session_name_template,
     attach::interactive_tty_preflight, attach::render_default_session_name,
     attach::report_attach_end, attach::run_attach_once, partial, server::ensure_server,
     server::ensure_server_unseeded,
@@ -139,25 +139,17 @@ fn run_new_empty_json(rt: &tokio::runtime::Runtime, target: &ServerTarget, name:
     }
 }
 
-/// Make sure a local server is running for a create-without-attach. The seed
-/// session uses [`DEFAULT_SESSION_NAME`] so it cannot collide with the create.
-/// Failure is only logged (never prose under `--json`); the create reports.
-fn ensure_local_server(target: &ServerTarget, json: bool) {
-    if let Some(path) = target.socket_path()
-        && let Err(err) = ensure_server(path, DEFAULT_SESSION_NAME, None, json)
-    {
-        tracing::debug!(error = %err, "auto-spawn failed on a create-without-attach path");
-    }
-}
-
-/// [`ensure_local_server`] for `phux new --empty` (ADR-0105): a server started
-/// here carries no seed session, so the empty session is the only one, and a
-/// requested name of `default` does not collide with a seed.
-fn ensure_local_unseeded_server(target: &ServerTarget, json: bool) {
+/// Make sure a local server is running for a create-without-attach (`phux
+/// new --json`, `phux new --empty`, `phux worktree new --json`). A server
+/// started here carries no seed session (ADR-0105): the requested session is
+/// the only one, so a requested name of `default` does not collide with a
+/// seed and no stray shell is left behind. Failure is only logged (never
+/// prose under `--json`); the create reports.
+pub(crate) fn ensure_local_unseeded_server(target: &ServerTarget, json: bool) {
     if let Some(path) = target.socket_path()
         && let Err(err) = ensure_server_unseeded(path, json)
     {
-        tracing::debug!(error = %err, "auto-spawn failed on the --empty create path");
+        tracing::debug!(error = %err, "auto-spawn failed on a create-without-attach path");
     }
 }
 
@@ -314,8 +306,8 @@ pub(crate) fn run_new_json(
     idempotency_key: Option<IdempotencyKey>,
 ) -> ExitCode {
     // A local server must be running to host the new session; the real
-    // session is then created without attaching (see `ensure_local_server`).
-    ensure_local_server(target, true);
+    // session is then created without attaching.
+    ensure_local_unseeded_server(target, true);
 
     let cwd = seed_cwd(cwd, target.is_remote());
     let command = if command.is_empty() {
