@@ -4,7 +4,9 @@ import test from "node:test";
 import {
   AgentSessionEmitter,
   isAgentSessionUnsupported,
+  isUpgradeSealRefusal,
   PhuxCli,
+  UPGRADE_RETRY_BUDGET_MS,
 } from "../src/adapter.js";
 import { PhuxError } from "../src/errors.js";
 import type { ProcessResult, ProcessRunner, RunRequest } from "../src/runner.js";
@@ -266,6 +268,51 @@ test("AgentSessionEmitter fails closed when session open is unsupported and neve
   assert.equal(isAgentSessionUnsupported(new PhuxError("command_failed", "x", {
     stderr: "unsupported_server",
   })), true);
+});
+
+const refusal = (code: string, message: string): ProcessResult => ({
+  termination: "completed",
+  exitCode: 2,
+  stdout: "",
+  stderr: JSON.stringify({ schema_version: 1, error: { code, message }, remedy: "", exit_code: 2 }),
+});
+const UPGRADING = "agent emit: overflow: the server is upgrading; retry the append";
+const emitted = completed(JSON.stringify({ schema_version: 1, resource: "@9", seq: 4, ts_ms: 1, type: "stop" }));
+
+test("agentEmit retries the upgrade seal refusal until the resumed server accepts", async () => {
+  const replies = [refusal("overflow", UPGRADING), refusal("overflow", UPGRADING), emitted];
+  const requests: RunRequest[] = [];
+  const cli = new PhuxCli({
+    runner: async (request) => {
+      requests.push(request);
+      return replies.shift() ?? emitted;
+    },
+  });
+  assert.equal((await cli.agentEmit("@9", "stop")).seq, 4);
+  assert.equal(requests.length, 3, "the same record is resent until accepted");
+  assert.deepEqual(requests[2]?.args, requests[0]?.args);
+});
+
+test("agentEmit never retries any other overflow, and gives up on a seal past its budget", async () => {
+  const lane = fakeRunner(refusal("overflow", "agent emit: overflow: the session's append queue is full"));
+  await assert.rejects(new PhuxCli({ runner: lane.runner }).agentEmit("@9", "stop"), expectCode("command_failed"));
+  assert.equal(lane.requests.length, 1, "a full lane is the caller's to back off from");
+
+  const sealed = fakeRunner(refusal("overflow", UPGRADING));
+  const started = Date.now();
+  await assert.rejects(new PhuxCli({ runner: sealed.runner }).agentEmit("@9", "stop"), (error: unknown) =>
+    isUpgradeSealRefusal(error));
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed <= UPGRADE_RETRY_BUDGET_MS + 500, `bounded by the budget: ${String(elapsed)}ms`);
+  assert.ok(sealed.requests.length > 2 && sealed.requests.length < 12, String(sealed.requests.length));
+});
+
+test("an abort ends the upgrade retry wait", async () => {
+  const controller = new AbortController();
+  const sealed = fakeRunner(refusal("overflow", UPGRADING));
+  const pending = new PhuxCli({ runner: sealed.runner }).agentEmit("@9", "stop", { signal: controller.signal });
+  setTimeout(() => controller.abort(), 20);
+  await assert.rejects(pending, expectCode("aborted"));
 });
 
 test("agent session open and emit reject unconfirmed responses", async () => {

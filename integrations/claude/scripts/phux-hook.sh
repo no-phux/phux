@@ -52,12 +52,29 @@ if [ ! -t 0 ] && payload=$(mktemp 2>/dev/null); then
   set -- "$1"
 fi
 
+# One `agent emit`, its stdin from file $1 (empty: none). A graceful upgrade
+# refuses appends from its cut of the stream until the re-exec ("the server
+# is upgrading"), with nothing appended, so that refusal alone is resent for
+# up to ~3s; every other failure stays best effort and silent.
+emit_once() {
+  input=${1:-/dev/null}
+  shift
+  tries=0
+  while :; do
+    err=$("$phux" agent emit "$target" "$@" < "$input" 2>&1 >/dev/null) && return 0
+    case $err in *'server is upgrading'*) ;; *) return 0 ;; esac
+    tries=$((tries + 1))
+    [ "$tries" -lt 10 ] || return 0
+    sleep 0.3 2>/dev/null || return 0
+  done
+}
+
 emit() {
   [ "$streams" = yes ] || return 0
   if [ "$#" -gt 1 ]; then
-    run_phux agent emit "$target" --type "$1" --data "$2"
+    emit_once "" --type "$1" --data "$2"
   else
-    run_phux agent emit "$target" --type "$1"
+    emit_once "" --type "$1"
   fi
 }
 
@@ -73,7 +90,7 @@ emit_tool() {
 emit_raw() {
   if [ "${PHUX_AGENT_EMIT_RAW:-0}" = 1 ] && [ -n "$payload" ] && [ -s "$payload" ]; then
     [ "$streams" = yes ] || return 0
-    run_phux agent emit "$target" --type provider_raw --data - < "$payload"
+    emit_once "$payload" --type provider_raw --data -
   fi
 }
 

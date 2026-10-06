@@ -59,6 +59,14 @@ case "$1 \${2:-}" in
   "agent hook-payload") cat > /dev/null; [ -z "\${FAKE_FIELDS:-}" ] || printf '%s\\n' "$FAKE_FIELDS"; exit 0 ;;
 esac
 case "$*" in *"--data -") printf 'stdin:%s\\n' "$(cat)" >> "$PHUX_TEST_LOG" ;; esac
+if [ "$1 \${2:-}" = "agent emit" ] && [ -n "\${FAKE_REFUSALS:-}" ]; then
+  left=$(cat "$FAKE_REFUSALS")
+  if [ "$left" -gt 0 ]; then
+    printf '%s\\n' "$((left - 1))" > "$FAKE_REFUSALS"
+    printf 'phux: agent emit: overflow: %s\\n' "\${FAKE_REFUSAL:-the server is upgrading; retry the append}" >&2
+    exit 2
+  fi
+fi
 exit 0
 `);
   await chmod(fake, 0o755);
@@ -176,6 +184,50 @@ test("payload text never reaches an argv line, and the raw record is opt-in and 
     [["tool-start", payload]],
   );
   assert.ok(legacyRaw.every((line) => !line.includes("provider_raw")), "raw has nowhere to go without a stream");
+});
+
+test("an emit refused while the server upgrades is resent, and no other refusal is", async () => {
+  const temp = await mkdtemp(join(tmpdir(), "phux-claude-refusals-"));
+  const refusals = join(temp, "left");
+  try {
+    const payload = '{"session_id":"sess-1"}';
+    const base = {
+      FAKE_FEATURES: '["resource_kinds"]', FAKE_FIELDS: "sess-1 PreToolUse Bash - 0 - -",
+      FAKE_REFUSALS: refusals, PHUX_AGENT_EMIT_RAW: "1",
+    };
+    const emitLine = 'agent emit @42 --type tool_start --data {"tool_name":"Bash"}';
+    const raw = ["agent emit @42 --type provider_raw --data -", `stdin:${payload}`];
+
+    await writeFile(refusals, "3\n");
+    const [sealed] = await driven(base, [["tool-start", payload]]);
+    assert.deepEqual(sealed, [
+      "status --json", "agent hook-payload", emitLine, emitLine, emitLine, emitLine, ...raw,
+    ], "the record is resent until the resumed server takes it");
+
+    await writeFile(refusals, "1\n");
+    const [rawSealed] = await driven(base, [["clear", payload, { FAKE_FIELDS: "sess-1 SessionEnd - - 0 other -" }]]);
+    assert.deepEqual(rawSealed, [
+      "status --json", "agent hook-payload", ...raw, ...raw,
+      'agent emit @42 --type session_end --data {"reason":"other"}',
+      "agent session close @42", "agent clear @42",
+    ], "a resent raw record carries its payload again");
+
+    await writeFile(refusals, "1\n");
+    const [full] = await driven(
+      { ...base, FAKE_REFUSAL: "the session's append queue is full" },
+      [["tool-start", payload]],
+    );
+    assert.deepEqual(full, ["status --json", "agent hook-payload", emitLine, ...raw],
+      "any other overflow stays a single best-effort try");
+
+    await writeFile(refusals, "100\n");
+    const started = Date.now();
+    const [forever] = await driven({ ...base, PHUX_AGENT_EMIT_RAW: "0" }, [["tool-start", payload]]);
+    assert.ok(Date.now() - started < 5000, "bounded under the hook's 5s timeout");
+    assert.equal(forever.filter((line) => line === emitLine).length, 10);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
 });
 
 test("a phux without the payload helper still runs the every-server arms", async () => {
