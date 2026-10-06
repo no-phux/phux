@@ -435,7 +435,7 @@ pub(crate) async fn attach_agent_session(
     let (reply, rx) = oneshot::channel();
     if session
         .bootstrap
-        .send(BootstrapRequest { reply })
+        .send(BootstrapRequest { reply, seal: None })
         .await
         .is_err()
     {

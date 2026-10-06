@@ -670,7 +670,9 @@ Workspace restore and live update handoff have different guarantees:
   can resume; save warns about any agent pane that will come back as a shell
   ([ADR-0151](./adr/0151-live-agent-sessions-bridge-into-native-restore.md)).
 - **Live update handoff:** `phux upgrade` keeps existing PTYs alive
-  across a server binary re-exec. `phux update` is the user-facing verb
+  across a server binary re-exec, and with them each pane's agent sessions:
+  same `@N`, same `phux agent log` history, same record sequence
+  ([L1 §4.8](./spec/L1.md)). `phux update` is the user-facing verb
   built on that handoff: it resolves the published release, verifies the
   `.sha256` sidecar, replaces the binaries atomically, then calls
   `phux upgrade`. Default is the latest `vX.Y.Z`; `phux channel next` follows
