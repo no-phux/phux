@@ -995,7 +995,7 @@ Usage: phux completion <SHELL>
 
 Arguments:
   <SHELL>  Shell dialect to generate for.
-           [possible values: bash, elvish, zsh, fish, nu, power-shell]
+           [possible values: bash, elvish, zsh, fish, nu, powershell]
 
 Flags:
   -h, --help           Print help
@@ -1064,13 +1064,16 @@ The loader already refuses an unknown key, but it names only the leaf field
 `sidebar.enabledd`, names the layer file that introduced it, and finds every
 problem in one pass — so a config with four typos takes one edit, not four.
 
-Exits 0 when clean and 1 when anything was found, so it can gate a dotfiles CI
-run.
+Exits 0 when clean, 1 when anything was found, and 2 when the check could not
+run (an unreadable or missing PATH, or malformed TOML), so it can gate a
+dotfiles CI run.
 
 Usage: phux config check [--json] [PATH]
 
 Arguments:
-  [PATH]  Config file to check. Defaults to the resolved config path.
+  [PATH]  Config file to check. Defaults to the resolved config path, where a
+          missing file is clean (shipped defaults apply); a PATH you name must
+          exist.
 
 Flags:
       --json           Emit a stable JSON document instead of human text.
@@ -3709,8 +3712,8 @@ Matching is against the lines as WRITTEN: rows the terminal soft-wrapped at its
 right edge are joined first, so text that straddles a wrap is found rather than
 silently never matching.
 
-Flags (`--until`, `--regex`, `--idle`, `--tail`, `--output-only`, `--timeout`,
-`--json`, `--socket`) MUST precede TARGET if you give one.
+Flags may come before or after TARGET; a bare `--tail` reads the next word as N,
+so spell N out when TARGET follows it.
 
 Examples:
 phux wait --until "BUILD SUCCESSFUL" build

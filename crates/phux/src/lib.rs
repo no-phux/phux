@@ -1744,6 +1744,48 @@ mod tests {
         assert!(crate::parse_cli(["phux", "kill", "work", "--server"]).is_err());
     }
 
+    /// `phux signal` takes the POSIX names a `kill(1)` user types, in any
+    /// case, beside its own words.
+    #[test]
+    fn signal_accepts_posix_spellings() {
+        use crate::commands::SignalArg;
+        for (word, want) in [
+            ("terminate", SignalArg::Terminate),
+            ("TERM", SignalArg::Terminate),
+            ("SIGTERM", SignalArg::Terminate),
+            ("int", SignalArg::Interrupt),
+            ("SIGINT", SignalArg::Interrupt),
+            ("STOP", SignalArg::Freeze),
+            ("cont", SignalArg::Resume),
+            ("SIGKILL", SignalArg::Kill),
+            ("Kill", SignalArg::Kill),
+        ] {
+            let cli = crate::parse_cli(["phux", "signal", "@1", word]).expect(word);
+            assert!(
+                matches!(cli.command, Some(Command::Signal { signal, .. }) if signal == want),
+                "{word}"
+            );
+        }
+    }
+
+    /// PowerShell is spelled the way the shell is, with the old derived
+    /// `power-shell` word and `pwsh` still accepted.
+    #[test]
+    fn completion_accepts_every_powershell_spelling() {
+        for word in ["powershell", "pwsh", "power-shell"] {
+            let cli = crate::parse_cli(["phux", "completion", word]).expect(word);
+            assert!(
+                matches!(
+                    cli.command,
+                    Some(Command::Completion {
+                        shell: crate::commands::CompletionShell::PowerShell
+                    })
+                ),
+                "{word}"
+            );
+        }
+    }
+
     /// `phux new <NAME>` must read the bare positional as the SESSION NAME,
     /// not as a command to spawn (the phux-new-foo bug: `phux new foo` tried
     /// to exec `foo` in an auto-named "0" session). The seed command is only

@@ -82,3 +82,30 @@ fn json_output_carries_the_new_fault_labels() {
         "missing `bad chord` in {faults:?}"
     );
 }
+
+/// A PATH the caller names must exist: a typo'd path in a dotfiles CI gate
+/// cannot pass as "clean". Exit 2 (the check could not run), on both
+/// surfaces.
+#[test]
+fn a_named_path_that_does_not_exist_cannot_pass() {
+    let tmp = TempDir::new().expect("tempdir");
+    let missing = tmp.path().join("no-such-config.toml");
+    let missing = missing.to_str().expect("utf-8 temp path");
+    for json in [false, true] {
+        let mut args = vec!["config", "check", missing];
+        if json {
+            args.push("--json");
+        }
+        let out = crate::common::phux_cmd(crate::runner::phux_bin())
+            .env("XDG_CONFIG_HOME", tmp.path())
+            .args(&args)
+            .output()
+            .expect("run phux binary");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "json={json}; stderr:\n{stderr}");
+        assert!(
+            stderr.contains("no-such-config.toml"),
+            "names the path; json={json}; stderr:\n{stderr}"
+        );
+    }
+}

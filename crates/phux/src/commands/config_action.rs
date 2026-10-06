@@ -37,10 +37,13 @@ pub(crate) enum ConfigAction {
     /// and finds every problem in one pass — so a config with four typos
     /// takes one edit, not four.
     ///
-    /// Exits 0 when clean and 1 when anything was found, so it can gate a
-    /// dotfiles CI run.
+    /// Exits 0 when clean, 1 when anything was found, and 2 when the check
+    /// could not run (an unreadable or missing PATH, or malformed TOML), so
+    /// it can gate a dotfiles CI run.
     Check {
-        /// Config file to check. Defaults to the resolved config path.
+        /// Config file to check. Defaults to the resolved config path, where
+        /// a missing file is clean (shipped defaults apply); a PATH you name
+        /// must exist.
         #[usage(value_name = "PATH")]
         path: Option<std::path::PathBuf>,
 

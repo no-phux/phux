@@ -9,18 +9,26 @@ use report::ReportAction;
 use usage::{Args, Subcommands, ValueEnum};
 
 /// CLI signal names for `phux signal TARGET SIGNAL` (ADR-0033), mapped to the
-/// wire [`TerminalSignal`].
+/// wire [`TerminalSignal`]. The POSIX spellings a `kill(1)` user types
+/// (`TERM`, `SIGTERM`, `INT`, ...) are accepted as hidden aliases, in any
+/// case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[usage(ignore_case)]
 pub(crate) enum SignalArg {
     /// SIGINT — the Ctrl-C equivalent.
+    #[usage(alias = "int", alias = "sigint")]
     Interrupt,
     /// SIGSTOP — pause the process group (reversible via `resume`).
+    #[usage(alias = "stop", alias = "sigstop")]
     Freeze,
     /// SIGCONT — resume a frozen process group.
+    #[usage(alias = "cont", alias = "sigcont")]
     Resume,
     /// SIGTERM — request graceful termination.
+    #[usage(alias = "term", alias = "sigterm")]
     Terminate,
     /// SIGKILL — force termination.
+    #[usage(alias = "sigkill")]
     Kill,
 }
 
@@ -35,11 +43,7 @@ pub(crate) enum SpawnSplit {
     Vertical,
 }
 
-/// Output format for a recording, shared by `--rec-format` on the attach
-/// path and `--format` on the `rec` verb.
-///
-/// `Apng` covers both the `.png` and `.apng` extensions: a recording is an
-/// animation, and this surface never produces a still frame.
+/// The shell `phux completion` writes a script for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum CompletionShell {
     Bash,
@@ -47,6 +51,9 @@ pub(crate) enum CompletionShell {
     Zsh,
     Fish,
     Nu,
+    // Spelled as the shell is (`powershell`, `pwsh`); `power-shell`, the
+    // derived kebab-case word this once was, stays accepted.
+    #[usage(name = "powershell", alias = "power-shell", alias = "pwsh")]
     PowerShell,
 }
 
@@ -106,6 +113,11 @@ impl SnapshotFormat {
     }
 }
 
+/// Output format for a recording, shared by `--rec-format` on the attach
+/// path and `--format` on the `rec` verb.
+///
+/// `Apng` covers both the `.png` and `.apng` extensions: a recording is an
+/// animation, and this surface never produces a still frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum RecFormat {
     /// asciinema cast — the archival, re-renderable artifact.
@@ -1582,9 +1594,8 @@ pub(crate) enum Command {
             Matching is against the lines as WRITTEN: rows the terminal \
             soft-wrapped at its right edge are joined first, so text that \
             straddles a wrap is found rather than silently never matching.\n\n\
-            Flags (`--until`, `--regex`, `--idle`, `--tail`, `--output-only`, \
-            `--timeout`, `--json`, `--socket`) MUST precede TARGET if you give \
-            one.\n\n\
+            Flags may come before or after TARGET; a bare `--tail` reads the \
+            next word as N, so spell N out when TARGET follows it.\n\n\
             Examples:\n  \
             phux wait --until \"BUILD SUCCESSFUL\" build\n  \
             phux wait --regex \"test result: (ok|FAILED)\" --output-only build\n  \
