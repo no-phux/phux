@@ -18,6 +18,7 @@ use crate::commands::new::{create_session_via_metadata, preflight_atomic_agent_s
 use crate::commands::spawn::dispatch_spawn_async;
 use crate::commands::{cli_runtime, partial, report_no_server};
 
+mod bridge;
 mod model;
 mod snapshot;
 
@@ -46,10 +47,14 @@ pub(super) fn run_save(
     // An archive is restored later, so an incomplete capture outlives the
     // command: warn before the file lands, but do not refuse.
     partial::warn_partial_view("workspace save", &degradation);
-    let agent_sessions = match rt.block_on(fetch_record_index(&socket_path, &snapshot)) {
+    let recorded = match rt.block_on(fetch_record_index(&socket_path, &snapshot)) {
         Ok(index) => index,
         Err(err) => return fail(&format!("could not capture native agent sessions: {err}")),
     };
+    // Agents started inside an existing shell carry a live `AgentSession`
+    // instead of a launch record (ADR-0151).
+    let (agent_sessions, bridge_warnings) =
+        bridge::bridge_live_agent_sessions(&snapshot, recorded, bridge::resolve_resume_owner);
     // `GET_STATE` never carries window layouts, so each session's split tree is
     // read from its L3 layout envelope (best-effort; missing or undecodable falls
     // back to the pane-list projection).
@@ -65,7 +70,11 @@ pub(super) fn run_save(
         );
     }
     let (archive, reconcile_warnings) = archive_from_snapshot(&snapshot, &agent_sessions, &layouts);
-    for warning in layout_warnings.iter().chain(&reconcile_warnings) {
+    for warning in bridge_warnings
+        .iter()
+        .chain(&layout_warnings)
+        .chain(&reconcile_warnings)
+    {
         eprintln!("phux: warning: {warning}");
     }
     let rendered = match serde_json::to_string_pretty(&archive) {

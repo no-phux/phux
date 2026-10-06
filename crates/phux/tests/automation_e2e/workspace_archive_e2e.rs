@@ -532,6 +532,32 @@ working_directory = "plugin-root"
 "#,
     )
     .expect("write integration");
+    // Claims the `fakeprov` provider that a shell-started agent's
+    // `AgentSession` names, so save can bridge it (ADR-0151).
+    std::fs::write(
+        integrations.join("shell-resume-agent.toml"),
+        r#"schema_version = 1
+id = "shell-resume-agent"
+display_name = "Shell-started resume agent"
+kind = "terminal-agent"
+first_party = true
+
+[session_identity]
+mode = "native-or-phux"
+native_env = "PHUX_FAKE_SESSION_ID"
+restore = "external-cli"
+resume_args = ["--resume", "${PHUX_AGENT_SESSION_ID}"]
+
+[agent_identity]
+name = "fakeprov"
+kind = "fakeprov"
+
+[launch]
+command = ["${PHUX_PLUGIN_ROOT}/scripts/fake-agent.sh"]
+working_directory = "workspace"
+"#,
+    )
+    .expect("write shell-started integration");
     std::fs::write(
         scripts.join("fake-agent.sh"),
         r#"#!/bin/sh
@@ -758,5 +784,89 @@ fn native_agent_session_is_replayed_after_pane_restart_and_rejects_stale_ownersh
             .iter()
             .any(|session| session["name"] == "agent-restart"),
         "ownership mismatch must not create the archived session"
+    );
+}
+
+/// ADR-0151: an agent started inside an existing shell has no launch record,
+/// only a live `AgentSession` with a native id. Save bridges it into the
+/// archived resume record through the integration claiming its provider, and
+/// restore resumes it through that integration's current argv.
+#[test]
+#[ignore = "spawns real phux servers; run explicitly when validating workspace archives."]
+fn shell_started_agent_session_is_archived_and_resumed() {
+    let root = tempfile::tempdir().expect("restore test tempdir");
+    let xdg = write_fake_agent_plugin(root.path());
+    let archive = root.path().join("shell-agent.json");
+    let archive_arg = archive.to_string_lossy().into_owned();
+
+    let source = start("shell-agent");
+    let source_socket = source.socket_text();
+    let (code, _, stderr) = run(&[
+        "agent",
+        "session",
+        "open",
+        "@1",
+        "--provider",
+        "fakeprov",
+        "--native-id",
+        "conv-7",
+        "--socket",
+        &source_socket,
+    ]);
+    assert_eq!(code, 0, "open the shell-started agent session: {stderr}");
+    let (code, _, stderr) = run_with_xdg(
+        &[
+            "workspace",
+            "save",
+            "--socket",
+            &source_socket,
+            "--output",
+            &archive_arg,
+        ],
+        &xdg,
+    );
+    assert_eq!(code, 0, "archive save failed: {stderr}");
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&archive).expect("read archive"))
+            .expect("parse archive");
+    let agent = saved["sessions"]
+        .as_array()
+        .expect("sessions")
+        .iter()
+        .find(|session| session["name"] == "shell-agent")
+        .map(|session| session["windows"][0]["panes"][0]["agent_session"].clone())
+        .expect("archived session");
+    assert_eq!(
+        agent,
+        serde_json::json!({
+            "plugin_id": "com.phux.test.restore",
+            "integration_id": "shell-resume-agent",
+            "native_id": "conv-7",
+        }),
+        "the live session is archived as the inert resume record"
+    );
+    assert!(
+        !saved.to_string().contains("fake-agent.sh"),
+        "the archive never carries executable argv: {saved}"
+    );
+    drop(source);
+
+    let dest = start("shell-agent-seed");
+    let dest_socket = dest.socket_text();
+    let (code, _, stderr) = run_with_xdg(
+        &[
+            "workspace",
+            "restore",
+            &archive_arg,
+            "--socket",
+            &dest_socket,
+        ],
+        &xdg,
+    );
+    assert_eq!(code, 0, "native restore failed: {stderr}");
+    wait_painted_then(
+        &dest_socket,
+        "shell-agent",
+        "FAKE_AGENT_ARGS=--resume conv-7",
     );
 }
