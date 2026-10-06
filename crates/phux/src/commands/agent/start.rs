@@ -1504,12 +1504,21 @@ mod tests {
         }
     }
 
-    /// Five manifests ship and every one of them is a legitimate `--kind`.
+    /// Every shipped detection manifest is a legitimate `--kind`.
     /// This is the roster the refusal above prints.
     #[test]
     fn the_shipped_manifests_resolve_as_kinds() {
         let kinds = agent_explain::kinds();
-        for kind in ["claude", "codex", "opencode", "pi", "omp"] {
+        for kind in [
+            "claude",
+            "codex",
+            "opencode",
+            "pi",
+            "omp",
+            "grok",
+            "amp",
+            "cursor-agent",
+        ] {
             assert!(
                 kinds.iter().any(|loaded| loaded == kind),
                 "{kind} must ship a detection manifest; loaded: {kinds:?}"

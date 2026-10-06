@@ -23,7 +23,8 @@ use tokio::sync::{mpsc, oneshot};
 use phux_config::instance::{BuildKind, PROBE_BUILD_KIND_ENV, build_kind};
 
 use super::RuntimeFlags;
-use crate::state::SharedState;
+use crate::resource::agent_session::{AgentSessionBootstrap, BootstrapRequest};
+use crate::state::{SharedState, UpgradeHandoffs, request_agent_session_cut};
 use crate::terminal_actor::{PaneUpgradeHandle, UpgradeHandleRequest};
 use crate::upgrade::blob::StateBlob;
 
@@ -192,6 +193,8 @@ pub(super) struct UpgradePlan {
     _blob_file: std::fs::File,
     _listener_fd: OwnedFd,
     _handoffs: HashMap<phux_core::ids::ResourceId, PaneUpgradeHandle>,
+    /// Lifted only if `exec` returns, so the old image keeps streaming.
+    _agent_seal: AgentSessionSeal,
 }
 
 /// Everything `prepare_upgrade` reads out of the live server under one lock,
@@ -207,6 +210,8 @@ struct UpgradeContext {
         phux_core::ids::ResourceId,
         mpsc::Sender<UpgradeHandleRequest>,
     )>,
+    /// Bootstrap mailbox of every agent session the upgrade carries.
+    agent_session_senders: Vec<(phux_core::ids::ResourceId, mpsc::Sender<BootstrapRequest>)>,
 }
 
 /// Do everything reversible: snapshot the tree into a handoff blob, stage it in
@@ -220,10 +225,18 @@ pub(super) async fn prepare_upgrade(state: &SharedState) -> Result<UpgradePlan, 
         flags,
         tree_identity,
         pane_senders,
+        agent_session_senders,
     } = capture_upgrade_context(state)?;
 
     let listener = dup_listener(listener_fd)?;
-    let handoffs = collect_pane_handoffs(pane_senders, PANE_HANDOFF_TIMEOUT).await?;
+    let (panes, (agent_sessions, agent_seal)) = tokio::join!(
+        collect_pane_handoffs(pane_senders, PANE_HANDOFF_TIMEOUT),
+        collect_agent_session_cuts(agent_session_senders, PANE_HANDOFF_TIMEOUT),
+    );
+    let handoffs = UpgradeHandoffs {
+        panes: panes?,
+        agent_sessions,
+    };
     let blob = reassemble_unchanged_tree(
         state,
         listener_fd,
@@ -245,7 +258,8 @@ pub(super) async fn prepare_upgrade(state: &SharedState) -> Result<UpgradePlan, 
         _fd_flags: fd_flags,
         _blob_file: blob_file,
         _listener_fd: listener,
-        _handoffs: handoffs,
+        _handoffs: handoffs.panes,
+        _agent_seal: agent_seal,
     })
 }
 
@@ -259,12 +273,14 @@ fn capture_upgrade_context(state: &SharedState) -> Result<UpgradeContext, Upgrad
                     listener_fd,
                     socket_path: path.to_path_buf(),
                     flags,
-                    tree_identity: s.assemble_upgrade_blob(listener_fd, &HashMap::new()),
+                    tree_identity: s
+                        .assemble_upgrade_blob(listener_fd, &UpgradeHandoffs::default()),
                     pane_senders: s
                         .upgrade_handles()
                         .into_iter()
                         .map(|(pane, handle)| (pane, handle.upgrade))
                         .collect(),
+                    agent_session_senders: s.upgrade_agent_sessions(),
                 })
         })
         .ok_or(UpgradeError::NoContext)
@@ -287,11 +303,11 @@ fn reassemble_unchanged_tree(
     listener_fd: RawFd,
     inherited_fd: RawFd,
     tree_identity: &StateBlob,
-    handoffs: &HashMap<phux_core::ids::ResourceId, PaneUpgradeHandle>,
+    handoffs: &UpgradeHandoffs,
 ) -> Result<StateBlob, UpgradeError> {
     state
         .with(|s| {
-            let current = s.assemble_upgrade_blob(listener_fd, &HashMap::new());
+            let current = s.assemble_upgrade_blob(listener_fd, &UpgradeHandoffs::default());
             (current == *tree_identity).then(|| s.assemble_upgrade_blob(inherited_fd, handoffs))
         })
         .ok_or(UpgradeError::TreeChanged)
@@ -438,6 +454,79 @@ async fn collect_pane_handoffs(
     })
     .await
     .map_err(|_| UpgradeError::HandoffDeadline)?
+}
+
+/// Agent-session streams sealed at their upgrade cut. Dropping the guard
+/// unseals them: it drops only when the upgrade did not happen (a failed
+/// preparation or `exec`), because a successful `exec` replaces the process.
+struct AgentSessionSeal {
+    bootstraps: Vec<mpsc::Sender<BootstrapRequest>>,
+}
+
+impl Drop for AgentSessionSeal {
+    fn drop(&mut self) {
+        for bootstrap in &self.bootstraps {
+            let unseal = || BootstrapRequest {
+                reply: oneshot::channel().0,
+                seal: Some(false),
+            };
+            if let Err(mpsc::error::TrySendError::Full(_)) = bootstrap.try_send(unseal()) {
+                // A full mailbox must not leave the stream sealed for good.
+                if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                    let bootstrap = bootstrap.clone();
+                    drop(runtime.spawn(async move {
+                        let _ = bootstrap.send(unseal()).await;
+                    }));
+                }
+            }
+        }
+    }
+}
+
+/// Cut and seal every carried agent session's record stream, concurrently,
+/// within `deadline`. The seal refuses appends from the cut until the
+/// re-exec, so no record is acked and then lost. Unlike a pane, a session
+/// that does not answer never aborts the upgrade: it holds no PTY to strand,
+/// so it is dropped with a warning.
+async fn collect_agent_session_cuts(
+    sessions: Vec<(phux_core::ids::ResourceId, mpsc::Sender<BootstrapRequest>)>,
+    deadline: Duration,
+) -> (
+    HashMap<phux_core::ids::ResourceId, AgentSessionBootstrap>,
+    AgentSessionSeal,
+) {
+    let wanted = sessions.len();
+    let seal = AgentSessionSeal {
+        bootstraps: sessions
+            .iter()
+            .map(|(_, bootstrap)| bootstrap.clone())
+            .collect(),
+    };
+    let mut pending = sessions
+        .into_iter()
+        .map(|(session, bootstrap)| async move {
+            request_agent_session_cut(&bootstrap, true)
+                .await
+                .map(|cut| (session, cut))
+        })
+        .collect::<FuturesUnordered<_>>();
+    let mut cuts = HashMap::with_capacity(wanted);
+    let _ = tokio::time::timeout(deadline, async {
+        while let Some(answer) = pending.next().await {
+            if let Some((session, cut)) = answer {
+                cuts.insert(session, cut);
+            }
+        }
+    })
+    .await;
+    if cuts.len() < wanted {
+        tracing::warn!(
+            carried = cuts.len(),
+            wanted,
+            "upgrade: some agent sessions did not answer their cut; not carried"
+        );
+    }
+    (cuts, seal)
 }
 
 impl UpgradePlan {
@@ -721,6 +810,9 @@ mod tests {
             _blob_file: blob_file,
             _listener_fd: tempfile::tempfile().unwrap().into(),
             _handoffs: HashMap::new(),
+            _agent_seal: AgentSessionSeal {
+                bootstraps: Vec::new(),
+            },
         };
 
         assert_eq!(plan.exec().kind(), std::io::ErrorKind::NotFound);
@@ -946,18 +1038,21 @@ mod tests {
                 );
                 assert!(!asked.contains(&orphan), "an orphan handle is not a pane");
 
-                let handoffs = collect_pane_handoffs(context.pane_senders, Duration::from_secs(2))
+                let panes = collect_pane_handoffs(context.pane_senders, Duration::from_secs(2))
                     .await
                     .expect("an agent session or orphan handle must not abort");
-                assert_eq!(handoffs.len(), 1);
-                assert!(handoffs.contains_key(&live_pane));
+                assert_eq!(panes.len(), 1);
+                assert!(panes.contains_key(&live_pane));
 
                 let blob = reassemble_unchanged_tree(
                     &state,
                     context.listener_fd,
                     context.listener_fd,
                     &context.tree_identity,
-                    &handoffs,
+                    &UpgradeHandoffs {
+                        panes,
+                        agent_sessions: HashMap::new(),
+                    },
                 )
                 .expect("the tree did not change");
                 assert_eq!(blob.panes.len(), 1, "only the live pane crosses");
@@ -969,6 +1064,238 @@ mod tests {
                     "the live pane carries its own handoff"
                 );
             })
+            .await;
+    }
+
+    /// Append `records` to an agent session's engine, as
+    /// `APPEND_RESOURCE_OUTPUT`, returning the engine's verdict.
+    async fn try_append(
+        append: &mpsc::Sender<crate::resource::agent_session::AppendRequest>,
+        records: &str,
+    ) -> Result<
+        crate::resource::agent_session::AppendAccepted,
+        crate::resource::agent_session::AppendRejection,
+    > {
+        let (reply, rx) = oneshot::channel();
+        append
+            .send(crate::resource::agent_session::AppendRequest {
+                bytes: bytes::Bytes::copy_from_slice(records.as_bytes()),
+                reply,
+            })
+            .await
+            .unwrap();
+        rx.await.unwrap()
+    }
+
+    async fn append_records(
+        append: &mpsc::Sender<crate::resource::agent_session::AppendRequest>,
+        records: &str,
+    ) -> crate::resource::agent_session::AppendAccepted {
+        try_append(append, records).await.unwrap()
+    }
+
+    /// The captured streams are sealed until the re-exec: an append in the
+    /// window is refused, never acked and then lost. An upgrade that does not
+    /// happen drops the seal and the old image streams on.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_failed_upgrade_unseals_the_streams_it_cut() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let (_, _, append) = state.with_mut(old_image_with_agent_sessions);
+                append_records(&append, "{\"type\":\"prompt\"}").await;
+                let (blob, seal) = capture_blob(&state).await;
+                assert_eq!(blob.agent_sessions[0].base_seq, 1);
+                assert!(matches!(
+                    try_append(&append, "{\"type\":\"stop\"}").await,
+                    Err(crate::resource::agent_session::AppendRejection::Overflow(_))
+                ));
+                drop(seal);
+                let next = append_records(&append, "{\"type\":\"stop\"}").await;
+                assert_eq!(next.first_seq, 2, "the refusal consumed no sequence");
+            })
+            .await;
+    }
+
+    /// Spawn an engine for an `AgentSession` under `parent`, returning its
+    /// wire id and append channel.
+    fn spawn_agent_session(
+        s: &mut crate::state::ServerState,
+        parent: phux_core::ids::ResourceId,
+        provider: &str,
+        native_id: Option<&str>,
+    ) -> (
+        phux_protocol::ids::ResourceId,
+        mpsc::Sender<crate::resource::agent_session::AppendRequest>,
+    ) {
+        let facet = phux_core::resource::AgentFacet {
+            provider: provider.to_owned(),
+            native_id: native_id.map(str::to_owned),
+            state: Some("working".to_owned()),
+        };
+        let core = s.registry_mut().new_agent_session(parent, facet).unwrap();
+        let token = tokio_util::sync::CancellationToken::new();
+        let bundle = crate::resource::agent_session::AgentSessionActor::build(
+            parent,
+            provider,
+            native_id,
+            token.clone(),
+            4096,
+        );
+        let append = bundle.handle.agent_session().unwrap().append.clone();
+        let wire = s.spawn_resource_actor(core, bundle.handle, token, bundle.actor.run());
+        (wire, append)
+    }
+
+    /// phux-1x9s.3: an agent session under a carried pane crosses the
+    /// upgrade under the same wire id with its provenance, state, and record
+    /// tail, and the resumed engine continues the same stream bound to the
+    /// rebuilt pane. A session under a pane that does not cross live (here a
+    /// retained one) is dropped with it.
+    /// An old image with a live pane hosting an agent session, and a retained
+    /// pane hosting another. Returns the live pane's and its session's wire
+    /// ids and the session's append channel.
+    fn old_image_with_agent_sessions(
+        s: &mut crate::state::ServerState,
+    ) -> (
+        phux_protocol::ids::ResourceId,
+        phux_protocol::ids::ResourceId,
+        mpsc::Sender<crate::resource::agent_session::AppendRequest>,
+    ) {
+        let (sid, wid, live_pane) = s.seed_session("main");
+        let live = crate::terminal_actor::TerminalActor::new_with_seed(20, 5, b"live").unwrap();
+        let live_token = live.token.clone();
+        let pane_wire =
+            s.spawn_resource_actor(live_pane, live.handle, live_token, live.actor.run());
+        let (agent_wire, append) = spawn_agent_session(s, live_pane, "claude", Some("native-1"));
+
+        let exited = s.add_pane_to_session(sid).unwrap();
+        let dead = crate::terminal_actor::TerminalActor::new_with_seed(20, 5, b"").unwrap();
+        let dead_token = dead.token.clone();
+        let _ = s.spawn_resource_actor(exited, dead.handle, dead_token, dead.actor.run());
+        let _ = spawn_agent_session(s, exited, "pi", None);
+        s.note_retain_request(exited, 60);
+        let _ = s
+            .retain_exited(exited, phux_core::process::ExitOutcome::exited(1), 1)
+            .unwrap();
+
+        let _ = s.build_session_snapshot(sid);
+        let _ = s.intern_window_wire(wid);
+        s.set_upgrade_context(
+            7,
+            PathBuf::from("/nonexistent/phux.sock"),
+            RuntimeFlags::default(),
+        );
+        (pane_wire, agent_wire, append)
+    }
+
+    /// The reversible half of `prepare_upgrade`, down to the staged blob and
+    /// the seal it holds on the captured sessions.
+    async fn capture_blob(state: &SharedState) -> (StateBlob, AgentSessionSeal) {
+        let context = capture_upgrade_context(state).unwrap();
+        assert_eq!(
+            context.agent_session_senders.len(),
+            1,
+            "only the live pane's session is cut"
+        );
+        let panes = collect_pane_handoffs(context.pane_senders, Duration::from_secs(2))
+            .await
+            .unwrap();
+        let (agent_sessions, seal) =
+            collect_agent_session_cuts(context.agent_session_senders, Duration::from_secs(2)).await;
+        let blob = reassemble_unchanged_tree(
+            state,
+            context.listener_fd,
+            context.listener_fd,
+            &context.tree_identity,
+            &UpgradeHandoffs {
+                panes,
+                agent_sessions,
+            },
+        )
+        .expect("a busy agent session does not make the tree look changed");
+        (blob, seal)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn upgrade_carries_agent_sessions_with_their_id_and_log_tail() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(Box::pin(async {
+                let state = SharedState::new();
+                let (pane_wire, agent_wire, append) = state.with_mut(old_image_with_agent_sessions);
+                append_records(
+                    &append,
+                    "{\"type\":\"session_start\"}\n\
+                     {\"type\":\"prompt\",\"data\":{\"marker\":\"before-upgrade\"}}",
+                )
+                .await;
+                let (blob, _seal) = capture_blob(&state).await;
+
+                assert_eq!(
+                    blob.agent_sessions.len(),
+                    1,
+                    "the retained pane's is dropped"
+                );
+                let carried = &blob.agent_sessions[0];
+                assert_eq!(Some(carried.wire_id), agent_wire.local_id());
+                assert_eq!(Some(carried.parent_wire_id), pane_wire.local_id());
+                assert_eq!(carried.provider, "claude");
+                assert_eq!(carried.native_id.as_deref(), Some("native-1"));
+                assert_eq!(carried.state.as_deref(), Some("working"));
+                assert_eq!((carried.base_seq, carried.dropped), (2, 0));
+                assert!(!carried.ended);
+                assert_eq!(carried.records.len(), 2);
+                assert!(carried.records[1].contains("before-upgrade"));
+
+                // What crosses the exec is the serialized blob.
+                let blob = StateBlob::from_bytes(&blob.to_bytes().unwrap()).unwrap();
+                let resumed = SharedState::new();
+                let watchers = resumed
+                    .with_mut(|s| s.rebuild_from_blob(&blob))
+                    .expect("rebuild");
+                assert_eq!(
+                    watchers.len(),
+                    blob.panes.len() + 1,
+                    "every pane and the carried session get an exit watcher"
+                );
+
+                let (session, handle, parent) = resumed.with(|s| {
+                    let session = s.terminal_from_wire(&agent_wire).expect("same `@N`");
+                    let handle = s.resource_handle(session).expect("engine").clone();
+                    let parent = s.terminal_from_wire(&pane_wire).expect("pane");
+                    (session, handle, parent)
+                });
+                assert_eq!(handle.parent, Some(parent), "rebound to its rebuilt pane");
+                let facet = resumed
+                    .with(|s| s.registry().resource(session).and_then(|r| r.agent.clone()))
+                    .expect("registered as an agent session");
+                assert_eq!(
+                    (
+                        facet.provider.as_str(),
+                        facet.native_id.as_deref(),
+                        facet.state.as_deref()
+                    ),
+                    ("claude", Some("native-1"), Some("working"))
+                );
+
+                let engine = handle.agent_session().unwrap();
+                let cut = request_agent_session_cut(&engine.bootstrap, false)
+                    .await
+                    .expect("the resumed engine answers");
+                assert_eq!(cut.base_seq, 2);
+                assert_eq!(
+                    cut.records
+                        .iter()
+                        .map(|r| String::from_utf8_lossy(r).into_owned())
+                        .collect::<Vec<_>>(),
+                    carried.records,
+                    "the log tail survived byte for byte"
+                );
+                let next = append_records(&engine.append, "{\"type\":\"stop\"}").await;
+                assert_eq!(next.first_seq, 3, "the stream continues where it left off");
+            }))
             .await;
     }
 

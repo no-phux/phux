@@ -75,6 +75,19 @@ newer compiler than this repository's Rust pin. Install the
 build-observability tools are Nix-or-native; `mise.toml` lists them under
 "deliberately absent".
 
+## Binary cache
+
+CI pushes the dev shell's build outputs to `https://phux.cachix.org`, and
+`flake.nix` asks Nix to use it. The Nix daemon honours a flake's substituter
+only for a trusted user or a cache in its own `trusted-substituters`, so on a
+default multi-user install every `nix develop` prints `ignoring untrusted
+substituter` and builds those outputs locally instead. `just doctor` reports
+this and prints the one-time fix: append the cache and its public key to the
+daemon's config (`/etc/nix/nix.custom.conf` on a Determinate install, else
+`/etc/nix/nix.conf`) as `extra-trusted-substituters` and
+`extra-trusted-public-keys`, then restart the daemon. That trusts this one
+cache, which is narrower than adding yourself to `trusted-users`.
+
 ## Build cache (mbx)
 
 Both environments run `cargo` through [mbx](https://mr-boxington.jdx.dev)

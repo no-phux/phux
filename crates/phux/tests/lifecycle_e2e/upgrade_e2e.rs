@@ -214,3 +214,67 @@ fn program_title_stays_out_of_the_user_title_across_upgrade() {
         "the resumed engine should still report the program title"
     );
 }
+
+/// phux-1x9s.3: an `AgentSession` crosses the upgrade under the same `@N`
+/// with its record log, so an integration's handle keeps working: the log
+/// replays the pre-upgrade record, and the next emit continues its sequence.
+#[test]
+#[ignore = "spawns a real phux server + performs a real in-place re-exec; run via `just e2e`."]
+fn agent_session_and_its_log_survive_graceful_upgrade() {
+    let marker = format!("AGENT_LOG_SURVIVES_{}", std::process::id());
+    let server = ServerGuard::start_with_seed("exec sleep 600");
+    let server_pid = server.pid();
+    assert!(
+        poll(Duration::from_secs(10), || server.status(&["ls"]) == 0),
+        "the server should accept connections"
+    );
+
+    let agent = server
+        .stdout(&[
+            "agent",
+            "session",
+            "open",
+            SESSION,
+            "--provider",
+            "upgrade-e2e",
+            "--native-id",
+            "native-upg",
+        ])
+        .trim()
+        .to_owned();
+    assert!(
+        agent.starts_with('@'),
+        "open prints the session id: {agent:?}"
+    );
+    let data = format!("{{\"marker\":\"{marker}\"}}");
+    assert_eq!(
+        server.status(&["agent", "emit", &agent, "--type", "prompt", "--data", &data]),
+        0,
+        "the pre-upgrade record is accepted"
+    );
+
+    assert_eq!(server.status(&["upgrade"]), 0, "`phux upgrade` should ack");
+    assert!(
+        poll(Duration::from_secs(10), || alive(server_pid)),
+        "the server process must survive the in-place execve"
+    );
+    assert!(
+        poll(Duration::from_secs(15), || server.status(&["ls"]) == 0),
+        "the resumed server should accept connections again"
+    );
+
+    let log = server.stdout(&["agent", "log", &agent]);
+    assert!(
+        log.starts_with("1\t") && log.contains(&marker),
+        "`agent log {agent}` should replay the pre-upgrade record; got:\n{log}"
+    );
+    let next = server.stdout(&[
+        "agent", "emit", &agent, "--type", "stop", "--data", "{}", "--json",
+    ]);
+    let next: serde_json::Value = serde_json::from_str(&next)
+        .unwrap_or_else(|err| panic!("emit --json prints a document ({err}): {next}"));
+    assert_eq!(
+        next["seq"], 2,
+        "the resumed session continues its sequence: {next}"
+    );
+}
