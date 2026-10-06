@@ -116,11 +116,17 @@ if (process.argv[2] !== "--isolated") {
     await session.dispose();
     session = undefined;
 
-    async function openCase(delayedType?: string) {
+    async function openCase(delayedType?: string, countedType?: string) {
       const loaded = await loadExtensions(paths, process.cwd());
       const entered = Promise.withResolvers<void>();
       const release = Promise.withResolvers<void>();
+      const counted = { calls: 0 };
       let delay = true;
+      if (countedType) {
+        const spy = { ...loaded.extensions[0]!, tools: new Map(), commands: new Map(), handlers: new Map() };
+        spy.handlers.set(countedType, [() => { counted.calls++; }]);
+        loaded.extensions.unshift(spy);
+      }
       if (delayedType) {
         const earlier = { ...loaded.extensions[0]!, tools: new Map(), commands: new Map(), handlers: new Map() };
         earlier.handlers.set(delayedType, [async () => {
@@ -142,7 +148,7 @@ if (process.argv[2] !== "--isolated") {
       const runner = session.extensionRunner!;
       await runner.emit({ type: "session_start" });
       await session.sessionManager.ensureOnDisk();
-      return { session, runner, loaded, entered, release };
+      return { session, runner, loaded, entered, release, counted };
     }
 
     async function closeCase() {
@@ -254,10 +260,58 @@ if (process.argv[2] !== "--isolated") {
     assert.ok(show().agent_session);
     await closeCase();
 
+    const { createAssistantMessageEventStream } = await import("@oh-my-pi/pi-ai/utils/event-stream");
+    // 18.x prepares a queued follow-up through before_agent_start inside the
+    // running loop (AgentSession's prepareQueuedMessages), with no agent_start of
+    // its own. Typing into a busy OMP must keep the exact child reporting.
+    const queued = await openCase(undefined, "before_agent_start");
+    // Print/RPC runtime wiring: binds ctx.isIdle() to the session's streaming
+    // state (the interactive TUI binds the same). Its session_start is a same-ID
+    // repeat, which navigation treats as idempotent.
+    const { initializeExtensions } = await import("@oh-my-pi/pi-coding-agent/modes/runtime-init");
+    await initializeExtensions(queued.session, {
+      reportSendError: (_action, error) => { throw error; },
+      reportRuntimeError: error => { throw new Error(String(error.error)); },
+    });
+    queued.session.agent.setModel({
+      id: "inert", name: "inert", api: "openai-completions", provider: "fixture", identity: { class: "unknown" }, input: ["text"], reasoning: false,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 10000, maxTokens: 1000,
+    } as any);
+    const turns = [Promise.withResolvers<() => void>(), Promise.withResolvers<() => void>()];
+    let turn = 0;
+    queued.session.agent.streamFn = model => {
+      const stream = createAssistantMessageEventStream();
+      const message = {
+        role: "assistant", content: [{ type: "text", text: "inert" }], api: model.api, provider: model.provider, model: model.id,
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+        stopReason: "stop", timestamp: Date.now(),
+      } as any;
+      turns[turn++]?.resolve(() => stream.push({ type: "done", reason: "stop", message }));
+      return stream;
+    };
+    await queued.runner.emitBeforeAgentStart("", undefined, []);
+    const queuedRun = queued.session.agent.prompt("inert local transport; never a provider call");
+    const finishFirst = await turns[0]!.promise;
+    await waitUntil(() => show().state === "working");
+    const queuedChild = show().agent_session;
+    assert.ok(queuedChild);
+    const guards = queued.counted.calls;
+    await queued.session.followUp("queued while busy; inert");
+    finishFirst();
+    const finishSecond = await turns[1]!.promise;
+    assert.equal(queued.counted.calls, guards + 1, "the queued delivery ran the before hook mid-run");
+    assert.equal(show().agent_session?.resource, queuedChild.resource, "absorbed queued delivery keeps the exact child");
+    assert.equal(show().state, "working");
+    finishSecond();
+    await queuedRun;
+    await queued.session.waitForIdle();
+    await waitUntil(() => show().state === "done");
+    assert.equal(show().agent_session?.resource, queuedChild.resource);
+    await closeCase();
+
     // Real same-file switch disconnects listeners before abort; provide NO end.
     const reload = await openCase();
     await reload.runner.emitBeforeAgentStart("", undefined, []);
-    const { createAssistantMessageEventStream } = await import("@oh-my-pi/pi-ai/utils/event-stream");
     reload.session.agent.setModel({
       id: "inert", name: "inert", api: "openai-completions", provider: "fixture", identity: { class: "unknown" }, input: ["text"], reasoning: false,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 10000, maxTokens: 1000,
@@ -365,7 +419,7 @@ if (process.argv[2] !== "--isolated") {
     assert.equal(show(sibling).agent_session, before.agent_session);
     console.log("Unassisted locked CLI native session_start:", JSON.stringify(proof));
     console.log("Unassisted locked CLI hosting projection:", JSON.stringify(nativePane));
-    console.log("Native approval wrapper: blocked throughout concurrent dialogs, denied inert tools, resolved working; detached-end overlaps new/resume/fork/successive starts and active same-ID reload: declaration-only, detector fallback restored.");
+    console.log("Native approval wrapper: blocked throughout concurrent dialogs, denied inert tools, resolved working; queued follow-up absorbed mid-run kept the child; detached-end overlaps new/resume/fork/successive starts and active same-ID reload: declaration-only, detector fallback restored.");
     console.log("Private server + packed locked OMP SDK: identity, scripted activity, automatic new/switch/reload/branch, shutdown and untouched sibling passed; no model calls.");
   } finally {
     await session?.dispose();

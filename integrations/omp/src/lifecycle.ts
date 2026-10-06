@@ -270,6 +270,11 @@ export function registerOmpLifecycle(pi: ExtensionAPI, cli: Cli, host?: string):
     if (token) return lifecycle.emit(token.id, token.generation, type, data);
   }
 
+  /** The host's own busy flag; absent means unproven, which keeps the fallback. */
+  function streaming(ctx: ExtensionContext): boolean {
+    return typeof ctx.isIdle === "function" && ctx.isIdle() === false;
+  }
+
   function activeApproval(event: { sessionId: string; toolCallId: string; toolName: string }): boolean {
     return token !== undefined && event.sessionId === token.id &&
       event.toolCallId.length > 0 && event.toolName.length > 0;
@@ -297,11 +302,15 @@ export function registerOmpLifecycle(pi: ExtensionAPI, cli: Cli, host?: string):
   // This is a payload-free causal guard, NOT prompt reporting. In 18.6.1
   // AgentSession.prompt awaits emitBeforeAgentStart before agent.prompt. Generic
   // agent/tool notifications are concurrent; their receipt alone is not a guard.
-  // 18.x also runs this hook for queued steering/follow-up deliveries mid-run and
-  // may repeat it for one prompt; neither is distinguishable from an overlapping
-  // start, so both fall back (docs/consumers/omp.md, "Host-bound lifecycle").
-  pi.on("before_agent_start", () => {
+  // 18.x also runs this hook for queued steering/follow-up deliveries the running
+  // loop absorbs (no agent_start of their own), and may repeat it for one prompt.
+  // While the session is streaming either is a no-op: a genuinely overlapping loop
+  // must still deliver its own agent_start, which falls back below. An idle
+  // session cannot be absorbing a delivery, so a guard behind an unreceived end
+  // still falls back (docs/consumers/omp.md, "Host-bound lifecycle").
+  pi.on("before_agent_start", (_event, ctx) => {
     if (phase === "fallback") return;
+    if ((phase === "prepared" || phase === "active") && streaming(ctx)) return;
     if (phase !== "idle" && phase !== "continuing") return fallback();
     token = lifecycle.token();
     phase = "prepared";
