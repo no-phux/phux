@@ -522,6 +522,19 @@ which-key-delay-ms = 400
 # cert-fingerprint = "AB:CD:..."
 # session = "main"
 # ssh = "me@mini"
+#
+# A server reached through a relay (ADR-0149) registers the relay as its
+# endpoint, the relay's pin as cert-fingerprint, and the relay route as
+# tls-server-name, the TLS server name every dial offers. `phux pair
+# --relay-route ROUTE` on the server prints a link that `phux attach
+# --remote NAME --code` registers this way.
+#
+# [[remote]]
+# name = "studio"
+# endpoint = "quic://relay.example:4433"
+# token-file = "/home/me/.local/state/phux/remotes/studio.token"
+# cert-fingerprint = "AB:CD:..."
+# tls-server-name = "studio"
 
 [status]
 # Left: the window/tab bar. The `windows` widget renders one tab per

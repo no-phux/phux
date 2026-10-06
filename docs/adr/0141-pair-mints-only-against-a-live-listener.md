@@ -15,6 +15,7 @@ still only edit the store.
 
 Status: Accepted
 Date: 2026-09-29
+See [ADR-0149](./0149-relay-routes-ride-the-tls-server-name-everywhere.md) for the gate a `--relay-route` mint passes instead.
 
 ## Context
 

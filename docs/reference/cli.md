@@ -1369,45 +1369,53 @@ Arguments:
               entry's name.
 
 Flags:
-      --role <ROLE>            Which registry the machine lands in: a server you
-                               attach to (`remote`, the default) or a peer this
-                               hub dials for its users.
-                               [possible values: remote, satellite]
-                               (default: remote)
-      --name <NAME>            Local label to register. Defaults to HOST without
-                               any `user@`, or to the host of an endpoint URI.
-      --endpoint <HOST:PORT>   Register this address instead of the routes
-                               detected on the host: `HOST:PORT` (dialed over
-                               QUIC) or a full `quic://`/`wss://` URI.
-      --quic-port <PORT>       QUIC port to configure on the host and dial.
-                               (default: 8788)
-      --no-service             Start the host's server but skip installing its
-                               service unit. The server will not come back on
-                               its own after a reboot.
-      --ssh-only               Register an `ssh://HOST` entry without contacting
-                               the host at all.
-      --remote-phux <PATH>     The `phux` to run on the host, for when a
-                               non-interactive ssh shell's `PATH` does not find
-                               it (a Homebrew or Nix install).
-                               (default: phux)
-      --token-file <PATH>      Manual form only: absolute path to a file holding
-                               the pairing token minted by `phux pair` on the
-                               other machine.
-      --cert-fingerprint <FP>  Manual form only: the other machine's TLS
-                               certificate SHA-256 fingerprint, as printed by
-                               `phux pair`. Required for `quic://` and `wss://`.
-      --session <NAME>         Session to attach on arrival (`--role remote`
-                               only). Omitted: the remote server's own
-                               last-attach memory decides.
-      --disabled               Register the entry but leave it disabled (`--role
-                               satellite` only).
-      --json                   Emit stable, versioned JSON on stdout instead of
-                               the human view. On failure, stdout stays empty
-                               and stderr carries one JSON error object.
-  -h, --help                   Print help
+      --role <ROLE>             Which registry the machine lands in: a server
+                                you attach to (`remote`, the default) or a peer
+                                this hub dials for its users.
+                                [possible values: remote, satellite]
+                                (default: remote)
+      --name <NAME>             Local label to register. Defaults to HOST
+                                without any `user@`, or to the host of an
+                                endpoint URI.
+      --endpoint <HOST:PORT>    Register this address instead of the routes
+                                detected on the host: `HOST:PORT` (dialed over
+                                QUIC) or a full `quic://`/`wss://` URI.
+      --quic-port <PORT>        QUIC port to configure on the host and dial.
+                                (default: 8788)
+      --no-service              Start the host's server but skip installing its
+                                service unit. The server will not come back on
+                                its own after a reboot.
+      --ssh-only                Register an `ssh://HOST` entry without
+                                contacting the host at all.
+      --remote-phux <PATH>      The `phux` to run on the host, for when a
+                                non-interactive ssh shell's `PATH` does not find
+                                it (a Homebrew or Nix install).
+                                (default: phux)
+      --token-file <PATH>       Manual form only: absolute path to a file
+                                holding the pairing token minted by `phux pair`
+                                on the other machine.
+      --cert-fingerprint <FP>   Manual form only: the other machine's TLS
+                                certificate SHA-256 fingerprint, as printed by
+                                `phux pair`. Required for `quic://` and
+                                `wss://`.
+      --tls-server-name <NAME>  Manual form, `--role remote` only: the TLS
+                                server name (SNI) every dial offers instead of
+                                the endpoint's host. Through a relay this is the
+                                route: register the relay's `quic://RELAY:PORT`
+                                with the relay's `--cert-fingerprint` and the
+                                server's `--token-file`.
+      --session <NAME>          Session to attach on arrival (`--role remote`
+                                only). Omitted: the remote server's own
+                                last-attach memory decides.
+      --disabled                Register the entry but leave it disabled
+                                (`--role satellite` only).
+      --json                    Emit stable, versioned JSON on stdout instead of
+                                the human view. On failure, stdout stays empty
+                                and stderr carries one JSON error object.
+  -h, --help                    Print help
 
 Global flags:
-      --socket <PATH>          Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>           Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux host attach`
@@ -1950,8 +1958,9 @@ the store directly and take effect without restarting the server.
 Minting first asks the running server (`--socket`) which remote listeners it has
 bound, and mints nothing when none would accept the credential: no server, no
 bound listener, `--host` with no wss listener, or `--qr` with no address a
-device can dial. `ls`, `prune`, `rotate`, and `revoke` only edit the store and
-need no server.
+device can dial. `--relay-route` mints for a relay route instead, which needs
+the server to answer but no bound listener. `ls`, `prune`, `rotate`, and
+`revoke` only edit the store and need no server.
 
 Usage: phux pair [FLAGS] [SUBCOMMAND]
 
@@ -1997,6 +2006,17 @@ Flags:
                              add` passes the previously enrolled token so
                              re-enrollment does not leave abandoned live
                              credentials.
+      --relay-route <ROUTE>  Mint for a relay route instead of a listener: the
+                             connect link dials the `[[connector]]` relay this
+                             server tunnels to, pins the relay's certificate,
+                             and names ROUTE as its TLS server name (the route
+                             `phux relay pair --route` enrolled). Needs a
+                             running server but no bound listener; the link
+                             reaches the server while its connector holds the
+                             route.
+      --relay <HOST:PORT>    The `[[connector]]` relay (its `relay =
+                             "HOST:PORT"`) a `--relay-route` link dials. Needed
+                             only when several are configured.
   -h, --help                 Print help
 
 Global flags:

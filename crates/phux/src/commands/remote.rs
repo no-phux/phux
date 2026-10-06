@@ -38,6 +38,9 @@ pub(crate) struct RemoteEntry {
     pub(crate) token_file: Option<PathBuf>,
     /// TLS certificate SHA-256 pin, as printed by `phux pair`. Not a secret.
     pub(crate) cert_fingerprint: Option<String>,
+    /// The TLS server name a dial offers instead of the endpoint's host: the
+    /// relay route when the endpoint is a relay (ADR-0149).
+    pub(crate) tls_server_name: Option<String>,
     /// Session to request on arrival, when the operator pinned one.
     pub(crate) session: Option<String>,
     /// The ssh destination the entry was enrolled through, when it was.
@@ -190,6 +193,7 @@ pub(crate) fn load_registry() -> Result<Vec<RemoteEntry>, String> {
             endpoint: remote.endpoint,
             token_file: remote.token_file,
             cert_fingerprint: remote.cert_fingerprint,
+            tls_server_name: remote.tls_server_name,
             session: remote.session,
             ssh: remote.ssh,
             direct: remote.direct,
@@ -216,6 +220,7 @@ pub(crate) struct NewRemote {
     pub(crate) endpoint: String,
     pub(crate) token_file: Option<PathBuf>,
     pub(crate) cert_fingerprint: Option<String>,
+    pub(crate) tls_server_name: Option<String>,
     pub(crate) session: Option<String>,
     pub(crate) ssh: Option<String>,
     pub(crate) direct: Option<String>,
@@ -236,7 +241,27 @@ impl NewRemote {
             entry.session.as_deref(),
         )?
         .with_ssh(entry.ssh.as_deref())
-        .with_direct(entry.direct.as_deref())
+        .with_direct(entry.direct.as_deref())?
+        .with_tls_server_name(entry.tls_server_name.as_deref())
+    }
+
+    /// Offer `name` as the TLS server name on every dial of this entry: the
+    /// relay route when the endpoint is a relay (ADR-0149). Validated as a
+    /// DNS name; blank clears it. An `ssh://` endpoint has no TLS of its own
+    /// to name, so it is refused there.
+    pub(crate) fn with_tls_server_name(mut self, name: Option<&str>) -> Result<Self, String> {
+        self.tls_server_name = match name.map(str::trim).filter(|name| !name.is_empty()) {
+            None => None,
+            Some(_) if self.endpoint.starts_with("ssh://") => {
+                return Err(format!(
+                    "{} rides ssh, which offers no TLS server name; register the relay's \
+                     quic:// endpoint instead",
+                    self.endpoint
+                ));
+            }
+            Some(name) => Some(phux_client_runtime::target::validate_tls_server_name(name)?),
+        };
+        Ok(self)
     }
 
     /// Record the enrolled workload client identity (both absolute paths),
@@ -314,6 +339,7 @@ impl NewRemote {
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_owned),
+            tls_server_name: None,
             ssh: None,
             direct: None,
             client_cert: None,
@@ -374,6 +400,7 @@ fn fill_table(table: &mut Table, new: &NewRemote) {
     table.insert("endpoint", value(&new.endpoint));
     toml_registry::set_or_remove(table, "token-file", display(&new.token_file));
     toml_registry::set_or_remove(table, "cert-fingerprint", new.cert_fingerprint.as_ref());
+    toml_registry::set_or_remove(table, "tls-server-name", new.tls_server_name.as_ref());
     toml_registry::set_or_remove(table, "session", new.session.as_ref());
     toml_registry::set_or_remove(table, "ssh", new.ssh.as_ref());
     toml_registry::set_or_remove(table, "direct", new.direct.as_ref());
@@ -401,6 +428,7 @@ mod tests {
             endpoint: "quic://mini:8788".to_owned(),
             token_file: path,
             cert_fingerprint: None,
+            tls_server_name: None,
             session: None,
             ssh: None,
             direct: None,
@@ -508,6 +536,34 @@ mod tests {
         // With a pin, quic is accepted.
         let fp = "ab".repeat(32);
         assert!(NewRemote::new("mini", "quic://mini:8788", None, Some(&fp), None).is_ok());
+    }
+
+    /// A relay route (ADR-0149) is a TLS server name on a TLS endpoint:
+    /// validated as a DNS name, refused on `ssh://`, and blank clears it.
+    #[test]
+    fn tls_server_name_is_a_dns_name_on_a_tls_endpoint() {
+        let fp = "ab".repeat(32);
+        let relay = || NewRemote::new("mini", "quic://relay:4433", None, Some(&fp), None);
+        let routed = relay()
+            .expect("quic entry")
+            .with_tls_server_name(Some(" mini-route "))
+            .expect("a route is a DNS label");
+        assert_eq!(routed.tls_server_name.as_deref(), Some("mini-route"));
+        assert!(
+            relay()
+                .expect("quic entry")
+                .with_tls_server_name(Some("not a name"))
+                .is_err()
+        );
+        let cleared = routed
+            .with_tls_server_name(Some(" "))
+            .expect("blank clears");
+        assert_eq!(cleared.tls_server_name, None);
+        let err = NewRemote::new("mini", "ssh://mini", None, None, None)
+            .expect("ssh entry")
+            .with_tls_server_name(Some("mini-route"))
+            .expect_err("ssh has no TLS server name");
+        assert!(err.contains("quic://"), "got {err}");
     }
 
     /// `direct` only means something beside an `ssh://` route: it is the

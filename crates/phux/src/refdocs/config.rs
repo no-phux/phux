@@ -335,6 +335,7 @@ mod tests {
             endpoint: "quic://mini.example:8788".to_owned(),
             token_file: Some(PathBuf::from("/tokens/mini.token")),
             cert_fingerprint: Some("AB:CD".to_owned()),
+            tls_server_name: None,
             session: Some("main".to_owned()),
             ssh: Some("me@mini".to_owned()),
             direct: None,
