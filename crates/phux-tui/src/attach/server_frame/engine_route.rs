@@ -25,7 +25,6 @@ use super::outcome::pane_label;
 pub(super) struct KernelRoute {
     pub(super) ack: Option<(ResourceId, StreamId, BootstrapId, u64)>,
     pub(super) history_request: Option<(ResourceId, StreamId, BootstrapId, bytes::Bytes, u32, u32)>,
-    pub(super) pty_writes: Vec<(ResourceId, Vec<u8>)>,
     pub(super) damaged: HashSet<ResourceId>,
     /// `AgentSession` resources whose record log grew under this frame. The
     /// chrome projects them, so the handler raises a chrome repaint.
@@ -524,9 +523,6 @@ fn collect_route_effects(route: &mut KernelRoute, effects: &KernelEffectBuffer) 
                     *max_bytes,
                     *max_rows,
                 ));
-            }
-            KernelEffect::Send(KernelSend::PtyWrite { terminal_id, bytes }) => {
-                route.pty_writes.push((terminal_id.clone(), bytes.clone()));
             }
             KernelEffect::Damage(damage) => {
                 route.damaged.insert(damage.terminal_id.clone());

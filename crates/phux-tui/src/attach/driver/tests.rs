@@ -27,7 +27,6 @@ use crate::attach::paint::{
 };
 use crate::attach::pane_state::{AttachKernel, PaneSlot, published_test_state};
 use crate::attach::render::{ReplicaWalk, SelectionRect};
-use crate::attach::server_frame::FrameOutcome;
 use crate::layout::Workspace;
 use crate::predict::PredictiveConfig;
 use crate::render::chrome::sidebar::SidebarPainter;
@@ -535,41 +534,6 @@ fn frame_ack_is_emitted_only_for_state_sync_consumers() {
     assert_eq!(should_emit_frame_ack(false, ack.clone()), None);
     assert_eq!(should_emit_frame_ack(true, ack.clone()), ack);
     assert_eq!(should_emit_frame_ack(true, None), None);
-}
-
-/// Terminal replies need the negotiated feature (else one notice), and an
-/// outcome that ends the loop sends none and adds no notice: the session has
-/// no PTY left to answer.
-#[test]
-fn terminal_replies_require_the_feature_and_a_live_session() {
-    let reply = (ResourceId::local(7), b"\x1b[0n".to_vec());
-    let outcome = || FrameOutcome {
-        pty_writes: vec![reply.clone()],
-        ..FrameOutcome::default()
-    };
-    let mut supported = outcome();
-    assert_eq!(
-        take_terminal_replies(&mut supported, true),
-        vec![reply.clone()]
-    );
-    assert!(supported.notices.is_empty());
-
-    let mut old_server = outcome();
-    assert!(take_terminal_replies(&mut old_server, false).is_empty());
-    assert_eq!(old_server.notices.len(), 1);
-    assert!(old_server.notices[0].text.contains("terminal-reply"));
-
-    let end = Some(AttachEnd::LastPaneClosed {
-        exit_status: Some(7),
-    });
-    let mut exiting = FrameOutcome {
-        exit: true,
-        exit_reason: end,
-        ..outcome()
-    };
-    assert!(take_terminal_replies(&mut exiting, true).is_empty());
-    assert!(exiting.pty_writes.is_empty() && exiting.notices.is_empty());
-    assert_eq!(exiting.exit_reason, end);
 }
 
 /// A write to a departed peer must not become the reason the loop ended (it

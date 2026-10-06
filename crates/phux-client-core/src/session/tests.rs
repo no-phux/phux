@@ -20,7 +20,7 @@ use super::{
 };
 use crate::engine::{
     BootstrapProgress, CanonicalGeometry, EngineAdapter, EngineDamage, EngineEffect,
-    EngineEffectBuffer, EngineJob, EngineSend, EngineStatus, HistoryApplyOutcome,
+    EngineEffectBuffer, EngineJob, EngineStatus, HistoryApplyOutcome,
 };
 use crate::history::HistoryLoadState;
 
@@ -101,9 +101,6 @@ impl EngineAdapter for FakeAdapter {
         }
         if payload == b"bootstrap-effects" {
             replica.finish_effects = true;
-            effects.push(EngineEffect::Send(EngineSend::PtyWrite(
-                b"suppressed-bootstrap-reply".to_vec(),
-            )));
             effects.push(EngineEffect::Damage(EngineDamage::Full));
             effects.push(EngineEffect::Status(EngineStatus::Title(
                 "bootstrap-staging".to_owned(),
@@ -138,9 +135,6 @@ impl EngineAdapter for FakeAdapter {
             return Err(FakeError::MutatedThenFailed);
         }
         if replica.finish_effects {
-            effects.push(EngineEffect::Send(EngineSend::PtyWrite(
-                b"suppressed-finish-reply".to_vec(),
-            )));
             effects.push(EngineEffect::Damage(EngineDamage::Full));
             effects.push(EngineEffect::Status(EngineStatus::Title(
                 "bootstrap-finished".to_owned(),
@@ -201,7 +195,6 @@ impl EngineAdapter for FakeAdapter {
             return Err(FakeError::MutatedThenFailed);
         }
         if payload == b"effects" {
-            effects.push(EngineEffect::Send(EngineSend::PtyWrite(b"reply".to_vec())));
             effects.push(EngineEffect::Damage(EngineDamage::Rows {
                 first: 2,
                 last: 4,
@@ -2619,10 +2612,6 @@ fn engine_effects_are_drained_after_apply_in_order() {
     assert_eq!(
         effects.as_slice(),
         &[
-            KernelEffect::Send(KernelSend::PtyWrite {
-                terminal_id: terminal_id.clone(),
-                bytes: b"reply".to_vec(),
-            }),
             KernelEffect::Damage(KernelDamage {
                 terminal_id: terminal_id.clone(),
                 kind: KernelDamageKind::Rows { first: 2, last: 4 },
@@ -2756,7 +2745,7 @@ fn effect_buffer_reuses_high_water_capacity() {
             &mut effects,
         )
         .unwrap();
-    assert_eq!(effects.len(), 4);
+    assert_eq!(effects.len(), 3);
     assert_eq!(effects.capacity(), initial_capacity);
     let drained = effects.take();
     assert!(effects.is_empty());
