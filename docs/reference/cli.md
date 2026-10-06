@@ -2253,6 +2253,7 @@ Commands:
   install   Fetch, build, validate, and link a plugin package.
   link      Add or update a manifest entry in `config.toml`.
   list      List configured plugin manifests. [aliases: ls]
+  log       Show recent plugin action and hook runs, oldest first.
   unlink    Remove a configured plugin by id. [aliases: rm, remove]
   update    Re-fetch, rebuild, and revalidate installed plugins.
   validate  Validate one manifest, or every configured manifest when omitted.
@@ -2359,6 +2360,29 @@ List configured plugin manifests.
 Usage: phux plugin list [--json]
 
 Flags:
+      --json           Emit a stable JSON document instead of human text.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux plugin log`
+
+```text
+Show recent plugin action and hook runs, oldest first.
+
+Every plugin action run (a TUI keybinding, `phux config run`, the MCP tool) and
+every server hook run appends one record to a bounded log in the state directory
+(`plugin-runs.jsonl`): the newest 100 runs, each with its exit status, duration,
+and the last 4 KiB of stdout and stderr. Failed runs show the tail of their
+output.
+
+Usage: phux plugin log [FLAGS]
+
+Flags:
+  -n, --limit <NUM>    How many of the newest runs to show; 20 when omitted.
+      --failed         Show only runs that did not exit 0.
       --json           Emit a stable JSON document instead of human text.
   -h, --help           Print help
 

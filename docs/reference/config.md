@@ -424,7 +424,9 @@ which-key-delay-ms = 400
 # `phux plugin list --json`, validate/link/toggle/unlink them with
 # `phux plugin`, project their agent-state declarations with
 # `phux config agents --json`, and execute action entries with
-# `phux config run PLUGIN ACTION [--json]`. Event hooks, plugin panes, and
+# `phux config run PLUGIN ACTION [--json]`; `phux plugin log` lists
+# recent action and hook runs with their exit status and output tail.
+# Event hooks, plugin panes, and
 # link handlers are declarative until their host surfaces ship. The
 # manifest path may be absolute or relative to this config file.
 #

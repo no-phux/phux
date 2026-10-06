@@ -548,7 +548,7 @@ fn run_config_action(
         Ok(rt) => rt,
         Err(code) => return code,
     };
-    match rt.block_on(phux_plugin::run_configured_action(&path, &request)) {
+    match rt.block_on(phux_plugin::run_configured_action_logged(&path, &request)) {
         Ok(output) => print_action_output(&output, json),
         Err(err) => {
             eprintln!("phux: {err}");
