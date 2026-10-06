@@ -25,6 +25,7 @@ ALL_GATES=(
     spec-version-sync
     spec-id-unique
     impl-status
+    conflict-marker
 )
 
 # ---------------------------------------------------------------------------
@@ -938,6 +939,17 @@ gate_impl_status() {
     impl_code_cache_init
     impl_status_tables
     impl_status_markers
+}
+
+# A leftover merge or stash conflict marker. `=======` alone is a setext
+# heading underline in Markdown, so only the three labelled markers count.
+gate_conflict_marker() {
+    local file lineno
+    for file in "${FILES[@]}"; do
+        while IFS=: read -r lineno _; do
+            violate conflict-marker "$file" "line $lineno: unresolved conflict marker"
+        done < <(grep -n -E '^(<<<<<<<|\|\|\|\|\|\|\||>>>>>>>) ' "$file" || true)
+    done
 }
 
 # ---------------------------------------------------------------------------
