@@ -1,7 +1,7 @@
 # Root validation: compile-free guards, independently routed Node integrations,
 # and two Rust lanes. All compile/run phases retain their own target directory:
 # check shares Clippy/rustdoc artifacts; test shares unit/e2e artifacts. Native
-# artifacts remain CPU-keyed by setup-rust-lane (libghostty detects host CPU).
+# compilations, build scripts, and links restore from setup-rust-lane's mbx cache.
 # The required `ci` aggregate owns the explicit skip/failure policy.
 name: ci
 
@@ -58,7 +58,7 @@ jobs:
 
   # Always check cheap contracts, including mixed and docs-only changes. Resolve
   # only these tools from the pinned nixpkgs input: no devshell, Rust or Zig
-  # realization, sccache setup, or target-cache restore on this runner.
+  # realization or build-cache restore on this runner.
   workflow-gate:
     name: workflow gate
     needs: changes
@@ -133,7 +133,7 @@ jobs:
         id: setup
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          rust-cache-shared-key: check
+          cache-lane: check
       - name: rust checks (fmt + clippy + doc + deny)
         run: |
           nix develop -c bash -euo pipefail <<'EOF'
@@ -145,13 +145,13 @@ jobs:
           timed features just build-features-check
           timed feature-compile just build-features-compile
           EOF
-      - name: sccache stats
+      - name: mbx stats
         if: always()
-        run: sccache --show-stats || true
+        run: mbx stats || true
       - name: lane signal
         if: always()
         env:
-          PHUX_CACHE_HIT: ${{ steps.setup.outputs.rust-cache-hit }}
+          PHUX_CACHE_HIT: ${{ steps.setup.outputs.cache-hit }}
           PHUX_DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
         run: bash scripts/ci/summarize-job.sh
 
@@ -170,8 +170,7 @@ jobs:
         id: setup
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          rust-cache-shared-key: test
-          cache-workspace-crates: "true"
+          cache-lane: test
       - name: tests (unit + e2e)
         env:
           # Pushes to main keep the full unit pool. PRs and merge groups use
@@ -193,13 +192,13 @@ jobs:
             timed e2e    just e2e
           fi
           EOF
-      - name: sccache stats
+      - name: mbx stats
         if: always()
-        run: sccache --show-stats || true
+        run: mbx stats || true
       - name: lane signal
         if: always()
         env:
-          PHUX_CACHE_HIT: ${{ steps.setup.outputs.rust-cache-hit }}
+          PHUX_CACHE_HIT: ${{ steps.setup.outputs.cache-hit }}
           PHUX_DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
           PHUX_JUNIT: target/nextest/ci/junit.xml
         run: bash scripts/ci/summarize-job.sh
@@ -243,3 +242,35 @@ jobs:
           mode: write
           workflow: .github/workflows/ci.yml
           coverage: phux=${{ needs.changes.outputs.phux_needed }},integrations=${{ needs.changes.outputs.integrations_needed }}
+
+  # setup-rust-lane's mbx action saves one immutable entry per lane on every
+  # push to main (about 0.4 GB check + 1.9 GB test compressed). Restores take
+  # only the newest, so the older ones would pile up until LRU eviction pushed
+  # out other workflows' caches from the shared 10 GB. Keep the newest entry
+  # per lane and delete the rest once both lanes have finished saving.
+  prune-build-cache:
+    name: prune superseded mbx cache entries
+    needs: [check, test]
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: keep the newest entry per lane
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for lane in check test; do
+            mapfile -t stale < <(gh api --paginate \
+              "repos/${GITHUB_REPOSITORY}/actions/caches?ref=refs/heads/main&key=linux-arm64-mbx-phux-${lane}-&sort=created_at&direction=desc&per_page=100" \
+              --jq '.actions_caches[].id' | tail -n +2)
+            for id in "${stale[@]:-}"; do
+              [ -n "${id}" ] || continue
+              echo "deleting superseded ${lane} entry ${id}"
+              # A 404 means another main run already pruned it.
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/${id}" --silent || true
+              sleep 1
+            done
+          done
