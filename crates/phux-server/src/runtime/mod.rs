@@ -1068,6 +1068,7 @@ fn resume_session_tree(
     info!(
         sessions = blob.sessions.len(),
         panes = blob.panes.len(),
+        agent_sessions = blob.agent_sessions.len(),
         "resumed session tree from upgrade blob"
     );
     Ok(())
@@ -1896,6 +1897,7 @@ mod tests {
             sessions,
             windows,
             panes,
+            agent_sessions: Vec::new(),
         }
     }
 

@@ -55,6 +55,12 @@ impl RecordRing {
         self.dropped
     }
 
+    /// Count `count` records evicted before this ring existed: a ring
+    /// restored across an upgrade inherits its predecessor's toll.
+    pub const fn add_dropped(&mut self, count: u64) {
+        self.dropped = self.dropped.saturating_add(count);
+    }
+
     /// Bytes currently retained.
     #[must_use]
     pub const fn bytes(&self) -> usize {
