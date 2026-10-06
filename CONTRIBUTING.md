@@ -145,9 +145,10 @@ runtime), commit-message linting, and the release/publish lanes
 
 `just milestone-check` is local-only and advisory: it asserts every non-closed
 bead carries exactly one of `rc-1.0` / `post-1.0` by querying the live Dolt
-store through `bd`. CI has no store, and the tracked `.beads/issues.jsonl`
-export is scrubbed, so there is no JSONL fallback. Without `bd` or a store it
-prints `SKIPPED` and exits 0; an unlabelled or double-labelled bead exits 1.
+store through `bd`. CI has no store, and the check deliberately does not read
+the tracked `.beads/issues.jsonl`: that file is a passive export that can lag
+the store. Without `bd` or a store it prints `SKIPPED` and exits 0; an
+unlabelled or double-labelled bead exits 1.
 
 ## Additional expectations
 
