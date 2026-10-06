@@ -70,7 +70,18 @@ impl ServerState {
         pane: ResourceId,
     ) -> (bool, Option<tokio_util::sync::CancellationToken>) {
         let window_id = self.sessions.registry.resource(pane).and_then(|t| t.window);
+        // `remove_resource` also drops every bound descendant from the
+        // registry. One still there (no close cascade ran first, e.g. a
+        // failed publication) must lose its handle and engine too: its own
+        // watcher will find it gone and reap nothing, so without this its
+        // handle would outlive it in the resource table forever.
+        let descendants = self.resource_descendants(pane);
         let token = if self.sessions.registry.remove_resource(pane).is_some() {
+            for child in descendants {
+                if let Some(child_token) = self.forget_terminal_bookkeeping(child) {
+                    child_token.cancel();
+                }
+            }
             self.forget_terminal_bookkeeping(pane)
         } else {
             None

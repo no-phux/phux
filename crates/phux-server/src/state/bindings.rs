@@ -210,4 +210,39 @@ mod tests {
             vec![child, grandchild]
         );
     }
+
+    /// phux-twft: reaping a parent directly (no close cascade first, as a
+    /// failed publication does) removes its descendants from the registry.
+    /// Their handles and engines must go with them; before, each one's watcher
+    /// found it already gone, reaped nothing, and its handle stayed in the
+    /// resource table for every later upgrade to trip on.
+    #[test]
+    fn a_direct_reap_forgets_descendant_handles_and_cancels_their_engines() {
+        let mut state = ServerState::new();
+        let (grandparent, child, grandchild) = three_level_tree(&mut state);
+        let mut tokens = Vec::new();
+        for resource in [grandparent, child, grandchild] {
+            let token = CancellationToken::new();
+            let _ = state.register_resource_handle(
+                resource,
+                crate::state::tests::mk_handle(),
+                token.clone(),
+            );
+            tokens.push(token);
+        }
+
+        let _ = state.reap_terminal(grandparent);
+
+        for resource in [grandparent, child, grandchild] {
+            assert!(
+                state.resource_handle(resource).is_none(),
+                "{resource:?} must leave the resource table with its registry entry"
+            );
+        }
+        assert!(state.resource_ids().is_empty());
+        assert!(
+            tokens.iter().all(CancellationToken::is_cancelled),
+            "no descendant engine may keep running unreachable"
+        );
+    }
 }
