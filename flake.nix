@@ -176,6 +176,11 @@
         # every crate above a proc macro missed. Unset, mbx asks for `macosx`,
         # which resolves to the same SDK, and so do rustc and cc: a binary
         # built either way records the same `sdk` in LC_BUILD_VERSION.
+        #
+        # It drops CC and CXX for the same reason: mbx routes build-script C
+        # and C++ (ring, *-sys crates) through its cache only when it supplies
+        # the compiler, and stdenv's CC=clang / CXX=clang++ name the very
+        # wrappers `cc` and `c++` resolve to on this PATH.
         mbxVersion = miseTools."mr-boxington";
         mbxAssets = {
           aarch64-darwin = "mbx-aarch64-apple-darwin.tar.gz";
@@ -213,7 +218,9 @@
                 makeWrapper $out/bin/mbx $out/libexec/mbx/cargo \
                   --set MBX_CARGO_SHIM_MODE 1 \
                   --set MBX_CARGO_SHIM_PATH $out/libexec/mbx/cargo \
-                  --unset SDKROOT
+                  --unset SDKROOT \
+                  --unset CC \
+                  --unset CXX
                 runHook postInstall
               '';
               meta = {
@@ -294,11 +301,11 @@
           # backs the `-fuse-ld=mold` rustflags in .cargo/config.toml for the
           # linux-gnu targets; it has no mach-o backend, so it is Linux-only
           # and macOS keeps Apple's default linker (already the fast path).
-          ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.mold ]
+          ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.mold ]
           # Darwin archive tools, including the `nmedit` Ghostty's build
           # invokes through `xcrun`; with it the shell's own Apple SDK is
           # all a cold Ghostty build needs (see the shellHook).
-          ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.cctools ];
+          ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ pkgs.cctools ];
 
           env.RUST_BACKTRACE = "1";
 
@@ -312,7 +319,7 @@
           # and nmedit under this DEVELOPER_DIR. The probe below only reports
           # a host where that resolution is broken (no Command Line Tools).
           shellHook =
-            pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
+            pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin ''
               if ! command -v xcrun >/dev/null 2>&1 ||
                  ! xcrun --show-sdk-path >/dev/null 2>&1 ||
                  ! xcrun --find nmedit >/dev/null 2>&1; then
@@ -346,7 +353,7 @@
         # and an explicitly matching driver (see docs/SETUP.md).
         devShells.browser = self.devShells.${system}.default.overrideAttrs (old: {
           nativeBuildInputs =
-            old.nativeBuildInputs ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.chromium ];
+            old.nativeBuildInputs ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.chromium ];
         });
 
         formatter = pkgs.nixfmt-rfc-style;
