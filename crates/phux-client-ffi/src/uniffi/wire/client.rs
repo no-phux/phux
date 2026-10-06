@@ -185,22 +185,36 @@ impl RemoteClient {
         fingerprint: Option<String>,
         token: Option<String>,
     ) -> Arc<Self> {
-        Arc::new(Self {
+        Self::build(url, cols, rows, fingerprint, token, None)
+    }
+
+    /// Construct a relay-routed client without changing the legacy constructor.
+    /// The DNS route overrides TLS SNI, not the dial endpoint or certificate pin.
+    /// Initializes the same route as [`Self::set_relay_route`]; the server's
+    /// authority pin and enrolled device identity are still set separately.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid TLS DNS route before starting a runtime.
+    #[uniffi::constructor]
+    pub fn new_routed(
+        url: String,
+        cols: u16,
+        rows: u16,
+        fingerprint: Option<String>,
+        token: Option<String>,
+        tls_server_name: String,
+    ) -> Result<Arc<Self>, WireError> {
+        let tls_server_name =
+            phux_client_runtime::target::validate_tls_server_name(&tls_server_name)
+                .map_err(|reason| WireError::Runtime { reason })?;
+        Ok(Self::build(
             url,
-            cols: Mutex::new(cols.max(1)),
-            rows: Mutex::new(rows.max(1)),
+            cols,
+            rows,
             fingerprint,
             token,
-            authority: Mutex::new(None),
-            route: Mutex::new(None),
-            learned_authority: Arc::new(Mutex::new(None)),
-            client_identity: Mutex::new(phux_client_runtime::TlsClientIdentity::None),
-            client: Mutex::new(None),
-            listener: Mutex::new(None),
-            input_deliveries: Mutex::new(Vec::new()),
-            authoritative_damage: Mutex::new(HashSet::new()),
-            generations: Mutex::new(HashMap::new()),
-        })
+            Some(tls_server_name),
+        ))
     }
 
     pub fn resize_viewport(&self, cols: u16, rows: u16) {
@@ -627,6 +641,34 @@ impl RemoteClient {
     }
 }
 
+impl RemoteClient {
+    fn build(
+        url: String,
+        cols: u16,
+        rows: u16,
+        fingerprint: Option<String>,
+        token: Option<String>,
+        tls_server_name: Option<String>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            url,
+            cols: Mutex::new(cols.max(1)),
+            rows: Mutex::new(rows.max(1)),
+            fingerprint,
+            token,
+            authority: Mutex::new(None),
+            route: Mutex::new(tls_server_name),
+            learned_authority: Arc::new(Mutex::new(None)),
+            client_identity: Mutex::new(phux_client_runtime::TlsClientIdentity::None),
+            client: Mutex::new(None),
+            listener: Mutex::new(None),
+            input_deliveries: Mutex::new(Vec::new()),
+            authoritative_damage: Mutex::new(HashSet::new()),
+            generations: Mutex::new(HashMap::new()),
+        })
+    }
+}
+
 #[uniffi::export]
 impl RemoteClient {
     pub fn has_projection(&self, terminal_id: String) -> bool {
@@ -881,6 +923,96 @@ impl Drop for RemoteClient {
 mod tests {
     use super::*;
     use phux_protocol::wire::frame::{FrameKind, RESOURCE_AGENT_KEY, Scope};
+
+    #[test]
+    fn routed_constructor_preserves_route_and_credentials_in_runtime_target() {
+        for (url, transport) in [
+            (
+                "quic://relay.example:443",
+                Transport::Quic("relay.example:443".into()),
+            ),
+            (
+                "wss://relay.example:443/phux",
+                Transport::Ws("wss://relay.example:443/phux".into()),
+            ),
+        ] {
+            let remote = RemoteClient::new_routed(
+                url.into(),
+                80,
+                24,
+                Some("pin".into()),
+                Some("token".into()),
+                " mini-route.example ".into(),
+            )
+            .unwrap();
+            let target = remote.target().unwrap();
+            assert_eq!(target.transport, transport);
+            assert_eq!(
+                target.tls_server_name.as_deref(),
+                Some("mini-route.example")
+            );
+            assert_eq!(target.cert_fingerprint.as_deref(), Some("pin"));
+            assert_eq!(target.token.as_deref(), Some("token"));
+            assert_eq!(target.token_file, None);
+            assert_eq!(
+                target.authority.route.as_deref(),
+                Some("mini-route.example")
+            );
+            assert!(
+                target.authority.learner.is_none(),
+                "relay leaf cannot authenticate the server CA"
+            );
+            assert_eq!(
+                target.client_identity,
+                phux_client_runtime::TlsClientIdentity::None
+            );
+            assert!(remote.runtime_client().is_none());
+
+            let direct = RemoteClient::new(url.into(), 80, 24, None, None);
+            assert_eq!(direct.target().unwrap().tls_server_name, None);
+
+            remote.set_authority_pin(Some("server-ca".into()));
+            remote.set_relay_route(Some("replacement-route".into()));
+            let target = remote.target().unwrap();
+            assert_eq!(target.authority.ca.as_deref(), Some("server-ca"));
+            assert_eq!(target.authority.route.as_deref(), Some("replacement-route"));
+            assert_eq!(target.tls_server_name.as_deref(), Some("replacement-route"));
+        }
+    }
+
+    #[test]
+    fn routed_constructor_rejects_malformed_dns_before_starting_runtime() {
+        for route in [
+            "",
+            " ",
+            "127.0.0.1",
+            "::1",
+            "bad_route",
+            "-route",
+            "route-",
+            "route..example",
+            "route.example.",
+            "route:443",
+            "route/path",
+            "route?x=y",
+            "route#fragment",
+            "user@route",
+            "routé.example",
+        ] {
+            let result = RemoteClient::new_routed(
+                "quic://relay.example:443".into(),
+                80,
+                24,
+                None,
+                None,
+                route.into(),
+            );
+            assert!(
+                matches!(result, Err(WireError::Runtime { reason }) if reason.contains("TLS server name")),
+                "{route:?}"
+            );
+        }
+    }
 
     #[test]
     fn remote_endpoint_classification_selects_the_runtime_transport() {
