@@ -1,7 +1,7 @@
 ---
 audience: humans, agents, contributors
 stability: evolving
-last-reviewed: 2026-09-30
+last-reviewed: 2026-10-06
 ---
 
 # Native Oh My Pi integration
@@ -169,10 +169,13 @@ state or attention. Other UI questions and fleet-context injection are not cover
 
 OMP 18.6.1 delivers generic activity concurrently and detaches aggregate extension
 notifications. Navigation/abort does **not** drain their delivery. OMP 18 removed
-the FIFO subscriber gate that made the received aggregate a barrier in 17.x; the
-lifecycle smoke's delayed-tool case still observes the received aggregate trailing
-a held-up earlier tool delivery on the pinned SDK, but that ordering is now
-emergent rather than an SDK contract, so re-verify it on every OMP bump.
+the FIFO subscriber gate that made the received aggregate a barrier in 17.x: it
+settles `agent_end` on its own path, so a tool event an earlier extension holds
+reaches this extension *after* the run's end. The reporter tolerates that. After a
+terminal end the event is dropped, so it cannot resurrect `working` on a finished
+run; after a continuing end it can only re-assert `working` for the loop that
+continues. Approval events are unaffected because the tool wrapper awaits them
+before the tool, and so the run, can finish.
 OMP 18 also runs `before_agent_start` for queued steering and follow-up messages
 delivered mid-run, and may repeat it while preparing one prompt. The event carries
 nothing that distinguishes those from a new prompt, but the running loop absorbs
@@ -259,8 +262,9 @@ delivery; the SDK's actual detached aggregate path, new/resume/fork, same-ID rel
 exact-child retirement and restored detector blocking are exercised. Normal idle
 navigation and continuation are also covered, as is a queued follow-up that an
 inert local transport's running loop absorbs through the before hook. No live
-model reasoning is claimed. The delayed-tool case checks emergent ordering, not
-an SDK contract, and fails intermittently on 18.6.1 (about one run in six).
+model reasoning is claimed. The delayed-tool case holds a tool-start delivery,
+waits for the run's end to report `done` while it is still held, then releases it
+and requires `done` to survive the late delivery.
 
 An owned inert `omp.js` process supplies kernel identification and a fixed approval
 screen. Startup initializes its unbound identity without predeclaration; approval

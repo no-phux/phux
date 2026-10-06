@@ -192,6 +192,20 @@ describe("OMP host lifecycle", () => {
     expect(f.calls.filter(call => call.verb === "close")).toHaveLength(0);
   });
 
+  test("a tool delivery held past the run's end cannot resurrect the finished run", async () => {
+    // 18.6.1 settles agent_end on its own path: an earlier extension that holds
+    // tool_execution_start lets the end, and even the tool's own end, overtake it.
+    const f = fixture(); const host = sdk(f.cli);
+    await host.event("session_start"); await host.event("agent_start");
+    await host.event("tool_execution_end", { toolName: "inert", toolCallId: "late", isError: false });
+    await host.event("agent_end");
+    await host.event("tool_execution_start", { toolName: "inert", toolCallId: "late" });
+    await host.event("tool_execution_end", { toolName: "inert", toolCallId: "late", isError: false });
+    const verbs = f.mutations().map(call => call.verb);
+    expect(verbs.slice(verbs.indexOf("stop"))).toEqual(["stop"]);
+    expect(f.calls.filter(call => call.verb === "close")).toHaveLength(0);
+  });
+
   test("continuation using awaited before hook does not fall back", async () => {
     const f = fixture(); const host = sdk(f.cli);
     await host.event("session_start"); await host.event("agent_start");

@@ -116,12 +116,20 @@ if (process.argv[2] !== "--isolated") {
     await session.dispose();
     session = undefined;
 
-    async function openCase(delayedType?: string, countedType?: string) {
+    async function openCase(delayedType?: string, countedType?: string, trailingType?: string) {
       const loaded = await loadExtensions(paths, process.cwd());
       const entered = Promise.withResolvers<void>();
       const release = Promise.withResolvers<void>();
+      const trailed = Promise.withResolvers<void>();
       const counted = { calls: 0 };
       let delay = true;
+      // After the extension under test: the runner awaits each handler in
+      // order, so this firing proves the reporter has finished with the event.
+      if (trailingType) {
+        const trailing = { ...loaded.extensions[0]!, tools: new Map(), commands: new Map(), handlers: new Map() };
+        trailing.handlers.set(trailingType, [() => { trailed.resolve(); }]);
+        loaded.extensions.push(trailing);
+      }
       if (countedType) {
         const spy = { ...loaded.extensions[0]!, tools: new Map(), commands: new Map(), handlers: new Map() };
         spy.handlers.set(countedType, [() => { counted.calls++; }]);
@@ -148,7 +156,7 @@ if (process.argv[2] !== "--isolated") {
       const runner = session.extensionRunner!;
       await runner.emit({ type: "session_start" });
       await session.sessionManager.ensureOnDisk();
-      return { session, runner, loaded, entered, release, counted };
+      return { session, runner, loaded, entered, release, counted, trailed };
     }
 
     async function closeCase() {
@@ -239,21 +247,25 @@ if (process.argv[2] !== "--isolated") {
     assert.equal(show().agent_session, null, "late earlier before guard must not adopt the newer loop");
     await closeCase();
 
-    // End must not reach extensions while an earlier generic tool delivery is
-    // still held up. 17.x enforced this with a FIFO subscriber gate; 18.x has no
-    // such gate, so this case is what proves the ordering on the pinned SDK.
-    const delayedTool = await openCase("tool_execution_start");
+    // 17.x held agent_end behind an earlier extension's slow tool delivery with
+    // a FIFO subscriber gate. 18.6.1 has no such gate: every agent event is
+    // dispatched fire-and-forget, and agent_end reaches extensions from its own
+    // settle path, so a held tool_execution_start lands AFTER the run's end.
+    // This case pins that ordering deterministically (no sleep: the end is
+    // awaited while the earlier delivery is still held) and proves the reporter
+    // tolerates it: the late tool event must not resurrect the finished run.
+    const delayedTool = await openCase("tool_execution_start", undefined, "tool_execution_start");
     await delayedTool.runner.emitBeforeAgentStart("", undefined, []);
     await delayedTool.runner.emit({ type: "agent_start" });
     delayedTool.session.agent.emitExternalEvent({ type: "tool_execution_start", toolCallId: "gate", toolName: "inert", args: {} });
     await delayedTool.entered.promise;
     delayedTool.session.agent.emitExternalEvent({ type: "tool_execution_end", toolCallId: "gate", toolName: "inert", result: { content: [], details: {} }, isError: false });
     delayedTool.session.agent.emitExternalEvent({ type: "agent_end", messages: [] });
-    await Bun.sleep(30);
-    assert.equal(show().state, "working", "aggregate must wait for the earlier generic delivery gate");
-    delayedTool.release.resolve();
-    await delayedTool.session.waitForIdle();
     await waitUntil(() => show().state === "done");
+    delayedTool.release.resolve();
+    await delayedTool.trailed.promise;
+    assert.equal(show().state, "done", "a tool start delivered after the end must not resurrect working");
+    await delayedTool.session.waitForIdle();
     await delayedTool.runner.emitBeforeAgentStart("", undefined, []);
     await delayedTool.runner.emit({ type: "agent_start" });
     assert.equal(show().state, "working", "received aggregate permits a safe normal next loop");
