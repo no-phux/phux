@@ -1070,6 +1070,15 @@ pub const PhuxProvider = struct {
     pub fn atPrompt(self: *const PhuxProvider, ref: provider.TerminalRef) bool {
         return self.host.atPrompt(ref);
     }
+    pub fn promptReturned(self: *const PhuxProvider, ref: provider.TerminalRef) bool {
+        return self.host.promptReturned(ref);
+    }
+    pub fn acknowledgePromptReturn(self: *PhuxProvider, ref: provider.TerminalRef) void {
+        self.host.acknowledgePromptReturn(ref);
+    }
+    pub fn bracketedPaste(self: *const PhuxProvider, owner_value: provider.ReplicaOwner) !bool {
+        return self.host.bracketedPaste(owner_value);
+    }
 
     pub fn takeEnded(self: *PhuxProvider) ?provider.TerminalRef {
         return self.host.takeEnded();

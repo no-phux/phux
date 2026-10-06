@@ -203,7 +203,7 @@ fn paneNeedsAttention(model: *const Model, pane: *const Pane) bool {
     const paste_failed = model.paste_owner.terminal_ref.eql(pane.id) and model.paste_failed;
     // Unacknowledged loss, not the cumulative count, or one dropped byte would
     // pin attention forever.
-    return pane.bellRung() or
+    return pane.bellRung() or pane.promptReturned() or
         pane.phase == .ended or pane.phase == .failed or
         pane.hasUnacknowledgedLoss() or pane.copy_failed or paste_failed;
 }
@@ -362,7 +362,9 @@ pub fn terminalNeedsAttention(model: *const Model, id: TerminalRef) bool {
     // OR if an agent running under it is waiting on an answer.
     if (model.agentAttention(id)) return true;
     if (comptime support.phux_enabled) {
-        if (model.phuxForRefConst(id)) |remote| if (remote.bellRung(id)) return true;
+        if (model.phuxForRefConst(id)) |remote| {
+            if (remote.bellRung(id) or remote.promptReturned(id)) return true;
+        }
     }
     const presentation = model.remotePresentation(id) orelse return true;
     return presentation.phase == .failed or presentation.phase == .tombstoned;

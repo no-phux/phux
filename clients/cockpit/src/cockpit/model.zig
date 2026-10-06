@@ -249,6 +249,15 @@ pub const PointerDragMode = enum { local_selection, mouse_report };
 /// Destination of an in-flight clipboard read. See `Model.paste_target`.
 pub const PasteTarget = enum { terminal, search_needle };
 
+/// A clipboard paste held for the user's answer (paste_safety.zig). The text
+/// is owned (page allocator) and goes to exactly `owner` or nowhere.
+pub const PendingPaste = struct {
+    owner: ReplicaOwner,
+    text: []u8,
+    lines: u32,
+    receiver: @import("paste_safety.zig").Receiver,
+};
+
 pub const PointerCapture = struct {
     active: bool = false,
     window_id: native_sdk.platform.WindowId = 0,
@@ -690,6 +699,8 @@ pub const Model = struct {
     /// Where the in-flight clipboard read lands; a needle paste is valid even
     /// against a pane that no longer accepts input.
     paste_target: PasteTarget = .terminal,
+    /// The one paste waiting on confirmation, app-wide like `paste_inflight`.
+    paste_pending: ?PendingPaste = null,
     /// Observable record of the last URL handed to the OS.
     opened_url_buf: [url_module.max_url_bytes]u8 = undefined,
     opened_url_len: usize = 0,
@@ -829,6 +840,13 @@ pub const Model = struct {
     }
 
     /// Where a terminal lives, across every window.
+    /// The held paste (`paste_pending`), when it still belongs to a current
+    /// replica. A stale one shows nothing and answers nothing.
+    pub fn pendingPaste(model: *const Model) ?*const PendingPaste {
+        const pending = if (model.paste_pending) |*value| value else return null;
+        return if (model.ownerIsCurrent(pending.owner)) pending else null;
+    }
+
     pub fn locateTerminal(model: *const Model, id: TerminalRef) ?TerminalLocation {
         for (0..max_windows) |index| {
             const workspace = model.wsAtConst(index) orelse continue;
@@ -1950,6 +1968,8 @@ fn restoreLocalPane(provider: *LocalProvider, terminal: LocalResourceId) !void {
 }
 
 pub fn deinitModel(model: *Model) void {
+    if (model.paste_pending) |pending| std.heap.page_allocator.free(pending.text);
+    model.paste_pending = null;
     model.shared_workspace.deinit();
     model.clearRemotePaint();
     if (comptime support.phux_enabled) {

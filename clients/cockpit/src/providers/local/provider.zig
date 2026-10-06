@@ -238,6 +238,17 @@ pub const Pane = struct {
     pub fn atPrompt(pane: *const Pane) bool {
         return pane.session.atPrompt();
     }
+
+    /// A command ran and the shell is back at its prompt, unattended since:
+    /// the idle half of attention. Read-only, like `bellRung`.
+    pub fn promptReturned(pane: *const Pane) bool {
+        return pane.session.prompt_returned;
+    }
+
+    /// Acknowledge the return to the prompt.
+    pub fn clearPromptReturned(pane: *const Pane) void {
+        pane.session.prompt_returned = false;
+    }
 };
 
 /// Close frees a slot eagerly (no tombstone). Identity never repeats, so a

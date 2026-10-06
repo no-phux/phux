@@ -310,6 +310,15 @@ fn write_status_fixtures(dir: &Path) -> Result<(), Box<dyn Error>> {
         })
         .collect();
     write(dir, "remote-title-burst.bin", titles)?;
+    // Paste protection: the attached fixture's bootstrap turns DEC 2004 on;
+    // this output turns it back off, so a multi-line paste would be typed.
+    write(dir, "remote-bracketed-off.bin", vec![FrameKind::ResourceOutput {
+        terminal_id: ResourceId::local(7),
+        stream_id: StreamId::new(7).unwrap(),
+        bootstrap_id: BootstrapId::new(1).unwrap(),
+        seq: 1,
+        bytes: Bytes::from_static(b"\x1b[?2004l"),
+    }])?;
     write_status_workspace_fixtures(dir)
 }
 

@@ -17,6 +17,9 @@ const EXTENSION_WINDOW_CONTEXTS = 5;
 /// Identity-bound agent inspection rows (ts_agents.zig). Kind 5 is already
 /// window_contexts, so parent-agent rows take the next free value.
 const EXTENSION_PARENT_AGENT_ROWS = 6;
+/// The paste held for confirmation (paste_safety.zig), present only while one is.
+const EXTENSION_PASTE_CONFIRMATION = 7;
+const PASTE_TITLE_LIMIT = 64;
 const WINDOW_CONTEXTS_VERSION = 1;
 /// The primary window and four secondary slots (`model.max_windows`).
 export const MAX_WINDOWS = 5;
@@ -178,6 +181,31 @@ export interface SnapshotEmptySession {
   readonly host: Uint8Array;
 }
 
+/// A clipboard paste the engine is holding for the user's answer: the window
+/// that shows its terminal (255 when none is held), who would receive it (0 a
+/// shell at its prompt, 1 a running program), its line count, and the
+/// terminal's name.
+export interface SnapshotPasteConfirmation {
+  readonly window: number;
+  readonly receiver: number;
+  readonly lines: number;
+  readonly title: Uint8Array;
+}
+
+function noPasteConfirmation(): SnapshotPasteConfirmation {
+  return { window: 255, receiver: 1, lines: 0, title: new Uint8Array(0) };
+}
+
+function readPasteConfirmation(bytes: Uint8Array): SnapshotPasteConfirmation | null {
+  if (bytes.length < 7) return null;
+  const window = bytes[0];
+  const receiver = bytes[1];
+  const titleLength = bytes[6];
+  if (!(window >= 0 && window <= 4) || !(receiver >= 0 && receiver <= 1)) return null;
+  if (titleLength > PASTE_TITLE_LIMIT || 7 + titleLength !== bytes.length) return null;
+  return { window: Math.trunc(window), receiver: Math.trunc(receiver), lines: readU32(bytes, 2), title: bytes.subarray(7) };
+}
+
 function noEmptySession(): SnapshotEmptySession {
   return { windows: 0, picked: false, opening: false, name: new Uint8Array(0), host: new Uint8Array(0) };
 }
@@ -289,6 +317,7 @@ export interface EngineSnapshot extends Invalidation {
   /// carried, or the drawn row count when it carried none.
   readonly agentTotal: number;
   readonly emptySession: SnapshotEmptySession;
+  readonly pasteConfirmation: SnapshotPasteConfirmation;
   /// Per-window header context; preferred over the navigation context and
   /// `emptySession` for every window whenever `present`.
   readonly windowContexts: WindowContexts;
@@ -478,12 +507,13 @@ interface SnapshotExtensions {
   readonly contexts: Uint8Array;
   readonly navigation: NavigationSnapshotContext;
   readonly empty: SnapshotEmptySession;
+  readonly paste: SnapshotPasteConfirmation;
   readonly windowContexts: WindowContexts;
   readonly total: number;
 }
 
 function noExtensions(): SnapshotExtensions {
-  return { agents: NO_AGENTS, contexts: new Uint8Array(0), navigation: emptyNavigationContext(), empty: noEmptySession(), windowContexts: absentWindowContexts(), total: 0 };
+  return { agents: NO_AGENTS, contexts: new Uint8Array(0), navigation: emptyNavigationContext(), empty: noEmptySession(), paste: noPasteConfirmation(), windowContexts: absentWindowContexts(), total: 0 };
 }
 
 interface NavigationSnapshotContext {
@@ -528,6 +558,10 @@ function snapshotExtension(previous: SnapshotExtensions, kind: number, payload: 
   }
   if (kind === EXTENSION_WINDOW_CONTEXTS) {
     return withWindowContexts(previous, payload);
+  }
+  if (kind === EXTENSION_PASTE_CONFIRMATION) {
+    const paste = readPasteConfirmation(payload);
+    return paste === null ? null : { ...previous, paste };
   }
   if (kind === EXTENSION_PARENT_AGENT_ROWS) {
     const record = readParentAgents(payload, 0, payload.length);
@@ -728,6 +762,7 @@ export function snapshot(bytes: Uint8Array): EngineSnapshot | null {
     agents: extensions.agents,
     agentTotal: extensions.total,
     emptySession: extensions.empty,
+    pasteConfirmation: extensions.paste,
     windowContexts: extensions.windowContexts,
   };
 }

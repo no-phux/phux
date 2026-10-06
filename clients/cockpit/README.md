@@ -414,6 +414,15 @@ autoscrolls through history. Copy and Paste are available from the Edit menu and
 with `cmd+C` / `cmd+V`. While a live TUI enables mouse reporting, it owns
 secondary click; Shift-drag selection remains copyable with `cmd+C`.
 
+**Paste protection asks before a paste would type Enter.** A paste carrying a
+line break goes straight through when the pane has bracketed paste on (the
+shell or program sees it as a paste, as Ghostty's default treats it); without
+bracketed paste each line break is an Enter, so Cockpit holds the paste and
+asks above the terminal, naming who would receive the lines: the shell at its
+prompt, which runs each one, or a running program. Return pastes, Escape or any
+other key drops it, and a paste containing the bracketed-paste terminator always
+asks. Phux terminals get the same rule from their replica's mode.
+
 Secondary-clicking a top or rail tab offers one-step axis movement and
 Close Tab. The action stays bound to the tab that opened the menu, including a
 background tab owned by another attached Phux session; it never selects that tab
@@ -444,6 +453,11 @@ than as a command. The pointer decides the pane, and focus follows the drop.
 **A bell that rings while Cockpit is in the background posts a notification**
 naming the terminal. In the foreground it stays a dot in the tab strip: a banner
 for the pane you are typing in is how notifications get turned off wholesale.
+
+**A command that finishes back at its prompt while nobody is looking marks its
+tab** the way a bell does, for shells with prompt marks (OSC 133) on direct
+PTYs and Phux terminals alike, until the pane is seen. A shell's first prompt
+and a command that started and ended inside one burst of output do not count.
 
 ## Requirements
 

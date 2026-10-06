@@ -100,8 +100,13 @@ import {
   navigationHostFilter,
   sameBytes,
   type SnapshotAgentRow,
+  type SnapshotPasteConfirmation,
   type EngineSnapshot,
 } from "./protocol.ts";
+
+/// `ts_protocol.NativeCommand.paste_confirm` / `paste_cancel`.
+const NATIVE_PASTE_CONFIRM = 26;
+const NATIVE_PASTE_CANCEL = 27;
 
 /// One agent session drawn under the terminal tab it runs in. It is not a
 /// tab: it carries no slot, takes no selection, and owns no pane. `id` is its
@@ -425,6 +430,17 @@ export interface Model {
   readonly emptyPicked: boolean;
   readonly emptyBusy: boolean;
   readonly emptyNotice: Uint8Array;
+  /// Paste protection (paste_safety.zig): the engine holds a clipboard paste
+  /// the receiving terminal would not see as a paste and the snapshot names
+  /// it; the window showing that terminal draws the question. Return and
+  /// Escape answer it in the terminal; the buttons send the same commands.
+  readonly mainPasteOpen: boolean;
+  readonly window1PasteOpen: boolean;
+  readonly window2PasteOpen: boolean;
+  readonly window3PasteOpen: boolean;
+  readonly window4PasteOpen: boolean;
+  readonly pasteTitle: Uint8Array;
+  readonly pasteDetail: Uint8Array;
   readonly hostQuery: Uint8Array;
   readonly hostAnchor: number;
   readonly hostFocus: number;
@@ -650,6 +666,8 @@ export type Msg =
   | { readonly kind: "session_failed"; readonly error: Uint8Array }
   | { readonly kind: "empty_new_tab" }
   | { readonly kind: "empty_dismiss" }
+  | { readonly kind: "paste_confirm" }
+  | { readonly kind: "paste_cancel" }
   | { readonly kind: "empty_loaded"; readonly body: Uint8Array }
   | { readonly kind: "empty_failed"; readonly error: Uint8Array }
   | { readonly kind: "remote_loaded"; readonly body: Uint8Array }
@@ -2699,6 +2717,13 @@ export function initialModel(): [Model, Cmd<Msg>] {
       emptyPicked: false,
       emptyBusy: false,
       emptyNotice: new Uint8Array(0),
+      mainPasteOpen: false,
+      window1PasteOpen: false,
+      window2PasteOpen: false,
+      window3PasteOpen: false,
+      window4PasteOpen: false,
+      pasteTitle: new Uint8Array(0),
+      pasteDetail: new Uint8Array(0),
       hostQuery: new Uint8Array(0),
       hostAnchor: 0,
       hostFocus: 0,
@@ -4515,6 +4540,7 @@ function applySnapshotState(model: Model, projected: EngineSnapshot, windows: Sn
   const emptyOpening = context.contexts.present ? false : projected.emptySession.opening;
   const refusedMask = projected.flags & 159;
   const refused = (projected.flags & 8) !== 0;
+  const paste = pasteConfirmation(projected.pasteConfirmation);
   return {
     ...model,
     themes: themeRows(projected.themes, projected.activeTheme, cursor), settingsCursor: cursor,
@@ -4533,6 +4559,41 @@ function applySnapshotState(model: Model, projected: EngineSnapshot, windows: Sn
     emptyPicked: snapshotEmptyPicked(context.contexts, projected, context.contextRows),
     emptyBusy: snapshotEmptyBusy(model, emptyMask, emptyOpening),
     emptyNotice: emptyMask === 0 ? NO_BYTES : model.emptyNotice,
+    mainPasteOpen: paste.mainPasteOpen, window1PasteOpen: paste.window1PasteOpen, window2PasteOpen: paste.window2PasteOpen,
+    window3PasteOpen: paste.window3PasteOpen, window4PasteOpen: paste.window4PasteOpen,
+    pasteTitle: paste.pasteTitle, pasteDetail: paste.pasteDetail,
+  };
+}
+
+const PASTE_RECEIVER_SHELL = 0;
+
+interface PasteConfirmationView {
+  readonly mainPasteOpen: boolean;
+  readonly window1PasteOpen: boolean;
+  readonly window2PasteOpen: boolean;
+  readonly window3PasteOpen: boolean;
+  readonly window4PasteOpen: boolean;
+  readonly pasteTitle: Uint8Array;
+  readonly pasteDetail: Uint8Array;
+}
+
+function pasteLinesLabel(lines: number): Uint8Array {
+  if (lines === 1) return asciiBytes("1 line");
+  return joinBytes(decimalBytes(lines), asciiBytes(" lines"), NO_BYTES);
+}
+
+/// The held paste's question, in the one window that shows its terminal.
+function pasteConfirmation(paste: SnapshotPasteConfirmation): PasteConfirmationView {
+  const window = paste.window >= 0 && paste.window <= 255 ? Math.trunc(paste.window) : 255;
+  const title = joinBytes(asciiBytes("Paste "), pasteLinesLabel(paste.lines), joinBytes(asciiBytes(" into "), paste.title, asciiBytes("?")));
+  const detail = paste.receiver === PASTE_RECEIVER_SHELL
+    ? asciiBytes("The shell is at its prompt and will run each line as a command. Return pastes, Escape cancels.")
+    : asciiBytes("A running program will receive each line as typed input. Return pastes, Escape cancels.");
+  const open = window <= 4;
+  return {
+    mainPasteOpen: window === 0, window1PasteOpen: window === 1, window2PasteOpen: window === 2,
+    window3PasteOpen: window === 3, window4PasteOpen: window === 4,
+    pasteTitle: open ? title : NO_BYTES, pasteDetail: open ? detail : NO_BYTES,
   };
 }
 
@@ -5027,6 +5088,10 @@ function applicationMessageUpdate(model: Model, msg: Msg, fromCommands: boolean)
     }
     case "clipboard_action":
       return hostPlan(model, "cockpit.clipboard", msg.target);
+    case "paste_confirm":
+      return hostPlan(model, "cockpit.intent", intent(11, model.engineRevision, NATIVE_PASTE_CONFIRM, 255));
+    case "paste_cancel":
+      return hostPlan(model, "cockpit.intent", intent(11, model.engineRevision, NATIVE_PASTE_CANCEL, 255));
     case "engine_wake":
       return modelPlan({ ...model });
     case "snapshot_failed":

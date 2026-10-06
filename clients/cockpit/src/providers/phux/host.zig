@@ -235,6 +235,10 @@ const Terminal = struct {
     /// The bell's latch for command completions: one notification per
     /// replica until the terminal is attended or the app regains focus.
     command_owner: ?provider.ReplicaOwner = null,
+    /// The attention latch for a command that ended back at the prompt: set
+    /// on a running -> at_prompt edge, owner-fenced like the bell, cleared
+    /// when the terminal is attended or the next command starts.
+    prompt_return_owner: ?provider.ReplicaOwner = null,
     /// Keys typed while this terminal was not live, in order. Each text is
     /// a range of `held_text`, which may reallocate.
     held_keys: std.ArrayListUnmanaged(HeldKey) = .empty,
@@ -1446,6 +1450,15 @@ pub const Host = struct {
         try host.stageOutgoing();
     }
 
+    /// DEC 2004 as the replica last saw it: whether the server will bracket a
+    /// paste to this terminal.
+    pub fn bracketedPaste(host: *const Host, owner_value: provider.ReplicaOwner) !bool {
+        const id = try host.currentCIdConst(owner_value);
+        var bracketed = false;
+        try resultError(c.phux_client_terminal_bracketed_paste(host.client, &id, &bracketed));
+        return bracketed;
+    }
+
     pub fn mouseMode(host: *const Host, owner_value: provider.ReplicaOwner) !provider.MouseMode {
         const id = try host.currentCIdConst(owner_value);
         var mode: u32 = 0;
@@ -1654,6 +1667,19 @@ pub const Host = struct {
     pub fn atPrompt(host: *const Host, ref: provider.TerminalRef) bool {
         const terminal = host.findTerminalConst(ref) orelse return false;
         return terminal.command == .at_prompt;
+    }
+
+    /// A command this client saw running ended back at the prompt and nobody
+    /// has attended the terminal since: the idle half of attention.
+    pub fn promptReturned(host: *const Host, ref: provider.TerminalRef) bool {
+        const terminal = host.findTerminalConst(ref) orelse return false;
+        const owner_value = terminal.prompt_return_owner orelse return false;
+        return host.ownerIsCurrent(owner_value);
+    }
+
+    pub fn acknowledgePromptReturn(host: *Host, ref: provider.TerminalRef) void {
+        const terminal = host.findTerminal(ref) orelse return;
+        terminal.prompt_return_owner = null;
     }
 
     pub fn bellRung(host: *const Host, ref: provider.TerminalRef) bool {
@@ -2183,8 +2209,13 @@ pub const Host = struct {
 
     fn captureCommandStarted(host: *Host, effect: *const c.PhuxClientEffect) !void {
         const terminal = (try host.findTerminalRaw(effect.terminal_id)) orelse return;
+        // The prompt state is projected (attention, paste safety): a snapshot
+        // consumer must hear that it moved.
+        if (terminal.command != .running) host.metadata_changed = true;
+        if (terminal.prompt_return_owner != null) host.metadata_changed = true;
         terminal.command = .running;
         terminal.command_started_ns = host.now_ns();
+        terminal.prompt_return_owner = null;
     }
 
     /// A command that ran at least `min_command_notice_ns` since this client
@@ -2193,6 +2224,10 @@ pub const Host = struct {
     fn captureCommandFinished(host: *Host, effect: *const c.PhuxClientEffect) !void {
         const terminal = (try host.findTerminalRaw(effect.terminal_id)) orelse return;
         const started = terminal.command_started_ns;
+        if (terminal.command != .at_prompt) host.metadata_changed = true;
+        // Only a command this client saw running returns to its prompt; a
+        // first boundary after attach is the prompt it was already at.
+        if (terminal.command == .running) terminal.prompt_return_owner = terminal.owner();
         terminal.command = .at_prompt;
         terminal.command_started_ns = null;
         if (!ranLongEnough(started, host.now_ns())) return;
@@ -2210,6 +2245,7 @@ pub const Host = struct {
         terminal.phase = .ended;
         terminal.command = .unknown;
         terminal.command_started_ns = null;
+        terminal.prompt_return_owner = null;
         host.metadata_changed = true;
         try host.recordEnded(terminal.terminalRef());
     }
@@ -4140,6 +4176,48 @@ test "remote CWD and COMMAND_STARTED update the replica but never the notice rin
     try std.testing.expectEqualStrings("/srv/work/cockpit-fixture", host.presentation(terminal).?.cwd);
     try std.testing.expect(!host.atPrompt(terminal));
     try std.testing.expect(host.takeNotice() == null);
+}
+
+test "a prompt boundary alone changes metadata, so a snapshot consumer refreshes" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try attachedStatusHost(&bridge);
+    defer host.destroy();
+    const terminal = try statusRef(7);
+    try test_support.stageFixture(&bridge, "remote-command-started.bin");
+    try std.testing.expect((try host.drainReadiness()).metadata_changed);
+    try std.testing.expect(!host.atPrompt(terminal));
+    // The same state again is not a change.
+    try test_support.stageFixture(&bridge, "remote-command-started.bin");
+    try std.testing.expect(!(try host.drainReadiness()).metadata_changed);
+    try test_support.stageFixture(&bridge, "remote-command-finished.bin");
+    try std.testing.expect((try host.drainReadiness()).metadata_changed);
+    try std.testing.expect(host.atPrompt(terminal));
+}
+
+test "only a command seen running returns to the prompt, and attending clears it" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try attachedStatusHost(&bridge);
+    defer host.destroy();
+    const terminal = try statusRef(7);
+    try test_support.stageFixture(&bridge, "remote-command-finished.bin");
+    _ = try host.drainReadiness();
+    try std.testing.expect(host.atPrompt(terminal) and !host.promptReturned(terminal));
+    try test_support.stageFixture(&bridge, "remote-command-started.bin");
+    try test_support.stageFixture(&bridge, "remote-command-finished.bin");
+    _ = try host.drainReadiness();
+    try std.testing.expect(host.promptReturned(terminal));
+    host.acknowledgePromptReturn(terminal);
+    try std.testing.expect(!host.promptReturned(terminal));
+    try test_support.stageFixture(&bridge, "remote-command-started.bin");
+    try test_support.stageFixture(&bridge, "remote-command-finished.bin");
+    _ = try host.drainReadiness();
+    try std.testing.expect(host.promptReturned(terminal));
+    // A new command is busy, not idle.
+    try test_support.stageFixture(&bridge, "remote-command-started.bin");
+    _ = try host.drainReadiness();
+    try std.testing.expect(!host.promptReturned(terminal));
 }
 
 var status_test_now_ns: u64 = 0;
