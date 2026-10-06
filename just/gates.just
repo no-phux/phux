@@ -173,6 +173,15 @@ zig-pin-check:
     bash scripts/check-zig-pins.sh
 
 
+# No env!("CARGO_MANIFEST_DIR") / env!("CARGO_BIN_EXE_*") in library or test
+# code: a compiled-in checkout path defeats the shared build cache.
+[group('gates')]
+[private]
+[doc('No compile-time checkout paths in library or test code.')]
+cache-portable-check:
+    bash scripts/check-cache-portable.sh
+
+
 # Install/release documentation contracts (README, INSTALL, RELEASING, the
 # installer, the formula generator, release.yml). Also run by
 # `just release-preflight`; in `ci` so it cannot rot between releases.
@@ -219,7 +228,7 @@ agent-integrations-check:
 # contract failures. CONTRIBUTING.md owns the local/CI gate map (phux-yb1m).
 [group('gates')]
 [doc('Full root gate set: the deterministic and unit bar.')]
-ci: fmt-check lint doc deny build-features-check build-features-compile docs-check workflow-check formula-check font-check e2e-lane-check zig-pin-check toolchain-check install-surface-check skill-contract agent-integrations-check binding-uniffi-test test
+ci: fmt-check lint doc deny build-features-check build-features-compile docs-check workflow-check formula-check font-check e2e-lane-check zig-pin-check toolchain-check install-surface-check cache-portable-check skill-contract agent-integrations-check binding-uniffi-test test
     @echo "ok"
 
 
