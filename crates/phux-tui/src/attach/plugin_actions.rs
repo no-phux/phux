@@ -504,6 +504,7 @@ mod tests {
             links: Vec::new(),
             workspaces: Vec::new(),
             widgets: Vec::new(),
+            sidebar: Vec::new(),
         };
         let entries = entries_from_manifests(&[manifest]);
         assert_eq!(entries.len(), 2);

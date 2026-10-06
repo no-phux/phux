@@ -6,7 +6,9 @@
 //! A child of `dispatch` so it can extend [`EventEnv`] and read the stage
 //! types without widening their visibility.
 
-use super::super::args::{bare_action, select_window_action, switch_host_action};
+use super::super::args::{
+    bare_action, focus_pane_action, select_window_action, switch_host_action,
+};
 use super::super::effects::broadcast_layout;
 use super::{
     AttachError, ContextMenu, DispatchCtx, DividerGrab, DragGrab, EventEnv, InputEvent, ModSet,
@@ -566,7 +568,8 @@ const fn strip_contains(rect: crate::layout::Rect, x: u16, y: u16) -> bool {
 
 /// Map a left press on the sidebar strip to the action it commits, through
 /// the same `ResolvedAction` vocabulary as a keybinding: window rows
-/// `select-window`, agent rows a local `select-window` or a cross-session
+/// `select-window`, plugin section rows `focus-pane`, agent rows a local
+/// `select-window` or a cross-session
 /// `switch-session` (from the painted `targets`), session rows
 /// `switch-session { name, host? }`, headers and overflow their management
 /// views, `+ new` `new-window`, the chevron `toggle-sidebar`.
@@ -581,6 +584,10 @@ pub(in crate::attach::input_dispatch) fn sidebar_click_action(
         SidebarHit::NeedsYou(j) => return sidebar_agent_action(targets.needs_you.get(j)?),
         SidebarHit::Roster(j) => {
             return Some(sidebar_session_action(targets.roster.get(j)?.as_ref()?));
+        }
+        SidebarHit::Plugin(s, j) => {
+            let (window, pane) = *targets.plugin.get(s)?.get(j)?;
+            return focus_pane_action(window, pane);
         }
         SidebarHit::Sessions => "session-picker",
         SidebarHit::Fleet => "agent-fleet",

@@ -490,6 +490,7 @@ pub(super) fn targets(needs_you: usize, windows: usize, roster: usize) -> Sideba
             active_session: (windows > 0 && roster > 0).then_some(0),
             host_starts: (0..roster.min(128)).fold(0, |mask, j| mask | (1u128 << j)),
             rule: crate::render::chrome::sidebar::SidebarRule::Trailing,
+            plugin: crate::render::chrome::sidebar_sections::PluginShape::default(),
         },
         // Row 0 is local; the rest are peers, so one fixture covers both.
         needs_you: (0..needs_you)
@@ -517,5 +518,6 @@ pub(super) fn targets(needs_you: usize, windows: usize, roster: usize) -> Sideba
                 })
             })
             .collect(),
+        plugin: Vec::new(),
     }
 }

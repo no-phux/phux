@@ -382,6 +382,12 @@ which-key-delay-ms = 400
 #   placement = "split"
 #   command = ["agent-board"]
 #
+#   [[sidebar]]            # a fixed band between Agents and Sessions
+#   id = "exits"
+#   title = "Last exit"
+#   format = "{window}: exit {exit}"   # agent cwd exit index state title window
+#   rows = 3                           # 1-8; a pane rows when every token resolves
+#
 #   [[links]]
 #   id = "ticket"
 #   title = "Open ticket"

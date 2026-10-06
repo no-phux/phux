@@ -57,6 +57,8 @@ pub struct PluginManifest {
     pub workspaces: Vec<PluginManifestWorkspace>,
     /// Status-bar widgets contributed by the plugin (phux-r82.6).
     pub widgets: Vec<PluginManifestWidget>,
+    /// Sidebar sections contributed by the plugin (`[[sidebar]]`).
+    pub sidebar: Vec<PluginManifestSidebar>,
 }
 
 /// Platform names accepted in plugin manifests.
@@ -265,6 +267,28 @@ pub enum PluginWidgetSlot {
     #[default]
     Right,
 }
+
+/// Sidebar section contributed by a plugin (`[[sidebar]]`).
+///
+/// A titled, fixed-height panel whose rows are this session's panes, each
+/// rendered from `format`. A pane contributes a row only when every token
+/// `format` names resolves for it (see [`crate::vocab::SIDEBAR_TOKENS`]).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PluginManifestSidebar {
+    /// Plugin-local section id.
+    pub id: String,
+    /// Section header text.
+    pub title: String,
+    /// Row template; `{token}` occurrences are replaced per pane.
+    pub format: String,
+    /// Rows the section reserves under its header, whatever its population.
+    pub rows: u8,
+}
+
+/// Default [`PluginManifestSidebar::rows`].
+pub const SIDEBAR_SECTION_DEFAULT_ROWS: u8 = 3;
+/// Largest accepted [`PluginManifestSidebar::rows`].
+pub const SIDEBAR_SECTION_MAX_ROWS: u8 = 8;
 
 /// Placement requested by a plugin pane entrypoint.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]

@@ -614,7 +614,8 @@ impl SessionLoop {
             conditional_kill_supported,
             pending_directory: None,
             vcs: VcsIndex::default(),
-            sidebar_painter: SidebarPainter::new(settings.theme),
+            sidebar_painter: SidebarPainter::new(settings.theme)
+                .with_plugin_specs(settings.plugin_sidebar.clone()),
             plugin_tx,
             plugin_rx,
             bind_reflow_owed: false,

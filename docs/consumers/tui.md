@@ -409,6 +409,39 @@ The session picker (`C-a s`) lists the same machines, one group each after
 the attached server's sessions and any satellites; its filter matches a
 session by its name or its machine's.
 
+An enabled plugin can add **sections** with `[[sidebar]]` entries in its
+manifest. Each is a band between Agents and Sessions: a header, then
+exactly `rows` rows (default 3, at most 8), so a section filling or
+emptying never moves Sessions. Rows are this session's panes in
+window/leaf order, rendered from `format`; a pane gets a row only when
+every token the format names resolves for it. An empty section shows the
+quiet dash, and a full one ends in `+N`. Clicking a row focuses its pane.
+Sections are drawn only while Agents and Sessions keep eight rows between
+them; up to four are drawn, the last declared yielding first
+([ADR-0148](../adr/0148-plugin-sidebar-sections-are-fixed-bands-of-pane-rows.md)).
+
+| Token | Value |
+|---|---|
+| `{window}` | the window's tab label |
+| `{index}` | the window's `select-window` index |
+| `{title}` | the pane's OSC title |
+| `{cwd}` | the pane's working directory, `$HOME` shown as `~` |
+| `{exit}` | the last command's exit code (needs OSC-133 shell integration) |
+| `{agent}` | the agent name from the pane's `phux.agent/v1` record |
+| `{state}` | that record's state: `idle`, `working`, `blocked`, `done`, `unknown` |
+
+```toml
+# phux-plugin.toml
+[[sidebar]]
+id = "exits"
+title = "Last exit"
+format = "{window}: exit {exit}"
+rows = 3
+```
+
+An unknown token fails `phux plugin validate` and plugin loading with a
+did-you-mean suggestion.
+
 Click targets commit the same actions as keys. The **Agents** and **Sessions**
 headings open their full management views; window and roster rows select their
 destination; overflow opens the matching view. The footer keeps `+ new window`

@@ -2,7 +2,8 @@
 //!
 //! Agents take the upper half of the body in caller-supplied stable order;
 //! Sessions the lower half, each with a host line, the active one expanding
-//! its windows beneath it. Neither area moves with its population. The last
+//! its windows beneath it. Plugin sections (ADR-0148) sit between them at
+//! fixed heights. No area moves with its population. The last
 //! row holds New window with a collapse chevron in the corner; a rule on the
 //! pane-facing column separates the strip from the panes. [`hit_test`] reads
 //! the same row model as the painter, and an unchanged repaint emits nothing.
@@ -18,6 +19,7 @@ use ratatui::widgets::{Paragraph, Widget};
 
 use crate::layout::Rect;
 use crate::render::Theme;
+use crate::render::chrome::sidebar_sections::{PluginSection, PluginSectionSpec, PluginShape};
 use crate::render::chrome::{
     AGENT_BLOCKED_GLYPH as AGENT_BLOCKED, AGENT_DONE_GLYPH as AGENT_DONE,
     AGENT_WORKING_GLYPH as AGENT_WORKING,
@@ -199,6 +201,8 @@ pub struct SidebarCounts {
     /// it moves every hit target: the rule and its collapse chevron are not
     /// row targets, and the rows shift away from a leading rule.
     pub rule: SidebarRule,
+    /// ADR-0148: the plugin sections' reserved heights and populations.
+    pub plugin: PluginShape,
 }
 
 /// The side of the strip that carries the separator rule: always the side
@@ -257,6 +261,14 @@ pub enum SidebarRow {
     SessionsEmpty,
     /// Hidden sessions/windows; opens the session picker.
     RosterOverflow,
+    /// Plugin section `s`'s header.
+    PluginHeader(usize),
+    /// Plugin section `s`'s row `j`.
+    PluginEntry(usize, usize),
+    /// Quiet placeholder under an empty plugin section.
+    PluginEmpty(usize),
+    /// Plugin section `s`'s hidden-row count (inert).
+    PluginOverflow(usize),
     /// Unused padding (section gap, or fill above the footer).
     Blank,
     /// The `+ new` affordance (create a window).
@@ -273,6 +285,8 @@ pub enum SidebarHit {
     NeedsYou(usize),
     /// Session name or host row `j`.
     Roster(usize),
+    /// Plugin section `s`'s row `j`: focuses that row's pane.
+    Plugin(usize, usize),
     /// Agents overflow opens the agent-fleet dashboard.
     Fleet,
     /// Sessions overflow opens the session picker.
@@ -321,6 +335,9 @@ pub struct SidebarTargets {
     pub needs_you: Vec<SidebarTarget>,
     /// Session destinations in display order; placeholders have no target.
     pub roster: Vec<Option<SessionRosterTarget>>,
+    /// ADR-0148: per plugin section, each row's `(window, pane)` for
+    /// `focus-pane`.
+    pub plugin: Vec<Vec<(usize, usize)>>,
 }
 
 /// Explicit session identity and optional satellite route for a roster click.
@@ -350,10 +367,15 @@ pub fn row_model(counts: SidebarCounts, h: u16) -> Vec<SidebarRow> {
     if body == 1 {
         rows.push(SidebarRow::RosterOverflow);
     } else {
-        let agents = body / 2;
+        // Plugin sections claim their fixed heights first, and only while
+        // Agents and Sessions keep their minimum; population never decides.
+        let sections = counts.plugin.fitting(body);
+        let core = body - counts.plugin.height(sections);
+        let agents = core / 2;
         push_agents(&mut rows, counts.needs_you, agents);
         rows.resize(agents, SidebarRow::Blank);
-        push_sessions(&mut rows, counts, body - agents);
+        push_plugin_sections(&mut rows, counts.plugin, sections);
+        push_sessions(&mut rows, counts, core - agents);
         rows.resize(body, SidebarRow::Blank);
     }
     if show_footer {
@@ -381,6 +403,26 @@ fn push_agents(rows: &mut Vec<SidebarRow>, count: usize, budget: usize) {
     rows.extend((0..shown).map(SidebarRow::NeedsYou));
     if overflow {
         rows.push(SidebarRow::NeedsYouOverflow);
+    }
+}
+
+/// Append the first `n` plugin sections, each a header plus exactly its
+/// reserved rows: entries, an empty placeholder, or entries with a `+N` last
+/// row when the population overflows.
+fn push_plugin_sections(rows: &mut Vec<SidebarRow>, shape: PluginShape, n: usize) {
+    for (s, (reserved, count)) in shape.sections().take(n).enumerate() {
+        let end = rows.len() + 1 + usize::from(reserved);
+        rows.push(SidebarRow::PluginHeader(s));
+        let room = usize::from(reserved);
+        if count == 0 {
+            rows.push(SidebarRow::PluginEmpty(s));
+        } else if count > room {
+            rows.extend((0..room - 1).map(|j| SidebarRow::PluginEntry(s, j)));
+            rows.push(SidebarRow::PluginOverflow(s));
+        } else {
+            rows.extend((0..count).map(|j| SidebarRow::PluginEntry(s, j)));
+        }
+        rows.resize(end, SidebarRow::Blank);
     }
 }
 
@@ -501,7 +543,13 @@ const fn row_hit(row: SidebarRow) -> Option<SidebarHit> {
         SidebarRow::NeedsYouHeader | SidebarRow::NeedsYouOverflow => Some(SidebarHit::Fleet),
         SidebarRow::SpacesHeader | SidebarRow::RosterOverflow => Some(SidebarHit::Sessions),
         SidebarRow::NewWindow => Some(SidebarHit::NewWindow),
-        SidebarRow::AgentsEmpty | SidebarRow::SessionsEmpty | SidebarRow::Blank => None,
+        SidebarRow::PluginEntry(s, j) => Some(SidebarHit::Plugin(s, j)),
+        SidebarRow::AgentsEmpty
+        | SidebarRow::SessionsEmpty
+        | SidebarRow::Blank
+        | SidebarRow::PluginHeader(_)
+        | SidebarRow::PluginEmpty(_)
+        | SidebarRow::PluginOverflow(_) => None,
     }
 }
 
@@ -519,6 +567,9 @@ pub struct SidebarPainter {
     windows: Vec<WindowInfo>,
     needs_you: Vec<AgentEntry>,
     roster: Vec<SessionRosterEntry>,
+    /// ADR-0148: the declared plugin sections, and their last projection.
+    plugin_specs: Vec<PluginSectionSpec>,
+    plugin: Vec<PluginSection>,
     theme: Theme,
     /// Last successfully emitted cells. Keep only one projection copy and
     /// compare rendered rows so hidden/truncated changes emit no bytes.
@@ -563,6 +614,8 @@ impl SidebarPainter {
             windows: Vec::new(),
             needs_you: Vec::new(),
             roster: Vec::new(),
+            plugin_specs: Vec::new(),
+            plugin: Vec::new(),
             theme,
             last: None,
             dirty: true,
@@ -633,6 +686,31 @@ impl SidebarPainter {
         true
     }
 
+    /// Declare the plugin sections (ADR-0148) the strip lays out; their rows
+    /// arrive through [`Self::set_plugin_sections`].
+    #[must_use]
+    pub fn with_plugin_specs(mut self, specs: Vec<PluginSectionSpec>) -> Self {
+        self.plugin_specs = specs;
+        self
+    }
+
+    /// The declared plugin sections, for the projection that fills them.
+    #[must_use]
+    pub fn plugin_specs(&self) -> &[PluginSectionSpec] {
+        &self.plugin_specs
+    }
+
+    /// Replace the plugin sections' projected rows. Same change-report
+    /// contract as [`Self::set_windows`].
+    pub fn set_plugin_sections(&mut self, sections: Vec<PluginSection>) -> bool {
+        if self.plugin == sections {
+            return false;
+        }
+        self.plugin = sections;
+        self.dirty = true;
+        true
+    }
+
     /// The counts [`row_model`] and [`hit_test`] derive the strip's shape
     /// from.
     #[must_use]
@@ -644,6 +722,7 @@ impl SidebarPainter {
             active_session: self.roster.iter().position(|s| s.active),
             host_starts: segment_starts(self.roster.iter().map(|s| s.host.as_str())),
             rule: self.rule,
+            plugin: PluginShape::of(&self.plugin),
         }
     }
 
@@ -680,6 +759,17 @@ impl SidebarPainter {
                         host: s.route_host.clone(),
                         switch_host: s.switch_host.clone(),
                     })
+                })
+                .collect(),
+            plugin: self
+                .plugin
+                .iter()
+                .map(|section| {
+                    section
+                        .entries
+                        .iter()
+                        .map(|row| (row.window, row.pane))
+                        .collect()
                 })
                 .collect(),
         }
@@ -1133,7 +1223,9 @@ impl SidebarPainter {
                 self.header_line(NEEDS_YOU_HEADER, self.needs_you.len(), text_w)
             }
             SidebarRow::SpacesHeader => self.header_line(SPACES_HEADER, self.roster.len(), text_w),
-            SidebarRow::AgentsEmpty => self.empty_line(AGENTS_EMPTY, text_w),
+            SidebarRow::AgentsEmpty | SidebarRow::PluginEmpty(_) => {
+                self.empty_line(AGENTS_EMPTY, text_w)
+            }
             SidebarRow::SessionsEmpty => self.empty_line(SESSIONS_EMPTY, text_w),
             SidebarRow::WindowName(i) => self
                 .windows
@@ -1155,7 +1247,37 @@ impl SidebarPainter {
             SidebarRow::RosterOverflow => self.sessions_overflow_line(hidden, text_w),
             SidebarRow::Blank => Line::from(""),
             SidebarRow::NewWindow => self.affordance_line(NEW_LABEL, text_w),
+            SidebarRow::PluginHeader(s) => self.plugin.get(s).map_or_else(
+                || Line::from(""),
+                |section| self.header_line(&section.title, section.entries.len(), text_w),
+            ),
+            SidebarRow::PluginEntry(s, j) => self
+                .plugin
+                .get(s)
+                .and_then(|section| section.entries.get(j))
+                .map_or_else(
+                    || Line::from(""),
+                    |row| self.plugin_row_line(&row.text, text_w),
+                ),
+            SidebarRow::PluginOverflow(s) => {
+                let hidden = self.plugin.get(s).map_or(0, |section| {
+                    section
+                        .entries
+                        .len()
+                        .saturating_sub(usize::from(section.rows).saturating_sub(1))
+                });
+                self.overflow_line(hidden, text_w)
+            }
         }
+    }
+
+    /// One plugin section row: a quiet bullet, then the rendered template.
+    fn plugin_row_line(&self, text: &str, text_w: u16) -> Line<'static> {
+        let label = truncate(text, usize::from(text_w).saturating_sub(ICON_COLUMNS));
+        Line::from(vec![
+            Span::styled("· ", Style::default().fg(self.theme.dim)),
+            Span::styled(label, Style::default().fg(self.theme.text)),
+        ])
     }
 
     fn sessions_overflow_line(&self, hidden: SidebarCounts, text_w: u16) -> Line<'static> {
@@ -1473,6 +1595,7 @@ mod tests {
             active_session: Some(0),
             host_starts: u128::MAX,
             rule: SidebarRule::Trailing,
+            plugin: PluginShape::default(),
         };
         assert_eq!(row_model(c, 1), vec![SidebarRow::RosterOverflow]);
         let rect = r(0, 0, 20, 1);
@@ -2389,6 +2512,7 @@ mod tests {
             active_session: None,
             host_starts: every_segment(roster),
             rule: SidebarRule::Trailing,
+            plugin: PluginShape::default(),
         }
     }
 
@@ -2659,7 +2783,7 @@ mod tests {
     /// affordance.
     #[test]
     fn paint_and_hit_test_agree_row_for_row() {
-        let rect = r(0, 0, 26, 14);
+        let rect = r(0, 0, 26, 22);
         let windows = vec![
             win_branch("alpha", true, "main"),
             win("beta", false),
@@ -2670,10 +2794,12 @@ mod tests {
             agent(2, "gamma", "codex", AgentMetaState::Idle),
         ];
         let peers = vec![roster("delta", 1, 0, 0), roster("epsilon", 0, 1, 0)];
+        let sections = vec![plugin_section("Builds", 2, &["lint", "test", "docs"])];
         let mut p = SidebarPainter::new(Theme::default());
         p.set_windows(windows.clone());
         p.set_needs_you(agents.clone());
         p.set_roster(peers.clone());
+        p.set_plugin_sections(sections.clone());
         let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
         let c = p.counts();
         for (y, row) in row_model(c, rect.h).iter().enumerate() {
@@ -2725,8 +2851,124 @@ mod tests {
                     assert!(row_text(&buf, rect, y16).contains(NEW_LABEL));
                     assert_eq!(hit, Some(SidebarHit::NewWindow));
                 }
+                SidebarRow::PluginHeader(_)
+                | SidebarRow::PluginEntry(..)
+                | SidebarRow::PluginOverflow(_)
+                | SidebarRow::PluginEmpty(_) => {
+                    assert_plugin_row(*row, &row_text(&buf, rect, y16), hit, &sections);
+                }
             }
         }
+        assert!(
+            row_model(c, rect.h).contains(&SidebarRow::PluginOverflow(0)),
+            "the fixture overflows its section"
+        );
+    }
+
+    /// The plugin half of [`paint_and_hit_test_agree_row_for_row`].
+    fn assert_plugin_row(
+        row: SidebarRow,
+        text: &str,
+        hit: Option<SidebarHit>,
+        sections: &[PluginSection],
+    ) {
+        match row {
+            SidebarRow::PluginHeader(s) => {
+                assert!(text.contains(&sections[s].title));
+                assert_eq!(hit, None);
+            }
+            SidebarRow::PluginEntry(s, j) => {
+                assert!(text.contains(&sections[s].entries[j].text));
+                assert_eq!(hit, Some(SidebarHit::Plugin(s, j)));
+            }
+            SidebarRow::PluginOverflow(_) => {
+                assert!(text.contains("+2"));
+                assert_eq!(hit, None);
+            }
+            _ => assert_eq!(hit, None),
+        }
+    }
+
+    fn plugin_section(title: &str, rows: u8, texts: &[&str]) -> PluginSection {
+        PluginSection {
+            title: title.to_owned(),
+            rows,
+            entries: texts
+                .iter()
+                .enumerate()
+                .map(
+                    |(i, text)| crate::render::chrome::sidebar_sections::PluginSectionRow {
+                        text: (*text).to_owned(),
+                        window: i,
+                        pane: 0,
+                    },
+                )
+                .collect(),
+        }
+    }
+
+    /// ADR-0148: a plugin section is a fixed band between Agents and
+    /// Sessions; its population never moves the Sessions header, an empty
+    /// section shows the quiet dash, and a strip too short for it keeps the
+    /// two core panels instead.
+    #[test]
+    fn plugin_sections_hold_a_fixed_band_between_agents_and_sessions() {
+        let rect = r(0, 0, 28, 24);
+        let mut p = SidebarPainter::new(Theme::default());
+        p.set_roster(vec![active_roster()]);
+        p.set_plugin_sections(vec![plugin_section("Builds", 3, &[])]);
+        let model = row_model(p.counts(), rect.h);
+        let sessions_at = |m: &[SidebarRow]| m.iter().position(|r| *r == SidebarRow::SpacesHeader);
+        let empty_sessions = sessions_at(&model);
+        let header = model
+            .iter()
+            .position(|r| *r == SidebarRow::PluginHeader(0))
+            .expect("section laid");
+        assert!(header > 0 && Some(header) < empty_sessions);
+        assert_eq!(model[header + 1], SidebarRow::PluginEmpty(0));
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
+        assert!(row_text(&buf, rect, u16::try_from(header).expect("row")).contains("Builds"));
+
+        p.set_plugin_sections(vec![plugin_section(
+            "Builds",
+            3,
+            &["a", "b", "c", "d", "e"],
+        )]);
+        let full = row_model(p.counts(), rect.h);
+        assert_eq!(
+            sessions_at(&full),
+            empty_sessions,
+            "population never moves Sessions"
+        );
+        assert_eq!(
+            &full[header..header + 4],
+            &[
+                SidebarRow::PluginHeader(0),
+                SidebarRow::PluginEntry(0, 0),
+                SidebarRow::PluginEntry(0, 1),
+                SidebarRow::PluginOverflow(0),
+            ]
+        );
+        let targets = p.click_targets();
+        assert_eq!(targets.plugin[0][1], (1, 0));
+        assert_eq!(
+            hit_test(
+                rect,
+                targets.counts,
+                2,
+                u16::try_from(header + 2).expect("row")
+            ),
+            Some(SidebarHit::Plugin(0, 1))
+        );
+
+        // Too short for the band plus the core minimum: no section at all.
+        let short = row_model(p.counts(), 12);
+        assert!(
+            !short
+                .iter()
+                .any(|r| matches!(r, SidebarRow::PluginHeader(_)))
+        );
+        assert!(short.contains(&SidebarRow::SpacesHeader));
     }
 
     /// The rail tees into the separator on the pane-facing side, so the
