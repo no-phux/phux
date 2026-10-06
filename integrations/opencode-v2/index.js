@@ -539,7 +539,7 @@ function parseRunResult(value) {
     truncated: boolean(root.truncated, "$.truncated")
   };
 }
-var AGENT_KINDS = ["codex", "claude", "open_code", "pi", "omp", "plugin", "declared", "unknown"];
+var AGENT_KINDS = ["codex", "claude", "open_code", "pi", "omp", "grok", "amp", "cursor_agent", "plugin", "declared", "unknown"];
 var AGENT_STATES = ["unknown", "idle", "working", "blocked", "done"];
 var AGENT_ATTENTION = ["none", "low", "normal", "high"];
 var PANE_SELECTOR = /^(?:[^/\s]+\/)?@\d+$/;

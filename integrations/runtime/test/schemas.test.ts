@@ -34,12 +34,12 @@ test("inventory accepts every canonical Rust producer kind and rejects unknown v
   assert.ok(enumBody, "producer enum must remain discoverable");
   const kinds = [...enumBody.matchAll(/^    ([A-Z][A-Za-z]+),$/gm)]
     .map((match) => match[1]!.replace(/([a-z])([A-Z])/g, "$1_$2").toLowerCase());
-  assert.deepEqual(kinds, ["codex", "claude", "open_code", "pi", "omp", "plugin", "declared", "unknown"]);
+  assert.deepEqual(kinds, ["codex", "claude", "open_code", "pi", "omp", "grok", "amp", "cursor_agent", "plugin", "declared", "unknown"]);
   const parsed = parseAgentStateList({ schema_version: 1, agents: kinds.map((kind) => ({
     ...agentPane, agent: { ...agentPane.agent, kind },
   })) });
   assert.deepEqual(parsed.agents.map((pane) => pane.agent.kind), kinds);
-  for (const kind of ["opencode", "future-kind", "", null, 3]) {
+  for (const kind of ["opencode", "cursor-agent", "future-kind", "", null, 3]) {
     assert.throws(() => inventory({ ...agentPane, agent: { ...agentPane.agent, kind } }), SchemaValidationError);
   }
 });
