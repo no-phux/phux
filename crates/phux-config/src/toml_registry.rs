@@ -7,7 +7,7 @@
 //! is not an atomic CAS against editors that do not take the lock.
 use std::path::{Path, PathBuf};
 
-use toml_edit::{ArrayOfTables, DocumentMut, Item, Table};
+use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
 
 /// One locked registry read/modify/publish transaction.
 pub struct RegistryEdit {
@@ -65,15 +65,7 @@ impl RegistryEdit {
             return Err("unknown machine registry role".to_owned());
         }
         let tables = tables_mut(&mut self.document, role)?;
-        let matches: Vec<_> = tables
-            .iter()
-            .enumerate()
-            .filter_map(|(index, table)| {
-                (table.get("name").and_then(Item::as_str) == Some(name)
-                    && table.get("endpoint").and_then(Item::as_str) == Some(endpoint))
-                .then_some(index)
-            })
-            .collect();
+        let matches = machine_indices(tables, name, endpoint);
         let [index] = matches.as_slice() else {
             return Err(
                 "machine is ambiguous or inherited; edit its source configuration".to_owned(),
@@ -156,6 +148,119 @@ pub fn forget_machine(
     edit.commit()
 }
 
+/// Insert a new `key` entry, or rewrite the one at the index `existing`
+/// finds, then publish, all under one registry lock.
+///
+/// `existing` runs after the lock is held, so the index it resolves cannot
+/// go stale before the write. `fill` writes the whole entry either way.
+///
+/// # Errors
+/// Lock, parse, lookup and publish failures.
+pub fn upsert_machine(
+    path: &Path,
+    key: &str,
+    existing: impl FnOnce() -> Result<Option<usize>, String>,
+    fill: impl FnOnce(&mut Table),
+) -> Result<(), String> {
+    let mut doc = edit_document(path)?;
+    if let Some(index) = existing()? {
+        fill(table_mut(&mut doc, key, index)?);
+    } else {
+        let mut table = Table::new();
+        fill(&mut table);
+        tables_mut(&mut doc, key)?.push(table);
+    }
+    doc.commit()
+}
+
+/// Remove the one root `key` entry matching `name` and `endpoint`, under the
+/// registry lock. See [`RegistryEdit::remove_machine`].
+///
+/// # Errors
+/// Lock, parse, ambiguity and publish failures.
+pub fn remove_machine_entry(
+    path: &Path,
+    key: &str,
+    name: &str,
+    endpoint: &str,
+) -> Result<(), String> {
+    let mut doc = edit_document(path)?;
+    doc.remove_machine(key, name, endpoint)?;
+    doc.commit()
+}
+
+/// Indices of every entry whose `name` and `endpoint` both match exactly.
+#[must_use]
+pub fn machine_indices(tables: &ArrayOfTables, name: &str, endpoint: &str) -> Vec<usize> {
+    tables
+        .iter()
+        .enumerate()
+        .filter_map(|(index, table)| {
+            (table.get("name").and_then(Item::as_str) == Some(name)
+                && table.get("endpoint").and_then(Item::as_str) == Some(endpoint))
+            .then_some(index)
+        })
+        .collect()
+}
+
+/// Write `key`, or remove it when `value` is `None`, so rewriting an entry
+/// never keeps a stale field the new entry omitted.
+pub fn set_or_remove<V: Into<Value>>(table: &mut Table, key: &str, value: Option<V>) {
+    match value {
+        Some(value) => {
+            table.insert(key, toml_edit::value(value));
+        }
+        None => {
+            table.remove(key);
+        }
+    }
+}
+
+/// Refuse a second entry with an already-seen name: one name must resolve
+/// to exactly one machine. `role` names the registry in the error.
+///
+/// # Errors
+/// `duplicate {role} name "..."` for the first repeated name.
+pub fn reject_duplicate_names<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+    role: &str,
+) -> Result<(), String> {
+    let mut seen = std::collections::BTreeSet::new();
+    for name in names {
+        if !seen.insert(name) {
+            return Err(format!("duplicate {role} name {name:?}"));
+        }
+    }
+    Ok(())
+}
+
+/// The trimmed machine name, or `None` when it is empty or contains `/` or
+/// `:` (the separators of the endpoint and selector grammars). Each registry
+/// adds its own rules and error wording on top.
+#[must_use]
+pub fn plain_machine_name(name: &str) -> Option<&str> {
+    let trimmed = name.trim();
+    (!trimmed.is_empty() && !trimmed.contains('/') && !trimmed.contains(':')).then_some(trimmed)
+}
+
+/// Require an absolute token-file path.
+///
+/// The file is read later by a process whose working directory is unrelated to where it was registered, so a
+/// relative path would silently point elsewhere. Existence is not required:
+/// pairing material may land after registration.
+///
+/// # Errors
+/// `{role} token-file must be an absolute path (got ...)`.
+pub fn validate_token_file(path: &Path, role: &str) -> Result<PathBuf, String> {
+    if path.as_os_str().is_empty() || !path.is_absolute() {
+        return Err(format!(
+            "{role} token-file must be an absolute path (got {})",
+            path.display()
+        ));
+    }
+    Ok(path.to_path_buf())
+}
+
 /// The array of tables under `key`, creating it when absent.
 pub fn tables_mut<'doc>(
     doc: &'doc mut DocumentMut,
@@ -216,6 +321,7 @@ fn before_publish_hook() {
 #[cfg(test)]
 mod tests {
     use super::{tables_mut, validate_fingerprint};
+    use toml_edit::{DocumentMut, Table};
 
     #[test]
     fn review_competing_registry_mutation_cannot_be_lost_during_publication() {
@@ -311,6 +417,64 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().contains(".tmp-"))
             .count();
         assert_eq!(leftovers, 0);
+    }
+
+    /// `upsert_machine` appends when the lookup finds nothing and rewrites in
+    /// place otherwise; `set_or_remove` clears a field the rewrite omits.
+    #[test]
+    fn upsert_appends_then_rewrites_in_place_clearing_omitted_fields() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "# keep me\n[[remote]]\nname = \"a\"\n").expect("seed");
+        let fill = |endpoint: &str, token: Option<&str>| {
+            let endpoint = endpoint.to_owned();
+            let token = token.map(str::to_owned);
+            move |table: &mut Table| {
+                table.insert("name", toml_edit::value("b"));
+                table.insert("endpoint", toml_edit::value(endpoint));
+                super::set_or_remove(table, "token-file", token);
+            }
+        };
+        super::upsert_machine(&path, "remote", || Ok(None), fill("ssh://b", Some("/t")))
+            .expect("append");
+        super::upsert_machine(&path, "remote", || Ok(Some(1)), fill("ssh://c", None))
+            .expect("rewrite");
+        let doc: DocumentMut = std::fs::read_to_string(&path)
+            .expect("read")
+            .parse()
+            .expect("parse");
+        assert!(doc.to_string().starts_with("# keep me"));
+        let tables = doc["remote"].as_array_of_tables().expect("array");
+        assert_eq!(tables.len(), 2, "rewritten, not appended");
+        assert_eq!(super::machine_indices(tables, "b", "ssh://c"), vec![1]);
+        assert!(tables.get(1).expect("b").get("token-file").is_none());
+        assert!(
+            super::upsert_machine(&path, "remote", || Err("lookup".to_owned()), |_| {}).is_err()
+        );
+        super::remove_machine_entry(&path, "remote", "b", "ssh://c").expect("remove");
+        let after = std::fs::read_to_string(&path).expect("read");
+        assert!(!after.contains("ssh://c") && after.contains("name = \"a\""));
+    }
+
+    #[test]
+    fn shared_validators_keep_each_registry_s_wording() {
+        assert_eq!(
+            super::reject_duplicate_names(["a", "b", "a"], "satellite"),
+            Err("duplicate satellite name \"a\"".to_owned())
+        );
+        assert_eq!(super::reject_duplicate_names(["a", "b"], "remote"), Ok(()));
+        assert_eq!(super::plain_machine_name("  mini "), Some("mini"));
+        for bad in ["", "  ", "a/b", "a:b"] {
+            assert_eq!(super::plain_machine_name(bad), None, "{bad:?}");
+        }
+        let err = super::validate_token_file(std::path::Path::new("rel"), "satellite")
+            .expect_err("relative");
+        assert_eq!(
+            err,
+            "satellite token-file must be an absolute path (got rel)"
+        );
+        assert!(super::validate_token_file(std::path::Path::new(""), "remote").is_err());
+        assert!(super::validate_token_file(std::path::Path::new("/abs"), "remote").is_ok());
     }
 
     #[test]
