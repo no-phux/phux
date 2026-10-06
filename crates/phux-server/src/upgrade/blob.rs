@@ -202,9 +202,15 @@ pub struct PaneBlob {
     pub cell_px: Option<(u16, u16)>,
     /// Working directory.
     pub cwd: PathBuf,
-    /// User-set title, if any.
+    /// User-set title, if any: what `GET_STATE` reports as `title`. Never
+    /// the program's OSC title, which rides in [`osc_title`](Self::osc_title).
     #[serde(default)]
     pub title: Option<String>,
+    /// The program's live OSC 0/2 title, if it set one. The resumed image
+    /// replays it into the rebuilt terminal engine (what `GET_SCREEN`
+    /// reports), never into [`title`](Self::title).
+    #[serde(default)]
+    pub osc_title: Option<String>,
     /// The `TERM` the child was spawned with.
     pub term: String,
     /// PID of the child, re-adopted via `waitpid` after the re-exec
@@ -356,6 +362,7 @@ mod tests {
                     cell_px: Some((9, 18)),
                     cwd: PathBuf::from("/home/u/proj"),
                     title: Some("vim".to_owned()),
+                    osc_title: Some("nvim README.md".to_owned()),
                     term: "xterm-256color".to_owned(),
                     child_pid: Some(4321),
                     master_fd: Some(11),
@@ -372,6 +379,7 @@ mod tests {
                     cell_px: None,
                     cwd: PathBuf::from("/home/u/proj/src"),
                     title: None,
+                    osc_title: None,
                     term: "xterm-256color".to_owned(),
                     child_pid: Some(4322),
                     master_fd: Some(12),

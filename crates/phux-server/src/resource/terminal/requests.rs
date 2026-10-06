@@ -523,8 +523,9 @@ pub struct PaneUpgradeHandle {
     pub rows: u16,
     /// Cell size in pixels, if a client reported one.
     pub cell_px: Option<(u16, u16)>,
-    /// Current pane title, if the child set one.
-    pub title: Option<String>,
+    /// The engine's live OSC 0/2 title, if the child set one. Not the
+    /// user-set title, which lives on the registry's `TerminalFacet`.
+    pub osc_title: Option<String>,
     /// Live cwd, falling back to the last known one.
     pub cwd: Option<String>,
     /// Replayable viewport snapshot.
