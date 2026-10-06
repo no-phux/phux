@@ -277,13 +277,15 @@ test "shipping remote copy unwraps provider selected Unicode words" {
     defer fixture.engine.destroy();
     // Ghostty owns Unicode/wide-cell boundaries, including a word spanning
     // a soft wrap. The native adapter never reads projected text to find it.
+    // A wide character is part of the surrounding word (ghostty a3e80a685),
+    // so either end of the wrapped run selects all of it.
     try fixture.output("\x1b[2J\x1b[H" ++ " " ** 77 ++ "界éword", 1);
     fixture.click(2, 1, std.time.ns_per_s);
     fixture.click(2, 1, std.time.ns_per_s + 100 * std.time.ns_per_ms);
-    try fixture.expectSelection("éword");
+    try fixture.expectSelection("界éword");
     fixture.click(77, 0, 2 * std.time.ns_per_s);
     fixture.click(77, 0, 2 * std.time.ns_per_s + 100 * std.time.ns_per_ms);
-    try fixture.expectSelection("界");
+    try fixture.expectSelection("界éword");
 }
 
 test "shipping remote pointer maps the canvas measured fractional cell pitch" {

@@ -599,6 +599,7 @@ mod tests {
             transport: Transport::Ws("ws://127.0.0.1:1".to_owned()),
             token_file: Some(PathBuf::from("/secret/mini.token")),
             cert_fingerprint: None,
+            tls_server_name: None,
             client_identity: phux_dial::TlsClientIdentity::None,
         };
         let joined = std::thread::spawn({
@@ -628,6 +629,7 @@ mod tests {
             transport: Transport::Ws("ws://127.0.0.1:1".to_owned()),
             token_file: None,
             cert_fingerprint: None,
+            tls_server_name: None,
             client_identity: phux_dial::TlsClientIdentity::None,
         });
         assert_eq!(tunnel.state(), TunnelState::Resolved);

@@ -22,7 +22,7 @@ pub(crate) async fn action(args: &Value) -> Result<Value, ToolError> {
         timeout: num_arg(args, "timeout_secs").map(Duration::from_secs),
         cwd: str_arg(args, "cwd").map(PathBuf::from),
     };
-    let result = phux_plugin::run_configured_action(&config_path(args), &request)
+    let result = phux_plugin::run_configured_action_logged(&config_path(args), &request)
         .await
         .map_err(|err| ToolError::new(err.to_string()))?;
     serde_json::to_value(result)

@@ -424,9 +424,12 @@ which-key-delay-ms = 400
 # `phux plugin list --json`, validate/link/toggle/unlink them with
 # `phux plugin`, project their agent-state declarations with
 # `phux config agents --json`, and execute action entries with
-# `phux config run PLUGIN ACTION [--json]`. Event hooks, plugin panes, and
-# link handlers are declarative until their host surfaces ship. The
-# manifest path may be absolute or relative to this config file.
+# `phux config run PLUGIN ACTION [--json]`; `phux plugin log` lists
+# recent action and hook runs with their exit status and output tail.
+# The server runs enabled plugins' `[[events]]` hooks, and the TUI opens
+# their `[[panes]]` (every placement) and lays out their `[[sidebar]]`
+# sections; link handlers are still declarative only. The manifest path
+# may be absolute or relative to this config file.
 #
 # [[plugins]]
 # manifest = "/path/to/plugin/phux-plugin.toml"
@@ -460,8 +463,14 @@ which-key-delay-ms = 400
 #   [[panes]]
 #   id = "board"
 #   title = "Agent Board"
-#   placement = "split"
+#   placement = "split"    # split | tab | zoomed | overlay (a floating box)
 #   command = ["agent-board"]
+#
+#   [[sidebar]]            # a fixed band between Agents and Sessions
+#   id = "exits"
+#   title = "Last exit"
+#   format = "{window}: exit {exit}"   # agent cwd exit index state title window
+#   rows = 3                           # 1-8; a pane rows when every token resolves
 #
 #   [[links]]
 #   id = "ticket"
@@ -513,6 +522,19 @@ which-key-delay-ms = 400
 # cert-fingerprint = "AB:CD:..."
 # session = "main"
 # ssh = "me@mini"
+#
+# A server reached through a relay (ADR-0149) registers the relay as its
+# endpoint, the relay's pin as cert-fingerprint, and the relay route as
+# tls-server-name, the TLS server name every dial offers. `phux pair
+# --relay-route ROUTE` on the server prints a link that `phux attach
+# --remote NAME --code` registers this way.
+#
+# [[remote]]
+# name = "studio"
+# endpoint = "quic://relay.example:4433"
+# token-file = "/home/me/.local/state/phux/remotes/studio.token"
+# cert-fingerprint = "AB:CD:..."
+# tls-server-name = "studio"
 
 [status]
 # Left: the window/tab bar. The `windows` widget renders one tab per

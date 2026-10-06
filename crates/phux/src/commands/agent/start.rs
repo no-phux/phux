@@ -1210,21 +1210,11 @@ async fn provenance(socket_path: &Path, terminal: &ResourceId, kind: &str) -> Op
         phux_client::snapshot::get_screen_scrollback(socket_path, terminal.clone(), None, false)
             .await
             .ok()?;
-    let title = super::fetch_snapshot(socket_path, "agent start")
-        .await
-        .ok()
-        .and_then(|(snapshot, _)| {
-            snapshot
-                .resources
-                .iter()
-                .find(|pane| pane.id == *terminal)
-                .and_then(|pane| pane.title.clone())
-        })
-        .unwrap_or_default();
     agent_explain::explain(
         kind,
         &agent_explain::Capture {
-            title,
+            // The live OSC title, the one the server's detector evaluates.
+            title: screen.title.unwrap_or_default(),
             lines: screen.lines,
         },
     )

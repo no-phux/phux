@@ -767,17 +767,21 @@ names are skipped (`restored` / `skipped_existing`). Schema-1 archives
 remain readable.
 
 `host ls`: `enabled` is `null` for `role: "remote"`; `session` is `null`
-for satellites. `host add` and `host renew` add an `enrollment` object
+for satellites; `tls_server_name` is `null` unless a remote is reached
+through a relay route (ADR-0149). `host add` and `host renew` add an `enrollment` object
 beside `host`: read its `status` (`enrolled`, `kept`, `failed` with
 `error`, `skipped`), not a `null` `client_cert`, to learn whether a
 workload client certificate was enrolled; the fields are in
 [remote-access.md](../remote-access.md#client-certificates-and-renewal). `pair --json` mints only after the running server
-reports a bound remote listener, and otherwise exits 1 with an empty
-stdout and nothing minted; the token is a secret emitted once and is not
+reports a bound remote listener (with `--relay-route`, only after it
+answers and a `[[connector]]` is configured), and otherwise exits 1 with
+an empty stdout and nothing minted; the token is a secret emitted once and is not
 re-derivable afterwards. `connect_link` is `null` when no address a
 device can dial is known. `overlay_addresses` is empty, never absent,
 when nothing was detected. `ws_addr` / `quic_addr` are the addresses the
-server reports bound, `null` when that transport is not listening.
+server reports bound, `null` when that transport is not listening. A
+`--relay-route` mint adds `relay` (`endpoint`, `route`); its
+`cert_fingerprint` is the relay's, the pin its link carries.
 Rotate/revoke emit operation documents; revoke never includes a token
 and needs no server.
 

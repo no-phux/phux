@@ -6,7 +6,9 @@
 //! A child of `dispatch` so it can extend [`EventEnv`] and read the stage
 //! types without widening their visibility.
 
-use super::super::args::{bare_action, select_window_action, switch_host_action};
+use super::super::args::{
+    bare_action, focus_pane_action, select_window_action, switch_host_action,
+};
 use super::super::effects::broadcast_layout;
 use super::{
     AttachError, ContextMenu, DispatchCtx, DividerGrab, DragGrab, EventEnv, InputEvent, ModSet,
@@ -35,6 +37,9 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             return Ok(StageOutcome::PASS);
         };
         if let Some(outcome) = self.step_chrome_drag(mouse).await? {
+            return Ok(outcome);
+        }
+        if let Some(outcome) = self.route_floating_mouse(mouse).await? {
             return Ok(outcome);
         }
         if let Some(outcome) = self.route_sidebar_click(mouse).await? {
@@ -76,6 +81,51 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
                 Ok(StageOutcome::CONSUMED)
             }
         }
+    }
+
+    /// ADR-0147: while the floating overlay is open it owns the pointer. Its
+    /// interior gets the event pane-local (the wheel scrolls it as it would a
+    /// tile), its border swallows it, and a press anywhere else dismisses it.
+    /// `None` when no overlay is open.
+    async fn route_floating_mouse(
+        &mut self,
+        mouse: &MouseEvent,
+    ) -> Result<Option<StageOutcome>, AttachError> {
+        use crate::attach::floating::{floating_box, floating_pane, rect_contains};
+        let Some(id) = floating_pane(self.panes).cloned() else {
+            return Ok(None);
+        };
+        let frame = floating_box(content_rect(
+            self.ctx.viewport,
+            self.ctx.bar,
+            self.ctx.sidebar,
+        ));
+        let (cell_x, cell_y) = (quantize_cell(mouse.x), quantize_cell(mouse.y));
+        if rect_contains(frame.inner, cell_x, cell_y) {
+            let mut routed = *mouse;
+            routed.x -= f64::from(frame.inner.x);
+            routed.y -= f64::from(frame.inner.y);
+            if let Some(scrolled) = self.scroll_pane_wheel(&id, &routed).await? {
+                return Ok(Some(StageOutcome::consumed(scrolled)));
+            }
+            if !crate::attach::pane_state::pane_exited(self.panes, &id) {
+                self.send_terminal_input(
+                    id,
+                    InputEvent::Mouse(scale_to_surface_pixels(routed, self.ctx.cell_px)),
+                    false,
+                )
+                .await?;
+            }
+            return Ok(Some(StageOutcome::CONSUMED));
+        }
+        let outside_press = matches!(mouse.action, MouseAction::Press)
+            && !rect_contains(frame.outer, cell_x, cell_y)
+            && wheel_scroll_delta(mouse).is_none();
+        if !outside_press {
+            return Ok(Some(StageOutcome::CONSUMED));
+        }
+        let dismissed = self.dismiss_floating().await?;
+        Ok(Some(StageOutcome::consumed(dismissed)))
     }
 
     /// Advance (or end) an in-flight chrome drag: a pane divider, the
@@ -566,7 +616,8 @@ const fn strip_contains(rect: crate::layout::Rect, x: u16, y: u16) -> bool {
 
 /// Map a left press on the sidebar strip to the action it commits, through
 /// the same `ResolvedAction` vocabulary as a keybinding: window rows
-/// `select-window`, agent rows a local `select-window` or a cross-session
+/// `select-window`, plugin section rows `focus-pane`, agent rows a local
+/// `select-window` or a cross-session
 /// `switch-session` (from the painted `targets`), session rows
 /// `switch-session { name, host? }`, headers and overflow their management
 /// views, `+ new` `new-window`, the chevron `toggle-sidebar`.
@@ -581,6 +632,10 @@ pub(in crate::attach::input_dispatch) fn sidebar_click_action(
         SidebarHit::NeedsYou(j) => return sidebar_agent_action(targets.needs_you.get(j)?),
         SidebarHit::Roster(j) => {
             return Some(sidebar_session_action(targets.roster.get(j)?.as_ref()?));
+        }
+        SidebarHit::Plugin(s, j) => {
+            let (window, pane) = *targets.plugin.get(s)?.get(j)?;
+            return focus_pane_action(window, pane);
         }
         SidebarHit::Sessions => "session-picker",
         SidebarHit::Fleet => "agent-fleet",

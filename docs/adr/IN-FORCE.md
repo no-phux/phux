@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-21
+last-reviewed: 2026-10-06
 ---
 
 # Decisions in force
@@ -108,6 +108,7 @@ by a newer one, the newer line is the operative reading.
 - [0093](./0093-remote-target-as-a-resolution-ladder.md) `--remote user@host` resolves to a `[[remote]]` entry and reuses the existing dial.
 - [0081](./0081-overlay-auto-listen-and-one-command-pairing.md) The server auto-binds its overlay listener at startup; pairing adds a credential without a restart.
 - [0066](./0066-host-namespace.md) `phux host add|ls|rm` with `--role` replaces the split remote and satellite verbs.
+- [0149](./0149-relay-routes-ride-the-tls-server-name-everywhere.md) A relay route is the TLS server name everywhere: `[[remote]] tls-server-name`, the connect link's `sni` (with `quic`, no `url`), and `phux pair --relay-route`.
 - [0057](./0057-minimal-reference-relay.md) A single-process, single-tenant reference relay ships in-tree as a self-host tool.
 - [0052](./0052-connector-route-identity-and-config.md) Consumers name a tunneled server by TLS SNI; routes bind to tokens at relay enrollment.
 - [0051](./0051-outbound-dial-out-connector-transport.md) A server behind NAT dials out to a relay and holds one persistent QUIC tunnel.
@@ -126,6 +127,7 @@ by a newer one, the newer line is the operative reading.
 
 ## Agents
 
+- [0151](./0151-live-agent-sessions-bridge-into-native-restore.md) Save archives a shell-started agent's live `AgentSession` native id when an enabled integration claims and can resume it.
 - [0118](./0118-agent-integrations-share-a-neutral-runtime.md) Pi and OpenCode are sibling adapters over one private, neutral Node integration runtime; neither imports the other.
 - [0103](./0103-agent-session-resource-and-producer-fed-streams.md) `AgentSession` is the second resource kind; its stream is producer-fed and derives agent state.
 - [0097](./0097-durable-coordinator-is-a-separate-bounded-endpoint.md) Durable work rides a separate, fenced, bounded `phux-coordinator/1` endpoint, never L1 or L3.
@@ -145,6 +147,9 @@ by a newer one, the newer line is the operative reading.
 
 ## TUI conventions
 
+- [0148](./0148-plugin-sidebar-sections-are-fixed-bands-of-pane-rows.md) A plugin `[[sidebar]]` section is a fixed band between Agents and Sessions; its rows are session panes rendered from a closed token vocabulary, and a pane rows only when every token resolves.
+- [0147](./0147-plugin-overlay-panes-float-outside-the-layout.md) A plugin `overlay` pane is a Terminal in no window, drawn by the client as a modal box; any action dismisses it by killing its Terminal, and it closes when its process exits.
+- [0146](./0146-tui-pushes-kitty-keyboard-disambiguate-on-the-host.md) While attached the TUI pushes kitty keyboard flag 1 on the host and pops it in the shared terminal reset; hosts without the protocol stay on the legacy decoder.
 - [0140](./0140-sidebar-machines-come-from-a-hosts-provider.md) The sidebar groups sessions by machine: the attached server live, every other machine from a hosts provider command printing `phux.hosts/v1` (default `phux ls --all --json`); `switch-host` execs `phux attach` on the chosen machine.
 - [0139](./0139-solid-desktop-over-native-runtime-views.md) The separate Solid desktop uses one native host and shared runtime views, an optional mechanical NAPI encoder, focused-writable geometry, and close-detaches semantics; independent views are first-release required.
 - [0135](./0135-one-binding-crate.md) A binding crate is one crate: `phux-client-ffi` derives the product vocabulary from the runtime once in `projection/`, and carries one encoder per language behind a feature (`c-abi` by default, `uniffi` for mobile); `phux-mobile-ffi` is deleted.

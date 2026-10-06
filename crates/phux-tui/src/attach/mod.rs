@@ -20,6 +20,7 @@ mod directory_picker;
 pub mod driver;
 mod exec_widgets;
 mod fleet;
+mod floating;
 mod focus;
 pub mod hosts;
 mod path_picker;
@@ -36,6 +37,7 @@ pub mod paint;
 mod pane_state;
 pub mod plugin_actions;
 pub mod plugin_panes;
+pub mod plugin_sidebar;
 mod review;
 mod sidebar_zones;
 // ADR-0060: the `phux --rec` tee.

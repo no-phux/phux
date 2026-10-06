@@ -25,6 +25,24 @@ pub(super) fn select_window_action(index: usize) -> Option<phux_config::keybind:
     Some(action)
 }
 
+/// `focus-pane { window, pane }`: the pane at DFS leaf ordinal `pane` of
+/// window `window`.
+pub(super) fn focus_pane_action(
+    window: usize,
+    pane: usize,
+) -> Option<phux_config::keybind::ResolvedAction> {
+    let mut action = bare_action("focus-pane");
+    action.args.insert(
+        "window".to_owned(),
+        toml::Value::Integer(i64::try_from(window).ok()?),
+    );
+    action.args.insert(
+        "pane".to_owned(),
+        toml::Value::Integer(i64::try_from(pane).ok()?),
+    );
+    Some(action)
+}
+
 /// Flatten a workspace deterministically: window order, then DFS leaf order.
 pub(super) fn ordered_workspace_panes(workspace: &Workspace) -> Vec<(usize, ResourceId)> {
     workspace

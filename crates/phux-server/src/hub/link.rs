@@ -46,7 +46,7 @@ use phux_protocol::wire::framing::FramingError;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use super::{HubEntry, HubTable, SatelliteTarget};
+use super::{HubEntry, SatelliteTarget};
 
 /// First redial delay after a failure or a lost connection.
 const BACKOFF_BASE: Duration = Duration::from_millis(500);
@@ -307,6 +307,11 @@ impl HubLinkStatuses {
     #[must_use]
     pub fn get(&self, host: &SatelliteHost) -> Option<LinkStatus> {
         self.lock().get(host).cloned()
+    }
+
+    /// Forget `host` (its link was stopped).
+    pub fn remove(&self, host: &SatelliteHost) {
+        self.lock().remove(host);
     }
 
     /// Snapshot every satellite's status, in deterministic name order.
@@ -1173,30 +1178,69 @@ fn validate_link_hello_ok(
     Ok(())
 }
 
-/// Spawn one [`run_link`] per hub-table entry on the current `LocalSet`,
-/// registering each satellite's relay handle in `relays`. `journal`
-/// re-stamps relayed events (ADR-0123).
-pub(crate) fn spawn_links(
-    table: &HubTable,
-    statuses: &HubLinkStatuses,
-    relays: &super::relay::HubRelays,
-    cancel: &CancellationToken,
-    journal: &crate::state::SharedState,
-    ssh_program: std::ffi::OsString,
-) {
-    let transport = NetLinkTransport::new(ssh_program);
-    for (host, entry) in table.iter() {
+/// The hub's running link supervisors, one cancel token per satellite, so a
+/// registry reload can start, stop, or redial one link without touching any
+/// other.
+#[derive(Debug)]
+pub(crate) struct HubLinks {
+    statuses: HubLinkStatuses,
+    relays: super::relay::HubRelays,
+    /// Parent of every link's token: server shutdown stops them all.
+    cancel: CancellationToken,
+    transport: NetLinkTransport,
+    links: BTreeMap<SatelliteHost, CancellationToken>,
+}
+
+impl HubLinks {
+    /// No links yet; [`Self::start`] adds them to `relays`, the registry the
+    /// consumer paths route through.
+    pub(crate) fn new(
+        relays: super::relay::HubRelays,
+        cancel: &CancellationToken,
+        ssh_program: std::ffi::OsString,
+    ) -> Self {
+        Self {
+            statuses: HubLinkStatuses::default(),
+            relays,
+            cancel: cancel.clone(),
+            transport: NetLinkTransport::new(ssh_program),
+            links: BTreeMap::new(),
+        }
+    }
+
+    /// Spawn [`run_link`] for `host` on the current `LocalSet` and register
+    /// its relay handle, stopping any link `host` already had. `journal`
+    /// re-stamps relayed events (ADR-0123).
+    pub(crate) fn start(
+        &mut self,
+        host: &SatelliteHost,
+        entry: &HubEntry,
+        journal: &crate::state::SharedState,
+    ) {
+        self.stop(host);
         let (handle, mut mailbox) = super::relay::RelayHandle::new(host.clone());
         mailbox.journal = Some(journal.clone());
-        relays.insert(handle);
+        self.relays.insert(handle);
+        let cancel = self.cancel.child_token();
+        self.links.insert(host.clone(), cancel.clone());
         tokio::task::spawn_local(run_link(
             host.clone(),
             entry.clone(),
-            transport.clone(),
-            statuses.clone(),
+            self.transport.clone(),
+            self.statuses.clone(),
             mailbox,
-            cancel.child_token(),
+            cancel,
         ));
+    }
+
+    /// Stop `host`'s link: new requests find no route, and the cancelled
+    /// supervisor tears its relay session down, notifying its subscribers.
+    pub(crate) fn stop(&mut self, host: &SatelliteHost) {
+        if let Some(cancel) = self.links.remove(host) {
+            cancel.cancel();
+        }
+        self.relays.remove(host);
+        self.statuses.remove(host);
     }
 }
 

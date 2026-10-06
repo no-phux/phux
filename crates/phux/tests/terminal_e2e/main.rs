@@ -1,4 +1,5 @@
-//! Lane-selected terminal geometry and fleet sidebar acceptance tests.
+//! Lane-selected terminal geometry, fleet sidebar, and plugin surface
+//! acceptance tests.
 
 #![allow(
     clippy::duplicate_mod,
@@ -10,6 +11,7 @@ mod runner;
 
 mod attach_roles_e2e;
 mod fleet_sidebar_e2e;
+mod plugin_surfaces_e2e;
 mod quic_restore_e2e;
 mod resize_e2e;
 mod spatial_e2e;

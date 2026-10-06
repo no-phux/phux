@@ -35,7 +35,7 @@ impl AsyncRead for H3Recv<'_> {
         buf: &mut [u8],
     ) -> Poll<io::Result<usize>> {
         let mut read_buf = ReadBuf::new(buf);
-        match Pin::new(&mut self.0).poll_read(cx, &mut read_buf) {
+        match Pin::new(&mut *self.0).poll_read(cx, &mut read_buf) {
             Poll::Ready(Ok(())) => Poll::Ready(Ok(read_buf.filled().len())),
             Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
             Poll::Pending => Poll::Pending,
@@ -51,7 +51,7 @@ impl AsyncWrite for H3Send<'_> {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.0).poll_write(cx, buf)
+        TokioAsyncWrite::poll_write(Pin::new(&mut *self.0), cx, buf)
     }
 }
 

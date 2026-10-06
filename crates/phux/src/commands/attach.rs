@@ -888,10 +888,15 @@ pub(crate) fn run_attach_remote_outcome(
         cert_fingerprint: entry.cert_fingerprint.clone(),
         identity,
     };
+    // A relay route (ADR-0149) rides the TLS server name; `None` keeps the
+    // endpoint-derived default.
+    let server_name = entry.tls_server_name.clone();
 
     match endpoint {
-        Endpoint::Quic(target) => run_attach_quic_outcome(session, target, credentials, None, rec),
-        Endpoint::Ws(url) => run_attach_ws_outcome(session, url, credentials, None, rec),
+        Endpoint::Quic(target) => {
+            run_attach_quic_outcome(session, target, credentials, server_name, rec)
+        }
+        Endpoint::Ws(url) => run_attach_ws_outcome(session, url, credentials, server_name, rec),
         // ADR-0120: bootstrap a direct QUIC attach over ssh first, and only
         // fall back to `exec`ing `ssh -t HOST phux attach` when that cannot
         // work. Only the direct path can carry a recording.

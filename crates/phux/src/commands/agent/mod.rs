@@ -61,8 +61,9 @@ pub(crate) enum AgentAction {
     /// else makes that visible (the detector fails safe to `idle`, silently).
     ///
     /// The capture is `phux snapshot --json` output or a plain text screen,
-    /// one viewport row per line; `-` reads stdin. A capture carries no OSC
-    /// title, so pass `--title` to exercise title-scoped rules.
+    /// one viewport row per line; `-` reads stdin. A JSON capture carries the
+    /// pane's OSC title; a text one does not, so pass `--title` to exercise
+    /// title-scoped rules against it (or to override the captured title).
     Explain {
         /// Target selector (resolves to one pane). Omit for the focused
         /// pane. Not used in offline (`--file`) mode.
@@ -79,8 +80,8 @@ pub(crate) enum AgentAction {
         /// process group to identify the agent from.
         #[usage(long, value_name = "KIND", requires("--file"))]
         kind: Option<String>,
-        /// OSC 0/2 title to evaluate `title`-scoped rules against. Captures
-        /// do not carry one, so it defaults to empty.
+        /// OSC 0/2 title to evaluate `title`-scoped rules against. Overrides
+        /// a JSON capture's own title; defaults to it, else to empty.
         #[usage(long, value_name = "TEXT", requires("--file"))]
         title: Option<String>,
         /// How to read `--file`. `auto` picks JSON when the first
@@ -737,7 +738,9 @@ async fn pane_evidence(
         terminal: phux_client::selector::format_terminal_id(&pane.id),
         session: session.map_or_else(|| "unknown".to_owned(), |s| s.name.clone()),
         window: window_label(window),
-        title: pane.title.clone(),
+        // The live OSC title from `GET_SCREEN`, the one the server's detector
+        // evaluates. `pane.title` is the user-set title and is not it.
+        title: screen.as_ref().and_then(|s| s.title.clone()),
         cwd: pane.cwd.clone(),
         record: None,
         agent_session,

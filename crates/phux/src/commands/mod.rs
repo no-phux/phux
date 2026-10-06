@@ -2108,8 +2108,10 @@ pub(crate) enum Command {
     /// Minting first asks the running server (`--socket`) which remote
     /// listeners it has bound, and mints nothing when none would accept the
     /// credential: no server, no bound listener, `--host` with no wss
-    /// listener, or `--qr` with no address a device can dial. `ls`, `prune`,
-    /// `rotate`, and `revoke` only edit the store and need no server.
+    /// listener, or `--qr` with no address a device can dial. `--relay-route`
+    /// mints for a relay route instead, which needs the server to answer but
+    /// no bound listener. `ls`, `prune`, `rotate`, and `revoke` only edit the
+    /// store and need no server.
     #[usage(help_heading = "Machines", display_order = 43)]
     Pair {
         #[usage(subcommand)]
@@ -2162,6 +2164,21 @@ pub(crate) enum Command {
         /// token so re-enrollment does not leave abandoned live credentials.
         #[usage(long, value_name = "HEX")]
         replace_token: Option<String>,
+
+        /// Mint for a relay route instead of a listener: the connect link
+        /// dials the `[[connector]]` relay this server tunnels to, pins the
+        /// relay's certificate, and names ROUTE as its TLS server name (the
+        /// route `phux relay pair --route` enrolled). Needs a running server
+        /// but no bound listener; the link reaches the server while its
+        /// connector holds the route.
+        #[usage(long, value_name = "ROUTE", conflicts("--host"))]
+        relay_route: Option<String>,
+
+        /// The `[[connector]]` relay (its `relay = "HOST:PORT"`) a
+        /// `--relay-route` link dials. Needed only when several are
+        /// configured.
+        #[usage(long, value_name = "HOST:PORT", requires("--relay-route"))]
+        relay: Option<String>,
     },
 
     /// Manage the mTLS workload authority
@@ -2805,6 +2822,27 @@ pub(crate) enum PluginAction {
     Validate {
         /// Optional path to a `phux-plugin.toml` file or plugin directory.
         manifest: Option<std::path::PathBuf>,
+
+        /// Emit a stable JSON document instead of human text.
+        #[usage(long)]
+        json: bool,
+    },
+
+    /// Show recent plugin action and hook runs, oldest first.
+    ///
+    /// Every plugin action run (a TUI keybinding, `phux config run`, the MCP
+    /// tool) and every server hook run appends one record to a bounded log
+    /// in the state directory (`plugin-runs.jsonl`): the newest 100 runs,
+    /// each with its exit status, duration, and the last 4 KiB of stdout
+    /// and stderr. Failed runs show the tail of their output.
+    Log {
+        /// How many of the newest runs to show; 20 when omitted.
+        #[usage(short = 'n', long, value_name = "NUM")]
+        limit: Option<u32>,
+
+        /// Show only runs that did not exit 0.
+        #[usage(long)]
+        failed: bool,
 
         /// Emit a stable JSON document instead of human text.
         #[usage(long)]

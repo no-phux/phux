@@ -58,6 +58,10 @@ pub struct Target {
     /// An in-memory bearer token supplied by an embedder such as a Keychain
     /// consumer. Takes precedence over `token_file` and is never logged.
     pub token: Option<String>,
+    /// The TLS server name (SNI) a remote dial offers instead of the
+    /// endpoint's host: a relay route when the endpoint is a relay
+    /// (ADR-0149). `None` keeps the host-derived default.
+    pub tls_server_name: Option<String>,
     /// The workload client certificate to present over TLS (ADR-0116):
     /// what a registry entry enrolled, else [`TlsClientIdentity::None`].
     /// Never read from the environment.
@@ -75,6 +79,7 @@ impl Target {
             cert_fingerprint: None,
             token_file: None,
             token: None,
+            tls_server_name: None,
             client_identity: TlsClientIdentity::None,
         }
     }
@@ -89,6 +94,7 @@ impl Target {
             cert_fingerprint: None,
             token_file: None,
             token: None,
+            tls_server_name: None,
             client_identity: TlsClientIdentity::None,
         }
     }
@@ -103,6 +109,7 @@ impl Target {
             cert_fingerprint: None,
             token_file: None,
             token: None,
+            tls_server_name: None,
             client_identity: TlsClientIdentity::None,
         }
     }
@@ -129,6 +136,7 @@ impl Target {
             transport,
             token_file: self.token_file.clone(),
             cert_fingerprint: self.cert_fingerprint.clone(),
+            tls_server_name: self.tls_server_name.clone(),
             client_identity: self.client_identity.clone(),
         })
     }
@@ -146,6 +154,7 @@ impl From<Resolved> for Target {
             cert_fingerprint: resolved.cert_fingerprint,
             token_file: resolved.token_file,
             token: None,
+            tls_server_name: resolved.tls_server_name,
             client_identity: resolved.client_identity,
         }
     }

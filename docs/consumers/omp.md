@@ -1,7 +1,7 @@
 ---
 audience: humans, agents, contributors
 stability: evolving
-last-reviewed: 2026-09-30
+last-reviewed: 2026-10-06
 ---
 
 # Native Oh My Pi integration
@@ -15,7 +15,7 @@ ordinary one-shot commands.
 
 ## Install and load
 
-The extension targets OMP 17.1.2 and requires Bun 1.3.14 or newer. It uses
+The extension targets OMP 18.6.1 and requires Bun 1.3.14 or newer. It uses
 `ExtensionAPI` from `@oh-my-pi/pi-coding-agent`, native `pi.registerTool`, and
 the host's plain JSON Schema `TSchema` alternative, not the Pi SDK or a
 compatibility shim. Development SDK dependencies are pinned; the installed
@@ -95,7 +95,7 @@ readiness. Use `phux_paste` for literal text and `phux_send_keys` for actual key
 chords. Agent prompts and shell commands are different operations. The build copies
 the canonical [native-tools skill](../../.agents/skills/using-phux-tools/SKILL.md)
 into `skills/using-phux-tools/SKILL.md`; OMP discovers that conventional package
-directory for explicit `-e` directories and installed plugins. OMP 17.1.2 has no
+directory for explicit `-e` directories and installed plugins. OMP 18.6.1 has no
 `omp.skills` manifest field. The generated copy is ignored in Git and included in
 the package. The [using-phux skill](../../.agents/skills/using-phux/SKILL.md) explains
 the underlying CLI workflow; this package does not maintain a divergent copy.
@@ -167,11 +167,30 @@ tool-start records cannot clear that block. Last resolution emits a stream-only
 working assertion, not a new prompt or completion. Declarations still never contain
 state or attention. Other UI questions and fleet-context injection are not covered.
 
-OMP 17.1.2 delivers generic activity concurrently and detaches aggregate extension
-notifications. Navigation/abort does **not** drain their delivery. The received
-aggregate is a usable barrier only because the SDK's FIFO subscriber gate first
-awaits preceding generic tool deliveries. An overlapping before/start, an unguarded
-start, or navigation during prepared/active/continuing work therefore retires the
+OMP 18.6.1 delivers generic activity concurrently and detaches aggregate extension
+notifications. Navigation/abort does **not** drain their delivery. OMP 18 removed
+the FIFO subscriber gate that made the received aggregate a barrier in 17.x: it
+settles `agent_end` on its own path, so a tool event an earlier extension holds
+reaches this extension *after* the run's end. The reporter tolerates that. After a
+terminal end the event is dropped, so it cannot resurrect `working` on a finished
+run; after a continuing end it can only re-assert `working` for the loop that
+continues. Approval events are unaffected because the tool wrapper awaits them
+before the tool, and so the run, can finish.
+OMP 18 also runs `before_agent_start` for queued steering and follow-up messages
+delivered mid-run, and may repeat it while preparing one prompt. The event carries
+nothing that distinguishes those from a new prompt, but the running loop absorbs
+a queued delivery without an `agent_start` of its own. So while OMP reports the
+session streaming (`ctx.isIdle()` false), a guard during prepared/active work is
+a no-op: typing into a busy OMP keeps reporting, and a genuinely overlapping loop
+still falls back when its own `agent_start` arrives. A guard while the session
+reports idle cannot be an absorbed delivery and falls back. Residual cost: if an
+earlier extension holds the old loop's `agent_end` past a new prompt's guard,
+that end reports `stop` before the new start falls back, so `done` can show
+briefly before detection takes over.
+A collaboration guest (`omp join`) mirrors starts without the before hook and
+lands in the same fallback. An overlapping start, an idle-session guard during
+prepared/active work, an unguarded start, or navigation during
+prepared/active/continuing work therefore retires the
 verified exact child and remains **declaration-only** until extension restart.
 This includes same-ID transcript reload, whose abort can discard completion.
 Same-ID tree navigation preserves the existing loop; idle reload is idempotent.
@@ -241,20 +260,21 @@ blocked state across concurrent approvals and honest resolution without executin
 action bodies. Earlier extension handlers deliberately delay before/start/tool/end
 delivery; the SDK's actual detached aggregate path, new/resume/fork, same-ID reload,
 exact-child retirement and restored detector blocking are exercised. Normal idle
-navigation and continuation are also covered. No live model reasoning is claimed.
+navigation and continuation are also covered, as is a queued follow-up that an
+inert local transport's running loop absorbs through the before hook. No live
+model reasoning is claimed. The delayed-tool case holds a tool-start delivery,
+waits for the run's end to report `done` while it is still held, then releases it
+and requires `done` to survive the late delivery.
 
 An owned inert `omp.js` process supplies kernel identification and a fixed approval
 screen. Startup initializes its unbound identity without predeclaration; approval
 and causality scenarios do not call `agent set` as fixture setup. A separate owned
 pane runs the actual pinned OMP CLI entrypoint with the packed extension. A local
-fixture registers an inert custom model solely to satisfy RPC startup's model
-requirement, records the automatic native `session_start`, and fails if any provider
-transport is invoked. Its native ID must match the exact host child, while the
+fixture registers an inert custom model, records the automatic native
+`session_start`, and fails if any provider transport is invoked. Its native ID must match the exact host child, while the
 selected sibling remains untouched. A diagnostic wrapper records actual CLI argv,
 stdout/stderr and exit; it does not supply lifecycle events or identity metadata.
 
-Credential-free RPC without that fixture exits 1 before native startup with
-`No models available`; the smoke records this boundary rather than claiming the
-pane's resulting shell is a running OMP session. HOME, XDG, profile, sessions,
+HOME, XDG, profile, sessions,
 credentials, tokens and TLS settings are isolated. No actual provider credentials
 or model/service calls are used. Owned servers and temporary roots are removed.

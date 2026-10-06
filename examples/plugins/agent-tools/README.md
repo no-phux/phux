@@ -32,11 +32,18 @@ and `PHUX_AGENT_BENCH_KEYS`.
 ## Integration templates
 
 `integrations/*.toml` are sample manifests for terminal-native agents
-(`codex`, `claude-code`, `gemini-cli`, `grok`, `generic-shell-agent`). Each
-declares an id, display name, version, status, capabilities, launch command,
-link-state policy, opt-in detection command, optional `required_executables`
-(a template is listed only when all are on `PATH`), and session identity
-policy.
+(`codex`, `claude-code`, `gemini-cli`, `grok`, `pi`, `omp`, `opencode`,
+`generic-shell-agent`). Each declares an id, display name, version, status,
+capabilities, launch command, link-state policy, opt-in detection command,
+optional `required_executables` (a template is listed only when all are on
+`PATH`), and session identity policy.
+
+A template's `[agent_identity] kind` also claims the provider an agent started
+in an ordinary shell reports through its `AgentSession` (`claude` from the
+Claude Code hooks, `pi`, `omp`, `opencode` from their phux extensions). With
+this plugin enabled, `phux workspace save` archives that session's native id
+and `phux workspace restore` resumes it through the template's `resume_args`
+([ADR-0151](../../../docs/adr/0151-live-agent-sessions-bridge-into-native-restore.md)).
 
 - `link-integration` / `unlink-integration` write only plugin-local state under
   `state/integrations`; they never install or run the agent. They default to

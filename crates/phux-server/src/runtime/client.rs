@@ -4756,7 +4756,15 @@ pub(crate) fn handle_set_metadata(
         apply_session_keep_empty(state, client_id, request_id, scope, &value, root_token);
         return;
     }
+    let config_reload =
+        key == phux_protocol::wire::frame::CONFIG_RELOAD_KEY && matches!(scope, Scope::Global);
     store_metadata_value(state, client_id, request_id, scope, key, value);
+    // A hub is a doorbell consumer too: it re-reads its own `[[satellites]]`
+    // (L3 §3.8), before any later frame on this connection is handled, so a
+    // writer's read-back barrier also covers the reload.
+    if config_reload {
+        crate::hub::reload_satellites(state);
+    }
 }
 
 pub(crate) fn handle_delete_metadata(

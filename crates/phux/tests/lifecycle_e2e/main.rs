@@ -1,4 +1,4 @@
-//! Lane-selected failure, idle-exit, upgrade, and remote acceptance tests.
+//! Lane-selected failure, idle-exit, upgrade, relay, and remote acceptance tests.
 
 #![allow(
     clippy::duplicate_mod,
@@ -12,6 +12,7 @@ mod empty_session_e2e;
 mod failure_ux_e2e;
 mod host_add_e2e;
 mod idle_exit_e2e;
+mod relay_route_e2e;
 mod remote_session_verbs_e2e;
 mod remote_target_e2e;
 mod retain_on_exit_e2e;

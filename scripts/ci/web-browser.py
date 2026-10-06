@@ -95,12 +95,17 @@ def signal_group(group, signum):
     return True
 
 
+# How long an owned group gets to exit on SIGINT before it is SIGKILLed.
+STOP_GRACE_SECONDS = 10.0
+
+
 def stop(process):
     """Drain the owned group, even when its leader exited before its children."""
     signal_group(process.pid, signal.SIGINT)
     # Reap the leader while checking the whole group, rather than taking the
     # leader's exit as proof that Chrome/driver/compiler descendants exited.
-    for _ in range(100):
+    deadline = time.monotonic() + STOP_GRACE_SECONDS
+    while time.monotonic() < deadline:
         process.poll()
         if not signal_group(process.pid, 0):
             process.wait(timeout=5)

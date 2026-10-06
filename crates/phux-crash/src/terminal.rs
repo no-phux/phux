@@ -33,9 +33,8 @@
 //   ?1015   RXVT extended mouse reporting                  never enabled by phux
 //   ?2004   Bracketed paste mode                           write_enter_alt_screen
 //   ?1004   Focus reporting (focus in/out events)          write_enter_alt_screen
-//   CSI<u   Kitty keyboard protocol pop                    never pushed by phux
-//                                                          (CSI-u is parsed, never
-//                                                          requested)
+//   CSI<u   Kitty keyboard protocol pop (flags 1 pushed    write_enter_alt_screen
+//           with CSI>1u)                                   (ADR-0146)
 //
 // The "never enabled" rows stay in the sequence on purpose: they cost a
 // handful of bytes on a path that only runs once, as the process dies, and

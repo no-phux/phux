@@ -141,7 +141,10 @@ class BrowserRunnerTests(unittest.TestCase):
             "pathlib.Path('child').write_text(child.stdout.readline()); "
             f"time.sleep({0 if parent_exits else 60})"
         )
-        with tempfile.TemporaryDirectory() as scratch:
+        # The descendant ignores SIGINT on purpose, so stop() always spends its
+        # whole grace before escalating; the escalation is what is under test,
+        # not the production grace's length.
+        with tempfile.TemporaryDirectory() as scratch, patch.object(browser, "STOP_GRACE_SECONDS", 0.5):
             try:
                 with tempfile.TemporaryFile() as log:
                     if parent_exits:

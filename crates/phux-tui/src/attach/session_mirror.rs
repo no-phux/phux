@@ -46,6 +46,9 @@ pub(in crate::attach) struct SessionMirror {
     pub(in crate::attach) pending_splits: HashMap<u32, PendingSplit>,
     /// Parked `new-window` actions awaiting their `RESOURCE_SPAWNED` reply.
     pub(in crate::attach) pending_windows: HashMap<u32, PendingWindow>,
+    /// ADR-0147: floating plugin overlay spawns awaiting their reply, by
+    /// request id, with the box title.
+    pub(in crate::attach) pending_floating: HashMap<u32, String>,
     /// Closes this client requested; their pane-exit notice is suppressed.
     pub(in crate::attach) expected_closes: HashSet<ResourceId>,
     /// `request_id` -> Terminal for commands whose `TERMINAL_NOT_FOUND` is the
@@ -56,6 +59,12 @@ pub(in crate::attach) struct SessionMirror {
 }
 
 impl SessionMirror {
+    /// The pane that owns paint focus: the floating overlay while one is
+    /// open (ADR-0147), else the focused leaf.
+    pub(in crate::attach) fn paint_focus(&self) -> Option<ResourceId> {
+        super::floating::paint_focus(&self.panes, self.focused_resource.as_ref()).cloned()
+    }
+
     /// An empty mirror around `engine_kernel`: no panes, an empty layout,
     /// nothing focused or in flight.
     pub(in crate::attach) fn new(engine_kernel: AttachKernel, predict: PredictionState) -> Self {
@@ -71,6 +80,7 @@ impl SessionMirror {
             predict,
             pending_splits: HashMap::new(),
             pending_windows: HashMap::new(),
+            pending_floating: HashMap::new(),
             expected_closes: HashSet::new(),
             pending_resource_ops: HashMap::new(),
             agent_meta: AgentMetaIndex::default(),

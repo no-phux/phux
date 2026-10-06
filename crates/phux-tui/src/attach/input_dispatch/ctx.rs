@@ -60,6 +60,9 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// `RESOURCE_SPAWNED` reply. Same lifecycle as `pending_splits`,
     /// keyed in the same request-id space.
     pub pending_windows: &'a mut HashMap<u32, PendingWindow>,
+    /// ADR-0147: floating plugin overlay spawns awaiting their
+    /// `RESOURCE_SPAWNED`, by request id, with the box title.
+    pub pending_floating: &'a mut HashMap<u32, String>,
     /// What `go-to-directory` can list on this server.
     pub directory_support: crate::attach::directory_picker::DirectorySupport,
     /// The `LIST_DIRECTORY` the directory picker is waiting on, with the

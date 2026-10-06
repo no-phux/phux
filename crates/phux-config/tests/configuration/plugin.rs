@@ -229,6 +229,63 @@ role = "lead"
 "#,
             "workspace bench references unknown pane 'not-declared'",
         ),
+        (
+            "sidebar format token typo",
+            r#"
+[[sidebar]]
+id = "builds"
+title = "Builds"
+format = "{window}: {titel}"
+"#,
+            "unknown format token `{titel}` (did you mean `{title}`?)",
+        ),
+        (
+            "sidebar format token with no near match",
+            r#"
+[[sidebar]]
+id = "builds"
+title = "Builds"
+format = "{frobnicate}"
+"#,
+            "unknown format token `{frobnicate}` (known: agent, cwd",
+        ),
+        (
+            "sidebar rows out of range",
+            r#"
+[[sidebar]]
+id = "builds"
+title = "Builds"
+format = "{title}"
+rows = 0
+"#,
+            "rows must be 1..=8, got 0",
+        ),
+        (
+            "duplicate sidebar section ids",
+            r#"
+[[sidebar]]
+id = "s"
+title = "One"
+format = "{title}"
+
+[[sidebar]]
+id = "s"
+title = "Two"
+format = "{cwd}"
+"#,
+            "duplicate plugin sidebar section id",
+        ),
+        (
+            "sidebar section with an unknown key",
+            r#"
+[[sidebar]]
+id = "s"
+title = "One"
+format = "{title}"
+key = "com.example/status"
+"#,
+            "unknown field `key`",
+        ),
     ];
 
     for (what, extra, want) in cases {
@@ -428,6 +485,43 @@ command = ["git-branch-widget"]
         loaded.widgets[1].slot,
         plugin::PluginWidgetSlot::Right,
         "slot defaults to right"
+    );
+    Ok(())
+}
+
+#[test]
+fn plugin_manifest_loads_sidebar_sections() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = TempDir::new()?;
+    let manifest = write_manifest(
+        dir.path(),
+        &manifest(
+            "example.sections",
+            r#"
+[[sidebar]]
+id = "agents-at-work"
+title = "  At work  "
+format = "{agent} {state} in {window}"
+rows = 4
+
+[[sidebar]]
+id = "failures"
+title = "Failures"
+format = "{index}:{window} exit {exit}"
+"#,
+        ),
+    );
+
+    let loaded = plugin::load_plugin_manifest(&manifest)?;
+
+    assert_eq!(loaded.sidebar.len(), 2);
+    assert_eq!(loaded.sidebar[0].id, "agents-at-work");
+    assert_eq!(loaded.sidebar[0].title, "At work", "title is trimmed");
+    assert_eq!(loaded.sidebar[0].format, "{agent} {state} in {window}");
+    assert_eq!(loaded.sidebar[0].rows, 4);
+    assert_eq!(
+        loaded.sidebar[1].rows,
+        plugin::SIDEBAR_SECTION_DEFAULT_ROWS,
+        "rows defaults"
     );
     Ok(())
 }

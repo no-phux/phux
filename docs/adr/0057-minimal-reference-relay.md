@@ -14,6 +14,7 @@ file, no persistence beyond a route-bound token store and a keypair.
 
 Status: Accepted
 Date: 2026-07-21
+See [ADR-0149](./0149-relay-routes-ride-the-tls-server-name-everywhere.md) for Open Question 2 (relay connect links).
 
 ## Context
 

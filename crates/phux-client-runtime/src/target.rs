@@ -293,6 +293,40 @@ pub fn classify(endpoint: &str, target: &RemoteTarget) -> Result<(String, Transp
     ))
 }
 
+/// Validate a TLS server name a dial would offer as SNI, returning it trimmed.
+///
+/// It must be a DNS name of at most 253 bytes whose dot-separated labels are
+/// 1-63 ASCII letters, digits, or hyphens with no hyphen at either end, and
+/// not an IP literal: TLS sends no SNI for an address, so a relay could not
+/// route it.
+///
+/// # Errors
+///
+/// The name, quoted, and the rule it breaks.
+pub fn validate_tls_server_name(raw: &str) -> Result<String, String> {
+    let name = raw.trim();
+    let label_ok = |label: &str| {
+        (1..=63).contains(&label.len())
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+    };
+    if name.parse::<std::net::IpAddr>().is_ok() {
+        return Err(format!(
+            "TLS server name {name:?} is an IP address; TLS offers no SNI for one"
+        ));
+    }
+    if name.is_empty() || name.len() > 253 || !name.split('.').all(label_ok) {
+        return Err(format!(
+            "TLS server name {name:?} must be a DNS name: dot-separated labels of \
+             letters, digits, and inner hyphens, each at most 63 characters"
+        ));
+    }
+    Ok(name.to_owned())
+}
+
 /// Read the bearer token behind an entry's `token-file`.
 ///
 /// That is the first line that is neither blank nor a `#` comment. Failures
@@ -330,6 +364,9 @@ pub struct Resolved {
     pub token_file: Option<PathBuf>,
     /// The SHA-256 leaf fingerprint to pin, or `None` for loopback.
     pub cert_fingerprint: Option<String>,
+    /// The TLS server name (SNI) the dial offers instead of the endpoint's
+    /// host: a relay route when the endpoint is a relay (ADR-0149).
+    pub tls_server_name: Option<String>,
     /// The workload client certificate the entry enrolled (ADR-0116), or
     /// [`TlsClientIdentity::None`]. Only paths: the key is read by the TLS
     /// stack at dial time, and the environment is never consulted.
@@ -371,8 +408,9 @@ pub fn resolve(raw: &str, config_path: Option<&Path>) -> Result<Resolved, String
 ///
 /// # Errors
 ///
-/// An endpoint no embedder can dial ([`classify`]) or a malformed client
-/// identity ([`entry_identity`]).
+/// An endpoint no embedder can dial ([`classify`]), a malformed client
+/// identity ([`entry_identity`]), or a TLS server name that is not a DNS
+/// name ([`validate_tls_server_name`]).
 pub fn resolve_entry(entry: &RemoteConfigEntry, target: &RemoteTarget) -> Result<Resolved, String> {
     let (endpoint, transport) = classify(&entry.endpoint, target)?;
     Ok(Resolved {
@@ -385,6 +423,13 @@ pub fn resolve_entry(entry: &RemoteConfigEntry, target: &RemoteTarget) -> Result
         transport,
         token_file: entry.token_file.clone(),
         cert_fingerprint: entry.cert_fingerprint.clone(),
+        tls_server_name: entry
+            .tls_server_name
+            .as_deref()
+            .filter(|name| !name.trim().is_empty())
+            .map(validate_tls_server_name)
+            .transpose()
+            .map_err(|err| format!("{}: {err}", entry.name))?,
         client_identity: entry_identity(entry)?,
     })
 }
@@ -420,6 +465,7 @@ mod tests {
             endpoint: endpoint.to_owned(),
             token_file: None,
             cert_fingerprint: None,
+            tls_server_name: None,
             session: None,
             ssh: None,
             direct: None,
@@ -533,6 +579,7 @@ mod tests {
         assert_eq!(resolved.name, "mini");
         assert_eq!(resolved.endpoint, "quic://127.0.0.1:8788");
         assert_eq!(resolved.session.as_deref(), Some("work"));
+        assert_eq!(resolved.tls_server_name, None);
         // Only the path: resolving for display never reads the secret.
         assert_eq!(resolved.token_file.as_deref(), Some(token.as_path()));
         assert!(!format!("{resolved:?}").contains("abcd01"));
@@ -547,6 +594,46 @@ mod tests {
         // An absent config file is an empty registry, not an I/O failure.
         let empty = resolve("mini", Some(&dir.path().join("absent.toml"))).expect_err("empty");
         assert!(empty.contains("not a registered host"), "{empty}");
+    }
+
+    #[test]
+    fn a_relay_routed_entry_resolves_with_its_tls_server_name() {
+        let mut routed = entry("mini", "quic://relay.example:4433");
+        routed.tls_server_name = Some("mini-route".to_owned());
+        let resolved = resolve_entry(&routed, &target("mini")).expect("resolve");
+        assert_eq!(
+            resolved.transport,
+            Transport::Quic("relay.example:4433".to_owned())
+        );
+        assert_eq!(resolved.tls_server_name.as_deref(), Some("mini-route"));
+
+        routed.tls_server_name = Some("  ".to_owned());
+        let blank = resolve_entry(&routed, &target("mini")).expect("resolve");
+        assert_eq!(blank.tls_server_name, None, "a blank name is no override");
+    }
+
+    #[test]
+    fn tls_server_names_are_dns_names() {
+        for ok in ["mini-route", "a", " relay.example.com ", "x1.y-2.z"] {
+            assert_eq!(
+                validate_tls_server_name(ok).as_deref(),
+                Ok(ok.trim()),
+                "{ok:?}"
+            );
+        }
+        for bad in [
+            "",
+            "-route",
+            "route-",
+            "a..b",
+            "has space",
+            "slash/route",
+            "127.0.0.1",
+            "::1",
+            &"a".repeat(64),
+        ] {
+            assert!(validate_tls_server_name(bad).is_err(), "{bad:?}");
+        }
     }
 
     /// The registry's enrolled client certificate is what the dial presents;

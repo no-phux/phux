@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: stable
-last-reviewed: 2026-09-21
+last-reviewed: 2026-10-06
 ---
 
 # Architecture Decision Records
@@ -176,6 +176,11 @@ column is the base status word plus at most one relationship clause, about
 | [0142](./0142-host-path-query-is-separate-from-directory-listing.md) | Host path queries do not change directory listings | Accepted (builds on [0137](./0137-server-feature-word-extends.md), [0108](./0108-a-hub-relays-host-queries-per-request.md)) |
 | [0143](./0143-ship-ten-mib-of-scrollback-per-pane.md) | Ship 10 MiB of scrollback per pane | Accepted (supersedes in part [0094](./0094-explicit-per-pane-scrollback-byte-ceiling.md), [0119](./0119-attach-leases-retained-history.md)) |
 | [0144](./0144-input-credits-backpressure-instead-of-drop.md) | Input credits: backpressure instead of drop | Accepted (supersedes in part [0044](./0044-dedicated-input-lane.md)) |
+| [0146](./0146-tui-pushes-kitty-keyboard-disambiguate-on-the-host.md) | The TUI pushes kitty keyboard disambiguate on the host | Accepted (builds on [0006](./0006-input-mirrors-libghostty.md)) |
+| [0147](./0147-plugin-overlay-panes-float-outside-the-layout.md) | Plugin overlay panes float outside the layout | Accepted (builds on [0017](./0017-tui-not-protocol-privileged.md)) |
+| [0148](./0148-plugin-sidebar-sections-are-fixed-bands-of-pane-rows.md) | Plugin sidebar sections are fixed bands of pane rows | Accepted (builds on [0112](./0112-stable-split-sidebar-navigation.md)) |
+| [0149](./0149-relay-routes-ride-the-tls-server-name-everywhere.md) | Relay routes ride the TLS server name everywhere | Accepted (builds on [0052](./0052-connector-route-identity-and-config.md), [0057](./0057-minimal-reference-relay.md)) |
+| [0151](./0151-live-agent-sessions-bridge-into-native-restore.md) | Live agent sessions bridge into native restore | Accepted (builds on [0068](./0068-native-agent-session-restore.md), [0103](./0103-agent-session-resource-and-producer-fed-streams.md)) |
 
 ## When to write an ADR
 

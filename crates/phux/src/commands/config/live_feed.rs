@@ -2,7 +2,8 @@
 //! entries are declared baselines (ADR-0040); this reads the per-pane
 //! `phux.agent/v1` records and asks from a running server, best-effort, and
 //! overlays them (the record outranks the `phux-ask` title sentinel). One
-//! `GET_STATE` plus pipelined `GET_METADATA`; no wire change.
+//! `GET_STATE`, pipelined `GET_METADATA`, and a `GET_SCREEN` per recorded
+//! pane for its live title; no wire change.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -33,12 +34,18 @@ pub(super) async fn fetch_live_feed(socket_path: &Path) -> Option<LiveAgentFeed>
     };
     let snapshot = view.into_snapshot_ignoring_degradation();
     let records = fetch_agent_index(socket_path, &snapshot).await;
-    let asked = snapshot
-        .resources
-        .iter()
-        .filter(|pane| pane.title.as_deref().is_some_and(is_ask_sentinel))
-        .map(|pane| pane.id.clone())
-        .collect();
+    // Only a pane with a record is ever bound, so only those need a title.
+    // The sentinel lives in the live OSC title, which `GET_SCREEN` carries;
+    // the snapshot's `title` is the user-set one.
+    let mut asked = HashSet::new();
+    for pane in records.keys() {
+        let Ok(screen) = phux_client::snapshot::get_screen(socket_path, pane.clone()).await else {
+            continue;
+        };
+        if screen.title.as_deref().is_some_and(is_ask_sentinel) {
+            asked.insert(pane.clone());
+        }
+    }
     Some(LiveAgentFeed { records, asked })
 }
 

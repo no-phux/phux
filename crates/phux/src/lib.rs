@@ -219,6 +219,13 @@ const fn pair_qr_with_action(cli: &Cli) -> Option<&'static str> {
         }) => Some(
             "phux: --qr belongs to minting a credential; it cannot combine with ls, prune, rotate, or revoke",
         ),
+        Some(Command::Pair {
+            action: Some(_),
+            relay_route: Some(_),
+            ..
+        }) => Some(
+            "phux: --relay-route belongs to minting a credential; it cannot combine with ls, prune, rotate, or revoke",
+        ),
         _ => None,
     }
 }
@@ -1401,6 +1408,8 @@ fn dispatch(
             json,
             migrate_legacy,
             replace_token,
+            relay_route,
+            relay,
         }) => commands::pair::run_pair(
             action,
             socket,
@@ -1412,6 +1421,7 @@ fn dispatch(
             json,
             migrate_legacy,
             replace_token,
+            relay_route.map(|route| commands::pair::RelayRoute { route, relay }),
         ),
         Some(Command::Workload { action, json }) => commands::workload::run(action, json),
         Some(Command::Completion { shell }) => commands::completion::run_completion(shell.into()),
@@ -2181,6 +2191,58 @@ mod tests {
         // The root registry verb keeps its established pair.
         for argv in [["phux", "ls"], ["phux", "list"]] {
             assert!(matches!(parsed(&argv), Command::Ls { .. }));
+        }
+    }
+
+    /// `phux plugin log` parses its flags, refuses a non-numeric limit, and
+    /// its help names the bounded run log it reads.
+    #[test]
+    fn plugin_log_parses_flags_and_documents_the_run_log() {
+        use crate::commands::PluginAction;
+
+        assert!(matches!(
+            parsed(&["phux", "plugin", "log"]),
+            Command::Plugin {
+                action: PluginAction::Log {
+                    limit: None,
+                    failed: false,
+                    json: false,
+                }
+            }
+        ));
+        for argv in [
+            &["phux", "plugin", "log", "-n", "5", "--failed", "--json"][..],
+            &[
+                "phux", "plugin", "log", "--limit", "5", "--failed", "--json",
+            ][..],
+        ] {
+            assert!(matches!(
+                parsed(argv),
+                Command::Plugin {
+                    action: PluginAction::Log {
+                        limit: Some(5),
+                        failed: true,
+                        json: true,
+                    }
+                }
+            ));
+        }
+        assert!(crate::parse_cli(["phux", "plugin", "log", "-n", "many"]).is_err());
+
+        let plugin = Cli::command()
+            .subcommands
+            .iter()
+            .find(|sub| sub.name == "plugin")
+            .expect("plugin verb");
+        let log = plugin
+            .subcommands
+            .iter()
+            .find(|sub| sub.name == "log")
+            .expect("plugin log verb");
+        let page =
+            super::render_help_page(log, true, usage::help::Style::PLAIN).expect("plugin log help");
+        for needle in ["plugin-runs.jsonl", "--failed", "--limit", "--json", "hook"] {
+            assert!(page.contains(needle), "{needle} missing from:\n{page}");
         }
     }
 

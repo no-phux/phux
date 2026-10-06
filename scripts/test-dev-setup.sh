@@ -114,6 +114,36 @@ echo 22
 SH
 chmod +x "$bin"/{uname,rustc,cargo,cc,mold,pkg-config,npm,node}
 expect_pass "$repo/scripts/doctor.sh" core
+
+# Check environment identity before Apple normalization can hide a mixed shell.
+mkdir -p "$repo/clients/desktop/scripts" "$scratch/custom-tools/command-wrappers/bin"
+cp "$root"/clients/desktop/scripts/build-{cli,host,source}.sh "$repo/clients/desktop/scripts/"
+cat >"$repo/scripts/check-desktop.sh" <<'SH'
+source "$(dirname "${BASH_SOURCE[0]}")/lib/dev-toolchain.sh"
+check_desktop_toolchain
+SH
+PHUX_ENV=mise IN_NIX_SHELL=1 expect_fail 'mixed Nix/Mise desktop toolchain' "$repo/scripts/doctor.sh" desktop
+for entry in cli host source; do
+    PHUX_ENV=mise IN_NIX_SHELL=1 expect_fail 'mixed Nix/Mise desktop toolchain' "$repo/clients/desktop/scripts/build-$entry.sh"
+done
+mkdir -p "$repo/clients/desktop/tests/native" "$repo/clients/desktop/tests/feasibility"
+cp "$root/clients/desktop/tests/native/terminal-run.sh" "$repo/clients/desktop/tests/native/"
+cp "$root/clients/desktop/tests/feasibility/run.sh" "$repo/clients/desktop/tests/feasibility/"
+for entry in native/terminal-run feasibility/run; do
+    PHUX_ENV=mise IN_NIX_SHELL=1 expect_fail 'mixed Nix/Mise desktop toolchain' "$repo/clients/desktop/tests/$entry.sh"
+done
+PHUX_ENV=mise expect_pass "$repo/scripts/check-desktop.sh"
+PHUX_ENV=nix IN_NIX_SHELL=1 expect_pass "$repo/scripts/check-desktop.sh"
+# Shell hooks can shadow Nix tools without changing PHUX_ENV.
+cp "$bin/cargo" "$scratch/custom-tools/command-wrappers/bin/cargo"
+PATH="$scratch/custom-tools/command-wrappers/bin:$bin" IN_NIX_SHELL=1 PHUX_ENV=nix \
+    "$bash_bin" "$repo/scripts/check-desktop.sh" >"$scratch/output" 2>&1 && exit 1
+grep -Fq 'mixed Nix/Mise desktop toolchain' "$scratch/output"
+cp "$bin/rustc" "$scratch/rustc-good"
+sed "s/rustc $RUST_CHANNEL /rustc 0.0.0 /" "$scratch/rustc-good" >"$bin/rustc"
+expect_fail "desktop requires Rust $RUST_CHANNEL (found: rustc 0.0.0" "$repo/clients/desktop/scripts/build-cli.sh"
+cp "$scratch/rustc-good" "$bin/rustc"
+
 # Tools present but the link broken (a linker older than the SDK) must fail.
 SETUP_TEST_LINK_FAIL=1 expect_fail 'unknown architecture' "$repo/scripts/doctor.sh" core
 expect_fail 'Node 24+' "$repo/scripts/doctor.sh" integrations

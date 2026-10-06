@@ -61,7 +61,7 @@ export default function phuxExtension(pi: ExtensionAPI): void {
     });
   }
 
-  // JSON Schema is a native TSchema alternative in OMP 17.1.2. No Pi SDK,
+  // JSON Schema is a native TSchema alternative in OMP 18.6.1. No Pi SDK,
   // TypeBox shim, or lossy schema translation is needed.
   for (const definition of Object.values(tools())) {
     pi.registerTool({

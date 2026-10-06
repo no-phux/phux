@@ -15,6 +15,7 @@ no wire frame and never archives executable argv as resume authority.
 
 Status: Accepted
 Date: 2026-08-01
+See [ADR-0151](./0151-live-agent-sessions-bridge-into-native-restore.md) for archiving shell-started agents from their live `AgentSession`.
 
 ## Context
 

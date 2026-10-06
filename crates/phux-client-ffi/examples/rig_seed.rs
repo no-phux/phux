@@ -73,6 +73,7 @@ fn seed_session(url: &str, spec: &SessionSpec) -> Result<usize, String> {
             cert_fingerprint: None,
             token_file: None,
             token: None,
+            tls_server_name: None,
             client_identity: phux_client_runtime::TlsClientIdentity::None,
         },
         ClientOptions {

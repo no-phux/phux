@@ -14,7 +14,7 @@ exclude = ["clients", ".claude"]
 [workspace.package]
 version = "0.51.0"
 edition = "2024"
-rust-version = "1.98"
+rust-version = "1.99"
 license = "Apache-2.0"
 repository = "https://github.com/no-phux/phux"
 authors = ["phall <phallsignup@gmail.com>"]
@@ -45,6 +45,11 @@ print_stderr = "warn"
 # Pedantic exceptions: too noisy for our style.
 module_name_repetitions = "allow"
 missing_errors_doc = "allow"
+# New in Rust 1.99 and flags several hundred existing test assertions. Its
+# suggested `assert_eq!(x, [] as [T; 0])` does not compile at many of them
+# (unnameable or non-PartialEq element types), so adopting it is a dedicated
+# cleanup, not part of a toolchain bump.
+assert_is_empty = "allow"
 
 [workspace.dependencies]
 # Internal.
@@ -98,7 +103,7 @@ tracing-appender = "0.2"
 # the binary. Completions replace clap_complete; validation covers portable
 # `validate=` rules that used to be clap `value_parser` closures; `test`
 # is the in-crate parse/help assertion helpers.
-usage = { package = "usage-rs", version = "6.11", features = ["completions", "validation", "test"] }
+usage = { package = "usage-rs", version = "6.12", features = ["completions", "validation", "test"] }
 bytes = "1"
 slotmap = "1"
 smallvec = "1.16"
@@ -213,7 +218,7 @@ serde_path_to_error = "0.1"
 # libghostty is our canonical terminal backend (ADR-0008). Both phux-protocol
 # and phux-server depend on it — phux-protocol re-exports types, phux-server
 # drives the emulator.
-libghostty-vt = { version = "0.2", git = "https://github.com/phall1/libghostty-rs.git", rev = "1cc00f3a0aeb77b851604d027518c9f66212029b", default-features = false }
+libghostty-vt = { version = "0.2", git = "https://github.com/phall1/libghostty-rs.git", rev = "c63fff011802b583e069ab062d57416d300d862c", default-features = false }
 # PNG decoder used by the Kitty graphics replay bridge (ADR-0034). This
 # matches libghostty-vt's optional PNG dependency and is enabled only for
 # in-workspace/server-feature consumers that need to ingest `f=100` APC images.
