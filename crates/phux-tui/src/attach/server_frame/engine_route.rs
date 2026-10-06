@@ -1,9 +1,10 @@
 //! Translation of wire frames into session-kernel inputs and the
 //! kernel-effect route (`KernelRoute`) the handler folds back in.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use phux_client_core::engine::CanonicalGeometry;
+use phux_client_core::history::HistoryLoadState;
 use phux_client_core::session::{
     AgentSessionDeclaration, EffectBuffer as KernelEffectBuffer,
     HistoryRejectionReason as KernelHistoryRejectionReason, HistoryUnavailableReason, KernelEffect,
@@ -37,6 +38,11 @@ pub(super) struct KernelRoute {
     pub(super) failed: Option<String>,
     /// Notices raised by the kernel's own effects.
     pub(super) notices: Vec<Notice>,
+    /// Per-pane progressive-history health this frame established: `true`
+    /// when the kernel reported history unavailable, `false` when a fresh
+    /// replica published or its cache reported a healthy state. Last word
+    /// per pane wins; panes absent here keep their flag.
+    pub(super) history_degraded: HashMap<ResourceId, bool>,
 }
 impl KernelRoute {
     pub(super) fn damaged(&self, terminal_id: &ResourceId) -> bool {
@@ -153,7 +159,32 @@ pub(super) fn route_engine_frame(
     if route.failed.is_none() {
         declare_spawned_agent_session(frame, kernel, effects, &mut route);
     }
+    note_fresh_history(frame, &mut route);
     route
+}
+
+/// Whether a history cache in `state` can still page scrollback in.
+const fn history_healthy(state: HistoryLoadState) -> bool {
+    matches!(
+        state,
+        HistoryLoadState::Idle | HistoryLoadState::Loading | HistoryLoadState::Complete
+    )
+}
+
+/// An accepted `BOOTSTRAP_READY` publishes a replica with a fresh history
+/// cache, so an earlier generation's degraded mark no longer applies. A
+/// failure reported by the same frame keeps its word.
+fn note_fresh_history(frame: &FrameKind, route: &mut KernelRoute) {
+    let FrameKind::BootstrapReady { terminal_id, .. } = frame else {
+        return;
+    };
+    if route.failed.is_some() || route.resync_required || route.ignored {
+        return;
+    }
+    route
+        .history_degraded
+        .entry(terminal_id.clone())
+        .or_insert(false);
 }
 
 /// Declare a live-spawned `AgentSession` whose parent is a Terminal this
@@ -517,6 +548,20 @@ fn collect_route_effects(route: &mut KernelRoute, effects: &KernelEffectBuffer) 
                     "{}: scrollback unavailable ({reason:?})",
                     pane_label(&key.terminal_id),
                 )));
+                route.history_degraded.insert(key.terminal_id.clone(), true);
+            }
+            // A healthy cache (a fresh fetch, or a completed one) clears the
+            // pane's degraded mark; a failed state leaves it as reported.
+            KernelEffect::Status(phux_client_core::session::KernelStatus::History {
+                key,
+                status,
+            }) => {
+                tracing::debug!(terminal_id = ?key.terminal_id, ?status, "history status");
+                if history_healthy(status.state) {
+                    route
+                        .history_degraded
+                        .insert(key.terminal_id.clone(), false);
+                }
             }
             // Cwd/command-boundary/exit statuses have no TUI chrome yet.
             KernelEffect::Status(

@@ -122,6 +122,11 @@ pub(super) struct PaneSlot {
     /// The satellite link is down: the leaf stays grey and input is dropped
     /// until an inventory says the host answers again.
     pub satellite_down: bool,
+    /// Progressive history for the published replica is unavailable (pruned,
+    /// tombstoned, rejected): only the scrollback this client already holds
+    /// remains. Cleared when a fresh replica publishes or the cache reports
+    /// a healthy state again; the focused pane badges it.
+    pub history_degraded: bool,
 }
 
 impl std::fmt::Debug for PaneSlot {
@@ -169,6 +174,7 @@ impl PaneSlot {
             last_title: String::new(),
             seen: false,
             satellite_down: false,
+            history_degraded: false,
         })
     }
 
