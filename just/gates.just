@@ -228,8 +228,23 @@ agent-integrations-check:
 # contract failures. CONTRIBUTING.md owns the local/CI gate map (phux-yb1m).
 [group('gates')]
 [doc('Full root gate set: the deterministic and unit bar.')]
-ci: fmt-check lint doc deny build-features-check build-features-compile docs-check workflow-check formula-check font-check e2e-lane-check zig-pin-check toolchain-check install-surface-check cache-portable-check skill-contract agent-integrations-check binding-uniffi-test test
+ci: ci-static test
     @echo "ok"
+
+
+# Everything in `ci` but the test suite, as two lanes that run side by side:
+# the Cargo gates in order (they share one target directory), and the repo
+# contracts, which never invoke Cargo. `test` runs after both and alone, so the
+# timing-sensitive PTY tests never compete with a compile or a browser.
+[private]
+[parallel]
+ci-static: ci-cargo-gates ci-repo-gates
+
+[private]
+ci-cargo-gates: fmt-check lint doc deny build-features-check build-features-compile skill-contract binding-uniffi-test
+
+[private]
+ci-repo-gates: docs-check workflow-check formula-check font-check e2e-lane-check zig-pin-check toolchain-check install-surface-check cache-portable-check agent-integrations-check
 
 
 # Full root PR bar, including timing-sensitive e2e and agent example smoke.
