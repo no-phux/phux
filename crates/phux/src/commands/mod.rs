@@ -3027,6 +3027,10 @@ fn no_server_lines(
         AttachError::Disconnected => {
             vec![format!("phux: server closed the connection during {verb}")]
         }
+        AttachError::Io(io_err) => vec![format!(
+            "phux: {}",
+            json_err::unreachable_socket_message(verb, io_err, socket_path)
+        )],
         other => vec![format!("phux: {verb} failed: {other}")],
     };
     lines.push(format!("  server log: {}", server_log.display()));
@@ -3118,7 +3122,11 @@ async fn resolve_target_with(
     let candidates = resolve_targets(socket_path, selector, &snapshot).await;
     let picked = phux_client::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
         .ok_or_else(|| {
-        partial::report_target_miss_keeping_status_for(json, None, &degradation)
+        partial::report_target_miss_keeping_status_for(
+            json,
+            Some(&selector.to_string()),
+            &degradation,
+        )
     })?;
     // A hit is still worth a word: the pane we picked is the best of what a
     // partial fleet offered, and the user is about to act on it.
@@ -3245,6 +3253,13 @@ fn attach_error_lines(
         AttachError::Refused(message) => {
             vec![format!("phux: server refused attach: {message}")]
         }
+        AttachError::Io(io_err) => vec![
+            format!(
+                "phux: {}",
+                json_err::unreachable_socket_message("attach", io_err, socket_path)
+            ),
+            "  run `phux doctor` for a health check".to_owned(),
+        ],
         AttachError::NotATty => {
             vec!["phux: attach requires an interactive terminal (stdin is not a TTY).".to_owned()]
         }
@@ -3303,6 +3318,29 @@ mod tests {
         assert_eq!(lines[2], "  server log: /state/phux/server.log");
         assert_eq!(lines[3], "  run `phux doctor` for a health check");
         assert_eq!(lines.len(), 4);
+    }
+
+    /// A socket that exists but cannot be dialed names the path and the OS
+    /// reason, not the client's internal "attach loop io error" wording.
+    #[test]
+    fn no_server_unreachable_socket_names_the_path_and_reason() {
+        let denied = AttachError::Io(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        let lines = no_server_lines(
+            &denied,
+            Path::new("/tmp/s.sock"),
+            "ls",
+            Path::new("/state/phux/server.log"),
+        );
+        assert!(
+            lines[0].starts_with("phux: ls: cannot reach the server socket /tmp/s.sock: "),
+            "{lines:?}"
+        );
+        assert!(!lines[0].contains("attach loop"), "{lines:?}");
+        assert_eq!(lines[2], "  run `phux doctor` for a health check");
+
+        let json = super::json_err::no_server_error(&denied, Path::new("/tmp/s.sock"), "ls");
+        assert_eq!(json.code, super::json_err::codes::TRANSPORT);
+        assert!(json.message.contains("/tmp/s.sock"), "{}", json.message);
     }
 
     /// A mid-command disconnect is not "no server": the server was there and

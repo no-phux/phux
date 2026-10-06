@@ -438,11 +438,14 @@ impl Default for ResourceId {
     }
 }
 
+/// The canonical direct selector a user types back (`@N`, `host/@N`), so an
+/// error message that names a resource names it the way the CLI addresses
+/// it. `Debug` keeps the structural form.
 impl core::fmt::Display for ResourceId {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Local { id } => write!(f, "ResourceId({id})"),
-            Self::Satellite { host, id } => write!(f, "ResourceId({host}/{id})"),
+            Self::Local { id } => write!(f, "@{id}"),
+            Self::Satellite { host, id } => write!(f, "{host}/@{id}"),
         }
     }
 }

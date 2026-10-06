@@ -165,7 +165,7 @@ pub(crate) fn run_signal(
             Err(phux_client::signal::SignalError::Miss { degradation }) => {
                 crate::commands::partial::report_target_miss_keeping_status_for(
                     false,
-                    None,
+                    Some(target),
                     &degradation,
                 )
             }

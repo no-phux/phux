@@ -71,6 +71,32 @@ impl Selector {
     }
 }
 
+/// The selector as a user would write it: `parse(&selector.to_string())`
+/// gives `selector` back, so an error can name the target it missed.
+impl std::fmt::Display for Selector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Current => f.write_str("."),
+            Self::Session(name) => f.write_str(name),
+            Self::Window(name, window) => write!(f, "{name}:{window}"),
+            Self::Pane(name, window, pane) => write!(f, "{name}:{window}.{pane}"),
+            Self::ResourceId(id) => write!(f, "@{id}"),
+            Self::SatelliteResourceId { host, id } => write!(f, "{host}/@{id}"),
+            Self::Tag(tag) => write!(f, "#{tag}"),
+            Self::Agent(name) => write!(f, "%{name}"),
+        }
+    }
+}
+
+impl std::fmt::Display for WindowRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Index(index) => write!(f, "{index}"),
+            Self::Tag(tag) => f.write_str(tag),
+        }
+    }
+}
+
 /// How a window is addressed within a session: by numeric index or by name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WindowRef {
@@ -665,6 +691,26 @@ fn session_id_by_name(
 
 #[cfg(test)]
 mod tests {
+    /// Every canonical form prints back as written, so a miss can name it.
+    #[test]
+    fn display_round_trips_through_parse() {
+        for raw in [
+            ".",
+            "work",
+            "work:2",
+            "work:logs",
+            "work:2.1",
+            "work:logs.0",
+            "@7",
+            "build-box/@3",
+            "#ci",
+            "%claude",
+        ] {
+            let selector = super::parse(raw).expect(raw);
+            assert_eq!(selector.to_string(), raw);
+        }
+    }
+
     use super::*;
     use phux_protocol::ids::{SessionId, WindowId};
     use phux_protocol::wire::info::{ResourceInfo, SessionInfo, WindowInfo};

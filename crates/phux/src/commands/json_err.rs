@@ -387,8 +387,28 @@ pub(crate) fn no_server_error(err: &AttachError, socket_path: &Path, verb: &str)
             format!("server closed the connection during {verb}"),
             doctor,
         ),
+        AttachError::Io(io_err) => CliError::new(
+            codes::TRANSPORT,
+            unreachable_socket_message(verb, io_err, socket_path),
+            doctor,
+        ),
         other => CliError::new(codes::TRANSPORT, format!("{verb} failed: {other}"), doctor),
     }
+}
+
+/// The sentence for a socket that exists in some form but cannot be dialed
+/// (permission denied, not a socket, a path too long for `sockaddr_un`):
+/// names the path and the OS reason, never the client's internal "attach
+/// loop" wording.
+pub(crate) fn unreachable_socket_message(
+    verb: &str,
+    io_err: &std::io::Error,
+    socket_path: &Path,
+) -> String {
+    format!(
+        "{verb}: cannot reach the server socket {}: {io_err}",
+        socket_path.display()
+    )
 }
 
 #[cfg(test)]

@@ -396,7 +396,7 @@ fn late_server_retry_keeps_the_fresh_seed_on_its_current_generation() {
         assert_eq!(kernel.feed(&stale), PhuxClientResult::InvalidState);
         assert_eq!(
             kernel.last_error(),
-            "generation (StreamId(2), BootstrapId(1)) is retired for ResourceId(1)",
+            "generation (StreamId(2), BootstrapId(1)) is retired for @1",
         );
         assert_eq!(kernel.state(), PhuxClientState::Attached);
 
