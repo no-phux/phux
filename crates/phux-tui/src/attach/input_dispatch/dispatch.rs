@@ -285,19 +285,20 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
     }
 
     /// Run an action through the path every trigger shares; true iff the
-    /// layout changed.
+    /// action or floating overlay dismissal needs a full repaint.
     async fn run_resolved(
         &mut self,
         resolved: &phux_config::keybind::ResolvedAction,
     ) -> Result<bool, AttachError> {
         // ADR-0147: any action first dismisses the floating overlay; for
         // `kill-pane` that is the whole action.
-        if self.dismiss_floating().await? && resolved.action == "kill-pane" {
+        let dismissed = self.dismiss_floating().await?;
+        if dismissed && resolved.action == "kill-pane" {
             return Ok(true);
         }
         if !self.ctx.layout_read_complete && edits_workspace(&resolved.action) {
             tracing::debug!(action = %resolved.action, "waiting for initial shared layout read");
-            return Ok(false);
+            return Ok(dismissed);
         }
         let effects = run_action(
             resolved,
@@ -305,7 +306,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             self.focused_resource.as_ref(),
             self.panes,
         );
-        apply_action_effects(
+        Ok(apply_action_effects(
             effects,
             self.out,
             self.conn,
@@ -314,7 +315,8 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             self.predict,
             self.panes,
         )
-        .await
+        .await?
+            || dismissed)
     }
 
     /// While a (non-passthrough) overlay is up it captures all input: keys and

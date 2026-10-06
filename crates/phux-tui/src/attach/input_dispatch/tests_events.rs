@@ -1451,6 +1451,47 @@ async fn another_action_dismisses_the_overlay_then_runs() {
     );
 }
 
+/// Copy mode does not mutate the layout, but dismissing the floating box
+/// must still ask the driver for a full repaint.
+#[tokio::test]
+async fn a_non_layout_action_repaints_when_it_dismisses_the_floating_overlay() {
+    let mut env = env_with_floating();
+    let sent = env
+        .dispatch(vec![ctrl_a(), press(PhysicalKey::BracketLeft, Some("["))])
+        .await;
+    assert_eq!(kills(&sent.frames), vec![tid(9)]);
+    assert!(!env.panes.contains_key(&tid(9)));
+    assert!(env.fx.expected_closes.contains(&tid(9)));
+    assert_eq!(env.fx.workspace, crate::layout::Workspace::single(tid(1)));
+    assert!(
+        env.fx.overlays.copy_selection().is_some(),
+        "copy mode still opens"
+    );
+    assert!(
+        sent.repainted,
+        "dismissing the floating box needs a full repaint"
+    );
+}
+
+/// Waiting for the initial layout read blocks the action, not the repaint
+/// needed by the floating overlay it already dismissed.
+#[tokio::test]
+async fn a_blocked_layout_action_repaints_when_it_dismisses_the_floating_overlay() {
+    let mut env = env_with_floating();
+    env.fx.layout_read_complete = false;
+    let sent = env
+        .dispatch(vec![ctrl_a(), press(PhysicalKey::C, Some("c"))])
+        .await;
+    assert_eq!(kills(&sent.frames), vec![tid(9)]);
+    assert_eq!(sent.frames.len(), 1, "new-window must stay blocked");
+    assert!(!env.panes.contains_key(&tid(9)));
+    assert_eq!(env.fx.workspace, crate::layout::Workspace::single(tid(1)));
+    assert!(
+        sent.repainted,
+        "even a blocked action dismissed the floating box"
+    );
+}
+
 /// The pointer inside the box reaches the overlay pane-local; a press
 /// outside the box dismisses it.
 #[tokio::test]
