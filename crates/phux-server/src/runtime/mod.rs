@@ -2434,6 +2434,41 @@ mod tests {
         );
     }
 
+    /// ADR-0145: a vote-free detach that leaves a pane unwatched and below
+    /// the usable minimum returns it to the headless size; a normally sized
+    /// pane keeps its tile, so a GUI or TUI relaunch reflows nothing.
+    #[test]
+    fn vote_free_detach_resets_only_an_unusably_small_pane() {
+        let state = SharedState::new();
+        let (_, window, tiny) = state.with_mut(|s| s.seed_session("home"));
+        let normal = state.with_mut(|s| s.registry_mut().new_terminal(window).unwrap());
+        let mut tiny_rx = register_stub(&state, tiny);
+        let mut normal_rx = register_stub(&state, normal);
+        let client = attach_client(&state, "home");
+        let (tiny_wire, normal_wire) =
+            state.with_mut(|s| (s.intern_terminal_wire(tiny), s.intern_terminal_wire(normal)));
+        handle_terminal_resize(&state, client, &tiny_wire, (1, 1), None);
+        handle_terminal_resize(&state, client, &normal_wire, (116, 37), None);
+        tiny_rx.resize.try_recv().expect("tile resize");
+        normal_rx.resize.try_recv().expect("tile resize");
+
+        state.with_mut(|s| s.detach(client));
+
+        let reset = tiny_rx.resize.try_recv().expect("tiny pane reset");
+        assert_eq!(
+            (reset.cols, reset.rows),
+            crate::state::HEADLESS_TERMINAL_DIMS
+        );
+        assert!(
+            normal_rx.resize.try_recv().is_err(),
+            "normal pane untouched"
+        );
+        assert_eq!(
+            state.with(|s| s.registry().terminal(normal).unwrap().dims),
+            (116, 37)
+        );
+    }
+
     #[test]
     fn viewport_resize_fans_out_only_to_live_subscribed_session_panes() {
         let state = SharedState::new();

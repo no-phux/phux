@@ -14,6 +14,12 @@ fn viewport_cell_px(v: &phux_protocol::wire::frame::ViewportInfo) -> Option<(u16
     (w > 0 && h > 0).then_some((w, h))
 }
 
+/// The smallest grid a vote-free detach may leave an unwatched Terminal at
+/// (ADR-0145): 10 columns fit a short prompt and a typed command, and 3 rows
+/// fit the prompt, its output, and the next prompt. A tile below this only
+/// comes from a degenerate outer window, never a usable layout.
+pub(crate) const MIN_USABLE_TERMINAL_DIMS: (u16, u16) = (10, 3);
+
 impl ServerState {
     /// Subscribed panes of the client's attached session. Foreign resource
     /// subscriptions, including geometry-preserving views, do not become
@@ -96,11 +102,25 @@ impl ServerState {
 
     /// Recompute a departed view's Terminals; with no usable viewport left
     /// they return to the headless size. `Manual` is left alone.
-    pub(super) fn restore_terminal_geometry_after_detach(&mut self, terminals: Vec<ResourceId>) {
+    ///
+    /// A view that cast no vote re-resolves nothing (L1 §9.2), so its
+    /// explicit sizes outlive it. The exception (ADR-0145) is a Terminal it
+    /// leaves with no subscriber at all and smaller than
+    /// [`MIN_USABLE_TERMINAL_DIMS`] on either axis. Unwatched at that size,
+    /// a shell cannot show a prompt and a command, so it returns to the
+    /// headless size. A normally sized pane is never touched.
+    pub(super) fn restore_terminal_geometry_after_detach(
+        &mut self,
+        terminals: Vec<ResourceId>,
+        voted: bool,
+    ) {
         if self.config.window_size == phux_config::WindowSize::Manual {
             return;
         }
         for terminal in terminals {
+            if !voted && !self.is_stranded_below_usable(terminal) {
+                continue;
+            }
             let latest = self.latest_terminal_viewport(terminal);
             let (cols, rows) = self
                 .resolve_terminal_geometry(terminal, latest)
@@ -128,6 +148,17 @@ impl ServerState {
                 pane.dims = (cols, rows);
             }
         }
+    }
+
+    /// No subscriber is left to size `terminal`, and it is smaller than
+    /// [`MIN_USABLE_TERMINAL_DIMS`] on either axis.
+    fn is_stranded_below_usable(&self, terminal: ResourceId) -> bool {
+        let (min_cols, min_rows) = MIN_USABLE_TERMINAL_DIMS;
+        self.subscribers_for_terminal(terminal).is_empty()
+            && self
+                .registry()
+                .terminal(terminal)
+                .is_some_and(|pane| pane.dims.0 < min_cols || pane.dims.1 < min_rows)
     }
 
     fn session_terminals(&self, session: phux_core::ids::SessionId) -> Vec<ResourceId> {

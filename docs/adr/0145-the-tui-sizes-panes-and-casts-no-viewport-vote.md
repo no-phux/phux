@@ -57,6 +57,11 @@ for PTY `winsize` pixels, XTWINOPS and mode-2048 size replies, and for turning
   no pixel metrics, the TUI omits the pair and keeps its 8x16 mouse fallback,
   which matches the server default. Without the bit the TUI behaves as
   before.
+- **Unusable panes still reset.** A vote-free detach re-resolves nothing,
+  except for a Terminal it leaves with no subscriber and smaller than
+  `MIN_USABLE_TERMINAL_DIMS = (10, 3)` on either axis (not under `manual`).
+  That Terminal returns to the headless 80x24. The check lives in the
+  server's one detach re-resolve.
 - **Amends ADR-0027 and ADR-0062 for the TUI.** The `window-size` policy
   still governs any client that votes: agents, the desktop app, mobile and
   old TUIs. It no longer governs panes sized only by vote-free TUIs. Between
@@ -95,6 +100,12 @@ voting instead of leaving that server at the 8x16 default.
 - **Satellites.** A hub forwards the pair on a satellite-routed
   `RESIZE_TERMINAL`. A satellite that predates the fields ignores it, and
   the pane keeps its cell size there.
+- **The minimum is a heuristic.** 10x3 is about the smallest grid where a
+  shell can show a prompt, a typed command and one output line. A real tile
+  is only that small in a degenerate outer window. A deliberately tiny,
+  unwatched pane (say, a 16-way split) is reset on detach. A GUI or TUI
+  relaunch never trips the reset, because normal tiles are far larger. It
+  is a constant, not config: nobody tunes a floor for unusable panes.
 - **Old servers.** A new TUI against an old server votes as before, so it
   keeps the old flap until the server is upgraded.
 
