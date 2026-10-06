@@ -102,6 +102,11 @@ fn run_new_empty_attached(
     target: &ServerTarget,
     requested: Option<String>,
 ) -> ExitCode {
+    if let Some(path) = target.socket_path()
+        && let Err(code) = super::attach::nested_attach_guard(path)
+    {
+        return code;
+    }
     let existing = existing_session_names(rt, target);
     let name = match choose_session_name(requested, &existing) {
         Ok(name) => name,
@@ -212,6 +217,11 @@ fn run_new_attached(
     command: Vec<String>,
     cwd: Option<PathBuf>,
 ) -> ExitCode {
+    if let Some(path) = target.socket_path()
+        && let Err(code) = super::attach::nested_attach_guard(path)
+    {
+        return code;
+    }
     let existing = existing_session_names(rt, target);
     let name = match choose_session_name(requested, &existing) {
         Ok(name) => name,

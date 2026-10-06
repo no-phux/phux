@@ -33,6 +33,7 @@ Every environment variable the `phux` binary reads, from the canonical in-code t
 | `PHUX_SSH` | OpenSSH-compatible program used to reach ssh:// hosts and satellites (default: `ssh` on PATH). |
 | `PHUX_TAILSCALE` | Tailscale-compatible CLI used to detect the overlay address (default: `tailscale` on PATH) for `phux pair`, `phux doctor`, and the server's auto-bound remote listener. When set it is the only source consulted: naming a command that reports nothing turns overlay detection off everywhere. |
 | `PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE` | Idle limit in seconds (1..=86400) for an auto-spawned server, as if started with `phux server --exit-after-idle`. Unset means no limit. For test harnesses and CI jobs that cannot guarantee their own cleanup runs. |
+| `PHUX_ALLOW_NESTED` | Set (non-empty) to let `phux`, `phux attach`, and `phux new` attach from inside one of the same server's panes, which they otherwise refuse (exit 2). |
 | `PHUX_LOG` | Write logs to this file (the server tees to it; the client writes only here). |
 | `PHUX_LOG_FORMAT` | `text` (default) or `json`: the log line format. |
 | `RUST_LOG` | tracing level filter, e.g. `phux=debug`. |
