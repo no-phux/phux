@@ -343,9 +343,15 @@ u8_flag_set! {
 pub enum EngineCodec {
     /// libghostty terminal checkpoint format version 2.
     LibghosttyCheckpointV2 = 2,
-    /// Official `GHOSTSNPv1` feed snapshot with a progressive READY boundary.
-    /// Id `3` is the capability, not the envelope's internal version.
-    LibghosttySnapshotV1 = 3,
+    /// Official `GHOSTSNPv1` feed snapshot with a progressive READY boundary
+    /// and empty READY/FINISH markers. Id `4` is the capability, not the
+    /// envelope's internal version.
+    ///
+    /// Id `3` is permanently retired: it named the earlier `GHOSTSNPv1`
+    /// bytes whose READY/FINISH carried BLAKE3 digests. Neither engine
+    /// decodes the other's bytes, so id `3` is never advertised and is
+    /// ignored on receipt.
+    LibghosttySnapshotV1 = 4,
 }
 
 impl EngineCodec {
@@ -360,7 +366,7 @@ impl EngineCodec {
     pub const fn from_wire(value: u8) -> Option<Self> {
         match value {
             2 => Some(Self::LibghosttyCheckpointV2),
-            3 => Some(Self::LibghosttySnapshotV1),
+            4 => Some(Self::LibghosttySnapshotV1),
             _ => None,
         }
     }
@@ -397,7 +403,7 @@ pub struct EngineCodecSet(u64);
 
 impl EngineCodecSet {
     const V2_BIT: u64 = 1 << 2;
-    const SNAPSHOT_V1_BIT: u64 = 1 << 3;
+    const SNAPSHOT_V1_BIT: u64 = 1 << 4;
     const KNOWN: u64 = Self::V2_BIT | Self::SNAPSHOT_V1_BIT;
 
     /// Empty codec set.
