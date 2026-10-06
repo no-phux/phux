@@ -50,17 +50,19 @@ pub(crate) fn run_config(action: &ConfigAction, socket: Option<std::path::PathBu
 /// chords that do not parse, unknown actions (with a suggestion), and shadowed
 /// bindings. Exit 0 clean, 1 findings, 2 the check could not run.
 fn run_config_check(path: Option<&Path>, json: bool) -> ExitCode {
+    let explicit = path.is_some();
     let path = path.map_or_else(config_loader::config_path, Path::to_path_buf);
 
-    // A missing file is clean, not an error: no config means no overrides,
-    // exactly as the loader treats it.
+    // A missing default file is clean, not an error: no config means no
+    // overrides, exactly as the loader treats it. A PATH the caller named is
+    // different: a typo there must not pass a CI gate as "clean".
     let mut missing = false;
     let body = match std::fs::read_to_string(&path) {
         Ok(body) => body,
         // A missing file is clean, but say so rather than printing "ok" for
         // a path that does not exist — the operator may have checked the
         // wrong file, and a bare "ok" would hide that.
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound && !explicit => {
             missing = true;
             String::new()
         }

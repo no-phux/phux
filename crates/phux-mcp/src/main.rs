@@ -61,11 +61,11 @@ const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 const SKILL: &str = include_str!("../../../.agents/skills/using-phux-mcp/SKILL.md");
 const HELP: &str = "phux-mcp - MCP stdio adapter for phux\n\n\
 Usage: phux-mcp [OPTION]\n\n\
-Options:\n  \
-  --skill   Print the agent operating guide compiled into this binary\n  \
-  --schema  Print the same MCP tool catalog returned by tools/list\n  \
-  -h, --help     Print help\n  \
-  -V, --version  Print version\n\n\
+Options:\n\
+\x20     --skill    Print the agent operating guide compiled into this binary\n\
+\x20     --schema   Print the same MCP tool catalog returned by tools/list\n\
+\x20 -h, --help     Print help\n\
+\x20 -V, --version  Print version\n\n\
 With no arguments, serve MCP over newline-delimited JSON-RPC on stdin/stdout.\n";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -428,6 +428,29 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::Duration;
+
+    /// Every option's description starts in one column, as clap lays it
+    /// out for `phux --help`.
+    #[test]
+    fn help_options_share_one_description_column() {
+        let columns: Vec<usize> = super::HELP
+            .lines()
+            .skip_while(|line| *line != "Options:")
+            .skip(1)
+            .take_while(|line| !line.is_empty())
+            .map(|line| {
+                let flags_end = line.trim_start().find("  ").expect("flag then gap");
+                let start = line.len() - line.trim_start().len() + flags_end;
+                start + line[start..].len() - line[start..].trim_start().len()
+            })
+            .collect();
+        assert_eq!(columns.len(), 4, "{}", super::HELP);
+        assert!(
+            columns.windows(2).all(|w| w[0] == w[1]),
+            "{columns:?}\n{}",
+            super::HELP
+        );
+    }
 
     use tempfile::TempDir;
     use tokio::io::{AsyncWriteExt, BufReader};
