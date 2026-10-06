@@ -79,6 +79,7 @@ impl ControlPlane {
                 terminal_id,
                 cols: self.viewport.desired.cols,
                 rows: self.viewport.desired.rows,
+                cell_px: None,
             });
         }
     }
@@ -116,6 +117,7 @@ impl ControlPlane {
             terminal_id: terminal_id.clone(),
             cols,
             rows,
+            cell_px: None,
         });
         TerminalResizeOutcome::Queued
     }

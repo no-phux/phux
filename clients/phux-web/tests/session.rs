@@ -1686,6 +1686,7 @@ async fn closing_a_pane_waits_for_resource_closed_and_restores_sibling_size() {
                 terminal_id,
                 cols,
                 rows,
+                ..
             } => (terminal_id, cols, rows),
             other => panic!("expected addressed resize, got {other:?}"),
         })
@@ -1720,7 +1721,7 @@ async fn closing_a_pane_waits_for_resource_closed_and_restores_sibling_size() {
     assert_eq!(session.focused_pane(), Some(original.clone()));
     assert_eq!(session.pane_rects()[0].1.cols, 60);
     assert!(closed.send.iter().any(|frame| matches!(decode_one(frame),
-        FrameKind::ResizeTerminal { terminal_id, cols: 60, rows: 15 } if terminal_id == original)));
+        FrameKind::ResizeTerminal { terminal_id, cols: 60, rows: 15, .. } if terminal_id == original)));
     assert!(session.close_pane_frame().is_err());
     assert!(session.key_frame(key()).is_some());
 }

@@ -174,7 +174,9 @@
       "fields": [
         {"id":1,"name":"TERMINAL_ID","type":"ResourceId","presence":"required"},
         {"id":2,"name":"COLS","type":"u16","presence":"optional"},
-        {"id":3,"name":"ROWS","type":"u16","presence":"optional"}
+        {"id":3,"name":"ROWS","type":"u16","presence":"optional"},
+        {"id":4,"name":"CELL_WIDTH_PX","type":"u16","presence":"optional"},
+        {"id":5,"name":"CELL_HEIGHT_PX","type":"u16","presence":"optional"}
       ]
     },
     {

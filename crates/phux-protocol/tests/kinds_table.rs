@@ -470,6 +470,7 @@ fn every_client_frame_type_has_a_classification() {
                 terminal_id: local,
                 cols: 80,
                 rows: 24,
+                cell_px: None,
             }
             .type_byte()
         )

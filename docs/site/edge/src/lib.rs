@@ -205,6 +205,7 @@ impl EdgeSession {
                 terminal_id,
                 cols,
                 rows,
+                cell_px: _,
             } => self.resize(&terminal_id, cols, rows),
             FrameKind::InputKey { terminal_id, event } => self.input_key(&terminal_id, &event),
             FrameKind::InputPaste { terminal_id, event } => self.input_paste(&terminal_id, &event),

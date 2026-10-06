@@ -34,18 +34,20 @@ pub(super) fn view_rects(
 }
 
 /// Emit `RESIZE_TERMINAL` for each pane whose rect changed from `prev_rects`
-/// (after a zoom or sidebar toggle), before repainting.
+/// (after a zoom or sidebar toggle), before repainting. `cell_px` rides
+/// every resize when the server applies it (ADR-0145).
 pub(super) async fn emit_view_reflow(
     conn: &mut Connection,
     workspace: &Workspace,
     zoomed: Option<&ResourceId>,
     prev_rects: &HashMap<ResourceId, crate::layout::Rect>,
     content: crate::layout::Rect,
+    cell_px: Option<(u16, u16)>,
 ) -> Result<(), AttachError> {
     let Some(ls) = workspace.render_window(zoomed) else {
         return Ok(());
     };
-    emit_layout_reflow(conn, ls.as_ref(), prev_rects, content).await
+    emit_layout_reflow(conn, ls.as_ref(), prev_rects, content, cell_px).await
 }
 
 /// Emit `RESIZE_TERMINAL` for each pane whose painted tile changed size
@@ -56,6 +58,7 @@ pub(super) async fn emit_moved_tiles(
     conn: &mut Connection,
     prev_rects: &HashMap<ResourceId, crate::layout::Rect>,
     rects: &HashMap<ResourceId, crate::layout::Rect>,
+    cell_px: Option<(u16, u16)>,
 ) -> Result<(), AttachError> {
     for (terminal_id, rect) in rects {
         let moved = prev_rects
@@ -68,6 +71,7 @@ pub(super) async fn emit_moved_tiles(
             terminal_id: terminal_id.clone(),
             cols: rect.w,
             rows: rect.h,
+            cell_px,
         })
         .await?;
     }
@@ -81,13 +85,22 @@ pub(super) async fn emit_bootstrap_workspace_reflow(
     workspace: &Workspace,
     zoomed: Option<&ResourceId>,
     content: crate::layout::Rect,
+    cell_px: Option<(u16, u16)>,
 ) -> Result<(), AttachError> {
     let no_previous_rects = HashMap::new();
     for (index, window) in workspace.windows.iter().enumerate() {
         if index == workspace.active {
-            emit_view_reflow(conn, workspace, zoomed, &no_previous_rects, content).await?;
+            emit_view_reflow(
+                conn,
+                workspace,
+                zoomed,
+                &no_previous_rects,
+                content,
+                cell_px,
+            )
+            .await?;
         } else {
-            emit_layout_reflow(conn, &window.state, &no_previous_rects, content).await?;
+            emit_layout_reflow(conn, &window.state, &no_previous_rects, content, cell_px).await?;
         }
     }
     Ok(())
@@ -99,6 +112,7 @@ async fn emit_layout_reflow(
     layout: &LayoutState,
     prev_rects: &HashMap<ResourceId, crate::layout::Rect>,
     content: crate::layout::Rect,
+    cell_px: Option<(u16, u16)>,
 ) -> Result<(), AttachError> {
     let diff = crate::attach::reflow::compute_reflow(layout, prev_rects, content);
     if diff.too_small {
@@ -122,6 +136,7 @@ async fn emit_layout_reflow(
                 terminal_id: terminal_id.clone(),
                 cols: new_rect.w,
                 rows: new_rect.h,
+                cell_px,
             },
         )
         .await?;
@@ -153,15 +168,29 @@ pub(super) const HOST_CELL_PX_FALLBACK: (u16, u16) = (8, 16);
 /// The host's per-cell pixel size, floored exactly as the server derives it
 /// (SPEC L1 §9.2.1).
 pub(super) fn host_cell_px(viewport: &ViewportInfo) -> (u16, u16) {
-    let derived = (|| {
-        if viewport.cols == 0 || viewport.rows == 0 {
-            return None;
-        }
-        let w = viewport.pixel_w? / viewport.cols;
-        let h = viewport.pixel_h? / viewport.rows;
-        (w > 0 && h > 0).then_some((w, h))
-    })();
-    derived.unwrap_or(HOST_CELL_PX_FALLBACK)
+    reported_cell_px(viewport).unwrap_or(HOST_CELL_PX_FALLBACK)
+}
+
+/// The cell size the host actually reported, or `None` without usable pixel
+/// metrics (the server then keeps the pane's last cell size).
+fn reported_cell_px(viewport: &ViewportInfo) -> Option<(u16, u16)> {
+    if viewport.cols == 0 || viewport.rows == 0 {
+        return None;
+    }
+    let w = viewport.pixel_w? / viewport.cols;
+    let h = viewport.pixel_h? / viewport.rows;
+    (w > 0 && h > 0).then_some((w, h))
+}
+
+/// ADR-0145: the cell size each `RESIZE_TERMINAL` carries. `None` against a
+/// server that does not apply it (it still gets the legacy viewport vote)
+/// or when the host reports no pixel metrics.
+pub(super) fn resize_cell_px(pane_sized: bool, viewport: &ViewportInfo) -> Option<(u16, u16)> {
+    if pane_sized {
+        reported_cell_px(viewport)
+    } else {
+        None
+    }
 }
 
 /// Read the controlling-TTY size via `tcgetwinsize` and return the
@@ -217,7 +246,7 @@ mod tests {
         let mut client = Connection::from_stream(client_stream);
         let mut server = Connection::from_stream(server_stream);
         let (sent, received) = tokio::join!(
-            emit_bootstrap_workspace_reflow(&mut client, &workspace, None, content),
+            emit_bootstrap_workspace_reflow(&mut client, &workspace, None, content, Some((9, 18))),
             async {
                 [
                     server.recv().await.expect("first resize frame"),
@@ -236,13 +265,28 @@ mod tests {
                     terminal_id,
                     cols: 100,
                     rows: 30,
+                    cell_px: Some((9, 18)),
                 } => terminal_id,
-                other => panic!("expected 100x30 resize, got {other:?}"),
+                other => panic!("expected 100x30 resize at 9x18 px, got {other:?}"),
             })
             .collect();
         assert_eq!(
             resized,
             [ResourceId::local(1), second].into_iter().collect()
+        );
+    }
+
+    /// ADR-0145: the resize cell size is the host's reported cell, only
+    /// when the server applies it and the host reports pixel metrics.
+    #[test]
+    fn resize_cell_px_needs_the_feature_and_real_metrics() {
+        let metered = ViewportInfo::new(100, 30).with_pixels(Some(900), Some(540));
+        assert_eq!(resize_cell_px(true, &metered), Some((9, 18)));
+        assert_eq!(resize_cell_px(false, &metered), None);
+        assert_eq!(resize_cell_px(true, &ViewportInfo::new(100, 30)), None);
+        assert_eq!(
+            host_cell_px(&ViewportInfo::new(100, 30)),
+            HOST_CELL_PX_FALLBACK
         );
     }
 
@@ -275,6 +319,7 @@ mod tests {
                 w: 100,
                 h: 30,
             },
+            None,
         )
         .await
         .expect("a peer-gone resize must leave the read side in charge");

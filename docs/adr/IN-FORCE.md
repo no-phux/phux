@@ -23,6 +23,7 @@ by a newer one, the newer line is the operative reading.
 
 ## Identity and kinds
 
+- [0145](./0145-the-tui-sizes-panes-and-casts-no-viewport-vote.md) The TUI casts no `window-size` vote and sizes each pane with `RESIZE_TERMINAL`, which carries an optional cell pixel size.
 - [0126](./0126-idempotent-create.md) A spawn may carry a client key; a retry with the same key and payload returns the original resource, and a different payload is refused.
 - [0125](./0125-kind-catalog-is-generated-metadata.md) One compiled table in `phux_protocol::kinds` is both the per-kind method catalog and the workload-auth classifier; no catalog frame, no string-invoked methods, and discovery grants nothing.
 - [0124](./0124-retain-on-exit.md) A spawn may ask to keep its Terminal after exit; the exit becomes a facet and `RESOURCE_CLOSED` stays the one purge.

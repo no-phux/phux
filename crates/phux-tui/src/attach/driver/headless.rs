@@ -8,7 +8,6 @@ use std::time::Duration;
 use phux_client_core::engine::ghostty::GhosttyAdapter;
 use phux_client_core::history::HistoryCacheConfig;
 use phux_client_core::session::SessionKernel;
-use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::{ResourceId, SessionId};
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, Scope};
 
@@ -27,8 +26,7 @@ use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layou
 
 use super::chrome::{agent_entries, window_infos};
 use super::session_io::{
-    attach_client_caps, attach_client_name, send_attach_without_size_vote, send_terminal_replies,
-    take_terminal_replies, wait_for_attached,
+    attach_client_caps, attach_client_name, send_attach_without_size_vote, wait_for_attached,
 };
 use crate::settings::TuiSettings;
 
@@ -389,17 +387,11 @@ async fn drain_until_settled(
     attach_id: &mut u32,
     focused_session: Option<SessionId>,
     layout_get_request_id: Option<u32>,
-    terminal_reply_supported: bool,
 ) -> Result<(), AttachError> {
     loop {
         let frame = conn.recv().await?;
         completion.observe_frame(&frame, *attach_id);
-        let mut outcome = session.ingest(frame, focused_session, layout_get_request_id)?;
-        send_terminal_replies(
-            conn,
-            take_terminal_replies(&mut outcome, terminal_reply_supported),
-        )
-        .await?;
+        let outcome = session.ingest(frame, focused_session, layout_get_request_id)?;
         if outcome.resync_required {
             *attach_id = restart_attach(conn, &session.mirror.session_name, completion).await?;
             continue;
@@ -442,9 +434,6 @@ pub async fn run_headless_rendered(
     let negotiated = conn.negotiated_bootstrap().ok_or_else(|| {
         AttachError::Protocol("headless attach lacks negotiated bootstrap".to_owned())
     })?;
-    let terminal_reply_supported = negotiated
-        .server_features
-        .contains(ServerFeature::TerminalReply);
     let history_config = HistoryCacheConfig {
         request_max_bytes: negotiated.limits.max_history_page_bytes(),
         ..HistoryCacheConfig::default()
@@ -481,7 +470,6 @@ pub async fn run_headless_rendered(
             &mut attach_id,
             focused_session,
             layout_get_request_id,
-            terminal_reply_supported,
         ),
     )
     .await;

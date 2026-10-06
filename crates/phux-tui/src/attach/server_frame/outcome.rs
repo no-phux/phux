@@ -82,8 +82,6 @@ pub(in crate::attach) struct FrameOutcome {
     /// Pull the next opaque native history page after READY or a prior page.
     pub(in crate::attach) history_request:
         Option<(ResourceId, StreamId, BootstrapId, bytes::Bytes, u32, u32)>,
-    /// Exact terminal-engine response writes to forward on the ordered PTY lane.
-    pub(in crate::attach) pty_writes: Vec<(ResourceId, Vec<u8>)>,
     /// A `DIRECTORY_LISTING` reply for the driver to match.
     pub(in crate::attach) directory_listing:
         Option<(u32, phux_protocol::wire::frame::DirectoryListingResult)>,

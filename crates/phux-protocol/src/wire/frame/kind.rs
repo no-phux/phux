@@ -589,6 +589,10 @@ pub enum FrameKind {
         cols: u16,
         /// New height in cells.
         rows: u16,
+        /// Cell size in pixels `(width, height)`, fields 4/5 (ADR-0145).
+        /// `None` keeps the Terminal's last cell size; a server that
+        /// predates the fields skips them by length.
+        cell_px: Option<(u16, u16)>,
     },
 
     /// `COMMAND` — control-plane request envelope (`docs/spec/L1.md` §5,
@@ -1148,7 +1152,8 @@ impl FrameKind {
                 terminal_id,
                 cols,
                 rows,
-            } => Self::encode_terminal_resize(enc, terminal_id, *cols, *rows),
+                cell_px,
+            } => Self::encode_terminal_resize(enc, terminal_id, *cols, *rows, *cell_px),
             Self::Command {
                 request_id,
                 command,
@@ -1838,10 +1843,15 @@ impl FrameKind {
         terminal_id: &ResourceId,
         cols: u16,
         rows: u16,
+        cell_px: Option<(u16, u16)>,
     ) {
         id_field(enc, field::terminal_resize::TERMINAL_ID, terminal_id);
         u16_field(enc, field::terminal_resize::COLS, cols);
         u16_field(enc, field::terminal_resize::ROWS, rows);
+        if let Some((width, height)) = cell_px {
+            u16_field(enc, field::terminal_resize::CELL_WIDTH_PX, width);
+            u16_field(enc, field::terminal_resize::CELL_HEIGHT_PX, height);
+        }
     }
 
     /// Write the `COMMAND` payload.

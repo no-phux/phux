@@ -285,6 +285,7 @@ fn samples(world: &World) -> Vec<FrameKind> {
             terminal_id: t.clone(),
             cols: 80,
             rows: 24,
+            cell_px: None,
         },
         FrameKind::MoveResource {
             request_id: 1,
@@ -779,6 +780,7 @@ fn rows(world: &mut World) -> Vec<Row> {
                 terminal_id: t.clone(),
                 cols: 80,
                 rows: 24,
+                cell_px: None,
             },
             "bind",
         ),

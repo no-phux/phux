@@ -2153,6 +2153,7 @@ mod tests {
                 terminal_id: ResourceId::local(1),
                 cols: 80,
                 rows: 24,
+                cell_px: None,
             };
             let err = client.send(&resize).await.expect_err("peer is gone");
             assert!(

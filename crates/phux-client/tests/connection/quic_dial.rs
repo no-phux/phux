@@ -316,6 +316,7 @@ async fn viewport_vote_precedes_exact_resize_across_quic_streams() {
         terminal_id: terminal_id.clone(),
         cols: 98,
         rows: 37,
+        cell_px: None,
     };
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
     let server = async {

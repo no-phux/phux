@@ -43,8 +43,7 @@ use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
     AgentEvent, AttachTarget, Command, CommandResult, CommandValue, DetachReason, ErrorCode,
     FrameKind, HistoryRejectionReason as WireRejection, HistoryTombstoneReason as WireTombstone,
-    MAX_APPLY_INPUT_COMMAND_BODY, MAX_INPUT_TERMINAL_REPLY_BYTES, RolePolicy, SpawnResult,
-    StateScope, ViewportInfo,
+    MAX_APPLY_INPUT_COMMAND_BODY, RolePolicy, SpawnResult, StateScope, ViewportInfo,
 };
 use phux_protocol::wire::info::SessionSnapshot;
 

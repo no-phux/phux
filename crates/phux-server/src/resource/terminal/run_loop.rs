@@ -872,14 +872,13 @@ impl TerminalActor {
                 (!last.is_empty()).then_some(last)
             });
         let cell_px = (self.cell_px != (0, 0)).then_some(self.cell_px);
-        let title = (!self.last_title.is_empty()).then(|| self.last_title.clone());
         let _ = req.reply.send(PaneUpgradeHandle {
             master_fd,
             child_pid,
             cols: self.cols,
             rows: self.rows,
             cell_px,
-            title,
+            osc_title: self.live_osc_title(),
             cwd,
             vt_replay_bytes: snap.bytes,
             scrollback_bytes: snap.scrollback,

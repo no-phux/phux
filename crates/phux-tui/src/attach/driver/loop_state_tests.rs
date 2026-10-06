@@ -164,6 +164,18 @@ async fn loop_with_window_on(
 async fn loop_before_drain(
     features: ServerFeatureSet,
 ) -> (SessionLoop, Connection, Connection, Vec<u8>) {
+    Box::pin(loop_before_drain_ext(
+        features,
+        phux_protocol::ServerFeatureExtSet::new(),
+    ))
+    .await
+}
+
+/// [`loop_before_drain`] with an extended-feature word as well.
+async fn loop_before_drain_ext(
+    features: ServerFeatureSet,
+    features_ext: phux_protocol::ServerFeatureExtSet,
+) -> (SessionLoop, Connection, Connection, Vec<u8>) {
     let (a, b) = tokio::net::UnixStream::pair().unwrap();
     let mut client = Connection::from_stream(a);
     let server = Connection::from_stream(b);
@@ -171,7 +183,7 @@ async fn loop_before_drain(
         profile: BootstrapProfile::SynthesizedVtRaw,
         limits: BootstrapLimits::default(),
         server_features: features,
-        server_features_ext: phux_protocol::ServerFeatureExtSet::new(),
+        server_features_ext: features_ext,
     };
     let mut state = SessionLoop::new(
         negotiated,
@@ -367,6 +379,7 @@ async fn late_bound_reflow_uses_current_zoom_and_chrome_once() {
                 terminal_id,
                 cols,
                 rows,
+                ..
             } => (terminal_id, (cols, rows)),
             other => panic!("unexpected late-bind frame: {other:?}"),
         })
@@ -402,11 +415,41 @@ async fn sigwinch_reasserts_pane_targets_when_host_cells_are_unchanged() {
             sent.as_slice(),
             [
                 FrameKind::ViewportResize { .. },
-                FrameKind::ResizeTerminal { terminal_id, cols, rows },
+                FrameKind::ResizeTerminal { terminal_id, cols, rows, .. },
             ] if terminal_id == &ResourceId::local(1)
                 && (*cols, *rows) == (content.w, content.h)
         ),
         "a session vote must be followed by the explicit chrome-inset target: {sent:?}"
+    );
+}
+
+/// ADR-0145: against a server that applies per-pane cell size, an outer
+/// resize sends no window-size vote, only each pane's exact tile, so no pane
+/// is ever sized to the full outer window on the way to its tile.
+#[tokio::test(flavor = "current_thread")]
+async fn sigwinch_sends_only_pane_targets_when_the_server_applies_cell_px() {
+    use phux_protocol::{ServerFeatureExt, ServerFeatureExtSet};
+    let (mut state, mut client, mut server, mut out) = Box::pin(loop_before_drain_ext(
+        ServerFeatureSet::new(),
+        ServerFeatureExtSet::with(&[ServerFeatureExt::ResizeCellPx]),
+    ))
+    .await;
+    state
+        .emit_deferred_bootstrap_outbound(&mut client)
+        .await
+        .unwrap();
+    let _ = frames_sent(&mut client, &mut server).await;
+    state.on_resize(&mut client, &mut out, None).await.unwrap();
+    let content = state.content(None);
+    let sent = frames_sent(&mut client, &mut server).await;
+    assert!(
+        matches!(
+            sent.as_slice(),
+            [FrameKind::ResizeTerminal { terminal_id, cols, rows, .. }]
+                if terminal_id == &ResourceId::local(1)
+                    && (*cols, *rows) == (content.w, content.h)
+        ),
+        "no VIEWPORT_RESIZE vote, only the chrome-inset tile: {sent:?}"
     );
 }
 

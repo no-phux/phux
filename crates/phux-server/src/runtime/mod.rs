@@ -2380,6 +2380,120 @@ mod tests {
         );
     }
 
+    /// ADR-0145: `RESIZE_TERMINAL` carries a cell size to the actor when it
+    /// has one, and `None` (actor keeps its last cell size) when it has none
+    /// or a degenerate one.
+    #[test]
+    fn terminal_resize_forwards_cell_px_or_keeps_the_last() {
+        let state = SharedState::new();
+        let (_, _, pane) = state.with_mut(|s| s.seed_session("home"));
+        let mut rx = register_stub(&state, pane);
+        let client = attach_client(&state, "home");
+        let wire = state.with_mut(|s| s.intern_terminal_wire(pane));
+
+        handle_terminal_resize(&state, client, &wire, (100, 40), Some((9, 18)));
+        let sized = rx.resize.try_recv().expect("resize queued");
+        assert_eq!(
+            (sized.cols, sized.rows, sized.cell_px),
+            (100, 40, Some((9, 18)))
+        );
+
+        handle_terminal_resize(&state, client, &wire, (90, 30), None);
+        assert_eq!(rx.resize.try_recv().expect("resize").cell_px, None);
+
+        handle_terminal_resize(&state, client, &wire, (90, 30), Some((0, 18)));
+        assert_eq!(rx.resize.try_recv().expect("resize").cell_px, None);
+        assert_eq!(
+            state.with(|s| s.registry().terminal(pane).unwrap().dims),
+            (90, 30)
+        );
+    }
+
+    /// ADR-0145 regression: a pane-sizing client (the TUI) attaches with no
+    /// vote and sizes the pane once with its tile; detaching and re-attaching
+    /// (a sidebar session switch) never resizes it. A legacy outer-window
+    /// vote resized the pane to the full window first, then to the tile, and
+    /// the departing vote shrank it to the headless size: three PTY sizes per
+    /// switch, each tearing output written for the previous width.
+    #[test]
+    fn pane_sizing_attach_resizes_each_pane_at_most_once() {
+        let state = SharedState::new();
+        let (_, _, pane) = state.with_mut(|s| s.seed_session("home"));
+        let mut rx = register_stub(&state, pane);
+        let target = || {
+            state.with_mut(|s| crate::state::AttachSnapshotPane {
+                terminal_id: pane,
+                handle: s.resource_handle(pane).unwrap().clone(),
+                wire_terminal_id: s.intern_terminal_wire(pane),
+            })
+        };
+        let no_vote = ViewportInfo::new(0, 0);
+        let mut sizes = Vec::new();
+        let mut drain = |rx: &mut StubRx| {
+            while let Ok(request) = rx.resize.try_recv() {
+                sizes.push((request.cols, request.rows));
+            }
+        };
+
+        let client = attach_client(&state, "home");
+        attach::apply_attach_viewport(&state, client, &[target()], no_vote);
+        handle_terminal_resize(
+            &state,
+            client,
+            &target().wire_terminal_id,
+            (116, 37),
+            Some((9, 18)),
+        );
+        drain(&mut rx);
+        // A session switch: detach, then attach again the same way.
+        state.with_mut(|s| s.detach(client));
+        drain(&mut rx);
+        let again = attach_client(&state, "home");
+        attach::apply_attach_viewport(&state, again, &[target()], no_vote);
+        drain(&mut rx);
+
+        assert_eq!(sizes, [(116, 37)], "one tile resize, never the full window");
+        assert_eq!(
+            state.with(|s| s.registry().terminal(pane).unwrap().dims),
+            (116, 37)
+        );
+    }
+
+    /// ADR-0145: a vote-free detach that leaves a pane unwatched and below
+    /// the usable minimum returns it to the headless size; a normally sized
+    /// pane keeps its tile, so a GUI or TUI relaunch reflows nothing.
+    #[test]
+    fn vote_free_detach_resets_only_an_unusably_small_pane() {
+        let state = SharedState::new();
+        let (_, window, tiny) = state.with_mut(|s| s.seed_session("home"));
+        let normal = state.with_mut(|s| s.registry_mut().new_terminal(window).unwrap());
+        let mut tiny_rx = register_stub(&state, tiny);
+        let mut normal_rx = register_stub(&state, normal);
+        let client = attach_client(&state, "home");
+        let (tiny_wire, normal_wire) =
+            state.with_mut(|s| (s.intern_terminal_wire(tiny), s.intern_terminal_wire(normal)));
+        handle_terminal_resize(&state, client, &tiny_wire, (1, 1), None);
+        handle_terminal_resize(&state, client, &normal_wire, (116, 37), None);
+        tiny_rx.resize.try_recv().expect("tile resize");
+        normal_rx.resize.try_recv().expect("tile resize");
+
+        state.with_mut(|s| s.detach(client));
+
+        let reset = tiny_rx.resize.try_recv().expect("tiny pane reset");
+        assert_eq!(
+            (reset.cols, reset.rows),
+            crate::state::HEADLESS_TERMINAL_DIMS
+        );
+        assert!(
+            normal_rx.resize.try_recv().is_err(),
+            "normal pane untouched"
+        );
+        assert_eq!(
+            state.with(|s| s.registry().terminal(normal).unwrap().dims),
+            (116, 37)
+        );
+    }
+
     #[test]
     fn viewport_resize_fans_out_only_to_live_subscribed_session_panes() {
         let state = SharedState::new();
@@ -2399,7 +2513,7 @@ mod tests {
             s.restore_retained_exit(retained, phux_protocol::wire::info::ExitFacet::new(1, 1000));
         });
         let foreign_wire = state.with_mut(|s| s.intern_terminal_wire(foreign));
-        handle_terminal_resize(&state, client, &foreign_wire, 137, 57);
+        handle_terminal_resize(&state, client, &foreign_wire, (137, 57), None);
         receivers[3]
             .resize
             .try_recv()
@@ -2465,7 +2579,7 @@ mod tests {
             assert_eq!((request.cols, request.rows), expected);
         }
         let wire = state.with_mut(|s| s.intern_terminal_wire(pane));
-        handle_terminal_resize(&state, large, &wire, 99, 33);
+        handle_terminal_resize(&state, large, &wire, (99, 33), None);
         receiver.resize.try_recv().expect("exact resize");
         state.with_mut(|s| s.set_window_size(WindowSize::Smallest));
         handle_viewport_resize(&state, large, &ViewportInfo::new(0, 50));
@@ -2502,7 +2616,7 @@ mod tests {
             state.with(|s| s.registry().terminal(pane).unwrap().dims),
             (80, 24)
         );
-        handle_terminal_resize(&state, client, &target.wire_terminal_id, 99, 33);
+        handle_terminal_resize(&state, client, &target.wire_terminal_id, (99, 33), None);
         assert_eq!(
             state.with(|s| s.registry().terminal(pane).unwrap().dims),
             (80, 24)

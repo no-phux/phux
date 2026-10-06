@@ -142,7 +142,6 @@ impl<W: crate::attach::RenderSink> FrameCtx<'_, W> {
 fn agent_stream_outcome(terminal_id: &ResourceId, route: KernelRoute) -> FrameOutcome {
     FrameOutcome {
         chrome_dirty: route.agent_touched.contains(terminal_id),
-        pty_writes: route.pty_writes,
         notices: route.notices,
         ..FrameOutcome::default()
     }
@@ -295,12 +294,7 @@ fn dispatch_frame<W: crate::attach::RenderSink>(
             terminal_id,
             payload,
             ..
-        } => Ok(record_bootstrap_chunk(
-            ctx,
-            &terminal_id,
-            payload.len(),
-            route,
-        )),
+        } => Ok(record_bootstrap_chunk(ctx, &terminal_id, payload.len())),
         // A record stream has nothing to paint: its READY and its live
         // output only refresh the chrome that projects it.
         FrameKind::BootstrapReady { terminal_id, .. }
@@ -316,7 +310,6 @@ fn dispatch_frame<W: crate::attach::RenderSink>(
         | FrameKind::HistoryTombstone { .. }
         | FrameKind::HistoryRejected { .. } => Ok(FrameOutcome {
             history_request: route.history_request,
-            pty_writes: route.pty_writes,
             notices: route.notices,
             ..FrameOutcome::default()
         }),
@@ -525,20 +518,16 @@ fn seed_bootstrap_geometry<W: crate::attach::RenderSink>(
     Ok(FrameOutcome::default())
 }
 
-/// Record a bootstrap chunk on the span and forward the kernel's PTY writes.
+/// Record a bootstrap chunk on the span; staging has nothing to paint.
 fn record_bootstrap_chunk<W: crate::attach::RenderSink>(
     ctx: &FrameCtx<'_, W>,
     terminal_id: &ResourceId,
     payload_len: usize,
-    route: KernelRoute,
 ) -> FrameOutcome {
     ctx.frame_span
         .record("terminal_id", tracing::field::debug(terminal_id));
     ctx.frame_span.record("bytes", payload_len);
-    FrameOutcome {
-        pty_writes: route.pty_writes,
-        ..FrameOutcome::default()
-    }
+    FrameOutcome::default()
 }
 
 /// Refresh the pane's chrome caches from the replica the bootstrap just
@@ -565,7 +554,6 @@ fn handle_bootstrap_ready<W: crate::attach::RenderSink>(
         authoritative_damage: damaged.then(|| terminal_id.clone()).into_iter().collect(),
         chrome_dirty: damaged && title_changed,
         history_request: route.history_request,
-        pty_writes: route.pty_writes,
         ..FrameOutcome::default()
     })
 }
@@ -608,7 +596,6 @@ fn handle_terminal_output<W: crate::attach::RenderSink>(
 ) -> Result<FrameOutcome, AttachError> {
     let damaged = route.damaged(terminal_id);
     let ack = route.ack;
-    let pty_writes = route.pty_writes;
     // Live output can retire scrollback; every exit carries the notice.
     let notices = route.notices;
     // The span's CLOSE duration is the per-frame client paint cost.
@@ -641,7 +628,6 @@ fn handle_terminal_output<W: crate::attach::RenderSink>(
     if !damaged {
         return Ok(FrameOutcome {
             ack,
-            pty_writes,
             notices,
             ..FrameOutcome::default()
         });
@@ -659,7 +645,6 @@ fn handle_terminal_output<W: crate::attach::RenderSink>(
             ack,
             authoritative_damage: vec![terminal_id.clone()],
             chrome_dirty: title_changed,
-            pty_writes,
             notices,
             ..FrameOutcome::default()
         });
@@ -686,7 +671,6 @@ fn handle_terminal_output<W: crate::attach::RenderSink>(
         painted_output: (ctx.focused_resource.as_ref() == Some(terminal_id))
             .then(|| terminal_id.clone()),
         chrome_dirty: title_changed,
-        pty_writes,
         notices,
         status_bar_painted,
         ..FrameOutcome::default()

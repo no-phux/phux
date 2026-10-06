@@ -251,14 +251,22 @@ enclosing split on that axis, whichever side the focused pane is on
 cells on that axis is a bell-no-op.
 
 **Shared geometry.** A Terminal has one `(cols, rows)`. Concurrent views
-letterbox or crop rather than reflowing a second grid.
-`defaults.window-size` picks the policy: `smallest` (default; nothing is
+letterbox or crop rather than reflowing a second grid. The TUI sizes each
+pane to its own tile, and its cell pixel size rides along. Against a server
+that supports this, the TUI casts no session-wide size vote, so attaching,
+switching sessions, or resizing the outer window never sends a pane through
+the full window size on the way to its tile
+([ADR-0145](../adr/0145-the-tui-sizes-panes-and-casts-no-viewport-vote.md)).
+When two such TUIs view one pane, the last tile sent wins. For clients that
+vote, `defaults.window-size` picks the policy: `smallest` (default; nothing is
 cropped), `largest`, `latest`, or `manual`. An explicit `phux resize`
 applies immediately; under every policy but `manual`, the next view
-event recomputes and supersedes it. When the last usable view detaches,
-those automatic policies return the live Terminal to the usable headless
-geometry, 80 columns by 24 rows; a tiny automation viewport therefore cannot
-strand a durable shell at 1x1. `manual` is the setting for a scripted geometry
+event recomputes and supersedes it. When the last usable voting view
+detaches, those automatic policies return the live Terminal to the usable
+headless geometry, 80 columns by 24 rows. A vote-free TUI's detach leaves
+its tiles in place, so a session switch resizes nothing, unless it leaves an
+unwatched pane under 10x3, which also returns to 80x24. Either way a tiny
+viewport cannot strand a durable shell at 1x1. `manual` is the setting for a scripted geometry
 and holds an explicit size across detach.
 
 **Satellite splits.** A window may mix local and satellite panes. With a

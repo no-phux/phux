@@ -413,10 +413,10 @@ fn pane_blob(
             .as_ref()
             .and_then(|h| h.cwd.as_deref())
             .map_or_else(|| desc.cwd.clone(), PathBuf::from),
-        title: handoff
-            .as_ref()
-            .and_then(|h| h.title.clone())
-            .or_else(|| desc.title.clone()),
+        // The user-set title only: the program's OSC title is engine state
+        // and rides separately, so an upgrade never promotes it to a name.
+        title: desc.title.clone(),
+        osc_title: handoff.as_ref().and_then(|h| h.osc_title.clone()),
         term: term.to_owned(),
         child_pid: handoff.as_ref().and_then(|h| h.child_pid),
         master_fd: handoff.and_then(|h| h.master_fd.as_ref().map(AsRawFd::as_raw_fd)),
@@ -932,12 +932,28 @@ fn unix_nanos_to_systemtime(nanos: u128) -> Option<std::time::SystemTime> {
 }
 
 /// Concatenate a pane's scrollback then viewport replay — the order a client
-/// applies them, so seeding a fresh `Terminal` reproduces the same grid.
+/// applies them, so seeding a fresh `Terminal` reproduces the same grid —
+/// then the program's OSC title as an `OSC 2`, so the rebuilt engine reports
+/// the title the program set rather than none.
 fn pane_seed(p: &PaneBlob) -> Vec<u8> {
     let mut seed = Vec::with_capacity(p.scrollback_bytes.len() + p.vt_replay_bytes.len());
     seed.extend_from_slice(&p.scrollback_bytes);
     seed.extend_from_slice(&p.vt_replay_bytes);
+    if let Some(title) = p.osc_title.as_deref() {
+        seed.extend_from_slice(&osc_title_sequence(title));
+    }
     seed
+}
+
+/// `OSC 2 ; title ST`, with control characters dropped so a title can
+/// neither terminate the sequence early nor smuggle another one in.
+fn osc_title_sequence(title: &str) -> Vec<u8> {
+    let clean: String = title.chars().filter(|c| !c.is_control()).collect();
+    let mut seq = Vec::with_capacity(clean.len() + 6);
+    seq.extend_from_slice(b"\x1b]2;");
+    seq.extend_from_slice(clean.as_bytes());
+    seq.extend_from_slice(b"\x1b\\");
+    seq
 }
 
 /// Rebuild a [`LayoutNode`] from its [`LayoutBlob`] mirror, resolving pane wire
@@ -1151,6 +1167,133 @@ mod tests {
             .await;
     }
 
+    /// The program's title, as an `OSC 2` a pane emitted before the upgrade.
+    const PROGRAM_TITLE: &str = "vim README.md";
+
+    /// One pane whose actor saw `seed`, with `user_title` on its registry
+    /// entry, carried through blob -> rebuild -> a second blob (a second
+    /// upgrade). Returns the twice-upgraded state.
+    async fn upgrade_twice(user_title: Option<&str>, seed: &[u8]) -> ServerState {
+        let mut state = ServerState::new();
+        let sid = state.registry_mut().new_session("main".to_owned());
+        let wid = state.registry_mut().new_window(sid).expect("new_window");
+        let tid = state
+            .registry_mut()
+            .new_terminal(wid)
+            .expect("new_terminal");
+        state
+            .registry_mut()
+            .terminal_mut(tid)
+            .expect("terminal")
+            .title = user_title.map(ToOwned::to_owned);
+        state.idspace.intern_session(sid);
+        state.intern_window_wire(wid);
+        let bundle = TerminalActor::new_with_seed(20, 5, seed).expect("new_with_seed");
+        tokio::task::spawn_local(bundle.actor.run());
+        state.register_resource_handle(tid, bundle.handle, bundle.token);
+
+        let blob = state.build_upgrade_blob(7).await;
+        let mut once = ServerState::new();
+        once.rebuild_from_blob(&blob).expect("first rebuild");
+        let blob = once.build_upgrade_blob(7).await;
+        let mut twice = ServerState::new();
+        twice.rebuild_from_blob(&blob).expect("second rebuild");
+        twice
+    }
+
+    /// `GET_STATE`'s `title` for the state's only pane: the user-set title.
+    fn get_state_title(state: &mut ServerState) -> Option<String> {
+        let sid = state
+            .registry()
+            .sessions()
+            .map(|(id, _)| id)
+            .next()
+            .expect("a session");
+        let snapshot = state.build_session_snapshot(sid).expect("snapshot");
+        assert_eq!(snapshot.resources.len(), 1);
+        snapshot.resources[0].title.clone()
+    }
+
+    /// `GET_SCREEN`'s `title` for the state's only pane: the engine's OSC title.
+    async fn get_screen_title(state: &ServerState) -> Option<String> {
+        let handles = state.upgrade_handles();
+        assert_eq!(handles.len(), 1);
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        handles[0]
+            .1
+            .terminal()
+            .expect("terminal handle")
+            .screen
+            .send(crate::resource::terminal::ScreenRequest {
+                pane: 1,
+                scrollback: None,
+                cells: false,
+                format: 0,
+                reply,
+            })
+            .await
+            .expect("send screen request");
+        match rx.await.expect("screen reply") {
+            crate::resource::terminal::ScreenReply::Projection(screen) => screen.title,
+            other @ crate::resource::terminal::ScreenReply::TooLarge { .. } => {
+                panic!("unexpected screen reply: {other:?}")
+            }
+        }
+    }
+
+    /// phux-xy9y: a pane no one named keeps no user title across upgrades,
+    /// while the title its program set still reads back from the engine.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_upgrade_keeps_the_program_title_out_of_the_user_title() {
+        let local = tokio::task::LocalSet::new();
+        Box::pin(local.run_until(async {
+            let seed = format!("hello\x1b]2;{PROGRAM_TITLE}\x07");
+            let mut state = upgrade_twice(None, seed.as_bytes()).await;
+            assert_eq!(
+                get_state_title(&mut state),
+                None,
+                "GET_STATE's user-set title must stay unset"
+            );
+            assert_eq!(
+                get_screen_title(&state).await.as_deref(),
+                Some(PROGRAM_TITLE),
+                "GET_SCREEN's OSC title must still report the program's title"
+            );
+        }))
+        .await;
+    }
+
+    /// phux-xy9y: a user-set title survives unchanged even when the program
+    /// set a different OSC title, and neither overwrites the other.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_upgrade_keeps_the_user_title_beside_the_program_title() {
+        let local = tokio::task::LocalSet::new();
+        Box::pin(local.run_until(async {
+            let seed = format!("hello\x1b]2;{PROGRAM_TITLE}\x07");
+            let mut state = upgrade_twice(Some("build"), seed.as_bytes()).await;
+            assert_eq!(get_state_title(&mut state).as_deref(), Some("build"));
+            assert_eq!(
+                get_screen_title(&state).await.as_deref(),
+                Some(PROGRAM_TITLE)
+            );
+
+            // No OSC title at all: still nothing in the engine, user title kept.
+            let mut state = upgrade_twice(Some("build"), b"hello").await;
+            assert_eq!(get_state_title(&mut state).as_deref(), Some("build"));
+            assert_eq!(get_screen_title(&state).await, None);
+        }))
+        .await;
+    }
+
+    /// A replayed title cannot break out of its `OSC 2`.
+    #[test]
+    fn the_replayed_title_drops_control_characters() {
+        assert_eq!(
+            super::osc_title_sequence("a\x07b\x1b]0;c"),
+            b"\x1b]2;ab]0;c\x1b\\".to_vec()
+        );
+    }
+
     fn empty_counters() -> Counters {
         Counters {
             next_session_wire_id: 10,
@@ -1194,6 +1337,7 @@ mod tests {
             cell_px: None,
             cwd: PathBuf::from("/tmp"),
             title: None,
+            osc_title: None,
             term: "xterm-256color".to_owned(),
             child_pid: None,
             master_fd: None,
