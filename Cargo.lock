@@ -1716,7 +1716,7 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 [[package]]
 name = "libghostty-vt"
 version = "0.2.1"
-source = "git+https://github.com/phall1/libghostty-rs.git?rev=65102309fe779f500455b30166f7e64cc11db900#65102309fe779f500455b30166f7e64cc11db900"
+source = "git+https://github.com/phall1/libghostty-rs.git?rev=362cb3dc05068cf7b9fac01900485e3068b9bfa7#362cb3dc05068cf7b9fac01900485e3068b9bfa7"
 dependencies = [
  "bitflags 2.13.2",
  "int-enum",
@@ -1727,7 +1727,7 @@ dependencies = [
 [[package]]
 name = "libghostty-vt-sys"
 version = "0.2.1"
-source = "git+https://github.com/phall1/libghostty-rs.git?rev=65102309fe779f500455b30166f7e64cc11db900#65102309fe779f500455b30166f7e64cc11db900"
+source = "git+https://github.com/phall1/libghostty-rs.git?rev=362cb3dc05068cf7b9fac01900485e3068b9bfa7#362cb3dc05068cf7b9fac01900485e3068b9bfa7"
 
 [[package]]
 name = "libloading"
