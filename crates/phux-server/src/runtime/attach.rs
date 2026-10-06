@@ -614,7 +614,6 @@ struct PaneResync {
 }
 
 /// Map the actor's resync cause onto its wire tombstone reason.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 const fn tombstone_reason_for(
     reason: crate::terminal_actor::ResyncReason,
 ) -> phux_protocol::wire::frame::TombstoneReason {
@@ -893,13 +892,7 @@ impl OutputPumpContext {
         if generation.is_active()
             && self
                 .out_tx
-                .send(Outbound::Frame(FrameKind::BootstrapTombstone {
-                    terminal_id: self.wire_terminal_id.clone(),
-                    stream_id: self.stream_id,
-                    bootstrap_id: prior_bootstrap_id,
-                    reason: tombstone_reason_for(reason),
-                    last_valid_seq: generation.last_forwarded_seq(),
-                }))
+                .send(Outbound::Frame(self.tombstone_frame(generation, reason)))
                 .await
                 .is_err()
         {
@@ -948,7 +941,24 @@ impl OutputPumpContext {
         Ok(true)
     }
 
-    /// Publish the synthesized-VT replacement generation for a resync.
+    /// `BOOTSTRAP_TOMBSTONE` retiring the generation this pump publishes.
+    fn tombstone_frame(
+        &self,
+        generation: &PumpGeneration,
+        reason: crate::terminal_actor::ResyncReason,
+    ) -> FrameKind {
+        FrameKind::BootstrapTombstone {
+            terminal_id: self.wire_terminal_id.clone(),
+            stream_id: self.stream_id,
+            bootstrap_id: generation.bootstrap_id(),
+            reason: tombstone_reason_for(reason),
+            last_valid_seq: generation.last_forwarded_seq(),
+        }
+    }
+
+    /// Publish the synthesized-VT replacement generation for a resync. A
+    /// live generation is tombstoned first (L1 §4.6), in the same queued
+    /// batch, so a deferred resync retires nothing.
     async fn republish_synthesized_generation(
         &self,
         generation: &mut PumpGeneration,
@@ -956,7 +966,7 @@ impl OutputPumpContext {
     ) -> ControlFlow<Option<PumpFault>> {
         let payload = downsample_for_caps(&resync.bytes, self.client_caps);
         let bootstrap_id = next_bootstrap_id(generation.bootstrap_id());
-        let Ok(frames) = synthesized_bootstrap_frames(
+        let Ok(mut frames) = synthesized_bootstrap_frames(
             self.wire_terminal_id.clone(),
             self.stream_id,
             bootstrap_id,
@@ -969,6 +979,9 @@ impl OutputPumpContext {
         ) else {
             return ControlFlow::Break(Some(PumpFault::OutboundClosed));
         };
+        if generation.is_active() {
+            frames.insert(0, self.tombstone_frame(generation, resync.reason));
+        }
         match queue_resync_bootstrap(&self.out_tx, resync.reason, frames, generation.is_fenced())
             .await
         {
@@ -4340,8 +4353,9 @@ mod tests {
                     "the fresh consumer keeps its generation straight through",
                 );
                 assert_eq!(
-                    frames_seen(&mut stale, 4).await,
+                    frames_seen(&mut stale, 5).await,
                     vec![
+                        Seen::Tombstone,
                         Seen::Begin {
                             generation: replacement,
                             base_seq: 3
@@ -4376,18 +4390,24 @@ mod tests {
                     })
                     .expect("pumps subscribed");
                 assert_eq!(
-                    frames_seen(&mut fresh, 1).await,
-                    vec![Seen::Begin {
-                        generation: replacement,
-                        base_seq: 4
-                    }],
+                    frames_seen(&mut fresh, 2).await,
+                    vec![
+                        Seen::Tombstone,
+                        Seen::Begin {
+                            generation: replacement,
+                            base_seq: 4
+                        }
+                    ],
                 );
                 assert_eq!(
-                    frames_seen(&mut stale, 1).await,
-                    vec![Seen::Begin {
-                        generation: next_bootstrap_id(replacement),
-                        base_seq: 4
-                    }],
+                    frames_seen(&mut stale, 2).await,
+                    vec![
+                        Seen::Tombstone,
+                        Seen::Begin {
+                            generation: next_bootstrap_id(replacement),
+                            base_seq: 4
+                        }
+                    ],
                 );
 
                 drop(output);
@@ -4440,8 +4460,9 @@ mod tests {
                 );
                 answer_gap_resync(&output, &request, 9);
                 assert_eq!(
-                    frames_seen(&mut lagging, 3).await,
+                    frames_seen(&mut lagging, 4).await,
                     vec![
+                        Seen::Tombstone,
                         Seen::Begin {
                             generation: replacement,
                             base_seq: 9
