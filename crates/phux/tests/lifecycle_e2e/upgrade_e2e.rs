@@ -161,3 +161,55 @@ fn child_and_scrollback_survive_graceful_upgrade() {
         "killing the resumed session should terminate its pane child"
     );
 }
+
+/// One `--json` verb's document from `server`.
+fn json_of(server: &ServerGuard, args: &[&str]) -> serde_json::Value {
+    let out = server.stdout(args);
+    serde_json::from_str(&out).unwrap_or_else(|err| panic!("{args:?} JSON ({err}): {out}"))
+}
+
+/// phux-xy9y: a pane's program title (OSC 2) never becomes its user-set
+/// title across an upgrade. `GET_STATE`'s `title` (via `resource show`)
+/// stays unset, and `GET_SCREEN`'s OSC `title` (via `snapshot --json`)
+/// still reports what the program set.
+#[test]
+#[ignore = "spawns a real phux server + performs a real in-place re-exec; run via `just e2e`."]
+fn program_title_stays_out_of_the_user_title_across_upgrade() {
+    let title = format!("OSC_TITLE_{}", std::process::id());
+    let marker = format!("TITLE_READY_{}", std::process::id());
+    let server = ServerGuard::start_with_seed(&format!(
+        "printf '\\033]2;{title}\\007{marker}\\n'; exec sleep 600"
+    ));
+    assert_eq!(
+        server.status(&["wait", SESSION, "--until", &marker, "--timeout", "10"]),
+        0,
+        "the seed pane should print its marker"
+    );
+    assert!(
+        poll(Duration::from_secs(10), || {
+            json_of(&server, &["snapshot", SESSION, "--json"])["title"] == title.as_str()
+        }),
+        "the program title should be live before the upgrade"
+    );
+    assert!(
+        json_of(&server, &["resource", "show", SESSION, "--json"])["title"].is_null(),
+        "no one named the pane before the upgrade"
+    );
+
+    assert_eq!(server.status(&["upgrade"]), 0, "`phux upgrade` should ack");
+    assert!(
+        poll(Duration::from_secs(15), || server.status(&["ls"]) == 0),
+        "the resumed server should accept connections again"
+    );
+
+    let shown = json_of(&server, &["resource", "show", SESSION, "--json"]);
+    assert!(
+        shown["title"].is_null(),
+        "the upgrade must not promote the program title to a user title; got {shown}"
+    );
+    let screen = json_of(&server, &["snapshot", SESSION, "--json"]);
+    assert_eq!(
+        screen["title"], title.as_str(),
+        "the resumed engine should still report the program title"
+    );
+}

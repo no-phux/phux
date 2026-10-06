@@ -84,6 +84,19 @@ impl TerminalActor {
         false
     }
 
+    /// The engine's OSC 0/2 title, or `None` when unset. Read from the
+    /// engine rather than `last_title`, which only syncs on PTY output (a
+    /// seeded or freshly resumed pane has an engine title before any chunk);
+    /// falls back to `last_title` while the terminal is on loan.
+    pub(super) fn live_osc_title(&self) -> Option<String> {
+        let engine = self
+            .terminal
+            .borrow()
+            .try_terminal()
+            .and_then(|terminal| terminal.title().ok().map(ToOwned::to_owned));
+        Some(engine.unwrap_or_else(|| self.last_title.clone())).filter(|t| !t.is_empty())
+    }
+
     /// Sync `last_title` with libghostty's OSC 0/2 title; `true` on change.
     pub(super) fn refresh_title(&mut self) -> bool {
         let next: Option<String> = {

@@ -629,7 +629,7 @@ mod tests {
             cols: 80,
             rows: 24,
             cell_px: None,
-            title: None,
+            osc_title: None,
             cwd: None,
             vt_replay_bytes: Vec::new(),
             scrollback_bytes: Vec::new(),

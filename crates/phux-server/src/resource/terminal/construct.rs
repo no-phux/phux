@@ -97,7 +97,7 @@ impl TerminalActor {
         token: CancellationToken,
         seed: &[u8],
     ) -> Result<TerminalActorBundle, TerminalActorError> {
-        let bundle = Self::build(
+        let mut bundle = Self::build(
             cols,
             rows,
             PtySource::Adopt {
@@ -109,6 +109,9 @@ impl TerminalActor {
             None,
         )?;
         bundle.actor.terminal.borrow_mut().vt_write(seed);
+        // The seed replays the old image's OSC title; sync it now so the
+        // detector and `title_changed` start from it, not from empty.
+        bundle.actor.refresh_title();
         bundle.actor.publish_input_snapshot();
         Ok(bundle)
     }
@@ -413,8 +416,9 @@ impl TerminalActor {
         rows: u16,
         bytes: &[u8],
     ) -> Result<TerminalActorBundle, TerminalActorError> {
-        let bundle = Self::new(cols, rows)?;
+        let mut bundle = Self::new(cols, rows)?;
         bundle.actor.terminal.borrow_mut().vt_write(bytes);
+        bundle.actor.refresh_title();
         bundle.actor.publish_input_snapshot();
         Ok(bundle)
     }
