@@ -202,6 +202,14 @@ pub enum DesktopEvent {
         agent_kind: Option<String>,
         state: String,
         attention: String,
+        // How `state` was read: `no_record`, `undeclared`, `indeterminate`,
+        // `recognized`, or `unsupported` (then `state_raw` holds the bounded
+        // word). `attention_reading` is `derived`, `declared`, or
+        // `unsupported` (then `attention_raw`). See `projection::agent`.
+        state_reading: String,
+        state_raw: Option<String>,
+        attention_reading: String,
+        attention_raw: Option<String>,
     },
     PaneSpawned {
         terminal_id: String,
@@ -337,13 +345,30 @@ pub(super) fn encode_event(value: Event) -> Option<DesktopEvent> {
 }
 
 fn agent_badge(id: &phux_protocol::ResourceId, bytes: Option<&[u8]>) -> DesktopEvent {
+    use crate::projection::agent::{AttentionReading, StateReading};
     let badge = crate::projection::agent::badge(id, bytes);
+    let (state_reading, state_raw) = match badge.state_reading {
+        StateReading::NoRecord => ("no_record", None),
+        StateReading::Undeclared => ("undeclared", None),
+        StateReading::Indeterminate => ("indeterminate", None),
+        StateReading::Recognized => ("recognized", None),
+        StateReading::Unsupported(raw) => ("unsupported", Some(raw)),
+    };
+    let (attention_reading, attention_raw) = match badge.attention_reading {
+        AttentionReading::Derived => ("derived", None),
+        AttentionReading::Declared => ("declared", None),
+        AttentionReading::Unsupported(raw) => ("unsupported", Some(raw)),
+    };
     DesktopEvent::AgentBadge {
         terminal_id: id::encode(&badge.terminal_id),
         name: badge.name,
         agent_kind: badge.kind,
         state: format!("{:?}", badge.state).to_lowercase(),
         attention: format!("{:?}", badge.attention).to_lowercase(),
+        state_reading: state_reading.to_owned(),
+        state_raw,
+        attention_reading: attention_reading.to_owned(),
+        attention_raw,
     }
 }
 
@@ -403,6 +428,8 @@ mod tests {
             agent_kind,
             state,
             attention,
+            state_reading,
+            ..
         }) = declared
         else {
             panic!("missing declared badge");
@@ -412,6 +439,7 @@ mod tests {
         assert_eq!(agent_kind.as_deref(), Some("claude"));
         assert_eq!(state, "blocked");
         assert_eq!(attention, "high");
+        assert_eq!(state_reading, "recognized");
         let cleared = encode_event(Event::AgentMetadata {
             terminal_id: terminal_id.clone(),
             value: None,
@@ -422,6 +450,10 @@ mod tests {
             agent_kind,
             state,
             attention,
+            state_reading,
+            state_raw,
+            attention_reading,
+            attention_raw,
         }) = cleared
         else {
             panic!("missing retracted badge");
@@ -431,6 +463,10 @@ mod tests {
         assert_eq!(agent_kind, None);
         assert_eq!(state, "unknown");
         assert_eq!(attention, "low");
+        assert_eq!(state_reading, "no_record");
+        assert_eq!(state_raw, None);
+        assert_eq!(attention_reading, "derived");
+        assert_eq!(attention_raw, None);
         // Raw extension frames remain available to other consumers, but must
         // not bypass the runtime fence or duplicate the canonical badge.
         assert!(
@@ -444,6 +480,33 @@ mod tests {
             )))
             .is_none()
         );
+    }
+
+    #[test]
+    fn unsupported_words_cross_with_their_raw_text() {
+        let Some(DesktopEvent::AgentBadge {
+            state,
+            attention,
+            state_reading,
+            state_raw,
+            attention_reading,
+            attention_raw,
+            ..
+        }) = encode_event(Event::AgentMetadata {
+            terminal_id: phux_protocol::ResourceId::local(1),
+            value: Some(
+                br#"{"name":"a","state":"waiting_approval","attention":"urgent"}"#.to_vec(),
+            ),
+        })
+        else {
+            panic!("missing badge");
+        };
+        assert_eq!(state, "unknown");
+        assert_eq!(attention, "normal");
+        assert_eq!(state_reading, "unsupported");
+        assert_eq!(state_raw.as_deref(), Some("waiting_approval"));
+        assert_eq!(attention_reading, "unsupported");
+        assert_eq!(attention_raw.as_deref(), Some("urgent"));
     }
 
     #[test]

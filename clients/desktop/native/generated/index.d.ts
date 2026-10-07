@@ -958,7 +958,7 @@ export type DesktopEvent =
   | { kind: 'StatusChanged'; status: DesktopStatus }
   | { kind: 'TopologyChanged' }
   | { kind: 'TerminalChanged'; terminalId: string }
-  | { kind: 'AgentBadge'; terminalId: string; name: string; agentKind?: string; state: string; attention: string }
+  | { kind: 'AgentBadge'; terminalId: string; name: string; agentKind?: string; state: string; attention: string; stateReading: string; stateRaw?: string; attentionReading: string; attentionRaw?: string }
   | { kind: 'PaneSpawned'; terminalId: string }
   | { kind: 'SpawnAnswered'; requestId: number; terminalId?: string; error?: string }
   | { kind: 'AttachAnswered'; requestId: number; terminalId: string; error?: string }

@@ -64,7 +64,15 @@ function wake(client: FakeClient, events: DesktopEvent[]): void {
 }
 
 function badge(terminalId: string, name = "claude"): Extract<DesktopEvent, { kind: "AgentBadge" }> {
-  return { kind: "AgentBadge", terminalId, name, state: "working", attention: "low" };
+  return {
+    kind: "AgentBadge",
+    terminalId,
+    name,
+    state: "working",
+    attention: "low",
+    stateReading: "recognized",
+    attentionReading: "declared",
+  };
 }
 
 function connecting(): DesktopEvent {
@@ -316,15 +324,7 @@ describe("bridge wakes", () => {
 
   test("output and agent badges are not structural; lifecycle is", () => {
     expect(structural({ kind: "TerminalChanged", terminalId: "local:1" })).toBe(false);
-    expect(
-      structural({
-        kind: "AgentBadge",
-        terminalId: "local:1",
-        name: "claude",
-        state: "working",
-        attention: "low",
-      }),
-    ).toBe(false);
+    expect(structural(badge("local:1"))).toBe(false);
     expect(structural({ kind: "TopologyChanged" })).toBe(true);
     expect(structural({ kind: "PaneSpawned", terminalId: "local:2" })).toBe(true);
   });

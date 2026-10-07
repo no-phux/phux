@@ -511,6 +511,8 @@ pub enum WireEvent {
     /// attach, so the level survives reconnects — phux-q7e.21). A tombstone,
     /// an absent record, or malformed bytes all project as `Unknown` with an
     /// empty `name`: "no declared agent", never a stale badge.
+    /// `state_reading` and `attention_reading` say how the normalized values
+    /// were read, so a present-but-unsupported word stays visible.
     AgentStateChanged {
         terminal_id: String,
         /// Human-facing agent name; empty when no record is declared.
@@ -523,6 +525,11 @@ pub enum WireEvent {
         /// The EFFECTIVE attention: the record's declared level, or the
         /// spec's derivation from `state` when absent (L3.md §3.7).
         attention: AgentAttention,
+        /// How `state` was read: no record, undeclared, explicit `unknown`,
+        /// recognized, or an unsupported word kept as bounded raw text.
+        state_reading: AgentStateReading,
+        /// Whether `attention` was declared, derived, or an unsupported word.
+        attention_reading: AgentAttentionReading,
     },
     /// The server reported an ERROR frame.
     ServerError { message: String },
@@ -537,6 +544,8 @@ impl From<agent::AgentBadge> for WireEvent {
             session: value.session,
             state: value.state.into(),
             attention: value.attention.into(),
+            state_reading: value.state_reading.into(),
+            attention_reading: value.attention_reading.into(),
         }
     }
 }
@@ -679,6 +688,55 @@ impl From<agent::AgentAttention> for AgentAttention {
     }
 }
 
+/// How an `AgentStateChanged`'s `state` was read (`projection::agent`).
+/// Provenance only: every case but `Recognized` carries `state: Unknown`.
+#[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq)]
+pub enum AgentStateReading {
+    /// No record: absent, deleted, malformed, or nameless. No agent.
+    NoRecord,
+    /// The record declared no `state`.
+    Undeclared,
+    /// The record declared `"unknown"` explicitly.
+    Indeterminate,
+    /// A word this build recognizes.
+    Recognized,
+    /// A newer or malformed value; `raw` is its bounded, display-safe text.
+    Unsupported { raw: String },
+}
+
+impl From<agent::StateReading> for AgentStateReading {
+    fn from(value: agent::StateReading) -> Self {
+        match value {
+            agent::StateReading::NoRecord => Self::NoRecord,
+            agent::StateReading::Undeclared => Self::Undeclared,
+            agent::StateReading::Indeterminate => Self::Indeterminate,
+            agent::StateReading::Recognized => Self::Recognized,
+            agent::StateReading::Unsupported(raw) => Self::Unsupported { raw },
+        }
+    }
+}
+
+/// How an `AgentStateChanged`'s effective `attention` was arrived at.
+#[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq)]
+pub enum AgentAttentionReading {
+    /// Undeclared: derived from `state`.
+    Derived,
+    /// Declared with a word this build recognizes.
+    Declared,
+    /// A newer or malformed value, read as `Normal`; `raw` is its bounded text.
+    Unsupported { raw: String },
+}
+
+impl From<agent::AttentionReading> for AgentAttentionReading {
+    fn from(value: agent::AttentionReading) -> Self {
+        match value {
+            agent::AttentionReading::Derived => Self::Derived,
+            agent::AttentionReading::Declared => Self::Declared,
+            agent::AttentionReading::Unsupported(raw) => Self::Unsupported { raw },
+        }
+    }
+}
+
 /// Touch-producible mouse actions, mirrored for FFI (ADR-0024: the wire owns
 /// the atoms; these are projections).
 #[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -742,8 +800,46 @@ mod tests {
                 session: None,
                 state: AgentState::Unknown,
                 attention: AgentAttention::Low,
+                state_reading: AgentStateReading::Unsupported {
+                    raw: "newer".to_owned()
+                },
+                attention_reading: AgentAttentionReading::Derived,
             }
         );
+    }
+
+    #[test]
+    fn readings_lower_one_for_one() {
+        for (record, state, attention) in [
+            (
+                r#"{"name":"a","state":"unknown","attention":"high"}"#,
+                AgentStateReading::Indeterminate,
+                AgentAttentionReading::Declared,
+            ),
+            (
+                r#"{"name":"a","attention":"urgent"}"#,
+                AgentStateReading::Undeclared,
+                AgentAttentionReading::Unsupported {
+                    raw: "urgent".to_owned(),
+                },
+            ),
+            (
+                r#"{"name":"a","state":"working"}"#,
+                AgentStateReading::Recognized,
+                AgentAttentionReading::Derived,
+            ),
+        ] {
+            let WireEvent::AgentStateChanged {
+                state_reading,
+                attention_reading,
+                ..
+            } = WireEvent::from(agent::badge(&ResourceId::local(1), Some(record.as_bytes())))
+            else {
+                panic!("a badge lowers to AgentStateChanged");
+            };
+            assert_eq!(state_reading, state, "{record}");
+            assert_eq!(attention_reading, attention, "{record}");
+        }
     }
 
     #[test]
@@ -758,6 +854,8 @@ mod tests {
                 session: None,
                 state: AgentState::Unknown,
                 attention: AgentAttention::Low,
+                state_reading: AgentStateReading::NoRecord,
+                attention_reading: AgentAttentionReading::Derived,
             }
         );
     }
