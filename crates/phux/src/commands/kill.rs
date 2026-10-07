@@ -243,6 +243,9 @@ fn report_selected(
                     eprintln!("phux: kill refused for session {session:?}: the server kept it");
                     ExitCode::from(2)
                 }
+                KillError::Agent(err) => {
+                    crate::commands::report_agent_resolve_error(false, &err, false)
+                }
                 KillError::Attach(err) => server.report_unreachable(false, &err, "kill"),
             }
         }

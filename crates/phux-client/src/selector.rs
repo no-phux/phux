@@ -611,6 +611,32 @@ pub fn resolve_agent_for_input(
     Ok(target)
 }
 
+/// What `%name` makes of `terminal`'s record, for `phux agent list` to say
+/// which names `%` cannot address (ADR-0075 point 4).
+///
+/// `Ok("%name")` when [`resolve_agent`] resolves the record's name to
+/// exactly `terminal`; otherwise the `--json` code `%name` would refuse with
+/// ([`AgentResolveError::code`], or `invalid_agent_name` for a name outside
+/// the `%` grammar). `None` when `terminal` has no record.
+#[must_use]
+pub fn agent_address(
+    terminal: &ResourceId,
+    snapshot: &SessionSnapshot,
+    index: &AgentIndex,
+) -> Option<Result<String, &'static str>> {
+    let name = &index.get(terminal)?.name;
+    if !is_addressable_agent_name(name) {
+        return Some(Err("invalid_agent_name"));
+    }
+    Some(match resolve_agent(name, snapshot, index) {
+        Ok(target) if &target.terminal == terminal => Ok(format!("%{name}")),
+        // `terminal` is not a live Terminal in `snapshot`, so the name
+        // reaches some other pane: never label this one with it.
+        Ok(_) => Err("selector_not_single"),
+        Err(err) => Err(err.code()),
+    })
+}
+
 /// Whether this record's `name` is its own `kind` (ASCII case-insensitive):
 /// the per-kind manifest constant a detector rule writes.
 fn is_kind_constant(record: &AgentRecord) -> bool {
@@ -1008,6 +1034,47 @@ mod tests {
         } else {
             AgentIndex::partial(map)
         }
+    }
+
+    /// ADR-0075 point 4: `phux agent list` says which names `%` cannot
+    /// address, with the code `%name` would refuse with.
+    #[test]
+    fn agent_address_says_which_listed_names_percent_cannot_reach() {
+        let snap = fixture();
+        let index = index_of(
+            &[
+                (100, record("build", None, AgentMetaState::Working)),
+                (101, record("Code Review", None, AgentMetaState::Idle)),
+                (102, record("twin", None, AgentMetaState::Idle)),
+                (200, record("twin", None, AgentMetaState::Idle)),
+            ],
+            true,
+        );
+        let address = |id| agent_address(&ResourceId::local(id), &snap, &index);
+        assert_eq!(address(100), Some(Ok("%build".to_owned())));
+        assert_eq!(address(101), Some(Err("invalid_agent_name")));
+        assert_eq!(address(102), Some(Err("selector_not_single")));
+        assert_eq!(address(200), Some(Err("selector_not_single")));
+        assert_eq!(address(999), None, "no record, nothing to address");
+
+        let constant = index_of(
+            &[(100, record("claude", Some("claude"), AgentMetaState::Idle))],
+            true,
+        );
+        assert_eq!(
+            agent_address(&ResourceId::local(100), &snap, &constant),
+            Some(Err("invalid_agent_name")),
+            "a per-kind constant is listed but not addressable, even when unique",
+        );
+
+        let partial = index_of(
+            &[(100, record("build", None, AgentMetaState::Working))],
+            false,
+        );
+        assert_eq!(
+            agent_address(&ResourceId::local(100), &snap, &partial),
+            Some(Err("partial_view")),
+        );
     }
 
     /// Every refusal carries the contract code and remedy each surface (CLI,

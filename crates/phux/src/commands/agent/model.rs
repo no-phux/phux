@@ -20,6 +20,35 @@ pub(super) struct AgentStateReport {
     /// has none. Additive; `schema_version` stays 1. Named `agent_session`
     /// because `session` in this document is already the phux session name.
     pub(super) agent_session: Option<AgentSessionJson>,
+    /// `%name` when that selector resolves to this pane, else `null`
+    /// (ADR-0075 point 4). Additive; `schema_version` stays 1.
+    pub(super) address: Option<String>,
+    /// Why this pane's record name is listed but not `%`-addressable: the
+    /// `--json` code `%name` would refuse with (`invalid_agent_name`,
+    /// `selector_not_single`, `partial_view`). `null` when addressable or
+    /// when the pane has no record.
+    pub(super) address_refusal: Option<&'static str>,
+}
+
+impl AgentStateReport {
+    /// Record what `%name` makes of this pane ([`phux_client::selector::agent_address`]).
+    pub(super) fn set_address(&mut self, address: Option<Result<String, &'static str>>) {
+        (self.address, self.address_refusal) = match address {
+            None => (None, None),
+            Some(Ok(address)) => (Some(address), None),
+            Some(Err(code)) => (None, Some(code)),
+        };
+    }
+
+    /// The human view's address column: `%name`, `-` with no record, or why
+    /// the record's name is not `%`-addressable.
+    pub(super) fn address_column(&self) -> String {
+        match (&self.address, self.address_refusal) {
+            (Some(address), _) => address.clone(),
+            (None, Some(code)) => format!("(not %-addressable: {code})"),
+            (None, None) => "-".to_owned(),
+        }
+    }
 }
 
 /// A confidence as the shortest decimal that round-trips the `f32` (`0.2`),

@@ -551,6 +551,7 @@ fn kill_error(err: phux_client::kill::KillError) -> ToolError {
             target,
             degradation,
         } => incomplete_view_miss(&format!("'{target}'"), degradation.notices()),
+        KillError::Agent(err) => agent_resolve_error(&err),
         other => ToolError::new(other.to_string()),
     }
 }
@@ -783,7 +784,9 @@ async fn resolve_one_with(
             .map(|target| target.terminal)
             .map_err(|err| agent_resolve_error(&err));
     }
-    let candidates = state::resolve_targets(socket, selector, snapshot).await;
+    let candidates = state::resolve_targets(socket, selector, snapshot)
+        .await
+        .map_err(|err| agent_resolve_error(&err))?;
     selector::pick_target_pane(&candidates, &snapshot.focused_resource).ok_or_else(|| {
         if view.is_complete() {
             ToolError::new("no such target")

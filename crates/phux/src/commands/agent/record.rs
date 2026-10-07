@@ -120,24 +120,15 @@ where
             Err(err) => return report_no_server(&err, &socket_path, verb),
         };
         // `%name` resolves to exactly one pane or refuses (ADR-0075 point 3).
-        let pane = if let phux_client::selector::Selector::Agent(name) = &selector {
-            match phux_client::state::resolve_agent_target(&socket_path, name, &snapshot, false)
-                .await
-            {
-                Ok(resolved) => resolved.terminal,
-                Err(err) => {
-                    return crate::commands::report_agent_resolve_error(false, &err, false);
-                }
-            }
-        } else {
-            let candidates = resolve_targets(&socket_path, &selector, &snapshot).await;
-            let Some(pane) =
-                phux_client::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
-            else {
-                // A miss under a partial fleet view is unresolved, not absent.
-                return partial::report_target_miss(target, &degradation);
-            };
-            pane
+        let candidates = match resolve_targets(&socket_path, &selector, &snapshot).await {
+            Ok(candidates) => candidates,
+            Err(err) => return crate::commands::report_agent_resolve_error(false, &err, false),
+        };
+        let Some(pane) =
+            phux_client::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
+        else {
+            // A miss under a partial fleet view is unresolved, not absent.
+            return partial::report_target_miss(target, &degradation);
         };
         // Resolved, but from a narrower world than the user assumed.
         partial::warn_partial_view(verb, &degradation);

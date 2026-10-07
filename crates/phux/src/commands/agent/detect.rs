@@ -101,6 +101,8 @@ fn report_from_record(
             .agent_session
             .as_ref()
             .map(super::model::SessionEvidence::to_json),
+        address: None,
+        address_refusal: None,
     }
 }
 
@@ -336,6 +338,8 @@ fn report_without_record(evidence: &PaneEvidence, plugins: &[PluginAgent]) -> Ag
             .agent_session
             .as_ref()
             .map(super::model::SessionEvidence::to_json),
+        address: None,
+        address_refusal: None,
     }
 }
 

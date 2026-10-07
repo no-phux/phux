@@ -412,9 +412,25 @@ pub async fn fetch_agent_index(conn: &mut Connection, snapshot: &SessionSnapshot
     AgentIndex::complete(records)
 }
 
-/// Resolve `%name` over a fresh connection: build the index, then apply
-/// [`selector::resolve_agent`] (or the input guard when `for_input`). A
-/// failed connect is a partial index, not a miss.
+/// Resolve `%name` on an open connection: build the index on `conn`, then
+/// apply [`selector::resolve_agent`] (or, when `for_input`, the ADR-0075
+/// point 5 write guard [`selector::resolve_agent_for_input`]).
+///
+/// # Errors
+///
+/// [`AgentResolveError`] — see its variants.
+pub async fn resolve_agent_on(
+    conn: &mut Connection,
+    name: &str,
+    snapshot: &SessionSnapshot,
+    for_input: bool,
+) -> Result<AgentTarget, AgentResolveError> {
+    let index = fetch_agent_index(conn, snapshot).await;
+    resolve_agent_in(name, snapshot, &index, for_input)
+}
+
+/// Resolve `%name` over a fresh connection, as [`resolve_agent_on`]. A failed
+/// connect is a partial index, not a miss.
 ///
 /// # Errors
 ///
@@ -425,34 +441,83 @@ pub async fn resolve_agent_target(
     snapshot: &SessionSnapshot,
     for_input: bool,
 ) -> Result<AgentTarget, AgentResolveError> {
-    let index = match Connection::connect(socket).await {
-        Ok(mut conn) => fetch_agent_index(&mut conn, snapshot).await,
-        Err(_) => AgentIndex::default(),
-    };
-    if for_input {
-        selector::resolve_agent_for_input(name, snapshot, &index)
-    } else {
-        selector::resolve_agent(name, snapshot, &index)
+    match Connection::connect(socket).await {
+        Ok(mut conn) => resolve_agent_on(&mut conn, name, snapshot, for_input).await,
+        Err(_) => resolve_agent_in(name, snapshot, &AgentIndex::default(), for_input),
     }
 }
 
-/// Resolve a selector against a snapshot, fetching L3 tags only for `#tag`
-/// (a failed lookup is a miss). `%name` yields nothing; callers branch to
-/// [`resolve_agent_target`] first.
+fn resolve_agent_in(
+    name: &str,
+    snapshot: &SessionSnapshot,
+    index: &AgentIndex,
+    for_input: bool,
+) -> Result<AgentTarget, AgentResolveError> {
+    if for_input {
+        selector::resolve_agent_for_input(name, snapshot, index)
+    } else {
+        selector::resolve_agent(name, snapshot, index)
+    }
+}
+
+/// Resolve a selector to the Terminals it names, over a fresh connection
+/// only when the form needs metadata.
+///
+/// `#tag` fetches L3 tags (a failed lookup is a miss). `%name` is singular
+/// (ADR-0075 point 3): exactly the one named Terminal, or a typed refusal —
+/// never the empty miss a set-valued verb would misreport as "no such
+/// target". Every other form is pure snapshot resolution. Input verbs that
+/// need the point 5 write guard resolve `%name` through
+/// [`resolve_agent_target`] with `for_input` instead.
+///
+/// # Errors
+///
+/// [`AgentResolveError`] for a `%name` that does not resolve to one agent.
 pub async fn resolve_targets(
     socket: &Path,
     selector: &Selector,
     snapshot: &SessionSnapshot,
-) -> Vec<ResourceId> {
-    if !matches!(selector, Selector::Tag(_)) {
-        return selector::resolve(selector, snapshot);
+) -> Result<Vec<ResourceId>, AgentResolveError> {
+    match selector {
+        Selector::Agent(name) => Ok(vec![
+            resolve_agent_target(socket, name, snapshot, false)
+                .await?
+                .terminal,
+        ]),
+        Selector::Tag(_) => {
+            let tags = match Connection::connect(socket).await {
+                Ok(mut conn) => fetch_tag_index(&mut conn, snapshot).await,
+                Err(_) => TagIndex::new(),
+            };
+            Ok(selector::resolve_with_tags(selector, snapshot, &tags))
+        }
+        _ => Ok(selector::resolve(selector, snapshot)),
     }
+}
 
-    let tags = match Connection::connect(socket).await {
-        Ok(mut conn) => fetch_tag_index(&mut conn, snapshot).await,
-        Err(_) => TagIndex::new(),
-    };
-    selector::resolve_with_tags(selector, snapshot, &tags)
+/// [`resolve_targets`] on an open connection, for verbs that act on the same
+/// connection they resolved on (`kill`, `tag`, `signal`).
+///
+/// # Errors
+///
+/// [`AgentResolveError`] for a `%name` that does not resolve to one agent.
+pub async fn resolve_targets_on(
+    conn: &mut Connection,
+    selector: &Selector,
+    snapshot: &SessionSnapshot,
+) -> Result<Vec<ResourceId>, AgentResolveError> {
+    match selector {
+        Selector::Agent(name) => Ok(vec![
+            resolve_agent_on(conn, name, snapshot, false)
+                .await?
+                .terminal,
+        ]),
+        Selector::Tag(_) => {
+            let tags = fetch_tag_index(conn, snapshot).await;
+            Ok(selector::resolve_with_tags(selector, snapshot, &tags))
+        }
+        _ => Ok(selector::resolve(selector, snapshot)),
+    }
 }
 
 #[cfg(test)]

@@ -523,7 +523,9 @@ ownership work has begun; preflight stays exit 2).
       "explanation": "live agent-session stream",
       "agent_session": {
         "resource": "@9", "provider": "claude", "native_id": "sess-01H..."
-      }
+      },
+      "address": "%reviewer",
+      "address_refusal": null
     }
   ]
 }
@@ -536,6 +538,14 @@ and unidentified panes are `unknown`. These are report spellings: `agent.id` and
 provider slug (`cursor-agent`, for example). These heuristic title markers
 suggest identity only; they never infer lifecycle state or completion.
 The explicit `phux-ask` title sentinel remains a state declaration (ADR-0035).
+
+`address` is the pane's `%name` when that selector resolves to it, else
+`null`. `address_refusal` says why a listed record name is not
+`%`-addressable, as the code `%name` would refuse with:
+`invalid_agent_name` (outside the `%` grammar, or a per-kind constant),
+`selector_not_single` (several panes share it), or `partial_view`; it is
+`null` when the pane is addressable or has no record. The human view
+prints the same as its third column. Both fields are additive.
 
 `agent_session` is additive (`null` when the pane has no live child).
 The key is `agent_session`, not `session` — `session` is already the

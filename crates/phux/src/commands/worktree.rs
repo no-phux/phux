@@ -545,7 +545,9 @@ pub(crate) fn seed_terminal_of(name: &str, socket: Option<&Path>) -> Option<u32>
             .await
             .ok()?
             .into_snapshot_ignoring_degradation();
-        let ids = crate::commands::resolve_targets(&socket_path, &selector, &snapshot).await;
+        let ids = crate::commands::resolve_targets(&socket_path, &selector, &snapshot)
+            .await
+            .ok()?;
         ids.iter()
             .filter_map(phux_protocol::ids::ResourceId::local_id)
             .min()

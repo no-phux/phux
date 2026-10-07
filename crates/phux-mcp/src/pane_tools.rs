@@ -298,7 +298,9 @@ async fn placement_owner(
     ),
     ToolError,
 > {
-    let candidates = state::resolve_targets(socket, selector, snapshot).await;
+    let candidates = state::resolve_targets(socket, selector, snapshot)
+        .await
+        .map_err(|err| crate::tools::agent_resolve_error(&err))?;
     let owner = selector::pick_target_pane(&candidates, &snapshot.focused_resource)
         .ok_or_else(|| ToolError::new("no such target"))?;
     if !matches!(owner, ResourceId::Local { .. }) {
@@ -397,7 +399,7 @@ fn signal_error(target: &str, err: phux_client::signal::SignalError) -> ToolErro
             ToolError::new("no such target")
         }
         SignalError::Miss { degradation } => incomplete_view_miss(target, degradation.notices()),
-        SignalError::Agent(err) => ToolError::new(err.to_string()),
+        SignalError::Agent(err) => crate::tools::agent_resolve_error(&err),
         SignalError::Keyed(KeyedError::Unsupported) => unsupported_keyed_signal(),
         SignalError::Keyed(KeyedError::Attach(err)) => err.into(),
     }
@@ -454,6 +456,9 @@ pub(crate) async fn tag(args: &Value) -> Result<Value, ToolError> {
         }
         Err(phux_client::tags::TagError::WriteRefused { message }) => {
             return Err(ToolError::new(message));
+        }
+        Err(phux_client::tags::TagError::Agent(err)) => {
+            return Err(crate::tools::agent_resolve_error(&err));
         }
         Err(phux_client::tags::TagError::Attach(err)) => return Err(err.into()),
     };
