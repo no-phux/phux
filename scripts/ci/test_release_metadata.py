@@ -31,12 +31,22 @@ def bump(text, old=CURRENT, new="999.0.0"):
     return text.replace(old, new)
 
 
+def bump_lock(text, old=CURRENT, new="999.0.0"):
+    """Bump only workspace (path) packages: a registry crate can share the
+    release's version string (windows-sys 0.52.0 did), and release-please
+    never rewrites those entries."""
+    blocks = text.split("\n[[package]]\n")
+    return "\n[[package]]\n".join(
+        block if "\nsource = " in block else bump(block, old, new) for block in blocks
+    )
+
+
 class ReleaseMetadataTests(unittest.TestCase):
     def test_shipped_release_files_are_version_only(self):
         pairs = {}
         for path in RELEASE_PATHS:
             before = (ROOT / path).read_text()
-            after = bump(before)
+            after = bump_lock(before) if path.endswith("Cargo.lock") else bump(before)
             self.assertNotEqual(before, after, path)
             pairs[path] = (before, after)
         self.assertTrue(release_metadata.only(list(RELEASE_PATHS), pairs.get))
