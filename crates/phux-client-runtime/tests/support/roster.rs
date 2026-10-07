@@ -1,5 +1,5 @@
 use super::*;
-use phux_protocol::wire::frame::{AgentEvent, RESOURCE_AGENT_KEY, Scope};
+use phux_protocol::wire::frame::{AgentEvent, RESOURCE_AGENT_KEY, RESOURCE_ASKED_KEY, Scope};
 
 fn outbound(plane: &mut ControlPlane) -> Vec<FrameKind> {
     plane
@@ -83,6 +83,13 @@ fn browsing() -> (ControlPlane, u32) {
 }
 
 fn discovered() -> (ControlPlane, u32) {
+    let (plane, agent, _) = discovered_both();
+    (plane, agent)
+}
+
+/// An inventoried terminal with both roster reads outstanding:
+/// `(plane, agent read, asked read)`.
+fn discovered_both() -> (ControlPlane, u32, u32) {
     let (mut plane, request_id) = browsing();
     answer_state(&mut plane, request_id, snapshot());
     let frames = outbound(&mut plane);
@@ -90,9 +97,66 @@ fn discovered() -> (ControlPlane, u32) {
         matches!(&frames[0], FrameKind::SubscribeMetadata { scope: Scope::Resource(id), key } if id == &terminal() && key == RESOURCE_AGENT_KEY)
     );
     assert!(matches!(frames[1], FrameKind::GetMetadata { .. }));
-    let id = metadata_id(&frames);
+    assert!(
+        matches!(&frames[2], FrameKind::SubscribeMetadata { scope: Scope::Resource(id), key } if id == &terminal() && key == RESOURCE_ASKED_KEY),
+        "{frames:?}"
+    );
+    let agent = metadata_id(&frames);
+    let asked = asked_id(&frames);
     let _ = plane.take_events();
-    (plane, id)
+    (plane, agent, asked)
+}
+
+fn asked_id(frames: &[FrameKind]) -> u32 {
+    frames
+        .iter()
+        .find_map(|frame| match frame {
+            FrameKind::GetMetadata {
+                request_id,
+                scope: Scope::Resource(id),
+                key,
+            } if id == &terminal() && key == RESOURCE_ASKED_KEY => Some(*request_id),
+            _ => None,
+        })
+        .expect("asked read")
+}
+
+fn asked_levels(plane: &mut ControlPlane) -> Vec<bool> {
+    plane
+        .take_events()
+        .into_iter()
+        .filter_map(|event| match event {
+            Event::AgentAskedState { terminal_id, asked } => {
+                assert_eq!(terminal_id, terminal());
+                Some(asked)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn asked_changed(plane: &mut ControlPlane, value: Option<&[u8]>) {
+    plane
+        .feed(FrameKind::MetadataChanged {
+            scope: Scope::Resource(terminal()),
+            key: RESOURCE_ASKED_KEY.to_owned(),
+            value: value.map(<[u8]>::to_vec),
+            actor: None,
+        })
+        .unwrap();
+}
+
+fn asked_event(plane: &mut ControlPlane, id: &str) {
+    event(
+        plane,
+        Some(terminal()),
+        AgentEvent::Asked {
+            id: id.to_owned(),
+            question: "Proceed?".to_owned(),
+            suggestions: Vec::new(),
+            elapsed_seconds: None,
+        },
+    );
 }
 
 fn declarations(plane: &mut ControlPlane) -> Vec<Option<Vec<u8>>> {
@@ -300,7 +364,10 @@ fn metadata_error_preserves_the_recovery_requested_while_read_was_pending() {
     answer_state(&mut plane, inventory, snapshot());
     assert!(matches!(
         outbound(&mut plane).as_slice(),
-        [FrameKind::SubscribeMetadata { .. }]
+        [
+            FrameKind::SubscribeMetadata { .. },
+            FrameKind::SubscribeMetadata { .. }
+        ]
     ));
     plane
         .feed(FrameKind::Error {
@@ -385,16 +452,19 @@ fn an_inventory_subscribes_and_reads_only_terminals_new_to_it() {
         4,
     ));
     let frames = refresh_after_settling(&mut plane, current);
-    assert!(
-        matches!(
-            frames.as_slice(),
-            [
-                FrameKind::SubscribeMetadata { scope: Scope::Resource(subscribed), .. },
-                FrameKind::GetMetadata { scope: Scope::Resource(read), .. },
-            ] if *subscribed == ResourceId::local(8) && *read == ResourceId::local(8)
-        ),
-        "{frames:?}"
-    );
+    assert_eq!(frames.len(), 4, "{frames:?}");
+    for pair in frames.chunks(2) {
+        assert!(
+            matches!(
+                pair,
+                [
+                    FrameKind::SubscribeMetadata { scope: Scope::Resource(subscribed), key: subscribed_key },
+                    FrameKind::GetMetadata { scope: Scope::Resource(read), key: read_key, .. },
+                ] if *subscribed == ResourceId::local(8) && *read == ResourceId::local(8) && subscribed_key == read_key
+            ),
+            "{frames:?}"
+        );
+    }
 }
 
 #[test]
@@ -413,10 +483,11 @@ fn a_detach_ends_the_subscriptions_so_the_next_inventory_renews_them() {
             frames.as_slice(),
             [
                 FrameKind::SubscribeMetadata { .. },
-                FrameKind::GetMetadata { .. }
+                FrameKind::GetMetadata { .. },
+                FrameKind::SubscribeMetadata { .. },
             ]
         ),
-        "{frames:?}"
+        "the asked read from before the detach is still in flight: {frames:?}"
     );
 }
 
@@ -461,4 +532,111 @@ fn a_denied_read_is_a_stable_answer_that_recovery_does_not_repeat() {
             "a grant does not change on a live connection, so neither does its refusal"
         );
     }
+}
+
+#[test]
+fn the_asked_flag_is_subscribed_before_it_is_read_and_reports_the_level() {
+    let (mut plane, agent, asked) = discovered_both();
+    assert_ne!(agent, asked);
+    answer_metadata(&mut plane, asked, Some(b"1"));
+    assert_eq!(asked_levels(&mut plane), vec![true]);
+    let (mut plane, _, asked) = discovered_both();
+    answer_metadata(&mut plane, asked, None);
+    assert_eq!(asked_levels(&mut plane), vec![false]);
+}
+
+#[test]
+fn a_live_clear_retracts_the_question_and_fences_the_delayed_read() {
+    let (mut plane, _, asked) = discovered_both();
+    asked_changed(&mut plane, Some(b"1"));
+    asked_event(&mut plane, "q1");
+    asked_changed(&mut plane, None);
+    // The read was issued before both changes: its `1` must not resurrect
+    // the retracted question.
+    answer_metadata(&mut plane, asked, Some(b"1"));
+    let events = plane.take_events();
+    let order: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::AgentAskedState { asked, .. } => Some(format!("level {asked}")),
+            Event::AgentAsked { question_id, .. } => Some(format!("asked {question_id}")),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(order, ["level true", "asked q1", "level false"]);
+    // Raw consumers still see the live frames.
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::Frame(frame) if matches!(&**frame, FrameKind::MetadataChanged { key, .. } if key == RESOURCE_ASKED_KEY)))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn a_question_cleared_during_a_gap_is_retracted_by_recovery() {
+    let (mut plane, _, asked) = discovered_both();
+    answer_metadata(&mut plane, asked, Some(b"1"));
+    asked_event(&mut plane, "q1");
+    let _ = plane.take_events();
+    // The clear's METADATA_CHANGED was lost with the gap.
+    journal_gap(&mut plane);
+    let inventory = state_id(&outbound(&mut plane));
+    answer_state(&mut plane, inventory, snapshot());
+    let reread = asked_id(&outbound(&mut plane));
+    assert_ne!(reread, asked);
+    answer_metadata(&mut plane, reread, None);
+    assert_eq!(asked_levels(&mut plane), vec![false]);
+}
+
+#[test]
+fn reconnect_rereads_the_flag_and_ignores_the_previous_connection() {
+    let (mut plane, _, old_asked) = discovered_both();
+    answer_metadata(&mut plane, old_asked, Some(b"1"));
+    let _ = plane.take_events();
+    plane.connection_lost(None);
+    plane.connection_opened();
+    let _ = outbound(&mut plane);
+    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    let request_id = state_id(&outbound(&mut plane));
+    answer_state(&mut plane, request_id, snapshot());
+    let asked = asked_id(&outbound(&mut plane));
+    // A late reply correlated by the old connection is not this one's read.
+    answer_metadata(&mut plane, old_asked, Some(b"1"));
+    answer_metadata(&mut plane, asked, None);
+    assert_eq!(asked_levels(&mut plane), vec![false]);
+}
+
+#[test]
+fn an_ordinary_refresh_leaves_a_pending_question_alone() {
+    let (mut plane, agent, asked) = discovered_both();
+    answer_metadata(&mut plane, agent, None);
+    answer_metadata(&mut plane, asked, Some(b"1"));
+    asked_event(&mut plane, "q1");
+    let _ = plane.take_events();
+    assert!(refresh_after_settling(&mut plane, snapshot()).is_empty());
+    assert!(
+        asked_levels(&mut plane).is_empty(),
+        "no level, so no retraction"
+    );
+}
+
+#[test]
+fn an_unexpected_flag_value_still_reads_as_asked() {
+    let (mut plane, _, asked) = discovered_both();
+    answer_metadata(&mut plane, asked, Some(b"yes"));
+    assert_eq!(asked_levels(&mut plane), vec![true]);
+}
+
+#[test]
+fn a_closed_terminal_publishes_no_late_asked_level() {
+    let (mut plane, _, asked) = discovered_both();
+    event(
+        &mut plane,
+        Some(terminal()),
+        AgentEvent::ResourceClosed { exit_status: None },
+    );
+    answer_metadata(&mut plane, asked, Some(b"1"));
+    assert!(asked_levels(&mut plane).is_empty());
 }

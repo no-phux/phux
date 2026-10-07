@@ -32,6 +32,15 @@ reporting. It never touches a socket or a clock it is not handed:
   (drop and redial), `Refused` (terminal), `Resync` (redial for fresh
   snapshots), `Closed` (the consumer asked).
 
+On an L3 server the plane also subscribes to, then reads, two keys for every
+inventoried terminal, and re-reads them after an event gap, an event-queue
+overflow or a reconnect. Those keys are `phux.agent/v1` (`Event::AgentMetadata`)
+and the server-owned `phux.agent.asked/v1` flag (`Event::AgentAskedState`). A
+read issued before a live change is fenced by that change. `AgentAsked`
+announces a question. `AgentAskedState { asked: false }` is the level that
+retracts it, so a question cleared while a client was not listening is not
+shown again.
+
 In `Runtime::embedded`, the consumer owns the socket and feeds frames directly.
 Harnesses use this lane for synthetic frames, as do the C ABI's
 `phux_client_new` clients.
