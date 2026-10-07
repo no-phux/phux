@@ -389,7 +389,7 @@ async fn phux_send_keys(args: &Value) -> Result<Value, ToolError> {
         ));
     }
     let view = state::get_state(&socket).await?;
-    let pane = resolve_one(&socket, &selector, &view).await?;
+    let pane = resolve_one_for_input(&socket, &selector, &view).await?;
     phux_client::send_keys::send_to(&socket, pane.clone(), &keys).await?;
     Ok(json!({ "sent": true, "pane": pane_value(&pane) }))
 }
@@ -412,7 +412,7 @@ async fn phux_paste(args: &Value) -> Result<Value, ToolError> {
         PasteTrust::Trusted
     };
     let view = state::get_state(&socket).await?;
-    let pane = resolve_one(&socket, &selector, &view).await?;
+    let pane = resolve_one_for_input(&socket, &selector, &view).await?;
     phux_client::send_keys::paste_to(&socket, pane.clone(), text.into_bytes(), trust).await?;
     Ok(json!({ "sent": true, "pane": pane_value(&pane), "untrusted": untrusted }))
 }
@@ -739,7 +739,8 @@ pub(crate) fn incomplete_view_miss(subject: &str, notices: &[String]) -> ToolErr
 
 /// Resolve `selector` against `view` to one pane as the CLI does (ADR-0021),
 /// preferring the focused pane. A miss against a degraded view says so
-/// rather than claiming the target is gone.
+/// rather than claiming the target is gone. For read tools; a tool that
+/// delivers input resolves through [`resolve_one_for_input`].
 ///
 /// # Errors
 ///
@@ -749,13 +750,38 @@ pub(crate) async fn resolve_one(
     selector: &Selector,
     view: &StateView,
 ) -> Result<ResourceId, ToolError> {
+    resolve_one_with(socket, selector, view, false).await
+}
+
+/// [`resolve_one`] for the tools that deliver input into the pane
+/// (`phux_send_keys`, `phux_paste`): identical, except that a `%name` whose
+/// record has the withdrawn shape is refused (ADR-0075 point 5), as the
+/// CLI's input verbs refuse it.
+///
+/// # Errors
+///
+/// A [`ToolError`] when the selector matches no pane, or `agent_withdrawn`.
+pub(crate) async fn resolve_one_for_input(
+    socket: &std::path::Path,
+    selector: &Selector,
+    view: &StateView,
+) -> Result<ResourceId, ToolError> {
+    resolve_one_with(socket, selector, view, true).await
+}
+
+async fn resolve_one_with(
+    socket: &std::path::Path,
+    selector: &Selector,
+    view: &StateView,
+    for_input: bool,
+) -> Result<ResourceId, ToolError> {
     let snapshot = view.snapshot();
     // `%name` resolves to exactly one agent or refuses (ADR-0075 point 3).
     if let Selector::Agent(name) = selector {
-        return state::resolve_agent_target(socket, name, snapshot, false)
+        return state::resolve_agent_target(socket, name, snapshot, for_input)
             .await
             .map(|target| target.terminal)
-            .map_err(|err| ToolError::new(err.to_string()));
+            .map_err(|err| agent_resolve_error(&err));
     }
     let candidates = state::resolve_targets(socket, selector, snapshot).await;
     selector::pick_target_pane(&candidates, &snapshot.focused_resource).ok_or_else(|| {
@@ -765,6 +791,12 @@ pub(crate) async fn resolve_one(
             incomplete_view_miss("the target", view.degradation().notices())
         }
     })
+}
+
+/// A `%name` refusal on the `--json` error contract, with the code and exit
+/// status the CLI reports it with (ADR-0075 point 3).
+pub(crate) fn agent_resolve_error(err: &selector::AgentResolveError) -> ToolError {
+    contract_error(err.code(), err.to_string(), err.remedy(), err.exit_code())
 }
 
 /// The explicit socket path, else `$PHUX_SOCKET`, else the daemon default.

@@ -410,6 +410,40 @@ impl AgentResolveError {
         }
     }
 
+    /// The stable `--json` error code (`docs/consumers/agents.md` §7) every
+    /// surface reports this refusal with, CLI and MCP alike.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::Unknown { .. } => "no_such_target",
+            Self::Ambiguous { .. } | Self::AmbiguousSession { .. } => "selector_not_single",
+            Self::KindConstant { .. } => "invalid_agent_name",
+            Self::Withdrawn { .. } => "agent_withdrawn",
+            Self::PartialIndex { .. } => "partial_view",
+        }
+    }
+
+    /// What to do about this refusal, one line.
+    #[must_use]
+    pub const fn remedy(&self) -> &'static str {
+        match self {
+            Self::Unknown { .. } => {
+                "`phux agent list` shows every declared name; set one with `phux agent set \
+                 TARGET --name <name>`"
+            }
+            Self::Ambiguous { .. } | Self::AmbiguousSession { .. } => {
+                "address one candidate directly by @N"
+            }
+            Self::KindConstant { .. } => {
+                "name one pane with `phux agent set @N --name <name>` and address that"
+            }
+            Self::Withdrawn { .. } => {
+                "inspect the pane with `phux agent explain`; address it by @N to write anyway"
+            }
+            Self::PartialIndex { .. } => "retry once the fleet is whole, or address the pane by @N",
+        }
+    }
+
     /// The name that was typed after `%`.
     #[must_use]
     pub fn name(&self) -> &str {
@@ -973,6 +1007,65 @@ mod tests {
             AgentIndex::complete(map)
         } else {
             AgentIndex::partial(map)
+        }
+    }
+
+    /// Every refusal carries the contract code and remedy each surface (CLI,
+    /// spatial, MCP) reports it with.
+    #[test]
+    fn agent_resolve_errors_carry_their_contract_codes() {
+        let t = ResourceId::local(1);
+        for (err, code, exit) in [
+            (
+                AgentResolveError::Unknown { name: "a".into() },
+                "no_such_target",
+                1,
+            ),
+            (
+                AgentResolveError::Ambiguous {
+                    name: "a".into(),
+                    candidates: vec![],
+                },
+                "selector_not_single",
+                2,
+            ),
+            (
+                AgentResolveError::AmbiguousSession {
+                    name: "a".into(),
+                    terminal: t.clone(),
+                    candidates: vec![],
+                },
+                "selector_not_single",
+                2,
+            ),
+            (
+                AgentResolveError::KindConstant {
+                    name: "a".into(),
+                    candidates: vec![],
+                },
+                "invalid_agent_name",
+                2,
+            ),
+            (
+                AgentResolveError::Withdrawn {
+                    name: "a".into(),
+                    terminal: t,
+                },
+                "agent_withdrawn",
+                2,
+            ),
+            (
+                AgentResolveError::PartialIndex {
+                    name: "a".into(),
+                    matched: vec![],
+                },
+                "partial_view",
+                3,
+            ),
+        ] {
+            assert_eq!(err.code(), code, "{err:?}");
+            assert_eq!(err.exit_code(), exit, "{err:?}");
+            assert!(!err.remedy().is_empty(), "{err:?}");
         }
     }
 
