@@ -12,6 +12,7 @@
 mod client;
 mod material;
 mod reload;
+mod server_identity;
 mod store;
 
 pub use client::{
@@ -23,6 +24,9 @@ pub use material::{ClientMaterial, MAX_MATERIAL_BYTES, MaterialError};
 pub use phux_protocol::scope::ScopeGrammarError;
 use phux_protocol::scope::{EffectiveScopeSet, ScopeGrant, Selector, TerminalScopeSet};
 pub use reload::{BrokenRegistry, RegistryObservation, ReloadingWorkloadRegistry};
+pub use server_identity::{
+    IssuedServerIdentity, Rotation, ServerPair, issue_server_identity, rotate_authority,
+};
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -780,11 +784,7 @@ fn mint_authority(
     key_path: &Path,
     held: &store::HeldLock<'_>,
 ) -> Result<(), WorkloadError> {
-    let mut params = CertificateParams::new(vec!["phux-workload-ca".to_owned()])?;
-    params
-        .distinguished_name
-        .push(DnType::CommonName, "phux workload authority");
-    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    let params = authority_params()?;
     let key = KeyPair::generate()?;
     let certificate = params.self_signed(&key)?;
     store::open_owner_dir(cert_path)?;
@@ -795,6 +795,16 @@ fn mint_authority(
     scrub(&mut key_pem);
     written?;
     store::atomic_replace(cert_path, certificate.pem().as_bytes(), held)
+}
+
+/// The fields of every workload CA certificate.
+fn authority_params() -> Result<CertificateParams, WorkloadError> {
+    let mut params = CertificateParams::new(vec!["phux-workload-ca".to_owned()])?;
+    params
+        .distinguished_name
+        .push(DnType::CommonName, "phux workload authority");
+    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    Ok(params)
 }
 
 /// SHA-256 CA fingerprint in the canonical `sha256:` form.

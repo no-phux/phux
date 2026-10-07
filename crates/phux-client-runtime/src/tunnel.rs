@@ -601,6 +601,7 @@ mod tests {
             cert_fingerprint: None,
             tls_server_name: None,
             client_identity: phux_dial::TlsClientIdentity::None,
+            authority: crate::target::AuthorityPin::default(),
         };
         let joined = std::thread::spawn({
             let shared = Arc::clone(&shared);
@@ -631,6 +632,7 @@ mod tests {
             cert_fingerprint: None,
             tls_server_name: None,
             client_identity: phux_dial::TlsClientIdentity::None,
+            authority: crate::target::AuthorityPin::default(),
         });
         assert_eq!(tunnel.state(), TunnelState::Resolved);
         assert!(tunnel.message().is_none());

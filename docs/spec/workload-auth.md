@@ -81,6 +81,22 @@ and all mutating authority. A client with a prior binding SHALL surface
 `authority_changed` and refuse; it SHALL NOT silently trust the
 replacement.
 
+<!-- impl-status: shipped; probe: chain_authority,AuthorityChange,issue_server_identity,rotate_authority,known_authorities -->
+> **Status: shipped (ADR-0153).** The reference server provisions its
+> certificate from the CA and presents the chain, leaf then CA; a chain
+> names its CA when the leaf verifies under the chain's last certificate.
+> Clients pin the CA at pairing (`phux pair --json` `ca_fingerprint`, the
+> connect link's `ca`) in `known-authorities` beside `config.toml`, keyed
+> by the leaf pin. A changed CA is refused as `authority_changed`, naming
+> both fingerprints, and never retried. Two transitional rules keep pairs
+> made earlier working, informatively: a server whose certificate predates
+> its CA keeps its self-signed leaf (it is never re-issued) and presents no
+> CA, so a client pinning a CA beside that exact leaf accepts the leaf; and
+> a client holding only a leaf pin records the CA its pinned leaf chains to
+> on its first connection. `phux workload authority --rotate` is the
+> rotation: a new CA and a server certificate under it, with no
+> cross-signing, so every client re-pairs.
+
 The CA's key file SHALL persist at `<state-dir>/workload-ca.key` with
 the CA certificate at `<state-dir>/workload-ca.pem`. The containing
 state directory SHALL be owner-only. Key and registry files SHALL be
@@ -88,7 +104,8 @@ regular, owner-owned, no-follow-opened files with mode `0600`; creation
 and replacement SHALL use an owner-controlled lock, same-directory
 temporary file, file sync, atomic rename, and directory sync. A missing
 CA may be created only by an explicit initialization path (first
-routable listen, or `phux workload authority --init`).
+routable listen, the `phux pair` that provisions the server certificate
+before it, or `phux workload authority --init`).
 
 Every directory above the state directory SHALL also be controlled by its
 owner or root. The reference implementation checks only the immediate
@@ -162,8 +179,8 @@ grant before any stateful frame is processed.
   (Informative: the reference dialer turns this on with
   `PHUX_WORKLOAD_REQUIRE_PAIRED`, off by default, and fails the TLS
   handshake itself when no `CertificateRequest` arrived, with session
-  resumption disabled so every handshake can show one. It still pins the
-  server leaf rather than a CA; see §2.)
+  resumption disabled so every handshake can show one. It pins the CA when
+  one is pinned and the leaf otherwise; see §2.)
 - **TLS session resumption** preserves the authenticated identity: a
   resumed session carries the same verified peer as the session it
   resumes. 0-RTT application data is not used for phux frames.
@@ -680,7 +697,8 @@ require them. None substitutes for the client certificate in `paired`.
 Plaintext remote transport is forbidden in every mode.
 
 `phux workload authority --init` is the only CLI path that creates a missing
-CA and prints only its fingerprint. `phux workload add-key` accepts only a
+CA and prints only its fingerprint. `phux workload authority --rotate`
+replaces an existing CA (§2) and prints only the old and new fingerprints. `phux workload add-key` accepts only a
 client certificate or CSR from stdin or an explicitly opened file and writes
 the registry. For a CSR it writes the issued chain (leaf, then CA) to a new
 `--cert-out` file or, with `--cert-stdout`, to stdout (as the `--json`

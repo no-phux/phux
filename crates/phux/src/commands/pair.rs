@@ -90,6 +90,7 @@ const LEGACY_CONNECT_URI_PREFIX: &str = "phux://connect";
 
 /// Build the one-tap link. `url`, `token`, and `fingerprint` are query-safe
 /// as-is; only the free-form `name` is percent-encoded.
+#[cfg(test)]
 fn build_connect_link(
     url: &str,
     quic: Option<&str>,
@@ -97,12 +98,41 @@ fn build_connect_link(
     fingerprint: Option<&str>,
     token: &str,
 ) -> String {
+    build_connect_link_pinned(
+        url,
+        quic,
+        name,
+        ServerPins {
+            leaf: fingerprint,
+            authority: None,
+        },
+        token,
+    )
+}
+
+/// What a link pins: the leaf fingerprint (`fp`) and, when the server's
+/// certificate chains to its workload CA, that CA (`ca`, ADR-0153).
+#[derive(Debug, Clone, Copy, Default)]
+struct ServerPins<'a> {
+    leaf: Option<&'a str>,
+    authority: Option<&'a str>,
+}
+
+/// [`build_connect_link`] carrying `ca=` after `fp=` when the server presents
+/// its CA. A consumer that predates `ca` ignores it and pins the leaf.
+fn build_connect_link_pinned(
+    url: &str,
+    quic: Option<&str>,
+    name: Option<&str>,
+    pins: ServerPins<'_>,
+    token: &str,
+) -> String {
     let mut link = format!("{CONNECT_URI_PREFIX}?url={url}");
     if let Some(quic) = quic {
         link.push_str("&quic=");
         link.push_str(quic);
     }
-    push_link_credentials(&mut link, name, fingerprint, token);
+    push_link_credentials(&mut link, name, pins, token);
     link
 }
 
@@ -116,24 +146,28 @@ fn build_relay_connect_link(
     token: &str,
 ) -> String {
     let mut link = format!("{CONNECT_URI_PREFIX}?quic=quic://{relay}&sni={route}");
-    push_link_credentials(&mut link, name, fingerprint, token);
+    // The relay terminates TLS, so its own leaf is the only pin (ADR-0149).
+    let pins = ServerPins {
+        leaf: fingerprint,
+        authority: None,
+    };
+    push_link_credentials(&mut link, name, pins, token);
     link
 }
 
 /// Append the fields every link ends with, in the documented order.
-fn push_link_credentials(
-    link: &mut String,
-    name: Option<&str>,
-    fingerprint: Option<&str>,
-    token: &str,
-) {
+fn push_link_credentials(link: &mut String, name: Option<&str>, pins: ServerPins<'_>, token: &str) {
     if let Some(name) = name {
         link.push_str("&name=");
         link.push_str(&percent_encode(name));
     }
-    if let Some(fp) = fingerprint {
+    if let Some(fp) = pins.leaf {
         link.push_str("&fp=");
         link.push_str(fp);
+    }
+    if let Some(ca) = pins.authority {
+        link.push_str("&ca=");
+        link.push_str(ca);
     }
     link.push_str("&token=");
     link.push_str(token);
@@ -183,6 +217,9 @@ pub(crate) struct ConnectLink {
     pub(crate) name: Option<String>,
     /// The TLS certificate SHA-256 pin.
     pub(crate) cert_fingerprint: Option<String>,
+    /// The `sha256:` fingerprint of the CA the server's leaf chains to
+    /// (`ca`, ADR-0153), canonical; `None` when the link carries none.
+    pub(crate) ca_fingerprint: Option<String>,
     /// The bearer pairing token. A secret — never echoed back.
     pub(crate) token: String,
 }
@@ -211,8 +248,17 @@ pub(crate) fn parse_connect_link(link: &str) -> Result<ConnectLink, String> {
         sni,
         name,
         fingerprint,
+        authority,
         token,
     } = parse_connect_fields(query)?;
+    let ca_fingerprint = authority
+        .filter(|ca| !ca.is_empty())
+        .map(|ca| {
+            phux_config::known_authorities::canonical_authority(&ca).ok_or_else(|| {
+                "connect code ca must be a sha256: certificate fingerprint".to_owned()
+            })
+        })
+        .transpose()?;
     let tls_server_name = sni
         .filter(|sni| !sni.is_empty())
         .map(|sni| {
@@ -231,6 +277,7 @@ pub(crate) fn parse_connect_link(link: &str) -> Result<ConnectLink, String> {
         tls_server_name,
         name: name.filter(|name| !name.is_empty()),
         cert_fingerprint: fingerprint.filter(|fp| !fp.is_empty()),
+        ca_fingerprint,
         token,
     })
 }
@@ -242,6 +289,7 @@ struct ConnectFields {
     sni: Option<String>,
     name: Option<String>,
     fingerprint: Option<String>,
+    authority: Option<String>,
     token: Option<String>,
 }
 
@@ -258,6 +306,7 @@ fn parse_connect_fields(query: &str) -> Result<ConnectFields, String> {
             "sni" => &mut fields.sni,
             "name" => &mut fields.name,
             "fp" => &mut fields.fingerprint,
+            "ca" => &mut fields.authority,
             "token" => &mut fields.token,
             // Unknown keys are forward-compat room, not an error.
             _ => continue,
@@ -710,6 +759,7 @@ pub(crate) fn run_pair(
     }
 
     let fingerprint = read_pairing_fingerprint(&certificate.cert, json);
+    let authority = read_pairing_authority(&certificate.cert, json);
     warn_on_uncovered_names(&certificate.cert, &certificate.key, &addresses.advertised);
 
     if !json {
@@ -718,18 +768,22 @@ pub(crate) fn run_pair(
 
     // The one-tap link (and its QR form) carries the token — it is as much
     // a secret as the token line above, shown once on the same terminal.
+    let pins = ServerPins {
+        leaf: fingerprint.as_deref(),
+        authority: authority.as_deref(),
+    };
     let link = addresses.server_url.as_deref().map(|url| {
-        build_connect_link(
+        build_connect_link_pinned(
             url,
             addresses.quic_endpoint.as_deref(),
             name.as_deref(),
-            fingerprint.as_deref(),
+            pins,
             &token,
         )
     });
 
     if json {
-        return crate::output::json(&pair_document(
+        let mut document = pair_document(
             &token,
             fingerprint.as_deref(),
             &addresses.overlay,
@@ -738,7 +792,10 @@ pub(crate) fn run_pair(
             &tokens,
             &minted.id,
             minted.generation,
-        ));
+        );
+        // Additive: `phux host add` pins it; older readers ignore it.
+        document["ca_fingerprint"] = serde_json::json!(authority);
+        return crate::output::json(&document);
     }
 
     if let Some(link) = link.as_deref() {
@@ -977,17 +1034,19 @@ fn resolve_pair_addresses(host: Option<&str>, live: LiveListeners) -> PairAddres
     }
 }
 
-/// Provision the self-signed cert at the default paths if it isn't there yet,
+/// Provision the server cert at the default paths if it isn't there yet (issued
+/// by the workload CA, ADR-0153, as the server itself would),
 /// so the fingerprint printed later is the one the server will actually
 /// present. An operator-supplied cert is used as-is, never generated over.
 fn provision_pairing_certificate(certificate: &CertificatePaths, advertised: &[String]) {
     if certificate.operator_supplied {
         return;
     }
-    if let Err(err) = phux_server::transport::tls::ensure_self_signed_for(
+    if let Err(err) = phux_server::transport::tls::ensure_server_identity(
         &certificate.cert,
         &certificate.key,
         advertised,
+        &phux_server::workload::WorkloadPaths::from_env(),
     ) {
         eprintln!("phux pair: warning: could not provision certificate: {err}");
     }
@@ -1046,6 +1105,20 @@ fn read_pairing_fingerprint(cert: &std::path::Path, json: bool) -> Option<String
             None
         }
     }
+}
+
+/// The workload CA the server's certificate chains to, printed for a human
+/// operator (ADR-0153); `None` for a self-signed or operator-supplied leaf.
+fn read_pairing_authority(cert: &std::path::Path, json: bool) -> Option<String> {
+    let authority = phux_server::transport::tls::presented_authority(cert)
+        .ok()
+        .flatten()?;
+    if !json {
+        outln!("Server certificate authority (pinned by the device; it survives leaf renewal):");
+        outln!("  {authority}");
+        outln!();
+    }
+    Some(authority)
 }
 
 /// List the overlay addresses a device can dial.
@@ -1373,9 +1446,9 @@ fn pair_document(
 #[cfg(test)]
 mod tests {
     use super::{
-        LiveListeners, advertised_names, build_connect_link, build_relay_connect_link,
-        legacy_connect_link, link_refusal, live_listeners, pair_document, parse_connect_link,
-        percent_encode, render_qr, resolve_quic_endpoint, resolve_server_url,
+        LiveListeners, ServerPins, advertised_names, build_connect_link, build_connect_link_pinned,
+        build_relay_connect_link, legacy_connect_link, link_refusal, live_listeners, pair_document,
+        parse_connect_link, percent_encode, render_qr, resolve_quic_endpoint, resolve_server_url,
         select_relay_connector,
     };
     use phux_protocol::wire::{
@@ -1748,6 +1821,61 @@ mod tests {
         assert_eq!(parsed.name.as_deref(), Some("mini box"));
         assert_eq!(parsed.cert_fingerprint.as_deref(), Some("AB:CD:EF"));
         assert_eq!(parsed.token, "deadbeef");
+    }
+
+    /// ADR-0153: a direct link carries the server's CA as `ca` after `fp`,
+    /// in its canonical spelling; a malformed one refuses the link rather
+    /// than pinning nothing silently, and a link without one parses as
+    /// before.
+    #[test]
+    fn a_link_carries_the_certificate_authority_after_the_leaf_pin() {
+        let authority = format!("sha256:{}", "ab".repeat(32));
+        let link = build_connect_link_pinned(
+            "wss://100.64.0.2:8787",
+            None,
+            None,
+            ServerPins {
+                leaf: Some("AB:CD"),
+                authority: Some(&authority),
+            },
+            "deadbeef",
+        );
+        assert_eq!(
+            link,
+            format!(
+                "https://phux.sh/connect?url=wss://100.64.0.2:8787&fp=AB:CD&ca={authority}&token=deadbeef"
+            )
+        );
+        let parsed = parse_connect_link(&link).expect("parse");
+        assert_eq!(parsed.ca_fingerprint.as_deref(), Some(authority.as_str()));
+        assert_eq!(parsed.cert_fingerprint.as_deref(), Some("AB:CD"));
+
+        let shouted = link.replace(
+            &authority,
+            &authority.to_uppercase().replace("SHA256", "sha256"),
+        );
+        assert_eq!(
+            parse_connect_link(&shouted)
+                .expect("any hex case")
+                .ca_fingerprint
+                .as_deref(),
+            Some(authority.as_str())
+        );
+        let truncated = link.replace(&authority, "sha256:abcd");
+        let err = parse_connect_link(&truncated).expect_err("a truncated pin");
+        assert!(err.contains("ca"), "{err}");
+        assert_eq!(
+            parse_connect_link(&build_connect_link(
+                "wss://h:1",
+                None,
+                None,
+                Some("AB"),
+                "t"
+            ))
+            .expect("parse")
+            .ca_fingerprint,
+            None
+        );
     }
 
     /// A link with no `name`/`fp` (the minimal shape the builder emits) is

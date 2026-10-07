@@ -28,9 +28,31 @@ struct QuicServer {
 
 impl QuicServer {
     fn start() -> Self {
+        Self::start_with(false)
+    }
+
+    /// With `authority`, the certificate is the one a server provisions
+    /// itself: issued by its workload CA, presented after the leaf
+    /// (ADR-0153).
+    fn start_with(authority: bool) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let (cert, key) = (dir.path().join("cert.pem"), dir.path().join("key.pem"));
-        phux_server::transport::tls::ensure_self_signed(&cert, &key).expect("cert");
+        if authority {
+            std::fs::set_permissions(
+                dir.path(),
+                <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+            )
+            .expect("owner-only state directory");
+            let paths = phux_server::workload::WorkloadPaths::with_overrides(
+                Some(dir.path().join("workload-ca.pem")),
+                Some(dir.path().join("workload-ca.key")),
+                Some(dir.path().join("workload-keys")),
+            );
+            phux_server::transport::tls::ensure_server_identity(&cert, &key, &[], &paths)
+                .expect("cert");
+        } else {
+            phux_server::transport::tls::ensure_self_signed(&cert, &key).expect("cert");
+        }
         // The runtime's reconnect ladder covers the listener's startup, so a
         // reserved-then-released port is enough; no readiness probe needed.
         let addr = UdpSocket::bind("127.0.0.1:0")
@@ -70,6 +92,10 @@ impl QuicServer {
             thread: Some(thread),
             _dir: dir,
         }
+    }
+
+    fn cert(&self) -> std::path::PathBuf {
+        self._dir.path().join("cert.pem")
     }
 }
 
@@ -116,6 +142,54 @@ fn quic_endpoint_attaches_over_real_loopback_quic() {
     });
     assert!(remote.server_protocol_version().is_some());
     remote.stop_connection();
+}
+
+/// ADR-0153 for the phone: a leaf-pinned client learns the CA on its first
+/// connection; pinned, a different CA is refused by name and never attaches,
+/// and the right one attaches.
+#[test]
+fn a_leaf_pinned_phone_learns_the_authority_and_a_swapped_one_is_refused() {
+    let server = QuicServer::start_with(true);
+    let leaf = phux_server::transport::tls::cert_fingerprint(&server.cert()).expect("leaf");
+    let authority = phux_server::transport::tls::presented_authority(&server.cert())
+        .expect("chain")
+        .expect("issued by the workload CA");
+    let endpoint = format!("quic://{}", server.addr);
+
+    let learning = RemoteClient::new(endpoint.clone(), 80, 24, Some(leaf.clone()), None);
+    learning.connect().expect("connect");
+    learning.attach_session(SESSION.to_owned());
+    wait_for(&learning, |remote| remote.status() == WireStatus::Attached);
+    assert_eq!(learning.learned_authority(), Some(authority.clone()));
+    learning.stop_connection();
+
+    let swapped = RemoteClient::new(endpoint.clone(), 80, 24, Some(leaf.clone()), None);
+    swapped.set_authority_pin(Some(format!("sha256:{}", "0".repeat(64))));
+    swapped.connect().expect("the runtime owns the failure");
+    wait_for(&swapped, |remote| {
+        remote
+            .last_error()
+            .is_some_and(|error| error.contains("certificate authority changed"))
+    });
+    let error = swapped.last_error().expect("an error");
+    assert!(
+        error.contains(&authority),
+        "names the presented CA: {error}"
+    );
+    assert_ne!(swapped.status(), WireStatus::Attached);
+    assert_eq!(
+        swapped.learned_authority(),
+        None,
+        "a pinned client learns nothing"
+    );
+    swapped.stop_connection();
+
+    let pinned = RemoteClient::new(endpoint, 80, 24, Some(leaf), None);
+    pinned.set_authority_pin(Some(authority));
+    pinned.connect().expect("connect");
+    pinned.attach_session(SESSION.to_owned());
+    wait_for(&pinned, |remote| remote.status() == WireStatus::Attached);
+    pinned.stop_connection();
 }
 
 #[test]

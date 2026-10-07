@@ -141,7 +141,7 @@ async fn dial_inner(
     };
     let mut endpoint = quinn::Endpoint::client(bind)
         .map_err(|err| DialError::Connect(format!("bind QUIC client socket: {err}")))?;
-    let mut config = client_config(&d.trust, identity, alpn)?;
+    let (mut config, refusal) = client_config(&d.trust, identity, alpn)?;
     if alpn == QUIC_RELAY_ALPN {
         // One endpoint per dial, so one tagged ID serves its one connection.
         let cid = tunnel_cid()?;
@@ -153,7 +153,9 @@ async fn dial_inner(
         .connect(d.addr, &d.server_name)
         .map_err(|err| DialError::Connect(format!("dial {}: {err}", d.addr)))?
         .await
-        .map_err(|err| handshake_error(d.addr, &err))?;
+        .map_err(|err| {
+            crate::tls::authority_refusal(&refusal).unwrap_or_else(|| handshake_error(d.addr, &err))
+        })?;
 
     let (mut send, recv) = conn
         .open_bi()
@@ -242,11 +244,8 @@ fn client_config(
     trust: &CertTrust,
     identity: Option<&TlsClientIdentity>,
     alpn: &[u8],
-) -> Result<quinn::ClientConfig, DialError> {
-    let crypto = match identity {
-        Some(identity) => crate::tls::client_config_with_identity(trust, identity, Some(alpn))?,
-        None => crate::tls::client_config(trust, Some(alpn))?,
-    };
+) -> Result<(quinn::ClientConfig, crate::tls::AuthorityRefusal), DialError> {
+    let (crypto, refusal) = crate::tls::client_config_reporting(trust, identity, Some(alpn))?;
     let quic_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(crypto)
         .map_err(|err| DialError::Connect(format!("build QUIC crypto: {err}")))?;
     let mut config = quinn::ClientConfig::new(Arc::new(quic_crypto));
@@ -257,7 +256,7 @@ fn client_config(
         transport.max_idle_timeout(Some(idle));
     }
     config.transport_config(Arc::new(transport));
-    Ok(config)
+    Ok((config, refusal))
 }
 
 #[cfg(test)]

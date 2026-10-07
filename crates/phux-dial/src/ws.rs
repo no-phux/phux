@@ -223,10 +223,7 @@ async fn tls_connect(
     dial: &WsDial,
     identity: Option<&TlsClientIdentity>,
 ) -> Result<tokio_rustls::client::TlsStream<TcpStream>, DialError> {
-    let config = match identity {
-        Some(identity) => crate::tls::client_config_with_identity(&dial.trust, identity, None)?,
-        None => crate::tls::client_config(&dial.trust, None)?,
-    };
+    let (config, refusal) = crate::tls::client_config_reporting(&dial.trust, identity, None)?;
     let config = Arc::new(config);
     let connector = tokio_rustls::TlsConnector::from(config);
     let server_name = dial
@@ -235,10 +232,11 @@ async fn tls_connect(
         .unwrap_or_else(|| target.server_name.clone());
     let server_name = rustls::pki_types::ServerName::try_from(server_name)
         .map_err(|err| DialError::Connect(format!("invalid TLS server name: {err}")))?;
-    connector
-        .connect(server_name, tcp)
-        .await
-        .map_err(|err| DialError::Connect(format!("TLS handshake with {}: {err}", target.host)))
+    connector.connect(server_name, tcp).await.map_err(|err| {
+        crate::tls::authority_refusal(&refusal).unwrap_or_else(|| {
+            DialError::Connect(format!("TLS handshake with {}: {err}", target.host))
+        })
+    })
 }
 
 fn ws_error(err: TungsteniteError) -> DialError {

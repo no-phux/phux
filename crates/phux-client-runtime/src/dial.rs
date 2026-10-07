@@ -46,11 +46,7 @@ pub async fn plan_quic_with_token(
 ) -> Result<QuicDial, String> {
     let name = resolved.name.as_str();
     let (bare, addr) = resolve_quic_addr(name, authority).await?;
-    let trust = quic_trust(
-        name,
-        resolved.cert_fingerprint.as_deref(),
-        addr.ip().is_loopback(),
-    )?;
+    let trust = quic_trust(name, resolved, addr.ip().is_loopback())?;
     let token = match token.or(load_token(resolved)?) {
         Some(token) => Some(parse_token_hex(&token).map_err(|_| bad_token(resolved))?),
         None => None,
@@ -89,11 +85,15 @@ async fn resolve_quic_addr<'a>(
     Ok((bare, addr))
 }
 
-/// Pin when the registry carries a fingerprint, trust loopback's dev
-/// certificate, and refuse an unpinned routable dial (the CLI's `quic_trust`).
-fn quic_trust(name: &str, pin: Option<&str>, loopback: bool) -> Result<CertTrust, String> {
-    match pin {
-        Some(fingerprint) => Ok(CertTrust::Pinned(fingerprint.to_owned())),
+/// Pin when the registry carries a fingerprint (the CA beside it when one is
+/// pinned, ADR-0153), trust loopback's dev certificate, and refuse an
+/// unpinned routable dial (the CLI's `quic_trust`).
+fn quic_trust(name: &str, resolved: &Resolved, loopback: bool) -> Result<CertTrust, String> {
+    match resolved
+        .authority
+        .trust(resolved.cert_fingerprint.as_deref())
+    {
+        Some(trust) => Ok(trust),
         None if loopback => Ok(CertTrust::SkipVerify),
         None => Err(unpinned(name)),
     }
@@ -120,7 +120,7 @@ pub fn plan_ws(resolved: &Resolved, url: &str, token: Option<String>) -> Result<
                 "{name}: {url} is plaintext; a routable WebSocket needs wss://"
             ));
         }
-        if resolved.cert_fingerprint.is_none() {
+        if resolved.cert_fingerprint.is_none() && resolved.authority.ca.is_none() {
             return Err(unpinned(name));
         }
         if token.is_none() {
@@ -140,9 +140,9 @@ pub fn plan_ws(resolved: &Resolved, url: &str, token: Option<String>) -> Result<
         url: url.to_owned(),
         token,
         trust: resolved
-            .cert_fingerprint
-            .clone()
-            .map_or(CertTrust::SkipVerify, CertTrust::Pinned),
+            .authority
+            .trust(resolved.cert_fingerprint.as_deref())
+            .unwrap_or(CertTrust::SkipVerify),
         tls_server_name: resolved.tls_server_name.clone(),
         // Explicit, so the plan never falls back to the environment.
         identity: Some(resolved.client_identity.clone()),
@@ -235,7 +235,19 @@ pub fn dial_message(name: &str, err: &DialError) -> String {
         ),
         DialError::Io(detail) => format!("{name}: {detail}"),
         DialError::Stalled(detail) => format!("{name} stopped answering ({detail})"),
+        DialError::AuthorityChanged(change) => authority_changed_message(name, change),
     }
+}
+
+/// The `authority_changed` refusal (ADR-0153): both fingerprints, why it is
+/// refused, and the re-pair that accepts a rotation the operator made.
+#[must_use]
+pub fn authority_changed_message(name: &str, change: &phux_dial::AuthorityChange) -> String {
+    format!(
+        "{name}: {change}. Refusing to connect: a rotated authority and an impostor look \
+         the same from here. If the host's operator rotated it (`phux workload authority \
+         --rotate`), re-pair: `phux host add {name}`"
+    )
 }
 
 /// Preserve the QUIC application-close code: quinn's stream I/O displays
@@ -315,6 +327,7 @@ mod tests {
             cert_fingerprint: pin.map(str::to_owned),
             tls_server_name: None,
             client_identity: phux_dial::TlsClientIdentity::None,
+            authority: crate::target::AuthorityPin::default(),
         }
     }
 

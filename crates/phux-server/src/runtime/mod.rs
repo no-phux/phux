@@ -1625,9 +1625,9 @@ fn warn_if_cert_omits_bind(cert_path: &Path, advertised: &[String], transport: &
 
 /// Certificate and key a TLS listener bound to `addr` presents: the
 /// operator's (`PHUX_WS_TLS_CERT` / `PHUX_WS_TLS_KEY`) when set, otherwise
-/// the shared self-signed pair, provisioned on first use and never
-/// regenerated (ADR-0091), so every listener presents the one fingerprint
-/// `phux pair` prints. `None`, after logging, when it cannot be provisioned.
+/// the shared pair, issued by the workload CA on first use (ADR-0153) and
+/// never regenerated (ADR-0091), so every listener presents the one
+/// fingerprint `phux pair` prints. `None`, after logging, when it cannot be provisioned.
 fn remote_certificate(
     addr: SocketAddr,
     transport: &str,
@@ -1648,10 +1648,14 @@ fn remote_certificate(
     }
     let advertised = crate::transport::tls::advertised_for_bind(addr);
     if !operator_cert
-        && let Err(err) =
-            crate::transport::tls::ensure_self_signed_for(&cert_path, &key_path, &advertised)
+        && let Err(err) = crate::transport::tls::ensure_server_identity(
+            &cert_path,
+            &key_path,
+            &advertised,
+            &env.workload_paths(),
+        )
     {
-        error!(error = %err, transport, "failed to provision self-signed certificate; listener disabled");
+        error!(error = %err, transport, "failed to provision the server certificate; listener disabled");
         return None;
     }
     warn_if_cert_omits_bind(&cert_path, &advertised, transport);

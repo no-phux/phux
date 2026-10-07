@@ -99,6 +99,8 @@ pub(crate) fn run(args: SshAttach<'_>) -> ExitCode {
         &target,
         &report.token,
         Some(&report.cert_fingerprint),
+        // The leaf pin arrived over ssh this second; nothing to learn.
+        &phux_client_runtime::target::AuthorityPin::default(),
         args.identity.clone(),
     ) {
         return fall_back(

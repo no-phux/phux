@@ -22,7 +22,7 @@ pub mod window;
 pub mod ws;
 
 pub use quic::QuicDial;
-pub use tls::{CertTrust, TlsClientIdentity};
+pub use tls::{AuthorityChange, AuthorityLearner, CertTrust, TlsClientIdentity};
 pub use window::{SendWindow, TrackedSend};
 pub use ws::{WsDial, WsTarget};
 
@@ -48,6 +48,13 @@ pub enum DialError {
     /// rather than credentials.
     #[error("transport connect error: {0}")]
     Unreachable(String),
+
+    /// The server did not present the certificate authority this client
+    /// pinned (`workload-auth.md` §2 `authority_changed`, ADR-0153). Never
+    /// retried: the remedy is re-pairing, after checking the change was the
+    /// operator's rotation.
+    #[error("{0}")]
+    AuthorityChanged(tls::AuthorityChange),
 
     /// An established connection stopped answering within the liveness
     /// timeout (a half-open TCP socket); callers reconnect. See

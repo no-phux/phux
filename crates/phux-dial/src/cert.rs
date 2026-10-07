@@ -90,23 +90,42 @@ pub fn ensure_self_signed_for(
         (false, true) => return Err(partial(key_path, cert_path)),
     }
     let certified = rcgen::generate_simple_self_signed(san_list(advertised))?;
+    write_pair(
+        cert_path,
+        key_path,
+        &certified.cert.pem(),
+        &certified.signing_key.serialize_pem(),
+    )
+}
+
+/// Write a freshly provisioned pair, creating missing parent directories.
+///
+/// The PEM certificate chain is public; the PEM private key is written
+/// owner-only (`0o600`). The callers write only where both files were absent.
+///
+/// # Errors
+///
+/// [`CertError::Io`] if a directory or either file cannot be written.
+pub fn write_pair(
+    cert_path: &Path,
+    key_path: &Path,
+    cert_pem: &str,
+    key_pem: &str,
+) -> Result<(), CertError> {
     if let Some(parent) = cert_path.parent() {
         fs::create_dir_all(parent)?;
     }
     if let Some(parent) = key_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(cert_path, certified.cert.pem())?;
+    fs::write(cert_path, cert_pem)?;
     let mut key_file = OpenOptions::new()
         .create(true)
         .truncate(true)
         .write(true)
         .mode(0o600)
         .open(key_path)?;
-    io::Write::write_all(
-        &mut key_file,
-        certified.signing_key.serialize_pem().as_bytes(),
-    )?;
+    io::Write::write_all(&mut key_file, key_pem.as_bytes())?;
     Ok(())
 }
 

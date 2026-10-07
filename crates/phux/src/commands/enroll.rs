@@ -63,10 +63,21 @@ const LEGACY_TOKEN_STORE: &str = "legacy token store requires explicit migration
 pub(crate) struct PairReport {
     pub(crate) token: String,
     pub(crate) cert_fingerprint: Option<String>,
+    /// The CA the far server's certificate chains to (ADR-0153), canonical;
+    /// `None` from a far `phux` that predates it or a self-signed leaf.
+    pub(crate) ca_fingerprint: Option<String>,
     pub(crate) overlay_addresses: Vec<String>,
 }
 
 impl PairReport {
+    /// The CA pin the report carries, for probing the routes it names.
+    pub(crate) fn authority_pin(&self) -> phux_client_runtime::target::AuthorityPin {
+        phux_client_runtime::target::AuthorityPin {
+            ca: self.ca_fingerprint.clone(),
+            learner: None,
+        }
+    }
+
     /// Parse `phux pair --json`: tolerant of unknown fields, strict about the two
     /// it needs.
     pub(crate) fn parse(stdout: &str) -> Result<Self, String> {
@@ -98,9 +109,16 @@ impl PairReport {
             })
             .unwrap_or_default();
 
+        // A malformed value pins nothing rather than failing the pairing.
+        let ca_fingerprint = value
+            .get("ca_fingerprint")
+            .and_then(serde_json::Value::as_str)
+            .and_then(phux_config::known_authorities::canonical_authority);
+
         Ok(Self {
             token,
             cert_fingerprint,
+            ca_fingerprint,
             overlay_addresses,
         })
     }
@@ -829,6 +847,7 @@ fn first_answering_route(
             target,
             &report.token,
             report.cert_fingerprint.as_deref(),
+            &report.authority_pin(),
             presented.clone(),
         ) {
             Ok(()) => {
@@ -1267,6 +1286,11 @@ fn try_reuse_previous_credential(
     let report = PairReport {
         token: token.to_owned(),
         cert_fingerprint: Some(fingerprint.to_owned()),
+        // What this client already pinned for that leaf, kept as it was.
+        ca_fingerprint: phux_config::known_authorities::lookup(
+            &super::remote::known_authorities(),
+            fingerprint,
+        ),
         overlay_addresses: Vec::new(),
     };
     let presented = req.previous_identity.map(ClientIdentityFiles::tls);
@@ -1290,6 +1314,7 @@ fn try_reuse_previous_credential(
             target,
             &report.token,
             report.cert_fingerprint.as_deref(),
+            &report.authority_pin(),
             presented.clone(),
         ) {
             Ok(()) => {
@@ -1608,6 +1633,7 @@ pub(crate) fn probe(
     target: &str,
     token: &str,
     cert_fingerprint: Option<&str>,
+    authority: &phux_client_runtime::target::AuthorityPin,
     identity: Option<TlsClientIdentity>,
 ) -> Result<(), String> {
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -1622,7 +1648,8 @@ pub(crate) fn probe(
         None,
     )
     .map_err(|refusal| format!("{refusal:?}"))?
-    .with_identity(identity);
+    .with_identity(identity)
+    .with_authority(authority);
     let deadline = probe_deadline();
     rt.block_on(async {
         match tokio::time::timeout(deadline, Connection::connect_dial(&plan.dial)).await {
@@ -1867,6 +1894,7 @@ mod tests {
 
     fn report(fp: Option<&str>, overlay: &[&str]) -> PairReport {
         PairReport {
+            ca_fingerprint: None,
             token: "deadbeef".to_owned(),
             cert_fingerprint: fp.map(str::to_owned),
             overlay_addresses: overlay.iter().map(|a| (*a).to_owned()).collect(),
@@ -1887,7 +1915,27 @@ mod tests {
         .expect("parse");
         assert_eq!(parsed.token, "abc123");
         assert_eq!(parsed.cert_fingerprint.as_deref(), Some("AB:CD"));
+        assert_eq!(
+            parsed.ca_fingerprint, None,
+            "a far phux that predates ADR-0153"
+        );
         assert_eq!(parsed.overlay_addresses, vec!["100.64.0.2".to_owned()]);
+    }
+
+    /// ADR-0153: the far server's CA is pinned in its canonical spelling, and
+    /// a malformed one pins nothing rather than failing the pairing.
+    #[test]
+    fn the_pair_document_names_the_certificate_authority() {
+        let authority = format!("sha256:{}", "cd".repeat(32));
+        let parsed = PairReport::parse(&format!(
+            r#"{{"token":"t","cert_fingerprint":"AB","ca_fingerprint":"{}"}}"#,
+            authority.to_uppercase().replace("SHA256", "sha256")
+        ))
+        .expect("parse");
+        assert_eq!(parsed.ca_fingerprint, Some(authority));
+        let malformed =
+            PairReport::parse(r#"{"token":"t","ca_fingerprint":"sha256:abc"}"#).expect("parse");
+        assert_eq!(malformed.ca_fingerprint, None);
     }
 
     #[test]

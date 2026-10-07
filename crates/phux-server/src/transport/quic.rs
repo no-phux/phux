@@ -1055,6 +1055,9 @@ async fn read_framed_bounded(
 mod workload_adversarial;
 
 #[cfg(test)]
+mod authority_pin;
+
+#[cfg(test)]
 #[allow(
     clippy::significant_drop_tightening,
     reason = "tests hold stream events and permits to the end of each scripted step"

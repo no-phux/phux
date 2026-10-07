@@ -67,6 +67,21 @@ impl Listener for ListenerProjection {
     }
 }
 
+impl RemoteClient {
+    /// The pin `connect` dials with: the stored authority, or a learner that
+    /// records the one a leaf-pinned server presents.
+    fn authority_pin(&self) -> phux_client_runtime::target::AuthorityPin {
+        let ca = self.authority.lock().unwrap().clone();
+        let learner = ca.is_none().then(|| {
+            let slot = Arc::clone(&self.learned_authority);
+            phux_client_runtime::AuthorityLearner::new(move |authority| {
+                *slot.lock().unwrap() = Some(authority.to_owned());
+            })
+        });
+        phux_client_runtime::target::AuthorityPin { ca, learner }
+    }
+}
+
 #[derive(uniffi::Object)]
 pub struct RemoteClient {
     url: String,
@@ -74,6 +89,11 @@ pub struct RemoteClient {
     rows: Mutex<u16>,
     fingerprint: Option<String>,
     token: Option<String>,
+    /// The certificate-authority pin beside the leaf pin (ADR-0153), set
+    /// before `connect` by [`RemoteClient::set_authority_pin`].
+    authority: Mutex<Option<String>>,
+    /// The CA a leaf-pinned connection learned, for the embedder to store.
+    learned_authority: Arc<Mutex<Option<String>>>,
     client: Mutex<Option<Client>>,
     listener: Mutex<Option<Arc<dyn WireListener>>>,
     input_deliveries: Mutex<Vec<WireInputDelivery>>,
@@ -112,6 +132,8 @@ impl RemoteClient {
             rows: Mutex::new(rows.max(1)),
             fingerprint,
             token,
+            authority: Mutex::new(None),
+            learned_authority: Arc::new(Mutex::new(None)),
             client: Mutex::new(None),
             listener: Mutex::new(None),
             input_deliveries: Mutex::new(Vec::new()),
@@ -129,6 +151,24 @@ impl RemoteClient {
         }
     }
 
+    /// Pin the server's certificate authority (`sha256:` fingerprint,
+    /// ADR-0153) beside the leaf fingerprint, or clear the pin. Takes effect
+    /// at the next `connect`. A pinned server presenting another authority is
+    /// refused with a "certificate authority changed" error that names both
+    /// fingerprints, and the connection does not retry.
+    pub fn set_authority_pin(&self, authority: Option<String>) {
+        *self.authority.lock().unwrap() = authority.filter(|pin| !pin.trim().is_empty());
+    }
+
+    /// The certificate authority (`sha256:` fingerprint) the server presented
+    /// on a connection authenticated by the leaf pin alone, once one has.
+    /// Store it beside the leaf pin and pass it to `set_authority_pin` from
+    /// then on (trust on first connect, ADR-0153). `None` until then, and
+    /// while an authority is pinned.
+    pub fn learned_authority(&self) -> Option<String> {
+        self.learned_authority.lock().unwrap().clone()
+    }
+
     pub fn connect(&self) -> Result<(), WireError> {
         let mut slot = self.client.lock().unwrap();
         if slot.is_some() {
@@ -142,6 +182,7 @@ impl RemoteClient {
             transport,
             name: self.url.clone(),
             cert_fingerprint: self.fingerprint.clone(),
+            authority: self.authority_pin(),
             token_file: None,
             token: self.token.clone(),
             tls_server_name: None,

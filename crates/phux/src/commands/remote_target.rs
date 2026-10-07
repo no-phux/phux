@@ -237,7 +237,16 @@ fn promote_direct_route(entry: RemoteEntry) -> RemoteEntry {
     let Ok(identity) = entry.client_identity() else {
         return entry;
     };
-    if enroll::probe(&target, &token, entry.cert_fingerprint.as_deref(), identity).is_err() {
+    let authority = entry.authority_pin();
+    if enroll::probe(
+        &target,
+        &token,
+        entry.cert_fingerprint.as_deref(),
+        &authority,
+        identity,
+    )
+    .is_err()
+    {
         return entry;
     }
     // The rewrite keeps the enrolled client identity with the route.
@@ -342,6 +351,15 @@ fn register_from_code(target: &RemoteTarget, code: &str) -> Result<RemoteEntry, 
 
     enroll::write_token(&token_file, &link.token).map_err(|err| format!("phux: --code: {err}"))?;
     remote::add_or_update(&new).map_err(|err| format!("phux: --code: {err}"))?;
+    // A relay link pins the relay's leaf; its `ca` would name nothing the
+    // relay presents, so only a direct link's is kept.
+    if link.tls_server_name.is_none() {
+        remote::pin_authority(
+            &name,
+            link.cert_fingerprint.as_deref(),
+            link.ca_fingerprint.as_deref(),
+        );
+    }
 
     eprintln!(
         "phux: paired {name} -> {} (from the connect code)",

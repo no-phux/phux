@@ -73,7 +73,7 @@ pub(crate) fn run_ls_all(json: bool, socket: Option<std::path::PathBuf>) -> Exit
                 Some(entry.endpoint.clone()),
             ),
             target: super::server_target::plan_entry(&rt, entry, "ls")
-                .map(ServerTarget::Remote)
+                .map(|remote| ServerTarget::Remote(Box::new(remote)))
                 .map_err(|err| err.message),
         });
     }
