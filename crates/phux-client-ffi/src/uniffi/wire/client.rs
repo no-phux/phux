@@ -661,6 +661,12 @@ impl RemoteClient {
                 suggestions,
                 waiting_seconds,
             }),
+            Event::AgentAskedState { terminal_id, asked } => {
+                projected.push(WireEvent::AgentAskedState {
+                    terminal_id: id::encode(&terminal_id),
+                    asked,
+                });
+            }
             Event::InputDelivery {
                 delivery_id,
                 outcome: result,
@@ -780,6 +786,52 @@ mod tests {
         );
         assert!(
             matches!(&projected[1], WireEvent::AgentStateChanged { name, .. } if name.is_empty())
+        );
+    }
+
+    #[test]
+    fn asked_levels_lower_after_their_announcement_in_order() {
+        let remote = RemoteClient::new("unused".into(), 80, 24, None, None);
+        let terminal_id = ResourceId::local(7);
+        let mut projected = Vec::new();
+        for event in [
+            Event::AgentAskedState {
+                terminal_id: terminal_id.clone(),
+                asked: true,
+            },
+            Event::AgentAsked {
+                terminal_id: terminal_id.clone(),
+                question_id: "q1".into(),
+                text: "Proceed?".into(),
+                suggestions: Vec::new(),
+                waiting_seconds: None,
+            },
+            Event::AgentAskedState {
+                terminal_id,
+                asked: false,
+            },
+        ] {
+            remote.project_event(event, &mut projected);
+        }
+        assert_eq!(
+            projected,
+            vec![
+                WireEvent::AgentAskedState {
+                    terminal_id: "local:7".into(),
+                    asked: true,
+                },
+                WireEvent::AgentAsked {
+                    terminal_id: "local:7".into(),
+                    question_id: "q1".into(),
+                    text: "Proceed?".into(),
+                    suggestions: Vec::new(),
+                    waiting_seconds: None,
+                },
+                WireEvent::AgentAskedState {
+                    terminal_id: "local:7".into(),
+                    asked: false,
+                },
+            ]
         );
     }
 }

@@ -497,6 +497,8 @@ pub enum WireEvent {
     /// the wire `AgentEvent::Asked` so Swift can populate its `AgentQuestion`
     /// without re-deriving the prompt from the grid: `id`/`question`/`suggestions`
     /// map one-for-one and `waiting_seconds` is the optional `elapsed_seconds`.
+    ///
+    /// An announcement only: `AgentAskedState` is the level that retracts it.
     AgentAsked {
         terminal_id: String,
         question_id: String,
@@ -504,6 +506,14 @@ pub enum WireEvent {
         suggestions: Vec<String>,
         waiting_seconds: Option<u64>,
     },
+    /// Whether a question is pending in the pane now: the server-owned
+    /// `phux.agent.asked/v1` flag, read on attach, followed live, and re-read
+    /// after every event gap and reconnect. `asked: false` retracts every
+    /// earlier `AgentAsked` for the pane: drop it, never resurrect it.
+    /// `asked: true` says some question is pending without naming it; the
+    /// latest `AgentAsked` describes it, but after a gap or reconnect that
+    /// description may be older than the question.
+    AgentAskedState { terminal_id: String, asked: bool },
     /// The pane's `phux.agent/v1` L3 record changed, or its current value
     /// arrived on (re)attach (phux-cck / ADR-0046: the server-side detector
     /// derives `state` from the live screen and publishes edge-filtered

@@ -204,7 +204,23 @@ pub enum Event {
         /// The `phux.agent/v1` record, or its absence.
         value: Option<Vec<u8>>,
     },
-    /// An agent in the terminal is waiting on a human answer.
+    /// Whether a question is pending in the terminal now: the server-owned
+    /// `phux.agent.asked/v1` flag (L3.md §1.3), from a fenced read or a live
+    /// change, re-read after every gap and reconnect.
+    ///
+    /// `asked: false` retracts every earlier [`Event::AgentAsked`] for the
+    /// terminal: no question is pending, so none may be shown or resurrected.
+    /// `asked: true` says a question is pending without identifying it: the
+    /// latest `AgentAsked` is its best description, and after a gap or a
+    /// reconnect that description may predate the pending question.
+    AgentAskedState {
+        /// The terminal.
+        terminal_id: ResourceId,
+        /// Whether any question is pending.
+        asked: bool,
+    },
+    /// An agent in the terminal is waiting on a human answer. An announcement
+    /// edge; [`Event::AgentAskedState`] is the level that retracts it.
     AgentAsked {
         /// The terminal.
         terminal_id: ResourceId,
