@@ -1127,15 +1127,33 @@ fn resume_session_tree(
     blob: &StateBlob,
     root_token: &CancellationToken,
 ) -> Result<(), ServerError> {
-    let exit_watchers = state.with_mut(|s| s.rebuild_from_blob(blob))?;
-    for (pane, exit_notify) in exit_watchers {
+    // Each pane is wired exactly as a fresh spawn is (event sink, agent
+    // detector), so a resumed pane keeps its events and agent-state feed.
+    let rebuilt = state.with_mut(|s| {
+        s.rebuild_from_blob(blob, |pane, actor| {
+            commands::wire_pane_actor(state, pane, actor)
+        })
+    })?;
+    let mut pane_events: std::collections::HashMap<_, _> = rebuilt
+        .wired_panes
+        .into_iter()
+        .map(|(pane, wiring)| {
+            let wire = state.with_mut(|s| s.intern_terminal_wire(pane));
+            (pane, wiring.start(state, &wire))
+        })
+        .collect();
+    for (resource, exit_notify) in rebuilt.exit_watchers {
         spawn_terminal_exit_watcher(
             state.clone(),
-            pane,
+            resource,
             Some(exit_notify),
             root_token.clone(),
-            None,
+            pane_events.remove(&resource),
         );
+    }
+    // A pane with no exit to watch (no PTY) still drains its events.
+    for (pane, events) in pane_events {
+        spawn_terminal_exit_watcher(state.clone(), pane, None, root_token.clone(), Some(events));
     }
     // ADR-0124 §6: retained exited panes close with `SERVER_SHUTDOWN`.
     state.with_mut(|s| s.close_upgrade_retained(blob));

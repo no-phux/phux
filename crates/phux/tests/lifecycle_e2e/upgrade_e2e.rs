@@ -278,3 +278,122 @@ fn agent_session_and_its_log_survive_graceful_upgrade() {
         "the resumed session continues its sequence: {next}"
     );
 }
+
+/// Write an executable fake Claude named `claude` (the detector identifies
+/// the kind from the foreground process name) that holds a plain screen
+/// until `trigger` exists, then rings the bell and paints the permission
+/// dialog only `rules/claude.toml` reads as `blocked`, and holds.
+fn write_gated_claude(dir: &std::path::Path, trigger: &std::path::Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let rule = "\\342\\224\\200".repeat(20);
+    let script = format!(
+        concat!(
+            "#!/bin/sh\n",
+            "printf '\\033[2J\\033[H'\n",
+            "echo 'waiting for the upgrade'\n",
+            "while [ ! -e '{trigger}' ]; do sleep 0.1; done\n",
+            "printf '\\007\\033[2J\\033[H'\n",
+            "echo 'some transcript output above the live chrome'\n",
+            "echo ''\n",
+            "printf '{rule}\\n'\n",
+            "echo ' Bash command'\n",
+            "echo ''\n",
+            "echo '   touch /tmp/probe.txt'\n",
+            "echo ''\n",
+            "echo ' Do you want to proceed?'\n",
+            "printf ' \\342\\235\\257 1. Yes\\n'\n",
+            "echo '   2. Yes, and always allow access'\n",
+            "echo '   3. No'\n",
+            "echo ''\n",
+            "echo ' Esc to cancel'\n",
+            "sleep 600\n",
+        ),
+        trigger = trigger.display(),
+        rule = rule,
+    );
+    let path = dir.join("claude");
+    std::fs::write(&path, script).expect("write fake claude");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod fake claude");
+    path
+}
+
+/// The detector's `state` for `target`'s agent, or `None` when no agent is
+/// reported.
+fn agent_state(server: &ServerGuard, target: &str) -> Option<String> {
+    let out = server.stdout(&["agent", "show", target, "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&out).ok()?;
+    json["agents"][0]["state"].as_str().map(str::to_owned)
+}
+
+/// phux-1x9s.6: a pane rebuilt by an upgrade is wired exactly as a fresh
+/// spawn is. Its agent detector re-arms, so a screen that changes only after
+/// the upgrade still moves the agent's state, and its event sink still feeds
+/// the journal (`watch --until bell`).
+#[test]
+#[ignore = "spawns a real phux server + performs a real in-place re-exec; run via `just e2e`."]
+fn agent_detector_and_pane_events_rearm_after_graceful_upgrade() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let trigger = dir.path().join("paint");
+    let claude = write_gated_claude(dir.path(), &trigger);
+    let server = ServerGuard(
+        common::ServerGuard::builder("upg")
+            .seed_command(format!("exec '{}'", claude.display()))
+            .env("PHUX_AGENT_STARTUP_GRACE_MS", "200")
+            .start(),
+    );
+
+    // Armed before the upgrade: the idle screen is identified and published.
+    assert!(
+        poll(Duration::from_secs(20), || agent_state(&server, SESSION)
+            .is_some_and(|state| state == "idle")),
+        "the detector should publish `idle` before the upgrade; last: {:?}",
+        agent_state(&server, SESSION)
+    );
+
+    assert_eq!(server.status(&["upgrade"]), 0, "`phux upgrade` should ack");
+    assert!(
+        poll(Duration::from_secs(15), || server.status(&["ls"]) == 0),
+        "the resumed server should accept connections again"
+    );
+
+    // A cursor taken after the resume, so only a post-upgrade event matches.
+    let first = server
+        .cmd(&["watch", SESSION, "--json", "--timeout", "0"])
+        .stdout(Stdio::null())
+        .output()
+        .expect("watch for a cursor");
+    let stderr = String::from_utf8_lossy(&first.stderr);
+    let tail = stderr.lines().last().unwrap_or_default();
+    let cursor = serde_json::from_str::<serde_json::Value>(tail)
+        .unwrap_or_else(|err| panic!("watch stderr tail {tail:?}: {err}"))["cursor"]
+        .as_str()
+        .expect("a journaling server issues a cursor")
+        .to_owned();
+
+    std::fs::write(&trigger, b"").expect("let the fake agent paint its dialog");
+
+    assert!(
+        poll(Duration::from_secs(20), || agent_state(&server, SESSION)
+            .is_some_and(|state| state == "blocked")),
+        "the resumed pane's detector should derive `blocked` from the screen \
+         painted after the upgrade; last: {:?}",
+        agent_state(&server, SESSION)
+    );
+    assert_eq!(
+        server.status(&[
+            "watch",
+            SESSION,
+            "--json",
+            "--after",
+            &cursor,
+            "--until",
+            "bell",
+            "--timeout",
+            "20",
+        ]),
+        0,
+        "the resumed pane's bell should reach the event journal"
+    );
+}

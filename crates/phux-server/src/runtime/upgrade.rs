@@ -1270,8 +1270,9 @@ mod tests {
                 let blob = StateBlob::from_bytes(&blob.to_bytes().unwrap()).unwrap();
                 let resumed = SharedState::new();
                 let watchers = resumed
-                    .with_mut(|s| s.rebuild_from_blob(&blob))
-                    .expect("rebuild");
+                    .with_mut(|s| s.rebuild_from_blob(&blob, |_, _| ()))
+                    .expect("rebuild")
+                    .exit_watchers;
                 assert_eq!(
                     watchers.len(),
                     blob.panes.len() + 1,
