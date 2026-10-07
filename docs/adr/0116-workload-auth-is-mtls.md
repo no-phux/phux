@@ -135,4 +135,7 @@ is explicit re-pairing.
 - ADR-0072 — the `PolicyEngine` seam this fills.
 - ADR-0091 — the cert-provisioning story the CA extends.
 - ADR-0115 — mTLS identity is per connection; streams inherit it.
+- ADR-0153 — decides the CA pin's mechanics: pinned at pairing, a changed
+  CA refused by name, `--rotate` re-pairs everything, existing leaf pins
+  migrate on first connect.
 - `docs/spec/workload-auth.md` — rewritten by the spec bead.

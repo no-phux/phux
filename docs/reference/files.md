@@ -38,6 +38,8 @@ A socket file whose server has died is *stale*, not a server: liveness is establ
 
 `$XDG_CONFIG_HOME/phux/config.toml`, falling back to `~/.config/phux/config.toml` when `XDG_CONFIG_HOME` is unset. A missing config file is not an error (the embedded defaults apply); there is no global config-path flag — set `XDG_CONFIG_HOME` to isolate configuration for a test or an alternate environment. `phux config path` prints the resolved path.
 
+Beside it, `known-authorities` holds the certificate authority each paired server's leaf was issued by, one line per server keyed by the `[[remote]]` entry's `cert-fingerprint` (ADR-0153). `phux host add` writes it, and so does the first connection to a server whose CA is not pinned yet; a server presenting another CA is then refused. Delete a line to forget a pin.
+
 ## State
 
 The state directory is `$XDG_STATE_HOME/<profile-dir>`, falling back to `~/.local/state/<profile-dir>` when `XDG_STATE_HOME` is unset or empty:
@@ -51,7 +53,7 @@ $XDG_STATE_HOME/<profile-dir>/
 ├── onboarding.json     # versioned first-use journey progress
 ├── onboarding.lock     # serializes first-use moment delivery
 ├── plugin-runs.jsonl   # recent plugin action/hook runs (phux plugin log)
-├── remote-cert.pem     # auto-provisioned remote-consumer certificate
+├── remote-cert.pem     # auto-provisioned remote-consumer certificate (leaf, then CA)
 ├── remote-key.pem      # its private key (owner-only, 0600)
 ├── remote-tokens       # structured credential store (owner-only, 0600)
 ├── reports/            # local bug-report bundles (TUI C-a B, phux report)
@@ -64,7 +66,7 @@ $XDG_STATE_HOME/<profile-dir>/
 - `client-<pid>.log` is where an interactive client writes its trace — the TUI owns the alt screen, so the client never logs to stderr. `PHUX_LOG` redirects it. Log files are created mode `0600`.
 - `onboarding.json` records only the versioned first-use journey stage. `onboarding.lock` serializes delivery within that profile. State is best-effort: missing state starts the guidance, while unreadable, unknown, or unwritable state stays quiet and never prevents attach.
 - `plugin-runs.jsonl` is the bounded run log behind `phux plugin log`: one JSON line per plugin action run (TUI keybinding, `phux config run`, the MCP tool) or server hook run, with exit status, duration, and the last 4 KiB of stdout and stderr. Writers lock it while appending and compact it to the newest 100 runs once it passes 1 MiB. Recording is best effort and never fails a run.
-- `remote-cert.pem` / `remote-key.pem` are the self-signed TLS pair auto-provisioned for remote consumers (ADR-0031); `PHUX_WS_TLS_CERT` / `PHUX_WS_TLS_KEY` substitute an operator-supplied pair. A complete pair is never regenerated, so the pinned fingerprint stays stable -- which also means its subjectAltName set is fixed at generation (ADR-0091); `phux doctor` reports whether it names the address phux advertises.
+- `remote-cert.pem` / `remote-key.pem` are the TLS pair auto-provisioned for remote consumers (ADR-0031): issued by the workload CA (`workload-ca.pem`), the certificate file holding the leaf then the CA (ADR-0153), or self-signed when provisioned before that. `PHUX_WS_TLS_CERT` / `PHUX_WS_TLS_KEY` substitute an operator-supplied pair. A complete pair is never regenerated (`phux workload authority --rotate` replaces it on purpose), so the pinned fingerprint stays stable -- which also means its subjectAltName set is fixed at generation (ADR-0091); `phux doctor` reports whether it names the address phux advertises.
 - `remote-tokens` is the versioned verifier-only credential store the server reads and `phux pair`, `phux pair rotate`, and `phux pair revoke` update under the sibling `.remote-tokens.lock`. Writers first lock the owner-controlled, non-group/world-writable parent directory, then no-follow open and validate the owner-only regular lock file, preventing lock-path replacement from splitting concurrent writers. Store commits use a synced temporary file and atomic rename. The store must be a regular, non-symlink file owned by the effective user with no group/world permissions; an integrity failure denies authentication. `PHUX_WS_TOKENS` moves it without weakening those checks. Legacy anonymous token lines require the idempotent `phux pair --migrate-legacy` conversion.
 - `reports/` holds local bug-report bundles written by the TUI `report-bug` action (`C-a B`) and by `phux report new`. Each subdirectory is one report (session, pane, version, log tails, optional screen dump, and a `report.md` an agent can open). `latest` points at the newest; `phux report` lists them and `phux report show` prints one.
 - `service-wrapper.sh` and `workspace.json` exist only under `phux service install --restore`. The wrapper starts `phux server --autosave workspace.json` and saves once more on stop. The server restores the archive on a fresh start and rewrites it (owner-only, `0600`) through a synced `workspace.json.autosave.tmp` and an atomic rename a few seconds after the workspace changes, so a crash or power loss leaves the latest layout (ADR-0150). An archive that fails to restore is copied to `workspace.json.unrestored` first.

@@ -15,6 +15,7 @@ mod error;
 pub mod instance;
 pub mod integration;
 pub mod keybind;
+pub mod known_authorities;
 mod layer;
 pub mod loader;
 pub mod overlay;

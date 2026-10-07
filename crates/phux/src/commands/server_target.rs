@@ -41,8 +41,9 @@ pub(crate) struct ServerSpec {
 pub(crate) enum ServerTarget {
     /// The local server's Unix socket.
     Local(PathBuf),
-    /// A registered remote, dialed over QUIC or WSS.
-    Remote(RemoteServer),
+    /// A registered remote, dialed over QUIC or WSS. Boxed: its dial plan
+    /// dwarfs a socket path.
+    Remote(Box<RemoteServer>),
 }
 
 /// A remote server resolved to a dial, plus what its diagnostics name.
@@ -98,7 +99,7 @@ impl ServerSpec {
             eprintln!("{SOCKET_REMOTE_CONFLICT}");
             return Err(ExitCode::from(2));
         }
-        resolve_remote(rt, &raw, verb, json).map(ServerTarget::Remote)
+        resolve_remote(rt, &raw, verb, json).map(|remote| ServerTarget::Remote(Box::new(remote)))
     }
 }
 
@@ -166,7 +167,10 @@ pub(crate) fn plan_entry(
         }
     };
     let DialPlan { dial, loopback } = plan
-        .map(|plan| plan.with_identity(identity))
+        .map(|plan| {
+            plan.with_identity(identity)
+                .with_authority(&entry.authority_pin())
+        })
         .map_err(|refusal| entry_refusal(entry, &refusal))?;
     Ok(RemoteServer {
         name: entry.name.clone(),
@@ -509,8 +513,9 @@ mod tests {
         let Dial::Quic(dial) = &quic.dial else {
             panic!("expected a QUIC dial, got {:?}", quic.dial);
         };
+        // No CA is pinned for this leaf, so the dial learns one (ADR-0153).
         assert!(
-            matches!(&dial.trust, CertTrust::Pinned(fp) if fp == "ab"),
+            matches!(&dial.trust, CertTrust::PinnedLearning { leaf, .. } if leaf == "ab"),
             "{:?}",
             dial.trust
         );
@@ -526,8 +531,9 @@ mod tests {
         let Dial::Ws(dial) = &wss.dial else {
             panic!("expected a WebSocket dial, got {:?}", wss.dial);
         };
+        // No CA is pinned for this leaf, so the dial learns one (ADR-0153).
         assert!(
-            matches!(&dial.trust, CertTrust::Pinned(fp) if fp == "cd"),
+            matches!(&dial.trust, CertTrust::PinnedLearning { leaf, .. } if leaf == "cd"),
             "{:?}",
             dial.trust
         );
@@ -683,7 +689,7 @@ mod tests {
             refused.remedy
         );
 
-        let target = ServerTarget::Remote(remote);
+        let target = ServerTarget::Remote(Box::new(remote));
         assert!(target.is_remote());
         assert_eq!(target.socket_path(), None);
         assert!(matches!(target.dial(), Dial::Quic(_)));

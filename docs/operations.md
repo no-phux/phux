@@ -859,9 +859,10 @@ previous generation is disconnected when the overlap ends, so a leaked old
 token cannot outlive it; `phux pair rotate` says so, and
 `--overlap-seconds` (up to 86400) gives devices longer to pick up the new
 token. Certificate lifecycle is an operator
-responsibility, like socket permissions: with a self-signed certificate,
-verifying the `phux pair` fingerprint on the device's first connect is
-what closes the trust-on-first-use MITM window.
+responsibility, like socket permissions: verifying the `phux pair`
+fingerprint on the device's first connect is what closes the
+trust-on-first-use MITM window. The certificate the server provisions is
+issued by its workload CA, which clients pin from then on (next sections).
 
 #### Workload mTLS (`phux workload`)
 
@@ -933,6 +934,49 @@ connection once it has stayed so for five seconds, so a write caught mid-way
 ends none; until a valid one is written, no workload connection is admitted
 ([workload-auth.md](spec/workload-auth.md) §7). `phux doctor` reports the
 CA fingerprint and the registry generation.
+
+#### Server identity and the CA pin
+
+A server that provisions its TLS certificate (first remote listener, or the
+`phux pair` before it) has the workload CA issue it, creating the CA first
+if needed, and presents the chain: the leaf, then the CA
+([ADR-0153](adr/0153-clients-pin-the-workload-ca.md),
+[workload-auth.md](spec/workload-auth.md) §2). `phux pair` prints the CA
+fingerprint beside the leaf fingerprint, `--json` reports it as
+`ca_fingerprint`, and the connect link carries it as `ca`. Clients pin it:
+`phux host add` and `--code` record it in `known-authorities` beside
+`config.toml`, one line per server, keyed by its leaf pin. A client that
+paired earlier and holds only a leaf pin records the CA on its first
+connection to a server that presents one. Existing certificates are never
+re-issued, so a server provisioned before this keeps its self-signed leaf,
+presents no CA, and every pin a device already holds keeps working;
+upgrading needs no re-pair.
+
+A client pinning a CA refuses a server presenting another one before any
+pairing token is sent, and does not retry:
+
+```text
+mini: the server's certificate authority changed: pinned sha256:..., presented sha256:....
+Refusing to connect: a rotated authority and an impostor look the same from here.
+If the host's operator rotated it (`phux workload authority --rotate`), re-pair: `phux host add mini`
+```
+
+Rotate only on purpose: after a CA key may have leaked, or to move a server
+provisioned before ADR-0153 under its CA.
+
+```sh
+phux workload authority --rotate   # new CA + server certificate; prints both fingerprints
+phux upgrade                       # present it (sessions survive)
+```
+
+Then re-pair every client: `phux host add NAME` on each machine that added
+the host over ssh (it re-enrolls the workload certificate too), and a fresh
+`phux pair --qr` for each phone. Workload certificates the old CA issued no
+longer verify. The replaced CA, key, and server pair are kept beside the new
+ones as `*.retired-<unix>`, owner-only. An operator-supplied certificate
+(`PHUX_WS_TLS_CERT` / `PHUX_WS_TLS_KEY`) is never touched, and such a server
+presents no CA unless its chain names one. Deleting a line from
+`known-authorities` forgets that pin; the next connection learns it again.
 
 #### Policy mode (`[policy] mode`)
 

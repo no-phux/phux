@@ -230,6 +230,74 @@ fn authority_init_prints_only_a_fingerprint() {
     assert_eq!(std::fs::read_to_string(&key).expect("re-read"), key_pem);
 }
 
+/// `authority --rotate` (ADR-0153) replaces the CA, reports both
+/// fingerprints and the re-pair it forces, keeps the old pair retired
+/// owner-only, and prints no key bytes, old or new.
+#[test]
+#[ignore = "runs the real binary; runs in the e2e lane"]
+fn authority_rotate_replaces_the_ca_and_prints_only_fingerprints() {
+    let dir = TempDir::new().expect("tempdir");
+    prepare_dirs(dir.path());
+    let nothing = phux(dir.path(), &["workload", "authority", "--rotate"]);
+    assert!(!nothing.status.success(), "nothing to rotate yet");
+    assert!(
+        text(&nothing.stderr).contains("authority --init"),
+        "{}",
+        text(&nothing.stderr)
+    );
+
+    let original = init_authority(dir.path());
+    let key = find(dir.path(), "workload-ca.key").expect("CA key");
+    let old_key = std::fs::read_to_string(&key).expect("old key");
+
+    let out = phux(dir.path(), &["workload", "authority", "--rotate", "--json"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let doc = json_doc(&out);
+    assert_eq!(doc["rotated"], true);
+    assert_eq!(doc["previous_ca_fingerprint"], original.as_str());
+    let rotated = doc["ca_fingerprint"]
+        .as_str()
+        .expect("new fingerprint")
+        .to_owned();
+    assert_ne!(rotated, original);
+    assert!(
+        doc["server_cert_fingerprint"].is_null(),
+        "no server pair yet"
+    );
+    assert_eq!(
+        text(&phux(dir.path(), &["workload", "authority"]).stdout).trim(),
+        rotated
+    );
+
+    let new_key = std::fs::read_to_string(&key).expect("new key");
+    let mut needles = key_needles(&old_key);
+    needles.extend(key_needles(&new_key));
+    assert_no_key_bytes(&out, &needles);
+    let suffix = doc["retired_suffix"].as_str().expect("suffix");
+    let retired = key.with_file_name(format!("workload-ca.key.{suffix}"));
+    assert_eq!(std::fs::read_to_string(&retired).expect("retired"), old_key);
+    let mode = std::fs::metadata(&retired)
+        .expect("stat")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600);
+
+    let prose = phux(dir.path(), &["workload", "authority", "--rotate"]);
+    assert!(prose.status.success(), "{}", text(&prose.stderr));
+    let stdout = text(&prose.stdout);
+    assert!(
+        stdout.contains(&rotated)
+            && stdout.contains("phux host add")
+            && stdout.contains("phux upgrade"),
+        "names the replaced CA and the re-pair: {stdout}"
+    );
+    assert_no_key_bytes(
+        &prose,
+        &key_needles(&std::fs::read_to_string(&key).expect("key")),
+    );
+}
+
 /// A CSR piped on stdin is signed and enrolled; `list` shows the ceiling,
 /// and public keys only when asked.
 #[test]

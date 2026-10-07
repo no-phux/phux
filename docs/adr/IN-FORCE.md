@@ -120,6 +120,7 @@ by a newer one, the newer line is the operative reading.
 
 ## Auth and trust
 
+- [0153](./0153-clients-pin-the-workload-ca.md) The workload CA issues the server certificate; clients pin the CA at pairing (or learn it on the first leaf-pinned connection), refuse a changed CA by name, and `phux workload authority --rotate` re-pairs everything.
 - [0116](./0116-workload-auth-is-mtls.md) Workload authentication is mTLS client certificates on QUIC/wss (kernel-uid on owner UDS, bearer token as outer admission only); 0098's proof handshake is retired unshipped.
 - [0106](./0106-identity-is-the-serving-user.md) A server never switches OS users; `user@host` selects that user's server, and `phux whoami` reports identity.
 - [0098](./0098-workload-proof-and-closed-scope-authority.md) Closed verb/selector grants with one pre-routing seam and live revocation (proof profile superseded by 0116).

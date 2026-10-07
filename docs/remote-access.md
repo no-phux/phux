@@ -377,9 +377,10 @@ remote listener, is an error that names the socket and the fix
 re-reads the credential store when it changes, so the token works at the next
 connection attempt with no restart, and revocation applies just as promptly.
 Legacy anonymous token lines require a one-time explicit
-`phux pair --migrate-legacy`. `phux pair` provisions the self-signed
-certificate if none exists yet, so the fingerprint it prints is the one the
-server presents.
+`phux pair --migrate-legacy`. `phux pair` provisions the server
+certificate if none exists yet, issued by the server's workload CA
+([ADR-0153](adr/0153-clients-pin-the-workload-ca.md)), so the fingerprints
+it prints are the ones the server presents.
 
 Its output looks like this (the overlay-address block appears when an
 explicit `PHUX_OVERLAY_ADDRS` list or a tailnet/CGNAT address is selected):
@@ -394,6 +395,9 @@ Pairing token (a secret — give it to the device once):
 Server certificate SHA-256 (verify on the device to defeat MITM):
   <64-hex fingerprint>
 
+Server certificate authority (pinned by the device; it survives leaf renewal):
+  sha256:<64-hex fingerprint>
+
 Overlay network addresses (dial one of these from the device):
   100.x.y.z
 
@@ -401,7 +405,12 @@ Token written to <state-dir>/remote-tokens
 ```
 
 Record the token and the fingerprint; every `phux attach` below uses both. The
-fingerprint is SHA-256, 64 hex digits, optionally colon-separated.
+fingerprint is SHA-256, 64 hex digits, optionally colon-separated. The
+authority line appears when the certificate was issued by the workload CA
+(a server provisioned before ADR-0153 keeps its self-signed certificate and
+prints none); `phux host add` and `--code` pin it, and a client holding
+only the leaf fingerprint pins it on its first connection
+([operations](./operations.md#server-identity-and-the-ca-pin)).
 
 Keep the non-secret credential ID for lifecycle operations. Rotation prints a
 new bearer once and keeps the previous generation valid for at most five
@@ -418,7 +427,7 @@ phux pair revoke <credential-id>
 ```
 
 For a phone or tablet `phux pair` also prints a one-tap
-`https://phux.sh/connect?url=…&quic=…&fp=…&token=…` Universal Link (an https
+`https://phux.sh/connect?url=…&quic=…&fp=…[&ca=…]&token=…` Universal Link (an https
 link so only the app owning the domain receives the bearer token), a
 `phux://connect?…` spelling for older app builds, and with `--qr` a terminal
 QR of the same link. Treat all three like the token itself. `url` names the
@@ -431,7 +440,9 @@ and current mobile apps prefer it. An unspecified QUIC bind uses a detected
 overlay address; a loopback bind, or an unspecified bind without an overlay,
 is not advertised. The app passes one selected endpoint to `RemoteClient`;
 the shared runtime alone owns dialing and reconnecting, with no bridge-side
-fallback race.
+fallback race. `ca` is the `sha256:` fingerprint of the CA the server's
+certificate chains to; an app pins it beside `fp`, and one that predates it
+ignores it.
 
 `--host` still needs a bound WSS listener behind it. A WSS listener bound only
 to loopback, or none at all, gives no link, and `--qr` then refuses before
@@ -666,6 +677,13 @@ server, wrong address, blocked port, or broken network route.
   prints the persisted certificate's fingerprint beside a fresh credential
   (`phux pair revoke` it if you do not need it) — and compare. Do not "fix" a mismatch by dropping the flag:
   the pin is what closes the trust-on-first-use MITM window.
+- **Certificate authority changed.** The server presented a certificate
+  issued by another CA than the one this client pinned, and the dial stops
+  before the token is sent; the message names both fingerprints. If the
+  server's operator ran `phux workload authority --rotate`, re-pair
+  (`phux host add NAME`, or a fresh `phux pair --qr` for a phone). If
+  nobody did, treat it as the wrong host or an interception and do not
+  re-pair ([operations](./operations.md#server-identity-and-the-ca-pin)).
 - **Certificate name mismatch** (`IP address mismatch`, `NotValidForName`,
   `ERR_CERT_COMMON_NAME_INVALID`) from a client that validates the server name
   — `curl --cacert`, a browser with the certificate trusted, `openssl s_client
@@ -683,7 +701,10 @@ server, wrong address, blocked port, or broken network route.
   phux upgrade         # restarts the server in place so it presents it
   ```
 
-  then re-pair every device against the new fingerprint.
+  then re-pair every device against the new fingerprint. A certificate the
+  workload CA issued is regenerated under the same CA, so a client that pins
+  the CA accepts the new one with no re-pair; only devices pinning the old
+  leaf alone need it.
 - **MagicDNS name does not resolve.** MagicDNS may be disabled on the tailnet,
   or the client OS resolver is not wired up; fall back to the `100.x` IP from
   `tailscale status`. The pin is on the fingerprint, not the hostname, so

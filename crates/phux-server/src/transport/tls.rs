@@ -113,6 +113,71 @@ pub fn ensure_self_signed_for(
     )?)
 }
 
+/// Provision the server's own TLS pair when neither file exists.
+///
+/// The certificate is the one the workload CA at `authority` issues, written as the chain
+/// (leaf, then CA) so clients can pin the CA (ADR-0153). The CA is created
+/// first when it does not exist (first routable listen, ADR-0116). An existing
+/// pair is never touched, so a self-signed leaf a device pins keeps working;
+/// a half-present pair is refused as by [`ensure_self_signed_for`].
+///
+/// When the authority cannot issue (an insecure state directory, a partial
+/// CA pair), this logs why and provisions a self-signed pair instead, so a
+/// listener is never lost to it; clients then pin that leaf, as before.
+///
+/// # Errors
+///
+/// As [`ensure_self_signed_for`].
+pub fn ensure_server_identity(
+    cert_path: &Path,
+    key_path: &Path,
+    advertised: &[String],
+    authority: &crate::workload::WorkloadPaths,
+) -> Result<(), TlsError> {
+    refuse_dev_on_production_tls(cert_path, key_path)?;
+    match (cert_path.exists(), key_path.exists()) {
+        (true, true) => return Ok(()),
+        (false, false) => {}
+        // The shared provisioner names the survivor.
+        _ => return ensure_self_signed_for(cert_path, key_path, advertised),
+    }
+    match crate::workload::issue_server_identity(authority, &cert::san_list(advertised)) {
+        Ok(issued) => Ok(cert::write_pair(
+            cert_path,
+            key_path,
+            issued.chain_pem(),
+            issued.key_pem(),
+        )?),
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "the workload authority could not issue the server certificate; \
+                 provisioning a self-signed one, which clients pin by its leaf"
+            );
+            ensure_self_signed_for(cert_path, key_path, advertised)
+        }
+    }
+}
+
+/// The `sha256:` fingerprint of the certificate authority the certificate
+/// file at `cert_path` presents after its leaf, when the leaf chains to it
+/// (ADR-0153); `None` for a self-signed or operator-supplied leaf.
+///
+/// # Errors
+///
+/// The certificate file cannot be read or parsed.
+pub fn presented_authority(cert_path: &Path) -> Result<Option<String>, TlsError> {
+    let certs = cert::load_certs(cert_path)?;
+    let Some((leaf, rest)) = certs.split_first() else {
+        return Err(TlsError::NoCerts(cert_path.display().to_string()));
+    };
+    Ok(phux_dial::tls::chain_authority(
+        leaf,
+        rest,
+        rustls::pki_types::UnixTime::now(),
+    ))
+}
+
 /// Refuse a development build the production certificate or private key.
 ///
 /// Provisioning one would write production state, and presenting one would

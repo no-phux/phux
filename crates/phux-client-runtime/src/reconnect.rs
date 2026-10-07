@@ -62,7 +62,7 @@ impl Ladder {
 #[must_use]
 pub fn is_fatal_refusal(error: &DialError) -> bool {
     match error {
-        DialError::AuthRefused(_) => true,
+        DialError::AuthRefused(_) | DialError::AuthorityChanged(_) => true,
         DialError::Connect(detail) => is_fatal_refusal_detail(detail),
         DialError::Io(_) | DialError::Unreachable(_) | DialError::Stalled(_) => false,
     }
@@ -72,11 +72,18 @@ pub fn is_fatal_refusal(error: &DialError) -> bool {
 /// into its own vocabulary; [`is_fatal_refusal_detail`] reads it back.
 pub const TOKEN_REFUSED: &str = "pairing token refused";
 
+/// The phrase every rendering of [`DialError::AuthorityChanged`] carries;
+/// [`is_fatal_refusal_detail`] reads it back.
+pub const AUTHORITY_CHANGED: &str = "certificate authority changed";
+
 /// [`is_fatal_refusal`] for a consumer holding only the rendered detail of
 /// a connect failure.
 #[must_use]
 pub fn is_fatal_refusal_detail(detail: &str) -> bool {
-    detail.contains("401") || detail.contains("403") || detail.contains(TOKEN_REFUSED)
+    detail.contains("401")
+        || detail.contains("403")
+        || detail.contains(TOKEN_REFUSED)
+        || detail.contains(AUTHORITY_CHANGED)
 }
 
 #[cfg(test)]
@@ -179,6 +186,18 @@ mod tests {
             "failed to lookup address information".to_owned()
         )));
         assert!(!is_fatal_refusal(&DialError::Stalled("no pong".to_owned())));
+        let changed = DialError::AuthorityChanged(phux_dial::AuthorityChange {
+            pinned: format!("sha256:{}", "a".repeat(64)),
+            presented: Some(format!("sha256:{}", "b".repeat(64))),
+        });
+        assert!(
+            is_fatal_refusal(&changed),
+            "a changed authority never heals"
+        );
+        assert!(
+            is_fatal_refusal_detail(&crate::dial::dial_message("mini", &changed)),
+            "the flattened refusal stays fatal"
+        );
     }
 
     /// The rendered-detail form is the same verdict as the typed one, so a
