@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/no-phux/phux/compare/claude-plugin-v0.4.0...claude-plugin-v0.4.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* **integrations:** resend an agent emit the upgrade seal refused ([#1032](https://github.com/no-phux/phux/issues/1032)) ([9540d76](https://github.com/no-phux/phux/commit/9540d76c4beb8ad60366fc9c2c774da8e8fc0f95))
+
 ## [0.4.0](https://github.com/no-phux/phux/compare/claude-plugin-v0.3.1...claude-plugin-v0.4.0) (2026-09-09)
 
 
