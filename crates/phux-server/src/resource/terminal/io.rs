@@ -9,11 +9,6 @@ use super::{
 };
 
 impl TerminalActor {
-    /// Synthesize a snapshot of the current `Terminal` (test entry point).
-    pub(super) fn synthesize(&self) -> Result<SnapshotBytes, crate::grid::SynthesisError> {
-        self.synthesize_with_scrollback(None)
-    }
-
     /// Synthesize an ATTACH snapshot, optionally priming scrollback (see
     /// [`crate::grid::SnapshotSynthesizer::synthesize_with_scrollback`]).
     pub(super) fn synthesize_with_scrollback(
@@ -330,12 +325,23 @@ impl TerminalActor {
         if self.core.output_tx.receiver_count() == 0 {
             return;
         }
-        match self.synthesize() {
+        // A replacement creates a fresh consumer replica. Replay history at the
+        // same cut too, or the first phone/keyboard resize erases scrollback.
+        // Leave half the shared 64 MiB staging budget for capability rewriting.
+        match self.synthesize_with_scrollback_bounded(
+            Some(super::DEFAULT_REPLAY_SCROLLBACK_LINES),
+            32 * 1024 * 1024,
+        ) {
             Ok(snap) => {
-                debug!(
-                    bytes = snap.bytes.len(),
-                    "resize resync: snapshot broadcast"
-                );
+                let replay = if snap.scrollback.is_empty() {
+                    Bytes::from(snap.bytes)
+                } else {
+                    let mut replay = snap.scrollback;
+                    replay.reserve_exact(snap.bytes.len());
+                    replay.extend_from_slice(&snap.bytes);
+                    Bytes::from(replay)
+                };
+                debug!(bytes = replay.len(), "resize resync: snapshot broadcast");
                 // Send errors are benign. `Resync` carries the settled dims
                 // so the mirror resizes before applying the replay.
                 let _ = self.core.output_tx.send(PaneOutput::Resync {
@@ -344,7 +350,7 @@ impl TerminalActor {
                     reason,
                     audience,
                     base_seq: self.core.seq(),
-                    bytes: Bytes::from(snap.bytes),
+                    bytes: replay,
                 });
             }
             Err(err) => {

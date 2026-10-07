@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-12
+last-reviewed: 2026-10-06
 ---
 
 # State synchronization
@@ -77,6 +77,12 @@ compatible engine codec:
    current `RenderState` and renders a byte sequence that, replayed into a
    fresh engine, reproduces the visible state; it ships as the bootstrap
    under `SynthesizedVtV1`.
+   A per-Terminal `ATTACH_RESOURCE` includes up to 1,000 retained history
+   rows before the screen, so opening an existing shell can scroll immediately.
+   Both synthesized profiles use the session path's capability rewrite and
+   64 MiB / 4,098-frame staging limits; native history remains client-pull.
+   Resize and gap replacements replay that same bounded history at their new
+   authoritative cut; reporting phone geometry must not erase the restored tail.
 2. Under `SynthesizedVtRaw` the client then follows the same raw byte
    stream as native consumers, after the per-client capability rewrite in
    `downsample.rs`.
