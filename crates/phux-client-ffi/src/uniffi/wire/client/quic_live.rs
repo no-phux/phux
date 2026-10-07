@@ -131,3 +131,67 @@ fn unpinned_routable_quic_fails_closed() {
     assert_ne!(remote.status(), WireStatus::Attached);
     remote.stop_connection();
 }
+
+/// Poll `take_publication` until `done` holds, keeping every event seen.
+fn publish_until(
+    remote: &RemoteClient,
+    seen: &mut Vec<WireEvent>,
+    done: impl Fn(&WirePublication) -> bool,
+) -> WirePublication {
+    let deadline = Instant::now() + DEADLINE;
+    loop {
+        let publication = remote.take_publication();
+        seen.extend(publication.events.iter().cloned());
+        if done(&publication) {
+            return publication;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out: {publication:?}, last error {:?}",
+            remote.last_error()
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_redial_publishes_a_new_incarnation_with_the_same_ids() {
+    let server = QuicServer::start();
+    let remote = RemoteClient::new(format!("quic://{}", server.addr), 80, 24, None, None);
+    remote.connect().expect("connect");
+    remote.attach_session(SESSION.to_owned());
+    let attached = |publication: &WirePublication| {
+        publication.status == WireStatus::Attached
+            && publication.topology.as_ref().is_some_and(|topology| {
+                topology
+                    .sessions
+                    .iter()
+                    .any(|session| session.name == SESSION)
+            })
+    };
+    let mut seen = Vec::new();
+    let first = publish_until(&remote, &mut seen, attached);
+    let epoch = first.connection_epoch;
+    assert!(seen.contains(&WireEvent::ConnectionOpened {
+        connection_epoch: epoch
+    }));
+
+    remote.resync();
+    let mut seen = Vec::new();
+    let second = publish_until(&remote, &mut seen, |publication| {
+        publication.connection_epoch > epoch && attached(publication)
+    });
+    assert!(seen.contains(&WireEvent::ConnectionOpened {
+        connection_epoch: second.connection_epoch
+    }));
+    // The same server hands back the same session: only the incarnation
+    // tells the two attachments apart.
+    let ids = |publication: &WirePublication| {
+        publication
+            .topology
+            .as_ref()
+            .map(|topology| topology.sessions.iter().map(|s| s.id).collect::<Vec<_>>())
+    };
+    assert_eq!(ids(&first), ids(&second));
+    remote.stop_connection();
+}

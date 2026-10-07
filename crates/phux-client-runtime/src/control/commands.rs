@@ -3,8 +3,8 @@
 use std::collections::HashSet;
 
 use super::{
-    AttachTarget, Command, ControlPlane, Event, FrameKind, GroupId, Pending, ResourceId,
-    ServerFeature, SpawnRequest, Status, StreamRecovery, ViewportInfo, encode,
+    AttachTarget, Command, ControlPlane, Event, FrameKind, GroupId, Observation, Pending,
+    ResourceId, ServerFeature, SpawnRequest, Status, StreamRecovery, ViewportInfo, encode,
 };
 
 impl ControlPlane {
@@ -18,6 +18,7 @@ impl ControlPlane {
     /// Every event queued since the last drain, in order, preceded by one
     /// [`Event::TerminalChanged`] per terminal that changed.
     pub fn take_events(&mut self) -> Vec<Event> {
+        self.events_dropped = 0;
         let mut events: Vec<Event> = self
             .damaged
             .drain(..)
@@ -25,6 +26,20 @@ impl ControlPlane {
             .collect();
         events.append(&mut self.events);
         events
+    }
+
+    /// Drain the events exactly as [`ControlPlane::take_events`] does, and
+    /// sample the state they lead to in the same step.
+    pub fn take_observation(&mut self) -> Observation {
+        let events_dropped = self.events_dropped > 0;
+        Observation {
+            events: self.take_events(),
+            events_dropped,
+            connection_epoch: self.connection_epoch,
+            status: self.status,
+            last_error: self.error.clone(),
+            topology: self.topology.clone(),
+        }
     }
 
     // ----- the common surface --------------------------------------------

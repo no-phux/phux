@@ -91,7 +91,26 @@ impl ControlPlane {
 
     pub(super) fn push_event(&mut self, event: Event) {
         if self.events.len() >= EVENT_QUEUE_CAP {
+            let queued = self.events.len();
             self.events.retain(Event::is_lossless);
+            // Every droppable event before the newest connection boundary is
+            // gone, and what remains is correlated by id, not by position, so
+            // older boundaries separate nothing and would grow without bound
+            // across a long reconnect loop nobody drains.
+            let newest = self
+                .events
+                .iter()
+                .rposition(|event| matches!(event, Event::ConnectionOpened { .. }));
+            let mut index = 0;
+            self.events.retain(|event| {
+                let keep =
+                    !matches!(event, Event::ConnectionOpened { .. }) || Some(index) == newest;
+                index += 1;
+                keep
+            });
+            self.events_dropped = self
+                .events_dropped
+                .saturating_add(queued - self.events.len());
             self.events.push(Event::TopologyChanged);
             if self.handshake_ready {
                 self.recover_roster();

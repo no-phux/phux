@@ -27,7 +27,13 @@ reporting. It never touches a socket or a clock it is not handed:
 
 - `feed(FrameKind)` and `feed_bytes(&[u8])` apply one inbound frame;
 - `take_outbound()` returns the encoded frames to send, in order;
-- `take_events()` returns an owned batch of `Event`s;
+- `take_events()` returns an owned batch of `Event`s, and
+  `take_observation()` returns the same batch together with the status, the
+  last error, the topology and the `connection_epoch` sampled in the same
+  step. A polling binding uses the second form, because separate reads can
+  straddle a reconnect. Every transport pushes a lossless
+  `Event::ConnectionOpened { connection_epoch }` boundary. On overflow the
+  queue keeps only the newest boundary and reports `events_dropped`;
 - a `ControlError` says how a frame ended the connection: `Protocol`
   (drop and redial), `Refused` (terminal), `Resync` (redial for fresh
   snapshots), `Closed` (the consumer asked).
