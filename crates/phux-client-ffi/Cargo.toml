@@ -159,6 +159,9 @@ phux-server-testkit.workspace = true
 # The uniffi lane's live QUIC test listens on the real server's QUIC socket.
 phux-server.workspace = true
 portable-pty.workspace = true
+# The phone-through-a-relay live test runs the production relay.
+phux-relay.workspace = true
+phux-config.workspace = true
 # A registry fixture file for the resolution and relay tests.
 tempfile.workspace = true
 # `TunnelShared::inject_failure` for the captured-tunnel test.

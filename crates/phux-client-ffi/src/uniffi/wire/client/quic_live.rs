@@ -163,6 +163,142 @@ impl QuicServer {
     }
 }
 
+/// A relay, and behind it a `paired` server that reaches it only through its
+/// `[[connector]]`: the phone dials the relay and meets the server end to
+/// end inside the relayed stream (ADR-0154 item 5).
+struct RelayedServer {
+    relay: SocketAddr,
+    relay_pin: String,
+    authority: String,
+    paths: phux_server::workload::WorkloadPaths,
+    token: String,
+    shutdown: Option<oneshot::Sender<()>>,
+    thread: Option<thread::JoinHandle<()>>,
+    _dir: tempfile::TempDir,
+}
+
+const ROUTE: &str = "phone-route";
+
+impl RelayedServer {
+    fn start() -> Self {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("owner-only");
+        let d = dir.path().to_path_buf();
+        let write_secret = |name: &str, body: &str| {
+            std::fs::write(d.join(name), body).expect("secret");
+            std::fs::set_permissions(d.join(name), std::fs::Permissions::from_mode(0o600))
+                .expect("chmod");
+        };
+        let tunnel = "31".repeat(32);
+        let token = "42".repeat(32);
+        std::fs::write(d.join("relay-tokens"), format!("{tunnel} {ROUTE}\n")).expect("route");
+        write_secret("connector-token", &format!("{tunnel}\n"));
+        write_secret("consumer-tokens", &format!("{token}\n"));
+        phux_server::auth::migrate_legacy_store(&d.join("consumer-tokens")).expect("migrate");
+        let paths = phux_server::workload::WorkloadPaths::with_overrides(
+            Some(d.join("workload-ca.pem")),
+            Some(d.join("workload-ca.key")),
+            Some(d.join("workload-keys")),
+        );
+        let (cert, key) = (d.join("cert.pem"), d.join("key.pem"));
+        phux_server::transport::tls::ensure_server_identity(&cert, &key, &[], &paths)
+            .expect("server identity");
+        let authority = phux_server::transport::tls::presented_authority(&cert)
+            .expect("chain")
+            .expect("issued by the CA");
+        let (shutdown, stopped) = oneshot::channel::<()>();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let env = ServerEnv {
+            ws_tokens: Some(d.join("consumer-tokens")),
+            tls_cert: Some(cert),
+            tls_key: Some(key),
+            workload_mtls: true,
+            workload_ca: Some(paths.ca_cert.clone()),
+            workload_ca_key: Some(paths.ca_key.clone()),
+            workload_keys: Some(paths.registry.clone()),
+            ..ServerEnv::default()
+        };
+        let state = d.clone();
+        let thread = thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime");
+            tokio::task::LocalSet::new().block_on(&runtime, async move {
+                let relay =
+                    phux_server_testkit::relay::RelayHarness::start(phux_relay::RelayConfig {
+                        listen: SocketAddr::from(([127, 0, 0, 1], 0)),
+                        cert_path: state.join("relay-cert.pem"),
+                        key_path: state.join("relay-key.pem"),
+                        tokens_path: state.join("relay-tokens"),
+                        max_conns: 16,
+                    });
+                let pin =
+                    phux_relay::cert_fingerprint(&state.join("relay-cert.pem")).expect("relay pin");
+                let connector = phux_config::ConnectorConfigEntry {
+                    relay: relay.addr.to_string(),
+                    token_file: Some(state.join("connector-token")),
+                    cert_fingerprint: Some(pin.clone()),
+                };
+                ready_tx.send((relay.addr, pin)).expect("ready");
+                let config = ServerConfig {
+                    socket_path: state.join("phux.sock"),
+                    pre_seeded_session: Some(SESSION.to_owned()),
+                    seed_with_pty: false,
+                    seed_command: None,
+                    env,
+                    ..ServerConfig::with_default_socket()
+                };
+                ServerRuntime::new(config)
+                    .connectors(vec![connector], None)
+                    .run_async(async move {
+                        let _ = stopped.await;
+                    })
+                    .await
+                    .expect("server run");
+                relay.stop().await;
+            });
+        });
+        let (relay, relay_pin) = ready_rx.recv().expect("relay up");
+        Self {
+            relay,
+            relay_pin,
+            authority,
+            paths,
+            token,
+            shutdown: Some(shutdown),
+            thread: Some(thread),
+            _dir: dir,
+        }
+    }
+
+    fn client(&self) -> Arc<RemoteClient> {
+        let client = RemoteClient::new(
+            format!("quic://{}", self.relay),
+            80,
+            24,
+            Some(self.relay_pin.clone()),
+            Some(self.token.clone()),
+        );
+        client.set_relay_route(Some(ROUTE.to_owned()));
+        client.set_authority_pin(Some(self.authority.clone()));
+        client
+    }
+}
+
+impl Drop for RelayedServer {
+    fn drop(&mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 /// A device key for the binding, in software (the phone's is in its
 /// keystore; the binding cannot tell).
 struct TestKey(phux_client_runtime::enroll::SoftwareSigner);
@@ -356,6 +492,41 @@ fn a_phone_enrolls_with_a_ticket_and_attaches_to_a_paired_server() {
     wait_for(&impostor, |remote| remote.last_error().is_some());
     assert_ne!(impostor.status(), WireStatus::Attached);
     impostor.stop_connection();
+}
+
+/// ADR-0154 item 5 for the phone: through a relay to a `paired` server, it
+/// enrolls with a ticket inside the end-to-end session and attaches; without
+/// its certificate the relay route admits nothing.
+#[test]
+fn a_phone_enrolls_and_attaches_through_a_relay_to_a_paired_server() {
+    let server = RelayedServer::start();
+    let bare = server.client();
+    bare.connect().expect("the runtime owns the failure");
+    wait_for(&bare, |remote| remote.last_error().is_some());
+    assert_ne!(bare.status(), WireStatus::Attached);
+    bare.stop_connection();
+
+    let phone = server.client();
+    let deadline = Instant::now() + DEADLINE;
+    let ticket = mint(&server.paths);
+    let key = test_key();
+    // The connector may not hold the route yet; a refused ticket would be
+    // spent, so retry only while the route is offline.
+    let chain = loop {
+        match phone.enroll_device(ticket.clone(), Arc::clone(&key)) {
+            Ok(chain) => break chain,
+            Err(error) if error.to_string().contains("route offline") => {
+                assert!(Instant::now() < deadline, "the route never came up");
+                thread::sleep(Duration::from_millis(100));
+            }
+            Err(error) => panic!("enrollment through the relay: {error}"),
+        }
+    };
+    assert!(chain.contains("BEGIN CERTIFICATE"));
+    phone.connect().expect("connect");
+    phone.attach_session(SESSION.to_owned());
+    wait_for(&phone, |remote| remote.status() == WireStatus::Attached);
+    phone.stop_connection();
 }
 
 #[test]

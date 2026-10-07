@@ -114,7 +114,7 @@ impl RemoteClient {
             authority: self.authority_pin(),
             token_file: None,
             token: self.token.clone(),
-            tls_server_name: None,
+            tls_server_name: self.route.lock().unwrap().clone(),
             client_identity: self.client_identity.lock().unwrap().clone(),
         })
     }
@@ -123,17 +123,16 @@ impl RemoteClient {
     /// records the one a leaf-pinned server presents.
     fn authority_pin(&self) -> phux_client_runtime::target::AuthorityPin {
         let ca = self.authority.lock().unwrap().clone();
-        let learner = ca.is_none().then(|| {
+        let route = self.route.lock().unwrap().clone();
+        // A relayed server's CA is never learned: the relay's leaf does not
+        // authenticate it (ADR-0154).
+        let learner = (ca.is_none() && route.is_none()).then(|| {
             let slot = Arc::clone(&self.learned_authority);
             phux_client_runtime::AuthorityLearner::new(move |authority| {
                 *slot.lock().unwrap() = Some(authority.to_owned());
             })
         });
-        phux_client_runtime::target::AuthorityPin {
-            ca,
-            learner,
-            route: None,
-        }
+        phux_client_runtime::target::AuthorityPin { ca, learner, route }
     }
 }
 
@@ -147,6 +146,9 @@ pub struct RemoteClient {
     /// The certificate-authority pin beside the leaf pin (ADR-0153), set
     /// before `connect` by [`RemoteClient::set_authority_pin`].
     authority: Mutex<Option<String>>,
+    /// The relay route the server is reached through (ADR-0149), set by
+    /// [`RemoteClient::set_relay_route`].
+    route: Mutex<Option<String>>,
     /// The CA a leaf-pinned connection learned, for the embedder to store.
     learned_authority: Arc<Mutex<Option<String>>>,
     /// The workload identity every dial presents (ADR-0154), once enrolled.
@@ -190,6 +192,7 @@ impl RemoteClient {
             fingerprint,
             token,
             authority: Mutex::new(None),
+            route: Mutex::new(None),
             learned_authority: Arc::new(Mutex::new(None)),
             client_identity: Mutex::new(phux_client_runtime::TlsClientIdentity::None),
             client: Mutex::new(None),
@@ -207,6 +210,15 @@ impl RemoteClient {
         if let Some(client) = self.runtime_client() {
             client.resize_viewport(viewport.0, viewport.1);
         }
+    }
+
+    /// Reach the server through a relay route (a connect link's `sni`,
+    /// ADR-0149): the URL is then the relay, the fingerprint the relay's,
+    /// and the authority pin the server's, verified end to end inside the
+    /// relayed stream, where the device identity is presented too
+    /// (ADR-0154). Takes effect at the next `connect` or `enroll_device`.
+    pub fn set_relay_route(&self, route: Option<String>) {
+        *self.route.lock().unwrap() = route.filter(|route| !route.trim().is_empty());
     }
 
     /// Pin the server's certificate authority (`sha256:` fingerprint,
