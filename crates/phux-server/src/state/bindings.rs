@@ -6,12 +6,15 @@
 //! this module records why each resource is closing. A closer records the
 //! reason before cancelling, and the resource's exit watcher claims it:
 //! [`ServerState::begin_resource_close`] returns `None` for an already-reaped
-//! resource, so exactly one closer emits each `RESOURCE_CLOSED`.
+//! resource, so exactly one closer emits each `RESOURCE_CLOSED`. A kill
+//! reaps in its own lock (L1 §5.2) while the process is still in its hangup
+//! grace; the exit-watch ledger lets that process's watcher finish the rest.
 //!
 //! [`Registry::children`]: phux_core::registry::Registry::children
 
 use phux_core::ids::ResourceId;
 use phux_core::resource::ResourceKind;
+use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::CloseReason;
 
 use super::ServerState;
@@ -107,6 +110,19 @@ impl ServerState {
         reason: CloseReason,
         attribution: super::CloseAttribution,
     ) -> u32 {
+        let closing = self.mark_and_cancel(targets, reason, attribution);
+        u32::try_from(closing.len()).unwrap_or(u32::MAX)
+    }
+
+    /// Record why `targets` and their descendants close and cancel their
+    /// actors, without reaping. Returns every closing resource, each after
+    /// its parent, so a reverse walk closes children first.
+    pub(crate) fn mark_and_cancel(
+        &mut self,
+        targets: &[ResourceId],
+        reason: CloseReason,
+        attribution: super::CloseAttribution,
+    ) -> Vec<ResourceId> {
         let mut closing: Vec<(ResourceId, CloseReason)> = Vec::new();
         for target in targets {
             if self.sessions.registry.resource(*target).is_none() {
@@ -124,7 +140,7 @@ impl ServerState {
                 }
             }
         }
-        let closed = u32::try_from(closing.len()).unwrap_or(u32::MAX);
+        let mut closed = Vec::with_capacity(closing.len());
         for (resource, reason) in closing {
             self.mark_resource_closing(resource, reason);
             if attribution != super::CloseAttribution::default() {
@@ -133,8 +149,44 @@ impl ServerState {
                     .or_insert(attribution);
             }
             self.detach_resource_actor(resource);
+            closed.push(resource);
         }
         closed
+    }
+
+    /// Note that `resource` has an exit watcher, which runs until its
+    /// process is gone ([`Self::end_exit_watch`]).
+    pub(crate) fn begin_exit_watch(&mut self, resource: ResourceId) {
+        self.exit_watches.insert(resource, None);
+    }
+
+    /// Remember the wire id of a watched resource a kill closed before its
+    /// process exited, so its watcher can still fire `pane-exit` for it.
+    pub(crate) fn note_closed_before_exit(&mut self, resource: ResourceId, wire: WireResourceId) {
+        if let Some(slot) = self.exit_watches.get_mut(&resource) {
+            *slot = Some(wire);
+        }
+    }
+
+    /// The wire id of a watched resource a kill closed before its process
+    /// exited; `None` for one that is live or another closer reaped.
+    #[must_use]
+    pub(crate) fn closed_before_exit(&self, resource: ResourceId) -> Option<WireResourceId> {
+        self.exit_watches.get(&resource).cloned().flatten()
+    }
+
+    /// End `resource`'s exit watch: its process is gone.
+    pub(crate) fn end_exit_watch(&mut self, resource: ResourceId) {
+        self.exit_watches.remove(&resource);
+    }
+
+    /// Whether last-session self-exit may run now: no session is left and
+    /// no killed resource's process is still in its hangup grace.
+    #[must_use]
+    pub(crate) fn self_exit_due(&self) -> bool {
+        self.sessions.registry.session_count() == 0
+            && self.exit_watches.is_empty()
+            && self.has_served_client()
     }
 }
 

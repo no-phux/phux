@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-12
+last-reviewed: 2026-10-06
 ---
 
 # Data model
@@ -145,14 +145,20 @@ Each engine embeds a `ResourceCore` (output sequence and broadcast, event
 fan-out, cancel token, control mailbox) and builds the `ResourceHandle`;
 the facet rule is in [module-structure.md](./module-structure.md#phux-server).
 
-Teardown runs under one lock acquisition. `KILL_RESOURCES` resolves every
-wire id and cancels every engine inside a single `with_mut`, so no other
-command interleaves between the first and last removal. A Terminal engine
-that observes PTY EOF fires its exit notification; the exit watcher then
-gathers the subscribers, reaps the domain entity through
+Teardown runs under one lock acquisition. A kill (`KILL_RESOURCE`,
+`KILL_RESOURCE_IF`, `KILL_RESOURCES`, `CLOSE_TAB_RESOURCES`) resolves every
+wire id inside a single `with_mut` and commits the whole visible teardown
+there (`runtime/committed_close.rs`, L1 §5.2): it cancels every engine into
+its hangup grace, journals each `pane_closed`, gathers the subscribers,
+cancels the output pumps, and reaps each entity through
 `ServerState::reap_terminal` (cascading to the window and session when they
-empty), and forgets the `ResourceTable` entry, all in the same critical
-section, before the `RESOURCE_CLOSED` sends are awaited.
+empty), so no other command interleaves and none sees a killed resource
+after the reply. A Terminal engine that observes PTY EOF fires its exit
+notification; the exit watcher then does the same gather, journal, and reap
+in one critical section before the `RESOURCE_CLOSED` sends are awaited. For a
+killed pane the watcher finds the entity already reaped and only fires
+`pane-exit`; last-session self-exit waits until no killed process is still
+in its grace.
 
 Session name lookup uses `Registry::sessions()` rather than a side index.
 Its O(N) cost is acceptable for the small session count (typically single

@@ -88,6 +88,13 @@ impl ServerState {
         wire
     }
 
+    /// Cancel every output pump of `terminal`: a killed Terminal's process
+    /// outlives its close (the hangup grace), and nothing it prints then may
+    /// follow its `RESOURCE_CLOSED`.
+    pub(crate) fn cancel_terminal_pumps(&mut self, terminal: ResourceId) {
+        self.resources.cancel_pumps_for_terminal(terminal);
+    }
+
     /// Cancel and forget `pane`'s actor token. Idempotent.
     pub fn detach_resource_actor(&mut self, terminal: ResourceId) {
         self.resources.detach_actor(terminal);

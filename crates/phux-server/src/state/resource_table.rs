@@ -375,6 +375,21 @@ impl ResourceTable {
         }
     }
 
+    /// Cancel every client's pumps for `terminal`, so nothing it outputs
+    /// reaches a subscriber after its close.
+    pub(super) fn cancel_pumps_for_terminal(&mut self, terminal: ResourceId) {
+        let clients: Vec<ClientId> = self
+            .pumps
+            .keys()
+            .chain(self.output_pumps.keys())
+            .filter(|(_, pane)| *pane == terminal)
+            .map(|(client, _)| *client)
+            .collect();
+        for client in clients {
+            self.cancel_pump(client, terminal);
+        }
+    }
+
     /// Cancel every pump `client` owns.
     pub(super) fn cancel_pumps_for_client(&mut self, client: ClientId) {
         self.output_pumps.retain(|(owner, _), _| *owner != client);

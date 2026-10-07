@@ -35,6 +35,7 @@ mod conditional_kill;
 mod consumer_filters;
 mod detach_fence;
 mod event_restamp;
+mod kill_visibility;
 mod link_gap;
 mod list_directory;
 mod live_reload;

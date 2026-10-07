@@ -981,14 +981,17 @@ fn handle_kill_terminal(
         .map_or_else(
             || terminal_not_found(terminal_id),
             |core_id| {
-                // ADR-0104 §2: the target and its children close in one lock.
-                state.with_mut(|s| {
-                    s.close_resources_attributed(
+                // ADR-0104 §2: the target and its children close in one lock,
+                // and the commit is the teardown (L1 §5.2).
+                let committed = state.with_mut(|s| {
+                    super::committed_close::commit_close(
+                        s,
                         &[core_id],
                         phux_protocol::wire::frame::CloseReason::Killed,
                         attribution,
                     )
                 });
+                super::committed_close::announce(state, committed);
                 CommandResult::Ok
             },
         )
@@ -1002,9 +1005,20 @@ fn handle_kill_resource_if(
     precondition: &phux_protocol::wire::frame::KillPrecondition,
     attribution: crate::state::CloseAttribution,
 ) -> CommandResult {
-    match state.with_mut(|s| s.kill_resource_if_attributed(terminal_id, precondition, attribution))
-    {
-        Ok(()) => CommandResult::Ok,
+    let admitted = state.with_mut(|s| {
+        let core = s.admit_conditional_kill(terminal_id, precondition)?;
+        Ok(super::committed_close::commit_close(
+            s,
+            &[core],
+            phux_protocol::wire::frame::CloseReason::Killed,
+            attribution,
+        ))
+    });
+    match admitted {
+        Ok(committed) => {
+            super::committed_close::announce(state, committed);
+            CommandResult::Ok
+        }
         Err(refusal) => kill_if_refusal(terminal_id, refusal),
     }
 }
@@ -2797,7 +2811,7 @@ fn kill_local_batch(
     } else {
         "KILL_RESOURCES"
     };
-    state.with_mut(|s| {
+    let (killed, not_found, committed) = state.with_mut(|s| {
         let mut targets = Vec::with_capacity(ids.len());
         let (mut killed, mut not_found) = (Vec::new(), Vec::new());
         for wire_id in ids.iter().filter(|id| id.local_id().is_some()) {
@@ -2820,18 +2834,23 @@ fn kill_local_batch(
                 );
             }
         }
-        // ADR-0104 §2: targets and their children close once, in this borrow.
-        let closed = s.close_resources_attributed(
+        // ADR-0104 §2: targets and their children close once, in this borrow,
+        // and the commit is the teardown (L1 §5.2).
+        let committed = super::committed_close::commit_close(
+            s,
             &targets,
             phux_protocol::wire::frame::CloseReason::Killed,
             attribution,
         );
         debug!(
             requested = ids.len(),
-            closed, "{label}: torn down local ids atomically"
+            closed = committed.len(),
+            "{label}: torn down local ids atomically"
         );
-        (killed, not_found)
-    })
+        (killed, not_found, committed)
+    });
+    super::committed_close::announce(state, committed);
+    (killed, not_found)
 }
 
 /// `CLOSE_TAB_RESOURCES`'s satellite ids, forwarded detached to each host as
@@ -3569,8 +3588,9 @@ fn viewport_cells_json(screen_state: &phux_core::screen::ScreenState) -> Vec<ser
 }
 
 /// Make `process.exit` the record `GET_STATE` reports (ADR-0124, L1 §1.1):
-/// a retained pane's exit wins, and a closing pane takes its ledger reason so
-/// a kill reads `killed` on both surfaces.
+/// a retained pane's exit wins, and a pane still closing (a shutdown, a
+/// retained eviction) takes its ledger reason. A killed pane is reaped at
+/// its commit (L1 §5.2), so it never reaches here.
 fn reconcile_process_exit(
     state: &SharedState,
     terminal_id: &phux_protocol::ids::ResourceId,

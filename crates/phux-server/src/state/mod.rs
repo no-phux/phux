@@ -183,6 +183,13 @@ pub struct ServerState {
     /// Who and which keyed operation closed a resource, for `pane_closed`
     /// (`docs/spec/L1.md` §7.3); lives from kill to reap.
     close_attributions: std::collections::HashMap<phux_core::ids::ResourceId, CloseAttribution>,
+    /// Every resource whose exit watcher still runs, with its wire id once
+    /// a kill reaped it ahead of its process (`docs/spec/L1.md` §5.2); see
+    /// [`bindings`].
+    exit_watches: std::collections::HashMap<
+        phux_core::ids::ResourceId,
+        Option<phux_protocol::ids::ResourceId>,
+    >,
     /// Retain-on-exit bookkeeping (ADR-0124); see [`retained`].
     retained: retained::RetainedTable,
     /// Remote listener bind outcomes for `GET_STATE` and `phux doctor`.

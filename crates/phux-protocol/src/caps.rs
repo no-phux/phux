@@ -1062,6 +1062,10 @@ pub enum ServerFeatureExt {
     /// (fields 4/5, ADR-0145), so a client can size panes without a
     /// viewport vote.
     ResizeCellPx = 0x0000_0002,
+    /// A kill's reply follows a commit that is the whole visible teardown
+    /// (`docs/spec/L1.md` §5.2): the next `GET_STATE` already omits the
+    /// killed resources, so a client need not wait for their reap.
+    CommittedTeardown = 0x0000_0004,
 }
 
 /// Known bits in `HELLO_OK.server_caps.features_ext`.
@@ -1069,7 +1073,9 @@ pub enum ServerFeatureExt {
 pub struct ServerFeatureExtSet(u32);
 
 impl ServerFeatureExtSet {
-    const KNOWN: u32 = ServerFeatureExt::PathQuery as u32 | ServerFeatureExt::ResizeCellPx as u32;
+    const KNOWN: u32 = ServerFeatureExt::PathQuery as u32
+        | ServerFeatureExt::ResizeCellPx as u32
+        | ServerFeatureExt::CommittedTeardown as u32;
 
     /// No extended features.
     #[must_use]
