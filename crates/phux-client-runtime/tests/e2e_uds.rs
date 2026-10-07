@@ -547,6 +547,171 @@ fn reconnects_through_the_ladder_after_a_server_restart() {
     });
 }
 
+/// Every acknowledged line resolves exactly once across a server restart
+/// (phux-8u7ii): one sent as the server dies, before the client notices, and
+/// one sent while the client is reconnecting. Neither may vanish without a
+/// receipt. The first may truly have reached the old server before it shut
+/// down, so Delivered is honest for it; the second was never attempted
+/// against the old server, and the new incarnation never had its pane.
+#[test]
+fn acknowledged_input_across_a_server_restart_always_resolves() {
+    use phux_client_runtime::control::DeliveryOutcome;
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket = tmp.path().join("phux.sock");
+        let (shutdown, server) = spawn_server(socket.clone(), Some("main"));
+        let client = Runtime::connect(Target::uds(&socket), options()).expect("connect");
+        wait_for_status(&client, Status::Attached).await;
+        let terminal = spawn_cat(&client).await;
+        drop(client.take_events());
+
+        // The server dies; the first line goes out before the client can
+        // have read the hangup.
+        drop(shutdown);
+        let as_it_dies = client.apply_line(&terminal, "as-it-dies");
+        server.await.unwrap().unwrap();
+        wait_for_status(&client, Status::Connecting).await;
+        let while_down = client.apply_line(&terminal, "while-down");
+
+        let (shutdown, server) = spawn_server(socket.clone(), Some("main"));
+        wait_for_status(&client, Status::Attached).await;
+
+        let mut outcomes = std::collections::HashMap::new();
+        wait_for_event(&client, "a receipt for both lines", |event| {
+            if let Event::InputDelivery {
+                delivery_id,
+                outcome,
+                message,
+                ..
+            } = event
+            {
+                assert!(
+                    outcomes
+                        .insert(*delivery_id, (*outcome, message.clone()))
+                        .is_none(),
+                    "delivery {delivery_id} resolved twice"
+                );
+            }
+            (outcomes.contains_key(&as_it_dies) && outcomes.contains_key(&while_down)).then_some(())
+        })
+        .await;
+        let (outcome, message) = &outcomes[&while_down];
+        assert_ne!(
+            *outcome,
+            DeliveryOutcome::Delivered,
+            "a line sent while the server was down claims a pane the restarted server never had: {message}"
+        );
+
+        client.close();
+        drop(shutdown);
+        server.await.unwrap().unwrap();
+    });
+}
+
+/// A Unix-socket relay to `server` that can turn every connection it has
+/// already accepted into a black hole: still open, never answering, the
+/// half-open link a dead NAT mapping or a stale USB forward leaves behind.
+/// Connections accepted after the freeze relay normally.
+fn freezable_relay(server: std::path::PathBuf, listen: &std::path::Path) -> Arc<AtomicUsize> {
+    // Connections with an index below this value are black-holed.
+    let frozen_below = Arc::new(AtomicUsize::new(0));
+    let listener = UnixListener::bind(listen).unwrap();
+    let freeze = Arc::clone(&frozen_below);
+    tokio::task::spawn_local(async move {
+        let mut index = 0usize;
+        while let Ok((client, _)) = listener.accept().await {
+            let Ok(upstream) = UnixStream::connect(&server).await else {
+                continue;
+            };
+            let this = index;
+            index += 1;
+            let (client_read, client_write) = client.into_split();
+            let (upstream_read, upstream_write) = upstream.into_split();
+            for (mut from, mut to) in [
+                (
+                    Box::new(client_read) as Box<dyn tokio::io::AsyncRead + Unpin>,
+                    Box::new(upstream_write) as Box<dyn tokio::io::AsyncWrite + Unpin>,
+                ),
+                (Box::new(upstream_read) as _, Box::new(client_write) as _),
+            ] {
+                let freeze = Arc::clone(&freeze);
+                tokio::task::spawn_local(async move {
+                    let mut buf = vec![0u8; 16 * 1024];
+                    loop {
+                        let Ok(n) = from.read(&mut buf).await else {
+                            return;
+                        };
+                        if n == 0 {
+                            return;
+                        }
+                        // Frozen: swallow the bytes and keep the socket open.
+                        if this < freeze.load(Ordering::SeqCst) {
+                            continue;
+                        }
+                        if to.write_all(&buf[..n]).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        }
+    });
+    frozen_below
+}
+
+/// An acknowledged line submitted into a half-open connection resolves
+/// promptly (phux-8u7ii): submitting it probes the link, the silent link is
+/// dropped within the probe timeout instead of the 30-second idle timeout,
+/// and the reconnect replays the line under its original operation id.
+#[test]
+fn acknowledged_input_into_a_half_open_link_resolves_promptly() {
+    use phux_client_runtime::control::DeliveryOutcome;
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket = tmp.path().join("phux.sock");
+        let relay = tmp.path().join("relay.sock");
+        let (shutdown, server) = spawn_server(socket.clone(), Some("main"));
+        drop(wait_for_socket(&socket, DEADLINE).await);
+        let frozen_below = freezable_relay(socket.clone(), &relay);
+        // options() keeps the production probe timeout, so the bound below is
+        // the real one.
+        let client = Runtime::connect(Target::uds(&relay), options()).expect("connect");
+        wait_for_status(&client, Status::Attached).await;
+        let terminal = spawn_cat(&client).await;
+        drop(client.take_events());
+
+        // Black-hole the live connection, then submit.
+        frozen_below.store(usize::MAX, Ordering::SeqCst);
+        let started = Instant::now();
+        let line = client.apply_line(&terminal, "through-the-black-hole");
+        // Let the reconnect through: only the frozen connection stays dead.
+        frozen_below.store(1, Ordering::SeqCst);
+
+        let (outcome, message) =
+            wait_for_event(&client, "the line's receipt", |event| match event {
+                Event::InputDelivery {
+                    delivery_id,
+                    outcome,
+                    message,
+                    ..
+                } if *delivery_id == line => Some((*outcome, message.clone())),
+                _ => None,
+            })
+            .await;
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "the receipt took {elapsed:?}; the 30-second idle timeout, not a probe, found the dead link"
+        );
+        assert_eq!(outcome, DeliveryOutcome::Delivered, "{message}");
+        wait_for_text(&client, &terminal, "through-the-black-hole").await;
+
+        client.close();
+        drop(shutdown);
+        server.await.unwrap().unwrap();
+    });
+}
+
 /// A listener that answers every WebSocket upgrade with 401: the pairing
 /// gate refusing a token, which no retry can change. Returns the port and
 /// the count of connections it accepted.
