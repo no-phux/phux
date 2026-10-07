@@ -81,3 +81,6 @@ tempfile.workspace = true
 phux-server-testkit.workspace = true
 # Its policy seam, for a scoped-grant server (already built by the testkit).
 phux-server.workspace = true
+# The seed command type the testkit's PTY-seeded server takes (already in
+# the lockfile through the testkit and phux-client-ffi's tests).
+portable-pty.workspace = true

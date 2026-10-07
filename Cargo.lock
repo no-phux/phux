@@ -2474,6 +2474,7 @@ dependencies = [
  "phux-protocol",
  "phux-server",
  "phux-server-testkit",
+ "portable-pty",
  "quinn",
  "serde_json",
  "sha2 0.11.0",
