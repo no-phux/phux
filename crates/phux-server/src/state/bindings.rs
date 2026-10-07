@@ -60,6 +60,12 @@ impl ServerState {
                     .registry
                     .resource(child)
                     .is_some_and(|r| r.kind == ResourceKind::AgentSession)
+                    && self
+                        .resource_handle(child)
+                        .and_then(|handle| handle.agent_session().ok())
+                        .is_some_and(|session| {
+                            !session.ended.load(std::sync::atomic::Ordering::Relaxed)
+                        })
             })
     }
 

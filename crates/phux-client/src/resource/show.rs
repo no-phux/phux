@@ -34,6 +34,8 @@ pub struct ResourceDetails {
     pub tags: Option<Vec<String>>,
     /// The Terminal's declared `phux.agent/v1` record, if any.
     pub agent: Option<AgentRecord>,
+    /// OSC 7501 active record and record-id index; absent on older servers.
+    pub program_status: Option<Value>,
     /// Degradation notices collected along the way.
     pub unreachable: Vec<String>,
 }
@@ -59,6 +61,7 @@ impl ResourceDetails {
             "process": self.process,
             "tags": self.tags,
             "agent": self.agent,
+            "program_status": self.program_status,
             "agent_session": info.agent.as_ref().map(|facet| json!({
                 "provider": facet.provider,
                 "native_id": facet.native_id,
@@ -90,6 +93,11 @@ pub async fn show(socket: &Path, resource: &ResourceId) -> Result<ResourceDetail
     } else {
         None
     };
+    let program_status = if is_terminal {
+        read_program_status(&mut conn, resource, &mut unreachable).await?
+    } else {
+        None
+    };
     drop(conn);
     Ok(ResourceDetails {
         session: session_name(&snapshot, &info),
@@ -97,6 +105,7 @@ pub async fn show(socket: &Path, resource: &ResourceId) -> Result<ResourceDetail
         process,
         tags,
         agent,
+        program_status,
         unreachable,
     })
 }
@@ -169,6 +178,26 @@ async fn read_agent(
     let (answer, degradation) = crate::agent_record::get_record(conn, resource, 3).await?;
     notices.extend_from_slice(degradation.notices());
     Ok(answer.ok().flatten())
+}
+
+async fn read_program_status(
+    conn: &mut Connection,
+    resource: &ResourceId,
+    notices: &mut Vec<String>,
+) -> Result<Option<Value>, AttachError> {
+    let (answer, interleaved) = conn
+        .request_metadata(
+            4,
+            Scope::Resource(resource.clone()),
+            phux_protocol::wire::frame::RESOURCE_PROGRAM_STATUS_KEY.to_owned(),
+        )
+        .await?
+        .into_parts();
+    notices.extend_from_slice(Degradation::from_interleaved(&interleaved).notices());
+    Ok(answer
+        .ok()
+        .flatten()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok()))
 }
 
 #[cfg(test)]

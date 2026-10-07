@@ -397,3 +397,54 @@ fn agent_detector_and_pane_events_rearm_after_graceful_upgrade() {
         "the resumed pane's bell should reach the event journal"
     );
 }
+
+/// OSC 7501 is terminal state, not a grid property or a transient badge.
+#[test]
+#[ignore = "spawns a real phux server + performs a real in-place re-exec; run via `just e2e`."]
+fn program_status_and_inheritance_survive_graceful_upgrade() {
+    let marker = format!("STATUS_READY_{}", std::process::id());
+    let server = ServerGuard::start_with_seed(&format!(
+        "printf '\\033]7501;state=idle:app=build\\007'; \
+         printf '\\033]7501;id=build/test:state=blocked:kind=question:progress=42:msg=UmVhZHk/\\033\\\\'; \
+         printf '{marker}\\n'; \
+         read answer; \
+         printf '\\033]7501;state=idle\\007'; \
+         exec sleep 600"
+    ));
+    assert_eq!(
+        server.status(&["wait", SESSION, "--until", &marker, "--timeout", "10"]),
+        0,
+    );
+    assert!(poll(Duration::from_secs(10), || {
+        json_of(&server, &["resource", "show", SESSION, "--json"])["program_status"]["active"]["state"]
+            == "blocked"
+    }));
+    let before = json_of(&server, &["resource", "show", SESSION, "--json"]);
+    assert_eq!(before["program_status"]["active"]["app"], "build");
+    assert_eq!(before["program_status"]["active"]["state"], "blocked");
+    assert_eq!(before["program_status"]["active"]["progress"], 42);
+    assert_eq!(before["program_status"]["active"]["msg"], "Ready?");
+
+    assert_eq!(server.status(&["upgrade"]), 0);
+    assert!(
+        poll(Duration::from_secs(15), || server.status(&["ls"]) == 0),
+        "the resumed server should accept connections again"
+    );
+    assert!(poll(Duration::from_secs(10), || {
+        let shown = json_of(&server, &["resource", "show", SESSION, "--json"]);
+        shown["program_status"] == before["program_status"] && shown["agent"]["state"] == "blocked"
+    }));
+    let after = json_of(&server, &["resource", "show", SESSION, "--json"]);
+    assert_eq!(after["program_status"], before["program_status"]);
+    assert_eq!(after["agent"]["state"], "blocked");
+
+    assert_eq!(server.status(&["send-keys", SESSION, "go", "Enter"]), 0);
+    assert!(
+        poll(Duration::from_secs(10), || {
+            let shown = json_of(&server, &["resource", "show", SESSION, "--json"]);
+            shown["program_status"]["active"]["state"] == "blocked"
+                && shown["program_status"]["active"]["app"].is_null()
+        }),
+        "replacement of the root must remove inherited app after upgrade"
+    );
+}

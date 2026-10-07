@@ -981,6 +981,12 @@ fn drain_retract(
     scope: &Scope,
     hooks_live: bool,
 ) -> Option<HookEvent> {
+    if s.metadata().contains(
+        scope,
+        phux_protocol::wire::frame::RESOURCE_PROGRAM_STATUS_KEY,
+    ) {
+        return None;
+    }
     let existing = s.metadata().get(scope, RESOURCE_AGENT_KEY);
     let prior = prior_state(hooks_live, existing.as_deref());
     if s.agent_records().is_declared(wire_terminal_id) {
@@ -1036,6 +1042,12 @@ fn drain_reidentified(
     name: &str,
 ) -> Option<HookEvent> {
     use crate::hooks::AGENT_STATE_UNKNOWN;
+    if s.metadata().contains(
+        scope,
+        phux_protocol::wire::frame::RESOURCE_PROGRAM_STATUS_KEY,
+    ) {
+        return None;
+    }
 
     let existing = s.metadata().get(scope, RESOURCE_AGENT_KEY)?;
     let prior = prior_state(hooks_live, Some(&existing));
@@ -1064,12 +1076,31 @@ fn drain_state(
     hooks_live: bool,
     report: &crate::agent_detect::AgentReport,
 ) -> Option<HookEvent> {
+    let program_status = s.metadata().contains(
+        scope,
+        phux_protocol::wire::frame::RESOURCE_PROGRAM_STATUS_KEY,
+    );
+    if program_status
+        && !crate::agent_detect::live_session::server_has_live_session(s, wire_terminal_id)
+    {
+        return None;
+    }
     if s.agent_records().is_declared(wire_terminal_id) {
         return None;
     }
-    let existing = s.metadata().get(scope, RESOURCE_AGENT_KEY);
+    let mut existing = s.metadata().get(scope, RESOURCE_AGENT_KEY);
     let prior = prior_state(hooks_live, existing.as_deref());
     let owned = s.agent_records().identity_ownership(wire_terminal_id);
+    // The OSC error badge is derived attention, not a human declaration.
+    if program_status
+        && !s.agent_records().has_explicit_identity(wire_terminal_id)
+        && let Some(mut record) = existing
+            .as_deref()
+            .and_then(crate::agent_detect::record::AgentRecordJson::decode)
+    {
+        record.attention = None;
+        existing = Some(record.encode());
+    }
     let contradicted = owned.kind
         && crate::agent_state::explicit_kind_is_contradicted(
             existing.as_deref(),
@@ -4251,6 +4282,8 @@ fn is_server_owned_key(key: &str) -> bool {
 
     key == RESOURCE_PANE_OCCUPANT_KEY
         || key == RESOURCE_ASKED_KEY
+        || key == phux_protocol::wire::frame::RESOURCE_PROGRAM_STATUS_KEY
+        || key.starts_with(phux_protocol::wire::frame::RESOURCE_PROGRAM_STATUS_RECORD_PREFIX)
         || key == WHOAMI_KEY
         || key.starts_with(APPROVAL_KEY_PREFIX)
 }

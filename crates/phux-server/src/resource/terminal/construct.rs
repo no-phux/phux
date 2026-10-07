@@ -109,6 +109,7 @@ impl TerminalActor {
             None,
         )?;
         bundle.actor.terminal.borrow_mut().vt_write(seed);
+        bundle.actor.restore_program_status(seed);
         // The seed replays the old image's OSC title; sync it now so the
         // detector and `title_changed` start from it, not from empty.
         bundle.actor.refresh_title();
@@ -251,6 +252,8 @@ impl TerminalActor {
             event_sink: None,
             last_title: String::new(),
             last_progress: String::new(),
+            program_status: super::program_status::ProgramStatus::default(),
+            program_status_sink: None,
             agent_detect: None,
             agent_state_sink: None,
             live_session_probe: None,
@@ -418,6 +421,7 @@ impl TerminalActor {
     ) -> Result<TerminalActorBundle, TerminalActorError> {
         let mut bundle = Self::new(cols, rows)?;
         bundle.actor.terminal.borrow_mut().vt_write(bytes);
+        bundle.actor.restore_program_status(bytes);
         bundle.actor.refresh_title();
         bundle.actor.publish_input_snapshot();
         Ok(bundle)

@@ -399,6 +399,9 @@ impl TerminalActor {
         self.pty_rx = None;
         let exit = self.reap_child_if_any();
         self.record_exit(exit);
+        if self.program_status.expire_active() {
+            self.publish_program_status();
+        }
     }
 
     /// Spawn a replacement child in this same Terminal after PTY EOF.

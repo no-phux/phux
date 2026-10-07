@@ -1833,3 +1833,27 @@ fn a_synthesized_state_record_falls_back_to_the_detector_path() {
         "and still forces one ordinary derivation, so it cannot latch",
     );
 }
+
+#[test]
+fn program_status_bel_terminators_are_not_bells_but_ground_bel_is() {
+    let mut actor = TerminalActor::new(20, 5).expect("new").actor;
+    let (sink, mut events) = mpsc::channel(8);
+    actor.set_event_sink(sink);
+    actor.source_events_from_chunk(b"\x1b]7501;state=working");
+    actor.source_events_from_chunk(b"\x07\x1b]7501;?\x07\x1b]99;ignored\x07");
+    while let Ok(event) = events.try_recv() {
+        assert!(
+            !matches!(event.event, AgentEvent::Bell),
+            "OSC terminators must not ring"
+        );
+    }
+    actor.source_events_from_chunk(b"\x07\x07");
+    assert!(matches!(
+        events.try_recv().map(|event| event.event),
+        Ok(AgentEvent::Bell)
+    ));
+    assert!(matches!(
+        events.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+}

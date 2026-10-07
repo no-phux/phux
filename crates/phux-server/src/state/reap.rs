@@ -69,6 +69,7 @@ impl ServerState {
         &mut self,
         pane: ResourceId,
     ) -> (bool, Option<tokio_util::sync::CancellationToken>) {
+        let parent = self.resource_parent(pane);
         let window_id = self.sessions.registry.resource(pane).and_then(|t| t.window);
         // `remove_resource` also drops every bound descendant from the
         // registry. One still there (no close cascade ran first, e.g. a
@@ -86,6 +87,12 @@ impl ServerState {
         } else {
             None
         };
+        // A removed producer hands its parent back to the remaining sources.
+        if let Some(handle) = parent.and_then(|parent| self.resource_handle(parent)) {
+            let _ = handle
+                .control
+                .try_send(crate::resource::ControlRequest::AgentRecordInvalidated);
+        }
         let Some(window_id) = window_id else {
             return (self.sessions.registry.session_count() == 0, token);
         };

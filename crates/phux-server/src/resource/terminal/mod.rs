@@ -41,6 +41,7 @@ mod io;
 mod native;
 mod osc133;
 mod process_facet;
+pub(crate) mod program_status;
 pub mod requests;
 mod run_loop;
 pub mod spawn;
@@ -746,6 +747,10 @@ pub struct TerminalActor {
     last_title: String,
     /// Latest OSC 9;4 payload, mirrored from the raw PTY stream for detection.
     last_progress: String,
+    /// OSC 7501 records belong to the terminal, independently of its screens.
+    program_status: program_status::ProgramStatus,
+    /// Latest-state publication coalesces bursts without dropping a clear.
+    program_status_sink: Option<watch::Sender<Vec<program_status::Record>>>,
     /// Agent-state detector (ADR-0046), built in [`Self::run`] for PTY-backed
     /// actors with a sink and rules.
     agent_detect: Option<crate::agent_detect::AgentDetector>,

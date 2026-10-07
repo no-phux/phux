@@ -755,16 +755,39 @@ impl TerminalActor {
     fn ingest_pty_payload(&mut self, payload: &Bytes) {
         let _apply_timer = crate::perf::PTY_VT_APPLY.timer();
         let parse_started = std::time::Instant::now();
-        self.terminal.borrow_mut().vt_write(payload);
+        let marks = self.write_pty_with_status_queries(payload);
         crate::perf::PTY_VT_PARSE.record_elapsed(parse_started);
         let _post_timer = crate::perf::PTY_POST_APPLY.timer();
         self.answer_color_queries(payload);
         self.publish_input_snapshot();
         self.terminal_dirty_since_tick = true;
         self.agent_dirty_since_detect = true;
-        self.source_events_from_chunk(payload);
+        self.source_events_from_marks(&marks);
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         self.start_next_native_bootstrap();
+    }
+
+    /// Parse queries in byte order with engine-generated replies, including DA.
+    pub(super) fn write_pty_with_status_queries(
+        &mut self,
+        bytes: &[u8],
+    ) -> Vec<(usize, super::osc133::OscMark)> {
+        let marks = self.osc133.feed_with_offsets(bytes);
+        let mut start = 0;
+        for (end, mark) in &marks {
+            if matches!(mark, super::osc133::OscMark::ProgramStatusQuery) {
+                self.terminal.borrow_mut().vt_write(&bytes[start..*end]);
+                if let Some(tx) = &self.pty_tx {
+                    let _ = super::try_send_to_writer(
+                        tx,
+                        EncodedInputRequest::legacy(b"\x1b]7501;?\x1b\\".to_vec()),
+                    );
+                }
+                start = *end;
+            }
+        }
+        self.terminal.borrow_mut().vt_write(&bytes[start..]);
+        marks
     }
 
     /// Answer a bounded `SnapshotRequest` with replay bytes and their raw cut.
@@ -839,7 +862,7 @@ impl TerminalActor {
     /// ADR-0032: hand the upgrade producer this pane's PTY descriptors and
     /// a full replay snapshot.
     fn reply_upgrade_handle(&self, req: UpgradeHandleRequest) {
-        let snap = self
+        let mut snap = self
             .synthesize_with_scrollback(Some(0))
             .unwrap_or_else(|err| {
                 warn!(error = %err, "upgrade snapshot synthesis failed; replying empty");
@@ -873,6 +896,7 @@ impl TerminalActor {
                 (!last.is_empty()).then_some(last)
             });
         let cell_px = (self.cell_px != (0, 0)).then_some(self.cell_px);
+        snap.bytes.extend_from_slice(&self.program_status.replay());
         let _ = req.reply.send(PaneUpgradeHandle {
             master_fd,
             child_pid,
