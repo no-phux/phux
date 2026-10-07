@@ -115,3 +115,10 @@ these task-owned records and appended them to the passive historical export,
 preserving all 1,870 earlier records. Local tracker operations have automatic
 backup and remote synchronization disabled. The primary source and installed
 phux remain untouched.
+
+Prepared the independent resync-only branch `fix/mimo-terminal-resync` from
+origin/main 0c7946e0, with source commit 195e4b8d. Its production and test targets
+also passed `mbx +1.99.0 check --locked -p phux-server --all-targets` without the
+upgrade PR's changes. The 1,358-test execution remains the combined-fixes run
+recorded above. This separate branch is committed and clean; it has not been
+pushed or made into a remote PR.
