@@ -122,3 +122,15 @@ also passed `mbx +1.99.0 check --locked -p phux-server --all-targets` without th
 upgrade PR's changes. The 1,358-test execution remains the combined-fixes run
 recorded above. This separate branch is committed and clean; it has not been
 pushed or made into a remote PR.
+
+
+At the operator's request, published the independent terminal-resync branch and
+opened [PR #1069](https://github.com/no-phux/phux/pull/1069) for review against
+`no-phux/phux:main`. The fork head is
+`antimemeai/phux:fix/mimo-terminal-resync`; its merge base is upstream main
+0c7946e000154ba096050d66cb1e993ce8012a9d. The diff excludes the upgrade and
+agent-session ordering changes from #1056. The PR description distinguishes
+the standalone all-target compilation from the combined 1,358-test execution.
+Local main was fast-forwarded to the same upstream commit with a guarded ref
+update; it is not checked out in any worktree. The dirty primary source and
+installed phux remain untouched. This journal update changes no Rust sources.
