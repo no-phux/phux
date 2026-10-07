@@ -23,7 +23,7 @@ struct QuicServer {
     addr: SocketAddr,
     shutdown: Option<oneshot::Sender<()>>,
     thread: Option<thread::JoinHandle<()>>,
-    _dir: tempfile::TempDir,
+    dir: tempfile::TempDir,
 }
 
 impl QuicServer {
@@ -90,12 +90,12 @@ impl QuicServer {
             addr,
             shutdown: Some(shutdown),
             thread: Some(thread),
-            _dir: dir,
+            dir,
         }
     }
 
     fn cert(&self) -> std::path::PathBuf {
-        self._dir.path().join("cert.pem")
+        self.dir.path().join("cert.pem")
     }
 }
 
