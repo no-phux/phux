@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.1.0-alpha.6](https://github.com/no-phux/phux/compare/desktop-v0.1.0-alpha.5...desktop-v0.1.0-alpha.6) (2026-10-07)
+
+
+### Bug Fixes
+
+* **desktop:** reject mixed and stale Rust toolchains before builds ([a0876b3](https://github.com/no-phux/phux/commit/a0876b3260a16e0de56533581dcdb16c66a18ce7))
+* **dev:** run the Nix shell's pinned toolchain ahead of rustup's proxies ([df4185a](https://github.com/no-phux/phux/commit/df4185ab698b95d7a0acd5cf70724a9156e680f6))
+
+
+### Build System
+
+* **deps:** move libghostty onto the 2026-10-05 Ghostty rebase ([384558c](https://github.com/no-phux/phux/commit/384558c5757bda0b8ed90da7b100c457ac91b373))
+* **deps:** pin libghostty-rs that keys shared builds on the Zig binary ([ba8897e](https://github.com/no-phux/phux/commit/ba8897e631184980f4ef41d613da18c850f09bf7))
+* **deps:** pin libghostty-rs with shared, reproducible vendored builds ([f640042](https://github.com/no-phux/phux/commit/f640042e36c43ec18f3760d7eab5434cedd7fe8b))
+* **deps:** pin libghostty-rs with trimmed shared builds ([f748d63](https://github.com/no-phux/phux/commit/f748d63fa72f5d3be2e46fd5b889fecca0af247a))
+
 ## [0.1.0-alpha.5](https://github.com/no-phux/phux/compare/desktop-v0.1.0-alpha.4...desktop-v0.1.0-alpha.5) (2026-10-02)
 
 
