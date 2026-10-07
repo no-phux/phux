@@ -369,7 +369,7 @@ export function parseRunResult(value) {
         truncated: boolean(root.truncated, "$.truncated"),
     };
 }
-const AGENT_KINDS = ["codex", "claude", "open_code", "pi", "omp", "grok", "amp", "cursor_agent", "plugin", "declared", "unknown"];
+const AGENT_KINDS = ["codex", "claude", "open_code", "pi", "omp", "grok", "amp", "cursor_agent", "gemini", "goose", "aider", "plugin", "declared", "unknown"];
 const AGENT_STATES = ["unknown", "idle", "working", "blocked", "done"];
 const AGENT_ATTENTION = ["none", "low", "normal", "high"];
 const PANE_SELECTOR = /^(?:[^/\s]+\/)?@\d+$/;

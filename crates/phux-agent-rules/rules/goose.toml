@@ -1,0 +1,82 @@
+# Agent-state detection manifest for Goose CLI (ADR-0046).
+#
+# The rules below are verified against 120x40 `phux snapshot --json`
+# viewports captured from `goose session` 1.53.0 in a phux pane on
+# 2026-10-07. Fixtures under `src/fixtures/goose/` retain the rendered
+# viewport; the only redaction is the account name inside the scratch path in
+# the session banner, replaced byte-for-byte (`-Users-uname-`).
+#
+# Provenance of the transcript text: the capture used an isolated HOME,
+# `GOOSE_PROVIDER=openai` with a throwaway key, and `OPENAI_HOST` aimed at a
+# localhost OpenAI-compatible stand-in, with `GOOSE_MODE=approve`. All chrome
+# (banner, spinner, approval prompt, footer) is the real 1.53.0 CLI; only the
+# model's replies ("Mock reply.", "line N", the `shell` tool call) were
+# served by the stand-in. No rule matches transcript text.
+#
+# The governing doctrine (ADR-0046 §D): a MISSED signal is cheap, a FALSE
+# `blocked` is not.
+
+kind = "goose"
+name = "goose"
+
+# Native `goose` argv[0] basename (~/.local/bin/goose).
+binaries = ["goose"]
+
+# --- Title -------------------------------------------------------------------
+#
+# Goose writes `🪿 <cwd basename>` once and leaves it: the same title was
+# captured idle, working, and blocked. No title rule is possible.
+
+# --- Screen rules ------------------------------------------------------------
+#
+# While Goose waits on the model it paints a half-circle spinner, a rotating
+# phrase, and an interrupt hint as the last row. Captured frames over two
+# turns:
+#
+#     '◒  Harmonizing heuristics...  (Ctrl+C to interrupt)'
+#     '◓  Calibrating neural networks...  (Ctrl+C to interrupt)'
+#     '◐  Calibrating neural networks...  (Ctrl+C to interrupt)'
+#
+# The rule matches the U+25D0..U+25D3 half circles (the fourth, ◑, belongs to
+# the same rotation but was not sampled) plus the hint, not the phrase. Once
+# tokens stream, Goose prints them with no spinner (`streaming_no_spinner.txt`),
+# so a streaming turn reads idle: a missed signal, recorded rather than
+# guessed around.
+
+[[rules]]
+id = "spinner-interrupt-hint"
+state = "working"
+priority = 60
+region = "bottom-lines(1)"
+match = { line-regex = '^[◐-◓]  .*\(Ctrl\+C to interrupt\)$' }
+
+# VERIFIED (GOOSE_MODE=approve): a tool call stops on a select prompt that is
+# the bottom of the screen until answered:
+#
+#     ◆  Goose would like to call the above tool, do you allow?
+#     │  ● Allow (Allow the tool call once)
+#     │  ○ Always Allow
+#     │  ○ Deny
+#     │  ○ Cancel
+#     └
+#
+# Once answered, the prompt collapses to `◇  Goose would like ...` plus the
+# chosen option and stays in the transcript (captured in `idle_prompt.txt`),
+# so the rule requires the ACTIVE `◆` marker and the unanswered `Deny` option
+# row inside the last six non-empty rows.
+
+[[rules]]
+id = "tool-approval-prompt"
+state = "blocked"
+priority = 80
+region = "bottom-lines"
+match = { all = [
+  { line-regex = '^◆  Goose would like to call the above tool' },
+  { line-regex = '^│  [●○] Deny$' },
+] }
+
+# --- Rules deliberately NOT written ------------------------------------------
+#
+# No `idle` rule. The `> Enter to send` prompt row would be a
+# screen-derived visible-idle signal, which the fixture audit warns against
+# arming without a single-payload source. `idle` is the fail-safe default.

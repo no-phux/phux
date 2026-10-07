@@ -20,7 +20,7 @@ use super::explain::{EvaluatedRule, PredicateEvidence};
 use super::regions::{Region, Screen, extract};
 
 /// Built-in manifests, each pinned by captured-screen tests below.
-const BUILTIN_MANIFESTS: [(&str, &str); 8] = [
+const BUILTIN_MANIFESTS: [(&str, &str); 11] = [
     ("claude", include_str!("../rules/claude.toml")),
     ("codex", include_str!("../rules/codex.toml")),
     ("opencode", include_str!("../rules/opencode.toml")),
@@ -29,6 +29,9 @@ const BUILTIN_MANIFESTS: [(&str, &str); 8] = [
     ("grok", include_str!("../rules/grok.toml")),
     ("amp", include_str!("../rules/amp.toml")),
     ("cursor-agent", include_str!("../rules/cursor-agent.toml")),
+    ("gemini", include_str!("../rules/gemini.toml")),
+    ("goose", include_str!("../rules/goose.toml")),
+    ("aider", include_str!("../rules/aider.toml")),
 ];
 
 /// `PHUX_AGENT_DETECT=0` disables the detector (an empty rule set).
@@ -861,10 +864,11 @@ match = { contains = "-- pager --" }
         }
     }
 
-    /// Claude's OSC 9;4 remove signal is the only shipped positive-idle
-    /// source; idle is otherwise the fail-safe reached by nothing matching.
+    /// The shipped positive-idle sources are Claude's OSC 9;4 remove signal
+    /// and Gemini CLI's state-less `Ready` title, each from a single-payload
+    /// region; idle is otherwise the fail-safe reached by nothing matching.
     #[test]
-    fn only_claudes_captured_progress_sets_visible_idle() {
+    fn only_single_payload_captured_signals_set_visible_idle() {
         let visible_idle: Vec<(&str, String)> = super::BUILTIN_MANIFESTS
             .iter()
             .flat_map(|(kind, text)| {
@@ -876,7 +880,37 @@ match = { contains = "-- pager --" }
                     .collect::<Vec<_>>()
             })
             .collect();
-        assert_eq!(visible_idle, [("claude", "osc-progress-idle".to_owned())]);
+        assert_eq!(
+            visible_idle,
+            [
+                ("claude", "osc-progress-idle".to_owned()),
+                ("gemini", "title-ready".to_owned()),
+            ]
+        );
+    }
+
+    /// Gemini's `Ready` title arms the idle bypass without asserting a state,
+    /// so the folder-trust dialog painted under that same title still wins.
+    #[test]
+    fn gemini_ready_title_is_visible_idle_but_never_masks_a_dialog() {
+        let set = compile(builtin("gemini"));
+        let ready = "\u{25c7}  Ready (work)";
+        let idle = eval(&set, "gemini", ready, "", &golden("gemini/idle_prompt.txt"));
+        assert_eq!((idle.state, idle.visible_idle), (None, true));
+        let trust = eval(
+            &set,
+            "gemini",
+            ready,
+            "",
+            &golden("gemini/blocked_trust.txt"),
+        );
+        assert_eq!(trust.state, Some(Blocked));
+        let busy = "\u{2726}  Working\u{2026} (work)";
+        let working = eval(&set, "gemini", busy, "", &golden("gemini/working.txt"));
+        assert_eq!(
+            (working.state, working.visible_idle),
+            (Some(Working), false)
+        );
     }
 
     /// `docs/spec/L3.md` §3.7 states the shipped per-state rule counts as the
@@ -1138,6 +1172,9 @@ match = { contains = "thinking" }
             ("grok", &["grok"][..]),
             ("amp", &["amp"][..]),
             ("cursor-agent", &["cursor-agent"][..]),
+            ("gemini", &["gemini"][..]),
+            ("goose", &["goose"][..]),
+            ("aider", &["aider"][..]),
         ];
         for (kind, binaries) in expected {
             let spec: ManifestSpec = toml::from_str(builtin(kind)).expect("builtin parses");
@@ -1163,7 +1200,10 @@ match = { contains = "thinking" }
     //
     // The fixtures are REAL viewports (`phux snapshot --json`) and titles
     // captured from each CLI. Synthetic screens only test the matcher against
-    // itself; re-capture when an agent's TUI changes, never hand-edit.
+    // itself; re-capture when an agent's TUI changes, never hand-edit. The
+    // gemini, goose, and aider captures drove the real CLI against a localhost
+    // model stand-in, so their transcript text is synthetic and their chrome
+    // is not; each manifest header records how.
 
     /// Claude titles: an animated prefix while busy (braille in 2.1.207,
     /// half circles in 2.1.228), a static U+2733 otherwise. The quiet title
@@ -1218,6 +1258,41 @@ amp | \u{280a} Terminal haiku - amp - /tmp/ws |  | @amp-idle | working title-bus
 amp |  |  | @amp-working | working prompt-box-activity-footer
 amp | Terminal haiku - amp - /tmp/ws |  | @amp-idle | nothing
 cursor-agent |  |  | @cursor-login | nothing
+gemini | \u{2726}  Working\u{2026} (work) |  | gemini/working.txt | working title-working
+gemini | \u{2726}  Working\u{2026} (work) |  | gemini/working_22s.txt | working title-working
+gemini | \u{2726}  Working\u{2026} (work) |  | gemini/working_1m.txt | working title-working
+gemini | \u{270b}  Action Required (work) |  | gemini/blocked_shell_approval.txt | blocked title-action-required
+gemini | \u{25c7}  Ready (work) |  | gemini/idle_prompt.txt | nothing
+gemini | \u{25c7}  Ready (work) |  | gemini/blocked_trust.txt | blocked folder-trust-dialog
+gemini | \u{25c7}  Ready (work) |  | gemini/auth_dialog.txt | nothing
+gemini | Gemini CLI (work) |  | gemini/working_static_title.txt | working screen-esc-to-cancel
+gemini | Gemini CLI (work) |  | gemini/blocked_static_title.txt | blocked tool-approval-dialog
+gemini |  |  | gemini/working.txt | working screen-esc-to-cancel
+gemini |  |  | gemini/working_22s.txt | working screen-esc-to-cancel
+gemini |  |  | gemini/working_1m.txt | working screen-esc-to-cancel
+gemini |  |  | gemini/blocked_shell_approval.txt | blocked tool-approval-dialog
+gemini |  |  | gemini/blocked_trust.txt | blocked folder-trust-dialog
+gemini |  |  | gemini/idle_prompt.txt | nothing
+gemini |  |  | gemini/auth_dialog.txt | nothing
+gemini | Gemini CLI (work) |  | @gemini-quoted-dialogs | not-blocked
+goose | \u{1fabf} gwork |  | goose/working.txt | working spinner-interrupt-hint
+goose | \u{1fabf} gwork |  | goose/working_8s.txt | working spinner-interrupt-hint
+goose | \u{1fabf} gwork |  | goose/working_14s.txt | working spinner-interrupt-hint
+goose | \u{1fabf} gwork |  | goose/working_20s.txt | working spinner-interrupt-hint
+goose | \u{1fabf} gwork |  | goose/blocked_tool_approval.txt | blocked tool-approval-prompt
+goose | \u{1fabf} gwork |  | goose/idle_prompt.txt | nothing
+goose | \u{1fabf} gwork |  | goose/idle_interrupted.txt | nothing
+goose | \u{1fabf} gwork |  | goose/streaming_no_spinner.txt | nothing
+goose | \u{1fabf} gwork |  | @goose-dialog-above-idle | not-blocked
+aider |  |  | aider/working.txt | working waiting-for-model
+aider |  |  | aider/working_8s.txt | working waiting-for-model
+aider |  |  | aider/working_13s.txt | working waiting-for-model
+aider |  |  | aider/working_18s.txt | working waiting-for-model
+aider |  |  | aider/blocked_shell_confirm.txt | blocked confirm-prompt
+aider |  |  | aider/idle_prompt.txt | nothing
+aider |  |  | aider/idle_after_decline.txt | nothing
+aider |  |  | aider/streaming_no_spinner.txt | nothing
+aider |  |  | @aider-dialog-above-idle | not-blocked
 pi |  |  | pi/idle_prompt.txt | nothing
 pi |  |  | pi/working.txt | working bottom-working-status
 pi |  |  | pi/blocked_trust.txt | blocked project-trust-dialog
@@ -1254,6 +1329,9 @@ omp | \u{3c0} > Run sleep and echo finished |  | @omp18-dialog-above-idle | not-
 omp |  |  | @omp18-dialog-above-idle | not-blocked
 ";
 
+    /// `(kind, title, progress, screen, want)`.
+    type GoldenCase = (String, String, String, Vec<String>, String);
+
     /// Synthetic screens built from, or around, the captures.
     fn named_screen(name: &str) -> Vec<String> {
         match name {
@@ -1289,9 +1367,26 @@ omp |  |  | @omp18-dialog-above-idle | not-blocked
                 );
                 screen
             }
+            "goose-dialog-above-idle" => [
+                golden("goose/blocked_tool_approval.txt"),
+                golden("goose/idle_prompt.txt"),
+            ]
+            .concat(),
+            "aider-dialog-above-idle" => [
+                golden("aider/blocked_shell_confirm.txt"),
+                golden("aider/idle_prompt.txt"),
+            ]
+            .concat(),
             "amp-idle" => lines(&["╰──────────────── /tmp/ws ─╯"]),
             "amp-working" => lines(&["╰ ≈ Waiting ───── /tmp/ws ─╯"]),
             "cursor-login" => lines(&["Press any key to log in", "Signing in with the browser"]),
+            // Both dialogs' text quoted in the transcript above a live footer.
+            "gemini-quoted-dialogs" => [
+                golden("gemini/blocked_shell_approval.txt"),
+                golden("gemini/blocked_trust.txt"),
+                golden("gemini/idle_prompt.txt"),
+            ]
+            .concat(),
             "pi-dialog-above-idle" => {
                 [golden("pi/blocked_trust.txt"), golden("pi/idle_prompt.txt")].concat()
             }
@@ -1309,10 +1404,58 @@ omp |  |  | @omp18-dialog-above-idle | not-blocked
         }
     }
 
+    /// One golden case per title, all against the same `fixture` screen.
+    fn sweep(kind: &str, fixture: &str, titles: Vec<String>, want: &str) -> Vec<GoldenCase> {
+        titles
+            .into_iter()
+            .map(|title| {
+                (
+                    kind.to_owned(),
+                    title,
+                    String::new(),
+                    golden(fixture),
+                    want.to_owned(),
+                )
+            })
+            .collect()
+    }
+
+    /// Gemini CLI 0.63.0 `computeTerminalTitle`: the captured `\u{2726}`
+    /// Working title plus the source-stated, uncaptured `\u{23f2}` silent
+    /// work and thought-subject variants; the Ready title asserts nothing.
+    fn gemini_title_sweeps() -> Vec<GoldenCase> {
+        let mut cases = Vec::new();
+        cases.extend(sweep(
+            "gemini",
+            "gemini/idle_prompt.txt",
+            [
+                "\u{2726}  Working\u{2026} (work)",
+                "\u{2726}  Reading the build script (work)",
+                "\u{23f2}  Working\u{2026} (work)",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
+            "working title-working",
+        ));
+        cases.extend(sweep(
+            "gemini",
+            "gemini/idle_prompt.txt",
+            [
+                "\u{25c7}  Ready (work)",
+                "Gemini CLI (work)",
+                "\u{2726} not the two-space separator",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
+            "nothing",
+        ));
+        cases
+    }
+
     /// Every golden case as `(kind, title, progress, screen, want)`, plus
     /// the title sweeps: every Claude busy frame, the whole Codex braille
     /// block, and the captured Grok title lists.
-    fn golden_cases() -> Vec<(String, String, String, Vec<String>, String)> {
+    fn golden_cases() -> Vec<GoldenCase> {
         let mut cases: Vec<_> = GOLDEN
             .lines()
             .filter(|line| !line.is_empty())
@@ -1333,20 +1476,6 @@ omp |  |  | @omp18-dialog-above-idle | not-blocked
                 )
             })
             .collect();
-        let sweep = |kind: &str, fixture: &str, titles: Vec<String>, want: &str| {
-            titles
-                .into_iter()
-                .map(|title| {
-                    (
-                        kind.to_owned(),
-                        title,
-                        String::new(),
-                        golden(fixture),
-                        want.to_owned(),
-                    )
-                })
-                .collect::<Vec<_>>()
-        };
         let busy = "working title-busy-spinner";
         cases.extend(sweep(
             "claude",
@@ -1395,6 +1524,7 @@ omp |  |  | @omp18-dialog-above-idle | not-blocked
             ["\u{3c0} ! label", "\u{3c0} !"].map(str::to_owned).to_vec(),
             "blocked title-attention",
         ));
+        cases.extend(gemini_title_sweeps());
         let grok_titles = |text: &str| text.lines().map(str::to_owned).collect();
         cases.extend(sweep(
             "grok",

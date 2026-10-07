@@ -1,0 +1,40 @@
+Analytics have been permanently disabled.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Aider v0.86.2
+Main model: openai/gpt-4o with diff edit format
+Weak model: gpt-4o-mini
+Git repo: none
+Repo-map: disabled
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+> DELAY please
+
+Mock reply.
+
+
+Tokens: 2.4k sent, 3 received. Cost: $0.0059 message, $0.0059 session.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+> DELAY more
+
+Mock reply.
+
+
+Tokens: 2.4k sent, 3 received. Cost: $0.0060 message, $0.01 session.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+> SLOW stream
+
+line 1 line 2 line 3 line 4 line 5 line 6
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

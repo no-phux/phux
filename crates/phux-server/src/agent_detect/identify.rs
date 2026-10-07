@@ -282,6 +282,35 @@ binaries = ["claude", "claude-code"]
         );
     }
 
+    /// Gemini CLI's foreground argv as observed from 0.63.0 under npx: the
+    /// pgid leader is `node <bin>/gemini`, its heap-sized relaunch shares the
+    /// group, and the agent-tools plugin launches it behind its wrapper.
+    #[test]
+    fn shipped_rules_identify_the_observed_gemini_argv() {
+        let rules = crate::agent_detect::rules::global();
+        let bin = "/Users/u/.npm/_npx/d07ada7b4a99c96e/node_modules/.bin/gemini";
+        for parts in [
+            &["node", bin][..],
+            &["/opt/node/bin/node", "--max-old-space-size=24576", bin][..],
+            &[
+                "sh",
+                "/plugins/agent-tools/scripts/phux-agent-wrap.sh",
+                "--name",
+                "gemini",
+                "--kind",
+                "gemini",
+                "--",
+                "gemini",
+            ][..],
+        ] {
+            assert_eq!(
+                kind_from_argv(&argv(parts), &rules).as_deref(),
+                Some("gemini"),
+                "{parts:?}"
+            );
+        }
+    }
+
     #[test]
     fn wrapper_flags_are_skipped() {
         assert_eq!(

@@ -68,6 +68,9 @@ pub(super) enum AgentKind {
     Grok,
     Amp,
     CursorAgent,
+    Gemini,
+    Goose,
+    Aider,
     Plugin,
     /// ADR-0040: identity declared via a `phux.agent/v1` record whose kind
     /// slug is neither a first-party agent nor a configured plugin.

@@ -1,0 +1,151 @@
+# Agent-state detection manifest for Gemini CLI (ADR-0046).
+#
+# The rules below are verified against 120x40 `phux snapshot --json`
+# viewports and OSC titles captured from Gemini CLI 0.63.0
+# (`@google/gemini-cli`, run ephemerally through npx) in a phux pane on
+# 2026-10-07. Fixtures under `src/fixtures/gemini/` retain the rendered
+# viewport unredacted; nothing machine- or account-specific is on screen.
+#
+# Provenance of the transcript text: the capture used an isolated HOME, a
+# throwaway API key, and `GOOGLE_GEMINI_BASE_URL` aimed at a localhost stand-in
+# for the Gemini API. Every pixel of chrome (titles, spinners, status line,
+# dialogs, composer, footer) is the real 0.63.0 TUI; only the model's replies
+# ("Mock reply.", "line N", the `touch` tool call) were served by the stand-in.
+# No rule matches transcript text.
+#
+# The governing doctrine (ADR-0046 §D): a MISSED signal is cheap, a FALSE
+# `blocked` is not.
+
+kind = "gemini"
+name = "gemini"
+
+# The npm package installs a `gemini` bin, a `#!/usr/bin/env node` script, so
+# the pane's foreground leader is `node .../bin/gemini` (observed under npx:
+# `node .../node_modules/.bin/gemini`). Its relaunched heap-sized child shares
+# the process group, so the leader is what the probe reads.
+binaries = ["gemini"]
+
+# --- Title rules -------------------------------------------------------------
+#
+# With `ui.dynamicWindowTitle` (the default), Gemini CLI writes its own
+# streaming state into the OSC title as `<icon>  <status> (<folder>)`, padded
+# to 80 columns. Captured from 0.63.0:
+#
+#     '✋  Action Required (work)'   tool-approval dialog up
+#     '✦  Working… (work)'          a turn is streaming
+#     '◇  Ready (work)'             no turn running
+#
+# `computeTerminalTitle` in the 0.63.0 bundle is the full contract: `✋` for
+# `isConfirming` or the WaitingForConfirmation stream state, `⏲  Working…` for
+# silent background work, `◇  Ready` for the Idle stream state, and `✦  ` +
+# the thought subject (or `Working…`) for every other (responding) state. The
+# `⏲` and thought-subject variants were not captured; they are matched because
+# that source states them, not because they were guessed.
+#
+# The folder name after the icon comes from `CLI_TITLE` or the cwd, so every
+# rule anchors on the icon and its two-space separator only.
+
+[[rules]]
+id = "title-action-required"
+state = "blocked"
+priority = 100
+region = "title"
+match = { line-regex = "^✋  Action Required" }
+
+[[rules]]
+id = "title-working"
+state = "working"
+priority = 90
+region = "title"
+match = { line-regex = "^[✦⏲]  " }
+
+# `◇  Ready` is the CLI's own statement that no turn is running, so it arms
+# the working -> idle bypass. It deliberately asserts NO state: title rules
+# outrank every screen rule, and the folder-trust dialog below is painted
+# under this same Ready title (captured). A stateful idle title rule would
+# mask it. Visible-idle stays safe because the title region holds one
+# payload, so Ready is mutually exclusive with the two titles above.
+[[rules]]
+id = "title-ready"
+priority = 10
+visible-idle = true
+region = "title"
+match = { line-regex = "^◇  Ready" }
+
+# --- Screen rules ------------------------------------------------------------
+#
+# Backstops for `ui.dynamicWindowTitle = false` (title `Gemini CLI (work)`,
+# captured) or a terminal that drops OSC titles.
+#
+# While a turn streams, the loading indicator above the composer reads, at 120
+# columns:
+#
+#     ' ⠙ Thinking... (esc to cancel, 5s)          ? for shortcuts'
+#     ' ⠼ Thinking... (esc to cancel, 1m 11s)      ? for shortcuts'
+#
+# The `(esc to cancel, <elapsed>)` suffix is rendered only for the Responding
+# stream state, and the phrase before it rotates (thought subjects, witty
+# phrases), so the rule matches the braille spinner plus that suffix rather
+# than the verb. Eighty consecutive samples over one turn put the row sixth
+# from the bottom non-empty row; `bottom-lines(10)` leaves room for a wrapped
+# composer. Narrow terminals drop the suffix: a missed signal, not a wrong one.
+
+[[rules]]
+id = "screen-esc-to-cancel"
+state = "working"
+priority = 60
+region = "bottom-lines(10)"
+match = { line-regex = '^\s*[⠀-⣿] .*\(esc to cancel, \d' }
+
+# VERIFIED: a `run_shell_command` approval replaces the composer and footer
+# with a bordered dialog. Captured (borders elided):
+#
+#     ? Shell  touch phux-capture-marker
+#     Allow execution of [Shell]?
+#     ● 1. Allow once
+#       2. Allow for this session
+#       3. No, suggest changes (esc)
+#
+# The question, the first option and the escape option must all be present,
+# and the composer footer (` workspace (/directory) ... /model`) must be
+# absent: the dialog removes it, while a transcript quoting the dialog sits
+# above a live footer. Edit and MCP approvals were not captured and are not
+# guessed; the `✋  Action Required` title covers them on default settings.
+
+[[rules]]
+id = "tool-approval-dialog"
+state = "blocked"
+priority = 80
+region = "viewport"
+match = { all = [
+  { line-regex = 'Allow execution of .*\?' },
+  { line-regex = '1\. Allow once' },
+  { contains = "No, suggest changes (esc)" },
+  { not = { line-regex = '^\s*workspace \(/directory\)' } },
+] }
+
+# VERIFIED: on first launch in an untrusted folder, Gemini CLI asks whether
+# to trust it before anything else and stays there. The title reads
+# `◇  Ready` throughout, which is why `title-ready` above carries no state.
+# Same guards: the question, two of the numbered choices, no live footer.
+
+[[rules]]
+id = "folder-trust-dialog"
+state = "blocked"
+priority = 80
+region = "viewport"
+match = { all = [
+  { contains = "Do you trust the files in this folder?" },
+  { line-regex = '1\. Trust folder' },
+  { line-regex = "\\d\\. Don't trust" },
+  { not = { line-regex = '^\s*workspace \(/directory\)' } },
+] }
+
+# --- Rules deliberately NOT written ------------------------------------------
+#
+# No `idle` state rule; see `title-ready`. Idle is the fail-safe default.
+#
+# No rule for the first-run "How would you like to authenticate for this
+# project?" chooser (captured as `auth_dialog.txt`). It waits on setup, not on
+# a turn, and painting every unauthenticated pane `blocked` would be the false
+# positive ADR-0046 §D forbids; it reads as idle under the Ready title.

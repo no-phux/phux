@@ -1518,6 +1518,9 @@ mod tests {
             "grok",
             "amp",
             "cursor-agent",
+            "gemini",
+            "goose",
+            "aider",
         ] {
             assert!(
                 kinds.iter().any(|loaded| loaded == kind),
