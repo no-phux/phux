@@ -1,0 +1,40 @@
+
+    __( O)>  ● new session · openai gpt-4o
+   \____)    20261007_1 · /private/tmp/claude-501/-Users-uname-workspace-phux/8e5b9cb2-cacd-42ef-81e7-5842c2357602/scrat
+chpad/gem/gwork
+     L L     goose is ready
+  ⏳ loading extensions in background...
+  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ 0% 0/128k
+> SLOW count
+  ✓ extensions ready
+
+line 1
+line 2
+line 3
+line 4
+line 5
+line 6
+line 7
+line 8
+line 9
+line 10
+line 11
+line 12
+line 13
+line 14
+line 15
+line 16
+line 17
+
+  ⏱ 16.80s
+  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ 0% 0/128k
+> DELAY then reply
+
+◒  Harmonizing heuristics...  (Ctrl+C to interrupt)
+
+
+
+
+
+
+

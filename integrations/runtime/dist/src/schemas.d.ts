@@ -247,7 +247,7 @@ export declare function parseAskedEvent(value: unknown): AskedEvent;
 export declare function parseWatchEvent(value: unknown, path?: string): WatchEvent;
 export declare function parseRenderedFrame(value: unknown): RenderedFrame;
 export declare function parseRunResult(value: unknown): RunResult;
-declare const AGENT_KINDS: readonly ["codex", "claude", "open_code", "pi", "omp", "grok", "amp", "cursor_agent", "plugin", "declared", "unknown"];
+declare const AGENT_KINDS: readonly ["codex", "claude", "open_code", "pi", "omp", "grok", "amp", "cursor_agent", "gemini", "goose", "aider", "plugin", "declared", "unknown"];
 export declare function parseAgentRecord(value: unknown, path?: string): AgentRecord;
 export declare function parseAgentStateList(value: unknown): AgentStateList;
 export declare function isAgentEventType(value: string): value is AgentEventType;

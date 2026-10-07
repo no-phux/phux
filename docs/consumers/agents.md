@@ -528,9 +528,9 @@ ownership work has begun; preflight stays exit 2).
 ```
 
 `agent.kind` classifies known agents as `codex`, `claude`, `open_code`,
-`pi`, `omp`, `grok`, `amp`, or `cursor_agent`; other configured plugins are
-`plugin`, other declared kinds are `declared`, and unidentified panes are
-`unknown`. These are report spellings: `agent.id` and metadata retain the
+`pi`, `omp`, `grok`, `amp`, `cursor_agent`, `gemini`, `goose`, or `aider`;
+other configured plugins are `plugin`, other declared kinds are `declared`,
+and unidentified panes are `unknown`. These are report spellings: `agent.id` and metadata retain the
 provider slug (`cursor-agent`, for example). These heuristic title markers
 suggest identity only; they never infer lifecycle state or completion.
 The explicit `phux-ask` title sentinel remains a state declaration (ADR-0035).

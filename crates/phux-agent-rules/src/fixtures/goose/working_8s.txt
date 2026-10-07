@@ -1,0 +1,40 @@
+line 12
+line 13
+line 14
+line 15
+line 16
+line 17
+
+  ⏱ 16.80s
+  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ 0% 0/128k
+> DELAY then reply
+
+Mock reply.
+  ⏱ 25.01s
+  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ 0% 15/128k
+> TOOL make a marker
+
+
+  ────────────────────────────────────────
+  ▸ shell
+    command: touch phux-capture-marker
+
+
+  Tool approval request
+    {
+      "tool_name": "shell",
+      "arguments": {
+        "command": "touch phux-capture-marker"
+      }
+    }
+
+◇  Goose would like to call the above tool, do you allow?
+│  Allow
+│
+    (no output)
+Mock reply.
+  ⏱ 12.51s
+  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ 0% 15/128k
+> DELAY again
+
+◓  Calibrating neural networks...  (Ctrl+C to interrupt)
