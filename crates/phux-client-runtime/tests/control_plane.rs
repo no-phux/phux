@@ -15,9 +15,10 @@ use phux_client_runtime::control::{
 #[cfg(feature = "engine")]
 use phux_client_runtime::engine::EngineEvent;
 use phux_protocol::PROTOCOL_VERSION;
+#[cfg(feature = "engine")]
+use phux_protocol::caps::BootstrapLimits;
 use phux_protocol::caps::{
-    BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, Layer, LayerSet, ServerCapabilities,
-    ServerFeature, ServerFeatureExt, ServerFeatureExtSet, ServerFeatureSet,
+    BootstrapStreamProfile, ServerFeature, ServerFeatureExt, ServerFeatureExtSet, ServerFeatureSet,
 };
 use phux_protocol::ids::{
     BootstrapId, ClientId, ResourceId, SatelliteHost, SessionId, StreamId, WindowId,
@@ -30,9 +31,9 @@ use phux_protocol::wire::frame::{
 };
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 
-const fn terminal() -> ResourceId {
-    ResourceId::local(7)
-}
+#[path = "support/embedded.rs"]
+mod embedded;
+use embedded::*;
 
 #[path = "support/geometry.rs"]
 mod geometry;
@@ -90,20 +91,6 @@ fn dropping_client_retires_views_even_with_an_external_owner_clone() {
     assert!(slot.acquire().is_none());
     assert!(owner.republish_view(view).is_err());
     assert_eq!(held.row_text(0), "two");
-}
-
-fn hello_ok(patch: u16) -> FrameKind {
-    FrameKind::HelloOk {
-        protocol_major: PROTOCOL_VERSION.major,
-        protocol_minor: PROTOCOL_VERSION.minor,
-        protocol_patch: patch,
-        server_caps: ServerCapabilities::new()
-            .with_layers(LayerSet::with(&[Layer::L3]))
-            .with_features(ServerFeatureSet::new()),
-        server_id: vec![0xAB; 16],
-        selected_profile: BootstrapProfile::SynthesizedVtRaw,
-        bootstrap_limits: BootstrapLimits::default(),
-    }
 }
 
 fn hello_ok_with(features: &[ServerFeature]) -> FrameKind {
@@ -268,17 +255,6 @@ fn path_queries_are_bounded_and_connection_scoped() {
         .unwrap_err(); // no server frame before HELLO_OK
 }
 
-fn snapshot() -> SessionSnapshot {
-    SessionSnapshot::new(SessionId::new(1), WindowId::new(1), terminal())
-        .with_sessions(vec![SessionInfo::new(SessionId::new(1), "main")])
-        .with_windows(vec![WindowInfo::new(
-            WindowId::new(1),
-            SessionId::new(1),
-            "shell",
-        )])
-        .with_resources(vec![ResourceInfo::new(terminal(), WindowId::new(1), 20, 4)])
-}
-
 fn two_session_snapshot(include_own_spawn: bool) -> SessionSnapshot {
     let main = SessionId::new(1);
     let beta = SessionId::new(2);
@@ -308,12 +284,6 @@ fn encode(frame: &FrameKind) -> Vec<u8> {
     let mut bytes = BytesMut::new();
     frame.encode(&mut bytes);
     bytes.to_vec()
-}
-
-fn decode(frame: &[u8]) -> FrameKind {
-    let (decoded, rest) = FrameKind::decode(frame).expect("outbound frame decodes");
-    assert!(rest.is_empty());
-    decoded
 }
 
 /// A plane past `HELLO_OK`, with the attach id its `ATTACH` carried.
@@ -355,158 +325,6 @@ fn negotiated() -> (ControlPlane, u32) {
 
 fn attach(plane: &mut ControlPlane, attach_id: u32, bytes: &[u8]) {
     attach_with_history(plane, attach_id, bytes, None);
-}
-
-fn attach_with_history(
-    plane: &mut ControlPlane,
-    attach_id: u32,
-    bytes: &[u8],
-    history_cursor: Option<Vec<u8>>,
-) {
-    plane
-        .feed(FrameKind::Attached {
-            attach_id,
-            snapshot: snapshot(),
-            initial_client_id: ClientId::new(1),
-        })
-        .expect("ATTACHED");
-    let stream_id = StreamId::new(1).unwrap();
-    let bootstrap_id = BootstrapId::new(1).unwrap();
-    plane
-        .feed(FrameKind::BootstrapBegin {
-            terminal_id: terminal(),
-            stream_id,
-            bootstrap_id,
-            profile: BootstrapStreamProfile::SynthesizedVtRaw,
-            cols: 20,
-            rows: 4,
-            base_seq: 0,
-        })
-        .expect("BOOTSTRAP_BEGIN");
-    plane
-        .feed(FrameKind::BootstrapChunk {
-            terminal_id: terminal(),
-            stream_id,
-            bootstrap_id,
-            chunk_seq: 0,
-            payload: bytes.to_vec().into(),
-        })
-        .expect("BOOTSTRAP_CHUNK");
-    plane
-        .feed(FrameKind::BootstrapReady {
-            terminal_id: terminal(),
-            stream_id,
-            bootstrap_id,
-            history_cursor: history_cursor.map(Into::into),
-        })
-        .expect("BOOTSTRAP_READY");
-    plane
-        .feed(FrameKind::AttachReady { attach_id })
-        .expect("ATTACH_READY");
-}
-
-#[cfg(feature = "engine")]
-fn embedded_with_history(history_cursor: Option<Vec<u8>>) -> phux_client_runtime::Client {
-    let client = phux_client_runtime::Runtime::embedded(ControlOptions {
-        attach: Some(AttachTarget::ByName("main".into())),
-        viewport: (20, 4),
-        ..ControlOptions::default()
-    });
-    client.with_control(ControlPlane::connection_opened);
-    let _ = client.take_outbound();
-    client.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
-    let attach_id = client
-        .take_outbound()
-        .iter()
-        .find_map(|bytes| match decode(bytes) {
-            FrameKind::Attach { attach_id, .. } => Some(attach_id),
-            _ => None,
-        })
-        .unwrap();
-    client.with_control(|plane| {
-        attach_with_history(
-            plane,
-            attach_id,
-            b"zero\r\none\r\ntwo\r\nthree\r\nfour\r\nfive",
-            history_cursor,
-        );
-    });
-    let _ = client.take_outbound();
-    client
-}
-
-/// The delivery shape sets the owner-thread cost, and the `runtime.*`
-/// counters show it: a transport read fed as one batch is one apply round
-/// trip and one grid publication; the same frames fed one at a time are one
-/// round trip each, and publish per frame only for a consumer that reads
-/// every frame. Unread, they cost one projection, pulled by the next read.
-#[cfg(feature = "engine")]
-#[test]
-fn a_batched_read_publishes_once_and_frame_at_a_time_publishes_per_read() {
-    use phux_client_runtime::perf::{ACQUIRED, APPLY_BATCHES, CAUGHT_UP, DEFERRED, PUBLISHED};
-    const FRAMES: u64 = 8;
-    let client = embedded_with_history(None);
-    let frame = |seq: u64| {
-        let mut encoded = BytesMut::new();
-        FrameKind::ResourceOutput {
-            terminal_id: terminal(),
-            stream_id: StreamId::new(1).unwrap(),
-            bootstrap_id: BootstrapId::new(1).unwrap(),
-            seq,
-            bytes: format!("\r\nline {seq}").into_bytes().into(),
-        }
-        .encode(&mut encoded);
-        encoded.to_vec()
-    };
-
-    let _ = client.acquire(&terminal()).unwrap();
-    let (batches, published) = (APPLY_BATCHES.get(), PUBLISHED.get());
-    let read: Vec<_> = (1..=FRAMES).map(frame).collect();
-    client
-        .with_control(|plane| plane.feed_bytes_batch(&read))
-        .unwrap();
-    assert_eq!(APPLY_BATCHES.get() - batches, 1, "one round trip per read");
-    assert_eq!(PUBLISHED.get() - published, 1, "one publication per read");
-
-    // A consumer that reads every frame is published every frame.
-    let (batches, published) = (APPLY_BATCHES.get(), PUBLISHED.get());
-    for seq in FRAMES + 1..=2 * FRAMES {
-        let _ = client.acquire(&terminal()).unwrap();
-        client
-            .with_control(|plane| plane.feed_bytes(&frame(seq)))
-            .unwrap();
-    }
-    assert_eq!(APPLY_BATCHES.get() - batches, FRAMES);
-    assert_eq!(PUBLISHED.get() - published, FRAMES);
-
-    // Nobody reads: every frame after the first unread one is deferred, and
-    // the read that follows pulls one projection of the final state.
-    let _ = client.acquire(&terminal()).unwrap();
-    let (batches, published, deferred, acquired) = (
-        APPLY_BATCHES.get(),
-        PUBLISHED.get(),
-        DEFERRED.get(),
-        ACQUIRED.get(),
-    );
-    for seq in 2 * FRAMES + 1..=3 * FRAMES {
-        client
-            .with_control(|plane| plane.feed_bytes(&frame(seq)))
-            .unwrap();
-    }
-    assert_eq!(APPLY_BATCHES.get() - batches, FRAMES);
-    assert_eq!(PUBLISHED.get() - published, 1, "only the first frame");
-    assert_eq!(DEFERRED.get() - deferred, FRAMES - 1);
-    let caught_up = CAUGHT_UP.get();
-    assert!(
-        client
-            .acquire(&terminal())
-            .unwrap()
-            .row_text(3)
-            .starts_with("line 24")
-    );
-    assert_eq!(CAUGHT_UP.get() - caught_up, 1);
-    assert_eq!(PUBLISHED.get() - published, 2, "the read pulled one more");
-    assert_eq!(ACQUIRED.get() - acquired, 1);
 }
 
 #[cfg(feature = "engine")]
