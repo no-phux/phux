@@ -7,7 +7,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bytes::Bytes;
 use futures_util::stream::{FuturesUnordered, StreamExt};
@@ -21,11 +21,12 @@ use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::sync::Barrier;
-use tokio::time::timeout;
+use tokio::time::{Instant, timeout};
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, join_after_shutdown, recv_typed, recv_until,
-    recv_until_detached, run_local, send_frame, spawn_server_with_seed_cmd, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, join_after_shutdown, recv_typed, recv_typed_before,
+    recv_until, recv_until_detached, run_local, send_frame, spawn_server_with_seed_cmd,
+    wait_for_socket,
 };
 
 use super::common::{connect_with, contains};
@@ -107,8 +108,7 @@ async fn wait_for_fullscreen_marker(path: &Path) -> EstablishedClient {
     let mut attach_ready = false;
     let deadline = Instant::now() + Duration::from_secs(60);
     while !(marker_seen && attach_ready) {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let (_, frame) = timeout(remaining, recv_typed(&mut stream))
+        let (_, frame) = recv_typed_before(&mut stream, deadline)
             .await
             .expect("full-screen marker did not reach the terminal actor");
         match frame {
@@ -148,8 +148,7 @@ async fn send_live_bytes(client: &mut EstablishedClient, bytes: &[u8]) {
 async fn receive_established_until(client: &mut EstablishedClient, marker: &[u8]) {
     let deadline = Instant::now() + WIRE_RECV_TIMEOUT;
     while !contains(&client.live_bytes, marker) {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let (_, frame) = timeout(remaining, recv_typed(&mut client.stream))
+        let (_, frame) = recv_typed_before(&mut client.stream, deadline)
             .await
             .expect("established client was delayed by a stalled bootstrap owner");
         if let FrameKind::ResourceOutput { bytes, .. } = frame {
@@ -466,10 +465,9 @@ async fn pump(client: &mut AttachedClient, marker: Option<&[u8]>) -> Option<(u32
         if marker.is_some_and(|m| contains(&client.live_bytes, m)) {
             return None;
         }
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let (_, frame) = timeout(remaining, recv_typed(&mut client.stream))
+        let (_, frame) = recv_typed_before(&mut client.stream, deadline)
             .await
-            .unwrap_or_else(|_| panic!("client {}: stalled", client.attach_id));
+            .unwrap_or_else(|| panic!("client {}: stalled", client.attach_id));
         match frame {
             FrameKind::HistoryPage { .. } => {
                 let page = accept_history_page(client, frame);

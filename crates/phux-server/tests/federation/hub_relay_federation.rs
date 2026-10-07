@@ -21,8 +21,8 @@ use phux_protocol::wire::frame::{
 };
 use phux_server::{ServerConfig, ServerError, ServerRuntime};
 use phux_server_testkit::{
-    Spawn, ascii_key, bound_listener_addr, encode_frame, recv_typed, send_frame, spawn_resource,
-    wait_for_raw_socket, wait_for_socket,
+    Spawn, ascii_key, bound_listener_addr, encode_frame, recv_typed, recv_until_deadline,
+    send_frame, spawn_resource, wait_for_raw_socket, wait_for_socket,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -440,13 +440,9 @@ async fn next_event(
     stream: &mut UnixStream,
     mut pred: impl FnMut(&FrameKind) -> bool,
 ) -> FrameKind {
-    tokio::time::timeout(STEP_DEADLINE, async {
-        loop {
-            let frame = recv_typed(stream).await.1;
-            if matches!(frame, FrameKind::Event { .. }) && pred(&frame) {
-                return frame;
-            }
-        }
+    let deadline = tokio::time::Instant::now() + STEP_DEADLINE;
+    recv_until_deadline(stream, deadline, |_, frame| {
+        (matches!(frame, FrameKind::Event { .. }) && pred(&frame)).then_some(frame)
     })
     .await
     .expect("expected EVENT never arrived")
@@ -498,21 +494,18 @@ fn command_round_trip_and_stream_retagging() {
         // Satellite loss: subscribers get a typed teardown notice, and later
         // commands fail fast with the same code.
         fed.kill_satellite().await;
-        tokio::time::timeout(STEP_DEADLINE, async {
-            loop {
-                if let FrameKind::Error {
-                    request_id: None,
-                    code: ErrorCode::SatelliteUnreachable,
-                    message,
-                } = recv_typed(&mut hub).await.1
-                {
-                    assert!(message.contains("sat"), "{message}");
-                    return;
-                }
-            }
+        let deadline = tokio::time::Instant::now() + STEP_DEADLINE;
+        let message = recv_until_deadline(&mut hub, deadline, |_, frame| match frame {
+            FrameKind::Error {
+                request_id: None,
+                code: ErrorCode::SatelliteUnreachable,
+                message,
+            } => Some(message),
+            _ => None,
         })
         .await
         .expect("no SatelliteUnreachable teardown notification");
+        assert!(message.contains("sat"), "{message}");
         assert_error(
             &get_screen_via_hub(&mut hub, 3000, sat_id).await,
             ErrorCode::SatelliteUnreachable,

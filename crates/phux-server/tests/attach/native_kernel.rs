@@ -28,8 +28,8 @@ use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, join_after_shutdown, recv_typed, run_local,
-    send_frame, spawn_server_with_seed_cmd, wait_for_raw_socket,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, join_after_shutdown, recv_typed, recv_typed_before,
+    run_local, send_frame, spawn_server_with_seed_cmd, wait_for_raw_socket,
 };
 
 use super::common::sh;
@@ -225,7 +225,7 @@ async fn run_flow(
     let mut metrics = FlowMetrics::default();
     let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
     while !metrics.saw_finish {
-        let (_, frame) = tokio::time::timeout_at(deadline, recv_typed(&mut stream))
+        let (_, frame) = recv_typed_before(&mut stream, deadline)
             .await
             .expect("progressive history did not reach FINISH");
         match &frame {
@@ -348,7 +348,7 @@ fn late_server_retry_keeps_the_fresh_seed_on_its_current_generation() {
         let mut saw_tombstone = false;
         let mut saw_replacement = false;
         let current = loop {
-            let (_, frame) = tokio::time::timeout_at(deadline, recv_typed(&mut stream))
+            let (_, frame) = recv_typed_before(&mut stream, deadline)
                 .await
                 .expect("replacement generation never published");
             match &frame {

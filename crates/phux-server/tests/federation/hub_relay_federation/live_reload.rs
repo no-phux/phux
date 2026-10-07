@@ -61,16 +61,12 @@ async fn ring_reload(hub: &mut UnixStream, request_id: u32, nonce: &str) {
         },
     )
     .await;
-    tokio::time::timeout(STEP_DEADLINE, async {
-        loop {
-            if let FrameKind::MetadataValue {
-                request_id: got, ..
-            } = recv_typed(hub).await.1
-                && got == request_id + 1
-            {
-                return;
-            }
-        }
+    let deadline = tokio::time::Instant::now() + STEP_DEADLINE;
+    recv_until_deadline(hub, deadline, |_, frame| match frame {
+        FrameKind::MetadataValue {
+            request_id: got, ..
+        } if got == request_id + 1 => Some(()),
+        _ => None,
     })
     .await
     .expect("doorbell read-back never answered");
