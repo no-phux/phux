@@ -419,3 +419,74 @@ fn snapshot_format_html_writes_a_document() {
         "document: {doc}",
     );
 }
+
+/// ADR-0075 point 3 on the set-valued verbs against a real server: `%name`
+/// reaches `tag` and `kill` through the agent resolver (a live name used to
+/// be a plain "no such target"), refusals keep their exit codes, and
+/// `agent list` marks which names `%` cannot address (point 4).
+#[test]
+#[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
+fn percent_name_reaches_tag_and_kill_and_agent_list_marks_it() {
+    let server = ServerGuard::start();
+    let address_of = |server: &ServerGuard| {
+        let listed = run_stdout(server, &["agent", "list", "--json"]);
+        let doc: serde_json::Value = serde_json::from_str(&listed).expect("agent list --json");
+        let agent = doc["agents"][0].clone();
+        (agent["address"].clone(), agent["address_refusal"].clone())
+    };
+
+    // A chosen name: addressable, and `tag` reaches it.
+    assert_eq!(
+        run_status(&server, &["agent", "set", SESSION, "--name", "build"]),
+        0
+    );
+    assert_eq!(
+        address_of(&server),
+        (serde_json::json!("%build"), serde_json::Value::Null)
+    );
+    assert_eq!(
+        run_status(&server, &["tag", "add", "%build", "ci"]),
+        0,
+        "`phux tag add %build ci` should resolve the named pane",
+    );
+    let listed = run_stdout(&server, &["tag", "ls", "%build", "--json"]);
+    let doc: serde_json::Value = serde_json::from_str(&listed).expect("tag ls --json");
+    assert_eq!(doc["terminals"][0]["tags"], serde_json::json!(["ci"]));
+    assert_eq!(run_status(&server, &["tag", "ls", "%ghost"]), 1, "a miss");
+    assert_eq!(
+        run_status(&server, &["kill", "--yes", "%ghost"]),
+        1,
+        "a miss"
+    );
+
+    // A per-kind constant is listed but refused, on every verb, with exit 2.
+    assert_eq!(
+        run_status(
+            &server,
+            &[
+                "agent", "set", SESSION, "--name", "claude", "--kind", "claude"
+            ]
+        ),
+        0
+    );
+    assert_eq!(
+        address_of(&server),
+        (
+            serde_json::Value::Null,
+            serde_json::json!("invalid_agent_name")
+        )
+    );
+    assert_eq!(run_status(&server, &["tag", "ls", "%claude"]), 2);
+    assert_eq!(run_status(&server, &["kill", "--yes", "%claude"]), 2);
+
+    // Named again, `kill %name` tears down exactly that pane.
+    assert_eq!(
+        run_status(&server, &["agent", "set", SESSION, "--name", "build"]),
+        0
+    );
+    assert_eq!(
+        run_status(&server, &["kill", "--yes", "%build"]),
+        0,
+        "`phux kill %build` should tear down the named pane",
+    );
+}

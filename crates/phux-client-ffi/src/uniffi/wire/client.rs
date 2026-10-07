@@ -7,7 +7,7 @@
 )]
 
 use super::*;
-use phux_client_runtime::control::SpawnRequest;
+use phux_client_runtime::control::{Observation, SpawnRequest};
 
 use crate::uniffi::engine;
 
@@ -178,6 +178,24 @@ impl RemoteClient {
             self.project_event(event, &mut projected);
         }
         projected
+    }
+
+    /// Drain events and sample status, error, topology and the connection
+    /// epoch in one step. Prefer this to `take_events` plus separate reads:
+    /// those can straddle a reconnect. Both drain the same queue, so a
+    /// consumer uses one or the other.
+    pub fn take_publication(&self) -> WirePublication {
+        let Some(client) = self.runtime_client() else {
+            return WirePublication {
+                connection_epoch: 0,
+                events: Vec::new(),
+                events_dropped: false,
+                status: status::connection(None).into(),
+                last_error: None,
+                topology: None,
+            };
+        };
+        self.publication(client.take_observation())
     }
 
     pub fn take_input_deliveries(&self) -> Vec<WireInputDelivery> {
@@ -622,6 +640,31 @@ impl RemoteClient {
         });
     }
 
+    fn publication(&self, observation: Observation) -> WirePublication {
+        let mut events = Vec::new();
+        for event in observation.events {
+            match event {
+                Event::ConnectionLost { message } => {
+                    events.push(WireEvent::ConnectionLost { message });
+                }
+                Event::ConnectionOpened { connection_epoch } => {
+                    events.push(WireEvent::ConnectionOpened { connection_epoch });
+                }
+                event => self.project_event(event, &mut events),
+            }
+        }
+        WirePublication {
+            connection_epoch: observation.connection_epoch,
+            events,
+            events_dropped: observation.events_dropped,
+            status: status::connection(Some(observation.status)).into(),
+            last_error: observation.last_error,
+            topology: observation
+                .topology
+                .map(|graph| topology::session_graph(graph).into()),
+        }
+    }
+
     /// Lower one runtime event.
     ///
     /// The two classifiers run first: whatever they recognize is a product
@@ -661,6 +704,12 @@ impl RemoteClient {
                 suggestions,
                 waiting_seconds,
             }),
+            Event::AgentAskedState { terminal_id, asked } => {
+                projected.push(WireEvent::AgentAskedState {
+                    terminal_id: id::encode(&terminal_id),
+                    asked,
+                });
+            }
             Event::InputDelivery {
                 delivery_id,
                 outcome: result,
@@ -780,6 +829,129 @@ mod tests {
         );
         assert!(
             matches!(&projected[1], WireEvent::AgentStateChanged { name, .. } if name.is_empty())
+        );
+    }
+
+    #[test]
+    fn a_publication_keeps_lifecycle_boundaries_in_order_and_take_events_omits_them() {
+        let remote = RemoteClient::new("unused".into(), 80, 24, None, None);
+        let terminal_id = ResourceId::local(7);
+        let events = vec![
+            Event::Bell {
+                terminal_id: terminal_id.clone(),
+            },
+            Event::ConnectionLost {
+                message: Some("reset".into()),
+            },
+            Event::ConnectionOpened {
+                connection_epoch: 2,
+            },
+            Event::TopologyChanged,
+            Event::AgentAskedState {
+                terminal_id,
+                asked: false,
+            },
+        ];
+        let published = remote.publication(Observation {
+            connection_epoch: 2,
+            events: events.clone(),
+            events_dropped: true,
+            status: phux_client_runtime::control::Status::Attached,
+            last_error: Some("reset".into()),
+            topology: None,
+        });
+        assert_eq!(
+            published,
+            WirePublication {
+                connection_epoch: 2,
+                events: vec![
+                    WireEvent::Bell {
+                        terminal_id: "local:7".into(),
+                    },
+                    WireEvent::ConnectionLost {
+                        message: Some("reset".into()),
+                    },
+                    WireEvent::ConnectionOpened {
+                        connection_epoch: 2,
+                    },
+                    WireEvent::TopologyChanged,
+                    WireEvent::AgentAskedState {
+                        terminal_id: "local:7".into(),
+                        asked: false,
+                    },
+                ],
+                events_dropped: true,
+                status: WireStatus::Attached,
+                last_error: Some("reset".into()),
+                topology: None,
+            }
+        );
+        // The established drain keeps its vocabulary.
+        let mut legacy = Vec::new();
+        for event in events {
+            remote.project_event(event, &mut legacy);
+        }
+        assert!(!legacy.iter().any(|event| matches!(
+            event,
+            WireEvent::ConnectionLost { .. } | WireEvent::ConnectionOpened { .. }
+        )));
+        assert_eq!(legacy.len(), 3);
+    }
+
+    #[test]
+    fn an_unconnected_client_publishes_an_empty_first_incarnation() {
+        let remote = RemoteClient::new("unused".into(), 80, 24, None, None);
+        let published = remote.take_publication();
+        assert_eq!(published.connection_epoch, 0);
+        assert!(published.events.is_empty());
+        assert!(!published.events_dropped);
+        assert_eq!(published.status, WireStatus::Connecting);
+        assert_eq!(published.topology, None);
+    }
+
+    #[test]
+    fn asked_levels_lower_after_their_announcement_in_order() {
+        let remote = RemoteClient::new("unused".into(), 80, 24, None, None);
+        let terminal_id = ResourceId::local(7);
+        let mut projected = Vec::new();
+        for event in [
+            Event::AgentAskedState {
+                terminal_id: terminal_id.clone(),
+                asked: true,
+            },
+            Event::AgentAsked {
+                terminal_id: terminal_id.clone(),
+                question_id: "q1".into(),
+                text: "Proceed?".into(),
+                suggestions: Vec::new(),
+                waiting_seconds: None,
+            },
+            Event::AgentAskedState {
+                terminal_id,
+                asked: false,
+            },
+        ] {
+            remote.project_event(event, &mut projected);
+        }
+        assert_eq!(
+            projected,
+            vec![
+                WireEvent::AgentAskedState {
+                    terminal_id: "local:7".into(),
+                    asked: true,
+                },
+                WireEvent::AgentAsked {
+                    terminal_id: "local:7".into(),
+                    question_id: "q1".into(),
+                    text: "Proceed?".into(),
+                    suggestions: Vec::new(),
+                    waiting_seconds: None,
+                },
+                WireEvent::AgentAskedState {
+                    terminal_id: "local:7".into(),
+                    asked: false,
+                },
+            ]
         );
     }
 }

@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-10-06
+last-reviewed: 2026-10-07
 ---
 
 # Decisions in force
@@ -136,7 +136,10 @@ by a newer one, the newer line is the operative reading.
 - [0095](./0095-the-blackbird-boundary.md) phux and Blackbird never connect; one optional field in the agent record joins their ledgers.
 - [0085](./0085-hook-sourced-agent-state.md) Hook-reported working, blocked, and done states are detector evidence, published immediately.
 - [0084](./0084-starting-an-agent-in-an-existing-shell.md) `phux agent start` types the integration argv into a live shell; detection verifies the kind.
+- [0078](./0078-alternate-screen-history.md) The server may harvest alternate-screen history by driving the application's own scrollback, opt-in.
 - [0077](./0077-agent-read-surface.md) The read surface grows additive `ScreenState` keys, not a new read-source vocabulary.
+- [0076](./0076-agent-prompt-and-lifecycle-wait.md) `agent prompt` submits through `APPLY_INPUT`; `agent wait` needs an observed transition.
+- [0075](./0075-agent-name-addressing.md) `%name` selects exactly one agent Terminal client-side; ambiguity or a withdrawn name refuses.
 - [0068](./0068-native-agent-session-restore.md) A launch records a bounded native session identity; restore rebuilds resume argv from the integration.
 - [0067](./0067-cache-preserving-agent-fleet-context.md) Fleet context reaches models as sequenced tail deltas; static prompts never carry live values.
 - [0046](./0046-server-side-agent-state-detection.md) The server derives agent state from title and screen; unmatched means `idle`, never `blocked`.
@@ -202,8 +205,5 @@ Drafted and under review; none of these governs anything yet.
 - [0132](./0132-swarm-members-are-coordinator-clients.md) Swarm members are coordinator clients; TUI/Cockpit/mobile are projections; a Run may bind no Terminal.
 - [0092](./0092-durable-work-coordinator-authority.md) Durable objectives, runs, and evidence belong to a coordinator, not to any client.
 - [0087](./0087-elastic-status-bar-space.md) The `spacer` widget is paid from the status row's leftover width, split evenly.
-- [0078](./0078-alternate-screen-history.md) The server may harvest alternate-screen history by driving the application's own scrollback, opt-in.
-- [0076](./0076-agent-prompt-and-lifecycle-wait.md) `agent prompt` submits through `APPLY_INPUT`; `agent wait` needs an observed transition.
-- [0075](./0075-agent-name-addressing.md) `%name` selects exactly one agent Terminal client-side; ambiguity or a withdrawn name refuses.
 - [0072](./0072-prune-policy-vocabulary-keep-the-seam.md) Prune the unreferenced policy vocabulary from `phux-protocol`; keep the HELLO authorization seam.
 - [0071](./0071-what-phux-1-0-commits-to.md) 1.0 freezes the consumer surface under semver; the wire keeps its own `0.x` line.

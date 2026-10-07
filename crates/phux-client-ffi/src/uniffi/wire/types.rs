@@ -497,6 +497,8 @@ pub enum WireEvent {
     /// the wire `AgentEvent::Asked` so Swift can populate its `AgentQuestion`
     /// without re-deriving the prompt from the grid: `id`/`question`/`suggestions`
     /// map one-for-one and `waiting_seconds` is the optional `elapsed_seconds`.
+    ///
+    /// An announcement only: `AgentAskedState` is the level that retracts it.
     AgentAsked {
         terminal_id: String,
         question_id: String,
@@ -504,6 +506,14 @@ pub enum WireEvent {
         suggestions: Vec<String>,
         waiting_seconds: Option<u64>,
     },
+    /// Whether a question is pending in the pane now: the server-owned
+    /// `phux.agent.asked/v1` flag, read on attach, followed live, and re-read
+    /// after every event gap and reconnect. `asked: false` retracts every
+    /// earlier `AgentAsked` for the pane: drop it, never resurrect it.
+    /// `asked: true` says some question is pending without naming it; the
+    /// latest `AgentAsked` describes it, but after a gap or reconnect that
+    /// description may be older than the question.
+    AgentAskedState { terminal_id: String, asked: bool },
     /// The pane's `phux.agent/v1` L3 record changed, or its current value
     /// arrived on (re)attach (phux-cck / ADR-0046: the server-side detector
     /// derives `state` from the live screen and publishes edge-filtered
@@ -511,6 +521,8 @@ pub enum WireEvent {
     /// attach, so the level survives reconnects — phux-q7e.21). A tombstone,
     /// an absent record, or malformed bytes all project as `Unknown` with an
     /// empty `name`: "no declared agent", never a stale badge.
+    /// `state_reading` and `attention_reading` say how the normalized values
+    /// were read, so a present-but-unsupported word stays visible.
     AgentStateChanged {
         terminal_id: String,
         /// Human-facing agent name; empty when no record is declared.
@@ -523,9 +535,48 @@ pub enum WireEvent {
         /// The EFFECTIVE attention: the record's declared level, or the
         /// spec's derivation from `state` when absent (L3.md §3.7).
         attention: AgentAttention,
+        /// How `state` was read: no record, undeclared, explicit `unknown`,
+        /// recognized, or an unsupported word kept as bounded raw text.
+        state_reading: AgentStateReading,
+        /// Whether `attention` was declared, derived, or an unsupported word.
+        attention_reading: AgentAttentionReading,
     },
     /// The server reported an ERROR frame.
     ServerError { message: String },
+    /// The transport dropped; the runtime is reconnecting. Delivered only by
+    /// `take_publication`, never by `take_events`.
+    ConnectionLost { message: Option<String> },
+    /// Connection `connection_epoch` opened: every later event in the batch
+    /// belongs to it, every earlier one to a previous connection, even when
+    /// session and pane ids are reused. Per-connection state (pending
+    /// questions, attention, input fences) resets here, not at an ordinary
+    /// `TopologyChanged`. Delivered only by `take_publication`.
+    ConnectionOpened { connection_epoch: u64 },
+}
+
+/// One coherent sample of the session for a polling UI (`take_publication`):
+/// the ordered events since the last drain plus, from the same instant, the
+/// status, error and topology they lead to. Unlike calling `take_events`,
+/// `status`, `last_error` and `topology` separately, a reconnect cannot land
+/// between the parts.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct WirePublication {
+    /// The runtime's connection incarnation, bumped by every transport it
+    /// opens and never reused: equal across two publications means no
+    /// reconnect happened between them. `0` before the first dial.
+    pub connection_epoch: u64,
+    /// Every event since the last drain, in order, including the
+    /// `ConnectionLost` / `ConnectionOpened` lifecycle `take_events` omits.
+    pub events: Vec<WireEvent>,
+    /// The bounded event queue dropped events since the last drain. The
+    /// latest `ConnectionOpened` and every correlated reply survive; a
+    /// `TopologyChanged` follows, and agent records and asked flags are
+    /// re-read and arrive as later events, so re-derive from those rather
+    /// than resetting what this batch cannot show.
+    pub events_dropped: bool,
+    pub status: WireStatus,
+    pub last_error: Option<String>,
+    pub topology: Option<SessionTopology>,
 }
 
 impl From<agent::AgentBadge> for WireEvent {
@@ -537,6 +588,8 @@ impl From<agent::AgentBadge> for WireEvent {
             session: value.session,
             state: value.state.into(),
             attention: value.attention.into(),
+            state_reading: value.state_reading.into(),
+            attention_reading: value.attention_reading.into(),
         }
     }
 }
@@ -679,6 +732,55 @@ impl From<agent::AgentAttention> for AgentAttention {
     }
 }
 
+/// How an `AgentStateChanged`'s `state` was read (`projection::agent`).
+/// Provenance only: every case but `Recognized` carries `state: Unknown`.
+#[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq)]
+pub enum AgentStateReading {
+    /// No record: absent, deleted, malformed, or nameless. No agent.
+    NoRecord,
+    /// The record declared no `state`.
+    Undeclared,
+    /// The record declared `"unknown"` explicitly.
+    Indeterminate,
+    /// A word this build recognizes.
+    Recognized,
+    /// A newer or malformed value; `raw` is its bounded, display-safe text.
+    Unsupported { raw: String },
+}
+
+impl From<agent::StateReading> for AgentStateReading {
+    fn from(value: agent::StateReading) -> Self {
+        match value {
+            agent::StateReading::NoRecord => Self::NoRecord,
+            agent::StateReading::Undeclared => Self::Undeclared,
+            agent::StateReading::Indeterminate => Self::Indeterminate,
+            agent::StateReading::Recognized => Self::Recognized,
+            agent::StateReading::Unsupported(raw) => Self::Unsupported { raw },
+        }
+    }
+}
+
+/// How an `AgentStateChanged`'s effective `attention` was arrived at.
+#[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq)]
+pub enum AgentAttentionReading {
+    /// Undeclared: derived from `state`.
+    Derived,
+    /// Declared with a word this build recognizes.
+    Declared,
+    /// A newer or malformed value, read as `Normal`; `raw` is its bounded text.
+    Unsupported { raw: String },
+}
+
+impl From<agent::AttentionReading> for AgentAttentionReading {
+    fn from(value: agent::AttentionReading) -> Self {
+        match value {
+            agent::AttentionReading::Derived => Self::Derived,
+            agent::AttentionReading::Declared => Self::Declared,
+            agent::AttentionReading::Unsupported(raw) => Self::Unsupported { raw },
+        }
+    }
+}
+
 /// Touch-producible mouse actions, mirrored for FFI (ADR-0024: the wire owns
 /// the atoms; these are projections).
 #[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -742,8 +844,46 @@ mod tests {
                 session: None,
                 state: AgentState::Unknown,
                 attention: AgentAttention::Low,
+                state_reading: AgentStateReading::Unsupported {
+                    raw: "newer".to_owned()
+                },
+                attention_reading: AgentAttentionReading::Derived,
             }
         );
+    }
+
+    #[test]
+    fn readings_lower_one_for_one() {
+        for (record, state, attention) in [
+            (
+                r#"{"name":"a","state":"unknown","attention":"high"}"#,
+                AgentStateReading::Indeterminate,
+                AgentAttentionReading::Declared,
+            ),
+            (
+                r#"{"name":"a","attention":"urgent"}"#,
+                AgentStateReading::Undeclared,
+                AgentAttentionReading::Unsupported {
+                    raw: "urgent".to_owned(),
+                },
+            ),
+            (
+                r#"{"name":"a","state":"working"}"#,
+                AgentStateReading::Recognized,
+                AgentAttentionReading::Derived,
+            ),
+        ] {
+            let WireEvent::AgentStateChanged {
+                state_reading,
+                attention_reading,
+                ..
+            } = WireEvent::from(agent::badge(&ResourceId::local(1), Some(record.as_bytes())))
+            else {
+                panic!("a badge lowers to AgentStateChanged");
+            };
+            assert_eq!(state_reading, state, "{record}");
+            assert_eq!(attention_reading, attention, "{record}");
+        }
     }
 
     #[test]
@@ -758,6 +898,8 @@ mod tests {
                 session: None,
                 state: AgentState::Unknown,
                 attention: AgentAttention::Low,
+                state_reading: AgentStateReading::NoRecord,
+                attention_reading: AgentAttentionReading::Derived,
             }
         );
     }

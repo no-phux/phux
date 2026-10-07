@@ -539,7 +539,7 @@ function parseRunResult(value) {
     truncated: boolean(root.truncated, "$.truncated")
   };
 }
-var AGENT_KINDS = ["codex", "claude", "open_code", "pi", "omp", "grok", "amp", "cursor_agent", "plugin", "declared", "unknown"];
+var AGENT_KINDS = ["codex", "claude", "open_code", "pi", "omp", "grok", "amp", "cursor_agent", "gemini", "goose", "aider", "plugin", "declared", "unknown"];
 var AGENT_STATES = ["unknown", "idle", "working", "blocked", "done"];
 var AGENT_ATTENTION = ["none", "low", "normal", "high"];
 var PANE_SELECTOR = /^(?:[^/\s]+\/)?@\d+$/;
@@ -2200,7 +2200,7 @@ function createPhuxTools(runtime) {
     },
     {
       name: "phux_agent_prompt",
-      description: "Deliver one single-line agent turn with an acknowledged receipt and, by default, observe a post-submit lifecycle transition (30s). Serialize fleet prompts: the acknowledged lane is server-wide. delivery_unknown or local cancellation: DO NOT RESEND; inspect the pane. An acknowledged prompt that times out was still delivered.",
+      description: "Deliver one single-line agent turn with an acknowledged receipt and, by default, observe a post-submit lifecycle transition (30s). Prompts to different panes may run in parallel; serialize prompts to one pane. delivery_unknown or local cancellation: DO NOT RESEND; inspect the pane. An acknowledged prompt that times out was still delivered.",
       input: schema({ target: TARGET, text: { ...STRING, pattern: "^[^\\r\\n]+$" }, wait: { type: "boolean" }, until: UNTIL, expect_agent: STRING, expect_kind: STRING, timeout_seconds: TIMEOUT, local_timeout_ms: LOCAL_TIMEOUT }, ["text"]),
       async execute(input, context) {
         const target = writeTarget(input.target, runtime, context);

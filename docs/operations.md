@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-10-02
+last-reviewed: 2026-10-07
 ---
 
 # Operations
@@ -944,7 +944,13 @@ The server reads it once at start
   server admits holds the owner's full grant. With a remote listener or
   relay connector configured, the server logs one warning at startup,
   because a pairing token then admits a consumer with command-execution
-  authority.
+  authority. This transitional posture stays until workload certificates
+  cover phones, relays, and WebTransport, which neither `local` nor
+  `paired` can serve today. Naming a workload CA or registry location
+  (`PHUX_WORKLOAD_CA`, `PHUX_WORKLOAD_CA_KEY`, `PHUX_WORKLOAD_KEYS`) with no
+  mode refuses to start the server: set `mode = "paired"` to enforce that
+  authority, or unset the variables. A registry at the default location,
+  such as one `phux host add` enrolled into, refuses nothing.
 - **`local`** admits the owner's Unix socket only, from the serving user's
   uid. A configured remote listener (`--listen`, `--quic`, `--webtransport`,
   their environment variables, or a `[[connector]]`) refuses to start the

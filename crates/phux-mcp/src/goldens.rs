@@ -418,3 +418,168 @@ async fn no_tool_outside_the_residue_spawns_a_subprocess() {
     .await;
     assert_eq!(spawn_record::take().len(), 1, "the residue control spawned");
 }
+
+/// [`state`] and [`screen`], with `@1` carrying `record` as its
+/// `phux.agent/v1` record.
+fn agent_spec(record: &AgentRecord) -> ScriptSpec {
+    ScriptSpec::new()
+        .state(state())
+        .screen(&screen())
+        .stored_metadata(
+            Scope::Resource(ResourceId::local(1)),
+            RESOURCE_AGENT_KEY,
+            record.encode(),
+        )
+}
+
+/// Dispatch `tool` with `args` against a scripted server answering every
+/// connection with `spec()`.
+async fn dispatch_against(
+    tool: &str,
+    mut args: Value,
+    spec: impl Fn() -> ScriptSpec + Send + 'static,
+) -> Result<Value, crate::tools::ToolError> {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let socket = dir.path().join("agent.sock");
+    let listener = UnixListener::bind(&socket).expect("bind");
+    let server = tokio::spawn(testkit::serve_every(listener, spec));
+    args["socket"] = json!(socket.to_string_lossy());
+    let result = crate::tools::dispatch(tool, &args).await;
+    server.abort();
+    result
+}
+
+/// The `error.code` of a refusal on the `--json` error contract.
+fn contract_code(err: &crate::tools::ToolError) -> String {
+    let document: Value = serde_json::from_str(&err.0)
+        .unwrap_or_else(|_| panic!("not a contract error document: {}", err.0));
+    document["error"]["code"]
+        .as_str()
+        .expect("error.code")
+        .to_owned()
+}
+
+/// ADR-0075 point 5 on MCP: `phux_send_keys` and `phux_paste` deliver input,
+/// so a `%name` whose record has the withdrawn shape (a `kind`, `state:
+/// unknown`) is refused as `agent_withdrawn`, exactly as the CLI input verbs
+/// refuse it. Read tools still resolve it, and an identity-only record (no
+/// `kind`) is the resting value of a declaration, not a withdrawal.
+#[tokio::test]
+async fn input_tools_refuse_a_withdrawn_name_that_read_tools_still_resolve() {
+    let withdrawn = || {
+        agent_spec(&AgentRecord {
+            name: "build".to_owned(),
+            kind: Some("codex".to_owned()),
+            state: AgentMetaState::Unknown,
+            ..AgentRecord::default()
+        })
+    };
+    for (tool, args) in [
+        (
+            "phux_send_keys",
+            json!({ "target": "%build", "keys": ["rm -rf .", "Enter"] }),
+        ),
+        (
+            "phux_paste",
+            json!({ "target": "%build", "text": "rm -rf ." }),
+        ),
+    ] {
+        let err = dispatch_against(tool, args, withdrawn)
+            .await
+            .expect_err("a withdrawn name must not receive input");
+        assert_eq!(contract_code(&err), "agent_withdrawn", "{tool}: {}", err.0);
+    }
+
+    let read = dispatch_against("phux_snapshot", json!({ "target": "%build" }), withdrawn)
+        .await
+        .expect("a read tool skips the write guard");
+    assert_eq!(read["lines"][0], "the quick");
+    let waited = dispatch_against(
+        "phux_wait",
+        json!({ "target": "%build", "until": "brown fox", "timeout_secs": 5 }),
+        withdrawn,
+    )
+    .await
+    .expect("a read tool skips the write guard");
+    assert_eq!(waited["outcome"], "met");
+
+    let identity_only = || {
+        agent_spec(&AgentRecord {
+            name: "build".to_owned(),
+            kind: None,
+            state: AgentMetaState::Unknown,
+            ..AgentRecord::default()
+        })
+    };
+    for (tool, args) in [
+        (
+            "phux_send_keys",
+            json!({ "target": "%build", "keys": ["ls"] }),
+        ),
+        ("phux_paste", json!({ "target": "%build", "text": "ls" })),
+    ] {
+        let sent = dispatch_against(tool, args, identity_only)
+            .await
+            .unwrap_or_else(|err| panic!("{tool}: identity-only must resolve: {}", err.0));
+        assert_eq!(sent["sent"], true, "{tool}");
+        assert_eq!(sent["pane"], "@1", "{tool}");
+    }
+}
+
+/// ADR-0075 point 3 on the MCP set-valued and placement tools: `%name`
+/// reaches `phux_tag`, `phux_kill`, and `phux_spawn` placement through the
+/// agent resolver, and a refusal is typed rather than "no such target".
+#[tokio::test]
+async fn percent_name_reaches_tag_kill_and_spawn_placement() {
+    let named = || {
+        agent_spec(&AgentRecord {
+            name: "build".to_owned(),
+            state: AgentMetaState::Working,
+            ..AgentRecord::default()
+        })
+    };
+    let tagged = dispatch_against(
+        "phux_tag",
+        json!({ "action": "add", "target": "%build", "tags": ["ci"] }),
+        named,
+    )
+    .await
+    .expect("tag %build");
+    assert_eq!(tagged["terminals"][0]["terminal"], "@1");
+
+    let constant = || {
+        agent_spec(&AgentRecord {
+            name: "claude".to_owned(),
+            kind: Some("claude".to_owned()),
+            state: AgentMetaState::Working,
+            ..AgentRecord::default()
+        })
+    };
+    for (tool, args, want) in [
+        (
+            "phux_kill",
+            json!({ "target": "%claude", "confirm": true }),
+            "invalid_agent_name",
+        ),
+        (
+            "phux_tag",
+            json!({ "action": "ls", "target": "%claude" }),
+            "invalid_agent_name",
+        ),
+        (
+            "phux_spawn",
+            json!({ "target": "%claude", "split": "vertical" }),
+            "invalid_agent_name",
+        ),
+        (
+            "phux_spawn",
+            json!({ "target": "%ghost", "split": "vertical" }),
+            "no_such_target",
+        ),
+    ] {
+        let err = dispatch_against(tool, args, constant)
+            .await
+            .expect_err("a refused name does nothing");
+        assert_eq!(contract_code(&err), want, "{tool}: {}", err.0);
+    }
+}

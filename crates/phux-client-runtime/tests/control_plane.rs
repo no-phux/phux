@@ -44,6 +44,9 @@ mod roster;
 #[path = "support/recovery.rs"]
 mod recovery;
 
+#[path = "support/observation.rs"]
+mod observation;
+
 #[path = "support/views.rs"]
 mod views;
 

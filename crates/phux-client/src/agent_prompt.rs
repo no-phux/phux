@@ -3,9 +3,10 @@
 //!
 //! `APPLY_INPUT`'s `OK` means every byte was written and flushed into the
 //! pane's tty input queue (L1 §6.2.1): more than `ROUTE_INPUT` attests, less
-//! than consumption. The acknowledged lane is server-wide and held across a
-//! 5 s completion wait, so the submit deadline and the `RESOURCE_EXHAUSTED`
-//! backoff both outlast it; prompting a fleet in parallel is unsupported.
+//! than consumption. Admission is per Terminal and held across a 5 s
+//! completion wait, so the submit deadline and the `RESOURCE_EXHAUSTED`
+//! backoff both outlast it; only a concurrent write to the same pane collides,
+//! and prompts to different panes proceed in parallel.
 //!
 //! Two rules never soften: a retry reuses the caller's operation id (a fresh
 //! id is exactly the duplicate this exists to prevent), and
@@ -484,7 +485,7 @@ pub enum PromptError {
     Refused(Refusal),
     /// The lane never freed; nothing written, safe to re-run. Exit 1.
     #[error(
-        "the server-wide acknowledged input lane stayed busy across {attempts} attempts \
+        "the pane's acknowledged input stayed busy across {attempts} attempts \
          ({budget_ms}ms): {message}"
     )]
     LaneBusy {

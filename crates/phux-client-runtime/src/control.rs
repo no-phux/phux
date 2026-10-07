@@ -67,7 +67,7 @@ mod roster;
 mod state;
 mod topology;
 
-pub use events::{DeliveryOutcome, Event, Status};
+pub use events::{DeliveryOutcome, Event, Observation, Status};
 pub use extensions::{
     DirectoryChild, DirectoryFailure, DirectoryListing, FileUploadOutcome, FileUploadReceipt,
     MAX_PATH_ANSWERS, PathAnswer, PathFailure, PathMatch, PathMatchKind, PathSearchStatus,
@@ -418,6 +418,8 @@ pub struct ControlPlane {
     clock_origin: Instant,
     outbound: Vec<Vec<u8>>,
     events: Vec<Event>,
+    /// How many events the queue cap dropped since the last drain.
+    events_dropped: usize,
     damaged: Vec<ResourceId>,
     extensions: extensions::Extensions,
     roster: roster::RosterRecovery,
@@ -474,6 +476,7 @@ impl ControlPlane {
             clock_origin: Instant::now(),
             outbound: Vec::new(),
             events: Vec::new(),
+            events_dropped: 0,
             damaged: Vec::new(),
             extensions: extensions::Extensions::default(),
             roster: roster::RosterRecovery::default(),
@@ -768,6 +771,9 @@ impl ControlPlane {
         self.input_replay.connection_lost();
         self.reset_extension_correlations("the connection ended before the server answered");
         self.fail_pending("connection replaced before the server answered");
+        self.push_event(Event::ConnectionOpened {
+            connection_epoch: self.connection_epoch,
+        });
         self.set_status(Status::Connecting);
         self.queue_frame(&FrameKind::Hello {
             client_name: self.options.client_name.clone(),

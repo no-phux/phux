@@ -1547,9 +1547,11 @@ fn paired_mode_without_registry_denies_everything() {
 #[test]
 fn posture_follows_the_mode_the_environment_and_the_listeners() {
     use phux_config::PolicyMode::{Local, Paired};
+    // (mode, PHUX_WORKLOAD_MTLS, remote listener, workload location named)
     let cases = [
         (
             None,
+            false,
             false,
             false,
             Ok(PolicyPosture::Transitional {
@@ -1560,16 +1562,21 @@ fn posture_follows_the_mode_the_environment_and_the_listeners() {
             None,
             false,
             true,
+            false,
             Ok(PolicyPosture::Transitional {
                 remote_listener: true,
             }),
         ),
-        (None, true, true, Ok(PolicyPosture::Paired)),
-        (Some(Paired), false, true, Ok(PolicyPosture::Paired)),
-        (Some(Local), false, false, Ok(PolicyPosture::Local)),
+        (None, true, true, false, Ok(PolicyPosture::Paired)),
+        (None, true, false, true, Ok(PolicyPosture::Paired)),
+        (Some(Paired), false, true, false, Ok(PolicyPosture::Paired)),
+        (Some(Paired), false, false, true, Ok(PolicyPosture::Paired)),
+        (Some(Local), false, false, false, Ok(PolicyPosture::Local)),
+        (Some(Local), false, false, true, Ok(PolicyPosture::Local)),
         (
             Some(Local),
             true,
+            false,
             false,
             Err(PostureError::LocalWithWorkloadMtls),
         ),
@@ -1577,16 +1584,38 @@ fn posture_follows_the_mode_the_environment_and_the_listeners() {
             Some(Local),
             false,
             true,
+            false,
             Err(PostureError::LocalWithRemoteListener),
         ),
+        // A named CA or registry location with no mode never falls back to
+        // the owner's grant (workload-auth §8): with or without a listener.
+        (
+            None,
+            false,
+            false,
+            true,
+            Err(PostureError::UnsetWithWorkloadAuthority),
+        ),
+        (
+            None,
+            false,
+            true,
+            true,
+            Err(PostureError::UnsetWithWorkloadAuthority),
+        ),
     ];
-    for (mode, env, remote, want) in cases {
+    for (mode, env, remote, located, want) in cases {
         assert_eq!(
-            PolicyPosture::resolve(mode, env, remote),
+            PolicyPosture::resolve(mode, env, remote, located),
             want,
-            "{mode:?} env={env} remote={remote}"
+            "{mode:?} env={env} remote={remote} located={located}"
         );
     }
+    let message = PostureError::UnsetWithWorkloadAuthority.to_string();
+    assert!(
+        message.contains("PHUX_WORKLOAD_KEYS") && message.contains("mode = \"paired\""),
+        "the refusal names the setting and the remedy: {message}"
+    );
     assert!(
         PolicyPosture::Transitional {
             remote_listener: true

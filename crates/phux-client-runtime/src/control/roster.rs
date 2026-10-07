@@ -2,11 +2,16 @@
 //! subscribe before reading, and fence unversioned snapshots by live delivery.
 //! Journal stamps do not version `GET_STATE` or `GET_METADATA` replies. Explicit
 //! gaps trigger recovery; a numeric jump in a filtered event stream does not.
-//! Current asked-state recovery needs a separate public retraction contract:
-//! `AgentAsked` announces a question but cannot represent an absent asked record.
+//!
+//! Two Terminal-scoped keys are recovered this way: the `phux.agent/v1`
+//! declaration ([`Event::AgentMetadata`]) and the server-owned
+//! `phux.agent.asked/v1` flag ([`Event::AgentAskedState`], L3.md §1.3).
+//! `AgentAsked` only announces a question; the flag is the level that says
+//! whether one is still pending, so it is what retracts a question after a
+//! gap or a reconnect instead of leaving it to resurrect.
 
 use phux_protocol::caps::Layer;
-use phux_protocol::wire::frame::{RESOURCE_AGENT_KEY, Scope};
+use phux_protocol::wire::frame::{RESOURCE_AGENT_KEY, RESOURCE_ASKED_KEY, Scope};
 
 use super::{
     AgentEvent, CommandResult, CommandValue, ControlError, ControlPlane, ErrorCode, Event,
@@ -30,8 +35,44 @@ pub(super) struct RosterRecovery {
 #[derive(Debug)]
 struct MetadataRead {
     terminal_id: ResourceId,
+    key: RosterKey,
     superseded: bool,
     repeat: bool,
+}
+
+/// The Terminal-scoped keys every inventoried terminal is subscribed to and
+/// read, in that order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RosterKey {
+    /// `phux.agent/v1`.
+    Agent,
+    /// `phux.agent.asked/v1`.
+    Asked,
+}
+
+impl RosterKey {
+    const ALL: [Self; 2] = [Self::Agent, Self::Asked];
+
+    const fn wire(self) -> &'static str {
+        match self {
+            Self::Agent => RESOURCE_AGENT_KEY,
+            Self::Asked => RESOURCE_ASKED_KEY,
+        }
+    }
+
+    fn from_wire(key: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|candidate| candidate.wire() == key)
+    }
+}
+
+/// The level a `phux.agent.asked/v1` value states: the server writes `1`
+/// while a question is pending and deletes the key when none is. Any other
+/// present value still reads as asked, so an unexpected byte can never
+/// retract a question.
+const fn asked_level(value: Option<&Vec<u8>>) -> bool {
+    value.is_some()
 }
 
 impl ControlPlane {
@@ -123,20 +164,22 @@ impl ControlPlane {
             if !self.roster.subscribed.insert(terminal_id.clone()) && !resync {
                 continue;
             }
-            self.queue_frame(&FrameKind::SubscribeMetadata {
-                scope: Scope::Resource(terminal_id.clone()),
-                key: RESOURCE_AGENT_KEY.to_owned(),
-            });
-            self.read_agent_metadata(terminal_id);
+            for key in RosterKey::ALL {
+                self.queue_frame(&FrameKind::SubscribeMetadata {
+                    scope: Scope::Resource(terminal_id.clone()),
+                    key: key.wire().to_owned(),
+                });
+                self.read_agent_metadata(terminal_id.clone(), key);
+            }
         }
     }
 
-    fn read_agent_metadata(&mut self, terminal_id: ResourceId) {
+    fn read_agent_metadata(&mut self, terminal_id: ResourceId, key: RosterKey) {
         if let Some(read) = self
             .roster
             .reads
             .values_mut()
-            .find(|read| read.terminal_id == terminal_id)
+            .find(|read| read.terminal_id == terminal_id && read.key == key)
         {
             read.superseded = true;
             read.repeat = true;
@@ -147,6 +190,7 @@ impl ControlPlane {
             request_id,
             MetadataRead {
                 terminal_id: terminal_id.clone(),
+                key,
                 superseded: false,
                 repeat: false,
             },
@@ -154,7 +198,23 @@ impl ControlPlane {
         self.queue_frame(&FrameKind::GetMetadata {
             request_id,
             scope: Scope::Resource(terminal_id),
-            key: RESOURCE_AGENT_KEY.to_owned(),
+            key: key.wire().to_owned(),
+        });
+    }
+
+    /// Publish one key's current value as its event.
+    fn publish_roster_value(
+        &mut self,
+        terminal_id: ResourceId,
+        key: RosterKey,
+        value: Option<Vec<u8>>,
+    ) {
+        self.push_event(match key {
+            RosterKey::Agent => Event::AgentMetadata { terminal_id, value },
+            RosterKey::Asked => Event::AgentAskedState {
+                terminal_id,
+                asked: asked_level(value.as_ref()),
+            },
         });
     }
 
@@ -186,9 +246,9 @@ impl ControlPlane {
         else {
             return;
         };
-        if key != RESOURCE_AGENT_KEY {
+        let Some(key) = RosterKey::from_wire(key) else {
             return;
-        }
+        };
         if !self.roster.subscribed.contains(terminal_id) {
             return;
         }
@@ -196,15 +256,12 @@ impl ControlPlane {
             .roster
             .reads
             .values_mut()
-            .filter(|read| &read.terminal_id == terminal_id)
+            .filter(|read| &read.terminal_id == terminal_id && read.key == key)
         {
             read.superseded = true;
             read.repeat = false;
         }
-        self.push_event(Event::AgentMetadata {
-            terminal_id: terminal_id.clone(),
-            value: value.clone(),
-        });
+        self.publish_roster_value(terminal_id.clone(), key, value.clone());
     }
 
     fn resolve_agent_metadata(&mut self, request_id: u32, value: Option<Vec<u8>>) {
@@ -215,12 +272,9 @@ impl ControlPlane {
             return;
         }
         if read.repeat {
-            self.read_agent_metadata(read.terminal_id);
+            self.read_agent_metadata(read.terminal_id, read.key);
         } else if !read.superseded {
-            self.push_event(Event::AgentMetadata {
-                terminal_id: read.terminal_id,
-                value,
-            });
+            self.publish_roster_value(read.terminal_id, read.key, value);
         }
     }
 
@@ -259,7 +313,7 @@ impl ControlPlane {
         // An error is not a retraction. It still settles the old read and
         // must preserve a refresh requested while that read was in flight.
         if read.repeat && self.roster.subscribed.contains(&read.terminal_id) {
-            self.read_agent_metadata(read.terminal_id);
+            self.read_agent_metadata(read.terminal_id, read.key);
         } else if !read.superseded {
             // The declaration stays unknown while its subscription stays
             // live; the next inventory reads it again.

@@ -1,7 +1,7 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-08-09
+last-reviewed: 2026-10-07
 ---
 
 # 0075 — Agent names are addressable, and a withdrawn name is refused
@@ -11,8 +11,9 @@ under a new `%name` sigil, resolved client-side against the agent index the CLI
 already builds. A name addresses exactly one hub-local Terminal: ambiguity, an
 unknown name, or an incomplete index refuses rather than narrowing silently.
 
-Status: Proposed
+Status: Accepted
 Date: 2026-08-08
+See [ADR-0103](./0103-agent-session-resource-and-producer-fed-streams.md) for `%name` also yielding the named Terminal's AgentSession child.
 
 ## Context
 
@@ -52,14 +53,20 @@ now and expensive later.
    `resolve_one`, which applies it unconditionally today and would narrow
    silently on a frozen surface. Unknown name: miss, exit 1. Two or more live
    records sharing it: refuse, exit 2, listing every candidate `@N`. An index
-   not built completely: refuse as partial, exit 3 — "no pane holds that name"
+   not built completely: refuse as `partial_view` — "no pane holds that name"
    and "we did not finish looking" must not collapse into one silence. The cost
-   is named, not assumed: `send-keys`/`paste` have no exit 2 today
-   (`agents.md` §5.2) and gain one; `run` mirrors its child's status, so a
-   refusal there stays exit 1 in words; and exit 3 keeps the meaning
+   is named, not assumed: the ambiguity, kind-constant, and withdrawn refusals
+   are exit 2 on every verb, so `send-keys`/`paste` gain an exit 2 and `run`
+   refuses with 2 before any child exists to mirror. The partial refusal is
+   exit 3 where a verb's status space is free (`kill`, `tag`,
+   `agent show|explain|set|clear`, the AgentSession verbs), keeping the meaning
    `crates/phux/src/exit_codes.rs` publishes and `docs/reference/exit-codes.md`
-   renders — the answer was taken against a partial view, so unlike a `1` the
-   target may exist and a retry is correct once the link is back.
+   renders — the target may exist and a retry is correct once the link is back.
+   Behind the shared single-pane resolver (`snapshot`, `send-keys`, `paste`,
+   `run`, `wait`, `signal`, the acknowledged agent writes) it is exit 1 in
+   words, because `run` and `wait` have already spent their status space and
+   that resolver reports a partial-fleet miss the same way
+   (`agents.md` §8).
 
 4. **Uniqueness is enforced at resolve, and `%` addresses chosen names.** The
    addressable grammar is `^[a-z][a-z0-9_-]{0,31}$`, checked at parse time so a
@@ -147,7 +154,8 @@ makes the claim true rather than assuming it.
 
 - Resolving `%name` costs one `GET_METADATA` per pane where `@N` costs nothing.
 - Point 3's third outcome is a client refactor, not reuse: the index moves into
-  `phux-client` and `resolve_targets` gains a `Result` at every CLI and MCP site.
+  `phux-client`, and every singular resolve site, CLI and MCP, branches `%name`
+  to a fallible `resolve_agent` before the set-valued path can narrow it.
 - Point 7(b) closes the occupant-swap and same-kind-restart holes at the
   identity cadence, not instantly, and not at all on a pane whose `kind` an
   explicit writer set; inside those gaps `%name` still retargets input.

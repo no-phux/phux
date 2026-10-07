@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: stable
-last-reviewed: 2026-10-06
+last-reviewed: 2026-10-07
 ---
 
 # Architecture Decision Records
@@ -106,10 +106,10 @@ column is the base status word plus at most one relationship clause, about
 | [0072](./0072-prune-policy-vocabulary-keep-the-seam.md) | Prune the policy vocabulary, keep the authorization seam | Proposed (amends [0031](./0031-remote-consumer-auth-and-encryption.md)) |
 | [0073](./0073-service-managed-pane-login-shell.md) | Login-shell semantics for service-managed pane spawns | Accepted (builds on [0055](./0055-always-on-server-and-ssh-bootstrapped-enrollment.md)) |
 | [0074](./0074-self-update-trust-boundary.md) | The self-update trust boundary | Accepted (builds on [0071](./0071-what-phux-1-0-commits-to.md)) |
-| [0075](./0075-agent-name-addressing.md) | Agent names are addressable, and a withdrawn name is refused | Proposed (builds on [0021](./0021-control-plane-commands.md), [0040](./0040-agent-identity-metadata.md)) |
-| [0076](./0076-agent-prompt-and-lifecycle-wait.md) | Prompting an agent is acknowledged; waiting on one is event-driven | Proposed (builds on [0053](./0053-acknowledged-idempotent-input.md), [0046](./0046-server-side-agent-state-detection.md)) |
+| [0075](./0075-agent-name-addressing.md) | Agent names are addressable, and a withdrawn name is refused | Accepted (builds on [0021](./0021-control-plane-commands.md), [0040](./0040-agent-identity-metadata.md)) |
+| [0076](./0076-agent-prompt-and-lifecycle-wait.md) | Prompting an agent is acknowledged; waiting on one is event-driven | Accepted (builds on [0053](./0053-acknowledged-idempotent-input.md), [0046](./0046-server-side-agent-state-detection.md)) |
 | [0077](./0077-agent-read-surface.md) | The agent read surface: sources, soft wrap, and truncation | Accepted (builds on [0022](./0022-tool-for-agents.md)) |
-| [0078](./0078-alternate-screen-history.md) | Harvesting alternate-screen history | Proposed (builds on [0077](./0077-agent-read-surface.md)) |
+| [0078](./0078-alternate-screen-history.md) | Harvesting alternate-screen history | Accepted (forward-compat; builds on [0077](./0077-agent-read-surface.md)) |
 | [0079](./0079-fatal-signal-terminal-restore.md) | Fatal-signal terminal restore | Accepted |
 | [0080](./0080-socket-lifecycle-and-instance-isolation.md) | Socket lifecycle and instance isolation | Accepted (amends [0055](./0055-always-on-server-and-ssh-bootstrapped-enrollment.md)) |
 | [0081](./0081-overlay-auto-listen-and-one-command-pairing.md) | Overlay auto-listen and one-command pairing | Accepted (builds on [0037](./0037-overlay-network-reachability.md), [0031](./0031-remote-consumer-auth-and-encryption.md)) |

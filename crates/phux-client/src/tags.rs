@@ -27,11 +27,24 @@ struct TagSession {
 async fn prepare(
     socket_path: &std::path::Path,
     selector: &Selector,
-) -> Result<TagSession, AttachError> {
+) -> Result<TagSession, TagError> {
     let mut conn = Connection::connect(socket_path).await?;
     let (snapshot, degradation) = crate::state::get_state_on(&mut conn).await?.into_parts();
+    // `%name` is singular (ADR-0075 point 3): the named Terminal or a typed
+    // refusal, never an empty set reported as a miss.
+    let named = match selector {
+        Selector::Agent(name) => Some(
+            crate::state::resolve_agent_on(&mut conn, name, &snapshot, false)
+                .await?
+                .terminal,
+        ),
+        _ => None,
+    };
     let index = crate::state::fetch_tag_index(&mut conn, &snapshot).await;
-    let targets = selector::resolve_with_tags(selector, &snapshot, &index);
+    let targets = named.map_or_else(
+        || selector::resolve_with_tags(selector, &snapshot, &index),
+        |terminal| vec![terminal],
+    );
     Ok(TagSession {
         conn,
         degradation,
@@ -128,6 +141,10 @@ pub enum TagError {
     /// Transport failure connecting or fetching state.
     #[error(transparent)]
     Attach(#[from] AttachError),
+    /// `%name` did not resolve to one agent (ADR-0075 point 3); nothing
+    /// was read or written.
+    #[error(transparent)]
+    Agent(#[from] crate::selector::AgentResolveError),
     /// The selector matched no Terminal.
     #[error("no such target")]
     Miss {
@@ -322,6 +339,46 @@ mod tests {
         let result = apply(&socket, &selector, op).await;
         drop(server);
         result
+    }
+
+    /// `%name` (ADR-0075) tags exactly the named pane; a kind constant is a
+    /// typed refusal, not the plain miss the set-valued path reported.
+    #[tokio::test]
+    async fn apply_resolves_percent_name_through_the_agent_resolver() {
+        use crate::agent_meta::{AgentRecord, RESOURCE_AGENT_KEY};
+        use crate::testkit::ScriptSpec;
+        let named = |id: u32, name: &str, kind: Option<&str>| {
+            let record = AgentRecord {
+                name: name.to_owned(),
+                kind: kind.map(str::to_owned),
+                ..AgentRecord::default()
+            };
+            ScriptSpec::new().state(pane_state()).stored_metadata(
+                Scope::Resource(ResourceId::local(id)),
+                RESOURCE_AGENT_KEY,
+                record.encode(),
+            )
+        };
+
+        let tags = ["ci".to_owned()];
+        let added = apply_on(named(2, "build", None), "%build", TagOp::Add(&tags))
+            .await
+            .expect("tag %build");
+        assert_eq!(
+            added.rows,
+            vec![(ResourceId::local(2), vec!["ci".to_owned()])]
+        );
+
+        let refused = apply_on(named(2, "claude", Some("claude")), "%claude", TagOp::List).await;
+        assert!(
+            matches!(&refused, Err(TagError::Agent(err)) if err.code() == "invalid_agent_name"),
+            "{refused:?}"
+        );
+        let unknown = apply_on(named(2, "build", None), "%ghost", TagOp::List).await;
+        assert!(
+            matches!(&unknown, Err(TagError::Agent(err)) if err.exit_code() == 1),
+            "{unknown:?}"
+        );
     }
 
     #[tokio::test]

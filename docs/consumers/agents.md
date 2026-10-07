@@ -221,8 +221,10 @@ Input contracts:
 Acknowledged agent writes (`agent send-keys`, `agent prompt`,
 `agent answer`) prove kernel tty-queue receipt, not consumption.
 `delivery_unknown` is terminal: inspect the pane and do not resend.
-The server has one acknowledged input lane; serialize concurrent
-acknowledged writes.
+Admission is per pane: one unresolved acknowledged write per Terminal.
+Writes to different panes proceed concurrently; a second concurrent
+write to the same pane is refused as busy (`RESOURCE_EXHAUSTED`), so
+serialize writes to one pane.
 
 `phux agent start` starts an agent in an existing shell pane without
 creating, splitting, moving, or focusing layout.
@@ -521,19 +523,29 @@ ownership work has begun; preflight stays exit 2).
       "explanation": "live agent-session stream",
       "agent_session": {
         "resource": "@9", "provider": "claude", "native_id": "sess-01H..."
-      }
+      },
+      "address": "%reviewer",
+      "address_refusal": null
     }
   ]
 }
 ```
 
 `agent.kind` classifies known agents as `codex`, `claude`, `open_code`,
-`pi`, `omp`, `grok`, `amp`, or `cursor_agent`; other configured plugins are
-`plugin`, other declared kinds are `declared`, and unidentified panes are
-`unknown`. These are report spellings: `agent.id` and metadata retain the
+`pi`, `omp`, `grok`, `amp`, `cursor_agent`, `gemini`, `goose`, or `aider`;
+other configured plugins are `plugin`, other declared kinds are `declared`,
+and unidentified panes are `unknown`. These are report spellings: `agent.id` and metadata retain the
 provider slug (`cursor-agent`, for example). These heuristic title markers
 suggest identity only; they never infer lifecycle state or completion.
 The explicit `phux-ask` title sentinel remains a state declaration (ADR-0035).
+
+`address` is the pane's `%name` when that selector resolves to it, else
+`null`. `address_refusal` says why a listed record name is not
+`%`-addressable, as the code `%name` would refuse with:
+`invalid_agent_name` (outside the `%` grammar, or a per-kind constant),
+`selector_not_single` (several panes share it), or `partial_view`; it is
+`null` when the pane is addressable or has no record. The human view
+prints the same as its third column. Both fields are additive.
 
 `agent_session` is additive (`null` when the pane has no live child).
 The key is `agent_session`, not `session` — `session` is already the

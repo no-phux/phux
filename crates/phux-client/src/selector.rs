@@ -410,6 +410,40 @@ impl AgentResolveError {
         }
     }
 
+    /// The stable `--json` error code (`docs/consumers/agents.md` §7) every
+    /// surface reports this refusal with, CLI and MCP alike.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::Unknown { .. } => "no_such_target",
+            Self::Ambiguous { .. } | Self::AmbiguousSession { .. } => "selector_not_single",
+            Self::KindConstant { .. } => "invalid_agent_name",
+            Self::Withdrawn { .. } => "agent_withdrawn",
+            Self::PartialIndex { .. } => "partial_view",
+        }
+    }
+
+    /// What to do about this refusal, one line.
+    #[must_use]
+    pub const fn remedy(&self) -> &'static str {
+        match self {
+            Self::Unknown { .. } => {
+                "`phux agent list` shows every declared name; set one with `phux agent set \
+                 TARGET --name <name>`"
+            }
+            Self::Ambiguous { .. } | Self::AmbiguousSession { .. } => {
+                "address one candidate directly by @N"
+            }
+            Self::KindConstant { .. } => {
+                "name one pane with `phux agent set @N --name <name>` and address that"
+            }
+            Self::Withdrawn { .. } => {
+                "inspect the pane with `phux agent explain`; address it by @N to write anyway"
+            }
+            Self::PartialIndex { .. } => "retry once the fleet is whole, or address the pane by @N",
+        }
+    }
+
     /// The name that was typed after `%`.
     #[must_use]
     pub fn name(&self) -> &str {
@@ -575,6 +609,32 @@ pub fn resolve_agent_for_input(
         });
     }
     Ok(target)
+}
+
+/// What `%name` makes of `terminal`'s record, for `phux agent list` to say
+/// which names `%` cannot address (ADR-0075 point 4).
+///
+/// `Ok("%name")` when [`resolve_agent`] resolves the record's name to
+/// exactly `terminal`; otherwise the `--json` code `%name` would refuse with
+/// ([`AgentResolveError::code`], or `invalid_agent_name` for a name outside
+/// the `%` grammar). `None` when `terminal` has no record.
+#[must_use]
+pub fn agent_address(
+    terminal: &ResourceId,
+    snapshot: &SessionSnapshot,
+    index: &AgentIndex,
+) -> Option<Result<String, &'static str>> {
+    let name = &index.get(terminal)?.name;
+    if !is_addressable_agent_name(name) {
+        return Some(Err("invalid_agent_name"));
+    }
+    Some(match resolve_agent(name, snapshot, index) {
+        Ok(target) if &target.terminal == terminal => Ok(format!("%{name}")),
+        // `terminal` is not a live Terminal in `snapshot`, so the name
+        // reaches some other pane: never label this one with it.
+        Ok(_) => Err("selector_not_single"),
+        Err(err) => Err(err.code()),
+    })
 }
 
 /// Whether this record's `name` is its own `kind` (ASCII case-insensitive):
@@ -973,6 +1033,106 @@ mod tests {
             AgentIndex::complete(map)
         } else {
             AgentIndex::partial(map)
+        }
+    }
+
+    /// ADR-0075 point 4: `phux agent list` says which names `%` cannot
+    /// address, with the code `%name` would refuse with.
+    #[test]
+    fn agent_address_says_which_listed_names_percent_cannot_reach() {
+        let snap = fixture();
+        let index = index_of(
+            &[
+                (100, record("build", None, AgentMetaState::Working)),
+                (101, record("Code Review", None, AgentMetaState::Idle)),
+                (102, record("twin", None, AgentMetaState::Idle)),
+                (200, record("twin", None, AgentMetaState::Idle)),
+            ],
+            true,
+        );
+        let address = |id| agent_address(&ResourceId::local(id), &snap, &index);
+        assert_eq!(address(100), Some(Ok("%build".to_owned())));
+        assert_eq!(address(101), Some(Err("invalid_agent_name")));
+        assert_eq!(address(102), Some(Err("selector_not_single")));
+        assert_eq!(address(200), Some(Err("selector_not_single")));
+        assert_eq!(address(999), None, "no record, nothing to address");
+
+        let constant = index_of(
+            &[(100, record("claude", Some("claude"), AgentMetaState::Idle))],
+            true,
+        );
+        assert_eq!(
+            agent_address(&ResourceId::local(100), &snap, &constant),
+            Some(Err("invalid_agent_name")),
+            "a per-kind constant is listed but not addressable, even when unique",
+        );
+
+        let partial = index_of(
+            &[(100, record("build", None, AgentMetaState::Working))],
+            false,
+        );
+        assert_eq!(
+            agent_address(&ResourceId::local(100), &snap, &partial),
+            Some(Err("partial_view")),
+        );
+    }
+
+    /// Every refusal carries the contract code and remedy each surface (CLI,
+    /// spatial, MCP) reports it with.
+    #[test]
+    fn agent_resolve_errors_carry_their_contract_codes() {
+        let t = ResourceId::local(1);
+        for (err, code, exit) in [
+            (
+                AgentResolveError::Unknown { name: "a".into() },
+                "no_such_target",
+                1,
+            ),
+            (
+                AgentResolveError::Ambiguous {
+                    name: "a".into(),
+                    candidates: vec![],
+                },
+                "selector_not_single",
+                2,
+            ),
+            (
+                AgentResolveError::AmbiguousSession {
+                    name: "a".into(),
+                    terminal: t.clone(),
+                    candidates: vec![],
+                },
+                "selector_not_single",
+                2,
+            ),
+            (
+                AgentResolveError::KindConstant {
+                    name: "a".into(),
+                    candidates: vec![],
+                },
+                "invalid_agent_name",
+                2,
+            ),
+            (
+                AgentResolveError::Withdrawn {
+                    name: "a".into(),
+                    terminal: t,
+                },
+                "agent_withdrawn",
+                2,
+            ),
+            (
+                AgentResolveError::PartialIndex {
+                    name: "a".into(),
+                    matched: vec![],
+                },
+                "partial_view",
+                3,
+            ),
+        ] {
+            assert_eq!(err.code(), code, "{err:?}");
+            assert_eq!(err.exit_code(), exit, "{err:?}");
+            assert!(!err.remedy().is_empty(), "{err:?}");
         }
     }
 

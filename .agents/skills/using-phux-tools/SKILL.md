@@ -74,7 +74,8 @@ agent, not proof that its claimed task result is correct.
 - **Missing server:** diagnose; do not start a new default server and assume it
   owns the old target.
 
-Serialize fleet prompts: phux's acknowledged input lane is server-scoped.
+Acknowledged input is admitted per pane: prompt different panes in parallel,
+but serialize prompts to one pane.
 Cancellation ends the local observer, not the process or input already sent.
 `output_only` avoids command-echo matches only with OSC-133 integration; read
 any warning. Idle screens and quiet processes are not completion signals.

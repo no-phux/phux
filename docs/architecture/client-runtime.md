@@ -27,10 +27,25 @@ reporting. It never touches a socket or a clock it is not handed:
 
 - `feed(FrameKind)` and `feed_bytes(&[u8])` apply one inbound frame;
 - `take_outbound()` returns the encoded frames to send, in order;
-- `take_events()` returns an owned batch of `Event`s;
+- `take_events()` returns an owned batch of `Event`s, and
+  `take_observation()` returns the same batch together with the status, the
+  last error, the topology and the `connection_epoch` sampled in the same
+  step. A polling binding uses the second form, because separate reads can
+  straddle a reconnect. Every transport pushes a lossless
+  `Event::ConnectionOpened { connection_epoch }` boundary. On overflow the
+  queue keeps only the newest boundary and reports `events_dropped`;
 - a `ControlError` says how a frame ended the connection: `Protocol`
   (drop and redial), `Refused` (terminal), `Resync` (redial for fresh
   snapshots), `Closed` (the consumer asked).
+
+On an L3 server the plane also subscribes to, then reads, two keys for every
+inventoried terminal, and re-reads them after an event gap, an event-queue
+overflow or a reconnect. Those keys are `phux.agent/v1` (`Event::AgentMetadata`)
+and the server-owned `phux.agent.asked/v1` flag (`Event::AgentAskedState`). A
+read issued before a live change is fenced by that change. `AgentAsked`
+announces a question. `AgentAskedState { asked: false }` is the level that
+retracts it, so a question cleared while a client was not listening is not
+shown again.
 
 In `Runtime::embedded`, the consumer owns the socket and feeds frames directly.
 Harnesses use this lane for synthetic frames, as do the C ABI's

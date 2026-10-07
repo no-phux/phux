@@ -621,7 +621,7 @@ export function parseRunResult(value: unknown): RunResult {
   };
 }
 
-const AGENT_KINDS = ["codex", "claude", "open_code", "pi", "omp", "grok", "amp", "cursor_agent", "plugin", "declared", "unknown"] as const;
+const AGENT_KINDS = ["codex", "claude", "open_code", "pi", "omp", "grok", "amp", "cursor_agent", "gemini", "goose", "aider", "plugin", "declared", "unknown"] as const;
 const AGENT_STATES = ["unknown", "idle", "working", "blocked", "done"] as const;
 const AGENT_ATTENTION = ["none", "low", "normal", "high"] as const;
 const PANE_SELECTOR = /^(?:[^/\s]+\/)?@\d+$/;

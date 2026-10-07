@@ -51,6 +51,9 @@ fn report_from_record(
         "grok" => AgentKind::Grok,
         "amp" => AgentKind::Amp,
         "cursor-agent" => AgentKind::CursorAgent,
+        "gemini" => AgentKind::Gemini,
+        "goose" => AgentKind::Goose,
+        "aider" => AgentKind::Aider,
         other if plugins.iter().any(|plugin| plugin.id == other) => AgentKind::Plugin,
         _ => AgentKind::Declared,
     };
@@ -98,6 +101,8 @@ fn report_from_record(
             .agent_session
             .as_ref()
             .map(super::model::SessionEvidence::to_json),
+        address: None,
+        address_refusal: None,
     }
 }
 
@@ -333,6 +338,8 @@ fn report_without_record(evidence: &PaneEvidence, plugins: &[PluginAgent]) -> Ag
             .agent_session
             .as_ref()
             .map(super::model::SessionEvidence::to_json),
+        address: None,
+        address_refusal: None,
     }
 }
 
@@ -653,6 +660,9 @@ mod tests {
             ("grok", "grok"),
             ("amp", "amp"),
             ("cursor-agent", "cursor_agent"),
+            ("gemini", "gemini"),
+            ("goose", "goose"),
+            ("aider", "aider"),
         ] {
             let mut evidence = PaneEvidence::for_test("@6", Some("live program title"), &[]);
             evidence.record = Some(AgentRecord {
@@ -706,6 +716,9 @@ mod tests {
             ("grok", AgentKind::Grok),
             ("amp", AgentKind::Amp),
             ("cursor-agent", AgentKind::CursorAgent),
+            ("gemini", AgentKind::Gemini),
+            ("goose", AgentKind::Goose),
+            ("aider", AgentKind::Aider),
         ] {
             let mut evidence = PaneEvidence::for_test("@6", None, &[]);
             evidence.record = Some(AgentRecord {

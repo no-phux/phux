@@ -276,7 +276,7 @@ fn refusal_for_verdict(verdict: ApplyVerdict, label: &str) -> Refusal {
         ),
         ApplyVerdict::Busy(message) => Refusal::new(
             codes::ANSWER_REFUSED,
-            format!("{label}: the server-wide acknowledged input lane is busy ({message})"),
+            format!("{label}: the pane's acknowledged input is busy ({message})"),
             "nothing was typed — this refusal happens before the write. Back off and run \
              the same command again",
             crate::exit_codes::EXIT_FAILURE,

@@ -3188,7 +3188,7 @@ pub(crate) async fn resolve_target(
 
 /// [`resolve_target`] for the verbs that deliver input into the pane
 /// (`send-keys`, `paste`, `run`, `signal`, and the acknowledged agent
-/// writes): identical, except that a `%name` whose record has the withdrawn
+/// writes, `agent start` among them): identical, except that a `%name` whose record has the withdrawn
 /// shape is refused (ADR-0075 point 5) rather than resolved.
 pub(crate) async fn resolve_target_for_input(
     socket_path: &Path,
@@ -3222,7 +3222,9 @@ async fn resolve_target_with(
         partial::warn_partial_view(verb, &degradation);
         return Ok(target.terminal);
     }
-    let candidates = resolve_targets(socket_path, selector, &snapshot).await;
+    let candidates = resolve_targets(socket_path, selector, &snapshot)
+        .await
+        .map_err(|err| report_agent_resolve_error(json, &err, true))?;
     let picked = phux_client::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
         .ok_or_else(|| {
         partial::report_target_miss_keeping_status_for(
@@ -3252,58 +3254,63 @@ pub(crate) fn report_agent_resolve_error(
     err: &phux_client::selector::AgentResolveError,
     keep_status: bool,
 ) -> ExitCode {
-    use phux_client::selector::AgentResolveError;
-    let (code, exit_code, remedy) = match err {
-        AgentResolveError::Unknown { .. } => (
-            json_err::codes::NO_SUCH_TARGET,
-            crate::exit_codes::EXIT_FAILURE,
-            "`phux agent list` shows every declared name; set one with `phux agent set \
-             TARGET --name <name>`",
-        ),
-        AgentResolveError::Ambiguous { .. } | AgentResolveError::AmbiguousSession { .. } => (
-            json_err::codes::SELECTOR_NOT_SINGLE,
-            crate::exit_codes::EXIT_USAGE,
-            "address one candidate directly by @N",
-        ),
-        AgentResolveError::KindConstant { .. } => (
-            json_err::codes::INVALID_AGENT_NAME,
-            crate::exit_codes::EXIT_USAGE,
-            "name one pane with `phux agent set @N --name <name>` and address that",
-        ),
-        AgentResolveError::Withdrawn { .. } => (
-            json_err::codes::AGENT_WITHDRAWN,
-            crate::exit_codes::EXIT_USAGE,
-            "inspect the pane with `phux agent explain`; address it by @N to write anyway",
-        ),
-        AgentResolveError::PartialIndex { .. } => (
-            json_err::codes::PARTIAL_VIEW,
-            if keep_status {
-                crate::exit_codes::EXIT_FAILURE
-            } else {
-                crate::exit_codes::EXIT_PARTIAL_VIEW
-            },
-            "retry once the fleet is whole, or address the pane by @N",
-        ),
-    };
     json_err::emit(
         json,
-        &json_err::CliError::new(code, err.to_string(), remedy),
-        exit_code,
+        &json_err::CliError::new(agent_resolve_code(err), err.to_string(), err.remedy()),
+        agent_resolve_exit(err, keep_status),
     )
 }
 
-/// Resolve `selector` to its `ResourceId`s, fetching L3 tag metadata first
-/// only when the selector is `#tag` (`phux-f8wi`). Non-tag selectors resolve
+/// The CLI vocabulary's spelling of [`AgentResolveError::code`], so the
+/// codes stay in [`json_err::codes`] (a test pins the two equal).
+///
+/// [`AgentResolveError::code`]: phux_client::selector::AgentResolveError::code
+const fn agent_resolve_code(err: &phux_client::selector::AgentResolveError) -> &'static str {
+    use phux_client::selector::AgentResolveError;
+    match err {
+        AgentResolveError::Unknown { .. } => json_err::codes::NO_SUCH_TARGET,
+        AgentResolveError::Ambiguous { .. } | AgentResolveError::AmbiguousSession { .. } => {
+            json_err::codes::SELECTOR_NOT_SINGLE
+        }
+        AgentResolveError::KindConstant { .. } => json_err::codes::INVALID_AGENT_NAME,
+        AgentResolveError::Withdrawn { .. } => json_err::codes::AGENT_WITHDRAWN,
+        AgentResolveError::PartialIndex { .. } => json_err::codes::PARTIAL_VIEW,
+    }
+}
+
+/// [`AgentResolveError::exit_code`], except a partial index exits 1 under
+/// `keep_status` (the shared single-pane resolver, ADR-0075 point 3).
+///
+/// [`AgentResolveError::exit_code`]: phux_client::selector::AgentResolveError::exit_code
+const fn agent_resolve_exit(
+    err: &phux_client::selector::AgentResolveError,
+    keep_status: bool,
+) -> u8 {
+    if keep_status
+        && matches!(
+            err,
+            phux_client::selector::AgentResolveError::PartialIndex { .. }
+        )
+    {
+        return crate::exit_codes::EXIT_FAILURE;
+    }
+    err.exit_code()
+}
+
+/// Resolve `selector` to its `ResourceId`s, fetching L3 metadata only for
+/// `#tag` (`phux-f8wi`) and `%name` (ADR-0075). Other selectors resolve
 /// purely against `snapshot`, so the common path pays no extra round-trip.
 ///
 /// A tag fetch that fails (no server mid-flight, a malformed value) degrades
 /// to an empty tag index, so a `#tag` selector then resolves to nothing —
-/// the caller reports it as a selector miss, never a hang.
+/// the caller reports it as a selector miss, never a hang. A `%name` resolves
+/// to its one Terminal or a typed refusal the caller reports with
+/// [`report_agent_resolve_error`].
 pub(crate) async fn resolve_targets(
     socket_path: &Path,
     selector: &phux_client::selector::Selector,
     snapshot: &phux_protocol::wire::info::SessionSnapshot,
-) -> Vec<phux_protocol::ids::ResourceId> {
+) -> Result<Vec<phux_protocol::ids::ResourceId>, phux_client::selector::AgentResolveError> {
     phux_client::state::resolve_targets(socket_path, selector, snapshot).await
 }
 
@@ -3401,6 +3408,49 @@ mod tests {
 
     fn refused_io() -> AttachError {
         AttachError::Io(std::io::Error::from(std::io::ErrorKind::ConnectionRefused))
+    }
+
+    /// The CLI spells every `%name` refusal with the same code the client,
+    /// the spatial verbs, and MCP report, and a partial index exits 3 except
+    /// behind the shared single-pane resolver, which keeps its status
+    /// (ADR-0075 point 3).
+    #[test]
+    fn agent_resolve_refusals_share_one_code_vocabulary() {
+        use phux_client::selector::AgentResolveError;
+        let t = phux_protocol::ids::ResourceId::local(1);
+        for err in [
+            AgentResolveError::Unknown { name: "a".into() },
+            AgentResolveError::Ambiguous {
+                name: "a".into(),
+                candidates: vec![],
+            },
+            AgentResolveError::AmbiguousSession {
+                name: "a".into(),
+                terminal: t.clone(),
+                candidates: vec![],
+            },
+            AgentResolveError::KindConstant {
+                name: "a".into(),
+                candidates: vec![],
+            },
+            AgentResolveError::Withdrawn {
+                name: "a".into(),
+                terminal: t,
+            },
+            AgentResolveError::PartialIndex {
+                name: "a".into(),
+                matched: vec![],
+            },
+        ] {
+            assert_eq!(super::agent_resolve_code(&err), err.code(), "{err:?}");
+            assert_eq!(super::agent_resolve_exit(&err, false), err.exit_code());
+        }
+        let partial = AgentResolveError::PartialIndex {
+            name: "a".into(),
+            matched: vec![],
+        };
+        assert_eq!(super::agent_resolve_exit(&partial, false), 3);
+        assert_eq!(super::agent_resolve_exit(&partial, true), 1);
     }
 
     /// phux-i0e8.7.3: the no-server arm must name the exact start commands,

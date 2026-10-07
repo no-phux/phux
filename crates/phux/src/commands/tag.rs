@@ -59,6 +59,9 @@ pub(crate) fn run_tag(action: &TagAction, socket: Option<std::path::PathBuf>) ->
             Err(phux_client::tags::TagError::Attach(err)) => {
                 json_err::report_no_server(json, &err, &socket_path, "tag")
             }
+            Err(phux_client::tags::TagError::Agent(err)) => {
+                crate::commands::report_agent_resolve_error(json, &err, false)
+            }
             Err(phux_client::tags::TagError::Miss { degradation }) => {
                 // Every `phux tag` target is Terminal-scoped, and `panes`
                 // is the list a hub aggregates. An empty match against a

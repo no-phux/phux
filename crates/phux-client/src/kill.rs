@@ -367,6 +367,10 @@ pub enum KillError {
         /// The session that should have gone.
         session: String,
     },
+    /// `%name` did not resolve to one agent (ADR-0075 point 3); nothing
+    /// was killed.
+    #[error(transparent)]
+    Agent(#[from] crate::selector::AgentResolveError),
     /// Transport or decode failure.
     #[error(transparent)]
     Attach(#[from] AttachError),
@@ -435,7 +439,7 @@ pub async fn selected(
         await_reaped(conn, &ids).await;
         return Ok(killed);
     }
-    let terminals = resolve_terminals(conn, selector, &snapshot).await;
+    let terminals = crate::state::resolve_targets_on(conn, selector, &snapshot).await?;
     if terminals.is_empty() {
         return Err(target_miss(target, degradation));
     }
@@ -520,21 +524,6 @@ fn target_miss(target: &str, degradation: Degradation) -> KillError {
             degradation,
         }
     }
-}
-
-/// The Terminals a non-session selector names. A `#tag` selector resolves
-/// against L3 tag metadata fetched on this same connection; every other form
-/// is pure snapshot resolution.
-async fn resolve_terminals(
-    conn: &mut Connection,
-    selector: &Selector,
-    snapshot: &SessionSnapshot,
-) -> Vec<ResourceId> {
-    if matches!(selector, Selector::Tag(_)) {
-        let index = crate::state::fetch_tag_index(conn, snapshot).await;
-        return selector::resolve_with_tags(selector, snapshot, &index);
-    }
-    selector::resolve(selector, snapshot)
 }
 
 /// Whether the session named `name` holds no windows (ADR-0105).
@@ -856,6 +845,85 @@ mod tests {
             FrameKind::Command { command: Command::KillResources { ids, .. }, .. }
                 if ids.len() == 2
         )));
+    }
+
+    /// `%name` (ADR-0075) kills exactly the named pane, and every refusal is
+    /// a typed [`KillError::Agent`] with nothing killed — not the plain
+    /// "no such target" the set-valued path reported for a live name.
+    #[tokio::test]
+    async fn selected_resolves_percent_name_through_the_agent_resolver() {
+        use crate::agent_meta::{AgentRecord, RESOURCE_AGENT_KEY};
+        use crate::selector::AgentResolveError;
+        fn named(records: &[(u32, &'static str, Option<&'static str>)]) -> ScriptSpec {
+            records
+                .iter()
+                .fold(ScriptSpec::new(), |spec, (id, name, kind)| {
+                    let record = AgentRecord {
+                        name: (*name).to_owned(),
+                        kind: kind.map(str::to_owned),
+                        ..AgentRecord::default()
+                    };
+                    spec.stored_metadata(
+                        Scope::Resource(ResourceId::local(*id)),
+                        RESOURCE_AGENT_KEY,
+                        record.encode(),
+                    )
+                })
+        }
+        let killed_any = |seen: &[FrameKind]| {
+            seen.iter().any(|frame| {
+                matches!(
+                    frame,
+                    FrameKind::Command {
+                        command: Command::KillResource { .. } | Command::KillResources { .. },
+                        ..
+                    }
+                )
+            })
+        };
+
+        let (result, _, seen) = run_selected(named(&[(2, "build", None)]), "%build").await;
+        assert!(result.is_ok(), "{result:?}");
+        assert!(killed_one(&seen, 2), "sent {seen:?}");
+
+        for (spec, target, want) in [
+            (named(&[(2, "build", None)]), "%ghost", "no_such_target"),
+            (
+                named(&[(1, "build", None), (2, "build", None)]),
+                "%build",
+                "selector_not_single",
+            ),
+            (
+                named(&[(2, "claude", Some("claude"))]),
+                "%claude",
+                "invalid_agent_name",
+            ),
+        ] {
+            let (result, _, seen) = run_selected(spec, target).await;
+            let Err(KillError::Agent(err)) = &result else {
+                panic!("{target}: expected an agent refusal, got {result:?}");
+            };
+            assert_eq!(err.code(), want, "{target}: {err}");
+            assert!(
+                !killed_any(&seen),
+                "{target}: a refusal kills nothing: {seen:?}"
+            );
+        }
+
+        let (result, _, seen) = run_selected(
+            named(&[(2, "build", None)])
+                .refuse_metadata(ErrorCode::PermissionDenied, "store offline"),
+            "%build",
+        )
+        .await;
+        assert!(
+            matches!(
+                result,
+                Err(KillError::Agent(AgentResolveError::PartialIndex { .. }))
+            ),
+            "an unreadable index is partial (exit 3), not a miss: {result:?}"
+        );
+        assert!(!killed_any(&seen), "sent {seen:?}");
     }
 
     /// A miss against a complete view is absence; a miss against a partial

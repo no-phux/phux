@@ -392,10 +392,12 @@ impl Scope {
         })
     }
 
-    /// The resource a non-`%name` selector picks, of any kind.
+    /// The resource a non-`%name` selector picks, of any kind. Callers branch
+    /// `%name` first, since a session verb needs the resolved session too.
     async fn pick(&self, socket_path: &Path, selector: &Selector) -> Option<ResourceId> {
-        let candidates =
-            phux_client::state::resolve_targets(socket_path, selector, &self.snapshot).await;
+        let candidates = phux_client::state::resolve_targets(socket_path, selector, &self.snapshot)
+            .await
+            .ok()?;
         phux_client::selector::pick_target_pane(&candidates, &self.snapshot.focused_resource)
     }
 
