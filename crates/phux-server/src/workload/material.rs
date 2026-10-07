@@ -92,6 +92,19 @@ impl ClientMaterial {
         classify(&sections)
     }
 
+    /// A DER certificate signing request, as the enrollment ALPN carries it
+    /// (`workload-auth.md` §8.2). Its self-signature must verify.
+    ///
+    /// # Errors
+    ///
+    /// [`MaterialError::TooLarge`] or [`MaterialError::InvalidRequest`].
+    pub fn from_request_der(der: &[u8]) -> Result<Self, MaterialError> {
+        if der.len() > MAX_MATERIAL_BYTES {
+            return Err(MaterialError::TooLarge);
+        }
+        request(der)
+    }
+
     /// A human name for the kind of material.
     #[must_use]
     pub const fn kind(&self) -> &'static str {

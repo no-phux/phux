@@ -80,6 +80,10 @@ pub struct QuicDial {
     pub token: Option<Vec<u8>>,
     /// How to trust the server's certificate.
     pub trust: CertTrust,
+    /// An end-to-end TLS session to run inside the stream: a relayed dial
+    /// whose relay terminates the outer TLS (ADR-0154 item 5). Set, only
+    /// [`dial_stream`] dials it.
+    pub inner: Option<InnerTls>,
     /// The TLS client identity to present. `None` reads it from
     /// `PHUX_WORKLOAD_CERT` / `PHUX_WORKLOAD_KEY` (see
     /// [`crate::tls::client_config`]); `Some` is exactly this identity and
@@ -128,11 +132,115 @@ pub async fn dial_with_alpn(d: &QuicDial, alpn: &[u8]) -> Result<QuicConnection,
     dial_inner(d, alpn, d.identity.as_ref()).await
 }
 
+/// The server a relayed dial reaches through its relay, end to end.
+///
+/// How to trust it (its CA pin) and the workload identity to present to it.
+/// The outer QUIC handshake trusts the relay and presents nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InnerTls {
+    /// The server's certificate trust (its CA, ADR-0153).
+    pub trust: CertTrust,
+    /// The identity presented to the server.
+    pub identity: TlsClientIdentity,
+    /// The name offered in the inner handshake (the relay route).
+    pub server_name: String,
+}
+
+/// The end-to-end session over one relayed QUIC stream.
+pub type InnerStream =
+    tokio_rustls::client::TlsStream<tokio::io::Join<quinn::RecvStream, quinn::SendStream>>;
+
+/// What [`dial_stream`] established.
+#[derive(Debug)]
+pub enum DialedStream {
+    /// The QUIC stream itself, its bearer preamble written.
+    Plain {
+        /// Client-to-server half.
+        send: quinn::SendStream,
+        /// Server-to-client half.
+        recv: quinn::RecvStream,
+    },
+    /// The end-to-end session inside it, its bearer preamble written inside.
+    Inner(Box<InnerStream>),
+}
+
+/// [`dial`], or the relayed dial for one carrying [`QuicDial::inner`].
+///
+/// The relayed dial is the outer handshake to the relay, then the end-to-end
+/// session to the server inside the stream, with the bearer preamble written
+/// inside it.
+///
+/// # Errors
+///
+/// As [`dial`]; a server presenting another CA than the inner pin is
+/// [`DialError::AuthorityChanged`].
+pub async fn dial_stream(
+    d: &QuicDial,
+) -> Result<(quinn::Endpoint, quinn::Connection, DialedStream), DialError> {
+    let Some(inner) = &d.inner else {
+        let (endpoint, conn, send, recv) = dial_inner(d, QUIC_ALPN, d.identity.as_ref()).await?;
+        return Ok((endpoint, conn, DialedStream::Plain { send, recv }));
+    };
+    let (endpoint, conn, mut stream) = dial_relayed(d, inner, QUIC_ALPN).await?;
+    if let Some(token) = &d.token {
+        use tokio::io::AsyncWriteExt as _;
+        let len = u32::try_from(token.len())
+            .map_err(|_| DialError::Connect("pairing token too long".to_owned()))?;
+        let written = async {
+            stream.write_all(&len.to_be_bytes()).await?;
+            stream.write_all(token).await?;
+            stream.flush().await
+        }
+        .await;
+        written
+            .map_err(|err| write_lost(&conn, err, "write token inside the end-to-end session"))?;
+    }
+    Ok((endpoint, conn, DialedStream::Inner(Box::new(stream))))
+}
+
+/// The outer dial to the relay (no token, no identity), then the inner
+/// handshake under `alpn`.
+pub(crate) async fn dial_relayed(
+    d: &QuicDial,
+    inner: &InnerTls,
+    alpn: &[u8],
+) -> Result<(quinn::Endpoint, quinn::Connection, InnerStream), DialError> {
+    let outer = QuicDial {
+        token: None,
+        inner: None,
+        ..d.clone()
+    };
+    let (endpoint, conn, send, recv) =
+        dial_inner(&outer, QUIC_ALPN, Some(&TlsClientIdentity::None)).await?;
+    let (config, refusal) =
+        crate::tls::client_config_reporting(&inner.trust, Some(&inner.identity), Some(alpn))?;
+    let name = rustls::pki_types::ServerName::try_from(inner.server_name.clone())
+        .map_err(|err| DialError::Connect(format!("invalid TLS server name: {err}")))?;
+    let stream = tokio_rustls::TlsConnector::from(Arc::new(config))
+        .connect(name, tokio::io::join(recv, send))
+        .await
+        .map_err(|err| {
+            crate::tls::authority_refusal(&refusal).unwrap_or_else(|| {
+                conn.close_reason().map_or_else(
+                    || DialError::Connect(format!("end-to-end TLS through the relay: {err}")),
+                    |close| close_error(&close),
+                )
+            })
+        })?;
+    Ok((endpoint, conn, stream))
+}
+
 async fn dial_inner(
     d: &QuicDial,
     alpn: &[u8],
     identity: Option<&TlsClientIdentity>,
 ) -> Result<QuicConnection, DialError> {
+    if d.inner.is_some() {
+        return Err(DialError::Connect(
+            "a dial with an end-to-end session inside the stream goes through dial_stream"
+                .to_owned(),
+        ));
+    }
     // A v4 client socket cannot reach a v6 listener and vice versa.
     let bind = if d.addr.is_ipv6() {
         SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0)
@@ -141,7 +249,7 @@ async fn dial_inner(
     };
     let mut endpoint = quinn::Endpoint::client(bind)
         .map_err(|err| DialError::Connect(format!("bind QUIC client socket: {err}")))?;
-    let mut config = client_config(&d.trust, identity, alpn)?;
+    let (mut config, refusal) = client_config(&d.trust, identity, alpn)?;
     if alpn == QUIC_RELAY_ALPN {
         // One endpoint per dial, so one tagged ID serves its one connection.
         let cid = tunnel_cid()?;
@@ -153,7 +261,9 @@ async fn dial_inner(
         .connect(d.addr, &d.server_name)
         .map_err(|err| DialError::Connect(format!("dial {}: {err}", d.addr)))?
         .await
-        .map_err(|err| handshake_error(d.addr, &err))?;
+        .map_err(|err| {
+            crate::tls::authority_refusal(&refusal).unwrap_or_else(|| handshake_error(d.addr, &err))
+        })?;
 
     let (mut send, recv) = conn
         .open_bi()
@@ -238,15 +348,12 @@ fn write_lost(conn: &quinn::Connection, err: impl std::fmt::Display, what: &str)
 
 /// The quinn client config: rustls TLS 1.3 with `alpn`, the trust policy's
 /// verifier, and the server's idle / keep-alive timings.
-fn client_config(
+pub(crate) fn client_config(
     trust: &CertTrust,
     identity: Option<&TlsClientIdentity>,
     alpn: &[u8],
-) -> Result<quinn::ClientConfig, DialError> {
-    let crypto = match identity {
-        Some(identity) => crate::tls::client_config_with_identity(trust, identity, Some(alpn))?,
-        None => crate::tls::client_config(trust, Some(alpn))?,
-    };
+) -> Result<(quinn::ClientConfig, crate::tls::AuthorityRefusal), DialError> {
+    let (crypto, refusal) = crate::tls::client_config_reporting(trust, identity, Some(alpn))?;
     let quic_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(crypto)
         .map_err(|err| DialError::Connect(format!("build QUIC crypto: {err}")))?;
     let mut config = quinn::ClientConfig::new(Arc::new(quic_crypto));
@@ -257,7 +364,7 @@ fn client_config(
         transport.max_idle_timeout(Some(idle));
     }
     config.transport_config(Arc::new(transport));
-    Ok(config)
+    Ok((config, refusal))
 }
 
 #[cfg(test)]
@@ -366,6 +473,7 @@ mod tests {
             token: Some(vec![0xAB; 32]),
             trust: CertTrust::SkipVerify,
             identity: None,
+            inner: None,
         })
         .await;
         let classified = match dialed {
@@ -416,6 +524,7 @@ mod tests {
                     crate::cert::cert_fingerprint(&dir.path().join("cert.pem")).expect("pin"),
                 ),
                 identity: None,
+                inner: None,
             },
             &TlsClientIdentity::RequirePaired {
                 certificate,

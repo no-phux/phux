@@ -1,5 +1,5 @@
 //! `phux workload` — the mTLS workload authority (ADR-0116,
-//! `docs/spec/workload-auth.md` §8): `authority [--init]`, `add-key` (enroll a
+//! `docs/spec/workload-auth.md` §8): `authority [--init|--rotate]`, `add-key` (enroll a
 //! certificate or sign a CSR, read from stdin or `--file`, never argv), `list`,
 //! and `revoke`. Like `phux pair` these write the state directory directly;
 //! a running server sees the new registry generation on its next connection.
@@ -31,10 +31,21 @@ pub(crate) enum WorkloadAction {
     ///
     /// Prints only the `sha256:` fingerprint clients pin. `--init` creates
     /// the CA first when none exists; an existing CA is never replaced.
+    /// `--rotate` replaces it with a new CA and re-issues the server
+    /// certificate under it: every client then refuses this server, naming
+    /// both fingerprints, until it re-pairs.
     Authority {
         /// Create the CA if it does not exist yet.
-        #[usage(long)]
+        #[usage(long, conflicts("--rotate"))]
         init: bool,
+
+        /// Replace the CA with a new one and re-issue the server
+        /// certificate under it. Every client must re-pair, and
+        /// every workload credential re-enroll; the replaced files are kept
+        /// beside the new ones as `*.retired-<unix>`. Restart the server to
+        /// present it.
+        #[usage(long)]
+        rotate: bool,
     },
     /// Enroll a client certificate, or sign a CSR into one.
     ///
@@ -105,7 +116,14 @@ pub(crate) enum WorkloadAction {
 pub(crate) fn run(action: WorkloadAction, json: bool) -> ExitCode {
     let paths = WorkloadPaths::from_env();
     let outcome = match action {
-        WorkloadAction::Authority { init } => authority(&paths, init),
+        WorkloadAction::Authority {
+            init: _,
+            rotate: true,
+        } => rotate(&paths),
+        WorkloadAction::Authority {
+            init,
+            rotate: false,
+        } => authority(&paths, init),
         WorkloadAction::AddKey {
             file,
             scope,
@@ -186,6 +204,74 @@ fn authority(paths: &WorkloadPaths, init: bool) -> Result<Report, CliError> {
         prose: vec![status.fingerprint],
         payload: None,
     })
+}
+
+/// `phux workload authority --rotate` (ADR-0153).
+fn rotate(paths: &WorkloadPaths) -> Result<Report, CliError> {
+    let (cert, key) = server_pair_paths();
+    let server = cert
+        .as_deref()
+        .zip(key.as_deref())
+        .map(|(cert, key)| workload::ServerPair { cert, key });
+    let rotation = workload::rotate_authority(paths, server).map_err(|error| cli_error(&error))?;
+    let mut prose = vec![
+        "Rotated the workload certificate authority.".to_owned(),
+        format!("  previous  {}", rotation.previous),
+        format!("  new       {}", rotation.fingerprint),
+    ];
+    match &rotation.server_leaf {
+        Some(leaf) => prose.push(format!("  server certificate re-issued under it: {leaf}")),
+        None if cert.is_none() => prose.push(
+            "  server certificate left alone: PHUX_WS_TLS_CERT/PHUX_WS_TLS_KEY name an operator-supplied one"
+                .to_owned(),
+        ),
+        None => prose.push(
+            "  no server certificate yet; the first remote listener is issued one under the new authority"
+                .to_owned(),
+        ),
+    }
+    prose.extend([
+        format!(
+            "The replaced files are kept beside the new ones with the suffix .{}.",
+            rotation.retired_suffix
+        ),
+        "Next:".to_owned(),
+        "  1. Restart the server to present it: `phux upgrade` (sessions survive).".to_owned(),
+        "  2. Re-pair every client. Each refuses this server, naming both fingerprints, until it does:"
+            .to_owned(),
+        "       `phux host add NAME` on each machine that added this host over ssh (it re-enrolls too)"
+            .to_owned(),
+        "       `phux pair --qr` here, scanned by each phone".to_owned(),
+        "     Workload credentials the old authority issued no longer verify; `phux host add` re-enrolls them."
+            .to_owned(),
+    ]);
+    Ok(Report {
+        document: json!({
+            "schema_version": 1,
+            "rotated": true,
+            "ca_fingerprint": rotation.fingerprint,
+            "previous_ca_fingerprint": rotation.previous,
+            "server_cert_fingerprint": rotation.server_leaf,
+            "retired_suffix": rotation.retired_suffix,
+        }),
+        prose,
+        payload: None,
+    })
+}
+
+/// The server's own TLS pair, as the server resolves it: `None` for both when
+/// `PHUX_WS_TLS_CERT` or `PHUX_WS_TLS_KEY` names an operator-supplied one,
+/// which rotation never touches.
+fn server_pair_paths() -> (Option<PathBuf>, Option<PathBuf>) {
+    if std::env::var_os("PHUX_WS_TLS_CERT").is_some()
+        || std::env::var_os("PHUX_WS_TLS_KEY").is_some()
+    {
+        return (None, None);
+    }
+    (
+        Some(phux_server::transport::tls::default_cert_path()),
+        Some(phux_server::transport::tls::default_key_path()),
+    )
 }
 
 /// Where the certificate issued for a CSR goes.

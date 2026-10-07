@@ -859,9 +859,10 @@ previous generation is disconnected when the overlap ends, so a leaked old
 token cannot outlive it; `phux pair rotate` says so, and
 `--overlap-seconds` (up to 86400) gives devices longer to pick up the new
 token. Certificate lifecycle is an operator
-responsibility, like socket permissions: with a self-signed certificate,
-verifying the `phux pair` fingerprint on the device's first connect is
-what closes the trust-on-first-use MITM window.
+responsibility, like socket permissions: verifying the `phux pair`
+fingerprint on the device's first connect is what closes the
+trust-on-first-use MITM window. The certificate the server provisions is
+issued by its workload CA, which clients pin from then on (next sections).
 
 #### Workload mTLS (`phux workload`)
 
@@ -875,11 +876,15 @@ certificate issued by the server's workload CA whose public key is enrolled
 and neither revoked nor expired. Where the listener asks for a pairing token,
 the token is still checked first, as outer admission only. With the variable
 set, a loopback WebSocket listener serves TLS too, because plaintext cannot
-carry the certificate check, and the server refuses to start with a
-WebTransport listener (`--webtransport`, `PHUX_WT_ADDR`) or a relay connector
-(`[[connector]]`): a browser session presents no client certificate, and a
-relay terminates TLS, so neither can carry one to this server. Unset, every
-listener and connector behaves exactly as described above.
+carry the certificate check. A relay connector (`[[connector]]`) and a
+WebTransport listener (`--webtransport`, `PHUX_WT_ADDR`) carry the
+certificate in a TLS session the client runs with this server inside its
+stream, since the relay terminates the outer TLS and a WebTransport session
+has none to give; under `paired` they admit nothing else
+([ADR-0154](adr/0154-devices-enroll-with-a-ticket-over-their-own-alpn.md)).
+A browser cannot run that session yet, so it reaches a `paired` server over
+neither. Unset, every listener and connector behaves exactly as described
+above.
 
 ```sh
 phux workload authority --init            # create the CA; prints only its fingerprint
@@ -901,6 +906,21 @@ cannot quietly downgrade the client to bearer-only admission
 ([workload-auth.md](spec/workload-auth.md) §3). It is off by default, needs
 both identity variables, and disables TLS session resumption so every
 handshake shows whether the server asked.
+
+A device with no ssh to the host, such as a phone, enrolls instead with a
+ticket: `phux pair --enroll` puts a single-use, ten-minute ticket in the
+connect link, and the device sends it with a certificate signing request for
+a key it generated (and, on a phone, keeps in its keystore) over the QUIC
+listener's second ALPN, `phux-enroll/1`, which the configured listener
+offers in every mode so devices can enroll before `paired` is turned on
+([ADR-0154](adr/0154-devices-enroll-with-a-ticket-over-their-own-alpn.md),
+[workload-auth.md](spec/workload-auth.md) §8.2). The server stores only each
+ticket's hash in `<state-dir>/enrollment-tickets`, consumes it on first use,
+and logs the ticket and credential ids an enrollment produced; revoke a
+credential you do not recognize with `phux workload revoke`. Under `paired`
+the QUIC listener completes a handshake without a client certificate so that
+ALPN can answer, and closes any terminal connection without an enrolled one
+before reading a byte of it.
 
 `phux host add me@host` enrolls a client certificate over SSH and saves
 owner-only key and certificate files in `<state-dir>/remotes/`. Its registry
@@ -934,6 +954,49 @@ ends none; until a valid one is written, no workload connection is admitted
 ([workload-auth.md](spec/workload-auth.md) §7). `phux doctor` reports the
 CA fingerprint and the registry generation.
 
+#### Server identity and the CA pin
+
+A server that provisions its TLS certificate (first remote listener, or the
+`phux pair` before it) has the workload CA issue it, creating the CA first
+if needed, and presents the chain: the leaf, then the CA
+([ADR-0153](adr/0153-clients-pin-the-workload-ca.md),
+[workload-auth.md](spec/workload-auth.md) §2). `phux pair` prints the CA
+fingerprint beside the leaf fingerprint, `--json` reports it as
+`ca_fingerprint`, and the connect link carries it as `ca`. Clients pin it:
+`phux host add` and `--code` record it in `known-authorities` beside
+`config.toml`, one line per server, keyed by its leaf pin. A client that
+paired earlier and holds only a leaf pin records the CA on its first
+connection to a server that presents one. Existing certificates are never
+re-issued, so a server provisioned before this keeps its self-signed leaf,
+presents no CA, and every pin a device already holds keeps working;
+upgrading needs no re-pair.
+
+A client pinning a CA refuses a server presenting another one before any
+pairing token is sent, and does not retry:
+
+```text
+mini: the server's certificate authority changed: pinned sha256:..., presented sha256:....
+Refusing to connect: a rotated authority and an impostor look the same from here.
+If the host's operator rotated it (`phux workload authority --rotate`), re-pair: `phux host add mini`
+```
+
+Rotate only on purpose: after a CA key may have leaked, or to move a server
+provisioned before ADR-0153 under its CA.
+
+```sh
+phux workload authority --rotate   # new CA + server certificate; prints both fingerprints
+phux upgrade                       # present it (sessions survive)
+```
+
+Then re-pair every client: `phux host add NAME` on each machine that added
+the host over ssh (it re-enrolls the workload certificate too), and a fresh
+`phux pair --qr` for each phone. Workload certificates the old CA issued no
+longer verify. The replaced CA, key, and server pair are kept beside the new
+ones as `*.retired-<unix>`, owner-only. An operator-supplied certificate
+(`PHUX_WS_TLS_CERT` / `PHUX_WS_TLS_KEY`) is never touched, and such a server
+presents no CA unless its chain names one. Deleting a line from
+`known-authorities` forgets that pin; the next connection learns it again.
+
 #### Policy mode (`[policy] mode`)
 
 `[policy] mode` in `config.toml` picks the server's authorization posture.
@@ -944,9 +1007,11 @@ The server reads it once at start
   server admits holds the owner's full grant. With a remote listener or
   relay connector configured, the server logs one warning at startup,
   because a pairing token then admits a consumer with command-execution
-  authority. This transitional posture stays until workload certificates
-  cover phones, relays, and WebTransport, which neither `local` nor
-  `paired` can serve today. Naming a workload CA or registry location
+  authority. This transitional posture stays until the clients that reach
+  such a server carry workload certificates: every entry point can carry
+  one under `paired`, but a phone needs an app that enrolls, a relayed
+  consumer a relay link that names the server's CA, and a browser a key it
+  cannot hold yet. Naming a workload CA or registry location
   (`PHUX_WORKLOAD_CA`, `PHUX_WORKLOAD_CA_KEY`, `PHUX_WORKLOAD_KEYS`) with no
   mode refuses to start the server: set `mode = "paired"` to enforce that
   authority, or unset the variables. A registry at the default location,
@@ -968,8 +1033,7 @@ The server reads it once at start
   `@global`. A refused HELLO ends with `DETACHED { AUTHENTICATION_FAILED }`.
   The scopes come from the registry at HELLO, never
   from a pairing token. A paired server refuses to start without usable
-  workload authority material, or beside a WebTransport listener or relay
-  connector.
+  workload authority material.
 
 The `phux.whoami/v1` record carries the grant the asking connection holds,
 and any connection may read its own.

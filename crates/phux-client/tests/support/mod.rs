@@ -115,6 +115,7 @@ pub async fn dial(addr: SocketAddr) -> Connection {
         token: None,
         trust: CertTrust::SkipVerify,
         identity: None,
+        inner: None,
     };
     let deadline = Instant::now() + STEP_DEADLINE;
     loop {

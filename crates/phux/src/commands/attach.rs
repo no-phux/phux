@@ -934,6 +934,7 @@ pub(crate) fn run_attach_remote_outcome(
     let credentials = RemoteCredentials {
         token,
         cert_fingerprint: entry.cert_fingerprint.clone(),
+        authority: entry.authority_pin(),
         identity,
     };
     // A relay route (ADR-0149) rides the TLS server name; `None` keeps the
@@ -1217,6 +1218,7 @@ pub(crate) fn run_attach_quic(
     let credentials = RemoteCredentials {
         token,
         cert_fingerprint,
+        authority: phux_client_runtime::target::AuthorityPin::default(),
         identity,
     };
     run_attach_quic_outcome(session, target, credentials, server_name, rec).code
@@ -1227,6 +1229,9 @@ pub(crate) fn run_attach_quic(
 struct RemoteCredentials {
     token: Option<String>,
     cert_fingerprint: Option<String>,
+    /// The CA pin beside the leaf pin (ADR-0153); default for a typed
+    /// `--cert-fingerprint`, which pins the leaf alone.
+    authority: phux_client_runtime::target::AuthorityPin,
     identity: Option<phux_dial::TlsClientIdentity>,
 }
 
@@ -1244,6 +1249,7 @@ fn run_attach_quic_outcome(
     let RemoteCredentials {
         token,
         cert_fingerprint,
+        authority,
         identity,
     } = credentials;
     let rt = match tokio::runtime::Builder::new_current_thread()
@@ -1259,7 +1265,7 @@ fn run_attach_quic_outcome(
 
     let DialPlan { dial, loopback } =
         match plan_quic_dial(&rt, &target, token, cert_fingerprint, server_name) {
-            Ok(plan) => plan.with_identity(identity),
+            Ok(plan) => plan.with_identity(identity).with_authority(&authority),
             Err(refusal) => {
                 return RemoteAttachOutcome::repairable(refusal.report_for_attach());
             }
@@ -1319,6 +1325,39 @@ impl DialPlan {
             Dial::Quic(quic) => quic.identity = identity,
             Dial::Ws(ws) => ws.identity = identity,
             Dial::Uds(_) => {}
+        }
+        self
+    }
+
+    /// Pin the server's certificate authority beside the leaf pin this plan
+    /// was built with (ADR-0153), or learn it on the first handshake while
+    /// none is pinned. A plan with no leaf pin (loopback) is left as it is.
+    pub(crate) fn with_authority(
+        mut self,
+        pin: &phux_client_runtime::target::AuthorityPin,
+    ) -> Self {
+        let trust = match &mut self.dial {
+            Dial::Quic(quic) => &mut quic.trust,
+            Dial::Ws(ws) => &mut ws.trust,
+            Dial::Uds(_) => return self,
+        };
+        if let CertTrust::Pinned(leaf) = trust
+            && let Some(pinned) = pin.trust(Some(leaf.as_str()))
+        {
+            *trust = pinned;
+        }
+        // Through a relay with the server's CA pinned: the workload identity
+        // goes to the server, end to end, and the relay sees none
+        // (ADR-0154 item 5).
+        if let Dial::Quic(quic) = &mut self.dial {
+            let identity = quic
+                .identity
+                .clone()
+                .unwrap_or(phux_dial::TlsClientIdentity::None);
+            if let Some(inner) = pin.inner(&identity) {
+                quic.inner = Some(inner);
+                quic.identity = Some(phux_dial::TlsClientIdentity::None);
+            }
         }
         self
     }
@@ -1422,6 +1461,7 @@ pub(crate) fn plan_quic_dial(
             token,
             trust,
             identity: None,
+            inner: None,
         }),
         loopback,
     })
@@ -1490,6 +1530,7 @@ pub(crate) fn run_attach_ws(
     let credentials = RemoteCredentials {
         token,
         cert_fingerprint,
+        authority: phux_client_runtime::target::AuthorityPin::default(),
         identity: None,
     };
     run_attach_ws_outcome(session, url, credentials, tls_server_name, rec).code
@@ -1505,11 +1546,12 @@ fn run_attach_ws_outcome(
     let RemoteCredentials {
         token,
         cert_fingerprint,
+        authority,
         identity,
     } = credentials;
     let DialPlan { dial, loopback } =
         match plan_ws_dial(url, token, cert_fingerprint, tls_server_name) {
-            Ok(plan) => plan.with_identity(identity),
+            Ok(plan) => plan.with_identity(identity).with_authority(&authority),
             Err(refusal) => {
                 return RemoteAttachOutcome::repairable(refusal.report_for_attach());
             }
@@ -1797,6 +1839,7 @@ mod tests {
             token: None,
             trust: CertTrust::SkipVerify,
             identity: None,
+            inner: None,
         })
     }
 
@@ -2257,6 +2300,7 @@ mod tests {
             token: None,
             trust: CertTrust::SkipVerify,
             identity: None,
+            inner: None,
         }));
 
         assert_eq!(ws, quic, "the two remote lanes share one policy");

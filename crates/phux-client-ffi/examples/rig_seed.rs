@@ -75,6 +75,7 @@ fn seed_session(url: &str, spec: &SessionSpec) -> Result<usize, String> {
             token: None,
             tls_server_name: None,
             client_identity: phux_client_runtime::TlsClientIdentity::None,
+            authority: phux_client_runtime::target::AuthorityPin::default(),
         },
         ClientOptions {
             control: ControlOptions {

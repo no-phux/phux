@@ -53,6 +53,9 @@ pub(crate) struct QuicListener {
     endpoint: quinn::Endpoint,
     admission: QuicAdmission,
     workload_registry: Option<Arc<crate::workload::ReloadingWorkloadRegistry>>,
+    /// Where the enrollment ALPN issues into, when this listener offers it
+    /// (`workload-auth.md` §8.2): the configured listener only.
+    enrollment: Option<Arc<crate::workload::WorkloadPaths>>,
     admissions: super::Admissions<QuicAccepted>,
     /// Refused preambles, warned about at a bounded rate.
     refusals: Arc<super::RefusalWarnings>,
@@ -73,7 +76,8 @@ pub(crate) enum QuicAdmission {
 impl QuicListener {
     /// Bind a listener that requires a pairing-store token when `tokens` is
     /// `Some`, and, with `client_ca`, a client certificate that maps to an
-    /// active credential in `workload_registry`.
+    /// active credential in `workload_registry`. With `enrollment` it also
+    /// offers the enrollment ALPN, issuing from that authority.
     pub(crate) fn from_pem_with_client_ca_and_registry(
         addr: SocketAddr,
         cert_path: &std::path::Path,
@@ -81,12 +85,19 @@ impl QuicListener {
         tokens: Option<Arc<crate::auth::ReloadingTokenStore>>,
         client_ca: Option<&rustls::pki_types::CertificateDer<'static>>,
         workload_registry: Option<Arc<crate::workload::ReloadingWorkloadRegistry>>,
+        enrollment: Option<crate::workload::WorkloadPaths>,
     ) -> Result<Self, QuicBindError> {
-        let tls = super::tls::quic_server_config_with_client_ca(cert_path, key_path, client_ca)?;
+        let tls = super::tls::quic_server_config_with_client_ca(
+            cert_path,
+            key_path,
+            client_ca,
+            enrollment.is_some(),
+        )?;
         Ok(Self {
             endpoint: server_endpoint(addr, tls, Some(MAX_CONCURRENT_BIDI_STREAMS))?,
             admission: tokens.map_or(QuicAdmission::Open, QuicAdmission::Store),
             workload_registry,
+            enrollment: enrollment.map(Arc::new),
             admissions: super::Admissions::new(),
             refusals: Arc::new(super::RefusalWarnings::new()),
         })
@@ -107,7 +118,7 @@ impl QuicListener {
     ) -> Result<Self, QuicBindError> {
         let (client_ca, registry) = workload.unzip();
         let mut listener = Self::from_pem_with_client_ca_and_registry(
-            addr, cert_path, key_path, None, client_ca, registry,
+            addr, cert_path, key_path, None, client_ca, registry, None,
         )?;
         listener.admission = admission;
         Ok(listener)
@@ -151,6 +162,14 @@ pub(super) fn server_endpoint(
     }
     server_config.transport_config(Arc::new(transport));
     Ok(quinn::Endpoint::server(server_config, addr)?)
+}
+
+/// The ALPN the handshake settled on.
+fn negotiated_alpn(conn: &quinn::Connection) -> Option<Vec<u8>> {
+    conn.handshake_data()?
+        .downcast::<quinn::crypto::rustls::HandshakeData>()
+        .ok()?
+        .protocol
 }
 
 /// The registry credential for a connection's client certificate, looked up
@@ -306,6 +325,7 @@ impl Incoming for QuicListener {
                     incoming,
                     self.admission.clone(),
                     self.workload_registry.clone(),
+                    self.enrollment.clone(),
                     Arc::clone(&self.refusals),
                 );
                 Ok(Box::pin(async move { admission.await.map(Ok) })
@@ -329,6 +349,7 @@ async fn admit_connection(
     incoming: quinn::Incoming,
     admission: QuicAdmission,
     workload_registry: Option<Arc<crate::workload::ReloadingWorkloadRegistry>>,
+    enrollment: Option<Arc<crate::workload::WorkloadPaths>>,
     refusals: Arc<super::RefusalWarnings>,
 ) -> Option<QuicAccepted> {
     let remote = incoming.remote_address();
@@ -343,6 +364,32 @@ async fn admit_connection(
             return None;
         }
     };
+    if negotiated_alpn(&conn).as_deref() == Some(phux_protocol::policy::ENROLL_ALPN) {
+        // Never a phux connection: one exchange, then closed.
+        match enrollment {
+            Some(paths) => enroll::serve(&conn, &paths).await,
+            None => conn.close(AUTH_FAILED_CODE.into(), b"unauthorized"),
+        }
+        return None;
+    }
+
+    // One refusal for every workload failure; the peer learns only that it
+    // was refused (`workload-auth.md` §7). The handshake asked for, but did
+    // not require, a certificate (ADR-0154), so this is the check that
+    // refuses a certificate-less or unenrolled peer, before any stream is
+    // read: no bearer preamble and no phux byte.
+    let workload_credential = match &workload_registry {
+        Some(registry) => {
+            let Some(credential) = workload_credential(&conn, registry) else {
+                debug!(%remote, "quic mTLS client identity refused");
+                conn.close(AUTH_FAILED_CODE.into(), b"unauthorized");
+                return None;
+            };
+            Some(credential)
+        }
+        None => None,
+    };
+
     let (send, mut recv) = match tokio::time::timeout(ADMISSION_DEADLINE, conn.accept_bi()).await {
         Ok(Ok(pair)) => pair,
         Ok(Err(err)) => {
@@ -380,19 +427,6 @@ async fn admit_connection(
         }
     };
 
-    // One refusal for every workload failure; the peer learns only that
-    // it was refused (`workload-auth.md` §7).
-    let workload_credential = match &workload_registry {
-        Some(registry) => {
-            let Some(credential) = workload_credential(&conn, registry) else {
-                debug!(%remote, "quic mTLS client identity refused");
-                conn.close(AUTH_FAILED_CODE.into(), b"unauthorized");
-                return None;
-            };
-            Some(credential)
-        }
-        None => None,
-    };
     let bearer = bearer_admission(&admission, credential.as_ref());
     let credential = workload_credential.or(credential);
     let peer = PeerIdentity {
@@ -1051,8 +1085,16 @@ async fn read_framed_bounded(
     Ok(Some(admitted))
 }
 
+mod enroll;
+
+#[cfg(test)]
+mod enroll_adversarial;
+
 #[cfg(test)]
 mod workload_adversarial;
+
+#[cfg(test)]
+mod authority_pin;
 
 #[cfg(test)]
 #[allow(
@@ -1106,6 +1148,7 @@ mod tests {
             &cert,
             &key,
             tokens,
+            None,
             None,
             None,
         )

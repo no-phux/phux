@@ -184,6 +184,8 @@ column is the base status word plus at most one relationship clause, about
 | [0150](./0150-the-server-keeps-the-restore-archive-current.md) | The server keeps the restore archive current | Accepted (amends [0055](./0055-always-on-server-and-ssh-bootstrapped-enrollment.md)) |
 | [0151](./0151-live-agent-sessions-bridge-into-native-restore.md) | Live agent sessions bridge into native restore | Accepted (builds on [0068](./0068-native-agent-session-restore.md), [0103](./0103-agent-session-resource-and-producer-fed-streams.md)) |
 | [0152](./0152-project-recipes-run-only-approved-bytes.md) | Project recipes run only approved bytes | Accepted (builds on [0054](./0054-worktree-bound-sessions.md), [0129](./0129-projections-are-named-by-key.md)) |
+| [0153](./0153-clients-pin-the-workload-ca.md) | Clients pin the workload CA, which issues the server certificate | Accepted (amends [0116](./0116-workload-auth-is-mtls.md)) |
+| [0154](./0154-devices-enroll-with-a-ticket-over-their-own-alpn.md) | Devices without ssh enroll with a single-use ticket over their own ALPN | Accepted (builds on [0116](./0116-workload-auth-is-mtls.md), [0153](./0153-clients-pin-the-workload-ca.md)) |
 
 ## When to write an ADR
 

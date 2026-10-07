@@ -21,16 +21,17 @@ use std::time::{Duration, Instant};
 
 use phux_client_ffi::{
     ABI_VERSION, PhuxAttachOptions, PhuxBytes, PhuxCatalogTerminal, PhuxClient, PhuxClientOptions,
-    PhuxClientResult, PhuxClientState, PhuxConnectOptions, PhuxResourceId, PhuxResourceInfo,
-    PhuxSessionInfo, PhuxTerminalGridView, PhuxWorkspaceInfo, PhuxWorkspaceMutation,
-    PhuxWorkspaceWindow, phux_client_catalog_terminal_get, phux_client_connect,
-    phux_client_connection_epoch, phux_client_connection_error, phux_client_feed_frame,
-    phux_client_free, phux_client_is_connected, phux_client_new, phux_client_outgoing_count,
-    phux_client_poll, phux_client_poll_pending, phux_client_queue_attach,
-    phux_client_resource_count, phux_client_resource_get, phux_client_send_paste,
-    phux_client_session_get, phux_client_state, phux_client_terminal_grid,
-    phux_client_terminal_resize, phux_client_viewport_resize, phux_client_workspace_info,
-    phux_client_workspace_mutate, phux_client_workspace_refresh, phux_client_workspace_window_get,
+    PhuxClientResult, PhuxClientState, PhuxConnectOptions, PhuxKeyEvent, PhuxResourceId,
+    PhuxResourceInfo, PhuxSessionInfo, PhuxTerminalGridView, PhuxWorkspaceInfo,
+    PhuxWorkspaceMutation, PhuxWorkspaceWindow, phux_client_catalog_terminal_get,
+    phux_client_connect, phux_client_connection_epoch, phux_client_connection_error,
+    phux_client_feed_frame, phux_client_free, phux_client_is_connected, phux_client_new,
+    phux_client_outgoing_count, phux_client_poll, phux_client_poll_pending,
+    phux_client_queue_attach, phux_client_resource_count, phux_client_resource_get,
+    phux_client_send_key, phux_client_send_paste, phux_client_session_get, phux_client_state,
+    phux_client_terminal_grid, phux_client_terminal_resize, phux_client_viewport_resize,
+    phux_client_workspace_info, phux_client_workspace_mutate, phux_client_workspace_refresh,
+    phux_client_workspace_window_get,
 };
 use phux_server_testkit::{run_local, spawn_server, spawn_server_with_seed_cmd};
 use tempfile::TempDir;
@@ -451,6 +452,33 @@ fn paste(client: *mut PhuxClient, terminal: &PhuxResourceId, text: &str) -> Phux
     unsafe { phux_client_send_paste(client, terminal, text.as_ptr(), text.len(), true) }
 }
 
+/// Run `command` in the seed shell the way a client submits a line: the
+/// text as a paste, then Enter as its own key. A carriage return inside the
+/// paste would run it under dash but not under a shell whose line editor
+/// takes bracketed paste (bash's readline), which keeps a pasted newline as
+/// text.
+fn run_line(client: *mut PhuxClient, terminal: &PhuxResourceId, command: &str) -> PhuxClientResult {
+    let pasted = paste(client, terminal, command);
+    if pasted != PhuxClientResult::Ok {
+        return pasted;
+    }
+    let enter = PhuxKeyEvent {
+        size: std::mem::size_of::<PhuxKeyEvent>(),
+        version: ABI_VERSION,
+        action: 1, // PHUX_KEY_PRESS
+        key: 58,   // PHUX_KEY_ENTER
+        modifiers: 0,
+        consumed_modifiers: 0,
+        composing: false,
+        has_text: false,
+        text: PhuxBytes::default(),
+        has_unshifted_codepoint: false,
+        unshifted_codepoint: 0,
+    };
+    // SAFETY: owning-thread live client, readable ID and event for this call.
+    unsafe { phux_client_send_key(client, terminal, &raw const enter) }
+}
+
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -550,8 +578,11 @@ fn retained_handle_recovers_workspace_catalog_and_seed_terminal_after_restart() 
             let marker = format!("FFI_RECOVERY_{generation}");
             // The full marker is absent from the shell command itself, so
             // observing it proves shell execution, not merely PTY input echo.
-            let command = format!("printf '%s%s\\n' 'FFI_RECOVERY_' '{generation}'\r");
-            assert_eq!(paste(client.0, &terminal, &command), PhuxClientResult::Ok);
+            let command = format!("printf '%s%s\\n' 'FFI_RECOVERY_' '{generation}'");
+            assert_eq!(
+                run_line(client.0, &terminal, &command),
+                PhuxClientResult::Ok
+            );
             poll_until(client.0, "fresh seed terminal input/output", || {
                 grid_text(client.0, &terminal).contains(&marker)
             })

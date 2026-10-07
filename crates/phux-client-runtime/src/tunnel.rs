@@ -400,7 +400,7 @@ async fn serve_quic(
         tracing::info!(host = name, transport = "quic", addr = %dial.addr, "remote tunnel dialing");
         // The registry's enrolled identity, never `PHUX_WORKLOAD_*` inherited
         // from a launcher shell.
-        let connected = phux_dial::quic::dial_with_identity(&dial, &resolved.client_identity)
+        let connected = phux_dial::quic::dial_stream(&dial)
             .await
             .map_err(|err| dial_message(name, &err));
         // The bearer preamble has been written; the owned token goes now,
@@ -410,7 +410,8 @@ async fn serve_quic(
     })
     .await
     .map_err(|_| timed_out(name))??;
-    let (endpoint, connection, mut to_host, mut from_host) = established;
+    let (endpoint, connection, stream) = established;
+    let (mut from_host, mut to_host) = host_halves(stream);
     if let Some(err) = connection.close_reason() {
         return Err(quic_closed_message(name, &err));
     }
@@ -439,6 +440,23 @@ async fn serve_quic(
     connection.close(quinn::VarInt::from_u32(0), b"tunnel closed");
     endpoint.close(quinn::VarInt::from_u32(0), b"");
     result
+}
+
+/// The host's read and write halves: the QUIC stream, or the end-to-end
+/// session inside it (ADR-0154 item 5).
+pub(crate) fn host_halves(
+    stream: phux_dial::quic::DialedStream,
+) -> (
+    Box<dyn tokio::io::AsyncRead + Send + Unpin>,
+    Box<dyn tokio::io::AsyncWrite + Send + Unpin>,
+) {
+    match stream {
+        phux_dial::quic::DialedStream::Plain { send, recv } => (Box::new(recv), Box::new(send)),
+        phux_dial::quic::DialedStream::Inner(stream) => {
+            let (recv, send) = tokio::io::split(*stream);
+            (Box::new(recv), Box::new(send))
+        }
+    }
 }
 
 async fn serve_ws(
@@ -601,6 +619,7 @@ mod tests {
             cert_fingerprint: None,
             tls_server_name: None,
             client_identity: phux_dial::TlsClientIdentity::None,
+            authority: crate::target::AuthorityPin::default(),
         };
         let joined = std::thread::spawn({
             let shared = Arc::clone(&shared);
@@ -631,6 +650,7 @@ mod tests {
             cert_fingerprint: None,
             tls_server_name: None,
             client_identity: phux_dial::TlsClientIdentity::None,
+            authority: crate::target::AuthorityPin::default(),
         });
         assert_eq!(tunnel.state(), TunnelState::Resolved);
         assert!(tunnel.message().is_none());

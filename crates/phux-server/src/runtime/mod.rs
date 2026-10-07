@@ -340,19 +340,6 @@ pub enum ServerError {
     #[error("connector: {0}")]
     Connector(#[from] crate::connector::ConnectorError),
 
-    /// Workload mode (`[policy] mode = "paired"`, or `PHUX_WORKLOAD_MTLS`
-    /// with no mode) beside a remote entry point that cannot require a
-    /// workload client certificate (ADR-0116).
-    #[error(
-        "workload mode is on ([policy] mode = \"paired\", or PHUX_WORKLOAD_MTLS with no mode), but {surface} cannot require a workload client certificate, so the server refuses to start; {remedy}"
-    )]
-    WorkloadModeUncovered {
-        /// The entry point that cannot be covered.
-        surface: &'static str,
-        /// How to start: remove that entry point, or leave workload mode.
-        remedy: &'static str,
-    },
-
     /// A `[policy]` mode the rest of the configuration contradicts
     /// (`docs/spec/workload-auth.md` §8).
     #[error("policy: {0}")]
@@ -704,7 +691,8 @@ impl ServerRuntime {
                 #[cfg(feature = "webtransport")]
                 let webtransport_listener = webtransport_addr.and_then(|addr| {
                     let env = state.with(crate::state::ServerState::server_env);
-                    let (listener, slot) = build_wt_listener(addr, &env);
+                    let paired = state.with(crate::state::ServerState::workload_mtls_required);
+                    let (listener, slot) = build_wt_listener(addr, paired, &env);
                     state.with_mut(|s| s.record_remote_listener(slot));
                     listener
                 });
@@ -948,11 +936,6 @@ fn startup_policy(
         remote,
         cfg.env.workload_authority_configured(),
     )?;
-    workload_auth::refuse_uncovered_surfaces(
-        posture.requires_workload_mtls(),
-        connectors,
-        webtransport,
-    )?;
     let engine = posture_policy_engine(cfg, posture)?;
     Ok((posture, engine))
 }
@@ -1122,7 +1105,69 @@ fn spawn_connector_supervisors(
     let Some(tokens) = consumer_tokens else {
         return;
     };
-    crate::connector::spawn_connectors(specs, tokens, state, input_lane, root_token);
+    let paired = state.with(crate::state::ServerState::workload_mtls_required);
+    let env = state.with(crate::state::ServerState::server_env);
+    let inner = connector_inner_tls(paired, &env);
+    if paired && inner.is_none() {
+        // Fail closed: under `paired` a bridged consumer is admitted only by
+        // the certificate its inner session presents.
+        error!(
+            "relay connectors disabled: the end-to-end TLS they need under `paired` could not be built"
+        );
+        return;
+    }
+    crate::connector::spawn_connectors(
+        specs,
+        tokens,
+        inner.as_ref(),
+        state,
+        input_lane,
+        root_token,
+    );
+}
+
+/// The end-to-end TLS session bridged consumers may run (ADR-0154 item 5):
+/// the server's own certificate and, under `paired`, the workload CA and
+/// registry it requires a certificate from. `None`, after logging, when it
+/// cannot be built.
+fn connector_inner_tls(
+    paired: bool,
+    env: &ServerEnv,
+) -> Option<std::sync::Arc<crate::transport::inner_tls::InnerTls>> {
+    let unspecified = SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0));
+    let (cert, key) = remote_certificate(unspecified, "relay", env)?;
+    inner_tls_for(paired, env, &cert, &key)
+}
+
+/// The end-to-end session over the server's certificate at `cert`/`key`,
+/// requiring a workload certificate under `paired` (ADR-0154 items 5, 6).
+fn inner_tls_for(
+    paired: bool,
+    env: &ServerEnv,
+    cert: &Path,
+    key: &Path,
+) -> Option<std::sync::Arc<crate::transport::inner_tls::InnerTls>> {
+    let workload = match workload_auth::WorkloadAuth::for_posture(paired, env) {
+        Ok(workload) => workload,
+        Err(err) => {
+            error!(error = %err, "configured workload mTLS unavailable for relay consumers");
+            return None;
+        }
+    };
+    match crate::transport::inner_tls::InnerTls::new(
+        cert,
+        key,
+        workload
+            .as_ref()
+            .map(|auth| (&auth.ca, std::sync::Arc::clone(&auth.registry))),
+        env.workload_paths(),
+    ) {
+        Ok(inner) => Some(std::sync::Arc::new(inner)),
+        Err(err) => {
+            error!(error = %err, "end-to-end TLS for relay consumers unavailable");
+            None
+        }
+    }
 }
 
 /// Rebuild the session tree from the upgrade blob (ADR-0032), all or
@@ -1625,9 +1670,9 @@ fn warn_if_cert_omits_bind(cert_path: &Path, advertised: &[String], transport: &
 
 /// Certificate and key a TLS listener bound to `addr` presents: the
 /// operator's (`PHUX_WS_TLS_CERT` / `PHUX_WS_TLS_KEY`) when set, otherwise
-/// the shared self-signed pair, provisioned on first use and never
-/// regenerated (ADR-0091), so every listener presents the one fingerprint
-/// `phux pair` prints. `None`, after logging, when it cannot be provisioned.
+/// the shared pair, issued by the workload CA on first use (ADR-0153) and
+/// never regenerated (ADR-0091), so every listener presents the one
+/// fingerprint `phux pair` prints. `None`, after logging, when it cannot be provisioned.
 fn remote_certificate(
     addr: SocketAddr,
     transport: &str,
@@ -1648,10 +1693,14 @@ fn remote_certificate(
     }
     let advertised = crate::transport::tls::advertised_for_bind(addr);
     if !operator_cert
-        && let Err(err) =
-            crate::transport::tls::ensure_self_signed_for(&cert_path, &key_path, &advertised)
+        && let Err(err) = crate::transport::tls::ensure_server_identity(
+            &cert_path,
+            &key_path,
+            &advertised,
+            &env.workload_paths(),
+        )
     {
-        error!(error = %err, transport, "failed to provision self-signed certificate; listener disabled");
+        error!(error = %err, transport, "failed to provision the server certificate; listener disabled");
         return None;
     }
     warn_if_cert_omits_bind(&cert_path, &advertised, transport);
@@ -1719,6 +1768,8 @@ fn build_quic_listener_for(
         tokens,
         workload_ca.as_ref(),
         workload_registry,
+        // Every mode, so a device can enroll before `paired` is turned on.
+        Some(env.workload_paths()),
     ) {
         Ok(quic) => {
             let bound = quic.local_addr().map_or(addr_s, |a| a.to_string());
@@ -1744,6 +1795,7 @@ fn build_quic_listener_for(
 #[cfg(feature = "webtransport")]
 fn build_wt_listener(
     addr: SocketAddr,
+    workload_mtls: bool,
     env: &ServerEnv,
 ) -> (
     Option<crate::transport::webtransport::WtListener>,
@@ -1757,8 +1809,17 @@ fn build_wt_listener(
     };
     let tokens = remote_tokens(secure, "webtransport", env);
     let token_count = tokens.as_ref().map_or(0, |s| s.len());
-    match crate::transport::webtransport::WtListener::from_pem(addr, &cert_path, &key_path, tokens)
-    {
+    let paired = workload_mtls;
+    let inner = inner_tls_for(paired, env, &cert_path, &key_path);
+    if paired && inner.is_none() {
+        error!(
+            "webtransport disabled: the end-to-end TLS it needs under `paired` could not be built"
+        );
+        return disabled(WT, addr_s, ListenerDisabledReason::TlsSetupFailed);
+    }
+    match crate::transport::webtransport::WtListener::from_pem(
+        addr, &cert_path, &key_path, tokens, inner,
+    ) {
         Ok(wt) => {
             let bound = wt.local_addr().map_or(addr_s, |a| a.to_string());
             info!(addr = %bound, tokens = token_count, secure, "WebTransport listening");

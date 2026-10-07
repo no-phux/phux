@@ -1394,6 +1394,7 @@ impl LinkTransport for NetLinkTransport {
                     token,
                     trust: trust.clone(),
                     identity: None,
+                    inner: None,
                 };
                 let (endpoint, connection, send, recv) = phux_dial::quic::dial(&dial)
                     .await

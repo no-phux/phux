@@ -82,6 +82,8 @@ impl From<phux_dial::DialError> for AttachError {
                 Self::Connect(format!("{TOKEN_REFUSED} ({msg})"))
             }
             phux_dial::DialError::Unreachable(msg) => Self::Unreachable(msg),
+            // Carries the AUTHORITY_CHANGED phrase, so it stays fatal.
+            phux_dial::DialError::AuthorityChanged(change) => Self::Connect(change.to_string()),
             // A stalled lane is a disconnection; mapping it here routes a
             // half-open `wss://` socket into the bounded reconnect.
             phux_dial::DialError::Stalled(msg) => {

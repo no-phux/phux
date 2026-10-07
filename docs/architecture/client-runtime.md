@@ -58,6 +58,10 @@ on a drop walks the `reconnect::Ladder`; `is_fatal_refusal` ends the session
 instead. A resync redials at once, a nudge cuts a backoff short and probes
 an attached socket, and the never-attached phase is bounded by attempts
 and wall clock so a caller can derive its wait from `ConnectOptions`.
+Every acknowledged submission (`apply_line`, `apply_paste`,
+`apply_tab_completion`) that waits on the wire nudges too, so a half-open
+link is dropped within `probe_timeout` and its receipt follows the
+reconnect, instead of waiting for an idle timeout.
 
 ## Where a connected binding takes delivery
 

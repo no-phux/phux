@@ -25,6 +25,7 @@ pub mod connection;
 pub mod control;
 pub mod dial;
 pub mod engine;
+pub mod enroll;
 pub mod perf;
 #[cfg(feature = "engine")]
 pub mod publication;
@@ -40,5 +41,5 @@ pub use runtime::{
 mod view;
 /// The TLS client identity a [`Target`] presents; re-exported so embedders
 /// can name it without depending on `phux-dial`.
-pub use phux_dial::TlsClientIdentity;
+pub use phux_dial::{AuthorityLearner, TlsClientIdentity};
 pub use view::ViewId;

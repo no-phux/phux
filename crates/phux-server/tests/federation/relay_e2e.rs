@@ -157,6 +157,7 @@ async fn dial(
         token,
         trust: CertTrust::Pinned(fingerprint.to_owned()),
         identity: None,
+        inner: None,
     };
     let (endpoint, conn, send, recv) = phux_dial::quic::dial(&dial)
         .await

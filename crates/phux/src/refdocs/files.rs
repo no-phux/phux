@@ -52,6 +52,13 @@ pub(crate) fn page() -> Page {
          `XDG_CONFIG_HOME` to isolate configuration for a test or an \
          alternate environment. `phux config path` prints the resolved \
          path.\n\n\
+         Beside it, `known-authorities` holds the certificate authority \
+         each paired server's leaf was issued by, one line per server \
+         keyed by the `[[remote]]` entry's `cert-fingerprint` \
+         (ADR-0153). `phux host add` writes it, and so does the first \
+         connection to a server whose CA is not pinned yet; a server \
+         presenting another CA is then refused. Delete a line to forget \
+         a pin.\n\n\
          ## State\n\n\
          The state directory is `$XDG_STATE_HOME/<profile-dir>`, falling \
          back to `~/.local/state/<profile-dir>` when `XDG_STATE_HOME` is \
@@ -65,9 +72,10 @@ pub(crate) fn page() -> Page {
          ├── onboarding.json     # versioned first-use journey progress\n\
          ├── onboarding.lock     # serializes first-use moment delivery\n\
          ├── plugin-runs.jsonl   # recent plugin action/hook runs (phux plugin log)\n\
-         ├── remote-cert.pem     # auto-provisioned remote-consumer certificate\n\
+         ├── remote-cert.pem     # auto-provisioned remote-consumer certificate (leaf, then CA)\n\
          ├── remote-key.pem      # its private key (owner-only, 0600)\n\
          ├── remote-tokens       # structured credential store (owner-only, 0600)\n\
+         ├── enrollment-tickets  # single-use enrollment ticket hashes (owner-only, 0600)\n\
          ├── reports/            # local bug-report bundles (TUI C-a B, phux report)\n\
          ├── service-wrapper.sh  # `phux service install --restore` wrapper\n\
          └── workspace.json      # `--restore` archive, kept current by `--autosave`\n\
@@ -107,11 +115,15 @@ pub(crate) fn page() -> Page {
            and stderr. Writers lock it while appending and compact it to \
            the newest 100 runs once it passes 1 MiB. Recording is best \
            effort and never fails a run.\n\
-         - `remote-cert.pem` / `remote-key.pem` are the self-signed \
-           TLS pair auto-provisioned for remote consumers (ADR-0031); \
-           `PHUX_WS_TLS_CERT` / `PHUX_WS_TLS_KEY` substitute an \
-           operator-supplied pair. A complete pair is never \
-           regenerated, so the pinned fingerprint stays stable -- which \
+         - `remote-cert.pem` / `remote-key.pem` are the TLS pair \
+           auto-provisioned for remote consumers (ADR-0031): issued by \
+           the workload CA (`workload-ca.pem`), the certificate file \
+           holding the leaf then the CA (ADR-0153), or self-signed when \
+           provisioned before that. `PHUX_WS_TLS_CERT` / \
+           `PHUX_WS_TLS_KEY` substitute an operator-supplied pair. A \
+           complete pair is never regenerated (`phux workload authority \
+           --rotate` replaces it on purpose), so the pinned fingerprint \
+           stays stable -- which \
            also means its subjectAltName set is fixed at generation \
            (ADR-0091); `phux doctor` reports whether it names the \
            address phux advertises.\n\
@@ -128,6 +140,11 @@ pub(crate) fn page() -> Page {
            authentication. `PHUX_WS_TOKENS` moves it without weakening those \
            checks. Legacy anonymous token lines \
            require the idempotent `phux pair --migrate-legacy` conversion.\n\
+         - `enrollment-tickets` holds the SHA-256 of each single-use \
+           ticket `phux pair --enroll` minted (never the ticket), with \
+           the scope and lifetime the credential it enrolls gets; the \
+           first redemption consumes it (ADR-0154). It sits beside the \
+           workload registry and moves with `PHUX_WORKLOAD_KEYS`.\n\
          - `reports/` holds local bug-report bundles written by the TUI \
            `report-bug` action (`C-a B`) and by `phux report new`. Each \
            subdirectory is one report (session, pane, version, log tails, \

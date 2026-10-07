@@ -17,7 +17,7 @@ use tokio::sync::{Notify, watch};
 use crate::control::ControlPlane;
 use crate::dial::DIAL_TIMEOUT;
 use crate::reconnect::Ladder;
-use crate::target::{Resolved, Transport as Lane};
+use crate::target::{AuthorityPin, Resolved, Transport as Lane};
 
 /// The lane a session rides.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +53,8 @@ pub struct Target {
     pub name: String,
     /// The SHA-256 leaf fingerprint to pin, or `None` for loopback.
     pub cert_fingerprint: Option<String>,
+    /// The certificate-authority pin beside the leaf pin (ADR-0153).
+    pub authority: AuthorityPin,
     /// Where the bearer token lives; read only at dial time.
     pub token_file: Option<PathBuf>,
     /// An in-memory bearer token supplied by an embedder such as a Keychain
@@ -77,6 +79,7 @@ impl Target {
             name: path.display().to_string(),
             transport: Transport::Uds(path),
             cert_fingerprint: None,
+            authority: AuthorityPin::default(),
             token_file: None,
             token: None,
             tls_server_name: None,
@@ -92,6 +95,7 @@ impl Target {
             name: url.clone(),
             transport: Transport::Ws(url),
             cert_fingerprint: None,
+            authority: AuthorityPin::default(),
             token_file: None,
             token: None,
             tls_server_name: None,
@@ -107,6 +111,7 @@ impl Target {
             name: authority.clone(),
             transport: Transport::Quic(authority),
             cert_fingerprint: None,
+            authority: AuthorityPin::default(),
             token_file: None,
             token: None,
             tls_server_name: None,
@@ -121,7 +126,7 @@ impl Target {
     }
 
     /// The registry entry a WebSocket or QUIC dial is planned from.
-    fn resolved(&self) -> Option<Resolved> {
+    pub(crate) fn resolved(&self) -> Option<Resolved> {
         let (endpoint, transport) = match &self.transport {
             Transport::Uds(_) => return None,
             Transport::Ws(url) => (url.clone(), Lane::Ws(url.clone())),
@@ -136,6 +141,7 @@ impl Target {
             transport,
             token_file: self.token_file.clone(),
             cert_fingerprint: self.cert_fingerprint.clone(),
+            authority: self.authority.clone(),
             tls_server_name: self.tls_server_name.clone(),
             client_identity: self.client_identity.clone(),
         })
@@ -152,6 +158,7 @@ impl From<Resolved> for Target {
             transport,
             name: resolved.name,
             cert_fingerprint: resolved.cert_fingerprint,
+            authority: resolved.authority,
             token_file: resolved.token_file,
             token: None,
             tls_server_name: resolved.tls_server_name,

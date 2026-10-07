@@ -364,6 +364,8 @@ pub struct Resolved {
     pub token_file: Option<PathBuf>,
     /// The SHA-256 leaf fingerprint to pin, or `None` for loopback.
     pub cert_fingerprint: Option<String>,
+    /// The certificate-authority pin beside the leaf pin (ADR-0153).
+    pub authority: AuthorityPin,
     /// The TLS server name (SNI) the dial offers instead of the endpoint's
     /// host: a relay route when the endpoint is a relay (ADR-0149).
     pub tls_server_name: Option<String>,
@@ -371,6 +373,102 @@ pub struct Resolved {
     /// [`TlsClientIdentity::None`]. Only paths: the key is read by the TLS
     /// stack at dial time, and the environment is never consulted.
     pub client_identity: TlsClientIdentity,
+}
+
+/// The server's certificate-authority pin (ADR-0153).
+///
+/// The CA a dial requires the server's leaf to chain to, and, while none is
+/// pinned, where the first authenticated connection reports the CA the pinned
+/// leaf was issued by.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AuthorityPin {
+    /// The pinned CA, `sha256:` form. `None` pins the leaf alone.
+    pub ca: Option<String>,
+    /// Called with the CA a leaf-pinned server presented. Unused once
+    /// [`Self::ca`] is set.
+    pub learner: Option<phux_dial::AuthorityLearner>,
+    /// The relay route the server is reached through (ADR-0154 item 5): the
+    /// leaf pin is then the relay's, and [`Self::ca`] is the server's, which
+    /// an end-to-end session inside the relayed stream verifies.
+    pub route: Option<String>,
+}
+
+impl AuthorityPin {
+    /// The pin `known-authorities` beside `config_path` holds for `leaf`
+    /// (through `route` when a relay serves the server), learning into the
+    /// same file while a direct server's is missing. A relayed server's CA
+    /// is never learned: the relay's leaf does not authenticate it.
+    #[must_use]
+    pub fn from_store(config_path: &Path, leaf: Option<&str>, route: Option<&str>) -> Self {
+        let route = route
+            .map(str::trim)
+            .filter(|route| !route.is_empty())
+            .map(str::to_owned);
+        let Some(leaf) = leaf.filter(|leaf| !leaf.trim().is_empty()) else {
+            return Self {
+                route,
+                ..Self::default()
+            };
+        };
+        let store = phux_config::known_authorities::path_beside(config_path);
+        let ca = phux_config::known_authorities::lookup(&store, leaf, route.as_deref());
+        let learner =
+            (ca.is_none() && route.is_none()).then(|| store_learner(store, leaf.to_owned()));
+        Self { ca, learner, route }
+    }
+
+    /// The dial trust for `leaf`: [`phux_dial::CertTrust::from_pins`]. For a
+    /// relayed server it is the relay's leaf alone; the server's CA belongs
+    /// to [`Self::inner`].
+    #[must_use]
+    pub fn trust(&self, leaf: Option<&str>) -> Option<phux_dial::CertTrust> {
+        if self.route.is_some() {
+            return phux_dial::CertTrust::from_pins(leaf.map(str::to_owned), None, None);
+        }
+        phux_dial::CertTrust::from_pins(
+            leaf.map(str::to_owned),
+            self.ca.clone(),
+            self.learner.clone(),
+        )
+    }
+
+    /// The end-to-end session a relayed dial runs to the server, presenting
+    /// `identity`: when the server's CA is pinned for the route. `None` dials
+    /// the relayed stream plain, as before ADR-0154.
+    #[must_use]
+    pub fn inner(&self, identity: &TlsClientIdentity) -> Option<phux_dial::quic::InnerTls> {
+        let route = self.route.clone()?;
+        let ca = self.ca.clone()?;
+        Some(phux_dial::quic::InnerTls {
+            trust: phux_dial::CertTrust::Authority { ca, leaf: None },
+            identity: identity.clone(),
+            server_name: route,
+        })
+    }
+}
+
+/// Records the CA a leaf-pinned server presented into `store`, once per
+/// learner: trust on first connect, after a client upgrade, for a pair made
+/// before servers presented their CA.
+fn store_learner(store: PathBuf, leaf: String) -> phux_dial::AuthorityLearner {
+    let recorded = std::sync::atomic::AtomicBool::new(false);
+    phux_dial::AuthorityLearner::new(move |authority| {
+        if recorded.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        match phux_config::known_authorities::record(&store, &leaf, None, authority) {
+            Ok(true) => tracing::info!(
+                %authority,
+                store = %store.display(),
+                "pinned the server's certificate authority on first connect"
+            ),
+            Ok(false) => {}
+            Err(error) => {
+                recorded.store(false, std::sync::atomic::Ordering::SeqCst);
+                tracing::warn!(%error, "could not pin the server's certificate authority");
+            }
+        }
+    })
 }
 
 /// The TLS identity a registry entry names: its enrolled certificate and
@@ -401,7 +499,13 @@ pub fn resolve(raw: &str, config_path: Option<&Path>) -> Result<Resolved, String
         .map_err(|err| format!("could not read the phux config {}: {err}", path.display()))?;
     reject_duplicates(&config.remote)?;
     let entry = find_entry(&config.remote, &target).ok_or_else(|| unregistered(&target))?;
-    resolve_entry(entry, &target)
+    let mut resolved = resolve_entry(entry, &target)?;
+    resolved.authority = AuthorityPin::from_store(
+        &path,
+        resolved.cert_fingerprint.as_deref(),
+        resolved.tls_server_name.as_deref(),
+    );
+    Ok(resolved)
 }
 
 /// Resolve one registry entry for `target`, applying its explicit `:PORT`.
@@ -423,6 +527,7 @@ pub fn resolve_entry(entry: &RemoteConfigEntry, target: &RemoteTarget) -> Result
         transport,
         token_file: entry.token_file.clone(),
         cert_fingerprint: entry.cert_fingerprint.clone(),
+        authority: AuthorityPin::default(),
         tls_server_name: entry
             .tls_server_name
             .as_deref()
@@ -676,6 +781,51 @@ mod tests {
         );
         let half = resolve("half", Some(&config)).expect_err("half");
         assert!(half.contains("together"), "{half}");
+    }
+
+    /// ADR-0153 migration: an entry paired before servers presented their CA
+    /// pins its leaf and learns the CA on its first connection, into
+    /// `known-authorities` beside the registry; from then on every dial pins
+    /// the CA, and the registry itself is never rewritten.
+    #[test]
+    fn a_leaf_pinned_entry_learns_its_authority_once_and_then_pins_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("config.toml");
+        let pin = "AB:".repeat(31) + "AB";
+        let registry = format!(
+            "[[remote]]\nname = \"mini\"\nendpoint = \"quic://127.0.0.1:8788\"\n\
+             cert-fingerprint = \"{pin}\"\n"
+        );
+        std::fs::write(&config, &registry).expect("config");
+        let first = resolve("mini", Some(&config)).expect("mini");
+        assert_eq!(first.authority.ca, None);
+        let Some(phux_dial::CertTrust::PinnedLearning { leaf, learn }) =
+            first.authority.trust(first.cert_fingerprint.as_deref())
+        else {
+            panic!("a leaf pin that learns");
+        };
+        assert_eq!(leaf, pin);
+
+        let authority = format!("sha256:{}", "c".repeat(64));
+        // The verifier calls it on every handshake; the store is written once.
+        learn.learn(&authority);
+        learn.learn(&authority);
+
+        let second = resolve("mini", Some(&config)).expect("mini");
+        assert_eq!(second.authority.ca.as_deref(), Some(authority.as_str()));
+        assert!(second.authority.learner.is_none());
+        assert_eq!(
+            second.authority.trust(second.cert_fingerprint.as_deref()),
+            Some(phux_dial::CertTrust::Authority {
+                ca: authority,
+                leaf: Some(pin),
+            })
+        );
+        assert_eq!(
+            std::fs::read_to_string(&config).expect("config"),
+            registry,
+            "the registry is untouched"
+        );
     }
 
     #[test]

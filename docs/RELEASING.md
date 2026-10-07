@@ -673,6 +673,19 @@ without mutating a release. The mobile repository resolves the workflow run by
 its pinned phux commit and can fall back to building this script from an exact
 phux checkout after run-artifact retention expires.
 
+Both mobile artifact workflows (`ffi-xcframework.yml`, `ffi-android.yml`) build
+the commit their run names, so a successful run's `headSha` always equals its
+provenance's phux revision: a push run checks out `github.sha`, not the branch
+that may have moved while it queued, and a step fails the run if the provenance
+names any other commit. Their concurrency groups are keyed on that commit, not
+the branch, because a group holds only one pending run and a branch-keyed group
+let a newer push replace a queued run whose commit a pin may target. A dispatch
+with `-f commit=<full sha>` builds that commit from any ref; since the run's
+`headSha` is then the ref's head, it suffixes the artifact names with
+`-<sha>` so a lookup by `headSha` never downloads them under the canonical
+name. To produce canonically named artifacts for an older commit, dispatch on a
+ref whose head is that commit.
+
 ## Publishing phux-protocol to crates.io
 
 Publishing is irreversible — versions cannot be reused and the name cannot be

@@ -283,7 +283,12 @@ impl PhuxMachineRegistry {
             host: entry.name.clone(),
             port: None,
         };
-        let resolved = target::resolve_entry(entry, &target).map_err(BridgeError::state)?;
+        let mut resolved = target::resolve_entry(entry, &target).map_err(BridgeError::state)?;
+        resolved.authority = target::AuthorityPin::from_store(
+            &self.path,
+            resolved.cert_fingerprint.as_deref(),
+            resolved.tls_server_name.as_deref(),
+        );
         Ok(PhuxRemoteTunnel {
             name: entry.name.clone(),
             endpoint: resolved.endpoint.clone(),

@@ -81,6 +81,22 @@ and all mutating authority. A client with a prior binding SHALL surface
 `authority_changed` and refuse; it SHALL NOT silently trust the
 replacement.
 
+<!-- impl-status: shipped; probe: chain_authority,AuthorityChange,issue_server_identity,rotate_authority,known_authorities -->
+> **Status: shipped (ADR-0153).** The reference server provisions its
+> certificate from the CA and presents the chain, leaf then CA; a chain
+> names its CA when the leaf verifies under the chain's last certificate.
+> Clients pin the CA at pairing (`phux pair --json` `ca_fingerprint`, the
+> connect link's `ca`) in `known-authorities` beside `config.toml`, keyed
+> by the leaf pin. A changed CA is refused as `authority_changed`, naming
+> both fingerprints, and never retried. Two transitional rules keep pairs
+> made earlier working, informatively: a server whose certificate predates
+> its CA keeps its self-signed leaf (it is never re-issued) and presents no
+> CA, so a client pinning a CA beside that exact leaf accepts the leaf; and
+> a client holding only a leaf pin records the CA its pinned leaf chains to
+> on its first connection. `phux workload authority --rotate` is the
+> rotation: a new CA and a server certificate under it, with no
+> cross-signing, so every client re-pairs.
+
 The CA's key file SHALL persist at `<state-dir>/workload-ca.key` with
 the CA certificate at `<state-dir>/workload-ca.pem`. The containing
 state directory SHALL be owner-only. Key and registry files SHALL be
@@ -88,7 +104,8 @@ regular, owner-owned, no-follow-opened files with mode `0600`; creation
 and replacement SHALL use an owner-controlled lock, same-directory
 temporary file, file sync, atomic rename, and directory sync. A missing
 CA may be created only by an explicit initialization path (first
-routable listen, or `phux workload authority --init`).
+routable listen, the `phux pair` that provisions the server certificate
+before it, or `phux workload authority --init`).
 
 Every directory above the state directory SHALL also be controlled by its
 owner or root. The reference implementation checks only the immediate
@@ -150,10 +167,15 @@ which intersects the registry ceiling into the connection's effective
 grant before any stateful frame is processed.
 
 - **No certificate, unknown certificate, or expired certificate** on a
-  paired listener refuses the connection at the TLS layer — QUIC
-  application close, WSS handshake rejection — before any phux frame
-  is read. There is no phux-shaped error pre-HELLO because no phux
-  frame has been exchanged.
+  paired listener refuses the connection before any phux frame is read:
+  a WSS listener rejects the handshake; a QUIC listener, which also
+  serves the enrollment ALPN (§8.2) and so asks for a certificate without
+  requiring one in the handshake, closes a terminal-ALPN connection that
+  presented none, or one not active in the registry, with an application
+  close before reading any stream (so no bearer preamble either). A
+  certificate that is presented is still verified inside the handshake.
+  There is no phux-shaped error pre-HELLO because no phux frame has been
+  exchanged.
 - **A client configured to require paired authority** SHALL close
   without issuing a stateful operation when the server does not
   request a client certificate, or when the server certificate does
@@ -162,8 +184,8 @@ grant before any stateful frame is processed.
   (Informative: the reference dialer turns this on with
   `PHUX_WORKLOAD_REQUIRE_PAIRED`, off by default, and fails the TLS
   handshake itself when no `CertificateRequest` arrived, with session
-  resumption disabled so every handshake can show one. It still pins the
-  server leaf rather than a CA; see §2.)
+  resumption disabled so every handshake can show one. It pins the CA when
+  one is pinned and the leaf otherwise; see §2.)
 - **TLS session resumption** preserves the authenticated identity: a
   resumed session carries the same verified peer as the session it
   resumes. 0-RTT application data is not used for phux frames.
@@ -176,11 +198,20 @@ grant before any stateful frame is processed.
   (preamble / `Authorization` header) proves "may knock" at
   establishment; it never mints authority and its store is consulted
   before, and independently of, the certificate registry.
-- **The relay is per-hop.** It terminates TLS on both legs for SNI
-  routing, so a consumer certificate does not survive to the server:
-  consumer↔relay and tunnel↔server authenticate separately, and
-  authority across a relay is the tunnel's enrolled route authority
-  ([ADR-0116](../adr/0116-workload-auth-is-mtls.md)).
+- **Through a relay the certificate travels end to end.** A relay
+  terminates the outer TLS on both legs for SNI routing, so a consumer runs
+  a second TLS 1.3 session inside the relayed stream, terminated by the
+  server: the server presents its own certificate (verified against the
+  consumer's CA pin, §2) and asks for the client certificate exactly as a
+  paired QUIC listener does; the bearer preamble then rides inside. The
+  server tells the session from a plain bearer preamble by its first byte
+  (`0x16` opens a TLS record; a preamble's big-endian length starts
+  `0x00`). Under `paired` a bridged consumer is admitted only this way; the
+  relay forwards ciphertext and learns nothing new
+  ([ADR-0154](../adr/0154-devices-enroll-with-a-ticket-over-their-own-alpn.md)
+  item 5). The same session, with the same first-byte rule, rides a
+  WebTransport stream (item 6); a WebTransport `CONNECT` still carries the
+  bearer, so nothing follows the handshake there.
 
 There is deliberately no nonce, no transcript, and no exporter
 derivation in this profile: replay of a captured handshake is
@@ -664,13 +695,14 @@ successful start applies the empty-snapshot revocation rule in §7.
 > its presence alone refuses nothing. The server keeps one transitional
 > posture the table above does not name: no mode beside a non-UDS listener
 > or relay connector starts, logs a warning once, and gives every admitted
-> connection the owner's full grant, as before enforcement existed. Making
-> that combination a startup error was verified to strand documented
-> setups with no mode left to admit them: paired phones (no mobile
-> enrollment), relay connectors, and WebTransport, which `paired` refuses
-> and `local` forbids. The posture ends, and this marker goes, when workload
-> mTLS covers WebSocket consumers, WebTransport, and mobile enrollment
-> (PHA-406 decision H1). `phux host add` remotes, including Cockpit's,
+> connection the owner's full grant, as before enforcement existed. Every
+> remote entry point can now carry a workload certificate under `paired`
+> (QUIC and WSS in their handshakes; relays and WebTransport end to end,
+> ADR-0154), but making that combination a startup error still strands
+> deployed clients that cannot present one yet: phones whose app has not
+> adopted enrollment (§8.2), consumers paired through a relay before relay
+> links carried the server's CA, and browsers (phux-web holds no key). The
+> posture ends, and this marker goes, once those have enrolled. `phux host add` remotes, including Cockpit's,
 > already enroll and present a client certificate (§8.1). Under `local` the
 > server never auto-binds the overlay listener and refuses `OPEN_LISTENER`.
 
@@ -680,7 +712,8 @@ require them. None substitutes for the client certificate in `paired`.
 Plaintext remote transport is forbidden in every mode.
 
 `phux workload authority --init` is the only CLI path that creates a missing
-CA and prints only its fingerprint. `phux workload add-key` accepts only a
+CA and prints only its fingerprint. `phux workload authority --rotate`
+replaces an existing CA (§2) and prints only the old and new fingerprints. `phux workload add-key` accepts only a
 client certificate or CSR from stdin or an explicitly opened file and writes
 the registry. For a CSR it writes the issued chain (leaf, then CA) to a new
 `--cert-out` file or, with `--cert-stdout`, to stdout (as the `--json`
@@ -703,9 +736,8 @@ crypto API permits.
 
 <!-- impl-status: shipped; probe: ClientRequest,IssuedIdentity,settle_identity,RENEW_WITHIN_SECONDS,HOST_ADD_WORKLOAD_SCOPE -->
 > **Status: shipped.** `phux host add` (and the attach repair rung that
-> re-pairs over ssh) enrolls a CLI or desktop client. Mobile enrollment,
-> which has no ssh channel, needs its own authorizer and is not specified
-> here.
+> re-pairs over ssh) enrolls a CLI or desktop client. A device with no ssh
+> channel enrolls with a ticket instead (§8.2).
 
 A client that already holds ssh access to the serving host enrolls over
 that channel; enrollment grants no authority ssh did not already grant.
@@ -767,6 +799,56 @@ appear in a QR code, connect link, `phux pair --json`, a log, or an ssh
 argument. `phux pair revoke` and `phux workload revoke` both accept an
 enrolled certificate's `sha256:` id; revocation follows §7.
 
+### 8.2 Client enrollment with a ticket
+
+<!-- impl-status: shipped; probe: ENROLL_ALPN,mint_ticket,redeem_ticket,enroll_with_ticket,enroll_target,check_issued_chain -->
+> **Status: shipped (ADR-0154).** `phux pair --enroll` mints the ticket;
+> the reference server offers the ALPN on its configured QUIC listener in
+> every policy mode; `phux --remote NAME --code LINK` and the phone binding
+> (`RemoteClient.enroll_device`, a keystore-held key) enroll with it. A
+> ticket rides QUIC: the configured listener's ALPN, or the end-to-end
+> session a relayed device runs (§3), which negotiates the same ALPN inside.
+> The WebTransport listener does not serve it.
+
+A client with no ssh channel to the serving host (a phone) enrolls with a
+single-use **enrollment ticket**: 32 random bytes the server mints into a
+pairing link (`enroll=`, lowercase hex), keeping only their SHA-256, the
+scope ceiling and lifetime the credential will get, and the ticket's own
+expiry, in `<state-dir>/enrollment-tickets` beside the registry under the
+same file rules (§2). The reference server mints a ticket for every verb at
+`global` (the ceiling `phux host add` uses), a one-year credential, and a
+ten-minute ticket. A ticket authorizes exactly one enrollment: the first
+redemption consumes it under the store lock, before anything is issued, and
+an unknown, expired, and consumed ticket are refused alike.
+
+The exchange runs on its own QUIC ALPN, `phux-enroll/1`, which a listener
+offering it negotiates beside `phux-quic/1`. It carries no bearer token, no
+phux frame, and grants nothing. On one bidirectional stream the client sends
+the whole request and finishes:
+
+```text
+version:u8 (= 1) | ticket_len:u8 (1..=64) | ticket | csr_len:u32 BE (1..=16384) | csr (PKCS#10 DER)
+```
+
+and the server answers once, finishes, and closes the connection:
+
+```text
+status:u8 (0 issued, 1 refused) | len:u32 BE | body
+```
+
+An issued body is the chain the CA issued for the CSR's key, PEM, leaf then
+CA, with the fields §8.1 gives an ssh enrollment; a refused body is the word
+`refused`, whatever failed. The server checks the CSR's self-signature before
+it redeems the ticket, so a malformed request spends nothing. Decoders refuse
+a wrong version, an out-of-bounds length, truncation, and trailing bytes.
+
+The client generates its key and keeps it: on a phone in the platform
+keystore, signing through the binding for the CSR and every later handshake.
+It dials trusting the server by the link's pins (`ca` when present, ADR-0153)
+and treats the reply as §8.1 step 3 does, and additionally refuses a CA other
+than the pinned one. The private key never appears in the link, the request,
+or any log; the ticket is a secret like the bearer token and is shown once.
+
 ## 9. Conformance cases
 
 A conforming implementation exercises at least these independent failures:
@@ -775,7 +857,10 @@ or non-chaining certificate; downgrade (paired client against a listener
 that does not request certificates); unknown credential id; empty or
 over-ceiling grant; unknown verb/selector; duplicate, unsorted, truncated,
 overlong, or trailing scope encoding; and revoked/expired authority at
-admission and while live.
+admission and while live. Enrollment cases (§8.2): a consumed, expired, or
+unknown ticket; one ticket raced by two keys; a malformed request leaving the
+ticket unspent; an issued chain presented with another key; and a
+certificate-less terminal connection on a listener that serves enrollment.
 
 Authorization cases include every matrix row; BIND-only
 `phux.session.create/v1`; mutation/subscription of server-owned metadata; a

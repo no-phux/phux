@@ -1417,6 +1417,7 @@ fn dispatch(
             replace_token,
             relay_route,
             relay,
+            enroll,
         }) => commands::pair::run_pair(
             action,
             socket,
@@ -1428,7 +1429,12 @@ fn dispatch(
             json,
             migrate_legacy,
             replace_token,
-            relay_route.map(|route| commands::pair::RelayRoute { route, relay }),
+            relay_route.map_or(commands::pair::Door::Listener { enroll }, |route| {
+                commands::pair::Door::Relay {
+                    route: commands::pair::RelayRoute { route, relay },
+                    enroll,
+                }
+            }),
         ),
         Some(Command::Workload { action, json }) => commands::workload::run(action, json),
         Some(Command::Completion { shell }) => commands::completion::run_completion(shell.into()),

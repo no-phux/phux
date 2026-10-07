@@ -2029,6 +2029,13 @@ Flags:
       --relay <HOST:PORT>    The `[[connector]]` relay (its `relay =
                              "HOST:PORT"`) a `--relay-route` link dials. Needed
                              only when several are configured.
+      --enroll               Also mint a single-use enrollment ticket into the
+                             link, so a device without ssh (a phone) enrolls a
+                             workload certificate for a key it generates and
+                             keeps. Needed to reach a server in `paired` policy
+                             mode. The ticket expires in ten minutes. With
+                             `--relay-route` the device enrolls end to end
+                             through the relay.
   -h, --help                 Print help
 
 Global flags:
@@ -4108,12 +4115,19 @@ Global flags:
 Print the workload CA fingerprint.
 
 Prints only the `sha256:` fingerprint clients pin. `--init` creates the CA first
-when none exists; an existing CA is never replaced.
+when none exists; an existing CA is never replaced. `--rotate` replaces it with
+a new CA and re-issues the server certificate under it: every client then
+refuses this server, naming both fingerprints, until it re-pairs.
 
-Usage: phux workload authority [--init]
+Usage: phux workload authority [--init] [--rotate]
 
 Flags:
       --init           Create the CA if it does not exist yet.
+      --rotate         Replace the CA with a new one and re-issue the server
+                       certificate under it. Every client must re-pair, and
+                       every workload credential re-enroll; the replaced files
+                       are kept beside the new ones as `*.retired-<unix>`.
+                       Restart the server to present it.
   -h, --help           Print help
 
 Global flags:

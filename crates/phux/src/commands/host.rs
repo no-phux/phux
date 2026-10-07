@@ -859,6 +859,7 @@ fn saved_route_answers(entry: &RemoteEntry) -> Option<Result<(), String>> {
         &target,
         &token,
         entry.cert_fingerprint.as_deref(),
+        &entry.authority_pin(),
         identity,
     ))
 }
@@ -1066,6 +1067,14 @@ fn finish_enroll_in(
             .map_err(reject_enrollment)?;
             write_pairing_token(token_file.as_deref(), pairing)?;
             remote::add_or_update(&new).map_err(registry_failure)?;
+            // Pinned over ssh, a channel the operator already trusts
+            // (ADR-0153): trust on first pair, not first connect.
+            remote::pin_authority(
+                name,
+                cert_fingerprint,
+                None,
+                pairing.and_then(|report| report.ca_fingerprint.as_deref()),
+            );
             Ok(HostRow::from_new_remote(new))
         }
         HostRole::Satellite => {
@@ -2430,6 +2439,7 @@ mod tests {
         let state_dir = tempfile::tempdir().expect("tempdir");
 
         let pairing = super::enroll::PairReport {
+            ca_fingerprint: None,
             token: "deadbeef".to_owned(),
             cert_fingerprint: Some("ab".repeat(32)),
             overlay_addresses: vec!["100.64.0.2".to_owned()],
@@ -2466,6 +2476,7 @@ mod tests {
         let state_dir = tempfile::tempdir().expect("tempdir");
 
         let pairing = super::enroll::PairReport {
+            ca_fingerprint: None,
             token: "deadbeef".to_owned(),
             cert_fingerprint: None,
             overlay_addresses: vec!["100.64.0.2".to_owned()],
