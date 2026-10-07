@@ -712,6 +712,70 @@ fn acknowledged_input_into_a_half_open_link_resolves_promptly() {
     });
 }
 
+/// The mobile lane after a server restart that reuses the seed terminal's
+/// id: a client with no attach target that subscribed to the terminal must
+/// show the NEW incarnation's screen, not keep publishing the old one.
+#[cfg(feature = "engine")]
+#[test]
+fn a_reused_terminal_id_publishes_the_new_incarnation_after_restart() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket = tmp.path().join("phux.sock");
+        let seed = || portable_pty::CommandBuilder::new("/bin/cat");
+        let (shutdown, server) =
+            phux_server_testkit::spawn_server_with_seed_cmd(socket.clone(), "main", seed());
+        let mut opts = options();
+        opts.control.attach = None;
+        let client = Runtime::connect(Target::uds(&socket), opts).expect("connect");
+        let seed_id = {
+            let mut found = None;
+            wait_until("the seed terminal in the topology", || {
+                found = client
+                    .topology()
+                    .and_then(|t| t.panes.first().map(|p| p.terminal_id.clone()));
+                found.is_some()
+            })
+            .await;
+            found.unwrap()
+        };
+        let _ = client.attach_terminal(&seed_id);
+        wait_until("the seed terminal to accept input", || {
+            client.input_ready(&seed_id)
+        })
+        .await;
+        assert!(client.send_text(&seed_id, "before-restart\r"));
+        wait_for_text(&client, &seed_id, "before-restart").await;
+
+        drop(shutdown);
+        server.await.unwrap().unwrap();
+        wait_for_status(&client, Status::Connecting).await;
+        let (shutdown, server) =
+            phux_server_testkit::spawn_server_with_seed_cmd(socket.clone(), "main", seed());
+        wait_until("the reconnect to attach", || {
+            client.connection_epoch() > 1 && client.status() == Status::Attached
+        })
+        .await;
+        // What phux-mobile does after a server restart: subscribe again.
+        let _ = client.attach_terminal(&seed_id);
+        wait_until("the reused terminal to accept input again", || {
+            client.input_ready(&seed_id)
+        })
+        .await;
+        assert!(client.send_text(&seed_id, "after-restart\r"));
+        wait_for_text(&client, &seed_id, "after-restart").await;
+        assert!(
+            !client
+                .acquire(&seed_id)
+                .is_some_and(|frame| frame.text().contains("before-restart")),
+            "the restarted server's fresh pane must not show the old incarnation's screen"
+        );
+
+        client.close();
+        drop(shutdown);
+        server.await.unwrap().unwrap();
+    });
+}
+
 /// A listener that answers every WebSocket upgrade with 401: the pairing
 /// gate refusing a token, which no retry can change. Returns the port and
 /// the count of connections it accepted.

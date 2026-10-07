@@ -40,6 +40,21 @@ impl ControlPlane {
             return Err(ControlError::Refused(message));
         }
         self.requalify_attach_target(server_id)?;
+        // Replicas survive a reconnect so the same incarnation can resume
+        // their streams. A new incarnation recycles resource ids for fresh
+        // PTYs (a restarted server reseeds `@1`), and a replica kept under a
+        // reused id would go on publishing the old terminal's screen while
+        // the new one's stream is never bootstrapped into it.
+        if self
+            .server
+            .as_ref()
+            .is_some_and(|previous| previous.id != server_id)
+        {
+            if let Some(engine) = &self.engine {
+                engine.reset_connection();
+            }
+            self.damaged.clear();
+        }
         self.server = Some(ServerInfo {
             id: server_id.to_vec(),
             features: server_caps.features,

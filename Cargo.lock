@@ -2475,6 +2475,7 @@ dependencies = [
  "phux-protocol",
  "phux-server",
  "phux-server-testkit",
+ "portable-pty",
  "quinn",
  "rcgen",
  "rustls",
