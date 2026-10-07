@@ -140,11 +140,11 @@ fn child_and_scrollback_survive_graceful_upgrade() {
         "the pane's scrollback marker should survive the upgrade; got:\n{snap}"
     );
 
-    // Rebuilt actors must regain their exit watchers. Without that watcher a
-    // kill stops the actor and child but never reaps the pane/window/session,
-    // leaving a ghost row in `phux ls`. This harness never attaches a client,
-    // so the server intentionally stays alive after becoming empty; the
-    // authoritative session list is the reap assertion here.
+    // A kill of the resumed session leaves the authoritative list at once
+    // (its reply follows the committed teardown, L1 §5.2), and its child then
+    // dies inside the pane-kill grace, so the child is awaited, not assumed
+    // dead the moment `ls` stops listing it. This harness never attaches a
+    // client, so the server intentionally stays alive after becoming empty.
     assert_eq!(
         server.status(&["kill", "--yes", SESSION]),
         0,
@@ -157,7 +157,7 @@ fn child_and_scrollback_survive_graceful_upgrade() {
         "the killed resumed session should be reaped from the authoritative list"
     );
     assert!(
-        !alive(child_pid),
+        poll(Duration::from_secs(10), || !alive(child_pid)),
         "killing the resumed session should terminate its pane child"
     );
 }
