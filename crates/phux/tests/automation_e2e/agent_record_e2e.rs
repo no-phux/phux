@@ -994,3 +994,39 @@ fn agent_answer_and_config_agents_read_the_live_ask_title() {
         std::thread::sleep(RECORD_POLL);
     }
 }
+
+/// ADR-0075 point 5 on `agent start`: it types the launch line over
+/// acknowledged input, so a `%name` whose record has the withdrawn shape (a
+/// `kind`, `state: unknown`) is refused as `agent_withdrawn` before anything
+/// is typed, as `send-keys`, `paste`, and `agent prompt` refuse it.
+#[test]
+#[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
+fn agent_start_refuses_a_withdrawn_name() {
+    let server = ServerGuard::start();
+    // `set` without `--state` leaves `unknown`: with a kind, the withdrawn shape.
+    server.agent(&["set", SESSION, "--name", "build", "--kind", "codex"]);
+    // The repo's example plugin config supplies a `codex` integration, so the
+    // launch plan resolves the same on every host and the guard is what refuses.
+    let config = crate::runner::manifest_dir()
+        .join("../../examples/plugins/agent-tools/config")
+        .canonicalize()
+        .expect("example plugin config");
+    let out = common::phux_cmd(crate::runner::phux_bin())
+        .env("XDG_CONFIG_HOME", &config)
+        .args([
+            "agent", "start", "--json", "--kind", "codex", "--target", "%build",
+        ])
+        .arg("--socket")
+        .arg(&server.socket)
+        .arg("reviewer")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run phux agent start");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "stderr={stderr}");
+    let error: serde_json::Value = stderr
+        .lines()
+        .find_map(|line| serde_json::from_str(line).ok())
+        .unwrap_or_else(|| panic!("no JSON error document: {stderr}"));
+    assert_eq!(error["error"]["code"], "agent_withdrawn", "{stderr}");
+}
