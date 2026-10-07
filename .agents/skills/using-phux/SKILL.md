@@ -83,9 +83,9 @@ phux snapshot --json --tail 200 --unwrap @7
 ```
 
 `delivery: "unknown"` is terminal: inspect the pane and do not resend because
-the first operation may still land. Serialize acknowledged prompts; their
-input lane is server-scoped. Use `phux agent --help` and
-`phux help agent <verb>` for current lifecycle and agent-session arguments.
+the first operation may still land. Acknowledged input is admitted per pane:
+prompt different panes in parallel, but serialize prompts to one pane. Use
+`phux agent --help` and `phux help agent <verb>` for current lifecycle and agent-session arguments.
 
 <!-- phux-skill-region: terminal -->
 ## Driving interactive terminals

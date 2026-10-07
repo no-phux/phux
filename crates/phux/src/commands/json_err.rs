@@ -172,7 +172,8 @@ pub(crate) mod codes {
     /// pane's actor gone before handoff). Unlike `delivery_unknown`, retrying
     /// — under the same operation id or a fresh one — cannot type it twice.
     pub(crate) const INPUT_NOT_WRITTEN: &str = "input_not_written";
-    /// The server-wide acknowledged input lane did not become available.
+    /// The pane's acknowledged input admission (one unresolved operation per
+    /// Terminal) did not become available.
     pub(crate) const INPUT_BUSY: &str = "input_busy";
     /// The pane's occupant changed while acknowledged input was in flight.
     pub(crate) const UNKNOWN_OCCUPANT: &str = "unknown_occupant";

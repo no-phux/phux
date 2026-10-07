@@ -190,7 +190,7 @@ export function createPhuxTools(runtime: PhuxToolRuntime): Record<string, PhuxTo
     },
     {
       name: "phux_agent_prompt",
-      description: "Deliver one single-line agent turn with an acknowledged receipt and, by default, observe a post-submit lifecycle transition (30s). Serialize fleet prompts: the acknowledged lane is server-wide. delivery_unknown or local cancellation: DO NOT RESEND; inspect the pane. An acknowledged prompt that times out was still delivered.",
+      description: "Deliver one single-line agent turn with an acknowledged receipt and, by default, observe a post-submit lifecycle transition (30s). Prompts to different panes may run in parallel; serialize prompts to one pane. delivery_unknown or local cancellation: DO NOT RESEND; inspect the pane. An acknowledged prompt that times out was still delivered.",
       input: schema({ target: TARGET, text: { ...STRING, pattern: "^[^\\r\\n]+$" }, wait: { type: "boolean" }, until: UNTIL, expect_agent: STRING, expect_kind: STRING, timeout_seconds: TIMEOUT, local_timeout_ms: LOCAL_TIMEOUT }, ["text"]),
       async execute(input: AgentInput & { text: string; wait?: boolean; expect_agent?: string; expect_kind?: string }, context) {
         const target = writeTarget(input.target, runtime, context);

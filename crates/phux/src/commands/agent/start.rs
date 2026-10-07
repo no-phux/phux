@@ -976,7 +976,8 @@ fn submit_verdict(verdict: ApplyVerdict) -> SubmitFailure {
             refusal: Refusal::new(
                 codes::AGENT_START_FAILED,
                 format!("the acknowledged input lane is busy: {message}"),
-                "nothing was typed; the lane is server-wide and single — back off and retry",
+                "nothing was typed; another acknowledged write to this pane is unresolved — \
+                 back off and retry",
                 EXIT_FAILURE,
             ),
             wrote_nothing: true,

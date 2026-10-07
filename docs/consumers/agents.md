@@ -221,8 +221,10 @@ Input contracts:
 Acknowledged agent writes (`agent send-keys`, `agent prompt`,
 `agent answer`) prove kernel tty-queue receipt, not consumption.
 `delivery_unknown` is terminal: inspect the pane and do not resend.
-The server has one acknowledged input lane; serialize concurrent
-acknowledged writes.
+Admission is per pane: one unresolved acknowledged write per Terminal.
+Writes to different panes proceed concurrently; a second concurrent
+write to the same pane is refused as busy (`RESOURCE_EXHAUSTED`), so
+serialize writes to one pane.
 
 `phux agent start` starts an agent in an existing shell pane without
 creating, splitting, moving, or focusing layout.

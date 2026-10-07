@@ -42,7 +42,8 @@ turn completed.
 
 Always use finite timeout values. A `delivery_unknown` result is terminal:
 inspect the pane and do not resend because the first operation may still land.
-Serialize acknowledged fleet prompts because the input lane is server-scoped.
+Acknowledged input is admitted per pane: prompt different panes in parallel,
+but serialize prompts to one pane.
 A paste inserts text but does not submit it.
 
 Cancellation or a local tool deadline only ends observation; it does not undo
