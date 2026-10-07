@@ -392,6 +392,12 @@ fn unbindable_socket_fails_fast_with_the_bind_error() {
         "took {elapsed:?}: {stderr}"
     );
     assert!(!socket.exists());
+    // The banner prints only once the socket is bound, so a failed bind
+    // never logs "listening" ahead of "failed to bind".
+    let log = std::fs::read_to_string(fixture.dir.path().join("phux-ensure/server.log"))
+        .expect("server log");
+    assert!(log.contains("failed to bind"), "{log}");
+    assert!(!log.contains("listening"), "{log}");
 }
 
 #[test]
