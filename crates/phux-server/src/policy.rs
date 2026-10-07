@@ -466,26 +466,38 @@ pub enum PostureError {
         "[policy] mode = \"local\" admits the owner socket only, but a remote listener or relay connector is configured: remove it (--listen, --quic, --webtransport, PHUX_WS_ADDR, PHUX_QUIC_ADDR, PHUX_WT_ADDR, [[connector]]) or set mode = \"paired\""
     )]
     LocalWithRemoteListener,
+    /// No mode beside a configured workload CA or registry location: the
+    /// operator named workload authority but did not choose to enforce it,
+    /// so starting would silently hand remote consumers the owner's grant.
+    #[error(
+        "no [policy] mode is set, but PHUX_WORKLOAD_CA, PHUX_WORKLOAD_CA_KEY, or PHUX_WORKLOAD_KEYS names a workload authority location: set [policy] mode = \"paired\" in config.toml to enforce it, or unset those variables"
+    )]
+    UnsetWithWorkloadAuthority,
 }
 
 impl PolicyPosture {
     /// Decide the posture from the configured mode, whether
-    /// `PHUX_WORKLOAD_MTLS` is set, and whether a remote listener or relay
-    /// connector is configured.
+    /// `PHUX_WORKLOAD_MTLS` is set, whether a remote listener or relay
+    /// connector is configured, and whether a workload CA or registry
+    /// location is configured (`PHUX_WORKLOAD_CA`, `PHUX_WORKLOAD_CA_KEY`,
+    /// `PHUX_WORKLOAD_KEYS`).
     ///
     /// # Errors
     ///
     /// A [`PostureError`] for a `local` mode the rest of the configuration
-    /// contradicts.
+    /// contradicts, or for no mode beside a configured workload authority
+    /// location (`docs/spec/workload-auth.md` §8).
     pub const fn resolve(
         mode: Option<phux_config::PolicyMode>,
         workload_mtls_env: bool,
         remote_listener: bool,
+        workload_authority_configured: bool,
     ) -> Result<Self, PostureError> {
         match mode {
             Some(phux_config::PolicyMode::Paired) => Ok(Self::Paired),
             Some(phux_config::PolicyMode::Local) => Self::local(workload_mtls_env, remote_listener),
             None if workload_mtls_env => Ok(Self::Paired),
+            None if workload_authority_configured => Err(PostureError::UnsetWithWorkloadAuthority),
             None => Ok(Self::Transitional { remote_listener }),
         }
     }

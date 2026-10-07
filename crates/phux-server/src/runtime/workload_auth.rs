@@ -72,13 +72,13 @@ pub(super) const fn refuse_uncovered_surfaces(
     if webtransport {
         return Err(super::ServerError::WorkloadModeUncovered {
             surface: "the WebTransport listener",
-            remedy: "remove `--webtransport` and PHUX_WT_ADDR, or unset PHUX_WORKLOAD_MTLS",
+            remedy: "remove `--webtransport` and PHUX_WT_ADDR, or leave workload mode (unset PHUX_WORKLOAD_MTLS and [policy] mode = \"paired\")",
         });
     }
     if relay_connectors {
         return Err(super::ServerError::WorkloadModeUncovered {
             surface: "a relay connector (`[[connector]]` in config.toml)",
-            remedy: "remove the `[[connector]]` entries, or unset PHUX_WORKLOAD_MTLS",
+            remedy: "remove the `[[connector]]` entries, or leave workload mode (unset PHUX_WORKLOAD_MTLS and [policy] mode = \"paired\")",
         });
     }
     Ok(())
