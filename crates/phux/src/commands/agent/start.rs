@@ -42,7 +42,7 @@ use phux_protocol::wire::frame::{FrameKind, Scope};
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::json_err::codes;
-use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
+use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target_for_input};
 use crate::exit_codes::{EXIT_FAILURE, EXIT_SUCCESS, EXIT_USAGE, EXIT_WAIT_TIMEOUT};
 
 /// Version of the `agent start` result document.
@@ -506,7 +506,9 @@ async fn open_target(
     selector: &phux_client::selector::Selector,
     socket_path: &Path,
 ) -> Result<(ResourceId, Connection), ExitCode> {
-    let terminal = resolve_target(socket_path, selector, "agent start", req.json).await?;
+    // `agent start` types the launch line over acknowledged input, so a
+    // `%name` takes the ADR-0075 point 5 withdrawn-record guard.
+    let terminal = resolve_target_for_input(socket_path, selector, "agent start", req.json).await?;
     // APPLY_INPUT is local-only and `phux.agent/v1` does not federate.
     if !matches!(terminal, ResourceId::Local { .. }) {
         return Err(emit(req.json, &satellite_refusal(&terminal)));

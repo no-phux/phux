@@ -3188,7 +3188,7 @@ pub(crate) async fn resolve_target(
 
 /// [`resolve_target`] for the verbs that deliver input into the pane
 /// (`send-keys`, `paste`, `run`, `signal`, and the acknowledged agent
-/// writes): identical, except that a `%name` whose record has the withdrawn
+/// writes, `agent start` among them): identical, except that a `%name` whose record has the withdrawn
 /// shape is refused (ADR-0075 point 5) rather than resolved.
 pub(crate) async fn resolve_target_for_input(
     socket_path: &Path,
