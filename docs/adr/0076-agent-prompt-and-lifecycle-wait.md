@@ -1,7 +1,7 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-08-09
+last-reviewed: 2026-10-07
 ---
 
 # 0076 — Prompting an agent is acknowledged; waiting on one is event-driven
@@ -12,7 +12,7 @@ operation, so a partial write can only lose the submission, never the meaning.
 `phux agent wait` is satisfied by an observed *transition*, never by a level
 read of `idle` — the value phux publishes when nothing matched.
 
-Status: Proposed
+Status: Accepted
 Date: 2026-08-08
 
 ## Context
@@ -30,10 +30,11 @@ Fire-and-forget stops being acceptable when driving an agent: a prompt is not
 idempotent at the receiver, a doubled one can run a destructive tool twice, a
 dropped one burns a timeout the orchestrator blames on the agent, and the only
 recovery — resend — produces the duplicate. Reading the result back is thinner
-than it looks. The five shipped manifests declare five `working` rules and five
-`blocked` rules and nothing else; `idle` is the fail-safe fallthrough ("no
-state-bearing rule matched => Idle"), and `claude.toml` records why its authors
-declined a positive idle rule.
+than it looks. The shipped manifests declare `working` and `blocked` rules, one
+`idle` rule read from Claude Code's OSC 9;4 progress channel, and no `done`
+rule ([`L3.md`](../spec/L3.md) §3.7 keeps the count); everywhere else `idle` is
+the fail-safe fallthrough ("no state-bearing rule matched => Idle"), and
+`claude.toml` records why its authors declined a title- or screen-derived one.
 
 ## Decision
 
@@ -51,7 +52,7 @@ declined a positive idle rule.
    `INPUT_DELIVERY_UNKNOWN` is terminal — a same-id retry replays the cached
    unknown, a new-id retry is the duplicate this design prevents — so the CLI
    **exits 1** with the operation id, not 3, whose published meaning
-   (`docs/consumers/agents.md` §5.2) is *retry is correct*. Pre-handoff refusals
+   (`docs/consumers/agents.md` §8) is *retry is correct*. Pre-handoff refusals
    wrote nothing and may be retried unchanged under the same id:
    `RESOURCE_EXHAUSTED` (backoff, then exit 1), `INPUT_LEASE_HELD` (exit 2).
    `CANONICAL_LIMIT_EXCEEDED` also wrote nothing but cannot succeed unchanged
@@ -104,14 +105,18 @@ declined a positive idle rule.
    positively asserted level.** An earlier draft carved one out for `blocked`
    and `done`, on the argument that neither is reachable by fallthrough;
    [`L3.md`](../spec/L3.md) §3.7 makes no such carve-out — a completion
-   gate "MUST require an observed transition" — and phux ships no `done` writer
-   at all, so the carve-out bought one state, `blocked`, at the cost of the only
-   structural enforcement the rule has. The shipped `EdgeTracker` therefore
+   gate "MUST require an observed transition" — and `done` arrives only from an
+   integration ([ADR-0085](./0085-hook-sourced-agent-state.md) hooks, an
+   [ADR-0103](./0103-agent-session-resource-and-producer-fed-streams.md)
+   session stream) whose timing against the baseline is no better known, so
+   the carve-out bought a fast path at the cost of the only structural
+   enforcement the rule has. The shipped `EdgeTracker` therefore
    *seeds* the baseline and never evaluates it, and a pane already resting in a
    target state times out at 124 with a diagnostic saying so. `--until done`
-   still means "wait for an instrumented agent to declare completion", and on
-   today's manifests it is inert. Because `METADATA_CHANGED` is
-   `try_send` and dropped on a full mailbox, and publication is edge-filtered
+   means "wait for an instrumented agent to declare completion"; no manifest
+   emits it, so on an uninstrumented pane it is inert. Because
+   `METADATA_CHANGED` is `try_send` and dropped on a full mailbox, and
+   publication is edge-filtered
    (ADR-0046 point 7), the CLI re-reads `GET_METADATA` on the existing `wait`
    cadence under the same deadline and treats a value differing from the last it
    held as the edge it missed: level-triggered *recovery of an edge*, not a
@@ -136,13 +141,16 @@ declined a positive idle rule.
 7. **`--json` states what the receipt attests**, in one `schema_version: 1`
    document: `delivery` (`acked` / `unknown` / `refused`), `operation_id`, the
    `agent` record the ownership check passed on, `pre_submit_state`,
-   `transition_observed`, `matched_by` (`transition` / `level`), `waited_ms`,
-   and whether the wait degraded to polling. Errors use ADR-0065's error object.
-   The connection must declare `Layer::L3` or the subscribe is dropped silently.
+   `staleness_bound_ms` (always null: L3 cannot tell a detector-owned record
+   from a declared one), `attempts`, `submit_ms`, `transition_observed`,
+   `edge`, `matched_by` (`transition`, else null — `level` is reserved and
+   never emitted, point 5), `waited_ms`, and `degraded_to_polling`. Errors use
+   ADR-0065's error object. The connection must declare `Layer::L3` or the
+   subscribe is dropped silently.
 
 No frame, tag, capability bit, or `phux.agent/v1` field is allocated,
 `PROTOCOL_VERSION` does not move, and ADR-0071's frozen surfaces are untouched;
-`docs/consumers/agents.md` §2 and §5.2 are owed updates.
+the consumer contract is `docs/consumers/agents.md` §4, §5, and §8.
 
 ## Why
 
@@ -189,9 +197,9 @@ tick derives `idle -> idle`, publishes nothing, and times out at 124 on work
 that succeeded. Dropping the fast path widens that to any pane already resting
 in a target state. That is the price of never returning 0 on a corpse, and
 `transition_observed: false` says which happened. The default `--until` set
-keeps `done`, a member no shipped phux writer emits, so on an uninstrumented
-pane the set reduces to `idle` and `blocked`; whether to drop it is open
-(phux-w7z2.28) and is a CLI change, not a doc one. A concurrent ADR-0078
+keeps `done`, which only an instrumented agent emits (the opt-in Claude hook
+shim through ADR-0085, or an AgentSession stream), so on an uninstrumented pane
+the set reduces to `idle` and `blocked`. A concurrent ADR-0078
 transcript harvest freezes detector publication on the same Terminal, which
 this wait sees as a blind window on both its push and its poll path — bounded,
 self-healing under level-triggered recovery, and worth a timeout wide enough

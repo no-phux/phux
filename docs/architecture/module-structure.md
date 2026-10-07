@@ -241,4 +241,4 @@ features: `dhat-heap` here, `tokio-console` via `phux-server`.
 
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|
-| Alternate-screen history harvest driver | Not implemented; the unwired merge helper was removed. ADR-0078 is Proposed. | [ADR-0078](../adr/0078-alternate-screen-history.md) | not scheduled |
+| Alternate-screen history harvest driver | Not implemented; the unwired merge helper was removed. ADR-0078 is accepted forward-compat. | [ADR-0078](../adr/0078-alternate-screen-history.md) | phux-w7z2.10 |
