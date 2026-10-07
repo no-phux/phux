@@ -1723,7 +1723,9 @@ pub(crate) enum Command {
         until: Vec<String>,
 
         /// Give up after this many seconds (exit 124). Applies with or
-        /// without `--until`. Default: stream until EOF or Ctrl-C.
+        /// without `--until`. Subscribing always gets at least 2 seconds, so
+        /// `--timeout 0` subscribes once and still reports the cursor.
+        /// Default: stream until EOF or Ctrl-C.
         #[usage(long, value_name = "SECS")]
         timeout: Option<u64>,
 

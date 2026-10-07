@@ -149,8 +149,10 @@ pub(crate) fn run_watch(args: WatchArgs<'_>) -> ExitCode {
         };
 
         // Race the stream against Ctrl-C (exit 0); the deadline lives in
-        // `watch_resumable` so it also covers the connect. `resume` outlives the
-        // stream so every ending reports where to resume.
+        // `watch_resumable` so it also covers the connect, which always gets
+        // the first-read floor (`--timeout 0` subscribes once, as `wait` reads
+        // once). `resume` outlives the stream so every ending reports where to
+        // resume.
         let mut resume = ResumeState::new(after);
         let code = {
             let stream = phux_client::watch::watch_resumable(

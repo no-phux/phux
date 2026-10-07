@@ -3816,8 +3816,9 @@ Flags:
                         before the watch starts, never a watch that quietly
                         never matches.
       --timeout <SECS>  Give up after this many seconds (exit 124). Applies with
-                        or without `--until`. Default: stream until EOF or
-                        Ctrl-C.
+                        or without `--until`. Subscribing always gets at least 2
+                        seconds, so `--timeout 0` subscribes once and still
+                        reports the cursor. Default: stream until EOF or Ctrl-C.
       --after <CURSOR>  Resume from the cursor a previous run printed: events
                         the server still holds since then are replayed before
                         live ones. A cursor from another server run is ignored,
