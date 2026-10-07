@@ -1,10 +1,11 @@
 //! Best-effort overlay-network address detection for `phux pair` (ADR-0037).
 //!
-//! The source is `tailscale ip -4` (overridable via `$PHUX_TAILSCALE`), with a
-//! fallback UDP route probe reported only inside the Tailscale CGNAT range.
-//! The probe is a guess made only when `$PHUX_TAILSCALE` is unset: a named CLI
-//! is the whole answer, even when it says nothing. Every failure degrades to
-//! detecting nothing.
+//! `$PHUX_OVERLAY_ADDRS` explicitly selects addresses for any private network
+//! (including Defguard/WireGuard); when set it is authoritative, even empty or
+//! invalid. Otherwise the source is `tailscale ip -4` (overridable via
+//! `$PHUX_TAILSCALE`), with a fallback UDP route probe reported only inside the
+//! Tailscale CGNAT range. The probe runs only when `$PHUX_TAILSCALE` is unset.
+//! Every failure degrades to detecting nothing.
 
 use std::net::IpAddr;
 
@@ -12,7 +13,64 @@ use std::net::IpAddr;
 /// nothing is detected).
 #[must_use]
 pub fn detect() -> Vec<IpAddr> {
-    detect_from_override(std::env::var_os("PHUX_TAILSCALE").as_deref())
+    detect_with_addresses(std::env::var_os("PHUX_OVERLAY_ADDRS").as_deref(), || {
+        detect_from_override(std::env::var_os("PHUX_TAILSCALE").as_deref())
+    })
+}
+
+/// Explicit addresses replace discovery, never augment it. In particular,
+/// an invalid configuration must not expose a listener on a different network.
+fn detect_with_addresses(
+    addresses: Option<&std::ffi::OsStr>,
+    discover: impl FnOnce() -> Vec<IpAddr>,
+) -> Vec<IpAddr> {
+    let Some(addresses) = addresses else {
+        return discover();
+    };
+    addresses
+        .to_str()
+        .and_then(parse_explicit_addresses)
+        .unwrap_or_else(|| {
+            tracing::warn!(
+                "invalid PHUX_OVERLAY_ADDRS; use comma-separated concrete unicast IPs \
+             (no CIDRs, ports, or link-local addresses); overlay discovery is disabled"
+            );
+            Vec::new()
+        })
+}
+
+/// Parse a comma-separated list atomically, preserving preference order.
+/// Empty means disabled; one bad item refuses the whole list. These are
+/// concrete unicast addresses, not interface names, CIDRs, or scoped IPv6.
+fn parse_explicit_addresses(raw: &str) -> Option<Vec<IpAddr>> {
+    let mut addresses = Vec::new();
+    if raw.trim().is_empty() {
+        return Some(addresses);
+    }
+    for item in raw.split(',') {
+        let address: IpAddr = item.trim().parse().ok()?;
+        if !is_explicit_unicast(address) {
+            return None;
+        }
+        if !addresses.contains(&address) {
+            addresses.push(address);
+        }
+    }
+    Some(addresses)
+}
+
+/// Link-local IPv6 needs a scope the address-only detector cannot carry.
+/// Reject mapped IPv4 too, so loopback/unspecified checks cannot be bypassed.
+const fn is_explicit_unicast(address: IpAddr) -> bool {
+    if address.is_loopback() || address.is_unspecified() || address.is_multicast() {
+        return false;
+    }
+    match address {
+        IpAddr::V4(address) => !address.is_broadcast() && !address.is_link_local(),
+        IpAddr::V6(address) => {
+            !address.is_unicast_link_local() && address.to_ipv4_mapped().is_none()
+        }
+    }
 }
 
 /// [`detect`] with the `$PHUX_TAILSCALE` value injected for tests.
@@ -135,6 +193,85 @@ mod tests {
             vec![ip("100.101.102.103"), ip("fd7a:115c:a1e0::1")]
         );
         assert!(parse_tailscale_ip_output("").is_empty());
+    }
+
+    #[test]
+    fn explicit_addresses_replace_discovery_and_preserve_order() {
+        let addresses = detect_with_addresses(
+            Some(std::ffi::OsStr::new(" 10.77.0.2, fd77::2,10.77.0.2 ")),
+            || panic!("explicit addresses must not consult tailscale or the route probe"),
+        );
+        assert_eq!(addresses, vec![ip("10.77.0.2"), ip("fd77::2")]);
+        assert_eq!(
+            detect_with_addresses(None, || vec![ip("100.99.98.97")]),
+            vec![ip("100.99.98.97")],
+        );
+    }
+
+    #[test]
+    fn empty_or_invalid_explicit_addresses_never_fall_back() {
+        for raw in [
+            "",
+            "  ",
+            "bad",
+            "10.77.0.2,bad",
+            "10.77.0.2,",
+            ",10.77.0.2",
+            "10.77.0.2/24",
+            "wg0",
+            "10.77.0.2:8788",
+            "[fd77::2]",
+            "fe80::1%en0",
+        ] {
+            assert!(
+                detect_with_addresses(Some(std::ffi::OsStr::new(raw)), || {
+                    panic!("explicit {raw:?} must not fall back to another network")
+                })
+                .is_empty(),
+                "invalid or empty explicit list {raw:?} must disable discovery",
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_addresses_reject_non_dialable_unicast() {
+        for raw in [
+            "0.0.0.0",
+            "::",
+            "127.0.0.1",
+            "127.7.8.9",
+            "::1",
+            "224.0.0.1",
+            "ff02::1",
+            "255.255.255.255",
+            "169.254.1.2",
+            "fe80::1",
+            "::ffff:127.0.0.1",
+            "::ffff:0.0.0.0",
+            "::ffff:10.77.0.2",
+        ] {
+            assert_eq!(parse_explicit_addresses(raw), None, "{raw}");
+        }
+        // Explicit selection is not a private-prefix policy: routed hosts
+        // may use public addresses, but no public address is auto-discovered.
+        assert_eq!(
+            parse_explicit_addresses("192.0.2.2,2001:db8::2"),
+            Some(vec![ip("192.0.2.2"), ip("2001:db8::2")]),
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_unicode_explicit_addresses_do_not_trigger_discovery() {
+        use std::os::unix::ffi::OsStrExt;
+
+        assert!(
+            detect_with_addresses(
+                Some(std::ffi::OsStr::from_bytes(b"10.77.0.2,\xff")),
+                || panic!("non-Unicode explicit addresses must not trigger discovery"),
+            )
+            .is_empty()
+        );
     }
 
     #[test]

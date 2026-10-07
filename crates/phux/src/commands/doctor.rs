@@ -919,7 +919,7 @@ fn off_loopback_target(bound: Option<&str>, overlay: &[IpAddr]) -> OffLoopbackTa
         return overlay
             .iter()
             .copied()
-            .find(|ip| !ip.is_loopback() && !ip.is_unspecified())
+            .find(|ip| !ip.is_loopback() && !ip.is_unspecified() && ip.is_ipv4() == addr.is_ipv4())
             .map_or_else(
                 || OffLoopbackTarget::NoOffLoopback {
                     bound: raw.to_owned(),
@@ -948,7 +948,7 @@ fn remote_reachable_verdict(
             ),
             "doctor only probes a concrete non-loopback bind, or an overlay IP \
              rewritten onto 0.0.0.0/:: — bind `--listen` to a routable address, \
-             or check overlay detection (`tailscale ip -4`)",
+             or check PHUX_OVERLAY_ADDRS (for Tailscale, `tailscale ip -4`)",
         ),
         OffLoopbackTarget::Dial(addr) => {
             let url = format!("wss://{addr}");
@@ -1072,7 +1072,7 @@ fn remote_reachable_check(
         Reachability::Unreachable => Check::warn(
             "remote-reachable",
             format!("could not reach {url} from this host"),
-            "if the address belongs to an overlay network, check it is up: `tailscale status`",
+            "if this is a VPN address, check its tunnel and routes (Tailscale: `tailscale status`)",
         ),
     }
 }
@@ -1138,7 +1138,7 @@ fn remote_cert_check(
                  coverage of a routable address cannot be checked",
                 cert.display()
             ),
-            "nothing to do unless you expected an overlay: check `tailscale ip -4`",
+            "nothing to do unless you expected an overlay: check PHUX_OVERLAY_ADDRS or `tailscale ip -4`",
         );
     }
     match phux_server::transport::tls::uncovered_names(cert, advertised) {
@@ -1436,6 +1436,28 @@ mod tests {
             off_loopback_target(None, &overlay),
             OffLoopbackTarget::NoOffLoopback { .. }
         ));
+    }
+
+    #[test]
+    fn wildcard_probe_selects_only_the_listener_address_family() {
+        let v4: IpAddr = "10.77.0.2".parse().unwrap();
+        let v6: IpAddr = "fd77::2".parse().unwrap();
+        assert_eq!(
+            off_loopback_target(Some("[::]:9443"), &[v4, v6]),
+            OffLoopbackTarget::Dial(SocketAddr::new(v6, 9443)),
+        );
+        assert_eq!(
+            off_loopback_target(Some("0.0.0.0:9443"), &[v6, v4]),
+            OffLoopbackTarget::Dial(SocketAddr::new(v4, 9443)),
+        );
+        for (bound, other_family) in [("[::]:9443", v4), ("0.0.0.0:9443", v6)] {
+            let target = off_loopback_target(Some(bound), &[other_family]);
+            assert!(matches!(target, OffLoopbackTarget::NoOffLoopback { .. }));
+            let verdict = remote_reachable_verdict(target, |_| {
+                unreachable!("family mismatch must warn, not dial another listener")
+            });
+            assert_eq!(verdict.status, Status::Warn);
+        }
     }
 
     #[test]

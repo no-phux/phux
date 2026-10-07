@@ -1020,14 +1020,37 @@ listener (bounded at two seconds, after which detection falls back to
 the CGNAT route heuristic unless `PHUX_TAILSCALE` is set), never a late
 server.
 
-One detector feeds `phux pair` and the auto-bound remote listener
-([ADR-0081](adr/0081-overlay-auto-listen-and-one-command-pairing.md)).
-`PHUX_TAILSCALE` substitutes the CLI both run (default: `tailscale` on
-PATH). Setting it also disables the CGNAT route-probe fallback,
-including after the CLI's two-second deadline: once you have named the
-overlay CLI, its answer is the whole answer. Pointing `PHUX_TAILSCALE`
-at a command that reports no address therefore turns overlay auto-listen
-and `phux pair`'s advertised address off.
+One detector feeds `phux pair`, `phux doctor`, and the auto-bound remote
+listener ([ADR-0081](adr/0081-overlay-auto-listen-and-one-command-pairing.md)).
+For Defguard, raw WireGuard, or another routed network, set
+`PHUX_OVERLAY_ADDRS=10.77.0.2,fd77::2` to the host's assigned tunnel
+addresses. This comma-separated list replaces discovery entirely. It keeps
+order and removes duplicates; the server auto-binds only the first address,
+while pairing can select a matching family for an explicitly configured
+wildcard listener. Use bare IP literals, not CIDRs, ports, interface names,
+or bracketed/scoped IPv6. Loopback, unspecified, multicast, broadcast,
+link-local, and IPv4-mapped IPv6 addresses are refused. An empty value
+turns discovery off; any invalid item refuses the entire list with a
+warning and no fallback to another network.
+
+Set the value in both the server service environment and the pairing shell;
+changing the shell does not reconfigure a running server. The addresses must
+already belong to this host: phux does not install a VPN, assign addresses,
+or verify peer routing. Startup binds once, with no automatic rebind after
+VPN address changes; restart only when safe for the running sessions. This
+is explicit address selection, not a private-prefix firewall: a public
+unicast address is also accepted if deliberately configured. Keep phux's
+TLS, credential, and policy checks plus the host/network firewall in place.
+`PHUX_NO_AUTO_LISTEN`, profile/policy gates, and explicit listener overrides
+still apply.
+
+When `PHUX_OVERLAY_ADDRS` is unset, `PHUX_TAILSCALE` substitutes the CLI
+(default: `tailscale` on PATH). Setting it also disables the CGNAT
+route-probe fallback, including after the CLI's two-second deadline: once
+you have named the overlay CLI, its answer is the whole answer. A command
+that reports no address therefore turns overlay discovery off. See the
+[Defguard federation masterplan](./architecture/defguard-federation.md) for
+topology, rollout gates, and limits.
 
 `phux doctor`'s remote-reachable check dials the running server's bound
 wss address when that address is off-loopback, so a concrete `--listen`

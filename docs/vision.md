@@ -63,6 +63,14 @@ routing from the remaining federation work:
 - **Cockpit.** The independently versioned native macOS client ships
   ([`consumers/cockpit.md`](./consumers/cockpit.md)).
 
+## Self-hosted federation networking
+
+The [Defguard federation masterplan](./architecture/defguard-federation.md)
+prepares a self-hosted routed WireGuard deployment beneath the existing
+hub-and-spoke transport. It separates implemented address selection from
+real-network, platform, policy and production acceptance gates. Defguard
+manages reachability; phux retains terminal identity and authorization.
+
 ## What phux is, on purpose, not
 
 The scope limits remain in force. [CONTRIBUTING.md](../CONTRIBUTING.md) owns
