@@ -144,7 +144,8 @@ fn run_new_empty_json(rt: &tokio::runtime::Runtime, target: &ServerTarget, name:
 /// started here carries no seed session (ADR-0105): the requested session is
 /// the only one, so a requested name of `default` does not collide with a
 /// seed and no stray shell is left behind. Failure is only logged (never
-/// prose under `--json`); the create reports.
+/// prose under `--json`); the create reports, its JSON error carrying the
+/// failure as `error.auto_start_error`.
 pub(crate) fn ensure_local_unseeded_server(target: &ServerTarget, json: bool) {
     if let Some(path) = target.socket_path()
         && let Err(err) = ensure_server_unseeded(path, json)

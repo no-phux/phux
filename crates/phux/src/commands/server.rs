@@ -833,12 +833,27 @@ fn ensure_server_with(
             || None,
         );
         drop(guard);
-        return result.map(|()| EnsureDisposition::SupervisedStarted);
+        return noting_failure(
+            socket_path,
+            result.map(|()| EnsureDisposition::SupervisedStarted),
+        );
     }
 
     let result = maybe_auto_spawn_server(socket_path, session, seed_command, quiet, login_shell)
         .map(|()| EnsureDisposition::DaemonStarted);
     drop(guard);
+    noting_failure(socket_path, result)
+}
+
+/// Park a failed start for the verb's later JSON `no_server` error, which
+/// otherwise knows only that nothing answered (`error.auto_start_error`).
+fn noting_failure(
+    socket_path: &Path,
+    result: std::io::Result<EnsureDisposition>,
+) -> std::io::Result<EnsureDisposition> {
+    if let Err(err) = &result {
+        super::json_err::record_auto_start_failure(socket_path, err);
+    }
     result
 }
 

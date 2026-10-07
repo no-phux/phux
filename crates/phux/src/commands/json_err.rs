@@ -7,12 +7,17 @@
 //! {"schema_version":1,"error":{"code":"no_server","message":"..."},"remedy":"...","exit_code":1}
 //! ```
 //!
+//! A `no_server` (or `transport`) failure after this process tried to
+//! auto-start the server also carries the additive `error.auto_start_error`:
+//! why that start failed, the server's own bind or config error included.
+//!
 //! Without `--json` the same failure prints prose (the no-server family keeps
 //! its exact historical diagnostic). The closed `code` vocabulary lives in
 //! [`codes`]; consumers read `docs/consumers/agents.md` §5.3.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Mutex;
 
 use phux_client::attach::AttachError;
 
@@ -296,6 +301,9 @@ pub(crate) struct CliError {
     pub(crate) code: &'static str,
     pub(crate) message: String,
     pub(crate) remedy: String,
+    /// Why this process's auto-start of the server failed, when it tried;
+    /// emitted as `error.auto_start_error`.
+    pub(crate) auto_start_error: Option<String>,
 }
 
 impl CliError {
@@ -308,16 +316,42 @@ impl CliError {
             code,
             message: message.into(),
             remedy: remedy.into(),
+            auto_start_error: None,
         }
     }
+}
+
+/// The last auto-start failure this process saw, and the socket it was for.
+/// A CLI process makes one auto-start attempt and then dials, and the dial's
+/// error is reported far from the attempt, so the failure is parked here.
+static AUTO_START_FAILURE: Mutex<Option<(PathBuf, String)>> = Mutex::new(None);
+
+/// Remember that auto-starting a server on `socket_path` failed with
+/// `error`, so a later [`no_server_error`] for that socket can say why.
+pub(crate) fn record_auto_start_failure(socket_path: &Path, error: &std::io::Error) {
+    if let Ok(mut slot) = AUTO_START_FAILURE.lock() {
+        *slot = Some((socket_path.to_path_buf(), error.to_string()));
+    }
+}
+
+/// The recorded auto-start failure for `socket_path`, if any.
+fn auto_start_failure(socket_path: &Path) -> Option<String> {
+    let slot = AUTO_START_FAILURE.lock().ok()?;
+    slot.as_ref()
+        .filter(|(socket, _)| socket == socket_path)
+        .map(|(_, error)| error.clone())
 }
 
 /// The JSON error document for `err`. `exit_code` is embedded because a
 /// consumer reading stderr may not see the process status.
 pub(crate) fn error_document(err: &CliError, exit_code: u8) -> serde_json::Value {
+    let mut error = serde_json::json!({ "code": err.code, "message": err.message });
+    if let Some(auto_start_error) = &err.auto_start_error {
+        error["auto_start_error"] = serde_json::Value::from(auto_start_error.as_str());
+    }
     serde_json::json!({
         "schema_version": ERROR_SCHEMA_VERSION,
-        "error": { "code": err.code, "message": err.message },
+        "error": error,
         "remedy": err.remedy,
         "exit_code": exit_code,
     })
@@ -362,6 +396,22 @@ pub(crate) fn report_no_server(
 /// The [`CliError`] behind [`report_no_server`]'s JSON path, also embedded
 /// by `phux status --json`.
 pub(crate) fn no_server_error(err: &AttachError, socket_path: &Path, verb: &str) -> CliError {
+    let mut cli_err = connect_error(err, socket_path, verb);
+    if matches!(err, AttachError::Io(_)) {
+        cli_err.auto_start_error = auto_start_failure(socket_path);
+        if cli_err.auto_start_error.is_some() {
+            cli_err.remedy = format!(
+                "auto-starting a server failed: fix the cause in `error.auto_start_error`, \
+                 then retry; {}",
+                cli_err.remedy
+            );
+        }
+    }
+    cli_err
+}
+
+/// [`no_server_error`] before any auto-start context is added.
+fn connect_error(err: &AttachError, socket_path: &Path, verb: &str) -> CliError {
     let server_log = phux_server::telemetry::server_log_path();
     let doctor = format!(
         "server log: {}; run `phux doctor` for a health check",
@@ -462,6 +512,39 @@ mod tests {
         assert_eq!(err.code, codes::TRANSPORT);
         assert!(err.message.contains("policy said no"));
         assert!(!err.remedy.is_empty());
+    }
+
+    /// A failed auto-start for the same socket rides along on the connect
+    /// error as the additive `error.auto_start_error`; another socket's does
+    /// not, and a disconnect is not a connect failure.
+    #[test]
+    fn a_recorded_auto_start_failure_rides_on_the_connect_error() {
+        let socket = Path::new("/tmp/phux-auto-start-failure-test.sock");
+        super::record_auto_start_failure(
+            socket,
+            &std::io::Error::other("server exited: failed to bind: Permission denied"),
+        );
+        let refused = AttachError::Io(std::io::Error::from(std::io::ErrorKind::NotFound));
+
+        let err = no_server_error(&refused, socket, "new");
+        assert_eq!(err.code, codes::NO_SERVER);
+        assert!(err.remedy.contains("auto_start_error"));
+        let doc = error_document(&err, 1);
+        assert_eq!(
+            doc["error"]["auto_start_error"],
+            "server exited: failed to bind: Permission denied"
+        );
+
+        let other = no_server_error(&refused, Path::new("/tmp/elsewhere.sock"), "new");
+        assert!(other.auto_start_error.is_none());
+        assert!(
+            error_document(&other, 1)["error"]
+                .get("auto_start_error")
+                .is_none()
+        );
+
+        let gone = no_server_error(&AttachError::Disconnected, socket, "new");
+        assert!(gone.auto_start_error.is_none());
     }
 
     /// The agent verbs' codes are part of the closed vocabulary frozen by
