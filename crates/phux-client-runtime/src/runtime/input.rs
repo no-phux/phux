@@ -77,6 +77,13 @@ impl Client {
         });
         if resolved {
             self.inner.wake();
+        } else {
+            // The receipt now waits on the wire. Probe it: a half-open link
+            // (a dead NAT mapping, a server gone behind a forward that keeps
+            // the socket open) would otherwise hold the receipt until an idle
+            // timeout notices, while the consumer still reads as attached.
+            // Mid-backoff, the nudge redials at once instead.
+            self.nudge();
         }
         id
     }
