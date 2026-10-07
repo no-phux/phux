@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-09-26
+last-reviewed: 2026-10-06
 ---
 
 # proto — connection lifecycle, framing, and protocol meta
@@ -430,6 +430,8 @@ ServerFeature = bitset (u32) {
 ServerFeatureExt = bitset (u32) {
     PATH_QUERY     = 0x00000001, // L3 host path browse + fuzzy search (§5)
     RESIZE_CELL_PX = 0x00000002, // RESIZE_TERMINAL cell size (L1 §3.1)
+    COMMITTED_TEARDOWN = 0x00000004, // a kill's reply follows its whole visible
+                                     //   teardown (L1 §5.2)
 }
 
 EngineFeatureSet = bitset (u32) {
@@ -514,6 +516,12 @@ its absence forbids both `PATH_QUERY` browse and recursive search.
 [ADR-0145](../adr/0145-the-tui-sizes-panes-and-casts-no-viewport-vote.md))
 says the server applies `RESIZE_TERMINAL`'s optional cell pixel size, so a
 client may size its Terminals without a viewport vote.
+`features_ext.COMMITTED_TEARDOWN = 0x00000004` ([L1.md](./L1.md) §5.2) says
+the reply to `KILL_RESOURCE`, `KILL_RESOURCE_IF`, `KILL_RESOURCES`, and
+`CLOSE_TAB_RESOURCES` follows a commit that already removed the killed
+resources from every state view and journaled their closes, so a client need
+not wait for their processes to be reaped. Through a hub it speaks for the
+hub's own resources; a satellite's kill commits on the satellite.
 `ACKNOWLEDGED_INPUT = 0x10`, `FILE_UPLOAD = 0x20`,
 `MOVE_RESOURCE = 0x40`, `TERMINAL_REPLY = 0x80`, `SHUTDOWN = 0x100`,
 `SPAWN_INITIAL_SIZE = 0x200`, `REPORT_AGENT_STATE = 0x400`,

@@ -1169,6 +1169,7 @@ pub(crate) fn spawn_terminal_exit_watcher(
         }
         return;
     };
+    state.with_mut(|s| s.begin_exit_watch(pane));
     tokio::task::spawn_local(async move {
         let (mut exit, mut events) = journal_until_exit(&state, rx, events).await;
         while let Some(next_rx) = replace_last_shell(&state, pane, &root_token).await {
@@ -1195,12 +1196,55 @@ pub(crate) fn spawn_terminal_exit_watcher(
             fire_retained_exit_hooks(&state, &wire_terminal_id, agent_hook, exit);
             events = hold_until_purge(&state, &retention, events).await;
         }
-        let Some(reap) = state.with_mut(|s| reap_exited_pane(s, pane, exit, events.as_mut()))
-        else {
-            return;
+        let reap = state.with_mut(|s| reap_exited_pane(s, pane, exit, events.as_mut()));
+        let targets = if let Some(reap) = reap {
+            announce_close(&state, reap, exit_hook_owed).await
+        } else {
+            fire_exit_hook_after_kill(&state, pane, exit, exit_hook_owed);
+            Vec::new()
         };
-        announce_close(&state, reap, &root_token, exit_hook_owed).await;
+        end_exit_watch(&state, pane, &root_token, &targets).await;
     });
+}
+
+/// A kill reaped `pane` in its own commit (L1 §5.2) while the process ran
+/// its hangup grace: fire the `pane-exit` its exit still owes, with the
+/// status the process actually ended with. Nothing when another closer
+/// reaped it, as before.
+fn fire_exit_hook_after_kill(
+    state: &SharedState,
+    pane: CoreResourceId,
+    exit: ExitOutcome,
+    exit_hook_owed: bool,
+) {
+    let killed = state.with(|s| s.closed_before_exit(pane));
+    if let Some(wire_terminal_id) = killed.filter(|_| exit_hook_owed) {
+        crate::hooks::fire_hook(state, HookEvent::pane_exit(&wire_terminal_id, exit.status));
+    }
+}
+
+/// End `pane`'s exit watch, and self-exit once the last session is gone and
+/// no killed process is still in its hangup grace, but only after serving a
+/// client (a fresh auto-spawned server's launcher is still connecting) and
+/// not during an ordinary shutdown.
+async fn end_exit_watch(
+    state: &SharedState,
+    pane: CoreResourceId,
+    root_token: &CancellationToken,
+    targets: &[mpsc::Sender<Outbound>],
+) {
+    let due = state.with_mut(|s| {
+        s.end_exit_watch(pane);
+        s.self_exit_due()
+    });
+    if !due || root_token.is_cancelled() {
+        return;
+    }
+    // Let writers flush `RESOURCE_CLOSED` before the root cancel closes
+    // their transports.
+    yield_until_close_frames_taken(targets).await;
+    info!("last session reaped after serving clients; server self-exit");
+    root_token.cancel();
 }
 
 /// If `pane` is the session's last Terminal and this was a natural process
@@ -1409,8 +1453,7 @@ fn reap_exited_pane(
         exit.status,
         attribution,
     );
-    let (server_empty, actor_token) = s.reap_terminal_deferring_actor_cancel(pane);
-    let served = s.has_served_client();
+    let (_, actor_token) = s.reap_terminal_deferring_actor_cancel(pane);
     // ADR-0105: clients of a session a group kill released are detached.
     let killed_clients: Vec<_> = s
         .take_killed_sessions()
@@ -1423,9 +1466,7 @@ fn reap_exited_pane(
         exit,
         cascaded,
         targets,
-        server_empty,
         killed_clients,
-        served,
         actor_token,
     })
 }
@@ -1538,22 +1579,20 @@ mod cascade_close_tests {
 }
 
 /// The off-lock half of a close: the `pane-exit` hook when the exit was not
-/// already announced, `RESOURCE_CLOSED` (children first), the detach of a
-/// released keep-empty session's clients, and the phux-60s self-exit.
+/// already announced, `RESOURCE_CLOSED` (children first), and the detach of
+/// a released keep-empty session's clients. Returns every mailbox a close
+/// went to, for the phux-60s self-exit to wait on.
 async fn announce_close(
     state: &SharedState,
     reap: ReapAndNotify,
-    root_token: &CancellationToken,
     exit_hook_owed: bool,
-) {
+) -> Vec<mpsc::Sender<Outbound>> {
     let ReapAndNotify {
         wire_terminal_id,
         reason,
         exit,
         cascaded,
-        targets,
-        server_empty,
-        served,
+        mut targets,
         killed_clients,
         actor_token,
     } = reap;
@@ -1581,19 +1620,10 @@ async fn announce_close(
     // the session that held it.
     detach_clients_of_killed_session(state, killed_clients);
 
-    // Self-exit once the last session is gone, but only after serving a
-    // client (a fresh auto-spawned server's launcher is still connecting)
-    // and not during an ordinary shutdown.
-    if server_empty && served && !root_token.is_cancelled() {
-        // Let writers flush `RESOURCE_CLOSED` before the root cancel closes
-        // their transports.
-        yield_until_close_frames_taken(&targets).await;
-        for child in &cascaded {
-            yield_until_close_frames_taken(&child.targets).await;
-        }
-        info!("last session reaped after serving clients; server self-exit");
-        root_token.cancel();
+    for child in cascaded {
+        targets.extend(child.targets);
     }
+    targets
 }
 
 /// Yield until each client writer has taken the just-queued close frames,
@@ -1626,12 +1656,8 @@ struct ReapAndNotify {
     cascaded: Vec<CascadedClose>,
     /// Every client subscribed to the pane at reap time.
     targets: Vec<mpsc::Sender<Outbound>>,
-    /// The reap emptied the last session.
-    server_empty: bool,
     /// ADR-0105: clients of a released session, detached with `SESSION_KILLED`.
     killed_clients: Vec<(ClientId, mpsc::Sender<Outbound>)>,
-    /// Whether any client has ever attached.
-    served: bool,
     /// Cancelled after `RESOURCE_CLOSED` is queued so a fenced pump can
     /// publish the last screen first.
     actor_token: Option<CancellationToken>,
@@ -2772,6 +2798,7 @@ async fn negotiate_hello(
             .with_features_ext(ServerFeatureExtSet::with(&[
                 ServerFeatureExt::PathQuery,
                 ServerFeatureExt::ResizeCellPx,
+                ServerFeatureExt::CommittedTeardown,
             ]))
             .with_compression(compression),
         server_id: state.with(|server| server.server_incarnation().as_bytes().to_vec()),
@@ -4343,7 +4370,7 @@ fn apply_session_keep_empty(
 /// Detach the clients attached to a session that was just killed, with
 /// `DETACHED { SESSION_KILLED }`. Each delivery waits in its own task, so a
 /// wedged client's full mailbox cannot block the write that killed it.
-fn detach_clients_of_killed_session(
+pub(super) fn detach_clients_of_killed_session(
     state: &SharedState,
     clients: Vec<(ClientId, mpsc::Sender<Outbound>)>,
 ) {

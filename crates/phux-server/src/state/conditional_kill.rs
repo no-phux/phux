@@ -6,7 +6,7 @@
 //! and the spawn provenance records.
 
 use phux_protocol::ids::ResourceId as WireResourceId;
-use phux_protocol::wire::frame::{CloseReason, KillConditions, KillPrecondition};
+use phux_protocol::wire::frame::{KillConditions, KillPrecondition};
 
 use super::ServerState;
 use crate::resource::ResourceId;
@@ -21,38 +21,17 @@ pub enum KillIfRefusal {
 }
 
 impl ServerState {
-    /// Close `terminal` if every condition in `precondition` holds, or say
-    /// why not and close nothing.
+    /// The resource a conditional kill may close, or why it may not; the
+    /// caller commits the close in the same lock acquisition.
+    ///
+    /// The instance is checked first: under another token the id may name a
+    /// different resource.
     ///
     /// # Errors
     ///
     /// [`KillIfRefusal::Precondition`] when a condition fails,
     /// [`KillIfRefusal::NotFound`] when the id names nothing.
-    pub fn kill_resource_if(
-        &mut self,
-        terminal: &WireResourceId,
-        precondition: &KillPrecondition,
-    ) -> Result<(), KillIfRefusal> {
-        self.kill_resource_if_attributed(terminal, precondition, super::CloseAttribution::default())
-    }
-
-    /// [`Self::kill_resource_if`], stamping the closes with `attribution`.
-    pub fn kill_resource_if_attributed(
-        &mut self,
-        terminal: &WireResourceId,
-        precondition: &KillPrecondition,
-        attribution: super::CloseAttribution,
-    ) -> Result<(), KillIfRefusal> {
-        let core = self.admit_conditional_kill(terminal, precondition)?;
-        self.close_resources_attributed(&[core], CloseReason::Killed, attribution);
-        Ok(())
-    }
-
-    /// The resource a conditional kill may close, or why it may not.
-    ///
-    /// The instance is checked first: under another token the id may name a
-    /// different resource.
-    fn admit_conditional_kill(
+    pub fn admit_conditional_kill(
         &self,
         terminal: &WireResourceId,
         precondition: &KillPrecondition,
@@ -159,9 +138,7 @@ mod tests {
         state.record_spawn(core, ClientId(1));
         state.subscribe_terminal(ClientId(1), core, None);
         let precondition = untouched(&state);
-        // The kill is committed; the id is retired later, when the reap
-        // that `close_resources` starts runs.
-        assert_eq!(state.kill_resource_if(&wire, &precondition), Ok(()));
+        assert_eq!(state.admit_conditional_kill(&wire, &precondition), Ok(core));
     }
 
     #[test]
@@ -172,7 +149,7 @@ mod tests {
         state.unsubscribe_terminal(ClientId(2), core);
         let precondition = untouched(&state);
         assert!(matches!(
-            state.kill_resource_if(&wire, &precondition),
+            state.admit_conditional_kill(&wire, &precondition),
             Err(KillIfRefusal::Precondition(_))
         ));
         assert_eq!(state.terminal_from_wire(&wire), Some(core), "kept");
@@ -180,10 +157,10 @@ mod tests {
 
     #[test]
     fn a_pane_no_client_spawned_is_never_unattached_since_spawn() {
-        let (mut state, core, wire) = state_with_pane();
+        let (state, core, wire) = state_with_pane();
         let precondition = untouched(&state);
         assert!(matches!(
-            state.kill_resource_if(&wire, &precondition),
+            state.admit_conditional_kill(&wire, &precondition),
             Err(KillIfRefusal::Precondition(_))
         ));
         assert_eq!(state.terminal_from_wire(&wire), Some(core));
@@ -197,13 +174,13 @@ mod tests {
         other[0] ^= 0xFF;
         let old_token = KillPrecondition::spawned_and_unattached(ServerInstance::new(other));
         assert!(matches!(
-            state.kill_resource_if(&wire, &old_token),
+            state.admit_conditional_kill(&wire, &old_token),
             Err(KillIfRefusal::Precondition(_))
         ));
         let absent = phux_protocol::ids::ResourceId::local(999);
         assert!(
             matches!(
-                state.kill_resource_if(&absent, &old_token),
+                state.admit_conditional_kill(&absent, &old_token),
                 Err(KillIfRefusal::Precondition(_))
             ),
             "a stale token wins over a missing id"
@@ -226,7 +203,7 @@ mod tests {
             conditions: KillConditions::NONE,
         };
         assert_eq!(
-            replacement.kill_resource_if(&wire, &stale),
+            replacement.admit_conditional_kill(&wire, &stale),
             Err(KillIfRefusal::Precondition(
                 "the instance token no longer names this server's id space"
             ))
@@ -241,8 +218,8 @@ mod tests {
             conditions: KillConditions::NONE,
         };
         assert_eq!(
-            replacement.kill_resource_if(&wire, &current),
-            Ok(()),
+            replacement.admit_conditional_kill(&wire, &current),
+            Ok(core),
             "intentional close permits another attachment when the instance is current"
         );
     }
@@ -259,7 +236,7 @@ mod tests {
         );
         state.note_resource_use(&wire, ClientId(2));
         assert!(matches!(
-            state.kill_resource_if(&wire, &precondition),
+            state.admit_conditional_kill(&wire, &precondition),
             Err(KillIfRefusal::Precondition(_))
         ));
         assert_eq!(state.terminal_from_wire(&wire), Some(core));
@@ -274,7 +251,7 @@ mod tests {
             conditions: KillConditions::UNATTACHED_SINCE_SPAWN,
         };
         assert!(matches!(
-            state.kill_resource_if(&wire, &no_token),
+            state.admit_conditional_kill(&wire, &no_token),
             Err(KillIfRefusal::Precondition(_))
         ));
         assert_eq!(state.terminal_from_wire(&wire), Some(core));
@@ -294,7 +271,7 @@ mod tests {
             .new_agent_session(core, facet)
             .expect("child");
         assert!(matches!(
-            state.kill_resource_if(&wire, &untouched(&state)),
+            state.admit_conditional_kill(&wire, &untouched(&state)),
             Err(KillIfRefusal::Precondition(_))
         ));
         assert_eq!(state.terminal_from_wire(&wire), Some(core));
@@ -309,12 +286,12 @@ mod tests {
             conditions: KillConditions::from_bits(0x80),
         };
         assert!(matches!(
-            state.kill_resource_if(&wire, &unknown),
+            state.admit_conditional_kill(&wire, &unknown),
             Err(KillIfRefusal::Precondition(_))
         ));
         let absent = phux_protocol::ids::ResourceId::local(999);
         assert_eq!(
-            state.kill_resource_if(&absent, &untouched(&state)),
+            state.admit_conditional_kill(&absent, &untouched(&state)),
             Err(KillIfRefusal::NotFound)
         );
         assert_eq!(state.terminal_from_wire(&wire), Some(core));

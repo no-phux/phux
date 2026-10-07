@@ -14,6 +14,7 @@ mod common;
 mod conditional_kill;
 mod idempotency;
 mod keep_empty;
+mod kill_visibility;
 mod lease_ttl;
 mod overlay_startup;
 mod retain_on_exit;

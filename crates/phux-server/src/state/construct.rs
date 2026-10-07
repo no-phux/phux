@@ -28,6 +28,7 @@ impl ServerState {
             lifecycle: Lifecycle::new(),
             close_reasons: std::collections::HashMap::new(),
             close_attributions: std::collections::HashMap::new(),
+            exit_watches: std::collections::HashMap::new(),
             retained: super::retained::RetainedTable::default(),
             remote_listeners: phux_protocol::wire::RemoteListenersReport::new(),
             operation_dedupe: crate::runtime::operation_dedupe::OperationDedupe::default(),

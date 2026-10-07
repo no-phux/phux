@@ -31,6 +31,7 @@ pub mod attach;
 pub mod client;
 mod command_tasks;
 pub mod commands;
+mod committed_close;
 mod directory;
 mod ephemeral_listener;
 pub mod idempotent_create;
@@ -2860,6 +2861,56 @@ mod tests {
                 Some("3")
             );
             assert!(event.context.contains_key("terminal-id"));
+        });
+    }
+
+    /// A kill reaps its pane in its own commit (L1 §5.2), before the process
+    /// ends its hangup grace: the watcher still fires `pane-exit` with the
+    /// status the process ended with, and last-session self-exit waits for
+    /// that process instead of cutting its grace short.
+    #[test]
+    fn a_pane_killed_before_its_exit_still_fires_pane_exit_and_holds_self_exit() {
+        let rt = Builder::new_current_thread().enable_all().build().unwrap();
+        let local = LocalSet::new();
+        local.block_on(&rt, async {
+            let state = SharedState::new();
+            let mut hooks = capture_hooks(&state);
+            let root = CancellationToken::new();
+            let (_sid, _wid, pane) = state.with_mut(|s| s.seed_session("doomed"));
+            state.with_mut(crate::state::ServerState::arm_self_exit);
+            let (exit_tx, exit_rx) = tokio::sync::oneshot::channel();
+            spawn_terminal_exit_watcher(state.clone(), pane, Some(exit_rx), root.clone(), None);
+
+            let committed = state.with_mut(|s| {
+                committed_close::commit_close(
+                    s,
+                    &[pane],
+                    phux_protocol::wire::frame::CloseReason::Killed,
+                    crate::state::CloseAttribution::default(),
+                )
+            });
+            assert_eq!(committed.len(), 1);
+            committed_close::announce(&state, committed);
+            assert!(
+                state.with(|s| s.registry().session_count() == 0 && !s.self_exit_due()),
+                "the session is gone at commit, but the process is still in its grace"
+            );
+
+            exit_tx
+                .send(phux_core::process::ExitOutcome::exited(7))
+                .expect("exit notify");
+            let event = tokio::time::timeout(MAILBOX_DEADLINE, hooks.recv())
+                .await
+                .expect("pane-exit hook timed out")
+                .expect("hook channel closed");
+            assert_eq!(event.name, crate::hooks::PANE_EXIT);
+            assert_eq!(
+                event.context.get("exit-code").map(String::as_str),
+                Some("7")
+            );
+            tokio::time::timeout(MAILBOX_DEADLINE, root.cancelled())
+                .await
+                .expect("the last watcher's end self-exits");
         });
     }
 
