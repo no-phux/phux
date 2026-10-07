@@ -340,10 +340,11 @@ pub enum ServerError {
     #[error("connector: {0}")]
     Connector(#[from] crate::connector::ConnectorError),
 
-    /// Workload mode (`PHUX_WORKLOAD_MTLS`) beside a remote entry point that
-    /// cannot require a workload client certificate (ADR-0116).
+    /// Workload mode (`[policy] mode = "paired"`, or `PHUX_WORKLOAD_MTLS`
+    /// with no mode) beside a remote entry point that cannot require a
+    /// workload client certificate (ADR-0116).
     #[error(
-        "PHUX_WORKLOAD_MTLS is set, but {surface} cannot require a workload client certificate, so the server refuses to start; {remedy}"
+        "workload mode is on ([policy] mode = \"paired\", or PHUX_WORKLOAD_MTLS with no mode), but {surface} cannot require a workload client certificate, so the server refuses to start; {remedy}"
     )]
     WorkloadModeUncovered {
         /// The entry point that cannot be covered.
@@ -941,8 +942,12 @@ fn startup_policy(
     connectors: bool,
 ) -> Result<(crate::policy::PolicyPosture, PostureEngine), ServerError> {
     let remote = remote_listener_configured(ws_addr, quic_addr, webtransport, connectors);
-    let posture =
-        crate::policy::PolicyPosture::resolve(cfg.policy_mode, cfg.env.workload_mtls, remote)?;
+    let posture = crate::policy::PolicyPosture::resolve(
+        cfg.policy_mode,
+        cfg.env.workload_mtls,
+        remote,
+        cfg.env.workload_authority_configured(),
+    )?;
     workload_auth::refuse_uncovered_surfaces(
         posture.requires_workload_mtls(),
         connectors,

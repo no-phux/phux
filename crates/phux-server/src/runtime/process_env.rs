@@ -116,6 +116,22 @@ impl ServerEnv {
         )
     }
 
+    /// Whether any workload authority location is configured
+    /// (`PHUX_WORKLOAD_CA`, `PHUX_WORKLOAD_CA_KEY`, `PHUX_WORKLOAD_KEYS`).
+    /// With no `[policy] mode` the server refuses to start beside one
+    /// (`docs/spec/workload-auth.md` §8). An empty value names nothing.
+    #[must_use]
+    pub fn workload_authority_configured(&self) -> bool {
+        [
+            &self.workload_ca,
+            &self.workload_ca_key,
+            &self.workload_keys,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|path| !path.as_os_str().is_empty())
+    }
+
     /// The SSH program hub links dial with: [`Self::ssh_program`], else
     /// `ssh`.
     #[must_use]
@@ -189,5 +205,29 @@ mod tests {
         assert_eq!(env.tokens_path(), PathBuf::from("/x/PHUX_WS_TOKENS"));
         assert!(env.workload_mtls && env.no_auto_listen);
         assert_eq!(env.ssh_program(), OsString::from("/x/PHUX_SSH"));
+    }
+
+    #[test]
+    fn any_named_workload_location_counts_as_configured_authority() {
+        assert!(!ServerEnv::default().workload_authority_configured());
+        for var in [
+            "PHUX_WORKLOAD_CA",
+            "PHUX_WORKLOAD_CA_KEY",
+            "PHUX_WORKLOAD_KEYS",
+        ] {
+            let named = ServerEnv::from_lookup(|asked| (asked == var).then(|| "/x".into()));
+            assert!(named.workload_authority_configured(), "{var}");
+            let empty = ServerEnv::from_lookup(|asked| (asked == var).then(OsString::new));
+            assert!(
+                !empty.workload_authority_configured(),
+                "an empty {var} names nothing"
+            );
+        }
+        let mtls_only =
+            ServerEnv::from_lookup(|asked| (asked == "PHUX_WORKLOAD_MTLS").then(|| "1".into()));
+        assert!(
+            !mtls_only.workload_authority_configured(),
+            "PHUX_WORKLOAD_MTLS opts in; it names no location"
+        );
     }
 }

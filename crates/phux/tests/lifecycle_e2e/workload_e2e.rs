@@ -706,6 +706,34 @@ fn workload_mode_refuses_to_start_with_webtransport() {
     );
 }
 
+/// A named workload CA or registry location with no `[policy] mode` is a
+/// startup error, not a silent owner grant (workload-auth §8): the operator
+/// pointed at workload authority without choosing to enforce it.
+#[test]
+#[ignore = "runs a real server start; runs in the e2e lane"]
+fn an_unset_mode_beside_a_named_workload_registry_refuses_to_start() {
+    let dir = TempDir::new().expect("tempdir");
+    prepare_dirs(dir.path());
+    let registry = dir.path().join("elsewhere-workload-keys");
+    let registry = registry.to_str().expect("utf-8 tempdir");
+    let out = server_command(
+        dir.path(),
+        &["--exit-after-idle", "5"],
+        &[("PHUX_WORKLOAD_KEYS", registry)],
+    )
+    .output()
+    .expect("run phux server");
+    let stderr = text(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "an unset mode beside a named registry must refuse: {stderr}"
+    );
+    assert!(
+        stderr.contains("[policy] mode") && stderr.contains("PHUX_WORKLOAD_KEYS"),
+        "the refusal names the setting and the remedy: {stderr}"
+    );
+}
+
 /// Poll `child` until it exits or `deadline` passes, then collect it.
 fn wait_exit(mut child: Child, deadline: Duration) -> Output {
     let start = Instant::now();

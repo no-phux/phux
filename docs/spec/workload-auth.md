@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-09-30
+last-reviewed: 2026-10-07
 ---
 
 # Workload authority over mTLS — authentication and scoped authority
@@ -653,21 +653,26 @@ non-UDS listener is a startup error. `paired` with missing, malformed, or unsafe
 CA or registry material is a startup error. Runtime corruption after a
 successful start applies the empty-snapshot revocation rule in §7.
 
-<!-- impl-status: partial; probe: PolicyPosture,warns_remote_owner_grant -->
-> **Status: partial (2026-09-30).** The reference server reads the mode from
+<!-- impl-status: partial; probe: PolicyPosture,warns_remote_owner_grant,UnsetWithWorkloadAuthority -->
+> **Status: partial (2026-10-07).** The reference server reads the mode from
 > `[policy] mode`, enforces `local`, `paired`, and their startup errors, and
-> treats `PHUX_WORKLOAD_MTLS` with no mode as `paired`. It keeps one
-> transitional posture the table above does not name: no mode beside a
-> non-UDS listener or relay connector starts, logs a warning once, and gives
-> every admitted connection the owner's full grant, as before enforcement
-> existed. `phux host add` remotes now enroll and present a client
-> certificate (§8.1), but paired phones keep working only through this
-> posture until workload mTLS covers WebSocket consumers, WebTransport, and
-> mobile enrollment (PHA-406 decision H1); the posture ends, and this marker
-> goes, when that follow-up lands. Under `local` the server never auto-binds the
-> overlay listener and refuses `OPEN_LISTENER`. One further gap: a
-> configured CA or registry path with no mode is ignored rather than
-> refused.
+> treats `PHUX_WORKLOAD_MTLS` with no mode as `paired`. A CA or registry
+> location named by `PHUX_WORKLOAD_CA`, `PHUX_WORKLOAD_CA_KEY`, or
+> `PHUX_WORKLOAD_KEYS` with no mode is a startup error. A registry at the
+> default location is not "configured" in this sense: `phux host add`
+> (§8.1) enrolls into it over ssh before the host opts in to `paired`, so
+> its presence alone refuses nothing. The server keeps one transitional
+> posture the table above does not name: no mode beside a non-UDS listener
+> or relay connector starts, logs a warning once, and gives every admitted
+> connection the owner's full grant, as before enforcement existed. Making
+> that combination a startup error was verified to strand documented
+> setups with no mode left to admit them: paired phones (no mobile
+> enrollment), relay connectors, and WebTransport, which `paired` refuses
+> and `local` forbids. The posture ends, and this marker goes, when workload
+> mTLS covers WebSocket consumers, WebTransport, and mobile enrollment
+> (PHA-406 decision H1). `phux host add` remotes, including Cockpit's,
+> already enroll and present a client certificate (§8.1). Under `local` the
+> server never auto-binds the overlay listener and refuses `OPEN_LISTENER`.
 
 TLS, certificate verification, an SSH login, a bearer token, or UDS
 peer credentials remain necessary transport evidence where their transports
