@@ -107,13 +107,24 @@ pub(crate) const ENV_VARS: &[EnvVarSpec] = &[
         ],
     },
     EnvVarSpec {
+        name: "PHUX_OVERLAY_ADDRS",
+        lines: &[
+            "Comma-separated concrete unicast IPs for any private network",
+            "(e.g. Defguard/WireGuard). Overrides overlay discovery for",
+            "pair, doctor, and auto-listen. Empty or invalid disables",
+            "discovery without fallback. First IP is the auto-bind IP.",
+            "Explicit --listen/--quic still win. Set in the service env",
+            "and pairing shell; this does not install or configure a VPN.",
+        ],
+    },
+    EnvVarSpec {
         name: "PHUX_TAILSCALE",
         lines: &[
             "Tailscale-compatible CLI used to detect the overlay address",
             "(default: `tailscale` on PATH) for `phux pair`, `phux",
             "doctor`, and the server's auto-bound remote listener. When",
-            "set it is the only source consulted: naming a command that",
-            "reports nothing turns overlay detection off everywhere.",
+            "set and PHUX_OVERLAY_ADDRS is unset, it is the only source:",
+            "a command reporting nothing disables overlay discovery.",
         ],
     },
     EnvVarSpec {

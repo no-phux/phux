@@ -147,6 +147,57 @@ fn whoami_reports_the_local_socket_peer() {
     assert!(lines.contains(&"ssh_client:     none"), "{text}");
 }
 
+/// The actual pairing CLI uses the provider-neutral override, without
+/// claiming those IPs are bound listeners. All server traffic stays loopback.
+#[test]
+#[ignore = "spawns a real server with a secure listener; runs in the e2e lane"]
+fn pairing_uses_explicit_overlay_addresses_without_fabricating_a_route() {
+    let dir = TempDir::new().expect("tempdir");
+    prepare_dirs(dir.path());
+    let _server = start_server(
+        dir.path(),
+        &["--quic", listeners::LOOPBACK_ANY_PORT],
+        &[("PHUX_WS_SECURE", "1")],
+    );
+    let socket = dir.path().join("s.sock");
+    let quic = listeners::bound_listener_addr(&socket, listeners::RemoteListenerTransport::Quic)
+        .to_string();
+
+    for (addresses, expected) in [
+        (
+            "10.77.0.2,fd77::2,10.77.0.2",
+            serde_json::json!(["10.77.0.2", "fd77::2"]),
+        ),
+        ("", serde_json::json!([])),
+        ("10.77.0.2,bad", serde_json::json!([])),
+    ] {
+        let out = common::phux_cmd(crate::runner::phux_bin())
+            .envs(hermetic_env(dir.path()))
+            .env("PHUX_OVERLAY_ADDRS", addresses)
+            .args([
+                "--socket",
+                socket.to_str().expect("utf-8 socket"),
+                "pair",
+                "--json",
+            ])
+            .stdin(Stdio::null())
+            .output()
+            .expect("run pairing CLI");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let paired = json_doc(&out);
+        assert_eq!(paired["overlay_addresses"], expected);
+        assert_eq!(paired["quic_addr"], quic.as_str());
+        assert!(
+            paired["connect_link"].is_null(),
+            "loopback must not become a remote link"
+        );
+    }
+}
+
 /// Over `--remote`: a secure loopback QUIC listener admits the dial by the
 /// token `phux pair` minted, and whoami reports that credential back with
 /// no peer uid.

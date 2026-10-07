@@ -341,8 +341,10 @@ LAN address, with TLS and token authentication on non-loopback binds
 ([ADR-0031](adr/0031-remote-consumer-auth-and-encryption.md)).
 
 Certificate pins identify the certificate, not the hostname, so overlay DNS
-names work unchanged. Headscale and raw WireGuard are supported alongside
-Tailscale. See [overlay reachability](./operations.md#connecting-from-another-network-overlay-reachability)
+names work unchanged. Headscale, raw WireGuard, and Defguard-managed
+WireGuard use the same phux transports as Tailscale. Defguard needs routed
+reachability through its gateway; it is not assumed to be a peer mesh.
+See [overlay reachability](./operations.md#connecting-from-another-network-overlay-reachability)
 for the trust model and environment settings.
 
 ## Common steps: listen, then pair
@@ -379,8 +381,8 @@ Legacy anonymous token lines require a one-time explicit
 certificate if none exists yet, so the fingerprint it prints is the one the
 server presents.
 
-Its output looks like this (the overlay-address block appears only when a
-tailnet or CGNAT-routed address is detected on the host):
+Its output looks like this (the overlay-address block appears when an
+explicit `PHUX_OVERLAY_ADDRS` list or a tailnet/CGNAT address is selected):
 
 ```
 Credential ID (use with `phux pair rotate|revoke`):
@@ -510,6 +512,40 @@ TCP resolution and the default TLS certificate identity use the bare address.
   Endpoint = server.example.com:51820
   PersistentKeepalive = 25
   ```
+
+### Defguard-managed WireGuard
+
+Use Defguard's official deployment and enrollment guides for the VPN. Once
+the host has a stable tunnel IP and the gateway permits the required route,
+select that IP explicitly; no Tailscale CLI or Defguard SDK is needed:
+
+```sh
+# On the server host, after 10.77.0.2 is assigned to its VPN interface:
+export PHUX_OVERLAY_ADDRS=10.77.0.2
+# On an intended default-profile server, auto-listen uses that IP.
+# For a deliberately configured server instead:
+phux server --quic 10.77.0.2:8788 --listen 10.77.0.2:8787
+# In another shell with the same environment and profile:
+phux pair --qr --name studio
+```
+
+Do not start a second server over an existing service; configure its concrete
+listener addresses or environment instead. Service configuration is distinct
+from shell exports. Prefer concrete binds over `0.0.0.0`; phux binds only
+addresses this machine owns, not the gateway's public IP or another peer's IP.
+For IPv6 use `--quic '[fd77::2]:8788' --listen '[fd77::2]:8787'`.
+
+The operator/client must also have an active VPN route to this host. Permit
+UDP 8788 for QUIC and TCP 8787 for WSS only from intended VPN peers. A VPN
+handshake alone does not prove client-to-client forwarding or a return path.
+Use the existing manual host registration or `host add --role satellite`
+flows above, retaining the token and certificate pin; do not treat VPN
+membership as phux authorization. Human MFA sessions and unattended machine
+tunnels have different lifecycle requirements.
+
+The [Defguard federation masterplan](./architecture/defguard-federation.md)
+records the network topology, self-hosted license baseline, deployment
+acceptance tests, and capabilities not yet validated in a real VPN lab.
 
 ## Path D: via a reference relay
 
