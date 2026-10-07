@@ -392,6 +392,48 @@ fn unbindable_socket_fails_fast_with_the_bind_error() {
         "took {elapsed:?}: {stderr}"
     );
     assert!(!socket.exists());
+    // The banner prints only once the socket is bound, so a failed bind
+    // never logs "listening" ahead of "failed to bind".
+    let log = std::fs::read_to_string(fixture.dir.path().join("phux-ensure/server.log"))
+        .expect("server log");
+    assert!(log.contains("failed to bind"), "{log}");
+    assert!(!log.contains("listening"), "{log}");
+}
+
+/// A JSON verb that auto-starts the server carries the server's own bind
+/// error in its `no_server` document, not just the log path.
+#[test]
+fn json_new_reports_the_auto_started_servers_bind_error() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let fixture = Fixture::new();
+    let locked = fixture.dir.path().join("locked");
+    std::fs::create_dir(&locked).expect("locked dir");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).expect("chmod");
+    let socket = locked.join("phux.sock");
+    let output = bounded_output(
+        fixture
+            .command()
+            .args(["new", "--json", "-s", "work", "--socket"])
+            .arg(&socket),
+    );
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let document: serde_json::Value =
+        serde_json::from_slice(&output.stderr).expect("one JSON error document on stderr");
+    assert_eq!(document["error"]["code"], "no_server", "{document}");
+    let auto_start = document["error"]["auto_start_error"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no auto_start_error: {document}"));
+    assert!(auto_start.contains("exited before accepting"), "{document}");
+    assert!(auto_start.contains("failed to bind"), "{document}");
+    assert!(
+        document["remedy"]
+            .as_str()
+            .is_some_and(|remedy| remedy.contains("auto_start_error")),
+        "{document}"
+    );
+    assert!(!socket.exists());
 }
 
 #[test]

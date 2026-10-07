@@ -395,7 +395,8 @@ fn bind_session(req: Binding<'_>) -> ExitCode {
     // the only one, rather than one beside a stray `default` seed.
     if let Err(err) = super::server::ensure_server_unseeded(&socket_path, json) {
         // Under `--json` the failure stays off stderr, which carries only the
-        // error document; the verb reports it there when the dial fails.
+        // error document; the verb reports it there (as
+        // `error.auto_start_error`) when the dial fails.
         if json {
             tracing::debug!(error = %err, "auto-spawn failed on the --json worktree path");
         } else {

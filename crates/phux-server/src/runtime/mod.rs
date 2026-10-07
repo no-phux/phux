@@ -25,7 +25,9 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::state::{Outbound, SharedState};
 use crate::upgrade::blob::StateBlob;
-use phux_protocol::wire::{ListenerDisabledReason, RemoteListenerSlot, RemoteListenerTransport};
+use phux_protocol::wire::{
+    ListenerDisabledReason, RemoteListenerSlot, RemoteListenerTransport, RemoteListenersReport,
+};
 
 pub mod attach;
 pub mod client;
@@ -407,6 +409,25 @@ pub struct ServerRuntime {
     overlay_detect: fn() -> Vec<std::net::IpAddr>,
     /// `--autosave`: the crash-safe workspace archive (ADR-0150).
     autosave: Option<crate::autosave::Autosave>,
+    /// Told once the startup listeners are bound; see [`Self::on_listening`].
+    on_listening: ListeningHook,
+}
+
+/// The callback behind [`ServerRuntime::on_listening`].
+type ListeningCallback = Box<dyn FnOnce(&RemoteListenersReport) + Send>;
+
+/// An optional [`ListeningCallback`]; a newtype so [`ServerRuntime`] keeps
+/// its `Debug`.
+struct ListeningHook(Option<ListeningCallback>);
+
+impl std::fmt::Debug for ListeningHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "ListeningHook(Some)"
+        } else {
+            "ListeningHook(None)"
+        })
+    }
 }
 
 impl ServerRuntime {
@@ -428,7 +449,23 @@ impl ServerRuntime {
             connect_override: None,
             overlay_detect: phux_config::overlay::detect,
             autosave: None,
+            on_listening: ListeningHook(None),
         }
+    }
+
+    /// Call `hook` once the UDS socket and every configured remote listener
+    /// have bound (each remote one may have failed; the report says which),
+    /// before the session tree is seeded. A startup that fails, a socket bind
+    /// above all, never calls it, so a "listening" line printed from here is
+    /// never a lie. The auto-bound overlay listener (ADR-0081) binds later
+    /// and is not in the report.
+    #[must_use]
+    pub fn on_listening(
+        mut self,
+        hook: impl FnOnce(&RemoteListenersReport) + Send + 'static,
+    ) -> Self {
+        self.on_listening = ListeningHook(Some(Box::new(hook)));
+        self
     }
 
     /// Keep a crash-safe workspace archive (ADR-0150): restore it once on a
@@ -610,6 +647,7 @@ impl ServerRuntime {
 
         let runtime_flags = self.runtime_flags();
         let autosave = self.autosave;
+        let on_listening = self.on_listening;
         state.with_mut(|s| {
             s.set_upgrade_context(listener.as_raw_fd(), socket_path.clone(), runtime_flags);
         });
@@ -668,6 +706,9 @@ impl ServerRuntime {
                     state.with_mut(|s| s.record_remote_listener(slot));
                     listener
                 });
+                if let ListeningHook(Some(hook)) = on_listening {
+                    hook(&state.with(|s| s.remote_listeners().clone()));
+                }
 
                 let cold_start = resume_blob.is_none();
                 if let Some(blob) = resume_blob {

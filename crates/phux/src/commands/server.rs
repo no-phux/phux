@@ -305,35 +305,43 @@ fn build_runtime() -> Result<tokio::runtime::Runtime, ExitCode> {
 }
 
 /// The listener/feature suffix of the "phux server listening on ..." line:
-/// every extra endpoint and mode this server was asked for.
+/// every remote listener startup bound (or failed to), at its bound address,
+/// and every mode this server was asked for.
 fn listener_summary(
-    listen: Option<std::net::SocketAddr>,
-    quic: Option<std::net::SocketAddr>,
-    webtransport: Option<std::net::SocketAddr>,
+    listeners: &phux_protocol::wire::RemoteListenersReport,
     hub: bool,
     connector_count: usize,
     exit_after_idle: Option<u64>,
 ) -> String {
-    let mut extra = match (listen, quic) {
-        (Some(ws), Some(q)) => format!(" + ws://{ws} + quic://{q}"),
-        (Some(ws), None) => format!(" + ws://{ws}"),
-        (None, Some(q)) => format!(" + quic://{q}"),
-        (None, None) => String::new(),
-    };
-    if let Some(wt) = webtransport {
-        // WebTransport session URLs are https:// (HTTP/3 CONNECT).
-        let _ =
-            std::fmt::Write::write_fmt(&mut extra, format_args!(" + webtransport https://{wt}"));
+    use phux_protocol::wire::RemoteListenerTransport;
+    use std::fmt::Write as _;
+    let mut extra = String::new();
+    for slot in &listeners.listeners {
+        let scheme = match slot.transport {
+            RemoteListenerTransport::Wss => "ws://",
+            RemoteListenerTransport::Quic => "quic://",
+            // WebTransport session URLs are https:// (HTTP/3 CONNECT).
+            RemoteListenerTransport::Wt => "webtransport https://",
+            _ => "",
+        };
+        let addr = slot.addr.as_deref().unwrap_or("?");
+        let _ = write!(extra, " + {scheme}{addr}");
+        if !slot.bound {
+            let reason = slot.disabled_reason.map_or(
+                "unknown",
+                phux_protocol::wire::ListenerDisabledReason::as_str,
+            );
+            let _ = write!(extra, " (disabled: {reason})");
+        }
     }
     if hub {
         extra.push_str(" [hub]");
     }
     if connector_count > 0 {
-        let _ =
-            std::fmt::Write::write_fmt(&mut extra, format_args!(" + connectors={connector_count}"));
+        let _ = write!(extra, " + connectors={connector_count}");
     }
     if let Some(secs) = exit_after_idle {
-        let _ = std::fmt::Write::write_fmt(&mut extra, format_args!(" [exit-after-idle={secs}s]"));
+        let _ = write!(extra, " [exit-after-idle={secs}s]");
     }
     extra
 }
@@ -452,22 +460,20 @@ pub(crate) fn run_server(
         Err(code) => return code,
     };
 
-    let extra = listener_summary(
-        listen,
-        quic,
-        webtransport,
-        hub,
-        connector_entries.len(),
-        exit_after_idle,
-    );
-    eprintln!(
-        "phux server listening on {}{extra} (session={}; Ctrl-C to stop)",
-        socket_path.display(),
-        session.unwrap_or("none")
-    );
     log_startup(&socket_path);
 
-    let mut server = with_network_listeners(ServerRuntime::new(cfg), listen, quic, webtransport);
+    // Printed once the sockets are bound, so a failed start never claims
+    // to be listening.
+    let banner_session = session.unwrap_or("none").to_owned();
+    let connector_count = connector_entries.len();
+    let mut server = with_network_listeners(ServerRuntime::new(cfg), listen, quic, webtransport)
+        .on_listening(move |listeners| {
+            let extra = listener_summary(listeners, hub, connector_count, exit_after_idle);
+            eprintln!(
+                "phux server listening on {}{extra} (session={banner_session}; Ctrl-C to stop)",
+                socket_path.display(),
+            );
+        });
     if !connector_entries.is_empty() {
         server = server.connectors(connector_entries, connect);
     }
@@ -827,12 +833,27 @@ fn ensure_server_with(
             || None,
         );
         drop(guard);
-        return result.map(|()| EnsureDisposition::SupervisedStarted);
+        return noting_failure(
+            socket_path,
+            result.map(|()| EnsureDisposition::SupervisedStarted),
+        );
     }
 
     let result = maybe_auto_spawn_server(socket_path, session, seed_command, quiet, login_shell)
         .map(|()| EnsureDisposition::DaemonStarted);
     drop(guard);
+    noting_failure(socket_path, result)
+}
+
+/// Park a failed start for the verb's later JSON `no_server` error, which
+/// otherwise knows only that nothing answered (`error.auto_start_error`).
+fn noting_failure(
+    socket_path: &Path,
+    result: std::io::Result<EnsureDisposition>,
+) -> std::io::Result<EnsureDisposition> {
+    if let Err(err) = &result {
+        super::json_err::record_auto_start_failure(socket_path, err);
+    }
     result
 }
 
