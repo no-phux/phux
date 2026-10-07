@@ -178,6 +178,10 @@ pub enum TlsClientIdentity {
         /// PEM private key corresponding to the leaf certificate.
         private_key: PathBuf,
     },
+    /// A certificate chain whose private key the client cannot read: a
+    /// platform keystore signs each handshake through [`HeldIdentity`]'s
+    /// signer (ADR-0154). Never read from the environment.
+    Held(HeldIdentity),
     /// [`Self::PemFiles`], and refuse a server that does not request the
     /// client certificate: that is a downgrade, not permission to continue
     /// (`docs/spec/workload-auth.md` §3). Session resumption is disabled so
@@ -191,6 +195,52 @@ pub enum TlsClientIdentity {
         /// PEM private key corresponding to the leaf certificate.
         private_key: PathBuf,
     },
+}
+
+/// A client certificate chain and a signer for its key, which stays where it
+/// was generated (a Secure Enclave, a StrongBox): rustls asks the signer for
+/// every handshake signature.
+#[derive(Clone)]
+pub struct HeldIdentity {
+    /// The issued chain, leaf first.
+    pub chain: Vec<CertificateDer<'static>>,
+    /// Signs for the leaf's key.
+    pub key: Arc<dyn rustls::sign::SigningKey>,
+}
+
+impl std::fmt::Debug for HeldIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HeldIdentity")
+            .field("chain", &self.chain.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Two held identities are equal when they are the same chain and signer.
+impl PartialEq for HeldIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        self.chain == other.chain && Arc::ptr_eq(&self.key, &other.key)
+    }
+}
+
+impl Eq for HeldIdentity {}
+
+/// Always presents one held identity.
+#[derive(Debug)]
+struct PresentHeld(Arc<rustls::sign::CertifiedKey>);
+
+impl ResolvesClientCert for PresentHeld {
+    fn resolve(
+        &self,
+        _root_hint_subjects: &[&[u8]],
+        _sigschemes: &[rustls::SignatureScheme],
+    ) -> Option<Arc<rustls::sign::CertifiedKey>> {
+        Some(Arc::clone(&self.0))
+    }
+
+    fn has_certs(&self) -> bool {
+        true
+    }
 }
 
 /// Turns on [`TlsClientIdentity::RequirePaired`] for environment-read dials.
@@ -256,7 +306,7 @@ pub(crate) fn client_config_reporting(
     }
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let pem = match identity {
-        TlsClientIdentity::None => None,
+        TlsClientIdentity::None | TlsClientIdentity::Held(_) => None,
         TlsClientIdentity::PemFiles {
             certificate,
             private_key,
@@ -284,11 +334,16 @@ pub(crate) fn client_config_reporting(
         .map_err(|err| DialError::Connect(format!("build TLS client config: {err}")))?
         .dangerous()
         .with_custom_certificate_verifier(verifier);
-    let mut crypto = match pem {
-        Some((certs, key)) => builder
+    let mut crypto = match (pem, identity) {
+        (Some((certs, key)), _) => builder
             .with_client_auth_cert(certs, key)
             .map_err(|err| DialError::Connect(format!("build workload identity: {err}")))?,
-        None => builder.with_no_client_auth(),
+        (None, TlsClientIdentity::Held(held)) => {
+            builder.with_client_cert_resolver(Arc::new(PresentHeld(Arc::new(
+                rustls::sign::CertifiedKey::new(held.chain.clone(), Arc::clone(&held.key)),
+            ))))
+        }
+        (None, _) => builder.with_no_client_auth(),
     };
     if let Some(requested) = cert_requested {
         crypto.client_auth_cert_resolver = Arc::new(NoteCertRequest {

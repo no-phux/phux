@@ -25,6 +25,7 @@ pub mod connection;
 pub mod control;
 pub mod dial;
 pub mod engine;
+pub mod enroll;
 pub mod perf;
 #[cfg(feature = "engine")]
 pub mod publication;

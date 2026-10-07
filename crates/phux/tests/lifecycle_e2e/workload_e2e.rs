@@ -662,6 +662,156 @@ fn revoke_marks_the_record_and_a_new_connection_is_refused() {
     assert_eq!(listed["registry_generation"], 2);
 }
 
+/// ADR-0154 end to end through the CLI: a `paired` server mints a ticket
+/// with `phux pair --enroll`; a connect code carrying it registers the host
+/// and enrolls a key the client generated, which then reaches the paired
+/// listener; the same code enrolls nothing a second time.
+#[test]
+#[ignore = "spawns a real server with a workload-mTLS QUIC listener; runs in the e2e lane"]
+fn a_connect_code_with_a_ticket_enrolls_once_and_reaches_a_paired_server() {
+    let dir = TempDir::new().expect("tempdir");
+    prepare_dirs(dir.path());
+    // Secure, so the loopback listener asks for the bearer token the link
+    // carries, as a routable one does.
+    let _server = start_server(
+        dir.path(),
+        &["--quic", listeners::LOOPBACK_ANY_PORT],
+        &[("PHUX_WORKLOAD_MTLS", "1"), ("PHUX_WS_SECURE", "1")],
+    );
+    let socket = dir.path().join("s.sock");
+    let socket_arg = socket.to_str().expect("utf-8 socket");
+    let paired = json_doc(&await_success(
+        dir.path(),
+        &["--socket", socket_arg, "pair", "--enroll", "--json"],
+        &[],
+    ));
+    let field = |name: &str| paired[name].as_str().unwrap_or_default().to_owned();
+    let ticket = field("enrollment_ticket");
+    assert_eq!(ticket.len(), 64, "{paired}");
+    let quic = field("quic_addr");
+    // A loopback listener gets no device link, so build the one a device
+    // would scan, from the same document.
+    let link = format!(
+        "https://phux.sh/connect?url=wss://127.0.0.1:1&quic=quic://{quic}&fp={}&ca={}&enroll={ticket}&token={}",
+        field("cert_fingerprint"),
+        field("ca_fingerprint"),
+        field("token"),
+    );
+
+    let attach = |name: &str| {
+        run_in_pty(
+            dir.path(),
+            &["attach", "--remote", name, "--code", &link, "--no-enroll"],
+            &["enrolled a workload certificate", "could not enroll"],
+        )
+    };
+    let first = attach("mini");
+    assert!(first.contains("enrolled a workload certificate"), "{first}");
+    assert!(!first.contains(&ticket), "the ticket is never echoed");
+    // `--code` registers the link's `url`, a placeholder here; point the
+    // entry at the QUIC listener it enrolled over.
+    let config_path = dir.path().join("config/phux/config.toml");
+    let config = std::fs::read_to_string(&config_path).expect("registry");
+    assert!(
+        config.contains("client-cert"),
+        "the identity is recorded: {config}"
+    );
+    std::fs::write(
+        &config_path,
+        config.replace("wss://127.0.0.1:1", &format!("quic://{quic}")),
+    )
+    .expect("rewrite registry");
+    let whoami = json_doc(&await_success(
+        dir.path(),
+        &["whoami", "--remote", "mini", "--json"],
+        &[],
+    ));
+    let listed = json_doc(&phux(dir.path(), &["workload", "list", "--json"]));
+    assert_eq!(
+        listed["credentials"].as_array().map(Vec::len),
+        Some(1),
+        "{listed}"
+    );
+    assert_eq!(
+        whoami["credential_id"], listed["credentials"][0]["credential_id"],
+        "{whoami}"
+    );
+
+    let second = attach("mini2");
+    assert!(
+        second.contains("could not enroll a workload certificate"),
+        "a spent ticket enrolls nothing: {second}"
+    );
+    let refused = phux(dir.path(), &["whoami", "--remote", "mini2", "--json"]);
+    assert!(
+        !refused.status.success(),
+        "no certificate, no admission: {}",
+        text(&refused.stdout)
+    );
+    let listed = json_doc(&phux(dir.path(), &["workload", "list", "--json"]));
+    assert_eq!(listed["credentials"].as_array().map(Vec::len), Some(1));
+}
+
+/// Run `phux ARGS` on a PTY with the hermetic environment until one of
+/// `needles` appears (or 30 s pass), then kill it; what it printed.
+fn run_in_pty(dir: &Path, args: &[&str], needles: &[&str]) -> String {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    use std::io::Read as _;
+    let pty = native_pty_system()
+        .openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .expect("openpty");
+    let mut cmd = CommandBuilder::new(crate::runner::phux_bin());
+    cmd.args(args);
+    cmd.env_clear();
+    for var in ["PATH", "TMPDIR"] {
+        if let Some(value) = std::env::var_os(var) {
+            cmd.env(var, value);
+        }
+    }
+    for (name, value) in hermetic_env(dir) {
+        cmd.env(name, value);
+    }
+    cmd.env("HOME", dir);
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("PHUX_SOCKET", dir.join("client.sock"));
+    cmd.env("PHUX_NO_AUTO_LISTEN", "1");
+    cmd.cwd(dir);
+    let mut child = pty.slave.spawn_command(cmd).expect("spawn phux");
+    drop(pty.slave);
+    let mut reader = pty.master.try_clone_reader().expect("clone reader");
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        let mut buf = [0_u8; 4096];
+        while let Ok(n) = reader.read(&mut buf) {
+            if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+    let deadline = Instant::now() + READY_DEADLINE;
+    let mut seen = String::new();
+    while !needles.iter().any(|needle| seen.contains(needle)) {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left) {
+            Ok(chunk) => seen.push_str(&String::from_utf8_lossy(&chunk)),
+            Err(_) => break,
+        }
+    }
+    // Let the line that matched finish.
+    std::thread::sleep(Duration::from_millis(200));
+    while let Ok(chunk) = rx.try_recv() {
+        seen.push_str(&String::from_utf8_lossy(&chunk));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    seen
+}
+
 /// `workload-auth.md` §8/§9 secret sweep across an enrolled lifecycle,
 /// revocation included: the private key never reaches argv, environment,
 /// stdout, stderr, or the server's trace log.

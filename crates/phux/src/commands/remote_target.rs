@@ -348,6 +348,14 @@ fn register_from_code(target: &RemoteTarget, code: &str) -> Result<RemoteEntry, 
     )
     .and_then(|new| new.with_tls_server_name(link.tls_server_name.as_deref()))
     .map_err(|err| format!("phux: --code: {err}"))?;
+    let identity = enroll_from_code(&name, &link);
+    let new = new
+        .with_client_identity(
+            identity
+                .as_ref()
+                .map(|files| (files.certificate.as_path(), files.private_key.as_path())),
+        )
+        .map_err(|err| format!("phux: --code: {err}"))?;
 
     enroll::write_token(&token_file, &link.token).map_err(|err| format!("phux: --code: {err}"))?;
     remote::add_or_update(&new).map_err(|err| format!("phux: --code: {err}"))?;
@@ -368,6 +376,49 @@ fn register_from_code(target: &RemoteTarget, code: &str) -> Result<RemoteEntry, 
     eprintln!("phux: next time, `phux --remote {name}` needs no code");
 
     Ok(registered_entry(target, &new))
+}
+
+/// Enroll a workload certificate with the link's single-use ticket, when it
+/// carries one (ADR-0154). A failure is a warning, as for `host add`: the
+/// host is still paired, and a server outside `paired` mode admits it.
+fn enroll_from_code(name: &str, link: &pair::ConnectLink) -> Option<enroll::ClientIdentityFiles> {
+    let ticket = link.enrollment_ticket.as_deref()?;
+    let Some(quic) = link
+        .quic
+        .as_deref()
+        .and_then(|quic| quic.strip_prefix("quic://"))
+    else {
+        eprintln!(
+            "phux: warning: {name}: the link carries an enrollment ticket but no quic endpoint to enroll over"
+        );
+        return None;
+    };
+    let remotes_dir = phux_server::telemetry::state_dir().join("remotes");
+    let pins = enroll::TicketPins {
+        leaf: link.cert_fingerprint.as_deref(),
+        authority: link.ca_fingerprint.as_deref(),
+    };
+    let workload = enroll::WorkloadEnrollment {
+        dir: &remotes_dir,
+        name,
+    };
+    match enroll::enroll_with_ticket(quic, &pins, ticket, &workload) {
+        Ok(files) => {
+            eprintln!(
+                "phux: {name}: enrolled a workload certificate ({})",
+                files.credential_id.as_deref().unwrap_or("unknown id")
+            );
+            Some(files)
+        }
+        Err(err) => {
+            eprintln!(
+                "phux: warning: {name}: could not enroll a workload certificate: {err}; \
+                 a server in `paired` mode refuses this host until it does (mint a new link with \
+                 `phux pair --enroll` there)"
+            );
+            None
+        }
+    }
 }
 
 /// Read back the entry just registered, so a write that did not round-trip

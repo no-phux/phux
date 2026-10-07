@@ -68,6 +68,12 @@ uuid.workspace = true
 # Runtime-owned file upload hashes complete payloads before chunking so every
 # binding shares the same reconnect-safe transfer state machine.
 sha2 = "0.11"
+# Device enrollment (ADR-0154): the CSR for a key a platform keystore holds
+# (rcgen signs through a callback, never holding the key) and the rustls
+# signer that presents it. Both crates are already in the lock through
+# phux-dial and phux-server at these specs.
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+rustls.workspace = true
 # TRANSCRIBE returns the protocol's open-shaped JSON command value.
 serde_json.workspace = true
 # Predictive text commits are segmented by grapheme before entering the

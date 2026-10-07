@@ -240,7 +240,7 @@ fn write_lost(conn: &quinn::Connection, err: impl std::fmt::Display, what: &str)
 
 /// The quinn client config: rustls TLS 1.3 with `alpn`, the trust policy's
 /// verifier, and the server's idle / keep-alive timings.
-fn client_config(
+pub(crate) fn client_config(
     trust: &CertTrust,
     identity: Option<&TlsClientIdentity>,
     alpn: &[u8],

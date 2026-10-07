@@ -105,6 +105,7 @@ fn build_connect_link(
         ServerPins {
             leaf: fingerprint,
             authority: None,
+            enrollment: None,
         },
         token,
     )
@@ -112,10 +113,13 @@ fn build_connect_link(
 
 /// What a link pins: the leaf fingerprint (`fp`) and, when the server's
 /// certificate chains to its workload CA, that CA (`ca`, ADR-0153).
+///
+/// A link may also carry a single-use enrollment ticket (`enroll`, ADR-0154).
 #[derive(Debug, Clone, Copy, Default)]
 struct ServerPins<'a> {
     leaf: Option<&'a str>,
     authority: Option<&'a str>,
+    enrollment: Option<&'a str>,
 }
 
 /// [`build_connect_link`] carrying `ca=` after `fp=` when the server presents
@@ -150,6 +154,7 @@ fn build_relay_connect_link(
     let pins = ServerPins {
         leaf: fingerprint,
         authority: None,
+        enrollment: None,
     };
     push_link_credentials(&mut link, name, pins, token);
     link
@@ -168,6 +173,10 @@ fn push_link_credentials(link: &mut String, name: Option<&str>, pins: ServerPins
     if let Some(ca) = pins.authority {
         link.push_str("&ca=");
         link.push_str(ca);
+    }
+    if let Some(ticket) = pins.enrollment {
+        link.push_str("&enroll=");
+        link.push_str(ticket);
     }
     link.push_str("&token=");
     link.push_str(token);
@@ -220,6 +229,9 @@ pub(crate) struct ConnectLink {
     /// The `sha256:` fingerprint of the CA the server's leaf chains to
     /// (`ca`, ADR-0153), canonical; `None` when the link carries none.
     pub(crate) ca_fingerprint: Option<String>,
+    /// The single-use enrollment ticket (`enroll`, ADR-0154), hex. A secret
+    /// like the token — never echoed back.
+    pub(crate) enrollment_ticket: Option<String>,
     /// The bearer pairing token. A secret — never echoed back.
     pub(crate) token: String,
 }
@@ -249,6 +261,7 @@ pub(crate) fn parse_connect_link(link: &str) -> Result<ConnectLink, String> {
         name,
         fingerprint,
         authority,
+        enrollment,
         token,
     } = parse_connect_fields(query)?;
     let ca_fingerprint = authority
@@ -278,6 +291,7 @@ pub(crate) fn parse_connect_link(link: &str) -> Result<ConnectLink, String> {
         name: name.filter(|name| !name.is_empty()),
         cert_fingerprint: fingerprint.filter(|fp| !fp.is_empty()),
         ca_fingerprint,
+        enrollment_ticket: enrollment.filter(|ticket| !ticket.is_empty()),
         token,
     })
 }
@@ -290,6 +304,7 @@ struct ConnectFields {
     name: Option<String>,
     fingerprint: Option<String>,
     authority: Option<String>,
+    enrollment: Option<String>,
     token: Option<String>,
 }
 
@@ -307,6 +322,7 @@ fn parse_connect_fields(query: &str) -> Result<ConnectFields, String> {
             "name" => &mut fields.name,
             "fp" => &mut fields.fingerprint,
             "ca" => &mut fields.authority,
+            "enroll" => &mut fields.enrollment,
             "token" => &mut fields.token,
             // Unknown keys are forward-compat room, not an error.
             _ => continue,
@@ -697,7 +713,7 @@ pub(crate) fn run_pair(
     json: bool,
     migrate_legacy: bool,
     replace_token: Option<String>,
-    relay: Option<RelayRoute>,
+    door: Door,
 ) -> ExitCode {
     let tokens = tokens
         .or_else(|| std::env::var_os("PHUX_WS_TOKENS").map(PathBuf::from))
@@ -720,14 +736,17 @@ pub(crate) fn run_pair(
         return ExitCode::FAILURE;
     }
     let socket = socket.unwrap_or_else(phux_server::runtime::default_socket_path);
-    if let Some(relay) = relay {
-        let output = LinkOutput {
-            name: name.as_deref(),
-            qr,
-            json,
-        };
-        return mint_relay_link(&relay, &socket, &tokens, output, replace_token.as_deref());
-    }
+    let enroll = match door {
+        Door::Listener { enroll } => enroll,
+        Door::Relay(relay) => {
+            let output = LinkOutput {
+                name: name.as_deref(),
+                qr,
+                json,
+            };
+            return mint_relay_link(&relay, &socket, &tokens, output, replace_token.as_deref());
+        }
+    };
     let live = match query_live_listeners(&socket) {
         Ok(live) => live,
         Err(refusal) => {
@@ -745,6 +764,10 @@ pub(crate) fn run_pair(
         eprintln!("phux pair: {refusal}");
         return ExitCode::FAILURE;
     }
+    if enroll && addresses.live.quic.is_none() {
+        eprintln!("phux pair: {ENROLL_NEEDS_QUIC}");
+        return ExitCode::FAILURE;
+    }
     provision_pairing_certificate(&certificate, &addresses.advertised);
 
     let Some(minted) = mint_pairing_credential(&tokens, replace_token.as_deref()) else {
@@ -760,6 +783,10 @@ pub(crate) fn run_pair(
 
     let fingerprint = read_pairing_fingerprint(&certificate.cert, json);
     let authority = read_pairing_authority(&certificate.cert, json);
+    let ticket = match enroll.then(|| mint_enrollment_ticket(json)) {
+        Some(None) => return ExitCode::FAILURE,
+        minted => minted.flatten(),
+    };
     warn_on_uncovered_names(&certificate.cert, &certificate.key, &addresses.advertised);
 
     if !json {
@@ -771,6 +798,7 @@ pub(crate) fn run_pair(
     let pins = ServerPins {
         leaf: fingerprint.as_deref(),
         authority: authority.as_deref(),
+        enrollment: ticket.as_ref().map(|ticket| ticket.secret_hex.as_str()),
     };
     let link = addresses.server_url.as_deref().map(|url| {
         build_connect_link_pinned(
@@ -793,8 +821,7 @@ pub(crate) fn run_pair(
             &minted.id,
             minted.generation,
         );
-        // Additive: `phux host add` pins it; older readers ignore it.
-        document["ca_fingerprint"] = serde_json::json!(authority);
+        add_pins_to_document(&mut document, authority.as_deref(), ticket.as_ref());
         return crate::output::json(&document);
     }
 
@@ -804,6 +831,38 @@ pub(crate) fn run_pair(
 
     outln!("Token written to {}", tokens.display());
     ExitCode::SUCCESS
+}
+
+/// What a mint's link reaches the server through.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Door {
+    /// A bound listener; with `enroll`, the link also carries a single-use
+    /// enrollment ticket (ADR-0154).
+    Listener {
+        /// `--enroll`.
+        enroll: bool,
+    },
+    /// A relay route (`--relay-route`, ADR-0149).
+    Relay(RelayRoute),
+}
+
+const ENROLL_NEEDS_QUIC: &str = "--enroll needs a bound QUIC listener: a device enrolls over \
+     QUIC (`phux server --quic ADDR`, or the overlay auto-listener)";
+
+/// The fields a mint document gained after its first schema: the CA pin
+/// (ADR-0153) and an enrollment ticket (ADR-0154). Additive: `phux host add`
+/// reads them, and older readers ignore them.
+fn add_pins_to_document(
+    document: &mut serde_json::Value,
+    authority: Option<&str>,
+    ticket: Option<&phux_server::workload::tickets::MintedTicket>,
+) {
+    document["ca_fingerprint"] = serde_json::json!(authority);
+    if let Some(ticket) = ticket {
+        document["enrollment_ticket"] = serde_json::json!(ticket.secret_hex);
+        document["enrollment_ticket_id"] = serde_json::json!(ticket.id);
+        document["enrollment_expires_at"] = serde_json::json!(ticket.expires_at);
+    }
 }
 
 /// `phux pair --relay-route ROUTE [--relay HOST:PORT]`: which relay route a
@@ -1102,6 +1161,39 @@ fn read_pairing_fingerprint(cert: &std::path::Path, json: bool) -> Option<String
         }
         Err(err) => {
             eprintln!("phux pair: warning: could not read certificate fingerprint: {err}");
+            None
+        }
+    }
+}
+
+/// Mint the single-use enrollment ticket a `--enroll` link carries
+/// (ADR-0154), with the ceiling `phux host add` enrolls with. `None` after
+/// reporting a failure.
+fn mint_enrollment_ticket(json: bool) -> Option<phux_server::workload::tickets::MintedTicket> {
+    use phux_server::workload::tickets;
+    let paths = phux_server::workload::WorkloadPaths::from_env();
+    match tickets::mint_ticket(
+        &tickets::tickets_path(&paths.registry),
+        vec![super::enroll::HOST_ADD_WORKLOAD_SCOPE.to_owned()],
+        tickets::DEFAULT_CREDENTIAL_SECONDS,
+        tickets::DEFAULT_TICKET_SECONDS,
+    ) {
+        Ok(ticket) => {
+            if !json {
+                outln!(
+                    "Enrollment ticket {} (in the link below; single use, valid {} minutes):",
+                    ticket.id,
+                    tickets::DEFAULT_TICKET_SECONDS / 60
+                );
+                outln!(
+                    "  the device enrolls its own key with it; nothing secret leaves the device"
+                );
+                outln!();
+            }
+            Some(ticket)
+        }
+        Err(err) => {
+            eprintln!("phux pair: could not mint an enrollment ticket: {err}");
             None
         }
     }
@@ -1837,6 +1929,7 @@ mod tests {
             ServerPins {
                 leaf: Some("AB:CD"),
                 authority: Some(&authority),
+                enrollment: None,
             },
             "deadbeef",
         );

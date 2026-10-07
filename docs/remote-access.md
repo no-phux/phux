@@ -427,7 +427,7 @@ phux pair revoke <credential-id>
 ```
 
 For a phone or tablet `phux pair` also prints a one-tap
-`https://phux.sh/connect?url=…&quic=…&fp=…[&ca=…]&token=…` Universal Link (an https
+`https://phux.sh/connect?url=…&quic=…&fp=…[&ca=…][&enroll=…]&token=…` Universal Link (an https
 link so only the app owning the domain receives the bearer token), a
 `phux://connect?…` spelling for older app builds, and with `--qr` a terminal
 QR of the same link. Treat all three like the token itself. `url` names the
@@ -442,7 +442,12 @@ is not advertised. The app passes one selected endpoint to `RemoteClient`;
 the shared runtime alone owns dialing and reconnecting, with no bridge-side
 fallback race. `ca` is the `sha256:` fingerprint of the CA the server's
 certificate chains to; an app pins it beside `fp`, and one that predates it
-ignores it.
+ignores it. `phux pair --enroll` adds `enroll`, a single-use ticket with which
+the device enrolls a workload certificate for a key it generates and keeps
+(on a phone, in its keystore): what a server in `paired` mode requires
+([ADR-0154](adr/0154-devices-enroll-with-a-ticket-over-their-own-alpn.md)).
+The ticket expires in ten minutes and enrolls one key; `phux --remote NAME
+--code LINK` enrolls with it too.
 
 `--host` still needs a bound WSS listener behind it. A WSS listener bound only
 to loopback, or none at all, gives no link, and `--qr` then refuses before

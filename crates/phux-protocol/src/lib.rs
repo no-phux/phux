@@ -34,6 +34,7 @@ pub mod input;
 pub mod wire;
 
 pub mod caps;
+pub mod enroll;
 pub mod ids;
 pub mod kinds;
 pub mod policy;

@@ -75,6 +75,7 @@ pub(crate) fn page() -> Page {
          ├── remote-cert.pem     # auto-provisioned remote-consumer certificate (leaf, then CA)\n\
          ├── remote-key.pem      # its private key (owner-only, 0600)\n\
          ├── remote-tokens       # structured credential store (owner-only, 0600)\n\
+         ├── enrollment-tickets  # single-use enrollment ticket hashes (owner-only, 0600)\n\
          ├── reports/            # local bug-report bundles (TUI C-a B, phux report)\n\
          ├── service-wrapper.sh  # `phux service install --restore` wrapper\n\
          └── workspace.json      # `--restore` archive, kept current by `--autosave`\n\
@@ -139,6 +140,11 @@ pub(crate) fn page() -> Page {
            authentication. `PHUX_WS_TOKENS` moves it without weakening those \
            checks. Legacy anonymous token lines \
            require the idempotent `phux pair --migrate-legacy` conversion.\n\
+         - `enrollment-tickets` holds the SHA-256 of each single-use \
+           ticket `phux pair --enroll` minted (never the ticket), with \
+           the scope and lifetime the credential it enrolls gets; the \
+           first redemption consumes it (ADR-0154). It sits beside the \
+           workload registry and moves with `PHUX_WORKLOAD_KEYS`.\n\
          - `reports/` holds local bug-report bundles written by the TUI \
            `report-bug` action (`C-a B`) and by `phux report new`. Each \
            subdirectory is one report (session, pane, version, log tails, \

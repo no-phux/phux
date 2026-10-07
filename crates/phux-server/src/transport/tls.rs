@@ -255,25 +255,43 @@ pub fn acceptor_from_pem(cert_path: &Path, key_path: &Path) -> Result<TlsAccepto
 }
 
 /// A WebSocket TLS acceptor that, with `client_ca`, verifies client
-/// certificates against the workload CA.
+/// certificates against the workload CA and requires one in the handshake.
 pub(crate) fn acceptor_from_pem_with_client_ca(
     cert_path: &Path,
     key_path: &Path,
     client_ca: Option<&CertificateDer<'static>>,
 ) -> Result<TlsAcceptor, TlsError> {
+    let auth = client_ca.map_or(ClientAuth::None, ClientAuth::Required);
     Ok(TlsAcceptor::from(Arc::new(server_config(
-        cert_path, key_path, client_ca, false, None,
+        cert_path,
+        key_path,
+        auth,
+        false,
+        &[],
     )?)))
 }
 
 /// The QUIC server config (TLS 1.3, phux ALPN), with optional workload-CA
-/// client verification.
+/// client verification and, with `enrollment`, the enrollment ALPN beside it.
+///
+/// With a workload CA the handshake asks for a client certificate and
+/// verifies any presented, but completes without one: the enrollment ALPN
+/// answers devices that hold none yet, and the listener refuses a terminal
+/// connection with no enrolled certificate before reading any stream
+/// (`workload-auth.md` §3, ADR-0154).
 pub(crate) fn quic_server_config_with_client_ca(
     cert_path: &Path,
     key_path: &Path,
     client_ca: Option<&CertificateDer<'static>>,
+    enrollment: bool,
 ) -> Result<ServerConfig, TlsError> {
-    server_config(cert_path, key_path, client_ca, true, Some(QUIC_ALPN))
+    let auth = client_ca.map_or(ClientAuth::None, ClientAuth::Requested);
+    let alpns: &[&[u8]] = if enrollment {
+        &[QUIC_ALPN, phux_protocol::policy::ENROLL_ALPN]
+    } else {
+        &[QUIC_ALPN]
+    };
+    server_config(cert_path, key_path, auth, true, alpns)
 }
 
 /// The WebTransport server config: TLS 1.3 with the standard `h3` ALPN,
@@ -283,7 +301,19 @@ pub(crate) fn webtransport_server_config(
     cert_path: &Path,
     key_path: &Path,
 ) -> Result<ServerConfig, TlsError> {
-    server_config(cert_path, key_path, None, true, Some(b"h3"))
+    server_config(cert_path, key_path, ClientAuth::None, true, &[b"h3"])
+}
+
+/// Whether a handshake asks for a workload client certificate.
+#[derive(Clone, Copy)]
+enum ClientAuth<'a> {
+    /// No `CertificateRequest`.
+    None,
+    /// Asked for, verified when presented, and required by the handshake.
+    Required(&'a CertificateDer<'static>),
+    /// Asked for and verified when presented; the listener decides after the
+    /// handshake what a certificate-less connection may do.
+    Requested(&'a CertificateDer<'static>),
 }
 
 /// One rustls server config over the shared cert material. QUIC forbids
@@ -291,9 +321,9 @@ pub(crate) fn webtransport_server_config(
 fn server_config(
     cert_path: &Path,
     key_path: &Path,
-    client_ca: Option<&CertificateDer<'static>>,
+    client_auth: ClientAuth<'_>,
     tls13_only: bool,
-    alpn: Option<&[u8]>,
+    alpns: &[&[u8]],
 ) -> Result<ServerConfig, TlsError> {
     let certs = cert::load_certs(cert_path)?;
     let key = cert::load_key(key_path)?;
@@ -305,15 +335,16 @@ fn server_config(
         builder.with_safe_default_protocol_versions()
     }
     .map_err(TlsError::Rustls)?;
-    let mut config = match client_ca {
-        Some(ca) => builder
+    let mut config = match client_auth {
+        ClientAuth::Required(ca) => builder
             .with_client_cert_verifier(client_verifier(ca)?)
             .with_single_cert(certs, key)?,
-        None => builder.with_no_client_auth().with_single_cert(certs, key)?,
+        ClientAuth::Requested(ca) => builder
+            .with_client_cert_verifier(optional_client_verifier(ca)?)
+            .with_single_cert(certs, key)?,
+        ClientAuth::None => builder.with_no_client_auth().with_single_cert(certs, key)?,
     };
-    if let Some(alpn) = alpn {
-        config.alpn_protocols = vec![alpn.to_vec()];
-    }
+    config.alpn_protocols = alpns.iter().map(|alpn| alpn.to_vec()).collect();
     Ok(config)
 }
 
@@ -326,6 +357,19 @@ pub(crate) fn client_verifier(
     let mut roots = rustls::RootCertStore::empty();
     roots.add(ca.clone()).map_err(TlsError::Rustls)?;
     rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
+        .build()
+        .map_err(|error| TlsError::ClientVerifier(error.to_string()))
+}
+
+/// [`client_verifier`] that lets the handshake finish without a certificate.
+/// A presented certificate must still chain to the CA.
+fn optional_client_verifier(
+    ca: &CertificateDer<'static>,
+) -> Result<Arc<dyn rustls::server::danger::ClientCertVerifier>, TlsError> {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(ca.clone()).map_err(TlsError::Rustls)?;
+    rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
+        .allow_unauthenticated()
         .build()
         .map_err(|error| TlsError::ClientVerifier(error.to_string()))
 }
@@ -397,11 +441,11 @@ mod tests {
             panic!("a world-readable key must be refused");
         };
         assert!(matches!(err, TlsError::InsecureKey(_)), "{err}");
-        assert!(quic_server_config_with_client_ca(&cert, &key, None).is_err());
+        assert!(quic_server_config_with_client_ca(&cert, &key, None, false).is_err());
 
         fs::set_permissions(&key, fs::Permissions::from_mode(0o640)).unwrap();
         acceptor_from_pem(&cert, &key).unwrap();
-        quic_server_config_with_client_ca(&cert, &key, None).unwrap();
+        quic_server_config_with_client_ca(&cert, &key, None, false).unwrap();
     }
 
     #[test]
@@ -444,6 +488,6 @@ mod tests {
         crate::workload::ensure_ca(&ca, &ca_key).unwrap();
         let ca = crate::workload::authority_certificate(&ca).unwrap();
         acceptor_from_pem_with_client_ca(&cert, &key, Some(&ca)).unwrap();
-        quic_server_config_with_client_ca(&cert, &key, Some(&ca)).unwrap();
+        quic_server_config_with_client_ca(&cert, &key, Some(&ca), true).unwrap();
     }
 }

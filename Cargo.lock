@@ -2475,6 +2475,8 @@ dependencies = [
  "phux-server",
  "phux-server-testkit",
  "quinn",
+ "rcgen",
+ "rustls",
  "serde_json",
  "sha2 0.11.0",
  "tempfile",

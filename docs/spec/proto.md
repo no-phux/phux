@@ -102,6 +102,9 @@ oriented byte stream. This version defines these concrete transports:
   QUIC mandates ALPN: both ends MUST offer the exact protocol id
   `phux-quic/1` (`QUIC_ALPN` in `phux-protocol`) or the TLS handshake
   fails — a stray non-phux QUIC client never reaches the frame layer.
+  A listener may also offer `phux-enroll/1` (`ENROLL_ALPN`), which carries
+  one workload enrollment exchange and never a phux frame
+  ([workload-auth.md](./workload-auth.md) §8.2).
   When both peers negotiate `QUIC_STREAMS` (§6.2), the connection
   carries one control stream plus one bidi stream per attached Terminal
   instead (§4.2); without the bit the single-stream shape above is the
