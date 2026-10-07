@@ -2445,6 +2445,7 @@ dependencies = [
  "phux-client-runtime",
  "phux-config",
  "phux-protocol",
+ "phux-relay",
  "phux-server",
  "phux-server-testkit",
  "portable-pty",
