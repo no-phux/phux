@@ -533,18 +533,30 @@ async fn read_snapshot(
     }
 }
 
+/// Each role's selector, resolved to exactly one local Terminal.
+async fn resolve_roles(
+    socket: &Path,
+    snapshot: &SessionSnapshot,
+    operation: &SpatialOp,
+    selectors: &[Selector],
+) -> Result<Vec<ResourceId>, SpatialRefusal> {
+    let mut terminals = Vec::with_capacity(selectors.len());
+    for ((role, _), selector) in operation.raw_selectors().iter().zip(selectors) {
+        let candidates = crate::state::resolve_targets(socket, selector, snapshot)
+            .await
+            .map_err(|err| agent_refusal(role, &err))?;
+        terminals.push(exactly_one_local(role, &candidates)?);
+    }
+    Ok(terminals)
+}
+
 async fn build_plan(
     socket: &Path,
     snapshot: &SessionSnapshot,
     operation: SpatialOp,
     selectors: Vec<Selector>,
 ) -> Result<PlanKind, SpatialRefusal> {
-    let roles = operation.raw_selectors();
-    let mut terminals = Vec::with_capacity(selectors.len());
-    for ((role, _), selector) in roles.iter().zip(&selectors) {
-        let candidates = crate::state::resolve_targets(socket, selector, snapshot).await;
-        terminals.push(exactly_one_local(role, &candidates)?);
-    }
+    let terminals = resolve_roles(socket, snapshot, &operation, &selectors).await?;
     if terminals.len() == 2 && terminals[0] == terminals[1] {
         return Err(same_pane_error());
     }
@@ -705,6 +717,17 @@ fn exactly_one_local(role: &str, candidates: &[ResourceId]) -> Result<ResourceId
     }
 }
 
+/// A `%name` that did not resolve to one agent, on its ADR-0075 code and
+/// exit status.
+fn agent_refusal(role: &str, err: &selector::AgentResolveError) -> SpatialRefusal {
+    SpatialRefusal::new(
+        err.code(),
+        format!("{role} selector: {err}"),
+        err.remedy(),
+        err.exit_code(),
+    )
+}
+
 fn selector_count_error(role: &str, matched: usize) -> SpatialRefusal {
     if matched == 0 {
         return SpatialRefusal::new(
@@ -845,6 +868,69 @@ mod tests {
             projection: Vec::new(),
         };
         assert_eq!(plan(op).await.unwrap_err().code, "cross_session");
+    }
+
+    /// `%name` (ADR-0075) reaches a spatial edit through the agent resolver:
+    /// a named pane plans like its `@N`, and a refusal keeps its own code and
+    /// exit status rather than collapsing to `selector_miss`.
+    #[tokio::test]
+    async fn percent_name_resolves_through_the_agent_resolver() {
+        use crate::agent_meta::{AgentRecord, RESOURCE_AGENT_KEY};
+        use crate::testkit::{self, ScriptSpec};
+        use phux_protocol::wire::frame::Scope;
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("spatial.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(testkit::serve_every(listener, || {
+            let record = |name: &str, kind: Option<&str>| {
+                AgentRecord {
+                    name: name.to_owned(),
+                    kind: kind.map(str::to_owned),
+                    ..AgentRecord::default()
+                }
+                .encode()
+            };
+            ScriptSpec::new()
+                .stored_metadata(
+                    Scope::Resource(ResourceId::local(1)),
+                    RESOURCE_AGENT_KEY,
+                    record("build", None),
+                )
+                .stored_metadata(
+                    Scope::Resource(ResourceId::local(2)),
+                    RESOURCE_AGENT_KEY,
+                    record("claude", Some("claude")),
+                )
+        }));
+        let swap = |first: &str, second: &str| SpatialOp::Swap {
+            first: first.to_owned(),
+            second: second.to_owned(),
+            projection: Vec::new(),
+        };
+        let plan_on = |op: SpatialOp| {
+            let socket = socket.clone();
+            async move {
+                let selectors = op.parse_selectors().unwrap();
+                build_plan(&socket, &snapshot(), op, selectors).await
+            }
+        };
+
+        let named = local(plan_on(swap("%build", "@2")).await.unwrap());
+        let by_id = local(plan_on(swap("@1", "@2")).await.unwrap());
+        assert_eq!(named.mutation, by_id.mutation);
+
+        let constant = plan_on(swap("%claude", "@1")).await.unwrap_err();
+        assert_eq!(
+            (constant.code, constant.exit_code),
+            ("invalid_agent_name", 2)
+        );
+        let unknown = plan_on(swap("@1", "%ghost")).await.unwrap_err();
+        assert_eq!((unknown.code, unknown.exit_code), ("no_such_target", 1));
+        assert!(
+            unknown.message.starts_with("second selector:"),
+            "{unknown:?}"
+        );
+        server.abort();
     }
 
     #[test]

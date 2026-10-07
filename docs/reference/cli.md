@@ -317,6 +317,11 @@ Global flags:
 ```text
 List every pane's detected or declared agent and current state.
 
+The third column is the pane's `%name` address, `-` when it has no agent record,
+or why its record name is listed but not `%`-addressable (a name outside
+`[a-z][a-z0-9_-]`, a per-kind constant like `claude`, or one several panes
+share). JSON carries `address` and `address_refusal`.
+
 Usage: phux agent list [--json]
 
 Flags:

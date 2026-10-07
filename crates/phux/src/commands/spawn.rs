@@ -278,7 +278,9 @@ pub(crate) fn dispatch_spawn_placed(
             }
             Err(err) => return Err(json_err::report_no_server(json, &err, socket_path, verb)),
         };
-        let candidates = resolve_targets(socket_path, &selector, &snapshot).await;
+        let candidates = resolve_targets(socket_path, &selector, &snapshot)
+            .await
+            .map_err(|err| crate::commands::report_agent_resolve_error(json, &err, false))?;
         let (owner, owner_window, session) =
             placement_owner(json, target_text, &snapshot, &candidates)?;
         let FrameKind::SpawnResource { owner_terminal, .. } = &mut frame else {

@@ -525,3 +525,61 @@ async fn input_tools_refuse_a_withdrawn_name_that_read_tools_still_resolve() {
         assert_eq!(sent["pane"], "@1", "{tool}");
     }
 }
+
+/// ADR-0075 point 3 on the MCP set-valued and placement tools: `%name`
+/// reaches `phux_tag`, `phux_kill`, and `phux_spawn` placement through the
+/// agent resolver, and a refusal is typed rather than "no such target".
+#[tokio::test]
+async fn percent_name_reaches_tag_kill_and_spawn_placement() {
+    let named = || {
+        agent_spec(&AgentRecord {
+            name: "build".to_owned(),
+            state: AgentMetaState::Working,
+            ..AgentRecord::default()
+        })
+    };
+    let tagged = dispatch_against(
+        "phux_tag",
+        json!({ "action": "add", "target": "%build", "tags": ["ci"] }),
+        named,
+    )
+    .await
+    .expect("tag %build");
+    assert_eq!(tagged["terminals"][0]["terminal"], "@1");
+
+    let constant = || {
+        agent_spec(&AgentRecord {
+            name: "claude".to_owned(),
+            kind: Some("claude".to_owned()),
+            state: AgentMetaState::Working,
+            ..AgentRecord::default()
+        })
+    };
+    for (tool, args, want) in [
+        (
+            "phux_kill",
+            json!({ "target": "%claude", "confirm": true }),
+            "invalid_agent_name",
+        ),
+        (
+            "phux_tag",
+            json!({ "action": "ls", "target": "%claude" }),
+            "invalid_agent_name",
+        ),
+        (
+            "phux_spawn",
+            json!({ "target": "%claude", "split": "vertical" }),
+            "invalid_agent_name",
+        ),
+        (
+            "phux_spawn",
+            json!({ "target": "%ghost", "split": "vertical" }),
+            "no_such_target",
+        ),
+    ] {
+        let err = dispatch_against(tool, args, constant)
+            .await
+            .expect_err("a refused name does nothing");
+        assert_eq!(contract_code(&err), want, "{tool}: {}", err.0);
+    }
+}

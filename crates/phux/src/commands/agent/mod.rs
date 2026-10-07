@@ -36,6 +36,12 @@ pub(crate) use self::session::{PreparedAgentSession, prepare, prepare_for_launch
 #[derive(Debug, usage::Subcommands)]
 pub(crate) enum AgentAction {
     /// List every pane's detected or declared agent and current state.
+    ///
+    /// The third column is the pane's `%name` address, `-` when it has no
+    /// agent record, or why its record name is listed but not
+    /// `%`-addressable (a name outside `[a-z][a-z0-9_-]`, a per-kind constant
+    /// like `claude`, or one several panes share). JSON carries `address`
+    /// and `address_refusal`.
     #[usage(alias = "ls")]
     List {
         /// Emit machine-readable JSON instead of the table.
@@ -652,21 +658,14 @@ fn run_agent_one(
         };
         // `%name` is singular (ADR-0075 point 3): the agent's pane, or a
         // refusal that names why — never `pick_target_pane` over a set.
-        let target_id = if let phux_client::selector::Selector::Agent(name) = &selector {
-            match phux_client::state::resolve_agent_target(&socket_path, name, &snapshot, false)
-                .await
-            {
-                Ok(resolved) => resolved.terminal,
-                Err(err) => return crate::commands::report_agent_resolve_error(json, &err, false),
-            }
-        } else {
-            let candidates = resolve_targets(&socket_path, &selector, &snapshot).await;
-            let Some(target_id) =
-                phux_client::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
-            else {
-                return partial::report_target_miss(target, &degradation);
-            };
-            target_id
+        let candidates = match resolve_targets(&socket_path, &selector, &snapshot).await {
+            Ok(candidates) => candidates,
+            Err(err) => return crate::commands::report_agent_resolve_error(json, &err, false),
+        };
+        let Some(target_id) =
+            phux_client::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
+        else {
+            return partial::report_target_miss(target, &degradation);
         };
         let plugins = configured_agents();
         let states = classify_snapshot(&socket_path, &snapshot, &plugins).await;
@@ -699,13 +698,19 @@ async fn classify_snapshot(
 ) -> Vec<AgentStateReport> {
     // Structured `phux.agent/v1` records outrank every heuristic (ADR-0040).
     let records = fetch_agent_index(socket_path, snapshot).await;
+    // What `%name` would make of each listed record (ADR-0075 point 4).
+    let index = phux_client::selector::AgentIndex::complete(records);
     let mut states = Vec::with_capacity(snapshot.resources.len());
     // Terminal-kind resources only: an `AgentSession` is reported under its
     // parent's `agent_session`, never as a row of its own.
     for pane in phux_client::resource::terminals(snapshot) {
         let mut evidence = pane_evidence(socket_path, snapshot, pane).await;
-        evidence.record = records.get(&pane.id).cloned();
-        states.push(infer_agent_state(&evidence, plugins));
+        evidence.record = index.get(&pane.id).cloned();
+        let mut state = infer_agent_state(&evidence, plugins);
+        state.set_address(phux_client::selector::agent_address(
+            &pane.id, snapshot, &index,
+        ));
+        states.push(state);
     }
     states.sort_by(|a, b| a.terminal.cmp(&b.terminal));
     states
@@ -796,9 +801,10 @@ fn print_agent_states(states: &[AgentStateReport], json: bool, view: AgentView) 
     }
     for state in states {
         outln!(
-            "{}\t{}\t{}\t{:.2}\t{}",
+            "{}\t{}\t{}\t{}\t{:.2}\t{}",
             state.terminal,
             state.agent.id,
+            state.address_column(),
             state.state,
             state.confidence,
             state.explanation

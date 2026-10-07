@@ -197,15 +197,11 @@ async fn resolve_one_for_input(
     degradation: &Degradation,
 ) -> Result<ResourceId, SignalError> {
     if let Selector::Agent(name) = selector {
-        let index = crate::state::fetch_agent_index(conn, snapshot).await;
-        return Ok(selector::resolve_agent_for_input(name, snapshot, &index)?.terminal);
+        return Ok(crate::state::resolve_agent_on(conn, name, snapshot, true)
+            .await?
+            .terminal);
     }
-    let candidates = if matches!(selector, Selector::Tag(_)) {
-        let index = crate::state::fetch_tag_index(conn, snapshot).await;
-        selector::resolve_with_tags(selector, snapshot, &index)
-    } else {
-        selector::resolve(selector, snapshot)
-    };
+    let candidates = crate::state::resolve_targets_on(conn, selector, snapshot).await?;
     selector::pick_target_pane(&candidates, &snapshot.focused_resource).ok_or_else(|| {
         SignalError::Miss {
             degradation: degradation.clone(),
