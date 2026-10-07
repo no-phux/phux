@@ -58,12 +58,22 @@ on:
         required: false
         type: string
         default: ""
+      commit:
+        description: Full 40-character commit SHA to build instead of the dispatched ref's head. Leave empty with a tag. Artifacts are then named with a -<sha> suffix, because the run's headSha is not the built commit.
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
 
+# Keyed on the built commit, never on a branch. A group admits one running and
+# ONE pending run, so a ref-keyed group let a third push on main replace the
+# still-pending run for the second, and that commit never got an artifact even
+# though phux-mobile may pin it. Per-commit groups only serialize a replay of
+# the same commit; nothing is cancelled.
 concurrency:
-  group: mini-v1-ffi-xcframework-${{ inputs.tag || github.ref }}
+  group: mini-v1-ffi-xcframework-${{ inputs.tag || inputs.commit || github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -86,7 +96,35 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ inputs.tag || inputs.commit || github.sha }}
+
+      # The checkout above names a commit, not a branch: a push run that waits
+      # in the queue must still build the commit that triggered it, or its
+      # artifacts carry a later main's provenance under this run's headSha and
+      # phux-mobile's fetcher refuses them. This step proves HEAD is that
+      # commit and decides the artifact names (see the commit input).
+      - name: Resolve the build commit
+        env:
+          COMMIT_INPUT: ${{ inputs.commit }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$RELEASE_TAG" ]]; then
+            [[ -z "$COMMIT_INPUT" ]] || { echo "::error::pass tag or commit, not both"; exit 1; }
+            expected="$(git rev-parse "$RELEASE_TAG^{commit}")"
+          else
+            expected="${COMMIT_INPUT:-$GITHUB_SHA}"
+          fi
+          [[ "$expected" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::commit must be a full 40-character SHA: $expected"; exit 1; }
+          test "$(git rev-parse HEAD)" = "$expected"
+          suffix=""
+          if [[ -n "$COMMIT_INPUT" && "$COMMIT_INPUT" != "$GITHUB_SHA" ]]; then
+            suffix="-$expected"
+          fi
+          {
+            echo "BUILD_SHA=$expected"
+            echo "ARTIFACT_SUFFIX=$suffix"
+          } >> "$GITHUB_ENV"
+          echo "Building ${expected} (run headSha ${GITHUB_SHA})" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Contributor Zig setup
         run: bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
@@ -157,9 +195,16 @@ jobs:
           cat "${stem}.xcframework.zip.sha256" "${stem}.provenance"
           echo "stem=${stem}" >> "$GITHUB_OUTPUT"
 
+      # The provenance the consumer checks must name the commit this run was for.
+      - name: Verify provenance names the build commit
+        run: |
+          set -euo pipefail
+          grep -qx "phux-rev $BUILD_SHA" "$ARTIFACTS/provenance"
+          grep -qx "phux_rev=$BUILD_SHA" "$MOBILE_ARTIFACTS/provenance"
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: PhuxFFI-xcframework
+          name: PhuxFFI-xcframework${{ env.ARTIFACT_SUFFIX }}
           # The zip already carries the xcframework bytes; uploading the
           # expanded directory too would double the payload for nothing.
           path: |
@@ -171,7 +216,7 @@ jobs:
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: PhuxMobileFFI-xcframework
+          name: PhuxMobileFFI-xcframework${{ env.ARTIFACT_SUFFIX }}
           path: |
             ${{ env.MOBILE_ARTIFACTS }}/provenance
             ${{ env.MOBILE_ARTIFACTS }}/${{ steps.mobile-package.outputs.stem }}.xcframework.zip
