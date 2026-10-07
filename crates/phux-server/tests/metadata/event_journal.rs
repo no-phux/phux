@@ -19,11 +19,11 @@ use phux_protocol::wire::frame::{
 };
 use tempfile::TempDir;
 use tokio::net::UnixStream;
-use tokio::time::timeout;
+use tokio::time::{Instant, timeout};
 
 use phux_server_testkit::{
-    ServerHandles, Spawn, WIRE_RECV_TIMEOUT, join_after_shutdown, recv_typed, recv_until,
-    run_local, send_frame, spawn_server_with, spawn_server_with_seed_cmd,
+    ServerHandles, Spawn, WIRE_RECV_TIMEOUT, join_after_shutdown, recv_typed, recv_typed_before,
+    recv_until, run_local, send_frame, spawn_server_with, spawn_server_with_seed_cmd,
 };
 
 use crate::common::{attach_pane, connect_as, full_caps, gated_seed};
@@ -127,11 +127,14 @@ async fn command(
         },
     )
     .await;
+    let deadline = Instant::now() + WIRE_RECV_TIMEOUT;
     let mut seen = Vec::new();
     loop {
-        let (_, frame) = timeout(WIRE_RECV_TIMEOUT, recv_typed(stream))
+        let (_, frame) = recv_typed_before(stream, deadline)
             .await
-            .expect("the reply arrives within the deadline");
+            .unwrap_or_else(|| {
+                panic!("no reply to request {request_id} within {WIRE_RECV_TIMEOUT:?}")
+            });
         match frame {
             FrameKind::CommandResult {
                 request_id: got,
@@ -208,10 +211,11 @@ async fn ask_padded(
 
 /// The next `EVENT` `matches` accepts.
 async fn next_event(stream: &mut UnixStream, matches: impl Fn(&Seen) -> bool) -> Seen {
+    let deadline = Instant::now() + WIRE_RECV_TIMEOUT;
     loop {
-        let (_, frame) = timeout(WIRE_RECV_TIMEOUT, recv_typed(stream))
+        let (_, frame) = recv_typed_before(stream, deadline)
             .await
-            .expect("the event arrives within the deadline");
+            .unwrap_or_else(|| panic!("no matching EVENT within {WIRE_RECV_TIMEOUT:?}"));
         if let Some(seen) = as_seen(frame)
             && matches(&seen)
         {
@@ -268,11 +272,14 @@ async fn spawn_pane(
         &Spawn::command(&["/bin/sh", "-c", script]).frame(request_id),
     )
     .await;
+    let deadline = Instant::now() + WIRE_RECV_TIMEOUT;
     let mut before = Vec::new();
     loop {
-        let (_, frame) = timeout(WIRE_RECV_TIMEOUT, recv_typed(stream))
+        let (_, frame) = recv_typed_before(stream, deadline)
             .await
-            .expect("the spawn completes within the deadline");
+            .unwrap_or_else(|| {
+                panic!("no RESOURCE_SPAWNED for request {request_id} within {WIRE_RECV_TIMEOUT:?}")
+            });
         match frame {
             FrameKind::ResourceSpawned {
                 request_id: got,

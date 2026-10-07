@@ -19,7 +19,7 @@ use phux_server_testkit::tracing_capture::TracingCapture;
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, ServerHandles, WIRE_RECV_TIMEOUT, ascii_key, attach_by_name, command,
     join_after_shutdown, recv_until, run_local, send_frame, spawn_server_with_seed_cmd,
-    try_recv_typed, wait_for_socket,
+    try_recv_typed, try_recv_typed_before, wait_for_socket,
 };
 
 use super::common::{focused_resource, named_key, poll_screen, sh};
@@ -95,8 +95,7 @@ fn mixed_input_key_and_route_input_preserve_wire_order() {
         let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
         let (mut acc, mut acked) = (Vec::new(), false);
         while !(acked && acc.windows(3).any(|w| w == b"abc")) {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            let Ok(Some((_, frame))) = timeout(remaining, try_recv_typed(&mut stream)).await else {
+            let Ok(Some((_, frame))) = try_recv_typed_before(&mut stream, deadline).await else {
                 panic!("no ordered `abc` echo (acked={acked}): {acc:?}");
             };
             match frame {

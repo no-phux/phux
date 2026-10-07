@@ -16,12 +16,12 @@ use phux_protocol::wire::frame::{
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
-use tokio::time::timeout;
 
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, ascii_key, attach_by_name, join_after_shutdown,
-    recv_typed, run_local, send_frame, spawn_server_with_seed_cmd, wait_for_socket,
+    recv_typed, recv_typed_before, run_local, send_frame, spawn_server_with_seed_cmd,
+    wait_for_socket,
 };
 
 /// Attach to `default`, drain `ATTACHED` + snapshot, return the pane.
@@ -50,12 +50,8 @@ async fn attach_default(socket_path: &std::path::Path) -> (UnixStream, ResourceI
 /// Feed `RESOURCE_OUTPUT` into `screen` until row 0 contains `needle`.
 async fn drain_until_row0(stream: &mut UnixStream, screen: &mut Screen, needle: &str) {
     let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
-    while tokio::time::Instant::now() < deadline {
-        if screen.row(0).contains(needle) {
-            return;
-        }
-        let remaining = deadline - tokio::time::Instant::now();
-        let Ok((type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
+    while !screen.row(0).contains(needle) {
+        let Some((type_byte, frame)) = recv_typed_before(stream, deadline).await else {
             return;
         };
         if type_byte != TYPE_RESOURCE_OUTPUT {

@@ -8,10 +8,9 @@ use std::time::Duration;
 use phux_protocol::wire::frame::{AgentEvent, FrameKind};
 use tempfile::TempDir;
 use tokio::net::UnixStream;
-use tokio::time::timeout;
 
 use phux_server_testkit::{
-    Spawn, WIRE_RECV_TIMEOUT, join_after_shutdown, recv_typed, run_local, spawn_resource,
+    Spawn, WIRE_RECV_TIMEOUT, join_after_shutdown, recv_typed_before, run_local, spawn_resource,
     spawn_server_with_seed_cmd,
 };
 
@@ -26,8 +25,7 @@ async fn collect_events(
     let end = tokio::time::Instant::now() + deadline;
     let mut seen = Vec::new();
     while !complete(&seen) {
-        let remaining = end.saturating_duration_since(tokio::time::Instant::now());
-        let Ok((_, frame)) = timeout(remaining, recv_typed(stream)).await else {
+        let Some((_, frame)) = recv_typed_before(stream, end).await else {
             break;
         };
         if let FrameKind::Event { event, .. } = frame {

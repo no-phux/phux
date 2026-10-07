@@ -218,21 +218,25 @@ pub async fn try_connect_socket(path: &Path, deadline: Duration) -> Option<UnixS
 /// Read one length-prefixed frame (header + body), or `None` on a clean EOF
 /// before the header. Panics on timeout, I/O error, or a truncated frame.
 async fn read_framed(stream: &mut UnixStream) -> Option<Vec<u8>> {
-    timeout(WIRE_RECV_TIMEOUT, async {
-        let mut header = [0u8; 4];
-        match stream.read_exact(&mut header).await {
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return None,
-            Err(e) => panic!("recv header io error: {e}"),
-        }
-        let body_len = u32::from_be_bytes(header) as usize;
-        let mut framed = vec![0u8; 4 + body_len];
-        framed[..4].copy_from_slice(&header);
-        stream.read_exact(&mut framed[4..]).await.unwrap();
-        Some(framed)
-    })
-    .await
-    .expect("timed out waiting for frame")
+    timeout(WIRE_RECV_TIMEOUT, read_framed_unbounded(stream))
+        .await
+        .expect("timed out waiting for frame")
+}
+
+/// [`read_framed`] with no deadline of its own, so the caller's is the only
+/// one. Panics on I/O error or a truncated frame.
+async fn read_framed_unbounded(stream: &mut UnixStream) -> Option<Vec<u8>> {
+    let mut header = [0u8; 4];
+    match stream.read_exact(&mut header).await {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return None,
+        Err(e) => panic!("recv header io error: {e}"),
+    }
+    let body_len = u32::from_be_bytes(header) as usize;
+    let mut framed = vec![0u8; 4 + body_len];
+    framed[..4].copy_from_slice(&header);
+    stream.read_exact(&mut framed[4..]).await.unwrap();
+    Some(framed)
 }
 
 fn decode_framed(framed: &[u8]) -> (u8, FrameKind) {
@@ -257,6 +261,36 @@ pub async fn try_recv_typed(stream: &mut UnixStream) -> Option<(u8, FrameKind)> 
     read_framed(stream).await.as_deref().map(decode_framed)
 }
 
+/// Like [`try_recv_typed`], but bounded only by `deadline`: `Err` once it
+/// passes, `Ok(None)` on a clean EOF. Use this instead of wrapping
+/// [`recv_typed`] in a caller-side timeout, which races the read's own
+/// [`WIRE_RECV_TIMEOUT`] and can replace the caller's diagnostic with a bare
+/// "timed out waiting for frame".
+pub async fn try_recv_typed_before(
+    stream: &mut UnixStream,
+    deadline: tokio::time::Instant,
+) -> Result<Option<(u8, FrameKind)>, tokio::time::error::Elapsed> {
+    if tokio::time::Instant::now() >= deadline {
+        // `timeout_at` still returns a ready read past its deadline, so a
+        // stream that never goes quiet would otherwise outrun it forever.
+        return tokio::time::timeout_at(deadline, std::future::pending()).await;
+    }
+    let framed = tokio::time::timeout_at(deadline, read_framed_unbounded(stream)).await?;
+    Ok(framed.as_deref().map(decode_framed))
+}
+
+/// Like [`recv_typed`], but bounded only by `deadline`: `None` once it
+/// passes, so the caller's panic names what stalled. Panics on EOF.
+pub async fn recv_typed_before(
+    stream: &mut UnixStream,
+    deadline: tokio::time::Instant,
+) -> Option<(u8, FrameKind)> {
+    try_recv_typed_before(stream, deadline)
+        .await
+        .ok()
+        .map(|frame| frame.expect("connection closed"))
+}
+
 /// Drain frames until `pred` returns `Some`. Each read is bounded by
 /// [`WIRE_RECV_TIMEOUT`]; for an overall deadline use [`recv_until_deadline`].
 pub async fn recv_until<T>(
@@ -277,14 +311,7 @@ pub async fn recv_until_deadline<T>(
     deadline: tokio::time::Instant,
     mut pred: impl FnMut(u8, FrameKind) -> Option<T>,
 ) -> Option<T> {
-    while tokio::time::Instant::now() < deadline {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            break;
-        }
-        let Ok((type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
-            break;
-        };
+    while let Some((type_byte, frame)) = recv_typed_before(stream, deadline).await {
         if let Some(value) = pred(type_byte, frame) {
             return Some(value);
         }

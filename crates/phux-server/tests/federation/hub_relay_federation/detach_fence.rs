@@ -125,20 +125,20 @@ async fn get_state_via_hub_frames(
 }
 
 async fn live_sequence(client: &mut UnixStream, pane: &ResourceId) -> u64 {
-    timeout(STEP_DEADLINE, async {
-        loop {
-            if let FrameKind::ResourceOutput {
-                terminal_id,
-                seq,
-                bytes,
-                ..
-            } = recv_typed(client).await.1
-            {
-                assert_eq!(&terminal_id, pane, "exact satellite output routing");
-                assert!(!bytes.is_empty());
-                return seq;
-            }
-        }
+    let deadline = tokio::time::Instant::now() + STEP_DEADLINE;
+    recv_until_deadline(client, deadline, |_, frame| {
+        let FrameKind::ResourceOutput {
+            terminal_id,
+            seq,
+            bytes,
+            ..
+        } = frame
+        else {
+            return None;
+        };
+        assert_eq!(&terminal_id, pane, "exact satellite output routing");
+        assert!(!bytes.is_empty());
+        Some(seq)
     })
     .await
     .expect("live satellite output")

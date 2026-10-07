@@ -18,13 +18,14 @@ use phux_protocol::wire::frame::{
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, Spawn, WIRE_RECV_TIMEOUT, attach_by_name, join_after_shutdown,
-    recv_typed, recv_until, run_local, send_frame, spawn_server_with_seed_cmd, wait_for_socket,
+    recv_typed, recv_until, recv_until_deadline, run_local, send_frame, spawn_server_with_seed_cmd,
+    wait_for_socket,
 };
 
 use super::common::connect_with;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
-use tokio::time::{Duration, timeout};
+use tokio::time::{Duration, Instant, timeout};
 
 #[derive(Clone, Copy, Debug)]
 enum Source {
@@ -47,20 +48,17 @@ async fn command(
         },
     )
     .await;
-    timeout(WIRE_RECV_TIMEOUT, async {
-        loop {
-            let (_, frame) = recv_typed(stream).await;
-            if quiet {
-                assert_no_content(&frame);
-            }
-            if let FrameKind::CommandResult {
+    let deadline = Instant::now() + WIRE_RECV_TIMEOUT;
+    recv_until_deadline(stream, deadline, |_, frame| {
+        if quiet {
+            assert_no_content(&frame);
+        }
+        match frame {
+            FrameKind::CommandResult {
                 request_id: got,
                 result,
-            } = frame
-                && got == request_id
-            {
-                return result;
-            }
+            } if got == request_id => Some(result),
+            _ => None,
         }
     })
     .await
@@ -88,14 +86,14 @@ fn assert_no_content(frame: &FrameKind) {
 async fn attach_session(stream: &mut UnixStream) -> ResourceId {
     send_frame(stream, &attach_by_name("detach")).await;
     let mut pane = None;
-    timeout(WIRE_RECV_TIMEOUT, async {
-        loop {
-            match recv_typed(stream).await.1 {
-                FrameKind::Attached { snapshot, .. } => pane = Some(snapshot.focused_resource),
-                FrameKind::AttachReady { .. } => return pane.take().expect("attached pane"),
-                _ => {}
-            }
+    let deadline = Instant::now() + WIRE_RECV_TIMEOUT;
+    recv_until_deadline(stream, deadline, |_, frame| match frame {
+        FrameKind::Attached { snapshot, .. } => {
+            pane = Some(snapshot.focused_resource);
+            None
         }
+        FrameKind::AttachReady { .. } => Some(pane.take().expect("attached pane")),
+        _ => None,
     })
     .await
     .expect("session ready")
@@ -145,32 +143,32 @@ async fn explicit_attach(
     let mut screen = Some(Screen::new(80, 24).unwrap());
     let mut bytes = 0;
     let mut ready = false;
-    timeout(WIRE_RECV_TIMEOUT, async {
-        loop {
-            match recv_typed(stream).await.1 {
-                FrameKind::BootstrapBegin {
-                    profile: BootstrapStreamProfile::NativeState { .. },
-                    ..
-                } => screen = None,
-                FrameKind::BootstrapChunk { payload, .. } => {
-                    bytes += payload.len();
-                    if let Some(screen) = screen.as_mut() {
-                        screen.write(&payload);
-                    }
+    let deadline = Instant::now() + WIRE_RECV_TIMEOUT;
+    recv_until_deadline(stream, deadline, |_, frame| {
+        match frame {
+            FrameKind::BootstrapBegin {
+                profile: BootstrapStreamProfile::NativeState { .. },
+                ..
+            } => screen = None,
+            FrameKind::BootstrapChunk { payload, .. } => {
+                bytes += payload.len();
+                if let Some(screen) = screen.as_mut() {
+                    screen.write(&payload);
                 }
-                FrameKind::BootstrapReady { .. } => ready = true,
-                FrameKind::CommandResult {
-                    request_id: got,
-                    result,
-                } if got == request_id => {
-                    assert_eq!(result, CommandResult::Ok);
-                    assert!(ready, "bootstrap must precede attach success");
-                    assert!(bytes > 0, "reattach must publish a populated bootstrap");
-                    return;
-                }
-                _ => {}
             }
+            FrameKind::BootstrapReady { .. } => ready = true,
+            FrameKind::CommandResult {
+                request_id: got,
+                result,
+            } if got == request_id => {
+                assert_eq!(result, CommandResult::Ok);
+                assert!(ready, "bootstrap must precede attach success");
+                assert!(bytes > 0, "reattach must publish a populated bootstrap");
+                return Some(());
+            }
+            _ => {}
         }
+        None
     })
     .await
     .expect("terminal attach reply");
@@ -194,31 +192,33 @@ async fn write_and_observe(control: &mut UnixStream, pane: &ResourceId, marker: 
         .await,
         CommandResult::Ok
     );
-    timeout(WIRE_RECV_TIMEOUT, async {
-        loop {
-            let result = command(
-                control,
-                801,
-                Command::GetScreen {
-                    terminal_id: pane.clone(),
-                    request_scrollback: None,
-                    cells: false,
-                    format: 0,
-                },
-                false,
-            )
-            .await;
-            let CommandResult::OkWith(CommandValue::Json(json)) = result else {
-                panic!("terminal must survive detach: {result:?}");
-            };
-            if json.contains(marker) {
-                return;
-            }
-            tokio::task::yield_now().await;
+    // Each `command` bounds its own read; this deadline bounds the polling.
+    let deadline = Instant::now() + WIRE_RECV_TIMEOUT;
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "PTY output never reached the live terminal after detach"
+        );
+        let result = command(
+            control,
+            801,
+            Command::GetScreen {
+                terminal_id: pane.clone(),
+                request_scrollback: None,
+                cells: false,
+                format: 0,
+            },
+            false,
+        )
+        .await;
+        let CommandResult::OkWith(CommandValue::Json(json)) = result else {
+            panic!("terminal must survive detach: {result:?}");
+        };
+        if json.contains(marker) {
+            return;
         }
-    })
-    .await
-    .expect("PTY output reached live terminal after detach");
+        tokio::task::yield_now().await;
+    }
 }
 
 async fn detach_and_check(
@@ -366,29 +366,26 @@ fn detach_terminal_answers_a_late_history_request_with_cursor_status() {
         );
         let mut stream = connect_with(&path, native_caps()).await;
         send_frame(&mut stream, &attach_by_name("detach")).await;
-        let history = timeout(WIRE_RECV_TIMEOUT, async {
-            loop {
-                if let FrameKind::BootstrapReady {
-                    terminal_id,
-                    stream_id,
-                    bootstrap_id,
-                    history_cursor,
-                    ..
-                } = recv_typed(&mut stream).await.1
-                {
-                    break FrameKind::HistoryRequest {
-                        terminal_id,
-                        stream_id,
-                        bootstrap_id,
-                        cursor: history_cursor.expect("native cursor"),
-                        max_bytes: 1024 * 1024,
-                        max_rows: 512,
-                    };
-                }
-            }
+        let deadline = Instant::now() + WIRE_RECV_TIMEOUT;
+        let history = recv_until_deadline(&mut stream, deadline, |_, frame| match frame {
+            FrameKind::BootstrapReady {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                history_cursor,
+                ..
+            } => Some(FrameKind::HistoryRequest {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                cursor: history_cursor.expect("native cursor"),
+                max_bytes: 1024 * 1024,
+                max_rows: 512,
+            }),
+            _ => None,
         })
         .await
-        .unwrap();
+        .expect("no BOOTSTRAP_READY within the deadline");
         let FrameKind::HistoryRequest {
             ref terminal_id, ..
         } = history
