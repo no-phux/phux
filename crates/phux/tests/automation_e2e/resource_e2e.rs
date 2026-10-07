@@ -253,19 +253,42 @@ fn new_with_a_key_reused_for_another_request_registers_nothing() {
 
 /// `watch --after CURSOR @N` on a pane that closed unretained: the pane is
 /// no longer in the inventory, but the replay still reaches its close.
+///
+/// The pane exits only once the test releases it, after the first watch has
+/// its cursor (phux-l3ox): a timed exit could beat a loaded host's first
+/// `watch` to the pane, and that watch must resolve a live `@N`. Every later
+/// step resumes from that cursor, so none of them races the exit either.
 #[test]
 #[ignore = "spawns a real phux server; run via `just e2e`."]
 fn watch_after_cursor_replays_the_close_of_an_unretained_pane() {
     let server = Server::start();
-    let pane = server.spawn(&[], &["/bin/sh", "-c", "sleep 1; exit 3"]);
+    let gate = tempfile::tempdir().expect("release dir");
+    let release = gate.path().join("release");
+    let script = format!(
+        "until [ -f '{}' ]; do sleep 0.01; done; exit 3",
+        release.display()
+    );
+    let pane = server.spawn(&[], &["/bin/sh", "-c", &script]);
     let first = server.phux(&["watch", "--json", "--timeout", "0", &pane]);
     let cursor = last_stderr_json(&first)["cursor"]
         .as_str()
         .expect("a journaling server issues a cursor")
         .to_owned();
+    std::fs::write(&release, b"").expect("release the pane");
 
-    // Nobody is watching when the pane closes; it is not retained.
-    let (doc, _) = server.json(&["resource", "wait", "--json", "--timeout", "20", &pane]);
+    // Nobody is watching when the pane closes; it is not retained. The wait
+    // resumes from the same cursor, so it finds the close whether it
+    // subscribes before the exit or after the pane has left the inventory.
+    let (doc, _) = server.json(&[
+        "resource",
+        "wait",
+        "--json",
+        "--after",
+        &cursor,
+        "--timeout",
+        "20",
+        &pane,
+    ]);
     assert_eq!(doc["outcome"], "exited", "{doc}");
     assert_eq!(doc["retained"], false, "{doc}");
 

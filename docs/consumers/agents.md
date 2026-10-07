@@ -251,7 +251,8 @@ creating, splitting, moving, or focusing layout.
   NDJSON, **no `schema_version`**, versioned by the binary and the
   `event` name vocabulary (a follower may join mid-stream). `--until`
   turns the stream into a gate; `--timeout` exits 124 without appending
-  a summary. `agent_state` is the detector half: one `(scope, key)`
+  a summary. Subscribing gets the same 2-second floor as `wait`'s first
+  read, so `--timeout 0` subscribes once and still reports the cursor. `agent_state` is the detector half: one `(scope, key)`
   subscription on the resolved pane, not a fleet-wide stream.
   `command_started` / `command_finished` come from OSC 133 `C` / `D` in
   the raw PTY bytes; a shell with no integration never emits them, and

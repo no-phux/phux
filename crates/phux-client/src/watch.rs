@@ -18,9 +18,11 @@ use serde_json::{Map, Value, json};
 use crate::agent_meta::{AgentRecord, RESOURCE_AGENT_KEY, parse_agent_record};
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
+use crate::deadline::Deadline;
 use crate::resource::cursor::{NO_REPLAY, ResumeState};
 use crate::selector::format_terminal_id;
 use crate::state::get_state_on_with_interleaved;
+use crate::wait::FIRST_READ_FLOOR;
 
 /// One streamed agent event plus the Terminal it concerns (`None` for a
 /// server-scoped event).
@@ -509,9 +511,15 @@ pub enum WatchOutcome {
     Ended,
 }
 
-/// A Terminal-scoped watch under an optional deadline (covering the connect
-/// too) that resumes from a journal cursor and records the one it reaches
-/// (ADR-0123).
+/// A Terminal-scoped watch under an optional deadline that resumes from a
+/// journal cursor and records the one it reaches (ADR-0123).
+///
+/// The deadline starts before the connect and bounds the whole run, but
+/// setting up the subscription (connect, cursor anchor, subscribe) always
+/// gets [`FIRST_READ_FLOOR`] from that start, the floor `wait` gives its
+/// first read: a zero timeout means "subscribe once, now" and still reports
+/// a cursor, instead of racing its own connect, while a wedged server still
+/// times out.
 ///
 /// `resume` lives outside the future, so a caller that drops it
 /// on Ctrl-C can still print where the stream stopped; a foreign cursor
@@ -531,44 +539,42 @@ pub async fn watch_resumable<F>(
 where
     F: FnMut(WatchItem) -> bool,
 {
+    let deadline = Deadline::new(timeout);
+    let subscribing = subscribe_resumable(socket, terminal, resume);
+    let Some(subscribed) = deadline.floored(FIRST_READ_FLOOR).run(subscribing).await else {
+        return Ok(WatchOutcome::TimedOut);
+    };
+    let mut conn = subscribed?;
     let mut stopped = false;
-    let stream = stream_resumable(socket, terminal, resume, |item| {
+    let stream = stream_items(&mut conn, |item| {
+        if let Some(seq) = event_seq(&item) {
+            resume.note(seq);
+        }
         let keep_going = sink(item);
         stopped |= !keep_going;
         keep_going
     });
-    let expired = run_within(timeout, stream).await?;
-    Ok(watch_outcome(expired, stopped))
+    let finished = deadline.run(stream).await.transpose();
+    // The connection is the subscription: it ends with the stream.
+    drop(conn);
+    let finished = finished?;
+    Ok(watch_outcome(finished.is_none(), stopped))
 }
 
-/// Connect, subscribe from `resume`'s cursor, and stream items into `sink`,
-/// noting each stamped event's journal sequence in `resume`.
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the connection is the subscription: it lives exactly as long as the stream"
-)]
-async fn stream_resumable<F>(
+/// Connect and subscribe from `resume`'s cursor, anchoring a live start at
+/// the journal head so even a run that sees no event has a cursor.
+async fn subscribe_resumable(
     socket: &Path,
     terminal: ResourceId,
     resume: &mut ResumeState,
-    mut sink: F,
-) -> Result<(), AttachError>
-where
-    F: FnMut(WatchItem) -> bool,
-{
+) -> Result<Connection, AttachError> {
     let mut conn = Connection::connect(socket).await?;
     let mut after_seq = resume.bind(&conn);
     if after_seq == Some(NO_REPLAY) {
         after_seq = anchor_live_start(&mut conn, resume).await.or(after_seq);
     }
     send_subscriptions(&mut conn, Some(terminal), after_seq).await?;
-    stream_items(&mut conn, |item| {
-        if let Some(seq) = event_seq(&item) {
-            resume.note(seq);
-        }
-        sink(item)
-    })
-    .await
+    Ok(conn)
 }
 
 /// Anchor a live start at the journal head, as `resource wait` does: a run
@@ -594,22 +600,6 @@ const fn event_seq(item: &WatchItem) -> Option<u64> {
     }
 }
 
-/// Run `stream` under an optional deadline: `Ok(true)` when the deadline
-/// fired first, `Ok(false)` when the stream finished.
-async fn run_within(
-    timeout: Option<Duration>,
-    stream: impl Future<Output = Result<(), AttachError>>,
-) -> Result<bool, AttachError> {
-    let Some(limit) = timeout else {
-        return stream.await.map(|()| false);
-    };
-    match tokio::time::timeout(limit, stream).await {
-        Ok(result) => result.map(|()| false),
-        // Dropping the stream drops the connection and its subscription.
-        Err(_elapsed) => Ok(true),
-    }
-}
-
 /// Which of the three endings a bounded run reached.
 const fn watch_outcome(expired: bool, stopped: bool) -> WatchOutcome {
     if expired {
@@ -631,7 +621,7 @@ mod tests {
     )]
 
     use crate::agent_meta::AgentMetaState;
-    use crate::testkit::{EndOfScript, ScriptSpec, serve_one};
+    use crate::testkit::{EndOfScript, ScriptSpec, ScriptedServer, serve_one};
     use phux_protocol::ids::{SessionId, WindowId};
     use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
 
@@ -1174,5 +1164,75 @@ mod tests {
             "replays from the head: {seen:?}"
         );
         assert_eq!(resume.cursor().expect("cursor").to_string(), "0102:30");
+    }
+
+    /// phux-l3ox: a zero timeout still subscribes once and reports where to
+    /// resume, however slowly the server answers inside the setup floor.
+    /// Before the floor the deadline also covered the connect, so a server
+    /// that took longer than the timer's first tick to say `HELLO_OK` left
+    /// the watch with no cursor at all.
+    #[tokio::test]
+    async fn a_zero_timeout_still_anchors_a_cursor_from_a_slow_server() {
+        use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let socket = dir.path().join("slow.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).expect("bind");
+        let state = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(7))
+            .with_journal_head(Some(30));
+        let spec = ScriptSpec::new()
+            .state(state)
+            .server_features(ServerFeatureSet::with(&[ServerFeature::EventJournal]))
+            .server_id(vec![0x01, 0x02])
+            .end(EndOfScript::ServeUntilDetach);
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            // Far longer than a zero deadline's first tick; well inside the floor.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            ScriptedServer::on_stream(stream, spec).run().await
+        });
+        let mut resume = ResumeState::new(None);
+        let outcome = watch_resumable(
+            &socket,
+            ResourceId::local(7),
+            &mut resume,
+            Some(Duration::ZERO),
+            |_| true,
+        )
+        .await
+        .expect("scripted transport");
+        assert_eq!(outcome, WatchOutcome::TimedOut);
+        assert_eq!(resume.cursor().expect("cursor").to_string(), "0102:30");
+        let seen = server.await.expect("scripted server task");
+        assert!(
+            seen.iter()
+                .any(|frame| matches!(frame, FrameKind::SubscribeEvents { .. })),
+            "the zero-timeout watch subscribed: {seen:?}"
+        );
+    }
+
+    /// The floor is a floor, not a hang: a server that never answers `HELLO`
+    /// still ends a zero-timeout watch, at the floor.
+    #[tokio::test(start_paused = true)]
+    async fn a_zero_timeout_against_a_silent_server_ends_at_the_floor() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let socket = dir.path().join("silent.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).expect("bind");
+        let peer = tokio::spawn(crate::testkit::hold_silent(listener));
+        let started = tokio::time::Instant::now();
+        let mut resume = ResumeState::new(None);
+        let outcome = watch_resumable(
+            &socket,
+            ResourceId::local(7),
+            &mut resume,
+            Some(Duration::ZERO),
+            |_| true,
+        )
+        .await
+        .expect("a silent peer is a timeout, not an error");
+        assert_eq!(outcome, WatchOutcome::TimedOut);
+        assert_eq!(started.elapsed(), crate::wait::FIRST_READ_FLOOR);
+        assert!(resume.cursor().is_none());
+        peer.abort();
     }
 }
