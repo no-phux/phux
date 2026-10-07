@@ -2832,6 +2832,30 @@ impl AttachStaging {
         self.budget
             .append_accounted(&mut self.frames, &mut frames, 0)
     }
+
+    /// Drop a pane that closed mid-capture from publication: its parked
+    /// pump sees the gate dropped and exits without forwarding anything.
+    /// Nothing of its bootstrap was staged, since every actor request that
+    /// can find it gone precedes the staging.
+    fn forget_pane(&mut self, terminal_id: ResourceId) {
+        self.gates.retain(|gate| gate.terminal_id != terminal_id);
+    }
+}
+
+/// Why one pane's capture did not stage a bootstrap.
+#[derive(Debug)]
+enum CaptureFailure {
+    /// The pane's actor was gone: a request found its mailbox closed or its
+    /// reply dropped. A pane only loses its actor by closing.
+    Closed(String),
+    /// The pane is live and its capture failed: the attach's rollback reason.
+    Failed(String),
+}
+
+impl From<String> for CaptureFailure {
+    fn from(reason: String) -> Self {
+        Self::Failed(reason)
+    }
 }
 
 /// Outcome of the ADR-0018 per-consumer state-sync registration for one pane.
@@ -2843,6 +2867,8 @@ struct ConsumerRegistration {
     tick_managed: bool,
     /// Atomic synthesized bootstrap captured in the same actor turn.
     state_sync_bootstrap: Option<crate::terminal_actor::StateSyncBootstrap>,
+    /// The actor was gone: its mailbox was closed or it dropped the reply.
+    actor_gone: bool,
 }
 
 /// The negotiated shape shared by every pane capture in one ATTACH.
@@ -2916,7 +2942,10 @@ impl PaneCaptureContext<'_> {
                 ?terminal_id,
                 "per-consumer state-sync register: actor mailbox closed",
             );
-            return ConsumerRegistration::default();
+            return ConsumerRegistration {
+                actor_gone: true,
+                ..ConsumerRegistration::default()
+            };
         }
         match attach_reply_rx.await {
             Ok(Ok(outcome)) => {
@@ -2929,6 +2958,7 @@ impl PaneCaptureContext<'_> {
                     registered: true,
                     tick_managed: outcome.tick_managed,
                     state_sync_bootstrap: outcome.state_sync_bootstrap,
+                    actor_gone: false,
                 }
             }
             Ok(Err(err)) => {
@@ -2944,7 +2974,10 @@ impl PaneCaptureContext<'_> {
                     ?terminal_id,
                     "per-consumer state-sync register: actor dropped reply",
                 );
-                ConsumerRegistration::default()
+                ConsumerRegistration {
+                    actor_gone: true,
+                    ..ConsumerRegistration::default()
+                }
             }
         }
     }
@@ -3063,7 +3096,7 @@ impl PaneCaptureContext<'_> {
         terminal_id: ResourceId,
         wire_terminal_id: &phux_protocol::ids::ResourceId,
         terminal: &crate::terminal_actor::TerminalHandle,
-    ) -> Result<(), String> {
+    ) -> Result<(), CaptureFailure> {
         let captured = request_native_checkpoint(terminal, |reply| {
             crate::terminal_actor::NativeBootstrapRequest {
                 owner: self.client_id.0,
@@ -3081,15 +3114,21 @@ impl PaneCaptureContext<'_> {
             Ok(reply) => reply,
             Err(NativeRequestFailure::Refused(error)) => {
                 warn!(?terminal_id, %error, "native checkpoint failed before attach publication");
-                return Err("native checkpoint capture failed".to_owned());
+                return Err(CaptureFailure::Failed(
+                    "native checkpoint capture failed".to_owned(),
+                ));
             }
             Err(NativeRequestFailure::Unsent) => {
                 warn!(?terminal_id, "pane actor dropped before native bootstrap");
-                return Err("pane actor dropped native bootstrap request".to_owned());
+                return Err(CaptureFailure::Closed(
+                    "pane actor dropped native bootstrap request".to_owned(),
+                ));
             }
             Err(NativeRequestFailure::Dropped) => {
                 warn!(?terminal_id, "pane actor dropped native checkpoint reply");
-                return Err("pane actor dropped native checkpoint reply".to_owned());
+                return Err(CaptureFailure::Closed(
+                    "pane actor dropped native checkpoint reply".to_owned(),
+                ));
             }
         };
         let cut = reply.base_seq;
@@ -3104,7 +3143,9 @@ impl PaneCaptureContext<'_> {
             .append_accounted(frames, &mut reply.frames, reply.retained_bytes)
             .is_err()
         {
-            return Err("aggregate bootstrap staging budget exceeded".to_owned());
+            return Err(CaptureFailure::Failed(
+                "aggregate bootstrap staging budget exceeded".to_owned(),
+            ));
         }
         if let Some(gate) = gates
             .iter_mut()
@@ -3124,7 +3165,7 @@ impl PaneCaptureContext<'_> {
         terminal_id: ResourceId,
         max_bytes: usize,
         max_frames: usize,
-    ) -> Result<(crate::grid::SnapshotBytes, u64), String> {
+    ) -> Result<(crate::grid::SnapshotBytes, u64), CaptureFailure> {
         let (reply_tx, reply_rx) = oneshot::channel();
         if terminal
             .snapshot
@@ -3142,20 +3183,26 @@ impl PaneCaptureContext<'_> {
                 ?terminal_id,
                 "pane actor dropped before synthesized bootstrap"
             );
-            return Err("pane actor dropped synthesized bootstrap request".to_owned());
+            return Err(CaptureFailure::Closed(
+                "pane actor dropped synthesized bootstrap request".to_owned(),
+            ));
         }
         match reply_rx.await {
             Ok(Ok(reply)) => Ok(reply),
             Ok(Err(error)) => {
                 warn!(?terminal_id, %error, "bounded snapshot synthesis failed");
-                Err("synthesized bootstrap source limit exceeded".to_owned())
+                Err(CaptureFailure::Failed(
+                    "synthesized bootstrap source limit exceeded".to_owned(),
+                ))
             }
             Err(_) => {
                 warn!(
                     ?terminal_id,
                     "pane actor dropped synthesized snapshot reply"
                 );
-                Err("pane actor dropped synthesized snapshot reply".to_owned())
+                Err(CaptureFailure::Closed(
+                    "pane actor dropped synthesized snapshot reply".to_owned(),
+                ))
             }
         }
     }
@@ -3167,7 +3214,7 @@ impl PaneCaptureContext<'_> {
         &self,
         staging: &mut AttachStaging,
         pane: AttachSnapshotPane,
-    ) -> Result<(), String> {
+    ) -> Result<(), CaptureFailure> {
         let synthesized_source_max =
             bootstrap_source_ceiling(staging.budget.remaining_bytes(), self.client_caps);
         let terminal_id = pane.terminal_id;
@@ -3192,7 +3239,12 @@ impl PaneCaptureContext<'_> {
                 ?terminal_id,
                 "state-sync registration failed before aggregate attach publication"
             );
-            return Err("state-sync consumer registration failed".to_owned());
+            let reason = "state-sync consumer registration failed".to_owned();
+            return Err(if registration.actor_gone {
+                CaptureFailure::Closed(reason)
+            } else {
+                CaptureFailure::Failed(reason)
+            });
         }
         // A tick-managed consumer's deltas come from the actor, in its own
         // sequence space: a broadcast pump beside it would double-emit.
@@ -3200,13 +3252,13 @@ impl PaneCaptureContext<'_> {
             self.spawn_pane_pump(staging, terminal_id, &wire_terminal_id, &handle, &terminal);
         }
         if let Some(state_sync) = registration.state_sync_bootstrap {
-            return self.stage_synthesized_frames(
+            return Ok(self.stage_synthesized_frames(
                 staging,
                 wire_terminal_id,
                 state_sync.snapshot,
                 state_sync.base_seq,
                 "state-sync bootstrap",
-            );
+            )?);
         }
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         if publishes_native_checkpoints(self.profile) {
@@ -3242,14 +3294,31 @@ impl PaneCaptureContext<'_> {
     /// Capture every bootstrap-capable pane in turn, then stage authoritative
     /// closures for snapshot participants that had no actor handle. The first
     /// failure is the rollback reason.
+    ///
+    /// A pane whose actor ends while the attach is capturing (its process
+    /// exited, or a kill or abandoned spawn reaped it after the snapshot was
+    /// taken) is not a failure: `ATTACH_READY` follows once every pane is
+    /// READY or closed (L1 §8), so it is staged as closed like a participant
+    /// that had no actor at all. Only a pane whose actor is still running can
+    /// fail the attach.
     async fn capture_panes(
         &self,
         staging: &mut AttachStaging,
         panes: Vec<AttachSnapshotPane>,
-        closed_before_ready: Vec<phux_protocol::ids::ResourceId>,
+        mut closed_before_ready: Vec<phux_protocol::ids::ResourceId>,
     ) -> Result<(), String> {
         for pane in panes {
-            self.capture_pane(staging, pane).await?;
+            let terminal_id = pane.terminal_id;
+            let wire_terminal_id = pane.wire_terminal_id.clone();
+            match self.capture_pane(staging, pane).await {
+                Ok(()) => continue,
+                Err(CaptureFailure::Failed(reason)) => return Err(reason),
+                Err(CaptureFailure::Closed(reason)) => {
+                    debug!(?terminal_id, %reason, "pane closed during ATTACH capture");
+                }
+            }
+            staging.forget_pane(terminal_id);
+            closed_before_ready.push(wire_terminal_id);
         }
         staging
             .append_closures(closed_before_ready)
@@ -4777,6 +4846,88 @@ mod tests {
                     state.with(|s| s.is_viewer(client_id, &wire)),
                     "a deferred (QUIC multi-stream) session ATTACH must still mark its viewer"
                 );
+            })
+            .await;
+    }
+
+    /// phux-ginr: a pane that closes between the attach's snapshot and its
+    /// capture (here, an actor whose mailboxes are already closed, as after a
+    /// reap) is published as closed beside its live neighbour, and the attach
+    /// still reaches `ATTACH_READY` (L1 §8: READY *or closed*). Before the
+    /// fix it failed the whole attach and cancelled the connection.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_pane_closed_mid_capture_is_published_closed_not_a_failed_attach() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = crate::state::SharedState::new();
+                let (_session, window, live) = state.with_mut(|s| s.seed_session("closing"));
+                let token = CancellationToken::new();
+                let bundle = crate::terminal_actor::TerminalActor::build_with_token(
+                    80,
+                    24,
+                    None,
+                    phux_config::ScrollbackLimits::default(),
+                    token.clone(),
+                )
+                .expect("test terminal actor");
+                let (live_wire, closed_wire) = state.with_mut(|s| {
+                    let _ = s.register_resource_handle(live, bundle.handle.clone(), token.clone());
+                    let closed = s
+                        .registry_mut()
+                        .new_terminal(window)
+                        .expect("second pane");
+                    let ended = detached_handle(
+                        crate::terminal_actor::TerminalHandle::detached_for_test(80, 24),
+                    );
+                    let _ = s.register_resource_handle(closed, ended, CancellationToken::new());
+                    (s.intern_terminal_wire(live), s.intern_terminal_wire(closed))
+                });
+                tokio::task::spawn_local(bundle.actor.run());
+                let client_id = state.with_mut(crate::state::ServerState::new_client_id);
+                let (out_tx, mut out_rx) =
+                    tokio::sync::mpsc::channel(crate::state::DEFAULT_CLIENT_MAILBOX);
+                let connection_token = CancellationToken::new();
+                attach(
+                    &state,
+                    client_id,
+                    7,
+                    "closing",
+                    None,
+                    &out_tx,
+                    BootstrapProfile::SynthesizedVtRaw,
+                    &mut JoinSet::new(),
+                    &connection_token,
+                    false,
+                )
+                .await;
+
+                let mut frames = Vec::new();
+                while let Ok(Outbound::Frame(frame)) = out_rx.try_recv() {
+                    frames.push(frame);
+                }
+                assert!(
+                    !connection_token.is_cancelled(),
+                    "a pane closing mid-capture must not fail the attach: {frames:?}"
+                );
+                let ready_for = |wire: &phux_protocol::ids::ResourceId| {
+                    frames.iter().any(|frame| {
+                        matches!(frame, FrameKind::BootstrapReady { terminal_id, .. } if terminal_id == wire)
+                    })
+                };
+                assert!(ready_for(&live_wire), "the live pane bootstraps: {frames:?}");
+                assert!(!ready_for(&closed_wire), "{frames:?}");
+                let closed_at = frames.iter().position(|frame| {
+                    matches!(frame, FrameKind::ResourceClosed { terminal_id, .. } if *terminal_id == closed_wire)
+                });
+                let ready_at = frames
+                    .iter()
+                    .position(|frame| matches!(frame, FrameKind::AttachReady { attach_id: 7 }));
+                assert!(
+                    matches!((closed_at, ready_at), (Some(closed), Some(ready)) if closed < ready),
+                    "RESOURCE_CLOSED for the closed pane precedes ATTACH_READY: {frames:?}"
+                );
+                token.cancel();
             })
             .await;
     }
