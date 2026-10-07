@@ -255,22 +255,23 @@ async fn dial_quic(
         let plan = plan_quic_with_token(&resolved, authority, target.token.clone())
             .await
             .map_err(ConnectionEnd::Refused)?;
-        let connected = phux_dial::quic::dial_with_identity(&plan, &resolved.client_identity).await;
+        let connected = phux_dial::quic::dial_stream(&plan).await;
         // The bearer preamble has been written; the owned token goes now.
         drop(plan);
         connected.map_err(|error| classify(name, &error))
     })
     .await
     .map_err(|_| ConnectionEnd::Dropped(Some(timed_out(name))))??;
-    let (endpoint, connection, send, recv) = established;
+    let (endpoint, connection, stream) = established;
     if let Some(reason) = connection.close_reason() {
         return Err(ConnectionEnd::Dropped(Some(quic_closed_message(
             name, &reason,
         ))));
     }
+    let (reader, writer) = crate::tunnel::host_halves(stream);
     Ok(Io::Stream {
-        reader: Box::new(recv),
-        writer: Box::new(send),
+        reader,
+        writer,
         pending: BytesMut::with_capacity(64 * 1024),
         quic: Some((endpoint, connection)),
     })

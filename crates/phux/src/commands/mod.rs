@@ -2216,8 +2216,9 @@ pub(crate) enum Command {
         /// Also mint a single-use enrollment ticket into the link, so a
         /// device without ssh (a phone) enrolls a workload certificate for a
         /// key it generates and keeps. Needed to reach a server in `paired`
-        /// policy mode. The ticket expires in ten minutes.
-        #[usage(long, conflicts("--relay-route"))]
+        /// policy mode. The ticket expires in ten minutes. With
+        /// `--relay-route` the device enrolls end to end through the relay.
+        #[usage(long)]
         enroll: bool,
     },
 

@@ -95,6 +95,7 @@ async fn dial(
         token: None,
         trust,
         identity: Some(phux_dial::TlsClientIdentity::None),
+        inner: None,
     };
     tokio::time::timeout(Duration::from_secs(10), async {
         tokio::select! {

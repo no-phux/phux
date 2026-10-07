@@ -17,7 +17,7 @@ longer requires at the TLS layer, a client certificate, so the enrollment
 ALPN can answer a device that has none yet; the terminal ALPN still refuses a
 connection without an enrolled certificate before reading any byte of it.
 Relays and WebTransport get the same identity by carrying an end-to-end TLS
-session inside their stream, decided here and built separately.
+session inside their stream, so `paired` no longer refuses either.
 
 Status: Accepted
 Date: 2026-10-07
@@ -82,13 +82,21 @@ transitional posture still exists (phux-pjc5.7).
    rides inside. The relay parses nothing new and now sees nothing: the
    per-hop authority ADR-0116 accepted becomes end-to-end. Under `paired` a
    connector admits only such sessions, and `paired` stops refusing
-   connectors.
+   connectors. A relay link (`phux pair --relay-route`) now carries the
+   server's `ca` beside the relay's `fp`; a client pins it keyed by
+   `<relay leaf>@<route>`, since one relay serves many routes, and never
+   learns it unprompted (the relay's leaf does not authenticate the server).
+   The inner session offers the enrollment ALPN too, so `--enroll` works
+   through a relay. A server whose certificate predates its CA has no `ca`
+   to give, and its relayed consumers keep the plain stream (outside
+   `paired` only).
 6. **WebTransport uses the same inner session.** The WebTransport listener
    applies item 5's sniff to its stream: a native client can present an
    enrolled certificate; a browser cannot hold one yet, so under `paired` a
    browser session is refused until phux-web carries a key and a TLS stack
-   (WebCrypto keys cannot sign synchronously for rustls). Items 5 and 6 are
-   built after items 1 to 4.
+   (WebCrypto keys cannot sign synchronously for rustls). The bearer still
+   rides the `CONNECT`, so nothing follows the inner handshake there, and
+   `paired` stops refusing the WebTransport listener.
 
 ## Why
 
@@ -116,6 +124,9 @@ transitional posture still exists (phux-pjc5.7).
   a new link; credentials default to a year. Certificate-authenticated
   renewal on the enrollment ALPN is a natural extension.
 - **Browsers stay outside `paired`** until phux-web can hold a key.
+- **A relayed connection keeps one stream.** Per-Terminal QUIC streams would
+  bypass the inner session, so a relayed consumer never negotiates them (it
+  never did: the relay splices one stream).
 
 ## Alternatives
 

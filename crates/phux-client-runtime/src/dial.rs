@@ -51,6 +51,7 @@ pub async fn plan_quic_with_token(
         Some(token) => Some(parse_token_hex(&token).map_err(|_| bad_token(resolved))?),
         None => None,
     };
+    let inner = resolved.authority.inner(&resolved.client_identity);
     Ok(QuicDial {
         addr,
         server_name: resolved
@@ -59,8 +60,15 @@ pub async fn plan_quic_with_token(
             .unwrap_or_else(|| quic_server_name(bare)),
         token,
         trust,
-        // Explicit, so the plan never falls back to the environment.
-        identity: Some(resolved.client_identity.clone()),
+        // Explicit, so the plan never falls back to the environment. Through
+        // a relay with the server's CA pinned, the identity goes to the
+        // server inside the end-to-end session, and the relay sees none.
+        identity: Some(if inner.is_some() {
+            phux_dial::TlsClientIdentity::None
+        } else {
+            resolved.client_identity.clone()
+        }),
+        inner,
     })
 }
 

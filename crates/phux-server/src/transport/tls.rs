@@ -294,6 +294,25 @@ pub(crate) fn quic_server_config_with_client_ca(
     server_config(cert_path, key_path, auth, true, alpns)
 }
 
+/// The config of the TLS session a consumer runs inside a relayed stream
+/// (ADR-0154 item 5): TLS 1.3, the terminal and enrollment ALPNs, and with a
+/// workload CA a client certificate asked for and verified but decided after
+/// the handshake, as on the QUIC listener.
+pub(crate) fn inner_server_config(
+    cert_path: &Path,
+    key_path: &Path,
+    client_ca: Option<&CertificateDer<'static>>,
+) -> Result<ServerConfig, TlsError> {
+    let auth = client_ca.map_or(ClientAuth::None, ClientAuth::Requested);
+    server_config(
+        cert_path,
+        key_path,
+        auth,
+        true,
+        &[QUIC_ALPN, phux_protocol::policy::ENROLL_ALPN],
+    )
+}
+
 /// The WebTransport server config: TLS 1.3 with the standard `h3` ALPN,
 /// since browsers offer exactly `h3`.
 #[cfg(feature = "webtransport")]

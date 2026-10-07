@@ -387,30 +387,63 @@ pub struct AuthorityPin {
     /// Called with the CA a leaf-pinned server presented. Unused once
     /// [`Self::ca`] is set.
     pub learner: Option<phux_dial::AuthorityLearner>,
+    /// The relay route the server is reached through (ADR-0154 item 5): the
+    /// leaf pin is then the relay's, and [`Self::ca`] is the server's, which
+    /// an end-to-end session inside the relayed stream verifies.
+    pub route: Option<String>,
 }
 
 impl AuthorityPin {
-    /// The pin `known-authorities` beside `config_path` holds for `leaf`,
-    /// learning into the same file while it holds none.
+    /// The pin `known-authorities` beside `config_path` holds for `leaf`
+    /// (through `route` when a relay serves the server), learning into the
+    /// same file while a direct server's is missing. A relayed server's CA
+    /// is never learned: the relay's leaf does not authenticate it.
     #[must_use]
-    pub fn from_store(config_path: &Path, leaf: Option<&str>) -> Self {
+    pub fn from_store(config_path: &Path, leaf: Option<&str>, route: Option<&str>) -> Self {
+        let route = route
+            .map(str::trim)
+            .filter(|route| !route.is_empty())
+            .map(str::to_owned);
         let Some(leaf) = leaf.filter(|leaf| !leaf.trim().is_empty()) else {
-            return Self::default();
+            return Self {
+                route,
+                ..Self::default()
+            };
         };
         let store = phux_config::known_authorities::path_beside(config_path);
-        let ca = phux_config::known_authorities::lookup(&store, leaf);
-        let learner = ca.is_none().then(|| store_learner(store, leaf.to_owned()));
-        Self { ca, learner }
+        let ca = phux_config::known_authorities::lookup(&store, leaf, route.as_deref());
+        let learner =
+            (ca.is_none() && route.is_none()).then(|| store_learner(store, leaf.to_owned()));
+        Self { ca, learner, route }
     }
 
-    /// The dial trust for `leaf`: [`phux_dial::CertTrust::from_pins`].
+    /// The dial trust for `leaf`: [`phux_dial::CertTrust::from_pins`]. For a
+    /// relayed server it is the relay's leaf alone; the server's CA belongs
+    /// to [`Self::inner`].
     #[must_use]
     pub fn trust(&self, leaf: Option<&str>) -> Option<phux_dial::CertTrust> {
+        if self.route.is_some() {
+            return phux_dial::CertTrust::from_pins(leaf.map(str::to_owned), None, None);
+        }
         phux_dial::CertTrust::from_pins(
             leaf.map(str::to_owned),
             self.ca.clone(),
             self.learner.clone(),
         )
+    }
+
+    /// The end-to-end session a relayed dial runs to the server, presenting
+    /// `identity`: when the server's CA is pinned for the route. `None` dials
+    /// the relayed stream plain, as before ADR-0154.
+    #[must_use]
+    pub fn inner(&self, identity: &TlsClientIdentity) -> Option<phux_dial::quic::InnerTls> {
+        let route = self.route.clone()?;
+        let ca = self.ca.clone()?;
+        Some(phux_dial::quic::InnerTls {
+            trust: phux_dial::CertTrust::Authority { ca, leaf: None },
+            identity: identity.clone(),
+            server_name: route,
+        })
     }
 }
 
@@ -423,7 +456,7 @@ fn store_learner(store: PathBuf, leaf: String) -> phux_dial::AuthorityLearner {
         if recorded.swap(true, std::sync::atomic::Ordering::SeqCst) {
             return;
         }
-        match phux_config::known_authorities::record(&store, &leaf, authority) {
+        match phux_config::known_authorities::record(&store, &leaf, None, authority) {
             Ok(true) => tracing::info!(
                 %authority,
                 store = %store.display(),
@@ -467,7 +500,11 @@ pub fn resolve(raw: &str, config_path: Option<&Path>) -> Result<Resolved, String
     reject_duplicates(&config.remote)?;
     let entry = find_entry(&config.remote, &target).ok_or_else(|| unregistered(&target))?;
     let mut resolved = resolve_entry(entry, &target)?;
-    resolved.authority = AuthorityPin::from_store(&path, resolved.cert_fingerprint.as_deref());
+    resolved.authority = AuthorityPin::from_store(
+        &path,
+        resolved.cert_fingerprint.as_deref(),
+        resolved.tls_server_name.as_deref(),
+    );
     Ok(resolved)
 }
 

@@ -86,7 +86,12 @@ pub async fn enroll_target(
         .resolved()
         .ok_or_else(|| format!("{name}: not a remote target"))?;
     let plan = crate::dial::plan_quic_with_token(&resolved, authority, None).await?;
-    let pinned = match &plan.trust {
+    // The server's trust: inside the relayed session when there is one.
+    let server_trust = plan
+        .inner
+        .as_ref()
+        .map_or(&plan.trust, |inner| &inner.trust);
+    let pinned = match server_trust {
         CertTrust::Authority { ca, .. } => Some(ca.clone()),
         _ => None,
     };
@@ -97,6 +102,7 @@ pub async fn enroll_target(
         addr: plan.addr,
         server_name: plan.server_name.clone(),
         trust: plan.trust.clone(),
+        inner: plan.inner.clone(),
     };
     let chain_pem = tokio::time::timeout(crate::dial::DIAL_TIMEOUT, enroll(&dial, &request))
         .await

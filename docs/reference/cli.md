@@ -2033,7 +2033,9 @@ Flags:
                              link, so a device without ssh (a phone) enrolls a
                              workload certificate for a key it generates and
                              keeps. Needed to reach a server in `paired` policy
-                             mode. The ticket expires in ten minutes.
+                             mode. The ticket expires in ten minutes. With
+                             `--relay-route` the device enrolls end to end
+                             through the relay.
   -h, --help                 Print help
 
 Global flags:

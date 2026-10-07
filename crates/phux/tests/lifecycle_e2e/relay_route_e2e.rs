@@ -326,6 +326,17 @@ fn a_relay_route_attaches_from_a_link_and_from_the_registry() {
             && config.contains(&format!("tls-server-name = \"{ROUTE}\"")),
         "{config}"
     );
+    // ADR-0154: the link pins the server's CA beside the relay's leaf, the
+    // client keeps it keyed by the route, and the listing above crossed the
+    // relay inside an end-to-end session verified against it.
+    let authority = doc["ca_fingerprint"].as_str().expect("the server's CA");
+    assert!(link.contains(&format!("&ca={authority}&")), "{link}");
+    let known = std::fs::read_to_string(linked.path().join("config/phux/known-authorities"))
+        .expect("known-authorities");
+    assert!(
+        known.contains(&format!("@{ROUTE} {authority}")),
+        "pinned by route: {known}"
+    );
     let listed = list_over_relay(&linked, "mini");
     assert!(listed["sessions"].is_array(), "{listed}");
 

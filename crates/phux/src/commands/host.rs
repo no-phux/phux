@@ -1072,6 +1072,7 @@ fn finish_enroll_in(
             remote::pin_authority(
                 name,
                 cert_fingerprint,
+                None,
                 pairing.and_then(|report| report.ca_fingerprint.as_deref()),
             );
             Ok(HostRow::from_new_remote(new))

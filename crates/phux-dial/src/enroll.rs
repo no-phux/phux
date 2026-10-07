@@ -22,8 +22,11 @@ pub struct EnrollDial {
     /// TLS server name offered in SNI.
     pub server_name: String,
     /// How to trust the server's certificate (its CA pin when the link
-    /// carried one, ADR-0153).
+    /// carried one, ADR-0153); through a relay, how to trust the relay.
     pub trust: CertTrust,
+    /// Through a relay: the server, end to end (ADR-0154 item 5). The
+    /// exchange then runs inside that session, under the enrollment ALPN.
+    pub inner: Option<crate::quic::InnerTls>,
 }
 
 /// Send one enrollment request and return the issued PEM chain, unchecked;
@@ -37,6 +40,9 @@ pub async fn enroll(d: &EnrollDial, request: &Request) -> Result<String, DialErr
     let encoded = request
         .encode()
         .map_err(|err| DialError::Connect(format!("enrollment request: {err}")))?;
+    if let Some(inner) = &d.inner {
+        return enroll_relayed(d, inner, &encoded).await;
+    }
     let bind = if d.addr.is_ipv6() {
         SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0)
     } else {
@@ -72,7 +78,53 @@ pub async fn enroll(d: &EnrollDial, request: &Request) -> Result<String, DialErr
     };
     conn.close(0_u32.into(), b"done");
     endpoint.wait_idle().await;
-    match Reply::decode(&reply)
+    decoded(&reply)
+}
+
+/// The exchange inside the end-to-end session through a relay: the request
+/// is self-delimiting, and the server ends its side after the reply.
+async fn enroll_relayed(
+    d: &EnrollDial,
+    inner: &crate::quic::InnerTls,
+    encoded: &[u8],
+) -> Result<String, DialError> {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let outer = crate::QuicDial {
+        addr: d.addr,
+        server_name: d.server_name.clone(),
+        token: None,
+        trust: d.trust.clone(),
+        identity: Some(TlsClientIdentity::None),
+        inner: None,
+    };
+    let (endpoint, conn, mut stream) =
+        crate::quic::dial_relayed(&outer, inner, ENROLL_ALPN).await?;
+    // Both messages are self-delimiting: a relay ends the whole splice when
+    // either side finishes, so nobody half-closes before the reply is read.
+    let exchanged = async {
+        stream.write_all(encoded).await?;
+        stream.flush().await?;
+        let mut head = [0_u8; 5];
+        stream.read_exact(&mut head).await?;
+        let len = usize::try_from(u32::from_be_bytes([head[1], head[2], head[3], head[4]]))
+            .unwrap_or(usize::MAX);
+        if len > phux_protocol::enroll::MAX_REPLY_BODY {
+            return Err(std::io::Error::other("oversized enrollment reply"));
+        }
+        let mut reply = head.to_vec();
+        reply.resize(5 + len, 0);
+        stream.read_exact(&mut reply[5..]).await?;
+        Ok::<_, std::io::Error>(reply)
+    }
+    .await;
+    conn.close(0_u32.into(), b"done");
+    endpoint.wait_idle().await;
+    let reply = exchanged.map_err(io_lost)?;
+    decoded(&reply)
+}
+
+fn decoded(reply: &[u8]) -> Result<String, DialError> {
+    match Reply::decode(reply)
         .map_err(|err| DialError::Connect(format!("enrollment reply: {err}")))?
     {
         Reply::Issued(chain) => Ok(chain),

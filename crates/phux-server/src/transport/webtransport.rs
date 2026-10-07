@@ -22,7 +22,7 @@ use std::time::Duration;
 use bytes::BytesMut;
 use phux_dial::window::{SendWindow, TrackedSend};
 use phux_protocol::policy::{PeerIdentity, TransportType};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt};
 use tracing::{debug, warn};
 use wtransport_proto::qpack::Decoder;
 
@@ -45,6 +45,10 @@ type Accepted = (WtReader, WtWriter, crate::auth::ConnectionIdentity);
 pub(crate) struct WtListener {
     endpoint: quinn::Endpoint,
     tokens: Option<Arc<crate::auth::ReloadingTokenStore>>,
+    /// The end-to-end session a native client may run inside its stream to
+    /// present a workload certificate (ADR-0154 item 6). Under `paired` it is
+    /// the only way in; a browser cannot run it yet.
+    inner: Option<Arc<super::inner_tls::InnerTls>>,
     admissions: super::Admissions<Accepted>,
     /// Refused `CONNECT`s, warned about at a bounded rate.
     refusals: Arc<super::RefusalWarnings>,
@@ -77,11 +81,13 @@ impl WtListener {
         cert_path: &std::path::Path,
         key_path: &std::path::Path,
         tokens: Option<Arc<crate::auth::ReloadingTokenStore>>,
+        inner: Option<Arc<super::inner_tls::InnerTls>>,
     ) -> Result<Self, WtBindError> {
         let tls = super::tls::webtransport_server_config(cert_path, key_path)?;
         Ok(Self {
             endpoint: super::quic::server_endpoint(addr, tls, None)?,
             tokens,
+            inner,
             admissions: super::Admissions::new(),
             refusals: Arc::new(super::RefusalWarnings::new()),
         })
@@ -97,6 +103,7 @@ impl WtListener {
     async fn establish(
         incoming: quinn::Incoming,
         tokens: Option<Arc<crate::auth::ReloadingTokenStore>>,
+        inner: Option<Arc<super::inner_tls::InnerTls>>,
         refusals: Arc<super::RefusalWarnings>,
     ) -> Option<Accepted> {
         let connection = match incoming.await {
@@ -159,21 +166,21 @@ impl WtListener {
             }
         };
 
+        let (stream, workload) =
+            settle_stream(send, recv, inner.as_deref(), remote, &refusals).await?;
+
         abandon.established();
-        let peer_identity = PeerIdentity {
-            uid: 0,
-            pid: None,
-            exe_path: None,
-            mcp_host_key: credential.as_ref().map(|credential| credential.id.clone()),
-            transport: TransportType::WebTransport,
-            source_addr: Some(remote.ip()),
+        let identity = session_identity(remote, tokens.as_ref(), credential, workload);
+        let (recv, send) = match stream {
+            WtStream::Plain { recv, send } => (
+                recv,
+                WtSend::Plain(TrackedSend::new(send, SendWindow::new(connection.clone()))),
+            ),
+            WtStream::Inner((recv, send)) => (
+                Box::new(recv) as Box<dyn tokio::io::AsyncRead + Unpin>,
+                WtSend::Inner(send),
+            ),
         };
-        let bearer = tokens
-            .as_ref()
-            .zip(credential.as_ref())
-            .map(|(store, credential)| {
-                crate::auth::BearerAdmission::new(Arc::clone(store), credential)
-            });
 
         Some((
             WtReader {
@@ -187,16 +194,83 @@ impl WtListener {
                 frames: super::FrameAssembler::default(),
             },
             WtWriter {
-                send: TrackedSend::new(send, SendWindow::new(connection.clone())),
+                send,
                 _connection: connection,
             },
-            crate::auth::ConnectionIdentity {
-                peer: peer_identity,
-                credential,
-                ssh_origin: None,
-                bearer,
-            },
+            identity,
         ))
+    }
+}
+
+/// A session's identity: its inner workload credential when it presented
+/// one, else the `CONNECT` bearer, whose revocation ends it either way.
+fn session_identity(
+    remote: SocketAddr,
+    tokens: Option<&Arc<crate::auth::ReloadingTokenStore>>,
+    bearer: Option<crate::auth::AuthenticatedCredential>,
+    workload: Option<crate::auth::AuthenticatedCredential>,
+) -> crate::auth::ConnectionIdentity {
+    let admission = tokens.zip(bearer.as_ref()).map(|(store, credential)| {
+        crate::auth::BearerAdmission::new(Arc::clone(store), credential)
+    });
+    let credential = workload.or(bearer);
+    crate::auth::ConnectionIdentity {
+        peer: PeerIdentity {
+            uid: 0,
+            pid: None,
+            exe_path: None,
+            mcp_host_key: credential.as_ref().map(|credential| credential.id.clone()),
+            transport: TransportType::WebTransport,
+            source_addr: Some(remote.ip()),
+        },
+        credential,
+        ssh_origin: None,
+        bearer: admission,
+    }
+}
+
+/// Settle what the consumer's stream carries: a native client may open an
+/// end-to-end TLS session to present its workload certificate (ADR-0154 item
+/// 6), told from a frame's length prefix by its first byte. Under `paired`
+/// nothing else is admitted. `None` refuses the session.
+async fn settle_stream(
+    send: quinn::SendStream,
+    mut recv: quinn::RecvStream,
+    inner: Option<&super::inner_tls::InnerTls>,
+    remote: SocketAddr,
+    refusals: &super::RefusalWarnings,
+) -> Option<(WtStream, Option<crate::auth::AuthenticatedCredential>)> {
+    let mut first = [0_u8; 1];
+    if recv.read_exact(&mut first).await.is_err() {
+        debug!(%remote, "webtransport stream ended before its first byte");
+        return None;
+    }
+    match inner {
+        Some(inner) if first[0] == super::inner_tls::TLS_HANDSHAKE => {
+            let io = tokio::io::join(std::io::Cursor::new(first).chain(recv), send);
+            if let super::inner_tls::InnerAccepted::Terminal { stream, workload } =
+                inner.accept(io).await
+            {
+                return Some((WtStream::Inner(tokio::io::split(stream)), workload));
+            }
+            debug!(%remote, "webtransport end-to-end session refused or done");
+            None
+        }
+        Some(inner) if !inner.admits_plain() => {
+            if let Some(suppressed) = refusals.due() {
+                warn!(%remote, suppressed, "webtransport consumer refused: no workload certificate under paired");
+            } else {
+                debug!(%remote, "webtransport consumer refused: no workload certificate under paired");
+            }
+            None
+        }
+        _ => Some((
+            WtStream::Plain {
+                recv: Box::new(std::io::Cursor::new(first).chain(recv)),
+                send,
+            },
+            None,
+        )),
     }
 }
 
@@ -208,12 +282,34 @@ impl std::fmt::Debug for WtListener {
     }
 }
 
+/// The stream a session settled on: plain, or the end-to-end session
+/// inside it.
+enum WtStream {
+    Plain {
+        recv: Box<dyn tokio::io::AsyncRead + Unpin>,
+        send: quinn::SendStream,
+    },
+    Inner(InnerHalves),
+}
+
+/// The two halves of an end-to-end session.
+type InnerHalves = (
+    tokio::io::ReadHalf<Box<dyn super::inner_tls::InnerIo>>,
+    tokio::io::WriteHalf<Box<dyn super::inner_tls::InnerIo>>,
+);
+
 /// WebTransport read half: the same length-prefixed framing as QUIC.
 pub(crate) struct WtReader {
     /// Keeps the HTTP/3 CONNECT session and control stream alive.
     _session: h3::SessionStreams,
-    recv: quinn::RecvStream,
+    recv: Box<dyn tokio::io::AsyncRead + Unpin>,
     frames: super::FrameAssembler,
+}
+
+/// The write side: congestion-tracked QUIC, or the end-to-end session.
+enum WtSend {
+    Plain(TrackedSend<quinn::SendStream>),
+    Inner(tokio::io::WriteHalf<Box<dyn super::inner_tls::InnerIo>>),
 }
 
 impl FrameReader for WtReader {
@@ -226,27 +322,29 @@ impl FrameReader for WtReader {
 /// [`TrackedSend`] as `QuicWriter`, so a slow browser blocks within about a
 /// round trip instead of queueing megabytes.
 pub(crate) struct WtWriter {
-    send: TrackedSend<quinn::SendStream>,
+    send: WtSend,
     /// Keeps the WebTransport session alive for the stream's lifetime.
     _connection: quinn::Connection,
 }
 
 impl FrameWriter for WtWriter {
     async fn write_frame(&mut self, frame: &[u8]) -> io::Result<()> {
-        self.send.write_all(frame).await
+        match &mut self.send {
+            WtSend::Plain(send) => send.write_all(frame).await,
+            WtSend::Inner(send) => send.write_all(frame).await,
+        }
     }
 
     /// One write for the whole batch, as `QuicWriter::write_frames`.
     async fn write_frames(&mut self, batch: &[u8], _ends: &[usize]) -> io::Result<()> {
-        self.send.write_all(batch).await
+        self.write_frame(batch).await
     }
 
-    #[allow(
-        clippy::unused_async_trait_impl,
-        reason = "FrameWriter requires an async close; Quinn's finish is synchronous"
-    )]
     async fn close(&mut self) -> io::Result<()> {
-        self.send.get_mut().finish().map_err(io::Error::other)
+        match &mut self.send {
+            WtSend::Plain(send) => send.get_mut().finish().map_err(io::Error::other),
+            WtSend::Inner(send) => send.shutdown().await,
+        }
     }
 }
 
@@ -266,7 +364,12 @@ impl Incoming for WtListener {
                 })?;
                 let establish = tokio::time::timeout(
                     ESTABLISH_DEADLINE,
-                    Self::establish(incoming, self.tokens.clone(), Arc::clone(&self.refusals)),
+                    Self::establish(
+                        incoming,
+                        self.tokens.clone(),
+                        self.inner.clone(),
+                        Arc::clone(&self.refusals),
+                    ),
                 );
                 Ok(Box::pin(async move {
                     establish
@@ -431,7 +534,8 @@ mod tests {
         let key = dir.path().join("key.pem");
         ensure_self_signed(&cert, &key).unwrap();
         let listener =
-            WtListener::from_pem("127.0.0.1:0".parse().unwrap(), &cert, &key, tokens).unwrap();
+            WtListener::from_pem("127.0.0.1:0".parse().unwrap(), &cert, &key, tokens, None)
+                .unwrap();
         let url = format!(
             "https://127.0.0.1:{}/session",
             listener.local_addr().unwrap().port()
@@ -448,6 +552,117 @@ mod tests {
             () = client => {}
             _ = listener.accept() => panic!("a refused CONNECT was accepted"),
         }
+    }
+
+    /// A `paired` listener's end-to-end session (ADR-0154 item 6): an
+    /// enrolled certificate presented inside the stream is the connection's
+    /// credential; a plain stream (what a browser sends) is refused.
+    #[tokio::test]
+    async fn under_paired_only_an_inner_session_with_an_enrolled_certificate_is_admitted() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let paths = crate::workload::WorkloadPaths {
+            ca_cert: dir.path().join("workload-ca.pem"),
+            ca_key: dir.path().join("workload-ca.key"),
+            registry: dir.path().join("workload-keys"),
+        };
+        let (cert, key) = (dir.path().join("cert.pem"), dir.path().join("key.pem"));
+        super::super::tls::ensure_server_identity(&cert, &key, &[], &paths).unwrap();
+        let client_key = rcgen::KeyPair::generate().unwrap();
+        let csr = rcgen::CertificateParams::new(Vec::<String>::new())
+            .unwrap()
+            .serialize_request(&client_key)
+            .unwrap();
+        let material =
+            crate::workload::ClientMaterial::from_pem(csr.pem().unwrap().as_bytes()).unwrap();
+        let expires = chrono::Utc::now().timestamp() + 3600;
+        let prepared = crate::workload::prepare_enrollment(&paths, &material, expires).unwrap();
+        let enrolled = prepared
+            .commit(&paths.registry, vec!["*@global".to_owned()], expires)
+            .unwrap();
+        let (client_cert, client_key_path) = (dir.path().join("c.pem"), dir.path().join("c.key"));
+        std::fs::write(&client_cert, prepared.issued_chain_pem().unwrap()).unwrap();
+        std::fs::write(&client_key_path, client_key.serialize_pem()).unwrap();
+        std::fs::set_permissions(&client_key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let ca = crate::workload::authority_certificate(&paths.ca_cert).unwrap();
+        let registry = Arc::new(
+            crate::workload::ReloadingWorkloadRegistry::load(paths.registry.clone()).unwrap(),
+        );
+        let inner = super::super::inner_tls::InnerTls::new(
+            &cert,
+            &key,
+            Some((&ca, registry)),
+            paths.clone(),
+        )
+        .unwrap();
+        let listener = WtListener::from_pem(
+            "127.0.0.1:0".parse().unwrap(),
+            &cert,
+            &key,
+            None,
+            Some(Arc::new(inner)),
+        )
+        .unwrap();
+        let url = format!(
+            "https://127.0.0.1:{}/session",
+            listener.local_addr().unwrap().port()
+        );
+
+        // A browser's plain stream: refused before any frame is read.
+        let plain = async {
+            let conn = client_endpoint().connect(url.clone()).await.unwrap();
+            let (mut send, mut recv) = conn.open_bi().await.unwrap().await.unwrap();
+            send.write_all(&FRAME).await.unwrap();
+            let mut byte = [0_u8; 1];
+            assert!(recv.read_exact(&mut byte).await.is_err(), "refused");
+        };
+        tokio::time::timeout(HANG_GUARD, async {
+            tokio::select! {
+                () = plain => {}
+                _ = listener.accept() => panic!("a plain stream was admitted under paired"),
+            }
+        })
+        .await
+        .unwrap();
+
+        let client = async {
+            let conn = client_endpoint().connect(url).await.unwrap();
+            let (send, recv) = conn.open_bi().await.unwrap().await.unwrap();
+            let config = phux_dial::tls::client_config_with_identity(
+                &phux_dial::CertTrust::Authority {
+                    ca: crate::workload::ca_fingerprint(&paths.ca_cert).unwrap(),
+                    leaf: None,
+                },
+                &phux_dial::TlsClientIdentity::PemFiles {
+                    certificate: client_cert,
+                    private_key: client_key_path,
+                },
+                Some(phux_protocol::policy::QUIC_ALPN),
+            )
+            .unwrap();
+            let mut tls = tokio_rustls::TlsConnector::from(Arc::new(config))
+                .connect(
+                    rustls::pki_types::ServerName::try_from("localhost").unwrap(),
+                    tokio::io::join(recv, send),
+                )
+                .await
+                .unwrap();
+            tls.write_all(&FRAME).await.unwrap();
+            tls.flush().await.unwrap();
+            // Hold the session until the server has read the frame.
+            let mut byte = [0_u8; 1];
+            let _ = tokio::time::timeout(Duration::from_secs(2), tls.read(&mut byte)).await;
+            conn
+        };
+        let server = async {
+            let (mut reader, _writer, peer) = listener.accept().await.unwrap();
+            (reader.read_frame().await.unwrap(), peer)
+        };
+        let (_conn, (frame, peer)) = tokio::join!(client, server);
+        assert_eq!(frame.unwrap().as_ref(), &FRAME);
+        assert_eq!(peer.mcp_host_key.as_deref(), Some(enrolled.id.as_str()));
     }
 
     #[tokio::test]
@@ -501,17 +716,19 @@ mod tests {
         let (_client, (_reader, mut writer)) = tokio::join!(client, server);
 
         proxy.blackhole_downstream();
+        let WtSend::Plain(send) = &mut writer.send else {
+            panic!("a plain session");
+        };
         let chunk = vec![0x5a_u8; 64 * 1024];
         let mut accepted = 0_usize;
         while accepted < 8 * 1024 * 1024 {
-            match tokio::time::timeout(Duration::from_millis(300), writer.send.write(&chunk)).await
-            {
+            match tokio::time::timeout(Duration::from_millis(300), send.write(&chunk)).await {
                 Ok(Ok(written)) => accepted += written,
                 Ok(Err(err)) => panic!("write failed: {err}"),
                 Err(_) => break,
             }
         }
-        let cwnd = writer.send.window().connection().stats().path.cwnd;
+        let cwnd = send.window().connection().stats().path.cwnd;
         let bound = phux_dial::window::send_window_for(cwnd).max(64 * 1024);
         assert!(
             accepted as u64 <= bound,

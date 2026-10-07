@@ -113,6 +113,7 @@ async fn enroll_on(
         addr,
         server_name: "localhost".to_owned(),
         trust,
+        inner: None,
     };
     tokio::time::timeout(Duration::from_secs(10), async {
         tokio::select! {
@@ -252,6 +253,7 @@ async fn a_certificate_less_terminal_connection_is_refused_before_any_stream() {
         token: Some(vec![1; 32]),
         trust: paired.trust(),
         identity: Some(phux_dial::TlsClientIdentity::None),
+        inner: None,
     };
     let outcome = tokio::time::timeout(Duration::from_secs(10), async {
         tokio::select! {

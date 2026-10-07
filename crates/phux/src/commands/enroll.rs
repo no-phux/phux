@@ -75,6 +75,7 @@ impl PairReport {
         phux_client_runtime::target::AuthorityPin {
             ca: self.ca_fingerprint.clone(),
             learner: None,
+            route: None,
         }
     }
 
@@ -1179,13 +1180,26 @@ pub(crate) fn enroll_with_ticket(
         .enable_all()
         .build()
         .map_err(|err| format!("could not build a runtime: {err}"))?;
-    let plan =
-        super::attach::plan_quic_dial(&rt, quic_target, None, pins.leaf.map(str::to_owned), None)
-            .map_err(|refusal| format!("{refusal:?}"))?
-            .with_authority(&phux_client_runtime::target::AuthorityPin {
-                ca: pins.authority.map(str::to_owned),
-                learner: None,
-            });
+    let pin = phux_client_runtime::target::AuthorityPin {
+        ca: pins.authority.map(str::to_owned),
+        learner: None,
+        route: pins.route.map(str::to_owned),
+    };
+    if pin.route.is_some() && pin.ca.is_none() {
+        return Err(
+            "a relay link enrolls only end to end, so it needs the server's `ca`; mint a new one with `phux pair --relay-route ROUTE --enroll`"
+                .to_owned(),
+        );
+    }
+    let plan = super::attach::plan_quic_dial(
+        &rt,
+        quic_target,
+        None,
+        pins.leaf.map(str::to_owned),
+        pins.route.map(str::to_owned),
+    )
+    .map_err(|refusal| format!("{refusal:?}"))?
+    .with_authority(&pin);
     let phux_client::attach::Dial::Quic(dial) = plan.dial else {
         return Err("enrollment needs a quic:// endpoint".to_owned());
     };
@@ -1193,6 +1207,7 @@ pub(crate) fn enroll_with_ticket(
         addr: dial.addr,
         server_name: dial.server_name,
         trust: dial.trust,
+        inner: pin.inner(&TlsClientIdentity::None),
     };
     let chain = rt
         .block_on(async {
@@ -1229,10 +1244,13 @@ pub(crate) fn enroll_with_ticket(
 
 /// The pins a connect link gave for a ticket enrollment.
 pub(crate) struct TicketPins<'a> {
-    /// The leaf fingerprint (`fp`).
+    /// The leaf fingerprint (`fp`): the relay's on a relay link.
     pub(crate) leaf: Option<&'a str>,
-    /// The CA fingerprint (`ca`).
+    /// The CA fingerprint (`ca`): the server's.
     pub(crate) authority: Option<&'a str>,
+    /// The relay route (`sni`), when the link reaches the server through a
+    /// relay (ADR-0154 item 5).
+    pub(crate) route: Option<&'a str>,
 }
 
 /// `<name>.client.<first 16 hex digits of the credential id>`: one pair of
@@ -1376,6 +1394,7 @@ fn try_reuse_previous_credential(
         ca_fingerprint: phux_config::known_authorities::lookup(
             &super::remote::known_authorities(),
             fingerprint,
+            None,
         ),
         overlay_addresses: Vec::new(),
     };

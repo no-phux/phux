@@ -876,11 +876,15 @@ certificate issued by the server's workload CA whose public key is enrolled
 and neither revoked nor expired. Where the listener asks for a pairing token,
 the token is still checked first, as outer admission only. With the variable
 set, a loopback WebSocket listener serves TLS too, because plaintext cannot
-carry the certificate check, and the server refuses to start with a
-WebTransport listener (`--webtransport`, `PHUX_WT_ADDR`) or a relay connector
-(`[[connector]]`): a browser session presents no client certificate, and a
-relay terminates TLS, so neither can carry one to this server. Unset, every
-listener and connector behaves exactly as described above.
+carry the certificate check. A relay connector (`[[connector]]`) and a
+WebTransport listener (`--webtransport`, `PHUX_WT_ADDR`) carry the
+certificate in a TLS session the client runs with this server inside its
+stream, since the relay terminates the outer TLS and a WebTransport session
+has none to give; under `paired` they admit nothing else
+([ADR-0154](adr/0154-devices-enroll-with-a-ticket-over-their-own-alpn.md)).
+A browser cannot run that session yet, so it reaches a `paired` server over
+neither. Unset, every listener and connector behaves exactly as described
+above.
 
 ```sh
 phux workload authority --init            # create the CA; prints only its fingerprint
@@ -1003,9 +1007,11 @@ The server reads it once at start
   server admits holds the owner's full grant. With a remote listener or
   relay connector configured, the server logs one warning at startup,
   because a pairing token then admits a consumer with command-execution
-  authority. This transitional posture stays until workload certificates
-  cover phones, relays, and WebTransport, which neither `local` nor
-  `paired` can serve today. Naming a workload CA or registry location
+  authority. This transitional posture stays until the clients that reach
+  such a server carry workload certificates: every entry point can carry
+  one under `paired`, but a phone needs an app that enrolls, a relayed
+  consumer a relay link that names the server's CA, and a browser a key it
+  cannot hold yet. Naming a workload CA or registry location
   (`PHUX_WORKLOAD_CA`, `PHUX_WORKLOAD_CA_KEY`, `PHUX_WORKLOAD_KEYS`) with no
   mode refuses to start the server: set `mode = "paired"` to enforce that
   authority, or unset the variables. A registry at the default location,
@@ -1027,8 +1033,7 @@ The server reads it once at start
   `@global`. A refused HELLO ends with `DETACHED { AUTHENTICATION_FAILED }`.
   The scopes come from the registry at HELLO, never
   from a pairing token. A paired server refuses to start without usable
-  workload authority material, or beside a WebTransport listener or relay
-  connector.
+  workload authority material.
 
 The `phux.whoami/v1` record carries the grant the asking connection holds,
 and any connection may read its own.
