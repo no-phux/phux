@@ -25,13 +25,12 @@ use phux_protocol::wire::frame::{CloseReason, FrameKind, SpawnResult};
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
-use tokio::time::timeout;
+use tokio::time::timeout_at;
 
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, Spawn, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local,
-    seed_pty, send_frame, spawn_server_with, try_recv_typed, wait_for_server_screen_text,
-    wait_for_socket,
+    seed_pty, send_frame, spawn_server_with, wait_for_server_screen_text, wait_for_socket,
 };
 
 use super::common::{named_key, sh};
@@ -105,6 +104,15 @@ fn printable_key(c: char) -> KeyEvent {
     }
 }
 
+/// Ambient budget for a host TUI's FIRST paint after attach: a cold
+/// `posix_spawn` of btop/nvim/fzf/less that the host may not schedule for
+/// seconds under load (booted simulators, parallel builds; load averages in
+/// the hundreds). Not the subject, so not a latency bound: the subject's
+/// `WIRE_RECV_TIMEOUT` deadlines start after it (phux-5wxp.3, shape 5).
+/// `threads-required` in `.config/nextest.toml` clears nextest's own pool but
+/// cannot clear load from outside it.
+const TUI_FIRST_PAINT_BUDGET: Duration = Duration::from_secs(60);
+
 /// A wire-attached probe around one TUI-in-a-pane: the probed pane's output
 /// feeds a [`Screen`] oracle and is kept raw for kitty forensics.
 struct TuiProbe {
@@ -115,6 +123,8 @@ struct TuiProbe {
     raw: Vec<u8>,
     closed: Option<(CloseReason, Option<i32>)>,
     transport_eof: bool,
+    /// Bytes read off `stream` but not yet cut into a frame.
+    rx: Vec<u8>,
 }
 
 impl TuiProbe {
@@ -134,6 +144,7 @@ impl TuiProbe {
             raw: Vec::new(),
             closed: None,
             transport_eof: false,
+            rx: Vec::new(),
         };
         loop {
             match recv_typed(&mut probe.stream).await.1 {
@@ -189,17 +200,32 @@ impl TuiProbe {
 
     /// Pump one frame, folding the probed pane's output into the oracle.
     /// `None` once the pane closed, the transport died, or `deadline` passed.
+    ///
+    /// Reads are cancel-safe (bytes land in `rx` before any frame is cut),
+    /// so `deadline` alone bounds the wait. testkit's `try_recv_typed` is not
+    /// usable here: its own 15s timeout panics, and racing it against a 15s
+    /// deadline made a silent pane surface as a bare "timed out waiting for
+    /// frame" instead of the caller's assertion (phux-5wxp.3); it would also
+    /// cap the first-paint budget at 15s.
     async fn pump_once(&mut self, deadline: tokio::time::Instant) -> Option<FrameKind> {
         if self.closed.is_some() || self.transport_eof {
             return None;
         }
-        let remaining = deadline.checked_duration_since(tokio::time::Instant::now())?;
-        let Some((_, frame)) = timeout(remaining, try_recv_typed(&mut self.stream))
-            .await
-            .ok()?
-        else {
-            self.transport_eof = true;
-            return None;
+        let frame = loop {
+            if let Some(frame) = self.take_buffered_frame() {
+                break frame;
+            }
+            let ready = timeout_at(deadline, self.stream.readable()).await.ok()?;
+            ready.expect("probe socket readiness");
+            match self.stream.try_read_buf(&mut self.rx) {
+                Ok(0) => {
+                    self.transport_eof = true;
+                    return None;
+                }
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(e) => panic!("probe socket read: {e}"),
+            }
         };
         match &frame {
             FrameKind::ResourceOutput {
@@ -222,16 +248,56 @@ impl TuiProbe {
         Some(frame)
     }
 
-    async fn expect_screen_contains(&mut self, needle: &str, what: &str) {
-        let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
-        while !self.screen.contains(needle) {
-            let progressed = self.pump_once(deadline).await.is_some();
-            assert!(
-                progressed || self.screen.contains(needle),
-                "{what}: {needle:?} never appeared.\n--- screen ---\n{}",
-                self.screen.snapshot_text()
-            );
+    /// Cut one complete length-prefixed frame off the front of `rx`.
+    fn take_buffered_frame(&mut self) -> Option<FrameKind> {
+        let header: [u8; 4] = self.rx.get(..4)?.try_into().ok()?;
+        let end = 4 + u32::from_be_bytes(header) as usize;
+        if self.rx.len() < end {
+            return None;
         }
+        let framed: Vec<u8> = self.rx.drain(..end).collect();
+        let (frame, rest) = FrameKind::decode(&framed).expect("decode frame");
+        assert!(rest.is_empty(), "decoder did not consume entire frame");
+        Some(frame)
+    }
+
+    /// Pump until the oracle shows `needle`; `false` if `budget` ran out (or
+    /// the pane closed) first.
+    async fn screen_shows_within(&mut self, needle: &str, budget: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + budget;
+        while !self.screen.contains(needle) {
+            if self.pump_once(deadline).await.is_none() {
+                return self.screen.contains(needle);
+            }
+        }
+        true
+    }
+
+    /// A step of the subject: the TUI reacts to input within the wire budget.
+    async fn expect_screen_contains(&mut self, needle: &str, what: &str) {
+        let shown = self.screen_shows_within(needle, WIRE_RECV_TIMEOUT).await;
+        assert!(
+            shown,
+            "{what}: {needle:?} never appeared.\n--- screen ---\n{}",
+            self.screen.snapshot_text()
+        );
+    }
+
+    /// The barrier before the subject: the cold-started TUI's first paint,
+    /// under its own [`TUI_FIRST_PAINT_BUDGET`] so the subject's deadline
+    /// starts only once the app is up (shape 5 of phux-5wxp).
+    async fn await_first_paint(&mut self, needle: &str, what: &str) {
+        let shown = self
+            .screen_shows_within(needle, TUI_FIRST_PAINT_BUDGET)
+            .await;
+        assert!(
+            shown,
+            "{what}: the host TUI never painted {needle:?} within \
+             {TUI_FIRST_PAINT_BUDGET:?} of attach. No input had been sent yet, \
+             so this is the host failing to schedule a cold-started process \
+             (ambient load), not a keyboard round-trip failure.\n--- screen ---\n{}",
+            self.screen.snapshot_text()
+        );
     }
 
     /// Poll the server's own grid on a separate unsubscribed connection (the
@@ -302,7 +368,7 @@ fn harness_seed_pane_sees_configured_term() {
     let cmd = sh("printf 'TERM_IS[%s]' \"$TERM\"; sleep 5");
     run_tui_probe(cmd, "ghostty", async |probe: &mut TuiProbe| {
         probe
-            .expect_screen_contains("TERM_IS[ghostty]", "seed TERM")
+            .await_first_paint("TERM_IS[ghostty]", "seed TERM")
             .await;
     });
 }
@@ -314,7 +380,7 @@ fn fzf_filters_and_accepts_under_term_ghostty() {
     }
     let cmd = sh("printf 'alpha\\nbravo\\ncharlie\\n' | fzf");
     run_tui_probe(cmd, "ghostty", async |probe: &mut TuiProbe| {
-        probe.expect_screen_contains("charlie", "fzf list").await;
+        probe.await_first_paint("charlie", "fzf list").await;
         probe.type_str("brav").await;
         probe.expect_screen_contains("> brav", "fzf query").await;
         probe
@@ -337,7 +403,7 @@ fn less_searches_and_quits_under_term_ghostty() {
     let mut cmd = CommandBuilder::new("less");
     cmd.arg(&file);
     run_tui_probe(cmd, "ghostty", async |probe: &mut TuiProbe| {
-        probe.expect_screen_contains("line-1", "less page").await;
+        probe.await_first_paint("line-1", "less page").await;
         probe.type_str("/line-137").await;
         probe
             .expect_screen_contains("/line-137", "less search prompt")
@@ -359,9 +425,7 @@ fn nvim_kip_insert_and_quit_under_term_ghostty() {
     let mut cmd = CommandBuilder::new("nvim");
     cmd.arg("--clean");
     run_tui_probe(cmd, "ghostty", async |probe: &mut TuiProbe| {
-        probe
-            .expect_screen_contains("[No Name]", "nvim startup")
-            .await;
+        probe.await_first_paint("[No Name]", "nvim startup").await;
         probe.send_key(printable_key('i')).await;
         probe.type_str("kip roundtrip ok").await;
         probe
@@ -376,6 +440,7 @@ fn nvim_kip_insert_and_quit_under_term_ghostty() {
 }
 
 /// Hang guard for vim under CPU starvation (phux-7y78), not a latency bound.
+/// vim's startup wait is already its own barrier on the server grid.
 const VIM_HANG_GUARD: Duration = Duration::from_secs(60);
 
 #[test]
@@ -414,7 +479,7 @@ fn btop_quits_on_q_under_term_ghostty() {
     cmd.env("LANG", "en_US.UTF-8");
     cmd.env("LC_ALL", "en_US.UTF-8");
     run_tui_probe(cmd, "ghostty", async |probe: &mut TuiProbe| {
-        probe.expect_screen_contains("cpu", "btop dashboard").await;
+        probe.await_first_paint("cpu", "btop dashboard").await;
         probe.send_key(printable_key('q')).await;
         probe.expect_closed("btop quit").await;
     });
