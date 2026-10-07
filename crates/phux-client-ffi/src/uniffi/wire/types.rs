@@ -543,6 +543,40 @@ pub enum WireEvent {
     },
     /// The server reported an ERROR frame.
     ServerError { message: String },
+    /// The transport dropped; the runtime is reconnecting. Delivered only by
+    /// `take_publication`, never by `take_events`.
+    ConnectionLost { message: Option<String> },
+    /// Connection `connection_epoch` opened: every later event in the batch
+    /// belongs to it, every earlier one to a previous connection, even when
+    /// session and pane ids are reused. Per-connection state (pending
+    /// questions, attention, input fences) resets here, not at an ordinary
+    /// `TopologyChanged`. Delivered only by `take_publication`.
+    ConnectionOpened { connection_epoch: u64 },
+}
+
+/// One coherent sample of the session for a polling UI (`take_publication`):
+/// the ordered events since the last drain plus, from the same instant, the
+/// status, error and topology they lead to. Unlike calling `take_events`,
+/// `status`, `last_error` and `topology` separately, a reconnect cannot land
+/// between the parts.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct WirePublication {
+    /// The runtime's connection incarnation, bumped by every transport it
+    /// opens and never reused: equal across two publications means no
+    /// reconnect happened between them. `0` before the first dial.
+    pub connection_epoch: u64,
+    /// Every event since the last drain, in order, including the
+    /// `ConnectionLost` / `ConnectionOpened` lifecycle `take_events` omits.
+    pub events: Vec<WireEvent>,
+    /// The bounded event queue dropped events since the last drain. The
+    /// latest `ConnectionOpened` and every correlated reply survive; a
+    /// `TopologyChanged` follows, and agent records and asked flags are
+    /// re-read and arrive as later events, so re-derive from those rather
+    /// than resetting what this batch cannot show.
+    pub events_dropped: bool,
+    pub status: WireStatus,
+    pub last_error: Option<String>,
+    pub topology: Option<SessionTopology>,
 }
 
 impl From<agent::AgentBadge> for WireEvent {

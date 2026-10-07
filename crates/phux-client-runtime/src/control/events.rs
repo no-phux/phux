@@ -310,6 +310,46 @@ pub enum Event {
         /// Why, when known.
         message: Option<String>,
     },
+    /// A transport opened: connection `connection_epoch` begins. Every later
+    /// event belongs to it, every earlier one to a previous connection, even
+    /// when the new connection reuses the old session and terminal ids.
+    /// Lossless, so a reconnect is visible after a queue overflow.
+    ConnectionOpened {
+        /// The new [`Observation::connection_epoch`].
+        connection_epoch: u64,
+    },
+}
+
+/// The drained events plus the state they lead to, sampled in one step.
+///
+/// A polling binding renders from the ordered events since the last drain
+/// and, from the same instant, the status, the failure message and the
+/// topology.
+///
+/// Sampling these separately (`take_events`, then `status`, then
+/// `topology`) can straddle a reconnect that completed between the calls;
+/// one observation cannot.
+#[derive(Debug, Clone)]
+pub struct Observation {
+    /// The connection incarnation the sample was taken on: bumped by every
+    /// transport the session opens, and never reused. Two observations with
+    /// the same epoch saw no reconnect between them.
+    pub connection_epoch: u64,
+    /// Every event since the last drain, in order. An
+    /// [`Event::ConnectionOpened`] inside marks where a reconnect happened.
+    pub events: Vec<Event>,
+    /// The queue cap dropped droppable events since the last drain
+    /// ([`crate::control::EVENT_QUEUE_CAP`]). Lossless events and the
+    /// latest `ConnectionOpened` survive; a `TopologyChanged` follows the
+    /// loss, and agent declarations and asked flags are re-read, so levels
+    /// recover through later events rather than this batch.
+    pub events_dropped: bool,
+    /// Where the session is, after the last event.
+    pub status: Status,
+    /// The last failure message, after the last event.
+    pub last_error: Option<String>,
+    /// The session graph, after the last event.
+    pub topology: Option<super::Topology>,
 }
 
 impl Event {
@@ -327,6 +367,7 @@ impl Event {
                 | Self::InputDelivery { .. }
                 | Self::CommandResult { .. }
                 | Self::AgentRecords { .. }
+                | Self::ConnectionOpened { .. }
         )
     }
 }

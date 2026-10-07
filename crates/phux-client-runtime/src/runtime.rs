@@ -23,7 +23,8 @@ use tokio::sync::{Notify, watch};
 pub use crate::connection::{ConnectOptions, Target, Transport};
 use crate::connection::{Shared, Signals, lock, run_session};
 use crate::control::{
-    ControlOptions, ControlPlane, Event, ServerInfo, SpawnRequest, Status, StreamRecovery, Topology,
+    ControlOptions, ControlPlane, Event, Observation, ServerInfo, SpawnRequest, Status,
+    StreamRecovery, Topology,
 };
 #[cfg(feature = "engine")]
 use crate::engine::Scroll;
@@ -419,6 +420,16 @@ impl Client {
     pub fn take_events(&self) -> Vec<Event> {
         self.inner.wake_pending.store(false, Ordering::Release);
         lock(&self.inner.control).take_events()
+    }
+
+    /// Drain every event and sample the status, failure message, topology
+    /// and connection epoch they lead to under one lock, then re-arm the
+    /// wake. Prefer this to `take_events` plus separate reads when a
+    /// reconnect between the calls would matter.
+    #[must_use]
+    pub fn take_observation(&self) -> Observation {
+        self.inner.wake_pending.store(false, Ordering::Release);
+        lock(&self.inner.control).take_observation()
     }
 
     /// Install the wake callback; one listener, a new one replaces the old.
