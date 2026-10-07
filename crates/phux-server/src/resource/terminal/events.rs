@@ -53,6 +53,12 @@ impl TerminalActor {
         self.agent_state_sink = Some(sink);
     }
 
+    /// Whether this actor drives a PTY child, the precondition for an agent
+    /// detector (a no-PTY pane has no foreground process to identify).
+    pub(crate) const fn has_pty(&self) -> bool {
+        self.pty.is_some()
+    }
+
     /// Wire the live-`AgentSession`-child probe (ADR-0103 §5); it depends on
     /// `ServerState`, which the pane never holds.
     pub(crate) fn set_live_session_probe(

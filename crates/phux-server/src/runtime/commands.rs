@@ -171,14 +171,7 @@ fn launch_pane_actor(
         ..
     } = bundle;
     // Sinks go in before `actor.run()` consumes the actor.
-    let (event_sink, event_source) = crate::resource::event_sink::event_sink(EVENT_SINK_CAPACITY);
-    actor.set_event_sink(event_sink);
-    let agent_rx = has_pty.then(|| {
-        let (agent_tx, agent_rx) = tokio::sync::mpsc::channel(AGENT_STATE_SINK_CAPACITY);
-        actor.set_agent_state_sink(agent_tx);
-        actor.set_live_session_probe(live_session_probe(state, terminal));
-        agent_rx
-    });
+    let wiring = wire_pane_actor(state, terminal, &mut actor);
     let wire_terminal_id = state.with_mut(|s| {
         let _ = s.spawn_resource_actor(terminal, handle, terminal_token, actor.run());
         if has_pty {
@@ -194,20 +187,67 @@ fn launch_pane_actor(
         journal_pane_spawned(s, &wire, attribution);
         wire
     });
-    if let Some(agent_rx) = agent_rx {
-        spawn_agent_state_drain(state.clone(), wire_terminal_id.clone(), agent_rx);
-    }
+    let events = wiring.start(state, &wire_terminal_id);
     spawn_terminal_exit_watcher(
         state.clone(),
         terminal,
         exit_notify,
         root_token.clone(),
-        Some(PaneEvents {
-            wire: wire_terminal_id.clone(),
-            source: event_source,
-        }),
+        Some(events),
     );
     Ok(wire_terminal_id)
+}
+
+/// The runtime ends of the sinks [`wire_pane_actor`] installed on a pane's
+/// actor, held until the pane's wire id is known.
+pub(crate) struct PaneWiring {
+    /// The runtime end of the pane's agent-event sink (ADR-0123).
+    events: crate::resource::event_sink::EventSource,
+    /// The runtime end of the detector's sink (ADR-0046); `None` for a
+    /// no-PTY pane, which never gets a detector.
+    agent_state: Option<tokio::sync::mpsc::Receiver<crate::agent_detect::AgentDetectEvent>>,
+}
+
+/// Install every runtime sink and probe a pane's actor needs: its event sink
+/// and, with a PTY, the agent detector's sink and live-session probe (the
+/// actor arms its detector at run start only when the sink is present). The
+/// one arming path for a fresh spawn and an ADR-0032 rebuild, so a resumed
+/// pane cannot come back without detection. Call before `actor.run()`.
+pub(crate) fn wire_pane_actor(
+    state: &SharedState,
+    terminal: phux_core::ids::ResourceId,
+    actor: &mut TerminalActor,
+) -> PaneWiring {
+    let (event_sink, events) = crate::resource::event_sink::event_sink(EVENT_SINK_CAPACITY);
+    actor.set_event_sink(event_sink);
+    let agent_state = actor.has_pty().then(|| {
+        let (agent_tx, agent_rx) = tokio::sync::mpsc::channel(AGENT_STATE_SINK_CAPACITY);
+        actor.set_agent_state_sink(agent_tx);
+        actor.set_live_session_probe(live_session_probe(state, terminal));
+        agent_rx
+    });
+    PaneWiring {
+        events,
+        agent_state,
+    }
+}
+
+impl PaneWiring {
+    /// Start the detector's metadata drain for the pane at `wire`, and hand
+    /// back its events for the exit watcher, which is their drain.
+    pub(crate) fn start(
+        self,
+        state: &SharedState,
+        wire: &phux_protocol::ids::ResourceId,
+    ) -> PaneEvents {
+        if let Some(agent_rx) = self.agent_state {
+            spawn_agent_state_drain(state.clone(), wire.clone(), agent_rx);
+        }
+        PaneEvents {
+            wire: wire.clone(),
+            source: self.events,
+        }
+    }
 }
 
 /// Seed `(session, window, pane)` named `name`; the pane runs `cmd` in a PTY,

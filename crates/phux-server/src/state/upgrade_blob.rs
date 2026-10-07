@@ -487,10 +487,22 @@ type PaneExitWatchers = Vec<(
 )>;
 
 /// What the pane pass produces: the wire-id -> core-id map the re-link passes
-/// resolve against, and each rebuilt pane's exit receiver.
-struct RebuiltPanes {
+/// resolve against, each rebuilt pane's exit receiver, and what the caller's
+/// wiring returned for each pane.
+struct RebuiltPanes<W> {
     core_ids: HashMap<u32, ResourceId>,
     exit_watchers: PaneExitWatchers,
+    wired: Vec<(ResourceId, W)>,
+}
+
+/// A committed rebuild: every resource's exit receiver, and each pane's
+/// wiring (see [`ServerState::rebuild_from_blob`]).
+#[derive(Debug)]
+pub(crate) struct RebuiltTree<W> {
+    /// Each rebuilt resource's (pane or agent session) exit receiver.
+    pub(crate) exit_watchers: PaneExitWatchers,
+    /// Each rebuilt pane's core id and what `wire_pane` returned for it.
+    pub(crate) wired_panes: Vec<(ResourceId, W)>,
 }
 
 impl ServerState {
@@ -498,7 +510,10 @@ impl ServerState {
     /// (ADR-0032): recreate entities under their wire ids, restore
     /// allocators and ledgers, and spawn actors that re-adopt PTYs (or
     /// replay snapshots), then rebind carried agent sessions to their panes.
-    /// Returns each rebuilt resource's exit receiver.
+    /// `wire_pane` runs on each pane's actor before it starts, so the runtime
+    /// installs the same sinks a fresh spawn gets (the agent detector arms
+    /// only when its sink is present). Returns each rebuilt resource's exit
+    /// receiver and each pane's wiring.
     ///
     /// Transactional: built on a fresh state and committed only on full
     /// success. The pass order resolves each pass's references. Runs inside
@@ -512,10 +527,11 @@ impl ServerState {
         clippy::type_complexity,
         reason = "the runtime immediately consumes each rebuilt pane id and its one-shot exit receiver"
     )]
-    pub fn rebuild_from_blob(
+    pub(crate) fn rebuild_from_blob<W>(
         &mut self,
         blob: &StateBlob,
-    ) -> Result<PaneExitWatchers, RebuildError> {
+        wire_pane: impl FnMut(ResourceId, &mut TerminalActor) -> W,
+    ) -> Result<RebuiltTree<W>, RebuildError> {
         validate_upgrade_blob(blob)?;
         let mut fresh = Self::new();
         fresh.config.scrollback = self.config.scrollback;
@@ -526,13 +542,16 @@ impl ServerState {
         }
         let session_core = fresh.rebuild_sessions(blob);
         let window_core = fresh.rebuild_windows(blob, &session_core)?;
-        let mut panes = fresh.rebuild_panes(blob, &window_core)?;
+        let mut panes = fresh.rebuild_panes(blob, &window_core, wire_pane)?;
         fresh.relink_window_contents(blob, &window_core, &panes.core_ids)?;
         fresh.relink_session_windows(blob, &session_core, &window_core)?;
         fresh.rebuild_agent_sessions(blob, &mut panes);
         fresh.restore_counters(blob);
         self.commit_rebuilt_tree(fresh);
-        Ok(panes.exit_watchers)
+        Ok(RebuiltTree {
+            exit_watchers: panes.exit_watchers,
+            wired_panes: panes.wired,
+        })
     }
 
     /// Recreate every carried `AgentSession` under its recorded wire id,
@@ -541,7 +560,7 @@ impl ServerState {
     /// The parent's `REPORT_AGENT_STATE` is re-bound to the stream
     /// (ADR-0103 §6). A session whose parent pane is not in the blob is
     /// dropped; losing one session must not cost the whole tree.
-    fn rebuild_agent_sessions(&mut self, blob: &StateBlob, panes: &mut RebuiltPanes) {
+    fn rebuild_agent_sessions<W>(&mut self, blob: &StateBlob, panes: &mut RebuiltPanes<W>) {
         let log_bytes = self.config.agent_log_bytes;
         for carried in &blob.agent_sessions {
             let Some(&parent) = panes.core_ids.get(&carried.parent_wire_id) else {
@@ -660,15 +679,17 @@ impl ServerState {
 
     /// Recreate every pane under its recorded wire id, in the window the blob
     /// names, and spawn the actor that re-adopts its PTY.
-    fn rebuild_panes(
+    fn rebuild_panes<W>(
         &mut self,
         blob: &StateBlob,
         window_core: &HashMap<u32, WindowId>,
-    ) -> Result<RebuiltPanes, RebuildError> {
+        mut wire_pane: impl FnMut(ResourceId, &mut TerminalActor) -> W,
+    ) -> Result<RebuiltPanes<W>, RebuildError> {
         let scrollback = self.config.scrollback;
         let mut panes = RebuiltPanes {
             core_ids: HashMap::new(),
             exit_watchers: Vec::with_capacity(blob.panes.len()),
+            wired: Vec::with_capacity(blob.panes.len()),
         };
         for p in &blob.panes {
             let window = *window_core
@@ -689,11 +710,12 @@ impl ServerState {
             self.idspace
                 .bind_terminal(core, WireResourceId::local(p.wire_id));
             let crate::terminal_actor::TerminalActorBundle {
-                actor,
+                mut actor,
                 handle,
                 token,
                 exit_notify,
             } = bundle;
+            panes.wired.push((core, wire_pane(core, &mut actor)));
             self.spawn_resource_actor(core, handle, token, actor.run());
             // ADR-0124: what the old image knew about this pane's retention.
             if let Some(secs) = p.retain_secs {
@@ -1097,11 +1119,27 @@ mod tests {
 
             // Rebuild into a brand-new state, then re-emit a blob from it.
             let mut fresh = ServerState::new();
-            let exit_watchers = fresh.rebuild_from_blob(&blob).expect("rebuild");
+            // phux-1x9s.6: every pane's actor passes through the runtime's
+            // wiring before it runs, as a fresh spawn's does.
+            let rebuilt = fresh
+                .rebuild_from_blob(&blob, |pane, actor| (pane, actor.has_pty()))
+                .expect("rebuild");
             assert_eq!(
-                exit_watchers.len(),
+                rebuilt.exit_watchers.len(),
                 blob.panes.len(),
                 "every rebuilt pane must return an exit receiver for the runtime watcher"
+            );
+            assert_eq!(
+                rebuilt.wired_panes.len(),
+                blob.panes.len(),
+                "every rebuilt pane must be wired before its actor runs"
+            );
+            assert!(
+                rebuilt
+                    .wired_panes
+                    .iter()
+                    .all(|(pane, (wired, _))| pane == wired),
+                "the wiring sees the pane it is handed back for"
             );
             let blob2 = fresh.build_upgrade_blob(7).await;
 
@@ -1150,14 +1188,18 @@ mod tests {
                     token,
                     "a cold start mints a new token"
                 );
-                upgraded.rebuild_from_blob(&blob).expect("rebuild");
+                upgraded
+                    .rebuild_from_blob(&blob, |_, _| ())
+                    .expect("rebuild");
                 assert_eq!(upgraded.idspace.instance(), token, "an upgrade keeps it");
 
                 let mut legacy = state.build_upgrade_blob(7).await;
                 legacy.counters.server_instance = None;
                 let mut from_legacy = ServerState::new();
                 let fresh = from_legacy.idspace.instance();
-                from_legacy.rebuild_from_blob(&legacy).expect("rebuild");
+                from_legacy
+                    .rebuild_from_blob(&legacy, |_, _| ())
+                    .expect("rebuild");
                 assert_eq!(
                     from_legacy.idspace.instance(),
                     fresh,
@@ -1194,10 +1236,13 @@ mod tests {
 
         let blob = state.build_upgrade_blob(7).await;
         let mut once = ServerState::new();
-        once.rebuild_from_blob(&blob).expect("first rebuild");
+        once.rebuild_from_blob(&blob, |_, _| ())
+            .expect("first rebuild");
         let blob = once.build_upgrade_blob(7).await;
         let mut twice = ServerState::new();
-        twice.rebuild_from_blob(&blob).expect("second rebuild");
+        twice
+            .rebuild_from_blob(&blob, |_, _| ())
+            .expect("second rebuild");
         twice
     }
 
@@ -1389,7 +1434,9 @@ mod tests {
                     vec![no_pty_pane(3, 2)],
                 );
                 validate_upgrade_blob(&handoff).expect("complete topology");
-                state.rebuild_from_blob(&handoff).expect("rebuild");
+                state
+                    .rebuild_from_blob(&handoff, |_, _| ())
+                    .expect("rebuild");
                 assert_eq!(session_names(&state), vec!["main".to_owned()]);
             })
             .await;
@@ -1410,7 +1457,9 @@ mod tests {
                     vec![window(2, 1, vec![3])],
                     vec![no_pty_pane(3, 2)],
                 );
-                state.rebuild_from_blob(&handoff).expect("rebuild");
+                state
+                    .rebuild_from_blob(&handoff, |_, _| ())
+                    .expect("rebuild");
                 assert_eq!(session_names(&state), vec!["main".to_owned()]);
                 assert!(
                     !state.has_served_client(),
@@ -1430,7 +1479,7 @@ mod tests {
                 let mut state = ServerState::new();
                 state.registry_mut().new_session("already-here".to_owned());
                 let handoff = blob(vec![session(1, vec![99])], Vec::new(), Vec::new());
-                match state.rebuild_from_blob(&handoff) {
+                match state.rebuild_from_blob(&handoff, |_, _| ()) {
                     Err(RebuildError::DanglingRef { kind, id }) => {
                         assert_eq!(kind, "window");
                         assert_eq!(id, 99);
@@ -1504,7 +1553,10 @@ mod tests {
                     vec![no_pty_pane(3, 2)],
                 );
                 handoff.agent_sessions = vec![agent_session(4, 3), agent_session(5, 99)];
-                let watchers = state.rebuild_from_blob(&handoff).expect("rebuild");
+                let watchers = state
+                    .rebuild_from_blob(&handoff, |_, _| ())
+                    .expect("rebuild")
+                    .exit_watchers;
                 assert_eq!(watchers.len(), 2, "the pane and its one session");
                 let kept = state.terminal_from_wire(&WireResourceId::local(4));
                 assert!(kept.is_some(), "the bound session resumes under its id");
@@ -1576,7 +1628,7 @@ mod tests {
                     vec![no_pty_pane(3, 2), bad],
                 );
                 validate_upgrade_blob(&handoff).expect("topology is complete");
-                match state.rebuild_from_blob(&handoff) {
+                match state.rebuild_from_blob(&handoff, |_, _| ()) {
                     Err(RebuildError::Actor(_)) => {}
                     other => panic!("expected actor rebuild failure, got {other:?}"),
                 }
