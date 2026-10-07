@@ -1009,9 +1009,11 @@ in [Remote access](./remote-access.md). An overlay IP is non-loopback, so
 TLS and a bearer token engage automatically. Until you pair, the token
 store is empty and the listener rejects every connection.
 
-The auto-bound listener binds the **detected overlay address**, not
-`0.0.0.0`, so it is invisible off the overlay. `PHUX_NO_AUTO_LISTEN=1`
-suppresses it; `--listen` / `--quic` (or `PHUX_WS_ADDR` /
+The auto-bound listener binds the **selected concrete address**, not
+`0.0.0.0`: it does not listen on every interface. Routing and firewall rules
+still determine who can reach that address, including when an explicit
+public IP is selected. `PHUX_NO_AUTO_LISTEN=1` suppresses auto-listen;
+`--listen` / `--quic` (or `PHUX_WS_ADDR` /
 `PHUX_QUIC_ADDR`) still override the address. Only the default profile
 auto-binds — a port is global to the host, so a `dev`-profile server
 would otherwise race the installed one. Detection runs off-thread after
