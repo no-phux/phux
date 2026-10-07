@@ -485,7 +485,9 @@ pub(crate) async fn attach_agent_session(
         .await;
         pump_done.cancel();
     });
-    state.with_mut(|s| s.track_terminal_output_pump(client_id, core, handle.abort_handle(), done));
+    state.with_mut(|s| {
+        s.track_terminal_output_pump(client_id, core, handle.abort_handle(), done, None);
+    });
     CommandResult::Ok
 }
 

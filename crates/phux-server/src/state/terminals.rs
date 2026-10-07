@@ -146,9 +146,35 @@ impl ServerState {
         terminal: ResourceId,
         abort: tokio::task::AbortHandle,
         done: CancellationToken,
+        drain: Option<CancellationToken>,
     ) {
         self.resources
-            .track_output_pump(client, terminal, abort, done);
+            .track_output_pump(client, terminal, abort, done, drain);
+    }
+
+    /// Signal natural-close drain and capture each client's completion fences.
+    pub(crate) fn begin_terminal_output_drain(
+        &mut self,
+        terminal: ResourceId,
+        wire: phux_protocol::ids::ResourceId,
+    ) -> Vec<(mpsc::Sender<Outbound>, Vec<CancellationToken>)> {
+        self.resources.remember_draining_terminal(wire, terminal);
+        self.resources
+            .begin_output_drain(terminal)
+            .into_iter()
+            .filter_map(|(client, done)| self.client_mailbox(client).map(|tx| (tx, done)))
+            .collect()
+    }
+
+    pub(crate) fn draining_terminal_from_wire(
+        &self,
+        wire: &phux_protocol::ids::ResourceId,
+    ) -> Option<ResourceId> {
+        self.resources.draining_terminal(wire)
+    }
+
+    pub(crate) fn finish_terminal_output_drain(&mut self, terminal: ResourceId) {
+        self.resources.finish_output_drain(terminal);
     }
 
     /// Abort this subscription's tasks; await the returned tokens off the

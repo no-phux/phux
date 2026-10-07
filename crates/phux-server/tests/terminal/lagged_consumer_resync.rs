@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
 use phux_protocol::wire::frame::FrameKind;
 use phux_server_testkit::screen::Screen;
+use phux_server_testkit::tracing_capture::TracingCapture;
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, run_local, send_frame,
     spawn_server_with_seed_cmd, wait_for_server_screen_text, wait_for_socket,
@@ -123,6 +124,8 @@ fn apply(frame: &FrameKind, oracle: &mut SequenceOracle, screen: &mut Screen) ->
 fn lagged_consumer_converges_on_a_replacement_generation() {
     phux_server::resource::set_output_broadcast_capacity_for_test(TEST_OUTPUT_BROADCAST);
     run_local(async {
+        // Include actor diagnostics when convergence fails.
+        let _cap = TracingCapture::install("lagged_consumer_resync");
         let tmp = TempDir::new().unwrap();
         let socket = tmp.path().join("phux.sock");
         let gate = tmp.path().join("dump.gate");
@@ -157,14 +160,22 @@ fn lagged_consumer_converges_on_a_replacement_generation() {
         wait_for_server_screen_text(&mut probe, &pane, TAIL_MARKER, HANG_GUARD).await;
 
         let started = Instant::now();
+        let mut received = 0usize;
         loop {
             assert!(
                 started.elapsed() < HANG_GUARD,
-                "consumer never converged after the broadcast gap",
+                "consumer never converged after the broadcast gap \
+                 ({received} frames in {:?})",
+                started.elapsed(),
             );
             let (_, frame) = recv_typed(&mut stream).await;
+            received += 1;
             if let Applied::Fatal(what) = apply(&frame, &mut oracle, &mut screen) {
-                panic!("server ended the session instead of resyncing: {what}");
+                panic!(
+                    "server ended the session instead of resyncing after \
+                     {received} frames in {:?}: {what}",
+                    started.elapsed()
+                );
             }
             if screen.contains(TAIL_MARKER) {
                 break;

@@ -425,8 +425,9 @@ impl TerminalActor {
             return;
         }
         let _ = self.flush_final_gap_resync(resync);
-        // `Exit` so full-mailbox pumps park on this snapshot;
-        // `RESOURCE_CLOSED` is queued after the yield, behind it.
+        // Offer the exit grid before notifying the watcher. Natural close
+        // also captures a fresh final generation and awaits each pump;
+        // a scheduling yield alone cannot order a backpressured publisher.
         self.broadcast_resync(ResyncReason::Exit, ResyncAudience::Everyone);
         tokio::task::yield_now().await;
         if let Some(exit) = self.exit.as_ref() {

@@ -52,3 +52,8 @@ graphify-out/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Local literature and reference material.
+*.pdf
+quarantine/
+context/

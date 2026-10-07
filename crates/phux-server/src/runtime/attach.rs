@@ -408,7 +408,7 @@ pub(crate) fn synthesized_bootstrap_frames(
 /// How a resync bootstrap met the consumer mailbox.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SnapshotQueue {
-    /// Every bootstrap frame is on the mailbox, with nothing else between them.
+    /// Every bootstrap frame is queued in generation order.
     Queued,
     /// The mailbox is full and this is not the final grid: the pump stays
     /// fenced and keeps draining, so a later exit snapshot still reaches it.
@@ -444,14 +444,11 @@ pub(crate) async fn send_synthesized_bootstrap(
     send_frames_contiguously(out_tx, &frames).await
 }
 
-/// Queue a resync bootstrap.
-///
-/// A fenced pump defers a non-final snapshot rather than park on a full
-/// mailbox: parking would leave the later exit snapshot unread when
-/// `RESOURCE_CLOSED` takes the next slot, losing the final grid. The exit
-/// snapshot (and an unfenced resize) always waits, reserving every frame at
-/// once when it fits so close cannot split `BEGIN` from its chunk; one larger
-/// than the mailbox goes frame by frame.
+/// Queue a replacement atomically when it fits the mailbox. A fitting gap
+/// replacement gets a bounded wait before deferring without publishing a prefix.
+/// Final generations always wait; natural close waits for the pump to finish.
+/// Batches larger than the mailbox stream frame by frame and cannot be deferred
+/// once publication begins.
 pub(crate) async fn queue_resync_bootstrap(
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     reason: crate::terminal_actor::ResyncReason,
@@ -467,6 +464,11 @@ pub(crate) async fn queue_resync_bootstrap(
     if !must_deliver {
         return match try_queue_frames(out_tx, &frames) {
             Ok(()) => SnapshotQueue::Queued,
+            Err(QueueFramesError::Full)
+                if matches!(reason, crate::terminal_actor::ResyncReason::OutboundGap) =>
+            {
+                wait_for_queue_room(out_tx, &frames).await
+            }
             Err(QueueFramesError::Full) => SnapshotQueue::Deferred,
             Err(QueueFramesError::Closed) => SnapshotQueue::Closed,
         };
@@ -484,6 +486,29 @@ pub(crate) async fn queue_resync_bootstrap(
 enum QueueFramesError {
     Full,
     Closed,
+}
+
+/// A fitting gap batch waits for capacity for at most this interval. Timeout
+/// releases all reservations without publishing any replacement frames.
+const GAP_RESYNC_QUEUE_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Queue a gap resync that found the mailbox full, giving the consumer one
+/// bounded window to drain room for it. Returns [`SnapshotQueue::Deferred`]
+/// if the window closes first, so the caller keeps its existing retry path.
+async fn wait_for_queue_room(
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    frames: &[FrameKind],
+) -> SnapshotQueue {
+    match tokio::time::timeout(
+        GAP_RESYNC_QUEUE_WAIT,
+        send_frames_contiguously(out_tx, frames),
+    )
+    .await
+    {
+        Ok(Ok(())) => SnapshotQueue::Queued,
+        Ok(Err(())) => SnapshotQueue::Closed,
+        Err(_elapsed) => SnapshotQueue::Deferred,
+    }
 }
 
 /// Reserve every frame, then send them. A later `send` cannot take a slot
@@ -657,6 +682,10 @@ pub(crate) struct OutputPumpContext {
     pub(crate) stale_skip: bool,
     /// Ends the pump between events (a ready event is still handled first).
     pub(crate) cancel: Option<CancellationToken>,
+    /// Request a fresh final checkpoint on natural close.
+    pub(crate) drain: Option<CancellationToken>,
+    /// Actor capture remains available until final publication completes.
+    pub(crate) snapshot: Option<tokio::sync::mpsc::Sender<SnapshotRequest>>,
     /// Kept at the last forwarded sequence, so a replacement generation can
     /// tombstone this one at the right point.
     pub(crate) last_seq: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
@@ -904,6 +933,18 @@ impl OutputPumpContext {
             generation.retire();
             return Ok(false);
         };
+        self.publish_captured_native_generation(generation, output_rx, bootstrap_id, reply)
+            .await
+    }
+
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    async fn publish_captured_native_generation(
+        &self,
+        generation: &mut PumpGeneration,
+        output_rx: &mut tokio::sync::broadcast::Receiver<PaneOutput>,
+        bootstrap_id: BootstrapId,
+        reply: crate::terminal_actor::NativeBootstrapReply,
+    ) -> Result<bool, PumpFault> {
         let (cut, cursor) = publish_native_bootstrap(&self.out_tx, reply)
             .await
             .map_err(|()| PumpFault::GenerationLost)?;
@@ -939,6 +980,96 @@ impl OutputPumpContext {
         // Chunks queued behind the replay waited on it, not on the consumer.
         generation.restart_staleness_clock();
         Ok(true)
+    }
+
+    /// Capture after EOF/retention expiry, independently of earlier Exit
+    /// broadcasts. Only capture has a deadline: cancelling a publication after
+    /// BEGIN could leave the client with a partial generation.
+    async fn publish_final_generation(
+        &self,
+        generation: &mut PumpGeneration,
+        output_rx: &mut tokio::sync::broadcast::Receiver<PaneOutput>,
+    ) -> Result<(), PumpFault> {
+        const CAPTURE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        if publishes_native_checkpoints(self.profile) {
+            let bootstrap_id = next_bootstrap_id(generation.bootstrap_id());
+            let capture = request_native_checkpoint(&self.terminal, |reply| {
+                crate::terminal_actor::NativeBootstrapRequest {
+                    owner: self.client_id.0,
+                    terminal_id: self.wire_terminal_id.clone(),
+                    stream_id: self.stream_id,
+                    bootstrap_id,
+                    limits: self.limits,
+                    max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
+                    max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
+                    reply,
+                }
+            });
+            let reply = tokio::time::timeout(CAPTURE_WAIT, capture)
+                .await
+                .map_err(|_| PumpFault::PublicationNotActivated)?
+                .map_err(|failure| match failure {
+                    NativeRequestFailure::Unsent | NativeRequestFailure::Dropped => {
+                        PumpFault::PaneGone
+                    }
+                    NativeRequestFailure::Refused(_) => PumpFault::PublicationNotActivated,
+                })?;
+            if generation.is_active() {
+                self.out_tx
+                    .send(Outbound::Frame(self.tombstone_frame(
+                        generation,
+                        crate::terminal_actor::ResyncReason::Exit,
+                    )))
+                    .await
+                    .map_err(|_| PumpFault::TombstoneNotQueued)?;
+            }
+            self.publish_captured_native_generation(generation, output_rx, bootstrap_id, reply)
+                .await?;
+            return Ok(());
+        }
+        let _ = output_rx;
+        let snapshot = self
+            .snapshot
+            .as_ref()
+            .ok_or(PumpFault::PublicationNotActivated)?;
+        let capture = async {
+            let (reply, receive) = oneshot::channel();
+            snapshot
+                .send(SnapshotRequest {
+                    scrollback: None,
+                    max_bytes: bootstrap_source_ceiling(
+                        MAX_STAGED_BOOTSTRAP_BYTES,
+                        self.client_caps,
+                    ),
+                    max_frames: MAX_STAGED_BOOTSTRAP_FRAMES - 1,
+                    chunk_bytes: self.limits.max_chunk_bytes() as usize,
+                    reply,
+                })
+                .await
+                .map_err(|_| PumpFault::PaneGone)?;
+            receive
+                .await
+                .map_err(|_| PumpFault::PaneGone)?
+                .map_err(|_| PumpFault::PublicationNotActivated)
+        };
+        let (snapshot, base_seq) = tokio::time::timeout(CAPTURE_WAIT, capture)
+            .await
+            .map_err(|_| PumpFault::PublicationNotActivated)??;
+        let resync = PaneResync {
+            cols: snapshot.cols,
+            rows: snapshot.rows,
+            bytes: snapshot.bytes.into(),
+            base_seq,
+            reason: crate::terminal_actor::ResyncReason::Exit,
+        };
+        match self
+            .republish_synthesized_generation(generation, &resync)
+            .await
+        {
+            ControlFlow::Continue(()) => Ok(()),
+            ControlFlow::Break(fault) => Err(fault.unwrap_or(PumpFault::PublicationNotActivated)),
+        }
     }
 
     /// `BOOTSTRAP_TOMBSTONE` retiring the generation this pump publishes.
@@ -991,7 +1122,7 @@ impl OutputPumpContext {
                 self.publish_last_seq(generation);
                 ControlFlow::Continue(())
             }
-            // Still fenced; the exit snapshot is later on this broadcast.
+            // Still fenced; retry or natural-close drain can replace this generation.
             SnapshotQueue::Deferred => ControlFlow::Continue(()),
             SnapshotQueue::Closed => ControlFlow::Break(Some(PumpFault::OutboundClosed)),
         }
@@ -1164,21 +1295,23 @@ impl std::fmt::Display for GapCause {
     }
 }
 
-/// The next broadcast event, or `None` once [`OutputPumpContext::cancel`]
-/// fires. A ready event wins over cancellation: a reaped pane's fenced
-/// consumer is still owed its final screen.
+/// A final drain wins over ready broadcast traffic and expired gap retries.
 async fn next_wait(
     ctx: &OutputPumpContext,
     generation: &PumpGeneration,
     output_rx: &mut tokio::sync::broadcast::Receiver<PaneOutput>,
 ) -> Option<pump::PumpWait> {
-    let Some(cancel) = &ctx.cancel else {
-        return Some(pump::next_event(generation, output_rx).await);
-    };
+    async fn cancelled(token: Option<&CancellationToken>) {
+        match token {
+            Some(token) => token.cancelled().await,
+            None => std::future::pending().await,
+        }
+    }
     tokio::select! {
         biased;
+        () = cancelled(ctx.drain.as_ref()) => Some(pump::PumpWait::FinalDrain),
         wait = pump::next_event(generation, output_rx) => Some(wait),
-        () = cancel.cancelled() => None,
+        () = cancelled(ctx.cancel.as_ref()) => None,
     }
 }
 
@@ -1217,6 +1350,12 @@ pub(crate) async fn run_started_output_pump(
     generation.restart_staleness_clock();
     loop {
         let received = match next_wait(ctx, &generation, &mut output_rx).await? {
+            pump::PumpWait::FinalDrain => {
+                return ctx
+                    .publish_final_generation(&mut generation, &mut output_rx)
+                    .await
+                    .err();
+            }
             pump::PumpWait::Event(received) => received,
             pump::PumpWait::RetryResync => {
                 if let ControlFlow::Break(fault) = ctx.retry_gap_resync(&mut generation).await {
@@ -2358,6 +2497,7 @@ fn spawn_terminal_output_pump(
         ctx.client_id,
         core_terminal_id,
         Some(output_pumps),
+        ctx.drain.clone(),
         async move {
             let Some(fault) = run_output_pump(&ctx, gate_rx, output_rx).await else {
                 return;
@@ -2501,6 +2641,8 @@ impl SpawnPublication<'_> {
                 lag_label: "SPAWN_RESOURCE output pump",
                 stale_skip: true,
                 cancel: None,
+                drain: Some(CancellationToken::new()),
+                snapshot: Some(self.terminal.snapshot.clone()),
                 last_seq: None,
                 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
                 terminal: self.terminal.clone(),
@@ -3008,6 +3150,8 @@ impl PaneCaptureContext<'_> {
             lag_label: "ResourceOutput pump",
             stale_skip: true,
             cancel: None,
+            drain: Some(CancellationToken::new()),
+            snapshot: Some(terminal.snapshot.clone()),
             last_seq: None,
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             terminal: terminal.clone(),
@@ -3031,6 +3175,7 @@ impl PaneCaptureContext<'_> {
             client_id,
             terminal_id,
             Some(&mut staging.pumps),
+            ctx.drain.clone(),
             async move {
                 let Some(fault) = run_output_pump(&ctx, gate_rx, output_rx).await else {
                     return;
@@ -3729,6 +3874,111 @@ mod tests {
         .expect("bootstrap frames")
     }
 
+    async fn poll_pending<F: std::future::Future>(mut future: std::pin::Pin<&mut F>) {
+        std::future::poll_fn(|cx| {
+            assert!(
+                future.as_mut().poll(cx).is_pending(),
+                "future completed before its barrier"
+            );
+            std::task::Poll::Ready(())
+        })
+        .await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn gap_resync_waits_for_the_entire_replacement_batch() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        for nonce in 0..8 {
+            tx.try_send(Outbound::Frame(FrameKind::Pong { nonce }))
+                .unwrap();
+        }
+        let frames = final_screen_frames(&phux_protocol::ids::ResourceId::local(1));
+        let count = frames.len();
+        let mut queued = Box::pin(queue_resync_bootstrap(
+            &tx,
+            crate::terminal_actor::ResyncReason::OutboundGap,
+            frames.clone(),
+            true,
+        ));
+        poll_pending(queued.as_mut()).await;
+        for _ in 0..count - 1 {
+            rx.recv().await.unwrap();
+        }
+        poll_pending(queued.as_mut()).await;
+        rx.recv().await.unwrap();
+        assert_eq!(queued.await, SnapshotQueue::Queued);
+        for _ in 0..8 - count {
+            assert!(matches!(
+                rx.recv().await,
+                Some(Outbound::Frame(FrameKind::Pong { .. }))
+            ));
+        }
+        for expected in frames {
+            let Some(Outbound::Frame(actual)) = rx.recv().await else {
+                panic!("missing replacement frame")
+            };
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_gap_timeout_publishes_no_partial_generation() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        for nonce in 0..8 {
+            tx.try_send(Outbound::Frame(FrameKind::Pong { nonce }))
+                .unwrap();
+        }
+        let frames = final_screen_frames(&phux_protocol::ids::ResourceId::local(1));
+        let mut queued = Box::pin(queue_resync_bootstrap(
+            &tx,
+            crate::terminal_actor::ResyncReason::OutboundGap,
+            frames,
+            true,
+        ));
+        poll_pending(queued.as_mut()).await;
+        rx.recv().await.unwrap();
+        tokio::time::advance(GAP_RESYNC_QUEUE_WAIT).await;
+        assert_eq!(queued.await, SnapshotQueue::Deferred);
+        for nonce in 1..8 {
+            let Some(Outbound::Frame(FrameKind::Pong { nonce: actual })) = rx.recv().await else {
+                panic!("timeout leaked a replacement frame");
+            };
+            assert_eq!(actual, nonce);
+        }
+        assert_eq!(tx.capacity(), 8, "timeout kept reserved permits");
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelling_a_gap_wait_returns_its_partial_reservation() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        for nonce in 0..8 {
+            tx.try_send(Outbound::Frame(FrameKind::Pong { nonce }))
+                .unwrap();
+        }
+        let frames = final_screen_frames(&phux_protocol::ids::ResourceId::local(1));
+        let mut queued = Box::pin(queue_resync_bootstrap(
+            &tx,
+            crate::terminal_actor::ResyncReason::OutboundGap,
+            frames,
+            true,
+        ));
+        poll_pending(queued.as_mut()).await;
+        rx.recv().await.unwrap();
+        poll_pending(queued.as_mut()).await;
+        drop(queued);
+        assert_eq!(tx.capacity(), 1, "cancelled reservation kept a permit");
+        tx.try_send(Outbound::Frame(FrameKind::Pong { nonce: 8 }))
+            .unwrap();
+        for nonce in 1..=8 {
+            let Some(Outbound::Frame(FrameKind::Pong { nonce: actual })) = rx.recv().await else {
+                panic!("cancellation leaked a replacement frame");
+            };
+            assert_eq!(actual, nonce);
+        }
+        assert!(rx.try_recv().is_err());
+    }
+
     /// phux-fpgl.28: a lagged mailbox is full. A gap resync must not park on
     /// it, and the exit snapshot's chunk — the final screen — must be queued
     /// ahead of `RESOURCE_CLOSED`, not split off after `BOOTSTRAP_BEGIN`.
@@ -4202,6 +4452,8 @@ mod tests {
             lag_label: "two-pump test pump",
             stale_skip: true,
             cancel: None,
+            drain: None,
+            snapshot: None,
             last_seq: None,
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             terminal: native_attach_handle()
@@ -4949,7 +5201,28 @@ mod tests {
         resize: ResizeSender,
     ) -> TwoPumpConsumer {
         let (out_tx, out_rx) = tokio::sync::mpsc::channel(32);
-        let ctx = OutputPumpContext {
+        let ctx = native_pump_context(out_tx, terminal, resize);
+        let (gate_tx, gate_rx) = oneshot::channel();
+        gate_tx
+            .send(OutputPumpStart {
+                published_cut: 0,
+                replay: Vec::new(),
+                live: None,
+            })
+            .unwrap_or_else(|_| panic!("gate receiver alive"));
+        let live = output.subscribe();
+        let task =
+            tokio::task::spawn_local(async move { run_output_pump(&ctx, gate_rx, live).await });
+        TwoPumpConsumer { out_rx, task }
+    }
+
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    fn native_pump_context(
+        out_tx: tokio::sync::mpsc::Sender<Outbound>,
+        terminal: crate::terminal_actor::TerminalHandle,
+        resize: ResizeSender,
+    ) -> OutputPumpContext {
+        OutputPumpContext {
             out_tx,
             resize,
             wire_terminal_id: phux_protocol::ids::ResourceId::local(1),
@@ -4964,21 +5237,95 @@ mod tests {
             lag_label: "native test pump",
             stale_skip: false,
             cancel: None,
+            drain: None,
+            snapshot: None,
             last_seq: None,
             terminal,
-        };
-        let (gate_tx, gate_rx) = oneshot::channel();
-        gate_tx
-            .send(OutputPumpStart {
-                published_cut: 0,
-                replay: Vec::new(),
-                live: None,
+        }
+    }
+
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    #[tokio::test(start_paused = true)]
+    async fn final_drain_wins_over_expired_gap_and_ready_broadcasts() {
+        let (handle, _, _, _) = native_attach_handle();
+        let terminal = handle.terminal().unwrap().clone();
+        let (out_tx, _) = tokio::sync::mpsc::channel(8);
+        let mut ctx = native_pump_context(out_tx, terminal.clone(), terminal.resize.clone());
+        let drain = CancellationToken::new();
+        ctx.drain = Some(drain.clone());
+        let mut generation = PumpGeneration::opened_at(0, two_pump_initial_generation());
+        generation.fence_for_gap();
+        generation.note_resync_requested();
+        tokio::time::advance(std::time::Duration::from_secs(30)).await;
+        let mut output = handle.output.subscribe();
+        handle
+            .output
+            .send(PaneOutput::Live {
+                seq: 1,
+                bytes: bytes::Bytes::from_static(b"old"),
+                at: std::time::Instant::now(),
             })
-            .unwrap_or_else(|_| panic!("gate receiver alive"));
-        let live = output.subscribe();
-        let task =
-            tokio::task::spawn_local(async move { run_output_pump(&ctx, gate_rx, live).await });
-        TwoPumpConsumer { out_rx, task }
+            .unwrap();
+        drain.cancel();
+        assert!(matches!(
+            next_wait(&ctx, &generation, &mut output).await,
+            Some(pump::PumpWait::FinalDrain)
+        ));
+    }
+
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    #[tokio::test(start_paused = true)]
+    async fn invalidated_final_native_capture_is_a_failure_without_partial_publication() {
+        let (handle, _, mut captures, _) = native_attach_handle();
+        let terminal = handle.terminal().unwrap().clone();
+        let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(8);
+        let ctx = native_pump_context(out_tx, terminal.clone(), terminal.resize.clone());
+        let mut output = handle.output.subscribe();
+        let mut generation = PumpGeneration::opened_at(0, two_pump_initial_generation());
+        let final_capture = ctx.publish_final_generation(&mut generation, &mut output);
+        tokio::pin!(final_capture);
+        let request = tokio::select! {
+            biased;
+            result = &mut final_capture => panic!("capture finished without an actor reply: {result:?}"),
+            request = captures.recv() => request.unwrap(),
+        };
+        request
+            .reply
+            .send(Err(crate::native_state::NativeStateError::Resize))
+            .unwrap();
+        assert!(matches!(
+            final_capture.await,
+            Err(PumpFault::PublicationNotActivated)
+        ));
+        assert!(
+            out_rx.try_recv().is_err(),
+            "failed capture published a partial generation"
+        );
+    }
+
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    #[tokio::test(start_paused = true)]
+    async fn unanswered_final_native_capture_has_a_deadline() {
+        let (handle, _, mut captures, _) = native_attach_handle();
+        let terminal = handle.terminal().unwrap().clone();
+        let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(8);
+        let ctx = native_pump_context(out_tx, terminal.clone(), terminal.resize.clone());
+        let mut output = handle.output.subscribe();
+        let mut generation = PumpGeneration::opened_at(0, two_pump_initial_generation());
+        let capture = ctx.publish_final_generation(&mut generation, &mut output);
+        tokio::pin!(capture);
+        let held_reply = tokio::select! {
+            biased;
+            result = &mut capture => panic!("capture finished without an actor reply: {result:?}"),
+            request = captures.recv() => request.unwrap(),
+        };
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
+        assert!(matches!(
+            capture.await,
+            Err(PumpFault::PublicationNotActivated)
+        ));
+        assert!(held_reply.reply.is_closed());
+        assert!(out_rx.try_recv().is_err());
     }
 
     /// The actor's reply to `capture`: an empty checkpoint at sequence 0.
