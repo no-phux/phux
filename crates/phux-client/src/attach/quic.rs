@@ -13,18 +13,3 @@ use super::outcome::AttachError;
 pub fn parse_token_hex(token: &str) -> Result<Vec<u8>, AttachError> {
     phux_dial::quic::parse_token_hex(token).map_err(AttachError::from)
 }
-
-/// Connect to the QUIC listener; see [`phux_dial::quic::dial`].
-pub(super) async fn dial(
-    d: &QuicDial,
-) -> Result<
-    (
-        quinn::Endpoint,
-        quinn::Connection,
-        quinn::SendStream,
-        quinn::RecvStream,
-    ),
-    AttachError,
-> {
-    phux_dial::quic::dial(d).await.map_err(AttachError::from)
-}

@@ -1346,6 +1346,19 @@ impl DialPlan {
         {
             *trust = pinned;
         }
+        // Through a relay with the server's CA pinned: the workload identity
+        // goes to the server, end to end, and the relay sees none
+        // (ADR-0154 item 5).
+        if let Dial::Quic(quic) = &mut self.dial {
+            let identity = quic
+                .identity
+                .clone()
+                .unwrap_or(phux_dial::TlsClientIdentity::None);
+            if let Some(inner) = pin.inner(&identity) {
+                quic.inner = Some(inner);
+                quic.identity = Some(phux_dial::TlsClientIdentity::None);
+            }
+        }
         self
     }
 }
@@ -1448,6 +1461,7 @@ pub(crate) fn plan_quic_dial(
             token,
             trust,
             identity: None,
+            inner: None,
         }),
         loopback,
     })
@@ -1825,6 +1839,7 @@ mod tests {
             token: None,
             trust: CertTrust::SkipVerify,
             identity: None,
+            inner: None,
         })
     }
 
@@ -2285,6 +2300,7 @@ mod tests {
             token: None,
             trust: CertTrust::SkipVerify,
             identity: None,
+            inner: None,
         }));
 
         assert_eq!(ws, quic, "the two remote lanes share one policy");

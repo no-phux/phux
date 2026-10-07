@@ -456,8 +456,10 @@ minting. `--name` labels the server in the device's list.
 A relay link from `phux pair --relay-route ROUTE`
 ([Path D](#path-d-via-a-reference-relay)) has a different shape:
 `quic` is the relay, `sni` is the route the dial offers as its TLS server
-name, `fp` pins the relay, and there is no `url`. The relay has no
-WebSocket leg. An app or CLI that predates `sni` refuses the link because
+name, `fp` pins the relay, `ca` pins the server (verified end to end inside
+the relayed stream, so the relay forwards only ciphertext; ADR-0154), and
+there is no `url`. The relay has no WebSocket leg; `--enroll` works through
+it too. An app or CLI that predates `sni` refuses the link because
 `url` is missing, instead of dialing the relay unrouted
 ([ADR-0149](adr/0149-relay-routes-ride-the-tls-server-name-everywhere.md)).
 

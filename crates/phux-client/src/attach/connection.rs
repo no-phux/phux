@@ -23,7 +23,6 @@ use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
 use super::outcome::AttachError;
-use super::quic;
 pub use super::quic::{CertTrust, QuicDial};
 use super::ws;
 pub use super::ws::WsDial;
@@ -403,7 +402,7 @@ struct UdsWriter {
 /// endpoint and connection so the I/O driver outlives the stream.
 #[derive(Debug)]
 struct QuicReader {
-    recv: quinn::RecvStream,
+    recv: QuicRecv,
     buf: BytesMut,
     /// Landing pad for [`Self::poll_read_once`], zero-initialized once.
     scratch: Box<[u8]>,
@@ -412,13 +411,92 @@ struct QuicReader {
     bootstrap_limits: BootstrapLimits,
 }
 
+/// A QUIC connection's read side: its stream, or the end-to-end TLS session
+/// a relayed dial runs inside it (ADR-0154 item 5).
+enum QuicRecv {
+    Plain(quinn::RecvStream),
+    Inner(tokio::io::ReadHalf<phux_dial::quic::InnerStream>),
+}
+
+/// The write side matching [`QuicRecv`].
+enum QuicSend {
+    Plain(quinn::SendStream),
+    Inner(tokio::io::WriteHalf<phux_dial::quic::InnerStream>),
+}
+
+impl std::fmt::Debug for QuicRecv {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Plain(_) => "QuicRecv::Plain",
+            Self::Inner(_) => "QuicRecv::Inner",
+        })
+    }
+}
+
+impl std::fmt::Debug for QuicSend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Plain(_) => "QuicSend::Plain",
+            Self::Inner(_) => "QuicSend::Inner",
+        })
+    }
+}
+
+impl tokio::io::AsyncRead for QuicRecv {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        match self.get_mut() {
+            Self::Plain(recv) => std::pin::Pin::new(recv).poll_read(cx, buf),
+            Self::Inner(recv) => std::pin::Pin::new(recv).poll_read(cx, buf),
+        }
+    }
+}
+
+impl tokio::io::AsyncWrite for QuicSend {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<io::Result<usize>> {
+        match self.get_mut() {
+            Self::Plain(send) => {
+                tokio::io::AsyncWrite::poll_write(std::pin::Pin::new(send), cx, buf)
+            }
+            Self::Inner(send) => std::pin::Pin::new(send).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        match self.get_mut() {
+            Self::Plain(send) => tokio::io::AsyncWrite::poll_flush(std::pin::Pin::new(send), cx),
+            Self::Inner(send) => std::pin::Pin::new(send).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        match self.get_mut() {
+            Self::Plain(send) => tokio::io::AsyncWrite::poll_shutdown(std::pin::Pin::new(send), cx),
+            Self::Inner(send) => std::pin::Pin::new(send).poll_shutdown(cx),
+        }
+    }
+}
+
 /// Room offered per non-blocking QUIC top-up: a full coalesced server write.
 const QUIC_TRY_READ_BYTES: usize = 64 * 1024;
 
 /// QUIC write half; its [`Drop`] issues a best-effort `CONNECTION_CLOSE`.
 #[derive(Debug)]
 struct QuicWriter {
-    send: quinn::SendStream,
+    send: QuicSend,
     out: BytesMut,
     endpoint: quinn::Endpoint,
     connection: quinn::Connection,
@@ -577,7 +655,22 @@ impl Connection {
     }
 
     async fn connect_quic_transport(dial: &QuicDial) -> Result<Self, AttachError> {
-        let (endpoint, connection, send, recv) = quic::dial(dial).await?;
+        let (endpoint, connection, stream) = phux_dial::quic::dial_stream(dial)
+            .await
+            .map_err(AttachError::from)?;
+        let (recv, send, multistream) = match stream {
+            phux_dial::quic::DialedStream::Plain { send, recv } => (
+                QuicRecv::Plain(recv),
+                QuicSend::Plain(send),
+                Some(Multistream::new(connection.clone())),
+            ),
+            // Per-Terminal streams would bypass the end-to-end session; a
+            // relayed connection keeps one stream.
+            phux_dial::quic::DialedStream::Inner(stream) => {
+                let (recv, send) = tokio::io::split(*stream);
+                (QuicRecv::Inner(recv), QuicSend::Inner(send), None)
+            }
+        };
         Ok(Self::new(
             FrameReader::Quic(QuicReader {
                 recv,
@@ -591,10 +684,10 @@ impl Connection {
                 send,
                 out: BytesMut::with_capacity(4096),
                 endpoint,
-                connection: connection.clone(),
+                connection,
             }),
             None,
-            Some(Multistream::new(connection)),
+            multistream,
         ))
     }
 
@@ -1590,10 +1683,9 @@ impl QuicWriter {
     async fn send(&mut self, frame: &FrameKind) -> Result<(), AttachError> {
         self.out.clear();
         frame.encode(&mut self.out);
-        self.send
-            .write_all(&self.out)
+        tokio::io::AsyncWriteExt::write_all(&mut self.send, &self.out)
             .await
-            .map_err(|err| AttachError::Io(io::Error::other(err)))?;
+            .map_err(AttachError::Io)?;
         Ok(())
     }
 }

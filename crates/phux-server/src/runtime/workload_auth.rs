@@ -55,62 +55,9 @@ impl WorkloadAuth {
     }
 }
 
-/// Refuse to start workload mode beside a remote entry point that cannot
-/// require a workload client certificate: the WebTransport listener (a
-/// browser session presents no client certificate) and a relay connector
-/// (the relay terminates TLS, so a consumer's certificate never reaches this
-/// server). Fail closed with the remedy named rather than leave either door
-/// on bearer-only admission (ADR-0116).
-pub(super) const fn refuse_uncovered_surfaces(
-    workload_mode: bool,
-    relay_connectors: bool,
-    webtransport: bool,
-) -> Result<(), super::ServerError> {
-    if !workload_mode {
-        return Ok(());
-    }
-    if webtransport {
-        return Err(super::ServerError::WorkloadModeUncovered {
-            surface: "the WebTransport listener",
-            remedy: "remove `--webtransport` and PHUX_WT_ADDR, or leave workload mode (unset PHUX_WORKLOAD_MTLS and [policy] mode = \"paired\")",
-        });
-    }
-    if relay_connectors {
-        return Err(super::ServerError::WorkloadModeUncovered {
-            surface: "a relay connector (`[[connector]]` in config.toml)",
-            remedy: "remove the `[[connector]]` entries, or leave workload mode (unset PHUX_WORKLOAD_MTLS and [policy] mode = \"paired\")",
-        });
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn workload_mode_refuses_entry_points_that_cannot_carry_a_certificate() {
-        assert!(
-            refuse_uncovered_surfaces(false, true, true).is_ok(),
-            "without workload mode nothing is refused"
-        );
-        assert!(refuse_uncovered_surfaces(true, false, false).is_ok());
-        for (connectors, webtransport, surface) in [
-            (false, true, "WebTransport"),
-            (true, false, "[[connector]]"),
-            (true, true, "WebTransport"),
-        ] {
-            let message = refuse_uncovered_surfaces(true, connectors, webtransport)
-                .unwrap_err()
-                .to_string();
-            assert!(
-                message.contains("PHUX_WORKLOAD_MTLS")
-                    && message.contains(surface)
-                    && message.contains("unset PHUX_WORKLOAD_MTLS"),
-                "the refusal names the setting, the entry point, and the remedy: {message}"
-            );
-        }
-    }
 
     #[test]
     fn partial_ca_pair_is_an_error_not_absent_authentication() {

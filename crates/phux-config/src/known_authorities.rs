@@ -4,7 +4,10 @@
 //!
 //! One line per server: the leaf pin a `[[remote]]` entry carries (bare
 //! uppercase hex, as [`normalize_leaf`] spells it), a space, and the
-//! `sha256:` fingerprint of the CA that issued it. Keyed by the leaf pin, not
+//! `sha256:` fingerprint of the CA that issued it. A server reached through a
+//! relay is keyed `<relay leaf>@<route>` (ADR-0154): the leaf pinned is the
+//! relay's, shared by every route it serves, and the CA is the server's,
+//! which the end-to-end session inside the relayed stream presents. Keyed by the leaf pin, not
 //! the entry's name, so a rename keeps its pin and a re-pair, which writes a
 //! new leaf pin, starts from a new line. A line that does not parse is
 //! ignored (the dial then pins the leaf alone, as before); `#` starts a
@@ -56,13 +59,25 @@ pub fn canonical_authority(pin: &str) -> Option<String> {
         .then(|| format!("{PREFIX}{hex}"))
 }
 
-/// The authority pinned for the server whose leaf `leaf` pins, if any.
+/// The key a server's line carries: its leaf pin, and for one reached
+/// through a relay, `@` and the route.
 #[must_use]
-pub fn lookup(store: &Path, leaf: &str) -> Option<String> {
-    let key = normalize_leaf(leaf);
-    if key.is_empty() {
+pub fn key(leaf: &str, route: Option<&str>) -> String {
+    let leaf = normalize_leaf(leaf);
+    match route.map(str::trim).filter(|route| !route.is_empty()) {
+        Some(route) => format!("{leaf}@{route}"),
+        None => leaf,
+    }
+}
+
+/// The authority pinned for the server whose leaf `leaf` pins (through
+/// `route` when a relay serves it), if any.
+#[must_use]
+pub fn lookup(store: &Path, leaf: &str, route: Option<&str>) -> Option<String> {
+    if normalize_leaf(leaf).is_empty() {
         return None;
     }
+    let key = key(leaf, route);
     let text = std::fs::read_to_string(store).ok()?;
     entries(&text)
         .find(|(line_leaf, _)| *line_leaf == key)
@@ -76,11 +91,19 @@ pub fn lookup(store: &Path, leaf: &str) -> Option<String> {
 ///
 /// A pin that is not a fingerprint, or a failure to write the store. The
 /// store is written owner-only, atomically.
-pub fn record(store: &Path, leaf: &str, authority: &str) -> Result<bool, String> {
-    let key = normalize_leaf(leaf);
-    if key.len() != 64 {
+pub fn record(
+    store: &Path,
+    leaf: &str,
+    route: Option<&str>,
+    authority: &str,
+) -> Result<bool, String> {
+    if normalize_leaf(leaf).len() != 64 {
         return Err("a known authority is keyed by a 64-digit leaf pin".to_owned());
     }
+    if route.is_some_and(|route| route.contains(char::is_whitespace)) {
+        return Err("a relay route has no whitespace".to_owned());
+    }
+    let key = key(leaf, route);
     let authority = canonical_authority(authority)
         .ok_or_else(|| format!("{authority:?} is not a sha256: certificate fingerprint"))?;
     let existing = match std::fs::read_to_string(store) {
@@ -129,8 +152,12 @@ fn parse_line(line: &str) -> Option<(String, String)> {
     if fields.next().is_some() {
         return None;
     }
-    let leaf = normalize_leaf(leaf);
-    (leaf.len() == 64).then_some((leaf, authority))
+    let (leaf, route) = match leaf.split_once('@') {
+        Some((leaf, route)) if !route.is_empty() => (leaf, Some(route)),
+        Some(_) => return None,
+        None => (leaf, None),
+    };
+    (normalize_leaf(leaf).len() == 64).then(|| (key(leaf, route), authority))
 }
 
 /// Temp file (owner-only, created new), sync, rename.
@@ -177,14 +204,14 @@ mod tests {
     fn a_recorded_pin_is_found_by_any_spelling_of_its_leaf() {
         let dir = tempfile::tempdir().unwrap();
         let store = path_beside(&dir.path().join("config.toml"));
-        assert_eq!(lookup(&store, LEAF), None, "nothing pinned yet");
-        assert!(record(&store, LEAF, &authority('a')).unwrap());
+        assert_eq!(lookup(&store, LEAF, None), None, "nothing pinned yet");
+        assert!(record(&store, LEAF, None, &authority('a')).unwrap());
         assert!(
-            !record(&store, LEAF, &authority('a')).unwrap(),
+            !record(&store, LEAF, None, &authority('a')).unwrap(),
             "idempotent"
         );
         let bare = LEAF.replace(':', "").to_lowercase();
-        assert_eq!(lookup(&store, &bare), Some(authority('a')));
+        assert_eq!(lookup(&store, &bare, None), Some(authority('a')));
         let mode = std::fs::metadata(&store).unwrap().permissions();
         assert_eq!(
             std::os::unix::fs::PermissionsExt::mode(&mode) & 0o777,
@@ -197,21 +224,38 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = path_beside(&dir.path().join("config.toml"));
         let other = "1".repeat(64);
-        record(&store, &other, &authority('b')).unwrap();
-        record(&store, LEAF, &authority('a')).unwrap();
-        record(&store, LEAF, &authority('c')).unwrap();
-        assert_eq!(lookup(&store, LEAF), Some(authority('c')));
-        assert_eq!(lookup(&store, &other), Some(authority('b')));
+        record(&store, &other, None, &authority('b')).unwrap();
+        record(&store, LEAF, None, &authority('a')).unwrap();
+        record(&store, LEAF, None, &authority('c')).unwrap();
+        assert_eq!(lookup(&store, LEAF, None), Some(authority('c')));
+        assert_eq!(lookup(&store, &other, None), Some(authority('b')));
         let text = std::fs::read_to_string(&store).unwrap();
         assert_eq!(text.matches(&normalize_leaf(LEAF)).count(), 1, "{text}");
+    }
+
+    /// Routes behind one relay share its leaf pin and keep their own CA.
+    #[test]
+    fn routes_behind_one_relay_are_pinned_apart() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = path_beside(&dir.path().join("config.toml"));
+        record(&store, LEAF, Some("mini"), &authority('a')).unwrap();
+        record(&store, LEAF, Some("studio"), &authority('b')).unwrap();
+        assert_eq!(lookup(&store, LEAF, Some("mini")), Some(authority('a')));
+        assert_eq!(lookup(&store, LEAF, Some("studio")), Some(authority('b')));
+        assert_eq!(
+            lookup(&store, LEAF, None),
+            None,
+            "the relay itself has no CA"
+        );
+        assert!(record(&store, LEAF, Some("a b"), &authority('c')).is_err());
     }
 
     #[test]
     fn malformed_lines_and_pins_are_refused_or_ignored() {
         let dir = tempfile::tempdir().unwrap();
         let store = path_beside(&dir.path().join("config.toml"));
-        assert!(record(&store, "AB:CD", &authority('a')).is_err());
-        assert!(record(&store, LEAF, "sha256:abc").is_err());
+        assert!(record(&store, "AB:CD", None, &authority('a')).is_err());
+        assert!(record(&store, LEAF, None, "sha256:abc").is_err());
         std::fs::write(
             &store,
             format!(
@@ -222,7 +266,7 @@ mod tests {
             ),
         )
         .unwrap();
-        assert_eq!(lookup(&store, LEAF), None);
+        assert_eq!(lookup(&store, LEAF, None), None);
         assert_eq!(
             canonical_authority(&format!("SHA256:{}", "A".repeat(64))),
             None,

@@ -359,15 +359,15 @@ fn register_from_code(target: &RemoteTarget, code: &str) -> Result<RemoteEntry, 
 
     enroll::write_token(&token_file, &link.token).map_err(|err| format!("phux: --code: {err}"))?;
     remote::add_or_update(&new).map_err(|err| format!("phux: --code: {err}"))?;
-    // A relay link pins the relay's leaf; its `ca` would name nothing the
-    // relay presents, so only a direct link's is kept.
-    if link.tls_server_name.is_none() {
-        remote::pin_authority(
-            &name,
-            link.cert_fingerprint.as_deref(),
-            link.ca_fingerprint.as_deref(),
-        );
-    }
+    // A relay link pins the relay's leaf, and its `ca` is the server's,
+    // which the end-to-end session inside the relayed stream verifies
+    // (ADR-0154): keyed by the route beside the relay's leaf.
+    remote::pin_authority(
+        &name,
+        link.cert_fingerprint.as_deref(),
+        link.tls_server_name.as_deref(),
+        link.ca_fingerprint.as_deref(),
+    );
 
     eprintln!(
         "phux: paired {name} -> {} (from the connect code)",
@@ -397,6 +397,7 @@ fn enroll_from_code(name: &str, link: &pair::ConnectLink) -> Option<enroll::Clie
     let pins = enroll::TicketPins {
         leaf: link.cert_fingerprint.as_deref(),
         authority: link.ca_fingerprint.as_deref(),
+        route: link.tls_server_name.as_deref(),
     };
     let workload = enroll::WorkloadEnrollment {
         dir: &remotes_dir,

@@ -1430,7 +1430,10 @@ fn dispatch(
             migrate_legacy,
             replace_token,
             relay_route.map_or(commands::pair::Door::Listener { enroll }, |route| {
-                commands::pair::Door::Relay(commands::pair::RelayRoute { route, relay })
+                commands::pair::Door::Relay {
+                    route: commands::pair::RelayRoute { route, relay },
+                    enroll,
+                }
             }),
         ),
         Some(Command::Workload { action, json }) => commands::workload::run(action, json),

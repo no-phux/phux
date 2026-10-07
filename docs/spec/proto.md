@@ -135,7 +135,10 @@ frames. One relay endpoint serves both legs; the negotiated ALPN alone
   at the TLS layer (the certificate resolver declines; no phux-shaped
   error). The relay blind-splices the consumer's stream to the tunnel,
   including the consumer's own §10 bearer preamble — end-to-end
-  authentication stays between consumer and server.
+  authentication stays between consumer and server. A consumer that pins
+  the server's CA runs TLS 1.3 with the server inside that stream and
+  sends its preamble inside it ([workload-auth.md](./workload-auth.md) §3);
+  the relay forwards the ciphertext unchanged.
 
 A relay refuses with these QUIC application close codes:
 

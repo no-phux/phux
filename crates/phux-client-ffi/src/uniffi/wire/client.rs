@@ -129,7 +129,11 @@ impl RemoteClient {
                 *slot.lock().unwrap() = Some(authority.to_owned());
             })
         });
-        phux_client_runtime::target::AuthorityPin { ca, learner }
+        phux_client_runtime::target::AuthorityPin {
+            ca,
+            learner,
+            route: None,
+        }
     }
 }
 

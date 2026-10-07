@@ -894,34 +894,25 @@ fn no_key_nonce_or_signature_bytes_in_argv_env_stdout_stderr_or_trace() {
     }
 }
 
-/// Workload mode refuses to start beside a WebTransport listener, which
-/// cannot carry a client certificate, and says how to fix it.
+/// Workload mode starts beside a WebTransport listener (ADR-0154 item 6):
+/// the listener admits only an end-to-end session presenting an enrolled
+/// certificate, which a browser cannot open yet.
 #[test]
 #[ignore = "runs a real server start; runs in the e2e lane"]
-fn workload_mode_refuses_to_start_with_webtransport() {
+fn workload_mode_starts_with_webtransport_and_reports_it_bound() {
     let dir = TempDir::new().expect("tempdir");
     prepare_dirs(dir.path());
     init_authority(dir.path());
-    // A server that wrongly starts exits on its own after the idle window,
-    // successfully, which fails the assertion instead of hanging the lane.
-    let out = server_command(
+    let _server = start_server(
         dir.path(),
-        &[
-            "--webtransport",
-            listeners::LOOPBACK_ANY_PORT,
-            "--exit-after-idle",
-            "5",
-        ],
+        &["--webtransport", listeners::LOOPBACK_ANY_PORT],
         &[("PHUX_WORKLOAD_MTLS", "1")],
-    )
-    .output()
-    .expect("run phux server");
-    let stderr = text(&out.stderr);
-    assert!(!out.status.success(), "workload mode must refuse: {stderr}");
-    assert!(
-        stderr.contains("PHUX_WORKLOAD_MTLS") && stderr.contains("WebTransport"),
-        "the refusal names the setting and the entry point: {stderr}"
     );
+    let bound = listeners::bound_listener_addr(
+        &dir.path().join("s.sock"),
+        listeners::RemoteListenerTransport::Wt,
+    );
+    assert_ne!(bound.port(), 0, "the WebTransport listener is bound");
 }
 
 /// A named workload CA or registry location with no `[policy] mode` is a
@@ -1337,6 +1328,7 @@ impl RawSession {
                 certificate: entry_path(entry, "client-cert"),
                 private_key: entry_path(entry, "client-key"),
             }),
+            inner: None,
         };
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()

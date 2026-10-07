@@ -63,6 +63,7 @@ impl RemoteEntry {
         phux_client_runtime::target::AuthorityPin::from_store(
             &config_loader::config_path(),
             self.cert_fingerprint.as_deref(),
+            self.tls_server_name.as_deref(),
         )
     }
 
@@ -222,11 +223,18 @@ pub(crate) fn known_authorities() -> PathBuf {
 /// Pin `authority` beside the leaf pin a pairing just registered for `name`.
 /// A failure is a warning: the entry still pins the leaf, and the first
 /// connection learns the authority instead.
-pub(crate) fn pin_authority(name: &str, leaf: Option<&str>, authority: Option<&str>) {
+/// For a relayed server, `route` keys the pin beside the relay's leaf.
+pub(crate) fn pin_authority(
+    name: &str,
+    leaf: Option<&str>,
+    route: Option<&str>,
+    authority: Option<&str>,
+) {
     let (Some(leaf), Some(authority)) = (leaf, authority) else {
         return;
     };
-    if let Err(err) = phux_config::known_authorities::record(&known_authorities(), leaf, authority)
+    if let Err(err) =
+        phux_config::known_authorities::record(&known_authorities(), leaf, route, authority)
     {
         eprintln!(
             "phux: warning: {name}: could not pin its certificate authority ({err}); \

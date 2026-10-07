@@ -146,16 +146,13 @@ fn build_relay_connect_link(
     relay: &str,
     route: &str,
     name: Option<&str>,
-    fingerprint: Option<&str>,
+    pins: ServerPins<'_>,
     token: &str,
 ) -> String {
     let mut link = format!("{CONNECT_URI_PREFIX}?quic=quic://{relay}&sni={route}");
-    // The relay terminates TLS, so its own leaf is the only pin (ADR-0149).
-    let pins = ServerPins {
-        leaf: fingerprint,
-        authority: None,
-        enrollment: None,
-    };
+    // `fp` pins the relay, which terminates the outer TLS (ADR-0149); `ca`
+    // pins the server, which the end-to-end session inside verifies
+    // (ADR-0154).
     push_link_credentials(&mut link, name, pins, token);
     link
 }
@@ -736,15 +733,16 @@ pub(crate) fn run_pair(
         return ExitCode::FAILURE;
     }
     let socket = socket.unwrap_or_else(phux_server::runtime::default_socket_path);
+    let output = LinkOutput {
+        name: name.as_deref(),
+        qr,
+        json,
+    };
     let enroll = match door {
         Door::Listener { enroll } => enroll,
-        Door::Relay(relay) => {
-            let output = LinkOutput {
-                name: name.as_deref(),
-                qr,
-                json,
-            };
-            return mint_relay_link(&relay, &socket, &tokens, output, replace_token.as_deref());
+        Door::Relay { route, enroll } => {
+            let replace = replace_token.as_deref();
+            return mint_relay_link(&route, &socket, &tokens, output, replace, enroll);
         }
     };
     let live = match query_live_listeners(&socket) {
@@ -755,17 +753,15 @@ pub(crate) fn run_pair(
         }
     };
     let addresses = resolve_pair_addresses(host.as_deref(), live);
-    if let Some(refusal) = link_refusal(
+    let refusal = link_refusal(
         host.as_deref(),
         qr,
         &addresses.live,
         addresses.server_url.as_deref(),
-    ) {
+    )
+    .or_else(|| (enroll && addresses.live.quic.is_none()).then(|| ENROLL_NEEDS_QUIC.to_owned()));
+    if let Some(refusal) = refusal {
         eprintln!("phux pair: {refusal}");
-        return ExitCode::FAILURE;
-    }
-    if enroll && addresses.live.quic.is_none() {
-        eprintln!("phux pair: {ENROLL_NEEDS_QUIC}");
         return ExitCode::FAILURE;
     }
     provision_pairing_certificate(&certificate, &addresses.advertised);
@@ -842,8 +838,14 @@ pub(crate) enum Door {
         /// `--enroll`.
         enroll: bool,
     },
-    /// A relay route (`--relay-route`, ADR-0149).
-    Relay(RelayRoute),
+    /// A relay route (`--relay-route`, ADR-0149); with `enroll`, as for a
+    /// listener, enrolled end to end through the relay (ADR-0154).
+    Relay {
+        /// The route.
+        route: RelayRoute,
+        /// `--enroll`.
+        enroll: bool,
+    },
 }
 
 const ENROLL_NEEDS_QUIC: &str = "--enroll needs a bound QUIC listener: a device enrolls over \
@@ -899,6 +901,7 @@ fn mint_relay_link(
     tokens: &Path,
     output: LinkOutput<'_>,
     replace_token: Option<&str>,
+    enroll: bool,
 ) -> ExitCode {
     let connector = match relay_connector(relay).and_then(|connector| {
         server_answers(socket)?;
@@ -915,13 +918,31 @@ fn mint_relay_link(
     };
     let token = minted.secret().to_owned();
     let fingerprint = connector.cert_fingerprint.as_deref();
-    let link = build_relay_connect_link(
-        &connector.relay,
-        &relay.route,
-        output.name,
-        fingerprint,
-        &token,
-    );
+    // The server's own CA, which a consumer verifies end to end through the
+    // relay (ADR-0154). A server whose certificate predates its CA has none,
+    // and its consumers keep the plain relayed stream.
+    let authority =
+        phux_server::transport::tls::presented_authority(&resolve_certificate_paths(None).cert)
+            .ok()
+            .flatten();
+    if enroll && authority.is_none() {
+        eprintln!(
+            "phux pair: --enroll through a relay needs the server's certificate to chain to its \
+             workload CA (ADR-0153); this one predates it. `phux workload authority --rotate` \
+             issues one (every device then re-pairs)"
+        );
+        return ExitCode::FAILURE;
+    }
+    let ticket = match enroll.then(|| mint_enrollment_ticket(output.json)) {
+        Some(None) => return ExitCode::FAILURE,
+        minted => minted.flatten(),
+    };
+    let pins = ServerPins {
+        leaf: fingerprint,
+        authority: authority.as_deref(),
+        enrollment: ticket.as_ref().map(|ticket| ticket.secret_hex.as_str()),
+    };
+    let link = build_relay_connect_link(&connector.relay, &relay.route, output.name, pins, &token);
     if output.json {
         let mut doc = pair_document(
             &token,
@@ -937,6 +958,7 @@ fn mint_relay_link(
             "endpoint": connector.relay,
             "route": relay.route,
         });
+        add_pins_to_document(&mut doc, authority.as_deref(), ticket.as_ref());
         return crate::output::json(&doc);
     }
     print_credential_block(&minted.id, &token);
@@ -952,6 +974,11 @@ fn mint_relay_link(
             );
         }
         None => outln!("  no relay pin configured: a loopback relay only"),
+    }
+    if let Some(authority) = &authority {
+        outln!(
+            "  server certificate authority {authority} (verified end to end through the relay)"
+        );
     }
     outln!();
     print_connect_link(&link, output.qr);
@@ -2113,7 +2140,10 @@ mod tests {
             "relay.example:4433",
             "mini-route",
             Some("mini box"),
-            Some("AB:CD"),
+            ServerPins {
+                leaf: Some("AB:CD"),
+                ..ServerPins::default()
+            },
             "deadbeef",
         );
         assert_eq!(

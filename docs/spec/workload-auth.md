@@ -198,11 +198,20 @@ grant before any stateful frame is processed.
   (preamble / `Authorization` header) proves "may knock" at
   establishment; it never mints authority and its store is consulted
   before, and independently of, the certificate registry.
-- **The relay is per-hop.** It terminates TLS on both legs for SNI
-  routing, so a consumer certificate does not survive to the server:
-  consumer↔relay and tunnel↔server authenticate separately, and
-  authority across a relay is the tunnel's enrolled route authority
-  ([ADR-0116](../adr/0116-workload-auth-is-mtls.md)).
+- **Through a relay the certificate travels end to end.** A relay
+  terminates the outer TLS on both legs for SNI routing, so a consumer runs
+  a second TLS 1.3 session inside the relayed stream, terminated by the
+  server: the server presents its own certificate (verified against the
+  consumer's CA pin, §2) and asks for the client certificate exactly as a
+  paired QUIC listener does; the bearer preamble then rides inside. The
+  server tells the session from a plain bearer preamble by its first byte
+  (`0x16` opens a TLS record; a preamble's big-endian length starts
+  `0x00`). Under `paired` a bridged consumer is admitted only this way; the
+  relay forwards ciphertext and learns nothing new
+  ([ADR-0154](../adr/0154-devices-enroll-with-a-ticket-over-their-own-alpn.md)
+  item 5). The same session, with the same first-byte rule, rides a
+  WebTransport stream (item 6); a WebTransport `CONNECT` still carries the
+  bearer, so nothing follows the handshake there.
 
 There is deliberately no nonce, no transcript, and no exporter
 derivation in this profile: replay of a captured handshake is
@@ -686,13 +695,14 @@ successful start applies the empty-snapshot revocation rule in §7.
 > its presence alone refuses nothing. The server keeps one transitional
 > posture the table above does not name: no mode beside a non-UDS listener
 > or relay connector starts, logs a warning once, and gives every admitted
-> connection the owner's full grant, as before enforcement existed. Making
-> that combination a startup error was verified to strand documented
-> setups with no mode left to admit them: phones that have not enrolled
-> (§8.2 shipped; the app adopts it), relay connectors, and WebTransport,
-> which `paired` refuses and `local` forbids. The posture ends, and this
-> marker goes, when those are covered (ADR-0154 items 5 and 6) and
-> deployed devices have enrolled. `phux host add` remotes, including Cockpit's,
+> connection the owner's full grant, as before enforcement existed. Every
+> remote entry point can now carry a workload certificate under `paired`
+> (QUIC and WSS in their handshakes; relays and WebTransport end to end,
+> ADR-0154), but making that combination a startup error still strands
+> deployed clients that cannot present one yet: phones whose app has not
+> adopted enrollment (§8.2), consumers paired through a relay before relay
+> links carried the server's CA, and browsers (phux-web holds no key). The
+> posture ends, and this marker goes, once those have enrolled. `phux host add` remotes, including Cockpit's,
 > already enroll and present a client certificate (§8.1). Under `local` the
 > server never auto-binds the overlay listener and refuses `OPEN_LISTENER`.
 
@@ -796,8 +806,9 @@ enrolled certificate's `sha256:` id; revocation follows §7.
 > the reference server offers the ALPN on its configured QUIC listener in
 > every policy mode; `phux --remote NAME --code LINK` and the phone binding
 > (`RemoteClient.enroll_device`, a keystore-held key) enroll with it. A
-> ticket rides QUIC only: a relay connector and the WebTransport listener
-> do not serve it.
+> ticket rides QUIC: the configured listener's ALPN, or the end-to-end
+> session a relayed device runs (§3), which negotiates the same ALPN inside.
+> The WebTransport listener does not serve it.
 
 A client with no ssh channel to the serving host (a phone) enrolls with a
 single-use **enrollment ticket**: 32 random bytes the server mints into a
