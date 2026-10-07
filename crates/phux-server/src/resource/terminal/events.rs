@@ -59,6 +59,37 @@ impl TerminalActor {
         self.pty.is_some()
     }
 
+    /// Subscribe to authoritative OSC 7501 state before starting this actor.
+    pub(crate) fn subscribe_program_status(
+        &mut self,
+    ) -> tokio::sync::watch::Receiver<Vec<super::program_status::Record>> {
+        let (tx, rx) = tokio::sync::watch::channel(self.program_status.snapshot());
+        self.program_status_sink = Some(tx);
+        rx
+    }
+
+    pub(super) fn publish_program_status(&self) {
+        if let Some(sink) = &self.program_status_sink {
+            sink.send_replace(self.program_status.snapshot());
+        }
+    }
+
+    /// Upgrade replay carries reports after the grid's own reset sequence.
+    pub(super) fn restore_program_status(&mut self, bytes: &[u8]) {
+        let mut scanner = osc133::Osc133Scanner::new();
+        for mark in scanner.feed(bytes) {
+            match mark {
+                osc133::OscMark::ProgramStatus(body) => {
+                    self.program_status.apply(&body);
+                }
+                osc133::OscMark::Reset => {
+                    self.program_status.clear();
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Wire the live-`AgentSession`-child probe (ADR-0103 §5); it depends on
     /// `ServerState`, which the pane never holds.
     pub(crate) fn set_live_session_probe(
@@ -153,7 +184,7 @@ impl TerminalActor {
         // skips scans, and eating the flag then lost the mutation that
         // painted the dialog. A failed projection keeps it set too.
         let dirty = self.agent_dirty_since_detect;
-        let screen = if detector.wants_screen(dirty) {
+        let screen = if self.program_status.is_empty() && detector.wants_screen(dirty) {
             let lines = self.viewport_lines();
             if lines.is_some() {
                 self.agent_dirty_since_detect = false;
@@ -203,34 +234,45 @@ impl TerminalActor {
         Some(next)
     }
 
-    /// Source agent events from a freshly written PTY chunk: `bell` (once per
-    /// chunk), `title_changed`, one `dirty` per output burst, and OSC 133
-    /// `command_started`/`command_finished` (with the `D` exit code the grid
-    /// drops). Each `D` is also a prompt boundary that re-checks the cwd.
+    /// Source semantic events and state from a freshly written PTY chunk.
+    #[cfg(test)]
     pub(super) fn source_events_from_chunk(&mut self, chunk: &[u8]) {
+        let marks = self.osc133.feed_with_offsets(chunk);
+        self.source_events_from_marks(&marks);
+    }
+
+    pub(super) fn source_events_from_marks(&mut self, marks: &[(usize, osc133::OscMark)]) {
         // Unconditional, even with no listener: the detector reads the title.
         let title_changed = self.refresh_title();
-        let marks = self.osc133.feed(chunk);
-        self.observe_marks(&marks);
+        self.observe_marks(marks);
         if self.event_sink.is_none() {
             return;
         }
         self.output_since_idle_tick = true;
         // OSC 133 marks first so a command boundary precedes its burst.
-        for mark in marks {
+        for (_, mark) in marks {
             match mark {
                 osc133::OscMark::CommandStart => self.emit_event(AgentEvent::CommandStarted),
                 osc133::OscMark::CommandEnd { exit_code } => {
-                    self.emit_event(AgentEvent::CommandFinished { exit_code });
+                    self.emit_event(AgentEvent::CommandFinished {
+                        exit_code: *exit_code,
+                    });
                     // Back at a prompt: any `cd` has landed.
                     self.check_cwd_changed();
                 }
                 osc133::OscMark::PromptStart
                 | osc133::OscMark::InputStart
-                | osc133::OscMark::Progress(_) => {}
+                | osc133::OscMark::Progress(_)
+                | osc133::OscMark::ProgramStatus(_)
+                | osc133::OscMark::ProgramStatusQuery
+                | osc133::OscMark::Bell
+                | osc133::OscMark::Reset => {}
             }
         }
-        if memchr::memchr(0x07, chunk).is_some() {
+        if marks
+            .iter()
+            .any(|(_, mark)| matches!(mark, osc133::OscMark::Bell))
+        {
             self.emit_event(AgentEvent::Bell);
         }
         if title_changed {
@@ -252,14 +294,31 @@ impl TerminalActor {
         }
     }
 
-    /// Fold OSC marks into state kept regardless of listeners: the OSC 9;4
-    /// progress mirror and the prompt machine.
-    fn observe_marks(&mut self, marks: &[osc133::OscMark]) {
-        for mark in marks {
+    /// Fold marks in stream order; a prompt only expires active records.
+    fn observe_marks(&mut self, marks: &[(usize, osc133::OscMark)]) {
+        let mut changed = false;
+        for (_, mark) in marks {
             self.prompt.observe(mark);
-            if let osc133::OscMark::Progress(progress) = mark {
-                self.last_progress.clone_from(progress);
+            match mark {
+                osc133::OscMark::Progress(progress) => self.last_progress.clone_from(progress),
+                osc133::OscMark::ProgramStatus(body) => {
+                    changed |= self.program_status.apply(body);
+                }
+                osc133::OscMark::PromptStart => {
+                    changed |= self.program_status.expire_active();
+                }
+                osc133::OscMark::Reset => {
+                    changed |= self.program_status.clear();
+                }
+                _ => {}
             }
+        }
+        // A native cut can replay the child's last bytes after EOF was observed.
+        if self.exit.is_some() {
+            changed |= self.program_status.expire_active();
+        }
+        if changed {
+            self.publish_program_status();
         }
     }
 
@@ -339,6 +398,7 @@ impl TerminalActor {
                 if let Some(detector) = self.agent_detect.as_mut() {
                     detector.invalidate_published();
                 }
+                self.publish_program_status();
             }
             ControlRequest::ReportStreamState { state, reply } => {
                 let state = state.map(|state| match state {
@@ -364,6 +424,7 @@ impl TerminalActor {
                         }
                         // A retraction hands the pane back to the screen.
                         self.agent_dirty_since_detect = true;
+                        self.publish_program_status();
                         let _ = reply.send(Ok(()));
                     }
                     Err(error) => {

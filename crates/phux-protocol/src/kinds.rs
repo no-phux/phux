@@ -923,7 +923,11 @@ fn is_session_create_result(key: &str) -> bool {
 /// Keys the server owns and no client may set or delete, in any scope: the
 /// pane occupant, whoami, and the approval records (ADR-0128).
 fn is_read_only_server_key(key: &str) -> bool {
-    key == RESOURCE_PANE_OCCUPANT_KEY || key == WHOAMI_KEY || key.starts_with(APPROVAL_KEY_PREFIX)
+    key == RESOURCE_PANE_OCCUPANT_KEY
+        || key == crate::wire::frame::RESOURCE_PROGRAM_STATUS_KEY
+        || key.starts_with(crate::wire::frame::RESOURCE_PROGRAM_STATUS_RECORD_PREFIX)
+        || key == WHOAMI_KEY
+        || key.starts_with(APPROVAL_KEY_PREFIX)
 }
 
 /// Keys the server applies on write, which are therefore never deletable.
@@ -1841,7 +1845,13 @@ mod tests {
             assert_eq!(row(&delete(key)), F_RESULT_NAMESPACE_WRITE.case);
             assert_eq!(row(&subscribe(key)), F_RESULT_NAMESPACE_SUBSCRIBE.case);
         }
-        for key in [RESOURCE_PANE_OCCUPANT_KEY, WHOAMI_KEY] {
+        for key in [
+            RESOURCE_PANE_OCCUPANT_KEY,
+            WHOAMI_KEY,
+            crate::wire::frame::RESOURCE_PROGRAM_STATUS_KEY,
+            crate::wire::frame::RESOURCE_PROGRAM_STATUS_RECORD_PREFIX,
+            "phux.program-status.record/v1/build/test",
+        ] {
             assert_eq!(
                 row(&set(Scope::Resource(terminal()), key, b"x")),
                 F_SERVER_OWNED_WRITE.case

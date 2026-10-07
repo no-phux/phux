@@ -7,6 +7,7 @@
 //! runtime's job. Lifecycle and close follow the same path as a Terminal.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use bytes::Bytes;
 use tokio::sync::{mpsc, oneshot};
@@ -106,6 +107,8 @@ pub struct AgentSessionHandle {
     pub append: mpsc::Sender<AppendRequest>,
     /// Bootstrap cut requests, served from the retained ring.
     pub bootstrap: mpsc::Sender<BootstrapRequest>,
+    /// The engine's existing end flag, shared with lock-held source arbitration.
+    pub(crate) ended: Arc<AtomicBool>,
 }
 
 /// An [`AgentSessionActor`] and everything the runtime needs to publish it.
@@ -129,7 +132,7 @@ pub struct AgentSessionActor {
     ring: RecordRing,
     /// `true` once a `session_end` record has been accepted; every later
     /// record is `RECORD_INVALID`.
-    ended: bool,
+    ended: Arc<AtomicBool>,
     /// `true` while a graceful upgrade holds this stream's cut: appends are
     /// refused with `OVERFLOW` rather than acked and lost.
     sealed: bool,
@@ -173,11 +176,13 @@ impl AgentSessionActor {
         } = channels;
         let (append_tx, append_rx) = mpsc::channel(AGENT_SESSION_MAILBOX);
         let (bootstrap_tx, bootstrap_rx) = mpsc::channel(AGENT_SESSION_MAILBOX);
+        let ended = Arc::new(AtomicBool::new(false));
         let facet = AgentSessionHandle {
             provider: Arc::from(provider),
             native_id: native_id.map(Arc::from),
             append: append_tx,
             bootstrap: bootstrap_tx,
+            ended: Arc::clone(&ended),
         };
         // Consumer, ack, and upgrade channels are Terminal-only; drop their
         // receivers so a stray send fails at once.
@@ -196,7 +201,7 @@ impl AgentSessionActor {
             actor: Self {
                 core,
                 ring: RecordRing::new(log_bytes as usize),
-                ended: false,
+                ended,
                 sealed: false,
                 append_rx,
                 bootstrap_rx,
@@ -222,7 +227,7 @@ impl AgentSessionActor {
         let mut bundle = Self::build(parent, provider, native_id, token, log_bytes);
         let actor = &mut bundle.actor;
         actor.core.seq = carried.base_seq;
-        actor.ended = carried.ended;
+        actor.ended.store(carried.ended, Ordering::Relaxed);
         actor.ring.add_dropped(carried.dropped);
         for record in carried.records {
             actor.ring.push(record);
@@ -272,7 +277,7 @@ impl AgentSessionActor {
             base_seq: self.core.seq(),
             records: self.ring.records().cloned().collect(),
             dropped: self.ring.dropped(),
-            ended: self.ended,
+            ended: self.ended.load(Ordering::Relaxed),
         }
     }
 
@@ -287,7 +292,7 @@ impl AgentSessionActor {
             )));
             return;
         }
-        let records = match record::validate(&bytes, self.ended) {
+        let records = match record::validate(&bytes, self.ended.load(Ordering::Relaxed)) {
             Ok(records) => records,
             Err(error) => {
                 let _ = reply.send(Err(AppendRejection::Invalid(error)));
@@ -325,7 +330,9 @@ impl AgentSessionActor {
             if let Some(question) = entry.ask() {
                 ask = Some(question);
             }
-            self.ended |= entry.ends_session();
+            if entry.ends_session() {
+                self.ended.store(true, Ordering::Relaxed);
+            }
         }
         let _ = self.core.output_tx.send(PaneOutput::Live {
             seq: last_seq,

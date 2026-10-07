@@ -53,7 +53,7 @@ fn target_schema() -> Value {
 fn show_schema() -> Value {
     schema(
         "phux_resource_show",
-        "Read one resource: kind, parent, lifecycle, how a retained process exited, process facts (pid, foreground group, cwd, prompt state), input-lease holder, tags, and agent record. Read-only; the document `phux resource show --json` prints.",
+        "Read one resource: kind, parent, lifecycle, how a retained process exited, process facts (pid, foreground group, cwd, prompt state), input-lease holder, tags, agent record, and OSC 7501 program status. Read-only; the document `phux resource show --json` prints.",
         json!({ "target": target_schema(), "socket": string_schema() }),
         &["target"],
     )

@@ -224,6 +224,7 @@ fn print_show(details: &ResourceDetails, json: bool) -> ExitCode {
         "process",
         "tags",
         "agent",
+        "program_status",
         "agent_session",
     ] {
         if let Some(line) = human_field(&doc, key) {
@@ -246,6 +247,13 @@ fn human_field(doc: &serde_json::Value, key: &str) -> Option<String> {
     let text = value
         .as_str()
         .map_or_else(|| value.to_string(), str::to_owned);
+    let text = if key == "program_status" {
+        text.chars()
+            .filter(|ch| !phux_tui::render::is_bidi_control(*ch))
+            .collect()
+    } else {
+        text
+    };
     Some(format!("{key}: {text}"))
 }
 
@@ -377,6 +385,20 @@ mod tests {
         assert_eq!(
             human_field(&watched, "viewers").as_deref(),
             Some("viewers: [5,6]")
+        );
+    }
+
+    #[test]
+    fn program_status_human_output_disarms_bidi_without_changing_json() {
+        let document = serde_json::json!({
+            "program_status": { "active": { "msg": "approve \u{202e}prod\u{202c}" } }
+        });
+        let line = human_field(&document, "program_status").unwrap();
+        assert!(!line.chars().any(phux_tui::render::is_bidi_control));
+        assert!(line.contains("approve prod"));
+        assert_eq!(
+            document["program_status"]["active"]["msg"],
+            "approve \u{202e}prod\u{202c}"
         );
     }
 
