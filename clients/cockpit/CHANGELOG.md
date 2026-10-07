@@ -25,6 +25,13 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   or server restart without restarting the app; recover the selected session
   by its confirmed name when a replacement server reuses numeric IDs.
 
+## [0.33.0](https://github.com/no-phux/phux/compare/cockpit-v0.32.0...cockpit-v0.33.0) (2026-10-07)
+
+
+### Features
+
+* **cockpit:** confirm unsafe pastes and mark panes that return to their prompt ([49cfb58](https://github.com/no-phux/phux/commit/49cfb58c67aa706d2c712d81bccb05f41c1d5e7d))
+
 ## [0.32.0](https://github.com/no-phux/phux/compare/cockpit-v0.31.0...cockpit-v0.32.0) (2026-10-01)
 
 

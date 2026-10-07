@@ -9,6 +9,98 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.52.0](https://github.com/no-phux/phux/compare/v0.51.0...v0.52.0) (2026-10-07)
+
+
+### Features
+
+* **attach:** refuse attaching from inside the same server's pane ([325bedf](https://github.com/no-phux/phux/commit/325bedfaf0122d82a5f96e0507921738b732f5c4))
+* **client-ffi:** report a replica's DEC 2004 bracketed-paste mode ([907d1de](https://github.com/no-phux/phux/commit/907d1de070e6c67c4d6bb6b46e1a20aed7294239))
+* **mobile:** expose raw QUIC pairing endpoints ([86524e7](https://github.com/no-phux/phux/commit/86524e74ad40ed162add68460d35f13309d9168c))
+* **plugin:** let a plugin manifest declare sidebar sections ([6377b27](https://github.com/no-phux/phux/commit/6377b2776bbe779ec3ced09d08afcccde0320147))
+* **plugin:** record plugin action and hook runs for phux plugin log ([8a7a925](https://github.com/no-phux/phux/commit/8a7a925ca148543daa2575dc966c998f0e1a7952))
+* **project:** open sessions from trusted per-repo recipes ([ff82c5a](https://github.com/no-phux/phux/commit/ff82c5a25e4a5eb17b5933f07cdc5ff55541e57c))
+* **protocol:** publish a machine-readable wire schema checked against the codec ([cffa543](https://github.com/no-phux/phux/commit/cffa543355b60d677eb47e817ab9c6fa6263f77d))
+* **remote:** attach through a relay route from links and the registry ([96ed257](https://github.com/no-phux/phux/commit/96ed257686a4f66229fbcce04a18f3f932a39186))
+* **server:** carry agent sessions across a graceful upgrade ([069866f](https://github.com/no-phux/phux/commit/069866ff4f232462c391bbea19896e39f66b3789))
+* **server:** crash-safe workspace autosave for service --restore ([#1033](https://github.com/no-phux/phux/issues/1033)) ([79dc048](https://github.com/no-phux/phux/commit/79dc0487967367cae5375d59ace451c299cedbf5))
+* **server:** pick up newly enrolled satellites without restarting the hub ([01721aa](https://github.com/no-phux/phux/commit/01721aa5022d10a951106edfc739ce558c6f701c))
+* **tui:** badge panes whose scrollback history is unavailable ([7a5db74](https://github.com/no-phux/phux/commit/7a5db74eea2e421fe50e59ef01988a17448332bc))
+* **tui:** push kitty keyboard disambiguate on the host while attached ([#1005](https://github.com/no-phux/phux/issues/1005)) ([d100b20](https://github.com/no-phux/phux/commit/d100b20a3731354cce14a7f2bbc6f2315a99bd74))
+* **tui:** ship the overlay plugin pane placement ([8fdaca2](https://github.com/no-phux/phux/commit/8fdaca2ea18a54de177ac8eba681c7a08c6cc5d0))
+* **workspace:** resume shell-started agents on restore ([c5e2ad5](https://github.com/no-phux/phux/commit/c5e2ad5faf4dde7184e5b533cb24d312126ebd83))
+
+
+### Bug Fixes
+
+* **agent-rules:** detect OMP 18 panes from its title and new chrome ([b846774](https://github.com/no-phux/phux/commit/b8467746f5bb6fac7bdf0d6be77a2fed94cf9b01))
+* **agent:** classify all captured first-party agent kinds ([661af18](https://github.com/no-phux/phux/commit/661af180aad58673376a2d9de057f03a2a91937f))
+* **agent:** read the live OSC title for agent show, explain, answer, and config agents ([e2643cf](https://github.com/no-phux/phux/commit/e2643cfd8600fa2de2987fc7686ea150d7b0e4c3))
+* **ci:** bump only workspace packages in the release-metadata lock test ([66b5e91](https://github.com/no-phux/phux/commit/66b5e91c32991f8d09a622b23095d48ee2d26138))
+* **client:** deliver Cmd/Shift/Ctrl+Return, Shift+Tab and Ctrl+Backspace to the pane ([#996](https://github.com/no-phux/phux/issues/996)) ([46c3972](https://github.com/no-phux/phux/commit/46c39726efdafa93a51757456b0c2a961bfb3450))
+* **client:** trust a committed-teardown kill reply instead of polling for the reap ([e790776](https://github.com/no-phux/phux/commit/e7907767d87888e6d55925158806d36ff31a5e0b))
+* **cli:** errors name the target, socket, and resource they are about ([f09d538](https://github.com/no-phux/phux/commit/f09d5384daadbeb19ff94edc62f9bad6eced82b2))
+* **cli:** fail auto-spawn at once when the spawned server exits ([a936611](https://github.com/no-phux/phux/commit/a936611c5dfdf8a876998451a412dc84acf049d9))
+* **cli:** headless creates start unseeded, and kill returns after the reap ([bde1998](https://github.com/no-phux/phux/commit/bde1998e310db343da05bde8d04465b044ebd830))
+* **cli:** help that tells the truth and parsing that accepts what users type ([c71c1c6](https://github.com/no-phux/phux/commit/c71c1c655b581496bd4a58cb5ee40a4a8030b6f7))
+* **cli:** tidy doctor, rec, agent JSON, and the watch cursor ([cecaa70](https://github.com/no-phux/phux/commit/cecaa70a3c0f060ed3bf72bbae7501fc996d26bc))
+* **cli:** watch --timeout 0 subscribes before its deadline can fire ([0cbab69](https://github.com/no-phux/phux/commit/0cbab69cf06d92b7367a803aa555d8481142d671))
+* **config:** share registry locks across symlink aliases ([#1034](https://github.com/no-phux/phux/issues/1034)) ([1e26120](https://github.com/no-phux/phux/commit/1e26120a7ef23180bc8d6142896d1e7059587943))
+* **desktop:** reject mixed and stale Rust toolchains before builds ([a0876b3](https://github.com/no-phux/phux/commit/a0876b3260a16e0de56533581dcdb16c66a18ce7))
+* **dev:** run the Nix shell's pinned toolchain ahead of rustup's proxies ([df4185a](https://github.com/no-phux/phux/commit/df4185ab698b95d7a0acd5cf70724a9156e680f6))
+* **docs:** drop a stray conflict marker and gate against them ([cb54115](https://github.com/no-phux/phux/commit/cb541158a5ee1f2b81397b6180a8550d55aa8c63))
+* **doctor:** report when the Nix daemon ignores the phux binary cache ([5955ccf](https://github.com/no-phux/phux/commit/5955ccf05790ccda62db38b89d816e3bd54ed82f))
+* **instance:** let dev builds skip an inherited production PHUX_SOCKET ([#995](https://github.com/no-phux/phux/issues/995)) ([3cbab9d](https://github.com/no-phux/phux/commit/3cbab9d148efe44ab90fe8e94be7c174aeb82a91))
+* **nix:** install Linux Zig from the pinned release archives ([aa4c03c](https://github.com/no-phux/phux/commit/aa4c03c1bd3edab7a68c21df017f9c543f5a5c35))
+* **omp:** keep reporting when input is queued into a busy run ([b718618](https://github.com/no-phux/phux/commit/b71861826a51526e75fd3d5d2846391db37c3d67))
+* **omp:** pin the post-end tool delivery the lifecycle smoke assumed away ([c420325](https://github.com/no-phux/phux/commit/c420325c806178b688a71350f271ed8e3531168d))
+* print the server banner after bind; carry auto-start errors in JSON no_server ([#1045](https://github.com/no-phux/phux/issues/1045)) ([443054d](https://github.com/no-phux/phux/commit/443054d00dfd5aa4a2dfdb13640812fb069247a1))
+* **protocol:** read CARGO_MANIFEST_DIR at run time in the wire-schema test ([7b87326](https://github.com/no-phux/phux/commit/7b87326d28f789664f1c7a658cd1d92d4087f4d2))
+* **protocol:** retire snapshot codec id 3 for digest-free GHOSTSNPv1 ([7ddee22](https://github.com/no-phux/phux/commit/7ddee22ad191b07f031c564135fc359a78b39969))
+* **server:** a kill's reply is the teardown every observer sees ([b48da94](https://github.com/no-phux/phux/commit/b48da948c9e0547c505aa5f81a0504a95a3048aa))
+* **server:** a pane that closes mid-ATTACH is published closed, not a failed attach ([37b4c21](https://github.com/no-phux/phux/commit/37b4c21b1a7d18d3fca471c7c1ebb6f1f40b320c))
+* **server:** abort upgrade for retry when a tree pane's engine has exited ([b64fbb2](https://github.com/no-phux/phux/commit/b64fbb21ebc105a86dce5470066499f8b36a5903))
+* **server:** stop agent sessions and dead engines from aborting live upgrade ([d50f897](https://github.com/no-phux/phux/commit/d50f89798fbb34154f3b963af54250009e4018e5))
+* **server:** tombstone a synthesized resync before its replacement ([fa5d237](https://github.com/no-phux/phux/commit/fa5d237d4cd238d3f0a2bf1942ac9f1734cd631e))
+* **server:** wire panes rebuilt by an upgrade like a fresh spawn ([0125938](https://github.com/no-phux/phux/commit/0125938c0ea1d963e0ba8ede65755cbe2072ea54))
+* **tui:** fit toasts to their text and keep the palette scrollbar off the border ([61df575](https://github.com/no-phux/phux/commit/61df575e390ca72cc489ea439cd24a8cc9e4fd49))
+* **tui:** repaint when bindings dismiss plugin overlays ([#1017](https://github.com/no-phux/phux/issues/1017)) ([3e0834e](https://github.com/no-phux/phux/commit/3e0834ea8192365e68b2a76075c911baec258b08))
+* **tui:** size panes per tile with cell pixels instead of a viewport vote ([#1010](https://github.com/no-phux/phux/issues/1010)) ([3906b11](https://github.com/no-phux/phux/commit/3906b1175008dcae31d416a9fc901798abe2d7c2))
+* **upgrade:** keep a pane's OSC title out of its user-set title ([#1028](https://github.com/no-phux/phux/issues/1028)) ([424d8dc](https://github.com/no-phux/phux/commit/424d8dcc99b0a8f7a24241fbda99f223fbbb0ccd))
+
+
+### Performance
+
+* **config:** keep the checkout distros path out of phux-config ([2c4cb41](https://github.com/no-phux/phux/commit/2c4cb4188e9d51e514f63c4b8d389f42e5094f9e))
+* **gates:** halve the local `just ci` ([2534b9c](https://github.com/no-phux/phux/commit/2534b9c00ffc24aadbea0712a8b62df6bb7673e6))
+* **tests:** read checkout paths from the test runner, not env! ([77a6ca6](https://github.com/no-phux/phux/commit/77a6ca6a6541de22f1991caa8cc24dbf3e2f047f))
+
+
+### Refactors
+
+* **client:** stop replicas generating terminal query replies; restore the TUI size budget guard ([#1031](https://github.com/no-phux/phux/issues/1031)) ([c1a1e1c](https://github.com/no-phux/phux/commit/c1a1e1cebc8dc907540fa2225f5dff1ba14834a2))
+* **cli:** share remote/satellite registry helpers in toml_registry ([633ee4b](https://github.com/no-phux/phux/commit/633ee4b0c5e2eb230420a5b941aed4e6af4d9874))
+* **tui:** split SessionLoop into wake-up handlers ([#1040](https://github.com/no-phux/phux/issues/1040)) ([e03b8ee](https://github.com/no-phux/phux/commit/e03b8eee26b74d02845cf63fce64e73d9256d438))
+
+
+### Documentation
+
+* **config:** describe which plugin manifest surfaces are live ([6a834db](https://github.com/no-phux/phux/commit/6a834db6e723e2230317c8983967926c9224cc64))
+* **contributing:** stop calling the beads export scrubbed ([7efd84d](https://github.com/no-phux/phux/commit/7efd84d39a3a5064554e77cabdd4f920f80f4dc0))
+* **server:** drop the intra-doc link to private reload_satellites ([cc0eae0](https://github.com/no-phux/phux/commit/cc0eae03aa7bbc532466b2a8587fcc3091e90967))
+* **setup:** document cache-portable builds and gate them ([4035657](https://github.com/no-phux/phux/commit/4035657119661206a9eb52748bd1dee0e542484a))
+* **site:** stop hard-coding the native phux-protocol pin in INFRA.md ([#997](https://github.com/no-phux/phux/issues/997)) ([d5155ea](https://github.com/no-phux/phux/commit/d5155ea96038e3e75e191e606f2462d3fb99ace7))
+
+
+### Build System
+
+* **deps:** move libghostty onto the 2026-10-05 Ghostty rebase ([384558c](https://github.com/no-phux/phux/commit/384558c5757bda0b8ed90da7b100c457ac91b373))
+* **deps:** pin libghostty-rs that keys shared builds on the Zig binary ([ba8897e](https://github.com/no-phux/phux/commit/ba8897e631184980f4ef41d613da18c850f09bf7))
+* **deps:** pin libghostty-rs with shared, reproducible vendored builds ([f640042](https://github.com/no-phux/phux/commit/f640042e36c43ec18f3760d7eab5434cedd7fe8b))
+* **deps:** pin libghostty-rs with trimmed shared builds ([f748d63](https://github.com/no-phux/phux/commit/f748d63fa72f5d3be2e46fd5b889fecca0af247a))
+* **dev:** cache build-script C in the Nix shell; drop eval warnings ([f1a9818](https://github.com/no-phux/phux/commit/f1a9818b596c094b42bbc78145fec710b406f7a9))
+* **dev:** route cargo through mbx for a shared, budgeted build cache ([7ded0fb](https://github.com/no-phux/phux/commit/7ded0fbe23606545ef4c8d948c03d9210f01e85e))
+
 ## [0.51.0](https://github.com/no-phux/phux/compare/v0.50.1...v0.51.0) (2026-10-05)
 
 

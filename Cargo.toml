@@ -12,7 +12,7 @@ default-members = ["crates/phux", "crates/phux-mcp"]
 exclude = ["clients", ".claude"]
 
 [workspace.package]
-version = "0.51.0"
+version = "0.52.0"
 edition = "2024"
 rust-version = "1.99"
 license = "Apache-2.0"
