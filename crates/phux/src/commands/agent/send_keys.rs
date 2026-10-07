@@ -306,7 +306,7 @@ fn report_failure(
             &json_err::CliError::new(
                 json_err::codes::TRANSPORT,
                 format!(
-                    "{label}: the server-wide acknowledged input lane stayed busy across \
+                    "{label}: the pane's acknowledged input stayed busy across \
                      {attempts} attempts (operation {operation_id}); nothing was written"
                 ),
                 "nothing was written on any attempt, so re-running this command is safe",

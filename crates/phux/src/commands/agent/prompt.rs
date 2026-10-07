@@ -13,8 +13,9 @@
 //!    target is refused (exit 2), never downgraded to `ROUTE_INPUT`.
 //!
 //! `OK` means the bytes are in the tty input queue, not that they were
-//! consumed; `--wait` reports an observed detector transition. The server
-//! has one acknowledged lane, so fleet prompting must be serialized.
+//! consumed; `--wait` reports an observed detector transition. Admission is
+//! per pane (L1 §6.2.1): prompts to different panes run concurrently, and only
+//! a second prompt to the same pane collides as busy.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -285,14 +286,14 @@ fn report_failure(
             &json_err::CliError::new(
                 codes::INPUT_BUSY,
                 format!(
-                    "{label}: the server-wide acknowledged input lane stayed busy across \
+                    "{label}: the pane's acknowledged input stayed busy across \
                      {attempts} attempts over {budget_ms}ms (operation {operation_id}); \
                      nothing was written"
                 ),
                 "nothing was written on any attempt, so re-running this command is safe. \
-                 phux has ONE acknowledged input lane per server, so two orchestrators \
-                 prompting two different panes collide: serialize fleet prompting rather \
-                 than issuing it in parallel",
+                 phux admits one acknowledged write per pane at a time, so another \
+                 prompt or acknowledged write to this same pane was still unresolved: \
+                 serialize writes to one pane; prompts to different panes do not collide",
             ),
             crate::exit_codes::EXIT_FAILURE,
         ),

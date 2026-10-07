@@ -290,8 +290,8 @@ an input lock.
   appends Enter. `phux_send_keys` remains key input, not clipboard support.
 - `phux_agent_prompt` requires the CLI's acknowledged-delivery capability.
   Unsupported servers and satellite prompt targets are refused by the CLI,
-  never downgraded to fire-and-forget keys. The acknowledged lane is shared:
-  serialize agent prompt submissions rather than prompting a fleet concurrently.
+  never downgraded to fire-and-forget keys. Acknowledged admission is per
+  pane: prompts to different panes run concurrently; serialize prompts to one pane.
 - `phux_rendered_snapshot` follows the CLI's `snapshot --rendered` contract:
   unlike ordinary snapshot it attaches a headless client and establishes that
   client's bounded viewport. Use `phux_snapshot` for a side-effect-free pane

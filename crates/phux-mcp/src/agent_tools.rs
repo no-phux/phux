@@ -490,7 +490,7 @@ fn prompt_schema() -> Value {
         "Deliver one single-line prompt through acknowledged, idempotent APPLY_INPUT and wait \
          in the same process for a post-delivery lifecycle transition. This is the sound MCP \
          completion primitive: splitting delivery and phux_agent_wait across calls can miss a \
-         fast turn. The server has one acknowledged input lane, so serialize fleet prompting. \
+         fast turn. Admission is per pane: prompts to different panes run in parallel; serialize prompts to one pane. \
          Success is a kernel tty-queue receipt, not proof the agent consumed the prompt. A \
          timeout returns the canonical document with transition_observed=false; delivery still \
          occurred. INPUT_DELIVERY_UNKNOWN is terminal: inspect the pane and do not resend.",

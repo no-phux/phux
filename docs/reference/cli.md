@@ -379,8 +379,9 @@ state change it sees is strictly post-write, and the gate is satisfied only by
 an observed TRANSITION — never by a level read of the current state, which a
 crashed agent also reads as.
 
-The server has ONE acknowledged input lane, so do not prompt a fleet in
-parallel: serialize it, or all but one caller collides.
+Acknowledged input is admitted one operation per pane: prompting different panes
+in parallel is fine, but two concurrent prompts to the SAME pane collide, and
+the later one is refused as busy.
 
 Usage: phux agent prompt [FLAGS] <TARGET> <TEXT>
 
