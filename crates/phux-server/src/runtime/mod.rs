@@ -42,6 +42,7 @@ pub mod keyed_ops;
 pub mod operation_dedupe;
 mod path_search;
 mod process_env;
+mod program_status;
 /// Shared per-generation state both pane output pumps enforce.
 mod pump;
 pub mod resource_commands;

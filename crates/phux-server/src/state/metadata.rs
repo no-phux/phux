@@ -105,6 +105,23 @@ impl MetadataStore {
         }
     }
 
+    /// Presence without cloning a potentially large metadata value.
+    #[must_use]
+    pub(crate) fn contains(&self, scope: &Scope, key: &str) -> bool {
+        match scope {
+            Scope::Resource(id) => self
+                .terminal
+                .get(id)
+                .is_some_and(|values| values.contains_key(key)),
+            Scope::Group(id) => self
+                .group
+                .get(id)
+                .is_some_and(|values| values.contains_key(key)),
+            Scope::Global => self.global.contains_key(key),
+            _ => false,
+        }
+    }
+
     /// Set `(scope, key)`; reports whether it changed.
     pub fn set(&mut self, scope: &Scope, key: &str, value: Vec<u8>) -> MetadataSetOutcome {
         let bucket: &mut HashMap<String, Vec<u8>> = match scope {

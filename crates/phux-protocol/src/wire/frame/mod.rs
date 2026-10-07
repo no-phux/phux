@@ -364,6 +364,12 @@ pub const RESOURCE_AGENT_SESSION_KEY: &str = "phux.agent-session/v1";
 /// subscribe to this key but MUST NOT set or delete it.
 pub const RESOURCE_PANE_OCCUPANT_KEY: &str = "phux.pane-occupant/v1";
 
+/// Server-owned OSC 7501 record index and active status (L3 §3.7.3).
+pub const RESOURCE_PROGRAM_STATUS_KEY: &str = "phux.program-status/v1";
+
+/// Server-owned OSC 7501 records; the empty suffix addresses the root.
+pub const RESOURCE_PROGRAM_STATUS_RECORD_PREFIX: &str = "phux.program-status.record/v1/";
+
 /// Maximum encoded `phux.agent-session/v1` record accepted by server mutations.
 pub const MAX_AGENT_SESSION_RECORD_BYTES: usize = 4 * 1024;
 

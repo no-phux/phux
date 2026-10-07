@@ -269,8 +269,9 @@ creating, splitting, moving, or focusing layout.
 - **`resource show`** — one resource's record: kind, parent, lifecycle,
   the exit of a retained process, the typed process facts (pid,
   foreground group, cwd, prompt state), the input-lease holder and the
-  connections watching it as viewers, tags, and agent record. `resource methods` lists what the resource answers
-  on this server; listing grants nothing.
+  connections watching it as viewers, tags, agent record, and OSC 7501
+  program status. `resource methods` lists what the resource answers on
+  this server; listing grants nothing.
 - **`ask`** — advisory human attention. It does not move focus. The
   reference TUI presents it as `C-a q` / `C-a Q`.
 
@@ -653,12 +654,30 @@ refused the read gets `permission_denied`, exit 2.
 
 `resource show --json` is `{ schema_version: 1, resource, kind, parent,
 session, title, cwd, lifecycle, exit, input_holder, viewers, process,
-tags, agent, agent_session, unreachable }`. `exit` adds `retained_until_ms`.
+tags, agent, program_status, agent_session, unreachable }`. `exit` adds `retained_until_ms`.
 `process` is the `GET_TERMINAL_STATE` process facet below, `null` for a
 non-Terminal or an older server. `tags` is `null` when the read was
 refused. `input_holder` is the lease holder's connection id, or `null`.
 `viewers` lists the connection ids attached as `VIEWER` (ADR-0127),
 ascending, `[]` when none; the human form prints it only when non-empty.
+
+`program_status` is the OSC 7501 summary (`record_ids`, `active`) described
+in [L3 §3.7.3](../spec/L3.md#373-program-status-osc-7501), or `null` when
+there are no records, the server predates support, or the read is refused.
+The active record exposes its exact state (including `error`), inherited
+`app`, optional `progress`, blocking `kind`, `title`, and `msg`.
+Programs report over their existing PTY, including over SSH or from a
+container; no phux socket integration is required:
+
+```sh
+status() {
+  printf '\033]7501;state=%s:app=build:msg=%s\033\\' \
+    "$1" "$(printf '%s' "$2" | base64 | tr -d '\n')"
+}
+status working "Building"
+make && status done "Build ready" || status error "Build failed"
+```
+
 
 `resource methods --json` is `{ schema_version: 1, resource, kind,
 methods: [{ name, facet, verb, mutating, dangerous, available, reason }] }`.

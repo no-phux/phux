@@ -612,9 +612,9 @@ impl TerminalActor {
             return;
         }
         for (_, bytes) in replay {
-            self.terminal.borrow_mut().vt_write(bytes);
+            let marks = self.write_pty_with_status_queries(bytes);
             self.answer_color_queries(bytes);
-            self.source_events_from_chunk(bytes);
+            self.source_events_from_marks(&marks);
         }
         self.publish_input_snapshot();
         self.terminal_dirty_since_tick = true;

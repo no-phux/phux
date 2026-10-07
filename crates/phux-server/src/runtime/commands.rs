@@ -206,6 +206,9 @@ pub(crate) struct PaneWiring {
     /// The runtime end of the detector's sink (ADR-0046); `None` for a
     /// no-PTY pane, which never gets a detector.
     agent_state: Option<tokio::sync::mpsc::Receiver<crate::agent_detect::AgentDetectEvent>>,
+    /// Reliable OSC 7501 snapshots, shared by fresh and resumed panes.
+    program_status:
+        tokio::sync::watch::Receiver<Vec<crate::resource::terminal::program_status::Record>>,
 }
 
 /// Install every runtime sink and probe a pane's actor needs: its event sink
@@ -229,6 +232,7 @@ pub(crate) fn wire_pane_actor(
     PaneWiring {
         events,
         agent_state,
+        program_status: actor.subscribe_program_status(),
     }
 }
 
@@ -243,6 +247,7 @@ impl PaneWiring {
         if let Some(agent_rx) = self.agent_state {
             spawn_agent_state_drain(state.clone(), wire.clone(), agent_rx);
         }
+        super::program_status::spawn_drain(state.clone(), wire.clone(), self.program_status);
         PaneEvents {
             wire: wire.clone(),
             source: self.events,
