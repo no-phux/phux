@@ -1,7 +1,7 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-08-09
+last-reviewed: 2026-10-07
 ---
 
 # 0078 — Harvesting alternate-screen history
@@ -13,7 +13,7 @@ lease-acquiring, actor-owned, restored by an obligation the actor owns rather
 than the caller, returned in its own array. It is a multi-week subsystem, and
 the one read that moves a pane.
 
-Status: Proposed
+Status: Accepted (forward-compat)
 Date: 2026-08-08
 
 ## Context
@@ -32,13 +32,13 @@ everything else in its wave combined.
 **One empirical prerequisite, now partly discharged.** That the named agents
 paint to the alternate screen *is* established in this tree, though not by the
 manifests, which key on titles and regions rather than screen mode:
-`crates/phux-server/src/grid/synthesizer.rs` documents a shipped fix whose bug
-report names "opencode, Claude Code" as mouse-tracking TUIs and "on the alt
-screen with 1007 set" as the failing path, with a regression test that writes
-`\x1b[?1049h` plus the mouse modes. What remains unestablished is the part the
-fixtures actually gate: rows per wheel notch, repaint settle time, and the seam
-a merge has to splice. Capture live viewports before accepting this ADR — the
-Tradeoffs of
+`crates/phux-server/src/grid/synthesizer.rs` pins it with a mouse-mode
+regression test that writes the DECSET set opencode and Claude Code were probed
+to use, `\x1b[?1049h` plus the mouse modes. What remains unestablished is the
+part the fixtures actually gate: rows per wheel notch, repaint settle time, and
+the seam a merge has to splice. The decision is accepted forward-compat;
+capturing live viewports is the first implementation step and precedes any
+merge heuristic or fixture — the Tradeoffs of
 [ADR-0046](./0046-server-side-agent-state-detection.md) record what writing
 against an imagined TUI cost last time.
 
@@ -69,11 +69,14 @@ against an imagined TUI cost last time.
    has no `detach` to clear it and `ttl_ms` is advisory in the v1 server, so the
    release is actor-owned and runs on terminal death and server shutdown.
 
-3. **The opt-in rides `GET_SCREEN` behind a `ServerFeature` bit, and the gate
-   carries a PRIMARY clause.** [`../docs/spec/L1.md`](../spec/L1.md) §6.1
-   calls `GET_SCREEN` side-effect-free and allowed for viewers; §6.2 contrasts
-   it as the read-only, viewer-safe surface. Both sentences change in the same
-   PR: `GET_SCREEN` is viewer-safe **except** with `request_transcript`, which
+3. **The opt-in rides `GET_SCREEN` behind a server feature bit, and the gate
+   carries a PRIMARY clause.** The bit lands in the trailing `features_ext`
+   word, the `ServerFeature` u32 being closed
+   ([ADR-0137](./0137-server-feature-word-extends.md)).
+   [`../docs/spec/L1.md`](../spec/L1.md) §6.1 calls `GET_SCREEN`
+   side-effect-free and allowed for viewers; §6.2 contrasts it as the
+   read-only, viewer-safe surface. Both sentences change in the same PR:
+   `GET_SCREEN` is viewer-safe **except** with `request_transcript`, which
    is primary-only. Left unedited, they would classify a wheel-driving traversal
    as a viewer read for whoever implements `RolePolicy`. The capability bit is
    load-bearing rather than polite: a missing trailing field decodes as a
@@ -135,14 +138,14 @@ against an imagined TUI cost last time.
 
 8. **The docs must stop implying this read is safe, and this ADR does not write
    that text.** [`../docs/consumers/agents.md`](../consumers/agents.md)
-   §1's viewport-safety paragraph keeps its five-verb list and needs two
-   changes: its "`snapshot`/`wait` are side-effect-free" clause narrowed to
-   `snapshot` *without* `--transcript`, and a following sentence naming
-   `--transcript` as the one read that moves the pane — opt-in, primary-only,
-   gated, lease-acquiring, restored, and visible to an attached human as a
-   bounded scroll and an input-authority acquisition. That file's owner makes
-   the edit. The same qualification is owed to `agents.md` §2 and §4.2, `L1.md`
-   §6.1 and §6.2, `input.md` §8, and both side-effect-free claims in
+   §1's viewport-safety paragraph keeps its verb list and gains a carve-out for
+   `snapshot --transcript`, and §5's "side-effect-free `GET_SCREEN`" entry for
+   `snapshot` narrows to `snapshot` *without* `--transcript`, followed by a
+   sentence naming `--transcript` as the one read that moves the pane —
+   opt-in, primary-only, gated, lease-acquiring, restored, and visible to an
+   attached human as a bounded scroll and an input-authority acquisition. That file's owner makes
+   the edit. The same qualification is owed to `L1.md` §6.1 and §6.2,
+   [`input.md`](../spec/input.md) §8, and both side-effect-free claims in
    [`../docs/consumers/pi.md`](../consumers/pi.md); `agents.md`'s `wait`
    and `agent explain` paragraphs stay untouched, because those paths cannot
    trigger a harvest. MCP's `phux_snapshot` does **not** gain the flag, its
