@@ -2029,6 +2029,11 @@ Flags:
       --relay <HOST:PORT>    The `[[connector]]` relay (its `relay =
                              "HOST:PORT"`) a `--relay-route` link dials. Needed
                              only when several are configured.
+      --enroll               Also mint a single-use enrollment ticket into the
+                             link, so a device without ssh (a phone) enrolls a
+                             workload certificate for a key it generates and
+                             keeps. Needed to reach a server in `paired` policy
+                             mode. The ticket expires in ten minutes.
   -h, --help                 Print help
 
 Global flags:

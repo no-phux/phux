@@ -1149,6 +1149,92 @@ fn accept_and_store(
     Ok(files)
 }
 
+/// Enroll a fresh local key with the single-use `ticket_hex` a connect link
+/// carried (ADR-0154): over the link's `quic` endpoint, under the enrollment
+/// ALPN, trusting the server by the link's pins. The reply is checked as an
+/// ssh enrollment's is ([`ClientRequest::accept`]), its CA must be the
+/// link's `ca` when the link names one, and the pair is stored owner-only
+/// in `workload.dir`.
+///
+/// # Errors
+///
+/// Wording for the operator; never the ticket or the reply.
+pub(crate) fn enroll_with_ticket(
+    quic_target: &str,
+    pins: &TicketPins<'_>,
+    ticket_hex: &str,
+    workload: &WorkloadEnrollment<'_>,
+) -> Result<ClientIdentityFiles, String> {
+    let ticket = phux_dial::quic::parse_token_hex(ticket_hex)
+        .ok()
+        .filter(|ticket| ticket.len() == phux_server::workload::tickets::TICKET_BYTES)
+        .ok_or_else(|| "the link's enrollment ticket is not 64 hex digits".to_owned())?;
+    let request = ClientRequest::generate()
+        .map_err(|err| format!("could not generate a client key: {err}"))?;
+    let csr = match phux_server::workload::ClientMaterial::from_pem(request.csr_pem().as_bytes()) {
+        Ok(phux_server::workload::ClientMaterial::Request(der)) => der.as_ref().to_vec(),
+        _ => return Err("could not encode the enrollment request".to_owned()),
+    };
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| format!("could not build a runtime: {err}"))?;
+    let plan =
+        super::attach::plan_quic_dial(&rt, quic_target, None, pins.leaf.map(str::to_owned), None)
+            .map_err(|refusal| format!("{refusal:?}"))?
+            .with_authority(&phux_client_runtime::target::AuthorityPin {
+                ca: pins.authority.map(str::to_owned),
+                learner: None,
+            });
+    let phux_client::attach::Dial::Quic(dial) = plan.dial else {
+        return Err("enrollment needs a quic:// endpoint".to_owned());
+    };
+    let enroll_dial = phux_dial::enroll::EnrollDial {
+        addr: dial.addr,
+        server_name: dial.server_name,
+        trust: dial.trust,
+    };
+    let chain = rt
+        .block_on(async {
+            tokio::time::timeout(
+                probe_deadline(),
+                phux_dial::enroll::enroll(
+                    &enroll_dial,
+                    &phux_protocol::enroll::Request { ticket, csr },
+                ),
+            )
+            .await
+        })
+        .map_err(|_| "the server did not answer the enrollment in time".to_owned())?
+        .map_err(|err| err.to_string())?;
+    let issued = request.accept(&chain).map_err(|err| err.to_string())?;
+    if let Some(pinned) = pins.authority
+        && phux_config::known_authorities::canonical_authority(pinned).as_deref()
+            != Some(issued.ca_fingerprint())
+    {
+        return Err("the issuing CA is not the one the link pins".to_owned());
+    }
+    let stem = identity_stem(workload.name, issued.credential_id());
+    let files = ClientIdentityFiles {
+        certificate: workload.dir.join(format!("{stem}{CERT_EXTENSION}")),
+        private_key: workload.dir.join(format!("{stem}{KEY_EXTENSION}")),
+        credential_id: Some(issued.credential_id().to_owned()),
+        fresh: true,
+    };
+    issued
+        .store(&files.private_key, &files.certificate)
+        .map_err(|err| format!("could not store the client identity: {err}"))?;
+    Ok(files)
+}
+
+/// The pins a connect link gave for a ticket enrollment.
+pub(crate) struct TicketPins<'a> {
+    /// The leaf fingerprint (`fp`).
+    pub(crate) leaf: Option<&'a str>,
+    /// The CA fingerprint (`ca`).
+    pub(crate) authority: Option<&'a str>,
+}
+
 /// `<name>.client.<first 16 hex digits of the credential id>`: one pair of
 /// files per enrollment, so a re-enrollment never overwrites the pair the
 /// registry still names.

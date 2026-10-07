@@ -1723,6 +1723,8 @@ fn build_quic_listener_for(
         tokens,
         workload_ca.as_ref(),
         workload_registry,
+        // Every mode, so a device can enroll before `paired` is turned on.
+        Some(env.workload_paths()),
     ) {
         Ok(quic) => {
             let bound = quic.local_addr().map_or(addr_s, |a| a.to_string());

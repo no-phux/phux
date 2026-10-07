@@ -126,7 +126,7 @@ impl Target {
     }
 
     /// The registry entry a WebSocket or QUIC dial is planned from.
-    fn resolved(&self) -> Option<Resolved> {
+    pub(crate) fn resolved(&self) -> Option<Resolved> {
         let (endpoint, transport) = match &self.transport {
             Transport::Uds(_) => return None,
             Transport::Ws(url) => (url.clone(), Lane::Ws(url.clone())),

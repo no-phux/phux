@@ -120,6 +120,7 @@ by a newer one, the newer line is the operative reading.
 
 ## Auth and trust
 
+- [0154](./0154-devices-enroll-with-a-ticket-over-their-own-alpn.md) A device without ssh enrolls a key it keeps with a single-use `phux pair --enroll` ticket over the QUIC listener's `phux-enroll/1` ALPN; relays and WebTransport carry the identity in an end-to-end TLS session inside their stream.
 - [0153](./0153-clients-pin-the-workload-ca.md) The workload CA issues the server certificate; clients pin the CA at pairing (or learn it on the first leaf-pinned connection), refuse a changed CA by name, and `phux workload authority --rotate` re-pairs everything.
 - [0116](./0116-workload-auth-is-mtls.md) Workload authentication is mTLS client certificates on QUIC/wss (kernel-uid on owner UDS, bearer token as outer admission only); 0098's proof handshake is retired unshipped.
 - [0106](./0106-identity-is-the-serving-user.md) A server never switches OS users; `user@host` selects that user's server, and `phux whoami` reports identity.

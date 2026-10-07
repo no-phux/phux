@@ -24,7 +24,12 @@ const STABLE_READ_ATTEMPTS: usize = 4;
 
 /// Default workload file names; a write sweeps stale temporaries only for
 /// these and the file it wrote.
-const MANAGED_NAMES: [&str; 3] = ["workload-keys", "workload-ca.key", "workload-ca.pem"];
+const MANAGED_NAMES: [&str; 4] = [
+    "workload-keys",
+    "workload-ca.key",
+    "workload-ca.pem",
+    "enrollment-tickets",
+];
 
 /// The role a file plays: the only name a diagnostic gives it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,6 +40,8 @@ pub(super) enum FileRole {
     CaCertificate,
     /// `<state-dir>/workload-ca.key` (secret).
     CaPrivateKey,
+    /// `<state-dir>/enrollment-tickets` (hashes only, still owner-only).
+    Tickets,
 }
 
 impl FileRole {
@@ -43,6 +50,7 @@ impl FileRole {
             Self::Registry => "registry",
             Self::CaCertificate => "CA certificate",
             Self::CaPrivateKey => "CA private key",
+            Self::Tickets => "enrollment tickets",
         }
     }
 
@@ -51,7 +59,7 @@ impl FileRole {
     const fn forbidden_mode_bits(self) -> u32 {
         match self {
             Self::CaCertificate => 0o022,
-            Self::Registry | Self::CaPrivateKey => 0o077,
+            Self::Registry | Self::CaPrivateKey | Self::Tickets => 0o077,
         }
     }
 }

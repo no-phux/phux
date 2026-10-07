@@ -2212,6 +2212,13 @@ pub(crate) enum Command {
         /// configured.
         #[usage(long, value_name = "HOST:PORT", requires("--relay-route"))]
         relay: Option<String>,
+
+        /// Also mint a single-use enrollment ticket into the link, so a
+        /// device without ssh (a phone) enrolls a workload certificate for a
+        /// key it generates and keeps. Needed to reach a server in `paired`
+        /// policy mode. The ticket expires in ten minutes.
+        #[usage(long, conflicts("--relay-route"))]
+        enroll: bool,
     },
 
     /// Manage the mTLS workload authority

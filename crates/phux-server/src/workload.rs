@@ -14,6 +14,7 @@ mod material;
 mod reload;
 mod server_identity;
 mod store;
+pub mod tickets;
 
 pub use client::{
     ClientRequest, IssuedIdentity, remove_identity_files, remove_owned_file,

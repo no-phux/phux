@@ -54,6 +54,39 @@ fn validate_quic_authority(authority: &str) -> Result<(), String> {
     ))
 }
 
+/// A P-256 key the platform keystore holds (Secure Enclave, StrongBox):
+/// the phone's workload identity (ADR-0154). The private key never crosses
+/// this boundary.
+#[uniffi::export(with_foreign)]
+pub trait DeviceKey: Send + Sync {
+    /// The uncompressed public point, X9.62 (`0x04 || X || Y`, 65 bytes):
+    /// `SecKeyCopyExternalRepresentation` of the public key.
+    fn public_point(&self) -> Vec<u8>;
+    /// ECDSA P-256 over SHA-256 of `message`, DER-encoded
+    /// (`ecdsaSignatureMessageX962SHA256`).
+    fn sign(&self, message: Vec<u8>) -> Result<Vec<u8>, DeviceKeyError>;
+}
+
+/// A keystore failure, reported to the user as given.
+#[derive(uniffi::Error, Debug, thiserror::Error)]
+pub enum DeviceKeyError {
+    #[error("{reason}")]
+    Failed { reason: String },
+}
+
+/// The runtime's view of a [`DeviceKey`].
+struct DeviceKeySigner(Arc<dyn DeviceKey>);
+
+impl phux_client_runtime::enroll::DeviceSigner for DeviceKeySigner {
+    fn public_point(&self) -> Vec<u8> {
+        self.0.public_point()
+    }
+
+    fn sign(&self, message: &[u8]) -> Result<Vec<u8>, String> {
+        self.0.sign(message.to_vec()).map_err(|err| err.to_string())
+    }
+}
+
 #[uniffi::export(with_foreign)]
 pub trait WireListener: Send + Sync {
     fn on_wire_activity(&self);
@@ -68,6 +101,24 @@ impl Listener for ListenerProjection {
 }
 
 impl RemoteClient {
+    /// The runtime target `connect` and `enroll_device` dial.
+    fn target(&self) -> Result<Target, WireError> {
+        let transport =
+            classify_remote_endpoint(&self.url).map_err(|reason| WireError::Runtime {
+                reason: format!("invalid remote endpoint: {reason}"),
+            })?;
+        Ok(Target {
+            transport,
+            name: self.url.clone(),
+            cert_fingerprint: self.fingerprint.clone(),
+            authority: self.authority_pin(),
+            token_file: None,
+            token: self.token.clone(),
+            tls_server_name: None,
+            client_identity: self.client_identity.lock().unwrap().clone(),
+        })
+    }
+
     /// The pin `connect` dials with: the stored authority, or a learner that
     /// records the one a leaf-pinned server presents.
     fn authority_pin(&self) -> phux_client_runtime::target::AuthorityPin {
@@ -94,6 +145,8 @@ pub struct RemoteClient {
     authority: Mutex<Option<String>>,
     /// The CA a leaf-pinned connection learned, for the embedder to store.
     learned_authority: Arc<Mutex<Option<String>>>,
+    /// The workload identity every dial presents (ADR-0154), once enrolled.
+    client_identity: Mutex<phux_client_runtime::TlsClientIdentity>,
     client: Mutex<Option<Client>>,
     listener: Mutex<Option<Arc<dyn WireListener>>>,
     input_deliveries: Mutex<Vec<WireInputDelivery>>,
@@ -134,6 +187,7 @@ impl RemoteClient {
             token,
             authority: Mutex::new(None),
             learned_authority: Arc::new(Mutex::new(None)),
+            client_identity: Mutex::new(phux_client_runtime::TlsClientIdentity::None),
             client: Mutex::new(None),
             listener: Mutex::new(None),
             input_deliveries: Mutex::new(Vec::new()),
@@ -169,27 +223,53 @@ impl RemoteClient {
         self.learned_authority.lock().unwrap().clone()
     }
 
+    /// Enroll `key` as this device's workload identity with the single-use
+    /// `ticket` a pairing link carried (`enroll=`), over this client's
+    /// `quic://` endpoint and pins. Blocks for at most the dial timeout; call
+    /// it off the main thread, before `connect`. Returns the issued chain
+    /// (public PEM): store it beside the key and hand both to
+    /// `set_device_identity` on later launches. The server's CA is pinned
+    /// for this client too ([`Self::learned_authority`]).
+    pub fn enroll_device(
+        &self,
+        ticket: String,
+        key: Arc<dyn DeviceKey>,
+    ) -> Result<String, WireError> {
+        let target = self.target()?;
+        let signer: Arc<dyn phux_client_runtime::enroll::DeviceSigner> =
+            Arc::new(DeviceKeySigner(key));
+        let enrolled =
+            phux_client_runtime::enroll::enroll_target_blocking(&target, &ticket, signer)
+                .map_err(|reason| WireError::Runtime { reason })?;
+        *self.client_identity.lock().unwrap() =
+            phux_client_runtime::TlsClientIdentity::Held(enrolled.identity);
+        if self.authority.lock().unwrap().is_none() {
+            *self.learned_authority.lock().unwrap() = Some(enrolled.authority);
+        }
+        Ok(enrolled.chain_pem)
+    }
+
+    /// Present the enrolled chain, signed by `key`, on every dial from the
+    /// next `connect` (ADR-0154).
+    pub fn set_device_identity(
+        &self,
+        chain_pem: String,
+        key: Arc<dyn DeviceKey>,
+    ) -> Result<(), WireError> {
+        let identity =
+            phux_client_runtime::enroll::held_identity(&chain_pem, Arc::new(DeviceKeySigner(key)))
+                .map_err(|reason| WireError::Runtime { reason })?;
+        *self.client_identity.lock().unwrap() =
+            phux_client_runtime::TlsClientIdentity::Held(identity);
+        Ok(())
+    }
+
     pub fn connect(&self) -> Result<(), WireError> {
         let mut slot = self.client.lock().unwrap();
         if slot.is_some() {
             return Err(WireError::AlreadyConnected);
         }
-        let transport =
-            classify_remote_endpoint(&self.url).map_err(|reason| WireError::Runtime {
-                reason: format!("invalid remote endpoint: {reason}"),
-            })?;
-        let target = Target {
-            transport,
-            name: self.url.clone(),
-            cert_fingerprint: self.fingerprint.clone(),
-            authority: self.authority_pin(),
-            token_file: None,
-            token: self.token.clone(),
-            tls_server_name: None,
-            // Mobile enrollment is its own ADR; until then the phone
-            // presents no client certificate.
-            client_identity: phux_client_runtime::TlsClientIdentity::None,
-        };
+        let target = self.target()?;
         let options = ClientOptions {
             control: phux_client_runtime::control::ControlOptions {
                 client_name: "phux-mobile".to_owned(),

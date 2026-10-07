@@ -12,6 +12,7 @@
 
 #[cfg(feature = "provision")]
 pub mod cert;
+pub mod enroll;
 pub mod quic;
 #[cfg(feature = "provision")]
 pub mod secret_file;
@@ -22,7 +23,7 @@ pub mod window;
 pub mod ws;
 
 pub use quic::QuicDial;
-pub use tls::{AuthorityChange, AuthorityLearner, CertTrust, TlsClientIdentity};
+pub use tls::{AuthorityChange, AuthorityLearner, CertTrust, HeldIdentity, TlsClientIdentity};
 pub use window::{SendWindow, TrackedSend};
 pub use ws::{WsDial, WsTarget};
 

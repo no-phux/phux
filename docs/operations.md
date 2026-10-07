@@ -903,6 +903,21 @@ cannot quietly downgrade the client to bearer-only admission
 both identity variables, and disables TLS session resumption so every
 handshake shows whether the server asked.
 
+A device with no ssh to the host, such as a phone, enrolls instead with a
+ticket: `phux pair --enroll` puts a single-use, ten-minute ticket in the
+connect link, and the device sends it with a certificate signing request for
+a key it generated (and, on a phone, keeps in its keystore) over the QUIC
+listener's second ALPN, `phux-enroll/1`, which the configured listener
+offers in every mode so devices can enroll before `paired` is turned on
+([ADR-0154](adr/0154-devices-enroll-with-a-ticket-over-their-own-alpn.md),
+[workload-auth.md](spec/workload-auth.md) §8.2). The server stores only each
+ticket's hash in `<state-dir>/enrollment-tickets`, consumes it on first use,
+and logs the ticket and credential ids an enrollment produced; revoke a
+credential you do not recognize with `phux workload revoke`. Under `paired`
+the QUIC listener completes a handshake without a client certificate so that
+ALPN can answer, and closes any terminal connection without an enrolled one
+before reading a byte of it.
+
 `phux host add me@host` enrolls a client certificate over SSH and saves
 owner-only key and certificate files in `<state-dir>/remotes/`. Its registry
 entry supplies them on every dial without `PHUX_WORKLOAD_*` variables.
