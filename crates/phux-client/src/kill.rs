@@ -9,7 +9,7 @@
 //! surfaces cannot drift.
 
 use phux_protocol::ResourceId;
-use phux_protocol::caps::ServerFeature;
+use phux_protocol::caps::{ServerFeature, ServerFeatureExt};
 use phux_protocol::ids::IdempotencyKey;
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, ErrorCode, FrameKind, SESSION_KEEP_EMPTY_KEY, Scope,
@@ -448,24 +448,41 @@ pub async fn selected(
     Ok(killed)
 }
 
-/// The longest a successful kill waits for its panes to leave the server's
-/// state: past the server's pane-kill grace (`SIGHUP`, then `SIGKILL` after
-/// 500ms) with room for a loaded host.
+/// The longest a successful kill waits, against an older server, for its
+/// panes to leave the server's state: past the pane-kill grace (`SIGHUP`,
+/// then `SIGKILL` after 500ms) with room for a loaded host.
 const REAP_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Poll cadence while [`await_reaped`] waits.
 const REAP_POLL: std::time::Duration = std::time::Duration::from_millis(20);
 
-/// Wait until none of the local `ids` is still listed by `GET_STATE`.
+/// Whether the server's kill reply already follows the whole visible
+/// teardown (`features_ext.COMMITTED_TEARDOWN`, `docs/spec/L1.md` §5.2), so
+/// the next `GET_STATE` omits the killed resources.
+fn kill_reply_is_the_teardown(conn: &Connection) -> bool {
+    conn.negotiated_bootstrap().is_some_and(|negotiated| {
+        negotiated
+            .server_features_ext
+            .contains(ServerFeatureExt::CommittedTeardown)
+    })
+}
+
+/// Against a server that predates `COMMITTED_TEARDOWN`, wait until none of
+/// the local `ids` is still listed by `GET_STATE`; a current server's reply
+/// already guarantees it, so this returns at once.
 ///
-/// The server commits a kill before it replies, but keeps each pane (and so
-/// its session) listed until the pane's process is reaped. Without this wait
-/// `phux kill work && phux new work` fails on a name that is about to be
-/// free, and `phux ls` right after a kill still lists the killed panes as
-/// running. Best-effort and bounded: a disconnect is the server exiting after
-/// its last session, and a pane that outlives [`REAP_WAIT`] was still killed.
-/// Satellite ids are not waited on; their reap is the satellite's business.
+/// An older server commits a kill before it replies, but keeps each pane
+/// (and so its session) listed until the pane's process is reaped. Without
+/// this wait `phux kill work && phux new work` fails on a name that is about
+/// to be free, and `phux ls` right after a kill still lists the killed panes
+/// as running. Best-effort and bounded: a disconnect is the server exiting
+/// after its last session, and a pane that outlives [`REAP_WAIT`] was still
+/// killed. Satellite ids are not waited on; their reap is the satellite's
+/// business.
 async fn await_reaped(conn: &mut Connection, ids: &[ResourceId]) {
+    if kill_reply_is_the_teardown(conn) {
+        return;
+    }
     let local: Vec<&ResourceId> = ids
         .iter()
         .filter(|id| matches!(id, ResourceId::Local { .. }))
@@ -871,17 +888,8 @@ mod tests {
         assert!(killed_one(&seen, 2), "a partial-view hit still kills");
     }
 
-    /// A successful kill returns only once its panes are no longer listed,
-    /// so `phux kill work && phux new work` cannot race the reap.
-    #[tokio::test]
-    async fn selected_waits_until_the_killed_panes_are_reaped() {
-        let spec = ScriptSpec::new()
-            .states([pane_state(), pane_state(), pane_state()])
-            .state(reaped_state());
-        let (result, _, seen) = run_selected_through(spec, "work").await;
-        assert!(result.is_ok(), "{result:?}");
-        let reads = seen
-            .iter()
+    fn state_reads(seen: &[FrameKind]) -> usize {
+        seen.iter()
             .filter(|frame| {
                 matches!(
                     frame,
@@ -891,10 +899,42 @@ mod tests {
                     }
                 )
             })
-            .count();
+            .count()
+    }
+
+    /// Against a server without `COMMITTED_TEARDOWN`, a successful kill
+    /// returns only once its panes are no longer listed, so
+    /// `phux kill work && phux new work` cannot race the reap.
+    #[tokio::test]
+    async fn selected_waits_until_an_older_server_reaps_the_killed_panes() {
+        let spec = ScriptSpec::new()
+            .states([pane_state(), pane_state(), pane_state()])
+            .state(reaped_state());
+        let (result, _, seen) = run_selected_through(spec, "work").await;
+        assert!(result.is_ok(), "{result:?}");
         assert_eq!(
-            reads, 4,
+            state_reads(&seen),
+            4,
             "resolve, two still-listed polls, then reaped: {seen:?}"
         );
+    }
+
+    /// A server advertising `COMMITTED_TEARDOWN` replies only once the kill
+    /// is the whole visible teardown (L1 §5.2), so the kill polls nothing.
+    #[tokio::test]
+    async fn selected_trusts_a_committed_teardown_reply() {
+        use phux_protocol::caps::ServerFeatureExtSet;
+
+        for target in ["work", "@2"] {
+            let spec = ScriptSpec::new()
+                .server_features_ext(ServerFeatureExtSet::with(&[
+                    ServerFeatureExt::CommittedTeardown,
+                ]))
+                .states([pane_state(), pane_state()])
+                .state(reaped_state());
+            let (result, _, seen) = run_selected_through(spec, target).await;
+            assert!(result.is_ok(), "{target}: {result:?}");
+            assert_eq!(state_reads(&seen), 1, "{target}: resolve only: {seen:?}");
+        }
     }
 }

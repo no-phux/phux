@@ -25,8 +25,8 @@ use std::fmt;
 use bytes::{Bytes, BytesMut};
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
-    BootstrapCapabilities, BootstrapStreamProfile, ServerCapabilities, ServerFeatureSet,
-    select_bootstrap_profile,
+    BootstrapCapabilities, BootstrapStreamProfile, ServerCapabilities, ServerFeatureExtSet,
+    ServerFeatureSet, select_bootstrap_profile,
 };
 use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
 use phux_protocol::wire::frame::{
@@ -106,6 +106,8 @@ pub struct ScriptSpec {
     /// The features `HELLO_OK` advertises; empty by default, so a verb that
     /// needs a bit must refuse against `new()`.
     server_features: ServerFeatureSet,
+    /// The extended features `HELLO_OK` advertises; empty by default.
+    server_features_ext: ServerFeatureExtSet,
     /// When set, `GET_SCREEN` is never answered: the connection stays open
     /// and silent. See [`ScriptSpec::wedge_screen_reads`].
     wedge_screen_reads: bool,
@@ -245,6 +247,13 @@ impl ScriptSpec {
     #[must_use]
     pub const fn server_features(mut self, features: ServerFeatureSet) -> Self {
         self.server_features = features;
+        self
+    }
+
+    /// The extended features (`HELLO_OK` word 1) the server advertises.
+    #[must_use]
+    pub const fn server_features_ext(mut self, features: ServerFeatureExtSet) -> Self {
+        self.server_features_ext = features;
         self
     }
 
@@ -651,7 +660,9 @@ fn reference_reply(frame: &FrameKind, spec: &mut ScriptSpec) -> Vec<FrameKind> {
                 protocol_major: PROTOCOL_VERSION.major,
                 protocol_minor: PROTOCOL_VERSION.minor,
                 protocol_patch: PROTOCOL_VERSION.patch,
-                server_caps: ServerCapabilities::new().with_features(spec.server_features),
+                server_caps: ServerCapabilities::new()
+                    .with_features(spec.server_features)
+                    .with_features_ext(spec.server_features_ext),
                 server_id: spec.server_id.clone(),
                 selected_profile,
                 bootstrap_limits,
