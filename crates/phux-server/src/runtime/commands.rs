@@ -2030,7 +2030,7 @@ async fn handle_upgrade(
             send_result(out_tx, request_id, CommandResult::Ok).await;
             tokio::task::yield_now().await;
             info!("UPGRADE: re-exec'ing the new binary");
-            let err = plan.exec();
+            let err = plan.exec().await;
             // Only reached if exec failed: the old image keeps serving.
             error!(error = %err, "UPGRADE exec failed; continuing on the current image");
             return;

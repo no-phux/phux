@@ -241,13 +241,18 @@ impl AgentSessionActor {
         let token = self.core.token.clone();
         loop {
             tokio::select! {
+                // `biased` and not by accident: seal/unseal is the control
+                // plane, and `AgentSessionSeal::drop` can only queue its
+                // unseal. An append queued behind that unseal in the same
+                // wake-up must see the unsealed stream, never the seal.
+                biased;
                 () = token.cancelled() => break,
-                request = self.append_rx.recv() => match request {
-                    Some(request) => self.handle_append(request),
-                    None => break,
-                },
                 request = self.bootstrap_rx.recv() => match request {
                     Some(request) => self.handle_bootstrap(request),
+                    None => break,
+                },
+                request = self.append_rx.recv() => match request {
+                    Some(request) => self.handle_append(request),
                     None => break,
                 },
                 request = self.core.control_rx.recv() => {
@@ -546,6 +551,65 @@ mod tests {
         });
         let next = append(&mut actor, "{\"type\":\"stop\"}").expect("unsealed");
         assert_eq!(next.first_seq, 2, "the refused append consumed nothing");
+    }
+
+    /// `AgentSessionSeal::drop` cannot await the actor: all it can do is queue
+    /// the unseal. An append queued behind that unseal in the same wake-up must
+    /// still find an unsealed stream, so `run` has to poll the bootstrap
+    /// mailbox before the append mailbox. Regression for #1035.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_queued_unseal_is_applied_before_the_append_queued_behind_it() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let bundle = AgentSessionActor::build(
+                    ResourceId::default(),
+                    "claude",
+                    Some("abc"),
+                    CancellationToken::new(),
+                    4096,
+                );
+                let ResourceFacetHandle::AgentSession(facet) = &bundle.handle.facet else {
+                    panic!("built the wrong facet");
+                };
+                let bootstrap = facet.bootstrap.clone();
+                let append_tx = facet.append.clone();
+                tokio::task::spawn_local(bundle.actor.run());
+
+                // Prove the actor is polling, then leave it sealed.
+                let (reply, cut) = oneshot::channel();
+                bootstrap
+                    .send(BootstrapRequest {
+                        reply,
+                        seal: Some(true),
+                    })
+                    .await
+                    .expect("the actor is running");
+                assert_eq!(cut.await.expect("the cut").base_seq, 0);
+
+                // Queue the unseal and an append without yielding, so the actor
+                // wakes with both mailboxes ready at once.
+                bootstrap
+                    .try_send(BootstrapRequest {
+                        reply: oneshot::channel().0,
+                        seal: Some(false),
+                    })
+                    .expect("the bootstrap mailbox has room");
+                let (reply, accepted) = oneshot::channel();
+                append_tx
+                    .try_send(AppendRequest {
+                        bytes: Bytes::copy_from_slice(b"{\"type\":\"stop\"}"),
+                        reply,
+                    })
+                    .expect("the append mailbox has room");
+
+                let verdict = accepted.await.expect("the actor always replies");
+                assert!(
+                    verdict.is_ok(),
+                    "an append queued behind its own unseal saw the seal: {verdict:?}"
+                );
+            })
+            .await;
     }
 
     #[test]
