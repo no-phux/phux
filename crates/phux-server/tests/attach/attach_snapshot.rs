@@ -228,6 +228,7 @@ fn resource_attach_replays_existing_scrollback_in_both_synthesized_profiles() {
                         terminal_id: pane,
                         cols: 43,
                         rows: 38,
+                        cell_px: None,
                     },
                 )
                 .await;
