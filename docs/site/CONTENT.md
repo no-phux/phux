@@ -191,3 +191,8 @@ asset directory together on a feature branch. Merge through the existing
 `main` workflow; the existing `site-deploy` workflow publishes the static files
 to `phux.sh`. No upload portal, CMS, or separate media deployment is involved.
 The documentation host redirects these marketing pages and media to `phux.sh`.
+
+The host Worker serves MP4 byte ranges through Cloudflare's native Cache API
+so the player can seek. The internal cache is keyed by the static asset's ETag;
+client cache directives remain unchanged. Verify seeking against `wrangler dev`
+or the deployed Worker, not only Astro preview, which has different media serving.

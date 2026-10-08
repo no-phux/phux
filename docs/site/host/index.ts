@@ -96,7 +96,14 @@ export default {
       return handleAnalyticsHttp(request, env, ctx);
     }
 
-    const asset = await env.ASSETS.fetch(request);
+    let asset = await env.ASSETS.fetch(request);
+    if (
+      request.method === "GET" && url.pathname.startsWith("/demos/") &&
+      asset.status === 200 && asset.headers.get("content-type")?.includes("video/mp4") &&
+      request.headers.has("range")
+    ) {
+      asset = await demoVideoRange(request, asset);
+    }
     const contentType = asset.headers.get("content-type") ?? "";
     if (!asset.ok || !contentType.includes("text/html")) {
       recordEvents(env.TELEMETRY, ctx, classifyRequest(request, asset));
@@ -135,6 +142,37 @@ export default {
     return html;
   },
 };
+
+// Workers static assets ignore Range. The native Cache API slices a stored
+// Content-Length response without buffering the entire film in JavaScript.
+async function demoVideoRange(request: Request, asset: Response): Promise<Response> {
+  const etag = asset.headers.get("etag");
+  const ifRange = request.headers.get("if-range");
+  if (ifRange && ifRange !== etag) return asset;
+  const url = new URL(request.url);
+  url.search = "";
+  // Key by the current asset revision so a deploy cannot serve an older film.
+  url.searchParams.set("revision", etag ?? "");
+  const cache = await caches.open("phux-demo-videos");
+  const lookup = new Request(url, { headers: request.headers });
+  let ranged = await cache.match(lookup);
+  if (!ranged) {
+    const headers = new Headers(asset.headers);
+    headers.set("accept-ranges", "bytes");
+    // Static assets default to max-age=0, which expires a Cache API put immediately.
+    headers.set("cache-control", "public, max-age=3600");
+    await cache.put(new Request(url), new Response(asset.body, { headers }));
+    ranged = await cache.match(lookup);
+  } else {
+    await asset.body?.cancel();
+  }
+  if (!ranged) throw new Error("The demo video could not be stored in the range cache");
+  const headers = new Headers(ranged.headers);
+  const policy = asset.headers.get("cache-control");
+  if (policy) headers.set("cache-control", policy);
+  else headers.delete("cache-control");
+  return new Response(ranged.body, { status: ranged.status, headers });
+}
 
 // Forward one exchange to the private ops pipeline. Skips static assets
 // (same rule as the public aggregate counters) and never throws.
