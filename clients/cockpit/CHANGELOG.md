@@ -25,6 +25,29 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   or server restart without restarting the app; recover the selected session
   by its confirmed name when a replacement server reuses numeric IDs.
 
+## [0.34.0](https://github.com/no-phux/phux/compare/cockpit-v0.33.1...cockpit-v0.34.0) (2026-10-08)
+
+
+### Features
+
+* **cockpit:** bundle Paper Mono as default terminal font ([#1087](https://github.com/no-phux/phux/issues/1087)) ([c496e4a](https://github.com/no-phux/phux/commit/c496e4a69d085c7ddc4aa1c547b2363feb33a6a9))
+* **cockpit:** confirm unsafe pastes and mark panes that return to their prompt ([49cfb58](https://github.com/no-phux/phux/commit/49cfb58c67aa706d2c712d81bccb05f41c1d5e7d))
+* **cockpit:** measure keystroke to echo on the coordinator path ([e927cec](https://github.com/no-phux/phux/commit/e927cec6bb4763d125675df819977f4fd3713fd9))
+* **cockpit:** say when another client is driving a terminal and offer Take Over Input ([45182d3](https://github.com/no-phux/phux/commit/45182d318eb34e1f5d10bc7d635f70e6fd74ddd7))
+
+
+### Bug Fixes
+
+* **cockpit:** lease each worktree to one agent session ([022aee5](https://github.com/no-phux/phux/commit/022aee5254b99db1c5603c752243b37469d76d00))
+* **cockpit:** pin native SDK on upstream main with scriptc 0.2.5 ([cf93781](https://github.com/no-phux/phux/commit/cf93781475da42f6fdc9325a0d04efbbc5d21bcf))
+* **cockpit:** pin native SDK with modal focus containment and scriptc 0.1.7 ([50562dd](https://github.com/no-phux/phux/commit/50562dd6a9a01fa63bd4beec47c75d20d145ca6e))
+* **cockpit:** pin native SDK with switch authority and test-stack fixes ([69237c7](https://github.com/no-phux/phux/commit/69237c7031218150e7127323176454066765d45d))
+
+
+### Documentation
+
+* **cockpit:** drop the retired process_restoration_supported flag from the topology doc ([fdb07d7](https://github.com/no-phux/phux/commit/fdb07d7e90d67eed64cecd1d9465448c41fcc1a8))
+
 ## [0.33.1](https://github.com/no-phux/phux/compare/cockpit-v0.33.0...cockpit-v0.33.1) (2026-10-08)
 
 
