@@ -1,0 +1,248 @@
+---
+import { existsSync } from "node:fs";
+import { render, type CollectionEntry } from "astro:content";
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import { getDemos, demoDate, demoDuration } from "../../lib/demos";
+import { SITE } from "../../lib/site";
+
+interface Props {
+  demo: CollectionEntry<"demos">;
+}
+
+export async function getStaticPaths() {
+  return (await getDemos()).map((demo) => ({
+    params: { slug: demo.id },
+    props: { demo },
+  }));
+}
+
+const { demo } = Astro.props;
+const { Content } = await render(demo);
+const title = `${SITE.name} — ${demo.data.title}`;
+const description = demo.data.summary;
+const cast = `/demos/${demo.id}/session.cast`;
+const hasCast = existsSync(`public${cast}`);
+---
+
+<BaseLayout {title} {description}>
+  <article class="wrap demo">
+    <a class="back" href="/demos"><span aria-hidden="true">←</span> All demos</a>
+    <header class="demo-head">
+      <p class="meta">
+        <time datetime={demo.data.publishedAt}>{demoDate(demo.data.publishedAt)}</time>
+        <span>{demoDuration(demo.data.duration)} runtime</span>
+        {demo.data.version && <span>phux {demo.data.version}</span>}
+      </p>
+      <h1>{demo.data.title}</h1>
+      <p class="lede">{demo.data.summary}</p>
+    </header>
+
+    <section class="recording" aria-label="Demo recording">
+          <video
+            controls
+            playsinline
+            preload="metadata"
+            poster={demo.data.poster}
+            src={demo.data.video}
+            aria-label={demo.data.title}
+            aria-describedby="playback-help"
+            data-demo-video
+          >
+            {demo.data.captions && (
+              <track kind="captions" src={demo.data.captions} srclang="en" label="English" default />
+            )}
+            <p>Your browser does not support this video. <a href={demo.data.video} download>Download the MP4</a> or read the walkthrough below.</p>
+          </video>
+          <p class="video-error" data-video-error hidden role="status">The video could not play in this browser. Download the MP4 to watch locally, or read the walkthrough below.</p>
+          <div class="recording-footer">
+            <p id="playback-help">{demo.data.captions ? "English captions available in the player." : "Written walkthrough below."}</p>
+            <div class="downloads" aria-label="Recording downloads">
+              <a href={demo.data.video} download>Download MP4</a>
+              {hasCast && <a href={cast} download>Download terminal recording</a>}
+            </div>
+          </div>
+    </section>
+
+    <section class="walkthrough" aria-labelledby="walkthrough-title">
+      <h2 id="walkthrough-title">Walkthrough</h2>
+      <Content />
+    </section>
+    <p class="end-link"><a href="/demos">Back to all demos <span aria-hidden="true">→</span></a></p>
+  </article>
+</BaseLayout>
+
+<script>
+  const video = document.querySelector<HTMLVideoElement>("[data-demo-video]");
+  const error = document.querySelector<HTMLElement>("[data-video-error]");
+  if (video && error) {
+    const showError = () => { error.hidden = false; };
+    video.addEventListener("error", showError);
+    if (video.error) showError();
+  }
+</script>
+
+<style>
+  .demo {
+    max-width: 1120px;
+    padding-block: clamp(28px, 5vw, 56px) 80px;
+    overflow-wrap: anywhere;
+  }
+  .back {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    gap: 12px;
+    color: var(--color-muted);
+    font-size: 14px;
+    margin-bottom: 24px;
+  }
+  .back:hover {
+    color: var(--color-accent);
+  }
+  .demo-head {
+    max-width: 780px;
+    margin-bottom: 32px;
+  }
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 20px;
+    font-size: 13px;
+    color: var(--color-muted);
+    margin: 0 0 16px;
+  }
+  h1 {
+    font-size: clamp(28px, 4.5vw, 44px);
+    font-weight: 600;
+    line-height: 1.2;
+    letter-spacing: -0.035em;
+    margin: 0 0 20px;
+  }
+  .lede {
+    margin: 0;
+    color: var(--color-muted);
+    font-size: 18px;
+    line-height: 1.65;
+  }
+  .recording {
+    border: 1px solid var(--color-rule);
+    background: var(--color-surface);
+  }
+  video {
+    display: block;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    object-fit: contain;
+    background: var(--color-bg);
+  }
+  .recording-footer {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 24px;
+    padding: 12px 20px;
+    border-top: 1px solid var(--color-rule);
+    font-size: 13px;
+  }
+  .recording-footer p {
+    margin: 0;
+    color: var(--color-muted);
+  }
+  .downloads {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 20px;
+  }
+  .downloads a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+  .video-error, .unavailable {
+    padding: 20px;
+    margin: 0;
+  }
+  .video-error {
+    color: var(--color-attention);
+  }
+  .unavailable p {
+    margin: 0 0 12px;
+  }
+  .walkthrough {
+    max-width: 760px;
+    margin: clamp(36px, 5vw, 56px) auto 0;
+    line-height: 1.8;
+  }
+  .walkthrough h2 {
+    margin: 0 0 24px;
+    font-size: 24px;
+    font-weight: 600;
+    letter-spacing: -0.025em;
+  }
+  .walkthrough :global(h2), .walkthrough :global(h3), .walkthrough :global(h4) {
+    margin: 32px 0 16px;
+    font-weight: 600;
+    line-height: 1.3;
+    letter-spacing: -0.02em;
+  }
+  .walkthrough :global(h2) { font-size: 24px; }
+  .walkthrough :global(h3) { font-size: 20px; }
+  .walkthrough :global(h4) { font-size: 18px; }
+  .walkthrough :global(p), .walkthrough :global(ul), .walkthrough :global(ol) {
+    margin: 0 0 20px;
+  }
+  .walkthrough :global(ul), .walkthrough :global(ol) {
+    padding-left: 24px;
+  }
+  .walkthrough :global(ul) { list-style: disc; }
+  .walkthrough :global(ol) { list-style: decimal; }
+  .walkthrough :global(li + li) { margin-top: 8px; }
+  .walkthrough :global(pre) {
+    max-width: 100%;
+    padding: 16px;
+    margin: 20px 0;
+    overflow-x: auto;
+    border: 1px solid var(--color-rule);
+    background: var(--color-surface);
+    font-size: 14px;
+    white-space: pre;
+  }
+  .walkthrough :global(pre.shiki), .walkthrough :global(pre.shiki span) {
+    color: var(--shiki-dark, var(--color-fg)) !important;
+  }
+  .walkthrough :global(code) { font-size: 0.875em; }
+  .walkthrough :global(:not(pre) > code) {
+    padding: 2px 4px;
+    background: var(--color-surface-raised);
+  }
+  .walkthrough :global(blockquote) {
+    border-left: 2px solid var(--color-accent);
+    padding-left: 20px;
+    margin: 24px 0;
+    color: var(--color-muted);
+  }
+  .walkthrough :global(img) { max-width: 100%; height: auto; }
+  .walkthrough :global(.table-region) { overflow-x: auto; max-width: 100%; }
+  .walkthrough :global(th), .walkthrough :global(td) {
+    border-bottom: 1px solid var(--color-rule);
+    padding: 10px 16px;
+    text-align: left;
+  }
+  .walkthrough :global(hr) {
+    border: 0;
+    border-top: 1px solid var(--color-rule);
+    margin: 32px 0;
+  }
+  .downloads a, .unavailable a, .walkthrough :global(a), .end-link a {
+    color: var(--color-accent);
+    text-decoration: underline;
+  }
+  .end-link {
+    max-width: 760px;
+    margin: 40px auto 0;
+    border-top: 1px solid var(--color-rule);
+    padding-top: 24px;
+    font-size: 14px;
+  }
+</style>

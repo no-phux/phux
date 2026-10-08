@@ -12,6 +12,7 @@
     "check:links": "bun run scripts/check-links.ts",
     "verify:demo": "bun run scripts/verify-demo.ts",
     "verify:motion": "bun run scripts/verify-motion.ts",
+    "demo:add": "bun run scripts/add-demo.ts",
     "sync-docs": "bun run scripts/sync-docs.ts",
     "fetch-release": "bun run scripts/fetch-release.ts",
     "build:client": "bash scripts/build-client.sh",

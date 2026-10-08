@@ -1,0 +1,118 @@
+---
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import DemoCard from "../../components/DemoCard.astro";
+import { getDemos } from "../../lib/demos";
+import { SITE, docsHref } from "../../lib/site";
+
+const [latest, ...earlier] = await getDemos();
+const title = `${SITE.name} — Demos`;
+const description = "See phux in action. Short recordings of real terminal workflows, with written walkthroughs you can follow at your own pace.";
+---
+
+<BaseLayout {title} {description}>
+  <div class="wrap demos">
+    <header class="catalogue-head">
+      <p class="kicker">In the terminal</p>
+      <h1>Demos</h1>
+      <p class="lede">{description}</p>
+    </header>
+
+    {latest ? (
+      <>
+        <DemoCard demo={latest} featured />
+        {earlier.length > 0 && (
+          <section class="earlier" aria-labelledby="more-demos">
+            <h2 id="more-demos">More demos</h2>
+            <div class="demo-grid">
+              {earlier.map((demo) => <DemoCard {demo} />)}
+            </div>
+          </section>
+        )}
+        <p class="catalogue-note">Recorded workflows. Watch at your own pace, or read the walkthrough alongside each demo.</p>
+      </>
+    ) : (
+      <section class="empty" aria-labelledby="no-demos">
+        <h2 id="no-demos">No recordings published yet.</h2>
+        <p>While the library is empty, you can try phux in your browser or follow the quickstart in your own terminal.</p>
+        <div class="empty-links">
+          <a class="cta" href="/embed">Try phux</a>
+          <a class="cta ghost" href={docsHref("/quickstart")}>Read the quickstart</a>
+        </div>
+      </section>
+    )}
+  </div>
+</BaseLayout>
+
+<style>
+  .demos {
+    padding-block: clamp(36px, 6vw, 72px) 80px;
+  }
+  .catalogue-head {
+    max-width: 680px;
+    margin-bottom: clamp(28px, 4vw, 48px);
+  }
+  .kicker {
+    margin: 0 0 12px;
+    color: var(--color-signal);
+    font-family: var(--font-code);
+    font-size: 12px;
+  }
+  h1 {
+    margin: 0 0 16px;
+    font-size: clamp(36px, 5vw, 52px);
+    font-weight: 600;
+    line-height: 1.15;
+    letter-spacing: -0.04em;
+  }
+  .lede {
+    margin: 0;
+    font-size: 18px;
+    line-height: 1.65;
+    color: var(--color-muted);
+  }
+  .earlier {
+    margin-top: 48px;
+  }
+  h2 {
+    margin: 0 0 20px;
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+  .demo-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 24px;
+  }
+  .catalogue-note {
+    margin: 28px 0 0;
+    max-width: 70ch;
+    color: var(--color-muted);
+    font-size: 14px;
+  }
+  .empty {
+    border: 1px solid var(--color-rule);
+    background: var(--color-surface);
+    padding: clamp(24px, 4vw, 40px);
+  }
+  .empty p {
+    max-width: 60ch;
+    color: var(--color-muted);
+    margin: 0 0 24px;
+  }
+  .empty-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  @media (max-width: 1000px) {
+    .demo-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  @media (max-width: 640px) {
+    .demo-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>

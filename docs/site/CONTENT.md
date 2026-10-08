@@ -134,3 +134,60 @@ installation path.
 Accessibility, light/dark reading, code copying, responsive layout, and visual
 roles are specified in `DESIGN_SYSTEM.md`. Verify them in the built browser
 surface, not by assuming the framework provides them.
+
+## Recorded demos
+
+The marketing-only `/demos` catalogue and `/demos/<slug>` pages show real
+recordings, independently of the hosted terminal above. Keep the landing
+minimal; link to the catalogue rather than adding a second demo section.
+
+### Add a recording
+
+From `docs/site`, with Bun and `ffmpeg`/`ffprobe` installed on `PATH`:
+
+```sh
+bun run demo:add --file /path/to/recording.mov --title "Program status with OSC 7501" --summary "Watch phux display the program's live status in the terminal list." --slug program-status-osc7501 --captions /path/to/captions.vtt --version 0.53.0
+```
+
+`--file`, `--title`, and `--summary` are required. `--slug`, `--captions`, and
+`--version` are optional; `--help` prints the interface. Input paths are relative
+to the working directory. Without `--slug`, the title produces a conservative
+lowercase ASCII kebab slug. Explicit slugs must contain only letters/digits
+separated by single hyphens, at most 100 characters. An existing entry or asset
+directory is never overwritten; use another slug for a separate recording.
+
+The command accepts video inputs such as MOV and MP4, transcodes the selected
+video stream to H.264/yuv420p MP4 with fast-start playback, and retains the first
+audio track as AAC when present. Silent recordings are valid. It fits the image
+within 1920 × 1080 without upscaling or changing the display aspect ratio, chooses
+a representative early real frame for a WebP poster, and probes the encoded
+duration. Review the poster: a recording with a long blank introduction should
+be trimmed before import. ffmpeg and ffprobe are local authoring prerequisites,
+not site build or deployment dependencies.
+
+Output is a Markdown entry at `src/content/demos/<slug>.md` plus
+`public/demos/<slug>/video.mp4`, `poster.webp`, and optional `captions.vtt`. The
+entry contains `title`, `summary`, UTC `publishedAt` (`YYYY-MM-DD`), actual
+`duration` in seconds, site-relative `video`/`poster` URLs, and optional
+`captions`/`version`. Failed encoding or validation cleans temporary outputs;
+the entry is installed only when all assets are ready.
+
+Replace or expand the initial summary prose in the Markdown body with a useful
+written walkthrough or transcript. Do not duplicate the page's H1. Describe
+observable behavior and the demonstrated release, not planned capabilities.
+Provide UTF-8 WebVTT captions for speech and important onscreen events; the
+command checks the `WEBVTT` header and basic cue timing/text format. Edit the
+copied `captions.vtt` and Markdown before publication and check synchronization.
+An optional original `session.cast` can live beside the video when useful.
+
+Every published asset must be at most **25 MiB**, the Workers static-asset cap.
+Large source recordings are allowed if their encoded output fits; oversized
+outputs fail without publishing an entry. Trim long clips or reduce the source
+resolution before trying again. Manually edited/replaced assets, including a
+`session.cast`, must obey the same cap.
+
+Review playback and captions locally, then commit the Markdown and its entire
+asset directory together on a feature branch. Merge through the existing
+`main` workflow; the existing `site-deploy` workflow publishes the static files
+to `phux.sh`. No upload portal, CMS, or separate media deployment is involved.
+The documentation host redirects these marketing pages and media to `phux.sh`.

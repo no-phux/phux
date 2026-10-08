@@ -51,6 +51,7 @@ export function docsHref(path: string): string {
 
 export const MARKETING_NAV = [
   { href: docsHref("/overview"), label: "Docs" },
+  { href: "/demos", label: "Demos" },
   { href: docsHref("/consumers"), label: "Apps" },
   { href: docsHref("/consumers/agents"), label: "Agents" },
   { href: SITE.github, label: "GitHub", external: true },
