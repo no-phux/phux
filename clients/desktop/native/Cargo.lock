@@ -4767,7 +4767,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-core"
-version = "0.53.1"
+version = "0.54.0"
 dependencies = [
  "ciborium",
  "libghostty-vt",
@@ -4783,7 +4783,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-ffi"
-version = "0.53.1"
+version = "0.54.0"
 dependencies = [
  "libghostty-vt",
  "napi",
@@ -4796,7 +4796,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-runtime"
-version = "0.53.1"
+version = "0.54.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -4821,7 +4821,7 @@ dependencies = [
 
 [[package]]
 name = "phux-config"
-version = "0.53.1"
+version = "0.54.0"
 dependencies = [
  "chrono",
  "nix",
@@ -4856,7 +4856,7 @@ dependencies = [
 
 [[package]]
 name = "phux-dial"
-version = "0.53.1"
+version = "0.54.0"
 dependencies = [
  "futures-util",
  "hex",
@@ -4872,7 +4872,7 @@ dependencies = [
 
 [[package]]
 name = "phux-perf"
-version = "0.53.1"
+version = "0.54.0"
 dependencies = [
  "libc",
  "nix",
@@ -4882,7 +4882,7 @@ dependencies = [
 
 [[package]]
 name = "phux-protocol"
-version = "0.53.1"
+version = "0.54.0"
 dependencies = [
  "bitflags 2.13.2",
  "bytes",
