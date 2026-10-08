@@ -59,30 +59,7 @@ fn set_cloexec(fd: RawFd) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
-    use std::os::fd::AsFd;
-
-    fn close_on_exec(fd: impl AsFd) -> bool {
-        fcntl_getfd(fd.as_fd())
-            .expect("descriptor flags")
-            .contains(FdFlags::CLOEXEC)
-    }
-
-    #[test]
-    fn an_inheritable_descriptor_becomes_close_on_exec() {
-        let (reader, writer) = std::io::pipe().expect("pipe");
-        let flags = fcntl_getfd(writer.as_fd()).expect("descriptor flags");
-        fcntl_setfd(writer.as_fd(), flags.difference(FdFlags::CLOEXEC)).expect("inheritable");
-        assert!(!close_on_exec(&writer));
-
-        withhold_inherited_descriptors();
-
-        assert!(close_on_exec(&writer));
-        assert!(close_on_exec(&reader));
-        // stdio is the caller's to hand on; it is left alone.
-        assert!(!close_on_exec(std::io::stderr()));
-    }
-}
+// Exercised end to end, in its own process, by the service suite's
+// `the_spawned_daemon_does_not_hold_the_callers_descriptors`. A unit test here
+// would flip descriptor flags process-wide under `cargo test`, racing the
+// upgrade tests that clear `FD_CLOEXEC` and assert on it.
