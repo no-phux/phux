@@ -195,19 +195,24 @@ measure_raster_worktree_source() {
 # Package, identity-stage, and launch from HOME. The app and CLI both use HOME
 # as cwd, giving this run a private automation dropbox. Sets MEASURE_APP_PID
 # and replaces NATIVE with a cwd-pinned wrapper for subsequent automation calls.
+# Extra arguments are passed to the app as KEY=VALUE environment entries.
+# MEASURE_PACKAGE_ARGS (a word list) extends the package build, for instance
+# -Dphux-client-ffi-profile=ffi-dev to find the iteration FFI archive.
 measure_launch_isolated() {
     local home="$1" config="$2" log="$3"
     local phux="${4:-0}"
+    shift 4 2>/dev/null || shift $#
     local source_app staged_app executable native_real wrapper
     staged_app="${home}/Phux Cockpit (measure).app"
     native_real="${NATIVE:?set NATIVE to the automation CLI before launching}"
 
     printf 'packaging with automation...\n'
     source_app="${MEASURE_ROOT}/zig-out/package/phux-cockpit.app"
+    # shellcheck disable=SC2086 # MEASURE_PACKAGE_ARGS is a deliberate word list
     if [[ "$phux" == 1 ]]; then
-        ( cd "$MEASURE_ROOT" && zig build package -Dautomation=true -Dphux-enabled=true >/dev/null )
+        ( cd "$MEASURE_ROOT" && zig build package -Dautomation=true -Dphux-enabled=true ${MEASURE_PACKAGE_ARGS:-} >/dev/null )
     else
-        ( cd "$MEASURE_ROOT" && zig build package -Dautomation=true >/dev/null )
+        ( cd "$MEASURE_ROOT" && zig build package -Dautomation=true ${MEASURE_PACKAGE_ARGS:-} >/dev/null )
     fi
     executable="$(dev_app_stage "$source_app" "$staged_app")"
 
@@ -227,7 +232,7 @@ measure_launch_isolated() {
 
     # A measurement must not depend on whoever runs it having a Ghostty
     # config: an empty value turns the Ghostty font/colour adoption off.
-    dev_app_launch "$executable" "$home" "$config" "$log" PHUX_COCKPIT_GHOSTTY_CONFIG=
+    dev_app_launch "$executable" "$home" "$config" "$log" PHUX_COCKPIT_GHOSTTY_CONFIG= "$@"
     # shellcheck disable=SC2034 # output variable consumed by the caller
     MEASURE_APP_PID="$DEV_APP_PID"
 }

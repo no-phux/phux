@@ -75,6 +75,31 @@ Stored machine-dependent baselines and a wrapper that normalizes every
 instrument's flags are deliberately omitted. Re-run derivations and compare
 the same basis instead.
 
+## Key echo (coordinator path)
+
+`scripts/measure-key-echo.sh` (also `./scripts/measure.sh measure-key-echo`)
+is the regression guard for the path a `cmd+T` terminal now takes: a text key
+leaving the Phux host, through the FFI, the socket, the coordinator's PTY and
+the shell's echo, until the published grid's damage lands back in the host.
+The sample is taken by the host's own clock (`EchoProbe` in
+`src/providers/phux/host.zig`, on only while `PHUX_COCKPIT_KEY_ECHO` is set),
+one key in flight at a time, and each sample is one `key_echo_us=` line in
+the app log. What is left between that and glass is the SDK's paint and
+present, which the same run prints from its frame profile when the ring is
+full; the two are reported side by side, never summed into a synthetic
+keystroke-to-glyph percentile.
+
+The run packages the checkout with automation, identity-stages it with its
+own HOME, config, state and socket, and lets the bundled CLI start an
+isolated coordinator; a developer's `PHUX_SOCKET` is overridden on purpose.
+It then activates the app by PID (typed keys are refused unfocused), which
+needs a logged-in GUI session and, once, macOS Automation permission for the
+invoking terminal to control System Events, and types 160 single letters
+30ms apart. Below 128 samples it refuses to report. `--max-p99-us` is the
+drift gate: a p99 above it fails the run. The default ceiling is provisional
+until the first permitted run pins it; replace it with that run's p99 times
+two and cite the `MEASURED-BASIS` line here.
+
 ## Paint ceilings (Hybrid C)
 
 `scripts/measure-paint-ceiling.sh` (also `./scripts/measure.sh measure-paint-ceiling`)

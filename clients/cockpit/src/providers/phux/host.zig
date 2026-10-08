@@ -193,6 +193,21 @@ const HeldKey = struct {
     text_len: usize,
 };
 
+/// Keystroke-to-echo probe (docs/MEASUREMENT.md, "Key echo"): the gap
+/// between a text key leaving this host and the next grid damage of the
+/// same terminal. Off unless PHUX_COCKPIT_KEY_ECHO is set when the host is
+/// created. One key in flight at a time, so a burst measures its first key
+/// rather than a queue, and a key that lands no damage is simply replaced
+/// by the next one.
+pub const EchoProbe = struct {
+    enabled: bool = false,
+    pending: ?Pending = null,
+    samples: u64 = 0,
+    last_us: u64 = 0,
+
+    const Pending = struct { ref: provider.TerminalRef, at_ns: u64 };
+};
+
 const Terminal = struct {
     measured_cell: ?provider.MeasuredCell = null,
     id: RemoteId,
@@ -376,6 +391,7 @@ pub const Host = struct {
     ended: std.ArrayListUnmanaged(provider.TerminalRef) = .empty,
     /// Injectable for tests; production reads the monotonic clock.
     now_ns: *const fn () u64 = &monotonicNanos,
+    echo: EchoProbe = .{},
     attach_barrier_seen: bool = false,
     client_generation: u64 = 1,
     operation_ledger: operations.Ledger(max_terminals) = .{},
@@ -435,6 +451,7 @@ pub const Host = struct {
         errdefer gpa.destroy(host);
         const context_id = try provider.context.allocate();
         host.* = .{ .gpa = gpa, .client = try newClient(), .bridge = bridge, .context_id = context_id };
+        host.echo.enabled = std.c.getenv("PHUX_COCKPIT_KEY_ECHO") != null;
         return host;
     }
 
@@ -1355,7 +1372,25 @@ pub const Host = struct {
             return err;
         };
         try host.queueKey(&id, input);
+        host.echoSent(owner_value.terminal_ref, input);
         try host.stageOutgoing();
+    }
+
+    fn echoSent(host: *Host, ref: provider.TerminalRef, input: *const provider.KeyInput) void {
+        if (!host.echo.enabled or host.echo.pending != null or input.text.len == 0) return;
+        host.echo.pending = .{ .ref = ref, .at_ns = host.now_ns() };
+    }
+
+    /// The first damage of the stamped terminal closes the sample. Damage of
+    /// any other terminal is someone else's output and leaves it open.
+    fn echoLanded(host: *Host, terminal: *const Terminal) void {
+        const pending = host.echo.pending orelse return;
+        if (!pending.ref.eql(terminal.terminalRef())) return;
+        host.echo.pending = null;
+        const us = (host.now_ns() -| pending.at_ns) / std.time.ns_per_us;
+        host.echo.samples += 1;
+        host.echo.last_us = us;
+        std.log.scoped(.key_echo).info("key_echo_us={d}", .{us});
     }
 
     /// A reconnect keeps the terminal's entry but not its owner
@@ -2174,6 +2209,7 @@ pub const Host = struct {
         }
         const terminal = try host.ensureTerminal(effect.terminal_id);
         markGridDirty(terminal, host.attach_barrier_seen);
+        host.echoLanded(terminal);
     }
 
     /// Only notices the engine consumes enter the bounded ring: a bell here,
@@ -2313,6 +2349,7 @@ pub const Host = struct {
 
     fn markDetached(host: *Host) void {
         host.attach_barrier_seen = false;
+        host.echo.pending = null;
         for (host.terminals.items) |*terminal| {
             terminal.phase = if (terminal.published) .reconnecting else .attaching;
             terminal.seen_in_attach = false;
@@ -4267,6 +4304,45 @@ fn stageStatusAt(host: *Host, bridge: *transport.Bridge, name: []const u8, at_ns
     status_test_now_ns = at_ns;
     try test_support.stageFixture(bridge, name);
     _ = try host.drainReadiness();
+}
+
+test "the key echo probe times a text key to its terminal's next damage, one key at a time" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try attachedStatusHost(&bridge);
+    defer host.destroy();
+    host.now_ns = &statusTestClock;
+    host.echo.enabled = true;
+    const terminal = try statusRef(7);
+    const owner_value = host.owner(terminal).?;
+    var damage = std.mem.zeroes(c.PhuxClientEffect);
+    damage.kind = c.PHUX_CLIENT_EFFECT_DAMAGE;
+    damage.detail = c.PHUX_CLIENT_DAMAGE_ROWS;
+    damage.terminal_id = cId(&host.findTerminal(terminal).?.id);
+    // A modifier-only key carries no text and is not an echo to wait for.
+    status_test_now_ns = 1_000_000;
+    try host.sendKey(owner_value, &.{ .action = .press, .physical = @enumFromInt(0) });
+    try std.testing.expect(host.echo.pending == null);
+    // A text key stamps; a second one in flight does not restamp.
+    try host.sendKey(owner_value, &.{ .action = .press, .physical = @enumFromInt(0), .text = "x" });
+    status_test_now_ns = 3_000_000;
+    try host.sendKey(owner_value, &.{ .action = .press, .physical = @enumFromInt(0), .text = "y" });
+    try std.testing.expectEqual(@as(u64, 1_000_000), host.echo.pending.?.at_ns);
+    // The terminal's damage closes the sample from the first key's stamp.
+    status_test_now_ns = 8_500_000;
+    try host.captureDamage(&damage);
+    try std.testing.expectEqual(@as(u64, 1), host.echo.samples);
+    try std.testing.expectEqual(@as(u64, 7_500), host.echo.last_us);
+    try std.testing.expect(host.echo.pending == null);
+    // Damage with nothing stamped is ordinary output.
+    try host.captureDamage(&damage);
+    try std.testing.expectEqual(@as(u64, 1), host.echo.samples);
+    // Off, nothing is stamped. Damage froze the replica until the next
+    // publication; a live phase is what a key needs, so restore it here.
+    host.findTerminal(terminal).?.phase = .live;
+    host.echo.enabled = false;
+    try host.sendKey(owner_value, &.{ .action = .press, .physical = @enumFromInt(0), .text = "z" });
+    try std.testing.expect(host.echo.pending == null);
 }
 
 test "an overlong cwd clears the stored one instead of keeping it" {
