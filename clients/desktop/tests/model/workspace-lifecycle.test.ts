@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { createRoot } from "solid-js";
-import type { DesktopEvent, DesktopPane, DesktopTopology } from "../../native/generated/index";
+import type {
+  DesktopEvent,
+  DesktopPane,
+  DesktopSession,
+  DesktopSpawnOptions,
+  DesktopTopology,
+} from "../../native/generated/index";
 import { createBridge, type DesktopHost } from "../../src/bridge/desktop";
 import { createWorkspace, type Workspace } from "../../src/workspace/controller";
 import { leaf, placements, splitAt } from "../../src/workspace/layout";
@@ -22,6 +28,8 @@ class LifecycleClient {
   attached: string[] = [];
   destroyed: string[] = [];
   requests: number[] = [];
+  spawned: DesktopSpawnOptions[] = [];
+  sessions: DesktopSession[] = [{ id: 1, name: "home", windowCount: 1, attachedClientCount: 1 }];
   queued: DesktopEvent[] = [];
   wake: (handle: string) => void = () => {};
   private nextView = 0;
@@ -62,7 +70,7 @@ class LifecycleClient {
   }
   topology(): DesktopTopology {
     return {
-      sessions: [{ id: 1, name: "home", windowCount: 1, attachedClientCount: 1 }],
+      sessions: this.sessions,
       panes: this.panes,
       focusedPane: this.panes[0]?.terminalId ?? "",
     };
@@ -89,17 +97,18 @@ class LifecycleClient {
     this.attached.push(terminalId);
     return this.attached.length;
   }
-  spawnTerminalWithOptions(_options: unknown): number {
+  spawnTerminalWithOptions(options: DesktopSpawnOptions): number {
+    this.spawned.push(options);
     const id = this.requests.length + 1;
     this.requests.push(id);
     return id;
   }
 }
 
-function pane(terminalId: string, sessionName = "home"): DesktopPane {
+function pane(terminalId: string, sessionName = "home", sessionId = 1): DesktopPane {
   return {
     terminalId,
-    sessionId: 1,
+    sessionId,
     sessionName,
     windowId: 1,
     windowIndex: 0,
@@ -460,6 +469,56 @@ describe("workspace restore lifecycle", () => {
         "local:3",
       ]);
       expect(client.views.size).toBe(3);
+    });
+  });
+});
+
+describe("spawn session", () => {
+  const projB: DesktopSession = { id: 2, name: "projB", windowCount: 1, attachedClientCount: 0 };
+
+  function inProjB(run: (context: Scenario) => void): void {
+    scenario(saved({ kind: "leaf", terminalId: "local:2" }), (context) => {
+      context.client.sessions = [...context.client.sessions, projB];
+      context.client.panes = [pane("local:2", "projB", 2)];
+      context.client.ready.add("local:2");
+      context.wake();
+      expect(context.workspace.focused()?.terminalId).toBe("local:2");
+      run(context);
+    });
+  }
+
+  test("split and new tab from a pane in another session spawn in that session", () => {
+    inProjB(({ client, workspace }) => {
+      workspace.split("row");
+      workspace.split("column", true);
+      workspace.newTerminal();
+      workspace.newTerminal("/tmp");
+      expect(client.spawned.map((options) => options.sessionId)).toEqual([2, 2, 2, 2]);
+      expect(client.spawned.at(-1)?.cwd).toBe("/tmp");
+    });
+  });
+
+  test("a focused pane whose session left the topology falls back to home", () => {
+    inProjB(({ client, workspace, wake }) => {
+      client.sessions = client.sessions.filter((session) => session.id !== projB.id);
+      wake();
+      workspace.split("row");
+      workspace.newTerminal();
+      expect(client.spawned.map((options) => options.sessionId)).toEqual([1, 1]);
+    });
+  });
+
+  test("with no focused pane, a new tab or split spawns in the home session", () => {
+    scenario(undefined, ({ client, workspace, wake }) => {
+      client.sessions = [...client.sessions, projB];
+      wake();
+      expect(workspace.focused()).toBeUndefined();
+      // An empty workspace may already have asked for its first terminal.
+      const before = client.spawned.length;
+      workspace.newTerminal();
+      workspace.split("row");
+      expect(client.spawned.slice(before).map((options) => options.sessionId)).toEqual([1, 1]);
+      expect(client.spawned.every((options) => options.sessionId === 1)).toBe(true);
     });
   });
 });
