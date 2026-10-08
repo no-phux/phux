@@ -122,7 +122,7 @@ import { SITE } from "../lib/site";
         }
 
         function unambiguous(q) {
-          return ["url", "quic", "sni", "token", "name", "fp"].every(function (key) {
+          return ["url", "quic", "sni", "token", "name", "fp", "ca", "enroll"].every(function (key) {
             return q.getAll(key).length <= 1;
           });
         }

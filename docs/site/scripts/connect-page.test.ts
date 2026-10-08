@@ -38,6 +38,8 @@ describe("pairing page", () => {
     { url: "wss://mac.example:8787", quic: "quic://mac.example:8788" },
     { quic: "quic://relay.example:4433", sni: "studio" },
     { quic: "quic://[2001:db8::1]:4433", sni: "studio" },
+    { url: "wss://mac.example:8787", quic: "quic://mac.example:8788", ca: `sha256:${fp}`, enroll: "c".repeat(64) },
+    { quic: "quic://relay.example:4433", sni: "studio", ca: `sha256:${fp}`, enroll: "c".repeat(64) },
   ];
   test.each(supported)("opens supported pairing payload %j without dropping any fields", (fields) => {
     const search = query(fields);
@@ -67,6 +69,8 @@ describe("pairing page", () => {
     query({ quic: "quic://relay.example:4433", sni: "-studio" }),
     query({ url: "wss://mac.example:8787", sni: "studio" }),
     query({ url: "https://mac.example", quic: "quic://mac.example:8788" }),
+    query({ quic: "quic://relay.example:4433", sni: "studio", ca: `sha256:${fp}` }) + "&ca=other",
+    query({ quic: "quic://relay.example:4433", sni: "studio", enroll: "c".repeat(64) }) + "&enroll=other",
   ])("rejects incomplete or ambiguous payload and still scrubs secrets: %s", (search) => {
     const { elements, history } = render(search);
     expect(elements.get("bad").hidden).toBe(false);
