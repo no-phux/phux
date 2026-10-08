@@ -9,6 +9,43 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.53.0](https://github.com/no-phux/phux/compare/v0.52.0...v0.53.0) (2026-10-08)
+
+
+### Features
+
+* **agent-rules:** ship verified gemini-cli, goose, and aider manifests ([5a3ed51](https://github.com/no-phux/phux/commit/5a3ed51a71a9266a36224acc00d0c9c1c7e734e5))
+* **client-ffi:** reach a relayed server end to end from the phone binding ([47c0265](https://github.com/no-phux/phux/commit/47c0265dac468fa52b9a9b2522d362f6c2baedfb))
+* **ffi:** preserve unsupported agent-state vocabulary across projections ([99a9e03](https://github.com/no-phux/phux/commit/99a9e030aef8dac473559dde96474a76a7d98dcd))
+* **network:** prepare Defguard-backed self-hosted federation ([bd8596e](https://github.com/no-phux/phux/commit/bd8596e7846e983a216fe91cf16f602bb2bdea4b))
+* **runtime:** publish generation-aware atomic observations to mobile ([531d4a7](https://github.com/no-phux/phux/commit/531d4a731fb4aa9f97d41eba062146c99a181419))
+* **runtime:** recover and retract the current asked state for bindings ([efc4083](https://github.com/no-phux/phux/commit/efc4083cf50dbc6ba89697dfeaa9fe9223dbc719))
+* **server:** refuse a named workload authority with no policy mode ([f0d0867](https://github.com/no-phux/phux/commit/f0d08670a2bd674fa776b3fd86622599bc7c62c5))
+* **terminal:** implement OSC 7501 program status ([2940bc2](https://github.com/no-phux/phux/commit/2940bc28b3d8affcad29c71e52b31f3deab9e714))
+* **workload:** devices without ssh enroll with a single-use ticket over their own ALPN ([f7d3cc7](https://github.com/no-phux/phux/commit/f7d3cc7f86dfe1edafefd185c9d78f19004d512a))
+* **workload:** relays and WebTransport carry the workload certificate end to end ([57e0ae5](https://github.com/no-phux/phux/commit/57e0ae5d71ace06119d91700f5ef9cd1637b5a59))
+* **workload:** the workload CA issues the server certificate and clients pin it ([c9a0b2d](https://github.com/no-phux/phux/commit/c9a0b2d777bdb3ba9c5166a75496d952da67d01e))
+
+
+### Bug Fixes
+
+* **agent:** agent start takes the withdrawn %name guard ([e04798c](https://github.com/no-phux/phux/commit/e04798c2030f88400b07cf50aa4d2c12e2076255))
+* **client-runtime:** drop replicas when the server incarnation changes ([6f82321](https://github.com/no-phux/phux/commit/6f82321fca6280d89f254c93ea330e78b5ce51cd))
+* **client-runtime:** probe the link when acknowledged input waits on it ([ef2cdcb](https://github.com/no-phux/phux/commit/ef2cdcb7b5263878644ed8795c30b87621447985))
+* **config:** fall back to /run/user/&lt;uid&gt; when XDG_RUNTIME_DIR is unset ([#1073](https://github.com/no-phux/phux/issues/1073)) ([620772b](https://github.com/no-phux/phux/commit/620772b06109d7e7add6ed37e4402ccb847438f5))
+* **mcp:** refuse a withdrawn %name on phux_send_keys and phux_paste ([4034ee8](https://github.com/no-phux/phux/commit/4034ee87f25e4012568909fd87e82e163e047be3))
+* **selector:** resolve %name on every set-valued and placement verb ([93b1be5](https://github.com/no-phux/phux/commit/93b1be565436338c483155be59aa7573dd1acb65))
+* **server:** an auto-spawned daemon inherits only its stdio ([fb2bb1a](https://github.com/no-phux/phux/commit/fb2bb1aa5608d16689276f7bf8d332c72b0e6daa))
+* **server:** order unseals and await bounded upgrade rollback ([3dcec8d](https://github.com/no-phux/phux/commit/3dcec8d06717e6343b590f63abb24f949a5a09f6))
+* **server:** recover lagged consumers and drain final terminal output ([385db34](https://github.com/no-phux/phux/commit/385db349dcac95ff13f917f8c2d57d8e0508971b))
+
+
+### Documentation
+
+* **adr:** ratify ADR-0075, ADR-0076, ADR-0078 ([1939adc](https://github.com/no-phux/phux/commit/1939adc9cf4b0e2865dfacc7c92d55b2d3b9ed2c))
+* **agent:** describe per-pane acknowledged input admission ([93c0734](https://github.com/no-phux/phux/commit/93c0734a18a14dcd1f2fcc4c3417ad84d75d6b00))
+* **network:** clarify concrete listener exposure boundary ([0fd4e51](https://github.com/no-phux/phux/commit/0fd4e511621f50c70c857ef0300b90fcd34a295f))
+
 ## [0.52.0](https://github.com/no-phux/phux/compare/v0.51.0...v0.52.0) (2026-10-07)
 
 
