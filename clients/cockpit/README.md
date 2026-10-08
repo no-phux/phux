@@ -467,7 +467,7 @@ and a command that started and ended inside one burst of output do not count.
   either environment. Internet access is needed to fetch pinned dependencies.
 
 native-sdk is pinned to
-[`phall1/native@d6e85cd9`](https://github.com/phall1/native/commit/d6e85cd943c5746f03a57ddd1297620010f1a79b),
+[`phall1/native@c06f1283`](https://github.com/phall1/native/commit/c06f1283e3e79888301a46a08de0060a74cec338),
 the fork's cockpit/v0.10.5 lineage: terminal interaction, viewport, and
 font seams, the packed `cell_grid` canvas command with its AppKit decoder and
 wire format v7, macOS glyph smoothing, bounded cell-grid draw-resource caching,
@@ -484,7 +484,10 @@ composite path with configurable real-frame capture cadence, and ScriptC 0.1.1
 startup also initializes the final drawable presenter. This pin includes
 host-native glass behind transparent canvas content, window composition lifetime
 handling, and complete modal-dismissal gesture ownership without click-through
-or contamination of the next click's count.
+or contamination of the next click's count. Model-bound checkbox, switch and
+toggle controls take the model's value on every rebuild, so a refused or
+synchronously answered toggle cannot leave the control showing its optimistic
+echo; SDK test binaries link a 48 MB stack for the 2.8 MB canvas `Builder`.
 The pin is a tarball SHA rather than a branch, so a push to the fork can never
 break a checkout of Cockpit — see [docs/SDK_PIN.md](docs/SDK_PIN.md) for how the
 fork and this repo stay in contract, and what to run before moving the pin.

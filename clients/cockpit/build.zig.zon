@@ -198,8 +198,8 @@
         // Cold GPU-composite startup initializes the final drawable presenter,
         // so a correct retained texture also reaches the visible window.
         .native_sdk = .{
-            .url = "https://github.com/phall1/native/archive/d6e85cd943c5746f03a57ddd1297620010f1a79b.tar.gz",
-            .hash = "native_sdk-0.1.0-hzDzQiw_uAJ0vW8AzKHwhMz4Qr09bqIbJuflPytMilV2",
+            .url = "https://github.com/phall1/native/archive/c06f1283e3e79888301a46a08de0060a74cec338.tar.gz",
+            .hash = "native_sdk-0.1.0-hzDzQqpxuAIzOCal1PQEPbdUGALXGjMf_c9nbND0ATiA",
         },
         // libghostty-vt: Ghostty's extracted terminal-state core, consumed
         // as the `ghostty-vt` Zig module. Pinned to the first upstream
