@@ -178,13 +178,23 @@ fn exe_is_under_cargo_target(exe: &Path) -> bool {
 /// spawn lock.
 ///
 /// `$XDG_RUNTIME_DIR/phux[-<profile>]` when `XDG_RUNTIME_DIR` is set,
-/// otherwise `/tmp/phux-<user>[-<profile>]`. The default profile is
-/// unsuffixed so paths created by earlier releases stay valid.
+/// otherwise `/run/user/<uid>/phux[-<profile>]` when that login runtime
+/// directory exists and belongs to this user, otherwise
+/// `/tmp/phux-<user>[-<profile>]`. The default profile is unsuffixed so
+/// paths created by earlier releases stay valid.
+///
+/// The `/run/user/<uid>` step matters for sessions that do not set
+/// `XDG_RUNTIME_DIR` (Tailscale SSH, cron): without it they look under
+/// `/tmp` while the systemd `--user` server, which always has the variable,
+/// listens under `/run/user/<uid>`.
 #[must_use]
 pub fn runtime_dir() -> PathBuf {
     let profile = profile();
-    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
-        let mut path = PathBuf::from(dir);
+    let base = std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(login_runtime_dir);
+    if let Some(mut path) = base {
         path.push(suffixed("phux", &profile));
         return path;
     }
@@ -232,6 +242,18 @@ fn suffixed(stem: &str, profile: &str) -> String {
     }
 }
 
+/// This user's `/run/user/<uid>`, if the login manager created it.
+fn login_runtime_dir() -> Option<PathBuf> {
+    let uid = nix::unistd::getuid().as_raw();
+    let dir = PathBuf::from(format!("/run/user/{uid}"));
+    owned_dir(&dir, uid).then_some(dir)
+}
+
+fn owned_dir(dir: &Path, uid: u32) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    std::fs::metadata(dir).is_ok_and(|meta| meta.is_dir() && meta.uid() == uid)
+}
+
 /// The path segment identifying the user, for the `/tmp` fallback.
 ///
 /// Only needs to be unique per user on a shared machine; the directory is
@@ -246,6 +268,15 @@ pub(crate) fn user_segment() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn login_runtime_dir_must_exist_and_be_ours() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let uid = nix::unistd::getuid().as_raw();
+        assert!(owned_dir(dir.path(), uid));
+        assert!(!owned_dir(dir.path(), uid.wrapping_add(1)));
+        assert!(!owned_dir(&dir.path().join("missing"), uid));
+    }
 
     #[test]
     fn default_profile_paths_are_unsuffixed() {

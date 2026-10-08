@@ -18,7 +18,8 @@ material, token store — lives under `$XDG_STATE_HOME/phux/`.
 The runtime path resolution lives in
 [`phux-server/src/runtime/mod.rs`](../../crates/phux-server/src/runtime/mod.rs): the
 socket is `$XDG_RUNTIME_DIR/phux/phux.sock` when that variable is set,
-otherwise `/tmp/phux-$UID/phux.sock`. The parent directory is created
+otherwise `/run/user/<uid>/phux/phux.sock` when that directory exists and
+is owned by the current user, otherwise `/tmp/phux-$UID/phux.sock`. The parent directory is created
 mode `0o700`.
 
 The persistent per-user state directory resolves via

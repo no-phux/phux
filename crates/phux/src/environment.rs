@@ -25,8 +25,9 @@ pub(crate) const ENV_VARS: &[EnvVarSpec] = &[
         name: "PHUX_SOCKET",
         lines: &[
             "Server socket for the CLI verbs and the server. `--socket`",
-            "overrides it. Default: $XDG_RUNTIME_DIR/phux/phux.sock, or",
-            "/tmp/phux-$USER/phux.sock when XDG_RUNTIME_DIR is unset.",
+            "overrides it. Default: $XDG_RUNTIME_DIR/phux/phux.sock; when",
+            "XDG_RUNTIME_DIR is unset, /run/user/<uid>/phux/phux.sock if",
+            "that directory exists, else /tmp/phux-$USER/phux.sock.",
         ],
     },
     EnvVarSpec {

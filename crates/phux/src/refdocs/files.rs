@@ -36,7 +36,11 @@ pub(crate) fn page() -> Page {
             overrides it);\n\
          2. `$XDG_RUNTIME_DIR/<profile-dir>/phux.sock` if `XDG_RUNTIME_DIR` \
             is set;\n\
-         3. `/tmp/phux-<user>[-<profile>]/phux.sock` otherwise.\n\n\
+         3. `/run/user/<uid>/<profile-dir>/phux.sock` if `XDG_RUNTIME_DIR` \
+            is unset and that login runtime directory exists and is owned \
+            by this user (sessions such as Tailscale SSH or cron that omit \
+            the variable still reach the systemd `--user` server);\n\
+         4. `/tmp/phux-<user>[-<profile>]/phux.sock` otherwise.\n\n\
          The parent directory is created mode `0700`. Its sibling \
          `spawn.lock` serialises auto-spawn so concurrent invocations elect \
          one server rather than racing to bind.\n\n\

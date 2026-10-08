@@ -449,7 +449,8 @@ from the installed release's sessions
 | *name* | `PHUX_PROFILE=name` | `/tmp/phux-$USER-name/phux.sock` | `$XDG_STATE_HOME/phux-name` |
 
 `$XDG_RUNTIME_DIR/phux[-<profile>]` replaces the `/tmp` path when that
-variable is set, and `PHUX_SOCKET` (or `--socket`) still overrides
+variable is set; when it is unset, an existing `/run/user/<uid>` owned by
+this user does instead. `PHUX_SOCKET` (or `--socket`) still overrides
 everything. Paths in full:
 [`docs/reference/files.md`](./reference/files.md).
 
