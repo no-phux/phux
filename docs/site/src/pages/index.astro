@@ -2,6 +2,7 @@
 import BaseLayout from "../layouts/BaseLayout.astro";
 import AuthReturn from "../components/AuthReturn.astro";
 import HeroDemo from "../components/HeroDemo";
+import PhuxExplainer from "../components/motion/PhuxExplainer";
 import { SITE, docsHref } from "../lib/site";
 import release from "../lib/release.json";
 
@@ -37,6 +38,7 @@ const FEATURES = [
       <div class="hero-ctas">
         <a class="cta" href="#install">Install</a>
         <a class="cta ghost" href="/embed" data-demo-launch>Try it in your browser</a>
+        <a class="cta ghost" href="#how-it-works">See how it works</a>
       </div>
     </div>
     <div class="hero-stage">
@@ -54,6 +56,8 @@ const FEATURES = [
       ))
     }
   </section>
+
+  <PhuxExplainer client:visible />
 
   <section class="wrap install" id="install">
     <h2>Install</h2>

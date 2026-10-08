@@ -1,0 +1,347 @@
+.phux-explainer {
+  padding-block: clamp(40px, 6vw, 80px);
+  border-top: 1px solid var(--color-rule);
+}
+.explainer-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: end;
+  gap: 24px;
+  margin-bottom: 28px;
+}
+.explainer-kicker {
+  color: var(--color-cyan);
+  font-family: var(--font-code);
+  font-size: 12px;
+  margin: 0 0 12px;
+}
+.explainer-heading h2 {
+  font-size: clamp(32px, 4vw, 52px);
+  letter-spacing: -0.045em;
+  line-height: 1.1;
+  margin: 0;
+}
+.explainer-heading > p {
+  max-width: 41ch;
+  color: var(--color-muted);
+  margin: 0;
+}
+.scenario-picker {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--color-rule);
+  border: 1px solid var(--color-rule);
+}
+.phux-explainer button,
+.phux-explainer select {
+  font: inherit;
+  color: var(--color-fg);
+  background: var(--color-bg-soft);
+  border: 1px solid var(--color-rule);
+  min-height: 44px;
+  cursor: pointer;
+}
+.scenario-picker button {
+  padding: 14px 12px;
+  border: 0;
+  text-align: left;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.scenario-picker button span {
+  font: 11px var(--font-code);
+  color: var(--color-dim);
+}
+.phux-explainer button[aria-pressed="true"] {
+  color: var(--color-cyan);
+  background: #131b2a;
+  box-shadow: inset 0 -2px var(--color-cyan);
+}
+.phux-explainer button:hover {
+  background: #141a28;
+}
+.explainer-stage {
+  border: 1px solid var(--color-rule);
+  border-top: 0;
+  background: #090c13;
+}
+.stage-toolbar {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--color-rule);
+  font-size: 13px;
+}
+.stage-toolbar label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--color-muted);
+}
+.stage-toolbar select,
+.stage-toolbar button {
+  padding-inline: 10px;
+}
+.motion-diagram {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+.motion-diagram.compact {
+  display: none;
+}
+.signal-legend {
+  display: none;
+  fill: #dcf5ff;
+  font: 11px var(--font-code);
+}
+.compact .signal-legend {
+  display: block;
+}
+.compact .packet-label {
+  display: none;
+}
+.arrival-ring {
+  stroke: #7dcfff;
+  stroke-width: 1.5;
+  fill: none;
+}
+.packet-trail {
+  stroke: #7dcfff;
+  stroke-width: 3;
+  stroke-linecap: round;
+  opacity: 0.6;
+}
+.host-boundary {
+  fill: #0d121c;
+  stroke: #252f47;
+  stroke-dasharray: 4 5;
+}
+.stage-heading,
+.host-label,
+.stage-footnote {
+  fill: #8992b8;
+  font: 11px var(--font-code);
+  letter-spacing: 1px;
+}
+.host-label {
+  font-size: 10px;
+}
+.quiet-wires path {
+  stroke: #29324a;
+  stroke-width: 1.5;
+  fill: none;
+}
+.active-wire {
+  stroke: #557d9b;
+  stroke-width: 2;
+  fill: none;
+}
+.stage-node rect {
+  fill: #0d131f;
+  stroke: #39435f;
+  stroke-width: 1.5;
+}
+.stage-node.landed rect {
+  stroke: #7dcfff;
+}
+.stage-node.landed .node-port {
+  fill: #9ece6a;
+}
+.node-name {
+  fill: #c0caf5;
+  font: 17px var(--font-reading);
+  font-weight: 500;
+}
+.node-sub {
+  fill: #8992b8;
+  font: 10px var(--font-code);
+}
+.node-port {
+  fill: #55708a;
+}
+.stage-node.detached rect {
+  stroke-dasharray: 4 5;
+}
+.stage-node.detached .node-name {
+  fill: #8992b8;
+}
+.signal-packet {
+  fill: #dcf5ff;
+}
+.signal-packet .packet-halo {
+  fill: #7dcfff;
+  opacity: 0.12;
+}
+.signal-packet text {
+  fill: #dcf5ff;
+  font: 11px var(--font-code);
+  paint-order: stroke;
+  stroke: #090c13;
+  stroke-width: 5;
+  stroke-linejoin: round;
+}
+.playback-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 18px;
+  border-top: 1px solid var(--color-rule);
+}
+.playback-controls button {
+  min-width: 132px;
+  padding-inline: 12px;
+  color: var(--color-cyan);
+}
+.playback-controls button:disabled {
+  color: var(--color-muted);
+  cursor: default;
+}
+.timeline-label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  font-size: 12px;
+  color: var(--color-muted);
+}
+.timeline-label input {
+  min-width: 0;
+  width: 100%;
+  min-height: 44px;
+  accent-color: var(--color-cyan);
+  cursor: pointer;
+}
+.step-counter {
+  white-space: nowrap;
+  font: 12px var(--font-code);
+  color: var(--color-muted);
+}
+.explainer-story {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 48px;
+  padding-top: 28px;
+}
+.explainer-story h3 {
+  font-size: 24px;
+  letter-spacing: -0.025em;
+  margin: 0 0 8px;
+}
+.explainer-story p {
+  color: var(--color-muted);
+  margin: 0 0 14px;
+}
+.explainer-story a {
+  color: var(--color-cyan);
+  font-size: 14px;
+  text-decoration: underline;
+}
+.beat-picker {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.beat-picker button {
+  width: 44px;
+  font-family: var(--font-code);
+}
+.beat-copy {
+  min-height: 120px;
+}
+.beat-copy h4 {
+  margin: 0 0 6px;
+  font-size: 17px;
+}
+.beat-copy p {
+  font-size: 15px;
+}
+.motion-note {
+  margin: 18px 0 0;
+  font-size: 12px;
+  color: var(--color-muted);
+}
+.architecture-film {
+  margin-top: 24px;
+  border-block: 1px solid var(--color-rule);
+  padding-block: 16px;
+}
+.architecture-film summary {
+  cursor: pointer;
+  min-height: 44px;
+  align-content: center;
+  font-weight: 500;
+}
+.architecture-film summary span {
+  color: var(--color-muted);
+  font-weight: 400;
+  font-size: 13px;
+  margin-left: 12px;
+}
+.architecture-film video {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-top: 16px;
+}
+.architecture-film p {
+  color: var(--color-muted);
+  font-size: 13px;
+  max-width: 90ch;
+}
+.architecture-film a {
+  color: var(--color-cyan);
+  text-decoration: underline;
+}
+@media (max-width: 700px) {
+  .motion-diagram.wide {
+    display: none;
+  }
+  .motion-diagram.compact {
+    display: block;
+  }
+  .explainer-heading {
+    display: block;
+  }
+  .explainer-heading > p {
+    margin-top: 16px;
+  }
+  .scenario-picker {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .scenario-picker button {
+    font-size: 13px;
+  }
+  .explainer-story {
+    grid-template-columns: 1fr;
+    gap: 24px;
+  }
+  .playback-controls {
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 12px;
+  }
+  .timeline-label {
+    flex-basis: 100%;
+    order: 3;
+  }
+  .step-counter {
+    margin-left: auto;
+  }
+  .stage-toolbar {
+    padding: 12px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .phux-explainer *,
+  .phux-explainer *::before,
+  .phux-explainer *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
