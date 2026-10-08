@@ -5,8 +5,8 @@
 //! clients and client input to the PTY. `Terminal` is `!Send`, so the actor
 //! runs via `spawn_local` on the server's `LocalSet` (ADR-0014) and is
 //! reached only through `Send` channel handles ([`TerminalHandle`]). The
-//! blocking PTY halves are bridged to async by one reader and one writer
-//! thread per pane.
+//! writer's half is one thread per pane. Quiet readers share one poller;
+//! a pane that is producing output gets its own reader until it goes quiet.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -37,9 +37,11 @@ use crate::resource::{ResourceCore, ResourceFacetHandle, ResourceHandle, Resourc
 mod construct;
 mod consumers;
 mod events;
+mod fd_shrink;
 mod io;
 mod native;
 mod osc133;
+mod park;
 mod process_facet;
 pub(crate) mod program_status;
 pub mod requests;

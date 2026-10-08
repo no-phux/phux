@@ -499,8 +499,8 @@ impl TerminalActor {
         if !reaped {
             spawn_detached_reaper(pid);
         }
-        // Both threads end on their own; detach rather than join.
-        drop(pty.reader_thread.take());
+        // Both halves end on their own; detach rather than join.
+        pty.reader.detach();
         drop(pty.writer_thread.take());
         drop(pty);
     }
@@ -550,7 +550,7 @@ impl TerminalActor {
         // drain budget is only checked between reads) never returns while
         // we hold the master. Even then the reader's dup'd fd may keep it
         // blocked, so the joins are bounded.
-        let reader_thread = pty.reader_thread.take();
+        let reader_thread = pty.reader.shutdown();
         let writer_thread = pty.writer_thread.take();
         drop(pty);
         join_thread_bounded(reader_thread, "pty reader").await;

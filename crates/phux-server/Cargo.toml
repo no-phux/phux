@@ -62,7 +62,7 @@ tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 # Safe POSIX wrappers: process-group signals (`signal`), foreground pgid
 # (`term`), `fpathconf(_PC_MAX_CANON)` (`fs` + `feature`), the detached
 # reaper's `waitpid` (`process`), and whoami's uid/login/host (`user`,
-# `hostname`). `libc` is macOS-only here, so these go through `nix`.
+# `hostname`). Quiet PTY masters wait on `event` (epoll / kqueue).
 nix = { version = "0.31", default-features = false, features = [
     "signal",
     "term",
@@ -71,7 +71,12 @@ nix = { version = "0.31", default-features = false, features = [
     "process",
     "user",
     "hostname",
+    # epoll on Linux, kqueue on macOS: one poller for quiet PTY masters.
+    "event",
 ] }
+# `posix_spawn` for pane children (the fd table must not be fork-copied)
+# and macOS `proc_pidinfo` / `getpeereid`.
+libc = "0.2"
 bytes.workspace = true
 # In-process performance telemetry (`GET_PERF`, `phux perf`).
 phux-perf.workspace = true
@@ -120,10 +125,6 @@ tempfile.workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 libghostty-vt.workspace = true
 
-
-# macOS `proc_pidinfo` FFI for cwd and start-time queries (Linux uses /proc).
-[target.'cfg(target_os = "macos")'.dependencies]
-libc = "0.2"
 
 [dev-dependencies]
 # `test-util`: paused time for tick and deadline tests.

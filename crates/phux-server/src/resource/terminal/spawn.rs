@@ -26,7 +26,7 @@ pub(super) const PTY_READ_CHUNK: usize = 16 * 1024;
 pub(super) const PTY_CHANNEL_DEPTH: usize = 128;
 
 /// `EIO`: the slave side is gone. `libc` is macOS-only here, so spell it.
-const EIO: i32 = 5;
+pub(super) const EIO: i32 = 5;
 
 /// Why the writer gave up on a request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -277,15 +277,16 @@ fn service_write_request(
 
 /// PTY-side resources of a [`TerminalActor`](crate::terminal_actor::TerminalActor).
 ///
-/// Field order is drop order: writer thread, master (EOF to the slave),
-/// child, reader thread.
+/// Drop order is the reverse of declaration: writer thread (VEOF), reader
+/// dup, child, then the master. Dropping the reader hangs up a master the
+/// poller was still holding.
 pub(crate) struct PtyOwned {
     /// Master handle, kept for resize ioctls and the writer's termios checks.
     pub(crate) master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     /// Child on the slave side, reaped in `TerminalActor::shutdown_pty`.
     pub(crate) child: Box<dyn Child + Send + Sync>,
-    /// Reader thread; exits on master EOF or when its sender closes.
-    pub(crate) reader_thread: Option<JoinHandle<()>>,
+    /// Quiet-poller registration, or a dedicated reader when the pane is hot.
+    pub(super) reader: super::park::PtyReader,
     /// Writer thread; exits when its receiver closes.
     pub(crate) writer_thread: Option<JoinHandle<()>>,
 }
@@ -611,10 +612,8 @@ pub(crate) fn spawn_pty(
 
     clear_upgrade_handoff_env(&mut cmd);
     clear_agent_host_env(&mut cmd);
-    let child = pair
-        .slave
-        .spawn_command(cmd)
-        .map_err(|e| TerminalActorError::Spawn(spawn_failure_reason(&e)))?;
+    let child = super::fd_shrink::spawn_pane_child(&*pair.slave, &*pair.master, cmd)
+        .map_err(|reason| TerminalActorError::Spawn(spawn_failure_reason(&reason)))?;
     // Our slave copy would prevent EOF on the master after the child exits.
     drop(pair.slave);
 
@@ -674,7 +673,7 @@ const ORPHAN_DRAIN_BUDGET: std::time::Duration = {
 ///
 /// The budget is checked only between reads; a read blocked by an outside
 /// holder of the slave is why `shutdown_pty` bounds the join itself.
-fn drain_master_to_eof<R: Read>(reader: &mut R, buf: &mut [u8]) {
+pub(super) fn drain_master_to_eof<R: Read>(reader: &mut R, buf: &mut [u8]) {
     drain_master_with_budget(reader, buf, ORPHAN_DRAIN_BUDGET);
 }
 
@@ -700,7 +699,7 @@ fn drain_master_with_budget<R: Read>(reader: &mut R, buf: &mut [u8], budget: std
 /// Hand one PTY chunk to the actor: `try_send` first (cheap), then
 /// `blocking_send` only when the queue is really full, which is the
 /// backpressure that stalls a runaway child. `Break` means the actor is gone.
-fn send_pty_chunk(
+pub(super) fn send_pty_chunk(
     tx: &mpsc::Sender<PtyEvent>,
     chunk: bytes::Bytes,
     read_at: std::time::Instant,
@@ -720,15 +719,31 @@ fn send_pty_chunk(
     }
 }
 
+/// Duplicate the master for the reader. `F_DUPFD_CLOEXEC` keeps the dup out of
+/// pane children; the flag is per-descriptor, not a status flag, so it does
+/// not make the writer's dup non-blocking.
+fn dup_master_reader(master: &dyn MasterPty) -> Result<std::fs::File, TerminalActorError> {
+    use std::os::fd::{BorrowedFd, FromRawFd, OwnedFd};
+    let raw = master
+        .as_raw_fd()
+        .ok_or_else(|| TerminalActorError::PtyIo("pty master has no file descriptor".to_owned()))?;
+    // SAFETY: `raw` belongs to `master`, which the caller holds across this
+    // dup. The borrow ends before `master` is used again.
+    let borrowed = unsafe { BorrowedFd::borrow_raw(raw) };
+    let fd = nix::fcntl::fcntl(borrowed, nix::fcntl::FcntlArg::F_DUPFD_CLOEXEC(0))
+        .map_err(|err| TerminalActorError::PtyIo(err.to_string()))?;
+    // SAFETY: `F_DUPFD_CLOEXEC` just created `fd` and this process owns it.
+    let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+    Ok(std::fs::File::from(owned))
+}
+
 /// Shared tail of [`spawn_pty`] / [`adopt_pty`]: start the bridge threads and
 /// assemble the [`PtyOwned`] bundle and channel endpoints.
 fn start_pty_bridge(
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
 ) -> Result<SpawnedPty, TerminalActorError> {
-    let mut reader = master
-        .try_clone_reader()
-        .map_err(|e| TerminalActorError::PtyIo(e.to_string()))?;
+    let reader = dup_master_reader(&*master)?;
     let writer = master
         .take_writer()
         .map_err(|e| TerminalActorError::PtyIo(e.to_string()))?;
@@ -741,41 +756,11 @@ fn start_pty_bridge(
     let (input_tx_to_writer, mut input_rx_for_writer) =
         mpsc::channel::<EncodedInputRequest>(super::PTY_WRITER_QUEUE);
 
-    let reader_thread = std::thread::Builder::new()
-        .name("phux-pty-reader".to_owned())
-        .spawn(move || {
-            crate::perf::promote_helper_thread("phux-pty-reader");
-            let mut buf = vec![0_u8; PTY_READ_CHUNK];
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) => {
-                        let _ = pty_tx_to_actor.blocking_send(PtyEvent::Eof);
-                        break;
-                    }
-                    Ok(n) => {
-                        let read_at = std::time::Instant::now();
-                        crate::perf::PTY_READ_SIZE.record_len(n);
-                        crate::perf::PTY_READ_BYTES.add_len(n);
-                        debug!(n, "pty read");
-                        let chunk = bytes::Bytes::copy_from_slice(&buf[..n]);
-                        if send_pty_chunk(&pty_tx_to_actor, chunk, read_at).is_break() {
-                            // The actor is gone; keep draining the master.
-                            drain_master_to_eof(&mut reader, &mut buf);
-                            break;
-                        }
-                    }
-                    Err(err) => {
-                        debug!(?err, "pty reader thread: read error");
-                        let _ = pty_tx_to_actor.blocking_send(PtyEvent::Eof);
-                        break;
-                    }
-                }
-            }
-        })
-        .map_err(|e| TerminalActorError::PtyIo(e.to_string()))?;
+    let reader = super::park::attach(reader, pty_tx_to_actor);
 
     let writer_thread = std::thread::Builder::new()
         .name("phux-pty-writer".to_owned())
+        .stack_size(super::park::READER_STACK)
         .spawn(move || {
             crate::perf::promote_helper_thread("phux-pty-writer");
             // portable-pty's writer `Drop` writes `\n` + VEOF. After a failed
@@ -803,7 +788,7 @@ fn start_pty_bridge(
         PtyOwned {
             master,
             child,
-            reader_thread: Some(reader_thread),
+            reader,
             writer_thread: Some(writer_thread),
         },
     ))
@@ -1324,6 +1309,134 @@ mod canonical_guard_tests {
         assert_eq!(received.len(), payload.len());
         assert_eq!(received, payload);
         let _ = pty.child.kill();
+    }
+
+    fn collect_for(rx: &mut mpsc::Receiver<PtyEvent>, timeout: Duration) -> Vec<u8> {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut got = Vec::new();
+        let mut last_byte: Option<std::time::Instant> = None;
+        while std::time::Instant::now() < deadline {
+            match rx.try_recv() {
+                Ok(PtyEvent::Bytes { chunk, .. }) => {
+                    got.extend_from_slice(&chunk);
+                    last_byte = Some(std::time::Instant::now());
+                }
+                Ok(PtyEvent::Eof) | Err(mpsc::error::TryRecvError::Disconnected) => break,
+                Err(mpsc::error::TryRecvError::Empty) => {
+                    // A pane that already printed a line and then went quiet is
+                    // done. Waiting out `timeout` would sit on the promote test's
+                    // `sleep`.
+                    let quiet =
+                        last_byte.is_some_and(|at| at.elapsed() >= Duration::from_millis(50));
+                    if quiet && got.contains(&b'\n') {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        }
+        got
+    }
+
+    /// Idle panes sit on the shared poller. They must not each grow a reader thread.
+    #[test]
+    fn idle_panes_share_one_poller() {
+        let parked = super::super::park::parked_count();
+        let hot = super::super::park::hot_count();
+        let mut live = Vec::new();
+        for _ in 0..8 {
+            let mut cmd = CommandBuilder::new("sleep");
+            cmd.arg("60");
+            live.push(spawn_pty(cmd, 80, 24).expect("spawn sleep"));
+        }
+        assert_eq!(super::super::park::parked_count(), parked + 8);
+        assert_eq!(super::super::park::hot_count(), hot);
+        for (_, _, mut pty) in live {
+            let _ = pty.child.kill();
+        }
+    }
+
+    /// The first burst promotes the pane onto a dedicated reader.
+    #[test]
+    fn output_promotes_a_pane_off_the_poller() {
+        let before = super::super::park::promote_count();
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.arg("-c");
+        cmd.arg("printf 'hello-from-pty\\n'; sleep 30");
+        let (mut rx, _, mut pty) = spawn_pty(cmd, 80, 24).expect("spawn a pane that prints once");
+        let got = collect_for(&mut rx, DELIVERY_DEADLINE);
+        assert!(
+            got.windows(14).any(|window| window == b"hello-from-pty"),
+            "missing prompt bytes in {got:?}"
+        );
+        // The byte is queued before the poller records the promotion.
+        let deadline = std::time::Instant::now() + DELIVERY_DEADLINE;
+        while super::super::park::promote_count() <= before && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            super::super::park::promote_count() > before,
+            "a pane that produced output should leave the shared poller"
+        );
+        let _ = pty.child.kill();
+    }
+
+    /// A high fd held open in the server must not be inherited, and on Linux
+    /// the child's allocated fd table must collapse back down.
+    #[test]
+    fn pane_child_does_not_inherit_the_servers_fd_table() {
+        use std::os::fd::FromRawFd;
+        let devnull = std::fs::File::open("/dev/null").expect("devnull");
+        let high = nix::fcntl::fcntl(&devnull, nix::fcntl::FcntlArg::F_DUPFD(4_000))
+            .expect("dup a high fd");
+        let probe = format!(
+            "result=CLEAN; \
+             if [ -e /dev/fd/{high} ]; then result=LEAK; fi; \
+             open=0; i=0; \
+             while [ \"$i\" -lt 64 ]; do \
+               if [ -e \"/dev/fd/$i\" ]; then open=$((open + 1)); fi; \
+               i=$((i + 1)); \
+             done; \
+             fdsize=na; \
+             if [ -r /proc/self/status ]; then \
+               fdsize=$(awk '/^FDSize:/ {{ print $2 }}' /proc/self/status); \
+             fi; \
+             printf '%s COUNT:%s FDSize:%s\\n' \"$result\" \"$open\" \"$fdsize\""
+        );
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.arg("-c");
+        cmd.arg(probe);
+        let (mut rx, _, mut pty) = spawn_pty(cmd, 80, 24).expect("spawn probe");
+        let got = collect_for(&mut rx, DELIVERY_DEADLINE);
+        let text = String::from_utf8_lossy(&got);
+        assert!(text.contains("CLEAN"), "child inherited fd {high}: {text}");
+        let count = text.split_whitespace().find_map(|field| {
+            field
+                .strip_prefix("COUNT:")
+                .and_then(|value| value.parse::<u64>().ok())
+        });
+        let count = count.expect("COUNT line");
+        assert!(
+            count < 16,
+            "child kept {count} fds below 64; the spawn should not copy the server table: {text}"
+        );
+        #[cfg(target_os = "linux")]
+        {
+            let fdsize = text.split_whitespace().find_map(|field| {
+                field
+                    .strip_prefix("FDSize:")
+                    .and_then(|value| value.parse::<u64>().ok())
+            });
+            let fdsize = fdsize.expect("FDSize line");
+            assert!(
+                fdsize < 512,
+                "fd table stayed fat (FDSize {fdsize}) after the trampoline"
+            );
+        }
+        let _ = pty.child.kill();
+        // SAFETY: `fcntl` just created `high` and this test owns it.
+        drop(unsafe { std::os::fd::OwnedFd::from_raw_fd(high) });
     }
 }
 
