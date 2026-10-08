@@ -5,8 +5,9 @@ use phux_protocol::input::mouse::MouseButton;
 use phux_protocol::input::paste::PasteTrust;
 use phux_web::input::{
     BrowserKey, MAX_PASTE_BYTES, WheelAction, WheelModes, code_to_physical_key, held_button,
-    is_copy_chord, is_find_chord, key_events_for_text, mouse_button, paste_event, reports_motion,
-    route_key, route_wheel, scrollback_page, surface_pixel, wheel_arrows, wheel_button, wheel_rows,
+    is_copy_chord, is_find_chord, key_events_for_text, mouse_button, on_screen_key, paste_event,
+    reports_motion, route_key, route_wheel, scrollback_page, surface_pixel, wheel_arrows,
+    wheel_button, wheel_rows, with_ctrl,
 };
 use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -371,4 +372,49 @@ fn pointer_positions_land_on_the_reported_cell_grid_at_any_scale() {
     assert_eq!(surface_pixel(20.5, 8.0, 8, 80), 20.0);
     assert_eq!(surface_pixel(-3.0, 8.0, 8, 80), 0.0);
     assert_eq!(surface_pixel(1.0e6, 8.0, 8, 80), 639.0);
+}
+
+#[wasm_bindgen_test]
+fn on_screen_keys_are_named_keys_or_one_character() {
+    for (name, physical) in [
+        ("Escape", PhysicalKey::Escape),
+        ("Tab", PhysicalKey::Tab),
+        ("Enter", PhysicalKey::Enter),
+        ("ArrowUp", PhysicalKey::ArrowUp),
+        ("ArrowLeft", PhysicalKey::ArrowLeft),
+        ("PageDown", PhysicalKey::PageDown),
+    ] {
+        let key = on_screen_key(name).unwrap_or_else(|| panic!("{name}"));
+        assert_eq!(key.key, physical, "{name}");
+        assert_eq!(key.mods, ModSet::empty(), "{name}");
+        assert_eq!(key.text, None, "{name}");
+    }
+    let slash = on_screen_key("/").unwrap();
+    assert_eq!(slash.text.as_deref(), Some("/"));
+    for refused in ["", "F1", "KeyA", "Shift", "ab", "Escape "] {
+        assert!(on_screen_key(refused).is_none(), "{refused:?}");
+    }
+}
+
+#[wasm_bindgen_test]
+fn a_ctrl_chord_drops_the_text_so_the_server_sends_the_control_byte() {
+    let c = with_ctrl(on_screen_key("c").unwrap());
+    assert_eq!(c.key, PhysicalKey::C);
+    assert_eq!(c.mods, ModSet::CTRL);
+    assert_eq!(c.consumed_mods, ModSet::empty());
+    assert_eq!(c.text, None);
+    let shifted = route_key(&BrowserKey {
+        shift: true,
+        ..key("C", "KeyC")
+    })
+    .unwrap();
+    let chord = with_ctrl(shifted);
+    assert_eq!(chord.mods, ModSet::CTRL | ModSet::SHIFT);
+    assert_eq!(chord.text, None);
+    let up = with_ctrl(on_screen_key("ArrowUp").unwrap());
+    assert_eq!((up.key, up.mods), (PhysicalKey::ArrowUp, ModSet::CTRL));
+    // A character with no physical key cannot carry Ctrl; it still types.
+    let unmapped = on_screen_key("\u{e9}").unwrap();
+    assert_eq!(unmapped.key, PhysicalKey::Unidentified);
+    assert_eq!(with_ctrl(unmapped.clone()), unmapped);
 }

@@ -17,6 +17,7 @@ mod panes;
 pub mod search;
 pub mod selection;
 pub mod session;
+pub mod touch;
 
 pub use panes::PaneRect;
 
@@ -87,6 +88,22 @@ impl HostedClient {
     /// Refuses the last pane; use the host's Release Session control instead.
     pub fn close_pane(&self) -> Result<(), JsValue> {
         self.client.close_pane()
+    }
+
+    /// Send one on-screen key as typed at the terminal: `Escape`, `Tab`,
+    /// `Enter`, `Backspace`, `Delete`, an arrow, `Home`, `End`, `PageUp`,
+    /// `PageDown`, or a single character. A held Ctrl latch chords it.
+    ///
+    /// # Errors
+    /// Refuses any other key name.
+    pub fn send_key(&self, key: &str) -> Result<(), JsValue> {
+        self.client.send_key(key)
+    }
+
+    /// Hold (or release) Ctrl for the next key typed at the terminal; the
+    /// canvas announces each change as a `phux-modifiers` event.
+    pub fn set_ctrl_latch(&self, held: bool) {
+        self.client.set_ctrl_latch(held);
     }
 }
 

@@ -15,6 +15,7 @@ use phux_protocol::input::mouse::MouseButton;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 
 pub use phux_client_core::keys::key_events_for_text;
+use phux_client_core::keys::{key_event_for_char, named};
 
 /// Largest clipboard payload sent as one `INPUT_PASTE`. Half the outbound
 /// transport budget, so a paste never overflows it and tears the connection
@@ -308,8 +309,8 @@ pub fn scrollback_page(key: &BrowserKey<'_>) -> Option<i32> {
     }
 }
 
-/// `WheelEvent.deltaMode` values.
-const WHEEL_PIXELS: u32 = 0;
+/// `WheelEvent.deltaMode` values. Touch scrolling is in pixels too.
+pub const WHEEL_PIXELS: u32 = 0;
 const WHEEL_LINES: u32 = 1;
 
 /// Whole rows a wheel event scrolls (negative is up, into scrollback).
@@ -344,6 +345,52 @@ pub fn paste_event(text: &str) -> Option<PasteEvent> {
         trust: PasteTrust::Trusted,
         data: text.as_bytes().to_vec(),
     })
+}
+
+/// Named keys an on-screen key bar may send, by their `KeyboardEvent.key`
+/// names (which match their `code`s).
+const ON_SCREEN_KEYS: [&str; 13] = [
+    "Escape",
+    "Tab",
+    "Enter",
+    "Backspace",
+    "Delete",
+    "ArrowUp",
+    "ArrowDown",
+    "ArrowLeft",
+    "ArrowRight",
+    "Home",
+    "End",
+    "PageUp",
+    "PageDown",
+];
+
+/// The key press an on-screen key sends: one of the named keys above, or a
+/// single character typed as text. `None` for anything else.
+#[must_use]
+pub fn on_screen_key(name: &str) -> Option<KeyEvent> {
+    let mut chars = name.chars();
+    if let (Some(ch), None) = (chars.next(), chars.next()) {
+        return key_event_for_char(ch);
+    }
+    ON_SCREEN_KEYS
+        .contains(&name)
+        .then(|| named(code_to_physical_key(name)))
+}
+
+/// `key` chorded with Control, as a held Ctrl would send it. The text goes,
+/// since the server derives the control byte from the key and its mods
+/// (carrying the letter would type it); a character with no physical key
+/// cannot carry Ctrl and is sent unchanged.
+#[must_use]
+pub fn with_ctrl(mut key: KeyEvent) -> KeyEvent {
+    if key.key == PhysicalKey::Unidentified {
+        return key;
+    }
+    key.mods |= ModSet::CTRL;
+    key.consumed_mods = ModSet::empty();
+    key.text = None;
+    key
 }
 
 /// Map a W3C `KeyboardEvent.code` to libghostty's physical-key discriminant.
