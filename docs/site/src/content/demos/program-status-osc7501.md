@@ -16,7 +16,7 @@ output. The approval pause is a real wait for Enter—not a simulated UI.
 ## What to watch
 
 - **0:04 — Working.** The program reports its state and progress while computing
-  file checksums. The tab and Agents list show that it is busy.
+  checksums for sample inputs. The tab and Agents list show that it is busy.
 - **0:10 — Needs you.** A `blocked` report with `kind=permission` changes the
   badges while the program waits for approval.
 - **0:16 — Done.** After Enter, the program finishes and returns to Bash. Its
