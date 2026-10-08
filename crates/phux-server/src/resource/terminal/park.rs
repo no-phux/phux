@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Read};
-use std::os::fd::{AsFd, AsRawFd, OwnedFd};
+use std::os::fd::{AsFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread::JoinHandle;
@@ -777,7 +777,6 @@ impl Reactor {
         {
             let Self::Epoll(epoll) = self;
             let _ = epoll.delete(fd);
-            return;
         }
         #[cfg(any(
             target_os = "macos",
@@ -859,6 +858,7 @@ fn kqueue_change(
     flags: nix::sys::event::EvFlags,
     id: u64,
 ) -> io::Result<nix::sys::event::KEvent> {
+    use std::os::fd::AsRawFd;
     let ident = usize::try_from(fd.as_raw_fd())
         .map_err(|_| io::Error::other("pty fd does not fit kevent ident"))?;
     let udata =
