@@ -10,6 +10,12 @@ import {
 } from "../../src/workspace/persist";
 
 describe("layout snapshot", () => {
+  test("defaults to Paper Mono without replacing an explicit saved face", () => {
+    expect(defaultDisplay.fontFamily).toBe("Paper Mono");
+    expect(sanitizeDisplay({ ...defaultDisplay, fontFamily: "" }).fontFamily).toBe("Paper Mono");
+    expect(sanitizeDisplay({ ...defaultDisplay, fontFamily: "Menlo" }).fontFamily).toBe("Menlo");
+  });
+
   test("round-trips split trees, titles and the active tab by terminal identity", () => {
     const root = splitAt(
       leaf({ id: "p1", terminalId: "local:1", viewId: "11" }),

@@ -36,7 +36,7 @@ impl Default for Settings {
             client_handle: String::new(),
             terminal_id: String::new(),
             view_id: None,
-            font: gpui::font("Menlo"),
+            font: gpui::font("Paper Mono"),
             font_size: 14.,
             line_height: 1.25,
             foreground: None,
@@ -116,7 +116,7 @@ impl Settings {
 
     fn set_font(&mut self, value: &Value) {
         let defaults = Self::default();
-        self.font = gpui::font(value["family"].as_str().unwrap_or("Menlo").to_owned());
+        self.font = gpui::font(value["family"].as_str().unwrap_or("Paper Mono").to_owned());
         self.font_size = number(&value["size"], 6., 96.).unwrap_or(defaults.font_size);
         self.line_height = number(&value["lineHeight"], 1., 3.).unwrap_or(defaults.line_height);
         self.cell_width_scale = number(&value["cellWidth"], 0.5, 2.).unwrap_or(1.);

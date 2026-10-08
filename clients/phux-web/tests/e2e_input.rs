@@ -27,6 +27,9 @@ use web_sys::{
 
 wasm_bindgen_test_configure!(run_in_browser);
 
+#[path = "browser_support/metrics.rs"]
+mod metrics;
+
 const WS_URL: &str = match option_env!("PHUX_TEST_WS_URL") {
     Some(url) => url,
     None => "ws://127.0.0.1:47654/",
@@ -332,8 +335,9 @@ fn pointer_with(
     init.set_buttons(if held { 1 << button.max(0) } else { 0 });
     init.set_shift_key(with.shift);
     init.set_ctrl_key(with.ctrl);
-    init.set_client_x((rect.left() + f64::from(col) * 8.0 + 4.0) as i32);
-    init.set_client_y((rect.top() + f64::from(row) * 16.0 + 8.0) as i32);
+    let cell = metrics::measured(canvas);
+    init.set_client_x((rect.left() + (f64::from(col) + 0.5) * cell.cell_w) as i32);
+    init.set_client_y((rect.top() + (f64::from(row) + 0.5) * cell.cell_h) as i32);
     init.set_bubbles(true);
     init.set_cancelable(true);
     let event = PointerEvent::new_with_event_init_dict(kind, &init).unwrap();
@@ -469,8 +473,14 @@ fn cell_pixel(canvas: &HtmlCanvasElement, col: u16, row: u16) -> [u8; 3] {
         .unwrap()
         .dyn_into()
         .unwrap();
+    let cell = metrics::measured(canvas);
     let data = ctx
-        .get_image_data(i32::from(col) * 8 + 6, i32::from(row) * 16 + 15, 1, 1)
+        .get_image_data(
+            ((f64::from(col) + 1.0) * cell.cell_w - 2.0) as i32,
+            ((f64::from(row) + 1.0) * cell.cell_h - 1.0) as i32,
+            1,
+            1,
+        )
         .unwrap()
         .data();
     [data[0], data[1], data[2]]

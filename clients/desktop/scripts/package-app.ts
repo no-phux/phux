@@ -41,6 +41,10 @@ const built = await Bun.build({
 if (!built.success) throw new AggregateError(built.logs, "Desktop app compile failed");
 
 cpSync(addon, join(contents, "Resources/phux-desktop-native.darwin-arm64.node"));
+cpSync(
+  join(root, "native/assets/fonts/PaperMono-OFL.txt"),
+  join(contents, "Resources/PaperMono-OFL.txt"),
+);
 renderIcon(join(contents, "Resources/AppIcon.icns"));
 
 const metadata: unknown = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
