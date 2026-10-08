@@ -57,12 +57,14 @@ pub fn canvasLabelFor(index: usize) []const u8 {
     return secondary_canvas_labels[index - 1];
 }
 
-/// The terminal family, registered up front so SGR bold/italic use real
-/// faces instead of synthesis.
+/// Explicit JetBrains family and Nerd-symbol fallback. IDs remain stable.
 pub const terminal_font_id: canvas.FontId = canvas.min_registered_font_id;
 pub const terminal_bold_font_id: canvas.FontId = terminal_font_id + 1;
 pub const terminal_italic_font_id: canvas.FontId = terminal_font_id + 2;
 pub const terminal_bold_italic_font_id: canvas.FontId = terminal_font_id + 3;
+
+pub const paper_font_id: canvas.FontId = terminal_font_id + 4;
+pub const paper_bold_font_id: canvas.FontId = terminal_font_id + 5;
 
 pub const cockpit_fonts = [_]TerminalApp.FontRegistration{
     .{
@@ -84,5 +86,15 @@ pub const cockpit_fonts = [_]TerminalApp.FontRegistration{
         .id = terminal_bold_italic_font_id,
         .name = "JetBrainsMonoNL Nerd Font Mono Bold Italic",
         .ttf = @embedFile("../../fonts/JetBrainsMonoNLNerdFontMono-BoldItalic.ttf"),
+    },
+    .{
+        .id = paper_font_id,
+        .name = "Paper Mono Regular",
+        .ttf = @embedFile("../../fonts/PaperMono-Regular.ttf"),
+    },
+    .{
+        .id = paper_bold_font_id,
+        .name = "Paper Mono Bold",
+        .ttf = @embedFile("../../fonts/PaperMono-Bold.ttf"),
     },
 };

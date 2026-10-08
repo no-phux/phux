@@ -66,3 +66,18 @@ JetBrains Mono copyright 2020 The JetBrains Mono Project Authors.
 Nerd Fonts font patches copyright 2014 Ryan L McIntyre.
 
 Source: https://github.com/ryanoasis/nerd-fonts/releases/tag/v3.4.0
+
+## Paper Mono
+
+Cockpit's default terminal family embeds the unmodified Regular and Bold
+TrueType faces from https://github.com/paper-design/paper-mono at
+`e6eaeceaef02e77e3db997711e07a16378de2bd7`. No font is fetched at runtime.
+Paper has no italic face; the native SDK synthesizes italics from Paper
+Regular or Bold. Nerd symbols continue to use the bundled JetBrains Nerd
+family as a glyph fallback, not as Paper's companion faces.
+
+Copyright 2025 The Paper-Mono.Git Project Authors.
+Licensed under SIL Open Font License, Version 1.1. The unmodified upstream
+license is distributed as `PaperMono-OFL.txt`, also under `assets/fonts`.
+`src/fonts` embeds the same font bytes the bundle carries in `assets/fonts`;
+`scripts/verify-paper-mono.py` pins both copies and the license by SHA-256.

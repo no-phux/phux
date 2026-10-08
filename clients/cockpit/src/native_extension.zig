@@ -2561,12 +2561,14 @@ test "shipping TypeScript graph registers terminal fonts without overriding nati
         .markup = .{ .source = @embedFile("app.native") },
     };
     configureOptionsValue(&options);
-    try std.testing.expectEqual(@as(usize, 4), options.fonts.len);
+    try std.testing.expectEqual(@as(usize, 6), options.fonts.len);
     const expected = [_]canvas.FontId{
         cockpit.scene.terminal_font_id,
         cockpit.scene.terminal_bold_font_id,
         cockpit.scene.terminal_italic_font_id,
         cockpit.scene.terminal_bold_italic_font_id,
+        cockpit.scene.paper_font_id,
+        cockpit.scene.paper_bold_font_id,
     };
     for (expected, options.fonts) |id, registration| {
         try std.testing.expectEqual(id, registration.id);
@@ -2576,11 +2578,18 @@ test "shipping TypeScript graph registers terminal fonts without overriding nati
     try std.testing.expect(options.tokens_fn == null);
     var rig = try Rig.start();
     defer rig.stop();
+    try std.testing.expectEqual(@as(usize, 6), rig.harness.runtime.registeredCanvasFontCount());
+    for ([_]canvas.FontId{ cockpit.scene.paper_font_id, cockpit.scene.paper_bold_font_id }) |id| {
+        const face = rig.harness.runtime.registeredCanvasFontFace(id) orelse return error.MissingPaperFace;
+        try std.testing.expect(face.glyphIndex('A') != 0);
+        try std.testing.expect(face.glyphIndex(0xe0b0) == 0);
+        try std.testing.expectApproxEqAbs(face.advance(face.glyphIndex('M')), face.advance(face.glyphIndex('i')), 0.001);
+    }
     const tokens = cockpit.projection.terminalTokens(bridge.engine.?.model);
-    try std.testing.expectEqual(cockpit.scene.terminal_font_id, tokens.typography.mono_font_id);
-    try std.testing.expectEqual(cockpit.scene.terminal_bold_font_id, tokens.typography.mono_bold_font_id);
-    try std.testing.expectEqual(cockpit.scene.terminal_italic_font_id, tokens.typography.mono_italic_font_id);
-    try std.testing.expectEqual(cockpit.scene.terminal_bold_italic_font_id, tokens.typography.mono_bold_italic_font_id);
+    try std.testing.expectEqual(cockpit.scene.paper_font_id, tokens.typography.mono_font_id);
+    try std.testing.expectEqual(cockpit.scene.paper_bold_font_id, tokens.typography.mono_bold_font_id);
+    try std.testing.expectEqual(@as(canvas.FontId, 0), tokens.typography.mono_italic_font_id);
+    try std.testing.expectEqual(@as(canvas.FontId, 0), tokens.typography.mono_bold_italic_font_id);
 }
 
 test "chrome follows native appearance without changing terminal defaults" {
@@ -7008,7 +7017,7 @@ test "Settings widget controls dispatch and reflect authoritative selections" {
     try rig.settleAppearance();
     try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
     var widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
-    var font_radios: [2]native_sdk.geometry.RectF = undefined;
+    var font_radios: [3]native_sdk.geometry.RectF = undefined;
     var fonts: usize = 0;
     var selected_fonts: usize = 0;
     for (widgets.nodes) |node| {
@@ -7017,7 +7026,7 @@ test "Settings widget controls dispatch and reflect authoritative selections" {
         font_radios[fonts] = node.frame;
         fonts += 1;
     }
-    try std.testing.expectEqual(@as(usize, 2), fonts);
+    try std.testing.expectEqual(@as(usize, 3), fonts);
     try std.testing.expectEqual(@as(usize, 1), selected_fonts);
     try std.testing.expect(!rig.app_state.model.fontChoices[1].selected);
     try pressCanvasFrame(&rig, font_radios[1]);

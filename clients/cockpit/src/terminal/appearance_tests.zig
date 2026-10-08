@@ -175,7 +175,7 @@ test "host bundled Geist face is byte identical to the reference renderer" {
 
 test "font family changes row fingerprints and the measured pointer cell together" {
     const scene = @import("../cockpit/native/scene.zig");
-    const Choice = enum { bundled, geist };
+    const Choice = @import("../config/config.zig").FontChoice;
     const session = try support.createSession(16, 4);
     defer session.destroy();
     session.feed("A\x1b[1mB\x1b[3mC\x1b[22mD");
@@ -233,4 +233,163 @@ test "contrast obeys row budgets and cannot recolor a preceding pane" {
     try testing.expectEqual(white, (try frame.row(2)).cells[0].fg);
     try testing.expectError(error.MissingPaintedRow, frame.row(3));
     try testing.expectEqual(@as(usize, 3), frame.builder.cell_len);
+}
+
+test "Paper host assets equal registered reference faces and synthesize only italics" {
+    const scene = @import("../cockpit/native/scene.zig");
+    for (scene.cockpit_fonts[4..], [_][]const u8{ "assets/fonts/PaperMono-Regular.ttf", "assets/fonts/PaperMono-Bold.ttf" }) |registration, path| {
+        const bundled = try std.Io.Dir.cwd().readFileAlloc(testing.io, path, testing.allocator, .limited(registration.ttf.len + 1));
+        defer testing.allocator.free(bundled);
+        try testing.expectEqualSlices(u8, registration.ttf, bundled);
+        _ = try canvas.font_ttf.Face.parse(registration.ttf);
+    }
+    const paper_row: canvas.CellGrid = .{ .font_id = scene.paper_font_id, .bold_font_id = scene.paper_bold_font_id };
+    try testing.expectEqual(scene.paper_font_id, paper_row.face(.{ .italic = true }).font_id);
+    try testing.expect(paper_row.face(.{ .italic = true }).synthetic_italic);
+    const bold_italic = paper_row.face(.{ .bold = true, .italic = true });
+    try testing.expectEqual(scene.paper_bold_font_id, bold_italic.font_id);
+    try testing.expect(bold_italic.synthetic_italic);
+    try testing.expect(!bold_italic.synthetic_bold);
+}
+
+test "Paper local and projected rows retain Nerd fallback geometry and symbol companions" {
+    const scene = @import("../cockpit/native/scene.zig");
+    const Choice = @import("../config/config.zig").FontChoice;
+    const session = try support.createSession(16, 4);
+    defer session.destroy();
+    // PUA Powerline and supplementary Nerd glyphs, alongside Paper italics.
+    session.feed("A\x1b[1;3m\xee\x82\xb0\x1b[22;23mB\xf3\xb0\x88\x86C");
+    const frame = try Frame.create();
+    defer testing.allocator.destroy(frame);
+    var opts = options(3);
+    fonts.apply(&opts.tokens, Choice.paper);
+    try render.paint(session, &frame.builder, opts);
+    const paper_run = try frame.row(0);
+    const nerd_run = try frame.row(1);
+    try testing.expectEqual(scene.paper_font_id, paper_run.font_id);
+    try testing.expectEqual(scene.terminal_font_id, nerd_run.font_id);
+    try testing.expectEqual(scene.terminal_bold_italic_font_id, nerd_run.bold_italic_font_id);
+    try testing.expectApproxEqAbs(paper_run.origin.x + paper_run.cell_width, nerd_run.origin.x, 0.001);
+    try testing.expectEqual(paper_run.cell_width, nerd_run.cell_width);
+    try testing.expectEqualSlices(u8, "\xee\x82\xb0", nerd_run.cells[0].cluster(nerd_run.text));
+    try testing.expectEqual(scene.paper_font_id, (try frame.row(2)).font_id);
+    try testing.expectEqual(scene.terminal_font_id, (try frame.row(3)).font_id);
+    // The provider grid uses exactly the same shared paint seam.
+    const snapshot = try session.snapshot(opts.tokens, true, false);
+    const fingerprint = canvas.cellGridFingerprint(nerd_run);
+    frame.builder.reset();
+    try render.paintTerminalGrid(snapshot, &frame.builder, opts);
+    try testing.expectEqual(fingerprint, canvas.cellGridFingerprint(try frame.row(1)));
+}
+
+test "Nerd fallback keeps wide spacers together and respects tight command budgets" {
+    const scene = @import("../cockpit/native/scene.zig");
+    const cells = [_]canvas.TerminalCell{
+        .{ .cp = 'A', .cluster = "A" },
+        .{ .cp = 0xe0b0, .cluster = "\xee\x82\xb0", .wide = .wide },
+        .{ .wide = .spacer },
+        .{ .cp = 'B', .cluster = "B" },
+    };
+    const rows = [_]canvas.TerminalRow{ .{ .cells = &cells }, .{ .cells = cells[0..2] } };
+    const frame = try Frame.create();
+    defer testing.allocator.destroy(frame);
+    var opts = options(1);
+    fonts.apply(&opts.tokens, @import("../config/config.zig").FontChoice.paper);
+    opts.id_base = render.paneIdBase(0);
+    try render.paintTerminalGrid(gridOf(&rows), &frame.builder, opts);
+    const wide = try frame.row(1);
+    try testing.expectEqual(@as(u16, 2), wide.cols);
+    try testing.expectEqual(scene.terminal_font_id, wide.font_id);
+    try testing.expectEqual(wide.origin.x + 2 * wide.cell_width, (try frame.row(2)).origin.x);
+    for (frame.builder.displayList().commands, 0..) |command, index| {
+        const id = command.objectId() orelse continue;
+        for (frame.builder.displayList().commands[index + 1 ..]) |other| {
+            try testing.expect(id != (other.objectId() orelse continue));
+        }
+    }
+    for ([_]usize{ 9, 12, 16 }) |budget| {
+        frame.builder.reset();
+        opts.command_budget = budget;
+        try render.paintTerminalGrid(gridOf(&rows), &frame.builder, opts);
+        try testing.expect(frame.builder.len <= budget);
+    }
+}
+
+test "Nerd run text is compact and cannot amplify the retained text budget" {
+    const cells = [_]canvas.TerminalCell{
+        .{ .cp = 'A', .cluster = "A" },
+        .{ .cp = 0xe0b0, .cluster = "\xee\x82\xb0" },
+        .{ .cp = 'B', .cluster = "B" },
+        .{ .cp = 0xe0b0, .cluster = "\xee\x82\xb0" },
+        .{ .cp = 'C', .cluster = "C" },
+    };
+    const rows = [_]canvas.TerminalRow{.{ .cells = &cells }};
+    const frame = try Frame.create();
+    defer testing.allocator.destroy(frame);
+    var opts = options(1);
+    fonts.apply(&opts.tokens, @import("../config/config.zig").FontChoice.paper);
+    try render.paintTerminalGrid(gridOf(&rows), &frame.builder, opts);
+    var text_bytes: usize = 0;
+    for (frame.builder.displayList().commands) |command| {
+        if (command != .cell_grid) continue;
+        text_bytes += command.cell_grid.text.len;
+        for (command.cell_grid.cells) |cell| try testing.expectEqual(@as(u32, 0), cell.text_offset);
+    }
+    try testing.expectEqual(@as(usize, 9), text_bytes);
+    // Only the original interned row blob plus compact runs are staged.
+    try testing.expectEqual(@as(usize, 15), frame.builder.text_byte_len);
+    frame.builder.reset();
+    opts.text_reserve = canvas.max_display_list_text_bytes - 8;
+    try render.paintTerminalGrid(gridOf(&rows), &frame.builder, opts);
+    try testing.expectError(error.MissingPaintedRow, frame.row(0));
+}
+
+test "Nerd reservations report command and text loss with truthful top and last-N rows" {
+    const cells = [_][5]canvas.TerminalCell{
+        .{ .{ .cp = '0', .cluster = "0" }, .{ .cp = 0xe0b0, .cluster = "\xee\x82\xb0" }, .{ .cp = 'A', .cluster = "A" }, .{ .cp = 0xe0b0, .cluster = "\xee\x82\xb0" }, .{ .cp = 'B', .cluster = "B" } },
+        .{ .{ .cp = '1', .cluster = "1" }, .{ .cp = 0xe0b0, .cluster = "\xee\x82\xb0" }, .{ .cp = 'A', .cluster = "A" }, .{ .cp = 0xe0b0, .cluster = "\xee\x82\xb0" }, .{ .cp = 'B', .cluster = "B" } },
+        .{ .{ .cp = '2', .cluster = "2" }, .{ .cp = 0xe0b0, .cluster = "\xee\x82\xb0" }, .{ .cp = 'A', .cluster = "A" }, .{ .cp = 0xe0b0, .cluster = "\xee\x82\xb0" }, .{ .cp = 'B', .cluster = "B" } },
+    };
+    const rows = [_]canvas.TerminalRow{ .{ .cells = &cells[0] }, .{ .cells = &cells[1] }, .{ .cells = &cells[2] } };
+    const frame = try Frame.create();
+    defer testing.allocator.destroy(frame);
+    var opts = options(1);
+    fonts.apply(&opts.tokens, @import("../config/config.zig").FontChoice.paper);
+    opts.id_base = render.paneIdBase(0);
+    for ([_]render.RowFit{ .from_top, .last_n }) |fit| {
+        opts.row_fit = fit;
+        opts.command_budget = 22;
+        opts.text_reserve = 0;
+        frame.builder.reset();
+        try render.paintTerminalGrid(gridOf(&rows), &frame.builder, opts);
+        const loss = frame.builder.degradation orelse return error.TruncationWentUnreported;
+        try testing.expectEqual(canvas.DisplayListStore.commands, loss.store);
+        try testing.expectEqual(@as(usize, 3), loss.requested);
+        try testing.expectEqual(@as(usize, 2), loss.produced);
+        try testing.expectEqual(opts.id_base, loss.id);
+        const first = try frame.row(0);
+        try testing.expectEqualSlices(u8, if (fit == .last_n) "1" else "0", first.cells[0].cluster(first.text));
+        try testing.expectEqual(@as(f32, 0), first.origin.y);
+        try testing.expect(frame.builder.len <= opts.command_budget);
+
+        opts.command_budget = 0;
+        opts.text_reserve = canvas.max_display_list_text_bytes - 20;
+        frame.builder.reset();
+        try render.paintTerminalGrid(gridOf(&rows), &frame.builder, opts);
+        const text_loss = frame.builder.degradation orelse return error.TruncationWentUnreported;
+        try testing.expectEqual(canvas.DisplayListStore.text_bytes, text_loss.store);
+        try testing.expectEqual(@as(usize, 3), text_loss.requested);
+        try testing.expectEqual(@as(usize, 0), text_loss.produced);
+        try testing.expectError(error.MissingPaintedRow, frame.row(0));
+    }
+    frame.builder.reset();
+    opts.command_budget = 0;
+    opts.text_reserve = 0;
+    try render.paintTerminalGrid(gridOf(&rows), &frame.builder, opts);
+    try testing.expectEqual(@as(?canvas.DisplayListDegradation, null), frame.builder.degradation);
+    var painted_cells: usize = 0;
+    for (frame.builder.displayList().commands) |command| {
+        if (command == .cell_grid) painted_cells += command.cell_grid.cells.len;
+    }
+    try testing.expectEqual(@as(usize, 15), painted_cells);
 }

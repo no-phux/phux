@@ -35,7 +35,7 @@ function setting(id: number, section: number, label: string, defaults: string, a
 /** Display descriptions have one owner. IDs match the append-only native schema. */
 export function settingsCatalog(): readonly Setting[] {
   return [
-    setting(0, 0, "Font family", "JetBrains Mono NL Nerd Font Mono (bundled)", "All terminal views. Blank restores the bundled face; Geist Mono selects the other shipped face. Other fonts are unsupported.", "Live preview", true, 2),
+    setting(0, 0, "Font family", "Paper Mono (bundled)", "All terminal views. Blank restores Paper Mono; JetBrains Mono NL Nerd Font Mono and Geist Mono are also bundled. Other fonts are unsupported.", "Live preview", true, 2),
     setting(1, 0, "Font size", "14 pt, or your Ghostty font-size", "All terminal views. 4 to 72 points.", "Live preview", true, 5),
     setting(2, 0, "Theme / follow system", "Cockpit default", "Use auto to follow macOS. Explicit foreground/background take precedence.", "Live preview", true, 0),
     setting(3, 0, "Minimum contrast", "3", "All Cockpit terminal views, including Phux. Changes presentation without changing source colors. 1 disables the floor; 21 is maximum.", "Live preview", true, 0),
@@ -95,7 +95,8 @@ function effectiveSettingValue(row: Setting, value: Uint8Array): Uint8Array {
   if (value.length === 0) return row.defaultLabel;
   if (row.id !== 0) return value;
   if (sameText(value, "Geist Mono")) return asciiBytes("Geist Mono");
-  if (sameText(value, "JetBrains Mono NL Nerd Font Mono")) return row.defaultLabel;
+  if (sameText(value, "Paper Mono")) return row.defaultLabel;
+  if (sameText(value, "JetBrains Mono NL Nerd Font Mono")) return asciiBytes("JetBrains Mono NL Nerd Font Mono");
   return asciiBytes("Bundled face; requested family is unsupported");
 }
 
@@ -109,7 +110,7 @@ function settingChoiceValue(appearance: Appearance, id: number): Uint8Array {
   if (id === 4) return cursorChoiceValue(appearance.cursor);
   if (id === 9) return asciiBytes(appearance.placement === 1 ? "side" : "top");
   const font = appearance.values[0] ?? new Uint8Array(0);
-  if (sameText(font, "JetBrains Mono NL Nerd Font Mono")) return new Uint8Array(0);
+  if (sameText(font, "Paper Mono")) return new Uint8Array(0);
   return font;
 }
 

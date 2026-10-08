@@ -51,7 +51,7 @@ test "the desktop fixture adopts the primary font, its size and every colour" {
     // The first family is primary; the second is Ghostty's fallback.
     try testing.expectEqualStrings("JetBrainsMono Nerd Font", adopted.requested_font.slice());
     // ...and it is the design Cockpit bundles, so it maps onto that face.
-    try testing.expectEqualStrings("", adopted.font_family.?.slice());
+    try testing.expectEqualStrings("JetBrains Mono NL Nerd Font Mono", adopted.font_family.?.slice());
     try testing.expectEqual(@as(f32, 14), adopted.font_size.?);
     try testing.expectEqual(rgb(0x07, 0x10, 0x12), adopted.background.?);
     // A colour without `#` reads the same.
@@ -83,9 +83,12 @@ test "a family Cockpit does not ship is reported, never adopted" {
 
 test "every bundled-family spelling maps to the bundled face" {
     for ([_][]const u8{ "JetBrainsMono Nerd Font", "JetBrains Mono", "JetBrains Mono NL Nerd Font Mono", "jetbrains-mono" }) |name| {
-        try testing.expectEqualStrings("", ghostty.cockpitFamily(name).?);
+        try testing.expectEqualStrings("JetBrains Mono NL Nerd Font Mono", ghostty.cockpitFamily(name).?);
     }
     try testing.expectEqualStrings("Geist Mono", ghostty.cockpitFamily("GeistMono Nerd Font").?);
+    for ([_][]const u8{ "Paper Mono", "PaperMono", "paper-mono" }) |name| {
+        try testing.expectEqualStrings("Paper Mono", ghostty.cockpitFamily(name).?);
+    }
     try testing.expect(ghostty.cockpitFamily("SF Mono") == null);
 }
 
@@ -145,20 +148,20 @@ test "loading layers the theme, then the file, then its includes" {
     defer tmp.cleanup();
     try tmp.dir.createDirPath(io, "home/.config/ghostty/themes");
     try tmp.dir.writeFile(io, .{ .sub_path = "home/.config/ghostty/config", .data =
-    \\font-size = 15
-    \\background = #101010
-    \\theme = light:Nope,dark:Blackwater
-    \\config-file = ?"colors.conf"
-    \\config-file = ?missing.conf
-    \\
+        \\font-size = 15
+        \\background = #101010
+        \\theme = light:Nope,dark:Blackwater
+        \\config-file = ?"colors.conf"
+        \\config-file = ?missing.conf
+        \\
     });
     try tmp.dir.writeFile(io, .{ .sub_path = "home/.config/ghostty/colors.conf", .data = "foreground = #aabbcc\n" });
     try tmp.dir.writeFile(io, .{ .sub_path = "home/.config/ghostty/themes/Blackwater", .data =
-    \\background = #000001
-    \\foreground = #000002
-    \\cursor-color = #000003
-    \\palette = 2=#000004
-    \\
+        \\background = #000001
+        \\foreground = #000002
+        \\cursor-color = #000003
+        \\palette = 2=#000004
+        \\
     });
     const home = try tmp.dir.realPathFileAlloc(io, "home", testing.allocator);
     defer testing.allocator.free(home);

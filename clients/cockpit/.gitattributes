@@ -1,0 +1,2 @@
+# Preserve the pinned upstream OFL verbatim, including its trailing space.
+assets/fonts/PaperMono-OFL.txt whitespace=-blank-at-eol

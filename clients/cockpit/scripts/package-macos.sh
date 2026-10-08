@@ -126,6 +126,8 @@ RESOURCES="${APP}/Contents/Resources"
 /bin/cp "${ROOT}/LICENSE" "${RESOURCES}/LICENSE.txt"
 /bin/cp "${ROOT}/THIRD_PARTY_NOTICES.md" "${RESOURCES}/THIRD_PARTY_NOTICES.md"
 /bin/cp "${ROOT}/assets/fonts/JetBrainsMono-OFL.txt" "${RESOURCES}/JetBrainsMono-OFL.txt"
+/bin/cp "${ROOT}/assets/fonts/PaperMono-OFL.txt" "${RESOURCES}/PaperMono-OFL.txt"
+python3 "${ROOT}/scripts/verify-paper-mono.py" --resources "${RESOURCES}"
 /bin/cp "${ROOT}/assets/licenses/Phux-FFI-THIRD-PARTY.html" "${RESOURCES}/Phux-FFI-THIRD-PARTY.html"
 /bin/cp "${REPO_ROOT}/scripts/cockpit-self-update.sh" "${RESOURCES}/cockpit-self-update.sh"
 /bin/cp "${REPO_ROOT}/scripts/install-cockpit.sh" "${RESOURCES}/install-cockpit.sh"
@@ -211,7 +213,8 @@ EOF
         return 1
     }
     verify_coordinator "${bundle}" || return 1
-    for resource in LICENSE.txt README.txt THIRD_PARTY_NOTICES.md JetBrainsMono-OFL.txt Phux-FFI-THIRD-PARTY.html Phux-FFI-Provenance.json signing-plan.txt cockpit-self-update.sh install-cockpit.sh; do
+    python3 "${ROOT}/scripts/verify-paper-mono.py" --resources "${resources}" || return 1
+    for resource in LICENSE.txt README.txt THIRD_PARTY_NOTICES.md JetBrainsMono-OFL.txt PaperMono-OFL.txt Phux-FFI-THIRD-PARTY.html Phux-FFI-Provenance.json signing-plan.txt cockpit-self-update.sh install-cockpit.sh; do
         [[ -s "${resources}/${resource}" ]] || {
             printf 'error: required resource %s is missing from %s\n' "${resource}" "${bundle}" >&2
             return 1

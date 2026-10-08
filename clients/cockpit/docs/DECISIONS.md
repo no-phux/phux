@@ -30,7 +30,7 @@ bytes (a ligature is a specific glyph, not a string); then the wire format,
 both renderers, and the glyph-atlas key path following. That is a project, not
 an increment.
 
-It is also moot today: the app deliberately bundles **JetBrains Mono NL**, the
+It is also moot today: the app retains **JetBrains Mono NL** as an explicit choice, the
 explicit no-ligature variant.
 
 If ligatures are ever wanted, do it engine-side with explicit glyph IDs. Never
