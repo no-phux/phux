@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
+import { PhuxCli } from "../src/adapter.js";
+import { createPhuxTools } from "../src/tools.js";
 
 import {
   parseAgentEmitResult,
@@ -74,6 +76,43 @@ test("session-list parser accepts v2 terminal inventory and normalizes v1", () =
     () => parseSessionList({ schema_version: 2, sessions: [] }),
     SchemaValidationError,
   );
+});
+
+test("session-list parser projects the installed 0.51.0+next.c420325 v3 CLI fixture", () => {
+  // Captured from the installed binary against a private, explicit socket.
+  // Tests compile into dist/test; the captured JSON stays in test/fixtures.
+  const fixture = JSON.parse(readFileSync(new URL("../../test/fixtures/session-list-v3.json", import.meta.url), "utf8"));
+  assert.deepEqual(parseSessionList(fixture), {
+    schema_version: 3,
+    sessions: [{ name: "fixture", windows: 1, attached: false }],
+    terminals: ["@1"],
+  });
+});
+
+test("session-list v3 retains strict summary validation and rejects future schemas", () => {
+  const valid = { schema_version: 3, sessions: [{ name: "work", windows: 1, attached: false }], terminals: ["@3", "devbox/@7"] };
+  for (const schema_version of [0, 4, 99, "3", null]) {
+    assert.throws(() => parseSessionList({ ...valid, schema_version }), /\$\.schema_version/);
+  }
+  for (const sessions of [null, {}, [{ name: "", windows: 1, attached: false }], [{ name: "work", windows: -1, attached: false }], [{ name: "work", windows: 1, attached: "false" }]]) {
+    assert.throws(() => parseSessionList({ ...valid, sessions }), SchemaValidationError);
+  }
+  for (const terminals of [undefined, null, {}, [3]]) {
+    assert.throws(() => parseSessionList({ ...valid, terminals }), /\$\.terminals/);
+  }
+});
+
+test("phux_list renders the canonical v3 CLI fixture through the shared tool", async () => {
+  const stdout = readFileSync(new URL("../../test/fixtures/session-list-v3.json", import.meta.url), "utf8");
+  const cli = new PhuxCli({ runner: async () => ({ termination: "completed", stdout, stderr: "", exitCode: 0 }) });
+  const tools = createPhuxTools({ cli, getSelectedTarget: () => undefined, selectTarget: () => {} });
+  const result = await tools.phux_list!.execute({}, { sessionID: "fixture", agent: "fixture", messageID: "fixture", id: "fixture" });
+  assert.deepEqual(result.metadata.result, {
+    schema_version: 3, sessions: [{ name: "fixture", windows: 1, attached: false }], terminals: ["@1"],
+  });
+  assert.equal(result.metadata.operation, "list");
+  assert.match(result.content, /"schema_version": 3/);
+  assert.match(result.content, /"fixture"/);
 });
 
 test("screen parser validates dimensions and normalizes additive fields", () => {
