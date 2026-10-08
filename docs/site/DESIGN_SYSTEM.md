@@ -1,7 +1,7 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-10-05
+last-reviewed: 2026-10-08
 ---
 # phux site design system
 
@@ -46,12 +46,13 @@ saved preference before paint and Astro document swaps.
 - Reader surface radii are 6–14px. Task cards group choices on the overview;
   ordinary articles do not need cards around every paragraph.
 
-Marketing keeps a flat, rule-aligned page and terminal palette, and one visual
-per idea: the hero's still terminal picture is the only illustration. It and
-the live-terminal dialog use rounded frames; the terminal interior stays
-undecorated, without ornamental gradients. Reader tokens do not restyle those
-surfaces. Marketing motion is limited to dialog opening, respects reduced
-motion, and nothing animates on its own.
+Marketing keeps a flat, rule-aligned page and terminal palette, with one visual
+per idea. The hero's still terminal picture introduces the product; the
+interactive explainer below it shows persistence, agents, federation, and the
+wire. Signals have a source, path, and destination; idle diagrams stay quiet.
+Playback is opt-in, pausable, and scrubbable. Reduced motion uses still story
+steps instead. The hero and live-terminal dialog use rounded frames; terminal
+interiors stay undecorated. Reader tokens do not restyle marketing surfaces.
 
 ## Article structure
 

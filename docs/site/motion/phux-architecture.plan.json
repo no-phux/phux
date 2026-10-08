@@ -1,0 +1,2307 @@
+{
+  "version": 2,
+  "id": "phux-architecture",
+  "durationNanos": 16000000000,
+  "actors": [
+    {
+      "id": "stage",
+      "recipe": "stage",
+      "data": {
+        "elements": [
+          {
+            "at": [
+              830.0,
+              220.0,
+              0.0
+            ],
+            "id": "machine",
+            "kind": "label",
+            "size": 25.0,
+            "spans": [
+              {
+                "text": "LOCAL MACHINE",
+                "tone": "muted"
+              }
+            ]
+          },
+          {
+            "at": [
+              285.0,
+              340.0,
+              0.0
+            ],
+            "id": "human",
+            "kind": "card",
+            "size": [
+              310.0,
+              110.0
+            ],
+            "status": [
+              {
+                "text": "attach, type, detach",
+                "tone": "muted"
+              }
+            ],
+            "title": "Human / CLI"
+          },
+          {
+            "at": [
+              285.0,
+              540.0,
+              0.0
+            ],
+            "id": "web",
+            "kind": "card",
+            "size": [
+              310.0,
+              110.0
+            ],
+            "status": [
+              {
+                "text": "another view",
+                "tone": "muted"
+              }
+            ],
+            "title": "Desktop / web"
+          },
+          {
+            "at": [
+              285.0,
+              760.0,
+              0.0
+            ],
+            "id": "agent",
+            "kind": "card",
+            "size": [
+              310.0,
+              110.0
+            ],
+            "status": [
+              {
+                "text": "structured input",
+                "tone": "muted"
+              }
+            ],
+            "title": "Agent"
+          },
+          {
+            "at": [
+              830.0,
+              340.0,
+              0.0
+            ],
+            "id": "server",
+            "kind": "card",
+            "size": [
+              340.0,
+              120.0
+            ],
+            "status": [
+              {
+                "text": "owns terminal lifetime",
+                "tone": "muted"
+              }
+            ],
+            "title": "phux server",
+            "tone": "accent"
+          },
+          {
+            "at": [
+              830.0,
+              540.0,
+              0.0
+            ],
+            "id": "terminal",
+            "kind": "card",
+            "size": [
+              340.0,
+              120.0
+            ],
+            "status": [
+              {
+                "text": "state survives detach",
+                "tone": "muted"
+              }
+            ],
+            "title": "Persistent terminal",
+            "tone": "accent"
+          },
+          {
+            "at": [
+              830.0,
+              760.0,
+              0.0
+            ],
+            "id": "pty",
+            "kind": "card",
+            "size": [
+              340.0,
+              110.0
+            ],
+            "status": [
+              {
+                "text": "runs on this machine",
+                "tone": "muted"
+              }
+            ],
+            "title": "PTY / process"
+          },
+          {
+            "at": [
+              1240.0,
+              340.0,
+              0.0
+            ],
+            "id": "hub",
+            "kind": "card",
+            "size": [
+              275.0,
+              120.0
+            ],
+            "status": [
+              {
+                "text": "remote resources",
+                "tone": "muted"
+              }
+            ],
+            "title": "Federation hub"
+          },
+          {
+            "at": [
+              1650.0,
+              340.0,
+              0.0
+            ],
+            "id": "remote",
+            "kind": "card",
+            "size": [
+              300.0,
+              120.0
+            ],
+            "status": [
+              {
+                "text": "remote phux server",
+                "tone": "muted"
+              }
+            ],
+            "title": "Remote machine"
+          },
+          {
+            "at": [
+              1650.0,
+              590.0,
+              0.0
+            ],
+            "id": "remote-process",
+            "kind": "card",
+            "size": [
+              300.0,
+              120.0
+            ],
+            "status": [
+              {
+                "text": "process stays here",
+                "tone": "muted"
+              }
+            ],
+            "title": "Remote terminal"
+          },
+          {
+            "bend": 0.0,
+            "from": "human",
+            "id": "human-link",
+            "kind": "beam",
+            "to": "server",
+            "tone": "accent"
+          },
+          {
+            "bend": -25.0,
+            "from": "web",
+            "id": "web-link",
+            "kind": "beam",
+            "to": "server"
+          },
+          {
+            "bend": -35.0,
+            "from": "agent",
+            "id": "agent-link",
+            "kind": "beam",
+            "to": "server",
+            "tone": "accent"
+          },
+          {
+            "bend": 0.0,
+            "from": "server",
+            "id": "ownership",
+            "kind": "beam",
+            "to": "terminal"
+          },
+          {
+            "bend": -340.0,
+            "from": "server",
+            "id": "input-path",
+            "kind": "beam",
+            "to": "pty",
+            "tone": "accent"
+          },
+          {
+            "bend": 0.0,
+            "from": "pty",
+            "id": "vt-path",
+            "kind": "beam",
+            "to": "terminal",
+            "tone": "accent"
+          },
+          {
+            "bend": 0.0,
+            "from": "server",
+            "id": "hub-link",
+            "kind": "beam",
+            "to": "hub",
+            "tone": "accent"
+          },
+          {
+            "bend": 0.0,
+            "from": "hub",
+            "id": "remote-link",
+            "kind": "beam",
+            "to": "remote",
+            "tone": "accent"
+          },
+          {
+            "bend": 0.0,
+            "from": "remote",
+            "id": "remote-ownership",
+            "kind": "beam",
+            "to": "remote-process"
+          },
+          {
+            "beam": "human-link",
+            "id": "input",
+            "kind": "packet",
+            "label": "structured input",
+            "tone": "accent"
+          },
+          {
+            "beam": "input-path",
+            "id": "pty-input",
+            "kind": "packet",
+            "label": "input",
+            "tone": "accent"
+          },
+          {
+            "beam": "vt-path",
+            "id": "vt",
+            "kind": "packet",
+            "label": "VT bytes",
+            "tone": "accent"
+          },
+          {
+            "beam": "agent-link",
+            "id": "agent-input",
+            "kind": "packet",
+            "label": "structured input",
+            "tone": "accent"
+          },
+          {
+            "beam": "hub-link",
+            "id": "resource",
+            "kind": "packet",
+            "label": "remote resource",
+            "tone": "accent"
+          },
+          {
+            "beam": "remote-link",
+            "id": "reach",
+            "kind": "packet",
+            "label": "access",
+            "tone": "accent"
+          },
+          {
+            "beam": "remote-link",
+            "id": "reply",
+            "kind": "packet",
+            "label": "remote view",
+            "reverse": true,
+            "tone": "accent"
+          }
+        ],
+        "post": {
+          "backdrop": 0.11999999731779099,
+          "bloom": 0.18000000715255737,
+          "grain": 0.012000000104308128,
+          "vignette": 0.2199999988079071
+        }
+      }
+    },
+    {
+      "id": "header",
+      "recipe": "caption",
+      "data": {
+        "lines": [
+          [
+            {
+              "text": "phux",
+              "tone": "accent"
+            },
+            {
+              "text": "  "
+            },
+            {
+              "text": "One terminal. Many ways in."
+            }
+          ]
+        ],
+        "origin": [
+          140.0,
+          96.0
+        ],
+        "size": 30.0
+      }
+    },
+    {
+      "id": "first",
+      "recipe": "caption",
+      "data": {
+        "lines": [
+          [
+            {
+              "text": "Clients send structured input. The PTY emits VT bytes."
+            }
+          ]
+        ],
+        "origin": [
+          140.0,
+          1004.0
+        ],
+        "size": 28.0
+      }
+    },
+    {
+      "id": "second",
+      "recipe": "caption",
+      "data": {
+        "lines": [
+          [
+            {
+              "text": "Detach the client. The server still owns the terminal."
+            }
+          ]
+        ],
+        "origin": [
+          140.0,
+          1004.0
+        ],
+        "size": 28.0
+      }
+    },
+    {
+      "id": "third",
+      "recipe": "caption",
+      "data": {
+        "lines": [
+          [
+            {
+              "text": "Federation exposes remote resources. It does not migrate processes."
+            }
+          ]
+        ],
+        "origin": [
+          140.0,
+          1004.0
+        ],
+        "size": 28.0
+      }
+    }
+  ],
+  "semanticTargets": [],
+  "continuousChannels": [
+    {
+      "id": "header.opacity",
+      "actorId": "header",
+      "property": "opacity",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "spring",
+          "atNanos": 0,
+          "target": 1.0,
+          "responseSeconds": 0.42000002,
+          "dampingRatio": 1.0,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "header.y",
+      "actorId": "header",
+      "property": "y",
+      "initial": 10.0,
+      "events": [
+        {
+          "operation": "spring",
+          "atNanos": 0,
+          "target": 0.0,
+          "responseSeconds": 0.54,
+          "dampingRatio": 1.0,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "first.opacity",
+      "actorId": "first",
+      "property": "opacity",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "spring",
+          "atNanos": 300000000,
+          "target": 1.0,
+          "responseSeconds": 0.42000002,
+          "dampingRatio": 1.0,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        },
+        {
+          "operation": "spring",
+          "atNanos": 6500000000,
+          "target": 0.0,
+          "responseSeconds": 0.28800002,
+          "dampingRatio": 1.0,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "first.y",
+      "actorId": "first",
+      "property": "y",
+      "initial": 10.0,
+      "events": [
+        {
+          "operation": "spring",
+          "atNanos": 300000000,
+          "target": 0.0,
+          "responseSeconds": 0.54,
+          "dampingRatio": 1.0,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.machine.opacity",
+      "actorId": "stage",
+      "property": "machine.opacity",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "spring",
+          "atNanos": 200000000,
+          "target": 1.0,
+          "responseSeconds": 0.48000002,
+          "dampingRatio": 1.0,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.server.scale",
+      "actorId": "stage",
+      "property": "server.scale",
+      "initial": 1.035,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 200000000,
+          "value": 1.035
+        },
+        {
+          "operation": "spring",
+          "atNanos": 200000000,
+          "target": 1.0,
+          "responseSeconds": 0.72,
+          "dampingRatio": 0.88,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.server.y",
+      "actorId": "stage",
+      "property": "server.y",
+      "initial": 16.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 200000000,
+          "value": 16.0
+        },
+        {
+          "operation": "spring",
+          "atNanos": 200000000,
+          "target": 0.0,
+          "responseSeconds": 0.66,
+          "dampingRatio": 0.84000003,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.server.content",
+      "actorId": "stage",
+      "property": "server.content",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 200000000,
+          "value": 0.0
+        },
+        {
+          "operation": "spring",
+          "atNanos": 265000000,
+          "target": 1.0,
+          "responseSeconds": 0.43200004,
+          "dampingRatio": 1.0,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.server.opacity",
+      "actorId": "stage",
+      "property": "server.opacity",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 200000000,
+          "value": 0.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 200000000,
+          "target": 1.0,
+          "durationNanos": 180000000,
+          "curve": "smootherstep"
+        }
+      ]
+    },
+    {
+      "id": "stage.server.blur",
+      "actorId": "stage",
+      "property": "server.blur",
+      "initial": 3.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 200000000,
+          "value": 3.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 200000000,
+          "target": 0.0,
+          "durationNanos": 300000000,
+          "curve": "smootherstep"
+        }
+      ]
+    },
+    {
+      "id": "stage.terminal.scale",
+      "actorId": "stage",
+      "property": "terminal.scale",
+      "initial": 1.035,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 320000000,
+          "value": 1.035
+        },
+        {
+          "operation": "spring",
+          "atNanos": 320000000,
+          "target": 1.0,
+          "responseSeconds": 0.72,
+          "dampingRatio": 0.88,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.terminal.y",
+      "actorId": "stage",
+      "property": "terminal.y",
+      "initial": 16.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 320000000,
+          "value": 16.0
+        },
+        {
+          "operation": "spring",
+          "atNanos": 320000000,
+          "target": 0.0,
+          "responseSeconds": 0.66,
+          "dampingRatio": 0.84000003,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.terminal.content",
+      "actorId": "stage",
+      "property": "terminal.content",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 320000000,
+          "value": 0.0
+        },
+        {
+          "operation": "spring",
+          "atNanos": 385000000,
+          "target": 1.0,
+          "responseSeconds": 0.43200004,
+          "dampingRatio": 1.0,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.terminal.opacity",
+      "actorId": "stage",
+      "property": "terminal.opacity",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 320000000,
+          "value": 0.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 320000000,
+          "target": 1.0,
+          "durationNanos": 180000000,
+          "curve": "smootherstep"
+        }
+      ]
+    },
+    {
+      "id": "stage.terminal.blur",
+      "actorId": "stage",
+      "property": "terminal.blur",
+      "initial": 3.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 320000000,
+          "value": 3.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 320000000,
+          "target": 0.0,
+          "durationNanos": 300000000,
+          "curve": "smootherstep"
+        }
+      ]
+    },
+    {
+      "id": "stage.pty.scale",
+      "actorId": "stage",
+      "property": "pty.scale",
+      "initial": 1.035,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 440000000,
+          "value": 1.035
+        },
+        {
+          "operation": "spring",
+          "atNanos": 440000000,
+          "target": 1.0,
+          "responseSeconds": 0.72,
+          "dampingRatio": 0.88,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.pty.y",
+      "actorId": "stage",
+      "property": "pty.y",
+      "initial": 16.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 440000000,
+          "value": 16.0
+        },
+        {
+          "operation": "spring",
+          "atNanos": 440000000,
+          "target": 0.0,
+          "responseSeconds": 0.66,
+          "dampingRatio": 0.84000003,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.pty.content",
+      "actorId": "stage",
+      "property": "pty.content",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 440000000,
+          "value": 0.0
+        },
+        {
+          "operation": "spring",
+          "atNanos": 505000000,
+          "target": 1.0,
+          "responseSeconds": 0.43200004,
+          "dampingRatio": 1.0,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.pty.opacity",
+      "actorId": "stage",
+      "property": "pty.opacity",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 440000000,
+          "value": 0.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 440000000,
+          "target": 1.0,
+          "durationNanos": 180000000,
+          "curve": "smootherstep"
+        }
+      ]
+    },
+    {
+      "id": "stage.pty.blur",
+      "actorId": "stage",
+      "property": "pty.blur",
+      "initial": 3.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 440000000,
+          "value": 3.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 440000000,
+          "target": 0.0,
+          "durationNanos": 300000000,
+          "curve": "smootherstep"
+        }
+      ]
+    },
+    {
+      "id": "stage.human.scale",
+      "actorId": "stage",
+      "property": "human.scale",
+      "initial": 1.035,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 560000000,
+          "value": 1.035
+        },
+        {
+          "operation": "spring",
+          "atNanos": 560000000,
+          "target": 1.0,
+          "responseSeconds": 0.72,
+          "dampingRatio": 0.88,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.human.y",
+      "actorId": "stage",
+      "property": "human.y",
+      "initial": 16.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 560000000,
+          "value": 16.0
+        },
+        {
+          "operation": "spring",
+          "atNanos": 560000000,
+          "target": 0.0,
+          "responseSeconds": 0.66,
+          "dampingRatio": 0.84000003,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.human.content",
+      "actorId": "stage",
+      "property": "human.content",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 560000000,
+          "value": 0.0
+        },
+        {
+          "operation": "spring",
+          "atNanos": 625000000,
+          "target": 1.0,
+          "responseSeconds": 0.43200004,
+          "dampingRatio": 1.0,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.human.opacity",
+      "actorId": "stage",
+      "property": "human.opacity",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 560000000,
+          "value": 0.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 560000000,
+          "target": 1.0,
+          "durationNanos": 180000000,
+          "curve": "smootherstep"
+        },
+        {
+          "operation": "spring",
+          "atNanos": 7000000000,
+          "target": 0.0,
+          "responseSeconds": 0.6,
+          "dampingRatio": 1.0,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.human.blur",
+      "actorId": "stage",
+      "property": "human.blur",
+      "initial": 3.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 560000000,
+          "value": 3.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 560000000,
+          "target": 0.0,
+          "durationNanos": 300000000,
+          "curve": "smootherstep"
+        }
+      ]
+    },
+    {
+      "id": "stage.web.scale",
+      "actorId": "stage",
+      "property": "web.scale",
+      "initial": 1.035,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 680000000,
+          "value": 1.035
+        },
+        {
+          "operation": "spring",
+          "atNanos": 680000000,
+          "target": 1.0,
+          "responseSeconds": 0.72,
+          "dampingRatio": 0.88,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.web.y",
+      "actorId": "stage",
+      "property": "web.y",
+      "initial": 16.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 680000000,
+          "value": 16.0
+        },
+        {
+          "operation": "spring",
+          "atNanos": 680000000,
+          "target": 0.0,
+          "responseSeconds": 0.66,
+          "dampingRatio": 0.84000003,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.web.content",
+      "actorId": "stage",
+      "property": "web.content",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 680000000,
+          "value": 0.0
+        },
+        {
+          "operation": "spring",
+          "atNanos": 745000000,
+          "target": 1.0,
+          "responseSeconds": 0.43200004,
+          "dampingRatio": 1.0,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.web.opacity",
+      "actorId": "stage",
+      "property": "web.opacity",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 680000000,
+          "value": 0.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 680000000,
+          "target": 1.0,
+          "durationNanos": 180000000,
+          "curve": "smootherstep"
+        }
+      ]
+    },
+    {
+      "id": "stage.web.blur",
+      "actorId": "stage",
+      "property": "web.blur",
+      "initial": 3.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 680000000,
+          "value": 3.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 680000000,
+          "target": 0.0,
+          "durationNanos": 300000000,
+          "curve": "smootherstep"
+        }
+      ]
+    },
+    {
+      "id": "stage.agent.scale",
+      "actorId": "stage",
+      "property": "agent.scale",
+      "initial": 1.035,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 800000000,
+          "value": 1.035
+        },
+        {
+          "operation": "spring",
+          "atNanos": 800000000,
+          "target": 1.0,
+          "responseSeconds": 0.72,
+          "dampingRatio": 0.88,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.agent.y",
+      "actorId": "stage",
+      "property": "agent.y",
+      "initial": 16.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 800000000,
+          "value": 16.0
+        },
+        {
+          "operation": "spring",
+          "atNanos": 800000000,
+          "target": 0.0,
+          "responseSeconds": 0.66,
+          "dampingRatio": 0.84000003,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.agent.content",
+      "actorId": "stage",
+      "property": "agent.content",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 800000000,
+          "value": 0.0
+        },
+        {
+          "operation": "spring",
+          "atNanos": 865000000,
+          "target": 1.0,
+          "responseSeconds": 0.43200004,
+          "dampingRatio": 1.0,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.agent.opacity",
+      "actorId": "stage",
+      "property": "agent.opacity",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 800000000,
+          "value": 0.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 800000000,
+          "target": 1.0,
+          "durationNanos": 180000000,
+          "curve": "smootherstep"
+        }
+      ]
+    },
+    {
+      "id": "stage.agent.blur",
+      "actorId": "stage",
+      "property": "agent.blur",
+      "initial": 3.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 800000000,
+          "value": 3.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 800000000,
+          "target": 0.0,
+          "durationNanos": 300000000,
+          "curve": "smootherstep"
+        }
+      ]
+    },
+    {
+      "id": "stage.human-link.port",
+      "actorId": "stage",
+      "property": "human-link.port",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "ease",
+          "atNanos": 1100000000,
+          "target": 1.0,
+          "durationNanos": 300000000,
+          "curve": "smootherstep"
+        }
+      ]
+    },
+    {
+      "id": "stage.human-link.draw",
+      "actorId": "stage",
+      "property": "human-link.draw",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 1400000000,
+          "value": 0.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 1400000000,
+          "target": 1.0,
+          "durationNanos": 500000000,
+          "curve": {
+            "cubic-bezier": [
+              0.45,
+              0.0,
+              0.2,
+              1.0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "stage.web-link.port",
+      "actorId": "stage",
+      "property": "web-link.port",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "ease",
+          "atNanos": 1100000000,
+          "target": 1.0,
+          "durationNanos": 300000000,
+          "curve": "smootherstep"
+        }
+      ]
+    },
+    {
+      "id": "stage.web-link.draw",
+      "actorId": "stage",
+      "property": "web-link.draw",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 1400000000,
+          "value": 0.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 1400000000,
+          "target": 1.0,
+          "durationNanos": 500000000,
+          "curve": {
+            "cubic-bezier": [
+              0.45,
+              0.0,
+              0.2,
+              1.0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "stage.agent-link.port",
+      "actorId": "stage",
+      "property": "agent-link.port",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "ease",
+          "atNanos": 1100000000,
+          "target": 1.0,
+          "durationNanos": 300000000,
+          "curve": "smootherstep"
+        }
+      ]
+    },
+    {
+      "id": "stage.agent-link.draw",
+      "actorId": "stage",
+      "property": "agent-link.draw",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 1400000000,
+          "value": 0.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 1400000000,
+          "target": 1.0,
+          "durationNanos": 500000000,
+          "curve": {
+            "cubic-bezier": [
+              0.45,
+              0.0,
+              0.2,
+              1.0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "stage.ownership.port",
+      "actorId": "stage",
+      "property": "ownership.port",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "ease",
+          "atNanos": 1100000000,
+          "target": 1.0,
+          "durationNanos": 300000000,
+          "curve": "smootherstep"
+        }
+      ]
+    },
+    {
+      "id": "stage.ownership.draw",
+      "actorId": "stage",
+      "property": "ownership.draw",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 1400000000,
+          "value": 0.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 1400000000,
+          "target": 1.0,
+          "durationNanos": 500000000,
+          "curve": {
+            "cubic-bezier": [
+              0.45,
+              0.0,
+              0.2,
+              1.0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "stage.input-path.port",
+      "actorId": "stage",
+      "property": "input-path.port",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "ease",
+          "atNanos": 1100000000,
+          "target": 1.0,
+          "durationNanos": 300000000,
+          "curve": "smootherstep"
+        }
+      ]
+    },
+    {
+      "id": "stage.input-path.draw",
+      "actorId": "stage",
+      "property": "input-path.draw",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 1400000000,
+          "value": 0.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 1400000000,
+          "target": 1.0,
+          "durationNanos": 500000000,
+          "curve": {
+            "cubic-bezier": [
+              0.45,
+              0.0,
+              0.2,
+              1.0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "stage.vt-path.port",
+      "actorId": "stage",
+      "property": "vt-path.port",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "ease",
+          "atNanos": 1100000000,
+          "target": 1.0,
+          "durationNanos": 300000000,
+          "curve": "smootherstep"
+        }
+      ]
+    },
+    {
+      "id": "stage.vt-path.draw",
+      "actorId": "stage",
+      "property": "vt-path.draw",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 1400000000,
+          "value": 0.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 1400000000,
+          "target": 1.0,
+          "durationNanos": 500000000,
+          "curve": {
+            "cubic-bezier": [
+              0.45,
+              0.0,
+              0.2,
+              1.0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "stage.input.age",
+      "actorId": "stage",
+      "property": "input.age",
+      "initial": -1.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 1760000000,
+          "value": 0.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 1760000000,
+          "target": 4.0,
+          "durationNanos": 4000000000,
+          "curve": "linear"
+        }
+      ]
+    },
+    {
+      "id": "stage.input.flight",
+      "actorId": "stage",
+      "property": "input.flight",
+      "initial": 0.8,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 1760000000,
+          "value": 0.8
+        }
+      ]
+    },
+    {
+      "id": "stage.server.flash",
+      "actorId": "stage",
+      "property": "server.flash",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 2900000000,
+          "value": 0.6
+        },
+        {
+          "operation": "ease",
+          "atNanos": 2900000000,
+          "target": 0.0,
+          "durationNanos": 800000000,
+          "curve": "cubic-out"
+        },
+        {
+          "operation": "set",
+          "atNanos": 9000000000,
+          "value": 0.6
+        },
+        {
+          "operation": "ease",
+          "atNanos": 9000000000,
+          "target": 0.0,
+          "durationNanos": 800000000,
+          "curve": "cubic-out"
+        }
+      ]
+    },
+    {
+      "id": "stage.pty-input.age",
+      "actorId": "stage",
+      "property": "pty-input.age",
+      "initial": -1.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 3010000000,
+          "value": 0.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 3010000000,
+          "target": 4.0,
+          "durationNanos": 4000000000,
+          "curve": "linear"
+        }
+      ]
+    },
+    {
+      "id": "stage.pty-input.flight",
+      "actorId": "stage",
+      "property": "pty-input.flight",
+      "initial": 0.9,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 3010000000,
+          "value": 0.9
+        }
+      ]
+    },
+    {
+      "id": "stage.pty.flash",
+      "actorId": "stage",
+      "property": "pty.flash",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 4250000000,
+          "value": 0.6
+        },
+        {
+          "operation": "ease",
+          "atNanos": 4250000000,
+          "target": 0.0,
+          "durationNanos": 800000000,
+          "curve": "cubic-out"
+        }
+      ]
+    },
+    {
+      "id": "stage.vt.age",
+      "actorId": "stage",
+      "property": "vt.age",
+      "initial": -1.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 4310000000,
+          "value": 0.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 4310000000,
+          "target": 4.0,
+          "durationNanos": 4000000000,
+          "curve": "linear"
+        }
+      ]
+    },
+    {
+      "id": "stage.vt.flight",
+      "actorId": "stage",
+      "property": "vt.flight",
+      "initial": 0.8,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 4310000000,
+          "value": 0.8
+        }
+      ]
+    },
+    {
+      "id": "stage.terminal.flash",
+      "actorId": "stage",
+      "property": "terminal.flash",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 5450000000,
+          "value": 0.6
+        },
+        {
+          "operation": "ease",
+          "atNanos": 5450000000,
+          "target": 0.0,
+          "durationNanos": 800000000,
+          "curve": "cubic-out"
+        }
+      ]
+    },
+    {
+      "id": "second.opacity",
+      "actorId": "second",
+      "property": "opacity",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "spring",
+          "atNanos": 6900000000,
+          "target": 1.0,
+          "responseSeconds": 0.42000002,
+          "dampingRatio": 1.0,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        },
+        {
+          "operation": "spring",
+          "atNanos": 9450000000,
+          "target": 0.0,
+          "responseSeconds": 0.28800002,
+          "dampingRatio": 1.0,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "second.y",
+      "actorId": "second",
+      "property": "y",
+      "initial": 10.0,
+      "events": [
+        {
+          "operation": "spring",
+          "atNanos": 6900000000,
+          "target": 0.0,
+          "responseSeconds": 0.54,
+          "dampingRatio": 1.0,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.human-link.opacity",
+      "actorId": "stage",
+      "property": "human-link.opacity",
+      "initial": 1.0,
+      "events": [
+        {
+          "operation": "spring",
+          "atNanos": 7000000000,
+          "target": 0.0,
+          "responseSeconds": 0.6,
+          "dampingRatio": 1.0,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.agent-input.age",
+      "actorId": "stage",
+      "property": "agent-input.age",
+      "initial": -1.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 7760000000,
+          "value": 0.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 7760000000,
+          "target": 4.0,
+          "durationNanos": 4000000000,
+          "curve": "linear"
+        }
+      ]
+    },
+    {
+      "id": "stage.agent-input.flight",
+      "actorId": "stage",
+      "property": "agent-input.flight",
+      "initial": 0.9,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 7760000000,
+          "value": 0.9
+        }
+      ]
+    },
+    {
+      "id": "third.opacity",
+      "actorId": "third",
+      "property": "opacity",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "spring",
+          "atNanos": 9900000000,
+          "target": 1.0,
+          "responseSeconds": 0.42000002,
+          "dampingRatio": 1.0,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "third.y",
+      "actorId": "third",
+      "property": "y",
+      "initial": 10.0,
+      "events": [
+        {
+          "operation": "spring",
+          "atNanos": 9900000000,
+          "target": 0.0,
+          "responseSeconds": 0.54,
+          "dampingRatio": 1.0,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.hub.scale",
+      "actorId": "stage",
+      "property": "hub.scale",
+      "initial": 1.035,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 9300000000,
+          "value": 1.035
+        },
+        {
+          "operation": "spring",
+          "atNanos": 9300000000,
+          "target": 1.0,
+          "responseSeconds": 0.72,
+          "dampingRatio": 0.88,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.hub.y",
+      "actorId": "stage",
+      "property": "hub.y",
+      "initial": 16.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 9300000000,
+          "value": 16.0
+        },
+        {
+          "operation": "spring",
+          "atNanos": 9300000000,
+          "target": 0.0,
+          "responseSeconds": 0.66,
+          "dampingRatio": 0.84000003,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.hub.content",
+      "actorId": "stage",
+      "property": "hub.content",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 9300000000,
+          "value": 0.0
+        },
+        {
+          "operation": "spring",
+          "atNanos": 9365000000,
+          "target": 1.0,
+          "responseSeconds": 0.43200004,
+          "dampingRatio": 1.0,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.hub.opacity",
+      "actorId": "stage",
+      "property": "hub.opacity",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 9300000000,
+          "value": 0.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 9300000000,
+          "target": 1.0,
+          "durationNanos": 180000000,
+          "curve": "smootherstep"
+        }
+      ]
+    },
+    {
+      "id": "stage.hub.blur",
+      "actorId": "stage",
+      "property": "hub.blur",
+      "initial": 3.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 9300000000,
+          "value": 3.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 9300000000,
+          "target": 0.0,
+          "durationNanos": 300000000,
+          "curve": "smootherstep"
+        }
+      ]
+    },
+    {
+      "id": "stage.remote.scale",
+      "actorId": "stage",
+      "property": "remote.scale",
+      "initial": 1.035,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 9420000000,
+          "value": 1.035
+        },
+        {
+          "operation": "spring",
+          "atNanos": 9420000000,
+          "target": 1.0,
+          "responseSeconds": 0.72,
+          "dampingRatio": 0.88,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.remote.y",
+      "actorId": "stage",
+      "property": "remote.y",
+      "initial": 16.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 9420000000,
+          "value": 16.0
+        },
+        {
+          "operation": "spring",
+          "atNanos": 9420000000,
+          "target": 0.0,
+          "responseSeconds": 0.66,
+          "dampingRatio": 0.84000003,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.remote.content",
+      "actorId": "stage",
+      "property": "remote.content",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 9420000000,
+          "value": 0.0
+        },
+        {
+          "operation": "spring",
+          "atNanos": 9485000000,
+          "target": 1.0,
+          "responseSeconds": 0.43200004,
+          "dampingRatio": 1.0,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.remote.opacity",
+      "actorId": "stage",
+      "property": "remote.opacity",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 9420000000,
+          "value": 0.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 9420000000,
+          "target": 1.0,
+          "durationNanos": 180000000,
+          "curve": "smootherstep"
+        }
+      ]
+    },
+    {
+      "id": "stage.remote.blur",
+      "actorId": "stage",
+      "property": "remote.blur",
+      "initial": 3.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 9420000000,
+          "value": 3.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 9420000000,
+          "target": 0.0,
+          "durationNanos": 300000000,
+          "curve": "smootherstep"
+        }
+      ]
+    },
+    {
+      "id": "stage.remote-process.scale",
+      "actorId": "stage",
+      "property": "remote-process.scale",
+      "initial": 1.035,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 9540000000,
+          "value": 1.035
+        },
+        {
+          "operation": "spring",
+          "atNanos": 9540000000,
+          "target": 1.0,
+          "responseSeconds": 0.72,
+          "dampingRatio": 0.88,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.remote-process.y",
+      "actorId": "stage",
+      "property": "remote-process.y",
+      "initial": 16.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 9540000000,
+          "value": 16.0
+        },
+        {
+          "operation": "spring",
+          "atNanos": 9540000000,
+          "target": 0.0,
+          "responseSeconds": 0.66,
+          "dampingRatio": 0.84000003,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.remote-process.content",
+      "actorId": "stage",
+      "property": "remote-process.content",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 9540000000,
+          "value": 0.0
+        },
+        {
+          "operation": "spring",
+          "atNanos": 9605000000,
+          "target": 1.0,
+          "responseSeconds": 0.43200004,
+          "dampingRatio": 1.0,
+          "positionThreshold": 0.001,
+          "velocityThreshold": 0.001
+        }
+      ]
+    },
+    {
+      "id": "stage.remote-process.opacity",
+      "actorId": "stage",
+      "property": "remote-process.opacity",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 9540000000,
+          "value": 0.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 9540000000,
+          "target": 1.0,
+          "durationNanos": 180000000,
+          "curve": "smootherstep"
+        }
+      ]
+    },
+    {
+      "id": "stage.remote-process.blur",
+      "actorId": "stage",
+      "property": "remote-process.blur",
+      "initial": 3.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 9540000000,
+          "value": 3.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 9540000000,
+          "target": 0.0,
+          "durationNanos": 300000000,
+          "curve": "smootherstep"
+        }
+      ]
+    },
+    {
+      "id": "stage.hub-link.port",
+      "actorId": "stage",
+      "property": "hub-link.port",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "ease",
+          "atNanos": 10100000000,
+          "target": 1.0,
+          "durationNanos": 300000000,
+          "curve": "smootherstep"
+        }
+      ]
+    },
+    {
+      "id": "stage.hub-link.draw",
+      "actorId": "stage",
+      "property": "hub-link.draw",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 10400000000,
+          "value": 0.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 10400000000,
+          "target": 1.0,
+          "durationNanos": 500000000,
+          "curve": {
+            "cubic-bezier": [
+              0.45,
+              0.0,
+              0.2,
+              1.0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "stage.remote-link.port",
+      "actorId": "stage",
+      "property": "remote-link.port",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "ease",
+          "atNanos": 10100000000,
+          "target": 1.0,
+          "durationNanos": 300000000,
+          "curve": "smootherstep"
+        }
+      ]
+    },
+    {
+      "id": "stage.remote-link.draw",
+      "actorId": "stage",
+      "property": "remote-link.draw",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 10400000000,
+          "value": 0.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 10400000000,
+          "target": 1.0,
+          "durationNanos": 500000000,
+          "curve": {
+            "cubic-bezier": [
+              0.45,
+              0.0,
+              0.2,
+              1.0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "stage.remote-ownership.port",
+      "actorId": "stage",
+      "property": "remote-ownership.port",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "ease",
+          "atNanos": 10100000000,
+          "target": 1.0,
+          "durationNanos": 300000000,
+          "curve": "smootherstep"
+        }
+      ]
+    },
+    {
+      "id": "stage.remote-ownership.draw",
+      "actorId": "stage",
+      "property": "remote-ownership.draw",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 10400000000,
+          "value": 0.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 10400000000,
+          "target": 1.0,
+          "durationNanos": 500000000,
+          "curve": {
+            "cubic-bezier": [
+              0.45,
+              0.0,
+              0.2,
+              1.0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "stage.resource.age",
+      "actorId": "stage",
+      "property": "resource.age",
+      "initial": -1.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 10460000000,
+          "value": 0.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 10460000000,
+          "target": 4.0,
+          "durationNanos": 4000000000,
+          "curve": "linear"
+        }
+      ]
+    },
+    {
+      "id": "stage.resource.flight",
+      "actorId": "stage",
+      "property": "resource.flight",
+      "initial": 0.7,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 10460000000,
+          "value": 0.7
+        }
+      ]
+    },
+    {
+      "id": "stage.hub.flash",
+      "actorId": "stage",
+      "property": "hub.flash",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 11500000000,
+          "value": 0.6
+        },
+        {
+          "operation": "ease",
+          "atNanos": 11500000000,
+          "target": 0.0,
+          "durationNanos": 800000000,
+          "curve": "cubic-out"
+        },
+        {
+          "operation": "set",
+          "atNanos": 13700000000,
+          "value": 0.6
+        },
+        {
+          "operation": "ease",
+          "atNanos": 13700000000,
+          "target": 0.0,
+          "durationNanos": 800000000,
+          "curve": "cubic-out"
+        }
+      ]
+    },
+    {
+      "id": "stage.reach.age",
+      "actorId": "stage",
+      "property": "reach.age",
+      "initial": -1.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 11560000000,
+          "value": 0.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 11560000000,
+          "target": 4.0,
+          "durationNanos": 4000000000,
+          "curve": "linear"
+        }
+      ]
+    },
+    {
+      "id": "stage.reach.flight",
+      "actorId": "stage",
+      "property": "reach.flight",
+      "initial": 0.7,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 11560000000,
+          "value": 0.7
+        }
+      ]
+    },
+    {
+      "id": "stage.remote.flash",
+      "actorId": "stage",
+      "property": "remote.flash",
+      "initial": 0.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 12600000000,
+          "value": 0.6
+        },
+        {
+          "operation": "ease",
+          "atNanos": 12600000000,
+          "target": 0.0,
+          "durationNanos": 800000000,
+          "curve": "cubic-out"
+        }
+      ]
+    },
+    {
+      "id": "stage.reply.age",
+      "actorId": "stage",
+      "property": "reply.age",
+      "initial": -1.0,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 12660000000,
+          "value": 0.0
+        },
+        {
+          "operation": "ease",
+          "atNanos": 12660000000,
+          "target": 4.0,
+          "durationNanos": 4000000000,
+          "curve": "linear"
+        }
+      ]
+    },
+    {
+      "id": "stage.reply.flight",
+      "actorId": "stage",
+      "property": "reply.flight",
+      "initial": 0.7,
+      "events": [
+        {
+          "operation": "set",
+          "atNanos": 12660000000,
+          "value": 0.7
+        }
+      ]
+    }
+  ],
+  "stateChannels": [],
+  "cues": [],
+  "media": []
+}
