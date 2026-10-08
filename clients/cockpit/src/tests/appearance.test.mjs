@@ -138,8 +138,8 @@ test('legacy responses cannot guess a font-family or boolean value', () => {
 });
 
 test('native bundled-font spellings and unsupported families project honest choices', () => {
-  for (const [family, expected] of [['', [true, false]], ['JetBrains Mono NL Nerd Font Mono', [true, false]],
-    ['Geist Mono', [false, true]], ['Unknown Font', [false, false]]]) {
+  for (const [family, expected] of [['', [true, false, false]], ['Paper Mono', [true, false, false]], ['JetBrains Mono NL Nerd Font Mono', [false, false, true]],
+    ['Geist Mono', [false, true, false]], ['Unknown Font', [false, false, false]]]) {
     const values = ['', '14', 'phux-dark', '3', 'block', 'true', '52428800', '', 'true', 'top', ''];
     values[0] = family;
     const model = opened(replyV2({ values }));
@@ -435,4 +435,15 @@ test('switching to a read-only group clears and conceals a keyboard editor', () 
   assert.equal(model.bindingEditIndex, 65535);
   const markup = readFileSync(new URL('../windows/components/cockpit-settings.native', import.meta.url), 'utf8');
   assert.match(markup, /if test="\{settingsFooterSave\}">\s*<if test="\{bindingEditIndex == binding.index\}"/);
+});
+
+ test('all bundled font controls emit distinct canonical family values', () => {
+  for (const [index, family] of [[0, ''], [1, 'Geist Mono'], [2, 'JetBrains Mono NL Nerd Font Mono']]) {
+    const model = opened(replyV2());
+    const [, cmd] = step(model, { kind: 'settings_font_family', index });
+    assert.deepEqual([...cmd.payload], [2, 8, 0, ...bytes(family)]);
+  }
+  const model = opened(replyV2());
+  assert.deepEqual(step(model, { kind: 'settings_font_family', index: 3 }), [model, null]);
+  assert.equal(text(model.settingRows[0].effectiveValue), 'Paper Mono (bundled)');
 });

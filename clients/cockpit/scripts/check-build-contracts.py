@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -31,6 +32,27 @@ def mock_rustc(tools):
 
 
 class BuildContracts(unittest.TestCase):
+    def test_paper_mono_assets_and_packaged_license_are_pinned(self):
+        script = ROOT / "scripts/verify-paper-mono.py"
+        subprocess.run([sys.executable, str(script)], check=True)
+        with tempfile.TemporaryDirectory() as directory:
+            resources = Path(directory)
+            fonts = resources / "assets/fonts"
+            fonts.mkdir(parents=True)
+            for source in (ROOT / "assets/fonts").glob("PaperMono-*"):
+                shutil.copyfile(source, fonts / source.name)
+            shutil.copyfile(fonts / "PaperMono-OFL.txt", resources / "PaperMono-OFL.txt")
+            command = [sys.executable, str(script), "--resources", str(resources)]
+            subprocess.run(command, check=True)
+            for name in ("PaperMono-Regular.ttf", "PaperMono-Bold.ttf", "PaperMono-OFL.txt"):
+                asset = fonts / name
+                original = asset.read_bytes()
+                asset.write_bytes(b"tampered")
+                self.assertNotEqual(subprocess.run(command, capture_output=True).returncode, 0)
+                asset.write_bytes(original)
+            (resources / "PaperMono-OFL.txt").unlink()
+            self.assertNotEqual(subprocess.run(command, capture_output=True).returncode, 0)
+
     def test_product_panes_refuse_framework_terminal_store(self):
         completed = subprocess.run(
             [sys.executable, str(ROOT / "scripts" / "check-shell-engine.py")],

@@ -32,14 +32,20 @@ test "the font-family knob selects the face the terminal grids measure and paint
     // Geist has no registered companions. Zero asks the renderers for their
     // shared synthesis instead of mixing JetBrains bold with Geist regular.
     try testing.expectEqual(@as(canvas.FontId, 0), geist.typography.mono_bold_font_id);
-    // Unset and unsupported names both keep the bundled family and its
-    // registered companions; the unsupported one is only a config warning.
-    for ([_][]const u8{ "", "font-family = Comic Mono" }) |text| {
+    // Unset, explicit Paper and unsupported names use Paper with real bold
+    // and synthesized italics; unsupported names retain their warning.
+    for ([_][]const u8{ "", "font-family = Paper Mono", "font-family = Comic Mono" }) |text| {
         var fallback: app.Model = .{ .provider = undefined, .config = app.parseConfig(text) };
         const tokens = app.terminalTokens(&fallback);
-        try testing.expectEqual(canvas.min_registered_font_id, tokens.typography.mono_font_id);
-        try testing.expectEqual(@as(canvas.FontId, canvas.min_registered_font_id + 1), tokens.typography.mono_bold_font_id);
+        try testing.expectEqual(@as(canvas.FontId, canvas.min_registered_font_id + 4), tokens.typography.mono_font_id);
+        try testing.expectEqual(@as(canvas.FontId, canvas.min_registered_font_id + 5), tokens.typography.mono_bold_font_id);
+        try testing.expectEqual(@as(canvas.FontId, 0), tokens.typography.mono_italic_font_id);
+        try testing.expectEqual(@as(canvas.FontId, 0), tokens.typography.mono_bold_italic_font_id);
     }
+    model.config = app.parseConfig("font-family = JetBrains Mono NL Nerd Font Mono");
+    const jetbrains = app.terminalTokens(&model);
+    try testing.expectEqual(canvas.min_registered_font_id, jetbrains.typography.mono_font_id);
+    try testing.expectEqual(@as(canvas.FontId, canvas.min_registered_font_id + 3), jetbrains.typography.mono_bold_italic_font_id);
 }
 
 test "font sizing clamps at both ends without stranding the key" {

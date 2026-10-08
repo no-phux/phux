@@ -126,11 +126,7 @@ pub const chrome_command_envelope: usize = native_sdk.runtime.max_canvas_command
 
 pub fn baseTokens() canvas.DesignTokens {
     var tokens = semantic_theme.designTokens();
-    tokens.typography.mono_font_id = scene.terminal_font_id;
-    // Real companion faces instead of synthesized bold/italic.
-    tokens.typography.mono_bold_font_id = scene.terminal_bold_font_id;
-    tokens.typography.mono_italic_font_id = scene.terminal_italic_font_id;
-    tokens.typography.mono_bold_italic_font_id = scene.terminal_bold_italic_font_id;
+    fonts.apply(&tokens, config_module.FontChoice.paper);
     return tokens;
 }
 
@@ -156,7 +152,7 @@ pub fn terminalTokensFrom(base: canvas.DesignTokens, model: *const Model) canvas
     tokens.colors.background = defaults.background;
     tokens.colors.text = defaults.text;
     tokens.colors.accent = defaults.accent;
-    fonts.apply(&tokens, config_module.fontChoice(cfg.font_family.slice()) orelse .bundled);
+    fonts.apply(&tokens, config_module.fontChoice(cfg.font_family.slice()) orelse .paper);
     tokens.typography.label_size = model.fontSize();
     // These become emulator defaults (OSC 10/11 still win). Theme-vs-explicit
     // precedence lives in `Config.resolved*`.

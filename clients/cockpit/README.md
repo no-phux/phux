@@ -237,7 +237,8 @@ a `light:…,dark:…` pair. These are the rules the desktop client uses, so the
 two clients read one file the same way.
 
 Adopted: `font-size`, `font-family` when it names a face Cockpit ships (any
-spelling of JetBrains Mono is the bundled face), `foreground`, `background`,
+spelling of JetBrains Mono retains the bundled JetBrains face; Paper Mono
+and Geist Mono are also supported), `foreground`, `background`,
 `cursor-color`, `selection-background`, and `palette = 0` through `15`. They
 are defaults, never written into Cockpit's file: any key in Cockpit's config,
 and a Cockpit `theme` for the colours it sets, outranks them. Settings >
@@ -320,8 +321,13 @@ attach` keeps its argument. It runs via the login shell with `exec`, so the
 program you name is the pty's own process. A value that is empty, over-long, or
 carries a NUL is refused and the built-in shell stands.
 
-`font-family` supports the bundled **JetBrains Mono NL Nerd Font Mono** and
-**Geist Mono**. An empty value selects the bundled face. Other family names are
+`font-family` supports bundled **Paper Mono** (the empty-config default),
+**JetBrains Mono NL Nerd Font Mono**, and **Geist Mono**. An empty value selects
+Paper Mono; explicit JetBrains and Geist values retain those designs. Paper
+uses its real Bold face and the SDK's existing italic synthesis; Nerd symbols
+fall back to JetBrains, while host emoji/system fallback is unchanged. All
+font assets are offline. See [third-party notices](THIRD_PARTY_NOTICES.md) for
+the official Paper source pin and license. Other family names are
 retained in configuration but display an unsupported-family notice and use the
 bundled face; opening Settings does not rewrite them. `selection-foreground`
 remains unsupported: a terminal grid carries one selection colour rather than a
@@ -881,10 +887,10 @@ existing draft tag.
   emitting OSC 7 and OSC 0/2. A shell without integration falls back to `$HOME`
   and to numbered tabs — correct, but less useful, and not something Cockpit
   can fix from its side.
-- `bold` and `italic` are carried into every cell and every renderer but cannot
-  change a glyph until companion mono faces are registered; the bundled face is
-  the explicit no-ligature JetBrains Mono NL, so ligatures are structurally
-  unavailable regardless of renderer support.
+- Paper Mono uses real regular/bold faces and synthesized italics. Explicit
+  JetBrains uses its four real companions; Geist keeps SDK synthesis. The CPU
+  reference renderer still lacks supplementary-codepoint and emoji outlines;
+  CoreText retains the host's emoji fallback and supplementary Nerd symbols.
 - Windows own independent workspaces. Tabs and panes cannot yet be moved or
   detached between windows, even though every window has the same terminal,
   chrome, lifecycle, fullscreen, and restoration behavior.

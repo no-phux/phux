@@ -663,9 +663,9 @@ fn applyBehaviorPair(config: *Config, line: u32, key: []const u8, value: []const
 }
 
 /// Registered native monospace families; arbitrary names remain diagnostic.
-pub const FontChoice = enum { bundled, geist };
+pub const FontChoice = enum { paper, bundled, geist };
 pub fn fontChoice(value: []const u8) ?FontChoice {
-    if (value.len == 0) return .bundled;
+    if (value.len == 0 or eq(value, "Paper Mono")) return .paper;
     if (eq(value, "JetBrains Mono NL Nerd Font Mono")) return .bundled;
     if (eq(value, "Geist Mono")) return .geist;
     return null;
@@ -825,7 +825,7 @@ test "supported font choices and editor preference are real typed values" {
     try std.testing.expectEqual(@as(usize, 0), parsed.diagnostic_count);
     try std.testing.expectEqual(FontChoice.geist, fontChoice(parsed.font_family.slice()).?);
     try std.testing.expectEqualStrings("nvim --wait", parsed.editorCommand());
-    try std.testing.expectEqual(FontChoice.bundled, fontChoice("").?);
+    try std.testing.expectEqual(FontChoice.paper, fontChoice("").?);
     const unsupported = parse("font-family = Unregistered Face\n");
     try std.testing.expectEqual(Diagnostic.Kind.unsupported_key, unsupported.diagnostics[0].kind);
 }
