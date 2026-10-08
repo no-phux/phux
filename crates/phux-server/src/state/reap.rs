@@ -244,8 +244,8 @@ impl ServerState {
         &mut self,
         pane: ResourceId,
     ) -> Option<tokio_util::sync::CancellationToken> {
-        // Pumps and subscriptions go now; the actor token comes back
-        // uncancelled so the last screen can publish.
+        // Subscriptions go now; draining pumps remain owned until close.
+        // The actor stays available for their final checkpoint captures.
         let token = self.resources.forget_resource(pane);
         // An unclaimed close reason must not outlive its id.
         self.forget_close_reason(pane);

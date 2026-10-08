@@ -45,6 +45,7 @@ pub(super) fn spawn_tracked(
     client: crate::state::ClientId,
     terminal: phux_core::ResourceId,
     tasks: Option<&mut tokio::task::JoinSet<()>>,
+    drain: Option<tokio_util::sync::CancellationToken>,
     future: impl std::future::Future<Output = ()> + 'static,
 ) {
     let done = tokio_util::sync::CancellationToken::new();
@@ -62,7 +63,7 @@ pub(super) fn spawn_tracked(
         }
         None => tokio::task::spawn_local(task).abort_handle(),
     };
-    state.with_mut(|s| s.track_terminal_output_pump(client, terminal, abort, done));
+    state.with_mut(|s| s.track_terminal_output_pump(client, terminal, abort, done, drain));
 }
 
 /// Stop all output tasks for a subscription, including tasks blocked inside
@@ -281,6 +282,8 @@ impl PumpGeneration {
 
 /// What one turn of waiting on the pane's broadcast produced.
 pub(super) enum PumpWait {
+    /// Natural close requests a fresh final capture before ending the pump.
+    FinalDrain,
     /// Dispatch this broadcast result.
     Event(Result<PaneOutput, tokio::sync::broadcast::error::RecvError>),
     /// A fenced pump's backoff elapsed with no replacement generation: ask
@@ -430,11 +433,18 @@ mod tests {
                 let subscription = output.subscribe();
                 let sender = mailbox.clone();
                 let (entered, entry) = tokio::sync::oneshot::channel();
-                super::spawn_tracked(&state, client, terminal, Some(&mut tasks), async move {
-                    let _subscription = subscription;
-                    entered.send(()).unwrap();
-                    sender.send(round).await.unwrap();
-                });
+                super::spawn_tracked(
+                    &state,
+                    client,
+                    terminal,
+                    Some(&mut tasks),
+                    None,
+                    async move {
+                        let _subscription = subscription;
+                        entered.send(()).unwrap();
+                        sender.send(round).await.unwrap();
+                    },
+                );
                 entry.await.unwrap();
                 assert_eq!(output.receiver_count(), 1);
                 tokio::time::timeout(
@@ -477,7 +487,7 @@ mod tests {
             let terminal = phux_core::ResourceId::default();
             let (output, _) = tokio::sync::broadcast::channel::<()>(1);
             let receiver = output.subscribe();
-            super::spawn_tracked(&state, client, terminal, None, async move {
+            super::spawn_tracked(&state, client, terminal, None, None, async move {
                 let _receiver = receiver;
                 panic!("aborted task must never run");
             });
@@ -577,7 +587,7 @@ mod tests {
                     assert!(retries < 32, "the fence must not retry forever");
                 }
                 PumpWait::GapUnrecoverable => break,
-                PumpWait::Event(_) => panic!("nothing was ever broadcast"),
+                PumpWait::Event(_) | PumpWait::FinalDrain => panic!("nothing was ever broadcast"),
             }
         }
         assert_eq!(

@@ -1643,6 +1643,8 @@ impl AttachResourceSession<'_> {
             lag_label: "ATTACH_RESOURCE output pump",
             stale_skip: false,
             cancel: Some(channels.token.clone()),
+            drain: Some(CancellationToken::new()),
+            snapshot: Some(self.terminal.snapshot.clone()),
             last_seq: Some(generation_last_seq),
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             terminal: self.terminal.clone(),
@@ -1650,22 +1652,29 @@ impl AttachResourceSession<'_> {
         let state = self.state.clone();
         let connection_token = self.connection_token.clone();
         let client_id = self.client_id;
-        pump::spawn_tracked(self.state, self.client_id, self.core, None, async move {
-            let _done_guard = pump_done_guard;
-            let Some((start, output_rx)) = channels.published(ctx.profile).await else {
-                return;
-            };
-            if let Some(fault) =
-                crate::runtime::attach::run_started_output_pump(&ctx, start, output_rx).await
-            {
-                crate::runtime::attach::release_after_pump_fault(
-                    fault,
-                    &state,
-                    client_id,
-                    &connection_token,
-                );
-            }
-        });
+        pump::spawn_tracked(
+            self.state,
+            self.client_id,
+            self.core,
+            None,
+            ctx.drain.clone(),
+            async move {
+                let _done_guard = pump_done_guard;
+                let Some((start, output_rx)) = channels.published(ctx.profile).await else {
+                    return;
+                };
+                if let Some(fault) =
+                    crate::runtime::attach::run_started_output_pump(&ctx, start, output_rx).await
+                {
+                    crate::runtime::attach::release_after_pump_fault(
+                        fault,
+                        &state,
+                        client_id,
+                        &connection_token,
+                    );
+                }
+            },
+        );
     }
 
     /// Publish the atomic state-sync bootstrap the actor captured with
@@ -1931,7 +1940,9 @@ pub(crate) async fn handle_detach_terminal(
     let handle = state.with_mut(|s| {
         s.unsubscribe_terminal_events(client_id, terminal_id);
         // A declared `VIEWER` outlives the subscription (ADR-0127).
-        let core = s.terminal_from_wire(terminal_id)?;
+        let core = s
+            .terminal_from_wire(terminal_id)
+            .or_else(|| s.draining_terminal_from_wire(terminal_id))?;
         s.unsubscribe_terminal(client_id, core);
         Some((core, s.resource_handle(core).cloned()))
     });
