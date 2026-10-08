@@ -242,10 +242,6 @@ fn suffixed(stem: &str, profile: &str) -> String {
     }
 }
 
-/// The path segment identifying the user, for the `/tmp` fallback.
-///
-/// Only needs to be unique per user on a shared machine; the directory is
-/// created `0700` and its ownership is verified before use.
 /// This user's `/run/user/<uid>`, if the login manager created it.
 fn login_runtime_dir() -> Option<PathBuf> {
     let uid = nix::unistd::getuid().as_raw();
@@ -258,6 +254,10 @@ fn owned_dir(dir: &Path, uid: u32) -> bool {
     std::fs::metadata(dir).is_ok_and(|meta| meta.is_dir() && meta.uid() == uid)
 }
 
+/// The path segment identifying the user, for the `/tmp` fallback.
+///
+/// Only needs to be unique per user on a shared machine; the directory is
+/// created `0700` and its ownership is verified before use.
 pub(crate) fn user_segment() -> String {
     std::env::var("UID")
         .ok()
