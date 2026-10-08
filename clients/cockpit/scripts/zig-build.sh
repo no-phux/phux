@@ -155,6 +155,12 @@ if [ "$ALLOW_FOREIGN_CWD" = 0 ]; then
     fi
 fi
 
+# ------------------------------------------------------- worktree lease
+#
+# Refuse a tree another agent session is working in (scripts/lib/worktree-owner.sh).
+. "$ROOT/scripts/lib/worktree-owner.sh"
+worktree_owner_claim "$ROOT" zig-build.sh || exit $?
+
 [ "$CACHE_MODE" = "shared" ] || prepare_cache
 print_config >&2
 cd "$ROOT"

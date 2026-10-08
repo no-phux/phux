@@ -26,6 +26,7 @@ set -euo pipefail
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 . "${ROOT}/scripts/lib/dev-app.sh"
 . "${ROOT}/scripts/lib/app-instance.sh"
+. "${ROOT}/scripts/lib/worktree-owner.sh"
 
 DEV_HOME="${PHUX_COCKPIT_DEV_HOME:-${ROOT}/.dev-run}"
 STAGED_APP="${ROOT}/zig-out/dev/Phux Cockpit (dev).app"
@@ -188,6 +189,10 @@ if [[ "$BUILD" == "0" && "$MEASURE_FIRST_FRAME" == "1" ]]; then
 fi
 
 [[ "$(uname -s)" == "Darwin" ]] || { printf 'error: macOS only\n' >&2; exit 1; }
+
+# The dev app writes into this tree (.dev-run/, zig-out/): never into a
+# worktree another agent session holds.
+worktree_owner_claim "$ROOT" dev-run.sh || exit $?
 
 if [[ "$FRESH" == "1" ]]; then
     rm -rf -- "$DEV_HOME"

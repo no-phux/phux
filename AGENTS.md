@@ -1,7 +1,7 @@
 ---
 audience: agents, contributors
 stability: stable
-last-reviewed: 2026-09-27
+last-reviewed: 2026-10-07
 ---
 # Agent Instructions
 
@@ -31,6 +31,10 @@ actual validation. Project architecture lives in CLAUDE.md; setup is one guide.
   update `main`, fast-forward verified work, push, remove finished worktrees.
 - Never stash, reset, clean, or overwrite a dirty primary worktree; isolate
   your work in a new worktree instead.
+- One agent session per worktree. Cockpit's `scripts/zig-build.sh` and
+  `scripts/dev-run.sh` lease the worktree to the running session and refuse
+  another session's run (exit 3); `PHUX_WORKTREE_TAKEOVER=1` is for a
+  deliberate handoff only. See `clients/cockpit/scripts/lib/worktree-owner.sh`.
 
 ## Never touch the installed phux
 
