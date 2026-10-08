@@ -17,7 +17,8 @@ use crate::instance;
 /// 1. `$PHUX_SOCKET` if set — an explicit `--socket` flag still overrides it
 ///    at the call sites that take one;
 /// 2. the profile-scoped runtime directory ([`instance::runtime_dir`]), which
-///    is `$XDG_RUNTIME_DIR/phux[-<profile>]` or `/tmp/phux-$USER[-<profile>]`.
+///    is `$XDG_RUNTIME_DIR/phux[-<profile>]`, `/run/user/<uid>/phux[-<profile>]`,
+///    or `/tmp/phux-$USER[-<profile>]`.
 ///
 /// The profile suffix is what keeps a development build off the production
 /// socket; see [`instance`]. A dev build skips a `$PHUX_SOCKET` naming the
