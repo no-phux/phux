@@ -50,6 +50,10 @@ pub fn Replay(comptime sdk: type) type {
         files: std.AutoHashMapUnmanaged(u64, void) = .empty,
         pending: usize = 0,
         delivered: usize = 0,
+        /// The current replayed event drained claimed native results. Live,
+        /// their callbacks changed the Engine and the event's rebuild read
+        /// native window chrome; replay reruns neither.
+        drained_this_event: bool = false,
 
         pub fn init(allocator: std.mem.Allocator, metadata_key: u64, policy: Policy) Self {
             return .{ .allocator = allocator, .metadata_key = metadata_key, .policy = policy };
@@ -245,11 +249,13 @@ pub fn Replay(comptime sdk: type) type {
         /// events continue through the SDK. Native results were delivered live
         /// on these UiApp drain boundaries, never during replay feed itself.
         pub fn event(self: *Self, value: sdk.Event, effects: anytype, context: DrainContext) !bool {
+            self.drained_this_event = false;
             if (!self.replaying) return false;
             if (self.failed) return error.NativeReplayMismatch;
             try self.verifyTimerIsolation(effects);
             if (value == .timer) return self.timer_ids.contains(value.timer.id);
             if (drains(value, context)) {
+                self.drained_this_event = self.pending != 0;
                 self.delivered += self.pending;
                 self.pending = 0;
             }

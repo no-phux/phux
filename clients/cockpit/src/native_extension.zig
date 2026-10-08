@@ -77,14 +77,15 @@ fn allocatePeerHandleThroughEngine() !u64 {
     try engine.model.ensurePeerSlots(1);
     return engine.model.peers.items[0].channel_key;
 }
-const builtin = @import("builtin");
 const native_sdk = @import("native_sdk");
 const core = @import("core");
 const cockpit = @import("cockpit_engine");
 
 const Engine = cockpit.Engine;
 const protocol = cockpit.protocol;
-const Adapter = native_sdk.TsUiAppWithFeatures(core, .{ .runtime_markup = builtin.mode == .Debug });
+// The generated runner's own adapter: its CoreOptions, Options and App are
+// the types configureCoreOptions/configureOptions/app receive.
+const Adapter = native_sdk.TsRunnerApp(core);
 const Effects = Adapter.Effects;
 const canvas = native_sdk.canvas;
 const canvas_label = "phux-cockpit-canvas";
@@ -2037,7 +2038,17 @@ const PointerHost = struct {
     fn event(context: *anyopaque, runtime: *native_sdk.Runtime, value: native_sdk.Event) anyerror!void {
         const self: *PointerHost = @ptrCast(@alignCast(context));
         try bridge.takeNativeReplayError();
-        if (try bridge.nativeReplayEvent(value)) return;
+        // The SDK journals every native window-chrome answer per event and
+        // replay must consume exactly those. Answers the live run read
+        // because of native-owned work (a skipped native timer, or the
+        // rebuild after claimed native results drained) belong to the work
+        // replay deliberately does not rerun, so they are consumed with it.
+        if (try bridge.nativeReplayEvent(value)) {
+            consumeReplayedWindowChrome(runtime);
+            return;
+        }
+        // Declared first so it runs after every later defer's rebuild.
+        defer if (bridge.native_replay.drained_this_event) consumeReplayedWindowChrome(runtime);
         if (self.consumeMenuDismissal(runtime, value)) return;
         if (tabOwnsNavigation(value)) return;
         const previous_origin = bridge.fallback_origin;
@@ -2065,6 +2076,10 @@ const PointerHost = struct {
         syncWindowIds(runtime);
         if (value == .canvas_widget_pointer and !consume_settings_outside)
             try self.focusTerminalAfterTabClick(runtime, value.canvas_widget_pointer);
+    }
+
+    fn consumeReplayedWindowChrome(runtime: *native_sdk.Runtime) void {
+        runtime.replay_window_chrome_index = runtime.replay_window_chrome_count;
     }
 
     fn consumeSettingsOutsideGesture(self: *PointerHost, value: native_sdk.Event) bool {

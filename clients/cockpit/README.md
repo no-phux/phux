@@ -467,30 +467,36 @@ and a command that started and ended inside one burst of output do not count.
   either environment. Internet access is needed to fetch pinned dependencies.
 
 native-sdk is pinned to
-[`phall1/native@56e2aa40`](https://github.com/phall1/native/commit/56e2aa4027a5e7f598bbb3643a110805b58cdeca),
-the fork's cockpit/v0.10.5 lineage: terminal interaction, viewport, and
-font seams, the packed `cell_grid` canvas command with its AppKit decoder and
-wire format v7, macOS glyph smoothing, bounded cell-grid draw-resource caching,
-device-pixel-partitioned terminal backgrounds without fractional-edge seams,
-per-window `ChromeContext` on `build_window` and `web_panes`, `fx.openUrl`, the
-`native_extension` hook that keeps the TypeScript-core graph's engine native,
-axis-aware native split dividers, scoped post-present display-list refresh
-batching, symlink-safe whole-file writes that retain file-access confinement,
-the native macOS app-updater surface, the Metal Hybrid C signed cell
-(4x) and text (2x) paint ceilings, a 32-slot null-platform window-drag region
-mirror matching the runtime collector cap, a `cell_grid`-capable opt-in GPU
-composite path with configurable real-frame capture cadence, and ScriptC 0.1.7
-(balanced wide-model decode guards, nested recipe scope 32). Cold composite
-startup also initializes the final drawable presenter. This pin includes
-host-native glass behind transparent canvas content, window composition lifetime
-handling, and complete modal-dismissal gesture ownership without click-through
-or contamination of the next click's count. Model-bound checkbox, switch and
-toggle controls take the model's value on every rebuild, so a refused or
-synchronously answered toggle cannot leave the control showing its optimistic
-echo; SDK test binaries link a 48 MB stack for the 2.8 MB canvas `Builder`.
-Modal dialogs, drawers and sheets contain Tab and Shift+Tab, including when the
-opener or a chrome click left focus outside them, and closing one returns focus
-to the widget that opened it.
+[`phall1/native@6f130530`](https://github.com/phall1/native/commit/6f130530ea255405d70bc14098272b3ed4fd431c),
+the fork's Cockpit patch set rebuilt on upstream main (v0.10.1 plus 143
+commits, which move much of the runtime into compiled TypeScript policies):
+terminal interaction, viewport, and font seams, the packed `cell_grid` canvas
+command with its AppKit decoder and wire format v7, macOS glyph smoothing,
+bounded cell-grid draw-resource caching, device-pixel-partitioned terminal
+backgrounds without fractional-edge seams, per-window `ChromeContext` on
+`build_window` and `web_panes`, `fx.openUrl`, the `native_extension` hook
+(extensions name the runner's adapter as `native_sdk.TsRunnerApp(core)`) that
+keeps the TypeScript-core graph's engine native, axis-aware split dividers in
+both the native and compiled layout paths, scoped post-present display-list
+refresh batching, symlink-safe whole-file writes that retain file-access
+confinement, the native macOS app-updater surface, the Metal Hybrid C signed
+cell (4x) and text (2x) paint ceilings, a 32-slot null-platform window-drag
+region mirror and 32-slot PTY table, a `cell_grid`-capable opt-in GPU
+composite path with configurable real-frame capture cadence, balanced
+wide-model decode guards, nested recipe scope 32, and ScriptC 0.2.5 (0.2.6's
+npm release is missing three platform runtime packages, so `npm ci` refuses
+it). Cold composite startup also initializes the final drawable presenter. This
+pin includes host-native glass behind transparent canvas content, window
+composition lifetime handling, and complete modal-dismissal gesture ownership
+without click-through or contamination of the next click's count. Model-bound
+checkbox, switch and toggle controls take the model's value on every rebuild,
+so a refused or synchronously answered toggle cannot leave the control showing
+its optimistic echo; SDK test binaries link a 48 MB stack for the 2.8 MB
+canvas `Builder`. Modal dialogs, drawers and sheets contain Tab and Shift+Tab,
+including when the opener or a chrome click left focus outside them, and
+closing one returns focus to the widget that opened it. Enter and Space on a
+textbox-role surface such as a terminal pane stay input rather than activating
+the pane's context-menu press.
 The pin is a tarball SHA rather than a branch, so a push to the fork can never
 break a checkout of Cockpit — see [docs/SDK_PIN.md](docs/SDK_PIN.md) for how the
 fork and this repo stay in contract, and what to run before moving the pin.
