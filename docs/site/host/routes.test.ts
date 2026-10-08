@@ -75,6 +75,35 @@ describe("host routing", () => {
     });
   });
 
+  test("demo pages and media redirect only within the demos path boundary", () => {
+    for (const path of [
+      "/demos",
+      "/demos/",
+      "/demos.html",
+      "/demos/index.html",
+      "/demos/program-status-osc7501?from=docs",
+      "/demos/program-status-osc7501.html",
+      "/demos/program-status-osc7501/video.mp4",
+      "/demos/program-status-osc7501/poster.webp",
+      "/demos/program-status-osc7501/captions.vtt",
+      "/demos/program-status-osc7501/session.cast",
+    ]) {
+      expect(isMarketingOnlyPath(urlOn(DOCS_HOST, path).pathname)).toBe(true);
+      expect(isDocsPath(urlOn(SITE_HOST, path).pathname)).toBe(false);
+      expect(routeRequest(DOCS_HOST, urlOn(DOCS_HOST, path))).toEqual({
+        kind: "redirect",
+        location: `https://${SITE_HOST}${path}`,
+        status: 301,
+      });
+      expect(routeRequest(SITE_HOST, urlOn(SITE_HOST, path))).toEqual({ kind: "asset" });
+      expect(routeRequest("phux-site.account.workers.dev", urlOn(SITE_HOST, path))).toEqual({ kind: "asset" });
+    }
+    for (const path of ["/demosphere", "/demos-old/video.mp4", "/demos.mp4"]) {
+      expect(isMarketingOnlyPath(path)).toBe(false);
+      expect(routeRequest(DOCS_HOST, urlOn(DOCS_HOST, path))).toEqual({ kind: "asset" });
+    }
+  });
+
   test("phux.sh 301s docs paths onto docs.phux.sh", () => {
     expect(routeRequest(SITE_HOST, urlOn(SITE_HOST, "/docs"))).toEqual({
       kind: "redirect",

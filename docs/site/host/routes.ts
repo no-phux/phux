@@ -1,7 +1,7 @@
 /**
  * Host split for the static site worker.
  *
- * phux.sh is the product surface (landing, installers, live demo).
+ * phux.sh is the product surface (landing, installers, live demo, demo library).
  * docs.phux.sh is the documentation surface (Fumadocs tree + /overview).
  *
  * Pure functions so unit tests do not need a Cloudflare runtime.
@@ -53,7 +53,9 @@ export function isDocsPath(pathname: string): boolean {
 
 export function isMarketingOnlyPath(pathname: string): boolean {
   const path = stripHtmlSuffix(pathname);
-  return path === "/embed" || path.startsWith("/embed/") || path === "/install" || path.startsWith("/install");
+  return path === "/embed" || path.startsWith("/embed/") ||
+    path === "/install" || path.startsWith("/install") ||
+    path === "/demos" || path.startsWith("/demos/");
 }
 
 export function routeRequest(host: string, url: URL): HostRoute {

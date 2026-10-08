@@ -1,0 +1,17 @@
+WEBVTT
+
+00:00:00.000 --> 00:00:04.240
+Programs report their own state. No screen scraping.
+
+00:00:04.240 --> 00:00:10.342
+Working. Progress is reported by the program.
+
+00:00:10.342 --> 00:00:16.406
+Blocked for permission. phux surfaces that it needs you.
+
+00:00:16.406 --> 00:00:22.518
+Done. The result survives the next shell prompt.
+
+00:00:22.518 --> 00:00:29.500
+The same status is available through CLI, MCP, and metadata.
+

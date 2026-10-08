@@ -57,4 +57,33 @@ const meta = defineCollection({
   }),
 });
 
-export const collections = { docs, meta };
+// Hand-authored demos stay separate from the generated documentation tree.
+const siteRelativeUrl = z.string().regex(/^\/(?!\/)\S+$/, "Use a site-relative asset URL");
+const demos = defineCollection({
+  loader: glob({
+    pattern: "*.md",
+    base: "./src/content/demos",
+    generateId: ({ entry }) => {
+      const slug = entry.replace(/\.md$/, "");
+      if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) {
+        throw new Error(`Demo filename must be lowercase kebab-case: ${entry}`);
+      }
+      return slug;
+    },
+  }),
+  schema: z.object({
+    title: z.string().min(1),
+    summary: z.string().min(1),
+    publishedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
+      const date = new Date(`${value}T00:00:00Z`);
+      return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+    }, "Use a valid YYYY-MM-DD date"),
+    duration: z.number().finite().positive(),
+    video: siteRelativeUrl,
+    poster: siteRelativeUrl,
+    captions: siteRelativeUrl.optional(),
+    version: z.string().optional(),
+  }),
+});
+
+export const collections = { docs, meta, demos };

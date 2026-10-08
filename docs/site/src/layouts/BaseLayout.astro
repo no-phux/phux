@@ -61,6 +61,7 @@ const path = Astro.url.pathname;
         </div>
         <nav class="foot-col" aria-label="Product">
           <h2>Product</h2>
+          <a href="/demos">Demos</a>
           <a href={docsHref("/consumers/tui")}>CLI</a>
           <a href={docsHref("/consumers/cockpit")}>Cockpit</a>
           <a href={docsHref("/consumers/web")}>Web</a>
@@ -87,3 +88,31 @@ const path = Astro.url.pathname;
 
   </body>
 </html>
+
+<style>
+  /* Keep the full primary navigation readable and reachable on small screens. */
+  @media (max-width: 560px) {
+    .nav {
+      height: auto;
+      flex-wrap: wrap;
+      gap: 4px 20px;
+      padding-block: 10px;
+    }
+    .nav .links {
+      flex-basis: 100%;
+      flex-wrap: wrap;
+      gap: 0 14px;
+      margin-left: 0;
+    }
+    .nav .brand,
+    .nav .links a {
+      display: inline-flex;
+      align-items: center;
+      min-height: 44px;
+      padding-inline: 0;
+    }
+    .nav .links a {
+      font-size: 14px;
+    }
+  }
+</style>
