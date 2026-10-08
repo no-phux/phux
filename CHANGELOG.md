@@ -9,6 +9,16 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.53.1](https://github.com/no-phux/phux/compare/v0.53.0...v0.53.1) (2026-10-08)
+
+
+### Bug Fixes
+
+* **cockpit:** lease each worktree to one agent session ([022aee5](https://github.com/no-phux/phux/commit/022aee5254b99db1c5603c752243b37469d76d00))
+* **ffi:** preserve relay SNI in additive mobile constructor ([e16f114](https://github.com/no-phux/phux/commit/e16f1146261a459822e958676c8c1d1ef738db76))
+* **site:** accept quic pairing links and recover pasted handoffs ([00805e8](https://github.com/no-phux/phux/commit/00805e88c1477005b0cba6af14d6f9453870c272))
+* **site:** preserve current enrollment pairing fields ([3a674a7](https://github.com/no-phux/phux/commit/3a674a7b058c2f48bcfaf29d1f13e36806faed77))
+
 ## [0.53.0](https://github.com/no-phux/phux/compare/v0.52.0...v0.53.0) (2026-10-08)
 
 

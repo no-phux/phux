@@ -25,6 +25,14 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   or server restart without restarting the app; recover the selected session
   by its confirmed name when a replacement server reuses numeric IDs.
 
+## [0.33.1](https://github.com/no-phux/phux/compare/cockpit-v0.33.0...cockpit-v0.33.1) (2026-10-08)
+
+
+### Bug Fixes
+
+* **cockpit:** lease each worktree to one agent session ([022aee5](https://github.com/no-phux/phux/commit/022aee5254b99db1c5603c752243b37469d76d00))
+* **cockpit:** pin native SDK with switch authority and test-stack fixes ([69237c7](https://github.com/no-phux/phux/commit/69237c7031218150e7127323176454066765d45d))
+
 ## [0.33.0](https://github.com/no-phux/phux/compare/cockpit-v0.32.0...cockpit-v0.33.0) (2026-10-07)
 
 
