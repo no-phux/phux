@@ -1072,3 +1072,177 @@ fn copy_event(surface: &Element) -> (bool, String) {
         clipboard.get_data("text/plain").unwrap_or_default(),
     )
 }
+
+/// A synthetic finger at the centre of cell `(col, row)`, or `offset_y` CSS
+/// pixels below it.
+fn finger(canvas: &HtmlCanvasElement, kind: &str, (col, row): (u16, u16), offset_y: f64) -> bool {
+    let rect = canvas.get_bounding_client_rect();
+    let cell = metrics::measured(canvas);
+    let init = PointerEventInit::new();
+    init.set_pointer_id(9);
+    init.set_pointer_type("touch");
+    init.set_is_primary(true);
+    init.set_button(if kind == "pointermove" { -1 } else { 0 });
+    init.set_buttons(u16::from(kind != "pointerup"));
+    init.set_client_x((rect.left() + (f64::from(col) + 0.5) * cell.cell_w) as i32);
+    init.set_client_y((rect.top() + (f64::from(row) + 0.5) * cell.cell_h + offset_y) as i32);
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    let event = PointerEvent::new_with_event_init_dict(kind, &init).unwrap();
+    canvas.dispatch_event(&event).unwrap();
+    event.default_prevented()
+}
+
+#[wasm_bindgen_test]
+async fn a_finger_scrolls_scrollback_a_hold_selects_and_a_tap_opens_a_link() {
+    let opened: Rc<RefCell<Vec<String>>> = Rc::default();
+    let record = Rc::clone(&opened);
+    let stub = Closure::<dyn FnMut(String) -> JsValue>::new(move |url: String| {
+        record.borrow_mut().push(url);
+        JsValue::NULL
+    });
+    let window = web_sys::window().unwrap();
+    let real_open = js_sys::Reflect::get(&window, &"open".into()).unwrap();
+    js_sys::Reflect::set(&window, &"open".into(), stub.as_ref()).unwrap();
+
+    let canvas = mounted_canvas("touch-canvas");
+    let client = phux_web::client::run(WS_URL, canvas.clone(), 80, 24)
+        .await
+        .expect("connect to live phux server");
+    assert_eq!(
+        canvas.style().get_property_value("touch-action").unwrap(),
+        "none",
+        "the browser neither pans nor zooms over the terminal"
+    );
+    let surface = input_surface(&canvas);
+    let marker = "PHUX_TOUCH_OK";
+    fresh_line(&surface);
+    type_text(&surface, marker);
+    assert!(keydown(&surface, "Enter", "Enter", false));
+    assert!(wait_rows(&client, marker, 2).await, "{}", screen(&client));
+    for _ in 0..40 {
+        assert!(keydown(&surface, "Enter", "Enter", false));
+    }
+    assert!(
+        wait_until(&client, false, marker).await,
+        "marker scrolled away: {}",
+        screen(&client)
+    );
+
+    // A finger dragged down pulls history into view, as on any phone.
+    let row_px = metrics::measured(&canvas).cell_h;
+    let mut reached = false;
+    for _ in 0..30 {
+        finger(&canvas, "pointerdown", (10, 2), 0.0);
+        for step in 1..=4 {
+            finger(&canvas, "pointermove", (10, 2), f64::from(step) * row_px);
+        }
+        finger(&canvas, "pointerup", (10, 6), 0.0);
+        if client.rows_text().iter().any(|row| row.contains(marker)) {
+            reached = true;
+            break;
+        }
+    }
+    assert!(
+        reached,
+        "the drag reached the marker in scrollback: {}",
+        screen(&client)
+    );
+    assert_eq!(
+        copy_event(&surface),
+        (false, String::new()),
+        "a scroll selects nothing"
+    );
+
+    // Hold, then drag across the marker: the cells are selected.
+    let rows = client.rows_text();
+    let row = rows.iter().position(|r| r.contains(marker)).unwrap();
+    let col = rows[row].find(marker).unwrap();
+    let (row, first, last) = (row as u16, col as u16, (col + marker.len() - 1) as u16);
+    finger(&canvas, "pointerdown", (first, row), 0.0);
+    sleep(Duration::from_millis(450)).await;
+    finger(&canvas, "pointermove", (first + 3, row), 0.0);
+    finger(&canvas, "pointermove", (last, row), 0.0);
+    finger(&canvas, "pointerup", (last, row), 0.0);
+    assert_eq!(
+        copy_event(&surface),
+        (true, marker.to_owned()),
+        "the hold-drag selected the marker"
+    );
+    // A tap clears it, as a click does.
+    finger(&canvas, "pointerdown", (0, 0), 0.0);
+    finger(&canvas, "pointerup", (0, 0), 0.0);
+    assert_eq!(copy_event(&surface), (false, String::new()));
+
+    // A tap on a URL opens it, with no modifier to hold.
+    fresh_line(&surface);
+    type_text(&surface, "see https://example.com/touch.");
+    assert!(keydown(&surface, "Enter", "Enter", false));
+    assert!(wait_rows(&client, "https://example.com/touch.", 2).await);
+    let rows = client.rows_text();
+    let (link_row, link_col) = rows
+        .iter()
+        .enumerate()
+        .find_map(|(row, text)| {
+            text.find("https://example.com/touch")
+                .map(|col| (row as u16, col as u16))
+        })
+        .unwrap();
+    finger(&canvas, "pointerdown", (link_col + 5, link_row), 0.0);
+    finger(&canvas, "pointerup", (link_col + 5, link_row), 0.0);
+    // A hold on it is not a tap.
+    finger(&canvas, "pointerdown", (link_col + 5, link_row), 0.0);
+    sleep(Duration::from_millis(450)).await;
+    finger(&canvas, "pointerup", (link_col + 5, link_row), 0.0);
+
+    js_sys::Reflect::set(&window, &"open".into(), &real_open).unwrap();
+    assert_eq!(*opened.borrow(), ["https://example.com/touch"]);
+    client.close();
+}
+
+#[wasm_bindgen_test]
+async fn on_screen_keys_and_the_ctrl_latch_reach_the_terminal() {
+    let canvas = mounted_canvas("keybar-canvas");
+    let latched: Rc<RefCell<Vec<bool>>> = Rc::default();
+    let record = Rc::clone(&latched);
+    let listener =
+        Closure::<dyn FnMut(web_sys::CustomEvent)>::new(move |event: web_sys::CustomEvent| {
+            let ctrl = js_sys::Reflect::get(&event.detail(), &"ctrl".into()).unwrap();
+            record.borrow_mut().push(ctrl.as_bool().unwrap());
+        });
+    canvas
+        .add_event_listener_with_callback("phux-modifiers", listener.as_ref().unchecked_ref())
+        .unwrap();
+    let client = phux_web::client::run(WS_URL, canvas.clone(), 80, 24)
+        .await
+        .expect("connect to live phux server");
+    let surface = input_surface(&canvas);
+    fresh_line(&surface);
+    // The latch chords the next key the phone keyboard types, then lets go.
+    client.set_ctrl_latch(true);
+    type_text(&surface, "b");
+    for key in ["K", "E", "Y", "B", "A", "R"] {
+        client.send_key(key).unwrap();
+    }
+    assert!(
+        client.send_key("F13").is_err(),
+        "only the documented keys are sent"
+    );
+    client.send_key("Enter").unwrap();
+    // The TTY echoes Ctrl+B as `^B`; cat's copy prints the letters.
+    assert!(
+        wait_rows(&client, "^BKEYBAR", 1).await,
+        "{}",
+        screen(&client)
+    );
+    assert!(
+        client
+            .rows_text()
+            .iter()
+            .any(|row| row.trim_end().ends_with("KEYBAR") && !row.contains('^')),
+        "{}",
+        screen(&client)
+    );
+    assert_eq!(*latched.borrow(), [true, false], "held, then spent");
+    client.close();
+}

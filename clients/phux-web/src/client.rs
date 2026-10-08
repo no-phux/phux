@@ -25,7 +25,7 @@ use gloo_timers::future::TimeoutFuture;
 use phux_protocol::BootstrapProfile;
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::focus::FocusEvent;
-use phux_protocol::input::key::ModSet;
+use phux_protocol::input::key::{KeyEvent, ModSet};
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use phux_protocol::wire::frame::FrameKind;
 use phux_vt_web::{Grid, Vt};
@@ -42,6 +42,7 @@ use crate::framing::FrameBuffer;
 use crate::input::WheelAction;
 use crate::search::{Search, find_matches, reveal_row};
 use crate::selection::{Selection, cell_at};
+use crate::touch::{TouchGesture, TouchMode, TouchStep};
 use crate::{Mark, Metrics, Overlay, render_cursor_row, render_selected};
 
 mod find;
@@ -533,6 +534,30 @@ impl Client {
         pane_action(&self.app, PaneAction::Close)
     }
 
+    /// Send one on-screen key as typed at the terminal: a named key
+    /// (`Escape`, `Tab`, `Enter`, `Backspace`, `Delete`, the arrows, `Home`,
+    /// `End`, `PageUp`, `PageDown`) or a single character. A held Ctrl latch
+    /// chords it and is spent.
+    ///
+    /// # Errors
+    /// Refuses any other key name.
+    pub fn send_key(&self, key: &str) -> Result<(), JsValue> {
+        let event = crate::input::on_screen_key(key)
+            .ok_or_else(|| JsValue::from_str("unsupported on-screen key"))?;
+        let events = typed_keys(&self.app, vec![event]);
+        send_input(&self.app, events);
+        Ok(())
+    }
+
+    /// Hold (or release) Ctrl for the next key typed at the terminal, from
+    /// the on-screen keyboard or [`Client::send_key`]. The canvas announces
+    /// every change as a `phux-modifiers` event.
+    pub fn set_ctrl_latch(&self, held: bool) {
+        let app = self.app.borrow();
+        app.ctrl_latch.set(held);
+        app.publish_modifiers();
+    }
+
     /// Close the transport and drop browser handlers and timers.
     pub fn close(&self) {
         self.app.borrow_mut().dispose();
@@ -991,6 +1016,11 @@ struct App {
     mouse_cell: Cell<Option<(u16, u16)>>,
     /// Whether the pointer shows a link under a held Command/Ctrl.
     link_hover: Cell<bool>,
+    /// The finger gesture over the canvas, while one is down.
+    touch: Cell<Option<TouchGesture>>,
+    /// An on-screen Ctrl held for the next typed key (a page's key bar sets
+    /// it; a phone keyboard has no Ctrl of its own).
+    ctrl_latch: Cell<bool>,
     /// When the visual bell last started, on the monotonic clock.
     bell_started_ms: Cell<f64>,
     bindings: RefCell<AppBindings>,
@@ -1359,12 +1389,17 @@ impl App {
 
     /// The viewport cell under a pointer event.
     fn cell_under(&self, event: &web_sys::MouseEvent) -> (u16, u16) {
+        self.cell_at_point((event.client_x(), event.client_y()))
+    }
+
+    /// The viewport cell at a point in client (CSS pixel) coordinates.
+    fn cell_at_point(&self, (x, y): (f64, f64)) -> (u16, u16) {
         let rect = self.canvas.get_bounding_client_rect();
         let (css_w, css_h) = self.css_cell(&rect);
         let (cols, rows) = self.session.dims();
         cell_at(
-            event.client_x() - rect.left() - f64::from(self.focused_rect().x) * css_w,
-            event.client_y() - rect.top() - f64::from(self.focused_rect().y) * css_h,
+            x - rect.left() - f64::from(self.focused_rect().x) * css_w,
+            y - rect.top() - f64::from(self.focused_rect().y) * css_h,
             css_w,
             css_h,
             cols,
@@ -1484,6 +1519,23 @@ impl App {
         }
     }
 
+    /// Announce the on-screen Ctrl latch, so a page's key bar shows it held
+    /// or spent: a bubbling `phux-modifiers` event with `{ ctrl }`.
+    fn publish_modifiers(&self) {
+        let detail = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(
+            &detail,
+            &"ctrl".into(),
+            &JsValue::from_bool(self.ctrl_latch.get()),
+        );
+        let init = web_sys::CustomEventInit::new();
+        init.set_bubbles(true);
+        init.set_detail(&detail);
+        if let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict("phux-modifiers", &init) {
+            let _ = self.canvas.dispatch_event(&event);
+        }
+    }
+
     /// Mirror a changed program title onto the canvas and announce it, so a
     /// page can show it (the standalone page sets its document title).
     fn publish_title(&self) {
@@ -1553,6 +1605,8 @@ fn build_app(
         forwarded_button: Cell::new(None),
         mouse_cell: Cell::new(None),
         link_hover: Cell::new(false),
+        touch: Cell::new(None),
+        ctrl_latch: Cell::new(false),
         bell_started_ms: Cell::new(f64::NEG_INFINITY),
         bindings: RefCell::new(AppBindings::default()),
         ready: RefCell::new(Some(ready_tx)),
@@ -2307,9 +2361,19 @@ fn close_webtransport_exit(app: &Rc<RefCell<App>>, message: &str, protocol: bool
 /// Inline style of the input surface: invisible and inert to the pointer,
 /// but a real focusable text control so the browser runs IME composition,
 /// dead keys, mobile keyboards, and clipboard paste against it.
+/// Its 16px font keeps iOS from zooming the page when it takes focus.
 const INPUT_SURFACE_STYLE: &str = "position:fixed;width:1px;height:1px;padding:0;border:0;\
 margin:0;opacity:0;resize:none;overflow:hidden;white-space:pre;pointer-events:none;\
-caret-color:transparent;";
+caret-color:transparent;font-size:16px;";
+
+/// The canvas's own touch handling: the browser neither pans nor zooms over
+/// it (a finger scrolls the terminal instead), nor raises a text-selection
+/// callout on a long press (which selects terminal cells).
+const CANVAS_TOUCH_STYLE: [(&str, &str); 3] = [
+    ("touch-action", "none"),
+    ("user-select", "none"),
+    ("-webkit-touch-callout", "none"),
+];
 
 /// Keyboard, IME, and paste: a hidden `<textarea>` beside the canvas owns
 /// terminal input. Focusing or clicking the canvas focuses it, so only keys
@@ -2323,6 +2387,10 @@ fn install_input(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
         .owner_document()
         .ok_or_else(|| JsValue::from_str("no document"))?;
     let surface = create_input_surface(&document, &canvas)?;
+    let style = canvas.style();
+    for (property, value) in CANVAS_TOUCH_STYLE {
+        style.set_property(property, value)?;
+    }
     let mut binding = InputBinding {
         surface: surface.clone(),
         listeners: Listeners::default(),
@@ -2392,6 +2460,8 @@ fn create_input_surface(
         ("autocorrect", "off"),
         ("autocapitalize", "off"),
         ("spellcheck", "false"),
+        ("inputmode", "text"),
+        ("enterkeyhint", "enter"),
         ("tabindex", "-1"),
         ("style", INPUT_SURFACE_STYLE),
     ] {
@@ -2426,13 +2496,18 @@ fn focus_surface(_: &Rc<RefCell<App>>, event: &web_sys::Event, surface: &HtmlTex
 /// The pointer over the canvas, in precedence order: Command/Ctrl+click
 /// opens a link; while the program tracks the mouse, presses, releases, and
 /// the motion it asked for reach it as `INPUT_MOUSE`; otherwise (and always
-/// with Shift held) a primary-button drag selects text locally.
+/// with Shift held) a primary-button drag selects text locally. A finger
+/// goes to [`on_touch`] instead.
 fn on_pointer(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaElement) {
     let Some(event) = event.dyn_ref::<web_sys::PointerEvent>() else {
         return;
     };
     if event.type_() == "pointerdown" {
         focus_pointer_pane(app, event);
+    }
+    if event.pointer_type() == "touch" {
+        on_touch(app, event);
+        return;
     }
     if event.type_() == "pointermove" {
         hover_link(&app.borrow(), event);
@@ -2472,6 +2547,16 @@ fn open_link(app: &Rc<RefCell<App>>, event: &web_sys::PointerEvent) -> bool {
     if event.type_() != "pointerdown" || event.button() != 0 || !link_modifier(event) {
         return false;
     }
+    if !open_link_under(app, event) {
+        return false;
+    }
+    event.prevent_default();
+    true
+}
+
+/// Open the link under the pointer, if there is one, in a new tab with no
+/// opener or referrer. Returns whether there was a link.
+fn open_link_under(app: &Rc<RefCell<App>>, event: &web_sys::MouseEvent) -> bool {
     let url = {
         let app = app.borrow();
         link_at(&app, app.cell_under(event))
@@ -2479,7 +2564,6 @@ fn open_link(app: &Rc<RefCell<App>>, event: &web_sys::PointerEvent) -> bool {
     let Some(url) = url else {
         return false;
     };
-    event.prevent_default();
     if let Some(window) = web_sys::window() {
         let _ = window.open_with_url_and_target_and_features(&url, "_blank", "noopener,noreferrer");
     }
@@ -2636,7 +2720,9 @@ fn on_context_menu(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextA
     let shift = event
         .dyn_ref::<web_sys::MouseEvent>()
         .is_some_and(web_sys::MouseEvent::shift_key);
-    if program_takes_mouse(&app.borrow(), shift) {
+    let app = app.borrow();
+    // A long press is a selection, never the browser's menu.
+    if app.touch.get().is_some() || program_takes_mouse(&app, shift) {
         event.prevent_default();
     }
 }
@@ -2646,22 +2732,8 @@ fn select_with_pointer(app: &Rc<RefCell<App>>, event: &web_sys::PointerEvent) {
     let app = app.borrow();
     let cell = app.cell_under(event);
     match event.type_().as_str() {
-        "pointerdown" if event.button() == 0 => {
-            app.selection.set(Some(Selection::at(cell)));
-            app.selecting.set(true);
-            // Keep receiving moves when the drag leaves the canvas.
-            let _ = app.canvas.set_pointer_capture(event.pointer_id());
-            app.request_paint();
-        }
-        "pointermove" if app.selecting.get() => {
-            if let Some(mut selection) = app.selection.get()
-                && selection.head != cell
-            {
-                selection.head = cell;
-                app.selection.set(Some(selection));
-                app.request_paint();
-            }
-        }
+        "pointerdown" if event.button() == 0 => begin_selection(&app, event, cell),
+        "pointermove" if app.selecting.get() => extend_selection(&app, cell),
         // A cancelled pointer (a touch taken for panning) ends the drag too.
         "pointerup" | "pointercancel" => {
             let dragging = app.selecting.replace(false);
@@ -2671,6 +2743,130 @@ fn select_with_pointer(app: &Rc<RefCell<App>>, event: &web_sys::PointerEvent) {
         }
         _ => {}
     }
+}
+
+/// Start a selection at `cell`, following the pointer that pressed there.
+fn begin_selection(app: &App, event: &web_sys::PointerEvent, cell: (u16, u16)) {
+    app.selection.set(Some(Selection::at(cell)));
+    app.selecting.set(true);
+    // Keep receiving moves when the drag leaves the canvas.
+    let _ = app.canvas.set_pointer_capture(event.pointer_id());
+    app.request_paint();
+}
+
+/// Move the live selection's head to `cell`.
+fn extend_selection(app: &App, cell: (u16, u16)) {
+    if let Some(mut selection) = app.selection.get()
+        && selection.head != cell
+    {
+        selection.head = cell;
+        app.selection.set(Some(selection));
+        app.request_paint();
+    }
+}
+
+/// One finger over the canvas ([`crate::touch`]): a drag scrolls as the
+/// wheel does, a hold then drag selects (and copies when the finger lifts),
+/// and a tap opens the link under it, or else clicks a mouse-tracking
+/// program.
+fn on_touch(app: &Rc<RefCell<App>>, event: &web_sys::PointerEvent) {
+    let position = (event.client_x(), event.client_y());
+    let now = event.time_stamp();
+    if event.type_() == "pointerdown" {
+        // Only the first finger down starts a gesture; a second one (a pinch,
+        // a resting thumb) is ignored. A primary finger means every earlier
+        // one has lifted, so it also replaces a gesture whose end was lost.
+        if event.is_primary() {
+            let app = app.borrow();
+            app.wheel_carry.set(0.0);
+            let gesture = TouchGesture::begin(event.pointer_id(), position, now);
+            app.touch.set(Some(gesture));
+        }
+        return;
+    }
+    let Some(mut gesture) = app
+        .borrow()
+        .touch
+        .get()
+        .filter(|gesture| gesture.pointer_id == event.pointer_id())
+    else {
+        return;
+    };
+    match event.type_().as_str() {
+        "pointermove" => {
+            let step = gesture.moved(position, now);
+            app.borrow().touch.set(Some(gesture));
+            touch_step(app, event, step);
+        }
+        "pointerup" | "pointercancel" => {
+            app.borrow().touch.set(None);
+            let lifted = event.type_() == "pointerup";
+            touch_end(app, event, gesture, lifted);
+        }
+        _ => {}
+    }
+}
+
+/// Carry out one finger move.
+fn touch_step(app: &Rc<RefCell<App>>, event: &web_sys::PointerEvent, step: TouchStep) {
+    match step {
+        TouchStep::Wait => {}
+        TouchStep::Scroll(delta) => scroll(app, event, delta, crate::input::WHEEL_PIXELS, false),
+        TouchStep::StartSelect(anchor) => {
+            let app = app.borrow();
+            begin_selection(&app, event, app.cell_at_point(anchor));
+            extend_selection(&app, app.cell_under(event));
+        }
+        TouchStep::ExtendSelect => {
+            let app = app.borrow();
+            extend_selection(&app, app.cell_under(event));
+        }
+    }
+}
+
+/// The finger lifted (or the browser cancelled it): a selection ends and is
+/// copied; a tap opens a link or clicks a tracking program, else clears the
+/// selection as a click does.
+fn touch_end(
+    app: &Rc<RefCell<App>>,
+    event: &web_sys::PointerEvent,
+    gesture: TouchGesture,
+    lifted: bool,
+) {
+    if gesture.mode() == TouchMode::Select {
+        app.borrow().selecting.set(false);
+        if lifted {
+            write_selection_to_clipboard(&app.borrow());
+        }
+        return;
+    }
+    if !lifted || !gesture.is_tap(event.time_stamp()) || open_link_under(app, event) {
+        return;
+    }
+    if program_takes_mouse(&app.borrow(), false) {
+        send_mouse(app, event, MouseAction::Press, MouseButton::Left);
+        send_mouse(app, event, MouseAction::Release, MouseButton::Left);
+    } else {
+        app.borrow().clear_selection();
+    }
+}
+
+/// Put the selected text on the clipboard: a phone has no copy chord, so a
+/// touch selection copies itself when the finger lifts. The asynchronous
+/// Clipboard API needs no focused element; a refusal (an insecure page, a
+/// denied permission) leaves the selection showing and the clipboard as it
+/// was.
+fn write_selection_to_clipboard(app: &App) {
+    let Some(text) = app.selected_text() else {
+        return;
+    };
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let promise = window.navigator().clipboard().write_text(&text);
+    wasm_bindgen_futures::spawn_local(async move {
+        let _ = JsFuture::from(promise).await;
+    });
 }
 
 /// Copying (the browser's own Command+C, or the chord handler) takes the
@@ -2696,25 +2892,40 @@ fn on_wheel(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaElem
         return;
     };
     event.prevent_default();
+    scroll(
+        app,
+        event,
+        event.delta_y(),
+        event.delta_mode(),
+        event.shift_key(),
+    );
+}
+
+/// Vertical travel over the terminal, from the wheel or a finger drag:
+/// `delta_y` in `delta_mode` units as `WheelEvent` reports them, routed by
+/// [`crate::input::route_wheel`]. A report to the program lands at `at`.
+fn scroll(
+    app: &Rc<RefCell<App>>,
+    at: &web_sys::MouseEvent,
+    delta_y: f64,
+    delta_mode: u32,
+    shift: bool,
+) {
     let action = {
         let app = app.borrow();
-        crate::input::route_wheel(
-            wheel_modes(&app),
-            event.shift_key(),
-            app.session.viewport_scrolled(),
-        )
+        crate::input::route_wheel(wheel_modes(&app), shift, app.session.viewport_scrolled())
     };
     match action {
-        WheelAction::Report => forward_wheel(app, event),
+        WheelAction::Report => forward_wheel(app, at, delta_y, delta_mode),
         WheelAction::Arrows => {
-            let rows = wheel_travel(&app.borrow(), event, 1.0);
+            let rows = wheel_travel(&app.borrow(), delta_y, delta_mode, 1.0);
             let arrows =
                 crate::input::wheel_arrows(rows.clamp(-MAX_WHEEL_ARROWS, MAX_WHEEL_ARROWS));
             send_input(app, arrows.into_iter().map(InputEvent::Key));
         }
         WheelAction::Scrollback => {
             let app = app.borrow();
-            let rows = wheel_travel(&app, event, 1.0);
+            let rows = wheel_travel(&app, delta_y, delta_mode, 1.0);
             if rows != 0 && app.session.scroll_viewport(rows) {
                 app.clear_selection();
                 app.request_paint();
@@ -2738,14 +2949,14 @@ fn wheel_modes(app: &App) -> crate::input::WheelModes {
 
 /// Whole units of wheel travel, `rows_per_unit` rows each; the remainder
 /// carries to the next wheel event. A row is a cell's drawn height.
-fn wheel_travel(app: &App, event: &web_sys::WheelEvent, rows_per_unit: f64) -> i32 {
+fn wheel_travel(app: &App, delta_y: f64, delta_mode: u32, rows_per_unit: f64) -> i32 {
     let rect = app.canvas.get_bounding_client_rect();
     let (_, css_h) = app.css_cell(&rect);
     let (_, page_rows) = app.session.dims();
     let mut carry = app.wheel_carry.get();
     let units = crate::input::wheel_rows(
-        event.delta_y(),
-        event.delta_mode(),
+        delta_y,
+        delta_mode,
         css_h * rows_per_unit,
         page_rows,
         &mut carry,
@@ -2764,12 +2975,17 @@ const MAX_WHEEL_ARROWS: i32 = 30;
 
 /// Report wheel travel to the program as xterm wheel presses (buttons 4
 /// and 5), one per [`crate::input::WHEEL_ROWS_PER_CLICK`] rows.
-fn forward_wheel(app: &Rc<RefCell<App>>, event: &web_sys::WheelEvent) {
-    let clicks = wheel_travel(&app.borrow(), event, crate::input::WHEEL_ROWS_PER_CLICK)
-        .clamp(-MAX_WHEEL_CLICKS, MAX_WHEEL_CLICKS);
+fn forward_wheel(app: &Rc<RefCell<App>>, at: &web_sys::MouseEvent, delta_y: f64, delta_mode: u32) {
+    let clicks = wheel_travel(
+        &app.borrow(),
+        delta_y,
+        delta_mode,
+        crate::input::WHEEL_ROWS_PER_CLICK,
+    )
+    .clamp(-MAX_WHEEL_CLICKS, MAX_WHEEL_CLICKS);
     let button = crate::input::wheel_button(clicks);
     for _ in 0..clicks.unsigned_abs() {
-        send_mouse(app, event, MouseAction::Press, button);
+        send_mouse(app, at, MouseAction::Press, button);
     }
 }
 
@@ -2912,7 +3128,7 @@ fn on_keydown(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaEl
     }
     let routed = crate::input::route_key(&browser_key);
     if let Some(key) = routed
-        && send_input(app, [InputEvent::Key(key)])
+        && send_input(app, typed_keys(app, vec![key]))
     {
         event.prevent_default();
     }
@@ -2928,7 +3144,7 @@ fn on_composition_end(
         .dyn_ref::<CompositionEvent>()
         .and_then(CompositionEvent::data)
     {
-        send_input(app, text_input_events(&text));
+        send_input(app, typed_text(app, &text));
     }
     surface.set_value("");
 }
@@ -2948,7 +3164,7 @@ fn on_text_input(app: &Rc<RefCell<App>>, event: &web_sys::Event, surface: &HtmlT
         "insertText" | "insertReplacementText"
     );
     if plain && let Some(text) = event.data() {
-        send_input(app, text_input_events(&text));
+        send_input(app, typed_text(app, &text));
     }
     surface.set_value("");
 }
@@ -2987,11 +3203,22 @@ fn copy_selection(app: &Rc<RefCell<App>>) -> bool {
         .is_some_and(|document| document.exec_command("copy").unwrap_or(false))
 }
 
-fn text_input_events(text: &str) -> Vec<InputEvent> {
-    crate::input::key_events_for_text(text)
-        .into_iter()
-        .map(InputEvent::Key)
-        .collect()
+/// Text typed at the terminal, as key presses.
+fn typed_text(app: &Rc<RefCell<App>>, text: &str) -> Vec<InputEvent> {
+    typed_keys(app, crate::input::key_events_for_text(text))
+}
+
+/// Keys typed at the terminal, the first chorded with Ctrl when the
+/// on-screen Ctrl latch is held, which that spends.
+fn typed_keys(app: &Rc<RefCell<App>>, mut keys: Vec<KeyEvent>) -> Vec<InputEvent> {
+    let app = app.borrow();
+    if let Some(first) = keys.first_mut()
+        && app.ctrl_latch.replace(false)
+    {
+        *first = crate::input::with_ctrl(first.clone());
+        app.publish_modifiers();
+    }
+    keys.into_iter().map(InputEvent::Key).collect()
 }
 
 /// Send input the user typed or pointed: as [`send_events`], and when any

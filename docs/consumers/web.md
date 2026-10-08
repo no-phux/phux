@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-30
+last-reviewed: 2026-10-08
 ---
 
 # The phux web client
@@ -241,6 +241,27 @@ The embedded client supports these interactions and page hooks:
   with no opener or referrer. Only `http`, `https`, and `mailto` links open;
   an OSC 8 link with another scheme opens nothing. The pointer turns into a
   hand over a link while the modifier is held.
+- **Touch.** A finger is not a mouse. The canvas sets `touch-action: none`,
+  so the page neither pans nor zooms over it. A one-finger drag scrolls as
+  the wheel does (scrollback, wheel reports, or arrow keys, by the same
+  routing); a finger held still for 400 ms and then dragged selects, and the
+  selection is copied to the clipboard when the finger lifts (a phone has no
+  copy chord). A tap opens a link with no modifier held, clicks a
+  mouse-tracking program, or else clears the selection, and the tap focuses
+  the terminal, which raises the phone's keyboard; a drag does not. Travel
+  under 8 CSS pixels is still a tap. A mouse and a pen keep the behavior
+  above.
+- **On-screen keys.** `HostedClient.send_key(key)` (Rust: `Client::send_key`)
+  types one key as if at the terminal: `Escape`, `Tab`, `Enter`,
+  `Backspace`, `Delete`, an arrow, `Home`, `End`, `PageUp`, `PageDown`, or a
+  single character; any other name is refused. `set_ctrl_latch(true)` holds
+  Ctrl for the next key typed, from the phone's keyboard or `send_key`, which
+  spends it. Every change dispatches a bubbling `phux-modifiers` event on the
+  canvas whose `detail` is `{ ctrl }`. On a coarse pointer the hosted shell
+  shows a key bar under the terminal (Esc, Tab, Ctrl, the arrows, Enter) whose
+  keys never take focus, so the phone keyboard stays up. A keyboard that
+  composes (most Android keyboards) commits its text, and so spends the
+  latch, when the composition ends.
 - **Bell.** A BEL from the program dispatches a bubbling `phux-bell`
   `CustomEvent` on the canvas and flashes the canvas for 150 ms; with
   `prefers-reduced-motion: reduce` the page gets the event and no flash. A
@@ -291,13 +312,15 @@ parent terminal usable. Use `phux agent log` to inspect the complete record stre
 `wasm-pack test --node` in `phux-vt-web` and `phux-web` drives the real
 engine (including its bell, copy formatting, hyperlink, and mouse-mode
 reads), the codec, frame reassembly, the viewport's pixel size, key, IME,
-paste, mouse, wheel, and selection routing, search, and link detection. `python3 scripts/ci/web-browser.py` (inside `nix develop .#browser`)
+paste, mouse, wheel, and selection routing, on-screen keys, touch gesture
+classification, search, and link detection. `python3 scripts/ci/web-browser.py` (inside `nix develop .#browser`)
 starts `ws_demo_server` and runs the headless Chrome suites against it: the
 `src/` unit tests, the canvas pixel tests (including a wide character's
 right half), live connect, input and paste, resize, scrollback and copy,
 find, mouse reporting (including after another client reports other cells),
 focus reporting, the alternate screen's wheel, links, the bell, wide
-character copy, and the authenticated WebTransport-to-WebSocket fallback.
+character copy, touch scrolling, selection, and link taps, on-screen keys and
+the Ctrl latch, and the authenticated WebTransport-to-WebSocket fallback.
 The runner starts the demo server with `PHUX_DEMO_PANE=cat` and strips every
 other inherited `PHUX_*` variable: the pane runs `cat`, so a test makes the
 "program" emit mouse modes, OSC 8 links, and BEL by typing them. The server's attach and `transport::webtransport` tests cover the

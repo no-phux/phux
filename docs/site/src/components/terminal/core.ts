@@ -54,6 +54,35 @@ export interface PhuxController {
   splitPane(axis: "vertical" | "horizontal"): void;
   focusNextPane(): void;
   closePane(): void;
+  /** Send one on-screen key (see THUMB_KEYS) as typed at the terminal. */
+  sendKey(key: ThumbKey): void;
+  /** Hold Ctrl for the next typed key; the canvas fires `phux-modifiers`. */
+  setCtrlLatch(held: boolean): void;
+}
+
+/**
+ * The thumb key bar a coarse pointer gets under the terminal: the keys a
+ * phone keyboard lacks. `key` is what the client's `send_key` accepts; the
+ * Ctrl latch is separate, since it chords the next key instead of sending.
+ */
+export const THUMB_KEYS = [
+  { key: "Escape", label: "Esc" },
+  { key: "Tab", label: "Tab" },
+  { key: "ArrowLeft", label: "\u2190", name: "Left" },
+  { key: "ArrowDown", label: "\u2193", name: "Down" },
+  { key: "ArrowUp", label: "\u2191", name: "Up" },
+  { key: "ArrowRight", label: "\u2192", name: "Right" },
+  { key: "Enter", label: "Enter" },
+] as const;
+
+export type ThumbKey = (typeof THUMB_KEYS)[number]["key"];
+
+/** The Ctrl latch state a `phux-modifiers` event announces, if well formed. */
+export function ctrlLatchOf(event: Event): boolean | null {
+  const detail = (event as CustomEvent<unknown>).detail;
+  if (!detail || typeof detail !== "object") return null;
+  const ctrl = (detail as Record<string, unknown>).ctrl;
+  return typeof ctrl === "boolean" ? ctrl : null;
 }
 
 export interface MountOptions {
@@ -114,6 +143,12 @@ export async function mountPhuxTerminal(
     },
     closePane() {
       mounted.close_pane();
+    },
+    sendKey(key: ThumbKey) {
+      mounted.send_key(key);
+    },
+    setCtrlLatch(held: boolean) {
+      mounted.set_ctrl_latch(held);
     },
   };
   if (opts.signal?.aborted) {

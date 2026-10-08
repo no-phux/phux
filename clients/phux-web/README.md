@@ -74,11 +74,13 @@ const client = await start_hosted(url, "my-canvas", 100, 24, onEvent, signal);
 client.split_pane("vertical"); // side-by-side; "horizontal" stacks panes
 client.focus_next_pane();
 client.close_pane();           // keeps at least one terminal
+client.send_key("Escape");     // an on-screen key: named key or one character
+client.set_ctrl_latch(true);   // Ctrl for the next typed key; fires phux-modifiers
 // client.resize(cols, rows) resizes the view; client.close() releases it
 ```
 
-Input, scrollback, selection, find, mouse and focus reporting, links, the bell and
-title events, and the connection attribute are described in
+Input, touch, scrollback, selection, find, mouse and focus reporting, links,
+the bell and title events, and the connection attribute are described in
 [the web client guide](../../docs/consumers/web.md#in-the-page).
 
 ## Building

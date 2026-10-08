@@ -41,6 +41,8 @@ REQUIRED_TESTS = (
     "focus_changes_reach_a_program_that_asks_for_them",
     "the_wheel_on_the_alternate_screen_is_arrow_keys",
     "mouse_positions_land_on_their_cells_after_another_client_reports_other_cells",
+    "a_finger_scrolls_scrollback_a_hold_selects_and_a_tap_opens_a_link",
+    "on_screen_keys_and_the_ctrl_latch_reach_the_terminal",
     # Unit tests in src/ that need a DOM and the live server.
     "exported_start_retains_live_client_until_transport_failure",
     "closed_ws_send_and_repeated_reconnect_teardown_release_every_app",
