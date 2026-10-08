@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-07
+last-reviewed: 2026-10-08
 ---
 
 # Topology Snapshots
@@ -14,8 +14,9 @@ references remain unresolved because coordinator identity does not prove a
 satellite incarnation.
 
 `Model.topologySnapshot()` is the durable boundary between terminal identity
-and a live local process. The current version is `5`, and
-`process_restoration_supported` is explicitly `false`.
+and a live local process. The current version is `5`. Local leaves never
+restore a process: a restored local leaf is a fresh ephemeral shell. Remote
+leaves restore by reattaching to the coordinator that still owns the terminal.
 
 ## Persisted State
 
