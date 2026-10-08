@@ -1444,6 +1444,7 @@ fn reap_exited_pane(
     let cascaded = cascade_children(s, pane, &wire_terminal_id);
     // Every subscriber, including `ATTACH_RESOURCE`-only ones (L1 §3.1).
     let targets: Vec<mpsc::Sender<Outbound>> = s.terminal_fanout_targets(pane);
+    let drains = s.begin_terminal_output_drain(pane, wire_terminal_id.clone());
     // ADR-0123: `pane_closed` is journaled in the lock that removes the pane.
     let attribution = s.take_close_attribution(pane);
     journal_pane_closed(
@@ -1461,11 +1462,13 @@ fn reap_exited_pane(
         .flat_map(|session| s.attached_clients_in_session(session))
         .collect();
     Some(ReapAndNotify {
+        core_terminal_id: pane,
         wire_terminal_id,
         reason,
         exit,
         cascaded,
         targets,
+        drains,
         killed_clients,
         actor_token,
     })
@@ -1505,6 +1508,7 @@ fn cascade_children(
             child_exit.status,
             attribution,
         );
+        s.cancel_terminal_pumps(child);
         s.reap_terminal(child);
         cascaded.push(CascadedClose {
             wire_terminal_id: wire_child_id,
@@ -1578,6 +1582,9 @@ mod cascade_close_tests {
     }
 }
 
+#[cfg(test)]
+mod natural_close_tests;
+
 /// The off-lock half of a close: the `pane-exit` hook when the exit was not
 /// already announced, `RESOURCE_CLOSED` (children first), and the detach of
 /// a released keep-empty session's clients. Returns every mailbox a close
@@ -1588,11 +1595,13 @@ async fn announce_close(
     exit_hook_owed: bool,
 ) -> Vec<mpsc::Sender<Outbound>> {
     let ReapAndNotify {
+        core_terminal_id,
         wire_terminal_id,
         reason,
         exit,
         cascaded,
         mut targets,
+        drains,
         killed_clients,
         actor_token,
     } = reap;
@@ -1611,7 +1620,8 @@ async fn announce_close(
         )
         .await;
     }
-    broadcast_terminal_closed(&wire_terminal_id, &targets, exit, reason).await;
+    broadcast_terminal_closed_after_drain(&wire_terminal_id, &targets, exit, reason, &drains).await;
+    state.with_mut(|s| s.finish_terminal_output_drain(core_terminal_id));
     if let Some(token) = actor_token {
         token.cancel();
     }
@@ -1647,6 +1657,7 @@ async fn yield_until_close_frames_taken(targets: &[mpsc::Sender<Outbound>]) {
 /// Everything the exit watcher captures under the reap lock for the
 /// off-lock `RESOURCE_CLOSED` fanout.
 struct ReapAndNotify {
+    core_terminal_id: CoreResourceId,
     /// The pane's wire id, interned before the reap retired it.
     wire_terminal_id: WireResourceId,
     /// Why this pane is closing (ADR-0104 §4).
@@ -1656,6 +1667,8 @@ struct ReapAndNotify {
     cascaded: Vec<CascadedClose>,
     /// Every client subscribed to the pane at reap time.
     targets: Vec<mpsc::Sender<Outbound>>,
+    /// Each terminal pump finishes its final publication before its client closes.
+    drains: Vec<(mpsc::Sender<Outbound>, Vec<CancellationToken>)>,
     /// ADR-0105: clients of a released session, detached with `SESSION_KILLED`.
     killed_clients: Vec<(ClientId, mpsc::Sender<Outbound>)>,
     /// Cancelled after `RESOURCE_CLOSED` is queued so a fenced pump can
@@ -1681,6 +1694,16 @@ pub(crate) async fn broadcast_terminal_closed(
     exit: ExitOutcome,
     reason: phux_protocol::wire::frame::CloseReason,
 ) {
+    broadcast_terminal_closed_after_drain(wire_terminal_id, targets, exit, reason, &[]).await;
+}
+
+async fn broadcast_terminal_closed_after_drain(
+    wire_terminal_id: &WireResourceId,
+    targets: &[mpsc::Sender<Outbound>],
+    exit: ExitOutcome,
+    reason: CloseReason,
+    drains: &[(mpsc::Sender<Outbound>, Vec<CancellationToken>)],
+) {
     if targets.is_empty() {
         debug!("RESOURCE_CLOSED: no L1-subscribed clients to notify");
     } else {
@@ -1699,6 +1722,14 @@ pub(crate) async fn broadcast_terminal_closed(
                 signal: exit.signal,
             });
             async move {
+                for (_, done) in drains
+                    .iter()
+                    .filter(|(mailbox, _)| mailbox.same_channel(&tx))
+                {
+                    for token in done {
+                        token.cancelled().await;
+                    }
+                }
                 let _ = tx.send(frame).await;
             }
         });

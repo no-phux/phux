@@ -54,21 +54,24 @@ pub(super) struct AttachResourceGeneration {
 /// An output task's lifetime; dropping the owner aborts the task.
 #[derive(Debug)]
 struct OutputPumpTask {
-    abort: AbortHandle,
+    abort: Option<AbortHandle>,
     done: CancellationToken,
+    drain: Option<CancellationToken>,
 }
 
 impl Drop for OutputPumpTask {
     fn drop(&mut self) {
-        self.abort.abort();
+        if let Some(abort) = &self.abort {
+            abort.abort();
+        }
     }
 }
 
 impl OutputPumpTask {
     /// Drop tracking without aborting: a fenced pump may still be sending
     /// the final screen after reap.
-    fn release(self) {
-        let _ = std::mem::ManuallyDrop::new(self);
+    fn release(mut self) {
+        self.abort.take();
     }
 }
 
@@ -96,6 +99,8 @@ pub(super) struct ResourceTable {
     /// Next per-client bootstrap id; monotonic, so tombstoned ids never
     /// recur.
     next_bootstrap: HashMap<ClientId, u64>,
+    /// Retired wire ids remain detachable while final publication is pending.
+    draining_terminals: HashMap<phux_protocol::ids::ResourceId, ResourceId>,
     /// ADR-0109: for spawned resources, the spawner and whether another
     /// connection has used it since. No entry means not client-spawned.
     spawns: HashMap<ResourceId, SpawnRecord>,
@@ -129,6 +134,7 @@ impl ResourceTable {
             pumps: HashMap::new(),
             output_pumps: HashMap::new(),
             next_bootstrap: HashMap::new(),
+            draining_terminals: HashMap::new(),
             spawns: HashMap::new(),
         }
     }
@@ -292,10 +298,63 @@ impl ResourceTable {
         terminal: ResourceId,
         abort: AbortHandle,
         done: CancellationToken,
+        drain: Option<CancellationToken>,
     ) {
         let tasks = self.output_pumps.entry((client, terminal)).or_default();
         tasks.retain(|task| !task.done.is_cancelled());
-        tasks.push(OutputPumpTask { abort, done });
+        tasks.push(OutputPumpTask {
+            abort: Some(abort),
+            done,
+            drain,
+        });
+    }
+
+    /// Ask terminal pumps for their final capture, retaining completion fences
+    /// before the resource and subscription tables are removed.
+    pub(super) fn begin_output_drain(
+        &self,
+        terminal: ResourceId,
+    ) -> Vec<(ClientId, Vec<CancellationToken>)> {
+        self.output_pumps
+            .iter()
+            .filter_map(|((client, pane), tasks)| {
+                if *pane != terminal {
+                    return None;
+                }
+                let done: Vec<_> = tasks
+                    .iter()
+                    .filter_map(|task| {
+                        let drain = task.drain.as_ref()?;
+                        if task.done.is_cancelled() {
+                            return None;
+                        }
+                        drain.cancel();
+                        Some(task.done.clone())
+                    })
+                    .collect();
+                (!done.is_empty()).then_some((*client, done))
+            })
+            .collect()
+    }
+
+    pub(super) fn remember_draining_terminal(
+        &mut self,
+        wire: phux_protocol::ids::ResourceId,
+        core: ResourceId,
+    ) {
+        self.draining_terminals.insert(wire, core);
+    }
+
+    pub(super) fn draining_terminal(
+        &self,
+        wire: &phux_protocol::ids::ResourceId,
+    ) -> Option<ResourceId> {
+        self.draining_terminals.get(wire).copied()
+    }
+
+    pub(super) fn finish_output_drain(&mut self, terminal: ResourceId) {
+        self.cancel_pumps_for_terminal(terminal);
+        self.draining_terminals.retain(|_, core| *core != terminal);
     }
 
     /// Let this pane's output pumps finish without aborting them.
@@ -307,8 +366,21 @@ impl ResourceTable {
             .copied()
             .collect();
         for key in keys {
+            let mut draining = Vec::new();
             for task in self.output_pumps.remove(&key).unwrap_or_default() {
-                task.release();
+                if task
+                    .drain
+                    .as_ref()
+                    .is_some_and(CancellationToken::is_cancelled)
+                    && !task.done.is_cancelled()
+                {
+                    draining.push(task);
+                } else {
+                    task.release();
+                }
+            }
+            if !draining.is_empty() {
+                self.output_pumps.insert(key, draining);
             }
         }
     }
