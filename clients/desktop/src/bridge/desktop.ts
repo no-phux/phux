@@ -40,6 +40,11 @@ export interface ConnectTarget {
   sessionName: string;
 }
 
+/** What a caller chooses for a new terminal; the bridge supplies the identity. */
+export type SpawnRequest = Omit<DesktopSpawnOptions, "identity" | "sessionId"> & {
+  sessionId?: number;
+};
+
 export interface Bridge {
   status: Accessor<string>;
   error: Accessor<string | undefined>;
@@ -69,7 +74,11 @@ export interface Bridge {
   fenced(terminalId: string): boolean;
   homeSession(): DesktopSession | undefined;
   panes(): DesktopPane[];
-  spawn(options: Omit<DesktopSpawnOptions, "identity" | "sessionId">): number | undefined;
+  /**
+   * Spawn a terminal in `sessionId`, or in the home session when that is
+   * absent or not in the current topology.
+   */
+  spawn(options: SpawnRequest): number | undefined;
   onEvents(listener: (events: DesktopEvent[]) => void): void;
   /** Host path answers (`PATH_QUERY`), drained on the same wake as events. */
   onPathAnswers(listener: (answers: DesktopPathAnswer[]) => void): void;
@@ -354,14 +363,22 @@ export function createBridge(
     return topology()?.sessions.find((session) => session.name === target.sessionName);
   }
 
-  function spawn(options: Omit<DesktopSpawnOptions, "identity" | "sessionId">): number | undefined {
+  function spawnSession(sessionId: number | undefined): DesktopSession | undefined {
+    const requested =
+      sessionId === undefined
+        ? undefined
+        : topology()?.sessions.find((session) => session.id === sessionId);
+    return requested ?? homeSession();
+  }
+
+  function spawn({ sessionId, ...options }: SpawnRequest): number | undefined {
     const info = server();
-    const home = homeSession();
-    if (!info || !home || status() !== "Attached") return undefined;
+    const session = spawnSession(sessionId);
+    if (!info || !session || status() !== "Attached") return undefined;
     return client().spawnTerminalWithOptions({
       ...options,
       identity: { serverId: info.serverId, connectionEpoch: info.connectionEpoch },
-      sessionId: home.id,
+      sessionId: session.id,
     });
   }
 

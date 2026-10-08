@@ -5,7 +5,7 @@
  */
 import { batch, createSignal, type Accessor } from "solid-js";
 import type { DesktopEvent, DesktopPane } from "../../native/generated/index";
-import type { Bridge } from "../bridge/desktop";
+import type { Bridge, SpawnRequest } from "../bridge/desktop";
 import {
   cycle,
   equalize,
@@ -307,8 +307,12 @@ export function createWorkspace(
   }
 
   function request(destination: Destination, cwd?: string): void {
-    const options: { cwd?: string; initialSize?: { cols: number; rows: number } } = {};
+    const options: SpawnRequest = {};
     if (cwd) options.cwd = cwd;
+    // New tabs and splits join the focused pane's session; the bridge falls
+    // back to the home session when there is none or it is gone.
+    const sessionId = focusedPane()?.sessionId;
+    if (sessionId !== undefined) options.sessionId = sessionId;
     const size = predictedSize(destination);
     if (size && size.cols >= 2 && size.rows >= 1) options.initialSize = size;
     const id = bridge.spawn(options);
@@ -320,12 +324,14 @@ export function createWorkspace(
     setPending(spawns.size + awaiting.size);
   }
 
-  function focusedCwd(): string | undefined {
+  function focusedPane(): DesktopPane | undefined {
     const placement = focused();
     if (!placement) return undefined;
-    return (
-      bridge.panes().find((pane) => pane.terminalId === placement.terminalId)?.cwd ?? undefined
-    );
+    return bridge.panes().find((pane) => pane.terminalId === placement.terminalId);
+  }
+
+  function focusedCwd(): string | undefined {
+    return focusedPane()?.cwd ?? undefined;
   }
 
   function newTerminal(cwd?: string): void {

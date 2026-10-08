@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { createRoot } from "solid-js";
-import type { DesktopEvent } from "../../native/generated/index";
+import type {
+  DesktopEvent,
+  DesktopSession,
+  DesktopSpawnOptions,
+} from "../../native/generated/index";
 import { createBridge, refusedInput, structural, type DesktopHost } from "../../src/bridge/desktop";
 
 /** A native client that records which snapshots a wake read. */
@@ -12,6 +16,8 @@ class FakeClient {
   queued: DesktopEvent[] = [];
   afterDrain: (() => void) | undefined;
   topologyReads = 0;
+  sessions: DesktopSession[] = [];
+  spawned: DesktopSpawnOptions[] = [];
   wake: (from: string) => void = () => {};
 
   constructor() {
@@ -36,9 +42,13 @@ class FakeClient {
   takePathAnswers(): never[] {
     return [];
   }
-  topology(): { sessions: never[]; panes: never[] } {
+  topology(): { sessions: DesktopSession[]; panes: never[] } {
     this.topologyReads += 1;
-    return { sessions: [], panes: [] };
+    return { sessions: this.sessions, panes: [] };
+  }
+  spawnTerminalWithOptions(options: DesktopSpawnOptions): number {
+    this.spawned.push(options);
+    return this.spawned.length;
   }
   status(): string {
     return "Attached";
@@ -371,5 +381,41 @@ describe("bridge wakes", () => {
     expect(refusedInput(receipt("Delivered", ""))).toBeUndefined();
     expect(refusedInput(receipt("Unknown", "lost"))).toBeUndefined();
     expect(refusedInput({ kind: "TopologyChanged" })).toBeUndefined();
+  });
+});
+
+describe("bridge spawn", () => {
+  const session = (id: number, name: string): DesktopSession => ({
+    id,
+    name,
+    windowCount: 1,
+    attachedClientCount: 0,
+  });
+
+  test("spawns in the requested session, and in the home session otherwise", () => {
+    scenario((bridge, client) => {
+      // The scenario's target session is "s".
+      client.sessions = [session(1, "s"), session(2, "projB")];
+      wake(client, [{ kind: "TopologyChanged" }]);
+      bridge.spawn({ sessionId: 2, cwd: "/work/projB" });
+      bridge.spawn({});
+      bridge.spawn({ sessionId: 99 });
+      expect(client.spawned.map((options) => options.sessionId)).toEqual([2, 1, 1]);
+      expect(client.spawned[0]).toEqual({
+        cwd: "/work/projB",
+        identity: { serverId: "server-a", connectionEpoch: "1" },
+        sessionId: 2,
+      });
+    });
+  });
+
+  test("a requested session still spawns when the home session is absent", () => {
+    scenario((bridge, client) => {
+      client.sessions = [session(2, "projB")];
+      wake(client, [{ kind: "TopologyChanged" }]);
+      expect(bridge.spawn({ sessionId: 2 })).toBe(1);
+      expect(bridge.spawn({})).toBeUndefined();
+      expect(client.spawned.map((options) => options.sessionId)).toEqual([2]);
+    });
   });
 });
