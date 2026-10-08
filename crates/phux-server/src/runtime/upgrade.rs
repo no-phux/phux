@@ -29,6 +29,7 @@ use crate::terminal_actor::{PaneUpgradeHandle, UpgradeHandleRequest};
 use crate::upgrade::blob::StateBlob;
 
 const PANE_HANDOFF_TIMEOUT: Duration = Duration::from_secs(2);
+const AGENT_ROLLBACK_TIMEOUT: Duration = Duration::from_secs(2);
 const UPGRADE_SOURCE_EXE: &str = crate::upgrade::SOURCE_EXE_ENV;
 const UPGRADE_SNAPSHOT_DIR: &str = crate::upgrade::SNAPSHOT_DIR_ENV;
 
@@ -189,12 +190,12 @@ pub(super) struct UpgradePlan {
     socket_path: PathBuf,
     /// Re-emitted on the resume argv.
     flags: RuntimeFlags,
-    _fd_flags: FdFlagsGuard,
+    fd_flags: FdFlagsGuard,
     _blob_file: std::fs::File,
     _listener_fd: OwnedFd,
     _handoffs: HashMap<phux_core::ids::ResourceId, PaneUpgradeHandle>,
     /// Lifted only if `exec` returns, so the old image keeps streaming.
-    _agent_seal: AgentSessionSeal,
+    agent_seal: AgentSessionSeal,
 }
 
 /// Everything `prepare_upgrade` reads out of the live server under one lock,
@@ -229,37 +230,52 @@ pub(super) async fn prepare_upgrade(state: &SharedState) -> Result<UpgradePlan, 
     } = capture_upgrade_context(state)?;
 
     let listener = dup_listener(listener_fd)?;
-    let (panes, (agent_sessions, agent_seal)) = tokio::join!(
+    let (panes, (agent_sessions, mut agent_seal)) = tokio::join!(
         collect_pane_handoffs(pane_senders, PANE_HANDOFF_TIMEOUT),
         collect_agent_session_cuts(agent_session_senders, PANE_HANDOFF_TIMEOUT),
     );
-    let handoffs = UpgradeHandoffs {
-        panes: panes?,
-        agent_sessions,
-    };
-    let blob = reassemble_unchanged_tree(
-        state,
-        listener_fd,
-        listener.as_raw_fd(),
-        &tree_identity,
-        &handoffs,
-    )?;
+    let staged: Result<_, UpgradeError> = async {
+        let handoffs = UpgradeHandoffs {
+            panes: panes?,
+            agent_sessions,
+        };
+        let blob = reassemble_unchanged_tree(
+            state,
+            listener_fd,
+            listener.as_raw_fd(),
+            &tree_identity,
+            &handoffs,
+        )?;
 
-    let blob_file = stage_blob_file(&blob)?;
-    let blob_fd = blob_file.as_raw_fd();
-    let executable = pin_validated_executable(flags.upgrade_source_exe.as_deref())?;
-    let fd_flags = clear_inherited_cloexec(blob_fd, listener_fd, &blob)?;
+        let blob_file = stage_blob_file(&blob)?;
+        let blob_fd = blob_file.as_raw_fd();
+        let executable = pin_validated_executable(flags.upgrade_source_exe.as_deref())?;
+        let fd_flags = clear_inherited_cloexec(blob_fd, listener_fd, &blob)?;
+        Ok((handoffs, blob_file, blob_fd, executable, fd_flags))
+    }
+    .await;
+
+    let (handoffs, blob_file, blob_fd, executable, fd_flags) = match staged {
+        Ok(parts) => parts,
+        Err(error) => {
+            // Await responsive actors before reporting the failure (#1035).
+            // Drop retains responsibility for actors that miss rollback's
+            // deadline, including ones that never answered their initial cut.
+            agent_seal.lift().await;
+            return Err(error);
+        }
+    };
 
     Ok(UpgradePlan {
         executable,
         blob_fd,
         socket_path,
         flags,
-        _fd_flags: fd_flags,
+        fd_flags,
         _blob_file: blob_file,
         _listener_fd: listener,
         _handoffs: handoffs.panes,
-        _agent_seal: agent_seal,
+        agent_seal,
     })
 }
 
@@ -460,7 +476,56 @@ async fn collect_pane_handoffs(
 /// unseals them: it drops only when the upgrade did not happen (a failed
 /// preparation or `exec`), because a successful `exec` replaces the process.
 struct AgentSessionSeal {
+    /// Actors still owing rollback. Removing each completed actor immediately
+    /// keeps cancellation from scheduling an extra unseal to that actor.
     bootstraps: Vec<mpsc::Sender<BootstrapRequest>>,
+}
+
+impl AgentSessionSeal {
+    /// Attempt every unseal concurrently within one rollback window. An actor
+    /// that acknowledges has applied the unseal before the next append; a
+    /// closed actor owes nothing. Unresponsive actors remain for Drop, so a
+    /// failed upgrade cannot block its caller or a healthy neighboring stream.
+    async fn lift(&mut self) {
+        if self.bootstraps.is_empty() {
+            return;
+        }
+        let mut pending = self
+            .bootstraps
+            .iter()
+            .cloned()
+            .map(|bootstrap| async move {
+                let (reply, applied) = oneshot::channel();
+                if bootstrap
+                    .send(BootstrapRequest {
+                        reply,
+                        seal: Some(false),
+                    })
+                    .await
+                    .is_ok()
+                {
+                    // The actor replies after applying the seal. A dropped
+                    // reply means its queued request died with the actor.
+                    let _ = applied.await;
+                }
+                bootstrap
+            })
+            .collect::<FuturesUnordered<_>>();
+        if tokio::time::timeout(AGENT_ROLLBACK_TIMEOUT, async {
+            while let Some(completed) = pending.next().await {
+                self.bootstraps
+                    .retain(|bootstrap| !bootstrap.same_channel(&completed));
+            }
+        })
+        .await
+        .is_err()
+        {
+            tracing::warn!(
+                pending = self.bootstraps.len(),
+                "upgrade: agent rollback deadline elapsed; retaining unresolved streams for fallback"
+            );
+        }
+    }
 }
 
 impl Drop for AgentSessionSeal {
@@ -531,9 +596,16 @@ async fn collect_agent_session_cuts(
 
 impl UpgradePlan {
     /// Re-exec the new binary with [`resume_args`], replacing this process.
-    /// Returns only on failure, which is harmless: nothing was closed, so the
-    /// old image keeps serving.
-    pub(super) fn exec(self) -> std::io::Error {
+    /// Returns only on failure, after restoring descriptor flags and awaiting
+    /// the same bounded stream rollback as a failed preparation.
+    pub(super) async fn exec(mut self) -> std::io::Error {
+        let error = self.try_exec();
+        drop(self.fd_flags);
+        self.agent_seal.lift().await;
+        error
+    }
+
+    fn try_exec(&self) -> std::io::Error {
         let exe = match self.executable.exec_path() {
             Ok(path) => path.to_path_buf(),
             Err(err) => return err,
@@ -792,8 +864,8 @@ mod tests {
         assert_eq!(fd_flags(fd), original);
     }
 
-    #[test]
-    fn exec_failure_restores_original_descriptor_flags() {
+    #[tokio::test]
+    async fn exec_failure_restores_original_descriptor_flags() {
         let listener = tempfile::tempfile().unwrap();
         let listener_fd = listener.as_raw_fd();
         let original = fd_flags(listener_fd).union(rustix::io::FdFlags::CLOEXEC);
@@ -813,16 +885,16 @@ mod tests {
             blob_fd,
             socket_path: PathBuf::from("/tmp/phux.sock"),
             flags: RuntimeFlags::default(),
-            _fd_flags: guard,
+            fd_flags: guard,
             _blob_file: blob_file,
             _listener_fd: tempfile::tempfile().unwrap().into(),
             _handoffs: HashMap::new(),
-            _agent_seal: AgentSessionSeal {
+            agent_seal: AgentSessionSeal {
                 bootstraps: Vec::new(),
             },
         };
 
-        assert_eq!(plan.exec().kind(), std::io::ErrorKind::NotFound);
+        assert_eq!(plan.exec().await.kind(), std::io::ErrorKind::NotFound);
         assert_eq!(fd_flags(listener_fd), original);
     }
 
@@ -1131,6 +1203,333 @@ mod tests {
                 assert_eq!(received.await.unwrap().base_seq, 1);
                 let next = append_records(&append, "{\"type\":\"stop\"}").await;
                 assert_eq!(next.first_seq, 2, "the refusal consumed no sequence");
+            })
+            .await;
+    }
+
+    /// This responsive actor acknowledges `lift` within its deadline, so the
+    /// next append is accepted with no FIFO barrier or retry. The completed
+    /// rollback leaves `Drop` nothing to do (#1035).
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_lifted_seal_accepts_the_next_append_with_no_barrier() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let (_, _, append) = state.with_mut(old_image_with_agent_sessions);
+                append_records(&append, "{\"type\":\"prompt\"}").await;
+                let (blob, mut seal) = capture_blob(&state).await;
+                assert_eq!(blob.agent_sessions[0].base_seq, 1);
+                assert!(matches!(
+                    try_append(&append, "{\"type\":\"stop\"}").await,
+                    Err(crate::resource::agent_session::AppendRejection::Overflow(_))
+                ));
+
+                seal.lift().await;
+
+                // Nothing between here and the append: if `lift` had only
+                // queued the unseal, this is where it would race it.
+                let next = append_records(&append, "{\"type\":\"stop\"}").await;
+                assert_eq!(next.first_seq, 2, "the refusal consumed no sequence");
+
+                drop(seal);
+            })
+            .await;
+    }
+
+    /// An empty seal lifts without touching the runtime, so the failure path
+    /// can call it unconditionally.
+    #[tokio::test(flavor = "current_thread")]
+    async fn lifting_a_seal_that_covers_no_sessions_is_a_no_op() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let mut seal = AgentSessionSeal {
+                    bootstraps: Vec::new(),
+                };
+                seal.lift().await;
+            })
+            .await;
+    }
+
+    fn empty_agent_cut() -> AgentSessionBootstrap {
+        AgentSessionBootstrap {
+            base_seq: 0,
+            records: Vec::new(),
+            dropped: 0,
+            ended: false,
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rollback_has_one_deadline_and_does_not_block_a_healthy_neighbor() {
+        let (blocked, _blocked_rx) = mpsc::channel(1);
+        blocked
+            .try_send(BootstrapRequest {
+                reply: oneshot::channel().0,
+                seal: None,
+            })
+            .unwrap();
+        let (healthy, mut healthy_rx) = mpsc::channel(1);
+        let mut seal = AgentSessionSeal {
+            bootstraps: vec![blocked.clone(), healthy],
+        };
+        {
+            let lift = seal.lift();
+            tokio::pin!(lift);
+            assert!(futures_util::poll!(&mut lift).is_pending());
+            let request = healthy_rx
+                .try_recv()
+                .expect("a blocked neighbor must not prevent an unseal request");
+            assert_eq!(request.seal, Some(false));
+            request.reply.send(empty_agent_cut()).unwrap();
+            assert!(futures_util::poll!(&mut lift).is_pending());
+            tokio::time::advance(AGENT_ROLLBACK_TIMEOUT).await;
+            assert!(
+                futures_util::poll!(&mut lift).is_ready(),
+                "rollback must finish within one aggregate deadline"
+            );
+        }
+        drop(seal);
+        assert!(matches!(
+            healthy_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rollback_waits_for_a_full_mailbox_and_then_for_application() {
+        let (bootstrap, mut receiver) = mpsc::channel(1);
+        bootstrap
+            .try_send(BootstrapRequest {
+                reply: oneshot::channel().0,
+                seal: None,
+            })
+            .unwrap();
+        let mut seal = AgentSessionSeal {
+            bootstraps: vec![bootstrap],
+        };
+        {
+            let lift = seal.lift();
+            tokio::pin!(lift);
+            assert!(futures_util::poll!(&mut lift).is_pending());
+            assert_eq!(receiver.recv().await.unwrap().seal, None);
+            assert!(futures_util::poll!(&mut lift).is_pending());
+            let request = receiver.recv().await.unwrap();
+            assert_eq!(request.seal, Some(false));
+            assert!(futures_util::poll!(&mut lift).is_pending());
+            request.reply.send(empty_agent_cut()).unwrap();
+            assert!(futures_util::poll!(&mut lift).is_ready());
+        }
+        drop(seal);
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rollback_is_bounded_when_an_actor_accepts_but_never_answers() {
+        let (bootstrap, mut receiver) = mpsc::channel(1);
+        let mut seal = AgentSessionSeal {
+            bootstraps: vec![bootstrap],
+        };
+        let unanswered;
+        {
+            let lift = seal.lift();
+            tokio::pin!(lift);
+            assert!(futures_util::poll!(&mut lift).is_pending());
+            unanswered = receiver.recv().await.unwrap();
+            tokio::time::advance(AGENT_ROLLBACK_TIMEOUT).await;
+            assert!(futures_util::poll!(&mut lift).is_ready());
+        }
+        drop(seal);
+        assert_eq!(receiver.recv().await.unwrap().seal, Some(false));
+        drop(unanswered);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn lost_actors_do_not_delay_rollback_or_leave_pending_senders() {
+        let (closed, receiver) = mpsc::channel(1);
+        drop(receiver);
+        let (lost_reply, mut reply_receiver) = mpsc::channel(1);
+        let mut seal = AgentSessionSeal {
+            bootstraps: vec![closed, lost_reply],
+        };
+        {
+            let lift = seal.lift();
+            tokio::pin!(lift);
+            assert!(futures_util::poll!(&mut lift).is_pending());
+            drop(reply_receiver.recv().await.unwrap());
+            drop(reply_receiver);
+            assert!(futures_util::poll!(&mut lift).is_ready());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelling_rollback_keeps_drop_fallback_for_a_full_mailbox() {
+        let (bootstrap, mut receiver) = mpsc::channel(1);
+        let mut seal = AgentSessionSeal {
+            bootstraps: vec![bootstrap],
+        };
+        {
+            let lift = seal.lift();
+            tokio::pin!(lift);
+            assert!(futures_util::poll!(&mut lift).is_pending());
+            // The queued request fills the mailbox. Cancel while its reply is
+            // still outstanding; Drop must arrange a second attempt.
+        }
+        drop(seal);
+        assert_eq!(receiver.recv().await.unwrap().seal, Some(false));
+        assert_eq!(receiver.recv().await.unwrap().seal, Some(false));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelled_rollback_does_not_repeat_an_acknowledged_unseal() {
+        let (healthy, mut healthy_rx) = mpsc::channel(1);
+        let (blocked, mut blocked_rx) = mpsc::channel(1);
+        let mut seal = AgentSessionSeal {
+            bootstraps: vec![healthy, blocked],
+        };
+        {
+            let lift = seal.lift();
+            tokio::pin!(lift);
+            assert!(futures_util::poll!(&mut lift).is_pending());
+            let request = healthy_rx.recv().await.unwrap();
+            assert_eq!(request.seal, Some(false));
+            request.reply.send(empty_agent_cut()).unwrap();
+            assert!(futures_util::poll!(&mut lift).is_pending());
+            // The neighbor still owes its acknowledgement when we cancel.
+        }
+        drop(seal);
+        assert!(matches!(
+            healthy_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
+        ));
+        assert_eq!(blocked_rx.recv().await.unwrap().seal, Some(false));
+        assert_eq!(blocked_rx.recv().await.unwrap().seal, Some(false));
+    }
+
+    /// The source is an owned non-executable file, so the actual exec syscall
+    /// fails safely without replacing this test process or touching an install.
+    fn unexecutable_plan(
+        seal: AgentSessionSeal,
+    ) -> (UpgradePlan, std::fs::File, rustix::io::FdFlags) {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let listener = tempfile::tempfile().unwrap();
+        let original = fd_flags(listener.as_raw_fd());
+        let blob_file = tempfile::tempfile().unwrap();
+        let mut guard = FdFlagsGuard::new();
+        guard.clear_cloexec(blob_file.as_raw_fd()).unwrap();
+        guard.clear_cloexec(listener.as_raw_fd()).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("non-executable");
+        std::fs::write(&path, b"not an executable\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let plan = UpgradePlan {
+            executable: PinnedExecutable {
+                source_path: path.clone(),
+                path,
+                dir,
+            },
+            blob_fd: blob_file.as_raw_fd(),
+            socket_path: PathBuf::from("/unused-test-socket"),
+            flags: RuntimeFlags::default(),
+            fd_flags: guard,
+            _blob_file: blob_file,
+            _listener_fd: dup_listener(listener.as_raw_fd()).unwrap(),
+            _handoffs: HashMap::new(),
+            agent_seal: seal,
+        };
+        (plan, listener, original)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_exec_restores_flags_before_waiting_for_rollback_application() {
+        let (bootstrap, mut receiver) = mpsc::channel(1);
+        bootstrap
+            .try_send(BootstrapRequest {
+                reply: oneshot::channel().0,
+                seal: None,
+            })
+            .unwrap();
+        let (plan, listener, original) = unexecutable_plan(AgentSessionSeal {
+            bootstraps: vec![bootstrap],
+        });
+        {
+            let exec = plan.exec();
+            tokio::pin!(exec);
+            assert!(futures_util::poll!(&mut exec).is_pending());
+            assert_eq!(fd_flags(listener.as_raw_fd()), original);
+            assert_eq!(receiver.recv().await.unwrap().seal, None);
+            assert!(futures_util::poll!(&mut exec).is_pending());
+            let request = receiver.recv().await.unwrap();
+            assert_eq!(request.seal, Some(false));
+            assert!(futures_util::poll!(&mut exec).is_pending());
+            request.reply.send(empty_agent_cut()).unwrap();
+            let std::task::Poll::Ready(error) = futures_util::poll!(&mut exec) else {
+                panic!("exec failure must return after rollback is applied");
+            };
+            assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        }
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn actual_exec_failure_resumes_the_next_append_without_a_barrier() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let (_, _, append) = state.with_mut(old_image_with_agent_sessions);
+                append_records(&append, "{\"type\":\"prompt\"}").await;
+                let (_, seal) = capture_blob(&state).await;
+                assert!(matches!(
+                    try_append(&append, "{\"type\":\"stop\"}").await,
+                    Err(crate::resource::agent_session::AppendRejection::Overflow(_))
+                ));
+                let (plan, _listener, _) = unexecutable_plan(seal);
+                assert_eq!(
+                    plan.exec().await.kind(),
+                    std::io::ErrorKind::PermissionDenied
+                );
+                let next = append_records(&append, "{\"type\":\"stop\"}").await;
+                assert_eq!(next.first_seq, 2, "failed appends consumed no sequence");
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn real_prepare_failure_resumes_the_next_append_without_a_barrier() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let (_, _, append) = state.with_mut(old_image_with_agent_sessions);
+                let next = append_records(&append, "{\"type\":\"prompt\"}").await;
+                assert_eq!(next.last_seq, 1);
+                let listener = tempfile::tempfile().unwrap();
+                let dir = tempfile::tempdir().unwrap();
+                state.with_mut(|s| {
+                    s.set_upgrade_context(
+                        listener.as_raw_fd(),
+                        dir.path().join("phux.sock"),
+                        RuntimeFlags {
+                            upgrade_source_exe: Some(dir.path().join("missing-replacement")),
+                            ..RuntimeFlags::default()
+                        },
+                    );
+                });
+                let Err(UpgradeError::Io(error)) = prepare_upgrade(&state).await else {
+                    panic!("the replacement does not exist");
+                };
+                assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+                let next = append_records(&append, "{\"type\":\"stop\"}").await;
+                assert_eq!(next.first_seq, 2);
             })
             .await;
     }
