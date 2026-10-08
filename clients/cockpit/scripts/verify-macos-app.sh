@@ -224,9 +224,10 @@ EXECUTABLE="${APP}/Contents/MacOS/${EXPECTED_EXECUTABLE}"
 RESOURCES="${APP}/Contents/Resources"
 [[ -f "${EXECUTABLE}" && -x "${EXECUTABLE}" ]] ||
     fail "bundle executable is missing or not executable: ${EXECUTABLE}"
-for resource in LICENSE.txt README.txt THIRD_PARTY_NOTICES.md JetBrainsMono-OFL.txt Phux-FFI-THIRD-PARTY.html Phux-FFI-Provenance.json signing-plan.txt cockpit-self-update.sh install-cockpit.sh; do
+for resource in LICENSE.txt README.txt THIRD_PARTY_NOTICES.md JetBrainsMono-OFL.txt PaperMono-OFL.txt Phux-FFI-THIRD-PARTY.html Phux-FFI-Provenance.json signing-plan.txt cockpit-self-update.sh install-cockpit.sh; do
     [[ -s "${RESOURCES}/${resource}" ]] || fail "required resource is missing: ${resource}"
 done
+python3 "${ROOT}/scripts/verify-paper-mono.py" --resources "${RESOURCES}"
 "${ROOT}/scripts/verify-phux-ffi.py" \
     --provenance-file "${RESOURCES}/Phux-FFI-Provenance.json"
 ARCHITECTURES="$(/usr/bin/lipo -archs "${EXECUTABLE}" 2>/dev/null)" ||

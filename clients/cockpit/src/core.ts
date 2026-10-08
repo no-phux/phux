@@ -2790,7 +2790,7 @@ export function initialModel(): [Model, Cmd<Msg>] {
         { index: 0, label: asciiBytes("Block"), value: asciiBytes("block"), selected: true }, { index: 1, label: asciiBytes("Bar"), value: asciiBytes("bar"), selected: false }, { index: 2, label: asciiBytes("Underline"), value: asciiBytes("underline"), selected: false },
       ],
       placementChoices: [{ index: 0, label: asciiBytes("Top strip"), value: asciiBytes("top"), selected: true }, { index: 1, label: asciiBytes("Workspace rail"), value: asciiBytes("side"), selected: false }],
-      fontChoices: [{ index: 0, label: asciiBytes("JetBrains Mono NL Nerd Font Mono"), value: asciiBytes(""), selected: true }, { index: 1, label: asciiBytes("Geist Mono"), value: asciiBytes("Geist Mono"), selected: false }],
+      fontChoices: [{ index: 0, label: asciiBytes("Paper Mono"), value: asciiBytes(""), selected: true }, { index: 1, label: asciiBytes("Geist Mono"), value: asciiBytes("Geist Mono"), selected: false }, { index: 2, label: asciiBytes("JetBrains Mono NL Nerd Font Mono"), value: asciiBytes("JetBrains Mono NL Nerd Font Mono"), selected: false }],
       fontDecrease: 0,
       fontIncrease: 1,
       navigationAfterSettings: false,
@@ -3724,10 +3724,10 @@ function visibleEditableSetting(model: Model, id: number): Setting | null {
 }
 
 function directFontFamily(model: Model, index: number): NavigatorDecision {
-  if (model.appearanceBusy || (index !== 0 && index !== 1)) return navigatorDecision(model, 0, NO_BYTES);
+  if (model.appearanceBusy || (index !== 0 && index !== 1 && index !== 2)) return navigatorDecision(model, 0, NO_BYTES);
   const row = visibleSetting(model, 0, 2);
   if (row === null) return navigatorDecision(model, 0, NO_BYTES);
-  return directSetting(model, 0, index === 0 ? asciiBytes("") : asciiBytes("Geist Mono"));
+  return directSetting(model, 0, model.fontChoices[index].value);
 }
 
 function directBoolean(model: Model, id: number, enabled: boolean): NavigatorDecision {

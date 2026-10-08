@@ -163,7 +163,8 @@ pub fn parse(text: []const u8, source: []const u8) Inherited {
 /// bundled design. Any other family is reported, never guessed at.
 pub fn cockpitFamily(name: []const u8) ?[]const u8 {
     if (config.fontChoice(name)) |choice| return switch (choice) {
-        .bundled => "",
+        .paper => "Paper Mono",
+        .bundled => "JetBrains Mono NL Nerd Font Mono",
         .geist => "Geist Mono",
     };
     var folded: [config.max_font_family_bytes]u8 = undefined;
@@ -175,7 +176,8 @@ pub fn cockpitFamily(name: []const u8) ?[]const u8 {
         len += 1;
     }
     const key = folded[0..len];
-    if (std.mem.startsWith(u8, key, "jetbrainsmono")) return "";
+    if (std.mem.startsWith(u8, key, "jetbrainsmono")) return "JetBrains Mono NL Nerd Font Mono";
+    if (std.mem.eql(u8, key, "papermono")) return "Paper Mono";
     if (std.mem.startsWith(u8, key, "geistmono")) return "Geist Mono";
     return null;
 }

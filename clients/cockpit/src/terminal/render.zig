@@ -2,6 +2,9 @@
 
 const native_sdk = @import("native_sdk");
 const session_module = @import("session.zig");
+const nerd_fallback = @import("nerd_fallback.zig");
+const config = @import("../config/config.zig");
+const fonts = @import("fonts.zig");
 const Palette = @import("palette.zig").Palette;
 
 const canvas = native_sdk.canvas;
@@ -104,25 +107,63 @@ pub fn paint(session: *Session, builder: *canvas.Builder, options: PaintOptions)
 /// Paint an already-projected provider grid with the same budgets and retained
 /// identity behavior as a local session.
 pub fn paintTerminalGrid(terminal_grid: canvas.TerminalGrid, builder: *canvas.Builder, options: PaintOptions) !void {
-    const fitted = switch (options.row_fit) {
+    var fitted = switch (options.row_fit) {
         .from_top => terminal_grid,
         .last_n => cropToFit(terminal_grid, builder, options),
     };
+    var paper_tokens: canvas.DesignTokens = .{};
+    fonts.apply(&paper_tokens, config.FontChoice.paper);
+    const use_fallback = options.tokens.typography.mono_font_id == paper_tokens.typography.mono_font_id;
+    var command_budget = options.command_budget;
+    var text_reserve = options.text_reserve;
+    var reservation_store: ?canvas.DisplayListStore = null;
+    if (use_fallback and nerd_fallback.needsReservation(fitted)) {
+        command_budget = if (command_budget == 0) builder.commands.len else @min(command_budget, builder.commands.len);
+        const reserved = nerd_fallback.reservation(fitted, command_budget -| builder.len, builder.text_bytes.len -| builder.text_byte_len -| text_reserve, options.row_fit == .last_n);
+        fitted = if (options.row_fit == .last_n) cropLastN(fitted, reserved.rows) else limitedTopRows(fitted, reserved.rows);
+        reservation_store = reserved.store;
+        command_budget -= reserved.extra;
+        text_reserve += reserved.text;
+    }
     const first_command = builder.len;
     const first_cell = builder.cell_len;
-    try canvas.terminal_grid.paint(fitted, builder, .{
+    const report = try canvas.terminal_grid.paintReport(fitted, builder, .{
         .frame = options.frame,
         .tokens = options.tokens,
         .focused = options.focused,
         .background_frame = options.background_frame,
         .id_base = options.id_base,
-        .command_budget = options.command_budget,
-        .text_reserve = options.text_reserve,
+        .command_budget = command_budget,
+        .text_reserve = text_reserve,
         .path_reserve = options.path_reserve,
         .glyph_budget = options.glyph_budget,
         .cell_reserve = options.cell_reserve,
     });
     applyContrast(fitted, builder, options.minimum_contrast, first_command, first_cell);
+    if (use_fallback) nerd_fallback.splitRows(builder, first_command, options.id_base);
+    if (reservation_store) |store| {
+        // SDK preflight may stop even earlier (cells, geometry, or text).
+        // Keep that limiting store, but restore the producer's row count:
+        // the fallback reservation must not make dropped content look whole.
+        builder.noteDegradation(.{
+            .id = options.id_base,
+            .store = if (report.truncated()) builder.degradation.?.store else store,
+            .produced = report.rows_painted,
+            .requested = terminal_grid.rows.len,
+        });
+    }
+}
+
+fn limitedTopRows(grid: canvas.TerminalGrid, rows: usize) canvas.TerminalGrid {
+    var limited = grid;
+    limited.rows = grid.rows[0..@min(rows, grid.rows.len)];
+    if (limited.cursor) |cursor| if (cursor.y >= rows) {
+        limited.cursor = null;
+    };
+    if (limited.select_head) |head| if (head.y >= rows) {
+        limited.select_head = null;
+    };
+    return limited;
 }
 
 fn gridCols(grid: canvas.TerminalGrid) usize {
