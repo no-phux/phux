@@ -4,9 +4,9 @@ export interface SessionSummary {
     readonly attached: boolean;
 }
 export interface SessionList {
-    readonly schema_version: 1 | 2;
+    readonly schema_version: 1 | 2 | 3;
     readonly sessions: readonly SessionSummary[];
-    /** Canonical selectors for every addressable terminal (v2; empty for v1). */
+    /** Canonical selectors for every addressable terminal (v2/v3; empty for v1). */
     readonly terminals: readonly string[];
 }
 export interface CursorState {

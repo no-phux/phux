@@ -221,8 +221,8 @@ function strings(value, path) {
 }
 function parseSessionList(value) {
   const root = record(value, "$ (phux ls --json CLI shape)");
-  if (root.schema_version !== 1 && root.schema_version !== 2) {
-    throw new SchemaValidationError("$.schema_version", "a supported value (1 or 2)");
+  if (root.schema_version !== 1 && root.schema_version !== 2 && root.schema_version !== 3) {
+    throw new SchemaValidationError("$.schema_version", "a supported value (1, 2, or 3)");
   }
   const schema = root.schema_version;
   if (!Array.isArray(root.sessions)) {

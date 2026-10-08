@@ -1,0 +1,44 @@
+{
+  "schema_version": 3,
+  "sessions": [
+    {
+      "name": "fixture",
+      "windows": 1,
+      "attached": false,
+      "attached_clients": 0,
+      "keep_empty": false,
+      "empty": false
+    }
+  ],
+  "terminals": ["@1"],
+  "unreachable": [],
+  "resources": [
+    {
+      "id": "@1",
+      "kind": "terminal",
+      "parent": null,
+      "lifecycle": "running",
+      "exit": null
+    }
+  ],
+  "hosts": [
+    {
+      "host": null,
+      "local": true,
+      "reachable": true,
+      "unreachable": null,
+      "sessions": [
+        {
+          "name": "fixture",
+          "id": 1,
+          "windows": 1,
+          "panes": 1,
+          "attached": false,
+          "attached_clients": 0,
+          "active_terminal": "@1"
+        }
+      ]
+    }
+  ],
+  "hosts_complete": true
+}
