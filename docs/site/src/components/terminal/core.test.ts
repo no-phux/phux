@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { parseHostedEvent, terminalGeometry } from "./core";
+import {
+  ctrlLatchOf,
+  parseHostedEvent,
+  terminalGeometry,
+  THUMB_KEYS,
+} from "./core";
 
 describe("hosted client events", () => {
   test("accepts authoritative session and normalized close events", () => {
@@ -59,5 +64,29 @@ describe("initial terminal geometry", () => {
       cols: 100,
       rows: 24,
     });
+  });
+});
+
+describe("thumb key bar", () => {
+  test("sends the keys a phone keyboard lacks, by the client's key names", () => {
+    expect(THUMB_KEYS.map(({ key }) => key)).toEqual([
+      "Escape",
+      "Tab",
+      "ArrowLeft",
+      "ArrowDown",
+      "ArrowUp",
+      "ArrowRight",
+      "Enter",
+    ]);
+  });
+
+  test("reads the Ctrl latch from a well-formed phux-modifiers event only", () => {
+    const event = (detail: unknown) =>
+      new CustomEvent("phux-modifiers", { detail });
+    expect(ctrlLatchOf(event({ ctrl: true }))).toBe(true);
+    expect(ctrlLatchOf(event({ ctrl: false }))).toBe(false);
+    for (const detail of [null, "ctrl", { ctrl: "yes" }, {}]) {
+      expect(ctrlLatchOf(event(detail))).toBeNull();
+    }
   });
 });

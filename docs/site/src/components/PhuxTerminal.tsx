@@ -1,7 +1,15 @@
-import { useEffect, useId, useRef, useState } from "react";
 import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
+import {
+  ctrlLatchOf,
   mountPhuxTerminal,
   terminalGeometry,
+  THUMB_KEYS,
   warmPhuxTerminal,
   type HostedEvent,
   type PhuxController,
@@ -153,6 +161,7 @@ export default function PhuxTerminal({
     pending: false,
   });
   const [paneError, setPaneError] = useState("");
+  const [ctrlHeld, setCtrlHeld] = useState(false);
   const [authMessage, setAuthMessage] = useState("");
 
   function signal(status: EmbedStatus) {
@@ -182,6 +191,11 @@ export default function PhuxTerminal({
     } catch (error) {
       setPaneError(error instanceof Error ? error.message : String(error));
     }
+  }
+
+  function thumbKey(action: (client: PhuxController) => void) {
+    const client = attempt.current?.client;
+    if (client) action(client);
   }
 
   async function readIdentity(signal: AbortSignal): Promise<Identity | null> {
@@ -306,6 +320,7 @@ export default function PhuxTerminal({
     setMessage("");
     setPanes({ count: 1, focused: "", pending: false });
     setPaneError("");
+    setCtrlHeld(false);
     setPhase("connecting");
     signal("loading");
     try {
@@ -322,6 +337,14 @@ export default function PhuxTerminal({
           const state = (event as CustomEvent<PaneState>).detail;
           setPanes(state);
           setPaneError(state.error ?? "");
+        },
+        { signal: current.abort.signal },
+      );
+      canvas.addEventListener(
+        "phux-modifiers",
+        (event) => {
+          const held = ctrlLatchOf(event);
+          if (isCurrent() && held !== null) setCtrlHeld(held);
         },
         { signal: current.abort.signal },
       );
@@ -627,6 +650,48 @@ export default function PhuxTerminal({
         )}
       </div>
       {phase === "live" && (
+        <div
+          className="pterm-keys"
+          role="toolbar"
+          aria-label="Terminal keys"
+          // Keys never take focus, so the phone keyboard stays up.
+          onPointerDown={keepTerminalFocus}
+          onMouseDown={keepTerminalFocus}
+        >
+          {THUMB_KEYS.slice(0, 2).map(({ key, label }) => (
+            <button
+              key={key}
+              type="button"
+              tabIndex={-1}
+              onClick={() => thumbKey((client) => client.sendKey(key))}
+            >
+              {label}
+            </button>
+          ))}
+          <button
+            type="button"
+            tabIndex={-1}
+            aria-pressed={ctrlHeld}
+            onClick={() =>
+              thumbKey((client) => client.setCtrlLatch(!ctrlHeld))
+            }
+          >
+            Ctrl
+          </button>
+          {THUMB_KEYS.slice(2).map((thumb) => (
+            <button
+              key={thumb.key}
+              type="button"
+              tabIndex={-1}
+              aria-label={"name" in thumb ? thumb.name : undefined}
+              onClick={() => thumbKey((client) => client.sendKey(thumb.key))}
+            >
+              {thumb.label}
+            </button>
+          ))}
+        </div>
+      )}
+      {phase === "live" && (
         <nav className="pterm-pane-controls" aria-label="Pane controls">
           <span>
             {panes.count} / 4 panes
@@ -728,6 +793,10 @@ export default function PhuxTerminal({
       )}
     </div>
   );
+}
+
+function keepTerminalFocus(event: ReactMouseEvent) {
+  event.preventDefault();
 }
 
 function formatTime(seconds: number): string {

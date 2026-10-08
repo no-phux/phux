@@ -33,6 +33,20 @@ export class HostedClient {
      */
     resize(cols: number, rows: number): void;
     /**
+     * Send one on-screen key as typed at the terminal: `Escape`, `Tab`,
+     * `Enter`, `Backspace`, `Delete`, an arrow, `Home`, `End`, `PageUp`,
+     * `PageDown`, or a single character. A held Ctrl latch chords it.
+     *
+     * # Errors
+     * Refuses any other key name.
+     */
+    send_key(key: string): void;
+    /**
+     * Hold (or release) Ctrl for the next key typed at the terminal; the
+     * canvas announces each change as a `phux-modifiers` event.
+     */
+    set_ctrl_latch(held: boolean): void;
+    /**
      * Split the focused terminal using one new resource on this connection.
      *
      * # Errors
@@ -83,19 +97,21 @@ export interface InitOutput {
     readonly hostedclient_close_pane: (a: number) => [number, number];
     readonly hostedclient_focus_next_pane: (a: number) => [number, number];
     readonly hostedclient_resize: (a: number, b: number, c: number) => void;
+    readonly hostedclient_send_key: (a: number, b: number, c: number) => [number, number];
+    readonly hostedclient_set_ctrl_latch: (a: number, b: number) => void;
     readonly hostedclient_split_pane: (a: number, b: number, c: number) => [number, number];
     readonly start: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
     readonly start_hosted: (a: number, b: number, c: number, d: number, e: number, f: number, g: any, h: number) => any;
     readonly start_webtransport: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => any;
-    readonly wasm_bindgen_4319d9ad64dc54c6___convert__closures_____invoke___u32__u32__i32__true_: (a: number, b: number, c: number, d: number) => number;
-    readonly wasm_bindgen_4319d9ad64dc54c6___convert__closures_____invoke___js_sys_19e6b106fee1164f___Function_fn_wasm_bindgen_4319d9ad64dc54c6___JsValue_____wasm_bindgen_4319d9ad64dc54c6___sys__Undefined___js_sys_19e6b106fee1164f___Function_fn_wasm_bindgen_4319d9ad64dc54c6___JsValue_____wasm_bindgen_4319d9ad64dc54c6___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen_4319d9ad64dc54c6___convert__closures_____invoke___u32__u32______true_: (a: number, b: number, c: number, d: number) => void;
-    readonly wasm_bindgen_4319d9ad64dc54c6___convert__closures_____invoke___wasm_bindgen_4319d9ad64dc54c6___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_4319d9ad64dc54c6___JsError___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_4319d9ad64dc54c6___convert__closures_____invoke___wasm_bindgen_4319d9ad64dc54c6___sys__Undefined__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_4319d9ad64dc54c6___JsError___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_4319d9ad64dc54c6___convert__closures_____invoke___wasm_bindgen_4319d9ad64dc54c6___sys__Undefined__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_4319d9ad64dc54c6___JsError___true__13: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_4319d9ad64dc54c6___convert__closures_____invoke___web_sys_bb7631f4d8aa1b67___features__gen_MessageEvent__MessageEvent______true_: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen_4319d9ad64dc54c6___convert__closures_____invoke___web_sys_bb7631f4d8aa1b67___features__gen_MessageEvent__MessageEvent______true__11: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen_4319d9ad64dc54c6___convert__closures_____invoke_______true_: (a: number, b: number) => void;
+    readonly wasm_bindgen_c41d5cbf289b5539___convert__closures_____invoke___u32__u32__i32__true_: (a: number, b: number, c: number, d: number) => number;
+    readonly wasm_bindgen_c41d5cbf289b5539___convert__closures_____invoke___js_sys_e1caa9b86f7b459a___Function_fn_wasm_bindgen_c41d5cbf289b5539___JsValue_____wasm_bindgen_c41d5cbf289b5539___sys__Undefined___js_sys_e1caa9b86f7b459a___Function_fn_wasm_bindgen_c41d5cbf289b5539___JsValue_____wasm_bindgen_c41d5cbf289b5539___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
+    readonly wasm_bindgen_c41d5cbf289b5539___convert__closures_____invoke___u32__u32______true_: (a: number, b: number, c: number, d: number) => void;
+    readonly wasm_bindgen_c41d5cbf289b5539___convert__closures_____invoke___wasm_bindgen_c41d5cbf289b5539___JsValue__core_608f92abc48d28da___result__Result_____wasm_bindgen_c41d5cbf289b5539___JsError___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_c41d5cbf289b5539___convert__closures_____invoke___wasm_bindgen_c41d5cbf289b5539___sys__Undefined__core_608f92abc48d28da___result__Result_____wasm_bindgen_c41d5cbf289b5539___JsError___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_c41d5cbf289b5539___convert__closures_____invoke___wasm_bindgen_c41d5cbf289b5539___sys__Undefined__core_608f92abc48d28da___result__Result_____wasm_bindgen_c41d5cbf289b5539___JsError___true__15: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_c41d5cbf289b5539___convert__closures_____invoke___web_sys_3ca46e9073013fcd___features__gen_MessageEvent__MessageEvent______true_: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_c41d5cbf289b5539___convert__closures_____invoke___web_sys_3ca46e9073013fcd___features__gen_MessageEvent__MessageEvent______true__13: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_c41d5cbf289b5539___convert__closures_____invoke_______true_: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __externref_table_alloc: () => number;

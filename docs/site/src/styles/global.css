@@ -694,6 +694,67 @@ a:hover {
   outline-offset: 2px;
 }
 
+/* The thumb key bar: the keys a phone keyboard lacks, under the terminal.
+   Only a coarse pointer gets it; a keyboard has these keys already. */
+.pterm-keys {
+  display: none;
+}
+@media (pointer: coarse) {
+  .pterm-keys {
+    display: grid;
+    grid-template-columns: repeat(8, minmax(0, 1fr));
+    gap: 4px;
+    padding: 6px;
+    border-top: 1px solid #24262d;
+    background: #101116;
+  }
+  .pterm-keys button {
+    min-width: 0;
+    min-height: 44px;
+    padding: 0;
+    border: 1px solid #363a44;
+    color: #e5e7ec;
+    background: #171920;
+    font: inherit;
+    font-size: 12px;
+    position: relative;
+    touch-action: manipulation;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  /* A narrow phone leaves a key under 44px wide; its hit area spans the
+     gaps to either side. */
+  .pterm-keys button::after {
+    content: "";
+    position: absolute;
+    inset: 0 -2px;
+  }
+  .pterm-keys button:active,
+  .pterm-keys button[aria-pressed="true"] {
+    color: #08080b;
+    border-color: #b9ff65;
+    background: #b9ff65;
+  }
+  /* Controls keep their look but take a thumb: an invisible hit area
+     reaches 44px, inside the gaps between them. */
+  .pterm :is(.pterm-actions, .pterm-controls, .pterm-pane-controls) button,
+  .pterm-canvas-host button,
+  .pterm-launch {
+    position: relative;
+    touch-action: manipulation;
+  }
+  .pterm :is(.pterm-actions, .pterm-controls, .pterm-pane-controls) button::after,
+  .pterm-canvas-host button::after,
+  .pterm-launch::after {
+    content: "";
+    position: absolute;
+    inset: -4px;
+  }
+  .pterm-launch::after {
+    inset: -6px -4px;
+  }
+}
+
 @media (max-width: 620px) {
   .pterm-actions {
     grid-template-columns: 1fr;
