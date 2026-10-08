@@ -144,8 +144,8 @@
         //   generated core.ts runner calls to compose `host_calls`, the
         //   view/markup options and the final `native_sdk.App`. Cockpit's
         //   root `src/native_extension.zig` reserves the
-        //   `cockpit.` command namespace through the generalized
-        //   `HostCallMux` and keeps a real engine behind it.
+        //   `cockpit.` command namespace through its own host-call binding
+        //   and keeps a real engine behind it.
         // - `AppArtifacts.extension`, `.test_extension` and
         //   `.extension_tests`: Zig collects tests from the root module only,
         //   so an extension's guards need their own test artifact, and a Zig
@@ -199,9 +199,23 @@
         // Cold GPU-composite startup initializes the final drawable presenter,
         // so a correct retained texture also reaches the visible window.
         // Open modals contain Tab focus and return it to their opener on close.
+        //
+        // cockpit-sync-2026-10-08 (phall1/native#20): the patch set rebuilt
+        // on upstream main (v0.10.1 + 143 commits), whose runtime moved into
+        // compiled TypeScript policies. Each fork fix now also holds on the
+        // compiled path Cockpit runs (split axis in layout coordination and
+        // slides, cell_grid in the render planner, clip-revealed damage, the
+        // 32-slot PTY plan, modal Tab containment). The extension names the
+        // runner's adapter as `native_sdk.TsRunnerApp(core)`; generated
+        // services and persistence keep upstream's compiled `HostCallMux`,
+        // and `RoutedHostCallMux` is the extension-side composition. Upstream
+        // journals native window-chrome answers per event, so replay-owned
+        // native work consumes the answers its live run read. A textbox-role
+        // surface keeps Enter/Space as input. ScriptC 0.2.5 (0.2.6 is missing
+        // three npm platform runtimes).
         .native_sdk = .{
-            .url = "https://github.com/phall1/native/archive/56e2aa4027a5e7f598bbb3643a110805b58cdeca.tar.gz",
-            .hash = "native_sdk-0.1.0-hzDzQvO8uALu2VA4brkbMTPfDkf2FzWNxcmG5FdIjOMz",
+            .url = "https://github.com/phall1/native/archive/6f130530ea255405d70bc14098272b3ed4fd431c.tar.gz",
+            .hash = "native_sdk-0.1.0-hzDzQl1eDAMOFGgO3TSaFxu2qXDK2W3lniMLYviB5fpY",
         },
         // libghostty-vt: Ghostty's extracted terminal-state core, consumed
         // as the `ghostty-vt` Zig module. Pinned to the first upstream
