@@ -72,6 +72,8 @@ pub const NativeCommand = enum(u8) {
     /// Deliver, or drop, the paste held for confirmation (paste_safety.zig).
     paste_confirm = 26,
     paste_cancel = 27,
+    /// Seize the focused terminal's input lease from the client driving it.
+    take_over_input = 28,
 };
 
 pub fn decodeNativeCommand(raw: u8) ?NativeCommand {
@@ -103,6 +105,7 @@ pub fn decodeNativeCommand(raw: u8) ?NativeCommand {
         25 => .minimize,
         26 => .paste_confirm,
         27 => .paste_cancel,
+        28 => .take_over_input,
         else => null,
     };
 }

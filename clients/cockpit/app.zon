@@ -19,6 +19,8 @@
             .{ .label = "Split Down", .command = "pane.split-down", .key = "d", .modifiers = .{ "primary", "shift" } },
             .{ .separator = true },
             .{ .label = "Close Pane", .command = "terminal.close", .key = "w", .modifiers = .{"primary"} },
+            .{ .separator = true },
+            .{ .label = "Take Over Input", .command = "terminal.take-over-input" },
         } },
         .{ .title = "Edit", .items = .{
             .{ .label = "Copy", .command = "terminal.copy", .key = "c", .modifiers = .{"primary"} },

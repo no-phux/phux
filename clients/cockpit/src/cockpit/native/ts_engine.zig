@@ -2726,6 +2726,7 @@ pub const Engine = struct {
             .font_larger, .font_smaller, .font_reset, .fullscreen, .minimize => self.displayCommand(command, fx),
             .paste_confirm => interaction.confirmPendingPaste(model, fx),
             .paste_cancel => interaction.cancelPendingPaste(model),
+            .take_over_input => self.takeOverInput(),
         };
         if (changed) pointer_input.endAllCaptures(model, fx);
         return changed;
@@ -2904,6 +2905,19 @@ pub const Engine = struct {
             return true;
         }
         return lifecycle.closePane(self.model, fx, ref, true);
+    }
+
+    /// Take Over Input: seize the focused Phux terminal's input lease from the
+    /// client driving it (ADR-0033). A deliberate act, never implied by focus;
+    /// a free wheel or a local pane has nothing to take.
+    fn takeOverInput(self: *Engine) bool {
+        if (comptime !support.phux_enabled) return false;
+        const ref = self.model.focusedTerminalRef() orelse return false;
+        const remote = self.model.phuxForRef(ref) orelse return false;
+        const presentation = remote.presentation(ref) orelse return false;
+        if (!presentation.input_held_by_other) return false;
+        _ = remote.requestAcquireInput(ref, true) catch return false;
+        return true;
     }
 
     /// Go to Directory's Open Here: a durable tab whose shell starts in `cwd`,

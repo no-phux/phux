@@ -2,7 +2,9 @@
 const provider = @import("provider_contract");
 
 /// `kill_if` is a conditional kill (KILL_RESOURCE_IF, ADR-0109).
-pub const Kind = enum(u32) { spawn = 1, attach = 2, detach = 3, kill_if = 4, close_resource = 5, close_resources = 6 };
+/// `acquire_input` / `release_input` move the input lease (ADR-0033); the
+/// holder the user sees arrives as INPUT_HOLDER, never in the receipt.
+pub const Kind = enum(u32) { spawn = 1, attach = 2, detach = 3, kill_if = 4, close_resource = 5, close_resources = 6, acquire_input = 7, release_input = 8 };
 pub const Status = enum(u32) { success = 1, refused = 2, unknown_outcome = 3 };
 pub const ErrorDomain = enum(u32) { none = 0, spawn = 1, protocol = 2 };
 

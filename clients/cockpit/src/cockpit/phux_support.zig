@@ -335,6 +335,9 @@ const DisabledPhuxProvider = struct {
         return false;
     }
     pub fn acknowledgePromptReturn(_: *DisabledPhuxProvider, _: TerminalRef) void {}
+    pub fn requestAcquireInput(_: *DisabledPhuxProvider, _: TerminalRef, _: bool) error{Disabled}!u32 {
+        return error.Disabled;
+    }
     pub fn bracketedPaste(_: *const DisabledPhuxProvider, _: ReplicaOwner) error{Disabled}!bool {
         return error.Disabled;
     }

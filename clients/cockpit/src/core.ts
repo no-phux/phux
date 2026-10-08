@@ -1829,6 +1829,7 @@ function terminalStateLabel(state: number): Uint8Array {
   if (state === 5) return asciiBytes("Terminal ended");
   if (state === 6) return asciiBytes("Loading earlier history");
   if (state === 7) return asciiBytes("Earlier history available");
+  if (state === 8) return asciiBytes("Another client is driving");
   return NO_BYTES;
 }
 
@@ -2516,6 +2517,7 @@ function editingNativeCommand(name: string): Msg | null {
   if (name === "terminal.find") return { kind: "native_command", command: 14 };
   if (name === "terminal.find-next") return { kind: "native_command", command: 15 };
   if (name === "terminal.find-previous") return { kind: "native_command", command: 16 };
+  if (name === "terminal.take-over-input") return { kind: "native_command", command: 28 };
   return null;
 }
 

@@ -55,6 +55,13 @@ test('engine readiness never implies a connected Phux provider', () => {
   }
 });
 
+test('a terminal whose wheel another client holds says so in its window status', () => {
+  const body = new Uint8Array([...snapshotBytes(2), 8, 0, 0, 0, 0]);
+  const [model] = step(initialModel()[0], { kind: 'snapshot_loaded', body });
+  assert.equal(text(model.connectionStatus), 'Phux connected / Another client is driving');
+  assert.equal(text(model.window1Status), 'Phux connected');
+});
+
 test('per-window terminal status survives connected and offline snapshot projection', () => {
   const body = new Uint8Array([...snapshotBytes(2), 6, 2, 3, 7, 0]);
   const [model] = step(initialModel()[0], { kind: 'snapshot_loaded', body });
@@ -67,7 +74,7 @@ test('per-window terminal status survives connected and offline snapshot project
   assert.equal(text(step(initialModel()[0], { kind: 'snapshot_loaded', body })[0].window1Status),
     'Phux offline / Recovering terminal: waiting for snapshot');
   assert.equal(snapshot(body.subarray(0, body.length - 1)), null);
-  body[body.length - 1] = 8;
+  body[body.length - 1] = 9;
   assert.equal(snapshot(body), null);
 });
 

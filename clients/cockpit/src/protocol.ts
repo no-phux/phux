@@ -662,7 +662,7 @@ function readSnapshotTrailer(bytes: Uint8Array, at: number, secondary: readonly 
   if (at === bytes.length) return { windows: secondary, terminalStates: new Uint8Array(5), extensions: noExtensions() };
   if (at + 5 > bytes.length) return null;
   const terminalStates = bytes.subarray(at, at + 5);
-  for (const state of terminalStates) if (state > 7) return null;
+  for (const state of terminalStates) if (state > 8) return null;
   const extensions = readExtensions(bytes, at + 5);
   if (extensions === null) return null;
   return { windows: secondary, terminalStates, extensions };

@@ -303,6 +303,9 @@ pub const Presentation = struct {
     history_has_more: bool = false,
     history_pages_loaded: u64 = 0,
     history_unread_rows: u64 = 0,
+    /// Another connection holds this terminal's input lease (ADR-0033):
+    /// keys typed here are acked and dropped until it is taken over.
+    input_held_by_other: bool = false,
 };
 
 pub fn localTerminalRef(id: LocalResourceId) TerminalRef {

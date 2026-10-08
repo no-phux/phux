@@ -244,6 +244,10 @@ const Terminal = struct {
     held_keys: std.ArrayListUnmanaged(HeldKey) = .empty,
     held_text: std.ArrayListUnmanaged(u8) = .empty,
     held_since_ns: u64 = 0,
+    /// The last INPUT_HOLDER said another connection holds the wheel.
+    /// False while free, held here, or unknown (before the first broadcast
+    /// and after a disconnect, which may have missed one).
+    input_held_by_other: bool = false,
 
     fn deinit(terminal: *Terminal, gpa: std.mem.Allocator) void {
         terminal.held_keys.deinit(gpa);
@@ -280,6 +284,7 @@ const Terminal = struct {
             .history_has_more = terminal.history_has_more,
             .history_pages_loaded = terminal.history_pages_loaded,
             .history_unread_rows = terminal.history_unread_rows,
+            .input_held_by_other = terminal.input_held_by_other,
         };
     }
 };
@@ -861,6 +866,20 @@ pub const Host = struct {
         }
         try resultError(c.phux_client_queue_close_tab_resources(host.client, request_id, &ids, refs.len));
         host.operation_ledger.accepted(request_id, host.client_generation, .close_resources, null);
+        host.stageOutgoing() catch host.disconnect();
+        return request_id;
+    }
+
+    /// ACQUIRE_INPUT for a live replica (ADR-0033): cooperative, or `seize`
+    /// to take the wheel from its holder. What the user sees is the
+    /// INPUT_HOLDER broadcast; the receipt only retires the ledger entry.
+    pub fn requestAcquireInput(host: *Host, terminal_ref: provider.TerminalRef, seize: bool) !u32 {
+        const request_id = try host.preflightOperation();
+        const terminal = host.findTerminalConst(terminal_ref) orelse return error.InvalidIdentity;
+        if (!terminal.published or terminal.phase != .live) return error.InvalidState;
+        const raw = cId(&terminal.id);
+        try resultError(c.phux_client_queue_acquire_input(host.client, request_id, &raw, seize));
+        host.operation_ledger.accepted(request_id, host.client_generation, .acquire_input, terminal_ref);
         host.stageOutgoing() catch host.disconnect();
         return request_id;
     }
@@ -1954,6 +1973,8 @@ pub const Host = struct {
     fn applyOperationIdentity(host: *Host, result: *const OperationResult) !void {
         // Kill receipts never admit replicas or fake authoritative closure.
         if (result.kind == .kill_if or result.kind == .close_resource or result.kind == .close_resources) return;
+        // Lease receipts carry no replica; the holder rides INPUT_HOLDER.
+        if (result.kind == .acquire_input or result.kind == .release_input) return;
         const terminal_ref = result.terminal_ref orelse return;
         if (result.kind == .detach) {
             if (result.status == .success) host.removeOperationReplica(terminal_ref);
@@ -2171,6 +2192,7 @@ pub const Host = struct {
             c.PHUX_CLIENT_STATUS_COMMAND_STARTED => try host.captureCommandStarted(effect),
             c.PHUX_CLIENT_STATUS_COMMAND_FINISHED => try host.captureCommandFinished(effect),
             c.PHUX_CLIENT_STATUS_EXITED => try host.captureExit(effect),
+            c.PHUX_CLIENT_STATUS_INPUT_HOLDER => try host.captureInputHolder(effect),
             c.PHUX_CLIENT_STATUS_RESYNC_REQUIRED => {
                 host.metadata_changed = true;
                 try host.markResync(effect.terminal_id);
@@ -2246,8 +2268,20 @@ pub const Host = struct {
         terminal.command = .unknown;
         terminal.command_started_ns = null;
         terminal.prompt_return_owner = null;
+        terminal.input_held_by_other = false;
         host.metadata_changed = true;
         try host.recordEnded(terminal.terminalRef());
+    }
+
+    /// INPUT_HOLDER (client.h): stream_id 1 while a holder exists, first_row
+    /// 1 when the holder is this connection. Only "someone else is driving"
+    /// is projected; who, and the action, stay with the server.
+    fn captureInputHolder(host: *Host, effect: *const c.PhuxClientEffect) !void {
+        const terminal = (try host.findTerminalRaw(effect.terminal_id)) orelse return;
+        const held_elsewhere = effect.stream_id == 1 and effect.first_row == 0;
+        if (terminal.input_held_by_other == held_elsewhere) return;
+        terminal.input_held_by_other = held_elsewhere;
+        host.metadata_changed = true;
     }
 
     fn recordEnded(host: *Host, ref: provider.TerminalRef) !void {
@@ -2291,6 +2325,9 @@ pub const Host = struct {
             // last one known, like the title.
             terminal.command = .unknown;
             terminal.command_started_ns = null;
+            // ponytail: the holder is unknown until the next broadcast; read
+            // the attach snapshot's input_holder once the FFI surfaces it.
+            terminal.input_held_by_other = false;
         }
     }
 
@@ -4336,6 +4373,44 @@ test "unknown status codes are still dropped silently" {
     try std.testing.expect(!host.atPrompt(terminal));
     try std.testing.expect(host.takeNotice() == null);
     try std.testing.expect(host.takeEnded() == null);
+}
+
+test "INPUT_HOLDER marks the replica driven elsewhere only while another connection holds the wheel" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try attachedStatusHost(&bridge);
+    defer host.destroy();
+    const terminal = try statusRef(7);
+    var effect = std.mem.zeroes(c.PhuxClientEffect);
+    effect.kind = c.PHUX_CLIENT_EFFECT_STATUS;
+    effect.detail = c.PHUX_CLIENT_STATUS_INPUT_HOLDER;
+    effect.terminal_id = cId(&host.findTerminal(terminal).?.id);
+    // SEIZED by server-side client 9, which is not this connection.
+    effect.stream_id = 1;
+    effect.bootstrap_id = 9;
+    effect.status_code = 1;
+    try host.captureStatusEffect(&effect, .{});
+    try std.testing.expect(host.metadata_changed);
+    try std.testing.expect(host.presentation(terminal).?.input_held_by_other);
+    try std.testing.expect(host.takeNotice() == null);
+    // A lifecycle restatement of the same holder moves nothing.
+    host.metadata_changed = false;
+    try host.captureStatusEffect(&effect, .{});
+    try std.testing.expect(!host.metadata_changed);
+    // Held by this connection: nothing to say.
+    effect.first_row = 1;
+    try host.captureStatusEffect(&effect, .{});
+    try std.testing.expect(host.metadata_changed);
+    try std.testing.expect(!host.presentation(terminal).?.input_held_by_other);
+    // Taken back by the other client, then RELEASED: the wheel is free.
+    effect.first_row = 0;
+    try host.captureStatusEffect(&effect, .{});
+    try std.testing.expect(host.presentation(terminal).?.input_held_by_other);
+    effect.stream_id = 0;
+    effect.bootstrap_id = 0;
+    effect.status_code = 2;
+    try host.captureStatusEffect(&effect, .{});
+    try std.testing.expect(!host.presentation(terminal).?.input_held_by_other);
 }
 
 test "the connected lane takes the socket from the worker and gives it back" {

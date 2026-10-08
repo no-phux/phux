@@ -94,6 +94,9 @@ pane whose wheel another client holds must say so rather than look dead.
 operations. Taking over is a deliberate user act. Focus, a second attach, and
 reconnect never acquire ([L1.md §8.1](../spec/L1.md)); the attach-time
 alternative is `phux_client_attach_role` with `PRIMARY, DELIBERATE`.
+Cockpit shows a wheel held elsewhere as the focused terminal's window
+status, "Another client is driving", and Take Over Input (Shell menu and
+the command palette) seizes it. Nothing is acquired on focus.
 
 ## Who owns the socket
 

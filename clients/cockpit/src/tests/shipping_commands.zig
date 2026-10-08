@@ -10,6 +10,8 @@ pub const menus: []const native_sdk.Menu = &.{
         .{ .label = "Split Down", .command = "pane.split-down", .key = "d", .modifiers = .{ .primary = true, .shift = true } },
         .{ .separator = true },
         .{ .label = "Close Pane", .command = "terminal.close", .key = "w", .modifiers = .{ .primary = true } },
+        .{ .separator = true },
+        .{ .label = "Take Over Input", .command = "terminal.take-over-input", .key = "", .modifiers = .{} },
     } },
     .{ .title = "Edit", .items = &.{
         .{ .label = "Copy", .command = "terminal.copy", .key = "c", .modifiers = .{ .primary = true } },

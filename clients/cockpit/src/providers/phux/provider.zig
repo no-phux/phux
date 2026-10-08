@@ -889,6 +889,12 @@ pub const PhuxProvider = struct {
         return self.host.requestCloseResources(refs, expected_epoch);
     }
 
+    /// Take (`seize`) or ask for the terminal's input lease (ADR-0033). The
+    /// holder arrives as a status effect, never as this receipt.
+    pub fn requestAcquireInput(self: *PhuxProvider, terminal_ref: provider.TerminalRef, seize: bool) !u32 {
+        return self.host.requestAcquireInput(terminal_ref, seize);
+    }
+
     /// Owned by the caller's buffer; copy immediately after a synchronous refusal.
     pub fn copyLastError(self: *const PhuxProvider, out: []u8) []const u8 {
         return self.host.copyLastError(out);

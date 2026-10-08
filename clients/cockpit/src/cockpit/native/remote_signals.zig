@@ -2,7 +2,7 @@
 const model_module = @import("../model.zig");
 const support = @import("../phux_support.zig");
 
-pub const State = enum(u8) { quiet, attaching, recovering, frozen, unavailable, ended, history_loading, history_available };
+pub const State = enum(u8) { quiet, attaching, recovering, frozen, unavailable, ended, history_loading, history_available, driven_elsewhere };
 
 pub fn state(model: *const model_module.Model, ref: support.TerminalRef) State {
     if (comptime !support.phux_enabled) return .quiet;
@@ -12,6 +12,8 @@ pub fn state(model: *const model_module.Model, ref: support.TerminalRef) State {
     const phase = remote.phase(ref) orelse return .attaching;
     if (phase != .live) return phaseState(phase);
     const presentation = model.remotePresentation(ref) orelse return .attaching;
+    // Keys typed here are dropped (ADR-0033): that outranks history cues.
+    if (presentation.input_held_by_other) return .driven_elsewhere;
     return historyState(presentation);
 }
 
@@ -42,6 +44,7 @@ pub fn label(value: State) []const u8 {
         .ended => "Terminal ended",
         .history_loading => "Loading earlier history",
         .history_available => "Earlier history available",
+        .driven_elsewhere => "Another client is driving",
     };
 }
 
