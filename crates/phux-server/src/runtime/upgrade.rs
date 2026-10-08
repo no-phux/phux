@@ -681,10 +681,11 @@ fn validate_binary(exe: &Path) -> Result<(), UpgradeError> {
 /// server with every live pane in it. A deliberate switch is a restart, not
 /// an upgrade.
 fn refuse_build_kind_change(exe: &Path) -> Result<(), UpgradeError> {
-    let output = Command::new(exe)
-        .arg("--version")
-        .env(PROBE_BUILD_KIND_ENV, "1")
-        .output()?;
+    let output = probe_output(
+        Command::new(exe)
+            .arg("--version")
+            .env(PROBE_BUILD_KIND_ENV, "1"),
+    )?;
     let candidate = output
         .status
         .success()
@@ -719,8 +720,28 @@ fn upgrade_kind_refusal(current: BuildKind, candidate: Option<BuildKind>) -> Opt
     })
 }
 
+/// Run a probe of the snapshot. Another thread's `fork` (a pane spawn, a
+/// parallel test) can inherit the snapshot's write descriptor for the
+/// instant before its own `exec`, and executing the file then fails with
+/// ETXTBSY; that window is microseconds, so retry briefly before giving up.
+fn probe_output(command: &mut Command) -> std::io::Result<std::process::Output> {
+    let mut delay = Duration::from_millis(1);
+    loop {
+        match command.output() {
+            Err(err)
+                if err.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && delay < Duration::from_millis(500) =>
+            {
+                std::thread::sleep(delay);
+                delay *= 2;
+            }
+            result => return result,
+        }
+    }
+}
+
 fn probe_binary(exe: &Path, args: &[&str]) -> Result<(), UpgradeError> {
-    let output = Command::new(exe).args(args).output()?;
+    let output = probe_output(Command::new(exe).args(args))?;
     if output.status.success() {
         return Ok(());
     }
@@ -855,10 +876,9 @@ mod tests {
         let mut guard = FdFlagsGuard::new();
         guard.clear_cloexec(fd).unwrap();
         assert!(!fd_flags(fd).contains(rustix::io::FdFlags::CLOEXEC));
-        let closed_file = tempfile::tempfile().unwrap();
-        let closed_fd = closed_file.as_raw_fd();
-        drop(closed_file);
-        assert!(guard.clear_cloexec(closed_fd).is_err());
+        // A dropped tempfile's number is reused by whichever parallel test
+        // opens next, so probe a descriptor no test can hold instead.
+        assert!(guard.clear_cloexec(RawFd::MAX).is_err());
         drop(guard);
 
         assert_eq!(fd_flags(fd), original);
