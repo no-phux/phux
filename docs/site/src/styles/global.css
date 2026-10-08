@@ -4,6 +4,14 @@
 @import "fumadocs-ui/css/neutral.css";
 @import "fumadocs-ui/css/preset.css";
 
+@font-face {
+  font-family: "Paper Mono";
+  src: url("/fonts/PaperMono.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+}
+
 /* ── phux identity ──────────────────────────────────────────────────────────
    Product typography keeps long-form reading calm; monospace is reserved for
    terminal and protocol information. Flux violet is the primary accent and
@@ -28,7 +36,7 @@
     "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica,
     Arial, sans-serif;
   --font-code:
-    "IBM Plex Mono", ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo,
+    "Paper Mono", ui-monospace, SFMono-Regular, Menlo,
     Monaco, Consolas, monospace;
   --font-mono: var(--font-code);
   --font-sans: var(--font-reading);

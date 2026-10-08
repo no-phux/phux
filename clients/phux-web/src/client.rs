@@ -173,7 +173,10 @@ fn monotonic_now_ms() -> Result<f64, JsValue> {
 
 async fn load_vt() -> Result<Rc<Vt>, JsValue> {
     match select(
-        Box::pin(Vt::load()),
+        Box::pin(async {
+            crate::fonts::load().await?;
+            Vt::load().await
+        }),
         Box::pin(TimeoutFuture::new(CONNECT_DEADLINE_MS)),
     )
     .await
@@ -1521,7 +1524,7 @@ fn build_app(
         .dyn_into()?;
 
     let (ready_tx, ready_rx) = oneshot::channel();
-    let metrics = Metrics::default();
+    let metrics = Metrics::measure(&ctx)?;
     let mut session = if synthesized_only {
         crate::Session::new_synthesized_compat(vt, cols, rows)
     } else {

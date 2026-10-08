@@ -56,7 +56,7 @@ export function Label(props: {
         overflow: "hidden",
         flexShrink: props.keep ? 0 : 1,
         ...(props.grow ? { flexGrow: 1 } : {}),
-        ...(props.mono ? { fontFamily: "Menlo" } : {}),
+        ...(props.mono ? { fontFamily: "Paper Mono" } : {}),
       }}
     >
       {props.children}

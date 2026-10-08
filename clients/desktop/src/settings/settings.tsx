@@ -520,7 +520,7 @@ function Fact(props: { label: string; value: string; mono?: boolean }): JSX.Elem
           flexShrink: 1,
           fontSize: uiFont.size,
           color: colors().foreground,
-          ...(props.mono ? { fontFamily: "Menlo" } : {}),
+          ...(props.mono ? { fontFamily: "Paper Mono" } : {}),
         }}
       >
         {props.value}

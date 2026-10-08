@@ -35,8 +35,9 @@ impl CustomElement for DragRegion {
         &mut self,
         ctx: CustomRenderContext,
         _window: &mut gpui::Window,
-        _cx: &mut gpui::Context<GpuixView>,
+        cx: &mut gpui::Context<GpuixView>,
     ) -> gpui::AnyElement {
+        crate::fonts::install(cx);
         custom_surface(gpui::div().id(self.element_id.clone()), &ctx)
             .on_mouse_down(gpui::MouseButton::Left, |event, window, cx| {
                 if event.click_count >= 2 {

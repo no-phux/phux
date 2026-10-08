@@ -8,7 +8,9 @@
 #![deny(missing_docs)]
 
 pub mod client;
+mod fonts;
 pub mod framing;
+pub use fonts::load as load_terminal_font;
 pub mod input;
 pub mod links;
 mod panes;
@@ -199,6 +201,21 @@ pub struct Metrics {
 }
 
 impl Metrics {
+    /// Measure the same loaded face the canvas paints, before reporting a viewport.
+    ///
+    /// # Errors
+    /// Fails if the canvas cannot measure text.
+    pub fn measure(ctx: &CanvasRenderingContext2d) -> Result<Self, JsValue> {
+        let mut metrics = Self::default();
+        ctx.set_font(&metrics.font);
+        let text = ctx.measure_text("M")?;
+        metrics.cell_w = text.width().ceil().max(1.0);
+        metrics.cell_h = (text.font_bounding_box_ascent() + text.font_bounding_box_descent())
+            .ceil()
+            .max(metrics.cell_h);
+        Ok(metrics)
+    }
+
     /// The cell size in whole pixels (at least 1x1), as the viewport
     /// reports it to the server.
     #[must_use]
@@ -213,7 +230,7 @@ impl Default for Metrics {
         Self {
             cell_w: 8.0,
             cell_h: 16.0,
-            font: "14px monospace".to_owned(),
+            font: "14px \"Paper Mono\", monospace".to_owned(),
         }
     }
 }

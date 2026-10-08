@@ -30,7 +30,7 @@ export interface DisplayPrefs {
 }
 
 export const defaultDisplay: DisplayPrefs = {
-  fontFamily: "Menlo",
+  fontFamily: "Paper Mono",
   fontSize: 13,
   lineHeight: 1.3,
   optionAsAlt: false,
@@ -47,6 +47,7 @@ export const defaultDisplay: DisplayPrefs = {
 };
 
 export const fontFamilies = [
+  "Paper Mono",
   "Menlo",
   "SF Mono",
   "Monaco",

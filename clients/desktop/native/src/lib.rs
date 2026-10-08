@@ -4,6 +4,7 @@
 //! consumers resolve the same handle without taking its listener or event queue.
 
 mod chrome;
+mod fonts;
 mod hotkeys;
 pub mod input;
 mod perf;

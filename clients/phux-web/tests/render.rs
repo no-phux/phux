@@ -10,6 +10,43 @@ use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 wasm_bindgen_test_configure!(run_in_browser);
 
 #[wasm_bindgen_test]
+async fn bundled_font_is_loaded_before_cell_measurement() {
+    phux_web::load_terminal_font()
+        .await
+        .expect("load bundled Paper Mono");
+    // A second load must reuse the face, including on reconnect.
+    phux_web::load_terminal_font()
+        .await
+        .expect("reuse bundled Paper Mono");
+    let document = web_sys::window().unwrap().document().unwrap();
+    assert!(document.fonts().check("14px \"Paper Mono\"").unwrap());
+    let canvas: HtmlCanvasElement = document
+        .create_element("canvas")
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+    let ctx: CanvasRenderingContext2d = canvas
+        .get_context("2d")
+        .unwrap()
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+    let metrics = Metrics::measure(&ctx).unwrap();
+    assert!(metrics.font.contains("Paper Mono"));
+    let narrow = ctx.measure_text("iiii").unwrap().width();
+    let wide = ctx.measure_text("WWWW").unwrap().width();
+    assert!(
+        (narrow - wide).abs() < 0.01,
+        "bundled face must be fixed-pitch"
+    );
+    assert_eq!(
+        metrics.cell_w,
+        ctx.measure_text("M").unwrap().width().ceil()
+    );
+    assert!(metrics.cell_h >= 16.0);
+}
+
+#[wasm_bindgen_test]
 async fn renders_engine_grid_to_canvas() {
     let vt = Vt::load().await.expect("load ghostty-vt engine");
     let term = vt.terminal(4, 2);
