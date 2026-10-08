@@ -3,9 +3,10 @@
 use phux_client_core::history::HistoryStatus;
 use phux_client_core::session::agent_stream::AgentEventRecord;
 use phux_client_core::session::{HistoryUnavailableReason, KernelSend};
+use phux_protocol::ClientId;
 use phux_protocol::ResourceId;
 use phux_protocol::wire::frame::{
-    CloseReason, CommandResult, DetachReason, ErrorCode, FrameKind, TombstoneReason,
+    CloseReason, CommandResult, ControlAction, DetachReason, ErrorCode, FrameKind, TombstoneReason,
 };
 use phux_protocol::wire::info::SessionSnapshot;
 
@@ -196,6 +197,19 @@ pub enum Event {
         /// The new working directory.
         cwd: String,
     },
+    /// The terminal's input lease changed hands or was restated
+    /// (`TerminalControl`, ADR-0033). `holder` is `None` while the wheel is
+    /// free; `mine` says this connection holds it.
+    InputHolderChanged {
+        /// The terminal.
+        terminal_id: ResourceId,
+        /// The client holding the lease, or `None` when open.
+        holder: Option<ClientId>,
+        /// Whether `holder` is this connection.
+        mine: bool,
+        /// What just happened to the lease.
+        action: ControlAction,
+    },
     /// The current agent declaration, from a fenced read or a live update.
     /// The binding owns interpretation of the record; `None` retracts it.
     AgentMetadata {
@@ -366,6 +380,7 @@ impl Event {
                 | Self::TerminalsClosed { .. }
                 | Self::InputDelivery { .. }
                 | Self::CommandResult { .. }
+                | Self::InputHolderChanged { .. }
                 | Self::AgentRecords { .. }
                 | Self::ConnectionOpened { .. }
         )

@@ -248,8 +248,11 @@ impl ControlPlane {
             FrameKind::Attached {
                 attach_id,
                 snapshot,
-                ..
-            } => self.attached(attach_id, &snapshot)?,
+                initial_client_id,
+            } => {
+                self.own_client_id = Some(initial_client_id);
+                self.attached(attach_id, &snapshot)?;
+            }
             FrameKind::AttachReady { attach_id } => self.attach_ready(attach_id)?,
             FrameKind::Error {
                 request_id,

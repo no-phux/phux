@@ -114,8 +114,10 @@ fn ffi_client_subscribe_events_queues_after_seq_while_attached() {
 struct CapturedStatus {
     kind: u32,
     detail: u32,
+    status_code: u32,
     stream_id: u64,
     bootstrap_id: u64,
+    first_row: u16,
     bytes: Vec<u8>,
 }
 
@@ -144,8 +146,10 @@ fn feed_scoped_event(
     let captured = CapturedStatus {
         kind: effect.kind,
         detail: effect.detail,
+        status_code: effect.status_code,
         stream_id: effect.stream_id,
         bootstrap_id: effect.bootstrap_id,
+        first_row: effect.first_row,
         bytes: span_bytes(effect.bytes).to_vec(),
     };
     assert_eq!(
@@ -169,6 +173,64 @@ fn cwd_changed_becomes_a_cwd_status_effect() {
     );
     assert_eq!((effect.kind, effect.detail), (2, 8));
     assert_eq!(effect.bytes, b"/srv/work");
+    unsafe { phux_client_free(client) };
+}
+
+/// ADR-0033: every `terminal_control` restates the holder. A holder other
+/// than this connection (client 9 in the fixture) encodes as present and not
+/// mine; a release encodes as absent.
+#[test]
+fn terminal_control_becomes_an_input_holder_status_effect() {
+    use phux_protocol::wire::frame::{ControlAction, ResourceLifecycle};
+    let client = attached_mixed_client();
+    let terminal = phux_protocol::ResourceId::local(MIXED_TERMINAL);
+    let control = |action, holder| AgentEvent::TerminalControl {
+        lifecycle: ResourceLifecycle::Running,
+        exit_status: None,
+        input_holder: holder,
+        action,
+        actor: holder,
+    };
+
+    let seized = feed_scoped_event(
+        client,
+        &terminal,
+        control(ControlAction::Seized, Some(phux_protocol::ClientId::new(4))),
+        1,
+    );
+    assert_eq!((seized.kind, seized.detail), (2, 12));
+    assert_eq!((seized.stream_id, seized.bootstrap_id), (1, 4));
+    assert_eq!(seized.status_code, u32::from(ControlAction::Seized.to_u8()));
+    assert_eq!(seized.first_row, 0, "client 4 is not this connection");
+
+    let mine = feed_scoped_event(
+        client,
+        &terminal,
+        control(
+            ControlAction::Acquired,
+            Some(phux_protocol::ClientId::new(9)),
+        ),
+        1,
+    );
+    assert_eq!(
+        (mine.stream_id, mine.bootstrap_id, mine.first_row),
+        (1, 9, 1)
+    );
+
+    let released = feed_scoped_event(client, &terminal, control(ControlAction::Released, None), 1);
+    assert_eq!(
+        (
+            released.stream_id,
+            released.bootstrap_id,
+            released.first_row
+        ),
+        (0, 0, 0)
+    );
+    assert_eq!(
+        released.status_code,
+        u32::from(ControlAction::Released.to_u8())
+    );
+
     unsafe { phux_client_free(client) };
 }
 

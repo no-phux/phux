@@ -84,6 +84,17 @@ or workspace snapshot arrives first.
 Command boundaries determine `atPrompt()`. A command that ran for at least
 ten seconds posts a notification under the bell's gate and latch.
 
+`PHUX_CLIENT_STATUS_INPUT_HOLDER` is the server's `terminal_control`
+broadcast (ADR-0033): who holds a terminal's exclusive input lease, restated
+on every lease or lifecycle change, with a flag for "this connection". Only
+the holder's keys reach the PTY; a non-holder's are acked and dropped, so a
+pane whose wheel another client holds must say so rather than look dead.
+`phux_client_queue_acquire_input` (cooperative, or `seize` to preempt) and
+`phux_client_queue_release_input` move the lease; both are correlated
+operations. Taking over is a deliberate user act. Focus, a second attach, and
+reconnect never acquire ([L1.md §8.1](../spec/L1.md)); the attach-time
+alternative is `phux_client_attach_role` with `PRIMARY, DELIBERATE`.
+
 ## Who owns the socket
 
 `phux-client-runtime` owns the socket (ADR-0133). Cockpit names a destination;

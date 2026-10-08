@@ -493,6 +493,16 @@ pub enum WireEvent {
     /// The pane's working directory changed (kernel cwd re-queried at prompt
     /// boundaries). The topology's pane entry is updated in place as well.
     CwdChanged { terminal_id: String, cwd: String },
+    /// The pane's input lease changed hands or was restated (ADR-0033).
+    /// `holder` is the server's client id of whoever drives it, `None`
+    /// while the wheel is free; `mine` says it is this connection. Taking
+    /// over is a deliberate `acquire_input(seize: true)`, never implied by
+    /// focus or a reattach (`docs/spec/L1.md` §8.1).
+    InputHolderChanged {
+        terminal_id: String,
+        holder: Option<u32>,
+        mine: bool,
+    },
     /// An agent in the pane is waiting on a human answer (phux-2sl6). Projects
     /// the wire `AgentEvent::Asked` so Swift can populate its `AgentQuestion`
     /// without re-deriving the prompt from the grid: `id`/`question`/`suggestions`
@@ -626,6 +636,16 @@ impl From<event::TerminalSignal> for Option<WireEvent> {
             } => WireEvent::CommandFinished {
                 terminal_id: id::encode(&terminal_id),
                 exit_code,
+            },
+            event::TerminalSignal::InputHolder {
+                terminal_id,
+                holder,
+                mine,
+                ..
+            } => WireEvent::InputHolderChanged {
+                terminal_id: id::encode(&terminal_id),
+                holder: holder.map(phux_protocol::ClientId::get),
+                mine,
             },
             event::TerminalSignal::Resync { .. }
             | event::TerminalSignal::History { .. }

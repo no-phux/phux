@@ -481,6 +481,21 @@ impl RemoteClient {
         let _ = self.with_terminal(&terminal_id, Client::kill_terminal);
     }
 
+    /// Take the pane's input lease (ADR-0033): cooperative when `seize` is
+    /// false (refused while another client drives), preempting when true.
+    /// Returns the request id, or 0 for an unparsable terminal id. The
+    /// outcome arrives as `WireEvent::InputHolderChanged`.
+    pub fn acquire_input(&self, terminal_id: String, seize: bool) -> u32 {
+        self.with_terminal(&terminal_id, |client, id| client.acquire_input(id, seize))
+            .unwrap_or(0)
+    }
+
+    /// Give the wheel back; a no-op when this connection does not hold it.
+    pub fn release_input(&self, terminal_id: String) -> u32 {
+        self.with_terminal(&terminal_id, Client::release_input)
+            .unwrap_or(0)
+    }
+
     pub fn set_listener(&self, listener: Arc<dyn WireListener>) {
         *self.listener.lock().unwrap() = Some(listener.clone());
         if let Some(client) = self.runtime_client() {

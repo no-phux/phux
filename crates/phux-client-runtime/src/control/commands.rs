@@ -2,6 +2,8 @@
 
 use std::collections::HashSet;
 
+use phux_protocol::wire::frame::InputMode;
+
 use super::{
     AttachTarget, Command, ControlPlane, Event, FrameKind, GroupId, Observation, Pending,
     ResourceId, ServerFeature, SpawnRequest, Status, StreamRecovery, ViewportInfo, encode,
@@ -379,6 +381,33 @@ impl ControlPlane {
     pub fn detach(&mut self) {
         self.detach_requested = true;
         self.queue_frame(&FrameKind::Detach);
+    }
+
+    /// Take the terminal's input lease (`ACQUIRE_INPUT`, ADR-0033). A
+    /// cooperative acquire is granted only while the wheel is free and is
+    /// otherwise refused `INPUT_LEASE_HELD`; `seize` preempts the holder.
+    /// The reply is [`Event::CommandResult`]; the lease change itself
+    /// arrives as [`Event::InputHolderChanged`]. Taking over is deliberate:
+    /// focus, a second attach, or a reconnect never implies it
+    /// (`docs/spec/L1.md` §8.1).
+    pub fn acquire_input(&mut self, terminal_id: &ResourceId, seize: bool) -> u32 {
+        self.send_command(Command::AcquireInput {
+            terminal_id: terminal_id.clone(),
+            mode: if seize {
+                InputMode::Seize
+            } else {
+                InputMode::Cooperative
+            },
+            ttl_ms: 0,
+        })
+    }
+
+    /// Give the wheel back (`RELEASE_INPUT`); a no-op when this connection
+    /// does not hold it. The reply is [`Event::CommandResult`].
+    pub fn release_input(&mut self, terminal_id: &ResourceId) -> u32 {
+        self.send_command(Command::ReleaseInput {
+            terminal_id: terminal_id.clone(),
+        })
     }
 
     /// Extension point: send any `COMMAND` and receive its reply as

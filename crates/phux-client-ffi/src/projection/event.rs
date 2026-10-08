@@ -16,8 +16,10 @@
 use phux_client_core::history::HistoryStatus;
 use phux_client_core::session::HistoryUnavailableReason;
 use phux_client_runtime::control::Event;
-use phux_protocol::ResourceId;
-use phux_protocol::wire::frame::{CloseReason, DetachReason, ErrorCode, TombstoneReason};
+use phux_protocol::wire::frame::{
+    CloseReason, ControlAction, DetachReason, ErrorCode, TombstoneReason,
+};
+use phux_protocol::{ClientId, ResourceId};
 
 /// Something one terminal did.
 #[derive(Debug, Clone)]
@@ -62,6 +64,17 @@ pub enum TerminalSignal {
         terminal_id: ResourceId,
         /// The exit code the shell integration reported, if any.
         exit_code: Option<i32>,
+    },
+    /// The input lease changed hands or was restated (ADR-0033).
+    InputHolder {
+        /// The terminal.
+        terminal_id: ResourceId,
+        /// Who holds the wheel, or `None` while it is free.
+        holder: Option<ClientId>,
+        /// Whether this connection is the holder.
+        mine: bool,
+        /// What just happened to the lease.
+        action: ControlAction,
     },
     /// The replica generation was invalidated; fresh snapshots are needed.
     Resync {
@@ -189,6 +202,17 @@ pub fn terminal_signal(event: Event) -> Result<TerminalSignal, Event> {
         } => TerminalSignal::CommandFinished {
             terminal_id,
             exit_code,
+        },
+        Event::InputHolderChanged {
+            terminal_id,
+            holder,
+            mine,
+            action,
+        } => TerminalSignal::InputHolder {
+            terminal_id,
+            holder,
+            mine,
+            action,
         },
         Event::ResyncRequired {
             terminal_id,

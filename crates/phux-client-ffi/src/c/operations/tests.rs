@@ -321,6 +321,107 @@ fn a_bound_spawn_needs_conditional_kill_and_its_reply_carries_the_instance() {
     }
 }
 
+/// ADR-0033: the lease verbs need only a negotiated connection, encode the
+/// exact wire command, and correlate like every other operation, a
+/// cooperative refusal included.
+#[test]
+fn input_lease_verbs_encode_exactly_and_correlate_their_replies() {
+    use phux_protocol::wire::frame::{Command, InputMode};
+    let id = ResourceId::local(9);
+    let raw = terminal_id_out(&id);
+
+    let mut h = Harness::new();
+    // SAFETY: harness owns the client; the ID outlives the call.
+    unsafe {
+        assert_eq!(
+            phux_client_queue_acquire_input(h.ptr(), 1, &raw const raw, true),
+            PhuxClientResult::InvalidState
+        );
+    }
+    assert!(
+        h.0.inner.outgoing.is_empty(),
+        "nothing queued before HELLO_OK"
+    );
+
+    let mut h = Harness::negotiated(&[]);
+    // SAFETY: as above.
+    unsafe {
+        assert_eq!(
+            phux_client_queue_acquire_input(h.ptr(), 1, &raw const raw, false),
+            PhuxClientResult::Ok
+        );
+        assert_eq!(
+            phux_client_queue_acquire_input(h.ptr(), 2, &raw const raw, true),
+            PhuxClientResult::Ok
+        );
+        assert_eq!(
+            phux_client_queue_release_input(h.ptr(), 3, &raw const raw),
+            PhuxClientResult::Ok
+        );
+    }
+    let sent: Vec<FrameKind> =
+        h.0.inner
+            .outgoing
+            .iter()
+            .map(|bytes| FrameKind::decode(bytes).expect("lease frame decodes").0)
+            .collect();
+    let acquire = |request_id, mode| FrameKind::Command {
+        request_id,
+        command: Command::AcquireInput {
+            terminal_id: id.clone(),
+            mode,
+            ttl_ms: 0,
+        },
+    };
+    let release = FrameKind::Command {
+        request_id: 3,
+        command: Command::ReleaseInput {
+            terminal_id: id.clone(),
+        },
+    };
+    assert_eq!(
+        sent,
+        [
+            acquire(1, InputMode::Cooperative),
+            acquire(2, InputMode::Seize),
+            release
+        ]
+    );
+    h.0.inner.outgoing.clear();
+
+    let held = CommandResult::Error {
+        code: ErrorCode::InputLeaseHeld,
+        message: "client 4 holds input".to_owned(),
+    };
+    for (request_id, result) in [(1, held), (2, CommandResult::Ok), (3, CommandResult::Ok)] {
+        assert_eq!(
+            h.feed(FrameKind::CommandResult { request_id, result }),
+            PhuxClientResult::Ok
+        );
+    }
+    let refused = h.result(0);
+    assert_eq!(
+        (
+            refused.kind,
+            refused.status,
+            refused.error_domain,
+            refused.error_code
+        ),
+        (7, 2, 2, u32::from(ErrorCode::InputLeaseHeld.as_wire()))
+    );
+    assert_eq!(refused.terminal_id.id, 9);
+    let seized = h.result(1);
+    assert_eq!(
+        (seized.kind, seized.status, seized.terminal_id.id),
+        (7, 1, 9)
+    );
+    let released = h.result(2);
+    assert_eq!(
+        (released.kind, released.status, released.terminal_id.id),
+        (8, 1, 9)
+    );
+}
+
 #[test]
 fn a_conditional_kill_needs_the_feature_and_is_correlated_on_a_connection_that_never_attached() {
     let mut h = Harness::negotiated(&[]);

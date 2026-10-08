@@ -533,6 +533,22 @@ impl Client {
             .with(|control| control.kill_terminal(terminal_id))
     }
 
+    /// Take the terminal's input lease; see
+    /// [`crate::control::ControlPlane::acquire_input`].
+    #[must_use]
+    pub fn acquire_input(&self, terminal_id: &ResourceId, seize: bool) -> u32 {
+        self.inner
+            .with(|control| control.acquire_input(terminal_id, seize))
+    }
+
+    /// Release the terminal's input lease; see
+    /// [`crate::control::ControlPlane::release_input`].
+    #[must_use]
+    pub fn release_input(&self, terminal_id: &ResourceId) -> u32 {
+        self.inner
+            .with(|control| control.release_input(terminal_id))
+    }
+
     /// Close a batch of terminals atomically; `None` when the server does
     /// not support it.
     #[must_use]
