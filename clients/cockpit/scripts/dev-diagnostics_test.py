@@ -286,6 +286,7 @@ dev_app_state_path() { echo /test/state; }
 dev_app_launch() { exit 23; }
 ''')
             (scripts / "lib/app-instance.sh").write_text("")
+            (scripts / "lib/worktree-owner.sh").write_text((d.ROOT / "scripts/lib/worktree-owner.sh").read_text())
             result = subprocess.run(["bash", str(script), "--no-build", "--debug", "--automation", "--phux"],
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 23, result.stderr)

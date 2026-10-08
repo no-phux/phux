@@ -55,6 +55,7 @@ dev_app_wait_named() {
 }
 LIB
 : >"${WORK}/fixture/scripts/lib/app-instance.sh"
+cp "${ROOT}/scripts/lib/worktree-owner.sh" "${WORK}/fixture/scripts/lib/worktree-owner.sh"
 
 cat >"${WORK}/bin/osascript" <<'SCRIPT'
 #!/bin/sh

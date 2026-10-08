@@ -345,6 +345,7 @@ while :; do sleep 1; done
             (scripts / "dev-run.sh").write_text((ROOT / "scripts/dev-run.sh").read_text())
             (scripts / "lib/dev-app.sh").write_text("dev_app_home_init() { :; }\n")
             (scripts / "lib/app-instance.sh").write_text("")
+            (scripts / "lib/worktree-owner.sh").write_text((ROOT / "scripts/lib/worktree-owner.sh").read_text())
             wrapper = scripts / "zig-build.sh"
             wrapper.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "$CAPTURE"\nexit 23\n')
             wrapper.chmod(0o755)
