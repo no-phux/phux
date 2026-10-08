@@ -16,6 +16,8 @@ wasm_bindgen_test_configure!(run_in_browser);
 
 #[path = "browser_support/agent_resources.rs"]
 mod agent_resources;
+#[path = "browser_support/metrics.rs"]
+mod metrics;
 
 const WS_URL: &str = match option_env!("PHUX_TEST_WS_URL") {
     Some(url) => url,
@@ -165,17 +167,19 @@ async fn resize_reflows_the_live_terminal_and_canvas() {
         "{}",
         failure_artifact("resize", &client, "grid never became 100x30")
     );
-    // Paint lands on the next animation frame.
+    // Paint lands on the next animation frame using the loaded bundled face.
+    let (cell_w, cell_h) = metrics::measured(&canvas).cell_px();
+    let expected = (100 * u32::from(cell_w), 30 * u32::from(cell_h));
     for _ in 0..POLLS {
-        if (canvas.width(), canvas.height()) == (100 * 8, 30 * 16) {
+        if (canvas.width(), canvas.height()) == expected {
             break;
         }
         sleep(POLL).await;
     }
     assert_eq!(
         (canvas.width(), canvas.height()),
-        (100 * 8, 30 * 16),
-        "the canvas follows the new grid"
+        expected,
+        "the canvas follows the new grid and measured font"
     );
     client.close();
 }
