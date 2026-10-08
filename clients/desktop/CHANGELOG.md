@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.0-alpha.7](https://github.com/no-phux/phux/compare/desktop-v0.1.0-alpha.6...desktop-v0.1.0-alpha.7) (2026-10-08)
+
+
+### Features
+
+* **ffi:** preserve unsupported agent-state vocabulary across projections ([99a9e03](https://github.com/no-phux/phux/commit/99a9e030aef8dac473559dde96474a76a7d98dcd))
+* **workload:** devices without ssh enroll with a single-use ticket over their own ALPN ([f7d3cc7](https://github.com/no-phux/phux/commit/f7d3cc7f86dfe1edafefd185c9d78f19004d512a))
+
 ## [0.1.0-alpha.6](https://github.com/no-phux/phux/compare/desktop-v0.1.0-alpha.5...desktop-v0.1.0-alpha.6) (2026-10-07)
 
 
