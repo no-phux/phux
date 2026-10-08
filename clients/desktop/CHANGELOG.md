@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.0-alpha.8](https://github.com/no-phux/phux/compare/desktop-v0.1.0-alpha.7...desktop-v0.1.0-alpha.8) (2026-10-08)
+
+
+### Bug Fixes
+
+* **desktop:** spawn new tabs and splits in the focused pane's session ([cad1def](https://github.com/no-phux/phux/commit/cad1defea45666356e53662ef4e94284aa784de5))
+
 ## [0.1.0-alpha.7](https://github.com/no-phux/phux/compare/desktop-v0.1.0-alpha.6...desktop-v0.1.0-alpha.7) (2026-10-08)
 
 
