@@ -16,6 +16,7 @@ pub mod auth;
 pub mod autosave;
 pub mod connector;
 pub mod cwd_query;
+pub mod daemon;
 pub mod downsample;
 pub mod grid;
 pub mod health; // phux-zomb.6 (server start history: crash-loop is reportable)

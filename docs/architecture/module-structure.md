@@ -92,7 +92,7 @@ src/
   policy.rs, policy/ — per-connection grant and the dispatch guard
   workload.rs, workload/ — mTLS workload authority and registry (ADR-0116)
   auth.rs, connector.rs, cwd_query.rs, proc_query.rs, id_bridge.rs,
-  telemetry.rs, health.rs, perf.rs, mailbox.rs
+  telemetry.rs, health.rs, perf.rs, mailbox.rs, daemon.rs
 ```
 
 Runtime code holds a `ResourceHandle` and reaches kind-only channels through
