@@ -166,7 +166,10 @@ fn failed_engine_resize_does_not_settle_or_publish_the_requested_geometry() {
         1,
         "a successful retry owes the replacement that failure refused"
     );
-    let snapshot = bundle.actor.synthesize().expect("snapshot after retry");
+    let snapshot = bundle
+        .actor
+        .synthesize_with_scrollback(None)
+        .expect("snapshot after retry");
     assert_eq!(
         (snapshot.cols, snapshot.rows),
         (100, 40),

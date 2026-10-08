@@ -66,6 +66,9 @@ pub use tick::*;
 /// Line half of [`DEFAULT_SCROLLBACK`]: a tmux-style mid-range value.
 const DEFAULT_MAX_SCROLLBACK: u32 = 10_000;
 
+/// Finite history replay for resource attachment and replacement generations.
+pub(crate) const DEFAULT_REPLAY_SCROLLBACK_LINES: u32 = 1_000;
+
 /// Scrollback bounds for the no-config constructors; the runtime passes the
 /// configured `defaults.history-limit`/`history-bytes` (ADR-0094).
 const DEFAULT_SCROLLBACK: phux_config::ScrollbackLimits =

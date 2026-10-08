@@ -101,7 +101,10 @@ fn ask_marker_parse() {
 #[test]
 fn synthesize_blank_pane_returns_reset_preamble() {
     let bundle = TerminalActor::new(80, 24).expect("new");
-    let snap = bundle.actor.synthesize().expect("synthesize");
+    let snap = bundle
+        .actor
+        .synthesize_with_scrollback(None)
+        .expect("synthesize");
     assert_eq!(snap.cols, 80);
     assert_eq!(snap.rows, 24);
     assert!(snap.bytes.starts_with(b"\x1b[!p\x1b[2J\x1b[H"));
@@ -111,7 +114,10 @@ fn synthesize_blank_pane_returns_reset_preamble() {
 #[test]
 fn synthesize_seeded_pane_carries_visible_text() {
     let bundle = TerminalActor::new_with_seed(20, 5, b"hello").expect("new_with_seed");
-    let snap = bundle.actor.synthesize().expect("synthesize");
+    let snap = bundle
+        .actor
+        .synthesize_with_scrollback(None)
+        .expect("synthesize");
     let body = String::from_utf8_lossy(&snap.bytes);
     assert!(
         body.contains("hello"),
@@ -1282,7 +1288,7 @@ async fn every_terminal_reader_degrades_while_a_capture_holds_it() {
     // None may panic; each must report the loan.
     assert!(
         matches!(
-            actor.synthesize(),
+            actor.synthesize_with_scrollback(None),
             Err(crate::grid::SynthesisError::TerminalUnavailable)
         ),
         "snapshot synthesis must refuse, not abort",
@@ -1312,7 +1318,7 @@ async fn every_terminal_reader_degrades_while_a_capture_holds_it() {
         "landing the cut must return the terminal",
     );
     assert!(
-        actor.synthesize().is_ok(),
+        actor.synthesize_with_scrollback(None).is_ok(),
         "synthesis works once it is back"
     );
 }

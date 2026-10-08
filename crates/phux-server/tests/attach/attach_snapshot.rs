@@ -169,3 +169,115 @@ fn last_shell_eof_keeps_the_terminal_live() {
         );
     });
 }
+
+/// A mobile/browser opening one existing shell must receive the output that
+/// predates its subscription, not just the last screen.
+#[test]
+fn resource_attach_replays_existing_scrollback_in_both_synthesized_profiles() {
+    use phux_protocol::caps::{ClientCapabilities, OutputMode};
+    use phux_server_testkit::wait_for_server_screen_text;
+
+    for mode in [OutputMode::Raw, OutputMode::StateSync] {
+        run_local(async {
+            let tmp = TempDir::new().unwrap();
+            let socket = tmp.path().join("phux.sock");
+            let (_shutdown, _server) = spawn_server_with_seed_cmd(
+                socket.clone(),
+                "history",
+                sh(
+                    "i=1; while [ \"$i\" -le 160 ]; do printf 'HISTORY_ROW_%03d\\n' \"$i\"; i=$((i+1)); done; printf 'HISTORY_TAIL\\n'; exec cat",
+                ),
+            );
+            let mut owner = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+            let CommandResult::OkWith(CommandValue::State(snapshot)) = command(
+                &mut owner,
+                1,
+                Command::GetState {
+                    scope: StateScope::Server,
+                },
+            )
+            .await
+            else {
+                panic!("server topology unavailable")
+            };
+            let pane = snapshot.resources.first().unwrap().id.clone();
+            let mut probe = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+            wait_for_server_screen_text(&mut probe, &pane, "HISTORY_TAIL", WIRE_RECV_TIMEOUT).await;
+            let mut watcher = super::common::connect_with(
+                &socket,
+                ClientCapabilities::new().with_output_mode(mode),
+            )
+            .await;
+            send_frame(
+                &mut watcher,
+                &FrameKind::Command {
+                    request_id: 100,
+                    command: Command::AttachResource {
+                        terminal_id: pane.clone(),
+                        role_policy: None,
+                    },
+                },
+            )
+            .await;
+            let mut terminal = resource_bootstrap(&mut watcher).await;
+            assert_retained_history(&mut terminal);
+            if mode == OutputMode::Raw {
+                send_frame(
+                    &mut watcher,
+                    &FrameKind::ResizeTerminal {
+                        terminal_id: pane,
+                        cols: 43,
+                        rows: 38,
+                    },
+                )
+                .await;
+                let mut resized = resource_bootstrap(&mut watcher).await;
+                assert_eq!((resized.cols().unwrap(), resized.rows().unwrap()), (43, 38));
+                assert_retained_history(&mut resized);
+            }
+        });
+    }
+}
+
+async fn resource_bootstrap(
+    stream: &mut tokio::net::UnixStream,
+) -> GhosttyTerminal<'static, 'static> {
+    let mut terminal = None;
+    loop {
+        match recv_typed(stream).await.1 {
+            FrameKind::BootstrapBegin { cols, rows, .. } => terminal = Some(fresh(cols, rows)),
+            FrameKind::BootstrapChunk { payload, .. } => {
+                terminal
+                    .as_mut()
+                    .expect("BEGIN before CHUNK")
+                    .vt_write(&payload);
+            }
+            FrameKind::BootstrapReady { .. } => return terminal.expect("BEGIN before READY"),
+            FrameKind::Error { message, .. }
+            | FrameKind::CommandResult {
+                result: CommandResult::Error { message, .. },
+                ..
+            } => panic!("{message}"),
+            _ => {}
+        }
+    }
+}
+
+fn assert_retained_history(terminal: &mut GhosttyTerminal<'_, '_>) {
+    use libghostty_vt::terminal::ScrollViewport;
+    assert!(
+        terminal.scrollback_rows().unwrap() >= 100,
+        "older shell output was lost"
+    );
+    for (position, marker) in [
+        (ScrollViewport::Top, b"HISTORY_ROW_001".as_slice()),
+        (ScrollViewport::Bottom, b"HISTORY_TAIL".as_slice()),
+    ] {
+        terminal.scroll_viewport(position);
+        let screen = SnapshotSynthesizer::new()
+            .unwrap()
+            .synthesize(terminal)
+            .unwrap();
+        assert!(screen.bytes.windows(marker.len()).any(|s| s == marker));
+    }
+}

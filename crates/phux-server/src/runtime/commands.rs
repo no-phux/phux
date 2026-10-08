@@ -1525,10 +1525,16 @@ impl AttachResourceSession<'_> {
                 bootstrap_id,
                 wants_state_sync: self.wants_state_sync(),
                 live_gate,
-                state_sync_scrollback: None,
-                bootstrap_max_bytes: usize::MAX,
-                bootstrap_max_frames: usize::MAX,
-                bootstrap_chunk_bytes: 1,
+                state_sync_scrollback: Some(
+                    crate::resource::terminal::DEFAULT_REPLAY_SCROLLBACK_LINES,
+                ),
+                bootstrap_max_bytes: crate::runtime::attach::bootstrap_source_ceiling(
+                    crate::runtime::attach::MAX_STAGED_BOOTSTRAP_BYTES,
+                    self.client_caps,
+                ),
+                bootstrap_max_frames: crate::runtime::attach::MAX_STAGED_BOOTSTRAP_FRAMES,
+                bootstrap_chunk_bytes: usize::try_from(self.bootstrap_limits.max_chunk_bytes())
+                    .ok()?,
                 // Reliable transport: emit-once is correct (ADR-0042).
                 loss_tolerant: false,
                 reply,
@@ -1689,32 +1695,8 @@ impl AttachResourceSession<'_> {
         generation: &AttachResourceGeneration,
         state_sync: crate::terminal_actor::StateSyncBootstrap,
     ) -> Result<(), AttachResourceFailure> {
-        let snap = state_sync.snapshot;
-        let replay = crate::runtime::attach::downsample_for_caps(
-            &bytes::Bytes::from(snap.bytes),
-            self.client_caps,
-        );
-        let mut payloads = Vec::with_capacity(2);
-        if !snap.scrollback.is_empty() {
-            payloads.push(bytes::Bytes::from(snap.scrollback));
-        }
-        payloads.push(replay);
-        crate::runtime::attach::send_synthesized_bootstrap(
-            self.out_tx,
-            self.terminal_id.clone(),
-            self.stream_id,
-            generation.bootstrap_id,
-            self.stream_profile,
-            self.bootstrap_limits,
-            snap.cols,
-            snap.rows,
-            state_sync.base_seq,
-            payloads,
-        )
-        .await
-        .map_err(|()| {
-            AttachResourceFailure::internal("consumer went away during state-sync ATTACH_RESOURCE")
-        })?;
+        self.publish_snapshot(generation, state_sync.snapshot, state_sync.base_seq)
+            .await?;
         generation
             .generation_last_seq
             .store(state_sync.base_seq, std::sync::atomic::Ordering::Release);
@@ -1821,6 +1803,41 @@ impl AttachResourceSession<'_> {
         Ok(())
     }
 
+    /// Both synthesized profiles replay bounded history before the current
+    /// screen, using the same capability adaptation as session attachments.
+    async fn publish_snapshot(
+        &self,
+        generation: &AttachResourceGeneration,
+        snapshot: crate::grid::SnapshotBytes,
+        cut: u64,
+    ) -> Result<(), AttachResourceFailure> {
+        let (cols, rows) = (snapshot.cols, snapshot.rows);
+        let adapted = crate::runtime::attach::adapt_bootstrap_snapshot(
+            snapshot,
+            self.client_caps,
+            crate::runtime::attach::MAX_STAGED_BOOTSTRAP_BYTES,
+        )
+        .map_err(|()| {
+            AttachResourceFailure::internal("resource snapshot exceeds bootstrap budget")
+        })?;
+        crate::runtime::attach::send_synthesized_bootstrap(
+            self.out_tx,
+            self.terminal_id.clone(),
+            self.stream_id,
+            generation.bootstrap_id,
+            self.stream_profile,
+            self.bootstrap_limits,
+            cols,
+            rows,
+            cut,
+            adapted.payloads,
+        )
+        .await
+        .map_err(|()| {
+            AttachResourceFailure::internal("consumer went away during resource bootstrap")
+        })
+    }
+
     /// Publish the authoritative snapshot, sent before the pump's first delta
     /// (the gate below releases it) and before the Ok reply.
     async fn finish_snapshot(
@@ -1833,10 +1850,15 @@ impl AttachResourceSession<'_> {
         self.terminal
             .snapshot
             .send(SnapshotRequest {
-                scrollback: None,
-                max_bytes: usize::MAX,
-                max_frames: usize::MAX,
-                chunk_bytes: 1,
+                scrollback: Some(crate::resource::terminal::DEFAULT_REPLAY_SCROLLBACK_LINES),
+                max_bytes: crate::runtime::attach::bootstrap_source_ceiling(
+                    crate::runtime::attach::MAX_STAGED_BOOTSTRAP_BYTES,
+                    self.client_caps,
+                ),
+                max_frames: crate::runtime::attach::MAX_STAGED_BOOTSTRAP_FRAMES,
+                chunk_bytes: usize::try_from(self.bootstrap_limits.max_chunk_bytes()).map_err(
+                    |_| AttachResourceFailure::internal("bootstrap chunk bound cannot fit host"),
+                )?,
                 reply: snapshot_tx,
             })
             .await
@@ -1848,26 +1870,7 @@ impl AttachResourceSession<'_> {
                 "pane actor dropped the ATTACH_RESOURCE snapshot",
             ));
         };
-        let replay = crate::runtime::attach::downsample_for_caps(
-            &bytes::Bytes::from(snap.bytes),
-            self.client_caps,
-        );
-        crate::runtime::attach::send_synthesized_bootstrap(
-            self.out_tx,
-            self.terminal_id.clone(),
-            self.stream_id,
-            generation.bootstrap_id,
-            self.stream_profile,
-            self.bootstrap_limits,
-            snap.cols,
-            snap.rows,
-            cut,
-            [replay],
-        )
-        .await
-        .map_err(|()| {
-            AttachResourceFailure::internal("consumer went away during ATTACH_RESOURCE")
-        })?;
+        self.publish_snapshot(generation, snap, cut).await?;
         let _ = generation.live_gate_tx.send(true);
         generation
             .generation_last_seq

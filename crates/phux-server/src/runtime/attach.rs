@@ -62,7 +62,7 @@ pub(crate) fn live_bytes_for_profile(
     }
 }
 
-fn bootstrap_source_ceiling(
+pub(crate) fn bootstrap_source_ceiling(
     remaining_bytes: usize,
     caps: phux_protocol::ClientCapabilities,
 ) -> usize {
@@ -75,13 +75,13 @@ fn bootstrap_source_ceiling(
 }
 
 #[derive(Debug)]
-struct AdaptedBootstrap {
-    payloads: Vec<bytes::Bytes>,
+pub(crate) struct AdaptedBootstrap {
+    pub(crate) payloads: Vec<bytes::Bytes>,
     retained_bytes: usize,
     peak_bytes: usize,
 }
 
-fn adapt_bootstrap_snapshot(
+pub(crate) fn adapt_bootstrap_snapshot(
     snapshot: crate::grid::SnapshotBytes,
     caps: phux_protocol::ClientCapabilities,
     peak_budget: usize,
@@ -199,8 +199,8 @@ struct SnapshotGate {
 /// Connection-wide retention ceiling for an aggregate ATTACH: every pane's
 /// bootstrap is held until the atomic publication, so the aggregate is capped
 /// at one maximal native prefix rather than scaling with the pane count.
-const MAX_STAGED_BOOTSTRAP_BYTES: usize = 64 * 1024 * 1024;
-const MAX_STAGED_BOOTSTRAP_FRAMES: usize = 4_096 + 2;
+pub(crate) const MAX_STAGED_BOOTSTRAP_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const MAX_STAGED_BOOTSTRAP_FRAMES: usize = 4_096 + 2;
 
 /// Maximum panes in one aggregate bootstrap: each needs at least
 /// `BEGIN`/`CHUNK`/`READY`, so more cannot fit the frame budget.
