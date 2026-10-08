@@ -9,6 +9,32 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.54.0](https://github.com/no-phux/phux/compare/v0.53.1...v0.54.0) (2026-10-08)
+
+
+### Features
+
+* **client-ffi:** expose the input lease and who holds it ([#1092](https://github.com/no-phux/phux/issues/1092)) ([b8dae11](https://github.com/no-phux/phux/commit/b8dae116d296b3118f184d1a3aed8ed7d5048c9c))
+* **cockpit:** bundle Paper Mono as default terminal font ([#1087](https://github.com/no-phux/phux/issues/1087)) ([c496e4a](https://github.com/no-phux/phux/commit/c496e4a69d085c7ddc4aa1c547b2363feb33a6a9))
+* **cockpit:** say when another client is driving a terminal and offer Take Over Input ([45182d3](https://github.com/no-phux/phux/commit/45182d318eb34e1f5d10bc7d635f70e6fd74ddd7))
+* **fonts:** adopt Paper Mono for phux monospace defaults ([#1086](https://github.com/no-phux/phux/issues/1086)) ([a654b63](https://github.com/no-phux/phux/commit/a654b633ceded926a6be1e0ae7a6799bab58a158))
+* **server:** shrink pane fd tables and park quiet pty readers ([#1083](https://github.com/no-phux/phux/issues/1083)) ([82c9541](https://github.com/no-phux/phux/commit/82c9541e1a9b918a0d4b9a8c8556d72a4cd04e02))
+* **site:** add a demo video library ([e98fd8e](https://github.com/no-phux/phux/commit/e98fd8eb75179ef54d675170119f634f56d3ac48))
+* **site:** explain phux with kinetic scenarios and Psychopomp film ([a103f51](https://github.com/no-phux/phux/commit/a103f510900c1b0961f1517e728401ff2894a1c5))
+* **web:** one-handed touch UX for the browser client and hosted shell ([#1089](https://github.com/no-phux/phux/issues/1089)) ([cbd186a](https://github.com/no-phux/phux/commit/cbd186a3b7fef872d0c441944810973c3707e826))
+
+
+### Bug Fixes
+
+* **server:** replay bounded history across resource attach and resize ([#1080](https://github.com/no-phux/phux/issues/1080)) ([525f524](https://github.com/no-phux/phux/commit/525f5240d3d6e252b4312e222e757259c38d36b1))
+* **server:** retry ETXTBSY when probing the upgrade snapshot ([#1091](https://github.com/no-phux/phux/issues/1091)) ([8d68ca8](https://github.com/no-phux/phux/commit/8d68ca8ebff61607b15795152d01e3e2cb1d4ece))
+* **site:** serve seekable demo video ranges ([3de9400](https://github.com/no-phux/phux/commit/3de940092eeec7720d95a365df232b71eded7744))
+
+
+### Documentation
+
+* **site:** clarify the recorded checksum example ([cbac537](https://github.com/no-phux/phux/commit/cbac5377e4881bfa7f7b76f501377224ebb90976))
+
 ## [0.53.1](https://github.com/no-phux/phux/compare/v0.53.0...v0.53.1) (2026-10-08)
 
 
