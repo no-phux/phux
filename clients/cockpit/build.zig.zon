@@ -186,7 +186,8 @@
         //
         // cockpit/v0.10.5 (2026-09-19): the packed-grid host rebased onto
         // current upstream instead of a v0.10.1 backport. scriptc 0.0.36
-        // then 0.1.1: balanced decode-guard trees so a wide model cannot
+        // then 0.1.1, now 0.1.7 (whose Linux codegen ships executable):
+        // balanced decode-guard trees so a wide model cannot
         // overflow the recursive IR emitter, stricter optional-read proofs,
         // and nested recipe scope capacity 16 -> 32 so an argument-rich app
         // shell still compiles. Cell-background device-pixel partitioning,
@@ -197,9 +198,10 @@
         // owns the complete pointer gesture and cannot seed a double click.
         // Cold GPU-composite startup initializes the final drawable presenter,
         // so a correct retained texture also reaches the visible window.
+        // Open modals contain Tab focus and return it to their opener on close.
         .native_sdk = .{
-            .url = "https://github.com/phall1/native/archive/c06f1283e3e79888301a46a08de0060a74cec338.tar.gz",
-            .hash = "native_sdk-0.1.0-hzDzQqpxuAIzOCal1PQEPbdUGALXGjMf_c9nbND0ATiA",
+            .url = "https://github.com/phall1/native/archive/56e2aa4027a5e7f598bbb3643a110805b58cdeca.tar.gz",
+            .hash = "native_sdk-0.1.0-hzDzQvO8uALu2VA4brkbMTPfDkf2FzWNxcmG5FdIjOMz",
         },
         // libghostty-vt: Ghostty's extracted terminal-state core, consumed
         // as the `ghostty-vt` Zig module. Pinned to the first upstream
