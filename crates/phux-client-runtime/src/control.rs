@@ -34,7 +34,7 @@ use phux_protocol::caps::{
 };
 #[cfg(not(feature = "engine"))]
 use phux_protocol::caps::{BootstrapProfileKind, BootstrapProfileSet};
-use phux_protocol::ids::{GroupId, InputOperationId, ResourceId, ResourceKind};
+use phux_protocol::ids::{ClientId, GroupId, InputOperationId, ResourceId, ResourceKind};
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::focus::FocusEvent;
 use phux_protocol::input::key::KeyEvent;
@@ -408,6 +408,9 @@ pub struct ControlPlane {
     own_spawns: HashSet<ResourceId>,
     /// `AgentSession` resources declared to the kernel.
     agent_streams: HashSet<ResourceId>,
+    /// This connection's identity on the server, from `ATTACHED`; what an
+    /// input lease's `holder` is compared against.
+    own_client_id: Option<ClientId>,
     pending: HashMap<u32, Pending>,
     request_seq: u32,
     input_replay: InputReplayJournal,
@@ -466,6 +469,7 @@ impl ControlPlane {
             stream_recoveries: HashSet::new(),
             own_spawns: HashSet::new(),
             agent_streams: HashSet::new(),
+            own_client_id: None,
             pending: HashMap::new(),
             request_seq: 1,
             input_replay: InputReplayJournal::new(),

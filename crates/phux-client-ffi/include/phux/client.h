@@ -478,7 +478,11 @@ typedef enum PhuxOperationKind {
     /* phux_client_queue_kill_if (see "conditional kill" below); additive. */
     PHUX_OPERATION_KILL_IF = 4,
     PHUX_OPERATION_CLOSE_RESOURCE = 5,
-    PHUX_OPERATION_CLOSE_RESOURCES = 6
+    PHUX_OPERATION_CLOSE_RESOURCES = 6,
+    /* phux_client_queue_acquire_input / _release_input (see "input lease"
+     * below); additive. */
+    PHUX_OPERATION_ACQUIRE_INPUT = 7,
+    PHUX_OPERATION_RELEASE_INPUT = 8
 } PhuxOperationKind;
 
 typedef enum PhuxOperationStatus {
@@ -588,6 +592,19 @@ typedef enum PhuxClientDamageKind {
  * PhuxClientCloseReason wire value (below); first_row carries the
  * terminating signal number when one is known and nonzero, or 0 when the
  * process exited without one or the cause is unknown.
+ *
+ * INPUT_HOLDER (ADR-0033) is the server's terminal_control broadcast: who
+ * holds the terminal's exclusive input lease, restated on every lease or
+ * lifecycle change. Only the holder's keys reach the PTY; everyone else's
+ * are acked and dropped, so a host renders this rather than letting a
+ * terminal look dead. stream_id is 1 when a holder exists and 0 while the
+ * wheel is free; bootstrap_id is then the holder's server-side client id;
+ * first_row is 1 when the holder is this connection; status_code is the
+ * ControlAction wire value (0 ACQUIRED, 1 SEIZED, 2 RELEASED, 9 EXPIRED;
+ * lifecycle actions restate the holder unchanged). Taking over is a
+ * deliberate phux_client_queue_acquire_input; focus, a second attach, or a
+ * reconnect never implies it (docs/spec/L1.md 8.1). Additive like every
+ * member here.
  */
 typedef enum PhuxClientStatusKind {
     PHUX_CLIENT_STATUS_BELL = 1,
@@ -600,7 +617,8 @@ typedef enum PhuxClientStatusKind {
     PHUX_CLIENT_STATUS_CWD = 8,
     PHUX_CLIENT_STATUS_COMMAND_STARTED = 9,
     PHUX_CLIENT_STATUS_COMMAND_FINISHED = 10,
-    PHUX_CLIENT_STATUS_EXITED = 11
+    PHUX_CLIENT_STATUS_EXITED = 11,
+    PHUX_CLIENT_STATUS_INPUT_HOLDER = 12
 } PhuxClientStatusKind;
 /**
  * status_code on a PHUX_CLIENT_STATUS_EXITED effect: the resource's
@@ -664,9 +682,10 @@ typedef enum PhuxClientHistoryUnavailableCode {
  * status_code is a stable TombstoneReason wire value for RESYNC_REQUIRED,
  * PhuxClientHistoryLoadCode for HISTORY, PhuxClientHistoryUnavailableCode for
  * HISTORY_UNAVAILABLE, PhuxClientDetachReason for DETACHED,
- * PhuxClientCloseReason for EXITED, and zero otherwise (including CWD,
- * COMMAND_STARTED, and COMMAND_FINISHED, whose own payload is documented on
- * PhuxClientStatusKind above).
+ * PhuxClientCloseReason for EXITED, the ControlAction wire value for
+ * INPUT_HOLDER, and zero otherwise (including CWD, COMMAND_STARTED, and
+ * COMMAND_FINISHED, whose own payload is documented on PhuxClientStatusKind
+ * above).
  */
 
 /** Borrowed effect. bytes contains title/error detail when defined by kind. The replica never answers terminal queries (the server's canonical terminal is the sole answerer), so no PTY reply appears here or in the outgoing queue. */
@@ -884,6 +903,31 @@ PhuxClientResult phux_client_queue_attach_resource(PhuxClient *client, const Phu
  * (0x08000000), or PHUX_CLIENT_INVALID_STATE; nothing is stored on refusal.
  * A takeover is consumed by the next attach it rides; VIEWER stays declared. */
 PhuxClientResult phux_client_attach_role(PhuxClient *client, uint8_t role_policy);
+
+/* ---------------------------------------------------------- input lease
+ *
+ * ADR-0033, docs/spec/L1.md 5.1 and 8.1. Additive to ABI version 2. The
+ * input lease is the one arbitration of who types: while a client holds it,
+ * only that client's keys reach the PTY and everyone else's are acked and
+ * dropped. Both verbs need only a negotiated client and are correlated like
+ * the other operations (kinds PHUX_OPERATION_ACQUIRE_INPUT and
+ * _RELEASE_INPUT; refusals carry error_domain protocol and the wire
+ * ErrorCode). The resulting holder arrives separately, to every attached
+ * client, as PHUX_CLIENT_STATUS_INPUT_HOLDER.
+ *
+ * phux_client_queue_acquire_input with seize false is cooperative: granted
+ * while the wheel is free, refused INPUT_LEASE_HELD (204) while another
+ * client drives. With seize true it preempts the holder, who stays attached
+ * and learns of it from the same effect. A takeover is a deliberate user
+ * act: never send it on focus, on a second attach, or on reconnect. A
+ * subscription declared VIEWER (phux_client_attach_role) is refused
+ * PERMISSION_DENIED.
+ *
+ * phux_client_queue_release_input returns the wheel to free; a no-op when
+ * this connection does not hold it. The lease also ends with the
+ * connection, so a host need not release on disconnect. */
+PhuxClientResult phux_client_queue_acquire_input(PhuxClient *client, uint32_t request_id, const PhuxResourceId *terminal_id, bool seize);
+PhuxClientResult phux_client_queue_release_input(PhuxClient *client, uint32_t request_id, const PhuxResourceId *terminal_id);
 
 /* Withdraw a subscription, never kill durable work. Requires completed session
  * ATTACH and an admitted terminal without a pending attach/detach. Correlated

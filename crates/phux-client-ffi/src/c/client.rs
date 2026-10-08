@@ -844,6 +844,21 @@ impl Client {
                 encode_optional_i32(&mut effect.stream_id, &mut effect.bootstrap_id, exit_code);
                 effect
             }
+            TerminalSignal::InputHolder {
+                terminal_id,
+                holder,
+                mine,
+                action,
+            } => {
+                let mut effect = OwnedEffect::simple(2, 12, terminal_id);
+                effect.status_code = u32::from(action.to_u8());
+                if let Some(holder) = holder {
+                    effect.stream_id = 1;
+                    effect.bootstrap_id = u64::from(holder.get());
+                }
+                effect.first_row = u16::from(mine);
+                effect
+            }
         })
     }
 

@@ -117,6 +117,19 @@ impl ControlPlane {
                 }
                 self.push_event(Event::CwdChanged { terminal_id, cwd });
             }
+            // Every broadcast restates the holder (ADR-0033), so a consumer
+            // never has to infer the wheel from dropped input. The exit it
+            // may also carry is the kernel's to report.
+            AgentEvent::TerminalControl {
+                input_holder,
+                action,
+                ..
+            } => self.push_event(Event::InputHolderChanged {
+                terminal_id,
+                holder: input_holder,
+                mine: input_holder.is_some() && input_holder == self.own_client_id,
+                action,
+            }),
             // Supervisory, unknown, and non-Terminal spawns: forward-compat
             // skip.
             _ => {}

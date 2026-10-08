@@ -10,7 +10,8 @@ use std::{mem, ptr};
 
 use phux_protocol::ids::{IdempotencyKey, ServerInstance};
 use phux_protocol::wire::frame::{
-    Command, CommandResult, FrameKind, KillPrecondition, SpawnError, SpawnResource, SpawnResult,
+    Command, CommandResult, FrameKind, InputMode, KillPrecondition, SpawnError, SpawnResource,
+    SpawnResult,
 };
 use phux_protocol::{GroupId, ResourceId, SatelliteHost};
 
@@ -195,6 +196,11 @@ enum Pending {
     /// Intentional termination completes only after acknowledgement and closure.
     Close(PendingClose),
     CloseMany(PendingClose),
+    /// `ACQUIRE_INPUT` (ADR-0033): the lease change itself arrives as a
+    /// `PHUX_CLIENT_STATUS_INPUT_HOLDER` effect, not through the completion.
+    AcquireInput(ResourceId),
+    /// `RELEASE_INPUT` (ADR-0033).
+    ReleaseInput(ResourceId),
 }
 
 impl Pending {
@@ -206,6 +212,8 @@ impl Pending {
             Self::Kill(_) => 4,
             Self::Close(_) => 5,
             Self::CloseMany(_) => 6,
+            Self::AcquireInput(_) => 7,
+            Self::ReleaseInput(_) => 8,
         }
     }
 
@@ -213,7 +221,11 @@ impl Pending {
         match self {
             Self::Spawn { .. } | Self::CloseMany(_) => None,
             Self::Close(close) => close.terminal(),
-            Self::Attach(id) | Self::Detach(id) | Self::Kill(id) => Some(id.clone()),
+            Self::Attach(id)
+            | Self::Detach(id)
+            | Self::Kill(id)
+            | Self::AcquireInput(id)
+            | Self::ReleaseInput(id) => Some(id.clone()),
         }
     }
 }
@@ -720,6 +732,96 @@ pub unsafe extern "C" fn phux_client_queue_kill_if(
             },
         })?;
         client.operations.insert(request_id, Pending::Kill(id));
+        Ok(())
+    })
+}
+
+/// Queue `ACQUIRE_INPUT` for `terminal_id` (ADR-0033).
+///
+/// Cooperative when `seize` is false, which the server refuses
+/// `INPUT_LEASE_HELD` while another client drives; preempting when true.
+/// Correlated like every operation (kind `PHUX_OPERATION_ACQUIRE_INPUT`);
+/// the lease change itself arrives as `PHUX_CLIENT_STATUS_INPUT_HOLDER`.
+/// Needs only a negotiated client.
+///
+/// # Safety
+/// Client is live and exclusively accessed on its owning thread; the ID and
+/// its host span are readable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_queue_acquire_input(
+    client: *mut PhuxClient,
+    request_id: u32,
+    terminal_id: *const PhuxResourceId,
+    seize: bool,
+) -> PhuxClientResult {
+    // SAFETY: forwards the caller's contract.
+    unsafe {
+        queue_lease(client, request_id, terminal_id, |id| {
+            (
+                Command::AcquireInput {
+                    terminal_id: id.clone(),
+                    mode: if seize {
+                        InputMode::Seize
+                    } else {
+                        InputMode::Cooperative
+                    },
+                    ttl_ms: 0,
+                },
+                Pending::AcquireInput(id),
+            )
+        })
+    }
+}
+
+/// Queue `RELEASE_INPUT` for `terminal_id` (ADR-0033); a no-op server-side
+/// when this connection does not hold the lease. Correlated as kind
+/// `PHUX_OPERATION_RELEASE_INPUT`.
+///
+/// # Safety
+/// As [`phux_client_queue_acquire_input`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_queue_release_input(
+    client: *mut PhuxClient,
+    request_id: u32,
+    terminal_id: *const PhuxResourceId,
+) -> PhuxClientResult {
+    // SAFETY: forwards the caller's contract.
+    unsafe {
+        queue_lease(client, request_id, terminal_id, |id| {
+            (
+                Command::ReleaseInput {
+                    terminal_id: id.clone(),
+                },
+                Pending::ReleaseInput(id),
+            )
+        })
+    }
+}
+
+/// # Safety
+/// As [`phux_client_queue_acquire_input`].
+unsafe fn queue_lease(
+    client: *mut PhuxClient,
+    request_id: u32,
+    terminal_id: *const PhuxResourceId,
+    build: impl FnOnce(ResourceId) -> (Command, Pending),
+) -> PhuxClientResult {
+    with_client_mut(client, |client| {
+        if !client.protocol_ready || client.detached {
+            return Err(BridgeError::state(
+                "an input lease needs a negotiated connection",
+            ));
+        }
+        // SAFETY: caller supplies a readable ID and its host span.
+        let id = unsafe { terminal_id_in(terminal_id) }?;
+        valid_terminal(&id)?;
+        ensure_queue_capacity(client, request_id)?;
+        let (command, pending) = build(id);
+        client.queue_frame(&FrameKind::Command {
+            request_id,
+            command,
+        })?;
+        client.operations.insert(request_id, pending);
         Ok(())
     })
 }
