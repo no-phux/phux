@@ -19,6 +19,7 @@ import {
   ConfirmDialog,
   EmptyState,
   RenameDialog,
+  SessionDialog,
   StatusBar,
   sameStatus,
   Toasts,
@@ -84,6 +85,13 @@ interface AppProps {
   readGhostty?: (() => string | undefined) | undefined;
   /** Start the server (and home session) if it is gone; returns the failure, if any. */
   ensureServer?: (() => string | undefined) | undefined;
+  /**
+   * Create a session on this window's socket. `directory` is the focused
+   * pane's directory or the folder the user typed. Returns the failure.
+   */
+  createSession?: ((name: string, directory: string) => string | undefined) | undefined;
+  /** Rename a session on this window's socket. Returns the failure. */
+  renameSession?: ((current: string, next: string) => string | undefined) | undefined;
   /** Write `text` to a new private temporary file named `name`; returns its path. */
   writeTempFile?: ((name: string, text: string) => string) | undefined;
   /** This window's key router; the app installs its shortcut handler here. */
@@ -120,6 +128,7 @@ type Modal =
   | { kind: "settings" }
   | { kind: "path" }
   | { kind: "rename"; tabId: string; title: string }
+  | { kind: "session"; mode: "create" | "rename"; name: string; directory?: string }
   | { kind: "terminate"; terminalId: string; title: string };
 
 interface FindState {
@@ -170,6 +179,8 @@ function DesktopApp(props: AppProps): JSX.Element {
   let lastSaved: SavedLayout | undefined = initial;
   const readGhostty = untrack(() => props.readGhostty);
   const ensureServer = untrack(() => props.ensureServer);
+  const createSession = untrack(() => props.createSession);
+  const renameSession = untrack(() => props.renameSession);
   const writeTempFile = untrack(() => props.writeTempFile);
   const ghosttyText = readGhostty?.();
   const startGhostty = parseGhostty(ghosttyText ?? "");
@@ -663,6 +674,66 @@ function DesktopApp(props: AppProps): JSX.Element {
     if (tab) setModal({ kind: "rename", tabId: tab.id, title: tab.title ?? "" });
   }
 
+  function openNewSession(): void {
+    setModal({
+      kind: "session",
+      mode: "create",
+      name: "",
+      directory: paneOf(workspace.focused()?.terminalId)?.cwd ?? "",
+    });
+  }
+
+  function openRenameSession(): void {
+    const name = paneOf(workspace.focused()?.terminalId)?.sessionName ?? "";
+    if (name.trim() === "") {
+      toast({
+        kind: "error",
+        title: "No session",
+        body: "Focus a pane in the session you want to rename.",
+      });
+      return;
+    }
+    setModal({ kind: "session", mode: "rename", name });
+  }
+
+  function applySession(name: string, directory: string | undefined): void {
+    const current = modal();
+    if (current.kind !== "session") return;
+    const mutate = current.mode === "create" ? createSession : renameSession;
+    if (!mutate) {
+      toast({
+        kind: "error",
+        title:
+          current.mode === "create"
+            ? "Could not create the session"
+            : "Could not rename the session",
+        body: "This window has no session command.",
+      });
+      return;
+    }
+    const failure =
+      current.mode === "create"
+        ? createSession?.(name, directory ?? "")
+        : renameSession?.(current.name, name);
+    if (failure) {
+      toast({
+        kind: "error",
+        title:
+          current.mode === "create"
+            ? "Could not create the session"
+            : "Could not rename the session",
+        body: failure,
+      });
+      return;
+    }
+    bridge.refreshTopology();
+    toast({
+      kind: "success",
+      title: current.mode === "create" ? "Session created" : "Session renamed",
+      body: name.trim(),
+    });
+  }
+
   function copyPath(): void {
     const pane = paneOf(workspace.focused()?.terminalId);
     if (!pane?.cwd) return;
@@ -815,6 +886,21 @@ function DesktopApp(props: AppProps): JSX.Element {
       chord: "cmd+t",
       icon: "plus",
       run: () => workspace.newTerminal(),
+    },
+    {
+      id: "new-session",
+      title: "New Session…",
+      group: "Terminal",
+      chord: "cmd+shift+n",
+      icon: "plus",
+      run: openNewSession,
+    },
+    {
+      id: "rename-session",
+      title: "Rename Session…",
+      group: "Terminal",
+      icon: "terminal",
+      run: openRenameSession,
     },
     {
       id: "new-home",
@@ -1773,6 +1859,7 @@ function DesktopApp(props: AppProps): JSX.Element {
           }}
           reconnect={reconnect}
           rename={(tabId, title) => workspace.renameTab(tabId, title)}
+          applySession={applySession}
           terminate={(terminalId) => workspace.terminate(terminalId)}
           picker={picker()}
           queryPaths={queryPaths}
@@ -1802,6 +1889,7 @@ function ModalLayer(props: {
   };
   reconnect: () => void;
   rename: (tabId: string, title: string) => void;
+  applySession: (name: string, directory: string | undefined) => void;
   terminate: (terminalId: string) => void;
   picker: PickerState | undefined;
   queryPaths: (root: string, query: string) => void;
@@ -1853,6 +1941,18 @@ function ModalLayer(props: {
             search={(query) => props.queryPaths(state().root, query)}
             open={(directory) => props.queryPaths(directory, "")}
             insert={props.insertPath}
+            close={props.close}
+          />
+        )}
+      </Show>
+      <Show when={props.modal.kind === "session" ? props.modal : undefined} keyed>
+        {(modal: Extract<Modal, { kind: "session" }>): JSX.Element => (
+          <SessionDialog
+            title={modal.mode === "create" ? "New Session" : "Rename Session"}
+            initialName={modal.name}
+            directory={modal.directory}
+            confirm={modal.mode === "create" ? "Create" : "Rename"}
+            apply={props.applySession}
             close={props.close}
           />
         )}
@@ -1916,13 +2016,17 @@ export interface MountOptions {
   quickLayouts?: LayoutStore | undefined;
   /** Runs `phux server --ensure` and the home session; returns the failure, if any. */
   ensureServer?: (() => string | undefined) | undefined;
+  /** Create a session on this window's socket. Returns the failure. */
+  createSession?: ((name: string, directory: string) => string | undefined) | undefined;
+  /** Rename a session on this window's socket. Returns the failure. */
+  renameSession?: ((current: string, next: string) => string | undefined) | undefined;
   /** Writes a private temporary file for Ghostty's `write_*_file` actions; returns its path. */
   writeTempFile?: ((name: string, text: string) => string) | undefined;
 }
 
 export function mount(host: DesktopHost, options: MountOptions): void {
   const { socketPath, sessionName, layouts, startupError, readGhostty, quickLayouts } = options;
-  const { ensureServer, writeTempFile } = options;
+  const { ensureServer, writeTempFile, createSession, renameSession } = options;
   const mainKeys: WindowKeys = { run: () => {} };
   const quick: { close?: () => void } = {};
 
@@ -1963,6 +2067,8 @@ export function mount(host: DesktopHost, options: MountOptions): void {
         layouts={store}
         readGhostty={readGhostty}
         ensureServer={ensureServer}
+        createSession={createSession}
+        renameSession={renameSession}
         writeTempFile={writeTempFile}
         keys={keys}
         newWindow={newWindow}
@@ -2017,6 +2123,8 @@ export function mount(host: DesktopHost, options: MountOptions): void {
         startupError={startupError}
         readGhostty={readGhostty}
         ensureServer={ensureServer}
+        createSession={createSession}
+        renameSession={renameSession}
         writeTempFile={writeTempFile}
         keys={mainKeys}
         newWindow={newWindow}

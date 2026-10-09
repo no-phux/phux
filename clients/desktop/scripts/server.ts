@@ -7,6 +7,32 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import {
+  createSessionArgs,
+  createSessionError,
+  renameSessionArgs,
+  renameSessionError,
+} from "../src/workspace/session-cli";
+
+/** What a session command's process returned. `status` null means it did not exit. */
+export interface CommandResult {
+  status: number | null;
+  stderr: string;
+}
+
+export type CommandRunner = (binary: string, args: string[]) => CommandResult;
+
+function spawnCommand(binary: string, args: string[]): CommandResult {
+  const run = spawnSync(binary, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  if (run.error) return { status: 1, stderr: run.error.message };
+  return { status: run.status, stderr: run.stderr };
+}
+
+function requireSuccess(result: CommandResult, fallback: string): void {
+  if (result.status === 0) return;
+  const detail = result.stderr.trim();
+  throw new Error(detail || `${fallback}: exit ${result.status ?? "unknown"}`);
+}
 
 /** A packaged app starts with launchd's minimal PATH, so look where installs land. */
 export function findPhux(explicit?: string): string | undefined {
@@ -63,6 +89,43 @@ export function sessionNames(phux: string, socket: string): string[] {
     typeof session.name === "string"
       ? [session.name]
       : [],
+  );
+}
+
+/**
+ * Create a session on `socket` whose seed pane starts in `directory`.
+ * An empty directory is refused before any process starts, so the desktop
+ * launcher's own cwd cannot become the session directory.
+ */
+export function createNamedSession(
+  phux: string,
+  socket: string,
+  name: string,
+  directory: string,
+  run: CommandRunner = spawnCommand,
+): void {
+  const problem = createSessionError(name, directory);
+  if (problem) throw new Error(problem);
+  requireSuccess(
+    run(phux, createSessionArgs(socket, name.trim(), directory)),
+    "Could not create the session",
+  );
+}
+
+/** Rename a session on `socket`. An unchanged name sends nothing. */
+export function renameNamedSession(
+  phux: string,
+  socket: string,
+  current: string,
+  next: string,
+  run: CommandRunner = spawnCommand,
+): void {
+  const problem = renameSessionError(current, next);
+  if (problem) throw new Error(problem);
+  if (current.trim() === next.trim()) return;
+  requireSuccess(
+    run(phux, renameSessionArgs(socket, current.trim(), next.trim())),
+    "Could not rename the session",
   );
 }
 

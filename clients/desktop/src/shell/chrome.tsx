@@ -1,4 +1,4 @@
-import { createSignal, For, Show, type JSX, type Accessor } from "solid-js";
+import { createSignal, For, Show, untrack, type JSX, type Accessor } from "solid-js";
 import { plainKey, type KeyLike } from "./keymap";
 import {
   Button,
@@ -315,6 +315,67 @@ export function RenameDialog(props: {
               props.close();
             }}
           />
+        </div>
+      </div>
+    </Overlay>
+  );
+}
+
+export function SessionDialog(props: {
+  title: string;
+  initialName: string;
+  directory: string | undefined;
+  confirm: string;
+  apply: (name: string, directory: string | undefined) => void;
+  close: () => void;
+}): JSX.Element {
+  const colors = usePalette();
+  const includeDirectory = untrack(() => props.directory) !== undefined;
+  const [name, setName] = createSignal(untrack(() => props.initialName));
+  const [directory, setDirectory] = createSignal(untrack(() => props.directory) ?? "");
+  const field = {
+    height: 32,
+    paddingLeft: 10,
+    fontSize: 13,
+    borderRadius: radius.control,
+    borderWidth: 1,
+    borderColor: colors().border,
+    backgroundColor: colors().background,
+    color: colors().foreground,
+  };
+  function submit(): void {
+    props.apply(name(), includeDirectory ? directory() : undefined);
+    props.close();
+  }
+  return (
+    <Overlay close={props.close} width={420} top={140}>
+      <div style={column({ padding: 18, gap: 12 })}>
+        <Label weight={600} size={uiFont.title}>
+          {props.title}
+        </Label>
+        <input
+          autoFocus
+          value={name()}
+          placeholder="Session name"
+          onChange={(event) => setName(event.value ?? "")}
+          onKeyDown={(event) => {
+            if (plainKey(event) === "escape") props.close();
+          }}
+          onSubmit={submit}
+          style={field}
+        />
+        <Show when={includeDirectory}>
+          <input
+            value={directory()}
+            placeholder="Directory"
+            onChange={(event) => setDirectory(event.value ?? "")}
+            onSubmit={submit}
+            style={field}
+          />
+        </Show>
+        <div style={row({ gap: 8, justifyContent: "flex-end" })}>
+          <Button label="Cancel" run={() => props.close()} />
+          <Button label={props.confirm} tone="accent" run={submit} />
         </div>
       </div>
     </Overlay>

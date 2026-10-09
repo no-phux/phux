@@ -74,6 +74,8 @@ export interface Bridge {
   fenced(terminalId: string): boolean;
   homeSession(): DesktopSession | undefined;
   panes(): DesktopPane[];
+  /** Ask the server for a fresh session list after a create or rename. */
+  refreshTopology(): void;
   /**
    * Spawn a terminal in `sessionId` when that session is in the topology.
    * An omitted session uses the window session. A named session that is
@@ -413,6 +415,10 @@ export function createBridge(
     },
     homeSession,
     panes: () => topology()?.panes ?? [],
+    refreshTopology: () => {
+      if (closed || status() !== "Attached") return;
+      client().refreshTopology();
+    },
     spawn,
     onEvents: (next) => {
       listener = next;

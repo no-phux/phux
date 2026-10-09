@@ -10,7 +10,14 @@ import { basename, join } from "node:path";
 import { loadDesktopHost } from "../native/loader.mjs";
 import { readGhosttyConfig } from "./ghostty-config";
 import { fileLayoutStore } from "./layout-store";
-import { ensureServer, ensureSession, findPhux, serverSocket } from "./server";
+import {
+  createNamedSession,
+  ensureServer,
+  ensureSession,
+  findPhux,
+  renameNamedSession,
+  serverSocket,
+} from "./server";
 
 export interface DesktopStart {
   addon: string;
@@ -26,6 +33,35 @@ export interface DesktopStart {
  * session. A server that now listens elsewhere than this window's socket is
  * reported rather than dialled. Returns the failure for the shell to show.
  */
+function sessionFailure(run: () => void): string | undefined {
+  try {
+    run();
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+/** Create or rename on this window's socket. Never omits the socket. */
+function sessionCommands(start: DesktopStart): {
+  createSession: (name: string, directory: string) => string | undefined;
+  renameSession: (current: string, next: string) => string | undefined;
+} {
+  const phux = findPhux(process.env.PHUX_BIN);
+  const missing =
+    "Install the phux CLI from https://phux.sh/install so the desktop can change sessions.";
+  return {
+    createSession: (name, directory) => {
+      if (!phux) return missing;
+      return sessionFailure(() => createNamedSession(phux, start.socketPath, name, directory));
+    },
+    renameSession: (current, next) => {
+      if (!phux) return missing;
+      return sessionFailure(() => renameNamedSession(phux, start.socketPath, current, next));
+    },
+  };
+}
+
 function restartServer(start: DesktopStart): string | undefined {
   if (process.env.PHUX_DESKTOP_DEMO === "1")
     return "The private demo server stopped. Relaunch the demo to start a new sandbox.";
@@ -81,6 +117,7 @@ export async function startDesktop(start: DesktopStart): Promise<void> {
       join(state, "phux-desktop/quick.json"),
     ),
     ensureServer: () => restartServer(start),
+    ...sessionCommands(start),
     writeTempFile,
   });
   scheduleCapture(process.env.PHUX_DESKTOP_CAPTURE);
