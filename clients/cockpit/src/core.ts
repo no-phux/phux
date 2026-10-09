@@ -327,6 +327,10 @@ export interface Model {
   readonly paletteNext: boolean;
   readonly paletteLoading: boolean;
   readonly paletteNotice: Uint8Array;
+  /// Loading, empty, and failure copy sits in the results viewport. Key hints
+  /// stay in the footer once a destination has rows.
+  readonly navigatorNoticeInResults: boolean;
+  readonly navigatorNoticeInFooter: boolean;
   /// Connect to Host (remote-hosts.ts): an app-wide modal like the switcher,
   /// presented in whichever window invoked it (the snapshot's active window).
   /// `hostQuery` survives a failure so a retry is one keystroke;
@@ -2712,6 +2716,8 @@ export function initialModel(): [Model, Cmd<Msg>] {
       paletteNext: false,
       paletteLoading: false,
       paletteNotice: NO_BYTES,
+      navigatorNoticeInResults: false,
+      navigatorNoticeInFooter: false,
       hostOpen: false,
       toolPurpose: 0,
       toolToken: NO_BYTES,
@@ -5256,8 +5262,28 @@ function planUpdate(incoming: Model, msg: Msg): UpdatePlan {
   return finalMessageUpdate(model, msg, fromCommands);
 }
 
+function navigatorListEmpty(model: Model): boolean {
+  if (model.navigatorView === 4) return model.actionRows.length === 0;
+  if (model.navigatorView === 2) return model.machineRows.length === 0;
+  return model.paletteRows.length === 0;
+}
+
+function placeNavigatorNotice(model: Model): Model {
+  const show = model.paletteOpen && model.paletteNotice.length > 0;
+  const inResults = show && (model.paletteLoading || navigatorListEmpty(model));
+  const inFooter = show && !inResults;
+  if (model.navigatorNoticeInResults === inResults && model.navigatorNoticeInFooter === inFooter) return model;
+  return { ...model, navigatorNoticeInResults: inResults, navigatorNoticeInFooter: inFooter };
+}
+
+function presentNavigatorNotice(planned: UpdatePlan): UpdatePlan {
+  const model = placeNavigatorNotice(planned.model);
+  if (model === planned.model) return planned;
+  return { ...planned, model };
+}
+
 export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
-  const planned = planUpdate(incoming, msg);
+  const planned = presentNavigatorNotice(planUpdate(incoming, msg));
   const first = planned.firstRequest;
   const second = planned.secondRequest;
   const third = planned.thirdRequest;
