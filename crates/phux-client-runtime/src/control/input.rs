@@ -94,6 +94,46 @@ impl ControlPlane {
         self.begin_acknowledged_input(terminal_id, events)
     }
 
+    /// Answer the ask `question_id` names on `terminal_id`: [`Self::apply_line`]
+    /// behind the staleness gate `phux agent answer` applies. The live ask is
+    /// the pane's ADR-0035 title sentinel when it carries one, else the id the
+    /// event stream last announced (a hook-reported ask sets no title).
+    /// Nothing is typed when the pane is not asking, is asking something
+    /// else, or the text is unsafe to type as one line; the refusal names
+    /// which, as the acknowledged receipt.
+    pub fn apply_answer(&mut self, terminal_id: &ResourceId, question_id: &str, text: &str) -> u64 {
+        if let Some(reason) = phux_client_core::ask::answer_text_refusal(text) {
+            return self.refuse_acknowledged_input(&reason);
+        }
+        let live = self
+            .topology
+            .as_ref()
+            .and_then(|topology| topology.pane(terminal_id))
+            .and_then(|pane| pane.title.as_deref())
+            .and_then(phux_client_core::ask::parse_ask_title)
+            .map_or_else(
+                || self.live_asks.get(terminal_id).cloned(),
+                |marker| Some(marker.id),
+            );
+        match live.as_deref() {
+            None => {
+                return self.refuse_acknowledged_input("the pane is not asking anything");
+            }
+            Some("") => {
+                return self.refuse_acknowledged_input(
+                    "the pane's ask carries no id, so an answer cannot be correlated to it",
+                );
+            }
+            Some(id) if id != question_id => {
+                return self.refuse_acknowledged_input(
+                    "the pane has moved on to another question; re-read the live ask",
+                );
+            }
+            Some(_) => {}
+        }
+        self.apply_line(terminal_id, text)
+    }
+
     /// Atomically deliver one untrusted paste through the acknowledged
     /// path, surfacing the server's safety-policy refusal.
     pub fn apply_paste(&mut self, terminal_id: &ResourceId, text: &str) -> u64 {
@@ -389,5 +429,56 @@ fn new_operation_id() -> InputOperationId {
         if let Some(id) = InputOperationId::new(uuid::Uuid::new_v4().into_bytes()) {
             return id;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::control::{AgentEvent, ControlOptions};
+
+    fn refusal(control: &mut ControlPlane) -> Option<String> {
+        control
+            .take_events()
+            .into_iter()
+            .find_map(|event| match event {
+                Event::InputDelivery {
+                    outcome: DeliveryOutcome::Refused,
+                    message,
+                    ..
+                } => Some(message),
+                _ => None,
+            })
+    }
+
+    /// The gate `phux agent answer` applies, on the runtime path: no ask,
+    /// a different ask, and an unsafe answer each type nothing; the ask the
+    /// event stream announced is answerable even with no title sentinel.
+    #[test]
+    fn an_answer_only_types_into_the_question_it_names() {
+        let mut control = ControlPlane::new(ControlOptions::default());
+        let pane = ResourceId::local(7);
+        control.apply_answer(&pane, "q1", "yes");
+        assert!(refusal(&mut control).is_some(), "no live ask must refuse");
+
+        control.fold_agent_event(
+            pane.clone(),
+            AgentEvent::Asked {
+                id: "q1".into(),
+                question: "Deploy?".into(),
+                suggestions: vec!["yes".into()],
+                elapsed_seconds: None,
+            },
+        );
+        control.take_events();
+        control.apply_answer(&pane, "q0", "yes");
+        assert!(refusal(&mut control).is_some(), "a stale id must refuse");
+        control.apply_answer(&pane, "q1", "yes\nno");
+        assert!(refusal(&mut control).is_some(), "a line break must refuse");
+        control.apply_answer(&pane, "q1", "yes");
+        assert!(
+            refusal(&mut control).is_none(),
+            "the live ask is answerable"
+        );
     }
 }

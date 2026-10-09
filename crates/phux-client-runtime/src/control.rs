@@ -418,6 +418,11 @@ pub struct ControlPlane {
     input_delivery_ids: HashMap<String, (u64, ResourceId)>,
     input_deadlines: HashMap<String, Instant>,
     input_delivery_seq: u64,
+    /// The question id each pane is asking per the event stream: set by
+    /// `AgentAsked`, cleared by the `asked: false` level and by pane close.
+    /// The fallback [`ControlPlane::apply_answer`] guards with when the
+    /// pane's title carries no ADR-0035 sentinel (a hook-reported ask).
+    live_asks: HashMap<ResourceId, String>,
     clock_origin: Instant,
     outbound: Vec<Vec<u8>>,
     events: Vec<Event>,
@@ -475,6 +480,7 @@ impl ControlPlane {
             input_replay: InputReplayJournal::new(),
             delivery_fences: HashMap::new(),
             input_delivery_ids: HashMap::new(),
+            live_asks: HashMap::new(),
             input_deadlines: HashMap::new(),
             input_delivery_seq: 1,
             clock_origin: Instant::now(),

@@ -49,6 +49,12 @@ impl Client {
         self.acknowledged(|control| control.apply_line(terminal_id, text))
     }
 
+    /// Answer the ask `question_id` names, refusing a stale or absent one.
+    #[must_use]
+    pub fn apply_answer(&self, terminal_id: &ResourceId, question_id: &str, text: &str) -> u64 {
+        self.acknowledged(|control| control.apply_answer(terminal_id, question_id, text))
+    }
+
     /// Atomically deliver an untrusted paste through the acknowledged path.
     #[must_use]
     pub fn apply_paste(&self, terminal_id: &ResourceId, text: &str) -> u64 {

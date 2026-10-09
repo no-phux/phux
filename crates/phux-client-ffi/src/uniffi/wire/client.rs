@@ -586,6 +586,16 @@ impl RemoteClient {
         self.apply_acknowledged(&terminal_id, |client, id| client.apply_paste(id, &text))
     }
 
+    /// Answer the ask `question_id` names (the id an `AgentAsked` event
+    /// carried) with `text` plus Enter, acknowledged. Refused, with the
+    /// receipt saying why, when the pane is no longer asking that question
+    /// or the text cannot be typed as one line; nothing is typed then.
+    pub fn apply_answer(&self, terminal_id: String, question_id: String, text: String) -> u64 {
+        self.apply_acknowledged(&terminal_id, |client, id| {
+            client.apply_answer(id, &question_id, &text)
+        })
+    }
+
     pub fn apply_tab_completion(&self, terminal_id: String, text: String) -> u64 {
         self.apply_acknowledged(&terminal_id, |client, id| {
             client.apply_tab_completion(id, &text)
