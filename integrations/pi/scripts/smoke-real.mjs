@@ -26,6 +26,8 @@ for (const name of [
   delete env[name];
 }
 Object.assign(env, {
+  // A shell marker probe must not depend on the user's interactive zsh startup.
+  SHELL: "/bin/sh",
   PHUX_SOCKET: socket,
   XDG_CACHE_HOME: join(temp, "cache"),
   XDG_CONFIG_HOME: join(temp, "config"),

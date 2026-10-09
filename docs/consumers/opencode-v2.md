@@ -16,7 +16,7 @@ lifecycle identity stays on the hosting pane rather than following a worker.
 The adapter lives in [`integrations/opencode-v2`](../../integrations/opencode-v2/README.md).
 That package README is the installation, configuration, tool catalog, and
 verification reference, including local tarball installation. It pins the public
-`@opencode/plugin@2.0.23` V2 API; it is not the legacy V1 plugin contract.
+`@opencode/plugin@2.0.26` V2 API; it is not the legacy V1 plugin contract.
 
 ## First shared-terminal walkthrough
 

@@ -1,4 +1,5 @@
 import type {
+  AgentSettledEvent,
   ExtensionAPI,
   ExtensionContext,
   MessageEndEvent,
@@ -429,7 +430,9 @@ export function registerPhuxLifecycle(
     // Do not own the trust decision; report blocked and let Pi continue.
     return { trusted: "undecided" as const };
   });
-  pi.on("agent_settled", () => lifecycle.emit("stop"));
+  pi.on("agent_settled", (event: AgentSettledEvent) => {
+    lifecycle.emit("stop", { aborted: event.aborted });
+  });
   pi.on("session_shutdown", async (event: SessionShutdownEvent) => {
     await lifecycle.shutdown(event.reason === "reload");
   });

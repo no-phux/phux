@@ -299,7 +299,7 @@ export function registerOmpLifecycle(pi: ExtensionAPI, cli: Cli, host?: string):
   pi.on("session_branch", navigate);
   pi.on("session_tree", navigate);
 
-  // This is a payload-free causal guard, NOT prompt reporting. In 18.6.1
+  // This is a payload-free causal guard, NOT prompt reporting. In 18.8.6
   // AgentSession.prompt awaits emitBeforeAgentStart before agent.prompt. Generic
   // agent/tool notifications are concurrent; their receipt alone is not a guard.
   // 18.x also runs this hook for queued steering/follow-up deliveries the running
@@ -358,7 +358,7 @@ export function registerOmpLifecycle(pi: ExtensionAPI, cli: Cli, host?: string):
     // can be forgotten here (also for automatic continuation).
     resolvedApprovals.clear();
     // Generic tool deliveries are NOT fenced by the end. 17.x held agent_end
-    // behind them with a FIFO subscriber gate; 18.6.1 dispatches each agent
+    // behind them with a FIFO subscriber gate; 18.8.6 dispatches each agent
     // event fire-and-forget and settles agent_end on its own path, so a tool
     // event an earlier extension holds can arrive after this. After a terminal
     // end the token is gone and such an event is dropped; after a continuing
