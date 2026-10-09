@@ -182,6 +182,9 @@ impl Owner {
                     let _ = self.kernel.release_terminal(&id);
                     self.forget_projection(&id);
                 }
+                // Agent streams and released closes publish no projection,
+                // so `visible` never names them.
+                self.kernel.release_incarnation();
                 let _ = reply.send(());
             }
             #[cfg(feature = "engine")]

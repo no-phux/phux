@@ -12,6 +12,8 @@ use phux_client_runtime::control::{Observation, SpawnRequest};
 use crate::uniffi::engine;
 
 #[cfg(test)]
+mod agent_records;
+#[cfg(test)]
 mod quic_live;
 mod search;
 mod selection;
@@ -328,6 +330,7 @@ impl RemoteClient {
                 scrollback_lines: SCROLLBACK_LINES,
                 attach: None,
                 attach_role: self.attach_role(),
+                subscribe_agent_sessions: true,
                 ..phux_client_runtime::control::ControlOptions::default()
             },
             connect: ConnectOptions::default(),
@@ -997,8 +1000,52 @@ impl RemoteClient {
             Event::TerminalsClosed { request_id, error } => {
                 projected.push(WireEvent::TerminalsClosed { request_id, error });
             }
+            Event::AgentRecords {
+                terminal_id,
+                records,
+                retained,
+                session,
+            } => {
+                let kind = if retained {
+                    AgentRecordsKind::Retained
+                } else {
+                    AgentRecordsKind::Live
+                };
+                let seq = records.last().map_or(0, |record| record.seq);
+                let jsonl = crate::projection::agent_records::jsonl(&records);
+                projected.push(agent_records(&terminal_id, session, kind, seq, jsonl));
+            }
+            Event::AgentSessionClosed {
+                terminal_id,
+                session,
+            } => projected.push(agent_records(
+                &terminal_id,
+                session,
+                AgentRecordsKind::Closed,
+                0,
+                String::new(),
+            )),
             _ => {}
         }
+    }
+}
+
+/// Lower one agent session's records, or its end, to the foreign event.
+fn agent_records(
+    terminal_id: &ResourceId,
+    session: phux_client_runtime::control::AgentSessionInfo,
+    kind: AgentRecordsKind,
+    seq: u64,
+    jsonl: String,
+) -> WireEvent {
+    WireEvent::AgentRecords {
+        agent_session_id: id::encode(terminal_id),
+        parent_terminal_id: session.parent.as_ref().map(id::encode),
+        provider: session.provider,
+        native_id: session.native_id,
+        kind,
+        seq,
+        jsonl,
     }
 }
 

@@ -496,6 +496,10 @@ pub enum KernelEffect {
         terminal_id: ResourceId,
         /// The records this update appended.
         records: Vec<AgentEventRecord>,
+        /// `true` for a generation's publication: `records` is the whole
+        /// retained stream and replaces whatever the frontend held. `false`
+        /// for one live output frame appended to it.
+        retained: bool,
     },
 }
 
@@ -1347,6 +1351,23 @@ impl<E: EngineAdapter> SessionKernel<E> {
         true
     }
 
+    /// Forget what only the previous server incarnation could mean: every
+    /// `AgentSession` resource, open or closed, and every closed resource's
+    /// tombstone, as [`Self::release_terminal`] forgets one. A new
+    /// incarnation may reuse those ids for a resource of any kind.
+    pub fn release_incarnation(&mut self) {
+        let stale: Vec<ResourceId> = self
+            .kinds
+            .iter()
+            .filter(|(_, kind)| **kind == ResourceKind::AgentSession)
+            .map(|(terminal_id, _)| terminal_id.clone())
+            .chain(self.closed.iter().cloned())
+            .collect();
+        for terminal_id in stale {
+            let _ = self.release_terminal(&terminal_id);
+        }
+    }
+
     /// The kind of one resource this kernel has seen, closed ones included.
     #[must_use]
     pub fn resource_kind(&self, terminal_id: &ResourceId) -> Option<ResourceKind> {
@@ -2059,6 +2080,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         effects.push(KernelEffect::AgentRecords {
             terminal_id: terminal_id.clone(),
             records: staging.records,
+            retained: true,
         });
         self.mark_attach_resolved(terminal_id);
         Ok(())
@@ -2123,6 +2145,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         effects.push(KernelEffect::AgentRecords {
             terminal_id: terminal_id.clone(),
             records,
+            retained: false,
         });
         Ok(())
     }

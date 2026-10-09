@@ -121,10 +121,16 @@ impl ControlPlane {
             KernelEffect::AgentRecords {
                 terminal_id,
                 records,
-            } => self.push_event(Event::AgentRecords {
-                terminal_id,
-                records,
-            }),
+                retained,
+            } => {
+                let session = self.agent_session_info(&terminal_id);
+                self.push_event(Event::AgentRecords {
+                    terminal_id,
+                    records,
+                    retained,
+                    session,
+                });
+            }
         }
     }
 

@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-21
+last-reviewed: 2026-10-09
 ---
 
 # The client runtime
@@ -46,6 +46,24 @@ read issued before a live change is fenced by that change. `AgentAsked`
 announces a question. `AgentAskedState { asked: false }` is the level that
 retracts it, so a question cleared while a client was not listening is not
 shown again.
+
+With `ControlOptions::subscribe_agent_sessions` (phux-mobile's lane) the
+plane also streams every `AgentSession` resource (ADR-0103) whose parent
+Terminal the connection streams. Each `ATTACHED`, each `GET_STATE` read, and
+each successful per-terminal attach reconciles the listed sessions: a new one
+is declared to the kernel and subscribed with `ATTACH_RESOURCE` (no resize);
+the `GET_STATE` every announced spawn triggers picks up a new session; a
+refused subscription is retried by the next read. Records arrive as the
+lossless `Event::AgentRecords` (`retained` is the whole stream after a
+subscription, reconnect or resync; otherwise one live frame), carrying the
+parent and provider identity the catalog listed. A close, a `GET_STATE` that
+no longer lists the session, a detach of its pane (which also sends
+`DETACH_RESOURCE` for it), or a new server incarnation yields
+`Event::AgentSessionClosed` once; a later server close of that id is not a
+`TerminalClosed`. Every resubscription replays the session's whole retained
+ring (tracked as phux-urxjy). The C ABI
+leaves the option off: its workspace refresh subscribes the same streams
+itself.
 
 In `Runtime::embedded`, the consumer owns the socket and feeds frames directly.
 Harnesses use this lane for synthetic frames, as do the C ABI's

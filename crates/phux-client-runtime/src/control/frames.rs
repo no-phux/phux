@@ -318,7 +318,9 @@ impl ControlPlane {
                     signal,
                     reason,
                 })?;
-                if !self.close_pane(&terminal_id, exit_status, signal, reason) {
+                if !self.close_pane(&terminal_id, exit_status, signal, reason)
+                    && !self.retired_agents.contains(&terminal_id)
+                {
                     // A manual binding may own the admission correlation;
                     // still surface the authoritative close exactly once.
                     self.push_event(Event::TerminalClosed {

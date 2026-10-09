@@ -222,6 +222,9 @@ impl Client {
             // enabling the generic runtime path as well would issue a second
             // ATTACH_RESOURCE for the same spawn.
             auto_attach_foreign_spawns: false,
+            // Workspace refresh subscribes AgentSession streams itself
+            // (`crate::c::workspace::resources`).
+            subscribe_agent_sessions: false,
             bootstrap_limits,
             deliver_inbound: InboundDelivery::Queued,
         };
@@ -878,7 +881,8 @@ impl Client {
             Event::AgentRecords {
                 terminal_id,
                 records,
-            } => self.agent_records_effect(terminal_id, &records)?,
+                ..
+            } => self.agent_records_effect(terminal_id, &records),
             Event::KernelSend(send) => self.process_send(send)?,
             Event::Frame(frame) => crate::c::dispatch_extension_frame(self, *frame)?,
             event => return Ok(EventProjection::Next(event)),
@@ -1018,7 +1022,7 @@ impl Client {
         &mut self,
         id: ResourceId,
         records: &[phux_client_core::session::agent_stream::AgentEventRecord],
-    ) -> Result<(), BridgeError> {
+    ) {
         let (generation, retained) =
             self.agent_streams
                 .get_mut(&id)
@@ -1028,18 +1032,6 @@ impl Client {
                         std::mem::replace(&mut state.retained_pending, false),
                     )
                 });
-        let mut bytes = Vec::new();
-        for record in records {
-            let line = serde_json::json!({
-                "seq": record.seq,
-                "ts_ms": record.ts_ms,
-                "type": record.kind.as_str(),
-                "data": record.data,
-            });
-            serde_json::to_writer(&mut bytes, &line)
-                .map_err(|error| BridgeError::engine(error.to_string()))?;
-            bytes.push(b'\n');
-        }
         let detail = if retained {
             crate::c::types::AGENT_RECORDS_RETAINED
         } else {
@@ -1050,9 +1042,8 @@ impl Client {
         effect.stream_id = stream_id;
         effect.bootstrap_id = bootstrap_id;
         effect.seq = records.last().map_or(0, |record| record.seq);
-        effect.bytes = bytes;
+        effect.bytes = crate::projection::agent_records::jsonl(records).into_bytes();
         self.owned_effects.push(effect);
-        Ok(())
     }
 
     fn sync_server_features(&mut self) {
