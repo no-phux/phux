@@ -396,6 +396,16 @@ pub const APPROVAL_KEY_PREFIX: &str = "phux.approval/v1/";
 /// `SIGNAL` on the held action's subject, and stores nothing.
 pub const APPROVAL_DECIDE_KEY_PREFIX: &str = "phux.approval.decide/v1/";
 
+/// `Global`-scope key family a device registers a background-push grant
+/// under (ADR-0155, `docs/spec/L3.md` §3.11).
+///
+/// `phux.push/v1/<device>` holds a client-owned UTF-8 JSON object naming the
+/// gateway the device trusts, the bearer secret that gateway minted for it,
+/// and the id the device knows this server by. The server posts a
+/// content-free notice there when an agent asks while the connection that
+/// wrote the key is gone.
+pub const PUSH_GRANT_KEY_PREFIX: &str = "phux.push/v1/";
+
 /// A decision's value: release the held action once.
 pub const APPROVAL_APPROVE: &[u8] = b"approve";
 

@@ -169,6 +169,9 @@ pub struct ServerState {
     /// Event-hook dispatcher; `None` when no hooks are configured (firing
     /// is then a no-op).
     hook_dispatcher: Option<crate::hooks::HookDispatcher>,
+    /// Who wrote each `phux.push/v1/<device>` grant, and what was last
+    /// pushed to it (ADR-0155).
+    push_grants: crate::push::PushGrants,
     /// Process-scoped state: incarnation, connection count and idle clock
     /// (ADR-0063), self-exit arming, viewport stamps, upgrade context. See
     /// [`lifecycle_state`].
@@ -212,6 +215,16 @@ impl ServerState {
     #[must_use]
     pub const fn server_incarnation(&self) -> ServerIncarnation {
         self.lifecycle.server_incarnation()
+    }
+
+    /// The push-grant registry (ADR-0155).
+    pub(crate) const fn push_grants(&self) -> &crate::push::PushGrants {
+        &self.push_grants
+    }
+
+    /// Mutable push-grant registry (ADR-0155).
+    pub(crate) const fn push_grants_mut(&mut self) -> &mut crate::push::PushGrants {
+        &mut self.push_grants
     }
 
     /// The shared operation dedupe record. Cloning the handle shares it.

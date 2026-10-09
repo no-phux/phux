@@ -186,6 +186,7 @@ column is the base status word plus at most one relationship clause, about
 | [0152](./0152-project-recipes-run-only-approved-bytes.md) | Project recipes run only approved bytes | Accepted (builds on [0054](./0054-worktree-bound-sessions.md), [0129](./0129-projections-are-named-by-key.md)) |
 | [0153](./0153-clients-pin-the-workload-ca.md) | Clients pin the workload CA, which issues the server certificate | Accepted (amends [0116](./0116-workload-auth-is-mtls.md)) |
 | [0154](./0154-devices-enroll-with-a-ticket-over-their-own-alpn.md) | Devices without ssh enroll with a single-use ticket over their own ALPN | Accepted (builds on [0116](./0116-workload-auth-is-mtls.md), [0153](./0153-clients-pin-the-workload-ca.md)) |
+| [0155](./0155-host-originated-push-through-a-blind-gateway.md) | Background push is host-originated, through a blind gateway | Proposed (builds on [0036](./0036-agent-asked-detection.md)) |
 
 ## When to write an ADR
 
