@@ -44,10 +44,10 @@ use std::time::{Duration, Instant};
 use bytes::{Bytes, BytesMut};
 use criterion::{BenchmarkId, Criterion, Throughput};
 use libghostty_vt::Terminal as GhosttyTerminal;
+use phux_protocol::ResourceId;
 use phux_protocol::ids::{BootstrapId, StreamId};
 use phux_protocol::wire::frame::FrameKind;
 use phux_protocol::wire::framing;
-use phux_protocol::ResourceId;
 use phux_server::grid::{ConsumerReference, SnapshotSynthesizer};
 
 std::thread_local! {

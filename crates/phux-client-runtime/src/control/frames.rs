@@ -548,9 +548,9 @@ fn history_rejection_reason(reason: WireRejection) -> Result<HistoryRejectionRea
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_engine_frame, ClassifiedFrame, EngineEvent, FrameKind};
-    use phux_protocol::ids::{BootstrapId, StreamId};
+    use super::{ClassifiedFrame, EngineEvent, FrameKind, classify_engine_frame};
     use phux_protocol::ResourceId;
+    use phux_protocol::ids::{BootstrapId, StreamId};
 
     /// The decoded payload moves into the engine event: an output flood, a
     /// bootstrap, or a history page is not copied a second time on its way

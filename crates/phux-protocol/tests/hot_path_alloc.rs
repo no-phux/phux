@@ -14,10 +14,10 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use bytes::{Bytes, BytesMut};
+use phux_protocol::ResourceId;
 use phux_protocol::ids::{BootstrapId, StreamId};
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::FrameKind;
-use phux_protocol::ResourceId;
 
 std::thread_local! {
     static COUNTING: Cell<bool> = const { Cell::new(false) };

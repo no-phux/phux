@@ -8,41 +8,42 @@ use crate::caps::{
     Compression, OutputMode, ServerCapabilities,
 };
 use crate::ids::{
-    BootstrapId, ClientId, GroupId, ResourceId, SatelliteHost, StreamId, RESOURCE_ID_TAG_LOCAL,
+    BootstrapId, ClientId, GroupId, RESOURCE_ID_TAG_LOCAL, ResourceId, SatelliteHost, StreamId,
 };
+use crate::input::InputEvent;
 use crate::input::focus::FocusEvent;
 use crate::input::key::KeyEvent;
 use crate::input::mouse::MouseEvent;
 use crate::input::paste::PasteEvent;
-use crate::input::InputEvent;
 use crate::wire::decode::Decoder;
 use crate::wire::encode::Encoder;
 use crate::wire::error::DecodeError;
 use crate::wire::field;
 use crate::wire::framing::LENGTH_PREFIX_LEN;
-use crate::wire::info::{encode_client_id, encode_session_snapshot, SessionSnapshot};
+use crate::wire::info::{SessionSnapshot, encode_client_id, encode_session_snapshot};
 
-use super::directory::{encode_directory_listing, encode_list_directory, DirectoryListingResult};
-use super::path::{encode_query, encode_results, PathQueryResult};
+use super::directory::{DirectoryListingResult, encode_directory_listing, encode_list_directory};
+use super::path::{PathQueryResult, encode_query, encode_results};
 use super::{
-    encode_actor_ref, encode_agent_event, encode_attach_target, encode_bootstrap_codec,
-    encode_bootstrap_profile, encode_command, encode_command_result, encode_env,
-    encode_focus_event, encode_key_event, encode_mouse_event, encode_move_result,
+    ActorRef, AgentEvent, AttachTarget, CloseReason, Command, CommandResult, DetachReason,
+    ErrorCode, EventStamp, HistoryRejectionReason, HistoryTombstoneReason, MAX_FRAME_LEN,
+    MoveResult, Scope, SpawnResource, SpawnResult, TYPE_ATTACH, TYPE_ATTACH_READY, TYPE_ATTACHED,
+    TYPE_BELL, TYPE_BOOTSTRAP_BEGIN, TYPE_BOOTSTRAP_CHUNK, TYPE_BOOTSTRAP_READY,
+    TYPE_BOOTSTRAP_TOMBSTONE, TYPE_COMMAND, TYPE_COMMAND_RESULT, TYPE_DELETE_METADATA, TYPE_DETACH,
+    TYPE_DETACHED, TYPE_DIRECTORY_LISTING, TYPE_ERROR, TYPE_EVENT, TYPE_FRAME_ACK,
+    TYPE_FRAME_COMPRESSED, TYPE_GET_METADATA, TYPE_HELLO, TYPE_HELLO_OK, TYPE_HISTORY_PAGE,
+    TYPE_HISTORY_REJECTED, TYPE_HISTORY_REQUEST, TYPE_HISTORY_TOMBSTONE, TYPE_INPUT_FOCUS,
+    TYPE_INPUT_KEY, TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE, TYPE_INPUT_TERMINAL_REPLY,
+    TYPE_LIST_DIRECTORY, TYPE_LIST_METADATA, TYPE_METADATA_CHANGED, TYPE_METADATA_KEYS,
+    TYPE_METADATA_VALUE, TYPE_MOVE_RESOURCE, TYPE_PATH_QUERY, TYPE_PATH_RESULTS, TYPE_PING,
+    TYPE_PONG, TYPE_RESIZE_TERMINAL, TYPE_RESOURCE_CLOSED, TYPE_RESOURCE_MOVED,
+    TYPE_RESOURCE_OUTPUT, TYPE_RESOURCE_SPAWNED, TYPE_SET_METADATA, TYPE_SPAWN_RESOURCE,
+    TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA, TYPE_VIEWPORT_RESIZE, TombstoneReason,
+    ViewportInfo, encode_actor_ref, encode_agent_event, encode_attach_target,
+    encode_bootstrap_codec, encode_bootstrap_profile, encode_command, encode_command_result,
+    encode_env, encode_focus_event, encode_key_event, encode_mouse_event, encode_move_result,
     encode_paste_event, encode_scope, encode_spawn_result, encode_string_list, encode_terminal_id,
-    encode_viewport_info, ActorRef, AgentEvent, AttachTarget, CloseReason, Command, CommandResult,
-    DetachReason, ErrorCode, EventStamp, HistoryRejectionReason, HistoryTombstoneReason,
-    MoveResult, Scope, SpawnResource, SpawnResult, TombstoneReason, ViewportInfo, MAX_FRAME_LEN,
-    TYPE_ATTACH, TYPE_ATTACHED, TYPE_ATTACH_READY, TYPE_BELL, TYPE_BOOTSTRAP_BEGIN,
-    TYPE_BOOTSTRAP_CHUNK, TYPE_BOOTSTRAP_READY, TYPE_BOOTSTRAP_TOMBSTONE, TYPE_COMMAND,
-    TYPE_COMMAND_RESULT, TYPE_DELETE_METADATA, TYPE_DETACH, TYPE_DETACHED, TYPE_DIRECTORY_LISTING,
-    TYPE_ERROR, TYPE_EVENT, TYPE_FRAME_ACK, TYPE_FRAME_COMPRESSED, TYPE_GET_METADATA, TYPE_HELLO,
-    TYPE_HELLO_OK, TYPE_HISTORY_PAGE, TYPE_HISTORY_REJECTED, TYPE_HISTORY_REQUEST,
-    TYPE_HISTORY_TOMBSTONE, TYPE_INPUT_FOCUS, TYPE_INPUT_KEY, TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE,
-    TYPE_INPUT_TERMINAL_REPLY, TYPE_LIST_DIRECTORY, TYPE_LIST_METADATA, TYPE_METADATA_CHANGED,
-    TYPE_METADATA_KEYS, TYPE_METADATA_VALUE, TYPE_MOVE_RESOURCE, TYPE_PATH_QUERY,
-    TYPE_PATH_RESULTS, TYPE_PING, TYPE_PONG, TYPE_RESIZE_TERMINAL, TYPE_RESOURCE_CLOSED,
-    TYPE_RESOURCE_MOVED, TYPE_RESOURCE_OUTPUT, TYPE_RESOURCE_SPAWNED, TYPE_SET_METADATA,
-    TYPE_SPAWN_RESOURCE, TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA, TYPE_VIEWPORT_RESIZE,
+    encode_viewport_info,
 };
 
 /// Decoded wire frame (`docs/spec/proto.md` §7).
