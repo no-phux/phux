@@ -161,7 +161,16 @@ fn posix_spawn_child(
     let slave = open_slave(&slave_name)?;
     let argv = spawn_argv(&trampoline, cmd)?;
     let envp = spawn_envp(cmd)?;
-    let pid = spawn_with_stdio(slave.as_raw_fd_pub(), &trampoline, &argv, &envp)?;
+    let cwd = spawn_directory(cmd)
+        .map(|dir| c_os(dir.as_os_str()))
+        .transpose()?;
+    let pid = spawn_with_stdio(
+        slave.as_raw_fd_pub(),
+        &trampoline,
+        &argv,
+        &envp,
+        cwd.as_deref(),
+    )?;
     Ok(Box::new(portable_pty_adopt::AdoptedChild::new(pid)))
 }
 
@@ -245,10 +254,16 @@ fn spawn_with_stdio(
     trampoline: &Path,
     argv: &[CString],
     envp: &[CString],
+    cwd: Option<&std::ffi::CStr>,
 ) -> io::Result<libc::pid_t> {
     let mut actions = SpawnActions::new()?;
     for target in 0..3 {
         actions.dup2(slave, target)?;
+    }
+    // The kernel applies this before the trampoline runs, so a cwd query
+    // in the parent cannot observe the server directory.
+    if let Some(dir) = cwd {
+        actions.chdir(dir)?;
     }
     #[cfg(target_os = "macos")]
     let attr = CloexecAttr::new()?;
@@ -317,6 +332,20 @@ impl SpawnActions {
     fn dup2(&mut self, from: std::os::fd::RawFd, to: i32) -> io::Result<()> {
         // SAFETY: `self.0` was initialized and is destroyed in `Drop`.
         let rc = unsafe { libc::posix_spawn_file_actions_adddup2(&raw mut self.0, from, to) };
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::from_raw_os_error(rc))
+        }
+    }
+
+    /// Queue a `chdir` that the kernel runs before the new image starts.
+    fn chdir(&mut self, path: &std::ffi::CStr) -> io::Result<()> {
+        // SAFETY: `self.0` was initialized and is destroyed in `Drop`.
+        // `path` is a live NUL-terminated string for the duration of the
+        // call; the kernel copies it into the actions object.
+        let rc =
+            unsafe { libc::posix_spawn_file_actions_addchdir_np(&raw mut self.0, path.as_ptr()) };
         if rc == 0 {
             Ok(())
         } else {
