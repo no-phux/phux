@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.0-alpha.9](https://github.com/no-phux/phux/compare/desktop-v0.1.0-alpha.8...desktop-v0.1.0-alpha.9) (2026-10-09)
+
+
+### Features
+
+* **clients:** session menus, directory terminals, and a folder on create ([#1115](https://github.com/no-phux/phux/issues/1115)) ([c6b2ff2](https://github.com/no-phux/phux/commit/c6b2ff20be7efb25aa9b28dd93d8434160f0d4cc))
+* **clients:** share session host, directory, and project grouping ([#1108](https://github.com/no-phux/phux/issues/1108)) ([0f0e081](https://github.com/no-phux/phux/commit/0f0e0813e39b17541236ad9f988352e522b0ac7d))
+
 ## [0.1.0-alpha.8](https://github.com/no-phux/phux/compare/desktop-v0.1.0-alpha.7...desktop-v0.1.0-alpha.8) (2026-10-08)
 
 
