@@ -1652,6 +1652,7 @@ function DesktopApp(props: AppProps): JSX.Element {
         }
         sizeOwner={workspace.sizeOwner(placement)}
         showHeader={
+          // Split signal only. Pane does not paint a title bar from this.
           placements(tab()?.root ?? { kind: "leaf", placement }).length > 1 || !!tab()?.zoomedId
         }
         zoomed={tab()?.zoomedId === placement.id}

@@ -188,10 +188,10 @@ fn paintWindow(model: *const Model, builder: *canvas.Builder, window_index: usiz
     const grid_tokens = projection.terminalTokensFrom(tokens, model);
     var panes: [layout.max_panes]layout.Pane = undefined;
     const count = projection.resolvePanesIn(model, ws, size, &panes);
-    // Split cards own their opaque backgrounds. Leave their gutters and
-    // rounded corners clear so the host material beneath the canvas shows
-    // through. A lone pane stays full-bleed; non-markup callers retain their
-    // full-window ground because they have no measured material boundary.
+    // Panes are full-bleed. A lone pane and a split share the terminal
+    // ground; the seam between splits is a 1px line, not a rounded card.
+    // Non-markup callers retain their full-window ground because they have
+    // no measured material boundary.
     if (ws.shipping_terminal_space == null or count < 2) {
         try builder.fillRect(.{
             .id = window_ground_command_id,
@@ -205,10 +205,9 @@ fn paintWindow(model: *const Model, builder: *canvas.Builder, window_index: usiz
     const tree = ws.selectedTreeConst() orelse return;
     try paintTerminalContents(model, builder, tree, panes[0..count], tokens, window_active, ws.surface_scale_factor);
 
-    // Borders and the focus ring follow all panes and their dim scrims, so a
-    // neighbouring pane cannot cover the active pane's focus indication.
-    // The ring also remains visible when a black terminal cannot dim further.
-    try paintPaneChrome(builder, panes[0..count], tree.focus, tokens, window_active);
+    // The seam and the focus hairline follow every pane and its dim scrim,
+    // so a neighbour cannot cover the active pane's focus indication.
+    try paintPaneChrome(builder, model, ws, size, panes[0..count], tree, tokens, window_active);
 }
 
 fn paintTerminalContents(model: *const Model, builder: *canvas.Builder, tree: *const layout.Tree, panes: []const layout.Pane, tokens: canvas.DesignTokens, window_active: bool, scale_factor: f32) !void {
@@ -277,10 +276,9 @@ fn paintDim(
     tokens: canvas.DesignTokens,
 ) !void {
     if (count < 2 or !window_active or pane.node == focus_node) return;
-    try builder.fillRoundedRect(.{
+    try builder.fillRect(.{
         .id = pane_dim_command_id_base + index,
         .rect = pane.rect,
-        .radius = projection.paneCardRadius(tokens),
         .fill = .{ .color = dim_scrim },
     });
 }
@@ -294,10 +292,9 @@ fn paintCard(
     tokens: canvas.DesignTokens,
 ) !void {
     if (count < 2) return;
-    try builder.fillRoundedRect(.{
+    try builder.fillRect(.{
         .id = pane_card_command_id_base + index,
         .rect = pane.rect,
-        .radius = projection.paneCardRadius(tokens),
         .fill = .{ .color = grid_tokens.colors.background },
     });
 }
@@ -330,32 +327,45 @@ fn paintLocalPane(terminal: *const Pane, builder: *canvas.Builder, index: usize,
 
 fn paintPaneChrome(
     builder: *canvas.Builder,
+    model: *const Model,
+    ws: *const model_module.Workspace,
+    size: geometry.SizeF,
     panes: []const layout.Pane,
-    focus_node: layout.NodeId,
+    tree: *const layout.Tree,
     tokens: canvas.DesignTokens,
     window_active: bool,
 ) !void {
     if (panes.len < 2 or !window_active) return;
-    const radius = projection.paneCardRadius(tokens);
     const hairline = @max(1, tokens.stroke.hairline);
-    // These borders sit on opaque terminal content, not native material. Keep
-    // the terminal's opaque divider: light chrome's black/8% hairline would
-    // disappear over a dark terminal when the system appearance changes.
+    // The seam sits on opaque terminal content. Keep the terminal's opaque
+    // divider: light chrome's black/8% hairline would disappear over a dark
+    // terminal when the system appearance changes.
     const border = projection.baseTokens().colors.border;
+    const content = projection.workspaceChromeIn(model, ws, size).content;
+    var seams: [layout.max_panes - 1]layout.Divider = undefined;
+    const seam_count = tree.dividers(
+        content,
+        projection.split_divider_width,
+        projection.split_pane_min_width,
+        projection.split_pane_min_height,
+        &seams,
+    );
+    for (seams[0..seam_count], 0..) |seam, index| {
+        if (seam.rect.width <= 0 or seam.rect.height <= 0) continue;
+        try builder.fillRect(.{
+            .id = pane_border_command_id_base + index,
+            .rect = seam.rect,
+            .fill = .{ .color = border },
+        });
+    }
     for (panes, 0..) |pane, index| {
+        if (pane.node != tree.focus) continue;
         if (pane.rect.width <= 0 or pane.rect.height <= 0) continue;
         try builder.strokeRect(.{
-            .id = pane_border_command_id_base + index,
-            .rect = pane.rect,
-            .radius = radius,
-            .stroke = .{ .fill = .{ .color = border }, .width = hairline },
-        });
-        if (pane.node != focus_node) continue;
-        try builder.strokeRect(.{
             .id = pane_focus_command_id_base + index,
-            .rect = projection.paneFocusRingRect(pane.rect, tokens),
-            .radius = projection.paneFocusRingRadius(tokens),
-            .stroke = .{ .fill = .{ .color = tokens.colors.accent }, .width = @max(1, tokens.stroke.focus) },
+            .rect = pane.rect,
+            .radius = canvas.Radius.all(0),
+            .stroke = .{ .fill = .{ .color = tokens.colors.accent }, .width = hairline },
         });
     }
 }

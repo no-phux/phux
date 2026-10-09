@@ -302,11 +302,11 @@ export function createWorkspace(
     }
     if (info.cols < 4 || info.rows < 4) return undefined;
     if (destination.kind === "tab") return { cols: info.cols, rows: info.rows };
-    // A first split gains pane headers; a split halves one axis less its divider.
-    const header = placements(activeTab()?.root ?? leaf(placement)).length === 1 ? 2 : 0;
+    // Splits are a hairline, not a per-pane header, so neither axis loses rows
+    // to chrome. The divider is one column on a horizontal split.
     return destination.axis === "row"
-      ? { cols: Math.floor((info.cols - 1) / 2), rows: info.rows - header }
-      : { cols: info.cols, rows: Math.floor((info.rows - 1) / 2) - header };
+      ? { cols: Math.floor((info.cols - 1) / 2), rows: info.rows }
+      : { cols: info.cols, rows: Math.floor((info.rows - 1) / 2) };
   }
 
   function request(destination: Destination, cwd?: string, sessionId?: number): void {

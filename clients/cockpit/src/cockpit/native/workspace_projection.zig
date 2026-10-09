@@ -92,13 +92,15 @@ fn saveFailureNoticeVisible(model: *const Model) bool {
 
 pub const side_rail_width: f32 = 184;
 pub const side_rail_gap: f32 = chrome_gap;
-/// The grab band between two panes; even, so its hairline centres on a point.
-pub const split_divider_width: f32 = chrome_gap;
+/// The seam between two panes. 1px, Rex-style: no card gutter. Even so the
+/// hairline centres on a point. The pointer hit target is inflated separately.
+pub const split_divider_width: f32 = 1;
 pub const split_pane_min_width: f32 = 240;
 pub const split_pane_min_height: f32 = 80;
-/// Keeps the grid clear of a split pane card's rounded corners; a single
-/// pane stays full-bleed.
-pub const pane_chrome_inset: f32 = chrome_band_inset;
+/// Splits are full-bleed. A card inset existed to clear rounded corners;
+/// those corners are gone, so the grid, the PTY and hit-testing share the
+/// pane rect. A lone pane was already identity.
+pub const pane_chrome_inset: f32 = 0;
 
 /// The rect the grid, the PTY and pointer cell-mapping all share.
 pub fn paneGridRect(card: geometry.RectF, pane_count: usize) geometry.RectF {
@@ -106,19 +108,18 @@ pub fn paneGridRect(card: geometry.RectF, pane_count: usize) geometry.RectF {
     return card.inset(geometry.InsetsF.all(pane_chrome_inset));
 }
 
-pub fn paneCardRadius(tokens: canvas.DesignTokens) canvas.Radius {
-    return canvas.Radius.all(tokens.radius.md);
+pub fn paneCardRadius(_: canvas.DesignTokens) canvas.Radius {
+    return canvas.Radius.all(0);
 }
 
-/// The focus ring floats `stroke.focus_offset` outside the card, so focus
-/// never resizes the grid.
-pub fn paneFocusRingRect(card: geometry.RectF, tokens: canvas.DesignTokens) geometry.RectF {
-    return card.normalized().inflate(geometry.InsetsF.all(@max(0, tokens.stroke.focus_offset)));
+/// Focus is an inset hairline on the pane itself. It does not inflate the
+/// card, so a split never reflows cells.
+pub fn paneFocusRingRect(card: geometry.RectF, _: canvas.DesignTokens) geometry.RectF {
+    return card.normalized();
 }
 
-pub fn paneFocusRingRadius(tokens: canvas.DesignTokens) canvas.Radius {
-    const offset = @max(0, tokens.stroke.focus_offset);
-    return canvas.Radius.all(tokens.radius.md + offset);
+pub fn paneFocusRingRadius(_: canvas.DesignTokens) canvas.Radius {
+    return canvas.Radius.all(0);
 }
 pub const webkit_parking_extent = scene.webkit_parking_extent;
 const widget_command_reserve: usize = canvas.terminal_grid.widget_command_reserve;
@@ -1101,22 +1102,17 @@ pub fn paneFrameFor(model: *const Model, size: geometry.SizeF, id: TerminalRef) 
     return null;
 }
 
-test "paneGridRect is identity for a lone pane and a constant inset for splits" {
+test "paneGridRect is identity for a lone pane and for splits" {
     const testing = std.testing;
     const card = geometry.RectF.init(10, 20, 400, 300);
     try testing.expectEqualDeep(card, paneGridRect(card, 1));
-    const grid_rect = paneGridRect(card, 2);
-    try testing.expectEqual(card.x + pane_chrome_inset, grid_rect.x);
-    try testing.expectEqual(card.y + pane_chrome_inset, grid_rect.y);
-    try testing.expectEqual(card.width - 2 * pane_chrome_inset, grid_rect.width);
-    try testing.expectEqual(card.height - 2 * pane_chrome_inset, grid_rect.height);
-    try testing.expectEqualDeep(grid_rect, paneGridRect(card, 8));
+    try testing.expectEqualDeep(card, paneGridRect(card, 2));
+    try testing.expectEqualDeep(card, paneGridRect(card, 8));
+    try testing.expectEqual(@as(f32, 0), pane_chrome_inset);
 }
 
-test "pane chrome inset clears the rounded-corner overshoot" {
+test "split seam is a hairline, not a card gutter" {
     const testing = std.testing;
-    const tokens = baseTokens();
-    const overshoot = tokens.radius.md * (1.0 - 1.0 / std.math.sqrt(@as(f32, 2.0)));
-    try testing.expect(pane_chrome_inset > overshoot);
-    try testing.expectEqual(chrome_band_inset, pane_chrome_inset);
+    try testing.expectEqual(@as(f32, 1), split_divider_width);
+    try testing.expect(split_divider_width < chrome_gap);
 }

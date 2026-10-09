@@ -1,10 +1,9 @@
-import { Show, type JSX, type Accessor } from "solid-js";
+import { Show, createSignal, type JSX, type Accessor } from "solid-js";
 import type { DesktopPane } from "../../native/generated/index";
 import type { AgentInfo } from "../bridge/desktop";
-import { paneTitle, shortPath } from "../shell/sidebar";
 import type { HostAction, TerminalTheme } from "../terminal-element";
-import { IconButton, Label, Pill, StatusDot, row, usePalette } from "../ui/controls";
-import { agentColors, uiFont } from "../ui/theme";
+import { IconButton, Label, Pill, row, usePalette } from "../ui/controls";
+import { agentColors } from "../ui/theme";
 import type { Placement } from "../workspace/layout";
 
 export interface PaneProps {
@@ -52,84 +51,58 @@ export function Pane(props: PaneProps): JSX.Element {
   const colors = usePalette();
   const tint = (): string =>
     props.agent ? (agentColors[props.agent.state] ?? colors().accent) : colors().accent;
+  // Rex has no per-pane title bar, even when split. `showHeader` now only
+  // means "this placement is in a split" so focus can be a hairline, not a card.
+  const [hot, setHot] = createSignal(false);
+  const split = (): boolean => props.showHeader;
   return (
     <div
+      onMouseEnter={() => setHot(true)}
+      onMouseLeave={() => setHot(false)}
       style={{
         display: "flex",
         flexDirection: "column",
         flexGrow: 1,
         minWidth: 0,
         minHeight: 0,
+        position: "relative",
         backgroundColor: props.theme.background,
-        borderWidth: props.showHeader ? 1 : 0,
-        borderColor: props.selected && props.showHeader ? `${colors().accent}66` : colors().border,
-        borderRadius: props.showHeader ? 6 : 0,
+        borderWidth: 0,
+        // Focus is an inset hairline on the focused split only. A lone pane
+        // stays full-bleed, matching Rex.
+        boxShadow:
+          split() && props.selected ? `inset 0 0 0 1px ${colors().accent}99` : "none",
         overflow: "hidden",
       }}
     >
-      <Show when={props.showHeader}>
+      <Show when={hot()}>
         <div
-          onClick={(event) => {
-            props.focus();
-            if ((event.clickCount ?? 1) >= 2) props.zoom();
-          }}
           style={row({
-            height: 28,
-            flexShrink: 0,
-            gap: 8,
-            paddingLeft: 10,
-            paddingRight: 4,
-            backgroundColor: props.selected ? colors().raised : colors().surface,
-            borderBottomWidth: 1,
+            position: "absolute",
+            top: 6,
+            right: 6,
+            zIndex: 2,
+            height: 24,
+            gap: 2,
+            paddingLeft: 6,
+            paddingRight: 2,
+            borderRadius: 6,
+            backgroundColor: `${colors().raised}ee`,
+            borderWidth: 1,
             borderColor: colors().border,
           })}
         >
-          <Show when={!props.agent}>
-            <div
-              style={{
-                width: 6,
-                height: 6,
-                borderRadius: 3,
-                backgroundColor: props.selected ? colors().accent : colors().faint,
-              }}
-            />
-          </Show>
-          <Show when={props.agent}>
-            {(agent: Accessor<AgentInfo>): JSX.Element => (
-              <StatusDot state={agent().state} size={7} />
-            )}
-          </Show>
-          <Label
-            keep
-            weight={props.selected ? 600 : 500}
-            color={props.selected ? colors().foreground : colors().muted}
-          >
-            {paneTitle(props.pane)}
-          </Label>
-          <Label size={uiFont.small} color={colors().faint} grow>
-            {shortPath(props.pane?.cwd)}
-          </Label>
           <Show when={props.agent}>
             {(agent: Accessor<AgentInfo>): JSX.Element => (
               <Pill color={tint()} subtle>
-                {`${agent().name} · ${agent().state}`}
+                {agent().state}
               </Pill>
             )}
-          </Show>
-          <Show when={props.views > 1}>
-            <Pill color={colors().muted} subtle>
-              {`${props.views} views`}
-            </Pill>
           </Show>
           <Show when={props.fenced}>
             <Pill color={colors().warning}>delivery unknown</Pill>
           </Show>
-          <IconButton
-            icon="splitRight"
-            label="Split right"
-            run={() => props.splitRight()}
-            size={22}
-          />
+          <IconButton icon="splitRight" label="Split right" run={() => props.splitRight()} size={22} />
           <IconButton icon="splitDown" label="Split down" run={() => props.splitDown()} size={22} />
           <IconButton
             icon={props.zoomed ? "minimize" : "maximize"}

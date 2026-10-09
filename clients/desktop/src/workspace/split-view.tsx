@@ -3,7 +3,9 @@ import type { StyleDesc } from "@gpuix/solid";
 import { usePalette } from "../ui/controls";
 import type { Axis, LayoutNode, Placement } from "./layout";
 
+// Hit target stays wide enough to grab; the painted seam is 1px (Rex).
 export const DIVIDER = 5;
+const SEAM = 1;
 
 interface SplitProps {
   pane: (placement: Placement) => JSX.Element;
@@ -87,7 +89,7 @@ function Split(props: SplitProps & { split: SplitNode }): JSX.Element {
       >
         <div
           style={{
-            ...thickness(1),
+            ...thickness(SEAM),
             backgroundColor: active() ? colors().accent : colors().divider,
           }}
         />
