@@ -70,14 +70,22 @@ test "close runtime requires exact Client receipt plus authoritative closure, in
     wrong = result;
     wrong.connection_epoch += 1;
     try testing.expect(!coordinator.completeFrom(remote, wrong));
+    // A success receipt alone cannot finish the close. The host's canonical
+    // Ok fixture is not a close receipt; the closed frame is.
+    const early = receipt(remote, request, .close_resource);
+    try testing.expect(coordinator.completeFrom(remote, early));
+    try testing.expect(coordinator.takeOutcomeFrom(model, remote) == null);
     try fixture.stageFixture(remote.bridge, "detach-ok.bin");
     _ = try remote.host.drainReadiness();
-    try testing.expect(coordinator.completeFrom(remote, remote.takeOperationResult().?));
-    try testing.expect(coordinator.takeOutcomeFrom(model, remote) == null);
+    try testing.expect(remote.takeOperationResult() == null);
     try testing.expectEqual(@as(usize, 1), model.ws().tab_count);
     try testing.expect(remote.owner(ref(7)) != null);
     try fixture.stageFixture(remote.bridge, "initial-terminal-closed.bin");
     _ = try remote.host.drainReadiness();
+    const closed = remote.takeOperationResult().?;
+    try testing.expectEqual(.close_resource, closed.kind);
+    try testing.expectEqual(.success, closed.status);
+    try testing.expect(!coordinator.completeFrom(remote, closed));
     try testing.expect(remote.owner(ref(7)) == null);
     try testing.expect(coordinator.observeClosedFrom(remote, ref(7)));
     const outcome = coordinator.takeOutcomeFrom(model, remote).?;
