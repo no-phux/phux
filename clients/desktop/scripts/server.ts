@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
+  closeSessionArgs,
   createSessionArgs,
   createSessionError,
   renameSessionArgs,
@@ -110,6 +111,17 @@ export function createNamedSession(
     run(phux, createSessionArgs(socket, name.trim(), directory)),
     "Could not create the session",
   );
+}
+
+/** End the panes of one session on `socket`. An empty name sends nothing. */
+export function closeNamedSession(
+  phux: string,
+  socket: string,
+  name: string,
+  run: CommandRunner = spawnCommand,
+): void {
+  if (name.trim() === "") throw new Error("Close needs the session name.");
+  requireSuccess(run(phux, closeSessionArgs(socket, name.trim())), "Could not close the session");
 }
 
 /** Rename a session on `socket`. An unchanged name sends nothing. */

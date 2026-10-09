@@ -1,5 +1,5 @@
 import { createMemo, createSignal, For, Show, type Accessor, type JSX } from "solid-js";
-import { displayPath, type PathRow, type PickerState } from "../path-picker";
+import { directoryForTerminal, displayPath, type PathRow, type PickerState } from "../path-picker";
 import { Icon, Label, column, row, usePalette } from "../ui/controls";
 import { radius, uiFont } from "../ui/theme";
 import { plainKey, type KeyLike } from "./keymap";
@@ -27,6 +27,8 @@ export function PathPicker(props: {
   search: (query: string) => void;
   open: (directory: string) => void;
   insert: (path: string) => void;
+  /** Start a terminal in a picked host directory. */
+  openTerminal?: (directory: string) => void;
   close: () => void;
 }): JSX.Element {
   const colors = usePalette();
@@ -65,6 +67,13 @@ export function PathPicker(props: {
     if (!line) return;
     if (line.parent) open(line);
     else props.insert(line.path);
+  }
+
+  function openTerminal(line: Line | undefined): void {
+    if (!line || !props.openTerminal) return;
+    const directory = directoryForTerminal(line.kind, line.path);
+    if (!directory) return;
+    props.openTerminal(directory);
   }
 
   function keyDown(event: KeyLike): void {
@@ -150,6 +159,18 @@ export function PathPicker(props: {
       </div>
       <div style={{ height: 1, backgroundColor: colors().border }} />
       <div style={row({ gap: 14, height: 30, paddingLeft: 16, paddingRight: 16 })}>
+        <Show
+          when={directoryForTerminal(
+            lines()[selected()]?.kind ?? "",
+            lines()[selected()]?.path ?? "",
+          )}
+        >
+          <div onClick={() => openTerminal(lines()[selected()])} style={{ cursor: "pointer" }}>
+            <Label size={uiFont.small} color={colors().accent}>
+              New terminal here
+            </Label>
+          </div>
+        </Show>
         <Show when={props.state.message}>
           {(message: Accessor<string>): JSX.Element => (
             <Label size={uiFont.small} color={colors().muted}>

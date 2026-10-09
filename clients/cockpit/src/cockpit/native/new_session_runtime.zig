@@ -41,11 +41,11 @@ pub fn current(engine: anytype, destination: sessions.Destination) bool {
     };
 }
 
-pub fn send(engine: anytype, destination: sessions.Destination, name: []const u8, keep_empty: bool) !u32 {
+pub fn send(engine: anytype, destination: sessions.Destination, name: []const u8, directory: []const u8, keep_empty: bool) !u32 {
     if (comptime !support.phux_enabled) return error.InvalidState;
     if (!keep_empty or !current(engine, destination)) return error.InvalidState;
     const remote = resolve(engine.model, destination) orelse return error.InvalidState;
-    return remote.requestCreateSession(name, true);
+    return remote.requestCreateSessionIn(name, directory, true);
 }
 
 /// Returned text borrows the owning Client; Controller copies it before release.

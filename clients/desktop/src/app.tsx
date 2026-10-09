@@ -69,6 +69,7 @@ import {
 } from "./workspace/persist";
 import { SplitView } from "./workspace/split-view";
 import { createWorkspace } from "./workspace/controller";
+import { windowSession } from "./workspace/session-cli";
 
 export interface LayoutStore {
   read(): unknown;
@@ -97,7 +98,9 @@ interface AppProps {
   /** This window's key router; the app installs its shortcut handler here. */
   keys: WindowKeys;
   /** Open another window on the same server (Command-N), optionally showing one terminal. */
-  newWindow: (terminalId?: string) => void;
+  newWindow: (options?: { terminalId?: string; sessionName?: string }) => void;
+  /** End one session's panes on this window's socket. Returns the failure. */
+  closeSession?: ((name: string) => string | undefined) | undefined;
   /** Show or hide the quick terminal window. */
   toggleQuick: () => void;
   /** A secondary window starts with a new terminal, not the restored layout. */
@@ -129,6 +132,8 @@ type Modal =
   | { kind: "path" }
   | { kind: "rename"; tabId: string; title: string }
   | { kind: "session"; mode: "create" | "rename"; name: string; directory?: string }
+  | { kind: "close-session"; name: string }
+  | { kind: "window-session" }
   | { kind: "terminate"; terminalId: string; title: string };
 
 interface FindState {
@@ -181,6 +186,7 @@ function DesktopApp(props: AppProps): JSX.Element {
   const ensureServer = untrack(() => props.ensureServer);
   const createSession = untrack(() => props.createSession);
   const renameSession = untrack(() => props.renameSession);
+  const closeSession = untrack(() => props.closeSession);
   const writeTempFile = untrack(() => props.writeTempFile);
   const ghosttyText = readGhostty?.();
   const startGhostty = parseGhostty(ghosttyText ?? "");
@@ -655,7 +661,7 @@ function DesktopApp(props: AppProps): JSX.Element {
   function moveToWindow(): void {
     const focus = workspace.focused();
     if (!focus) return;
-    props.newWindow(focus.terminalId);
+    props.newWindow({ terminalId: focus.terminalId });
     workspace.closePane(focus.id);
   }
 
@@ -1287,7 +1293,7 @@ function DesktopApp(props: AppProps): JSX.Element {
       group: "View",
       chord: "cmd+n",
       icon: "window",
-      run: () => props.newWindow(),
+      run: () => setModal({ kind: "window-session" }),
     },
     {
       id: "fullscreen",
@@ -1764,6 +1770,8 @@ function DesktopApp(props: AppProps): JSX.Element {
               open={(pane) => openTerminal(pane.terminalId)}
               newTerminal={() => workspace.newTerminal()}
               newTerminalIn={(sessionId) => workspace.newTerminalIn(sessionId)}
+              renameSession={(name) => setModal({ kind: "session", mode: "rename", name })}
+              closeSession={(name) => setModal({ kind: "close-session", name })}
               openSettings={() => setModal({ kind: "settings" })}
               openPalette={() => setModal({ kind: "commands" })}
             />
@@ -1864,6 +1872,34 @@ function DesktopApp(props: AppProps): JSX.Element {
           picker={picker()}
           queryPaths={queryPaths}
           insertPath={insertPath}
+          openTerminal={(directory) => {
+            workspace.newTerminal(directory);
+            closePathPicker();
+          }}
+          sessionItems={(bridge.topology()?.sessions ?? []).map((session) => ({
+            id: `window-${session.id}`,
+            title: session.name,
+            group: "Sessions on this server",
+            icon: "window" as const,
+            run: () => props.newWindow({ sessionName: windowSession(session.name, sessionName) }),
+          }))}
+          closeNamed={(name) => {
+            if (!closeSession) {
+              toast({
+                kind: "error",
+                title: "Could not close the session",
+                body: "This window has no session command.",
+              });
+              return;
+            }
+            const failure = closeSession(name);
+            if (failure) {
+              toast({ kind: "error", title: "Could not close the session", body: failure });
+              return;
+            }
+            bridge.refreshTopology();
+            toast({ kind: "success", title: "Session closed", body: name });
+          }}
         />
       </div>
     </PaletteContext.Provider>
@@ -1894,6 +1930,9 @@ function ModalLayer(props: {
   picker: PickerState | undefined;
   queryPaths: (root: string, query: string) => void;
   insertPath: (path: string) => void;
+  openTerminal: (directory: string) => void;
+  sessionItems: PaletteItem[];
+  closeNamed: (name: string) => void;
 }): JSX.Element {
   return (
     <>
@@ -1941,6 +1980,25 @@ function ModalLayer(props: {
             search={(query) => props.queryPaths(state().root, query)}
             open={(directory) => props.queryPaths(directory, "")}
             insert={props.insertPath}
+            openTerminal={props.openTerminal}
+            close={props.close}
+          />
+        )}
+      </Show>
+      <Show when={props.modal.kind === "window-session"}>
+        <CommandPalette
+          placeholder="Open a window on a session…"
+          items={props.sessionItems}
+          close={props.close}
+        />
+      </Show>
+      <Show when={props.modal.kind === "close-session" ? props.modal : undefined} keyed>
+        {(modal: Extract<Modal, { kind: "close-session" }>): JSX.Element => (
+          <ConfirmDialog
+            title={`Close ${modal.name}?`}
+            body="This ends the panes in that session. The window stays on this server."
+            confirm="Close session"
+            run={() => props.closeNamed(modal.name)}
             close={props.close}
           />
         )}
@@ -2020,13 +2078,15 @@ export interface MountOptions {
   createSession?: ((name: string, directory: string) => string | undefined) | undefined;
   /** Rename a session on this window's socket. Returns the failure. */
   renameSession?: ((current: string, next: string) => string | undefined) | undefined;
+  /** End one session's panes on this window's socket. Returns the failure. */
+  closeSession?: ((name: string) => string | undefined) | undefined;
   /** Writes a private temporary file for Ghostty's `write_*_file` actions; returns its path. */
   writeTempFile?: ((name: string, text: string) => string) | undefined;
 }
 
 export function mount(host: DesktopHost, options: MountOptions): void {
   const { socketPath, sessionName, layouts, startupError, readGhostty, quickLayouts } = options;
-  const { ensureServer, writeTempFile, createSession, renameSession } = options;
+  const { ensureServer, writeTempFile, createSession, renameSession, closeSession } = options;
   const mainKeys: WindowKeys = { run: () => {} };
   const quick: { close?: () => void } = {};
 
@@ -2036,7 +2096,7 @@ export function mount(host: DesktopHost, options: MountOptions): void {
    * the quick terminal keeps its own small layout so the same terminal comes
    * back on every toggle.
    */
-  function openWindow(options: { quick: boolean; terminalId?: string }): {
+  function openWindow(options: { quick: boolean; terminalId?: string; sessionName?: string }): {
     close: () => void;
     isOpen: () => boolean;
   } {
@@ -2063,12 +2123,13 @@ export function mount(host: DesktopHost, options: MountOptions): void {
       <DesktopApp
         host={host}
         socketPath={socketPath}
-        sessionName={sessionName}
+        sessionName={windowSession(options.sessionName, sessionName)}
         layouts={store}
         readGhostty={readGhostty}
         ensureServer={ensureServer}
         createSession={createSession}
         renameSession={renameSession}
+        closeSession={closeSession}
         writeTempFile={writeTempFile}
         keys={keys}
         newWindow={newWindow}
@@ -2098,8 +2159,8 @@ export function mount(host: DesktopHost, options: MountOptions): void {
     };
   }
 
-  function newWindow(terminalId?: string): void {
-    openWindow(terminalId ? { quick: false, terminalId } : { quick: false });
+  function newWindow(options?: { terminalId?: string; sessionName?: string }): void {
+    openWindow({ quick: false, ...options });
   }
 
   let quickWindow: ReturnType<typeof openWindow> | undefined;
@@ -2125,6 +2186,7 @@ export function mount(host: DesktopHost, options: MountOptions): void {
         ensureServer={ensureServer}
         createSession={createSession}
         renameSession={renameSession}
+        closeSession={closeSession}
         writeTempFile={writeTempFile}
         keys={mainKeys}
         newWindow={newWindow}

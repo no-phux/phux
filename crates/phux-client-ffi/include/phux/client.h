@@ -1550,6 +1550,11 @@ PhuxClientResult phux_client_session_rename_info(const PhuxClient *client, PhuxS
  * monotonic operation namespace. Names are UTF-8, 1..240 bytes, no controls. */
 PhuxClientResult phux_client_create_session(PhuxClient *client, uint32_t request_id, PhuxBytes name, bool keep_empty);
 
+/* Same as phux_client_create_session. A non-empty directory is the session
+ * seed cwd (`cwd` in the create document). An empty directory stays an empty
+ * session. The old function is unchanged. */
+PhuxClientResult phux_client_create_session_in(PhuxClient *client, uint32_t request_id, PhuxBytes name, PhuxBytes directory, bool keep_empty);
+
 typedef struct PhuxSessionCreateInfo {
     size_t size;
     uint32_t version;

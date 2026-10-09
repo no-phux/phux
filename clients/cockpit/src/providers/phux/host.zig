@@ -1877,9 +1877,15 @@ pub const Host = struct {
     /// Create on this exact coordinator connection. The FFI sends the CLI's
     /// create metadata request and confirms its nonce before publishing an ID.
     pub fn requestCreateSession(host: *Host, name: []const u8, keep_empty: bool) !u32 {
+        return host.requestCreateSessionIn(name, "", keep_empty);
+    }
+
+    /// Create on this connection. A non-empty `directory` is the seed cwd.
+    /// An empty directory is the same empty session as `requestCreateSession`.
+    pub fn requestCreateSessionIn(host: *Host, name: []const u8, directory: []const u8, keep_empty: bool) !u32 {
         if (host.disconnected) return error.InvalidState;
         const request_id = try host.operation_ledger.nextRequestId();
-        try resultError(c.phux_client_create_session(host.client, request_id, bytes(name), keep_empty));
+        try resultError(c.phux_client_create_session_in(host.client, request_id, bytes(name), bytes(directory), keep_empty));
         host.operation_ledger.last_id = request_id;
         host.stageOutgoing() catch host.disconnect();
         return request_id;

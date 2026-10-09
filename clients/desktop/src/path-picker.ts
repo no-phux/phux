@@ -4,6 +4,13 @@ export interface PathRow {
   kind: string;
 }
 
+/** A host directory the path picker can start a terminal in. Files insert only. */
+export function directoryForTerminal(kind: string, path: string): string | undefined {
+  if (kind !== "directory") return undefined;
+  const directory = path.trim();
+  return directory === "" ? undefined : directory;
+}
+
 export interface PathResult {
   requestId: number;
   root: string;

@@ -11,6 +11,7 @@ import { loadDesktopHost } from "../native/loader.mjs";
 import { readGhosttyConfig } from "./ghostty-config";
 import { fileLayoutStore } from "./layout-store";
 import {
+  closeNamedSession,
   createNamedSession,
   ensureServer,
   ensureSession,
@@ -46,6 +47,7 @@ function sessionFailure(run: () => void): string | undefined {
 function sessionCommands(start: DesktopStart): {
   createSession: (name: string, directory: string) => string | undefined;
   renameSession: (current: string, next: string) => string | undefined;
+  closeSession: (name: string) => string | undefined;
 } {
   const phux = findPhux(process.env.PHUX_BIN);
   const missing =
@@ -58,6 +60,10 @@ function sessionCommands(start: DesktopStart): {
     renameSession: (current, next) => {
       if (!phux) return missing;
       return sessionFailure(() => renameNamedSession(phux, start.socketPath, current, next));
+    },
+    closeSession: (name) => {
+      if (!phux) return missing;
+      return sessionFailure(() => closeNamedSession(phux, start.socketPath, name));
     },
   };
 }
