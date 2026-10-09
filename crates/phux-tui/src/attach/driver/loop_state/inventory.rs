@@ -2,8 +2,8 @@
 
 use super::{
     AttachError, Command, CommandResult, CommandValue, Connection, FrameKind, FrameOutcome,
-    HostAnswers, Notice, RepaintAccumulator, Scope, apply_graph_rename, federation_notices,
-    host_answers, host_inventory_overdue, sync_agent_meta_subscriptions,
+    HostAnswers, Notice, ProjectTagFrame, RepaintAccumulator, Scope, apply_graph_rename,
+    federation_notices, host_answers, host_inventory_overdue, sync_agent_meta_subscriptions,
     unexplained_unreachable_notices,
 };
 
@@ -38,7 +38,59 @@ impl super::SessionLoop {
         // The fleet's other half. Rides the same deferred
         // sweep, so it costs the first paint nothing.
         self.request_serving_host(conn).await?;
+        self.request_project_tag(conn).await?;
         self.request_host_inventory(conn).await
+    }
+
+    /// Read the one stored project tag. The subscribe in bootstrap only
+    /// delivers later writes.
+    pub(super) async fn request_project_tag(
+        &mut self,
+        conn: &mut Connection,
+    ) -> Result<(), AttachError> {
+        if self.peers.project_tag_pending.is_some() {
+            return Ok(());
+        }
+        let request_id = self.take_request_id();
+        self.peers.project_tag_pending = Some(request_id);
+        super::super::session_io::send_unless_peer_gone(
+            conn,
+            &FrameKind::GetMetadata {
+                request_id,
+                scope: Scope::Global,
+                key: phux_protocol::wire::frame::SESSION_PROJECT_KEY.to_owned(),
+            },
+        )
+        .await
+    }
+
+    /// Join the stored project tag to the session that still has that name.
+    pub(super) fn fold_project_tag(&mut self, value: Option<&[u8]>) {
+        self.peers.project_tag_pending = None;
+        self.peers.stored_project_tag = value
+            .and_then(phux_protocol::wire::frame::decode_session_project)
+            .map(|(name, project)| (name.to_owned(), project.to_owned()));
+        self.apply_stored_project_tag();
+    }
+
+    /// Rebuild `project_tags` from the stored tag and the current session names.
+    pub(super) fn apply_stored_project_tag(&mut self) {
+        let mut next = std::collections::HashMap::new();
+        if let Some((name, project)) = &self.peers.stored_project_tag
+            && let Some(session) = self
+                .peers
+                .sessions
+                .iter()
+                .find(|session| session.name == *name)
+        {
+            next.insert(session.id, project.clone());
+        }
+        if next == self.peers.project_tags {
+            return;
+        }
+        self.peers.project_tags = next;
+        self.peers.chrome_dirty = true;
+        self.session_picker_dirty = true;
     }
 
     /// Read the server's identity after first paint without blocking the frame loop.
@@ -117,6 +169,7 @@ impl super::SessionLoop {
                 let sessions_changed = self.peers.sessions != snapshot.sessions;
                 if sessions_changed {
                     self.peers.sessions.clone_from(&snapshot.sessions);
+                    self.apply_stored_project_tag();
                 }
                 // Sweep only when the graph the sweep reads actually moved.
                 if sessions_changed || self.snapshot_graph_changed(snapshot) {
@@ -199,6 +252,17 @@ impl super::SessionLoop {
         self.peers.chrome_dirty = true;
         self.session_picker_dirty = true;
         self.note_chrome_change(repaint);
+    }
+
+    /// Apply a `phux.session.project/v1` broadcast to the picker tags.
+    pub(super) fn fold_project_tag_outcome(&mut self, outcome: &mut FrameOutcome) {
+        let stored = match std::mem::take(&mut outcome.project_tag) {
+            ProjectTagFrame::Absent => return,
+            ProjectTagFrame::Cleared => None,
+            ProjectTagFrame::Set { name, project } => Some((name, project)),
+        };
+        self.peers.stored_project_tag = stored;
+        self.apply_stored_project_tag();
     }
 
     /// The `GET_STATE` barrier after a local rename: the snapshot is

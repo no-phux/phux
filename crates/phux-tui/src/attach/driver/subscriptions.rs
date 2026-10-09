@@ -81,6 +81,10 @@ pub(super) struct PeerWatch {
     pub(super) foreign_attention: HashSet<ResourceId>,
     /// Project tags from `phux.session.project/v1`, keyed by session id.
     pub(super) project_tags: HashMap<SessionId, String>,
+    /// The one stored tag (`name`, `project`) before it is joined to a session id.
+    pub(super) stored_project_tag: Option<(String, String)>,
+    /// In-flight `GET` of `phux.session.project/v1`.
+    pub(super) project_tag_pending: Option<u32>,
     /// The peer sweep waits for the first paint: set at construction and
     /// consumed at the first frame-burst drain, so a bootstrap (including a
     /// session switch, which drops all subscriptions) does not queue peer

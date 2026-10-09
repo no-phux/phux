@@ -10,6 +10,22 @@ use crate::attach::outcome::AttachEnd;
 use crate::attach::paint::StatusBarPaint;
 use crate::render::chrome::status_bar::Notice;
 
+/// What one frame did to the stored `phux.session.project/v1` tag.
+///
+/// `Absent` is the default so a frame that never mentions the key leaves the
+/// picker alone. A tombstone or undecodable value is `Cleared`, distinct from
+/// a frame that did not speak.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(in crate::attach) enum ProjectTagFrame {
+    /// This frame did not mention the project tag.
+    #[default]
+    Absent,
+    /// The stored tag was removed or could not be decoded.
+    Cleared,
+    /// The stored tag now names one session.
+    Set { name: String, project: String },
+}
+
 /// Outcome of processing one server frame: the async follow-ups the driver
 /// owes, decided synchronously by [`handle_server_frame`].
 #[allow(
@@ -108,6 +124,8 @@ pub(in crate::attach) struct FrameOutcome {
     pub(in crate::attach) config_reload: bool,
     /// A `phux.session.name/v1` rename `(current, new)`.
     pub(in crate::attach) session_rename: Option<(String, String)>,
+    /// A `phux.session.project/v1` write. `Absent` means this frame did not speak.
+    pub(in crate::attach) project_tag: ProjectTagFrame,
     /// Transient status-bar notices raised by this frame.
     pub(in crate::attach) notices: Vec<Notice>,
     /// A status-bar paint completed while handling this frame. Used to commit

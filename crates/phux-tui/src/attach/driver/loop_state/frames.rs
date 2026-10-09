@@ -375,6 +375,9 @@ impl super::SessionLoop {
         let Some(frame) = self.take_serving_host_metadata(frame) else {
             return Ok(None);
         };
+        let Some(frame) = self.take_project_tag_metadata(frame) else {
+            return Ok(None);
+        };
         let Some(frame) = self
             .take_foreign_layout_metadata(conn, frame, repaint)
             .await?
@@ -398,6 +401,26 @@ impl super::SessionLoop {
                 ..
             } if self.peers.serving_host_pending == Some(request_id) => {
                 self.peers.serving_host_pending = None;
+                None
+            }
+            other => Some(other),
+        }
+    }
+
+    /// The session picker's project-tag read. `None` means this frame was that reply.
+    fn take_project_tag_metadata(&mut self, frame: FrameKind) -> Option<FrameKind> {
+        match frame {
+            FrameKind::MetadataValue { request_id, value }
+                if self.peers.project_tag_pending == Some(request_id) =>
+            {
+                self.fold_project_tag(value.as_deref());
+                None
+            }
+            FrameKind::Error {
+                request_id: Some(request_id),
+                ..
+            } if self.peers.project_tag_pending == Some(request_id) => {
+                self.peers.project_tag_pending = None;
                 None
             }
             other => Some(other),
@@ -549,6 +572,7 @@ impl super::SessionLoop {
         let fleet_dirty = fleet_projection_dirty(&outcome);
         self.fold_peer_outcome(conn, &mut outcome, repaint).await?;
         self.fold_session_rename(&mut outcome, repaint);
+        self.fold_project_tag_outcome(&mut outcome);
         self.finish_paint(outcome.status_bar_painted);
         self.resync_watches(conn, &mut outcome).await?;
         self.fold_chrome_and_notices(&mut outcome, repaint);

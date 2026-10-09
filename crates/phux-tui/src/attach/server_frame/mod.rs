@@ -20,7 +20,7 @@ pub(super) use handler::{FrameEnv, handle_server_frame};
 // `RESOURCE_OUTPUT` does.
 pub(super) use handler::{OutputFrame, paint_output_frame};
 pub(super) use index::AgentMetaIndex;
-pub(super) use outcome::FrameOutcome;
+pub(super) use outcome::{FrameOutcome, ProjectTagFrame};
 pub(in crate::attach) use outcome::pane_label;
 
 #[cfg(test)]

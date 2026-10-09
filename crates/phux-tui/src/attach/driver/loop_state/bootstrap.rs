@@ -143,6 +143,12 @@ impl super::SessionLoop {
             key: SESSION_NAME_KEY.to_owned(),
         })
         .await?;
+        // Project tags, so the session picker groups by `phux.session.project/v1`.
+        conn.send(&FrameKind::SubscribeMetadata {
+            scope: Scope::Global,
+            key: phux_protocol::wire::frame::SESSION_PROJECT_KEY.to_owned(),
+        })
+        .await?;
         if subscribe_layout && let Some(session) = self.peers.focused_session {
             // Fetch and watch this session's persisted layout (best effort).
             let key = layout_key(session);
