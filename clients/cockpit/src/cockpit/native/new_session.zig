@@ -24,19 +24,32 @@ pub const Destination = struct {
     host: []const u8 = "",
 };
 
-pub const Request = struct { kind: Kind, token: u64, name: []const u8 };
+pub const Request = struct { kind: Kind, token: u64, name: []const u8, directory: []const u8 = "" };
 
 pub fn decode(bytes: []const u8) Error!Request {
     if (bytes.len < 11 or bytes[0] != 1) return error.InvalidRequest;
     const kind = std.enums.fromInt(Kind, bytes[1]) orelse return error.InvalidRequest;
-    if (bytes.len != 11 + @as(usize, bytes[10])) return error.InvalidRequest;
+    const name_len: usize = bytes[10];
+    if (bytes.len < 11 + name_len) return error.InvalidRequest;
     const token = std.mem.readInt(u64, bytes[2..10], .little);
-    const name = bytes[11..];
+    const name = bytes[11..][0..name_len];
+    const rest = bytes[11 + name_len ..];
+    const directory = if (rest.len == 0) "" else blk: {
+        if (rest.len < 1 or rest.len != 1 + @as(usize, rest[0])) return error.InvalidRequest;
+        break :blk rest[1..];
+    };
     if ((kind == .describe) != (token == 0)) return error.InvalidRequest;
     if (kind == .create) {
         if (!validName(name)) return error.InvalidRequest;
-    } else if (name.len != 0) return error.InvalidRequest;
-    return .{ .kind = kind, .token = token, .name = name };
+        if (directory.len > 0 and !validDirectory(directory)) return error.InvalidRequest;
+    } else if (name.len != 0 or directory.len != 0) return error.InvalidRequest;
+    return .{ .kind = kind, .token = token, .name = name, .directory = directory };
+}
+
+fn validDirectory(directory: []const u8) bool {
+    if (directory.len > max_text_bytes or !std.unicode.utf8ValidateSlice(directory)) return false;
+    for (directory) |byte| if (byte < 0x20 or byte == 0x7f) return false;
+    return true;
 }
 
 fn validName(name: []const u8) bool {
@@ -128,7 +141,7 @@ pub const Controller = struct {
         if (request.kind == .describe) return encode(try self.describe(engine), out);
         const index = self.find(request.token) orelse return encode(.{ .phase = .unavailable, .token = request.token, .reason = "This New Session request is no longer available. Open New Session again." }, out);
         const entry = &self.entries.items[index];
-        if (request.kind == .create) self.create(engine, entry, request.name);
+        if (request.kind == .create) self.create(engine, entry, request.name, request.directory);
         return encode(entry.reply(), out);
     }
 
@@ -151,13 +164,13 @@ pub const Controller = struct {
         return self.entries.items[self.entries.items.len - 1].reply();
     }
 
-    fn create(_: *Controller, engine: anytype, entry: *Entry, name: []const u8) void {
+    fn create(_: *Controller, engine: anytype, entry: *Entry, name: []const u8, directory: []const u8) void {
         // The same token is idempotent: neither double-click nor retry sends a
         // second operation. A fresh describe is needed after a refusal.
         if (entry.phase != .ready or entry.cancelled) return;
         if (!entry.windowCurrent(engine)) return entry.refuse("The invoking window was closed. Open New Session again.");
         if (!engine.newSessionDestinationCurrent(entry.destination)) return entry.refuse("The destination connection changed. Open New Session again.");
-        const id = engine.sendNewSession(entry.destination, name, true) catch |err| {
+        const id = engine.sendNewSession(entry.destination, name, directory, true) catch |err| {
             var reason: [max_text_bytes]u8 = undefined;
             entry.refuse(std.fmt.bufPrint(&reason, "Could not create the session ({s}). Check the machine connection and try again.", .{@errorName(err)}) catch "Could not create the session. Check the machine connection and try again.");
             return;
@@ -240,7 +253,7 @@ const Fixture = struct {
     pub fn newSessionDestinationCurrent(self: *@This(), _: Destination) bool {
         return self.current;
     }
-    pub fn sendNewSession(self: *@This(), _: Destination, _: []const u8, keep: bool) !u32 {
+    pub fn sendNewSession(self: *@This(), _: Destination, _: []const u8, _: []const u8, keep: bool) !u32 {
         if (self.fail_send) return error.ConnectionUnavailable;
         self.sent += 1;
         self.keep = keep;

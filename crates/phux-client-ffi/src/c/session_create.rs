@@ -221,14 +221,30 @@ fn valid_name(name: &[u8]) -> Result<&str, BridgeError> {
     std::str::from_utf8(name).map_err(|_| BridgeError::invalid("session name must be UTF-8"))
 }
 
-fn queue(client: &mut Client, id: u32, name: &str) -> Result<Creation, BridgeError> {
+fn create_value(name: &str, directory: Option<&str>, token: &str) -> Result<Vec<u8>, BridgeError> {
+    let mut value = serde_json::json!({
+        "name": name,
+        "keep_empty": true,
+        "request_token": token,
+    });
+    if let Some(directory) = directory.filter(|directory| !directory.is_empty()) {
+        value["cwd"] = serde_json::Value::String(directory.to_owned());
+    } else {
+        value["empty"] = serde_json::Value::Bool(true);
+    }
+    serde_json::to_vec(&value).map_err(|error| BridgeError::invalid(error.to_string()))
+}
+
+fn queue(
+    client: &mut Client,
+    id: u32,
+    name: &str,
+    directory: Option<&str>,
+) -> Result<Creation, BridgeError> {
     let token = uuid::Uuid::new_v4().to_string();
     let result_read = client.workspace.reserve_internal()?;
     let state_read = client.workspace.reserve_internal()?;
-    let value = serde_json::to_vec(&serde_json::json!({
-        "name": name, "empty": true, "keep_empty": true, "request_token": token,
-    }))
-    .map_err(|error| BridgeError::invalid(error.to_string()))?;
+    let value = create_value(name, directory, &token)?;
     let frames = [
         FrameKind::SetMetadata {
             request_id: id,
@@ -298,7 +314,47 @@ pub unsafe extern "C" fn phux_client_create_session(
         let name = valid_name(unsafe { bytes_in(name.data, name.len) }?)?;
         client.operations.check_request_id(request_id)?;
         ensure_capacity(client)?;
-        let entry = queue(client, request_id, name)?;
+        let entry = queue(client, request_id, name, None)?;
+        client.operations.consume_request_id(request_id);
+        client.session_creates.entries.insert(request_id, entry);
+        Ok(())
+    })
+}
+
+/// Create a session whose seed uses `directory` when that span is non-empty.
+/// An empty directory is the same empty session as [`phux_client_create_session`].
+///
+/// # Safety
+/// Client is live and exclusively accessed on its owning thread. Name and
+/// directory are readable spans. Request IDs obey the bridge's monotonic
+/// operation namespace.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_create_session_in(
+    client: *mut PhuxClient,
+    request_id: u32,
+    name: PhuxBytes,
+    directory: PhuxBytes,
+    keep_empty: bool,
+) -> PhuxClientResult {
+    with_client_mut(client, |client| {
+        if !client.protocol_ready || client.detached {
+            return Err(BridgeError::state(
+                "session creation needs a negotiated connection",
+            ));
+        }
+        if !keep_empty || !client.keep_empty_sessions {
+            return Err(BridgeError::state(
+                "server must support keep-empty sessions",
+            ));
+        }
+        // SAFETY: caller supplies readable name and directory spans.
+        let name = valid_name(unsafe { bytes_in(name.data, name.len) }?)?;
+        let directory = unsafe { bytes_in(directory.data, directory.len) }?;
+        let directory = std::str::from_utf8(directory)
+            .map_err(|_| BridgeError::invalid("session directory must be UTF-8"))?;
+        client.operations.check_request_id(request_id)?;
+        ensure_capacity(client)?;
+        let entry = queue(client, request_id, name, Some(directory))?;
         client.operations.consume_request_id(request_id);
         client.session_creates.entries.insert(request_id, entry);
         Ok(())
@@ -400,6 +456,24 @@ mod tests {
         unsafe { Box::from_raw(client) }
     }
 
+    fn create_in(
+        client: &mut PhuxClient,
+        id: u32,
+        name: &str,
+        directory: &str,
+    ) -> PhuxClientResult {
+        // SAFETY: owned client and spans live throughout the call.
+        unsafe {
+            phux_client_create_session_in(
+                client,
+                id,
+                bytes_out(name.as_bytes()),
+                bytes_out(directory.as_bytes()),
+                true,
+            )
+        }
+    }
+
     fn create(client: &mut PhuxClient, id: u32, name: &str) -> PhuxClientResult {
         // SAFETY: owned client and name live throughout the call.
         unsafe { phux_client_create_session(client, id, bytes_out(name.as_bytes()), true) }
@@ -459,6 +533,24 @@ mod tests {
     }
 
     #[test]
+    fn create_in_records_the_directory_and_does_not_mark_the_session_empty() {
+        let mut client = client();
+        assert_eq!(
+            create_in(&mut client, 7, "api", "/src/api"),
+            PhuxClientResult::Ok
+        );
+        let (frame, _) = FrameKind::decode(&client.inner.outgoing[0]).unwrap();
+        let FrameKind::SetMetadata { value, .. } = frame else {
+            panic!("expected CLI metadata create")
+        };
+        let value: serde_json::Value = serde_json::from_slice(&value).unwrap();
+        assert_eq!(value["cwd"], "/src/api");
+        assert_eq!(value["keep_empty"], true);
+        assert_eq!(value["name"], "api");
+        assert!(value.get("empty").is_none());
+    }
+
+    #[test]
     fn sends_real_cli_create_with_keep_empty_and_confirms_server_identity_without_attach() {
         let mut client = client();
         assert_eq!(create(&mut client, 1, "work"), PhuxClientResult::Ok);
@@ -473,6 +565,7 @@ mod tests {
         assert_eq!(value["keep_empty"], true);
         assert_eq!(value["empty"], true);
         assert_eq!(value["name"], "work");
+        assert!(value.get("cwd").is_none());
         let response = receipt(&client, 1);
         feed(&mut client, &response);
         assert_eq!(

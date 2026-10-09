@@ -19,6 +19,10 @@ export interface SidebarProps {
   newTerminal: () => void;
   /** Spawn in this session. The header + calls this instead of the home session. */
   newTerminalIn?: (sessionId: number) => void;
+  /** Rename this session from the header menu. */
+  renameSession?: (name: string) => void;
+  /** Close this session from the header menu. */
+  closeSession?: (name: string) => void;
   /** Project tags keyed by session id. Empty keeps the flat session list. */
   projects?: ReadonlyMap<number, string>;
   openSettings: () => void;
@@ -31,6 +35,7 @@ const PRIORITY: Record<string, number> = { blocked: 0, done: 1, working: 2, idle
 export function Sidebar(props: SidebarProps): JSX.Element {
   const colors = usePalette();
   const [collapsed, setCollapsed] = createSignal<Record<string, boolean>>({});
+  const [menu, setMenu] = createSignal<number | undefined>();
   const agentPanes = createMemo(() => {
     const agents = props.agents;
     return props.panes
@@ -152,7 +157,42 @@ export function Sidebar(props: SidebarProps): JSX.Element {
                             run={() => props.newTerminalIn?.(session.id)}
                           />
                         </Show>
+                        <Show when={props.renameSession || props.closeSession}>
+                          <IconButton
+                            icon="command"
+                            label={`Session menu for ${session.name}`}
+                            run={() =>
+                              setMenu((current) =>
+                                current === session.id ? undefined : session.id,
+                              )
+                            }
+                          />
+                        </Show>
                       </div>
+                      <Show when={menu() === session.id}>
+                        <div style={row({ gap: 6, paddingLeft: 22, paddingBottom: 4 })}>
+                          <Show when={props.renameSession}>
+                            <IconButton
+                              icon="terminal"
+                              label={`Rename ${session.name}`}
+                              run={() => {
+                                setMenu(undefined);
+                                props.renameSession?.(session.name);
+                              }}
+                            />
+                          </Show>
+                          <Show when={props.closeSession}>
+                            <IconButton
+                              icon="close"
+                              label={`Close ${session.name}`}
+                              run={() => {
+                                setMenu(undefined);
+                                props.closeSession?.(session.name);
+                              }}
+                            />
+                          </Show>
+                        </div>
+                      </Show>
                       <Show when={!closed()}>
                         <For each={panes()}>
                           {(pane): JSX.Element => (

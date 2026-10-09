@@ -2515,8 +2515,8 @@ pub const Engine = struct {
         return new_session_runtime.current(self, destination);
     }
 
-    pub fn sendNewSession(self: *Engine, destination: new_session.Destination, name: []const u8, keep_empty: bool) !u32 {
-        return new_session_runtime.send(self, destination, name, keep_empty);
+    pub fn sendNewSession(self: *Engine, destination: new_session.Destination, name: []const u8, directory: []const u8, keep_empty: bool) !u32 {
+        return new_session_runtime.send(self, destination, name, directory, keep_empty);
     }
 
     pub fn pollNewSession(self: *Engine, destination: new_session.Destination, request: u32) new_session.Outcome {

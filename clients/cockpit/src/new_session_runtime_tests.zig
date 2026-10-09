@@ -101,8 +101,8 @@ const Hooks = struct {
     pub fn newSessionDestinationCurrent(self: *@This(), destination: sessions.Destination) bool {
         return runtime.current(self.engine, destination);
     }
-    pub fn sendNewSession(self: *@This(), destination: sessions.Destination, name: []const u8, keep_empty: bool) !u32 {
-        return runtime.send(self.engine, destination, name, keep_empty);
+    pub fn sendNewSession(self: *@This(), destination: sessions.Destination, name: []const u8, directory: []const u8, keep_empty: bool) !u32 {
+        return runtime.send(self.engine, destination, name, directory, keep_empty);
     }
     pub fn pollNewSession(self: *@This(), destination: sessions.Destination, id: u32) sessions.Outcome {
         return runtime.poll(self.engine, destination, id);

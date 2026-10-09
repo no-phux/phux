@@ -1,10 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { createNamedSession, renameNamedSession, type CommandResult } from "../../scripts/server";
 import {
+  closeNamedSession,
+  createNamedSession,
+  renameNamedSession,
+  type CommandResult,
+} from "../../scripts/server";
+import { directoryForTerminal } from "../../src/path-picker";
+import {
+  closeSessionArgs,
   createSessionArgs,
   createSessionError,
   renameSessionArgs,
   renameSessionError,
+  windowSession,
 } from "../../src/workspace/session-cli";
 
 describe("desktop session commands", () => {
@@ -38,6 +46,36 @@ describe("desktop session commands", () => {
     expect(renameSessionError("", "notes")).toBe(
       "Rename needs the current session and a new name.",
     );
+  });
+
+  test("close kills that session on the window socket", () => {
+    expect(closeSessionArgs("/tmp/phux.sock", "api")).toEqual([
+      "--socket",
+      "/tmp/phux.sock",
+      "kill",
+      "api",
+    ]);
+    const calls: string[][] = [];
+    closeNamedSession("/bin/phux", "/tmp/phux.sock", "api", (binary, args) => {
+      calls.push([binary, ...args]);
+      return { status: 0, stderr: "" };
+    });
+    expect(calls).toEqual([["/bin/phux", ...closeSessionArgs("/tmp/phux.sock", "api")]]);
+    expect(() =>
+      closeNamedSession("/bin/phux", "/tmp/phux.sock", "  ", () => ({ status: 0, stderr: "" })),
+    ).toThrow("Close needs the session name.");
+  });
+
+  test("a new window keeps the current session unless a name is chosen", () => {
+    expect(windowSession(undefined, "beta")).toBe("beta");
+    expect(windowSession("  ", "beta")).toBe("beta");
+    expect(windowSession("api", "beta")).toBe("api");
+  });
+
+  test("a host directory can start a terminal and a file cannot", () => {
+    expect(directoryForTerminal("directory", "/src/api")).toBe("/src/api");
+    expect(directoryForTerminal("file", "/src/api/main.rs")).toBeUndefined();
+    expect(directoryForTerminal("directory", "  ")).toBeUndefined();
   });
 
   test("an empty directory never spawns phux", () => {
