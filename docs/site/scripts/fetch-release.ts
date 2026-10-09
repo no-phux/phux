@@ -37,52 +37,53 @@ interface GitHubRelease {
   prerelease?: boolean;
 }
 
-export function latestCoreRelease(list: GitHubRelease[]): Release | null {
-  // GitHub returns releases newest-first. This repository publishes multiple
-  // streams; only bare vX.Y.Z tags represent the core phux CLI.
-  const data = list.find(
-    (release) =>
-      !release.draft &&
-      !release.prerelease &&
-      /^v\d+\.\d+\.\d+$/.test(release.tag_name ?? ""),
-  );
-  if (!data?.tag_name) return null;
+function latestRelease(
+  list: GitHubRelease[],
+  tagPattern: RegExp,
+  allowPrereleases = false,
+): Release | null {
+  let latest: GitHubRelease | null = null;
+  let latestVersion: bigint[] | null = null;
+  for (const release of list) {
+    if (release.draft || (!allowPrereleases && release.prerelease)) continue;
+    const match = tagPattern.exec(release.tag_name ?? "");
+    if (!match) continue;
+    const version = match.slice(1).map((part) => BigInt(part));
+    // GitHub's release order is not semantic version order. Compare each
+    // numeric component, including the desktop alpha number, in precedence order.
+    let newer = latestVersion === null;
+    if (latestVersion) {
+      for (let i = 0; i < version.length; i++) {
+        if (version[i] === latestVersion[i]) continue;
+        newer = version[i]! > latestVersion[i]!;
+        break;
+      }
+    }
+    if (newer) {
+      latest = release;
+      latestVersion = version;
+    }
+  }
+  if (!latest?.tag_name) return null;
   return {
-    tag: data.tag_name,
-    url: data.html_url ?? null,
-    publishedAt: data.published_at ?? null,
+    tag: latest.tag_name,
+    url: latest.html_url ?? null,
+    publishedAt: latest.published_at ?? null,
   };
 }
 
+export function latestCoreRelease(list: GitHubRelease[]): Release | null {
+  // Only bare vX.Y.Z tags represent stable core phux CLI releases.
+  return latestRelease(list, /^v(\d+)\.(\d+)\.(\d+)$/);
+}
+
 export function latestCockpitRelease(list: GitHubRelease[]): Release | null {
-  // The Cockpit native macOS client ships as its own stream: cockpit-vX.Y.Z.
-  const data = list.find(
-    (release) =>
-      !release.draft &&
-      !release.prerelease &&
-      /^cockpit-v\d+\.\d+\.\d+$/.test(release.tag_name ?? ""),
-  );
-  if (!data?.tag_name) return null;
-  return {
-    tag: data.tag_name,
-    url: data.html_url ?? null,
-    publishedAt: data.published_at ?? null,
-  };
+  return latestRelease(list, /^cockpit-v(\d+)\.(\d+)\.(\d+)$/);
 }
 
 export function latestDesktopRelease(list: GitHubRelease[]): Release | null {
   // Desktop alphas are intentionally published as prereleases.
-  const data = list.find(
-    (release) =>
-      !release.draft &&
-      /^desktop-v\d+\.\d+\.\d+-alpha\.[1-9]\d*$/.test(release.tag_name ?? ""),
-  );
-  if (!data?.tag_name) return null;
-  return {
-    tag: data.tag_name,
-    url: data.html_url ?? null,
-    publishedAt: data.published_at ?? null,
-  };
+  return latestRelease(list, /^desktop-v(\d+)\.(\d+)\.(\d+)-alpha\.([1-9]\d*)$/, true);
 }
 
 interface StampedReleases {
@@ -98,16 +99,23 @@ const EMPTY: Release = { tag: null, url: null, publishedAt: null };
 async function main() {
   try {
     const githubToken = process.env.GITHUB_TOKEN;
-    const res = await fetch(API, {
-      headers: {
-        Accept: "application/vnd.github+json",
-        "User-Agent": "phux-site-build",
-        ...(githubToken ? { Authorization: `Bearer ${githubToken}` } : {}),
-      },
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!res.ok) throw new Error(`github api ${res.status}`);
-    const list = (await res.json()) as GitHubRelease[];
+    const list: GitHubRelease[] = [];
+    // Match the installer's bounded recent window; any later page can contain
+    // a higher version even when all three streams already have a candidate.
+    for (let page = 1; page <= 10; page++) {
+      const res = await fetch(`${API}&page=${page}`, {
+        headers: {
+          Accept: "application/vnd.github+json",
+          "User-Agent": "phux-site-build",
+          ...(githubToken ? { Authorization: `Bearer ${githubToken}` } : {}),
+        },
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!res.ok) throw new Error(`github api ${res.status}`);
+      const releases = (await res.json()) as GitHubRelease[];
+      list.push(...releases);
+      if (releases.length < 30) break;
+    }
     const release = latestCoreRelease(list);
     if (!release) throw new Error("no core phux release found in recent releases");
     const stamped: StampedReleases = {
