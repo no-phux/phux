@@ -5,6 +5,7 @@
 //! shelling out or racing a port probe.
 
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 
 use phux_relay::{BoundRelay, RelayConfig, RelayRuntime};
 use tokio::sync::oneshot;
@@ -21,7 +22,16 @@ pub struct RelayHarness {
 impl RelayHarness {
     /// Bind and begin serving one relay inside the caller's tokio runtime.
     pub fn start(config: RelayConfig) -> Self {
-        let bound: BoundRelay = RelayRuntime::new(config).bind().expect("bind relay");
+        Self::spawn(RelayRuntime::new(config))
+    }
+
+    /// Like [`Self::start`], and append each consumer SNI rustls accepted.
+    pub fn start_observing(config: RelayConfig, observed: Arc<Mutex<Vec<String>>>) -> Self {
+        Self::spawn(RelayRuntime::new(config).with_observed_consumer_sni(observed))
+    }
+
+    fn spawn(runtime: RelayRuntime) -> Self {
+        let bound: BoundRelay = runtime.bind().expect("bind relay");
         let addr = bound.local_addr();
         let (stop, stopped) = oneshot::channel();
         let task = tokio::spawn(async move {

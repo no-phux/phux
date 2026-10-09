@@ -6,6 +6,7 @@
 #![allow(clippy::panic, reason = "test assertions")]
 
 use std::net::{SocketAddr, UdpSocket};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -172,6 +173,7 @@ struct RelayedServer {
     authority: String,
     paths: phux_server::workload::WorkloadPaths,
     token: String,
+    observed_sni: Arc<Mutex<Vec<String>>>,
     shutdown: Option<oneshot::Sender<()>>,
     thread: Option<thread::JoinHandle<()>>,
     _dir: tempfile::TempDir,
@@ -220,21 +222,25 @@ impl RelayedServer {
             workload_keys: Some(paths.registry.clone()),
             ..ServerEnv::default()
         };
+        let observed_sni = Arc::new(Mutex::new(Vec::new()));
         let state = d.clone();
+        let relay_sni = Arc::clone(&observed_sni);
         let thread = thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .expect("runtime");
             tokio::task::LocalSet::new().block_on(&runtime, async move {
-                let relay =
-                    phux_server_testkit::relay::RelayHarness::start(phux_relay::RelayConfig {
+                let relay = phux_server_testkit::relay::RelayHarness::start_observing(
+                    phux_relay::RelayConfig {
                         listen: SocketAddr::from(([127, 0, 0, 1], 0)),
                         cert_path: state.join("relay-cert.pem"),
                         key_path: state.join("relay-key.pem"),
                         tokens_path: state.join("relay-tokens"),
                         max_conns: 16,
-                    });
+                    },
+                    relay_sni,
+                );
                 let pin =
                     phux_relay::cert_fingerprint(&state.join("relay-cert.pem")).expect("relay pin");
                 let connector = phux_config::ConnectorConfigEntry {
@@ -268,6 +274,7 @@ impl RelayedServer {
             authority,
             paths,
             token,
+            observed_sni,
             shutdown: Some(shutdown),
             thread: Some(thread),
             _dir: dir,
@@ -528,6 +535,15 @@ fn a_phone_enrolls_and_attaches_through_a_relay_to_a_paired_server() {
     phone.attach_session(SESSION.to_owned());
     wait_for(&phone, |remote| remote.status() == WireStatus::Attached);
     let epoch = phone.take_publication().connection_epoch;
+    let sni_before_resync = server
+        .observed_sni
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .len();
+    assert!(
+        sni_before_resync >= 1,
+        "the relay saw no consumer SNI on the first attach"
+    );
     phone.resync();
     let mut seen = Vec::new();
     publish_until(&phone, &mut seen, |publication| {
@@ -536,6 +552,17 @@ fn a_phone_enrolls_and_attaches_through_a_relay_to_a_paired_server() {
     assert_eq!(
         phone.target().expect("target").authority.route.as_deref(),
         Some(ROUTE)
+    );
+    // rustls read this name from the ClientHello, on the enroll/attach
+    // handshakes and again on the resync redial. A stored route is not enough.
+    let seen = server
+        .observed_sni
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert!(
+        seen.len() > sni_before_resync && seen.iter().all(|name| name == ROUTE),
+        "relay-observed consumer SNI before {sni_before_resync}, after {seen:?}"
     );
     phone.stop_connection();
 }
