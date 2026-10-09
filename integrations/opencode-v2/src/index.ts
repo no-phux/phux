@@ -10,6 +10,7 @@ import { deletedSessionId, applyServerEvent } from "./events.js";
 import { OpenCodeLifecycle } from "./lifecycle.js";
 import { createPhuxTools } from "../../runtime/src/tools.js";
 import { PARENT_PANE_RULE, parentPane } from "./parent.js";
+import { redirectShell } from "./shell.js";
 
 
 export interface PhuxOpenCodeV2Options {
@@ -67,6 +68,19 @@ export default Plugin.define({
       selectTarget: (target, context) => {
         if (context !== undefined) selectedTargets.set(context.sessionID, target);
       },
+    });
+
+    await ctx.shell.hook("create.before", async (event) => {
+      const decision = redirectShell({
+        command: event.command,
+        parent,
+        siblings: [...selectedTargets.values()],
+        executable: options.executable ?? "phux",
+        ...(options.socket === undefined ? {} : { socket: options.socket }),
+        timeoutMs: event.timeout,
+      });
+      if (decision.kind === "refuse") throw new Error(decision.reason);
+      if (decision.kind === "run") event.command = decision.command;
     });
 
     await ctx.tool.transform((editor) => {

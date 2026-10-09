@@ -2342,9 +2342,59 @@ ${notice}` : ""}${suffix}`, truncated };
 }
 
 // src/parent.ts
-var PARENT_PANE_RULE = "phux owns the terminals. This OpenCode process may be running inside a phux pane. Do not type into that pane: phux_run, phux_send_keys, phux_paste, and phux_agent_prompt refuse it. Create a sibling with phux_create or phux_spawn, then run shell work there. Use phux_agent_prompt only for agent panes, not phux_run. Do not use OpenCode's built-in terminal or PTY for that work.";
+var PARENT_PANE_RULE = "phux owns the terminals. This OpenCode process may be running inside a phux pane. Do not type into that pane: phux_run, phux_send_keys, phux_paste, and phux_agent_prompt refuse it. Create a sibling with phux_create or phux_spawn, then run shell work there. The built-in shell runs on that selected sibling and refuses when the only pane is this agent. Use phux_agent_prompt only for agent panes, not phux_run. Do not use OpenCode's built-in terminal or PTY for that work.";
 function parentPane(value) {
   return normalizeTerminalIdentity(value);
+}
+
+// src/shell.ts
+function redirectShell(input) {
+  const siblings = uniqueSiblings(input.siblings, input.parent);
+  if (siblings.length > 1) {
+    return {
+      kind: "refuse",
+      reason: "Several sibling panes are selected. Use phux_run with an exact target."
+    };
+  }
+  const sibling = siblings[0];
+  if (sibling !== undefined) {
+    return {
+      kind: "run",
+      command: phuxRunCommand(input.executable, input.socket, sibling, input.command, timeoutSeconds(input.timeoutMs))
+    };
+  }
+  if (input.parent !== null) {
+    return {
+      kind: "refuse",
+      reason: "Refusing OpenCode's shell: the only pane is this agent. Create a sibling with phux_create, select it, then retry."
+    };
+  }
+  return { kind: "passthrough" };
+}
+function uniqueSiblings(targets, parent) {
+  const found = new Set;
+  for (const target of targets) {
+    const normalized = normalizeTerminalIdentity(target);
+    if (normalized === null || normalized === parent)
+      continue;
+    found.add(normalized);
+  }
+  return [...found];
+}
+function timeoutSeconds(timeoutMs) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
+    return 30;
+  return Math.min(86400, Math.max(1, Math.ceil(timeoutMs / 1000)));
+}
+function shellQuote(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+function phuxRunCommand(executable, socket, target, command, seconds) {
+  const parts = [shellQuote(executable), "run", "--json", "--timeout", String(seconds)];
+  if (socket !== undefined && socket.length > 0)
+    parts.push("--socket", shellQuote(socket));
+  parts.push(shellQuote(target), shellQuote(command));
+  return parts.join(" ");
 }
 
 // src/index.ts
@@ -2385,6 +2435,20 @@ var src_default = Plugin.define({
         if (context !== undefined)
           selectedTargets.set(context.sessionID, target);
       }
+    });
+    await ctx.shell.hook("create.before", async (event) => {
+      const decision = redirectShell({
+        command: event.command,
+        parent,
+        siblings: [...selectedTargets.values()],
+        executable: options.executable ?? "phux",
+        ...options.socket === undefined ? {} : { socket: options.socket },
+        timeoutMs: event.timeout
+      });
+      if (decision.kind === "refuse")
+        throw new Error(decision.reason);
+      if (decision.kind === "run")
+        event.command = decision.command;
     });
     await ctx.tool.transform((editor) => {
       for (const tool of Object.values(tools)) {

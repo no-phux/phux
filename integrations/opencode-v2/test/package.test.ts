@@ -32,6 +32,7 @@ test("packed plugin loads outside the checkout with only its declared dependency
         options: { contextAwareness: false, executable: ${JSON.stringify(executable)} },
         tool: { transform: async (f) => f({ add: (tool) => tools.push(tool) }), hook: async () => {} },
         session: { hook: async () => {} },
+        shell: { hook: async () => {} },
         event: { subscribe: async function* () {} },
       });
       const status = await tools.find(tool => tool.name === 'phux_status').execute({}, {
