@@ -109,7 +109,8 @@ phux CLI installed, install the Apple-silicon macOS 27-or-later alpha:
 curl -fsSL https://phux.sh/install-desktop | sh
 ```
 
-This selects a published `desktop-vX.Y.Z-alpha.N` prerelease and verifies the
+This selects the highest published `desktop-vX.Y.Z-alpha.N` version in the
+recent release index and verifies the
 checksum and ad-hoc app signature before replacing `Phux.app`. It does not
 upgrade the CLI or stop a server. Releases are not Apple-notarized; the
 installer clears quarantine after verification. Rerun to update, or pin a

@@ -40,12 +40,12 @@ interface GitHubRelease {
 function latestRelease(
   list: GitHubRelease[],
   tagPattern: RegExp,
-  allowPrereleases = false,
+  prerelease = false,
 ): Release | null {
   let latest: GitHubRelease | null = null;
   let latestVersion: bigint[] | null = null;
   for (const release of list) {
-    if (release.draft || (!allowPrereleases && release.prerelease)) continue;
+    if (release.draft || Boolean(release.prerelease) !== prerelease) continue;
     const match = tagPattern.exec(release.tag_name ?? "");
     if (!match) continue;
     const version = match.slice(1).map((part) => BigInt(part));

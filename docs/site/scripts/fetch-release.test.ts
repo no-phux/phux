@@ -156,6 +156,7 @@ describe("desktop numeric precedence", () => {
   test("higher drafts, other channels, and other streams cannot displace an alpha", () => {
     expect(latestDesktopRelease([
       { tag_name: "desktop-v999.0.0-alpha.1", draft: true },
+      { tag_name: "desktop-v1000.0.0-alpha.1", prerelease: false },
       { tag_name: "desktop-v999.0.0" },
       { tag_name: "desktop-v999.0.0-beta.1", prerelease: true },
       { tag_name: "v999.0.0" },
@@ -163,12 +164,6 @@ describe("desktop numeric precedence", () => {
       { tag_name: "desktop-v0.1.0-alpha.9", prerelease: true },
       { tag_name: "desktop-v0.1.0-alpha.10", prerelease: true },
     ])).toEqual({ tag: "desktop-v0.1.0-alpha.10", url: null, publishedAt: null });
-  });
-
-  test("preserves eligibility for an alpha not marked as a prerelease", () => {
-    expect(latestDesktopRelease([{ tag_name: "desktop-v0.1.0-alpha.10" }])?.tag)
-      .toBe("desktop-v0.1.0-alpha.10");
-    expect(latestDesktopRelease([])).toBeNull();
   });
 });
 
