@@ -9,6 +9,20 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.55.1](https://github.com/no-phux/phux/compare/v0.55.0...v0.55.1) (2026-10-09)
+
+
+### Bug Fixes
+
+* **ci:** preserve pending mbx export groups during cleanup ([#1150](https://github.com/no-phux/phux/issues/1150)) ([a0b49df](https://github.com/no-phux/phux/commit/a0b49df5f1e40f38c6e47597febf22575b5378ce))
+* **cli:** print the focused pane directory in a workspace plan ([#1148](https://github.com/no-phux/phux/issues/1148)) ([15124c2](https://github.com/no-phux/phux/commit/15124c2c6010ab50ba205429d73d70098f8479bb))
+* **just:** pin cargo run to the phux binary ([#1146](https://github.com/no-phux/phux/issues/1146)) ([3bf0eb5](https://github.com/no-phux/phux/commit/3bf0eb5a5ec8f510a6f46b69e2b168532d0462cb))
+
+
+### Documentation
+
+* **research:** record which Rex gaps landed ([#1151](https://github.com/no-phux/phux/issues/1151)) ([24b6949](https://github.com/no-phux/phux/commit/24b6949ebddaa030dc64f1a5381971607914e0f3))
+
 ## [0.55.0](https://github.com/no-phux/phux/compare/v0.54.0...v0.55.0) (2026-10-09)
 
 

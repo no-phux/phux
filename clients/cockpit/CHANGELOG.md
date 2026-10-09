@@ -25,6 +25,13 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   or server restart without restarting the app; recover the selected session
   by its confirmed name when a replacement server reuses numeric IDs.
 
+## [0.35.1](https://github.com/no-phux/phux/compare/cockpit-v0.35.0...cockpit-v0.35.1) (2026-10-09)
+
+
+### Bug Fixes
+
+* **cockpit:** focus destination pickers and dialog the agent inspector ([#1140](https://github.com/no-phux/phux/issues/1140)) ([743bde5](https://github.com/no-phux/phux/commit/743bde5189dbe0baf861a3f71f0008725d7d6b66))
+
 ## [0.35.0](https://github.com/no-phux/phux/compare/cockpit-v0.34.0...cockpit-v0.35.0) (2026-10-09)
 
 
