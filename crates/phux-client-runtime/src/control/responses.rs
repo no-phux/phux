@@ -240,7 +240,11 @@ impl ControlPlane {
         // Any earlier attachment's subscriptions ended with it.
         self.forget_roster_subscriptions();
         self.sync_agent_metadata();
-        self.watch_session_project();
+        // Manual embedders own request ids. An autonomous project-tag GET
+        // would steal the first metadata read their fixtures answer.
+        if self.options.automatic_lifecycle {
+            self.watch_session_project();
+        }
         // A hub's satellites and anything the grant inventories but does not
         // observe are missing from this view, not gone: read them back.
         if self.options.automatic_lifecycle && self.listings.hides(View::Attach, snapshot) {
