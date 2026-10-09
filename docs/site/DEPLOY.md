@@ -115,6 +115,10 @@ the script the release tests exercise.
 Two real files per installer rather than a redirect, because
 `curl https://phux.sh/install` has to work without `-L`.
 
+The installers and homepage badges compare numeric component versions across
+the bounded recent release index. They do not trust GitHub's list order:
+an older alpha can appear before a newer one, including alpha.9 before alpha.10.
+
 Three things keep that honest, all pinned by `scripts/check-install-surface.sh`:
 `site-deploy.yml` lists the scripts in its path filter (or an installer
 fix never redeploys the site), `sync-docs.ts` refuses to publish a script whose

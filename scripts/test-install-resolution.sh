@@ -26,14 +26,17 @@ case "$url" in
   *'&page='*) page="${url##*&page=}" ;;
   *) page=1 ;;
 esac
+fixture="$RESOLUTION_PAGES/$page.json"
+[ -f "$fixture" ] || fixture="$RESOLUTION_PAGES/empty.json"
 if [ -n "$out" ] && [ "$out" != '-' ]; then
-  cp "$RESOLUTION_PAGES/$page.json" "$out"
+  cp "$fixture" "$out"
 else
-  cat "$RESOLUTION_PAGES/$page.json"
+  cat "$fixture"
 fi
 EOF
 chmod 755 "$TMP/bin/curl"
 export RESOLUTION_CALLS="$TMP/calls" RESOLUTION_PAGES="$TMP/pages"
+printf '[]\n' > "$TMP/pages/empty.json"
 
 resolve() {
   PATH="$TMP/bin:$PATH" "$SH" "$ROOT/scripts/$1" --dry-run --os darwin --arch arm64 "${@:2}"
@@ -58,6 +61,40 @@ cp "$ROOT/scripts/fixtures/install-releases/mixed.json" "$TMP/pages/2.json"
 expect_tag install.sh v9.8.7
 grep -Fq '&page=2' "$TMP/calls"
 expect_tag install-cockpit.sh cockpit-v9.8.7
+rm "$TMP/pages/2.json"
+
+# Both stable consumers must choose numerically, not by publication order or
+# lexical order, and keep searching after the first eligible release.
+for script in install.sh install-cockpit.sh; do
+  prefix=v
+  [[ $script != install-cockpit.sh ]] || prefix=cockpit-v
+  for versions in '1.9.99 1.10.0 1.8.999' '1.0.9 1.0.10 1.0.8' \
+    '9.99.99 10.0.0 8.999.999' '1.0.9007199254740992 1.0.9007199254740993 1.0.8'; do
+    read -r first highest last <<< "$versions"
+    printf '[{"tag_name":"%s%s","draft":false,"prerelease":false},{"tag_name":"%s%s","draft":false,"prerelease":false},{"tag_name":"%s%s","draft":false,"prerelease":false}]\n' \
+      "$prefix" "$first" "$prefix" "$highest" "$prefix" "$last" > "$TMP/pages/1.json"
+    : > "$TMP/calls"
+    expect_tag "$script" "$prefix$highest"
+    [[ $(wc -l < "$TMP/calls") -eq 2 ]]
+  done
+  printf '[{"tag_name":"%s1.0.9","draft":false,"prerelease":false}]\n' "$prefix" > "$TMP/pages/1.json"
+  printf '[{"tag_name":"%s1.0.8","draft":false,"prerelease":false},{"tag_name":"%s1.0.10","draft":false,"prerelease":false},{"tag_name":"%s99.0.0","draft":true,"prerelease":false},{"tag_name":"%s99.0.0-alpha.1","draft":false,"prerelease":true},{"tag_name":"other-v999.0.0","draft":false,"prerelease":false}]\n' \
+    "$prefix" "$prefix" "$prefix" "$prefix" > "$TMP/pages/2.json"
+  : > "$TMP/calls"
+  expect_tag "$script" "${prefix}1.0.10"
+  [[ $(wc -l < "$TMP/calls") -eq 3 ]]
+  rm "$TMP/pages/2.json"
+done
+
+# A match cannot hide malformed metadata on a later page.
+printf '[{"tag_name":"v1.0.10","draft":false,"prerelease":false}]\n' > "$TMP/pages/1.json"
+printf '[{"tag_name":"v1.0.11","draft":"false","prerelease":false}]\n' > "$TMP/pages/2.json"
+if resolve install.sh > "$TMP/out" 2> "$TMP/err"; then
+  echo 'core ignored malformed later page' >&2; exit 1
+fi
+[[ ! -s $TMP/out ]]
+grep -Fq 'invalid release list on page 2' "$TMP/err"
+rm "$TMP/pages/2.json"
 
 # Pins are syntax-checked locally; neither valid nor invalid pins query GitHub.
 : > "$TMP/calls"
@@ -105,6 +142,16 @@ for script in install.sh install-cockpit.sh; do
   : > "$TMP/calls"
   expect_failure "$script" '10 pages'
   [[ $(wc -l < "$TMP/calls") -eq 10 ]]
+  # A match still scans the bounded window and selects the maximum on page 10.
+  prefix=v
+  [[ $script != install-cockpit.sh ]] || prefix=cockpit-v
+  printf '[{"tag_name":"%s1.0.9","draft":false,"prerelease":false}]\n' "$prefix" > "$TMP/pages/1.json"
+  printf '[{"tag_name":"%s1.0.10","draft":false,"prerelease":false}]\n' "$prefix" > "$TMP/pages/10.json"
+  printf '[{"tag_name":"%s99.0.0","draft":false,"prerelease":false}]\n' "$prefix" > "$TMP/pages/11.json"
+  : > "$TMP/calls"
+  expect_tag "$script" "${prefix}1.0.10"
+  [[ $(wc -l < "$TMP/calls") -eq 10 ]]
+  rm "$TMP/pages/10.json" "$TMP/pages/11.json"
   # Size is bounded before parsing even a single huge JSON string/line.
   head -c 1048577 /dev/zero | tr '\0' ' ' > "$TMP/pages/1.json"
   expect_failure "$script" '1048576'

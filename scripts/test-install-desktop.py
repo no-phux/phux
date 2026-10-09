@@ -44,6 +44,90 @@ class AlphaResolver(unittest.TestCase):
             self.assertEqual(alpha.stdout.strip(), "desktop-v0.1.0-alpha.2")
             self.assertEqual(stable.stdout.strip(), "v8.0.0")
 
+    @unittest.skipUnless(
+        platform.system() == "Darwin" and platform.machine() == "arm64",
+        "standalone desktop resolver requires macOS arm64",
+    )
+    def test_standalone_selects_highest_alpha_across_pages(self):
+        if int(run("/usr/bin/sw_vers", "-productVersion").stdout.split(".")[0]) < 27:
+            self.skipTest("desktop alpha requires macOS 27 or later")
+
+        def release(version, **metadata):
+            return {"tag_name": f"desktop-v{version}", "draft": False, "prerelease": True, **metadata}
+
+        cases = [
+            ([[
+                release("0.1.0-alpha.9"),
+                release("0.1.0-alpha.10"),
+                release("0.1.0-alpha.8"),
+            ]], "0.1.0-alpha.10"),
+            ([
+                [release("0.1.0-alpha.9")],
+                [
+                    release("0.1.0-alpha.8"),
+                    release("0.1.0-alpha.10"),
+                    release("99.0.0-alpha.99", draft=True),
+                    release("99.0.0-alpha.99", prerelease=False),
+                    release("99.0.0", prerelease=False),
+                    release("99.0.0-alpha.99", tag_name="v99.0.0-alpha.99"),
+                    release("99.0.0-alpha.99", tag_name="cockpit-v99.0.0-alpha.99"),
+                ],
+                [release("0.1.0-alpha.7")],
+            ], "0.1.0-alpha.10"),
+            ([[
+                release("0.1.0-alpha.999"),
+                release("0.1.1-alpha.0"),
+                release("0.1.0-alpha.1000"),
+            ]], "0.1.1-alpha.0"),
+            ([[
+                release("0.1.0-alpha.9007199254740992"),
+                release("0.1.0-alpha.9007199254740993"),
+            ]], "0.1.0-alpha.9007199254740993"),
+        ]
+        for pages, expected in cases:
+            with self.subTest(expected=expected, pages=len(pages)), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                for number, releases in enumerate(pages, 1):
+                    (root / f"{number}.json").write_text(json.dumps(releases))
+                (root / "empty.json").write_text("[]")
+                index_temp = root / "index-temp"
+                index_temp.mkdir()
+                curl = root / "curl"
+                curl.write_text('''#!/bin/sh
+set -eu
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift ;;
+    https://api.github.com/repos/no-phux/phux/releases?*) url="$1" ;;
+  esac
+  shift
+done
+page="${url##*&page=}"
+printf '%s\\n' "$page" >> "$FIXTURE/calls"
+fixture="$FIXTURE/$page.json"
+[ -f "$fixture" ] || fixture="$FIXTURE/empty.json"
+cp "$fixture" "$out"
+''')
+                curl.chmod(0o755)
+                env = {
+                    **os.environ, "FIXTURE": str(root), "TMPDIR": str(index_temp),
+                    "PATH": f"{root}:{os.environ['PATH']}",
+                }
+                result = run(
+                    SHELL, str(INSTALLER), "--dry-run",
+                    "--applications-dir", str(root / "Applications"),
+                    "--bin-dir", str(root / "launchers"), env=env,
+                )
+                self.assertIn(f"tag: desktop-v{expected}\n", result.stdout)
+                self.assertIn(f"/desktop-v{expected}/phux-desktop-{expected}-macos-arm64.zip", result.stdout)
+                self.assertEqual(
+                    (root / "calls").read_text().splitlines(),
+                    [str(number) for number in range(1, len(pages) + 2)],
+                )
+                self.assertEqual(list(index_temp.iterdir()), [])
+                self.assertFalse((root / "Applications").exists())
+                self.assertFalse((root / "launchers").exists())
+
 
 @unittest.skipUnless(platform.system() == "Darwin" and platform.machine() == "arm64", "macOS arm64 app installer")
 class DesktopInstaller(unittest.TestCase):
