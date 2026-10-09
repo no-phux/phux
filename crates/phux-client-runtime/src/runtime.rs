@@ -137,6 +137,7 @@ impl Runtime {
         let outbound = Arc::new(Notify::new());
         let (resync_tx, resync_rx) = watch::channel(0_u64);
         let (nudge_tx, nudge_rx) = watch::channel(0_u64);
+        let (rebind_tx, rebind_rx) = watch::channel(0_u64);
         let (close_tx, close_rx) = watch::channel(false);
         let inner = Arc::new(Inner {
             lane,
@@ -145,6 +146,7 @@ impl Runtime {
             outbound: Arc::clone(&outbound),
             resync: resync_tx,
             nudge: nudge_tx,
+            rebind: rebind_tx,
             close: close_tx,
             listener: Mutex::new(None),
             wake_pending: AtomicBool::new(false),
@@ -155,6 +157,7 @@ impl Runtime {
             outbound,
             resync: resync_rx,
             nudge: nudge_rx,
+            rebind: rebind_rx,
             close: close_rx,
         };
         (inner, shared, signals)
@@ -170,6 +173,7 @@ struct Inner {
     outbound: Arc<Notify>,
     resync: watch::Sender<u64>,
     nudge: watch::Sender<u64>,
+    rebind: watch::Sender<u64>,
     close: watch::Sender<bool>,
     listener: Mutex<Option<Arc<dyn Listener>>>,
     /// Edge-trigger: set while a wake has been delivered and not yet
@@ -467,9 +471,18 @@ impl Client {
     }
 
     /// Cut a reconnect backoff short, or probe an attached socket that may
-    /// have gone stale (app foreground, network path change).
+    /// have gone stale: the resume edge (app foreground). A healthy socket
+    /// stays up; a dead one fails the probe and walks the ladder at once.
     pub fn nudge(&self) {
         self.inner.nudge.send_modify(|n| *n += 1);
+    }
+
+    /// The device's network path changed (Wi-Fi to cellular, a new
+    /// address). A QUIC connection migrates onto a fresh socket and keeps
+    /// its incarnation; every lane is then probed as [`Client::nudge`]
+    /// does, so a path the server cannot reach walks the ladder.
+    pub fn network_path_changed(&self) {
+        self.inner.rebind.send_modify(|n| *n += 1);
     }
 
     /// End the session for good; idempotent, and there is no reopen.
