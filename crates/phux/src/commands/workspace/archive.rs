@@ -221,7 +221,8 @@ async fn fetch_session_layouts(
 }
 
 /// Print the archive's session, host, directory, and project organization.
-/// Does not dial a server.
+/// Does not dial a server. The directory is the focused pane's cwd when the
+/// session itself has none.
 pub(super) fn print_plan(archive_path: &Path) -> ExitCode {
     let text = match std::fs::read_to_string(archive_path) {
         Ok(text) => text,
@@ -231,16 +232,10 @@ pub(super) fn print_plan(archive_path: &Path) -> ExitCode {
         Ok(archive) => archive,
         Err(err) => return fail(&err),
     };
-    let rows: Vec<phux_client_core::organization::OrganizedSession> = archive
-        .sessions
-        .iter()
-        .map(|session| phux_client_core::organization::OrganizedSession {
-            name: session.name.clone(),
-            host: session.host.clone(),
-            directory: session.cwd.clone(),
-            project: session.project.clone(),
-        })
-        .collect();
+    let rows = match model::organization_rows(&archive) {
+        Ok(rows) => rows,
+        Err(err) => return fail(&err),
+    };
     for line in phux_client_core::organization::organization_lines(&rows) {
         outln!("{line}");
     }
