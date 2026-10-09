@@ -134,6 +134,9 @@ pub struct RelayRuntime {
     config: RelayConfig,
     preamble_deadline: Duration,
     handshakes_per_source: usize,
+    /// Consumer SNIs rustls read from completed handshakes. `None` in
+    /// production; tests share the list with the dialing client.
+    observed_consumer_sni: Option<Arc<Mutex<Vec<String>>>>,
 }
 
 impl RelayRuntime {
@@ -144,7 +147,16 @@ impl RelayRuntime {
             config,
             preamble_deadline: PREAMBLE_DEADLINE,
             handshakes_per_source: DEFAULT_HANDSHAKES_PER_SOURCE,
+            observed_consumer_sni: None,
         }
+    }
+
+    /// Record each consumer SNI rustls accepted. Does not change the listen
+    /// socket, the SNI gate, or which handshakes are admitted.
+    #[must_use]
+    pub fn with_observed_consumer_sni(mut self, observed: Arc<Mutex<Vec<String>>>) -> Self {
+        self.observed_consumer_sni = Some(observed);
+        self
     }
 
     /// Override the per-source admission share (default
@@ -203,6 +215,7 @@ impl RelayRuntime {
             max_conns: config.max_conns,
             preamble_deadline,
             handshakes_per_source: self.handshakes_per_source,
+            observed_consumer_sni: self.observed_consumer_sni,
         })
     }
 }
@@ -221,6 +234,7 @@ pub struct BoundRelay {
     max_conns: usize,
     preamble_deadline: Duration,
     handshakes_per_source: usize,
+    observed_consumer_sni: Option<Arc<Mutex<Vec<String>>>>,
 }
 
 impl BoundRelay {
@@ -264,6 +278,7 @@ impl BoundRelay {
                         Arc::clone(&self.tokens),
                         self.preamble_deadline,
                         Arc::clone(&slots),
+                        self.observed_consumer_sni.clone(),
                     ));
                 }
             }
@@ -395,6 +410,7 @@ async fn handle_connection(
     tokens: Arc<CachedRouteTokens>,
     preamble_deadline: Duration,
     slots: Arc<Semaphore>,
+    observed_consumer_sni: Option<Arc<Mutex<Vec<String>>>>,
 ) {
     let AdmittedHandshake {
         incoming,
@@ -441,11 +457,24 @@ async fn handle_connection(
         };
         admit_tunnel(conn, leg, &registry).await;
     } else if alpn == QUIC_ALPN {
+        note_consumer_sni(observed_consumer_sni.as_ref(), server_name.as_deref());
         bridge_consumer(conn, server_name, source, &registry).await;
     } else {
         // rustls only negotiates advertised protocols; defensive.
         conn.close(PROTOCOL_VIOLATION_CODE.into(), b"unknown protocol");
     }
+}
+
+/// Append a consumer SNI rustls already accepted. Absent observer or absent
+/// name records nothing; the handshake decision has already been made.
+fn note_consumer_sni(observed: Option<&Arc<Mutex<Vec<String>>>>, name: Option<&str>) {
+    let (Some(observed), Some(name)) = (observed, name) else {
+        return;
+    };
+    observed
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(name.to_owned());
 }
 
 /// The negotiated ALPN and the SNI server name, read back from quinn's
