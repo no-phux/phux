@@ -110,7 +110,7 @@ valid_release_tag() {
 }
 
 release_page() {
-  LC_ALL=C awk -v prefix="$1" -v channel="${3:-stable}" '
+  LC_ALL=C awk -v prefix="$1" -v channel="${3:-stable}" -v selected="${4:-}" '
     function fail() { invalid = 1; exit 1 }
     # Keep unread input in 1 KiB chunks. Matching/removing a small token must
     # not copy the entire page; only a token spanning chunks grows the buffer.
@@ -265,6 +265,22 @@ release_page() {
       if (!boolean_field("draft") || !boolean_field("prerelease")) fail()
       return fields["draft"] == "false" && fields["prerelease"] == (channel == "alpha" ? "true" : "false")
     }
+    function newer(tag, previous,    version, old_version, parts, old_parts, n, i) {
+      if (previous == "") return 1
+      version = substr(tag, length(prefix) + 1)
+      old_version = substr(previous, length(prefix) + 1)
+      gsub(/-alpha\./, ".", version)
+      gsub(/-alpha\./, ".", old_version)
+      n = split(version, parts, /[.]/)
+      split(old_version, old_parts, /[.]/)
+      for (i = 1; i <= n; i++) {
+        # Valid components have no leading zeroes. Compare decimal strings
+        # exactly, including components beyond awk numeric precision.
+        if (length(parts[i]) != length(old_parts[i])) return length(parts[i]) > length(old_parts[i])
+        if (("x" parts[i]) != ("x" old_parts[i])) return ("x" parts[i]) > ("x" old_parts[i])
+      }
+      return 0
+    }
     function release(    key, tag, version_pattern) {
       for (key in fields) delete fields[key]
       for (key in types) delete types[key]
@@ -273,7 +289,7 @@ release_page() {
       tag = ascii_string(fields["tag_name"])
       version_pattern = "(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)"
       if (channel == "alpha") version_pattern = version_pattern "-alpha\\.(0|[1-9][0-9]*)"
-      if (selected == "" && tag ~ ("^" prefix version_pattern "$")) selected = tag
+      if (tag ~ ("^" prefix version_pattern "$") && newer(tag, selected)) selected = tag
     }
     function page() {
       advance(); consume("[")
@@ -286,8 +302,8 @@ release_page() {
       }
       consume("]")
       if (kind != "") fail()
-      if (selected != "") print selected
-      else if (count == 0) print "empty"
+      if (count == 0) print "empty"
+      else if (selected != "") print selected
       else print "more"
     }
     { append_record($0) }
@@ -314,8 +330,8 @@ fetch_release_page() (
 )
 
 resolve_latest_version() (
-  # GitHub returns release streams interleaved, newest first. Keep all network
-  # and temporary state inside this subshell, including for --dry-run.
+  # Release publication order is not version order. Select the highest version
+  # across the bounded recent window, keeping network/temp state in this subshell.
   prefix="$1"
   release_channel="${2:-stable}"
   index_dir="$(mktemp -d)"
@@ -324,20 +340,28 @@ resolve_latest_version() (
   trap 'exit 130' INT
   trap 'exit 143' TERM
   page=1
+  selected=""
   while [ "$page" -le 10 ]; do
     url="https://api.github.com/repos/no-phux/phux/releases?per_page=30&page=${page}"
     fetch_release_page "$url" "$index_dir/page.json" \
       || die "could not fetch release page $page (limit 1048576 bytes); check GitHub access/rate limits or pass --version"
     [ "$(wc -c < "$index_dir/page.json")" -le 1048576 ] \
       || die "release page exceeds 1048576 bytes; pass --version to select a known release"
-    result="$(release_page "$prefix" "$index_dir/page.json" "$release_channel")" \
+    result="$(release_page "$prefix" "$index_dir/page.json" "$release_channel" "$selected")" \
       || die "invalid release list on page $page; retry or pass --version to select a known release"
     case "$result" in
-      empty) die "no ${release_channel} ${prefix} release found; pass --version to select a known release" ;;
-      more) page=$((page + 1)) ;;
-      *) printf '%s\n' "$result"; exit 0 ;;
+      empty) break ;;
+      more) ;;
+      *) selected="$result" ;;
     esac
+    page=$((page + 1))
   done
+  if [ -n "$selected" ]; then
+    printf '%s\n' "$selected"
+    exit 0
+  fi
+  [ "$result" != empty ] \
+    || die "no ${release_channel} ${prefix} release found; pass --version to select a known release"
   die "no ${release_channel} ${prefix} release found within 10 pages; pass --version to select a known release"
 )
 # END shared release resolver
