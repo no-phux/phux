@@ -71,6 +71,7 @@ const shell_words = @import("../shell_words.zig");
 const session_state = @import("../session_state.zig");
 const publication = @import("publication.zig");
 pub const tab_commands = @import("tab_commands.zig");
+pub const tab_drag = @import("tab_drag.zig");
 
 const canvas = native_sdk.canvas;
 const geometry = native_sdk.geometry;
@@ -327,6 +328,12 @@ const SplitDrag = struct {
     authority: ?support.ProviderId = null,
 };
 
+const TabDrag = struct {
+    window: usize,
+    tab_id: u32,
+    origin: usize,
+};
+
 /// Snapshot flag bit reserved for the engine: the last intent was refused
 /// because it named a revision the engine had already moved past (or could
 /// not be decoded at all). Bits 0..6 belong to `ts_snapshot.snapshotFlags`.
@@ -367,6 +374,9 @@ pub const Engine = struct {
     last_down_point: geometry.PointF = .{},
     last_click_count: u8 = 0,
     split_drag: ?SplitDrag = null,
+    /// The tab a pointer drag started on. Snapshots replace the TypeScript
+    /// model, so the rollback origin stays here until end or cancel.
+    tab_drag: ?TabDrag = null,
     /// Each shipping split callback is bound to the exact tree that produced
     /// it. A node index is only meaningful inside that tree, so a rebuilt tab
     /// or recycled window slot cannot resize a different divider.
@@ -1163,8 +1173,92 @@ pub const Engine = struct {
         const changed = switch (action) {
             .close => lifecycle.closeTab(self.model, fx, window, index),
             .previous, .next => self.moveLocalTab(window, index, action == .next),
+            .others => self.closeOtherLocalTabs(window, index, fx),
         };
         return if (changed) .applied else .rejected;
+    }
+
+    fn closeOtherLocalTabs(self: *Engine, window: usize, keep_index: u8, fx: anytype) bool {
+        const workspace = self.model.wsAt(window) orelse return false;
+        const keep_id = workspace.tabId(keep_index) orelse return false;
+        if (workspace.tab_count < 2) return false;
+        var changed = false;
+        var guard = workspace.tab_count;
+        while (guard > 0) : (guard -= 1) {
+            const current = self.model.wsAt(window) orelse return changed;
+            if (current.tab_count < 2) return changed;
+            const victim = otherTabIndex(current, keep_id) orelse return changed;
+            if (!lifecycle.closeTab(self.model, fx, window, victim)) return changed;
+            changed = true;
+        }
+        return changed;
+    }
+
+    /// Move a dragged tab onto the shipping frame under the pointer.
+    /// Local order previews on each change and returns to `origin` on cancel.
+    /// A shared workspace sends one reorder when the pointer is released.
+    pub fn applyTabDrag(self: *Engine, phase: tab_drag.Phase, located: tab_drag.Located, destination: usize) bool {
+        const origin = self.rememberTabDrag(located);
+        if (phase == .cancel) return self.restoreTabDrag(located, origin);
+        if (self.model.phux() != null) return self.finishSharedTabDrag(phase, located, destination);
+        return self.previewLocalTabDrag(phase, located, destination);
+    }
+
+    fn rememberTabDrag(self: *Engine, located: tab_drag.Located) usize {
+        if (self.tab_drag) |gesture| {
+            if (gesture.window == located.window and gesture.tab_id == located.tab_id) return gesture.origin;
+        }
+        self.tab_drag = .{ .window = located.window, .tab_id = located.tab_id, .origin = located.index };
+        return located.index;
+    }
+
+    fn restoreTabDrag(self: *Engine, located: tab_drag.Located, origin: usize) bool {
+        self.tab_drag = null;
+        if (self.model.phux() != null) return false;
+        const moved = tab_drag.moveTabToIndex(self.model, located.window, located.tab_id, origin);
+        if (moved) self.noteTabDrag();
+        return moved;
+    }
+
+    fn previewLocalTabDrag(self: *Engine, phase: tab_drag.Phase, located: tab_drag.Located, destination: usize) bool {
+        const moved = tab_drag.moveTabToIndex(self.model, located.window, located.tab_id, destination);
+        if (phase == .end) self.tab_drag = null;
+        if (moved) self.noteTabDrag();
+        return moved;
+    }
+
+    fn finishSharedTabDrag(self: *Engine, phase: tab_drag.Phase, located: tab_drag.Located, destination: usize) bool {
+        if (phase != .end) return false;
+        self.tab_drag = null;
+        const moved = self.reorderSharedTab(located, destination);
+        if (moved) self.noteTabDrag();
+        return moved;
+    }
+
+    fn noteTabDrag(self: *Engine) void {
+        self.sequence +%= 1;
+        self.revision +%= 1;
+    }
+
+    fn reorderSharedTab(self: *Engine, located: tab_drag.Located, destination: usize) bool {
+        const workspace = self.model.wsAt(located.window) orelse return false;
+        const index = tab_drag.indexOf(workspace, located.tab_id) orelse return false;
+        const shared_target = sharedDragTarget(workspace, index, destination) orelse return false;
+        const tree = workspace.treeConst(index) orelse return false;
+        const attachment = tree.attachment_id orelse return false;
+        const remote = self.model.phuxForTree(tree) orelse return false;
+        if (remote.context_id != attachment) return false;
+        const target = sharedWindowIndex(remote.workspaceSnapshot().windows, shared_target.destination) orelse return false;
+        return self.requestSharedReorder(remote, attachment, shared_target.source, target);
+    }
+
+    fn requestSharedReorder(self: *Engine, remote: *support.PhuxProvider, attachment: u64, source: shared_mutations.WindowId, target: usize) bool {
+        if (primaryOwnsAttachment(self.model, remote, attachment)) {
+            self.model.shared_mutations.requestReorderNative(self.model, source, target) catch return false;
+            return true;
+        }
+        self.peer_edits.reorderToForAttachment(self.model, attachment, source, target) catch return false;
+        return true;
     }
 
     fn moveLocalTab(self: *Engine, window: usize, index: u8, right: bool) bool {
@@ -1179,6 +1273,7 @@ pub const Engine = struct {
         const attachment = tree.attachment_id orelse return null;
         const remote = self.model.phuxForTree(tree) orelse return null;
         if (remote.context_id != attachment) return null;
+        if (action == .others) return null;
         if (action == .close) return self.applySharedTabClose(id, workspace, index, remote, attachment);
         return self.applySharedTabReorder(id, workspace, index, remote, attachment, action == .next);
     }
@@ -1222,6 +1317,37 @@ pub const Engine = struct {
         const shared_id = workspace.shared_ids[index] orelse return null;
         const target = peer_edits.neighborIndex(windows, shared_id, right) orelse return null;
         return if (std.mem.eql(u8, &windows[target].id, &neighbor_id)) target else null;
+    }
+
+    fn otherTabIndex(workspace: *const model_module.Workspace, keep_id: u32) ?usize {
+        for (0..workspace.tab_count) |index| {
+            const id = workspace.tabId(index) orelse continue;
+            if (id != keep_id) return index;
+        }
+        return null;
+    }
+
+    const SharedDragEnds = struct {
+        source: shared_mutations.WindowId,
+        destination: shared_mutations.WindowId,
+    };
+
+    fn sharedDragTarget(workspace: *const model_module.Workspace, index: usize, destination: usize) ?SharedDragEnds {
+        if (destination == index or destination >= workspace.tab_count) return null;
+        const source_tree = workspace.treeConst(index) orelse return null;
+        const dest_tree = workspace.treeConst(destination) orelse return null;
+        if (source_tree.attachment_id == null or source_tree.attachment_id != dest_tree.attachment_id) return null;
+        return .{
+            .source = workspace.shared_ids[index] orelse return null,
+            .destination = workspace.shared_ids[destination] orelse return null,
+        };
+    }
+
+    fn sharedWindowIndex(windows: []const provider_contract.workspace.Window, id: shared_mutations.WindowId) ?usize {
+        for (windows, 0..) |window, index| {
+            if (std.mem.eql(u8, &window.id, &id)) return index;
+        }
+        return null;
     }
 
     fn adjacentTabIndex(tab_count: usize, index: usize, right: bool) ?usize {

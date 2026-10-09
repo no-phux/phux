@@ -429,10 +429,15 @@ prompt, which runs each one, or a running program. Return pastes, Escape or any
 other key drops it, and a paste containing the bracketed-paste terminator always
 asks. Phux terminals get the same rule from their replica's mode.
 
-Secondary-clicking a top or rail tab offers one-step axis movement and
-Close Tab. The action stays bound to the tab that opened the menu, including a
-background tab owned by another attached Phux session; it never selects that tab
-just to operate on it. Tab dragging and Close Others do not ship yet.
+Secondary-clicking a top or rail tab offers one-step axis movement, Close
+Others, and Close Tab. The action stays bound to the tab that opened the menu,
+including a background tab owned by another attached Phux session; it never
+selects that tab just to operate on it. Dragging a tab reorders it. Escape, or
+any other pointer cancel, puts that tab back where the drag started. Close
+Others removes the other tabs in a local window in one step. A shared Phux
+workspace has no batch remove, so Close Others is refused there instead of
+closing windows one mutation at a time. A shared drag sends one reorder when
+the pointer is released.
 
 Right-click or control-click also opens Copy/Paste actions for that pane on
 both direct PTYs and Phux-backed terminals. An ended direct PTY allows copying

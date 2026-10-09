@@ -412,6 +412,12 @@ pub const Edits = struct {
         try self.states.items[slot].mutations.requestReorder(&peer_view, id, target);
     }
 
+    pub fn reorderToForAttachment(self: *Edits, model: *Model, attachment: u64, id: WindowId, target_index: usize) !void {
+        var target = try viewForAttachment(model, attachment);
+        try self.ensure(target.slot);
+        try self.states.items[target.slot].mutations.requestReorder(&target.view, id, target_index);
+    }
+
     pub fn reorderCorrelatedForAttachment(self: *Edits, model: *Model, attachment: u64, id: WindowId, target_index: usize, command_id: u64) !void {
         var target = try viewForAttachment(model, attachment);
         try self.ensure(target.slot);
