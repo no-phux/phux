@@ -259,8 +259,8 @@ automate assert --timeout-ms 5000 'role=menuitem name="Machines…"' \
     'role=menuitem name="Sessions…"' 'role=menuitem name="Connect to Host…"' >/dev/null
 shot phux-cockpit-canvas nav-02-location-menu
 click_in w1 phux-cockpit-canvas menuitem 'Machines…'
-automate assert --timeout-ms 5000 'role=tab name="Machines" [^\n]*state=\[selected\]' \
-    'role=button name="Add Machine…"' >/dev/null
+automate assert --timeout-ms 5000 'role=dialog name="Navigator"' \
+    'role=text name="Machines"' 'role=button name="Add Machine…"' >/dev/null
 shot phux-cockpit-canvas nav-03-machines
 printf '  ok: location menu -> Machines lists saved machines with Add Machine\n'
 click_in w1 phux-cockpit-canvas button 'Close navigator'
@@ -277,7 +277,7 @@ printf '  ok: New Window is titled "Phux Cockpit — Window 2"\n'
 automate assert --timeout-ms 10000 '@w2/[^ ]* role=button name="Workspace actions"' >/dev/null
 click_in w2 phux-cockpit-canvas-1 button 'Workspace actions'
 click_in w2 phux-cockpit-canvas-1 menuitem 'Show all windows…'
-automate assert --timeout-ms 5000 '@w2/[^ ]* role=tab name="Windows" [^\n]*state=\[selected\]' \
+automate assert --timeout-ms 5000 '@w2/[^ ]* role=text name="Windows"' \
     '@w2/[^ ]* role=listitem name="Window 1"' '@w2/[^ ]* role=listitem name="Window 2"' \
     '@w2/[^ ]* role=text name="Tab 1 of 1 · Window 2 · ' >/dev/null
 current="$(app_instance_snapshot | grep -F '@w2/' | grep -Fc 'role=text name="Current"' || true)"
@@ -293,4 +293,35 @@ click_in w2 phux-cockpit-canvas-1 listitem 'Window 1'
 automate assert --absent --timeout-ms 5000 '@w2/[^ ]* role=dialog name="Navigator"' >/dev/null
 automate assert --absent '^window @w3 ' >/dev/null
 printf '  ok: activating Window 1 closes the overview and opens nothing new\n'
+
+# 6. The OS close command for the secondary window removes that window.
+automate native-command cockpit.window.closed.1 phux-cockpit-canvas >/dev/null
+automate assert --absent --timeout-ms 5000 '^window @w2 ' >/dev/null
+printf '  ok: closing Window 2 removes it\n'
+
+# 7. Settings, Directory, Rename, and Connect to Host open and dismiss.
+automate native-command settings.open phux-cockpit-canvas >/dev/null
+automate assert --timeout-ms 10000 'name="Search settings"' >/dev/null
+click_in w1 phux-cockpit-canvas button 'Cancel settings'
+automate assert --absent --timeout-ms 5000 'name="Search settings"' >/dev/null
+printf '  ok: Settings opens and Cancel dismisses it\n'
+
+automate native-command directory.open phux-cockpit-canvas >/dev/null
+automate assert --timeout-ms 10000 'name="Filter directories"' >/dev/null
+click_in w1 phux-cockpit-canvas button 'Close Go to Directory'
+automate assert --absent --timeout-ms 5000 'name="Filter directories"' >/dev/null
+printf '  ok: Go to Directory opens and closes\n'
+
+automate native-command session.rename phux-cockpit-canvas >/dev/null
+automate assert --timeout-ms 10000 'name="Rename Session"' >/dev/null
+click_in w1 phux-cockpit-canvas button 'Close naming dialog'
+automate assert --absent --timeout-ms 5000 'name="Rename Session"' >/dev/null
+printf '  ok: Rename Session opens and closes\n'
+
+click_in w1 phux-cockpit-canvas button 'Session and machine'
+click_in w1 phux-cockpit-canvas menuitem 'Connect to Host…'
+automate assert --timeout-ms 5000 'name="Machine destination"' >/dev/null
+click_in w1 phux-cockpit-canvas button 'Close Connect to Host'
+automate assert --absent --timeout-ms 5000 'name="Machine destination"' >/dev/null
+printf '  ok: Connect to Host opens and closes\n'
 printf 'PASS: live navigation journey holds in pid %s\n' "$APP_PID"
