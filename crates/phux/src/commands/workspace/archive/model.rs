@@ -209,6 +209,25 @@ pub(crate) fn restore_plan(
     })
 }
 
+/// Rows for `workspace restore --plan`. The directory is the session
+/// directory when the archive has one, otherwise the focused pane's cwd:
+/// the active window's active pane, the same pane [`restore_plan`] would seed.
+pub(crate) fn organization_rows(
+    archive: &WorkspaceArchive,
+) -> Result<Vec<phux_client_core::organization::OrganizedSession>, String> {
+    let plan = restore_plan(archive, &[])?;
+    Ok(plan
+        .creates
+        .into_iter()
+        .map(|create| phux_client_core::organization::OrganizedSession {
+            name: create.name,
+            host: create.host,
+            directory: create.cwd,
+            project: create.project,
+        })
+        .collect())
+}
+
 fn validate_archive(archive: &WorkspaceArchive) -> Result<(), String> {
     let mut names = BTreeSet::new();
     if archive.schema_version == LEGACY_ARCHIVE_SCHEMA_VERSION
@@ -387,6 +406,51 @@ mod tests {
 
         assert_eq!(plan.creates[0].cwd.as_deref(), Some("/right"));
         assert_eq!(plan.creates[0].command, Some(vec!["right".to_owned()]));
+    }
+
+    #[test]
+    fn plan_lines_use_the_focused_pane_directory() {
+        let json = r#"{
+            "schema_version": 2,
+            "sessions": [
+                {
+                    "name": "api",
+                    "active": true,
+                    "windows": [{
+                        "name": "1",
+                        "active": true,
+                        "panes": [{
+                            "active": true,
+                            "cwd": "/Users/phall/workspace/phux/crates"
+                        }]
+                    }]
+                },
+                {
+                    "name": "zeta",
+                    "windows": [{
+                        "name": "1",
+                        "active": true,
+                        "panes": [
+                            { "cwd": "/wrong" },
+                            {
+                                "active": true,
+                                "cwd": "/Users/phall/workspace/phux/docs"
+                            }
+                        ]
+                    }]
+                }
+            ]
+        }"#;
+        let archive = parse_archive(json).expect("archive parses");
+        let rows = organization_rows(&archive).expect("rows");
+        let lines = phux_client_core::organization::organization_lines(&rows);
+        assert_eq!(
+            lines,
+            vec![
+                "api host=local directory=/Users/phall/workspace/phux/crates project=-".to_owned(),
+                "zeta host=local directory=/Users/phall/workspace/phux/docs project=-".to_owned(),
+            ]
+        );
     }
 
     #[test]
