@@ -412,7 +412,7 @@ async fn restore_one_session(
         return Err(err);
     }
 
-    if let Err(err) = replay_split_tree(
+    if let Err(err) = replay_or_keep_local(
         socket_path,
         &seed,
         seed_position,
@@ -484,6 +484,61 @@ async fn rollback_session(socket_path: &Path, created: &[ResourceId]) {
     {
         eprintln!("phux: workspace restore: could not roll back a failed session's panes: {err}");
     }
+}
+
+/// Place archived panes on `host` when this server can reach it.
+///
+/// A missing satellite route, or a hosted archive with no pane to send
+/// there, keeps the session on this server. The seed pane already has the
+/// archived directory, and the caller still writes the project tag. Any
+/// other failure still rolls the session back.
+async fn replay_or_keep_local(
+    socket_path: &Path,
+    seed: &ResourceId,
+    seed_position: Option<(usize, usize)>,
+    windows: &[WorkspaceWindow],
+    host: Option<&str>,
+    created: &mut Vec<ResourceId>,
+    warnings: &mut Vec<String>,
+) -> Result<(), String> {
+    match replay_split_tree(
+        socket_path,
+        seed,
+        seed_position,
+        windows,
+        host,
+        created,
+        warnings,
+    )
+    .await
+    {
+        Ok(()) => Ok(()),
+        Err(err) if keep_local_when_host_unroutable(host, &err) => {
+            let host_name = host.unwrap_or("");
+            warnings.push(format!(
+                "could not place this session on host {host_name:?}: {err}; kept it on this server"
+            ));
+            replay_split_tree(
+                socket_path,
+                seed,
+                seed_position,
+                windows,
+                None,
+                created,
+                warnings,
+            )
+            .await
+        }
+        Err(err) => Err(err),
+    }
+}
+
+/// A hosted restore that this server cannot route still has a local seed.
+fn keep_local_when_host_unroutable(host: Option<&str>, err: &str) -> bool {
+    if host.is_none_or(str::is_empty) {
+        return false;
+    }
+    err.contains("no route to that satellite") || err.contains("no pane to restore there")
 }
 
 /// Recreate the archived panes and write the session's layout envelope.
@@ -995,6 +1050,22 @@ mod tests {
         ];
         let tree = linear_chain(&ids);
         assert_eq!(phux_client::layout::leaves(&tree), ids);
+    }
+
+    #[test]
+    fn an_unroutable_host_keeps_the_local_session() {
+        let err = "workspace restore could not recreate an archived pane: spawn failed: no route to that satellite";
+        assert!(keep_local_when_host_unroutable(Some("edge"), err));
+        assert!(keep_local_when_host_unroutable(
+            Some("edge"),
+            "session was saved on host \"edge\" but the archive has no pane to restore there"
+        ));
+        assert!(!keep_local_when_host_unroutable(None, err));
+        assert!(!keep_local_when_host_unroutable(Some(""), err));
+        assert!(!keep_local_when_host_unroutable(
+            Some("edge"),
+            "workspace restore could not recreate an archived pane: spawn failed: permission denied"
+        ));
     }
 
     #[test]
