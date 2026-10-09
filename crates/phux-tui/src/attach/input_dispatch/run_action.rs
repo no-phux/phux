@@ -1303,12 +1303,7 @@ fn spawn_place(
 
 fn remember_session(ctx: &mut DispatchCtx<'_>) {
     let name = ctx.session_name.clone();
-    if name.is_empty() {
-        return;
-    }
-    if ctx.session_mru.last().is_none_or(|last| last != &name) {
-        ctx.session_mru.push(name);
-    }
+    ctx.focus_history.remember_session(&name);
 }
 
 fn reattach_named(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects, name: String) {
@@ -1341,7 +1336,12 @@ fn step_session(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects, step: i3
 
 /// Switch to the session this client attached to before the current one.
 fn last_session(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
-    let history: Vec<&str> = ctx.session_mru.iter().map(String::as_str).collect();
+    let history: Vec<&str> = ctx
+        .focus_history
+        .session_names()
+        .iter()
+        .map(String::as_str)
+        .collect();
     let Some(name) = phux_client_core::organization::last_name(&history, ctx.session_name) else {
         effects.bell = true;
         return;

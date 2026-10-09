@@ -98,9 +98,6 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     pub host_refresh_request: &'a mut bool,
     /// The attached session's name; changed only by a confirmed rename.
     pub session_name: &'a mut String,
-    /// Session names this client has attached to, oldest first.
-    /// `last-session` reads it.
-    pub session_mru: &'a mut Vec<String>,
     /// In-flight `rename-session` confirmation, parked by
     /// [`apply_action_effects`] until the driver consumes the `GET_STATE`
     /// barrier. `None` when no rename is outstanding.

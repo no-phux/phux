@@ -5,10 +5,12 @@ use phux_protocol::ResourceId;
 
 use crate::layout::{self, Workspace};
 
-/// One-entry, client-local pane focus history.
+/// Client-local pane focus and the session names this client has attached.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct FocusHistory {
     previous: Option<ResourceId>,
+    /// Attached session names, oldest first. Not persisted.
+    sessions: Vec<String>,
 }
 
 impl FocusHistory {
@@ -17,7 +19,29 @@ impl FocusHistory {
     pub(super) const fn with_previous(previous: ResourceId) -> Self {
         Self {
             previous: Some(previous),
+            sessions: Vec::new(),
         }
+    }
+
+    /// Remember `name` unless it is empty or already the newest entry.
+    pub(super) fn remember_session(&mut self, name: &str) {
+        if name.is_empty() {
+            return;
+        }
+        if self.sessions.last().is_none_or(|last| last != name) {
+            self.sessions.push(name.to_owned());
+        }
+    }
+
+    /// Attached session names, oldest first.
+    pub(super) fn session_names(&self) -> &[String] {
+        &self.sessions
+    }
+
+    /// Replace the session history. Dispatcher tests seed a known MRU.
+    #[cfg(test)]
+    pub(super) fn set_sessions(&mut self, names: Vec<String>) {
+        self.sessions = names;
     }
 
     /// Apply one focus transition and remember the pane being left.

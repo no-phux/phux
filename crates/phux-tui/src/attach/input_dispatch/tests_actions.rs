@@ -1412,7 +1412,8 @@ fn new_session_and_split_inherit_the_focused_place() {
 fn session_navigation_uses_mru_and_name_order() {
     let mut f = fx(Workspace::single(tid(1)));
     f.session_name = "beta".to_owned();
-    f.session_mru = vec!["alpha".to_owned(), "beta".to_owned()];
+    f.focus_history
+        .set_sessions(vec!["alpha".to_owned(), "beta".to_owned()]);
     f.sessions = vec![sinfo(1, "alpha"), sinfo(2, "beta"), sinfo(3, "gamma")];
     let last = f.run(&bare_action("last-session"));
     assert!(matches!(

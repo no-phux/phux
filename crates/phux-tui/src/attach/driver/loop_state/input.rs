@@ -256,7 +256,6 @@ impl super::SessionLoop {
             peers: self.peers.inputs(&self.review),
             host_refresh_request: &mut self.host_refresh_request,
             session_name: &mut self.mirror.session_name,
-            session_mru: &mut self.session_mru,
             rename_pending: &mut self.rename_pending,
             rename_notice: &mut self.rename_notice,
             switch_request: &mut self.switch_request,
