@@ -187,7 +187,7 @@ const FEATURES = [
   }
 </style>
 
-<script is:inline define:vars={{ cliInstall, cockpitInstall, productName: SITE.name, docsUrl: SITE.docsUrl, releaseTag: release.tag, releaseUrl: release.url }}>
+<script is:inline>
   document.querySelectorAll("[data-copy]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const value = btn.getAttribute("data-copy");
@@ -268,69 +268,31 @@ const FEATURES = [
     });
   })();
 
-  // WebMCP: expose the site's key actions to in-browser AI agents.
-  // Experimental API — feature-detect and no-op where it doesn't exist.
-  (() => {
-    const modelContext = navigator.modelContext;
-    if (!modelContext || typeof modelContext.registerTool !== "function") return;
-    modelContext.registerTool("get_install_command", {
-      description:
-        `Get the installer for the ${productName} CLI, Cockpit, or agent skills.`,
-      inputSchema: {
-        type: "object",
-        properties: {
-          target: {
-            type: "string",
-            enum: ["cli", "cockpit", "skills"],
-            description: `Which installer to return. Defaults to the ${productName} CLI.`,
-          },
-        },
-      },
-      execute: ({ target } = {}) => ({
-        command:
-          target === "cockpit"
-            ? cockpitInstall
-            : target === "skills"
-              ? "npx skills add no-phux/skills"
-              : cliInstall,
-      }),
+</script>
+<div
+  hidden
+  data-webmcp
+  data-product={SITE.name}
+  data-cli={cliInstall}
+  data-cockpit={cockpitInstall}
+  data-docs={SITE.docsUrl}
+  data-release-tag={release.tag}
+  data-release-url={release.url}
+></div>
+<script>
+  import { registerSiteTools, siteModelContext } from "../webmcp.ts";
+  const facts = document.querySelector("[data-webmcp]");
+  const context = siteModelContext(globalThis);
+  if (facts instanceof HTMLElement && context) {
+    void registerSiteTools(context, {
+      productName: facts.dataset.product ?? "",
+      cliInstall: facts.dataset.cli ?? "",
+      cockpitInstall: facts.dataset.cockpit ?? "",
+      docsUrl: facts.dataset.docs ?? "",
+      releaseTag: facts.dataset.releaseTag ?? "",
+      releaseUrl: facts.dataset.releaseUrl ?? "",
     });
-    modelContext.registerTool("open_docs", {
-      description:
-        `Get the canonical documentation URL for a ${productName} topic.`,
-      inputSchema: {
-        type: "object",
-        properties: {
-          topic: {
-            type: "string",
-            description: "Docs topic, e.g. \"quickstart\", \"wire\", \"consumers\".",
-          },
-        },
-        required: ["topic"],
-      },
-      execute: ({ topic } = {}) => {
-        const slug = String(topic || "").toLowerCase().replace(/[^a-z0-9/-]+/g, "");
-        const paths = {
-          overview: "/overview",
-          quickstart: "/quickstart/install",
-          concepts: "/concepts",
-          consumers: "/consumers",
-          agents: "/consumers/agents",
-          "remote-access": "/remote-access",
-          wire: "/wire/proto",
-          architecture: "/architecture",
-          decisions: "/decisions",
-        };
-        const path = paths[slug] ?? `/overview?search=${encodeURIComponent(slug)}`;
-        return { url: `${docsUrl}${path}` };
-      },
-    });
-    modelContext.registerTool("get_latest_release", {
-      description: `Get the latest ${productName} release tag and URL.`,
-      inputSchema: { type: "object", properties: {} },
-      execute: () => ({ tag: releaseTag, url: releaseUrl }),
-    });
-  })();
+  }
 </script>
 
 <style>
