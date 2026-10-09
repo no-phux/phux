@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors
 stability: evolving
-last-reviewed: 2026-10-05
+last-reviewed: 2026-10-09
 ---
 
 # Remote access
@@ -331,6 +331,53 @@ If the local server is already running without `--hub`, the unit is
 updated and hub mode starts the next time that server starts — the
 running process is not restarted, so panes stay up. `--no-service` skips
 installing the *remote* unit only; the local `--hub` ensure still runs.
+
+## A fleet that sees itself: registrations are one-way
+
+Each machine's sidebar and `phux ls --all` list **that machine's own**
+`[[remote]]` registry, dialed by its own hosts provider
+([ADR-0140](adr/0140-sidebar-machines-come-from-a-hosts-provider.md)). Nothing
+is shared or propagated: registering `mini` on the laptop makes `mini` appear
+on the laptop, and nowhere else. A phone that sees every host has every host
+in its own registry; that says nothing about what the hosts see.
+
+So a mesh of N machines needs N x (N-1) registrations, one per direction.
+For three machines that is six `phux host add` or `--code` runs. Pick the
+route per direction with this ladder; the first rung that holds wins:
+
+1. **`phux host add me@HOST`** when `ssh me@HOST` works non-interactively
+   (key auth; password prompts never fire, the ssh is run in batch mode).
+   Add `--remote-phux /opt/homebrew/bin/phux` (or the Nix store path) when
+   the error says phux is not on the PATH the ssh shell sees.
+2. **`phux pair` on the target, `phux attach --remote NAME --code LINK` on
+   the dialer** when ssh cannot work in that direction. Mint one link per
+   dialer so each link is revocable on its own with `phux pair revoke`.
+
+Cases met in practice:
+
+- **macOS target with Remote Login off.** Port 22 is closed, so rung 1 is
+  out. Either enable Remote Login (System Settings > General > Sharing) and
+  use rung 1, or use rung 2. A laptop's listener already binds its overlay
+  address, so `phux pair --host 100.x.y.z:8787` prints a usable link.
+- **Linux target behind Tailscale SSH.** The tailnet SSH policy, not sshd,
+  decides which users may log in; the symptom is
+  `tailnet policy does not permit you to SSH as user "me"` and no key
+  helps. Either allow `autogroup:nonroot` in the tailnet ACL and use rung
+  1, or use rung 2. Do not enroll as `root`: phux is one server per user,
+  and a root server is not the one holding your sessions.
+- **Homebrew or Nix phux.** Non-interactive zsh on macOS does not source
+  the profile that puts `/opt/homebrew/bin` on the PATH. `--remote-phux`
+  names the binary; nothing on the host needs to change.
+- **Stale overlay names.** A re-enrolled machine gets a `-1` suffix in
+  `tailscale status` (`jamess-mac-mini-1`); the unsuffixed entry is the
+  dead node. Dial the online one.
+- **Laptops go away.** A row for a machine that sleeps or roams shows as
+  unreachable until it is back on the overlay. That is the row doing its
+  job, not a broken registration.
+
+An agent diagnosing "host X does not see host Y" should run `phux host ls`
+on X first. An empty or Y-less registry is the whole answer; the fix is a
+registration on X, never on Y and never on the phone.
 
 ## Why an overlay
 
