@@ -57,6 +57,33 @@ impl From<outcome::Delivery> for WireInputDeliveryOutcome {
     }
 }
 
+/// The local disposition of one `resize_terminal`. Only `Queued` sent
+/// anything; the server's applied geometry arrives in frames.
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WireResizeOutcome {
+    Queued,
+    /// An axis was zero. Nothing was sent.
+    InvalidSize,
+    /// This connection attached as a viewer. Nothing was sent.
+    Observer,
+    /// No live, confirmed subscription for the pane yet. Nothing was sent.
+    NotReady,
+    /// Not connected, or the terminal id does not parse.
+    Unavailable,
+}
+
+impl From<phux_client_runtime::control::TerminalResizeOutcome> for WireResizeOutcome {
+    fn from(value: phux_client_runtime::control::TerminalResizeOutcome) -> Self {
+        use phux_client_runtime::control::TerminalResizeOutcome as Outcome;
+        match value {
+            Outcome::Queued => Self::Queued,
+            Outcome::InvalidSize => Self::InvalidSize,
+            Outcome::Observer => Self::Observer,
+            Outcome::NotReady => Self::NotReady,
+        }
+    }
+}
+
 /// One terminal result from the acknowledged-input lane. `delivery_id` is a
 /// bridge-local correlation only; the secret wire operation id is never
 /// exposed across FFI.
@@ -464,6 +491,14 @@ pub enum WireEvent {
     TerminalDetached {
         request_id: u32,
         terminal_id: String,
+        error: Option<String>,
+    },
+    /// The server answered one of OUR `close_terminals` batches
+    /// (`CLOSE_TAB_RESOURCES`, correlated by the `request_id` it returned).
+    /// `error` is `None` when every pane closed; the batch is all or
+    /// nothing. Each pane's own `TerminalClosed` follows.
+    TerminalsClosed {
+        request_id: u32,
         error: Option<String>,
     },
     /// A pane closed (process exit, signal, or kill). `exit_status` is the

@@ -14,6 +14,7 @@ use crate::uniffi::engine;
 #[cfg(test)]
 mod quic_live;
 mod search;
+mod selection;
 
 const SCROLLBACK_LINES: u32 = 1000;
 
@@ -119,6 +120,14 @@ impl RemoteClient {
         })
     }
 
+    /// The role every `ATTACH` on the next connection declares.
+    fn attach_role(&self) -> Option<phux_protocol::wire::frame::RolePolicy> {
+        self.attach_viewer
+            .lock()
+            .unwrap()
+            .then_some(phux_protocol::wire::frame::RolePolicy::VIEWER)
+    }
+
     /// The pin `connect` dials with: the stored authority, or a learner that
     /// records the one a leaf-pinned server presents.
     fn authority_pin(&self) -> phux_client_runtime::target::AuthorityPin {
@@ -153,6 +162,9 @@ pub struct RemoteClient {
     learned_authority: Arc<Mutex<Option<String>>>,
     /// The workload identity every dial presents (ADR-0154), once enrolled.
     client_identity: Mutex<phux_client_runtime::TlsClientIdentity>,
+    /// Whether every `ATTACH` declares the watch-only role (ADR-0127), set
+    /// by [`RemoteClient::set_attach_viewer`].
+    attach_viewer: Mutex<bool>,
     client: Mutex<Option<Client>>,
     listener: Mutex<Option<Arc<dyn WireListener>>>,
     input_deliveries: Mutex<Vec<WireInputDelivery>>,
@@ -235,6 +247,15 @@ impl RemoteClient {
         *self.route.lock().unwrap() = route.filter(|route| !route.trim().is_empty());
     }
 
+    /// Attach watch-only (ADR-0127): the server grants `VIEWER`, so input
+    /// and resizes from this connection are refused rather than racing the
+    /// primary. Takes effect at the next `connect`; the default declares no
+    /// role. Taking the wheel later is `acquire_input(seize: true)` on an
+    /// ordinary attach, not a role change.
+    pub fn set_attach_viewer(&self, viewer: bool) {
+        *self.attach_viewer.lock().unwrap() = viewer;
+    }
+
     /// Pin the server's certificate authority (`sha256:` fingerprint,
     /// ADR-0153) beside the leaf fingerprint, or clear the pin. Takes effect
     /// at the next `connect`. A pinned server presenting another authority is
@@ -306,6 +327,7 @@ impl RemoteClient {
                 viewport: (*self.cols.lock().unwrap(), *self.rows.lock().unwrap()),
                 scrollback_lines: SCROLLBACK_LINES,
                 attach: None,
+                attach_role: self.attach_role(),
                 ..phux_client_runtime::control::ControlOptions::default()
             },
             connect: ConnectOptions::default(),
@@ -479,6 +501,37 @@ impl RemoteClient {
 
     pub fn kill_terminal(&self, terminal_id: String) {
         let _ = self.with_terminal(&terminal_id, Client::kill_terminal);
+    }
+
+    /// Close several panes as one all-or-nothing `CLOSE_TAB_RESOURCES`
+    /// (a whole session, say: its panes from `topology()`). Returns the
+    /// request id the `WireEvent::TerminalsClosed` reply correlates by, or
+    /// 0 when the server does not offer the batch verb or an id does not
+    /// parse; nothing is sent then.
+    pub fn close_terminals(&self, terminal_ids: Vec<String>) -> u32 {
+        let Some(client) = self.runtime_client() else {
+            return 0;
+        };
+        let Some(ids) = terminal_ids
+            .iter()
+            .map(|id| id::parse(id))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return 0;
+        };
+        client.close_terminals(ids).unwrap_or(0)
+    }
+
+    /// Resize one pane exactly, without moving the client's viewport vote
+    /// (`resize_viewport`). The outcome is local: `Queued` means one
+    /// `RESIZE_TERMINAL` left; the server's own geometry arrives in frames.
+    pub fn resize_terminal(&self, terminal_id: String, cols: u16, rows: u16) -> WireResizeOutcome {
+        self.with_terminal(&terminal_id, |client, id| {
+            client
+                .resize_terminal(id, u32::from(cols), u32::from(rows))
+                .into()
+        })
+        .unwrap_or(WireResizeOutcome::Unavailable)
     }
 
     /// Take the pane's input lease (ADR-0033): cooperative when `seize` is
@@ -685,6 +738,7 @@ impl RemoteClient {
             route: Mutex::new(tls_server_name),
             learned_authority: Arc::new(Mutex::new(None)),
             client_identity: Mutex::new(phux_client_runtime::TlsClientIdentity::None),
+            attach_viewer: Mutex::new(false),
             client: Mutex::new(None),
             listener: Mutex::new(None),
             input_deliveries: Mutex::new(Vec::new()),
@@ -931,6 +985,9 @@ impl RemoteClient {
             Event::AgentMetadata { terminal_id, value } => {
                 projected.push(agent::badge(&terminal_id, value.as_deref()).into());
             }
+            Event::TerminalsClosed { request_id, error } => {
+                projected.push(WireEvent::TerminalsClosed { request_id, error });
+            }
             _ => {}
         }
     }
@@ -947,7 +1004,48 @@ impl Drop for RemoteClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phux_protocol::wire::frame::{FrameKind, RESOURCE_AGENT_KEY, Scope};
+    use phux_protocol::wire::frame::{FrameKind, RESOURCE_AGENT_KEY, RolePolicy, Scope};
+
+    /// The parity verbs before a connection exists refuse without panicking,
+    /// the viewer switch shapes the next attach, and a batch close reply
+    /// reaches the consumer by its request id.
+    #[test]
+    fn parity_verbs_refuse_offline_and_project_their_replies() {
+        let remote = RemoteClient::new("unused".into(), 80, 24, None, None);
+        assert_eq!(remote.attach_role(), None);
+        remote.set_attach_viewer(true);
+        assert_eq!(remote.attach_role(), Some(RolePolicy::VIEWER));
+
+        assert_eq!(
+            remote.resize_terminal("1".into(), 100, 40),
+            WireResizeOutcome::Unavailable
+        );
+        assert_eq!(remote.close_terminals(vec!["1".into(), "2".into()]), 0);
+        assert!(matches!(
+            remote.projection_selection_text("1".into()),
+            Err(search::SearchError::Unavailable)
+        ));
+        assert!(matches!(
+            remote.set_projection_selection("1".into(), 1, 2, false),
+            Err(search::SearchError::Unavailable)
+        ));
+
+        let mut projected = Vec::new();
+        remote.project_event(
+            Event::TerminalsClosed {
+                request_id: 9,
+                error: Some("refused".into()),
+            },
+            &mut projected,
+        );
+        assert_eq!(
+            projected,
+            vec![WireEvent::TerminalsClosed {
+                request_id: 9,
+                error: Some("refused".into()),
+            }]
+        );
+    }
 
     #[test]
     fn routed_constructor_preserves_route_and_credentials_in_runtime_target() {
