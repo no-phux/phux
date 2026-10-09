@@ -7,8 +7,11 @@ use std::process::ExitCode;
 use phux_client::attach::connection::Connection;
 use phux_client::layout::{LayoutNode, LayoutState, SplitDir, WindowState, Workspace};
 use phux_client::layout_ops::LayoutOps;
-use phux_protocol::ids::{GroupId, ResourceId};
+use phux_protocol::ids::{GroupId, ResourceId, SatelliteHost};
 use phux_protocol::wire::frame::{Command, FrameKind, SpawnResult};
+use phux_protocol::wire::frame::{
+    SESSION_PROJECT_KEY, Scope, decode_session_project, encode_session_project,
+};
 use phux_server::runtime::default_socket_path;
 
 use phux_client::agent_session_record::{AgentSessionRecord, fetch_record_index};
@@ -105,7 +108,9 @@ async fn capture_archive(
                 .to_owned(),
         ));
     }
-    let (archive, reconcile_warnings) = archive_from_snapshot(&snapshot, &agent_sessions, &layouts);
+    let projects = fetch_project_by_session(socket_path).await;
+    let (archive, reconcile_warnings) =
+        archive_from_snapshot(&snapshot, &agent_sessions, &layouts, &projects);
     for warning in bridge_warnings
         .iter()
         .chain(&layout_warnings)
@@ -115,6 +120,87 @@ async fn capture_archive(
     }
     serde_json::to_string_pretty(&archive)
         .map_err(|err| CaptureError::Failed(format!("could not render workspace archive: {err}")))
+}
+
+/// The one stored `phux.session.project/v1` value, keyed by session name.
+/// The spec keeps a single global value, so at most one session is tagged.
+async fn fetch_project_by_session(socket_path: &Path) -> HashMap<String, String> {
+    let mut projects = HashMap::new();
+    let Ok(mut conn) = Connection::connect(socket_path).await else {
+        return projects;
+    };
+    let Ok(reply) = conn
+        .request_metadata(1, Scope::Global, SESSION_PROJECT_KEY.to_owned())
+        .await
+    else {
+        return projects;
+    };
+    let (answer, _) = reply.into_parts();
+    let Ok(Some(value)) = answer else {
+        return projects;
+    };
+    if let Some((name, project)) = decode_session_project(&value) {
+        projects.insert(name.to_owned(), project.to_owned());
+    }
+    projects
+}
+
+/// `SET_METADATA` for `phux.session.project/v1`, then read it back. The write
+/// has no reply, so the read is what proves the tag landed.
+async fn set_session_project(socket_path: &Path, name: &str, project: &str) -> Result<(), String> {
+    let mut conn = Connection::connect(socket_path)
+        .await
+        .map_err(|err| format!("could not set the project tag: {err}"))?;
+    let value = encode_session_project(name, project);
+    conn.send(&project_set_frame(name, project))
+        .await
+        .map_err(|err| format!("could not set the project tag: {err}"))?;
+    let reply = conn
+        .request_metadata(2, Scope::Global, SESSION_PROJECT_KEY.to_owned())
+        .await
+        .map_err(|err| format!("could not read the project tag back: {err}"))?;
+    let (answer, _) = reply.into_parts();
+    let stored = answer.map_err(|err| format!("server refused the project tag: {err}"))?;
+    if stored.as_deref() != Some(value.as_slice()) {
+        return Err(format!(
+            "project tag for session {name:?} did not read back as {project:?}"
+        ));
+    }
+    Ok(())
+}
+
+/// The project-tag write [`set_session_project`] sends.
+fn project_set_frame(name: &str, project: &str) -> FrameKind {
+    FrameKind::SetMetadata {
+        request_id: 1,
+        scope: Scope::Global,
+        key: SESSION_PROJECT_KEY.to_owned(),
+        value: encode_session_project(name, project),
+    }
+}
+
+/// Spawn frame for one restored pane. `host` is the session's satellite, or
+/// `None` for a pane on the attached server.
+fn restored_spawn_frame(
+    owner: &ResourceId,
+    command: Option<Vec<String>>,
+    cwd: Option<String>,
+    env: Option<Vec<(String, String)>>,
+    host: Option<&str>,
+) -> FrameKind {
+    FrameKind::SpawnResource {
+        request_id: 1,
+        group: GroupId::new(1),
+        command,
+        cwd,
+        env,
+        term: None,
+        satellite: host.filter(|host| !host.is_empty()).map(SatelliteHost::new),
+        owner_terminal: Some(owner.clone()),
+        agent_session: None,
+        initial_size: None,
+        resource: None,
+    }
 }
 
 /// The `phux server --autosave` archiver (ADR-0150): the same capture and
@@ -396,6 +482,15 @@ async fn restore_one_session(
     .await
     .map_err(|_| "could not create the seed pane (see the diagnostic above)".to_owned())?;
 
+    if let Some(project) = create
+        .project
+        .as_deref()
+        .filter(|project| !project.is_empty())
+        && let Err(err) = set_session_project(socket_path, &create.name, project).await
+    {
+        return Err(err);
+    }
+
     let Ok(seed_local) = u32::try_from(pane_id) else {
         return Err("restored terminal id exceeds the local wire-id range".to_owned());
     };
@@ -415,6 +510,7 @@ async fn restore_one_session(
         &seed,
         seed_position,
         &windows,
+        create.host.as_deref(),
         &mut created,
         &mut warnings,
     )
@@ -481,6 +577,7 @@ async fn replay_split_tree(
     seed: &ResourceId,
     seed_position: Option<(usize, usize)>,
     windows: &[WorkspaceWindow],
+    host: Option<&str>,
     created: &mut Vec<ResourceId>,
     warnings: &mut Vec<String>,
 ) -> Result<(), String> {
@@ -504,7 +601,8 @@ async fn replay_split_tree(
             if pane_ids[window_index][pane_index].is_some() {
                 continue;
             }
-            let spawned = spawn_owned_pane(socket_path, seed, pane, created, warnings).await?;
+            let spawned =
+                spawn_owned_pane(socket_path, seed, pane, host, created, warnings).await?;
             pane_ids[window_index][pane_index] = Some(spawned);
         }
     }
@@ -519,6 +617,7 @@ async fn spawn_owned_pane(
     socket_path: &Path,
     owner: &ResourceId,
     pane: &model::WorkspacePane,
+    host: Option<&str>,
     created: &mut Vec<ResourceId>,
     warnings: &mut Vec<String>,
 ) -> Result<ResourceId, String> {
@@ -542,19 +641,7 @@ async fn spawn_owned_pane(
             )
         },
     );
-    let frame = FrameKind::SpawnResource {
-        request_id: 1,
-        group: GroupId::new(1),
-        command,
-        cwd,
-        env,
-        term: None,
-        satellite: None,
-        owner_terminal: Some(owner.clone()),
-        agent_session: None,
-        initial_size: None,
-        resource: None,
-    };
+    let frame = restored_spawn_frame(owner, command, cwd, env, host);
     let spawned = match dispatch_spawn_async(socket_path, &frame, None).await {
         Ok(SpawnResult::Ok(id)) => id,
         Ok(SpawnResult::Err(err)) => {
@@ -966,5 +1053,46 @@ mod tests {
         let node = model::WorkspaceLayoutNode::Pane { pane: 5 };
         let ids = [ResourceId::local(1)];
         assert!(layout_node_from_archive(&node, &ids).is_none());
+    }
+
+    #[test]
+    fn restored_spawn_uses_the_session_host() {
+        let frame = restored_spawn_frame(
+            &ResourceId::local(1),
+            None,
+            Some("/src/api".to_owned()),
+            None,
+            Some("edge"),
+        );
+        match frame {
+            FrameKind::SpawnResource {
+                satellite: Some(host),
+                cwd: Some(dir),
+                owner_terminal: Some(owner),
+                ..
+            } => {
+                assert_eq!(host.as_str(), "edge");
+                assert_eq!(dir, "/src/api");
+                assert_eq!(owner, ResourceId::local(1));
+            }
+            other => panic!("spawn dropped the session host: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn project_write_names_the_session() {
+        let frame = project_set_frame("api", "phux");
+        match frame {
+            FrameKind::SetMetadata {
+                scope: Scope::Global,
+                key,
+                value,
+                ..
+            } => {
+                assert_eq!(key, SESSION_PROJECT_KEY);
+                assert_eq!(decode_session_project(&value), Some(("api", "phux")));
+            }
+            other => panic!("project tag was not a global metadata write: {other:?}"),
+        }
     }
 }
