@@ -9,6 +9,7 @@
           </row>
           <if test="{renameTabTarget}"><input text="{renameQuery}" placeholder="New tab name" autofocus="true" on-input="rename_edit" on-submit="rename_submit" label="New tab name" /></if>
           <else><input text="{renameQuery}" placeholder="New session name" autofocus="true" on-input="rename_edit" on-submit="rename_submit" label="New session name" /></else>
+          <if test="{creatingSession}"><input text="{newSessionDirectory}" placeholder="Folder on this host" on-input="session_directory_edit" on-submit="rename_submit" label="Folder" /></if>
           <text wrap="true" foreground="text_muted">{renameNotice}</text>
           <row gap="8" cross="center">
             <spacer grow="1" />

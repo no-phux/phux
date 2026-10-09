@@ -117,6 +117,46 @@ function rowTarget(resource, session, provider = 0x80000001) {
 }
 
 
+test('Sessions navigator keeps a recent list and last-session reopens the previous target', async () => {
+  const { navigationScopedRequest } = await import('../protocol.ts');
+  const revision = { hi: 0, lo: 7 };
+  const alpha = rowTarget(2, 1, 1);
+  const beta = rowTarget(2, 2, 1);
+  const rows = [
+    ['alpha', alpha, 2, 1],
+    ['beta', beta, 2, 1],
+  ];
+  const head = navigationScopedRequest(revision, 0, new Uint8Array(), 1, new Uint8Array());
+  const records = rows.flatMap(([label, target], index) => {
+    const labelBytes = bytes(label);
+    return [index, 0, labelBytes.length, target.length, 0, ...target, ...labelBytes];
+  });
+  const metadata = rows.flatMap(([, , kind, selectable]) => [kind, selectable, 0]);
+  const body = new Uint8Array([...head, rows.length, 0, rows.length, ...records, 0x4e, ...metadata]);
+  let [model] = step({ ...initialModel()[0], engineRevision: revision, engineConnected: true, navigatorView: 1 }, { kind: 'sessions_open' });
+  [model] = step(model, { kind: 'navigation_loaded', body });
+  assert.deepEqual(model.paletteRows.map(row => text(row.label)), ['alpha', 'beta']);
+  [model] = step(model, { kind: 'palette_pick', target: beta });
+  assert.equal(model.sessionRecent.length, 1);
+  [model] = step({ ...model, paletteOpen: true, navigatorView: 1, engineConnected: true }, { kind: 'navigation_loaded', body });
+  [model] = step(model, { kind: 'palette_pick', target: alpha });
+  assert.equal(model.sessionRecent.length, 2);
+  [model] = step({ ...model, paletteOpen: true, navigatorView: 1, engineConnected: true }, { kind: 'navigation_loaded', body });
+  assert.deepEqual(model.paletteRows.map(row => text(row.label)).slice(0, 2), ['alpha', 'beta']);
+  const { initialTabCommands } = await import('../tab-commands.ts');
+  const [, cmd] = step({ ...model, tabCommands: initialTabCommands() }, { kind: 'session_last' });
+  const payloads = (cmd.cmds ?? [cmd]).map(effect => effect.payload).filter(payload => payload instanceof Uint8Array);
+  const contains = (haystack, needle) => {
+    for (let start = 0; start + needle.length <= haystack.length; start += 1) {
+      let same = true;
+      for (let index = 0; index < needle.length; index += 1) if (haystack[start + index] !== needle[index]) same = false;
+      if (same) return true;
+    }
+    return false;
+  };
+  assert.ok(payloads.some(payload => contains(payload, beta)), 'last-session must resend the previous catalog target');
+});
+
 test('only a listed session row is renamable: never a terminal or a peer group row', async () => {
   const { navigationScopedRequest } = await import('../protocol.ts');
   const revision = { hi: 0, lo: 7 };

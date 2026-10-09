@@ -392,6 +392,12 @@ export interface Model {
   readonly creatingSession: boolean;
   readonly newSessionToken: Uint8Array;
   readonly newSessionAwaiting: boolean;
+  /// Folder typed in New Session. Empty keeps an empty session.
+  readonly newSessionDirectory: Uint8Array;
+  readonly newSessionDirectoryAnchor: number;
+  readonly newSessionDirectoryFocus: number;
+  /// Session catalog targets this window has opened, newest first.
+  readonly sessionRecent: readonly Uint8Array[];
   readonly mainRenameOpen: boolean;
   readonly window1RenameOpen: boolean;
   readonly window2RenameOpen: boolean;
@@ -662,6 +668,8 @@ export type Msg =
   | { readonly kind: "rename_close" }
   | { readonly kind: "rename_edit"; readonly edit: TextInputEvent }
   | { readonly kind: "rename_submit" }
+  | { readonly kind: "session_directory_edit"; readonly edit: TextInputEvent }
+  | { readonly kind: "session_last" }
   | { readonly kind: "session_loaded"; readonly body: Uint8Array }
   | { readonly kind: "session_failed"; readonly error: Uint8Array }
   | { readonly kind: "empty_new_tab" }
@@ -1103,8 +1111,31 @@ function loadedNavigation(model: Model, body: Uint8Array): Model {
   return reconcileNavigationSelection(loaded);
 }
 
+function sessionRank(recent: readonly Uint8Array[], target: Uint8Array): number {
+  for (let index = 0; index < recent.length; index += 1) {
+    if (sameBytes(recent[index], target)) return index;
+  }
+  return recent.length;
+}
+
+function orderSessionsByRecent(rows: readonly SwitcherRow[], recent: readonly Uint8Array[]): readonly SwitcherRow[] {
+  if (recent.length === 0) return rows;
+  const ordered = rows.slice();
+  ordered.sort((left, right) => sessionRank(recent, left.target) - sessionRank(recent, right.target));
+  return ordered;
+}
+
+function rememberSession(model: Model, target: Uint8Array): Model {
+  if (target.length === 0) return model;
+  const recent = [target];
+  for (const item of model.sessionRecent) {
+    if (!sameBytes(item, target) && recent.length < 8) recent.push(item);
+  }
+  return { ...model, sessionRecent: recent };
+}
+
 function navigationRowsForPage(model: Model, page: NavigationPage): readonly SwitcherRow[] {
-  const incoming = switcherRows(page.rows);
+  const incoming = model.navigatorView === 1 ? orderSessionsByRecent(switcherRows(page.rows), model.sessionRecent) : switcherRows(page.rows);
   if (page.offset === 0) return incoming;
   const rows: SwitcherRow[] = [];
   for (const row of model.paletteRows) rows.push(row);
@@ -1417,6 +1448,27 @@ function displaceRename(model: Model, msg: Msg): Model {
   if (!model.renameOpen) return model;
   if (msg.kind !== "palette_open" && msg.kind !== "agents_open" && msg.kind !== "host_open" && msg.kind !== "settings_open" && msg.kind !== "dir_open" && msg.kind !== "path_open") return model;
   return closeRename(model).model;
+}
+
+function editSessionDirectory(model: Model, edit: TextInputEvent): Model {
+  const next = applyTextInputEvent(
+    {
+      text: model.newSessionDirectory,
+      selection: { anchor: model.newSessionDirectoryAnchor, focus: model.newSessionDirectoryFocus },
+      composition: null,
+    },
+    edit,
+    240,
+  );
+  if (next === null) return model;
+  const anchor = next.selection.anchor >= 0 && next.selection.anchor <= 240 ? Math.trunc(next.selection.anchor) : 0;
+  const focus = next.selection.focus >= 0 && next.selection.focus <= 240 ? Math.trunc(next.selection.focus) : 0;
+  return {
+    ...model,
+    newSessionDirectory: next.text,
+    newSessionDirectoryAnchor: anchor,
+    newSessionDirectoryFocus: focus,
+  };
 }
 
 function editRename(model: Model, edit: TextInputEvent): Model {
@@ -2492,6 +2544,7 @@ function creationCommandMsg(name: string): Msg | null {
   if (name === "directory.open") return { kind: "dir_open" };
   if (name === "path.insert") return { kind: "path_open" };
   if (name === "session.rename") return { kind: "rename_open" };
+  if (name === "session.last") return { kind: "session_last" };
   if (name === "tabs.toggle-placement") return { kind: "toggle_tab_placement" };
   return null;
 }
@@ -2692,6 +2745,10 @@ export function initialModel(): [Model, Cmd<Msg>] {
       creatingSession: false,
       newSessionToken: NO_BYTES,
       newSessionAwaiting: false,
+      newSessionDirectory: new Uint8Array(0),
+      newSessionDirectoryAnchor: 0,
+      newSessionDirectoryFocus: 0,
+      sessionRecent: [],
       mainRenameOpen: false,
       window1RenameOpen: false,
       window2RenameOpen: false,
@@ -3486,7 +3543,28 @@ function commandsTransition(model: Model, msg: Msg): NavigatorDecision | null {
   return null;
 }
 
+function lastSession(model: Model): NavigatorDecision {
+  const previous = model.sessionRecent.length > 1 ? model.sessionRecent[1] : undefined;
+  if (!previous) {
+    return navigatorDecision(
+      { ...model, commandNotice: asciiBytes("No previous session yet.") },
+      0,
+      NO_BYTES,
+    );
+  }
+  const decision = enqueueCatalogCommand(model.tabCommands, previous);
+  const next = freshCommandModel(model, decision);
+  if (decision.state.outcome !== 1) return navigatorDecision(next, 0, NO_BYTES);
+  const remembered = rememberSession(next, previous);
+  return navigatorDecision(
+    closePalette(remembered),
+    decision.request.length === 0 ? 1 : 11,
+    decision.request,
+  );
+}
+
 function navigatorTransition(incoming: Model, msg: Msg): NavigatorDecision | null {
+  if (msg.kind === "session_last") return lastSession(incoming);
   const menu = headerMenuTransition(incoming, msg);
   if (menu !== null) return menu;
   const hosts = headerHostsTransition(incoming, msg);
@@ -3557,8 +3635,10 @@ function pickCatalogNavigation(model: Model, msg: Msg): NavigatorDecision {
   if (windowTarget(target)) return pickWindowNavigation(model, target);
   const host = navigationHostFilter(target);
   if (host !== null) return requestCatalogNavigation(model, hostNavigation(model, host), false);
-  const decision = enqueueCatalogCommand(model.tabCommands, target);
-  const next = freshCommandModel(model, decision);
+  const row = model.paletteRows.find((item) => sameBytes(item.target, target));
+  const remembered = row?.renamable ? rememberSession(model, target) : model;
+  const decision = enqueueCatalogCommand(remembered.tabCommands, target);
+  const next = freshCommandModel(remembered, decision);
   if (decision.state.outcome !== 1) return navigatorDecision(next, 0, NO_BYTES);
   return navigatorDecision(closePalette(next), decision.request.length === 0 ? 1 : 11, decision.request);
 }
@@ -4063,6 +4143,7 @@ function describeNewSession(model: Model): NavigatorDecision {
   const next = scopeOverlays({ ...closePalette(model), hostOpen: false, dirOpen: false,
     renameOpen: true, creatingSession: true, renameTabTarget: NO_BYTES, renameBusy: true, renameAwaiting: false,
     renameQuery: NO_BYTES, renameAnchor: 0, renameFocus: 0, newSessionToken: NO_BYTES,
+    newSessionDirectory: NO_BYTES, newSessionDirectoryAnchor: 0, newSessionDirectoryFocus: 0,
     newSessionAwaiting: false, renameTitle: asciiBytes("New Session"), renameNotice: asciiBytes("Checking destination...") });
   return navigatorDecision(next, 5, newSessionRequest(1, NO_BYTES, NO_BYTES));
 }
@@ -4082,7 +4163,7 @@ function submitNewSession(model: Model): NavigatorDecision {
   if (model.renameBusy || model.newSessionToken.length !== 8) return navigatorDecision(model, 0, NO_BYTES);
   if (model.renameQuery.length === 0) return navigatorDecision({ ...model, renameNotice: asciiBytes("Name the work you want to return to.") }, 0, NO_BYTES);
   return navigatorDecision({ ...model, renameBusy: true, newSessionAwaiting: true }, 5,
-    newSessionRequest(2, model.newSessionToken, model.renameQuery));
+    newSessionRequest(2, model.newSessionToken, model.renameQuery, model.newSessionDirectory));
 }
 
 function newSessionTransition(model: Model, msg: Msg): NavigatorDecision | null {
@@ -4092,6 +4173,7 @@ function newSessionTransition(model: Model, msg: Msg): NavigatorDecision | null 
   if (reply !== null) return reply;
   switch (msg.kind) {
     case "rename_edit": return navigatorDecision(editRename(model, msg.edit), 0, NO_BYTES);
+    case "session_directory_edit": return navigatorDecision(editSessionDirectory(model, msg.edit), 0, NO_BYTES);
     case "rename_submit": return submitNewSession(model);
     case "palette_move": return navigatorDecision(model, 0, NO_BYTES);
     case "rename_close":
