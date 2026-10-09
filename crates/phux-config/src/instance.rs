@@ -159,6 +159,28 @@ pub fn is_dev_build() -> bool {
     std::env::current_exe().is_ok_and(|exe| exe_is_under_cargo_target(&exe))
 }
 
+/// The path of the running binary, as the file that now sits there.
+///
+/// On Linux `current_exe` reads `/proc/self/exe`, which names a replaced or
+/// unlinked image `<path> (deleted)`. After `phux update` (or a package
+/// manager) swaps the binary in place, the installed file is `<path>` itself;
+/// keeping the suffix wrote it into the service unit and made the server's
+/// hot-swap open a file that does not exist.
+///
+/// # Errors
+///
+/// Whatever `std::env::current_exe` returns.
+pub fn running_executable() -> std::io::Result<PathBuf> {
+    std::env::current_exe().map(|exe| without_deleted_suffix(&exe))
+}
+
+fn without_deleted_suffix(path: &Path) -> PathBuf {
+    use std::os::unix::ffi::OsStrExt as _;
+    let bytes = path.as_os_str().as_bytes();
+    let live = bytes.strip_suffix(b" (deleted)").unwrap_or(bytes);
+    PathBuf::from(std::ffi::OsStr::from_bytes(live))
+}
+
 /// Whether `exe` lives under a Cargo `target/` directory.
 ///
 /// Matches `…/target/release/phux` and `…/target/<triple>/release/phux`
@@ -268,6 +290,18 @@ pub(crate) fn user_segment() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_replaced_binary_resolves_to_its_installed_path() {
+        assert_eq!(
+            without_deleted_suffix(Path::new("/home/u/.local/bin/phux (deleted)")),
+            PathBuf::from("/home/u/.local/bin/phux")
+        );
+        assert_eq!(
+            without_deleted_suffix(Path::new("/opt/homebrew/bin/phux")),
+            PathBuf::from("/opt/homebrew/bin/phux")
+        );
+    }
 
     #[test]
     fn login_runtime_dir_must_exist_and_be_ours() {

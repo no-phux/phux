@@ -1061,7 +1061,7 @@ pub(crate) fn reconcile_after_update(print: bool) {
         body = patched;
         policy_changed = true;
     }
-    if let Ok(exe) = std::env::current_exe()
+    if let Ok(exe) = phux_config::instance::running_executable()
         && let Reconcile::Patched(patched) = rewrite_unit_binary(manager, &body, &exe)
     {
         body = patched;
@@ -1224,7 +1224,7 @@ fn resolve_plan(
     socket: Option<PathBuf>,
     hub: bool,
 ) -> Result<ServicePlan, String> {
-    let binary = std::env::current_exe()
+    let binary = phux_config::instance::running_executable()
         .map_err(|err| format!("could not resolve the running phux binary: {err}"))?;
     let state = phux_server::telemetry::state_dir();
     let socket_path = socket

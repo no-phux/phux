@@ -344,8 +344,10 @@ fn stage_blob_file(blob: &StateBlob) -> Result<std::fs::File, UpgradeError> {
 fn pin_validated_executable(
     inherited_source: Option<&Path>,
 ) -> Result<PinnedExecutable, UpgradeError> {
-    let source_exe =
-        inherited_source.map_or_else(std::env::current_exe, |path| Ok(path.to_path_buf()))?;
+    let source_exe = inherited_source
+        .map_or_else(phux_config::instance::running_executable, |path| {
+            Ok(path.to_path_buf())
+        })?;
     let executable = PinnedExecutable::open(&source_exe)?;
     validate_binary(&executable.path)?;
     Ok(executable)
