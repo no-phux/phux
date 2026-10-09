@@ -480,17 +480,19 @@ pub(crate) fn run_server(
     if let Some(autosave) = autosave {
         server = server.autosave(autosave);
     }
-    // Hub mode (ADR-0007): the runtime validates the satellite registry.
-    // The config-reload doorbell re-reads `[[satellites]]` the same way, so
-    // `phux host add --role satellite` reaches a running hub (phux-lpn7.2).
+    // The config-reload doorbell re-reads `[[satellites]]`. A server that
+    // booted with `--hub` redials the diff. One that did not still grows
+    // the links when enrollment adds the first satellite (phux-lpn7.3),
+    // without restarting panes.
+    server = server.hub_reload(phux_server::SatelliteSource::new(|| {
+        config_loader::load()
+            .map(|config| config.satellites)
+            .map_err(|err| err.to_string())
+    }));
+    // Hub mode (ADR-0007): the runtime validates the satellite registry
+    // before it accepts clients.
     if hub {
-        server = server
-            .hub(satellites)
-            .hub_reload(phux_server::SatelliteSource::new(|| {
-                config_loader::load()
-                    .map(|config| config.satellites)
-                    .map_err(|err| err.to_string())
-            }));
+        server = server.hub(satellites);
     }
     // Every start consumes (resume) or discards the upgrade handoff.
     server = match resume {
