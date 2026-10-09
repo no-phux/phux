@@ -163,4 +163,5 @@ test {
     _ = @import("tests/multi_coordinator_tests.zig");
     _ = @import("tests/side_by_side_tests.zig");
     _ = @import("tests/relaunch_layout_tests.zig");
+    _ = @import("cockpit/durable_creation_tests.zig");
 }
