@@ -13,7 +13,7 @@ with the gateway and writes it to each server as `phux.push/v1/<device>`.
 No relay holds a wire, no first-party service sees terminal bytes, and the
 server never holds APNs credentials.
 
-Status: Proposed
+Status: Accepted
 Date: 2026-10-08
 
 ## Context
