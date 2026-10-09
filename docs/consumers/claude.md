@@ -147,7 +147,7 @@ entries as the shim.
 
 `integrations/claude/package.json`, the plugin manifest, and the repository
 marketplace entry share one component version. CI runs Anthropic's strict plugin
-validator, package-shape tests, exact hook argv tests, and a high-severity npm
-audit. Release Please owns `claude-plugin-vX.Y.Z`; the component release workflow
+validator (pinned to Claude Code 2.1.295), package-shape tests, exact hook argv
+tests, and a high-severity npm audit. Release Please owns `claude-plugin-vX.Y.Z`; the component release workflow
 archives the exact tagged plugin and publishes the draft GitHub release only
 after validation.

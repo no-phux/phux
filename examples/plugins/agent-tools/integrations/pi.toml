@@ -18,7 +18,7 @@ mode = "state-file"
 default_session = "agent-bench-pi"
 
 [session_identity]
-# Pi 1.0.4 (`@earendil-works/pi-coding-agent`, dist/cli/args.js and main.js):
+# Pi 1.1.0 (`@earendil-works/pi-coding-agent`, dist/cli/args.js and main.js):
 # `--session <path|id>` reopens a project session by exact or prefix id, and
 # `--session-id <id>` opens that exact id or creates a new session with it.
 # The `@phux/pi` extension opens its AgentSession with the same id

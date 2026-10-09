@@ -15,7 +15,7 @@ ordinary one-shot commands.
 
 ## Install and load
 
-The extension targets OMP 18.6.1 and requires Bun 1.3.14 or newer. It uses
+The extension targets OMP 18.8.6 and requires Bun 1.3.14 or newer. It uses
 `ExtensionAPI` from `@oh-my-pi/pi-coding-agent`, native `pi.registerTool`, and
 the host's plain JSON Schema `TSchema` alternative, not the Pi SDK or a
 compatibility shim. Development SDK dependencies are pinned; the installed
@@ -95,7 +95,7 @@ readiness. Use `phux_paste` for literal text and `phux_send_keys` for actual key
 chords. Agent prompts and shell commands are different operations. The build copies
 the canonical [native-tools skill](../../.agents/skills/using-phux-tools/SKILL.md)
 into `skills/using-phux-tools/SKILL.md`; OMP discovers that conventional package
-directory for explicit `-e` directories and installed plugins. OMP 18.6.1 has no
+directory for explicit `-e` directories and installed plugins. OMP 18.8.6 has no
 `omp.skills` manifest field. The generated copy is ignored in Git and included in
 the package. The [using-phux skill](../../.agents/skills/using-phux/SKILL.md) explains
 the underlying CLI workflow; this package does not maintain a divergent copy.
@@ -167,7 +167,7 @@ tool-start records cannot clear that block. Last resolution emits a stream-only
 working assertion, not a new prompt or completion. Declarations still never contain
 state or attention. Other UI questions and fleet-context injection are not covered.
 
-OMP 18.6.1 delivers generic activity concurrently and detaches aggregate extension
+OMP 18.8.6 delivers generic activity concurrently and detaches aggregate extension
 notifications. Navigation/abort does **not** drain their delivery. OMP 18 removed
 the FIFO subscriber gate that made the received aggregate a barrier in 17.x: it
 settles `agent_end` on its own path, so a tool event an earlier extension holds

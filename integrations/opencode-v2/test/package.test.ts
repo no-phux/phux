@@ -19,8 +19,13 @@ test("packed plugin loads outside the checkout with only its declared dependency
     const executable = join(directory, "phux-fixture");
     await writeFile(executable, "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"running\":false}'\nexit 1\n", { mode: 0o700 });
     const output = command([process.execPath, "--eval", `
-      import plugin from './package/index.js';
-      import tui from './package/tui.js';
+      import { Host } from '@opencode/plugin/host';
+      const entrypoints = Host.resolve({ directory: ${JSON.stringify(join(directory, "package"))} });
+      if (!entrypoints.server || !entrypoints.tui || entrypoints.rpc) {
+        throw new Error('native loader must discover exactly the packed server and TUI entrypoints');
+      }
+      const { default: plugin } = await Host.load(entrypoints.server);
+      const { default: tui } = await Host.load(entrypoints.tui);
       if (tui.id !== 'phux.tui') throw new Error('packed terminal entrypoint not loadable');
       const tools = [];
       const cleanup = await plugin.setup({

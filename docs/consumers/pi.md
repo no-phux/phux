@@ -17,8 +17,9 @@ AgentSession events. It neither embeds a terminal nor owns the server.
 ## Requirements and installation
 
 The package requires Node.js 22 or newer, Pi, and `phux` on `PATH`; it does
-not bundle phux. Development and packed-extension load gates pin Pi 1.0.4;
-host-provided Pi modules remain wildcard peers rather than bundled copies. The installed CLI must support `paste`, `agent prompt/wait`,
+not bundle phux. Development and packed-extension load gates pin Pi 1.1.0;
+host-provided Pi modules must satisfy the `^1.1.0` peers and are not bundled.
+The installed CLI must support `paste`, `agent prompt/wait`,
 `resource wait`, `runtime-info`, and current snapshot/wait options. Older
 binaries may support only part of this surface; unsupported verbs fail
 rather than being emulated. Check the installed version before loading:
@@ -267,8 +268,10 @@ On a server that advertises `RESOURCE_KINDS`, the extension also opens one
 AgentSession per pane and emits closed record types from Pi's lifecycle bus:
 `session_start` at bind, `prompt` on `agent_start`, `tool_start` /
 `tool_end` around tool execution, `ask` on a trust prompt or blocking UI
-prompt, `stop` on `agent_settled`, and `session_end` then `session close` on
-shutdown. The server derives working, blocked, and done from this stream.
+prompt, `stop` on `agent_settled` with Pi's boolean `aborted` metadata, and
+`session_end` then `session close` on shutdown. A cancelled run settles without
+closing the native session; stream readers can distinguish it from completion.
+The server still derives working, blocked, and done from this stream.
 If `phux agent session open` is missing or refused with `unsupported_server`,
 emit fails closed; identity-only writes and the detector still run.
 

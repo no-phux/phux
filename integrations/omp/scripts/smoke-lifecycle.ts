@@ -248,7 +248,7 @@ if (process.argv[2] !== "--isolated") {
     await closeCase();
 
     // 17.x held agent_end behind an earlier extension's slow tool delivery with
-    // a FIFO subscriber gate. 18.6.1 has no such gate: every agent event is
+    // a FIFO subscriber gate. 18.8.6 has no such gate: every agent event is
     // dispatched fire-and-forget, and agent_end reaches extensions from its own
     // settle path, so a held tool_execution_start lands AFTER the run's end.
     // This case pins that ordering deterministically (no sleep: the end is
@@ -364,7 +364,7 @@ if (process.argv[2] !== "--isolated") {
       api.on("session_start", async (_event, ctx) => {
         await Bun.write(${JSON.stringify(proofPath)}, JSON.stringify({
           nativeId: ctx.sessionManager.getSessionId(), pid: process.pid, host: process.env.PHUX_TERMINAL_ID,
-          selected: process.env.PHUX_TARGET, argv: process.argv, sdk: "18.6.1"
+          selected: process.env.PHUX_TARGET, argv: process.argv, sdk: "18.8.6"
         }));
       });
     }`);

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AgentSettledEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { PhuxCli, type AgentEmitOptions, type AgentSessionOpenOptions, type ExecutionOptions } from "../src/adapter.js";
 import type { RunRequest } from "../src/runner.js";
@@ -530,7 +530,7 @@ test("per-turn events emit on the AgentSession stream and never rewrite identity
 
   handlers.get("agent_start")?.({ type: "agent_start" }, ctx);
   handlers.get("project_trust")?.({ type: "project_trust", cwd: "/repo" }, ctx);
-  handlers.get("agent_settled")?.({ type: "agent_settled" }, ctx);
+  handlers.get("agent_settled")?.({ type: "agent_settled", aborted: false } satisfies AgentSettledEvent, ctx);
   await registered.lifecycle.settled();
 
   assert.equal(adapter.sets.length, afterStart, "a turn must not rewrite the identity record");
@@ -556,6 +556,34 @@ test("per-turn events emit on the AgentSession stream and never rewrite identity
   assert.equal(adapter.sets.length, writesAtShutdown, "control changes never write identity");
   assert.equal(adapter.clears.length, 0, "reload preserves the hosting declaration");
   assert.equal(adapter.sessionCloses.length, 0, "reload preserves AgentSession");
+});
+
+test("Pi 1.1 settled events preserve cancellation metadata without rewriting identity", async () => {
+  const timers = new FakeTimers();
+  const adapter = new FakeAdapter();
+  const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+  const pi = { on: (name: string, handler: (event: unknown, ctx: unknown) => unknown) => handlers.set(name, handler) } as unknown as ExtensionAPI;
+  const pane = projection(null).agents[0] as AgentPane;
+  const store = new PhuxTargetStore({ appendEntry: () => {} }, { agentList: async () => ({ agents: [pane] }) });
+  await store.refresh();
+  const { lifecycle } = registerPhuxLifecycle(pi, store, { cli: adapter, timers, hostTerminal: "3" });
+  const ctx = { sessionManager: { getSessionId: () => "session-1" } };
+  handlers.get("session_start")?.({ reason: "startup" }, ctx);
+  timers.runAll();
+  await lifecycle.settled();
+
+  for (const aborted of [false, true]) {
+    handlers.get("agent_start")?.({ type: "agent_start" }, ctx);
+    handlers.get("agent_settled")?.({ type: "agent_settled", aborted } satisfies AgentSettledEvent, ctx);
+  }
+  await lifecycle.settled();
+  assert.deepEqual(adapter.emits.filter((entry) => entry.type === "stop"), [
+    { target: "@99", type: "stop", data: { aborted: false } },
+    { target: "@99", type: "stop", data: { aborted: true } },
+  ]);
+  assert.equal(adapter.sets.length, 1, "completion and cancellation must not rewrite identity");
+  assert.equal(adapter.sets[0]?.record.state, undefined);
+  assert.equal(adapter.sessionCloses.length, 0, "cancellation settles a run, not the native session");
 });
 
 test("hosting identity never falls back to selected control target", async () => {
@@ -662,7 +690,7 @@ test("transcript entries ride provider_raw beside the typed records, and transcr
     handlers.get("tool_execution_start")?.({ toolCallId: "c1", toolName: "bash", args: { command: "ls" } }, ctx);
     handlers.get("tool_execution_end")?.({ toolCallId: "c1", toolName: "bash", isError: false, result: { content: [] } }, ctx);
     handlers.get("message_end")?.({ message: { role: "assistant", content: [{ type: "text", text: "ok" }], timestamp: 2 } }, ctx);
-    handlers.get("agent_settled")?.({}, ctx);
+    handlers.get("agent_settled")?.({ type: "agent_settled", aborted: false } satisfies AgentSettledEvent, ctx);
     await lifecycle.settled();
 
     const summary = adapter.emits.map((emit) => {

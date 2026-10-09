@@ -49,6 +49,11 @@ try {
   assert.deepEqual(metadata.publishConfig, { access: "public", provenance: true });
   assert.deepEqual(metadata.pi?.extensions, ["./extensions/index.ts"]);
   assert.equal(metadata.exports?.["."]?.import, "./dist/src/index.js");
+  for (const name of ["pi-ai", "pi-coding-agent", "pi-tui"]) {
+    const sdk = `@earendil-works/${name}`;
+    assert.equal(metadata.peerDependencies?.[sdk], "^1.1.0", `${sdk} must require the current host API`);
+    assert.equal(metadata.devDependencies?.[sdk], "1.1.0", `${sdk} loader tests must use the pinned SDK`);
+  }
 
   const adapterTypes = await readFile(
     join(packedRoot, "node_modules", "@phux", "integration-runtime", "dist", "src", "adapter.d.ts"),

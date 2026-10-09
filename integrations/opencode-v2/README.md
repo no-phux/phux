@@ -1,6 +1,6 @@
 # @phux/opencode-v2
 
-Private OpenCode V2 plugin, pinned to the public `@opencode/plugin@2.0.23`
+Private OpenCode V2 plugin, pinned to the public `@opencode/plugin@2.0.26`
 contract. phux owns the terminals; OpenCode owns its session and permissions.
 
 ## Build and load

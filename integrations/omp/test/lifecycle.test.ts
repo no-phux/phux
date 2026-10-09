@@ -193,7 +193,7 @@ describe("OMP host lifecycle", () => {
   });
 
   test("a tool delivery held past the run's end cannot resurrect the finished run", async () => {
-    // 18.6.1 settles agent_end on its own path: an earlier extension that holds
+    // 18.8.6 settles agent_end on its own path: an earlier extension that holds
     // tool_execution_start lets the end, and even the tool's own end, overtake it.
     const f = fixture(); const host = sdk(f.cli);
     await host.event("session_start"); await host.event("agent_start");
