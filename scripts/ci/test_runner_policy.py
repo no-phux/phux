@@ -85,6 +85,103 @@ class RunnerPolicyTests(unittest.TestCase):
         self.assertIn("key=linux-arm64-mbx-phux-${lane}-", prune)
         self.assertIn("tail -n +2", prune)
 
+    def test_rust_lanes_bound_the_mbx_objects_export_to_free_disk(self):
+        """A full test lane filled the runner and the objects export ENOSPC'd.
+
+        GC stays off during the build so the restored bundle survives. The
+        last step of check and test collects the store before the action's
+        post step writes a second copy. The script must not delete the action
+        store, and a low-disk report must ask for the tighter cap.
+        """
+        ci = (WORKFLOWS / "ci.yml").read_text()
+        for job in ("check", "test"):
+            body = re.split(
+                r"\n  [a-z#]",
+                ci.split(f"\n  {job}:\n", 1)[1],
+                maxsplit=1,
+            )[0]
+            self.assertIn("name: leave disk for the mbx objects export", body)
+            self.assertLess(body.index("name: lane signal"), body.index("mbx-export-headroom.sh"))
+            step = body.split("name: leave disk for the mbx objects export", 1)[1]
+            self.assertIn("if: always()", step)
+            self.assertIn("bash scripts/ci/mbx-export-headroom.sh", step)
+        lane = (ROOT / ".github/actions/setup-rust-lane/action.yml").read_text()
+        self.assertIn("scripts/ci/mbx-export-headroom.sh", lane)
+        self.assertNotIn("isolate-objects-cache: true", lane)
+
+        script = ROOT / "scripts/ci/mbx-export-headroom.sh"
+        self._assert_headroom(script, free_kb="20000000", sizes=["8GiB"])
+        self._assert_headroom(script, free_kb="1000000", sizes=["8GiB", "4GiB"])
+        refused = subprocess.run(
+            ["bash", str(script)],
+            env={"PATH": "/usr/bin:/bin", "PHUX_MBX_EXPORT_HEADROOM": "1", "HOME": ""},
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("refusing", refused.stderr)
+
+    def _assert_headroom(self, script: Path, free_kb: str, sizes: list[str]) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            cargo_registry = home / ".cargo" / "registry" / "src"
+            cargo_git = home / ".cargo" / "git" / "db"
+            cargo_bin = home / ".cargo" / "bin"
+            keep = home / "keep-store"
+            for path in (cargo_registry, cargo_git, cargo_bin, keep):
+                path.mkdir(parents=True)
+                (path / "sentinel").write_text("keep")
+            log = root / "mbx.log"
+            bindir = root / "bin"
+            bindir.mkdir()
+            (bindir / "mbx").write_text(textwrap.dedent(f"""\
+                #!/bin/sh
+                printf '%s\\n' "$*" >> "{log}"
+                exit 0
+                """))
+            (bindir / "df").write_text(textwrap.dedent(f"""\
+                #!/bin/sh
+                if [ "$1" = "-Pk" ]; then
+                  echo 'Filesystem 1024-blocks Used Available Capacity Mounted on'
+                  echo '/dev/disk 100 0 {free_kb} 90% /'
+                fi
+                exit 0
+                """))
+            for name in ("mbx", "df"):
+                os.chmod(bindir / name, 0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{bindir}{os.pathsep}{env.get('PATH', '')}"
+            env["HOME"] = str(home)
+            env["PHUX_MBX_EXPORT_HEADROOM"] = "1"
+            env.pop("GITHUB_ACTIONS", None)
+            env.pop("CARGO_HOME", None)
+            completed = subprocess.run(
+                ["bash", str(script)],
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertFalse((cargo_registry / "sentinel").exists())
+            self.assertFalse((cargo_git / "sentinel").exists())
+            self.assertTrue((cargo_bin / "sentinel").exists())
+            self.assertEqual((keep / "sentinel").read_text(), "keep")
+            calls = log.read_text().splitlines()
+            self.assertEqual(calls, [f"gc --max-size {size}" for size in sizes])
+
+            skipped = subprocess.run(
+                ["bash", str(script)],
+                env={**env, "PHUX_MBX_EXPORT_HEADROOM": "0", "PATH": "/usr/bin:/bin"},
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(skipped.returncode, 0, skipped.stderr)
+            self.assertIn("skipped", skipped.stdout)
+
     def test_linux_release_keeps_glibc_2204_userspace_without_retired_runners(self):
         for name, body in (("release.yml", RELEASE), ("next-release.yml", NEXT_RELEASE)):
             with self.subTest(workflow=name):
