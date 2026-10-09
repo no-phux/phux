@@ -548,10 +548,11 @@ impl ServerRuntime {
         self
     }
 
-    /// Let a hub pick up registry edits live: on each
-    /// `phux.config.reload/v1` doorbell it re-reads `[[satellites]]` from
-    /// `source` and dials added entries, stops removed ones, and redials
-    /// changed ones, leaving every other link and pane alone. Ignored off-hub.
+    /// On each `phux.config.reload/v1` doorbell, re-read `[[satellites]]`
+    /// from `source`. A hub dials added entries, stops removed ones, and
+    /// redials changed ones. A server that did not boot as a hub starts
+    /// those links the first time the registry is non-empty. Local panes
+    /// stay up either way.
     #[must_use]
     pub fn hub_reload(mut self, source: crate::hub::SatelliteSource) -> Self {
         self.satellite_source = Some(source);
@@ -668,6 +669,9 @@ impl ServerRuntime {
                 spawn_shutdown_folder(shutdown, &root_token);
                 arm_idle_exit(&state, exit_after_idle, &root_token);
                 install_hook_dispatcher(&state, hook_catalog, hook_socket_path);
+                state.with_mut(|s| {
+                    s.arm_hub_reload(satellite_source.clone(), root_token.clone());
+                });
                 spawn_hub_links(&state, hub_table.as_ref(), satellite_source, &root_token);
                 // Live revocation (workload-auth §7).
                 revocation::spawn_revocation_watcher(&state, &root_token);

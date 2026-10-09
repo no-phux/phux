@@ -29,10 +29,32 @@ impl ServerState {
     }
 
     /// The registry source [`crate::hub::reload_satellites`] re-reads;
-    /// `None` off-hub or when the embedder supplied none.
+    /// `None` when the embedder supplied none.
     #[must_use]
     pub(crate) fn hub_satellite_source(&self) -> Option<crate::hub::SatelliteSource> {
         self.hub.source()
+    }
+
+    /// Arm reload before any link exists, so a later doorbell can promote
+    /// this server into a hub without restarting panes.
+    pub(crate) fn arm_hub_reload(
+        &mut self,
+        source: Option<crate::hub::SatelliteSource>,
+        cancel: tokio_util::sync::CancellationToken,
+    ) {
+        self.hub.arm_reload(source, cancel);
+    }
+
+    /// Whether satellite link supervisors are installed.
+    #[must_use]
+    pub(crate) const fn hub_has_links(&self) -> bool {
+        self.hub.has_links()
+    }
+
+    /// Install empty link supervisors when a doorbell is about to add the
+    /// first satellites. `false` when reload was not armed with a token.
+    pub(crate) fn hub_ensure_links(&mut self, ssh_program: std::ffi::OsString) -> bool {
+        self.hub.ensure_links(ssh_program)
     }
 
     /// Swap in a reloaded satellite table, starting, stopping, or redialing

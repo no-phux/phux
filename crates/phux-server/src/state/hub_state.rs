@@ -15,6 +15,9 @@ pub(super) struct HubState {
     links: Option<crate::hub::link::HubLinks>,
     /// Where a reload re-reads `[[satellites]]`; `None` disables reload.
     source: Option<crate::hub::SatelliteSource>,
+    /// Parent of link supervisors started by a later promotion. `None` until
+    /// the runtime arms reload.
+    cancel: Option<tokio_util::sync::CancellationToken>,
     /// What each satellite advertised on its current link (ADR-0127), set by
     /// the link's relay session when it negotiates. Empty off-hub.
     satellite_features: Vec<(
@@ -38,6 +41,7 @@ impl HubState {
             relays: None,
             links: None,
             source: None,
+            cancel: None,
             satellite_features: Vec::new(),
         }
     }
@@ -53,9 +57,50 @@ impl HubState {
         self.source = source;
     }
 
-    /// The registry source a reload re-reads; `None` off-hub.
+    /// Remember the registry reader and the token that will parent any link
+    /// started later. A server that did not boot as a hub can still promote
+    /// when the doorbell finds satellites.
+    pub(super) fn arm_reload(
+        &mut self,
+        source: Option<crate::hub::SatelliteSource>,
+        cancel: tokio_util::sync::CancellationToken,
+    ) {
+        if source.is_some() {
+            self.source = source;
+        }
+        self.cancel = Some(cancel);
+    }
+
+    /// The registry source a reload re-reads; `None` when reload was not armed.
     pub(super) fn source(&self) -> Option<crate::hub::SatelliteSource> {
-        self.links.as_ref().and(self.source.clone())
+        self.source.clone()
+    }
+
+    /// Whether link supervisors are already installed.
+    pub(super) const fn has_links(&self) -> bool {
+        self.links.is_some()
+    }
+
+    /// Install empty relays and supervisors so the next table swap can dial.
+    /// `false` when no parent token was armed. Existing supervisors stay.
+    pub(super) fn ensure_links(&mut self, ssh_program: std::ffi::OsString) -> bool {
+        if self.links.is_some() {
+            return true;
+        }
+        let Some(cancel) = self.cancel.clone() else {
+            return false;
+        };
+        let Ok(empty) = crate::hub::HubTable::from_registry(&[]) else {
+            return false;
+        };
+        let relays = crate::hub::relay::HubRelays::default();
+        let links = crate::hub::link::HubLinks::new(relays.clone(), &cancel, ssh_program);
+        self.relays = Some(relays);
+        if self.table.is_none() {
+            self.table = Some(empty);
+        }
+        self.links = Some(links);
+        true
     }
 
     /// Swap in `next` and start, stop, or redial exactly the links that

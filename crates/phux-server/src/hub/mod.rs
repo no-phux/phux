@@ -252,12 +252,15 @@ impl core::fmt::Debug for SatelliteSource {
     }
 }
 
-/// Re-read the satellite registry into a running hub and apply the
-/// difference: dial added satellites, stop removed ones, redial changed
-/// ones, and leave every other link, relay session, and local pane alone.
-/// Rung by the `phux.config.reload/v1` doorbell. A no-op off-hub or without
-/// a [`SatelliteSource`]; a registry that fails to read or validate keeps
-/// the running table.
+/// Re-read the satellite registry and apply the difference: dial added
+/// satellites, stop removed ones, redial changed ones, and leave every
+/// other link, relay session, and local pane alone.
+///
+/// Rung by the `phux.config.reload/v1` doorbell. A no-op without a
+/// [`SatelliteSource`]. A server that did not boot with `--hub` grows link
+/// supervisors the first time the registry is non-empty, instead of waiting
+/// for a restart. A registry that fails to read or validate keeps the
+/// running table.
 pub(crate) fn reload_satellites(state: &crate::state::SharedState) {
     let Some(source) = state.with(crate::state::ServerState::hub_satellite_source) else {
         return;
@@ -275,6 +278,16 @@ pub(crate) fn reload_satellites(state: &crate::state::SharedState) {
             return;
         }
     };
+    if !state.with(crate::state::ServerState::hub_has_links) {
+        if next.is_empty() {
+            return;
+        }
+        let ssh = state.with(|s| s.server_env().ssh_program());
+        if !state.with_mut(|s| s.hub_ensure_links(ssh)) {
+            tracing::warn!("hub: satellites are configured but this server cannot start links");
+            return;
+        }
+    }
     let diff = state.with_mut(|s| s.hub_replace_table(next, state));
     log_reload(&diff);
 }
@@ -458,6 +471,45 @@ fn parse_ssh_port(port: &str) -> Result<u16, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_doorbell_promotes_a_non_hub_and_leaves_an_empty_registry_alone() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let idle = crate::state::SharedState::new();
+                let idle_cancel = tokio_util::sync::CancellationToken::new();
+                idle.with_mut(|s| {
+                    s.arm_hub_reload(
+                        Some(SatelliteSource::new(|| Ok(Vec::new()))),
+                        idle_cancel.clone(),
+                    );
+                });
+                reload_satellites(&idle);
+                assert!(idle.with(|s| s.hub_table().is_none()));
+                idle_cancel.cancel();
+
+                let state = crate::state::SharedState::new();
+                let cancel = tokio_util::sync::CancellationToken::new();
+                state.with_mut(|s| {
+                    s.arm_hub_reload(
+                        Some(SatelliteSource::new(|| {
+                            Ok(vec![entry("edge", "quic://127.0.0.1:9", true)])
+                        })),
+                        cancel.clone(),
+                    );
+                });
+                reload_satellites(&state);
+                let host = state.with(|s| {
+                    let table = s.hub_table().expect("promoted to a hub");
+                    assert_eq!(table.len(), 1);
+                    table.iter().next().expect("satellite").0.clone()
+                });
+                assert!(state.with(|s| s.hub_relay(&host).is_some()));
+                cancel.cancel();
+            })
+            .await;
+    }
 
     fn entry(name: &str, endpoint: &str, enabled: bool) -> SatelliteConfigEntry {
         SatelliteConfigEntry {
