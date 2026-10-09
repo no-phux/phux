@@ -482,18 +482,41 @@ shipped bar's shape change at 64 columns is per-widget `min-cols` /
 
 ### Theme
 
-`[theme]` is a free-form `slot = color` map for chrome and overlays.
-Unknown slot keys are ignored; an unparseable color keeps that slot's
-default. Colors accept names (`"cyan"`), hex (`"#cdd6f4"`), and ANSI
-indices (`"12"`). `phux config show --default` prints the shipped slots;
+`[theme]` is a `slot = color` map for chrome and overlays, plus two
+reserved keys that select a palette underneath the slots (ADR-0157):
+`name` picks an installed theme (`phux theme list`) and `file` points at
+any Omarchy-schema `colors.toml`. Unknown slot keys are ignored; an
+unparseable color keeps that slot's default; a `name` that does not
+resolve is a warning at attach and a refusal on `phux config reload`.
+Colors accept names (`"cyan"`), hex (`"#cdd6f4"`), and ANSI indices
+(`"12"`). `phux config show --default` prints the shipped slots;
 [`../CONFIG.md`](../CONFIG.md) owns the file.
 
 ```toml
 [theme]
-accent = "#cdd6f4"
-attention = "#fde047"
-surface = "#171b23"
+name = "tokyo-night"
+attention = "#fde047"   # an explicit slot still wins
 ```
+
+A selected theme's semantic keys land on the slots like this. The
+terminal's own ANSI palette is not touched by the TUI; that is the
+client runtime's job and lands separately.
+
+| theme key | slots |
+| --- | --- |
+| `accent` | `accent`, `title`, `divider_focus`, `pane_title_focus`, `agent_done` |
+| `green` | `chord`, `agent_working` |
+| `yellow` | `attention`, `agent_blocked` |
+| `red` | `error` |
+| `foreground` | `dim`, `section_header`, `sidebar_section`, `agent_idle`, `pane_title` |
+| `bright_foreground` | `text` |
+| `muted` | `border`, `divider` |
+| `selection`, `selection_foreground` | `selection_bg`, `selection_fg` |
+| `lighter_background` (dark) / `dark_background` (light) | `surface` |
+
+`action` and `shadow` stay `reset`. The WCAG floor the shipped palette
+pins is not promised for an arbitrary theme; `phux theme show` prints
+the foreground-on-background ratio.
 
 ## Copy-mode
 

@@ -10,9 +10,9 @@ use super::workspace::{RawPluginManifestWorkspace, WorkspaceSourceSlices, normal
 use super::{
     PluginAgentAttention, PluginAgentState, PluginManifest, PluginManifestAction,
     PluginManifestAgent, PluginManifestBuild, PluginManifestError, PluginManifestEvent,
-    PluginManifestLinkHandler, PluginManifestPane, PluginManifestSidebar, PluginManifestWidget,
-    PluginPanePlacement, PluginPlatform, PluginWidgetSlot, SIDEBAR_SECTION_DEFAULT_ROWS,
-    SIDEBAR_SECTION_MAX_ROWS,
+    PluginManifestLinkHandler, PluginManifestPane, PluginManifestSidebar, PluginManifestTheme,
+    PluginManifestWidget, PluginPanePlacement, PluginPlatform, PluginWidgetSlot,
+    SIDEBAR_SECTION_DEFAULT_ROWS, SIDEBAR_SECTION_MAX_ROWS,
 };
 
 #[derive(Debug, Deserialize)]
@@ -44,6 +44,15 @@ struct RawPluginManifest {
     widgets: Vec<RawPluginManifestWidget>,
     #[serde(default)]
     sidebar: Vec<RawPluginManifestSidebar>,
+    #[serde(default)]
+    themes: Vec<RawPluginManifestTheme>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPluginManifestTheme {
+    name: String,
+    path: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
@@ -200,6 +209,15 @@ pub fn load_plugin_manifest(path: &Path) -> Result<PluginManifest, PluginManifes
         id_of_sidebar,
         "plugin sidebar section",
     )?;
+    let themes = raw
+        .themes
+        .into_iter()
+        .map(|theme| normalize_theme(&theme, &plugin_root))
+        .collect::<Result<Vec<_>, _>>()?;
+    reject_duplicate_ids(
+        themes.iter().map(|theme| theme.name.as_str()),
+        "plugin theme",
+    )?;
 
     Ok(PluginManifest {
         id,
@@ -219,7 +237,43 @@ pub fn load_plugin_manifest(path: &Path) -> Result<PluginManifest, PluginManifes
         workspaces,
         widgets,
         sidebar,
+        themes,
     })
+}
+
+/// Validate one `[[themes]]` entry: a usable catalog name and a relative
+/// directory under the plugin root that holds a `colors.toml`. The file is
+/// not parsed here; a broken palette is the theme loader's finding.
+fn normalize_theme(
+    raw: &RawPluginManifestTheme,
+    plugin_root: &Path,
+) -> Result<PluginManifestTheme, PluginManifestError> {
+    let name = raw.name.trim().to_owned();
+    if !crate::theme::is_valid_name(&name) {
+        return Err(PluginManifestError::Invalid(format!(
+            "plugin theme name {:?} must match [a-z0-9_][a-z0-9._+-]*",
+            raw.name
+        )));
+    }
+    if raw.path.is_absolute()
+        || raw
+            .path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return Err(PluginManifestError::Invalid(format!(
+            "plugin theme '{name}': path must be relative to the plugin root and not climb out of it"
+        )));
+    }
+    let path = plugin_root.join(&raw.path);
+    if !path.join(crate::theme::COLORS_FILE).is_file() {
+        return Err(PluginManifestError::Invalid(format!(
+            "plugin theme '{name}': {} has no {}",
+            path.display(),
+            crate::theme::COLORS_FILE
+        )));
+    }
+    Ok(PluginManifestTheme { name, path })
 }
 
 /// Normalize one repeated section entry by entry, then reject duplicate

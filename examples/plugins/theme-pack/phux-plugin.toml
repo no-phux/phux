@@ -1,0 +1,9 @@
+id = "com.phux.demo.theme-pack"
+name = "phux Theme Pack"
+version = "0.1.0"
+min_phux_version = "0.0.2"
+description = "A plugin that ships a theme: an Omarchy-schema colors.toml under [[themes]]."
+
+[[themes]]
+name = "phux-dark"
+path = "themes/phux-dark"

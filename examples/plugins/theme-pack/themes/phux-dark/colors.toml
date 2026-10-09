@@ -1,0 +1,22 @@
+# The TUI's shipped chrome palette, written as a theme. Keys follow
+# Omarchy's colors.toml schema; bright_* and the darker shades are derived
+# when omitted.
+mode = "dark"
+
+accent = "#bef264"
+selection = "#293628"
+muted = "#7c8696"
+
+background = "#0f1218"
+lighter_background = "#171b23"
+
+foreground = "#c9d1dc"
+dark_foreground = "#9aa4b2"
+bright_foreground = "#f4f7fb"
+
+red = "#f87171"
+yellow = "#fde047"
+green = "#86efac"
+cyan = "#67e8f9"
+blue = "#7aa2f7"
+magenta = "#c4b5fd"

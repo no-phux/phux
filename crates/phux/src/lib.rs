@@ -1391,6 +1391,7 @@ fn dispatch(
         }) => commands::run::run_run(&target, &command, timeout, force, json.json, socket),
         Some(Command::Config { action }) => commands::config::run_config(&action, socket),
         Some(Command::Plugin { action }) => commands::plugin::run_plugin(&action),
+        Some(Command::Theme { action }) => commands::theme::run_theme(&action, socket),
         Some(Command::Workspace { action }) => commands::workspace::run_workspace(&action, socket),
         Some(Command::Tag { action }) => commands::tag::run_tag(&action, socket),
         Some(Command::StdioBridge {}) => commands::stdio_bridge::run_stdio_bridge(socket),
@@ -2247,6 +2248,72 @@ mod tests {
         // The root registry verb keeps its established pair.
         for argv in [["phux", "ls"], ["phux", "list"]] {
             assert!(matches!(parsed(&argv), Command::Ls { .. }));
+        }
+    }
+
+    /// `phux theme` parses every verb; `set` takes a name or `--file`, and
+    /// `remove` answers to `rm` (ADR-0065 alias policy).
+    #[test]
+    fn theme_verbs_parse() {
+        use crate::commands::ThemeAction;
+
+        for argv in [["phux", "theme", "list"], ["phux", "theme", "ls"]] {
+            assert!(matches!(
+                parsed(&argv),
+                Command::Theme {
+                    action: ThemeAction::List { json: false }
+                }
+            ));
+        }
+        assert!(matches!(
+            parsed(&["phux", "theme", "show"]),
+            Command::Theme {
+                action: ThemeAction::Show {
+                    name: None,
+                    json: false
+                }
+            }
+        ));
+        assert!(matches!(
+            parsed(&["phux", "theme", "set", "nord"]),
+            Command::Theme {
+                action: ThemeAction::Set {
+                    name: Some(_),
+                    file: None
+                }
+            }
+        ));
+        assert!(matches!(
+            parsed(&["phux", "theme", "set", "--file", "~/x/colors.toml"]),
+            Command::Theme {
+                action: ThemeAction::Set {
+                    name: None,
+                    file: Some(_)
+                }
+            }
+        ));
+        assert!(matches!(
+            parsed(&[
+                "phux",
+                "theme",
+                "install",
+                "https://example.com/x.git",
+                "--json"
+            ]),
+            Command::Theme {
+                action: ThemeAction::Install { json: true, .. }
+            }
+        ));
+        for argv in [
+            ["phux", "theme", "remove", "nord"],
+            ["phux", "theme", "rm", "nord"],
+        ] {
+            assert!(matches!(
+                parsed(&argv),
+                Command::Theme {
+                    action: ThemeAction::Remove { .. }
+                }
+            ));
         }
     }
 

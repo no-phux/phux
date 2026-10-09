@@ -22,7 +22,9 @@
 
 use std::str::FromStr;
 
+use phux_config::plugin::PluginManifest;
 use phux_config::settings::{Applies, SettingKind, SettingSection, SettingSpec};
+use phux_config::theme::{ThemeColors, ThemeError, ThemeMode};
 use ratatui::style::Color;
 
 /// Named color slots for chrome + overlay painting (ratatui [`Color`]s).
@@ -128,13 +130,95 @@ impl Default for Theme {
 }
 
 impl Theme {
-    /// The default theme with `[theme]` overrides layered on. Values parse
-    /// like ratatui's `Color` (`"cyan"`, `"#cdd6f4"`, `"12"`); unknown keys
-    /// and unparseable values keep the default (warned).
+    /// The selected theme (`[theme] name` / `file`, ADR-0157) or the shipped
+    /// palette, with the remaining `[theme]` slot overrides layered on.
+    /// Tolerant: a theme that does not load is warned about and the shipped
+    /// palette stands in. Values parse like ratatui's `Color` (`"cyan"`,
+    /// `"#cdd6f4"`, `"12"`); unknown keys and unparseable values keep the
+    /// default (warned).
     #[must_use]
-    pub fn from_cfg(cfg: &phux_config::ThemeCfg) -> Self {
-        let mut theme = Self::default();
-        for (key, spec) in &cfg.slots {
+    pub fn from_cfg(cfg: &phux_config::ThemeCfg, plugins: &[PluginManifest]) -> Self {
+        let base = match phux_config::theme::resolve_selected(cfg, plugins) {
+            Ok(Some(colors)) => Self::from_colors(&colors),
+            Ok(None) => Self::default(),
+            Err(err) => {
+                tracing::warn!(error = %err, "selected theme did not load; using the shipped palette");
+                Self::default()
+            }
+        };
+        base.with_overrides(cfg)
+    }
+
+    /// [`Self::from_cfg`], refusing instead of warning when the selected
+    /// theme does not load (the strict build behind `phux config reload`).
+    ///
+    /// # Errors
+    ///
+    /// The [`ThemeError`] naming what did not load.
+    pub fn resolve(
+        cfg: &phux_config::ThemeCfg,
+        plugins: &[PluginManifest],
+    ) -> Result<Self, ThemeError> {
+        let base = phux_config::theme::resolve_selected(cfg, plugins)?
+            .map_or_else(Self::default, |colors| Self::from_colors(&colors));
+        Ok(base.with_overrides(cfg))
+    }
+
+    /// Map a theme's semantic colours onto the chrome slots (ADR-0157
+    /// decision 5). Text rides `foreground` / `bright_foreground`, rules
+    /// ride `muted`, the one focus hue is `accent`, agent lifecycle borrows
+    /// the terminal's green / yellow, and panels fill with the raised shade
+    /// of the background (`lighter_background` on dark, `dark_background` on
+    /// light) so a panel reads as a surface against the terminal.
+    #[must_use]
+    pub fn from_colors(colors: &ThemeColors) -> Self {
+        let rgb = |key: &str| {
+            colors
+                .get(key)
+                .map_or(Color::Reset, |c| Color::Rgb(c.r, c.g, c.b))
+        };
+        let accent = rgb("accent");
+        let green = rgb("green");
+        let yellow = rgb("yellow");
+        let fg = rgb("foreground");
+        let bright_fg = rgb("bright_foreground");
+        let muted = rgb("muted");
+        let surface = match colors.mode {
+            ThemeMode::Dark => rgb("lighter_background"),
+            ThemeMode::Light => rgb("dark_background"),
+        };
+        Self {
+            accent,
+            chord: green,
+            action: Color::Reset,
+            dim: fg,
+            border: muted,
+            title: accent,
+            section_header: fg,
+            error: rgb("red"),
+            surface,
+            shadow: Color::Reset,
+            selection_fg: rgb("selection_foreground"),
+            selection_bg: rgb("selection"),
+            attention: yellow,
+            sidebar_section: fg,
+            agent_idle: fg,
+            agent_working: green,
+            agent_blocked: yellow,
+            agent_done: accent,
+            divider: muted,
+            divider_focus: accent,
+            pane_title: fg,
+            pane_title_focus: accent,
+            text: bright_fg,
+        }
+    }
+
+    /// Layer the `[theme]` slot overrides (every key but the reserved
+    /// selectors) onto `self`.
+    fn with_overrides(mut self, cfg: &phux_config::ThemeCfg) -> Self {
+        let theme = &mut self;
+        for (key, spec) in cfg.slot_overrides() {
             let Some(slot) = theme.slot_mut(key) else {
                 tracing::warn!(slot = key, "unknown theme slot; ignoring");
                 continue;
@@ -150,7 +234,7 @@ impl Theme {
                 }
             }
         }
-        theme
+        self
     }
 
     /// The color in the slot named `key`, or `None` if `key` is not a
@@ -521,7 +605,7 @@ mod tests {
     #[test]
     fn every_slot_is_overridable_and_bad_entries_are_ignored() {
         for spec in SLOT_SPECS {
-            let t = Theme::from_cfg(&cfg(&[(spec.leaf(), "#123456")]));
+            let t = Theme::from_cfg(&cfg(&[(spec.leaf(), "#123456")]), &[]);
             assert_eq!(
                 t.slot(spec.leaf()),
                 Some(Color::Rgb(0x12, 0x34, 0x56)),
@@ -529,23 +613,108 @@ mod tests {
                 spec.key
             );
         }
-        let t = Theme::from_cfg(&cfg(&[
-            ("accent", "magenta"),
-            ("chord", "12"),
-            ("surface", "reset"),
-        ]));
+        let t = Theme::from_cfg(
+            &cfg(&[("accent", "magenta"), ("chord", "12"), ("surface", "reset")]),
+            &[],
+        );
         assert_eq!(
             (t.accent, t.chord, t.surface),
             (Color::Magenta, Color::Indexed(12), Color::Reset)
         );
         assert_eq!(t.dim, Theme::default().dim);
         for bad in [("not_a_slot", "red"), ("accent", "definitely-not-a-color")] {
-            assert_eq!(Theme::from_cfg(&cfg(&[bad])), Theme::default(), "{bad:?}");
+            assert_eq!(
+                Theme::from_cfg(&cfg(&[bad]), &[]),
+                Theme::default(),
+                "{bad:?}"
+            );
         }
         assert_eq!(
-            Theme::from_cfg(&phux_config::ThemeCfg::default()),
+            Theme::from_cfg(&phux_config::ThemeCfg::default(), &[]),
             Theme::default()
         );
+    }
+
+    const LIGHT_COLORS: &str = "mode = \"light\"\naccent = \"#1e66f5\"\nselection = \"#ccd0da\"\n\
+        muted = \"#acb0be\"\nbackground = \"#eff1f5\"\ndark_background = \"#e3e4e8\"\n\
+        lighter_background = \"#dce0e8\"\nforeground = \"#4c4f69\"\nbright_foreground = \"#4c4f69\"\n\
+        red = \"#d20f39\"\nyellow = \"#df8e1d\"\ngreen = \"#40a02b\"\ncyan = \"#179299\"\n\
+        blue = \"#1e66f5\"\nmagenta = \"#ea76cb\"\n";
+
+    /// A scratch theme directory holding `colors.toml`, removed on drop.
+    struct ThemeDir(std::path::PathBuf);
+
+    impl ThemeDir {
+        fn new(tag: &str, colors: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "phux-tui-theme-{tag}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos())
+            ));
+            std::fs::create_dir_all(&dir).expect("mkdir");
+            std::fs::write(dir.join("colors.toml"), colors).expect("write colors.toml");
+            Self(dir)
+        }
+    }
+
+    impl Drop for ThemeDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// `[theme] file` selects a palette; its semantic keys land on the slots
+    /// per the documented mapping, a light theme fills panels with the
+    /// darker shade, and explicit slot keys still win (ADR-0026 layering).
+    #[test]
+    fn a_selected_theme_maps_onto_the_slots_and_overrides_still_win() {
+        let dir = ThemeDir::new("light", LIGHT_COLORS);
+        let file = dir.0.join("colors.toml").display().to_string();
+        let t = Theme::from_cfg(&cfg(&[("file", &file), ("error", "#000001")]), &[]);
+        assert_eq!(t.accent, Color::Rgb(0x1e, 0x66, 0xf5));
+        assert_eq!(t.title, t.accent);
+        assert_eq!(t.divider_focus, t.accent);
+        assert_eq!(t.chord, Color::Rgb(0x40, 0xa0, 0x2b));
+        assert_eq!(t.attention, Color::Rgb(0xdf, 0x8e, 0x1d));
+        assert_eq!(
+            t.surface,
+            Color::Rgb(0xe3, 0xe4, 0xe8),
+            "light: dark_background"
+        );
+        assert_eq!(t.border, Color::Rgb(0xac, 0xb0, 0xbe));
+        assert_eq!(t.selection_bg, Color::Rgb(0xcc, 0xd0, 0xda));
+        assert_eq!(t.text, Color::Rgb(0x4c, 0x4f, 0x69));
+        assert_eq!(t.action, Color::Reset);
+        assert_eq!(
+            t.error,
+            Color::Rgb(0, 0, 1),
+            "an explicit slot beats the theme"
+        );
+        assert!(Theme::resolve(&cfg(&[("file", &file)]), &[]).is_ok());
+    }
+
+    /// A dark theme fills panels with `lighter_background`; a selection
+    /// that does not load is a warning for the tolerant build and a refusal
+    /// for the strict one.
+    #[test]
+    fn dark_surface_and_missing_theme_handling() {
+        let dark = LIGHT_COLORS.replace("mode = \"light\"", "mode = \"dark\"");
+        let dir = ThemeDir::new("dark", &dark);
+        let file = dir.0.join("colors.toml").display().to_string();
+        let t = Theme::from_cfg(&cfg(&[("file", &file)]), &[]);
+        assert_eq!(
+            t.surface,
+            Color::Rgb(0xdc, 0xe0, 0xe8),
+            "dark: lighter_background"
+        );
+
+        let missing = cfg(&[("name", "no-such-theme-xyz"), ("accent", "#123456")]);
+        let tolerant = Theme::from_cfg(&missing, &[]);
+        assert_eq!(tolerant.accent, Color::Rgb(0x12, 0x34, 0x56));
+        assert_eq!(tolerant.dim, Theme::default().dim);
+        assert!(Theme::resolve(&missing, &[]).is_err());
     }
 
     /// Relative luminance per WCAG 2.1, for the contrast assertion below.

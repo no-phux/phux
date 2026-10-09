@@ -79,6 +79,7 @@ Maintain:
   update        Update phux, keeping sessions alive
   upgrade       Hot-swap the running server to the installed binary
   channel       Show or switch the release channel
+  theme         Install, list, and select colour themes
 
 More:
   rec           Record a pane to a cast, GIF, or APNG
@@ -3766,6 +3767,141 @@ Flags:
                        exiting. Omit to hold the lease until `phux give` or a
                        disconnect, today's default. The wire's `ttl_ms` is a
                        `u32`, so this caps at 4294967 (about 49.7 days).
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux theme`
+
+```text
+Install, list, and select colour themes
+
+A theme is a directory holding an Omarchy-schema `colors.toml`. Installed themes
+live under the phux data dir; enabled plugins may contribute more. `set` edits
+`[theme] name` in your config and signals attached clients to repaint;
+everything else is local.
+
+Usage: phux theme <SUBCOMMAND>
+
+Commands:
+  install  Install a theme from a git URL or a local directory.
+  list     List installed and plugin-provided themes; `*` marks the selected
+           one. [aliases: ls]
+  remove   Remove an installed theme by name. [aliases: rm]
+  set      Select a theme: write `[theme] name` (or `file`) and signal a reload.
+  show     Show a theme's resolved colours, or the selected theme's when NAME is
+           omitted.
+  help     Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux theme install`
+
+```text
+Install a theme from a git URL or a local directory.
+
+SOURCE is cloned with the system `git` (or copied) into the managed theme
+directory (`$XDG_DATA_HOME/phux/themes`, else `~/.local/share/phux/themes`)
+under a name derived from the URL as Omarchy derives it: the last path segment
+minus `.git`, an `omarchy-` or `phux-` prefix, and a `-theme` suffix. It must
+hold `colors.toml` at its root. Installing the same name again replaces it.
+Nothing in a theme is executed.
+
+Usage: phux theme install [--json] <SOURCE>
+
+Arguments:
+  <SOURCE>  Git URL or local theme directory.
+
+Flags:
+      --json           Emit a stable JSON document instead of human text.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux theme list`
+
+```text
+List installed and plugin-provided themes; `*` marks the selected one.
+
+Usage: phux theme list [--json]
+
+Flags:
+      --json           Emit a stable JSON document instead of human text.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux theme remove`
+
+```text
+Remove an installed theme by name.
+
+A plugin-provided theme is refused here: disable the plugin instead.
+
+Usage: phux theme remove <NAME>
+
+Arguments:
+  <NAME>  Catalog name.
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux theme set`
+
+```text
+Select a theme: write `[theme] name` (or `file`) and signal a reload.
+
+With NAME, the catalog entry must exist and load. With `--file`, any
+`colors.toml` path is accepted (`~/` expands), so pointing it at
+`~/.local/state/omarchy/current/theme/colors.toml` follows the Omarchy theme
+switcher. The other key is removed so exactly one selects. Explicit `[theme]`
+slot keys keep overriding the selected theme.
+
+Usage: phux theme set [--file <PATH>] [NAME]
+
+Arguments:
+  [NAME]  Catalog name (see `phux theme list`).
+
+Flags:
+      --file <PATH>    A `colors.toml` to follow instead of a catalog name.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux theme show`
+
+```text
+Show a theme's resolved colours, or the selected theme's when NAME is omitted.
+
+Prints the mode, every semantic colour after Omarchy's fallback cascade, the
+shared palette-0..15 mapping, and the foreground-on- background contrast ratio.
+A client that does not read plugin manifests uses `--json` here to resolve a
+name.
+
+Usage: phux theme show [--json] [NAME]
+
+Arguments:
+  [NAME]  Catalog name. Omit for the theme `config.toml` selects.
+
+Flags:
+      --json           Emit a stable JSON document instead of human text.
   -h, --help           Print help
 
 Global flags:

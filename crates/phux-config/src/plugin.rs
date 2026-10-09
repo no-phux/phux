@@ -59,6 +59,18 @@ pub struct PluginManifest {
     pub widgets: Vec<PluginManifestWidget>,
     /// Sidebar sections contributed by the plugin (`[[sidebar]]`).
     pub sidebar: Vec<PluginManifestSidebar>,
+    /// Themes contributed by the plugin (`[[themes]]`, ADR-0157).
+    pub themes: Vec<PluginManifestTheme>,
+}
+
+/// One `[[themes]]` entry: a catalog name and the directory, under the
+/// plugin root, holding its `colors.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PluginManifestTheme {
+    /// Catalog name (`[a-z0-9_][a-z0-9._+-]*`).
+    pub name: String,
+    /// Absolute theme directory (the manifest's relative `path`, resolved).
+    pub path: PathBuf,
 }
 
 /// Platform names accepted in plugin manifests.

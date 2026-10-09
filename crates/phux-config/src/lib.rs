@@ -29,6 +29,7 @@ mod schema;
 pub mod session_name;
 pub mod settings;
 pub mod socket;
+pub mod theme;
 pub mod toml_registry;
 pub mod vocab;
 pub mod widget;

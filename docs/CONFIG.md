@@ -264,7 +264,11 @@ phux plugin disable example.agent-tools
 Enabled actions appear in the attach command palette. An action may
 declare a prefix-table `keys` chord; user `[keybindings]` always win on
 conflict. Plugin panes (including floating `overlay` panes) and sidebar
-sections are described in [the TUI guide](consumers/tui.md). There is no in-process plugin host: commands run as argv from
+sections are described in [the TUI guide](consumers/tui.md). A plugin may
+also ship themes: each `[[themes]]` entry names a directory under the
+plugin root holding a `colors.toml` (`name = "night"`, `path =
+"themes/night"`), and `phux theme list` shows it while the plugin is
+enabled. There is no in-process plugin host: commands run as argv from
 the plugin root.
 
 ---
@@ -394,15 +398,26 @@ exists.
 
 ## Other knobs
 
-**Theme.** `[theme]` is a free-form map of named slots. Set one; the rest
-keep the shipped palette:
+**Theme.** `[theme]` selects a theme and overrides slots. Two keys are
+reserved: `name` picks an installed theme and `file` follows a
+`colors.toml` directly. Every other key is a named chrome slot layered on
+top of whichever palette is selected (or the shipped one):
 
 ```toml
 [theme]
-accent = "#7aa2f7"
+name = "tokyo-night"      # phux theme list
+accent = "#7aa2f7"        # still wins over the theme's accent
 ```
 
-Slot names and the shipped colors are in
+A theme is a directory holding an Omarchy-schema `colors.toml`
+(ADR-0157), so every Omarchy theme works unchanged. `phux theme install
+URL` clones one into `$XDG_DATA_HOME/phux/themes`, `phux theme set NAME`
+writes the key and signals attached clients to repaint, and
+`file = "~/.local/state/omarchy/current/theme/colors.toml"` follows the
+Omarchy theme switcher with no generated files. Plugins contribute themes
+with `[[themes]]` entries. Slot names, the shipped colors, and how a
+theme's semantic keys map onto the slots are in
+[the TUI guide](consumers/tui.md#theme) and
 [the configuration reference](./reference/config.md).
 
 **Sidebar.** On by default. `enabled`, `width` (`0` adapts to 28–40
