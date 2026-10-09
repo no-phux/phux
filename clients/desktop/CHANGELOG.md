@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.0-alpha.10](https://github.com/no-phux/phux/compare/desktop-v0.1.0-alpha.9...desktop-v0.1.0-alpha.10) (2026-10-09)
+
+
+### Bug Fixes
+
+* **desktop:** fall back to Paper Mono when the font family is missing ([#1142](https://github.com/no-phux/phux/issues/1142)) ([8f4dfa8](https://github.com/no-phux/phux/commit/8f4dfa857b4984ab73c2974e554a914919b2d8d8))
+
 ## [0.1.0-alpha.9](https://github.com/no-phux/phux/compare/desktop-v0.1.0-alpha.8...desktop-v0.1.0-alpha.9) (2026-10-09)
 
 
