@@ -166,7 +166,6 @@ const EngineFx = struct {
         self.effects.hostSend(name, payload);
     }
     pub fn ptySpawn(self: EngineFx, options: anytype) void {
-        if (self.effects.replayArmed()) return;
         self.effects.ptySpawn(.{
             .key = options.key,
             .argv = options.argv,
@@ -174,18 +173,19 @@ const EngineFx = struct {
             .rows = options.rows,
             .on_event = options.on_event,
         });
-        bridge.native_replay.noteParked(options.key) catch |err| bridge.latchNativeReplay(err);
+        // The slot stays so a replay can feed recorded output. The journaled
+        // line, exit, and response terminals are consumed by native replay.
+        if (!self.effects.replayArmed()) {
+            bridge.native_replay.noteParked(options.key) catch |err| bridge.latchNativeReplay(err);
+        }
     }
     pub fn ptyWrite(self: EngineFx, key: u64, bytes: []const u8) bool {
-        if (self.effects.replayArmed()) return true;
         return self.effects.ptyWrite(key, bytes);
     }
     pub fn ptyResize(self: EngineFx, key: u64, cols: u16, rows: u16) void {
-        if (self.effects.replayArmed()) return;
         self.effects.ptyResize(key, cols, rows);
     }
     pub fn ptyKill(self: EngineFx, key: u64) void {
-        if (self.effects.replayArmed()) return;
         self.effects.ptyKill(key);
     }
     pub fn cancel(self: EngineFx, key: u64) void {
@@ -1487,7 +1487,6 @@ test "appearance creates an absent configuration and restores system-following m
 /// core receives only a void wake so it re-renders; no terminal byte enters
 /// the compiled core.
 fn shellEvent(event: native_sdk.EffectPtyEvent) core.Msg {
-    if (nativeReplayArmed()) return .engine_wake;
     if (bridge.engine) |engine| {
         if (engineFx()) |fx| {
             if (engine.onShellEvent(fx, event)) bridge.announce(engine);
