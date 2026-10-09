@@ -46,6 +46,8 @@ pub(super) fn archive_from_snapshot(
                 name: session.name.clone(),
                 active: session.id == snapshot.focused_session,
                 cwd: None,
+                host: None,
+                project: None,
                 command: None,
                 windows,
             }

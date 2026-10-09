@@ -385,6 +385,8 @@ pub(super) struct SessionLoop {
     /// One-entry focus MRU, deliberately outside Workspace so focus history
     /// never persists (ADR-0019).
     focus_history: crate::attach::focus::FocusHistory,
+    /// Session names this client has attached to, oldest first.
+    session_mru: Vec<String>,
     /// This client's `ClientId` from ATTACHED, for the supervisory badge.
     own_client_id: Option<ClientId>,
     /// The in-flight layout GET's request id.
@@ -626,6 +628,7 @@ impl SessionLoop {
                 PredictionState::new(predict_cfg, 80, 24),
             ),
             focus_history: crate::attach::focus::FocusHistory::default(),
+            session_mru: Vec::new(),
             own_client_id: None,
             layout_get_request_id: None,
             layout_read_complete: false,

@@ -479,7 +479,7 @@ describe("spawn session", () => {
   function inProjB(run: (context: Scenario) => void): void {
     scenario(saved({ kind: "leaf", terminalId: "local:2" }), (context) => {
       context.client.sessions = [...context.client.sessions, projB];
-      context.client.panes = [pane("local:2", "projB", 2)];
+      context.client.panes = [{ ...pane("local:2", "projB", 2), cwd: "/src/api" }];
       context.client.ready.add("local:2");
       context.wake();
       expect(context.workspace.focused()?.terminalId).toBe("local:2");
@@ -494,17 +494,28 @@ describe("spawn session", () => {
       workspace.newTerminal();
       workspace.newTerminal("/tmp");
       expect(client.spawned.map((options) => options.sessionId)).toEqual([2, 2, 2, 2]);
-      expect(client.spawned.at(-1)?.cwd).toBe("/tmp");
+      expect(client.spawned.map((options) => options.cwd)).toEqual([
+        "/src/api",
+        "/src/api",
+        "/src/api",
+        "/tmp",
+      ]);
+      const before = client.spawned.length;
+      workspace.newTerminalIn(2);
+      expect(client.spawned.at(-1)?.sessionId).toBe(2);
+      expect(client.spawned.at(-1)?.cwd).toBe("/src/api");
+      workspace.newTerminalIn(99);
+      expect(client.spawned.length).toBe(before + 1);
     });
   });
 
-  test("a focused pane whose session left the topology falls back to home", () => {
+  test("a focused pane whose session left the topology does not spawn in home", () => {
     inProjB(({ client, workspace, wake }) => {
       client.sessions = client.sessions.filter((session) => session.id !== projB.id);
       wake();
       workspace.split("row");
       workspace.newTerminal();
-      expect(client.spawned.map((options) => options.sessionId)).toEqual([1, 1]);
+      expect(client.spawned).toEqual([]);
     });
   });
 

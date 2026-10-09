@@ -43,6 +43,7 @@ pub mod input_replay;
 pub mod keys;
 pub mod layout;
 pub mod multi_pane;
+pub mod organization;
 pub mod perf;
 pub mod predict;
 pub mod rename;

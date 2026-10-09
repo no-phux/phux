@@ -54,7 +54,8 @@ pub(crate) fn run_workspace(action: &WorkspaceAction, socket: Option<PathBuf>) -
         WorkspaceAction::Save { output, projection } => {
             archive::run_save(socket, output.as_ref(), projection.as_deref())
         }
-        WorkspaceAction::Restore { archive } => archive::run_restore(archive, socket),
+        WorkspaceAction::Restore { archive, plan } if *plan => archive::print_plan(archive),
+        WorkspaceAction::Restore { archive, plan: _ } => archive::run_restore(archive, socket),
     }
 }
 

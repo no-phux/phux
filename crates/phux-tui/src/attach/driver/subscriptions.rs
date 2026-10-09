@@ -79,6 +79,8 @@ pub(super) struct PeerWatch {
     /// Peer panes whose agent asked for a human; a foreign pane has no
     /// `PaneSlot::attention` to carry the flag.
     pub(super) foreign_attention: HashSet<ResourceId>,
+    /// Project tags from `phux.session.project/v1`, keyed by session id.
+    pub(super) project_tags: HashMap<SessionId, String>,
     /// The peer sweep waits for the first paint: set at construction and
     /// consumed at the first frame-burst drain, so a bootstrap (including a
     /// session switch, which drops all subscriptions) does not queue peer
@@ -104,6 +106,7 @@ impl PeerWatch {
             foreign_layouts: &self.foreign_layouts,
             foreign_agents: &self.foreign_agents,
             foreign_attention: &self.foreign_attention,
+            project_tags: &self.project_tags,
             review,
         }
     }

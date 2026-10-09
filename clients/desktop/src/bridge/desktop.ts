@@ -364,11 +364,10 @@ export function createBridge(
   }
 
   function spawnSession(sessionId: number | undefined): DesktopSession | undefined {
-    const requested =
-      sessionId === undefined
-        ? undefined
-        : topology()?.sessions.find((session) => session.id === sessionId);
-    return requested ?? homeSession();
+    if (sessionId !== undefined) {
+      return topology()?.sessions.find((session) => session.id === sessionId);
+    }
+    return homeSession();
   }
 
   function spawn({ sessionId, ...options }: SpawnRequest): number | undefined {

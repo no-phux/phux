@@ -448,9 +448,17 @@ fn record_reattach_request(
                 resource,
             });
         }
-        ReattachTarget::Create(name) => {
-            tracing::info!(session = %name, "new-session requested");
-            *switch_request = Some(ReattachTarget::Create(name));
+        ReattachTarget::Create {
+            name,
+            directory,
+            host,
+        } => {
+            tracing::info!(session = %name, directory = ?directory, host = ?host, "new-session requested");
+            *switch_request = Some(ReattachTarget::Create {
+                name,
+                directory,
+                host,
+            });
         }
     }
 }
@@ -663,8 +671,16 @@ pub enum ReattachTarget {
         resource: Option<ResourceId>,
     },
     /// Create — or attach to, if it already exists — a session by name
-    /// (`new-session`).
-    Create(String),
+    /// (`new-session`). `directory` and `host` come from the focused pane
+    /// or an explicit pick, never from the client process's working directory.
+    Create {
+        /// Session name.
+        name: String,
+        /// Seed-pane directory. `None` leaves the server default.
+        directory: Option<String>,
+        /// Satellite host. `None` creates on the attached server.
+        host: Option<String>,
+    },
 }
 
 /// An in-flight `rename-session` waiting on its `GET_STATE` barrier

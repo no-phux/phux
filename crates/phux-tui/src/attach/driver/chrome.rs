@@ -99,6 +99,8 @@ fn no_peers() -> crate::attach::sidebar_zones::PeerInputs<'static> {
     static AGENTS: LazyLock<HashMap<ResourceId, AgentRecord>> = LazyLock::new(HashMap::new);
     static ATTENTION: LazyLock<std::collections::HashSet<ResourceId>> =
         LazyLock::new(std::collections::HashSet::new);
+    static TAGS: LazyLock<std::collections::HashMap<phux_protocol::ids::SessionId, String>> =
+        LazyLock::new(std::collections::HashMap::new);
     static WINDOWS: &[phux_protocol::wire::info::WindowInfo] = &[];
     static RESOURCES: &[phux_protocol::wire::info::ResourceInfo] = &[];
     static REVIEW: LazyLock<ReviewIndex> = LazyLock::new(ReviewIndex::new);
@@ -114,6 +116,7 @@ fn no_peers() -> crate::attach::sidebar_zones::PeerInputs<'static> {
         foreign_layouts: &LAYOUTS,
         foreign_agents: &AGENTS,
         foreign_attention: &ATTENTION,
+        project_tags: &TAGS,
         review: &REVIEW,
     }
 }

@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-10-08
+last-reviewed: 2026-10-09
 ---
 
 # Wire-protocol changelog
@@ -18,6 +18,7 @@ must equal `PROTOCOL_VERSION` in `crates/phux-protocol/src/lib.rs`;
 
 | Version | Date       | Notes                                        |
 |---------|------------|----------------------------------------------|
+| 0.9.0-draft.55 | 2026-10-09 | Session project tags. [L3.md](./L3.md) §3.1 adds stored Global key `phux.session.project/v1` (`name\0project`). The server does not interpret it. Pickers group sessions that share the project side. **No wire bytes change:** no tag, field, frame, verb, error code, or capability is added, and `PROTOCOL_VERSION` stays `0.9.0`. |
 | 0.9.0-draft.54 | 2026-10-08 | [ADR-0155](../adr/0155-host-originated-push-through-a-blind-gateway.md): background push is host-originated. [L3.md](./L3.md) §3.11 defines the client-owned `phux.push/v1/<device>` `Global` key family (gateway URL, bearer grant, the device's own id for the server) and the content-free `POST` the reference server makes to that gateway when it broadcasts an `Asked` event while the key's writing connection is closed. **No wire bytes change:** no tag, field, frame, verb, error code, or capability is added, and `PROTOCOL_VERSION` stays `0.9.0`. |
 | 0.9.0-draft.53 | 2026-10-07 | phux-hrf0: support the complete OSC 7501 Program Status Protocol on each Terminal's PTY, including fixed feature detection before a following DA reply, bounded atomic reports, hierarchical replacement/clear and inherited application identity, prompt/process-exit expiration, and full-reset versus soft/alternate-screen lifetimes. [L3.md](./L3.md) §3.7.3 defines server-owned read-only `phux.program-status.record/v1/<id>` JSON records and the `phux.program-status/v1` summary (`blocked > error > done > working > idle`, newest report breaks ties), plus projection into existing agent badges without overriding explicit declarations. No OSC 9 mapping is added. **No wire bytes change:** no tag, field, frame, verb, error code, or capability is added, and `PROTOCOL_VERSION` stays `0.9.0`. |
 | 0.9.0-draft.52 | 2026-10-07 | phux-pjc5 (ADR-0154 items 5, 6): workload identity through relays and WebTransport ([workload-auth.md](./workload-auth.md) §3). **Additive, outside the frame layer:** a bridged relay consumer or a WebTransport stream may open with a TLS 1.3 handshake (first byte `0x16`) instead of a frame or bearer preamble (first byte `0x00`); the server terminates it with its own certificate and the workload client verifier, and the bearer preamble (relay) then rides inside. Under `paired` a connector and the WebTransport listener admit only such sessions carrying an enrolled certificate, and `paired` no longer refuses to start beside either. The inner session also offers `phux-enroll/1` (§8.2). Relay connect links gain the server's `ca`. No frame, tag, field, verb, error code, or capability changes; `PROTOCOL_VERSION` stays `0.9.0`. |

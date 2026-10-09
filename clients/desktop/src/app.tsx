@@ -1677,6 +1677,7 @@ function DesktopApp(props: AppProps): JSX.Element {
               now={now()}
               open={(pane) => openTerminal(pane.terminalId)}
               newTerminal={() => workspace.newTerminal()}
+              newTerminalIn={(sessionId) => workspace.newTerminalIn(sessionId)}
               openSettings={() => setModal({ kind: "settings" })}
               openPalette={() => setModal({ kind: "commands" })}
             />

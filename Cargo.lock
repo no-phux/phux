@@ -2343,6 +2343,7 @@ dependencies = [
  "libghostty-vt",
  "phux-agent-rules",
  "phux-client",
+ "phux-client-core",
  "phux-client-runtime",
  "phux-config",
  "phux-core",

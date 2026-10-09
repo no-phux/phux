@@ -310,6 +310,35 @@ pub const SESSION_CREATE_RESULT_KEY_PREFIX: &str = "phux.session.created/v1/";
 /// [`ServerFeature::KeepEmptySessions`](crate::caps::ServerFeature::KeepEmptySessions).
 pub const SESSION_KEEP_EMPTY_KEY: &str = "phux.session.keep_empty/v1";
 
+/// Global key grouping sessions under a project tag.
+///
+/// Stored, not intercepted (`docs/spec/L3.md` §3.1). Value: `name\0project`,
+/// both non-empty UTF-8. A `GET` returns the stored bytes. `DELETE` clears
+/// the tag. Pickers group sessions that share the project side.
+pub const SESSION_PROJECT_KEY: &str = "phux.session.project/v1";
+
+/// Encode a [`SESSION_PROJECT_KEY`] value: `name\0project`.
+#[must_use]
+pub fn encode_session_project(name: &str, project: &str) -> Vec<u8> {
+    let mut value = name.as_bytes().to_vec();
+    value.push(0);
+    value.extend_from_slice(project.as_bytes());
+    value
+}
+
+/// Decode a [`SESSION_PROJECT_KEY`] value into `(name, project)`.
+///
+/// `None` unless both sides are non-empty UTF-8 with no extra NULs.
+#[must_use]
+pub fn decode_session_project(value: &[u8]) -> Option<(&str, &str)> {
+    let text = std::str::from_utf8(value).ok()?;
+    let (name, project) = text.split_once('\0')?;
+    if name.is_empty() || project.is_empty() || project.contains('\0') {
+        return None;
+    }
+    Some((name, project))
+}
+
 /// Encode a [`SESSION_KEEP_EMPTY_KEY`] value: `name\0true` or `name\0false`.
 #[must_use]
 pub fn encode_session_keep_empty(name: &str, keep: bool) -> Vec<u8> {

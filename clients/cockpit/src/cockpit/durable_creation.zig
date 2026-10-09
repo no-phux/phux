@@ -127,7 +127,16 @@ pub const Creation = struct {
     }
 
     pub fn request(self: *Creation, model: *Model, kind: Kind) !void {
-        return self.spawn(model, kind, null, "", .focused);
+        return self.spawn(model, kind, null, focusedDirectory(model), .focused);
+    }
+
+    /// The focused pane's reported directory. Empty when the pane has not
+    /// reported one. An explicit directory goes through `requestIn`.
+    fn focusedDirectory(model: *Model) []const u8 {
+        const remote = model.phux() orelse return "";
+        const focused = model.focusedTerminalRef() orelse return "";
+        const view = remote.presentation(focused) orelse return "";
+        return view.cwd;
     }
 
     /// A new tab or window whose shell starts in `cwd` (Go to Directory) on

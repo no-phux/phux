@@ -30,6 +30,7 @@ import {
   type Placement,
 } from "./layout";
 import type { SavedLayout, SavedNode, SavedTab } from "./persist";
+import { placeFor } from "./place";
 
 /** Where a terminal that is not yet ready will be placed. */
 export type Destination =
@@ -57,6 +58,8 @@ export interface Workspace {
   equalizeTab(): void;
   resizeSplit(splitId: string, ratio: number): void;
   newTerminal(cwd?: string): void;
+  /** Spawn a tab in `sessionId`. Does not substitute another session. */
+  newTerminalIn(sessionId: number, cwd?: string): void;
   /** Split the focused pane with a new terminal after it, or `before` it. */
   split(axis: Axis, before?: boolean): void;
   duplicateView(): void;
@@ -306,13 +309,18 @@ export function createWorkspace(
       : { cols: info.cols, rows: Math.floor((info.rows - 1) / 2) - header };
   }
 
-  function request(destination: Destination, cwd?: string): void {
+  function request(destination: Destination, cwd?: string, sessionId?: number): void {
     const options: SpawnRequest = {};
-    if (cwd) options.cwd = cwd;
-    // New tabs and splits join the focused pane's session; the bridge falls
-    // back to the home session when there is none or it is gone.
-    const sessionId = focusedPane()?.sessionId;
-    if (sessionId !== undefined) options.sessionId = sessionId;
+    const focusedDirectory = focusedCwd();
+    const place = placeFor(
+      focusedDirectory === undefined ? undefined : { directory: focusedDirectory },
+      cwd === undefined ? undefined : { directory: cwd },
+    );
+    if (place.directory) options.cwd = place.directory;
+    // New tabs and splits join the focused pane's session unless the caller
+    // named one. The bridge uses the window session only when this is unset.
+    const inherited = sessionId ?? focusedPane()?.sessionId;
+    if (inherited !== undefined) options.sessionId = inherited;
     const size = predictedSize(destination);
     if (size && size.cols >= 2 && size.rows >= 1) options.initialSize = size;
     const id = bridge.spawn(options);
@@ -335,7 +343,11 @@ export function createWorkspace(
   }
 
   function newTerminal(cwd?: string): void {
-    request({ kind: "tab" }, cwd ?? focusedCwd());
+    request({ kind: "tab" }, cwd);
+  }
+
+  function newTerminalIn(sessionId: number, cwd?: string): void {
+    request({ kind: "tab" }, cwd, sessionId);
   }
 
   function split(axis: Axis, before = false): void {
@@ -642,6 +654,7 @@ export function createWorkspace(
       );
     },
     newTerminal,
+    newTerminalIn,
     split,
     duplicateView,
     closePane,

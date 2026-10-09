@@ -18,6 +18,12 @@ pub(crate) struct WorkspaceSession {
     pub(crate) active: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) cwd: Option<String>,
+    /// Host this session was saved from. Absent means the attached server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) host: Option<String>,
+    /// Project tag (`phux.session.project/v1`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) project: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) command: Option<Vec<String>>,
     #[serde(default)]
@@ -130,6 +136,8 @@ pub(crate) struct RestorePlan {
 pub(crate) struct CreateRequest {
     pub(crate) name: String,
     pub(crate) cwd: Option<String>,
+    pub(crate) host: Option<String>,
+    pub(crate) project: Option<String>,
     pub(crate) command: Option<Vec<String>>,
     pub(crate) agent_session: Option<WorkspaceAgentSession>,
     /// The seed pane's extra environment (see [`WorkspacePane::env`]).
@@ -179,6 +187,8 @@ pub(crate) fn restore_plan(
         let pane = seed_position.map(|(wi, pi)| &session.windows[wi].panes[pi]);
         creates.push(CreateRequest {
             name: session.name.clone(),
+            host: session.host.clone(),
+            project: session.project.clone(),
             cwd: session
                 .cwd
                 .clone()
@@ -317,6 +327,39 @@ mod tests {
         assert_eq!(plan.creates[0].cwd, None);
         assert_eq!(plan.creates[0].command, None);
         assert_eq!(plan.creates[0].agent_session, None);
+    }
+
+    #[test]
+    fn restore_plan_keeps_host_directory_and_project() {
+        let json = r#"{
+            "schema_version": 2,
+            "sessions": [
+                {
+                    "name": "api",
+                    "host": "edge",
+                    "cwd": "/src/api",
+                    "project": "phux",
+                    "windows": []
+                }
+            ]
+        }"#;
+        let archive = parse_archive(json).expect("archive parses");
+        let plan = restore_plan(&archive, &[]).expect("restore plan");
+        assert_eq!(plan.creates[0].host.as_deref(), Some("edge"));
+        assert_eq!(plan.creates[0].cwd.as_deref(), Some("/src/api"));
+        assert_eq!(plan.creates[0].project.as_deref(), Some("phux"));
+        let lines = phux_client_core::organization::organization_lines(&[
+            phux_client_core::organization::OrganizedSession {
+                name: plan.creates[0].name.clone(),
+                host: plan.creates[0].host.clone(),
+                directory: plan.creates[0].cwd.clone(),
+                project: plan.creates[0].project.clone(),
+            },
+        ]);
+        assert_eq!(
+            lines,
+            vec!["api host=edge directory=/src/api project=phux".to_owned()]
+        );
     }
 
     #[test]

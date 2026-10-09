@@ -55,7 +55,10 @@ The **Palette** column is the command-palette section the action is offered unde
 | `return-from-attention` | Pane |  | Return to where attention navigation started |
 | `switch-session` | — | `name`; `window?` (window index to select after the switch); `pane?` (DFS leaf ordinal to focus in that window); `host?` (a satellite of this hub: opens that session's active pane here through the relay instead of re-attaching) | Re-attach this client to another session |
 | `switch-host` | — | `host` (a registered host name, or `local` for this machine); `name` (the session there) | Re-attach this terminal to a session on another machine |
-| `new-session` | Session | `name?` (bare opens an interactive prompt) | Create a new session and switch to it |
+| `new-session` | Session | `name?` (bare opens an interactive prompt); `cwd?`; `host?` | Create a new session and switch to it |
+| `last-session` | Session |  | Switch back to the previous session |
+| `next-session` | Session |  | Switch to the next session by name |
+| `previous-session` | Session |  | Switch to the previous session by name |
 | `take-input` | Pane |  | Take the wheel: seize exclusive input over the focused pane |
 | `give-input` | Pane |  | Give back the wheel: release the focused pane's input lease |
 | `signal-terminal` | Pane | `signal` = `interrupt` \| `freeze` \| `resume` \| `terminate` \| `kill` | Signal the focused pane's process group (freeze, resume, kill) |

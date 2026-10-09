@@ -220,6 +220,33 @@ async fn fetch_session_layouts(
     (layouts, warnings)
 }
 
+/// Print the archive's session, host, directory, and project organization.
+/// Does not dial a server.
+pub(super) fn print_plan(archive_path: &Path) -> ExitCode {
+    let text = match std::fs::read_to_string(archive_path) {
+        Ok(text) => text,
+        Err(err) => return fail(&format!("could not read {}: {err}", archive_path.display())),
+    };
+    let archive = match model::parse_archive(&text) {
+        Ok(archive) => archive,
+        Err(err) => return fail(&err),
+    };
+    let rows: Vec<phux_client_core::organization::OrganizedSession> = archive
+        .sessions
+        .iter()
+        .map(|session| phux_client_core::organization::OrganizedSession {
+            name: session.name.clone(),
+            host: session.host.clone(),
+            directory: session.cwd.clone(),
+            project: session.project.clone(),
+        })
+        .collect();
+    for line in phux_client_core::organization::organization_lines(&rows) {
+        println!("{line}");
+    }
+    ExitCode::SUCCESS
+}
+
 pub(super) fn run_restore(archive_path: &Path, socket: Option<PathBuf>) -> ExitCode {
     let archive = match load_archive(archive_path) {
         Ok(archive) => archive,

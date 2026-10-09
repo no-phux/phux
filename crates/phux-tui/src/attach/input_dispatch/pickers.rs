@@ -283,6 +283,11 @@ pub(in crate::attach) fn session_picker_rows(
     peers: &PeerInputs<'_>,
     workspace: &Workspace,
 ) -> Vec<SelectItem> {
+    if peers.project_tags.values().any(|tag| !tag.is_empty()) {
+        let mut items = project_grouped_session_items(peers);
+        items.push(new_session_item());
+        return items;
+    }
     let here = match peers.origin {
         Some(AttachOrigin::Remote(name)) => name.as_str(),
         Some(AttachOrigin::Local) | None => LOCAL_HOST_HEADER,
@@ -297,6 +302,49 @@ pub(in crate::attach) fn session_picker_rows(
     );
     items.push(new_session_item());
     items
+}
+
+/// Attached sessions grouped by `phux.session.project/v1`. Untagged sessions
+/// sit under `Sessions`. Each row still commits `switch-session`.
+fn project_grouped_session_items(peers: &PeerInputs<'_>) -> Vec<SelectItem> {
+    let lines: Vec<phux_client_core::organization::SessionLine> = peers
+        .sessions
+        .iter()
+        .map(|session| phux_client_core::organization::SessionLine {
+            name: session.name.clone(),
+            host: None,
+            project: peers.project_tags.get(&session.id).cloned(),
+        })
+        .collect();
+    let mut items = Vec::new();
+    for group in phux_client_core::organization::group_by_project(&lines) {
+        let header = group
+            .project
+            .clone()
+            .unwrap_or_else(|| "Sessions".to_owned());
+        items.push(SelectItem::header(header));
+        for line in group.sessions {
+            let Some(session) = peers
+                .sessions
+                .iter()
+                .find(|session| session.name == line.name)
+            else {
+                continue;
+            };
+            items.push(session_switch_row(session).indented());
+        }
+    }
+    items
+}
+
+fn session_switch_row(session: &phux_protocol::wire::info::SessionInfo) -> SelectItem {
+    SelectItem::new(
+        session.name.clone(),
+        phux_config::keybind::ResolvedAction {
+            action: "switch-session".to_owned(),
+            args: switch_session_args(&session.name, Some(session.id)),
+        },
+    )
 }
 
 /// Session picker rows grouped by host: with no other host exactly
