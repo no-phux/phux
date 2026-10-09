@@ -17,6 +17,9 @@
 #      restricted to pushes to main so PR writes cannot thrash the shared
 #      10 GB LRU and evict the warm base every lane restores from. Each main
 #      push saves a new entry; ci.yml's prune-build-cache keeps the newest.
+#      Objects mode leaves GC off during the build. ci.yml's check and test
+#      jobs run scripts/ci/mbx-export-headroom.sh after the lane, before this
+#      action's post step exports the closure, so that copy has disk left.
 #
 # No CPU fingerprint: libghostty-vt-sys builds Zig for `-Dcpu=baseline` unless
 # LIBGHOSTTY_VT_SYS_CPU says otherwise (and its build script declares that

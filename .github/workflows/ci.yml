@@ -154,6 +154,9 @@ jobs:
           PHUX_CACHE_HIT: ${{ steps.setup.outputs.cache-hit }}
           PHUX_DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
         run: bash scripts/ci/summarize-job.sh
+      - name: leave disk for the mbx objects export
+        if: always()
+        run: bash scripts/ci/mbx-export-headroom.sh
 
   # Library changes keep the workspace feature union. A tests/-only diff
   # builds that integration test instead of linking the rest of the pool.
@@ -202,6 +205,9 @@ jobs:
           PHUX_DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
           PHUX_JUNIT: target/nextest/ci/junit.xml
         run: bash scripts/ci/summarize-job.sh
+      - name: leave disk for the mbx objects export
+        if: always()
+        run: bash scripts/ci/mbx-export-headroom.sh
 
   # Live main rules require ci + commitlint (verified 2026-09-09). Retain raw
   # check/test names for visibility. A crashed classifier or cheap guard cannot
