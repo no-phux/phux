@@ -1,7 +1,7 @@
 <template name="cockpit-agents" args="open rows notice previous next status">
   <stack>
     <if test="{open}">
-      <sheet width="520" padding="12" on-dismiss="palette_close">
+      <dialog width="520" height="480" padding="16" on-dismiss="palette_close" label="Agents">
         <column gap="8">
           <row cross="center" gap="8">
             <text>Agents</text>
@@ -36,7 +36,7 @@
             <if test="{next}"><button size="sm" variant="ghost" on-press="palette_next">Next agent</button></if>
           </row>
         </column>
-      </sheet>
+      </dialog>
     </if>
   </stack>
 </template>
