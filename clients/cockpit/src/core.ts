@@ -2,6 +2,7 @@ import { Cmd, asciiBytes, utf8Bytes, windowDescriptor } from "@native-sdk/core";
 import { type WindowDescriptor, type ScrollState } from "@native-sdk/core/events";
 import { applyTextInputEvent, type TextEditState, type TextInputEvent } from "@native-sdk/core/text";
 import { type TabCommandState, type TabCommandDecision, initialTabCommands, enqueueTabCommand, enqueueCatalogCommand, enqueueOperationCommand, enqueueTabActionCommand, receiveTabReceipt, unknownTabCommand } from "./tab-commands.ts";
+import { encodeTabDrag } from "./tab-drag.ts";
 import { type CommandResults, type ResultDecision, initialCommandResults, requestCommandResults, receiveCommandResult, failedCommandResults } from "./command-results.ts";
 import { type Appearance, initialAppearance, appearanceRequest, appearanceResponse } from "./appearance.ts";
 import { type ActionRow, commandRows, commandDefinition, contextualCommand, containsQuery } from "./commands.ts";
@@ -139,6 +140,8 @@ export interface RailRow {
   readonly attentionLabel: Uint8Array;
   readonly movePreviousDisabled: boolean;
   readonly moveNextDisabled: boolean;
+  readonly closeOthersDisabled: boolean;
+  readonly tabId: number;
 }
 
 export interface Tab {
@@ -159,6 +162,7 @@ export interface Tab {
   readonly target: Uint8Array;
   readonly movePreviousDisabled: boolean;
   readonly moveNextDisabled: boolean;
+  readonly closeOthersDisabled: boolean;
 }
 
 /// One catalog row: display bookkeeping and label beside the captured native
@@ -726,7 +730,9 @@ export type Msg =
       readonly bytes: Uint8Array;
       readonly droppedPending: number;
       readonly droppedTotal: number;
-    };
+    }
+  | { readonly kind: "close_other_tabs"; readonly target: Uint8Array }
+  | { readonly kind: "tab_dragged"; readonly sourceId: number; readonly phase: number; readonly x: number; readonly y: number; readonly viewWidth: number; readonly viewHeight: number };
 
 export const viewUnbound = [
   "presentation",
@@ -985,6 +991,7 @@ function copyTab(tab: Tab, selected: boolean): Tab {
     icon: tab.icon, accessibilityLabel: tab.accessibilityLabel,
     attentionLabel: tab.attentionLabel, agents: tab.agents, target: tab.target,
     movePreviousDisabled: tab.movePreviousDisabled, moveNextDisabled: tab.moveNextDisabled,
+    closeOthersDisabled: tab.closeOthersDisabled,
   };
 }
 
@@ -2326,7 +2333,8 @@ function stampSlots(tabs: readonly SnapshotTab[], window: number, agents: readon
       closeLabel: joinBytes(asciiBytes("Close tab: "), t.title, NO_BYTES),
       icon: asciiBytes(t.attention ? "alert" : "terminal"),
       accessibilityLabel: t.attention ? attentionLabel(t.title, true) : t.title,
-      movePreviousDisabled: index === 0, moveNextDisabled: index + 1 === tabs.length });
+      movePreviousDisabled: index === 0, moveNextDisabled: index + 1 === tabs.length,
+      closeOthersDisabled: tabs.length < 2 });
   }
   return out;
 }
@@ -2341,7 +2349,8 @@ function railRows(tabs: readonly Tab[]): readonly RailRow[] {
     const tab = tabs[i];
     if (!(ordinal >= 0 && ordinal <= 65535)) break;
     out.push({ id: Math.trunc(ordinal), index: tab.index, label: tab.title, state: NO_BYTES, mark: tab.attention ? ATTENTION_MARK : NO_BYTES, selected: tab.selected, agent: false, parentIndex: 65535, target: tab.target, attentionLabel: tab.attentionLabel,
-      closeLabel: tab.closeLabel, movePreviousDisabled: tab.movePreviousDisabled, moveNextDisabled: tab.moveNextDisabled });
+      closeLabel: tab.closeLabel, movePreviousDisabled: tab.movePreviousDisabled, moveNextDisabled: tab.moveNextDisabled,
+      closeOthersDisabled: tab.closeOthersDisabled, tabId: tab.id });
     ordinal += 1;
     const rows = tab.agents;
     for (let j = 0; j < rows.length; j += 1) {
@@ -2349,7 +2358,7 @@ function railRows(tabs: readonly Tab[]): readonly RailRow[] {
       if (!(ordinal >= 0 && ordinal <= 65535)) break;
       const label = row.resource.length === 0 ? row.provider : joinBytes(row.provider, asciiBytes(" / "), joinBytes(row.resource, asciiBytes(" under "), row.parent));
       out.push({ id: Math.trunc(ordinal), index: tab.index, label, state: row.state, mark: row.attention ? ATTENTION_MARK : NO_BYTES, selected: false, agent: true, parentIndex: row.parentIndex, target: NO_BYTES, attentionLabel: attentionLabel(label, row.attention),
-        closeLabel: NO_BYTES, movePreviousDisabled: true, moveNextDisabled: true });
+        closeLabel: NO_BYTES, movePreviousDisabled: true, moveNextDisabled: true, closeOthersDisabled: true, tabId: 0 });
       ordinal += 1;
     }
   }
@@ -2614,8 +2623,8 @@ export function initialModel(): [Model, Cmd<Msg>] {
   return [
     {
       presentation: initialPresentation(),
-      tabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), closeLabel: asciiBytes("Close tab: Terminal 1"), icon: asciiBytes("terminal"), accessibilityLabel: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, attentionLabel: NO_BYTES, agents: NO_AGENT_ROWS, target: NO_BYTES, movePreviousDisabled: true, moveNextDisabled: true }],
-      visibleTabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), closeLabel: asciiBytes("Close tab: Terminal 1"), icon: asciiBytes("terminal"), accessibilityLabel: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, attentionLabel: NO_BYTES, agents: NO_AGENT_ROWS, target: NO_BYTES, movePreviousDisabled: true, moveNextDisabled: true }],
+      tabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), closeLabel: asciiBytes("Close tab: Terminal 1"), icon: asciiBytes("terminal"), accessibilityLabel: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, attentionLabel: NO_BYTES, agents: NO_AGENT_ROWS, target: NO_BYTES, movePreviousDisabled: true, moveNextDisabled: true, closeOthersDisabled: true }],
+      visibleTabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), closeLabel: asciiBytes("Close tab: Terminal 1"), icon: asciiBytes("terminal"), accessibilityLabel: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, attentionLabel: NO_BYTES, agents: NO_AGENT_ROWS, target: NO_BYTES, movePreviousDisabled: true, moveNextDisabled: true, closeOthersDisabled: true }],
       tabWidth: 168,
       hasOverflow: false,
       overflowLabel: new Uint8Array(0),
@@ -2959,7 +2968,7 @@ function tabCommandTransition(model: Model, msg: Msg): TabCommandTransition | nu
   if (msg.kind === "tab_command_failed") {
     return { model: tabCommandModel(model, unknownTabCommand(model.tabCommands)), request: NO_BYTES };
   }
-  if (msg.kind === "close_tab_target" || msg.kind === "move_tab_previous_target" || msg.kind === "move_tab_next_target") {
+  if (msg.kind === "close_tab_target" || msg.kind === "move_tab_previous_target" || msg.kind === "move_tab_next_target" || msg.kind === "close_other_tabs") {
     const decision = enqueueTabActionCommand(model.tabCommands, msg.target, tabAction(msg));
     return { model: freshCommandModel(model, decision), request: decision.request };
   }
@@ -2973,6 +2982,7 @@ function tabAction(msg: Msg): number {
   if (msg.kind === "close_tab_target") return 4;
   if (msg.kind === "move_tab_previous_target") return 5;
   if (msg.kind === "move_tab_next_target") return 6;
+  if (msg.kind === "close_other_tabs") return 8;
   return 0;
 }
 
@@ -4937,6 +4947,11 @@ function appearanceUpdate(model: Model, decision: AppearanceDecision): UpdatePla
     plannedRequest("cockpit.appearance", decision.request, "cockpit-appearance", "appearance_loaded", "appearance_failed"));
 }
 
+function tabDragUpdate(model: Model, msg: Msg): UpdatePlan | null {
+  if (msg.kind !== "tab_dragged") return null;
+  return hostPlan(model, "cockpit.tab-drag", encodeTabDrag(msg.sourceId, msg.phase, msg.x, msg.y));
+}
+
 function tabCommandUpdate(decision: TabCommandTransition, fromCommands: boolean): UpdatePlan {
   if (decision.request.length === 0) {
     if (fromCommands) return hostPlan(decision.model, "cockpit.committed", NO_BYTES);
@@ -5224,6 +5239,8 @@ function planUpdate(incoming: Model, msg: Msg): UpdatePlan {
   if (selfUpdate !== null) return selfUpdateResult(selfUpdate);
   const appearance = updateAppearance(model, msg);
   if (appearance !== null) return appearanceUpdate(model, appearance);
+  const dragged = tabDragUpdate(model, msg);
+  if (dragged !== null) return dragged;
   const command = tabCommandTransition(model, msg);
   if (command !== null) return tabCommandUpdate(command, fromCommands);
   return finalMessageUpdate(model, msg, fromCommands);

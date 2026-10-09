@@ -74,6 +74,10 @@ pub const Action = enum(u8) {
     close = 4,
     previous = 5,
     next = 6,
+    /// Close every other tab in the captured window. One admission, not a
+    /// chain of revision-fenced removes. 7 stays unassigned: captured-action
+    /// tests use it as a malformed kind.
+    others = 8,
 };
 
 pub const ActionTarget = struct {
@@ -104,6 +108,7 @@ fn decodeAction(kind: u8, id: u64, bytes: []const u8) ?Request {
         4 => .close,
         5 => .previous,
         6 => .next,
+        8 => .others,
         else => return null,
     };
     const target = decodeTab(bytes) orelse return null;

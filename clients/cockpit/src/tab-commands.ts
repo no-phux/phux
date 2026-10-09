@@ -58,7 +58,7 @@ export function enqueueOperationCommand(state: TabCommandState, operation: Uint8
 }
 
 export function enqueueTabActionCommand(state: TabCommandState, target: Uint8Array, action: number): TabCommandDecision {
-  if (target.length !== 22 || target[0] !== 1 || !(action >= 4 && action <= 6)) {
+  if (target.length !== 22 || target[0] !== 1 || !((action >= 4 && action <= 6) || action === 8)) {
     return { state: { ...state, outcome: 3 }, request: EMPTY };
   }
   return enqueueSelection(state, target, Math.trunc(action));

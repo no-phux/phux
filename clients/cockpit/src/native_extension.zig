@@ -420,6 +420,10 @@ const Bridge = struct {
             self.sendClipboard(payload);
             return;
         }
+        if (std.mem.eql(u8, name, cockpit.engine.tab_drag.command_name)) {
+            self.sendTabDrag(payload);
+            return;
+        }
         if (!std.mem.eql(u8, name, protocol.intent_command)) return;
         const engine = self.engine orelse return;
         if (engineFx()) |fx| {
@@ -430,6 +434,62 @@ const Bridge = struct {
             _ = engine.applyIntent(payload, &cockpit.NoShells{});
         }
         self.announce(engine);
+    }
+
+    fn sendTabDrag(self: *Bridge, payload: []const u8) void {
+        const engine = self.engine orelse return;
+        const event = cockpit.engine.tab_drag.decode(payload) orelse return;
+        const located = cockpit.engine.tab_drag.findTab(engine.model, event.source_id) orelse {
+            engine.tab_drag = null;
+            return;
+        };
+        const destination = self.tabDragDestination(located.window, event.x, event.y) orelse located.index;
+        if (engine.applyTabDrag(event.phase, located, destination)) self.announce(engine);
+    }
+
+    fn tabDragDestination(self: *Bridge, window: usize, x: f32, y: f32) ?usize {
+        var frames: [16]native_sdk.geometry.RectF = undefined;
+        const count = self.collectTabFrames(window, &frames);
+        if (count == 0) return null;
+        const engine = self.engine orelse return null;
+        const horizontal = engine.model.tab_placement == .top;
+        const visible = nearestTabFrame(frames[0..count], x, y, horizontal);
+        const run = engine.currentRuns()[window];
+        const absolute = run.first + visible;
+        const workspace = engine.model.wsAtConst(window) orelse return null;
+        if (absolute >= workspace.tab_count) return null;
+        return absolute;
+    }
+
+    fn collectTabFrames(self: *Bridge, window: usize, out: []native_sdk.geometry.RectF) usize {
+        const runtime = self.runtime orelse return 0;
+        const engine = self.engine orelse return 0;
+        const workspace = engine.model.wsAtConst(window) orelse return 0;
+        const window_id: native_sdk.platform.WindowId = if (workspace.window_id != 0) workspace.window_id else if (window == 0) 1 else return 0;
+        const layout = runtime.canvasWidgetLayout(window_id, cockpit.scene.canvasLabelFor(window)) catch return 0;
+        var count: usize = 0;
+        for (layout.nodes) |node| {
+            if (node.widget.semantics.role != .tab) continue;
+            if (count >= out.len) break;
+            out[count] = node.frame;
+            count += 1;
+        }
+        return count;
+    }
+
+    fn nearestTabFrame(frames: []const native_sdk.geometry.RectF, x: f32, y: f32, horizontal: bool) usize {
+        var best: usize = 0;
+        var best_distance: f32 = std.math.inf(f32);
+        for (frames, 0..) |frame, index| {
+            const center = if (horizontal) frame.x + frame.width / 2 else frame.y + frame.height / 2;
+            const coord = if (horizontal) x else y;
+            const distance = @abs(center - coord);
+            if (distance < best_distance) {
+                best = index;
+                best_distance = distance;
+            }
+        }
+        return best;
     }
 
     fn sendClipboard(self: *Bridge, payload: []const u8) void {
@@ -3610,6 +3670,92 @@ fn chooseTabMenuItem(rig: *Rig, host: TabMenuHost, token: u64, item: u32) !void 
         try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
     }
     try std.testing.expectEqual(@as(usize, 0), rig.app_state.model.tabCommands.queue.len);
+}
+
+fn canvasPointer(rig: *Rig, kind: native_sdk.platform.GpuSurfaceInputKind, x: f32, y: f32, delta_x: f32, delta_y: f32) !void {
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = kind,
+        .x = x,
+        .y = y,
+        .delta_x = delta_x,
+        .delta_y = delta_y,
+    } });
+}
+
+fn shippingTabFrames(rig: *Rig, out: []native_sdk.geometry.RectF) !usize {
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const count = bridge.collectTabFrames(0, out);
+    if (count < 2) return error.TestExpectedTabFrames;
+    return count;
+}
+
+test "tabdragrestore shipping pointer reorder and escape rollback" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.new_terminal);
+    const engine = bridge.engine.?;
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try std.testing.expectEqual(@as(usize, 2), engine.model.ws().tab_count);
+    var frames: [16]native_sdk.geometry.RectF = undefined;
+    _ = try shippingTabFrames(&rig, &frames);
+    const first = engine.model.ws().tab_ids[0];
+    const second = engine.model.ws().tab_ids[1];
+    const from = frames[0];
+    const to = frames[1];
+    const x0 = from.x + from.width / 2;
+    const y0 = from.y + from.height / 2;
+    const x1 = to.x + to.width / 2;
+    const y1 = to.y + to.height / 2;
+    try canvasPointer(&rig, .pointer_down, x0, y0, 0, 0);
+    try canvasPointer(&rig, .pointer_drag, x1, y1, x1 - x0, y1 - y0);
+    try std.testing.expectEqual(second, engine.model.ws().tab_ids[0]);
+    try std.testing.expectEqual(first, engine.model.ws().tab_ids[1]);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try std.testing.expectEqual(@as(i64, @intCast(second)), rig.app_state.model.tabs[0].id);
+
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .key_down,
+        .key = "escape",
+    } });
+    try std.testing.expectEqual(first, engine.model.ws().tab_ids[0]);
+    try std.testing.expectEqual(second, engine.model.ws().tab_ids[1]);
+    try canvasPointer(&rig, .pointer_up, x1, y1, x1 - x0, y1 - y0);
+    try std.testing.expectEqual(first, engine.model.ws().tab_ids[0]);
+    try std.testing.expectEqual(second, engine.model.ws().tab_ids[1]);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try std.testing.expectEqual(@as(i64, @intCast(first)), rig.app_state.model.tabs[0].id);
+}
+
+test "closeotherscaptured shipping menu keeps the captured local tab" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.new_terminal);
+    const engine = bridge.engine.?;
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try rig.dispatch(.new_terminal);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try std.testing.expectEqual(@as(usize, 3), engine.model.ws().tab_count);
+    const kept = engine.model.ws().tab_ids[0];
+    const host = try tabMenuHost(&rig, true, false);
+    const token = try openTabMenu(&rig, host);
+    const layout = try rig.harness.runtime.canvasWidgetLayout(host.window_id, host.label);
+    var others: ?u32 = null;
+    for (layout.nodes) |node| {
+        if (node.widget.id != host.id) continue;
+        others = tabMenuItem(node.widget.context_menu, "Close Others");
+    }
+    try chooseTabMenuItem(&rig, host, token, others orelse return error.TestExpectedCloseOthers);
+    try std.testing.expectEqual(@as(usize, 1), engine.model.ws().tab_count);
+    try std.testing.expectEqual(kept, engine.model.ws().tab_ids[0]);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try std.testing.expectEqual(@as(usize, 1), rig.app_state.model.tabs.len);
+    try std.testing.expectEqual(@as(i64, @intCast(kept)), rig.app_state.model.tabs[0].id);
 }
 
 const ShippingSameCoordinator = struct {

@@ -22,12 +22,13 @@
               <!-- Native Tabs owns sibling arrow/Home/End traversal.
                    The 1pt title/close seam and trailing spacer distinguish
                    each tab without admitting close buttons to its focus group. -->
-              <segmented-control width="0" grow="1" height="32" size="sm" variant="ghost" role="tab" icon="{tab.icon}" label="{tab.accessibilityLabel}" selected="{tab.selected}" on-press="select_target:{tab.target}">{tab.title}
+              <segmented-control width="0" grow="1" height="32" size="sm" variant="ghost" role="tab" global-key="{tab.id}" icon="{tab.icon}" label="{tab.accessibilityLabel}" selected="{tab.selected}" on-press="select_target:{tab.target}" on-drag="tab_dragged:{tab.id}">{tab.title}
                 <context-menu>
                   <menu-item on-press="rename_tab:{tab.target}">Rename Tab…</menu-item>
                   <separator />
                   <menu-item disabled="{tab.movePreviousDisabled}" on-press="move_tab_previous_target:{tab.target}">Move Left</menu-item>
                   <menu-item disabled="{tab.moveNextDisabled}" on-press="move_tab_next_target:{tab.target}">Move Right</menu-item>
+                  <menu-item disabled="{tab.closeOthersDisabled}" on-press="close_other_tabs:{tab.target}">Close Others</menu-item>
                   <separator />
                   <menu-item on-press="close_tab_target:{tab.target}">Close Tab</menu-item>
                 </context-menu>
@@ -99,7 +100,7 @@
                   <else>
                     <!-- All visible content uses real flow slots. Never mix
                          the SDK's painted icon= slot with custom text children. -->
-                    <list-item height="32" gap="8" cross="center" role="tab" label="{row.label}" selected="{row.selected}" accent="surface_pressed" accent-foreground="text" on-press="select_target:{row.target}">
+                    <list-item height="32" gap="8" cross="center" role="tab" global-key="{row.tabId}" label="{row.label}" selected="{row.selected}" accent="surface_pressed" accent-foreground="text" on-press="select_target:{row.target}" on-drag="tab_dragged:{row.tabId}">
                       <spacer width="4" />
                       <if test="{row.mark}"><icon name="alert" width="16" height="16" foreground="warning" label="{row.attentionLabel}" /></if>
                       <else><icon name="terminal" width="16" height="16" foreground="text_muted" /></else>
@@ -113,6 +114,7 @@
                           <separator />
                           <menu-item disabled="{row.movePreviousDisabled}" on-press="move_tab_previous_target:{row.target}">Move Up</menu-item>
                           <menu-item disabled="{row.moveNextDisabled}" on-press="move_tab_next_target:{row.target}">Move Down</menu-item>
+                          <menu-item disabled="{row.closeOthersDisabled}" on-press="close_other_tabs:{row.target}">Close Others</menu-item>
                           <separator />
                           <menu-item on-press="close_tab_target:{row.target}">Close Tab</menu-item>
                       </context-menu>
