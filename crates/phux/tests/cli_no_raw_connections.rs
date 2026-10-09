@@ -24,8 +24,8 @@ use std::path::{Path, PathBuf};
 const ALLOWLIST: &[(&str, usize, &str)] = &[
     (
         "mod.rs",
-        29,
-        "the shared `command_on`/`request_command` helpers, plus matches on the CLI's own `Command` enum",
+        30,
+        "the shared `command_on`/`request_command` helpers, plus matches on the CLI's own `Command` enum (`phux theme`'s socketless-verb arm is the 30th)",
     ),
     (
         "server_target.rs",
