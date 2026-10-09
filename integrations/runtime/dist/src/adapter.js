@@ -218,8 +218,11 @@ export class PhuxCli {
             if (typeof options.data !== "object" || Array.isArray(options.data)) {
                 throw new TypeError("data must be a JSON object");
             }
-            args.push("--data", JSON.stringify(options.data));
+            // On stdin, never argv: record data can carry conversation text, and
+            // argv is readable by any local user through the process table.
+            args.push("--data", "-");
         }
+        const stdin = options.data === undefined ? undefined : wellFormedJson(options.data);
         args.push("--json");
         this.pushSocket(args);
         // A graceful upgrade seals the stream from its cut until the re-exec and
@@ -227,7 +230,7 @@ export class PhuxCli {
         const started = Date.now();
         for (let attempt = 0;; attempt += 1) {
             try {
-                return await this.jsonCommand("agent emit", args, options, parseAgentEmitResult);
+                return await this.jsonCommand("agent emit", args, options, parseAgentEmitResult, stdin);
             }
             catch (error) {
                 const delay = Math.min(UPGRADE_RETRY_BASE_MS * 2 ** attempt, UPGRADE_RETRY_MAX_DELAY_MS);
@@ -473,14 +476,14 @@ export class PhuxCli {
             ended: result.termination === "completed",
         };
     }
-    async jsonCommand(verb, args, options, parser) {
-        const result = await this.completed(verb, args, options, false);
+    async jsonCommand(verb, args, options, parser, stdin) {
+        const result = await this.completed(verb, args, options, false, stdin);
         return parseJson(verb, this.executable, result.stdout, args, parser);
     }
-    async completed(verb, args, options, allowNonzero) {
+    async completed(verb, args, options, allowNonzero, stdin) {
         let result;
         try {
-            result = await this.execute(args, options);
+            result = await this.execute(args, options, stdin);
         }
         catch (cause) {
             const message = isMissingExecutable(cause)
@@ -497,7 +500,7 @@ export class PhuxCli {
         }
         return result;
     }
-    execute(args, options) {
+    execute(args, options, stdin) {
         const request = {
             executable: this.executable,
             args,
@@ -507,6 +510,7 @@ export class PhuxCli {
             timeoutMs: options.timeoutMs ?? 10_000,
             maxStdoutBytes: this.maxStdoutBytes,
             maxStderrBytes: this.maxStderrBytes,
+            ...(stdin === undefined ? {} : { stdin }),
         };
         return this.runner(request);
     }
@@ -898,4 +902,13 @@ export class AgentSessionEmitter {
         }
         await this.emit("session_start", { provider: this.provider, native_id: nativeId }, options);
     }
+}
+const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
+/**
+ * JSON for a record's data with every lone UTF-16 surrogate replaced by
+ * U+FFFD. `JSON.stringify` writes a lone surrogate as a `\ud8xx` escape that a
+ * strict UTF-8 parser (the phux CLI's) refuses, which would drop the record.
+ */
+export function wellFormedJson(value) {
+    return JSON.stringify(value, (_key, item) => typeof item === "string" ? item.replace(LONE_SURROGATE, "�") : item);
 }

@@ -11,6 +11,8 @@ export interface RunRequest {
   readonly timeoutMs?: number;
   readonly maxStdoutBytes?: number;
   readonly maxStderrBytes?: number;
+  /** Bytes written to the child's stdin, which is then closed; stdin is ignored when absent. */
+  readonly stdin?: string;
 }
 
 export type ProcessTermination = "completed" | "aborted" | "timed_out" | "output_limit";
@@ -50,8 +52,18 @@ export const nodeProcessRunner: ProcessRunner = (request) =>
       env: request.env,
       shell: false,
       detached: true,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [request.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
     });
+    if (request.stdin !== undefined && child.stdin !== null) {
+      // A child that exits without reading must not fail the run with EPIPE.
+      child.stdin.on("error", () => {});
+      child.stdin.end(request.stdin);
+    }
+    const { stdout, stderr } = child;
+    if (stdout === null || stderr === null) {
+      reject(new Error("phux subprocess started without output pipes"));
+      return;
+    }
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
     let stdoutBytes = 0;
@@ -70,7 +82,7 @@ export const nodeProcessRunner: ProcessRunner = (request) =>
       forceKill.unref();
     };
 
-    child.stdout.on("data", (chunk: Buffer) => {
+    stdout.on("data", (chunk: Buffer) => {
       if (termination !== "completed") return;
       const remaining = maxStdoutBytes - stdoutBytes;
       if (chunk.length > remaining) {
@@ -82,7 +94,7 @@ export const nodeProcessRunner: ProcessRunner = (request) =>
       stdoutChunks.push(chunk);
       stdoutBytes += chunk.length;
     });
-    child.stderr.on("data", (chunk: Buffer) => {
+    stderr.on("data", (chunk: Buffer) => {
       if (termination !== "completed") return;
       const remaining = maxStderrBytes - stderrBytes;
       if (chunk.length > remaining) {

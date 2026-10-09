@@ -15,9 +15,16 @@ emit attention asks for permission and elicitation prompts, and clear the
 declaration at session end. On a phux server that serves agent session
 resources they also open a session under Claude's pane and append one record
 per hook event (`session_start`, `prompt` as a character count, `tool_start`
-and `tool_end` by tool name, `ask`, `notification`, `stop`, `session_end`);
-prompt text, tool input, and tool output are never forwarded unless
-`PHUX_AGENT_EMIT_RAW=1` opts the raw payload in. The plugin never declares a
+and `tool_end` by tool name, `ask`, `notification`, `stop`, `session_end`).
+Typed records never carry prompt text, tool input, or tool output. A
+`provider_raw` record in the `phux.transcript/v1` convention (ADR-0156)
+carries the conversation for phones and other stream readers: the prompt, each
+finished or failed tool call (its name, a one-line argument summary, and its
+status), and the turn's last reply. It is on by default, because the same
+text is already on the pane's screen under the same access control;
+`PHUX_AGENT_TRANSCRIPT=0` turns it off, and `PHUX_AGENT_TRANSCRIPT=full` adds
+the tail of each tool's output. `PHUX_AGENT_EMIT_RAW=1` separately
+opts the whole raw hook payload in. The plugin never declares a
 state: the server derives it from the stream, or from its own detector.
 
 For development:

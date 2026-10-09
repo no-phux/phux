@@ -9,6 +9,8 @@ use std::collections::VecDeque;
 
 use serde_json::Value;
 
+use super::agent_transcript::TranscriptEntry;
+
 /// Upper bound on one record line, matching the producer-side limit.
 pub const MAX_RECORD_BYTES: usize = 16 * 1024;
 
@@ -100,6 +102,16 @@ impl AgentEventRecord {
     #[must_use]
     pub fn data_str(&self, field: &str) -> Option<&str> {
         self.data.get(field).and_then(Value::as_str)
+    }
+
+    /// The `phux.transcript/v1` entry this record carries, when it is a
+    /// `provider_raw` record in that convention (ADR-0156).
+    #[must_use]
+    pub fn transcript_entry(&self) -> Option<TranscriptEntry> {
+        if self.kind != AgentEventKind::ProviderRaw {
+            return None;
+        }
+        TranscriptEntry::from_data(&self.data)
     }
 }
 
@@ -472,6 +484,20 @@ mod tests {
         assert!(fold(&mut state, 13, "session_start", "{}"));
         assert_eq!(state.status, AgentSessionStatus::Unknown);
         assert_eq!(state.provider.as_deref(), Some("claude"));
+    }
+
+    #[test]
+    fn transcript_entries_are_recognized_only_on_provider_raw() {
+        let data = r#"{"provider":"pi","schema":"phux.transcript/v1","entry":{"id":"a-1","role":"assistant","text":"hi","truncated":false,"final":false}}"#;
+        let raw = parse_records(line(1, "provider_raw", data).as_bytes()).expect("parse");
+        let entry = raw[0].transcript_entry().expect("a transcript entry");
+        assert_eq!(entry.id, "a-1");
+        assert!(!entry.is_final);
+        let elsewhere = parse_records(line(2, "notification", data).as_bytes()).expect("parse");
+        assert_eq!(elsewhere[0].transcript_entry(), None);
+        let opaque = parse_records(line(3, "provider_raw", r#"{"session_id":"s"}"#).as_bytes())
+            .expect("parse");
+        assert_eq!(opaque[0].transcript_entry(), None);
     }
 
     #[test]

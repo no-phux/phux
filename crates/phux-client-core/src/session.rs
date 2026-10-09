@@ -3879,6 +3879,7 @@ const fn profile_matches(selected: BootstrapProfile, incoming: BootstrapStreamPr
 }
 
 pub mod agent_stream;
+pub mod agent_transcript;
 
 #[cfg(test)]
 mod kernel_rig;

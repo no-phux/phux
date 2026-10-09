@@ -2,7 +2,9 @@
 # The plugin's lifecycle hook. One arm per registration in hooks/hooks.json;
 # Claude's payload arrives on stdin and is read through `phux agent
 # hook-payload`, which prints shell-safe tokens and never the prompt text,
-# tool input, or tool output. Best effort and silent: every phux call is
+# tool input, or tool output. Conversation text reaches phux only on stdin:
+# the transcript entry `phux agent hook-transcript` prints (ADR-0156), and the
+# raw payload under `PHUX_AGENT_EMIT_RAW=1`. Best effort and silent: every phux call is
 # allowed to fail, and nothing is printed back to Claude.
 set -u
 
@@ -34,6 +36,13 @@ hook_chars=0
 hook_reason=-
 hook_source=-
 payload=
+entry=
+# The payload copy and a transcript entry are removed however the hook
+# leaves, including Claude killing it at its timeout.
+trap 'rm -f ${payload:+"$payload"} ${entry:+"$entry"}' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 if [ ! -t 0 ] && payload=$(mktemp 2>/dev/null); then
   cat > "$payload" 2>/dev/null || :
   fields=$("$phux" agent hook-payload < "$payload" 2>/dev/null) || fields=
@@ -94,6 +103,23 @@ emit_raw() {
   fi
 }
 
+# The transcript entry for this hook (ADR-0156): the prompt, a finished tool
+# call, or the turn's last reply, as `phux.transcript/v1` data fed on stdin.
+# On by default; `PHUX_AGENT_TRANSCRIPT=0` opts out. A phux without the
+# helper prints nothing, and nothing is emitted.
+emit_transcript() {
+  [ "${PHUX_AGENT_TRANSCRIPT:-1}" != 0 ] || return 0
+  [ "$streams" = yes ] || return 0
+  [ -n "$payload" ] || return 0
+  [ -s "$payload" ] || return 0
+  entry=$(mktemp 2>/dev/null) || return 0
+  if "$phux" agent hook-transcript < "$payload" > "$entry" 2>/dev/null && [ -s "$entry" ]; then
+    emit_once "$entry" --type provider_raw --data -
+  fi
+  rm -f "$entry"
+  entry=
+}
+
 case "$1" in
   start)
     run_phux agent set "$target" --name claude --kind claude
@@ -105,6 +131,7 @@ case "$1" in
     ;;
   working)
     emit prompt "{\"chars\":$hook_chars}"
+    emit_transcript
     emit_raw
     ;;
   tool-start)
@@ -112,7 +139,12 @@ case "$1" in
     emit_raw
     ;;
   tool-end)
-    emit_tool tool_end
+    if [ "$hook_event" = PostToolUseFailure ] && [ "$hook_tool" != - ]; then
+      emit tool_end "{\"tool_name\":\"$hook_tool\",\"ok\":false}"
+    else
+      emit_tool tool_end
+    fi
+    emit_transcript
     emit_raw
     ;;
   blocked)
@@ -131,6 +163,7 @@ case "$1" in
     run_phux ask "$target" "Claude needs attention"
     ;;
   done)
+    emit_transcript
     emit stop
     emit_raw
     ;;
@@ -145,9 +178,7 @@ case "$1" in
     run_phux agent clear "$target"
     ;;
   *)
-    [ -z "$payload" ] || rm -f "$payload"
     exit 2
     ;;
 esac
-[ -z "$payload" ] || rm -f "$payload"
 exit 0

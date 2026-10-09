@@ -52,6 +52,19 @@
         ]
       }
     ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/phux-hook.sh", "tool-end"],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "PermissionRequest": [
       {
         "matcher": "",

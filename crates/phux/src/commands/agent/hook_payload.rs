@@ -21,9 +21,10 @@
 //!
 //! What is deliberately NOT printed: the prompt text (only its character
 //! count), `tool_input`, `tool_response`, `last_assistant_message`,
-//! `transcript_path`. The wrapper forwards the whole payload only when the
-//! user opts in with `PHUX_AGENT_EMIT_RAW=1`, and it does that by re-reading
-//! its own copy of stdin, never through this helper.
+//! `transcript_path`. Conversation text reaches a record only through
+//! `hook_transcript.rs` (the bounded `phux.transcript/v1` entry) or, when the
+//! user opts in with `PHUX_AGENT_EMIT_RAW=1`, as the whole payload; both read
+//! the wrapper's own copy of stdin, never this helper's line.
 //!
 //! Hidden machine plumbing. Never fails: an empty, oversized, or malformed
 //! payload prints the all-absent line and exits 0, so a hook never breaks

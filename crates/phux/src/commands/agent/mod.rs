@@ -2,6 +2,7 @@ mod answer;
 mod config;
 mod detect;
 mod hook_payload;
+mod hook_transcript;
 mod model;
 mod offline;
 mod prompt;
@@ -445,6 +446,11 @@ pub(crate) enum AgentAction {
     /// not a promise that phux ships a JSON tool.
     #[usage(name = "hook-payload", hide)]
     HookPayload,
+    /// Internal: read one Claude Code hook payload from stdin and print the
+    /// `provider_raw` data of its `phux.transcript/v1` entry, or nothing.
+    /// Hidden because only the generated shim and the Claude plugin call it.
+    #[usage(name = "hook-transcript", hide)]
+    HookTranscript,
 }
 
 #[allow(
@@ -608,6 +614,7 @@ pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCo
         }
         AgentAction::UninstallClaude => shim::run_uninstall_claude(),
         AgentAction::HookPayload => hook_payload::run(),
+        AgentAction::HookTranscript => hook_transcript::run(),
     }
 }
 

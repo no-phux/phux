@@ -1,7 +1,7 @@
 ---
 audience: humans, agents, consumers, contributors
 stability: evolving
-last-reviewed: 2026-09-30
+last-reviewed: 2026-10-09
 ---
 
 # Pi integration
@@ -271,6 +271,21 @@ prompt, `stop` on `agent_settled`, and `session_end` then `session close` on
 shutdown. The server derives working, blocked, and done from this stream.
 If `phux agent session open` is missing or refused with `unsupported_server`,
 emit fails closed; identity-only writes and the detector still run.
+
+The same stream carries the conversation as `provider_raw` records in the
+`phux.transcript/v1` convention
+([ADR-0156](../adr/0156-agent-transcript-records.md)), so a phone can render
+a native transcript while the pane's TUI stays the session: each user
+message, the assistant reply (streamed as partials at most every 250 ms while
+it grows, then final under the same id), visible thinking once a thinking
+block ends, and each tool call as one entry keyed by its call id (running
+with an argument summary, then ok or error). Text is cut
+to keep each record under 16 KiB, and the text reaches `phux` on stdin, never
+on a command line. Transcript records are on by default, because the pane
+already shows the same text to the same clients; set
+`PHUX_AGENT_TRANSCRIPT=0` before startup to turn them off. Tool output and
+file contents are not on the screen, so tool entries carry an empty `output`
+unless `PHUX_AGENT_TRANSCRIPT=full`, which adds the last 4 KiB.
 
 Writes are serialized, debounced, and best-effort. Changing the selected control
 target or navigating the session tree does not move the hosting declaration or

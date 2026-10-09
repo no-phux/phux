@@ -8,6 +8,8 @@ export interface RunRequest {
     readonly timeoutMs?: number;
     readonly maxStdoutBytes?: number;
     readonly maxStderrBytes?: number;
+    /** Bytes written to the child's stdin, which is then closed; stdin is ignored when absent. */
+    readonly stdin?: string;
 }
 export type ProcessTermination = "completed" | "aborted" | "timed_out" | "output_limit";
 export type OutputLimitStream = "stdout" | "stderr";

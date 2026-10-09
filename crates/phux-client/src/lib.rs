@@ -71,3 +71,5 @@ pub mod wait;
 pub mod watch;
 
 pub use phux_client_core::{layout, multi_pane, predict, rename};
+// The `phux.transcript/v1` entry inside `provider_raw` records (ADR-0156).
+pub use phux_client_core::session::agent_transcript;

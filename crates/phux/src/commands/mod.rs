@@ -334,6 +334,7 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
             agent::AgentAction::InstallClaude { .. } => Some("agent install-claude"),
             agent::AgentAction::UninstallClaude => Some("agent uninstall-claude"),
             agent::AgentAction::HookPayload => Some("agent hook-payload"),
+            agent::AgentAction::HookTranscript => Some("agent hook-transcript"),
             _ => None,
         },
         Command::Config { action } => match action {

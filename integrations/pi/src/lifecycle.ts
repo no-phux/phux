@@ -1,6 +1,8 @@
 import type {
   ExtensionAPI,
   ExtensionContext,
+  MessageEndEvent,
+  MessageUpdateEvent,
   ProjectTrustEvent,
   SessionShutdownEvent,
   SessionStartEvent,
@@ -27,6 +29,7 @@ import {
   type AgentStateList,
 } from "./schemas.js";
 import type { PhuxTargetSelection, PhuxTargetStore } from "./target-store.js";
+import { PiTranscript } from "./transcript.js";
 import { normalizeTerminalIdentity } from "./awareness.js";
 
 export interface LifecycleCommandOptions {
@@ -58,6 +61,15 @@ export interface PhuxLifecycleOptions {
   readonly timers?: LifecycleTimers;
   /** Best-effort failures are reported here; the safe default deliberately does nothing. */
   readonly onError?: (error: unknown) => void;
+  /**
+   * Append `phux.transcript/v1` entries (ADR-0156) as `provider_raw` records.
+   * On unless false; the extension maps `PHUX_AGENT_TRANSCRIPT=0` to false.
+   */
+  readonly transcript?: boolean;
+  /** Include tool output in tool entries (`PHUX_AGENT_TRANSCRIPT=full`); off by default. */
+  readonly transcriptToolOutput?: boolean;
+  /** The transcript mapper; injectable so tests control its clock. */
+  readonly transcriptMapper?: PiTranscript;
 }
 
 export class PhuxLifecycleShutdownError extends Error {
@@ -382,9 +394,24 @@ export function registerPhuxLifecycle(
     );
   });
   // Per-turn events feed the AgentSession stream and never write `state`.
+  // Transcript entries ride `provider_raw` beside the typed records.
+  const transcript = options.transcript === false ? null : options.transcriptMapper ??
+    new PiTranscript(undefined, options.transcriptToolOutput === true);
+  const emitTranscript = (records: readonly Readonly<Record<string, unknown>>[]): void => {
+    for (const data of records) lifecycle.emit("provider_raw", data);
+  };
   pi.on("agent_start", () => lifecycle.emit("prompt"));
+  if (transcript !== null) {
+    pi.on("message_update", (event: MessageUpdateEvent) => {
+      emitTranscript(transcript.messageUpdate(event.message, event.assistantMessageEvent?.type));
+    });
+    pi.on("message_end", (event: MessageEndEvent) => {
+      emitTranscript(transcript.messageEnd(event.message));
+    });
+  }
   pi.on("tool_execution_start", (event: ToolExecutionStartEvent) => {
     lifecycle.emit("tool_start", { tool_name: event.toolName, tool_use_id: event.toolCallId });
+    if (transcript !== null) emitTranscript(transcript.toolStart(event));
   });
   pi.on("tool_execution_end", (event: ToolExecutionEndEvent) => {
     lifecycle.emit("tool_end", {
@@ -392,6 +419,7 @@ export function registerPhuxLifecycle(
       tool_use_id: event.toolCallId,
       ok: !event.isError,
     });
+    if (transcript !== null) emitTranscript(transcript.toolEnd(event));
   });
   pi.on("ui_prompt_start", (event: UIPromptStartEvent) => {
     lifecycle.emit("ask", { kind: event.kind, ...(event.title === undefined ? {} : { question: event.title }) });

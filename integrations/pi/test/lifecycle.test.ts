@@ -3,7 +3,8 @@ import test from "node:test";
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-import type { AgentEmitOptions, AgentSessionOpenOptions, ExecutionOptions } from "../src/adapter.js";
+import { PhuxCli, type AgentEmitOptions, type AgentSessionOpenOptions, type ExecutionOptions } from "../src/adapter.js";
+import type { RunRequest } from "../src/runner.js";
 import { PhuxError } from "../src/errors.js";
 import {
   PhuxLifecycle,
@@ -639,4 +640,86 @@ test("unsupported session open fails closed and identity-only still writes no st
   assert.equal(adapter.emits.length, 0, "detector remains the fallback when emit is absent");
   assert.equal(adapter.sets.length, 1);
   assert.equal(adapter.sets[0]?.record.state, undefined);
+});
+
+test("transcript entries ride provider_raw beside the typed records, and transcript:false silences them", async () => {
+  for (const enabled of [true, false]) {
+    const timers = new FakeTimers();
+    const adapter = new FakeAdapter();
+    const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+    const pi = { on: (name: string, handler: (event: unknown, ctx: unknown) => unknown) => handlers.set(name, handler) } as unknown as ExtensionAPI;
+    const pane = projection(null).agents[0] as AgentPane;
+    const store = new PhuxTargetStore({ appendEntry: () => {} }, { agentList: async () => ({ agents: [pane] }) });
+    await store.refresh();
+    const { lifecycle } = registerPhuxLifecycle(pi, store, {
+      cli: adapter, timers, hostTerminal: "3", ...(enabled ? {} : { transcript: false }),
+    });
+    const ctx = { sessionManager: { getSessionId: () => "session-1" } };
+    handlers.get("session_start")?.({ reason: "startup" }, ctx);
+    timers.runAll();
+    handlers.get("agent_start")?.({}, ctx);
+    handlers.get("message_end")?.({ message: { role: "user", content: "hi", timestamp: 1 } }, ctx);
+    handlers.get("tool_execution_start")?.({ toolCallId: "c1", toolName: "bash", args: { command: "ls" } }, ctx);
+    handlers.get("tool_execution_end")?.({ toolCallId: "c1", toolName: "bash", isError: false, result: { content: [] } }, ctx);
+    handlers.get("message_end")?.({ message: { role: "assistant", content: [{ type: "text", text: "ok" }], timestamp: 2 } }, ctx);
+    handlers.get("agent_settled")?.({}, ctx);
+    await lifecycle.settled();
+
+    const summary = adapter.emits.map((emit) => {
+      if (emit.type !== "provider_raw") return emit.type;
+      const entry = emit.data?.entry as { id: string; final: boolean };
+      assert.equal(emit.data?.schema, "phux.transcript/v1");
+      assert.equal(emit.data?.provider, "pi");
+      return `raw:${entry.id}:${entry.final ? "final" : "partial"}`;
+    });
+    assert.deepEqual(summary, enabled
+      ? ["session_start", "prompt", "raw:user-1:final", "tool_start", "raw:c1:partial", "tool_end",
+        "raw:c1:final", "raw:assistant-2:final", "stop"]
+      : ["session_start", "prompt", "tool_start", "tool_end", "stop"]);
+  }
+});
+
+test("transcript text reaches the phux CLI on stdin, never argv", async () => {
+  const requests: RunRequest[] = [];
+  const cli = new PhuxCli({
+    runner: async (request) => {
+      requests.push(request);
+      const type = request.args[request.args.indexOf("--type") + 1] ?? "";
+      return {
+        termination: "completed", exitCode: 0, stderr: "",
+        stdout: JSON.stringify({ schema_version: 1, resource: "@99", seq: requests.length, ts_ms: 1, type }),
+      };
+    },
+  });
+  class CliBackedAdapter extends FakeAdapter {
+    override async agentEmit(selector: string, type: AgentEventType, options: AgentEmitOptions = {}): Promise<AgentEmitResult> {
+      await super.agentEmit(selector, type, options);
+      return cli.agentEmit(selector, type, options);
+    }
+  }
+  const timers = new FakeTimers();
+  const adapter = new CliBackedAdapter();
+  const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+  const pi = { on: (name: string, handler: (event: unknown, ctx: unknown) => unknown) => handlers.set(name, handler) } as unknown as ExtensionAPI;
+  const pane = projection(null).agents[0] as AgentPane;
+  const store = new PhuxTargetStore({ appendEntry: () => {} }, { agentList: async () => ({ agents: [pane] }) });
+  await store.refresh();
+  const { lifecycle } = registerPhuxLifecycle(pi, store, { cli: adapter, timers, hostTerminal: "3" });
+  const ctx = { sessionManager: { getSessionId: () => "session-1" } };
+  handlers.get("session_start")?.({ reason: "startup" }, ctx);
+  timers.runAll();
+  handlers.get("message_end")?.({ message: { role: "user", content: "PROMPT-SECRET \ud800", timestamp: 1 } }, ctx);
+  handlers.get("tool_execution_start")?.({ toolCallId: "c1", toolName: "bash", args: { command: "cat ARGS-SECRET" } }, ctx);
+  handlers.get("message_end")?.({ message: { role: "assistant", content: [{ type: "text", text: "REPLY-SECRET" }], timestamp: 2 } }, ctx);
+  await lifecycle.settled();
+
+  const raw = requests.filter((request) => request.args.includes("provider_raw"));
+  assert.equal(raw.length, 3);
+  for (const request of requests) {
+    assert.ok(request.args.every((arg) => !arg.includes("SECRET")), `argv leaked: ${request.args.join(" ")}`);
+  }
+  const stdin = raw.map((request) => request.stdin ?? "").join("\n");
+  for (const marker of ["PROMPT-SECRET �", "cat ARGS-SECRET", "REPLY-SECRET"]) {
+    assert.ok(stdin.includes(marker), `${marker} rides stdin: ${stdin}`);
+  }
 });

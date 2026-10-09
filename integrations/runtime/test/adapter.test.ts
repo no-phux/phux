@@ -122,9 +122,11 @@ test("agent session open/emit/close use documented argv and parse confirmations"
 
   assert.deepEqual(requests.map((request) => request.args), [
     ["agent", "session", "open", "@3", "--provider", "pi", "--native-id", "s-1", "--json", "--socket", "/tmp/p.sock"],
-    ["agent", "emit", "@3", "--type", "ask", "--data", "{\"kind\":\"trust\"}", "--json", "--socket", "/tmp/p.sock"],
+    ["agent", "emit", "@3", "--type", "ask", "--data", "-", "--json", "--socket", "/tmp/p.sock"],
     ["agent", "session", "close", "@3", "--socket", "/tmp/p.sock"],
   ]);
+  assert.equal(requests[1]?.stdin, "{\"kind\":\"trust\"}", "record data rides stdin");
+  assert.equal(requests[0]?.stdin, undefined);
 });
 
 test("AgentSessionEmitter opens once per pane, emits ask as blocked, and fails closed without identity writes", async () => {
@@ -158,7 +160,8 @@ test("AgentSessionEmitter opens once per pane, emits ask as blocked, and fails c
   assert.equal(option(requests[0]!.args, "--provider"), "pi");
   assert.equal(option(requests[1]!.args, "--type"), "session_start");
   assert.equal(option(requests[2]!.args, "--type"), "ask");
-  assert.match(option(requests[2]!.args, "--data") ?? "", /"kind":"trust"/);
+  assert.equal(option(requests[2]!.args, "--data"), "-");
+  assert.match(requests[2]!.stdin ?? "", /"kind":"trust"/);
   assert.equal(option(requests[3]!.args, "--type"), "session_end");
   assert.deepEqual(requests[4]?.args.slice(0, 4), ["agent", "session", "close", "@9"]);
   assert.equal(requests.slice(1, 4).every((request) => request.args[2] === "@9"), true,
@@ -605,4 +608,31 @@ test("probe reports compatible versions and rejects versions below the package m
   const result = await new PhuxCli({ runner: missing }).probe();
   assert.equal(result.available, false);
   assert.match(result.reason ?? "", /install phux/);
+});
+
+test("agentEmit keeps record data off argv and sends well-formed JSON on stdin", async () => {
+  const fake = fakeRunner(completed(JSON.stringify({
+    schema_version: 1, resource: "@9", seq: 1, ts_ms: 1, type: "provider_raw",
+  })));
+  const secret = "SECRET-MARKER \"quoted\" 😀 lone:\ud800 tail:\udc00";
+  await new PhuxCli({ runner: fake.runner }).agentEmit("@9", "provider_raw", {
+    data: { schema: "phux.transcript/v1", entry: { text: secret } },
+  });
+  const [request] = fake.requests;
+  assert.ok(request !== undefined);
+  assert.ok(request.args.every((arg) => !arg.includes("SECRET")), `argv leaked: ${request.args.join(" ")}`);
+  assert.deepEqual(request.args.slice(0, 7), ["agent", "emit", "@9", "--type", "provider_raw", "--data", "-"]);
+  const stdin = request.stdin ?? "";
+  assert.doesNotMatch(stdin, /\\ud[89a-f][0-9a-f]{2}/i, "no surrogate escape a strict parser would refuse");
+  assert.equal(
+    (JSON.parse(stdin) as { entry: { text: string } }).entry.text,
+    "SECRET-MARKER \"quoted\" 😀 lone:� tail:�",
+  );
+
+  const bare = fakeRunner(completed(JSON.stringify({
+    schema_version: 1, resource: "@9", seq: 2, ts_ms: 1, type: "stop",
+  })));
+  await new PhuxCli({ runner: bare.runner }).agentEmit("@9", "stop");
+  assert.equal(bare.requests[0]?.stdin, undefined);
+  assert.ok(!bare.requests[0]?.args.includes("--data"));
 });

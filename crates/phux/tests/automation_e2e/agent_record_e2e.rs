@@ -566,13 +566,56 @@ impl ServerGuard {
             std::thread::sleep(RECORD_POLL);
         }
     }
+
+    /// Poll the log until a `phux.transcript/v1` entry with `role` appears
+    /// and return the whole log.
+    fn await_transcript(
+        &self,
+        target: &str,
+        role: &str,
+        deadline: Duration,
+    ) -> Vec<serde_json::Value> {
+        let end = Instant::now() + deadline;
+        loop {
+            let records = self.agent_log(target);
+            if records.iter().any(|record| is_transcript(record, role)) {
+                return records;
+            }
+            assert!(
+                Instant::now() < end,
+                "{target} never logged a `{role}` transcript entry within {deadline:?}; last: {records:?}"
+            );
+            std::thread::sleep(RECORD_POLL);
+        }
+    }
+}
+
+fn is_transcript(record: &serde_json::Value, role: &str) -> bool {
+    record["type"] == "provider_raw"
+        && record["data"]["schema"] == "phux.transcript/v1"
+        && record["data"]["provider"] == "claude"
+        && record["data"]["entry"]["role"] == role
+}
+
+/// The last `phux.transcript/v1` entry with `role` in `records`.
+fn transcript_entry(records: &[serde_json::Value], role: &str) -> serde_json::Value {
+    records
+        .iter()
+        .rev()
+        .find(|record| is_transcript(record, role))
+        .map_or_else(
+            || panic!("a `{role}` transcript entry: {records:?}"),
+            |record| record["data"]["entry"].clone(),
+        )
 }
 
 /// The generated wrapper, fed Claude's real hook payloads, drives an agent
 /// session end to end: `SessionStart` opens it with Claude's `session_id`;
 /// prompt, tool, ask, and stop hooks log records and the pane derives
 /// `working`, `blocked`, then `done`; `SessionEnd` closes it. No prompt text,
-/// tool input, or tool output may appear in the log. States are read from a
+/// tool input, or tool output may appear in a typed record; the conversation
+/// rides `provider_raw` records in the `phux.transcript/v1` convention
+/// (ADR-0156), and the transcript path never appears at all. States are read from a
 /// `phux watch` because the detector's next screen tick supersedes a stream
 /// edge within ~300 ms.
 #[test]
@@ -639,7 +682,16 @@ fn the_generated_claude_shim_feeds_the_agent_session_stream() {
         base
     };
     let assert_private = |records: &[serde_json::Value]| {
-        let text = serde_json::to_string(records).expect("serialize log");
+        let all = serde_json::to_string(records).expect("serialize log");
+        assert!(
+            !all.contains("TRANSCRIPT-MARKER"),
+            "the transcript path must never reach the stream: {all}"
+        );
+        let typed: Vec<_> = records
+            .iter()
+            .filter(|record| record["type"] != "provider_raw")
+            .collect();
+        let text = serde_json::to_string(&typed).expect("serialize typed records");
         for marker in [
             "PROMPT-MARKER",
             "INPUT-MARKER",
@@ -689,6 +741,12 @@ fn the_generated_claude_shim_feeds_the_agent_session_stream() {
         .expect("prompt record");
     assert_eq!(prompt["data"]["chars"], 25, "{prompt}");
     assert_private(&records);
+    let user = transcript_entry(
+        &server.await_transcript(&target, "user", DETECT_DEADLINE),
+        "user",
+    );
+    assert_eq!(user["text"], "hello PROMPT-MARKER world", "{user}");
+    assert_eq!(user["final"], true, "{user}");
     watch.await_agent_state("working");
 
     // --- 3. Tool records name the tool and nothing else -------------------
@@ -731,6 +789,23 @@ fn the_generated_claude_shim_feeds_the_agent_session_stream() {
         assert!(record["data"].get("tool_input").is_none(), "{record}");
     }
     assert_private(&records);
+    let tool = transcript_entry(
+        &server.await_transcript(&target, "tool", DETECT_DEADLINE),
+        "tool",
+    );
+    // Tool output is not on the screen; only PHUX_AGENT_TRANSCRIPT=full carries it.
+    assert_eq!(tool["id"], "toolu_e2e", "{tool}");
+    assert_eq!(
+        tool["tool"],
+        serde_json::json!({
+            "name": "Bash",
+            "call_id": "toolu_e2e",
+            "summary": "echo INPUT-MARKER",
+            "status": "ok",
+            "output": ""
+        }),
+        "{tool}"
+    );
 
     // --- 4. PermissionRequest: ask, and blocked ---------------------------
     run_hook_with_payload(
@@ -764,6 +839,15 @@ fn the_generated_claude_shim_feeds_the_agent_session_stream() {
     );
     let records = server.await_record(&target, "stop", DETECT_DEADLINE);
     assert_private(&records);
+    let reply = transcript_entry(&records, "assistant");
+    assert_eq!(reply["text"], "OUTPUT-MARKER", "{reply}");
+    let seq_of = |pred: &dyn Fn(&serde_json::Value) -> bool| {
+        records.iter().find(|r| pred(r)).map(|r| r["seq"].as_u64())
+    };
+    assert!(
+        seq_of(&|r| r["data"]["entry"]["role"] == "assistant") < seq_of(&|r| r["type"] == "stop"),
+        "the reply lands before the turn's stop: {records:?}"
+    );
     watch.await_agent_state("done");
     // The whole ordered ladder, on one stream: the hooks drove the pane
     // through working, blocked and done in that order, from a screen that
