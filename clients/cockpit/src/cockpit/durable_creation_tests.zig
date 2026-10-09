@@ -175,6 +175,25 @@ fn confirmCreation(engine: *engine_module.Engine, kind: enum { add, split }) !vo
     try testing.expectEqual(@as(usize, 0), engine.creation.count());
 }
 
+test "a new tab passes the focused pane directory into requestSpawnIn" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const remote = engine.model.phux().?;
+    try fixture.stageFixture(remote.bridge, "remote-cwd.bin");
+    try drain(engine);
+    const focused = engine.model.focusedTerminalRef().?;
+    try testing.expectEqualStrings("/srv/work/cockpit-fixture", remote.presentation(focused).?.cwd);
+    remote.bridge.outgoing.reset();
+    try engine.creation.request(engine.model, .tab);
+    var found = false;
+    while (remote.bridge.outgoing.take()) |frame| {
+        if (std.mem.indexOf(u8, frame, "/srv/work/cockpit-fixture") != null) found = true;
+        remote.bridge.outgoing.release(frame);
+    }
+    try testing.expect(found);
+}
+
 test "confirmed placement starts the next queued creation without a timer or terminal output" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
     const engine = try start();

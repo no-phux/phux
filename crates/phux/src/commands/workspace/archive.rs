@@ -7,8 +7,8 @@ use std::process::ExitCode;
 use phux_client::attach::connection::Connection;
 use phux_client::layout::{LayoutNode, LayoutState, SplitDir, WindowState, Workspace};
 use phux_client::layout_ops::LayoutOps;
-use phux_protocol::ids::{GroupId, ResourceId};
-use phux_protocol::wire::frame::{Command, FrameKind, SpawnResult};
+use phux_protocol::ids::ResourceId;
+use phux_protocol::wire::frame::{Command, SpawnResult};
 use phux_server::runtime::default_socket_path;
 
 use phux_client::agent_session_record::{AgentSessionRecord, fetch_record_index};
@@ -105,7 +105,9 @@ async fn capture_archive(
                 .to_owned(),
         ));
     }
-    let (archive, reconcile_warnings) = archive_from_snapshot(&snapshot, &agent_sessions, &layouts);
+    let projects = phux_client::workspace_place::fetch_project_by_session(socket_path).await;
+    let (archive, reconcile_warnings) =
+        archive_from_snapshot(&snapshot, &agent_sessions, &layouts, &projects);
     for warning in bridge_warnings
         .iter()
         .chain(&layout_warnings)
@@ -410,22 +412,32 @@ async fn restore_one_session(
         return Err(err);
     }
 
-    match replay_split_tree(
+    if let Err(err) = replay_split_tree(
         socket_path,
         &seed,
         seed_position,
         &windows,
+        create.host.as_deref(),
         &mut created,
         &mut warnings,
     )
     .await
     {
-        Ok(()) => Ok(SessionOutcome { warnings }),
-        Err(err) => {
-            rollback_session(socket_path, &created).await;
-            Err(err)
-        }
+        rollback_session(socket_path, &created).await;
+        return Err(err);
     }
+    if let Some(project) = create
+        .project
+        .as_deref()
+        .filter(|project| !project.is_empty())
+        && let Err(err) =
+            phux_client::workspace_place::set_session_project(socket_path, &create.name, project)
+                .await
+    {
+        rollback_session(socket_path, &created).await;
+        return Err(err.to_string());
+    }
+    Ok(SessionOutcome { warnings })
 }
 
 /// Resolve one pane's archived native agent session. A prep failure is a
@@ -474,37 +486,50 @@ async fn rollback_session(socket_path: &Path, created: &[ResourceId]) {
     }
 }
 
-/// Recreate the archived panes beyond the seed and write the session's
-/// layout envelope. Each spawned pane is pushed onto `created` for rollback.
+/// Recreate the archived panes and write the session's layout envelope.
+///
+/// A local session keeps the seed pane the session-create call already
+/// made. A session saved on a satellite spawns every archived pane there,
+/// including that seed: a local owner cannot cross the link. Each spawned
+/// pane is pushed onto `created` for rollback.
 async fn replay_split_tree(
     socket_path: &Path,
     seed: &ResourceId,
     seed_position: Option<(usize, usize)>,
     windows: &[WorkspaceWindow],
+    host: Option<&str>,
     created: &mut Vec<ResourceId>,
     warnings: &mut Vec<String>,
 ) -> Result<(), String> {
     if windows.is_empty() {
-        return Ok(());
+        return hosted_without_panes(host);
     }
 
+    let hosted = host.is_some_and(|host| !host.is_empty());
     let mut pane_ids: Vec<Vec<Option<ResourceId>>> = windows
         .iter()
         .map(|window| vec![None; window.panes.len()])
         .collect();
-    if let Some((window_index, pane_index)) = seed_position
+    if !hosted
+        && let Some((window_index, pane_index)) = seed_position
         && let Some(slot) = pane_ids
             .get_mut(window_index)
             .and_then(|row| row.get_mut(pane_index))
     {
         *slot = Some(seed.clone());
     }
+    let mut remote_owner: Option<ResourceId> = None;
     for (window_index, window) in windows.iter().enumerate() {
         for (pane_index, pane) in window.panes.iter().enumerate() {
             if pane_ids[window_index][pane_index].is_some() {
                 continue;
             }
-            let spawned = spawn_owned_pane(socket_path, seed, pane, created, warnings).await?;
+            let owner = spawn_owner(hosted, seed, remote_owner.as_ref());
+            let spawned =
+                spawn_owned_pane(socket_path, owner, pane, host, created, warnings).await?;
+            if hosted {
+                remote_owner.get_or_insert_with(|| spawned.clone());
+            }
             pane_ids[window_index][pane_index] = Some(spawned);
         }
     }
@@ -513,12 +538,35 @@ async fn replay_split_tree(
     write_restored_layout(socket_path, seed, workspace).await
 }
 
-/// Spawn one archived pane owned by the seed pane (keeping it in the seed's
-/// session), resuming its agent session when possible.
+/// A hosted archive with no panes has nowhere to put the host.
+fn hosted_without_panes(host: Option<&str>) -> Result<(), String> {
+    let Some(host) = host.filter(|host| !host.is_empty()) else {
+        return Ok(());
+    };
+    Err(format!(
+        "session was saved on host {host:?} but the archive has no pane to restore there"
+    ))
+}
+
+/// Local panes join the seed. The first satellite pane has no owner on that
+/// host yet; later panes join the first one spawned there.
+const fn spawn_owner<'a>(
+    hosted: bool,
+    seed: &'a ResourceId,
+    remote_owner: Option<&'a ResourceId>,
+) -> Option<&'a ResourceId> {
+    if hosted { remote_owner } else { Some(seed) }
+}
+
+/// Spawn one archived pane, resuming its agent session when possible.
+///
+/// `owner` `None` asks the satellite to place the pane. A local owner keeps
+/// the pane in that pane's session.
 async fn spawn_owned_pane(
     socket_path: &Path,
-    owner: &ResourceId,
+    owner: Option<&ResourceId>,
     pane: &model::WorkspacePane,
+    host: Option<&str>,
     created: &mut Vec<ResourceId>,
     warnings: &mut Vec<String>,
 ) -> Result<ResourceId, String> {
@@ -542,19 +590,7 @@ async fn spawn_owned_pane(
             )
         },
     );
-    let frame = FrameKind::SpawnResource {
-        request_id: 1,
-        group: GroupId::new(1),
-        command,
-        cwd,
-        env,
-        term: None,
-        satellite: None,
-        owner_terminal: Some(owner.clone()),
-        agent_session: None,
-        initial_size: None,
-        resource: None,
-    };
+    let frame = phux_client::workspace_place::restored_spawn_frame(owner, command, cwd, env, host);
     let spawned = match dispatch_spawn_async(socket_path, &frame, None).await {
         Ok(SpawnResult::Ok(id)) => id,
         Ok(SpawnResult::Err(err)) => {

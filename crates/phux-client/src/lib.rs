@@ -61,6 +61,8 @@ pub mod spawn;
 pub mod state;
 // `phux.tags/v1` read/write (ADR-0027).
 pub mod tags;
+// Project tag and satellite spawn for `phux workspace` save and restore.
+pub mod workspace_place;
 // `UPGRADE` (`phux upgrade`, ADR-0032).
 pub mod upgrade;
 // The scripted server every client-side test speaks to.

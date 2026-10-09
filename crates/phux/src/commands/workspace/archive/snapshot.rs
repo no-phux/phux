@@ -20,6 +20,7 @@ pub(super) fn archive_from_snapshot(
     snapshot: &SessionSnapshot,
     agent_sessions: &HashMap<ResourceId, AgentSessionRecord>,
     layouts: &HashMap<SessionId, Workspace>,
+    projects: &HashMap<String, String>,
 ) -> (WorkspaceArchive, Vec<String>) {
     let windows_by_session = windows_by_session(&snapshot.windows);
     let panes_by_window = panes_by_window(&snapshot.resources);
@@ -42,12 +43,13 @@ pub(super) fn archive_from_snapshot(
                 agent_sessions,
                 &mut warnings,
             );
+            let (cwd, host) = focused_place(session, snapshot);
             WorkspaceSession {
                 name: session.name.clone(),
                 active: session.id == snapshot.focused_session,
-                cwd: None,
-                host: None,
-                project: None,
+                cwd,
+                host,
+                project: projects.get(&session.name).cloned(),
                 command: None,
                 windows,
             }
@@ -60,6 +62,45 @@ pub(super) fn archive_from_snapshot(
         },
         warnings,
     )
+}
+
+/// The focused pane's directory and satellite host. A local pane has no host.
+/// When the active window has no focused pane, the first pane in the session
+/// that has a directory supplies it.
+fn focused_place(
+    session: &SessionInfo,
+    snapshot: &SessionSnapshot,
+) -> (Option<String>, Option<String>) {
+    let in_session = |window: &WindowInfo| window.session_id == session.id;
+    let focused_id = session
+        .active_window
+        .and_then(|window_id| {
+            snapshot
+                .windows
+                .iter()
+                .find(|window| window.id == window_id && in_session(window))
+        })
+        .and_then(|window| window.active_resource.clone())
+        .or_else(|| {
+            snapshot.resources.iter().find_map(|resource| {
+                snapshot
+                    .windows
+                    .iter()
+                    .any(|window| in_session(window) && window.id == resource.window_id)
+                    .then(|| resource.id.clone())
+            })
+        });
+    let info = focused_id.as_ref().and_then(|id| {
+        snapshot
+            .resources
+            .iter()
+            .find(|resource| resource.id == *id)
+    });
+    let cwd = info.and_then(|resource| resource.cwd.clone());
+    let host = focused_id
+        .as_ref()
+        .and_then(|id| id.host().map(|host| host.as_str().to_owned()));
+    (cwd, host)
 }
 
 /// One session's archived windows, from its L3 layout when present, else
@@ -369,7 +410,7 @@ mod tests {
         )]);
 
         let (archive, warnings) =
-            archive_from_snapshot(&snapshot, &agent_sessions, &HashMap::new());
+            archive_from_snapshot(&snapshot, &agent_sessions, &HashMap::new(), &HashMap::new());
         assert!(warnings.is_empty(), "{warnings:?}");
 
         assert_eq!(archive.schema_version, ARCHIVE_SCHEMA_VERSION);
@@ -383,6 +424,8 @@ mod tests {
             archive.sessions[0].windows[0].panes[0].cwd.as_deref(),
             Some("/tmp/phux-ops")
         );
+        assert_eq!(archive.sessions[0].cwd.as_deref(), Some("/tmp/phux-ops"));
+        assert_eq!(archive.sessions[0].host, None);
         assert_eq!(archive.sessions[0].windows[0].panes[0].command, None);
         assert_eq!(
             archive.sessions[0].windows[0].panes[0]
@@ -414,10 +457,39 @@ mod tests {
                 .with_resources(panes);
 
         let (archive, warnings) =
-            archive_from_snapshot(&snapshot, &HashMap::new(), &HashMap::new());
+            archive_from_snapshot(&snapshot, &HashMap::new(), &HashMap::new(), &HashMap::new());
         assert!(warnings.is_empty(), "{warnings:?}");
 
         assert!(!archive.sessions[0].windows[0].active);
         assert!(archive.sessions[0].windows[1].active);
+    }
+
+    #[test]
+    fn saves_the_focused_panes_host_directory_and_project() {
+        let session = SessionInfo::new(SessionId::new(1), "api")
+            .with_active_window(Some(WindowId::new(2)))
+            .with_window_count(1);
+        let pane_id = ResourceId::satellite("edge", 4);
+        let window = WindowInfo::new(WindowId::new(2), SessionId::new(1), "main")
+            .with_active_resource(Some(pane_id.clone()));
+        let pane = ResourceInfo::new(pane_id, WindowId::new(2), 80, 24)
+            .with_cwd(Some("/src/api".to_owned()));
+        let snapshot = SessionSnapshot::new(
+            SessionId::new(1),
+            WindowId::new(2),
+            ResourceId::satellite("edge", 4),
+        )
+        .with_sessions(vec![session])
+        .with_windows(vec![window])
+        .with_resources(vec![pane]);
+        let mut projects = HashMap::new();
+        projects.insert("api".to_owned(), "phux".to_owned());
+
+        let (archive, warnings) =
+            archive_from_snapshot(&snapshot, &HashMap::new(), &HashMap::new(), &projects);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(archive.sessions[0].host.as_deref(), Some("edge"));
+        assert_eq!(archive.sessions[0].cwd.as_deref(), Some("/src/api"));
+        assert_eq!(archive.sessions[0].project.as_deref(), Some("phux"));
     }
 }
