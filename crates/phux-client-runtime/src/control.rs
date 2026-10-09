@@ -67,7 +67,7 @@ mod roster;
 mod state;
 mod topology;
 
-pub use events::{DeliveryOutcome, Event, Observation, Status};
+pub use events::{AgentSessionInfo, DeliveryOutcome, Event, Observation, Status};
 pub use extensions::{
     DirectoryChild, DirectoryFailure, DirectoryListing, FileUploadOutcome, FileUploadReceipt,
     MAX_PATH_ANSWERS, PathAnswer, PathFailure, PathMatch, PathMatchKind, PathSearchStatus,
@@ -125,6 +125,13 @@ pub struct ControlOptions {
     /// attach on the live socket, so its output reaches this client
     /// without a reconnect.
     pub auto_attach_foreign_spawns: bool,
+    /// Stream every `AgentSession` resource (ADR-0103) whose parent Terminal
+    /// this connection streams: subscribe it with a per-resource attach,
+    /// re-read the topology when one is announced, and surface its records
+    /// as [`Event::AgentRecords`] and its end as
+    /// [`Event::AgentSessionClosed`]. Needs `automatic_lifecycle`, which
+    /// owns the request ids those attaches use.
+    pub subscribe_agent_sessions: bool,
     /// The bootstrap payload limits offered in `HELLO`.
     pub bootstrap_limits: BootstrapLimits,
     /// Where the connection driver puts an inbound frame.
@@ -167,6 +174,7 @@ impl Default for ControlOptions {
             attach_role: None,
             event_after_seq: None,
             auto_attach_foreign_spawns: true,
+            subscribe_agent_sessions: false,
             bootstrap_limits: BootstrapLimits::default(),
             deliver_inbound: InboundDelivery::Fed,
         }
@@ -352,6 +360,8 @@ enum Pending {
     PutFile(u64),
     /// A one-shot transcription request for a completed upload.
     Transcribe(u64),
+    /// The runtime's own subscription to an `AgentSession` stream.
+    AgentSubscription(ResourceId),
 }
 
 /// The sans-IO control plane. See the module docs.
@@ -408,6 +418,12 @@ pub struct ControlPlane {
     own_spawns: HashSet<ResourceId>,
     /// `AgentSession` resources declared to the kernel.
     agent_streams: HashSet<ResourceId>,
+    /// The `AgentSession` resources the last topology listed, kept for
+    /// subscribing one whose parent this connection admits later.
+    agent_catalog: Vec<phux_protocol::wire::info::ResourceInfo>,
+    /// The `AgentSession` streams `subscribe_agent_sessions` follows, kept
+    /// across reconnects until the server proves them closed.
+    agent_subscriptions: HashMap<ResourceId, agents::AgentSubscription>,
     /// This connection's identity on the server, from `ATTACHED`; what an
     /// input lease's `holder` is compared against.
     own_client_id: Option<ClientId>,
@@ -474,6 +490,8 @@ impl ControlPlane {
             stream_recoveries: HashSet::new(),
             own_spawns: HashSet::new(),
             agent_streams: HashSet::new(),
+            agent_catalog: Vec::new(),
+            agent_subscriptions: HashMap::new(),
             own_client_id: None,
             pending: HashMap::new(),
             request_seq: 1,

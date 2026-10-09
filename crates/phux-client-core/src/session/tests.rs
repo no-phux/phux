@@ -3440,14 +3440,16 @@ fn agent_begin(
     )
 }
 
-fn agent_records_effect(effects: &EffectBuffer) -> Option<(ResourceId, Vec<u64>)> {
+fn agent_records_effect(effects: &EffectBuffer) -> Option<(ResourceId, Vec<u64>, bool)> {
     effects.as_slice().iter().find_map(|effect| match effect {
         KernelEffect::AgentRecords {
             terminal_id,
             records,
+            retained,
         } => Some((
             terminal_id.clone(),
             records.iter().map(|record| record.seq).collect(),
+            *retained,
         )),
         _ => None,
     })
@@ -3530,7 +3532,7 @@ fn agent_session_bootstraps_into_a_typed_log_and_never_a_replica() {
         .unwrap();
     assert_eq!(
         agent_records_effect(&effects),
-        Some((agent.clone(), vec![1, 2])),
+        Some((agent.clone(), vec![1, 2], true)),
         "publication hands the frontend every retained record"
     );
     assert!(
@@ -3564,7 +3566,7 @@ fn agent_session_bootstraps_into_a_typed_log_and_never_a_replica() {
         .unwrap();
     assert_eq!(
         agent_records_effect(&effects),
-        Some((agent.clone(), vec![6]))
+        Some((agent.clone(), vec![6], false))
     );
     let view = kernel.agent_session(&agent).expect("live");
     assert_eq!(view.state.status, AgentSessionStatus::Done);
@@ -3758,7 +3760,7 @@ fn malformed_agent_records_retire_only_that_generation() {
         .unwrap();
     assert_eq!(
         agent_records_effect(&effects),
-        Some((agent.clone(), vec![]))
+        Some((agent.clone(), vec![], true))
     );
     assert!(
         kernel
@@ -3886,7 +3888,7 @@ fn agent_live_batches_advance_by_the_last_record_sequence() {
     .unwrap();
     assert_eq!(
         agent_records_effect(&effects),
-        Some((terminal(2), vec![1, 2, 3]))
+        Some((terminal(2), vec![1, 2, 3], false))
     );
     let agent = terminal(2);
     let view = kernel.agent_session(&agent).unwrap();
@@ -3895,7 +3897,7 @@ fn agent_live_batches_advance_by_the_last_record_sequence() {
     apply_agent_batch(&mut kernel, &mut effects, 5, &[(4, "prompt"), (5, "ask")]).unwrap();
     assert_eq!(
         agent_records_effect(&effects),
-        Some((agent.clone(), vec![4, 5]))
+        Some((agent.clone(), vec![4, 5], false))
     );
     assert_eq!(
         kernel.agent_session(&agent).unwrap().state.status,
@@ -3980,7 +3982,7 @@ fn agent_live_batches_reach_sequence_exhaustion_without_wrapping() {
     .unwrap();
     assert_eq!(
         agent_records_effect(&effects),
-        Some((terminal(2), vec![u64::MAX - 1, u64::MAX]))
+        Some((terminal(2), vec![u64::MAX - 1, u64::MAX], false))
     );
     assert!(matches!(
         apply_agent_batch(&mut kernel, &mut effects, 0, &[(0, "ask")]),

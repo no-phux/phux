@@ -49,6 +49,21 @@ pub enum DeliveryOutcome {
     Unknown,
 }
 
+/// The catalog's facts about an `AgentSession` resource (ADR-0103).
+///
+/// The Terminal it belongs to and its provider identity, as listed when the
+/// runtime subscribed it. Every field is `None` for a stream a binding
+/// subscribed itself.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentSessionInfo {
+    /// The Terminal the session runs in.
+    pub parent: Option<ResourceId>,
+    /// The provider, for example `claude`.
+    pub provider: Option<String>,
+    /// The provider's own opaque session id.
+    pub native_id: Option<String>,
+}
+
 /// A state change the control plane surfaces, drained in order through
 /// `take_events`. Every event is owned: no field borrows the control plane.
 #[derive(Debug, Clone)]
@@ -276,6 +291,23 @@ pub enum Event {
         terminal_id: ResourceId,
         /// The records.
         records: Vec<AgentEventRecord>,
+        /// `true` when `records` is a generation's whole retained stream,
+        /// delivered once when it publishes (after a subscription, a
+        /// reconnect, or a resync), and replaces every record held for the
+        /// resource. `false` for one live output frame appended to it.
+        retained: bool,
+        /// The resource's parent and provider identity.
+        session: AgentSessionInfo,
+    },
+    /// An `AgentSession` stream the runtime subscribed
+    /// (`ControlOptions::subscribe_agent_sessions`) ended: the server
+    /// closed the resource, or a topology read no longer lists it. Exactly
+    /// once per subscription; no records follow.
+    AgentSessionClosed {
+        /// The `AgentSession` resource.
+        terminal_id: ResourceId,
+        /// The resource's parent and provider identity.
+        session: AgentSessionInfo,
     },
     /// One acknowledged input operation resolved. Lossless: never dropped
     /// by the queue cap.
@@ -382,6 +414,7 @@ impl Event {
                 | Self::CommandResult { .. }
                 | Self::InputHolderChanged { .. }
                 | Self::AgentRecords { .. }
+                | Self::AgentSessionClosed { .. }
                 | Self::ConnectionOpened { .. }
         )
     }

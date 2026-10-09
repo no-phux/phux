@@ -224,6 +224,7 @@ impl ControlPlane {
             terminals: terminals.clone(),
         })?;
         self.declare_agent_sessions(snapshot, &terminals)?;
+        self.reconcile_agent_sessions(snapshot, false)?;
         self.push_event(Event::TopologySnapshot {
             attach_id: Some(attach_id),
             snapshot: snapshot.clone(),
@@ -491,6 +492,10 @@ impl ControlPlane {
                 if error.is_some() {
                     self.terminal_attached.remove(&terminal_id);
                     self.stream_recoveries.remove(&terminal_id);
+                } else {
+                    // Agents running in a pane admitted after the topology
+                    // listed them.
+                    self.subscribe_catalogued_agents()?;
                 }
                 self.push_event(Event::TerminalAttached {
                     request_id,
@@ -524,6 +529,9 @@ impl ControlPlane {
             }
             Pending::RefreshTopology => {
                 self.resolve_topology_read(result)?;
+            }
+            Pending::AgentSubscription(terminal_id) => {
+                self.agent_subscription_answered(&terminal_id, error.is_some());
             }
             Pending::Extension => {
                 self.push_event(Event::CommandResult { request_id, result });
@@ -560,6 +568,7 @@ impl ControlPlane {
         }
         self.error = None;
         self.topology = Some(topology);
+        self.reconcile_agent_sessions(snapshot, true)?;
         self.push_event(Event::TopologySnapshot {
             attach_id: None,
             snapshot: snapshot.clone(),

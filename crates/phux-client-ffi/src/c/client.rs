@@ -222,6 +222,9 @@ impl Client {
             // enabling the generic runtime path as well would issue a second
             // ATTACH_RESOURCE for the same spawn.
             auto_attach_foreign_spawns: false,
+            // Workspace refresh subscribes AgentSession streams itself
+            // (`crate::c::workspace::resources`).
+            subscribe_agent_sessions: false,
             bootstrap_limits,
             deliver_inbound: InboundDelivery::Queued,
         };
@@ -878,6 +881,7 @@ impl Client {
             Event::AgentRecords {
                 terminal_id,
                 records,
+                ..
             } => self.agent_records_effect(terminal_id, &records)?,
             Event::KernelSend(send) => self.process_send(send)?,
             Event::Frame(frame) => crate::c::dispatch_extension_frame(self, *frame)?,

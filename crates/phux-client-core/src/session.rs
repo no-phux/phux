@@ -496,6 +496,10 @@ pub enum KernelEffect {
         terminal_id: ResourceId,
         /// The records this update appended.
         records: Vec<AgentEventRecord>,
+        /// `true` for a generation's publication: `records` is the whole
+        /// retained stream and replaces whatever the frontend held. `false`
+        /// for one live output frame appended to it.
+        retained: bool,
     },
 }
 
@@ -2059,6 +2063,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         effects.push(KernelEffect::AgentRecords {
             terminal_id: terminal_id.clone(),
             records: staging.records,
+            retained: true,
         });
         self.mark_attach_resolved(terminal_id);
         Ok(())
@@ -2123,6 +2128,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         effects.push(KernelEffect::AgentRecords {
             terminal_id: terminal_id.clone(),
             records,
+            retained: false,
         });
         Ok(())
     }
