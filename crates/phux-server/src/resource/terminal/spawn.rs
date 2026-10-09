@@ -1128,6 +1128,44 @@ mod canonical_guard_tests {
         );
     }
 
+    /// A wire cwd is the directory the child starts in, before any `cd`.
+    #[test]
+    fn spawn_pty_starts_in_the_requested_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let expected = dir.path().canonicalize().expect("canonicalize");
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.arg("-c");
+        cmd.arg("pwd; read _");
+        cmd.cwd(expected.as_os_str());
+        let (mut pty_rx, _input_tx, mut pty) = spawn_pty(cmd, 80, 24).expect("spawn");
+        let pid = pty.child.process_id().expect("child pid");
+        let immediate =
+            crate::cwd_query::process_cwd(pid).map(|path| path.canonicalize().unwrap_or(path));
+        assert_eq!(
+            immediate.as_deref(),
+            Some(expected.as_path()),
+            "cwd must be applied before posix_spawn returns, pid {pid}"
+        );
+        let mut received = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline && !received.contains(&b'\n') {
+            match pty_rx.try_recv() {
+                Ok(PtyEvent::Bytes { chunk, .. }) => received.extend_from_slice(&chunk),
+                Ok(PtyEvent::Eof) => break,
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(10)),
+            }
+        }
+        let settled =
+            crate::cwd_query::process_cwd(pid).map(|path| path.canonicalize().unwrap_or(path));
+        let _ = pty.child.kill();
+        let printed = String::from_utf8_lossy(&received);
+        assert_eq!(
+            settled.as_deref(),
+            Some(expected.as_path()),
+            "pid {pid} immediate {immediate:?} printed {printed:?}"
+        );
+    }
+
     /// Spawn `cmd` under a real PTY and collect output up to the first `]`.
     async fn spawn_and_capture(cmd: CommandBuilder) -> String {
         let (mut pty_rx, _input_tx, mut pty) =
