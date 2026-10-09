@@ -53,6 +53,19 @@ test('Edit Configuration uses a captured local launch and never types into the f
   assert.equal(admitted.toolQueued, true);
 });
 
+test('New Session sends the typed folder with the name', () => {
+  let [model] = step(initialModel()[0], { kind: 'new_session_open' });
+  [model] = step(model, { kind: 'new_session_loaded', body: sessionReply(0) });
+  [model] = step(model, { kind: 'rename_edit', edit: { kind: 'insert_text', text: bytes('Build') } });
+  [model] = step(model, { kind: 'session_directory_edit', edit: { kind: 'insert_text', text: bytes('/src/api') } });
+  const [, cmd] = step(model, { kind: 'rename_submit' });
+  const payload = cmd.cmds[1].payload;
+  assert.equal(payload[10], 5);
+  assert.equal(text(payload.slice(11, 16)), 'Build');
+  assert.equal(payload[16], '/src/api'.length);
+  assert.equal(text(payload.slice(17)), '/src/api');
+});
+
 test('New Session names its captured machine, echoes token, and does not report pending as success', () => {
   let [model, cmd] = step(initialModel()[0], { kind: 'new_session_open' });
   assert.equal(cmd.cmds[1].name, 'cockpit.new-session');
