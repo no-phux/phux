@@ -7,6 +7,7 @@ import { SITE, docsHref } from "../lib/site";
 import release from "../lib/release.json";
 
 const cliInstall = "curl -fsSL https://phux.sh/install | sh";
+const desktopInstall = "curl -fsSL https://phux.sh/install-desktop | sh";
 const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
 
 const FEATURES = [
@@ -62,19 +63,29 @@ const FEATURES = [
   <section class="wrap install" id="install">
     <h2>Install</h2>
     <div class="install-row">
+      <div class="install-cmd desktop-install">
+        <span>Desktop for macOS · Alpha {release.desktop?.tag && <em>{release.desktop.tag}</em>}</span>
+        <code tabindex="0">{desktopInstall}</code>
+        <button type="button" data-copy={desktopInstall}>Copy</button>
+        <p>
+          Apple silicon · macOS 27 or later. Install the CLI below first, then open Phux.app.
+          Ad-hoc signed; not Apple-notarized.{" "}
+          <a href={docsHref("/quickstart/install#gpuix-desktop-alpha-native-macos")}>Desktop install details</a>
+        </p>
+      </div>
       <div class="install-cmd">
-        <span>CLI {release.tag && <em>{release.tag}</em>}</span>
+        <span>CLI · macOS and Linux {release.tag && <em>{release.tag}</em>}</span>
         <code tabindex="0">{cliInstall}</code>
         <button type="button" data-copy={cliInstall}>Copy</button>
       </div>
       <div class="install-cmd">
-        <span>Cockpit for macOS {release.cockpit?.tag && <em>{release.cockpit.tag}</em>}</span>
+        <span>Cockpit for macOS · Experimental {release.cockpit?.tag && <em>{release.cockpit.tag}</em>}</span>
         <code tabindex="0">{cockpitInstall}</code>
         <button type="button" data-copy={cockpitInstall}>Copy</button>
       </div>
     </div>
     <p class="install-more">
-      macOS and Linux. Installers verify release checksums.{" "}
+      Installers verify release checksums.{" "}
       <a href={docsHref("/quickstart/install")}>More ways to install</a>
     </p>
   </section>
@@ -274,6 +285,7 @@ const FEATURES = [
   data-webmcp
   data-product={SITE.name}
   data-cli={cliInstall}
+  data-desktop={desktopInstall}
   data-cockpit={cockpitInstall}
   data-docs={SITE.docsUrl}
   data-release-tag={release.tag}
@@ -287,6 +299,7 @@ const FEATURES = [
     void registerSiteTools(context, {
       productName: facts.dataset.product ?? "",
       cliInstall: facts.dataset.cli ?? "",
+      desktopInstall: facts.dataset.desktop ?? "",
       cockpitInstall: facts.dataset.cockpit ?? "",
       docsUrl: facts.dataset.docs ?? "",
       releaseTag: facts.dataset.releaseTag ?? "",
@@ -383,6 +396,20 @@ const FEATURES = [
     padding: 14px 16px;
     border: 1px solid var(--color-rule);
     background: var(--color-surface);
+  }
+  .desktop-install {
+    grid-column: 1 / -1;
+  }
+  .desktop-install p {
+    grid-column: 1 / -1;
+    margin: 0;
+    color: var(--color-dim);
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  .desktop-install a {
+    color: var(--color-accent);
+    text-decoration: underline;
   }
   .install-cmd span {
     grid-column: 1 / -1;

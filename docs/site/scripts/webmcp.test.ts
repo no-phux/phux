@@ -4,6 +4,7 @@ import { registerSiteTools, siteModelContext, type ModelContextTool } from "../s
 const facts = {
   productName: "phux",
   cliInstall: "curl -fsSL https://phux.sh/install | sh",
+  desktopInstall: "curl -fsSL https://phux.sh/install-desktop | sh",
   cockpitInstall: "curl -fsSL https://phux.sh/install-cockpit | sh",
   docsUrl: "https://docs.phux.sh",
   releaseTag: "v0.9.0",
