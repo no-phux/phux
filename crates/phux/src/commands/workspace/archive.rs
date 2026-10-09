@@ -242,7 +242,7 @@ pub(super) fn print_plan(archive_path: &Path) -> ExitCode {
         })
         .collect();
     for line in phux_client_core::organization::organization_lines(&rows) {
-        println!("{line}");
+        outln!("{line}");
     }
     ExitCode::SUCCESS
 }

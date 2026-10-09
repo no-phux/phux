@@ -173,18 +173,23 @@ pub fn organization_lines(sessions: &[OrganizedSession]) -> Vec<String> {
 /// directory creates an empty keep-empty session, which is today's create.
 #[must_use]
 pub fn session_create_document(name: &str, directory: Option<&str>) -> String {
-    let directory = directory.filter(|directory| !directory.is_empty());
-    match directory {
-        Some(directory) => format!(
-            "{{\"cwd\":{},\"keep_empty\":true,\"name\":{}}}",
-            json_string(directory),
-            json_string(name),
-        ),
-        None => format!(
-            "{{\"empty\":true,\"keep_empty\":true,\"name\":{}}}",
-            json_string(name),
-        ),
-    }
+    directory
+        .filter(|directory| !directory.is_empty())
+        .map_or_else(
+            || {
+                format!(
+                    "{{\"empty\":true,\"keep_empty\":true,\"name\":{}}}",
+                    json_string(name),
+                )
+            },
+            |directory| {
+                format!(
+                    "{{\"cwd\":{},\"keep_empty\":true,\"name\":{}}}",
+                    json_string(directory),
+                    json_string(name),
+                )
+            },
+        )
 }
 
 fn json_string(value: &str) -> String {
