@@ -59,6 +59,25 @@ test("standalone explicit target remains identity when another target is selecte
   }
 });
 
+test("built-in shell runs on the selected sibling and refuses the parent pane", async () => {
+  process.env.PHUX_TERMINAL_ID = "7";
+  fakeCli();
+  const host = await setupHost();
+  try {
+    const parentOnly = { command: "pwd", cwd: "/tmp", timeout: 30_000, shell: "bash", env: {} };
+    await expect(host.shellBefore(parentOnly)).rejects.toThrow("only pane");
+    expect(parentOnly.command).toBe("pwd");
+    await host.execute("phux_create", { name: "worker" }, "a");
+    const sibling = { command: "pwd", cwd: "/tmp", timeout: 30_000, shell: "bash", env: {} };
+    await host.shellBefore(sibling);
+    expect(sibling.command).toContain("run --json --timeout 30");
+    expect(sibling.command).toContain("'@10'");
+    expect(sibling.command).toContain("'pwd'");
+  } finally {
+    await host.close();
+  }
+});
+
 test("host cancellation interrupts an in-flight CLI operation", async () => {
   delete process.env.PHUX_TERMINAL_ID;
   delete process.env.PHUX_TARGET;
@@ -126,6 +145,7 @@ function fakeCli() {
 async function setupHost(serverLifecycle = true) {
   const tools: Record<string, Info> = {};
   const hooks: Record<string, (event: unknown) => Promise<void>> = {};
+  const shellHooks: Record<string, (event: { command: string }) => Promise<void>> = {};
   let deliver!: (entry: { event: unknown; done: () => void } | undefined) => void;
   const context = {
     options: { contextAwareness: false, serverLifecycle },
@@ -134,6 +154,11 @@ async function setupHost(serverLifecycle = true) {
       hook: async (name: string, hook: (event: unknown) => Promise<void>) => { hooks[name] = hook; },
     },
     session: { hook: async () => {} },
+    shell: {
+      hook: async (name: string, hook: (event: { command: string }) => Promise<void>) => {
+        shellHooks[name] = hook;
+      },
+    },
     event: {
       async *subscribe({ signal }: { signal: AbortSignal }) {
         while (!signal.aborted) {
@@ -153,6 +178,7 @@ async function setupHost(serverLifecycle = true) {
   const cleanup = await plugin.setup(context);
   return {
     before: (event: unknown) => hooks["execute.before"]!(event),
+    shellBefore: (event: { command: string }) => shellHooks["create.before"]!(event),
     execute: (name: string, input: unknown, sessionID: string, signal = new AbortController().signal) => tools[name]!.execute(input, {
       sessionID, agent: "build", messageID: "message", id: "call", signal, progress: async () => {},
     } as ToolContext),

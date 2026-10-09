@@ -95,10 +95,11 @@ The context hook adds the parent-pane rule and fleet context. Set
 the parent-pane rule remains. Options also include `lifecycleTimeoutMs` and
 `contextTimeoutMs`.
 
-This does not replace OpenCode's built-in shell executor, terminal widget, or
-PTY API, and does not tunnel the OpenCode server. Use the phux tools for phux
-terminal work and `phux attach` for a remote view. Satellite targets work through
-the phux CLI and its configured local hub socket.
+When a sibling pane is selected, OpenCode's built-in shell runs as `phux run`
+on that sibling. If the only pane is the one hosting this agent, the shell
+refuses. The plugin does not replace the terminal widget or PTY API, and it
+does not tunnel the OpenCode server. Use `phux attach` for a remote view.
+Satellite targets work through the phux CLI and its configured local hub socket.
 
 ## Verification
 
