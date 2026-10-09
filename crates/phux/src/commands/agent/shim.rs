@@ -23,8 +23,9 @@ const MANIFEST: &str = "claude-install.json";
 /// identity on every hook (clobbering derived state each turn); 3 writes
 /// identity once at session start; 4 feeds per-turn edges through
 /// `report-state`; 5 reads the hook payload and, when the server serves
-/// `AgentSession` resources, feeds a session stream with `agent emit`.
-pub(crate) const SHIM_SCHEMA: u32 = 5;
+/// `AgentSession` resources, feeds a session stream with `agent emit`; 6 adds
+/// the `phux.transcript/v1` entries for prompts, tool results, and replies.
+pub(crate) const SHIM_SCHEMA: u32 = 6;
 
 /// Prefix of the wrapper's schema stamp line. A `#` comment, so it is inert
 /// to `/bin/sh` and greppable without executing anything.
@@ -72,10 +73,13 @@ pub(super) fn run_install_claude(shell: Option<&str>, real: Option<&Path>) -> Ex
                     } else if prior == 3 {
                         "left lifecycle timing to screen detection and could not publish \
                          the Claude Stop hook's exact `done` edge"
-                    } else {
+                    } else if prior == 4 {
                         "reported lifecycle edges to the detector but never read the hook \
                          payload, so it could not open or feed the pane's agent session \
                          stream"
+                    } else {
+                        "fed the agent session stream lifecycle records only, so phones \
+                         and other stream readers could not show the conversation"
                     };
                     outln!(
                         "schema {prior} {was}; a Claude already running picks the new shim up \
@@ -349,10 +353,14 @@ fn read_manifest(path: &Path) -> Result<Option<serde_json::Value>, String> {
 /// `clear` always deletes the record. A session is opened at most once per
 /// process and never for a `compact`-sourced `SessionStart`.
 ///
-/// Payload privacy is structural: only the tokens `hook-payload` prints
-/// (never prompt text, `tool_input`, `tool_response`, or the transcript)
-/// reach a command line. `PHUX_AGENT_EMIT_RAW=1` opts the whole payload into
-/// a `provider_raw` record, fed on stdin.
+/// Payload text never reaches a command line: only the tokens `hook-payload`
+/// prints (never prompt text, `tool_input`, `tool_response`, or the
+/// transcript) do. The `working`, `tool-end`, and `done` arms append the
+/// `phux.transcript/v1` entry `phux agent hook-transcript` prints, fed on
+/// stdin, unless `PHUX_AGENT_TRANSCRIPT=0` (ADR-0156); the pane's scrollback
+/// already shows that text under the same access control.
+/// `PHUX_AGENT_EMIT_RAW=1` opts the whole payload into a `provider_raw`
+/// record, fed on stdin.
 #[allow(
     clippy::too_many_lines,
     reason = "one shell script, rendered as one literal so it reads as the script it is"
@@ -451,8 +459,24 @@ emit_raw() {{
   fi
 }}
 
-# The session-stream arms. Record data never carries prompt text or tool
-# input: `prompt` is a character count; `tool_*` name the tool.
+# The transcript entry for this hook (ADR-0156): the prompt, a finished tool
+# call, or the turn's last reply, as `phux.transcript/v1` data that
+# `phux agent hook-transcript` prints and `agent emit` reads on stdin, never
+# on a command line. On by default; `PHUX_AGENT_TRANSCRIPT=0` opts out.
+emit_transcript() {{
+  [ "${{PHUX_AGENT_TRANSCRIPT:-1}}" != 0 ] || return 0
+  [ -n "$payload" ] || return 0
+  [ -s "$payload" ] || return 0
+  entry=$(mktemp 2>/dev/null) || return 0
+  if "$phux" agent hook-transcript < "$payload" > "$entry" 2>/dev/null && [ -s "$entry" ]; then
+    run_phux agent emit "$target" --type provider_raw --data - < "$entry"
+  fi
+  rm -f "$entry"
+}}
+
+# The session-stream arms. Typed records never carry prompt text or tool
+# input: `prompt` is a character count; `tool_*` name the tool. Text rides
+# only the transcript entry and the raw opt-in.
 opened=false
 stream_state() {{
   case "$1" in
@@ -466,6 +490,7 @@ stream_state() {{
       ;;
     working)
       emit prompt "{{\"chars\":$hook_chars}}"
+      emit_transcript
       emit_raw
       ;;
     tool-start)
@@ -474,6 +499,7 @@ stream_state() {{
       ;;
     tool-end)
       emit_tool tool_end
+      emit_transcript
       emit_raw
       ;;
     blocked)
@@ -491,6 +517,7 @@ stream_state() {{
       emit_raw
       ;;
     done)
+      emit_transcript
       emit stop
       emit_raw
       ;;
@@ -771,6 +798,7 @@ mod tests {
         "case \"$1 ${2:-}\" in\n",
         "  \"status --json\") printf '{\"running\":true,\"features\":%s}\\n' \"$FAKE_FEATURES\"; exit 0 ;;\n",
         "  \"agent hook-payload\") cat > /dev/null; printf '%s\\n' \"$FAKE_FIELDS\"; exit 0 ;;\n",
+        "  \"agent hook-transcript\") cat > /dev/null; [ -z \"${FAKE_TRANSCRIPT:-}\" ] || printf '%s\\n' \"$FAKE_TRANSCRIPT\"; exit 0 ;;\n",
         "esac\n",
         "case \"$*\" in *\"--data -\") printf 'stdin:%s\\n' \"$(cat)\" >> \"$FAKE_LOG\" ;; esac\n",
         "exit 0\n",
@@ -813,6 +841,21 @@ mod tests {
             fields: &str,
             raw: bool,
         ) -> Vec<String> {
+            self.hook_env(arm, payload, features, fields, raw, &[])
+        }
+
+        /// [`Self::hook`] with extra environment: `FAKE_TRANSCRIPT` is the
+        /// line the fake `agent hook-transcript` prints, and
+        /// `PHUX_AGENT_TRANSCRIPT` the opt-out. Both are unset otherwise.
+        fn hook_env(
+            &self,
+            arm: &str,
+            payload: &str,
+            features: &str,
+            fields: &str,
+            raw: bool,
+            env: &[(&str, &str)],
+        ) -> Vec<String> {
             use std::io::Write as _;
             use std::process::{Command, Stdio};
 
@@ -824,6 +867,9 @@ mod tests {
                 .env("FAKE_LOG", &self.log)
                 .env("FAKE_FEATURES", features)
                 .env("FAKE_FIELDS", fields)
+                .env_remove("FAKE_TRANSCRIPT")
+                .env_remove("PHUX_AGENT_TRANSCRIPT")
+                .envs(env.iter().copied())
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
@@ -956,6 +1002,7 @@ mod tests {
                     "agent hook-payload",
                     "status --json",
                     "agent emit @42 --type prompt --data {\"chars\":18}",
+                    "agent hook-transcript",
                 ],
             ),
             (
@@ -974,6 +1021,7 @@ mod tests {
                     "agent hook-payload",
                     "status --json",
                     "agent emit @42 --type tool_end --data {\"tool_name\":\"mcp__phux__phux_ls\"}",
+                    "agent hook-transcript",
                 ],
             ),
             (
@@ -1022,6 +1070,7 @@ mod tests {
                 vec![
                     "agent hook-payload",
                     "status --json",
+                    "agent hook-transcript",
                     "agent emit @42 --type stop",
                 ],
             ),
@@ -1155,14 +1204,15 @@ mod tests {
     /// through the helper's six tokens: the prompt text, `tool_input`, and
     /// `tool_response` markers never appear in any argv, on either path, and
     /// the whole payload is forwarded only under `PHUX_AGENT_EMIT_RAW=1`, only
-    /// on stdin of a `provider_raw` emit.
+    /// on stdin of a `provider_raw` emit. (Transcript entries also travel on
+    /// stdin only; `transcript_entries_ride_provider_raw_on_stdin_by_default`.)
     #[test]
     fn payload_text_never_reaches_a_command_line_unless_raw_is_opted_in() {
         let wrapper = rendered();
         for forbidden in [
             "tool_input",
             "tool_response",
-            "transcript",
+            "transcript_path",
             "$prompt",
             "\"$payload\" |",
         ] {
@@ -1247,6 +1297,69 @@ mod tests {
         assert!(
             !log.iter().any(|line| line.contains("provider_raw")),
             "raw opt-in has nowhere to go without a session stream: {log:?}"
+        );
+    }
+
+    /// Transcript entries are on by default (ADR-0156): the `working`,
+    /// `tool-end`, and `done` arms feed what `agent hook-transcript` prints to
+    /// a `provider_raw` emit on stdin, `done` before its terminal-for-the-turn
+    /// `stop`. `PHUX_AGENT_TRANSCRIPT=0` turns them off, an empty helper
+    /// answer emits nothing, and the legacy path never asks.
+    #[test]
+    fn transcript_entries_ride_provider_raw_on_stdin_by_default() {
+        let h = Harness::new();
+        let entry = r#"{"provider":"claude","schema":"phux.transcript/v1","entry":{"id":"user-1","role":"user","text":"hi","truncated":false,"final":true}}"#;
+        let on = [("FAKE_TRANSCRIPT", entry)];
+        let fields = "sess-1 UserPromptSubmit - - 2 - -";
+        let log = h.hook_env("working", "{}", STREAMING, fields, false, &on);
+        assert_eq!(
+            log,
+            [
+                "agent hook-payload",
+                "status --json",
+                "agent emit @42 --type prompt --data {\"chars\":2}",
+                "agent hook-transcript",
+                "agent emit @42 --type provider_raw --data -",
+                &format!("stdin:{entry}"),
+            ]
+        );
+        let log = h.hook_env("done", "{}", STREAMING, "sess-1 Stop - - 0 - -", false, &on);
+        assert_eq!(
+            log,
+            [
+                "agent hook-payload",
+                "status --json",
+                "agent hook-transcript",
+                "agent emit @42 --type provider_raw --data -",
+                &format!("stdin:{entry}"),
+                "agent emit @42 --type stop",
+            ]
+        );
+        for arm in ["start", "tool-start", "blocked", "clear"] {
+            let log = h.hook_env(arm, "{}", STREAMING, fields, false, &on);
+            assert!(
+                !log.iter().any(|line| line.contains("hook-transcript")),
+                "arm `{arm}` has no transcript entry: {log:?}"
+            );
+        }
+        let off = [("FAKE_TRANSCRIPT", entry), ("PHUX_AGENT_TRANSCRIPT", "0")];
+        for arm in ["working", "tool-end", "done"] {
+            let log = h.hook_env(arm, "{}", STREAMING, fields, false, &off);
+            assert!(
+                !log.iter()
+                    .any(|line| line.contains("transcript") || line.contains("provider_raw")),
+                "opted out, arm `{arm}` must not read or emit a transcript: {log:?}"
+            );
+            let legacy = h.hook_env(arm, "{}", LEGACY, fields, false, &on);
+            assert!(
+                !legacy.iter().any(|line| line.contains("transcript")),
+                "no stream, no transcript: {legacy:?}"
+            );
+        }
+        let silent = h.hook_env("tool-end", "{}", STREAMING, fields, false, &[]);
+        assert!(
+            !silent.iter().any(|line| line.contains("provider_raw")),
+            "an empty helper answer emits nothing: {silent:?}"
         );
     }
 

@@ -46,7 +46,8 @@ test("declares one marketplace-ready plugin with phux MCP and bounded lifecycle 
 /**
  * A fake `phux` that logs every argv line, answers the capability probe from
  * `FAKE_FEATURES`, stands in for `agent hook-payload` with the canned
- * `FAKE_FIELDS` line (the real helper is pinned in the phux crate), and logs
+ * `FAKE_FIELDS` line and for `agent hook-transcript` with `FAKE_TRANSCRIPT`
+ * (the real helpers are pinned in the phux crate), and logs
  * whatever an `emit --data -` was fed on stdin. A phux old enough to lack the
  * helper is modelled by an empty `FAKE_FIELDS`.
  */
@@ -57,6 +58,7 @@ printf '%s\\n' "$*" >> "$PHUX_TEST_LOG"
 case "$1 \${2:-}" in
   "status --json") printf '{"running":true,"features":%s}\\n' "\${FAKE_FEATURES:-[]}"; exit 0 ;;
   "agent hook-payload") cat > /dev/null; [ -z "\${FAKE_FIELDS:-}" ] || printf '%s\\n' "$FAKE_FIELDS"; exit 0 ;;
+  "agent hook-transcript") cat > /dev/null; [ -z "\${FAKE_TRANSCRIPT:-}" ] || printf '%s\\n' "$FAKE_TRANSCRIPT"; exit 0 ;;
 esac
 case "$*" in *"--data -") printf 'stdin:%s\\n' "$(cat)" >> "$PHUX_TEST_LOG" ;; esac
 if [ "$1 \${2:-}" = "agent emit" ] && [ -n "\${FAKE_REFUSALS:-}" ]; then
@@ -139,14 +141,14 @@ test("against a server with resource kinds the arms open, feed, and close the se
     [...probe, "agent set @42 --name claude --kind claude",
       "agent session open @42 --provider claude --native-id=sess-1", "agent emit @42 --type session_start"],
     [...probe, "agent set @42 --name claude --kind claude"],
-    [...probe, 'agent emit @42 --type prompt --data {"chars":18}'],
+    [...probe, 'agent emit @42 --type prompt --data {"chars":18}', "agent hook-transcript"],
     [...probe, 'agent emit @42 --type tool_start --data {"tool_name":"Bash"}'],
-    [...probe, 'agent emit @42 --type tool_end --data {"tool_name":"mcp__phux__phux_ls"}'],
+    [...probe, 'agent emit @42 --type tool_end --data {"tool_name":"mcp__phux__phux_ls"}', "agent hook-transcript"],
     [...probe, "agent emit @42 --type ask", "ask @42 Claude needs attention"],
     [...probe, 'agent emit @42 --type notification --data {"kind":"permission"}', "ask @42 Claude needs attention"],
     [...probe, 'agent emit @42 --type notification --data {"kind":"elicitation"}', "ask @42 Claude needs attention"],
     [...probe, 'agent emit @42 --type notification --data {"kind":"idle"}', "ask @42 Claude needs attention"],
-    [...probe, "agent emit @42 --type stop"],
+    [...probe, "agent hook-transcript", "agent emit @42 --type stop"],
     [...probe, 'agent emit @42 --type session_end --data {"reason":"prompt_input_exit"}',
       "agent session close @42", "agent clear @42"],
   ]);
@@ -238,4 +240,38 @@ test("a phux without the payload helper still runs the every-server arms", async
   assert.deepEqual(start, ["status --json", "agent hook-payload", "agent set @42 --name claude --kind claude"]);
   assert.deepEqual(blocked, ["status --json", "agent hook-payload", "ask @42 Claude needs attention"]);
   assert.deepEqual(clear, ["status --json", "agent hook-payload", "agent clear @42"]);
+});
+
+test("transcript entries ride provider_raw on stdin by default and PHUX_AGENT_TRANSCRIPT=0 opts out", async () => {
+  const entry = '{"provider":"claude","schema":"phux.transcript/v1","entry":{"id":"user-1","role":"user","text":"PROMPT-MARKER","truncated":false,"final":true}}';
+  const base = { FAKE_FEATURES: '["resource_kinds"]', FAKE_TRANSCRIPT: entry };
+  const f = (event) => ({ FAKE_FIELDS: `sess-1 ${event} - - 13 - -` });
+  const [working, toolEnd, done, toolStart] = await driven(base, [
+    ["working", "{}", f("UserPromptSubmit")],
+    ["tool-end", "{}", f("PostToolUse")],
+    ["done", "{}", f("Stop")],
+    ["tool-start", "{}", f("PreToolUse")],
+  ]);
+  const transcript = ["agent hook-transcript", "agent emit @42 --type provider_raw --data -", `stdin:${entry}`];
+  assert.deepEqual(working, ["status --json", "agent hook-payload", 'agent emit @42 --type prompt --data {"chars":13}', ...transcript]);
+  assert.deepEqual(toolEnd, ["status --json", "agent hook-payload", "agent emit @42 --type tool_end", ...transcript]);
+  assert.deepEqual(done, ["status --json", "agent hook-payload", ...transcript, "agent emit @42 --type stop"],
+    "the reply lands before the turn's stop");
+  assert.ok(toolStart.every((line) => !line.includes("transcript")), "PreToolUse carries no entry");
+  for (const run of [working, toolEnd, done]) {
+    assert.ok(run.filter((line) => line.includes("MARKER")).every((line) => line.startsWith("stdin:")),
+      "entry text travels on stdin only");
+  }
+
+  const optedOut = await driven({ ...base, PHUX_AGENT_TRANSCRIPT: "0" }, [
+    ["working", "{}", f("UserPromptSubmit")], ["tool-end", "{}", f("PostToolUse")], ["done", "{}", f("Stop")],
+  ]);
+  const legacy = await driven({ ...base, FAKE_FEATURES: "[]" }, [
+    ["working", "{}", f("UserPromptSubmit")], ["done", "{}", f("Stop")],
+  ]);
+  for (const run of [...optedOut, ...legacy]) {
+    assert.ok(run.every((line) => !line.includes("transcript") && !line.includes("provider_raw")), `${run}`);
+  }
+  const [silent] = await driven({ ...base, FAKE_TRANSCRIPT: "" }, [["working", "{}", f("UserPromptSubmit")]]);
+  assert.ok(silent.every((line) => !line.includes("provider_raw")), "an empty helper answer emits nothing");
 });

@@ -532,6 +532,10 @@ const fn stale_shim_consequence(found: u32) -> &'static str {
             "schema 4 never reads the hook payload, so it cannot open or feed the pane's \
              agent session stream and `PreToolUse`/`PostToolUse` are not wired"
         }
+        5 => {
+            "schema 5 feeds lifecycle records only, so the pane's agent session stream \
+             carries no transcript of prompts, tool results, or replies"
+        }
         _ => "the installed shim predates this binary's wrapper behavior",
     }
 }

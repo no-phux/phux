@@ -2499,6 +2499,8 @@ mod tests {
             // The Claude shim's stdin JSON reader: invoked only by the
             // generated wrapper, one line of shell-safe tokens out.
             "phux agent hook-payload",
+            // Its transcript reader: one `phux.transcript/v1` data object out.
+            "phux agent hook-transcript",
         ];
 
         /// Collect every hidden row of the tree under `path`: hidden long

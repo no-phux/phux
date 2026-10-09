@@ -1,7 +1,7 @@
 ---
 audience: humans, agents, consumers, contributors
 stability: evolving
-last-reviewed: 2026-09-12
+last-reviewed: 2026-10-09
 ---
 
 # Claude Code integration
@@ -85,8 +85,9 @@ blocked state.
 ## What the hook shim emits
 
 **Checkout behavior, not a minimum-release promise:** the source checkout's
-`phux agent install-claude` shim (schema 5) registers every arm below and emits
-AgentSession records through `phux agent session` / `phux agent emit`.
+`phux agent install-claude` shim (schema 6) registers every arm below and emits
+AgentSession records through `phux agent session` / `phux agent emit`, plus
+the transcript entries below; schema 5 emits the same records without them.
 The older schema-4 released shim omits `PreToolUse` and `PostToolUse`, feeds
 the detector with `phux agent report-state`, and emits no records. The plugin
 minimum above does not imply schema-5 hooks. Check the running server with
@@ -100,12 +101,12 @@ and acts only when `PHUX_TERMINAL_ID` names Claude's own pane:
 | Hook | Emits | On every server | Fallback only (no `RESOURCE_KINDS`) |
 |---|---|---|---|
 | `SessionStart` | `phux agent session open @$PHUX_TERMINAL_ID --provider claude --native-id <session_id>`, then `session_start` | `phux agent set --name claude --kind claude` | |
-| `UserPromptSubmit` | `prompt` with `{"chars": N}`; the text is not forwarded | | `phux agent report-state working` |
+| `UserPromptSubmit` | `prompt` with `{"chars": N}`, then a `user` transcript entry | | `phux agent report-state working` |
 | `PreToolUse` | `tool_start` with `{"tool_name": "..."}`; `tool_input` is never sent | | (new registration; nothing) |
-| `PostToolUse` | `tool_end` with `{"tool_name": "..."}` | | (new registration; nothing) |
+| `PostToolUse` | `tool_end` with `{"tool_name": "..."}`, then a `tool` transcript entry | | (new registration; nothing) |
 | `PermissionRequest` | `ask` | `phux ask`, so the TUI and fleet chrome keep their exact timing | `phux agent report-state blocked` |
 | `Notification` (the permission, idle-prompt, and elicitation matchers) | `notification` with the hook's `kind` | `phux ask` | `phux agent report-state blocked` |
-| `Stop` | `stop` | | `phux agent report-state done` |
+| `Stop` | the reply as an `assistant` transcript entry, then `stop` | | `phux agent report-state done` |
 | `SessionEnd` | `session_end`, then `phux agent session close` | `phux agent clear` | |
 
 The server derives pane state from that stream before consulting other
@@ -118,16 +119,25 @@ a hub relaying a pane it does not own), `session open` refuses with
 `unsupported_server` and the per-turn arms fall back to
 `phux agent report-state`, as the table shows.
 
-**Privacy.** Prompts are not forwarded: `prompt` carries a character count
-and nothing else. Tool records carry the tool's name and never its input or
-output. The hook's raw stdin JSON is emitted as `provider_raw` only when
-`PHUX_AGENT_EMIT_RAW=1` is set in Claude's environment; it is off by
-default and the shim never sets it. The retained stream is bounded by
+**Privacy.** Typed records carry no conversation text: `prompt` carries a
+character count, and tool records carry the tool's name. The conversation
+rides `provider_raw` records in the `phux.transcript/v1` convention
+([ADR-0156](../adr/0156-agent-transcript-records.md)): the prompt, each
+finished tool call as a one-line argument summary and an output tail of at
+most 4 KiB, and the turn's last reply, each record under 16 KiB. They are on
+by default because the pane's scrollback already shows the same text to the
+same clients; `PHUX_AGENT_TRANSCRIPT=0` in Claude's environment turns them
+off. Payload text reaches `phux` on stdin only, never on a command line.
+The hook's whole raw stdin JSON is emitted as another `provider_raw` record
+only when `PHUX_AGENT_EMIT_RAW=1` is set in Claude's environment; it is off
+by default and the shim never sets it. The retained stream is bounded by
 `defaults.agent-log-bytes`, readable by any client on the socket through
 `phux agent log`, and not recorded by `phux rec`.
 
-The marketplace plugin's hooks emit only identity and attention, as described
-under [Runtime contract](#runtime-contract); they do not emit this stream.
+The marketplace plugin's hooks write identity and attention on every server,
+as described under [Runtime contract](#runtime-contract), and on a server
+advertising `RESOURCE_KINDS` they emit the same records and transcript
+entries as the shim.
 
 ## Validation and versioning
 
