@@ -9,7 +9,7 @@ export function newSessionRequest(
   kind: number,
   token: Uint8Array,
   name: Uint8Array,
-  directory: Uint8Array = new Uint8Array(0),
+  directory: Uint8Array,
 ): Uint8Array {
   if (name.length > 240 || directory.length > 240) return new Uint8Array(0);
   const out = new Uint8Array(11 + name.length);
