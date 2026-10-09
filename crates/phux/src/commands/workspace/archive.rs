@@ -106,8 +106,9 @@ async fn capture_archive(
         ));
     }
     let projects = phux_client::workspace_place::fetch_project_by_session(socket_path).await;
+    let hosts = phux_client::workspace_place::fetch_host_by_session(socket_path).await;
     let (archive, reconcile_warnings) =
-        archive_from_snapshot(&snapshot, &agent_sessions, &layouts, &projects);
+        archive_from_snapshot(&snapshot, &agent_sessions, &layouts, &projects, &hosts);
     for warning in bridge_warnings
         .iter()
         .chain(&layout_warnings)
@@ -425,6 +426,13 @@ async fn restore_one_session(
     {
         rollback_session(socket_path, &created).await;
         return Err(err);
+    }
+    if let Some(host) = create.host.as_deref().filter(|host| !host.is_empty())
+        && let Err(err) =
+            phux_client::workspace_place::set_session_host(socket_path, &create.name, host).await
+    {
+        rollback_session(socket_path, &created).await;
+        return Err(err.to_string());
     }
     if let Some(project) = create
         .project

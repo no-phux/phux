@@ -320,10 +320,7 @@ pub const SESSION_PROJECT_KEY: &str = "phux.session.project/v1";
 /// Encode a [`SESSION_PROJECT_KEY`] value: `name\0project`.
 #[must_use]
 pub fn encode_session_project(name: &str, project: &str) -> Vec<u8> {
-    let mut value = name.as_bytes().to_vec();
-    value.push(0);
-    value.extend_from_slice(project.as_bytes());
-    value
+    encode_named_tag(name, project)
 }
 
 /// Decode a [`SESSION_PROJECT_KEY`] value into `(name, project)`.
@@ -331,12 +328,45 @@ pub fn encode_session_project(name: &str, project: &str) -> Vec<u8> {
 /// `None` unless both sides are non-empty UTF-8 with no extra NULs.
 #[must_use]
 pub fn decode_session_project(value: &[u8]) -> Option<(&str, &str)> {
+    decode_named_tag(value)
+}
+
+/// Global key for the host a session is organized on.
+///
+/// Stored, not intercepted (`docs/spec/L3.md` §3.1). Value: `name\0host`,
+/// both non-empty UTF-8. A `GET` returns the stored bytes. `DELETE` clears
+/// the tag. A focused satellite pane names its own host at save time; this
+/// tag is the host recorded for a pane on the attached server.
+pub const SESSION_HOST_KEY: &str = "phux.session.host/v1";
+
+/// Encode a [`SESSION_HOST_KEY`] value: `name\0host`.
+#[must_use]
+pub fn encode_session_host(name: &str, host: &str) -> Vec<u8> {
+    encode_named_tag(name, host)
+}
+
+/// Decode a [`SESSION_HOST_KEY`] value into `(name, host)`.
+///
+/// `None` unless both sides are non-empty UTF-8 with no extra NULs.
+#[must_use]
+pub fn decode_session_host(value: &[u8]) -> Option<(&str, &str)> {
+    decode_named_tag(value)
+}
+
+fn encode_named_tag(name: &str, value: &str) -> Vec<u8> {
+    let mut bytes = name.as_bytes().to_vec();
+    bytes.push(0);
+    bytes.extend_from_slice(value.as_bytes());
+    bytes
+}
+
+fn decode_named_tag(value: &[u8]) -> Option<(&str, &str)> {
     let text = std::str::from_utf8(value).ok()?;
-    let (name, project) = text.split_once('\0')?;
-    if name.is_empty() || project.is_empty() || project.contains('\0') {
+    let (name, rest) = text.split_once('\0')?;
+    if name.is_empty() || rest.is_empty() || rest.contains('\0') {
         return None;
     }
-    Some((name, project))
+    Some((name, rest))
 }
 
 /// Encode a [`SESSION_KEEP_EMPTY_KEY`] value: `name\0true` or `name\0false`.

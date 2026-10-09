@@ -9,7 +9,8 @@ use std::path::Path;
 
 use phux_protocol::ids::{GroupId, ResourceId, SatelliteHost};
 use phux_protocol::wire::frame::{
-    FrameKind, SESSION_PROJECT_KEY, Scope, decode_session_project, encode_session_project,
+    FrameKind, SESSION_HOST_KEY, SESSION_PROJECT_KEY, Scope, decode_session_host,
+    decode_session_project, encode_session_host, encode_session_project,
 };
 
 use crate::attach::AttachError;
@@ -40,16 +41,32 @@ pub enum SessionProjectError {
 /// A missing server or an empty value yields an empty map: save still writes
 /// the rest of the archive.
 pub async fn fetch_project_by_session(socket_path: &Path) -> HashMap<String, String> {
-    let mut projects = HashMap::new();
+    fetch_named_tag(socket_path, SESSION_PROJECT_KEY, decode_session_project).await
+}
+
+/// The stored `phux.session.host/v1` value, keyed by session name.
+///
+/// Same shape as [`fetch_project_by_session`]: at most one entry, and a
+/// missing server yields an empty map.
+pub async fn fetch_host_by_session(socket_path: &Path) -> HashMap<String, String> {
+    fetch_named_tag(socket_path, SESSION_HOST_KEY, decode_session_host).await
+}
+
+async fn fetch_named_tag(
+    socket_path: &Path,
+    key: &str,
+    decode: fn(&[u8]) -> Option<(&str, &str)>,
+) -> HashMap<String, String> {
+    let mut tags = HashMap::new();
     let Ok(mut conn) = Connection::connect(socket_path).await else {
-        return projects;
+        return tags;
     };
-    let stored = read_project_value(&mut conn).await;
+    let stored = read_tag(&mut conn, key).await;
     drop(conn);
-    if let Some((name, project)) = stored.as_deref().and_then(decode_session_project) {
-        projects.insert(name.to_owned(), project.to_owned());
+    if let Some((name, value)) = stored.as_deref().and_then(decode) {
+        tags.insert(name.to_owned(), value.to_owned());
     }
-    projects
+    tags
 }
 
 /// Write `phux.session.project/v1` for `name` and read it back.
@@ -65,12 +82,50 @@ pub async fn set_session_project(
     name: &str,
     project: &str,
 ) -> Result<(), SessionProjectError> {
-    let expected = encode_session_project(name, project);
-    let stored = write_project_tag(socket_path, name, project).await?;
+    set_named_tag(
+        socket_path,
+        SESSION_PROJECT_KEY,
+        name,
+        project,
+        encode_session_project,
+    )
+    .await
+}
+
+/// Write `phux.session.host/v1` for `name` and read it back.
+///
+/// # Errors
+///
+/// [`SessionProjectError`] when the server cannot be reached, refuses the
+/// read, or returns a different value.
+pub async fn set_session_host(
+    socket_path: &Path,
+    name: &str,
+    host: &str,
+) -> Result<(), SessionProjectError> {
+    set_named_tag(
+        socket_path,
+        SESSION_HOST_KEY,
+        name,
+        host,
+        encode_session_host,
+    )
+    .await
+}
+
+async fn set_named_tag(
+    socket_path: &Path,
+    key: &str,
+    name: &str,
+    value: &str,
+    encode: fn(&str, &str) -> Vec<u8>,
+) -> Result<(), SessionProjectError> {
+    let expected = encode(name, value);
+    let stored = write_tag(socket_path, key, &expected).await?;
     if stored.as_deref() != Some(expected.as_slice()) {
         return Err(SessionProjectError::Mismatch {
             name: name.to_owned(),
-            project: project.to_owned(),
+            project: value.to_owned(),
         });
     }
     Ok(())
@@ -119,15 +174,15 @@ fn owner_on_spawn_host(owner: Option<&ResourceId>, host: Option<&str>) -> Option
 }
 
 /// `SET_METADATA` has no reply. The caller reads the key back on this connection.
-async fn write_project_tag(
+async fn write_tag(
     socket_path: &Path,
-    name: &str,
-    project: &str,
+    key: &str,
+    value: &[u8],
 ) -> Result<Option<Vec<u8>>, SessionProjectError> {
     let mut conn = Connection::connect(socket_path).await?;
-    conn.send(&project_set_frame(name, project)).await?;
+    conn.send(&tag_set_frame(key, value)).await?;
     let reply = conn
-        .request_metadata(2, Scope::Global, SESSION_PROJECT_KEY.to_owned())
+        .request_metadata(2, Scope::Global, key.to_owned())
         .await?;
     let (answer, _) = reply.into_parts();
     let stored = answer.map_err(|err| SessionProjectError::Refused(err.to_string()))?;
@@ -135,21 +190,21 @@ async fn write_project_tag(
     Ok(stored)
 }
 
-async fn read_project_value(conn: &mut Connection) -> Option<Vec<u8>> {
+async fn read_tag(conn: &mut Connection, key: &str) -> Option<Vec<u8>> {
     let reply = conn
-        .request_metadata(1, Scope::Global, SESSION_PROJECT_KEY.to_owned())
+        .request_metadata(1, Scope::Global, key.to_owned())
         .await
         .ok()?;
     let (answer, _) = reply.into_parts();
     answer.ok().flatten()
 }
 
-fn project_set_frame(name: &str, project: &str) -> FrameKind {
+fn tag_set_frame(key: &str, value: &[u8]) -> FrameKind {
     FrameKind::SetMetadata {
         request_id: 1,
         scope: Scope::Global,
-        key: SESSION_PROJECT_KEY.to_owned(),
-        value: encode_session_project(name, project),
+        key: key.to_owned(),
+        value: value.to_vec(),
     }
 }
 
@@ -268,7 +323,7 @@ mod tests {
 
     #[test]
     fn project_write_names_the_session() {
-        let frame = project_set_frame("api", "phux");
+        let frame = tag_set_frame(SESSION_PROJECT_KEY, &encode_session_project("api", "phux"));
         match frame {
             FrameKind::SetMetadata {
                 scope: Scope::Global,
@@ -280,6 +335,23 @@ mod tests {
                 assert_eq!(decode_session_project(&value), Some(("api", "phux")));
             }
             other => panic!("project tag was not a global metadata write: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn host_write_names_the_session() {
+        let frame = tag_set_frame(SESSION_HOST_KEY, &encode_session_host("api", "edge"));
+        match frame {
+            FrameKind::SetMetadata {
+                scope: Scope::Global,
+                key,
+                value,
+                ..
+            } => {
+                assert_eq!(key, SESSION_HOST_KEY);
+                assert_eq!(decode_session_host(&value), Some(("api", "edge")));
+            }
+            other => panic!("host tag was not a global metadata write: {other:?}"),
         }
     }
 }

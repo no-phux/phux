@@ -21,6 +21,7 @@ pub(super) fn archive_from_snapshot(
     agent_sessions: &HashMap<ResourceId, AgentSessionRecord>,
     layouts: &HashMap<SessionId, Workspace>,
     projects: &HashMap<String, String>,
+    hosts: &HashMap<String, String>,
 ) -> (WorkspaceArchive, Vec<String>) {
     let windows_by_session = windows_by_session(&snapshot.windows);
     let panes_by_window = panes_by_window(&snapshot.resources);
@@ -43,12 +44,12 @@ pub(super) fn archive_from_snapshot(
                 agent_sessions,
                 &mut warnings,
             );
-            let (cwd, host) = focused_place(session, snapshot);
+            let (cwd, pane_host) = focused_place(session, snapshot);
             WorkspaceSession {
                 name: session.name.clone(),
                 active: session.id == snapshot.focused_session,
                 cwd,
-                host,
+                host: pane_host.or_else(|| hosts.get(&session.name).cloned()),
                 project: projects.get(&session.name).cloned(),
                 command: None,
                 windows,
@@ -409,8 +410,13 @@ mod tests {
                 .expect("valid record"),
         )]);
 
-        let (archive, warnings) =
-            archive_from_snapshot(&snapshot, &agent_sessions, &HashMap::new(), &HashMap::new());
+        let (archive, warnings) = archive_from_snapshot(
+            &snapshot,
+            &agent_sessions,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
         assert!(warnings.is_empty(), "{warnings:?}");
 
         assert_eq!(archive.schema_version, ARCHIVE_SCHEMA_VERSION);
@@ -456,8 +462,13 @@ mod tests {
                 .with_windows(vec![inactive_window, active_window])
                 .with_resources(panes);
 
-        let (archive, warnings) =
-            archive_from_snapshot(&snapshot, &HashMap::new(), &HashMap::new(), &HashMap::new());
+        let (archive, warnings) = archive_from_snapshot(
+            &snapshot,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
         assert!(warnings.is_empty(), "{warnings:?}");
 
         assert!(!archive.sessions[0].windows[0].active);
@@ -485,8 +496,46 @@ mod tests {
         let mut projects = HashMap::new();
         projects.insert("api".to_owned(), "phux".to_owned());
 
-        let (archive, warnings) =
-            archive_from_snapshot(&snapshot, &HashMap::new(), &HashMap::new(), &projects);
+        let (archive, warnings) = archive_from_snapshot(
+            &snapshot,
+            &HashMap::new(),
+            &HashMap::new(),
+            &projects,
+            &HashMap::new(),
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(archive.sessions[0].host.as_deref(), Some("edge"));
+        assert_eq!(archive.sessions[0].cwd.as_deref(), Some("/src/api"));
+        assert_eq!(archive.sessions[0].project.as_deref(), Some("phux"));
+    }
+
+    #[test]
+    fn a_stored_host_fills_a_local_pane() {
+        let session = SessionInfo::new(SessionId::new(1), "api")
+            .with_active_window(Some(WindowId::new(2)))
+            .with_window_count(1);
+        let pane_id = ResourceId::local(4);
+        let window = WindowInfo::new(WindowId::new(2), SessionId::new(1), "main")
+            .with_active_resource(Some(pane_id.clone()));
+        let pane = ResourceInfo::new(pane_id, WindowId::new(2), 80, 24)
+            .with_cwd(Some("/src/api".to_owned()));
+        let snapshot =
+            SessionSnapshot::new(SessionId::new(1), WindowId::new(2), ResourceId::local(4))
+                .with_sessions(vec![session])
+                .with_windows(vec![window])
+                .with_resources(vec![pane]);
+        let mut hosts = HashMap::new();
+        hosts.insert("api".to_owned(), "edge".to_owned());
+        let mut projects = HashMap::new();
+        projects.insert("api".to_owned(), "phux".to_owned());
+
+        let (archive, warnings) = archive_from_snapshot(
+            &snapshot,
+            &HashMap::new(),
+            &HashMap::new(),
+            &projects,
+            &hosts,
+        );
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(archive.sessions[0].host.as_deref(), Some("edge"));
         assert_eq!(archive.sessions[0].cwd.as_deref(), Some("/src/api"));
