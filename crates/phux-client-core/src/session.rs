@@ -984,6 +984,7 @@ fn retained_engine_effect_bytes(capacity: usize, effects: &[EngineEffect]) -> us
     effects.iter().fold(allocation, |total, effect| {
         let owned = match effect {
             EngineEffect::Status(EngineStatus::Title(title)) => title.capacity(),
+            EngineEffect::Status(EngineStatus::ClipboardWrite(text)) => text.0.capacity(),
             EngineEffect::Damage(_)
             | EngineEffect::Status(EngineStatus::Bell)
             | EngineEffect::Job(_) => 0,

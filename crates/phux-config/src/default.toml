@@ -85,6 +85,11 @@ retain-on-exit-max = 256
 # mouse mode on. false = pass-through-only (native click-drag selection).
 mouse = true
 
+# What a program's OSC 52 clipboard write does (ADR-0158): "allow" sets the
+# host clipboard, "ask" prompts first, "deny" drops it. Only the focused pane
+# can write; clipboard reads are never answered.
+clipboard-write = "allow"
+
 # How a newly-spawned pane picks its working directory. One of:
 #   "inherit-focused"     — match the focused pane's CWD (tmux behavior).
 #   "home"                — always start in $HOME.

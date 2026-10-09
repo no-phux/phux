@@ -44,7 +44,7 @@ pub use project::ProjectConfigEntry;
 pub use remote::RemoteConfigEntry;
 pub use satellite::SatelliteConfigEntry;
 pub use schema::{
-    Action, ChromeCfg, Config, CwdInheritance, DEFAULT_AGENT_LOG_BYTES,
+    Action, ChromeCfg, ClipboardWrite, Config, CwdInheritance, DEFAULT_AGENT_LOG_BYTES,
     DEFAULT_APPROVAL_MAX_PENDING, DEFAULT_APPROVAL_MAX_PENDING_TOTAL, DEFAULT_APPROVAL_TTL_SECS,
     DEFAULT_EVENT_JOURNAL_BYTES, DEFAULT_EVENT_JOURNAL_ENTRIES, DEFAULT_HISTORY_BYTES,
     DEFAULT_METADATA_VALUE_BYTES, DEFAULT_RETAIN_ON_EXIT_MAX, DEFAULT_RETAIN_ON_EXIT_MAX_SECS,

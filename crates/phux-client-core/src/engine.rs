@@ -79,6 +79,22 @@ pub enum EngineStatus {
     Bell,
     /// The engine observed a terminal title change.
     Title(String),
+    /// A program asked to set the clipboard (OSC 52) in live output. The
+    /// frontend applies its `clipboard-write` policy (ADR-0158).
+    ClipboardWrite(ClipboardText),
+}
+
+/// Text a program asked to place on the clipboard. `Debug` reports only its
+/// length: clipboards carry secrets (ADR-0028).
+#[derive(Clone, PartialEq, Eq)]
+pub struct ClipboardText(pub String);
+
+impl core::fmt::Debug for ClipboardText {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ClipboardText")
+            .field("len", &self.0.len())
+            .finish()
+    }
 }
 
 /// Cooperative engine work that a host may schedule outside the kernel.

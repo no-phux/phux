@@ -195,6 +195,8 @@ const WHICH_KEY_DELAY_MAX_MS: i64 = 60_000;
 const VOICE_TIMEOUT_MAX_SECS: i64 = 3_600;
 
 // Serde variant names of the schema enums.
+const CLIPBOARD_WRITE: &[&str] = &["allow", "ask", "deny"];
+
 const CWD_INHERITANCE: &[&str] = &[
     "inherit-focused",
     "home",
@@ -409,6 +411,17 @@ pub const CATALOG: &[SettingSpec] = &[
                  pass-through-only escape hatch: the host's native click-drag selection \
                  is left untouched.",
         applies: Applies::NextAttach,
+    },
+    SettingSpec {
+        key: "defaults.clipboard-write",
+        section: SettingSection::Defaults,
+        kind: SettingKind::Choice(CLIPBOARD_WRITE),
+        summary: "What a program's OSC 52 clipboard write does",
+        detail: "allow sets the host clipboard (Ghostty and tmux behavior); ask shows a \
+                 prompt first; deny drops it. Only the pane this client is focused on can \
+                 write, only from live output, and at most 1 MiB. Clipboard reads are \
+                 never answered (ADR-0158).",
+        applies: Applies::LiveReload,
     },
     SettingSpec {
         key: "defaults.cwd-inheritance",
@@ -888,7 +901,7 @@ mod tests {
             }
             assert!(parse("not-a-real-variant").is_err(), "{}", spec.key);
         }
-        assert_eq!(seen, 4);
+        assert_eq!(seen, 5);
     }
 
     #[test]

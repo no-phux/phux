@@ -84,6 +84,9 @@ pub struct TuiSettings {
     /// The global `defaults.mouse` gate the `RawModeGuard` install reads;
     /// attach-time only.
     pub mouse_capture: bool,
+    /// `defaults.clipboard-write`: what a pane's OSC 52 write does
+    /// (ADR-0158). Live on reload.
+    pub clipboard_write: phux_config::ClipboardWrite,
 }
 
 impl std::fmt::Debug for TuiSettings {
@@ -101,6 +104,7 @@ impl std::fmt::Debug for TuiSettings {
             .field("sidebar", &self.sidebar)
             .field("hosts", &self.hosts)
             .field("mouse_capture", &self.mouse_capture)
+            .field("clipboard_write", &self.clipboard_write)
             .finish()
     }
 }
@@ -151,6 +155,7 @@ impl TuiSettings {
         self.plugin_panes = new.plugin_panes;
         self.plugin_sidebar = new.plugin_sidebar;
         self.which_key = new.which_key;
+        self.clipboard_write = new.clipboard_write;
     }
 
     /// The seed when the config does not load: no bindings, defaults, the
@@ -183,6 +188,7 @@ impl TuiSettings {
             },
             hosts: crate::attach::hosts::HostsSettings::disabled(),
             mouse_capture: true,
+            clipboard_write: phux_config::ClipboardWrite::default(),
         }
     }
 
@@ -302,6 +308,7 @@ impl TuiSettings {
             },
             hosts: crate::attach::hosts::HostsSettings::from_cfg(&cfg.sidebar),
             mouse_capture: cfg.defaults.mouse,
+            clipboard_write: cfg.defaults.clipboard_write,
         }
     }
 }

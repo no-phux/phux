@@ -189,7 +189,7 @@ column is the base status word plus at most one relationship clause, about
 | [0155](./0155-host-originated-push-through-a-blind-gateway.md) | Background push is host-originated, through a blind gateway | Accepted (builds on [0036](./0036-agent-asked-detection.md)) |
 | [0156](./0156-agent-transcript-records.md) | Agent transcripts ride provider_raw as phux.transcript/v1 | Accepted (amends [0103](./0103-agent-session-resource-and-producer-fed-streams.md)) |
 | [0157](./0157-themes-are-colors-toml-files-every-client-reads.md) | Themes are Omarchy-schema `colors.toml` files in one catalog, read natively by every client | Proposed |
-| [0158](./0158-pane-clipboard-writes-are-client-policy.md) | Pane clipboard writes are a client-side, policy-gated effect | Proposed |
+| [0158](./0158-pane-clipboard-writes-are-client-policy.md) | Pane clipboard writes are a client-side, policy-gated effect | Accepted |
 
 ## When to write an ADR
 

@@ -50,6 +50,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `defaults.approval-max-pending` | `64` |
 | `defaults.approval-max-pending-total` | `1024` |
 | `defaults.approval-ttl-secs` | `120` |
+| `defaults.clipboard-write` | `"allow"` |
 | `defaults.cwd-inheritance` | `"inherit-focused"` |
 | `defaults.event-journal-bytes` | `1048576` |
 | `defaults.event-journal-entries` | `4096` |
@@ -169,6 +170,11 @@ retain-on-exit-max = 256
 # drag-to-resize and click-to-focus work without an inner program turning
 # mouse mode on. false = pass-through-only (native click-drag selection).
 mouse = true
+
+# What a program's OSC 52 clipboard write does (ADR-0158): "allow" sets the
+# host clipboard, "ask" prompts first, "deny" drops it. Only the focused pane
+# can write; clipboard reads are never answered.
+clipboard-write = "allow"
 
 # How a newly-spawned pane picks its working directory. One of:
 #   "inherit-focused"     — match the focused pane's CWD (tmux behavior).

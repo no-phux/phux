@@ -1,5 +1,6 @@
 //! Inbound frame bursts and what one outcome does to the view.
 
+mod clipboard;
 use super::{
     AttachEnd, AttachError, Connection, FRAME_COALESCE_CAP, FrameEnv, FrameKind, FrameOutcome,
     FrameStep, HashMap, MAX_PENDING_STREAM_BINDS, Notice, RepaintAccumulator, ResourceId,
@@ -38,6 +39,7 @@ impl super::SessionLoop {
             defer_paint,
         };
         let mut outcome = handle_server_frame(&mut self.mirror, env, out, frame)?;
+        self.deliver_clipboard_writes(out, &mut outcome)?;
         for terminal_id in &outcome.authoritative_damage {
             let fenced = self
                 .input_replay

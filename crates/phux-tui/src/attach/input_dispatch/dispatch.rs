@@ -495,6 +495,10 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             OverlayOutcome::Paste(paste) => {
                 self.forward_to_focused_pane(InputEvent::Paste(paste)).await
             }
+            OverlayOutcome::SetClipboard(text) => {
+                crate::attach::copy::write_host_clipboard(self.out, &text.0)?;
+                Ok(false)
+            }
             // Overlay consumed the event but nothing else to do.
             OverlayOutcome::None => Ok(false),
         }

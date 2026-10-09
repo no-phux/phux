@@ -9,7 +9,7 @@
 //! callback is installed and libghostty drops the replies it would generate.
 
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     collections::{HashMap, VecDeque},
     marker::PhantomData,
     rc::Rc,
@@ -21,7 +21,7 @@ use libghostty_vt::{
     selection::{FormatOptions, Selection},
     snapshot::{CaptureEvent, CaptureOptions, Decoder, FeedDecoder, FeedIncrementalDecoder},
     style::{Palette, PaletteIndex, RgbColor},
-    terminal::{Point, PointCoordinate, PointSpace, ScrollViewport},
+    terminal::{ClipboardWrite, Point, PointCoordinate, PointSpace, ScrollViewport},
 };
 use phux_protocol::{
     BootstrapCapabilities, BootstrapLimits, BootstrapStreamProfile, EngineCodec, EngineFeatureSet,
@@ -241,7 +241,7 @@ impl GhosttyAdapter {
 /// ```
 #[derive(Debug)]
 pub struct GhosttyReplica {
-    bell_pending: Rc<Cell<bool>>,
+    pending: Rc<PendingEffects>,
     profile: BootstrapStreamProfile,
     reported_title: Option<String>,
     anchors: HashMap<DocumentAnchorId, TrackedGridRef>,
@@ -406,7 +406,7 @@ enum ReplicaState {
 
 #[derive(Debug)]
 struct NativeReplica {
-    bell_pending: Rc<Cell<bool>>,
+    pending: Rc<PendingEffects>,
     decoder: NativeDecoderState,
     protocol_finished: bool,
 }
@@ -540,17 +540,14 @@ impl EngineAdapter for GhosttyAdapter {
         profile: BootstrapStreamProfile,
         geometry: CanonicalGeometry,
     ) -> Result<Self::Replica, Self::Error> {
-        let bell_pending = Rc::new(Cell::new(false));
+        let pending = Rc::new(PendingEffects::default());
         let state = match profile {
             BootstrapStreamProfile::SynthesizedVtRaw
             | BootstrapStreamProfile::SynthesizedVtStateSync => {
                 let mut terminal = GhosttyTerminal::new(geometry.cols, geometry.rows)?;
                 terminal.set_scrollback_max_lines(Some(SYNTH_SCROLLBACK_ROWS))?;
                 let _ = terminal.set_continuation_max_bytes(CONTINUATION_LIMIT);
-                terminal.on_bell({
-                    let bell_pending = Rc::clone(&bell_pending);
-                    move |_terminal| bell_pending.set(true)
-                })?;
+                install_effect_hooks(&mut terminal, &pending)?;
                 ReplicaState::Synthesized {
                     terminal,
                     protocol_finished: false,
@@ -562,7 +559,7 @@ impl EngineAdapter for GhosttyAdapter {
                 let mut decoder = FeedDecoder::new(CONTINUATION_LIMIT)?;
                 decoder.set_max_continuation_bytes(CONTINUATION_LIMIT)?;
                 ReplicaState::Native(NativeReplica {
-                    bell_pending: Rc::clone(&bell_pending),
+                    pending: Rc::clone(&pending),
                     decoder: NativeDecoderState::Collecting(decoder),
                     protocol_finished: false,
                 })
@@ -570,14 +567,14 @@ impl EngineAdapter for GhosttyAdapter {
             BootstrapStreamProfile::NativeState {
                 codec: EngineCodec::LibghosttyCheckpointV2,
             } if self.native_available => ReplicaState::Native(NativeReplica {
-                bell_pending: Rc::clone(&bell_pending),
+                pending: Rc::clone(&pending),
                 decoder: NativeDecoderState::LegacyCollecting(Vec::new()),
                 protocol_finished: false,
             }),
             _ => return Err(GhosttyEngineError::UnsupportedProfile(profile)),
         };
         Ok(GhosttyReplica {
-            bell_pending,
+            pending,
             reported_title: None,
             profile,
             state,
@@ -692,8 +689,9 @@ impl EngineAdapter for GhosttyAdapter {
         }
         enforce_history_budget(replica)?;
         replica.publish_title(effects)?;
-        // Synthesized bootstrap bytes are history, not new attention events.
-        replica.bell_pending.set(false);
+        // Synthesized bootstrap bytes are history, not new attention events
+        // or clipboard writes (ADR-0158: live output only).
+        replica.pending.clear();
         Ok(progress)
     }
 
@@ -744,8 +742,13 @@ impl EngineAdapter for GhosttyAdapter {
             },
         }
         replica.publish_title(effects)?;
-        if replica.bell_pending.replace(false) {
+        if replica.pending.bell.replace(false) {
             effects.push(EngineEffect::Status(super::EngineStatus::Bell));
+        }
+        if let Some(text) = replica.pending.clipboard.take() {
+            effects.push(EngineEffect::Status(super::EngineStatus::ClipboardWrite(
+                super::ClipboardText(text),
+            )));
         }
         effects.push(EngineEffect::Damage(EngineDamage::Full));
         Ok(())
@@ -1364,11 +1367,60 @@ fn attach_native_callbacks(
     native: &NativeReplica,
     terminal: &mut GhosttyTerminal<'static, 'static>,
 ) -> Result<(), GhosttyEngineError> {
+    install_effect_hooks(terminal, &native.pending)
+}
+
+/// The largest OSC 52 payload a replica passes on (ADR-0158).
+const MAX_CLIPBOARD_BYTES: usize = 1 << 20;
+
+/// Effects a replica's libghostty callbacks raise inside `vt_write`.
+/// `apply_output` drains them as engine effects; bootstrap drops them, since
+/// replayed history is not new activity.
+#[derive(Debug, Default)]
+struct PendingEffects {
+    bell: Cell<bool>,
+    /// The latest clipboard write; an earlier one in the same chunk loses.
+    clipboard: RefCell<Option<String>>,
+}
+
+impl PendingEffects {
+    fn clear(&self) {
+        self.bell.set(false);
+        self.clipboard.take();
+    }
+}
+
+fn install_effect_hooks(
+    terminal: &mut GhosttyTerminal<'static, 'static>,
+    pending: &Rc<PendingEffects>,
+) -> Result<(), GhosttyEngineError> {
     terminal.on_bell({
-        let bell_pending = Rc::clone(&native.bell_pending);
-        move |_terminal| bell_pending.set(true)
+        let pending = Rc::clone(pending);
+        move |_terminal| pending.bell.set(true)
+    })?;
+    terminal.on_clipboard_write({
+        let pending = Rc::clone(pending);
+        move |_terminal, write| {
+            if let Some(text) = clipboard_text(&write) {
+                pending.clipboard.replace(Some(text));
+            }
+            Ok(())
+        }
     })?;
     Ok(())
+}
+
+/// The UTF-8 `text/plain` representation of a clipboard write, or `None` for
+/// a clear, a non-text write, or one over [`MAX_CLIPBOARD_BYTES`]. Every
+/// destination (standard, selection, primary) means the host clipboard.
+fn clipboard_text(write: &ClipboardWrite<'_>) -> Option<String> {
+    let content = write
+        .contents()
+        .find(|content| content.mime.starts_with("text/plain"))?;
+    if content.data.len() > MAX_CLIPBOARD_BYTES {
+        return None;
+    }
+    String::from_utf8(content.data.to_vec()).ok()
 }
 
 fn finish_native(native: &mut NativeReplica) -> Result<BootstrapProgress, GhosttyEngineError> {
@@ -1707,6 +1759,52 @@ mod tests {
                 assert_live_bell(&mut adapter, &mut replica, &mut effects);
             }
         }
+    }
+
+    /// ADR-0158: an OSC 52 write fires only from live output, once, as the
+    /// decoded text; one replayed in bootstrap bytes never does.
+    #[test]
+    fn clipboard_writes_fire_from_live_output_only() {
+        let osc52 = b"\x1b]52;c;aGVsbG8=\x07".as_slice();
+        let clipboard = |effects: &EngineEffectBuffer| -> Vec<String> {
+            effects
+                .as_slice()
+                .iter()
+                .filter_map(|effect| match effect {
+                    EngineEffect::Status(super::super::EngineStatus::ClipboardWrite(text)) => {
+                        Some(text.0.clone())
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut adapter = native_adapter();
+        let mut replica = adapter
+            .start_replica(BootstrapStreamProfile::SynthesizedVtRaw, geometry())
+            .unwrap();
+        let mut effects = EngineEffectBuffer::new();
+        adapter
+            .apply_bootstrap_chunk(&mut replica, osc52, &mut effects)
+            .unwrap();
+        adapter
+            .finish_bootstrap(&mut replica, &mut effects)
+            .unwrap();
+        assert!(
+            clipboard(&effects).is_empty(),
+            "replayed history must not copy"
+        );
+
+        effects.clear();
+        adapter
+            .apply_output(&mut replica, osc52, &mut effects)
+            .unwrap();
+        assert_eq!(clipboard(&effects), ["hello"]);
+
+        effects.clear();
+        adapter
+            .apply_output(&mut replica, b"quiet", &mut effects)
+            .unwrap();
+        assert!(clipboard(&effects).is_empty(), "a write fires once");
     }
 
     fn assert_live_bell(

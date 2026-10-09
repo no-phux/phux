@@ -15,6 +15,7 @@ use ratatui::style::Color;
 
 use crate::render::{ChromeBreakpoints, Theme};
 
+pub mod clipboard_confirm;
 pub mod copy_mode;
 pub mod line_edit;
 pub mod menu;
@@ -30,6 +31,7 @@ pub mod toast;
 pub mod which_key;
 pub mod widgets;
 
+pub use clipboard_confirm::ClipboardConfirmOverlay;
 pub use copy_mode::{CopyModeOverlay, CopySearchRequest, CopySearchResult, CopySearchView};
 pub use menu::{ContextMenu, MenuRow};
 pub use paste_confirm::PasteConfirmOverlay;
@@ -194,6 +196,8 @@ pub enum OverlayCommand {
     Search(CopySearchRequest),
     /// Close the overlay and deliver this confirmed paste to the focused pane.
     Paste(phux_protocol::input::paste::PasteEvent),
+    /// Close the overlay and set the host clipboard to this text (ADR-0158).
+    SetClipboard(phux_client_core::engine::ClipboardText),
 }
 
 /// What [`OverlayState::handle_key`] hands back to the dispatcher.
@@ -216,6 +220,8 @@ pub enum OverlayOutcome {
     Search(CopySearchRequest),
     /// Deliver a paste the user confirmed.
     Paste(phux_protocol::input::paste::PasteEvent),
+    /// Set the host clipboard to a pane's write the user allowed.
+    SetClipboard(phux_client_core::engine::ClipboardText),
 }
 
 /// Stacked overlay state: the top captures input; rendering walks the stack
@@ -420,6 +426,10 @@ impl OverlayState {
             OverlayCommand::Paste(paste) => {
                 self.dismiss();
                 OverlayOutcome::Paste(paste)
+            }
+            OverlayCommand::SetClipboard(text) => {
+                self.dismiss();
+                OverlayOutcome::SetClipboard(text)
             }
         }
     }

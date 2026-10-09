@@ -2948,3 +2948,20 @@ fn output_under_the_floating_overlay_waits_and_the_overlay_paints_in_its_box() {
         "paints at the box origin: {painted:?}"
     );
 }
+
+/// ADR-0158: an OSC 52 write in live output reaches the driver as the pane's
+/// decoded clipboard text; one replayed in the bootstrap never does.
+#[test]
+fn a_live_osc52_write_rides_the_outcome_but_a_replayed_one_does_not() {
+    let pane = tid(1);
+    let old = b"\x1b]52;c;b2xk\x07".as_slice();
+    let mut h = H::published(Workspace::single(pane.clone()), &[(&pane, 80, 24, old)]);
+    let outcome = h.output(&pane, b"\x1b]52;c;aGVsbG8=\x07");
+    let writes: Vec<_> = outcome
+        .clipboard_writes
+        .iter()
+        .map(|(id, text)| (id.clone(), text.0.clone()))
+        .collect();
+    assert_eq!(writes, [(pane.clone(), "hello".to_owned())]);
+    assert!(h.output(&pane, b"quiet").clipboard_writes.is_empty());
+}

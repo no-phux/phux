@@ -10,10 +10,10 @@ last-reviewed: 2026-10-09
 the attached client that is showing that pane, using its own libghostty
 replica's `on_clipboard_write` hook. It never touches the wire. The write
 fires only from live output, never from bootstrap or replay. A per-client
-`clipboard.write` policy (`allow`, `ask`, `deny`) gates it. Clipboard reads
+`defaults.clipboard-write` policy (`allow`, `ask`, `deny`) gates it. Clipboard reads
 stay unsupported.
 
-Status: Proposed
+Status: Accepted
 Date: 2026-10-09
 
 ## Context
@@ -53,7 +53,7 @@ consumes it.
 3. **One client writes: the one focused on that pane.** Writes from other
    panes are dropped. A session mirrored to a phone and a laptop changes the
    clipboard only on the device the user is looking at.
-4. **Policy, per client: `clipboard.write = "allow" | "ask" | "deny"`.**
+4. **Policy, per client: `defaults.clipboard-write = "allow" | "ask" | "deny"`.**
    - The default is `allow`, matching Ghostty and tmux `set-clipboard`.
    - `ask` shows the TUI's confirm modal (the same pattern as paste
      protection) or the GUI equivalent, and names the source pane and host.
@@ -67,6 +67,9 @@ consumes it.
      uses. The outer terminal's own clipboard permission still applies.
    - Cockpit, desktop, and web write the platform pasteboard.
    - FFI hosts (mobile) receive a callback and decide.
+
+   The TUI delivers first. Until a client implements delivery it drops the
+   write, as every client did before this ADR.
 7. **Reads stay unsupported.** libghostty-vt ignores `52;?`, and answering a
    read would hand clipboard contents to a remote program. A future read
    policy needs its own ADR.

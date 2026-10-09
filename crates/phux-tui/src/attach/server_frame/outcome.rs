@@ -113,6 +113,10 @@ pub(in crate::attach) struct FrameOutcome {
     /// A status-bar paint completed while handling this frame. Used to commit
     /// attach onboarding only after its notice reaches the render sink.
     pub(in crate::attach) status_bar_painted: StatusBarPaint,
+    /// OSC 52 writes this frame's live output raised, by pane (ADR-0158);
+    /// the driver applies `defaults.clipboard-write`.
+    pub(in crate::attach) clipboard_writes:
+        Vec<(ResourceId, phux_client_core::engine::ClipboardText)>,
 }
 
 /// Payload-free label for the dispatch span's `kind` field.
@@ -150,7 +154,7 @@ pub(super) fn input_authority_notice(holder: Option<ClientId>) -> String {
 }
 
 /// A pane's name in a notice: `pane N`, or `pane host/N` for a satellite.
-pub(super) fn pane_label(id: &ResourceId) -> String {
+pub(in crate::attach) fn pane_label(id: &ResourceId) -> String {
     match id {
         ResourceId::Local { id } => format!("pane {id}"),
         ResourceId::Satellite { host, id } => format!("pane {host}/{id}"),
