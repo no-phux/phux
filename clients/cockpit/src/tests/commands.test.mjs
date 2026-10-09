@@ -58,6 +58,21 @@ test('CmdK opens the searchable Sessions switcher', () => {
   const [model] = step(initialModel()[0], commandMsg('navigator.sessions'));
   assert.equal(model.paletteOpen, true);
   assert.equal(model.navigatorView, 1);
+  assert.equal(model.paletteLoading, true);
+  assert.equal(model.navigatorNoticeInResults, true);
+  assert.equal(model.navigatorNoticeInFooter, false);
+});
+
+test('an empty command search keeps its notice in the results and a match keeps the key hint in the footer', () => {
+  let [model] = step(initialModel()[0], commandMsg('commands.open'));
+  assert.equal(model.actionRows.length > 0, true);
+  assert.equal(model.navigatorNoticeInFooter, true);
+  assert.equal(model.navigatorNoticeInResults, false);
+  [model] = step(model, { kind: 'palette_edit', edit: { kind: 'insert_text', text: bytes('zzzz-not-a-command') } });
+  assert.equal(model.actionRows.length, 0);
+  assert.equal(model.navigatorNoticeInResults, true);
+  assert.equal(model.navigatorNoticeInFooter, false);
+  assert.equal(text(model.paletteNotice), 'No matching commands');
 });
 
 test('disabled actions explain missing terminal and Enter cannot execute them', () => {

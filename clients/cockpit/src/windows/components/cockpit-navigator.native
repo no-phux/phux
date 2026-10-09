@@ -23,11 +23,8 @@
             </tabs>
             <if test="{navigatorView == 4}"><input text="{palettequery}" placeholder="Type a command" autofocus="true" on-input="palette_edit" on-submit="palette_submit" label="Search commands" /></if>
             <else><input text="{palettequery}" placeholder="Search by name, machine or directory" autofocus="true" on-input="palette_edit" on-submit="palette_submit" label="Search navigator" /></else>
-            <if test="{navigatorView == 2}">
-              <if test="{machines.failed}"><text wrap="true" foreground="warning">Check the machine registry, then refresh.</text></if>
-              <else><if test="{machines.total == 1}"><text wrap="true" foreground="text_muted">No remote machines added</text></if></else>
-            </if>
-            <scroll grow="1" value="{navigatorScroll}" on-scroll="navigator_scrolled">
+            <scroll grow="1" value="{navigatorScroll}" on-scroll="navigator_scrolled" label="Navigator results">
+            <if test="{navigatorNoticeInResults}"><text wrap="true" foreground="text_muted">{palettenotice}</text></if>
             <if test="{navigatorView == 4}">
               <list gap="4" label="Commands">
                 <for each="actionRows" key="index" as="action">
@@ -48,6 +45,8 @@
             <else>
             <if test="{navigatorView == 2}">
               <column gap="8">
+                <if test="{machines.failed}"><text wrap="true" foreground="warning">Check the machine registry, then refresh.</text></if>
+                <else><if test="{machines.total == 1}"><text wrap="true" foreground="text_muted">No remote machines added</text></if></else>
                 <list gap="4" label="Saved machines">
                   <for each="machineRows" key="target" as="machine">
                     <list-item height="{machine.height}" label="{machine.name}" selected="{machine.highlighted}" accent="surface_pressed" accent-foreground="text" on-press="machine_pick:{machine.target}">
@@ -76,6 +75,7 @@
                   </for>
                 </list>
                 <if test="{machines.hasMore}"><button size="sm" variant="ghost" on-press="machines_more">Load more machines</button></if>
+                <if test="{machines.notice}"><text wrap="true" foreground="text_muted">{machines.notice}</text></if>
               </column>
             </if>
             <else>
@@ -113,7 +113,6 @@
                   <button size="sm" on-press="tool_recheck">Recheck</button>
                 </row>
               </if>
-              <text wrap="true" foreground="text_muted">{machines.notice}</text>
               <if test="{machines.forgetTarget}">
                 <panel padding="12">
                   <column gap="8">
@@ -127,7 +126,7 @@
                 </panel>
               </if>
             </if>
-            <text foreground="text_muted">{palettenotice}</text>
+            <if test="{navigatorNoticeInFooter}"><text foreground="text_muted">{palettenotice}</text></if>
             <row gap="8" cross="center">
               <if test="{paletteprevious}"><button size="sm" variant="ghost" on-press="palette_previous">Previous</button></if>
               <spacer grow="1" />
