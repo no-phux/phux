@@ -156,6 +156,7 @@ impl CustomElement for Terminal {
         cx: &mut gpui::Context<GpuixView>,
     ) -> gpui::AnyElement {
         crate::fonts::install(cx);
+        crate::fonts::resolve(&mut self.settings.font, cx);
         crate::perf::RENDERS.incr();
         // Always reacquire, including after removal, skipped generations, or a
         // slot replacement. Dirty rows are not a cache-coherency contract; the
