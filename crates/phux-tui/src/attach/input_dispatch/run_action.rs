@@ -69,7 +69,7 @@ pub(super) fn run_action(
         "give-input" => give_input(ctx, focused, e),
         "signal-terminal" => signal_terminal(resolved, ctx, focused, e),
         "set-pane" => set_pane(resolved, ctx, focused, e),
-        "new-window" => new_window(resolved, ctx, e),
+        "new-window" => new_window(resolved, ctx, focused, panes, e),
         "go-to-directory" => go_to_directory(resolved, ctx, focused, panes, e),
         "find-path" => find_path(resolved, ctx, focused, panes, e),
         "insert-path" => insert_path(resolved, ctx, focused, panes, e),
@@ -97,7 +97,10 @@ pub(super) fn run_action(
         "focus-pane" => focus_pane(resolved, ctx, e),
         "switch-session" => switch_session(resolved, ctx, e),
         "switch-host" => switch_host(resolved, e),
-        "new-session" => new_session(resolved, ctx, e),
+        "new-session" => new_session(resolved, ctx, focused, panes, e),
+        "last-session" => last_session(ctx, e),
+        "next-session" => step_session(ctx, e, 1),
+        "previous-session" => step_session(ctx, e, -1),
         "detach" => e.detach = true,
         "plugin-action" => plugin_action(resolved, e),
         "plugin-pane" => plugin_pane(resolved, ctx, focused, e),
@@ -203,17 +206,20 @@ fn split_pane(
     }
     let request_id = ctx.take_request_id();
     // `split-pane { host }` spawns there with no owner; else follow the pane.
-    let wanted = host_arg(resolved).or_else(|| focused_id.host().cloned());
+    let place = spawn_place(resolved, Some(&focused_id), panes);
+    let wanted = place.host.clone().map(SatelliteHost::new);
     let host = split_host(wanted, ctx.directory_support);
     let satellite = match &host {
         SplitHost::Satellite(satellite) => Some(satellite.clone()),
         SplitHost::Attached | SplitHost::AttachedInsteadOf(_) => None,
     };
-    // A satellite split starts at the split pane's cwd; a local one lets
-    // the server pick.
-    let cwd = satellite
-        .as_ref()
-        .and_then(|satellite| pane_cwd_on(Some(satellite), Some(&focused_id), panes));
+    // A directory is only sent to the host that owns it. An older hub that
+    // cannot spawn on the satellite must not receive that satellite's path.
+    let cwd = match &host {
+        SplitHost::Satellite(_) => place.directory,
+        SplitHost::Attached if place.host.is_none() => place.directory,
+        SplitHost::Attached | SplitHost::AttachedInsteadOf(_) => None,
+    };
     let pending = PendingSplit {
         focused_at_request: focused_id,
         dir,
@@ -450,18 +456,21 @@ fn set_pane(
 fn new_window(
     resolved: &phux_config::keybind::ResolvedAction,
     ctx: &mut DispatchCtx<'_>,
+    focused: Option<&ResourceId>,
+    panes: &HashMap<ResourceId, PaneSlot>,
     effects: &mut ActionEffects,
 ) {
     let request_id = ctx.take_request_id();
     let name = ctx.workspace.default_window_name();
+    let place = spawn_place(resolved, focused, panes);
     let mut frame = FrameKind::SpawnResource {
         request_id,
         group: DEFAULT_GROUP_ID,
         command: None,
-        cwd: str_arg(resolved, "cwd"),
+        cwd: place.directory,
         env: None,
         term: None,
-        satellite: host_arg(resolved),
+        satellite: place.host.map(SatelliteHost::new),
         owner_terminal: None,
         agent_session: None,
         // The new window holds one leaf, so the pane
@@ -1266,16 +1275,103 @@ fn satellite_session_pane(
         .clone()
 }
 
+/// The focused pane's host and directory, with an explicit `cwd` or `host`
+/// argument overriding the matching field.
+fn spawn_place(
+    resolved: &phux_config::keybind::ResolvedAction,
+    focused: Option<&ResourceId>,
+    panes: &HashMap<ResourceId, PaneSlot>,
+) -> phux_client_core::organization::Place {
+    let focused_place = phux_client_core::organization::Place {
+        host: focused
+            .and_then(ResourceId::host)
+            .map(|host| host.as_str().to_owned()),
+        directory: focused
+            .and_then(|id| panes.get(id))
+            .and_then(|slot| slot.cwd.clone()),
+    };
+    let source = if str_arg(resolved, "cwd").is_none() && str_arg(resolved, "host").is_none() {
+        phux_client_core::organization::PlaceSource::Focused
+    } else {
+        phux_client_core::organization::PlaceSource::Explicit {
+            host: str_arg(resolved, "host"),
+            directory: str_arg(resolved, "cwd"),
+        }
+    };
+    phux_client_core::organization::place_for(Some(&focused_place), source)
+}
+
+fn remember_session(ctx: &mut DispatchCtx<'_>) {
+    let name = ctx.session_name.clone();
+    ctx.focus_history.remember_session(&name);
+}
+
+fn reattach_named(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects, name: String) {
+    remember_session(ctx);
+    effects.reattach = Some(ReattachTarget::Existing {
+        name,
+        id: None,
+        window: None,
+        pane: None,
+        resource: None,
+    });
+}
+
+/// Switch to the session `step` away in name order (`1` next, `-1` previous).
+fn step_session(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects, step: i32) {
+    let mut names: Vec<&str> = ctx
+        .peers
+        .sessions
+        .iter()
+        .map(|session| session.name.as_str())
+        .collect();
+    names.sort_unstable();
+    let Some(name) = phux_client_core::organization::adjacent_name(&names, ctx.session_name, step)
+    else {
+        effects.bell = true;
+        return;
+    };
+    reattach_named(ctx, effects, name.to_owned());
+}
+
+/// Switch to the session this client attached to before the current one.
+fn last_session(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
+    let history: Vec<&str> = ctx
+        .focus_history
+        .session_names()
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let Some(name) = phux_client_core::organization::last_name(&history, ctx.session_name) else {
+        effects.bell = true;
+        return;
+    };
+    let name = name.to_owned();
+    reattach_named(ctx, effects, name);
+}
+
 /// Create-or-switch to a named session, or prompt for a name. A name no
 /// selector could address again is refused with a notice, not created.
+/// The seed directory and host follow the focused pane unless `cwd` or
+/// `host` is set.
 fn new_session(
     resolved: &phux_config::keybind::ResolvedAction,
     ctx: &mut DispatchCtx<'_>,
+    focused: Option<&ResourceId>,
+    panes: &HashMap<ResourceId, PaneSlot>,
     effects: &mut ActionEffects,
 ) {
+    let place = spawn_place(resolved, focused, panes);
     match name_arg(resolved) {
         Some(name) => match phux_client::rename::check_session_name(&name) {
-            Ok(()) => effects.reattach = Some(ReattachTarget::Create(name)),
+            Ok(()) => {
+                remember_session(ctx);
+                effects.reattach = Some(ReattachTarget::Create {
+                    name,
+                    directory: place.directory,
+                    host: place.host,
+                });
+            }
             Err(invalid) => {
                 *ctx.rename_notice = Some(format!("could not create session {name}: {invalid}"));
             }

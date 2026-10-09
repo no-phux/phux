@@ -74,9 +74,12 @@ export interface Bridge {
   fenced(terminalId: string): boolean;
   homeSession(): DesktopSession | undefined;
   panes(): DesktopPane[];
+  /** Ask the server for a fresh session list after a create or rename. */
+  refreshTopology(): void;
   /**
-   * Spawn a terminal in `sessionId`, or in the home session when that is
-   * absent or not in the current topology.
+   * Spawn a terminal in `sessionId` when that session is in the topology.
+   * An omitted session uses the window session. A named session that is
+   * absent does not fall back to another session.
    */
   spawn(options: SpawnRequest): number | undefined;
   onEvents(listener: (events: DesktopEvent[]) => void): void;
@@ -364,11 +367,10 @@ export function createBridge(
   }
 
   function spawnSession(sessionId: number | undefined): DesktopSession | undefined {
-    const requested =
-      sessionId === undefined
-        ? undefined
-        : topology()?.sessions.find((session) => session.id === sessionId);
-    return requested ?? homeSession();
+    if (sessionId !== undefined) {
+      return topology()?.sessions.find((session) => session.id === sessionId);
+    }
+    return homeSession();
   }
 
   function spawn({ sessionId, ...options }: SpawnRequest): number | undefined {
@@ -413,6 +415,10 @@ export function createBridge(
     },
     homeSession,
     panes: () => topology()?.panes ?? [],
+    refreshTopology: () => {
+      if (closed || status() !== "Attached") return;
+      client().refreshTopology();
+    },
     spawn,
     onEvents: (next) => {
       listener = next;

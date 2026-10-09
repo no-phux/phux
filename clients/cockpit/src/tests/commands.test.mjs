@@ -36,6 +36,8 @@ test('command catalog derives exactly from shipping menu labels and shortcuts', 
   assert.equal(text(COMMAND_CATALOG.find(command => command.name === 'terminal.clear').shortcut), 'Cmd+Shift+K');
   assert.equal(text(COMMAND_CATALOG.find(command => command.name === 'terminal.find-previous').shortcut), 'Cmd+Shift+G');
   assert.equal(text(COMMAND_CATALOG.find(command => command.name === 'tabs.palette').shortcut), '');
+  assert.equal(text(COMMAND_CATALOG.find(command => command.name === 'session.new').shortcut), 'Cmd+Shift+N');
+  assert.equal(text(COMMAND_CATALOG.find(command => command.name === 'session.rename').shortcut), 'Cmd+Shift+R');
 });
 
 test('CmdShiftP opens actions; action selection uses the same message as native menus', () => {

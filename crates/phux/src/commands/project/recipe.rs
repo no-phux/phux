@@ -183,6 +183,8 @@ pub(crate) fn compile(
             name: session.to_owned(),
             active: true,
             cwd: None,
+            host: None,
+            project: None,
             command: None,
             windows,
         }],

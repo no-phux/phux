@@ -44,6 +44,8 @@ pub(super) struct PeerInputs<'a> {
     pub foreign_agents: &'a HashMap<ResourceId, AgentRecord>,
     /// Peer panes that raised an ADR-0035 `Asked`.
     pub foreign_attention: &'a HashSet<ResourceId>,
+    /// `phux.session.project/v1` tags, keyed by session id.
+    pub project_tags: &'a HashMap<SessionId, String>,
     /// Connection-lifetime review index. Peer rows read `seen`
     /// from here instead of hardcoding unseen.
     pub review: &'a ReviewIndex,
@@ -498,6 +500,7 @@ mod tests {
         layouts: HashMap<SessionId, Workspace>,
         agents: HashMap<ResourceId, AgentRecord>,
         attention: HashSet<ResourceId>,
+        project_tags: HashMap<SessionId, String>,
         review: ReviewIndex,
     }
 
@@ -515,6 +518,7 @@ mod tests {
                 foreign_layouts: &self.layouts,
                 foreign_agents: &self.agents,
                 foreign_attention: &self.attention,
+                project_tags: &self.project_tags,
                 review: &self.review,
             }
         }
@@ -537,6 +541,7 @@ mod tests {
                 graph_resource(ResourceId::local(11), 11),
             ],
             layouts,
+            project_tags: HashMap::new(),
             agents: HashMap::new(),
             attention: HashSet::new(),
             review: ReviewIndex::default(),

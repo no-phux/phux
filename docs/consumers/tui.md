@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-10-06
+last-reviewed: 2026-10-09
 ---
 
 # The phux reference TUI
@@ -203,7 +203,9 @@ Default prefix `C-a`. Override it in one line of config.
 | `C-a S` | `settings` |
 | `C-a B` | `report-bug` (local bug-report bundle) |
 | `C-a q` / `C-a Q` | `next-attention` / `return-from-attention` |
-| `C-a C` | `new-session` |
+| `C-a C` | `new-session` (focused pane's host and directory, or `cwd` / `host`) |
+| `C-a N` / `C-a P` | `next-session` / `previous-session` |
+| `C-a )` | `last-session` |
 | `C-a ,` / `C-a $` | `rename-window` / `rename-session` |
 | `C-a H/J/K/L` | `resize-pane` by 5 |
 | `C-a :` / `C-a ?` | `command-palette` / `show-help` (one overlay) |

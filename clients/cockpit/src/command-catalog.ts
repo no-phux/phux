@@ -11,7 +11,7 @@ export interface CommandDefinition {
 export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   { index: 0, name: "window.new", label: utf8Bytes("New Window"), shortcut: asciiBytes("Cmd+N") },
   { index: 1, name: "terminal.new", label: utf8Bytes("New Tab"), shortcut: asciiBytes("Cmd+T") },
-  { index: 2, name: "session.new", label: utf8Bytes("New Session"), shortcut: asciiBytes("") },
+  { index: 2, name: "session.new", label: utf8Bytes("New Session"), shortcut: asciiBytes("Cmd+Shift+N") },
   { index: 3, name: "pane.split-right", label: utf8Bytes("Split Right"), shortcut: asciiBytes("Cmd+D") },
   { index: 4, name: "pane.split-down", label: utf8Bytes("Split Down"), shortcut: asciiBytes("Cmd+Shift+D") },
   { index: 5, name: "terminal.close", label: utf8Bytes("Close Pane"), shortcut: asciiBytes("Cmd+W") },
@@ -39,7 +39,7 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   { index: 27, name: "tabs.palette", label: utf8Bytes("Go to Terminal"), shortcut: asciiBytes("") },
   { index: 28, name: "directory.open", label: utf8Bytes("Go to Directory"), shortcut: asciiBytes("Cmd+Shift+J") },
   { index: 29, name: "path.insert", label: utf8Bytes("Insert Path"), shortcut: asciiBytes("Cmd+Shift+I") },
-  { index: 30, name: "session.rename", label: utf8Bytes("Rename Session"), shortcut: asciiBytes("") },
+  { index: 30, name: "session.rename", label: utf8Bytes("Rename Session"), shortcut: asciiBytes("Cmd+Shift+R") },
   { index: 31, name: "tab.previous", label: utf8Bytes("Previous Tab"), shortcut: asciiBytes("Cmd+Shift+[") },
   { index: 32, name: "tab.next", label: utf8Bytes("Next Tab"), shortcut: asciiBytes("Cmd+Shift+]") },
   { index: 33, name: "tab.move-left", label: utf8Bytes("Move Tab Left"), shortcut: asciiBytes("Cmd+Shift+Left") },

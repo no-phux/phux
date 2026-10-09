@@ -97,20 +97,25 @@ fn detach_classification_requires_local_intent_and_plain_detach() {
     ));
 }
 
-/// A session created from inside the TUI seeds its pane in the client's cwd,
-/// not the daemon's.
+/// A session created from inside the TUI seeds its pane in the directory
+/// the caller picked (the focused pane, or an explicit folder), not the
+/// process that launched the TUI.
 #[test]
-fn create_session_target_carries_client_cwd() {
-    let expected = std::env::current_dir()
-        .expect("cwd")
-        .to_string_lossy()
-        .into_owned();
+fn create_session_target_uses_the_given_directory() {
     assert_eq!(
-        create_session_target("picker".to_owned()),
+        create_session_target("picker".to_owned(), Some("/src/api".to_owned())),
         AttachTarget::CreateIfMissing {
             name: "picker".to_owned(),
             command: None,
-            cwd: Some(expected),
+            cwd: Some("/src/api".to_owned()),
+        }
+    );
+    assert_eq!(
+        create_session_target("picker".to_owned(), None),
+        AttachTarget::CreateIfMissing {
+            name: "picker".to_owned(),
+            command: None,
+            cwd: None,
         }
     );
 }

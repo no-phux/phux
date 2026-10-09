@@ -3013,6 +3013,10 @@ pub(crate) enum WorkspaceAction {
     Restore {
         /// JSON archive path, or '-' to read from stdin.
         archive: std::path::PathBuf,
+        /// Print the archive's session, host, and directory organization
+        /// and do not dial a server.
+        #[usage(long)]
+        plan: bool,
     },
 }
 

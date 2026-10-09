@@ -709,9 +709,9 @@ fn go_to_directory_on_a_satellite_pane_names_its_host() {
     assert_eq!(pending.host, ListingHost::AttachedInsteadOf(edge()));
 }
 
-/// Splitting a satellite pane spawns on that satellite at its cwd (bound);
-/// a local pane's split is unchanged; an older hub keeps it local and
-/// remembers the satellite it stands in for.
+/// Splitting a satellite pane spawns on that satellite at its cwd (bound).
+/// A local pane's split carries that pane's directory. An older hub keeps
+/// a satellite split local and remembers the satellite it stands in for.
 #[test]
 fn split_pane_follows_the_focused_panes_host() {
     let (mut f, panes) = satellite_pane(Some("/home/e/src"));
@@ -740,10 +740,10 @@ fn split_pane_follows_the_focused_panes_host() {
         matches!(
             &frame,
             FrameKind::SpawnResource {
-                cwd: None,
+                cwd: Some(c),
                 satellite: None,
                 ..
-            }
+            } if c == "/srv/app"
         ),
         "{frame:?}"
     );
@@ -1358,11 +1358,94 @@ fn new_session_creates_or_prompts() {
     );
     assert_eq!(
         effects.reattach,
-        Some(ReattachTarget::Create("scratch".to_owned()))
+        Some(ReattachTarget::Create {
+            name: "scratch".to_owned(),
+            directory: None,
+            host: None,
+        })
     );
     let mut f = fx(Workspace::single(tid(1)));
     assert!(f.run(&bare_action("new-session")).reattach.is_none());
     assert!(f.overlays.is_active());
+}
+
+/// new-session and split use the focused pane's host and directory.
+/// An explicit `cwd` overrides the directory and does not read the launch cwd.
+#[test]
+fn new_session_and_split_inherit_the_focused_place() {
+    let (mut f, panes) = satellite_pane(Some("/src/api"));
+    let created = f.run_in(&act("new-session", &[("name", "work".into())]), &panes);
+    assert_eq!(
+        created.reattach,
+        Some(ReattachTarget::Create {
+            name: "work".to_owned(),
+            directory: Some("/src/api".to_owned()),
+            host: Some("edge".to_owned()),
+        })
+    );
+    let overridden = f.run_in(
+        &act(
+            "new-session",
+            &[("name", "work".into()), ("cwd", "/picked".into())],
+        ),
+        &panes,
+    );
+    assert!(matches!(
+        overridden.reattach,
+        Some(ReattachTarget::Create {
+            directory: Some(ref dir),
+            host: Some(ref host),
+            ..
+        }) if dir == "/picked" && host == "edge"
+    ));
+    let split = f.run_in(&split_action(), &panes);
+    let frame = split.spawn_terminal.expect("split").2;
+    assert!(matches!(
+        frame,
+        FrameKind::SpawnResource { cwd: Some(ref dir), satellite: Some(ref host), .. }
+            if dir == "/src/api" && host.as_str() == "edge"
+    ));
+}
+
+/// last-session returns to the previous name; next and previous wrap.
+#[test]
+fn session_navigation_uses_mru_and_name_order() {
+    let mut f = fx(Workspace::single(tid(1)));
+    f.session_name = "beta".to_owned();
+    f.focus_history
+        .set_sessions(vec!["alpha".to_owned(), "beta".to_owned()]);
+    f.sessions = vec![sinfo(1, "alpha"), sinfo(2, "beta"), sinfo(3, "gamma")];
+    let last = f.run(&bare_action("last-session"));
+    assert!(matches!(
+        last.reattach,
+        Some(ReattachTarget::Existing { ref name, .. }) if name == "alpha"
+    ));
+    let next = f.run(&bare_action("next-session"));
+    assert!(matches!(
+        next.reattach,
+        Some(ReattachTarget::Existing { ref name, .. }) if name == "gamma"
+    ));
+    let previous = f.run(&bare_action("previous-session"));
+    assert!(matches!(
+        previous.reattach,
+        Some(ReattachTarget::Existing { ref name, .. }) if name == "alpha"
+    ));
+}
+
+/// A project tag groups the session picker. Rows still switch sessions.
+#[test]
+fn session_picker_groups_by_project_tag() {
+    let mut f = fx(Workspace::single(tid(1)));
+    f.sessions = vec![sinfo(1, "api"), sinfo(2, "web"), sinfo(3, "notes")];
+    f.project_tags.insert(SessionId::new(1), "phux".to_owned());
+    f.project_tags.insert(SessionId::new(2), "phux".to_owned());
+    let ctx = f.ctx();
+    let items = session_picker_rows(&ctx.peers, ctx.workspace);
+    let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        ["phux", "api", "web", "Sessions", "notes", "+ New session…"]
+    );
 }
 
 /// `C-a C` then `x:y` once created a session that `phux attach x:y` reads

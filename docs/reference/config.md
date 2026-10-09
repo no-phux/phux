@@ -336,9 +336,8 @@ which-key-delay-ms = 400
 #       hierarchical list: every session is a header with its windows
 #       nested beneath. Picking a window in the CURRENT session switches to
 #       it via `select-window { index }`; picking another session switches
-#       to that session (its windows then list under its own picker). See
-#       the window-picker builder for why foreign windows aren't yet
-#       directly selectable in one step.
+#       to that session. A session whose layout is already cached lists its
+#       windows in the same step; one that is not cached offers a switch.
 #
 #   s — session picker (`session-picker`, phux-4li.20). A filterable list
 #       of all server sessions, built from the ATTACHED snapshot. The current
@@ -385,6 +384,10 @@ which-key-delay-ms = 400
 # picker (s, alias a) also offers a "+ New session" row. (Lowercase c is
 # new-window; capital is the session-level peer.)
 "C" = "new-session"
+# Session motion. Prefix-L stays resize-pane; last-session is `)`.
+"N" = "next-session"
+"P" = "previous-session"
+")" = "last-session"
 
 # Detach this client from the session.
 "d" = "detach"

@@ -3,6 +3,7 @@ import type { DesktopPane, DesktopSession } from "../../native/generated/index";
 import type { AgentInfo } from "../bridge/desktop";
 import { IconButton, Icon, Label, Pill, StatusDot, column, row, usePalette } from "../ui/controls";
 import { agentColors, radius, uiFont } from "../ui/theme";
+import { groupByProject } from "../workspace/place";
 
 export interface SidebarProps {
   width: number;
@@ -16,6 +17,10 @@ export interface SidebarProps {
   now: number;
   open: (pane: DesktopPane) => void;
   newTerminal: () => void;
+  /** Spawn in this session. The header + calls this instead of the home session. */
+  newTerminalIn?: (sessionId: number) => void;
+  /** Project tags keyed by session id. Empty keeps the flat session list. */
+  projects?: ReadonlyMap<number, string>;
   openSettings: () => void;
   openPalette: () => void;
 }
@@ -43,6 +48,23 @@ export function Sidebar(props: SidebarProps): JSX.Element {
     return [...props.sessions].sort((a, b) =>
       a.name === home ? -1 : b.name === home ? 1 : a.name.localeCompare(b.name),
     );
+  });
+  const sessionGroups = createMemo(() => {
+    const tagged = sessions().map((session) => {
+      const project = props.projects?.get(session.id);
+      return project === undefined
+        ? { name: session.name, session }
+        : { name: session.name, project, session };
+    });
+    return groupByProject(tagged).map((group) => ({
+      project: group.project,
+      sessions: group.sessions.flatMap((line) => {
+        const match = tagged.find(
+          (item) => item.name === line.name && item.project === line.project,
+        );
+        return match ? [match.session] : [];
+      }),
+    }));
   });
 
   return (
@@ -80,61 +102,77 @@ export function Sidebar(props: SidebarProps): JSX.Element {
           <div style={{ height: 8 }} />
         </Show>
         <SectionHeader title="Sessions" count={props.sessions.length} />
-        <For each={sessions()}>
-          {(session): JSX.Element => {
-            const panes = (): DesktopPane[] =>
-              props.panes.filter((pane) => pane.sessionId === session.id);
-            const closed = (): boolean => collapsed()[session.name] === true;
-            return (
-              <div style={column({ gap: 1 })}>
-                <div
-                  onClick={() =>
-                    setCollapsed((current) => ({ ...current, [session.name]: !closed() }))
-                  }
-                  style={row({
-                    gap: 6,
-                    height: 26,
-                    paddingLeft: 6,
-                    paddingRight: 8,
-                    borderRadius: radius.small,
-                    cursor: "pointer",
-                    hover: { backgroundColor: colors().hover },
-                  })}
-                >
-                  <Icon
-                    name={closed() ? "chevronRight" : "chevronDown"}
-                    size={11}
-                    color={colors().faint}
-                  />
-                  <Label weight={600} color={colors().subtext} grow>
-                    {session.name}
-                  </Label>
-                  <Show when={session.name === props.homeSession}>
-                    <Pill color={colors().accent} subtle>
-                      home
-                    </Pill>
-                  </Show>
-                  <Label size={uiFont.small} color={colors().faint}>
-                    {String(panes().length)}
-                  </Label>
-                </div>
-                <Show when={!closed()}>
-                  <For each={panes()}>
-                    {(pane): JSX.Element => (
-                      <PaneRow
-                        pane={pane}
-                        agent={props.agents[pane.terminalId]}
-                        focused={props.focusedTerminal === pane.terminalId}
-                        visible={props.visibleTerminals.has(pane.terminalId)}
-                        views={props.viewCount(pane.terminalId)}
-                        open={() => props.open(pane)}
-                      />
-                    )}
-                  </For>
-                </Show>
-              </div>
-            );
-          }}
+        <For each={sessionGroups()}>
+          {(group): JSX.Element => (
+            <div style={column({ gap: 1 })}>
+              <Show when={props.projects && props.projects.size > 0}>
+                <SectionHeader title={group.project ?? "Sessions"} count={group.sessions.length} />
+              </Show>
+              <For each={group.sessions}>
+                {(session): JSX.Element => {
+                  const panes = (): DesktopPane[] =>
+                    props.panes.filter((pane) => pane.sessionId === session.id);
+                  const closed = (): boolean => collapsed()[session.name] === true;
+                  return (
+                    <div style={column({ gap: 1 })}>
+                      <div
+                        onClick={() =>
+                          setCollapsed((current) => ({ ...current, [session.name]: !closed() }))
+                        }
+                        style={row({
+                          gap: 6,
+                          height: 26,
+                          paddingLeft: 6,
+                          paddingRight: 8,
+                          borderRadius: radius.small,
+                          cursor: "pointer",
+                          hover: { backgroundColor: colors().hover },
+                        })}
+                      >
+                        <Icon
+                          name={closed() ? "chevronRight" : "chevronDown"}
+                          size={11}
+                          color={colors().faint}
+                        />
+                        <Label weight={600} color={colors().subtext} grow>
+                          {session.name}
+                        </Label>
+                        <Show when={session.name === props.homeSession}>
+                          <Pill color={colors().accent} subtle>
+                            home
+                          </Pill>
+                        </Show>
+                        <Label size={uiFont.small} color={colors().faint}>
+                          {String(panes().length)}
+                        </Label>
+                        <Show when={props.newTerminalIn}>
+                          <IconButton
+                            icon="plus"
+                            label={`New terminal in ${session.name}`}
+                            run={() => props.newTerminalIn?.(session.id)}
+                          />
+                        </Show>
+                      </div>
+                      <Show when={!closed()}>
+                        <For each={panes()}>
+                          {(pane): JSX.Element => (
+                            <PaneRow
+                              pane={pane}
+                              agent={props.agents[pane.terminalId]}
+                              focused={props.focusedTerminal === pane.terminalId}
+                              visible={props.visibleTerminals.has(pane.terminalId)}
+                              views={props.viewCount(pane.terminalId)}
+                              open={() => props.open(pane)}
+                            />
+                          )}
+                        </For>
+                      </Show>
+                    </div>
+                  );
+                }}
+              </For>
+            </div>
+          )}
         </For>
         <Show when={props.sessions.length === 0}>
           <div style={{ padding: 10 }}>

@@ -550,7 +550,11 @@ async fn reattach_on_same_connection(
             };
             id.map_or(AttachTarget::ByName(name), AttachTarget::ById)
         }
-        ReattachTarget::Create(name) => create_session_target(name),
+        ReattachTarget::Create {
+            name,
+            directory,
+            host: _,
+        } => create_session_target(name, directory),
     };
     let attach_id = send_attach(conn, attach_target).await?;
     let attached = wait_for_attached(conn, attach_id).await?;
@@ -558,16 +562,16 @@ async fn reattach_on_same_connection(
     Ok(attached)
 }
 
-/// The `CreateIfMissing` target for an in-TUI session create, carrying the
-/// client's cwd (`None` would seed the daemon's cwd; the server falls back
-/// when the path is not enterable there).
-pub(super) fn create_session_target(name: String) -> AttachTarget {
+/// The `CreateIfMissing` target for an in-TUI session create.
+///
+/// `directory` is the focused pane's cwd or an explicit pick.
+/// `None` leaves the server default. This does not read the client
+/// process's working directory.
+pub(super) fn create_session_target(name: String, directory: Option<String>) -> AttachTarget {
     AttachTarget::CreateIfMissing {
         name,
         command: None,
-        cwd: std::env::current_dir()
-            .ok()
-            .map(|path| path.to_string_lossy().into_owned()),
+        cwd: directory.filter(|path| !path.is_empty()),
     }
 }
 

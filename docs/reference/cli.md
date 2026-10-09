@@ -4221,12 +4221,14 @@ Global flags:
 ```text
 Restore missing sessions from a workspace archive.
 
-Usage: phux workspace restore <ARCHIVE>
+Usage: phux workspace restore [--plan] <ARCHIVE>
 
 Arguments:
   <ARCHIVE>  JSON archive path, or '-' to read from stdin.
 
 Flags:
+      --plan           Print the archive's session, host, and directory
+                       organization and do not dial a server.
   -h, --help           Print help
 
 Global flags:
