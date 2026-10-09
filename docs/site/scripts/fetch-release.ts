@@ -70,11 +70,27 @@ export function latestCockpitRelease(list: GitHubRelease[]): Release | null {
   };
 }
 
+export function latestDesktopRelease(list: GitHubRelease[]): Release | null {
+  // Desktop alphas are intentionally published as prereleases.
+  const data = list.find(
+    (release) =>
+      !release.draft &&
+      /^desktop-v\d+\.\d+\.\d+-alpha\.[1-9]\d*$/.test(release.tag_name ?? ""),
+  );
+  if (!data?.tag_name) return null;
+  return {
+    tag: data.tag_name,
+    url: data.html_url ?? null,
+    publishedAt: data.published_at ?? null,
+  };
+}
+
 interface StampedReleases {
   tag: string | null;
   url: string | null;
   publishedAt: string | null;
   cockpit: Release;
+  desktop: Release;
 }
 
 const EMPTY: Release = { tag: null, url: null, publishedAt: null };
@@ -97,16 +113,17 @@ async function main() {
     const stamped: StampedReleases = {
       ...release,
       cockpit: latestCockpitRelease(list) ?? { ...EMPTY },
+      desktop: latestDesktopRelease(list) ?? { ...EMPTY },
     };
     await writeFile(OUT, JSON.stringify(stamped, null, 2) + "\n");
-    console.log(`fetch-release: stamped ${release.tag} + ${stamped.cockpit.tag ?? "no-cockpit"}`);
+    console.log(`fetch-release: stamped ${release.tag} + ${stamped.cockpit.tag ?? "no-cockpit"} + ${stamped.desktop.tag ?? "no-desktop"}`);
   } catch (err) {
     // Keep a previously stamped file if one exists; otherwise omit the badges.
     try {
       await readFile(OUT, "utf8");
       console.warn(`fetch-release: fetch failed (${err}); keeping existing release.json`);
     } catch {
-      const empty: StampedReleases = { ...EMPTY, cockpit: { ...EMPTY } };
+      const empty: StampedReleases = { ...EMPTY, cockpit: { ...EMPTY }, desktop: { ...EMPTY } };
       await writeFile(OUT, JSON.stringify(empty, null, 2) + "\n");
       console.warn(`fetch-release: fetch failed (${err}); badges omitted this build`);
     }

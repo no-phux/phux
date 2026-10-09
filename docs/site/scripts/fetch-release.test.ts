@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { latestCockpitRelease, latestCoreRelease } from "./fetch-release";
+import { latestCockpitRelease, latestCoreRelease, latestDesktopRelease } from "./fetch-release";
 
 describe("latestCoreRelease", () => {
   test("selects the newest core release from mixed release streams", () => {
@@ -59,6 +59,42 @@ describe("latestCockpitRelease", () => {
         { tag_name: "cockpit-v1.0.0", draft: true },
         { tag_name: "cockpit-v0.22.0", prerelease: true },
         { tag_name: "v0.31.0" },
+      ]),
+    ).toBeNull();
+  });
+});
+
+describe("latestDesktopRelease", () => {
+  test("selects a published alpha, not a draft or another component's release", () => {
+    expect(
+      latestDesktopRelease([
+        { tag_name: "desktop-v0.1.0-alpha.9", draft: true, prerelease: true },
+        { tag_name: "v0.54.0" },
+        { tag_name: "cockpit-v0.34.0" },
+        { tag_name: "desktop-v0.1.0" },
+        { tag_name: "desktop-v0.1.0-beta.1", prerelease: true },
+        {
+          tag_name: "desktop-v0.1.0-alpha.8",
+          prerelease: true,
+          html_url: "https://github.com/no-phux/phux/releases/tag/desktop-v0.1.0-alpha.8",
+          published_at: "2026-10-08T09:19:12Z",
+        },
+        { tag_name: "desktop-v0.1.0-alpha.7", prerelease: true },
+      ]),
+    ).toEqual({
+      tag: "desktop-v0.1.0-alpha.8",
+      url: "https://github.com/no-phux/phux/releases/tag/desktop-v0.1.0-alpha.8",
+      publishedAt: "2026-10-08T09:19:12Z",
+    });
+  });
+
+  test("omits the badge when no published desktop alpha exists", () => {
+    expect(
+      latestDesktopRelease([
+        { tag_name: "desktop-v0.1.0-alpha.1", draft: true },
+        { tag_name: "desktop-v0.1.0-alpha.0" },
+        { tag_name: "desktop-v0.1.0-alpha.1-extra" },
+        { tag_name: "v0.54.0" },
       ]),
     ).toBeNull();
   });

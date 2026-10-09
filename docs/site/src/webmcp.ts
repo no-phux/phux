@@ -5,6 +5,7 @@
 export type SiteFacts = {
   productName: string;
   cliInstall: string;
+  desktopInstall: string;
   cockpitInstall: string;
   docsUrl: string;
   releaseTag: string;
@@ -28,8 +29,8 @@ export type ModelContextLike = {
 };
 
 type ModelContextScope = {
-  document?: { modelContext?: ModelContextLike | null };
-  navigator?: { modelContext?: ModelContextLike | null };
+  document?: Document | { modelContext?: ModelContextLike | null };
+  navigator?: Navigator | { modelContext?: ModelContextLike | null };
 };
 
 const DOC_PATHS: Record<string, string> = {
@@ -45,6 +46,7 @@ const DOC_PATHS: Record<string, string> = {
 };
 
 function installCommand(facts: SiteFacts, target: unknown): string {
+  if (target === "desktop") return facts.desktopInstall;
   if (target === "cockpit") return facts.cockpitInstall;
   if (target === "skills") return "npx skills add no-phux/skills";
   return facts.cliInstall;
@@ -61,13 +63,13 @@ export function siteTools(facts: SiteFacts): ModelContextTool[] {
   return [
     {
       name: "get_install_command",
-      description: `Get the installer for the ${facts.productName} CLI, Cockpit, or agent skills.`,
+      description: `Get the installer for the ${facts.productName} CLI, Desktop alpha, Cockpit, or agent skills.`,
       inputSchema: {
         type: "object",
         properties: {
           target: {
             type: "string",
-            enum: ["cli", "cockpit", "skills"],
+            enum: ["cli", "desktop", "cockpit", "skills"],
             description: `Which installer to return. Defaults to the ${facts.productName} CLI.`,
           },
         },
@@ -103,8 +105,9 @@ export function siteTools(facts: SiteFacts): ModelContextTool[] {
 
 // Prefer the page-scoped context. navigator.modelContext remains the older alias.
 export function siteModelContext(scope: ModelContextScope): ModelContextLike | null {
-  const candidates = [scope.document?.modelContext, scope.navigator?.modelContext];
-  for (const candidate of candidates) {
+  for (const owner of [scope.document, scope.navigator]) {
+    if (!owner || !("modelContext" in owner)) continue;
+    const candidate = owner.modelContext;
     if (candidate && typeof candidate.registerTool === "function") return candidate;
   }
   return null;

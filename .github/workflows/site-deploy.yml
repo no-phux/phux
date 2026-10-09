@@ -38,10 +38,9 @@ permissions:
 
 jobs:
   pages:
-    # Release events matter for the core phux tags (vX.Y.Z) and the Cockpit
-    # tags (cockpit-vX.Y.Z) — both move a version badge on the landing.
+    # Core, Cockpit and Desktop releases move version badges on the landing.
     # Other component releases (opencode-plugin-v*, …) badge nothing.
-    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'v') || startsWith(github.event.release.tag_name, 'cockpit-v')
+    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'v') || startsWith(github.event.release.tag_name, 'cockpit-v') || startsWith(github.event.release.tag_name, 'desktop-v')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

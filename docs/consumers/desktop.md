@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-28
+last-reviewed: 2026-10-09
 ---
 
 # Desktop
@@ -22,9 +22,9 @@ The architecture choice is [ADR-0139](../adr/0139-solid-desktop-over-native-runt
 [Cockpit](./cockpit.md) remains a separate client. The first release requires
 independent same-terminal views; Linux follows, Intel macOS is not required.
 
-[Install the GPUIX/Solid desktop demo](../INSTALL.md#desktop-demo) on an
-Apple-silicon Mac. The current installer builds from source; it is not the
-Cockpit download.
+[Install the Desktop alpha](../INSTALL.md#gpuix-desktop-alpha-native-macos)
+from the first-party installer on an Apple-silicon Mac running macOS 27 or
+later. It downloads a published `Phux.app`; Cockpit remains a separate app.
 
 ## Start with a terminal
 

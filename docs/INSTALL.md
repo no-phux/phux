@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors
 stability: stable
-last-reviewed: 2026-09-27
+last-reviewed: 2026-10-09
 ---
 
 # Install
@@ -9,7 +9,8 @@ last-reviewed: 2026-09-27
 **TL;DR.** Install with Homebrew or the release installer on supported macOS
 and Linux hosts. Use numbered releases for stable builds or `next` for the
 moving prerelease. Update direct installs with `phux update`, package-managed
-installs with their package manager. Cockpit has a separate macOS installer.
+installs with their package manager. Desktop alpha and experimental Cockpit
+have separate macOS installers.
 
 ---
 
@@ -116,8 +117,10 @@ published alpha with `sh -s -- --version X.Y.Z-alpha.N`.
 
 The app is a view of server-owned sessions: quitting or crashing the desktop
 does not intentionally end the shells. This is not a guarantee against server
-failure or reboot. See the [desktop guide](../clients/desktop/README.md) for
-controls, alternate install locations and the current alpha limitations.
+failure or reboot. See the [desktop guide](./consumers/desktop.md) for controls
+and the current alpha limitations. The installer supports alternate locations
+with `--applications-dir` and `--bin-dir`. After install, open `Phux.app` or run
+`phux-desktop`.
 
 ## Cockpit (native macOS)
 
@@ -167,14 +170,12 @@ After replacement the app relaunches; phux-backed remote sessions remain on
 the server. Homebrew, Nix, and development copies refuse self-update and
 print the native command.
 
-## Desktop demo
+## Build Desktop from source
 
-The **GPUIX/Solid desktop demo** installs as `Phux.app` on Apple-silicon
-macOS 13 or later. It is separate from Cockpit. There is no published binary
-installer yet; this route builds the app from source.
-
-Install the phux CLI first, then follow [contributor setup](./SETUP.md) for
-the desktop build tools. From the repository root:
+Contributors can build the same `Phux.app` locally instead of installing a
+published alpha. Install the CLI first, then follow
+[contributor setup](./SETUP.md) for the desktop build tools.
+From the repository root:
 
 ```sh
 just doctor desktop
