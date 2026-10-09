@@ -90,6 +90,9 @@ tokio-tungstenite = { version = "0.30", default-features = false, features = ["h
 # fingerprints.
 rustls.workspace = true
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging"] }
+# Mozilla's root store for the one outbound HTTPS call the server makes: the
+# background-push notice to a device's gateway (ADR-0155). Data only, no code.
+webpki-roots = "1"
 subtle = "2"
 getrandom = "0.4"
 sha2 = "0.11"

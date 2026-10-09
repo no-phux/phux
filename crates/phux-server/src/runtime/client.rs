@@ -4858,6 +4858,24 @@ pub(crate) fn handle_set_metadata(
         apply_session_keep_empty(state, client_id, request_id, scope, &value, root_token);
         return;
     }
+    // ADR-0155: a push grant is stored like any key, but the server also
+    // remembers who wrote it, so a later ask is pushed only once that
+    // connection is gone.
+    if crate::push::is_grant_key(scope, key) {
+        match crate::push::parse_grant(&value) {
+            Ok(_) => {
+                let admitted = state.with_mut(|s| s.push_grants_mut().register(key, client_id));
+                if !admitted {
+                    warn!(?client_id, request_id, %key, "SET_METADATA: push grant registry full; ignoring");
+                    return;
+                }
+            }
+            Err(reason) => {
+                warn!(?client_id, request_id, %key, %reason, "SET_METADATA: ignoring push grant");
+                return;
+            }
+        }
+    }
     let config_reload =
         key == phux_protocol::wire::frame::CONFIG_RELOAD_KEY && matches!(scope, Scope::Global);
     store_metadata_value(state, client_id, request_id, scope, key, value);
@@ -4888,6 +4906,9 @@ pub(crate) fn handle_delete_metadata(
             && key == RESOURCE_AGENT_KEY
         {
             s.agent_records_mut().note_explicit_delete(terminal);
+        }
+        if crate::push::is_grant_key(scope, key) {
+            s.push_grants_mut().forget(key);
         }
         s.metadata_delete_by(scope, key, Some(client_id))
     });
@@ -5165,6 +5186,11 @@ pub(crate) fn broadcast_event(
     terminal: Option<&WireResourceId>,
     event: &AgentEvent,
 ) {
+    // ADR-0155: every ask source funnels through here, so this is where an
+    // absent phone hears about it.
+    if let (Some(pane), AgentEvent::Asked { id, .. }) = (terminal, event) {
+        crate::push::on_asked(state, pane, id);
+    }
     journal_event(
         state,
         crate::state::EventRecord::new(terminal.cloned(), event.clone()),

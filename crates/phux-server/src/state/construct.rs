@@ -23,6 +23,7 @@ impl ServerState {
             config: super::ServerConfig::default(),
             hub: HubState::new(),
             hook_dispatcher: None,
+            push_grants: crate::push::PushGrants::default(),
             // Mints this process's incarnation and starts the idle clock —
             // see `Lifecycle::new`.
             lifecycle: Lifecycle::new(),

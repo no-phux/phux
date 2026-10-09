@@ -131,6 +131,7 @@ by a newer one, the newer line is the operative reading.
 
 ## Agents
 
+- [0155](./0155-host-originated-push-through-a-blind-gateway.md) A suspended phone is pushed by its own server through a blind first-party gateway, with a content-free notice and a per-device grant under `phux.push/v1/<device>`.
 - [0151](./0151-live-agent-sessions-bridge-into-native-restore.md) Save archives a shell-started agent's live `AgentSession` native id when an enabled integration claims and can resume it.
 - [0118](./0118-agent-integrations-share-a-neutral-runtime.md) Pi and OpenCode are sibling adapters over one private, neutral Node integration runtime; neither imports the other.
 - [0103](./0103-agent-session-resource-and-producer-fed-streams.md) `AgentSession` is the second resource kind; its stream is producer-fed and derives agent state.

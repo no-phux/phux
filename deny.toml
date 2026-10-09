@@ -21,6 +21,8 @@ allow = [
     "ISC",
     "MIT",
     "MPL-2.0",
+    # webpki-roots 1.x (Mozilla's root store, data only; ADR-0155).
+    "CDLA-Permissive-2.0",
     "Unicode-3.0",
     "Unicode-DFS-2016",
     "Zlib",

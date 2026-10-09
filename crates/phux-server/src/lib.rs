@@ -30,6 +30,7 @@ pub mod native_state;
 pub mod perf;
 pub mod policy;
 pub(crate) mod proc_query;
+pub(crate) mod push;
 pub mod resource;
 pub mod runtime;
 pub mod state;
