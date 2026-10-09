@@ -64,9 +64,48 @@ test "native replay policy owns production peer handles and no core channel" {
         try std.testing.expect(!try sink.feed(.{ .kind = .channel, .key = key, .payload = &.{1} }));
     }
     try std.testing.expect(!try sink.feed(.{ .kind = .file, .key = cockpit.topology_state_file_key + 1, .file_op = .write }));
+    // Clipboard and PTY terminals are not claimed until their declaration.
+    try std.testing.expect(!try sink.feed(.{ .kind = .clipboard, .key = 101, .clipboard_op = .read, .payload = "external" }));
+    try std.testing.expect(!try sink.feed(.{ .kind = .line, .key = 1, .payload = "output" }));
     // Owned but undeclared: a production handle's result must never pass.
+    // This refusal sticks, so it stays last.
     try std.testing.expectError(error.NativeReplayMismatch, sink.feed(.{ .kind = .channel, .key = handle, .payload = &.{1} }));
 }
+
+test "clipboardptyreplay declared clipboard and pty terminals are consumed" {
+    var sink = NativeReplay.init(std.testing.allocator, native_replay_key, native_replay_policy);
+    defer sink.deinit();
+    const recorder = try std.testing.allocator.create(native_sdk.runtime.SessionRecorder);
+    defer std.testing.allocator.destroy(recorder);
+    var journal = ShippingJournal{};
+    initShippingRecorder(recorder, journal.sink());
+    recorder.begin(.{ .platform_name = "test", .app_name = "phux-cockpit", .window_width = 400, .window_height = 300 });
+    var live = NativeReplay.init(std.testing.allocator, native_replay_key, native_replay_policy);
+    defer live.deinit();
+    live.bindRecorder(recorder);
+    try live.noteParked(101);
+    try live.noteParked(1);
+    try live.noteParked(101);
+    recorder.finish();
+
+    sink.armReplay();
+    var reader = try native_sdk.runtime.session_journal.Reader.init(journal.journal());
+    while (try reader.next()) |record| {
+        if (record == .effect) try std.testing.expect(try sink.feed(record.effect));
+    }
+    try std.testing.expect(try sink.feed(.{ .kind = .clipboard, .key = 101, .clipboard_op = .read, .clipboard_outcome = .ok, .payload = "recorded-paste" }));
+    try std.testing.expect(try sink.feed(.{ .kind = .line, .key = 1, .payload = "pty-bytes" }));
+    try std.testing.expect(try sink.feed(.{ .kind = .exit, .key = 1, .code = 0 }));
+    try std.testing.expect(!try sink.feed(.{ .kind = .clipboard, .key = 99, .clipboard_op = .read, .payload = "nope" }));
+    try std.testing.expect(!try sink.feed(.{ .kind = .line, .key = 0, .payload = "not a pty" }));
+    _ = try sink.event(.effects_wake, &ParkedEffects{}, .{ .installed = true, .primary_canvas_label = canvas_label });
+    try sink.finish();
+}
+
+const ParkedEffects = struct {
+    const Slot = struct { active: bool = false };
+    timer_slots: [1]Slot = .{.{}},
+};
 
 /// The production peer allocator, reached through a fresh Engine as the
 /// native_effect_replay_tests contract allows: the engine module exports
@@ -102,12 +141,16 @@ const peer_handle_first: u64 = 0x5046_0000_0000_0000;
 const ts_persist_outcome_channel_key: u64 = 0x5453_5052_0000_0001;
 /// Native registrations the core never sees: provider and pointer channels,
 /// dynamic peer wakes and retries, the topology debounce and its file write.
-/// Only channel and file records are ever claimed, so host replies and the
-/// clipboard (100, 101) and PTY (1 + index) results always reach the core.
+/// Clipboard (100, 101) and PTY keys below the peer-handle range are parked:
+/// replay consumes their journaled terminals and does not re-read the host
+/// clipboard or re-execute the recorded process.
 const native_replay_policy: native_effect_replay.Policy = .{
     .channels = &.{ cockpit.phux_channel_key, cockpit.pointer_channel_key },
     .timers = &.{cockpit.topology_persist_timer_key},
     .files = &.{cockpit.topology_state_file_key},
+    .clipboard = &.{ 100, 101 },
+    .pty_first = 1,
+    .pty_limit = peer_handle_first,
     .dynamic_first = peer_handle_first,
     .dynamic_limit = std.math.maxInt(u64),
     .reserved = &.{ admission_channel_key, native_replay_key, protocol.event_channel_key, ts_persist_outcome_channel_key },
@@ -123,6 +166,7 @@ const EngineFx = struct {
         self.effects.hostSend(name, payload);
     }
     pub fn ptySpawn(self: EngineFx, options: anytype) void {
+        if (self.effects.replayArmed()) return;
         self.effects.ptySpawn(.{
             .key = options.key,
             .argv = options.argv,
@@ -130,14 +174,18 @@ const EngineFx = struct {
             .rows = options.rows,
             .on_event = options.on_event,
         });
+        bridge.native_replay.noteParked(options.key) catch |err| bridge.latchNativeReplay(err);
     }
     pub fn ptyWrite(self: EngineFx, key: u64, bytes: []const u8) bool {
+        if (self.effects.replayArmed()) return true;
         return self.effects.ptyWrite(key, bytes);
     }
     pub fn ptyResize(self: EngineFx, key: u64, cols: u16, rows: u16) void {
+        if (self.effects.replayArmed()) return;
         self.effects.ptyResize(key, cols, rows);
     }
     pub fn ptyKill(self: EngineFx, key: u64) void {
+        if (self.effects.replayArmed()) return;
         self.effects.ptyKill(key);
     }
     pub fn cancel(self: EngineFx, key: u64) void {
@@ -165,10 +213,14 @@ const EngineFx = struct {
         self.effects.minimizeWindow(label);
     }
     pub fn writeClipboard(self: EngineFx, options: struct { key: u64, text: []const u8 }) void {
+        if (self.effects.replayArmed()) return;
         self.effects.writeClipboard(.{ .key = options.key, .text = options.text, .on_result = clipboardWritten });
+        bridge.native_replay.noteParked(options.key) catch |err| bridge.latchNativeReplay(err);
     }
     pub fn readClipboard(self: EngineFx, options: struct { key: u64 }) void {
+        if (self.effects.replayArmed()) return;
         self.effects.readClipboard(.{ .key = options.key, .on_result = clipboardRead });
+        bridge.native_replay.noteParked(options.key) catch |err| bridge.latchNativeReplay(err);
     }
     /// Replay claims a recorded native timer by its platform ID. Installing
     /// one again would shift core timer slots and rerun a native callback.
@@ -1435,6 +1487,7 @@ test "appearance creates an absent configuration and restores system-following m
 /// core receives only a void wake so it re-renders; no terminal byte enters
 /// the compiled core.
 fn shellEvent(event: native_sdk.EffectPtyEvent) core.Msg {
+    if (nativeReplayArmed()) return .engine_wake;
     if (bridge.engine) |engine| {
         if (engineFx()) |fx| {
             if (engine.onShellEvent(fx, event)) bridge.announce(engine);
@@ -1471,11 +1524,13 @@ fn topologyWritten(result: native_sdk.EffectFileResult) core.Msg {
 }
 
 fn clipboardWritten(event: native_sdk.EffectClipboardResult) core.Msg {
+    if (nativeReplayArmed()) return .engine_wake;
     if (bridge.engine) |engine| engine.onClipboardWritten(event.outcome == .ok);
     return .engine_wake;
 }
 
 fn clipboardRead(event: native_sdk.EffectClipboardResult) core.Msg {
+    if (nativeReplayArmed()) return .engine_wake;
     if (bridge.engine) |engine| {
         // A paste held for confirmation is chrome the core must draw.
         const before = engine.beginPublication();
@@ -3361,6 +3416,41 @@ fn recordTopologyPersistence(recorder: *native_sdk.runtime.SessionRecorder) !Rec
     try std.testing.expectEqual(sequence, engine.sequence);
     try std.testing.expectEqualStrings("READY", rig.app_state.model.status);
     return .{ .fingerprint = rig.harness.runtime.sessionStateFingerprint(), .sequence = rig.app_state.model.engineSequence.lo };
+}
+
+test "clipboardptyreplay shipping paste and pty output do not import the host clipboard" {
+    const journal = try std.heap.page_allocator.create(ShippingJournal);
+    defer std.heap.page_allocator.destroy(journal);
+    journal.len = 0;
+    const recorder = try std.heap.page_allocator.create(native_sdk.runtime.SessionRecorder);
+    defer std.heap.page_allocator.destroy(recorder);
+    initShippingRecorder(recorder, journal.sink());
+    recorder.begin(.{ .platform_name = "test", .app_name = "phux-cockpit", .window_width = 1100, .window_height = 640 });
+    {
+        var rig = try Rig.create(false, false, recorder);
+        defer rig.stop();
+        try rig.boot();
+        try rig.settle(0, "READY");
+        const fx = engineFx() orelse return error.TestExpectedEngine;
+        const executor = rig.app_state.effects.executor;
+        rig.app_state.effects.executor = .fake;
+        fx.readClipboard(.{ .key = 101 });
+        try rig.app_state.effects.feedClipboardResult(101, .ok, "recorded-paste");
+        rig.app_state.effects.executor = executor;
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+    }
+    recorder.finish();
+    try std.testing.expect(!recorder.failed);
+
+    var rig = try Rig.create(false, false, null);
+    defer rig.stop();
+    try rig.harness.runtime.options.platform.services.writeClipboard("EXTERNAL-LEAK");
+    const report = try native_sdk.runtime.replaySession(&rig.harness.runtime, rig.decorated, journal.journal(), .{ .require_same_platform = false });
+    try std.testing.expectEqual(@as(usize, 0), report.mismatch_count);
+    var clipboard: [64]u8 = undefined;
+    const text = try rig.harness.runtime.readClipboard(&clipboard);
+    try std.testing.expect(std.mem.indexOf(u8, text, "EXTERNAL-LEAK") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "recorded-paste") == null);
 }
 
 test "shipping replay owns the topology timer and file write before a core snapshot" {

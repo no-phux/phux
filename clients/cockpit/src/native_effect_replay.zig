@@ -9,6 +9,14 @@ pub const Policy = struct {
     channels: []const u64,
     timers: []const u64,
     files: []const u64 = &.{},
+    /// Clipboard effect keys (copy 100, paste read 101). Their results carry
+    /// host text, so replay consumes the journaled terminal instead of reading
+    /// the replay machine's clipboard.
+    clipboard: []const u64 = &.{},
+    /// PTY effect keys occupy [pty_first, pty_limit), except clipboard keys.
+    /// A zero limit owns none.
+    pty_first: u64 = 1,
+    pty_limit: u64 = 0,
     dynamic_first: u64,
     dynamic_limit: u64,
     reserved: []const u64 = &.{},
@@ -16,19 +24,34 @@ pub const Policy = struct {
     fn dynamic(self: Policy, key: u64) bool {
         return key >= self.dynamic_first and key < self.dynamic_limit;
     }
+    fn reservedKey(self: Policy, key: u64) bool {
+        return std.mem.indexOfScalar(u64, self.reserved, key) != null;
+    }
     fn owns(self: Policy, keys: []const u64, key: u64) bool {
-        if (std.mem.indexOfScalar(u64, self.reserved, key) != null) return false;
+        if (self.reservedKey(key)) return false;
         return self.dynamic(key) or std.mem.indexOfScalar(u64, keys, key) != null;
     }
     fn ownsFile(self: Policy, key: u64) bool {
-        return std.mem.indexOfScalar(u64, self.files, key) != null and std.mem.indexOfScalar(u64, self.reserved, key) == null;
+        return std.mem.indexOfScalar(u64, self.files, key) != null and !self.reservedKey(key);
+    }
+    pub fn ownsClipboard(self: Policy, key: u64) bool {
+        return !self.reservedKey(key) and std.mem.indexOfScalar(u64, self.clipboard, key) != null;
+    }
+    pub fn ownsPty(self: Policy, key: u64) bool {
+        if (self.pty_limit <= self.pty_first) return false;
+        if (key < self.pty_first or key >= self.pty_limit) return false;
+        if (self.reservedKey(key) or self.ownsClipboard(key)) return false;
+        return true;
+    }
+    pub fn ownsParked(self: Policy, key: u64) bool {
+        return self.ownsClipboard(key) or self.ownsPty(key);
     }
 };
 
 pub fn Replay(comptime sdk: type) type {
     return struct {
         const Self = @This();
-        const Op = enum(u8) { channel = 1, timer = 2, file_write = 3, file_refused = 4 };
+        const Op = enum(u8) { channel = 1, timer = 2, file_write = 3, file_refused = 4, parked = 5 };
         const Channel = struct { active: bool = false, rejected: bool = false, opened: bool = false };
         const Declaration = struct { op: Op, key: u64, value: u64 };
         pub const DrainContext = struct {
@@ -48,6 +71,7 @@ pub fn Replay(comptime sdk: type) type {
         channels: std.AutoHashMapUnmanaged(u64, Channel) = .empty,
         timer_ids: std.AutoHashMapUnmanaged(u64, u64) = .empty,
         files: std.AutoHashMapUnmanaged(u64, void) = .empty,
+        parked: std.AutoHashMapUnmanaged(u64, void) = .empty,
         pending: usize = 0,
         delivered: usize = 0,
         /// The current replayed event drained claimed native results. Live,
@@ -62,6 +86,7 @@ pub fn Replay(comptime sdk: type) type {
             self.channels.deinit(self.allocator);
             self.timer_ids.deinit(self.allocator);
             self.files.deinit(self.allocator);
+            self.parked.deinit(self.allocator);
         }
         pub fn bindRecorder(self: *Self, recorder: ?*sdk.runtime.SessionRecorder) void {
             self.recorder = recorder;
@@ -73,6 +98,14 @@ pub fn Replay(comptime sdk: type) type {
 
         /// Call AFTER the live EngineFx.openChannel, with handle.live(). A failed
         /// attempt is distinct from closing the already-open stream on that key.
+        /// One declaration covers every later result on a reused clipboard or
+        /// PTY key. Replay drops those terminals; it does not re-read the host
+        /// clipboard or re-execute the recorded process.
+        pub fn noteParked(self: *Self, key: u64) !void {
+            if (self.replaying) return self.refuse();
+            if (!self.policy.ownsParked(key)) return self.refuse();
+            try self.record(.parked, key, 0);
+        }
         pub fn noteChannelOpen(self: *Self, key: u64, accepted: bool) !void {
             try self.record(.channel, key, @intFromBool(accepted));
         }
@@ -138,6 +171,7 @@ pub fn Replay(comptime sdk: type) type {
                 .channel => self.policy.channels,
                 .timer => self.policy.timers,
                 .file_write, .file_refused => return self.policy.ownsFile(key),
+                .parked => return self.policy.ownsParked(key),
             };
             return self.policy.owns(keys, key);
         }
@@ -153,6 +187,7 @@ pub fn Replay(comptime sdk: type) type {
                 try self.metadata(result);
                 return true;
             }
+            if (try self.claimParked(result)) return true;
             const op = resultOperation(result) orelse return false;
             if (!self.owns(op, result.key)) return false;
             try self.deliverResult(result);
@@ -179,7 +214,26 @@ pub fn Replay(comptime sdk: type) type {
                 .channel => try self.declareChannel(declaration.key, declaration.value),
                 .timer => try self.declareTimer(declaration.key, declaration.value),
                 .file_write, .file_refused => try self.declareFile(declaration),
+                .parked => try self.declareParked(declaration.key),
             }
+        }
+        fn declareParked(self: *Self, key: u64) !void {
+            if (!self.policy.ownsParked(key)) return self.refuse();
+            if (self.parked.contains(key)) return;
+            try self.parked.put(self.allocator, key, {});
+        }
+        fn claimParked(self: *Self, result: sdk.runtime.EffectResultRecord) !bool {
+            if (!parkedKind(result.kind)) return false;
+            if (!self.parked.contains(result.key)) return false;
+            if (!self.policy.ownsParked(result.key)) return self.refuse();
+            self.pending += 1;
+            return true;
+        }
+        fn parkedKind(kind: sdk.runtime.EffectResultKind) bool {
+            return switch (kind) {
+                .clipboard, .line, .exit, .response => true,
+                else => false,
+            };
         }
         fn cleanData(result: sdk.runtime.EffectResultRecord) bool {
             return result.kind == .channel and result.channel_kind == .data and result.dropped == 0 and result.channel_dropped_total == 0;
