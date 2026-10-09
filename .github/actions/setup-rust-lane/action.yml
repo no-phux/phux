@@ -17,9 +17,9 @@
 #      restricted to pushes to main so PR writes cannot thrash the shared
 #      10 GB LRU and evict the warm base every lane restores from. Each main
 #      push saves a new entry; ci.yml's prune-build-cache keeps the newest.
-#      Objects mode leaves GC off during the build. ci.yml's check and test
-#      jobs run scripts/ci/mbx-export-headroom.sh after the lane, before this
-#      action's post step exports the closure, so that copy has disk left.
+#      Objects mode leaves GC off during the build. Collect the restored store
+#      before any build records its export group; after the lane, release Cargo
+#      downloads without evicting the group's pending action results.
 #
 # No CPU fingerprint: libghostty-vt-sys builds Zig for `-Dcpu=baseline` unless
 # LIBGHOSTTY_VT_SYS_CPU says otherwise (and its build script declares that
@@ -93,3 +93,7 @@ runs:
         # isolated store, because mbx marks its shared OUT_DIR copies
         # read-only (EACCES), and that failure skips the save.
         cache-generation: ${{ steps.mbx-env.outputs.generation }}
+
+    - name: bound restored objects before recording builds
+      shell: bash
+      run: mbx gc --max-size 8GiB

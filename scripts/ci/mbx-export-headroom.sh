@@ -7,11 +7,10 @@
 # directory. A full workspace test filled the hosted runner, the export
 # returned ENOSPC, and the green test job failed in post.
 #
-# The Cargo registry is not part of an objects bundle. The action store is.
-# Collect it to one lane's closure after the build, and once more, lower, if
-# that still leaves under 8 GiB free for the second copy. LRU eviction drops
-# restored objects this job did not use before it drops the closure the
-# export is about to copy. This does not delete the action store.
+# The Cargo registry is not part of an objects bundle, so it can be removed
+# after the build. Never run mbx GC here: pending export groups reference the
+# action results GC evicts, even when there is plenty of disk space. Bound the
+# restored store in setup-rust-lane before the first build records that group.
 set -euo pipefail
 
 if [[ "${GITHUB_ACTIONS:-}" != "true" && "${PHUX_MBX_EXPORT_HEADROOM:-}" != "1" ]]; then
@@ -26,24 +25,9 @@ if [[ "${cargo_home}" != /* || "${cargo_home}" == "/" || "${cargo_home}" == "/.c
   exit 1
 fi
 
-command -v mbx >/dev/null
 command -v df >/dev/null
 
 df -h / || true
 rm -rf "${cargo_home}/registry" "${cargo_home}/git"
-
-# One lane's saved entry is about 0.4 GiB (check) or 1.9 GiB (test)
-# compressed. 8 GiB of objects keeps that closure; 4 GiB is the floor when
-# the runner still cannot hold a second copy.
-mbx gc --max-size 8GiB
-free_kb="$(df -Pk / | awk 'NR == 2 { print $4 }')"
-if [[ ! "${free_kb}" =~ ^[0-9]+$ ]]; then
-  echo "mbx-export-headroom: df did not report free space: ${free_kb}" >&2
-  exit 1
-fi
-reserve_kb=$((8 * 1024 * 1024))
-if (( free_kb < reserve_kb )); then
-  mbx gc --max-size 4GiB
-fi
 
 df -h / || true
