@@ -329,6 +329,75 @@ fn negotiated() -> (ControlPlane, u32) {
     (plane, attach_id)
 }
 
+/// Attach subscribes to `phux.session.project/v1` and a stored value becomes
+/// one event. The test feeds the frames; it does not insert the tag by hand.
+#[test]
+fn attach_reads_the_session_project_tag_into_an_event() {
+    use phux_protocol::wire::frame::{SESSION_PROJECT_KEY, Scope, encode_session_project};
+
+    let (mut plane, attach_id) = negotiated();
+    plane
+        .feed(FrameKind::Attached {
+            attach_id,
+            snapshot: two_session_snapshot(false),
+            initial_client_id: ClientId::new(1),
+        })
+        .unwrap();
+    let outbound: Vec<FrameKind> = plane
+        .take_outbound()
+        .iter()
+        .map(|frame| decode(frame))
+        .collect();
+    assert!(
+        outbound.iter().any(|frame| matches!(
+            frame,
+            FrameKind::SubscribeMetadata { scope: Scope::Global, key }
+                if key == SESSION_PROJECT_KEY
+        )),
+        "attach must subscribe to the project tag: {outbound:?}"
+    );
+    let request_id = outbound
+        .iter()
+        .find_map(|frame| match frame {
+            FrameKind::GetMetadata {
+                request_id,
+                scope: Scope::Global,
+                key,
+            } if key == SESSION_PROJECT_KEY => Some(*request_id),
+            _ => None,
+        })
+        .expect("attach GETs the project tag");
+    plane
+        .feed(FrameKind::MetadataValue {
+            request_id,
+            value: Some(encode_session_project("beta", "phux")),
+        })
+        .unwrap();
+    assert!(
+        plane.take_events().iter().any(|event| matches!(
+            event,
+            Event::SessionProject { name, project }
+                if name == "beta" && project.as_deref() == Some("phux")
+        )),
+        "the GET value must surface as a session project event"
+    );
+    plane
+        .feed(FrameKind::MetadataChanged {
+            scope: Scope::Global,
+            key: SESSION_PROJECT_KEY.to_owned(),
+            value: None,
+            actor: None,
+        })
+        .unwrap();
+    assert!(
+        plane.take_events().iter().any(|event| matches!(
+            event,
+            Event::SessionProject { name, project } if name.is_empty() && project.is_none()
+        )),
+        "a tombstone must clear the project tag"
+    );
+}
+
 fn attach(plane: &mut ControlPlane, attach_id: u32, bytes: &[u8]) {
     attach_with_history(plane, attach_id, bytes, None);
 }

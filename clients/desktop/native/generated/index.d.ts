@@ -969,6 +969,7 @@ export type DesktopEvent =
   | { kind: 'Detached'; reason?: number; message: string }
   | { kind: 'ServerError'; code: number; message: string; requestId?: number }
   | { kind: 'InputDelivery'; deliveryId: string; outcome: DesktopDelivery; code?: number; message: string }
+  | { kind: 'SessionProject'; sessionName: string; project?: string }
 
 export interface DesktopGestureResult {
   handle: string

@@ -1760,6 +1760,7 @@ function DesktopApp(props: AppProps): JSX.Element {
             <Sidebar
               width={prefs().sidebarWidth}
               sessions={bridge.topology()?.sessions ?? []}
+              projects={bridge.projects()}
               panes={bridge.panes()}
               agents={bridge.agents()}
               homeSession={sessionName}

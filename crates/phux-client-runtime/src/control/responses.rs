@@ -240,6 +240,7 @@ impl ControlPlane {
         // Any earlier attachment's subscriptions ended with it.
         self.forget_roster_subscriptions();
         self.sync_agent_metadata();
+        self.watch_session_project();
         // A hub's satellites and anything the grant inventories but does not
         // observe are missing from this view, not gone: read them back.
         if self.options.automatic_lifecycle && self.listings.hides(View::Attach, snapshot) {
@@ -331,6 +332,10 @@ impl ControlPlane {
                 request_id,
             });
             return Err(ControlError::Refused(rendered));
+        }
+        if request_id.is_some_and(|id| self.project_tag_pending == Some(id)) {
+            self.project_tag_pending = None;
+            return Ok(());
         }
         let roster_read = request_id.and_then(|id| self.agent_metadata_error(id, code));
         if roster_read == Some(true) {

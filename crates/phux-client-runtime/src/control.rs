@@ -455,6 +455,8 @@ pub struct ControlPlane {
     damaged: Vec<ResourceId>,
     extensions: extensions::Extensions,
     roster: roster::RosterRecovery,
+    /// In-flight `GET` of `phux.session.project/v1`.
+    project_tag_pending: Option<u32>,
 }
 
 impl ControlPlane {
@@ -518,6 +520,7 @@ impl ControlPlane {
             damaged: Vec::new(),
             extensions: extensions::Extensions::default(),
             roster: roster::RosterRecovery::default(),
+            project_tag_pending: None,
         }
     }
 

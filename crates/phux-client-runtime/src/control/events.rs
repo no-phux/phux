@@ -233,6 +233,16 @@ pub enum Event {
         /// The `phux.agent/v1` record, or its absence.
         value: Option<Vec<u8>>,
     },
+    /// The one stored `phux.session.project/v1` tag.
+    ///
+    /// `project: None` clears it. The server keeps a single global value, so
+    /// a new tag replaces the previous session's tag.
+    SessionProject {
+        /// Session name the tag belongs to. Empty when the tag was cleared.
+        name: String,
+        /// The project tag, or `None` when it was removed.
+        project: Option<String>,
+    },
     /// Whether a question is pending in the terminal now: the server-owned
     /// `phux.agent.asked/v1` flag (L3.md §1.3), from a fenced read or a live
     /// change, re-read after every gap and reconnect.

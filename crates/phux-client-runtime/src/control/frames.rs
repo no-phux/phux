@@ -375,6 +375,9 @@ impl ControlPlane {
         let Some(frame) = self.roster_metadata_frame(frame) else {
             return Ok(());
         };
+        let Some(frame) = self.take_project_tag_frame(frame) else {
+            return Ok(());
+        };
         match classify_engine_frame(frame)? {
             ClassifiedFrame::Engine(event) => self.apply_engine(event),
             ClassifiedFrame::Other(frame) => {
@@ -382,6 +385,63 @@ impl ControlPlane {
                 Ok(())
             }
         }
+    }
+
+    /// Subscribe to and read the one stored `phux.session.project/v1` tag.
+    pub(super) fn watch_session_project(&mut self) {
+        use phux_protocol::wire::frame::{SESSION_PROJECT_KEY, Scope};
+        self.queue_frame(&FrameKind::SubscribeMetadata {
+            scope: Scope::Global,
+            key: SESSION_PROJECT_KEY.to_owned(),
+        });
+        let request_id = self.next_request_id();
+        self.project_tag_pending = Some(request_id);
+        self.queue_frame(&FrameKind::GetMetadata {
+            request_id,
+            scope: Scope::Global,
+            key: SESSION_PROJECT_KEY.to_owned(),
+        });
+    }
+
+    /// Consume the project-tag GET. A live change is published and kept so
+    /// other consumers still see the raw metadata frame.
+    fn take_project_tag_frame(&mut self, frame: FrameKind) -> Option<FrameKind> {
+        use phux_protocol::wire::frame::{SESSION_PROJECT_KEY, Scope};
+        match frame {
+            FrameKind::MetadataValue { request_id, value }
+                if self.project_tag_pending == Some(request_id) =>
+            {
+                self.project_tag_pending = None;
+                self.publish_project_tag(value.as_deref());
+                None
+            }
+            FrameKind::MetadataChanged {
+                scope: Scope::Global,
+                key,
+                value,
+                actor,
+            } if key == SESSION_PROJECT_KEY => {
+                self.publish_project_tag(value.as_deref());
+                Some(FrameKind::MetadataChanged {
+                    scope: Scope::Global,
+                    key,
+                    value,
+                    actor,
+                })
+            }
+            other => Some(other),
+        }
+    }
+
+    fn publish_project_tag(&mut self, value: Option<&[u8]>) {
+        let (name, project) =
+            match value.and_then(phux_protocol::wire::frame::decode_session_project) {
+                Some((name, project)) if !name.is_empty() && !project.is_empty() => {
+                    (name.to_owned(), Some(project.to_owned()))
+                }
+                _ => (String::new(), None),
+            };
+        self.push_event(Event::SessionProject { name, project });
     }
 }
 
