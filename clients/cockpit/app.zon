@@ -56,6 +56,7 @@
             .{ .label = "Go to Terminal…", .command = "tabs.palette" },
             .{ .label = "Go to Directory…", .command = "directory.open", .key = "j", .modifiers = .{ "primary", "shift" } },
             .{ .label = "Insert Path…", .command = "path.insert", .key = "i", .modifiers = .{ "primary", "shift" } },
+            .{ .separator = true },
             .{ .label = "Rename Session…", .command = "session.rename", .key = "r", .modifiers = .{ "primary", "shift" } },
             .{ .label = "Last Session", .command = "session.last", .key = "l", .modifiers = .{ "primary", "shift" } },
             .{ .separator = true },

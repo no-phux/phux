@@ -47,6 +47,7 @@ pub const menus: []const native_sdk.Menu = &.{
         .{ .label = "Go to Terminal…", .command = "tabs.palette", .key = "", .modifiers = .{} },
         .{ .label = "Go to Directory…", .command = "directory.open", .key = "j", .modifiers = .{ .primary = true, .shift = true } },
         .{ .label = "Insert Path…", .command = "path.insert", .key = "i", .modifiers = .{ .primary = true, .shift = true } },
+        .{ .separator = true },
         .{ .label = "Rename Session…", .command = "session.rename", .key = "r", .modifiers = .{ .primary = true, .shift = true } },
         .{ .label = "Last Session", .command = "session.last", .key = "l", .modifiers = .{ .primary = true, .shift = true } },
         .{ .separator = true },

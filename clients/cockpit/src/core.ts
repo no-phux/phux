@@ -4145,7 +4145,7 @@ function describeNewSession(model: Model): NavigatorDecision {
     renameQuery: NO_BYTES, renameAnchor: 0, renameFocus: 0, newSessionToken: NO_BYTES,
     newSessionDirectory: NO_BYTES, newSessionDirectoryAnchor: 0, newSessionDirectoryFocus: 0,
     newSessionAwaiting: false, renameTitle: asciiBytes("New Session"), renameNotice: asciiBytes("Checking destination...") });
-  return navigatorDecision(next, 5, newSessionRequest(1, NO_BYTES, NO_BYTES));
+  return navigatorDecision(next, 5, newSessionRequest(1, NO_BYTES, NO_BYTES, NO_BYTES));
 }
 
 function receiveNewSession(model: Model, body: Uint8Array): NavigatorDecision {
@@ -4349,7 +4349,7 @@ function cancelSessionForAction(model: Model, msg: Msg): NavigatorDecision {
   const next = scopeOverlays({ ...model, renameOpen: false, creatingSession: false, newSessionAwaiting: false,
     pendingSessionAction: captureDeferredAction(model, msg), retiredSessionToken: model.newSessionToken });
   if (model.newSessionToken.length !== 8) return navigatorDecision(next, 1, NO_BYTES);
-  return navigatorDecision(next, 13, newSessionRequest(4, model.newSessionToken, NO_BYTES));
+  return navigatorDecision(next, 13, newSessionRequest(4, model.newSessionToken, NO_BYTES, NO_BYTES));
 }
 
 function waitingSessionDeparture(model: Model, msg: Msg): NavigatorDecision | null {
@@ -4360,7 +4360,7 @@ function waitingSessionDeparture(model: Model, msg: Msg): NavigatorDecision | nu
   if (model.newSessionToken.length > 0) return { model, effect: 0, request: NO_BYTES };
   const reply = newSessionReply(msg.body);
   if (reply === null) return navigatorDecision(model, 0, NO_BYTES);
-  return navigatorDecision({ ...model, newSessionToken: reply.token, retiredSessionToken: reply.token }, 13, newSessionRequest(4, reply.token, NO_BYTES));
+  return navigatorDecision({ ...model, newSessionToken: reply.token, retiredSessionToken: reply.token }, 13, newSessionRequest(4, reply.token, NO_BYTES, NO_BYTES));
 }
 
 function failedSessionCancellation(model: Model): NavigatorDecision {
@@ -5077,7 +5077,7 @@ function loadedSnapshotPlan(model: Model, loaded: LoadedSnapshotProjection): Upd
   if (machinePoll !== null) return requestPlan(machinePoll.model,
     plannedRequest("cockpit.machines", machinePoll.request, "cockpit-machines", "machines_loaded", "machines_failed"));
   if (model.newSessionAwaiting) return requestPlan(routed.scoped,
-    plannedRequest("cockpit.new-session", newSessionRequest(3, model.newSessionToken, NO_BYTES),
+    plannedRequest("cockpit.new-session", newSessionRequest(3, model.newSessionToken, NO_BYTES, NO_BYTES),
       "cockpit-new-session", "new_session_loaded", "new_session_failed"));
   if (!model.paletteOpen || model.navigatorView === 2 || model.navigatorView === 4) return snapshotWithoutNavigator(model, routed);
   return snapshotWithNavigator(routed);

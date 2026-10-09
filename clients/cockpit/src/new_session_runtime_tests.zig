@@ -39,8 +39,8 @@ test "new session runtime keeps simultaneous same-host captures on independent C
     try std.testing.expect(a.provider_context != b.provider_context);
     try std.testing.expect(a.host_context != b.host_context);
     try std.testing.expect(runtime.current(engine, a));
-    const aid = try runtime.send(engine, a, "first", true);
-    const bid = try runtime.send(engine, b, "second", true);
+    const aid = try runtime.send(engine, a, "first", "", true);
+    const bid = try runtime.send(engine, b, "second", "", true);
     try std.testing.expectEqual(aid, bid); // Identical per-Client request IDs.
     try std.testing.expect(runtime.poll(engine, a, aid) == .pending);
     try std.testing.expect(runtime.poll(engine, b, bid) == .pending);
@@ -66,16 +66,16 @@ test "new session runtime never releases a reused request ID into a reconnected 
     defer engine.destroy();
     const remote = try peer(engine);
     const old = runtime.capture(engine, remote, 1).?;
-    const old_id = try runtime.send(engine, old, "old", true);
+    const old_id = try runtime.send(engine, old, "old", "", true);
     try remote.host.reconnect("new-session-runtime-test");
     try negotiate(remote);
     const replacement = runtime.capture(engine, remote, 1).?;
     try std.testing.expect(old.connection_epoch != replacement.connection_epoch);
-    const new_id = try runtime.send(engine, replacement, "replacement", true);
+    const new_id = try runtime.send(engine, replacement, "replacement", "", true);
     try std.testing.expectEqual(old_id, new_id);
     try std.testing.expect(!runtime.current(engine, old));
     try std.testing.expect(runtime.poll(engine, old, old_id) == .unknown);
-    try std.testing.expectError(error.InvalidState, runtime.send(engine, old, "stale", true));
+    try std.testing.expectError(error.InvalidState, runtime.send(engine, old, "stale", "", true));
     runtime.release(engine, old, old_id);
     try std.testing.expect(runtime.poll(engine, replacement, new_id) == .pending);
     remote.host.disconnect();

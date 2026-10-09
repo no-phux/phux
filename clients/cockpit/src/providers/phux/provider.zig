@@ -851,6 +851,10 @@ pub const PhuxProvider = struct {
         return self.host.requestCreateSession(name, keep_empty);
     }
 
+    pub fn requestCreateSessionIn(self: *PhuxProvider, name: []const u8, directory: []const u8, keep_empty: bool) !u32 {
+        return self.host.requestCreateSessionIn(name, directory, keep_empty);
+    }
+
     pub fn sessionCreateInfo(self: *PhuxProvider, request_id: u32) SessionCreateInfo {
         return self.host.sessionCreateInfo(request_id);
     }
