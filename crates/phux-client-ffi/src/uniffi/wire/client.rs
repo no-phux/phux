@@ -172,9 +172,6 @@ pub struct RemoteClient {
     input_deliveries: Mutex<Vec<WireInputDelivery>>,
     authoritative_damage: Mutex<HashSet<ResourceId>>,
     generations: Mutex<HashMap<ResourceId, u64>>,
-    /// Every `AgentSession` resource lowered as `WireEvent::AgentRecords`:
-    /// a second close the server sends for one is not a pane closing.
-    agent_sessions: Mutex<HashSet<ResourceId>>,
 }
 
 #[uniffi::export]
@@ -759,7 +756,6 @@ impl RemoteClient {
             input_deliveries: Mutex::new(Vec::new()),
             authoritative_damage: Mutex::new(HashSet::new()),
             generations: Mutex::new(HashMap::new()),
-            agent_sessions: Mutex::new(HashSet::new()),
         })
     }
 }
@@ -947,11 +943,6 @@ impl RemoteClient {
     /// bookkeeping) or a fact with no Swift
     /// vocabulary.
     fn project_event(&self, event: Event, projected: &mut Vec<WireEvent>) {
-        if let Event::TerminalClosed { terminal_id, .. } = &event
-            && self.agent_sessions.lock().unwrap().contains(terminal_id)
-        {
-            return;
-        }
         let event = match event::terminal_signal(event) {
             Ok(signal) => return projected.extend(Option::<WireEvent>::from(signal)),
             Err(event) => event,
@@ -1022,13 +1013,13 @@ impl RemoteClient {
                 };
                 let seq = records.last().map_or(0, |record| record.seq);
                 let jsonl = crate::projection::agent_records::jsonl(&records);
-                projected.push(self.agent_records(terminal_id, session, kind, seq, jsonl));
+                projected.push(agent_records(&terminal_id, session, kind, seq, jsonl));
             }
             Event::AgentSessionClosed {
                 terminal_id,
                 session,
-            } => projected.push(self.agent_records(
-                terminal_id,
+            } => projected.push(agent_records(
+                &terminal_id,
                 session,
                 AgentRecordsKind::Closed,
                 0,
@@ -1037,26 +1028,24 @@ impl RemoteClient {
             _ => {}
         }
     }
+}
 
-    fn agent_records(
-        &self,
-        terminal_id: ResourceId,
-        session: phux_client_runtime::control::AgentSessionInfo,
-        kind: AgentRecordsKind,
-        seq: u64,
-        jsonl: String,
-    ) -> WireEvent {
-        let agent_session_id = id::encode(&terminal_id);
-        self.agent_sessions.lock().unwrap().insert(terminal_id);
-        WireEvent::AgentRecords {
-            agent_session_id,
-            parent_terminal_id: session.parent.as_ref().map(id::encode),
-            provider: session.provider,
-            native_id: session.native_id,
-            kind,
-            seq,
-            jsonl,
-        }
+/// Lower one agent session's records, or its end, to the foreign event.
+fn agent_records(
+    terminal_id: &ResourceId,
+    session: phux_client_runtime::control::AgentSessionInfo,
+    kind: AgentRecordsKind,
+    seq: u64,
+    jsonl: String,
+) -> WireEvent {
+    WireEvent::AgentRecords {
+        agent_session_id: id::encode(terminal_id),
+        parent_terminal_id: session.parent.as_ref().map(id::encode),
+        provider: session.provider,
+        native_id: session.native_id,
+        kind,
+        seq,
+        jsonl,
     }
 }
 

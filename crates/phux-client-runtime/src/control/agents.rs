@@ -48,16 +48,6 @@ impl ControlPlane {
         {
             self.pick_up_foreign_spawn(&terminal_id);
         }
-        // The announcement names the parent but not the provider identity:
-        // read the catalog, whose reconcile subscribes it.
-        if let AgentEvent::ResourceSpawned {
-            kind: ResourceKind::AgentSession,
-            ..
-        } = &event
-            && self.subscribes_agent_sessions()
-        {
-            self.queue_refresh_topology();
-        }
         // The kernel folds the process-exit bookkeeping (a retained
         // resource, ADR-0124) for terminals it knows; every other kind is
         // projected here directly.
@@ -201,11 +191,7 @@ impl ControlPlane {
         self.own_spawns.remove(terminal_id);
         self.agent_streams.remove(terminal_id);
         // A subscribed agent stream ends as itself, never as a pane.
-        if let Some(subscription) = self.agent_subscriptions.remove(terminal_id) {
-            self.push_event(Event::AgentSessionClosed {
-                terminal_id: terminal_id.clone(),
-                session: subscription.info,
-            });
+        if self.end_agent_subscription(terminal_id) {
             return true;
         }
         if let Some(topology) = self.topology.as_mut() {
@@ -285,52 +271,128 @@ impl ControlPlane {
         if !self.subscribes_agent_sessions() {
             return Ok(());
         }
-        let epoch = self.connection_epoch;
         for resource in self.agent_catalog.clone() {
             let admitted = resource
                 .parent
                 .as_ref()
                 .is_some_and(|parent| self.kernel_knows(parent));
-            let closed = self
-                .engine
-                .as_ref()
-                .is_some_and(|engine| engine.is_closed(&resource.id));
-            if !admitted || closed {
-                continue;
+            if admitted {
+                self.follow_agent_session(resource)?;
             }
-            let info = session_info(&resource);
-            let subscription = self
-                .agent_subscriptions
-                .entry(resource.id.clone())
-                .or_insert_with(|| AgentSubscription {
-                    info: AgentSessionInfo::default(),
-                    connection: 0,
-                });
-            subscription.info = info.clone();
-            if subscription.connection == epoch {
-                continue;
-            }
-            subscription.connection = epoch;
-            self.apply_engine(EngineEvent::AgentSessionDeclared {
-                terminal_id: resource.id.clone(),
-                parent: info.parent,
-                provider: info.provider,
-                native_id: info.native_id,
-                state: resource.agent.as_ref().map(|facet| facet.state.clone()),
-            })?;
-            self.agent_streams.insert(resource.id.clone());
-            let request_id = self.next_request_id();
-            self.pending
-                .insert(request_id, Pending::AgentSubscription(resource.id.clone()));
-            self.queue_frame(&FrameKind::Command {
-                request_id,
-                command: Command::AttachResource {
-                    terminal_id: resource.id,
-                    role_policy: self.options.attach_role,
-                },
-            });
         }
         Ok(())
+    }
+
+    /// Keep one admitted `AgentSession` subscribed and declared on this
+    /// connection.
+    fn follow_agent_session(&mut self, resource: ResourceInfo) -> Result<(), ControlError> {
+        let epoch = self.connection_epoch;
+        let subscribed = self
+            .agent_subscriptions
+            .get(&resource.id)
+            .is_some_and(|subscription| subscription.connection == epoch);
+        // A replacement ATTACH forgets the kernel declarations, not the
+        // per-resource stream: declare again without re-subscribing.
+        if subscribed && self.agent_streams.contains(&resource.id) {
+            if let Some(subscription) = self.agent_subscriptions.get_mut(&resource.id) {
+                subscription.info = session_info(&resource);
+            }
+            return Ok(());
+        }
+        // One engine query, only for a session not yet followed.
+        if !subscribed
+            && self
+                .engine
+                .as_ref()
+                .is_some_and(|engine| engine.is_closed(&resource.id))
+        {
+            return Ok(());
+        }
+        let info = session_info(&resource);
+        self.apply_engine(EngineEvent::AgentSessionDeclared {
+            terminal_id: resource.id.clone(),
+            parent: info.parent.clone(),
+            provider: info.provider.clone(),
+            native_id: info.native_id.clone(),
+            state: resource.agent.as_ref().map(|facet| facet.state.clone()),
+        })?;
+        self.agent_streams.insert(resource.id.clone());
+        self.agent_subscriptions.insert(
+            resource.id.clone(),
+            AgentSubscription {
+                info,
+                connection: epoch,
+            },
+        );
+        if subscribed {
+            return Ok(());
+        }
+        self.retired_agents.remove(&resource.id);
+        let request_id = self.next_request_id();
+        self.pending
+            .insert(request_id, Pending::AgentSubscription(resource.id.clone()));
+        self.queue_frame(&FrameKind::Command {
+            request_id,
+            command: Command::AttachResource {
+                terminal_id: resource.id,
+                role_policy: self.options.attach_role,
+            },
+        });
+        Ok(())
+    }
+
+    /// End one subscription: it is closed to the consumer exactly once.
+    fn end_agent_subscription(&mut self, terminal_id: &ResourceId) -> bool {
+        let Some(subscription) = self.agent_subscriptions.remove(terminal_id) else {
+            return false;
+        };
+        self.agent_streams.remove(terminal_id);
+        self.retired_agents.insert(terminal_id.clone());
+        self.push_event(Event::AgentSessionClosed {
+            terminal_id: terminal_id.clone(),
+            session: subscription.info,
+        });
+        true
+    }
+
+    /// The pane `parent` is no longer streamed: release its agent sessions
+    /// and end them for the consumer, so every followed session still runs
+    /// in a pane this connection streams.
+    pub(super) fn release_agents_of(&mut self, parent: &ResourceId) {
+        let epoch = self.connection_epoch;
+        let children: Vec<(ResourceId, bool)> = self
+            .agent_subscriptions
+            .iter()
+            .filter(|(_, subscription)| subscription.info.parent.as_ref() == Some(parent))
+            .map(|(id, subscription)| (id.clone(), subscription.connection == epoch))
+            .collect();
+        for (terminal_id, streamed) in children {
+            if streamed {
+                let request_id = self.next_request_id();
+                self.pending.insert(request_id, Pending::AgentRelease);
+                self.queue_frame(&FrameKind::Command {
+                    request_id,
+                    command: Command::DetachResource {
+                        terminal_id: terminal_id.clone(),
+                    },
+                });
+            }
+            if let Some(engine) = &self.engine {
+                let _ = engine.detach(terminal_id.clone());
+            }
+            self.end_agent_subscription(&terminal_id);
+        }
+    }
+
+    /// A new server incarnation: every followed session is gone, and its
+    /// ids may now name anything.
+    pub(super) fn end_agent_incarnation(&mut self) {
+        let ended: Vec<ResourceId> = self.agent_subscriptions.keys().cloned().collect();
+        for terminal_id in ended {
+            self.end_agent_subscription(&terminal_id);
+        }
+        self.agent_catalog.clear();
+        self.retired_agents.clear();
     }
 
     /// A refused subscription releases the stream; the next topology read

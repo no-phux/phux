@@ -54,6 +54,9 @@ impl ControlPlane {
                 engine.reset_connection();
             }
             self.damaged.clear();
+            // The new incarnation reuses resource ids, a Terminal's as
+            // readily as an agent session's.
+            self.end_agent_incarnation();
         }
         self.server = Some(ServerInfo {
             id: server_id.to_vec(),
@@ -510,6 +513,7 @@ impl ControlPlane {
                     if let Some(engine) = &self.engine {
                         let _ = engine.detach(terminal_id.clone());
                     }
+                    self.release_agents_of(&terminal_id);
                 }
                 self.push_event(Event::TerminalDetached {
                     request_id,
@@ -533,6 +537,7 @@ impl ControlPlane {
             Pending::AgentSubscription(terminal_id) => {
                 self.agent_subscription_answered(&terminal_id, error.is_some());
             }
+            Pending::AgentRelease => {}
             Pending::Extension => {
                 self.push_event(Event::CommandResult { request_id, result });
             }

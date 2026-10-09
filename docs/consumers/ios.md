@@ -39,7 +39,8 @@ the connection streams, and delivers its records as
 `retained` is the session's whole retained stream, delivered once per
 subscription and again after a reconnect or a resync: replace every record
 held for the session. `live` appends one output frame. `closed` carries no
-records and ends the session. The parent and provider fields repeat on every
+records and ends the session: it closed, its pane was detached, or the
+server restarted (after which its id may name a new pane). The parent and provider fields repeat on every
 event, so mapping a transcript to its pane needs no join. Transcript entries
 are `provider_raw` records in the `phux.transcript/v1` convention
 (ADR-0156). The case is additive: generated bindings ship with the native

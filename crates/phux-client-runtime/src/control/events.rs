@@ -301,8 +301,10 @@ pub enum Event {
     },
     /// An `AgentSession` stream the runtime subscribed
     /// (`ControlOptions::subscribe_agent_sessions`) ended: the server
-    /// closed the resource, or a topology read no longer lists it. Exactly
-    /// once per subscription; no records follow.
+    /// closed the resource, a topology read no longer lists it, its pane
+    /// was detached, or the server restarted as a new incarnation. Exactly
+    /// once per subscription; no records follow, and a later server close
+    /// of the same id never surfaces as [`Event::TerminalClosed`].
     AgentSessionClosed {
         /// The `AgentSession` resource.
         terminal_id: ResourceId,

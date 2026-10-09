@@ -599,8 +599,9 @@ pub enum WireEvent {
     /// `Retained` is the session's whole retained stream: replace every
     /// record held for it. It arrives once per subscription, again after a
     /// reconnect or a resync. `Live` appends one live output frame.
-    /// `Closed` has no records: the session ended, nothing follows, and
-    /// its records may be dropped. `parent_terminal_id`, `provider` and
+    /// `Closed` has no records: the session ended, its pane was detached,
+    /// or the server restarted; nothing follows, and its records may be
+    /// dropped. The id may name a fresh pane or session after a restart. `parent_terminal_id`, `provider` and
     /// `native_id` repeat the server's catalog on every event, so a
     /// consumer needs no topology join.
     AgentRecords {

@@ -85,16 +85,9 @@ fn agent_subscription(frames: &[FrameKind]) -> u32 {
     request_id
 }
 
-/// A `RemoteClient` over a sans-IO runtime client configured as `connect`
-/// configures it, attached to `snapshot` with the terminal bootstrapped.
-/// Returns the frames the attach queued.
-fn attached(snapshot: SessionSnapshot) -> (Arc<RemoteClient>, Vec<FrameKind>) {
-    let client = Runtime::embedded(ControlOptions {
-        attach: Some(AttachTarget::ByName("working".into())),
-        viewport: (80, 24),
-        subscribe_agent_sessions: true,
-        ..ControlOptions::default()
-    });
+/// Open a connection to the server incarnation `server_id` and return the
+/// attach id its `ATTACH` carried.
+fn handshake(client: &Client, server_id: u8) -> u32 {
     client.with_control(ControlPlane::connection_opened);
     let _ = client.take_outbound();
     client
@@ -105,18 +98,28 @@ fn attached(snapshot: SessionSnapshot) -> (Arc<RemoteClient>, Vec<FrameKind>) {
             server_caps: ServerCapabilities::new()
                 .with_layers(LayerSet::with(&[Layer::L3]))
                 .with_features(ServerFeatureSet::new()),
-            server_id: vec![0xAB; 16],
+            server_id: vec![server_id; 16],
             selected_profile: BootstrapProfile::SynthesizedVtRaw,
             bootstrap_limits: BootstrapLimits::default(),
         })
         .expect("HELLO_OK");
-    let attach_id = outgoing(&client)
+    outgoing(client)
         .into_iter()
         .find_map(|frame| match frame {
             FrameKind::Attach { attach_id, .. } => Some(attach_id),
             _ => None,
         })
-        .expect("ATTACH queued");
+        .expect("ATTACH queued")
+}
+
+/// Answer `attach_id` with `snapshot`, bootstrap `panes`, and release the
+/// barrier. Returns the frames the `ATTACHED` queued.
+fn attach_to(
+    client: &Client,
+    attach_id: u32,
+    snapshot: SessionSnapshot,
+    panes: &[ResourceId],
+) -> Vec<FrameKind> {
     client
         .feed(FrameKind::Attached {
             attach_id,
@@ -124,34 +127,82 @@ fn attached(snapshot: SessionSnapshot) -> (Arc<RemoteClient>, Vec<FrameKind>) {
             initial_client_id: ClientId::new(1),
         })
         .expect("ATTACHED");
-    let queued = outgoing(&client);
+    let queued = outgoing(client);
     let stream_id = StreamId::new(1).expect("nonzero");
     let bootstrap_id = BootstrapId::new(1).expect("nonzero");
-    for frame in [
-        FrameKind::BootstrapBegin {
-            terminal_id: terminal(),
-            stream_id,
-            bootstrap_id,
-            profile: BootstrapStreamProfile::SynthesizedVtRaw,
-            cols: 80,
-            rows: 24,
-            base_seq: 0,
-        },
-        FrameKind::BootstrapReady {
-            terminal_id: terminal(),
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        },
-        FrameKind::AttachReady { attach_id },
-    ] {
-        client.feed(frame).expect("terminal bootstrap");
+    for pane in panes {
+        for frame in [
+            FrameKind::BootstrapBegin {
+                terminal_id: pane.clone(),
+                stream_id,
+                bootstrap_id,
+                profile: BootstrapStreamProfile::SynthesizedVtRaw,
+                cols: 80,
+                rows: 24,
+                base_seq: 0,
+            },
+            FrameKind::BootstrapReady {
+                terminal_id: pane.clone(),
+                stream_id,
+                bootstrap_id,
+                history_cursor: None,
+            },
+        ] {
+            client.feed(frame).expect("terminal bootstrap");
+        }
     }
+    client
+        .feed(FrameKind::AttachReady { attach_id })
+        .expect("ATTACH_READY");
     let _ = client.take_outbound();
+    queued
+}
+
+/// A `RemoteClient` over a sans-IO runtime client configured as `connect`
+/// configures it, attached to `snapshot` with the terminal bootstrapped.
+/// Returns the frames the attach queued.
+fn attached(snapshot: SessionSnapshot) -> (Arc<RemoteClient>, Vec<FrameKind>) {
+    let client = Runtime::embedded(ControlOptions {
+        attach: Some(AttachTarget::ByName("working".into())),
+        viewport: (80, 24),
+        subscribe_agent_sessions: true,
+        ..ControlOptions::default()
+    });
+    let attach_id = handshake(&client, 0xAB);
+    let queued = attach_to(&client, attach_id, snapshot, &[terminal()]);
     let remote = RemoteClient::new("unused".into(), 80, 24, None, None);
     *remote.client.lock().unwrap() = Some(client);
     let _ = remote.take_events();
     (remote, queued)
+}
+
+/// The session with both `TERMINAL` and `AGENT` as panes: what a restarted
+/// server, reusing the agent's id for a fresh terminal, lists.
+fn agent_id_as_pane() -> SessionSnapshot {
+    let mut snapshot = snapshot(false);
+    snapshot
+        .resources
+        .push(ResourceInfo::new(agent(), WindowId::new(10), 80, 24));
+    snapshot
+}
+
+fn closed(terminal_id: ResourceId) -> FrameKind {
+    FrameKind::ResourceClosed {
+        terminal_id,
+        exit_status: None,
+        reason: CloseReason::Exited,
+        signal: None,
+    }
+}
+
+fn pane_closes(events: &[WireEvent]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            WireEvent::PaneClosed { terminal_id, .. } => Some(terminal_id.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Open generation (4, 5) on the agent stream: two retained records, then
@@ -431,4 +482,169 @@ fn a_session_removed_while_refused_still_closes_once() {
     );
     assert!(refresh(&remote, snapshot(false)).is_empty());
     assert!(agent_events(remote.take_events()).is_empty());
+}
+
+#[test]
+fn a_server_restart_ends_agent_sessions_and_frees_their_ids_for_panes() {
+    let (remote, queued) = attached(snapshot(true));
+    open_agent_stream(&remote, agent_subscription(&queued));
+    let _ = remote.take_events();
+
+    // The restarted server reuses the agent's id for a fresh terminal.
+    let client = remote.runtime_client().expect("connected");
+    let attach_id = handshake(&client, 0xCD);
+    let queued = attach_to(
+        &client,
+        attach_id,
+        agent_id_as_pane(),
+        &[terminal(), agent()],
+    );
+    assert!(
+        !queued.iter().any(|frame| matches!(
+            frame,
+            FrameKind::Command {
+                command: Command::AttachResource { .. },
+                ..
+            }
+        )),
+        "a pane is never subscribed as an agent session"
+    );
+    let events = agent_events(remote.take_events());
+    assert!(
+        matches!(
+            events.as_slice(),
+            [WireEvent::AgentRecords {
+                agent_session_id,
+                kind: AgentRecordsKind::Closed,
+                ..
+            }] if agent_session_id == "local:31"
+        ),
+        "the old incarnation's session ends once: {events:?}"
+    );
+    assert!(
+        client.acquire(&agent()).is_some(),
+        "the reused id is a live pane"
+    );
+
+    client.feed(closed(agent())).expect("pane close");
+    let events = remote.take_events();
+    assert_eq!(pane_closes(&events), vec!["local:31".to_owned()]);
+    assert!(agent_events(events).is_empty());
+}
+
+#[test]
+fn a_server_restart_lets_a_former_pane_id_name_an_agent_session() {
+    let client = Runtime::embedded(ControlOptions {
+        attach: Some(AttachTarget::ByName("working".into())),
+        viewport: (80, 24),
+        subscribe_agent_sessions: true,
+        ..ControlOptions::default()
+    });
+    let attach_id = handshake(&client, 0xAB);
+    attach_to(
+        &client,
+        attach_id,
+        agent_id_as_pane(),
+        &[terminal(), agent()],
+    );
+    let remote = RemoteClient::new("unused".into(), 80, 24, None, None);
+    *remote.client.lock().unwrap() = Some(client);
+    let _ = remote.take_events();
+    let client = remote.runtime_client().expect("connected");
+    client.feed(closed(agent())).expect("pane close");
+    assert_eq!(
+        pane_closes(&remote.take_events()),
+        vec!["local:31".to_owned()]
+    );
+
+    let attach_id = handshake(&client, 0xCD);
+    let queued = attach_to(&client, attach_id, snapshot(true), &[terminal()]);
+    open_agent_stream(&remote, agent_subscription(&queued));
+    let events = agent_events(remote.take_events());
+    assert_eq!(events.len(), 2, "{events:?}");
+
+    client.feed(closed(agent())).expect("agent close");
+    let events = remote.take_events();
+    assert!(pane_closes(&events).is_empty(), "{events:?}");
+    assert!(matches!(
+        agent_events(events).as_slice(),
+        [WireEvent::AgentRecords {
+            kind: AgentRecordsKind::Closed,
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn detaching_a_pane_releases_and_ends_its_agent_sessions() {
+    // The agent runs in a pane of another session, streamed per terminal.
+    let other = ResourceId::local(8);
+    let mut catalog = snapshot(false);
+    let beta = SessionId::new(2);
+    let beta_window = WindowId::new(20);
+    catalog.sessions.push(SessionInfo::new(beta, "beta"));
+    catalog
+        .windows
+        .push(WindowInfo::new(beta_window, beta, "beta"));
+    catalog.resources.extend([
+        ResourceInfo::new(other.clone(), beta_window, 80, 24),
+        ResourceInfo::new(agent(), WindowId::new(0), 0, 0)
+            .with_kind(ResourceKind::AgentSession)
+            .with_parent(Some(other))
+            .with_agent(Some(AgentFacet::new("claude", "working"))),
+    ]);
+    let (remote, queued) = attached(catalog);
+    assert!(
+        !queued.iter().any(|frame| matches!(
+            frame,
+            FrameKind::Command {
+                command: Command::AttachResource { .. },
+                ..
+            }
+        )),
+        "the agent's pane is not streamed yet"
+    );
+
+    let client = remote.runtime_client().expect("connected");
+    let pane_request = remote.attach_terminal("local:8".into());
+    let _ = client.take_outbound();
+    client
+        .feed(FrameKind::CommandResult {
+            request_id: pane_request,
+            result: CommandResult::Ok,
+        })
+        .expect("pane attached");
+    open_agent_stream(&remote, agent_subscription(&outgoing(&client)));
+    let _ = remote.take_events();
+
+    let detach = remote.detach_terminal("local:8".into());
+    let _ = client.take_outbound();
+    client
+        .feed(FrameKind::CommandResult {
+            request_id: detach,
+            result: CommandResult::Ok,
+        })
+        .expect("pane detached");
+    assert!(
+        outgoing(&client).iter().any(|frame| matches!(
+            frame,
+            FrameKind::Command {
+                command: Command::DetachResource { terminal_id },
+                ..
+            } if *terminal_id == agent()
+        )),
+        "the agent stream is released with its pane"
+    );
+    let events = agent_events(remote.take_events());
+    assert!(
+        matches!(
+            events.as_slice(),
+            [WireEvent::AgentRecords {
+                kind: AgentRecordsKind::Closed,
+                parent_terminal_id: Some(parent),
+                ..
+            }] if parent == "local:8"
+        ),
+        "{events:?}"
+    );
 }

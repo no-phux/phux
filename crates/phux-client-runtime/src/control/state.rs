@@ -54,7 +54,8 @@ impl ControlPlane {
                 Pending::RefreshTopology
                 | Pending::PutFile(_)
                 | Pending::Transcribe(_)
-                | Pending::AgentSubscription(_) => {}
+                | Pending::AgentSubscription(_)
+                | Pending::AgentRelease => {}
                 Pending::Extension => {
                     self.push_event(Event::CommandResult {
                         request_id,

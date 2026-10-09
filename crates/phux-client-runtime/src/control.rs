@@ -362,6 +362,9 @@ enum Pending {
     Transcribe(u64),
     /// The runtime's own subscription to an `AgentSession` stream.
     AgentSubscription(ResourceId),
+    /// The runtime's release of an `AgentSession` stream whose pane it
+    /// stopped streaming; the answer changes nothing.
+    AgentRelease,
 }
 
 /// The sans-IO control plane. See the module docs.
@@ -424,6 +427,10 @@ pub struct ControlPlane {
     /// The `AgentSession` streams `subscribe_agent_sessions` follows, kept
     /// across reconnects until the server proves them closed.
     agent_subscriptions: HashMap<ResourceId, agents::AgentSubscription>,
+    /// `AgentSession` streams that ended on this server incarnation: a
+    /// later close the server sends for one is not a pane closing. Ids are
+    /// unique within an incarnation, so a restart clears it.
+    retired_agents: HashSet<ResourceId>,
     /// This connection's identity on the server, from `ATTACHED`; what an
     /// input lease's `holder` is compared against.
     own_client_id: Option<ClientId>,
@@ -492,6 +499,7 @@ impl ControlPlane {
             agent_streams: HashSet::new(),
             agent_catalog: Vec::new(),
             agent_subscriptions: HashMap::new(),
+            retired_agents: HashSet::new(),
             own_client_id: None,
             pending: HashMap::new(),
             request_seq: 1,
