@@ -31,6 +31,41 @@ impl From<status::Connection> for WireStatus {
     }
 }
 
+/// Client-side terminal colours (ADR-0157): exactly sixteen `ansi16`
+/// entries (palette 0..=15) plus the default foreground, background, and
+/// cursor.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct WireTerminalTheme {
+    pub ansi16: Vec<crate::uniffi::engine::Color>,
+    pub foreground: crate::uniffi::engine::Color,
+    pub background: crate::uniffi::engine::Color,
+    pub cursor: crate::uniffi::engine::Color,
+}
+
+impl TryFrom<WireTerminalTheme> for phux_client_runtime::engine::TerminalTheme {
+    type Error = WireError;
+
+    fn try_from(theme: WireTerminalTheme) -> Result<Self, WireError> {
+        let rgb = |c: crate::uniffi::engine::Color| [c.r, c.g, c.b];
+        let ansi16: [crate::uniffi::engine::Color; 16] =
+            theme
+                .ansi16
+                .try_into()
+                .map_err(|entries: Vec<_>| WireError::Runtime {
+                    reason: format!(
+                        "a terminal theme needs 16 ansi16 entries, got {}",
+                        entries.len()
+                    ),
+                })?;
+        Ok(Self {
+            ansi16: ansi16.map(rgb),
+            foreground: rgb(theme.foreground),
+            background: rgb(theme.background),
+            cursor: rgb(theme.cursor),
+        })
+    }
+}
+
 #[derive(uniffi::Error, Debug, thiserror::Error)]
 pub enum WireError {
     #[error("already connected")]
@@ -918,6 +953,26 @@ impl MouseButton {
 
 #[cfg(test)]
 mod tests {
+    use super::WireTerminalTheme;
+    use crate::uniffi::engine::Color;
+
+    #[test]
+    fn a_wire_theme_needs_exactly_sixteen_ansi_entries() {
+        let grey = |v| Color { r: v, g: v, b: v };
+        let theme = |n: u8| WireTerminalTheme {
+            ansi16: (0..n).map(grey).collect(),
+            foreground: grey(250),
+            background: grey(10),
+            cursor: grey(200),
+        };
+        let ok = phux_client_runtime::engine::TerminalTheme::try_from(theme(16)).unwrap();
+        assert_eq!(ok.ansi16[15], [15; 3]);
+        assert_eq!(ok.background, [10; 3]);
+        for n in [0, 15, 17] {
+            assert!(phux_client_runtime::engine::TerminalTheme::try_from(theme(n)).is_err());
+        }
+    }
+
     use super::*;
     use phux_protocol::ResourceId;
     use phux_protocol::wire::frame::CloseReason;

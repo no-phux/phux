@@ -439,6 +439,25 @@ pub enum EngineError {
 #[cfg(feature = "engine")]
 pub use phux_client_core::engine::BoundedSelectionText;
 
+/// Client-side terminal colours (ADR-0157): palette entries 0..=15 plus
+/// the default foreground, background, and cursor, each `[r, g, b]`.
+///
+/// Installed as engine *defaults* on every replica, so an application's OSC
+/// 4 / 10 / 11 / 12 still override them and OSC 104 / 110 / 111 / 112 revert
+/// to the theme. The mapping from a theme's semantic colours to these slots
+/// is fixed by ADR-0157 decision 4 (`phux_config::theme::ANSI16_KEYS`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerminalTheme {
+    /// Palette entries 0..=15.
+    pub ansi16: [[u8; 3]; 16],
+    /// Default foreground.
+    pub foreground: [u8; 3],
+    /// Default background.
+    pub background: [u8; 3],
+    /// Default cursor colour.
+    pub cursor: [u8; 3],
+}
+
 /// What the owner thread needs to build its kernel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EngineConfig {
@@ -470,6 +489,7 @@ struct QueuedCommand {
 
 enum Command {
     Stop(Sender<()>),
+    SetTheme(Option<TerminalTheme>, Sender<()>),
     ApplyBatch(Vec<EngineEvent>, Sender<Vec<EngineOutcome>>),
     Lifecycle(Lifecycle),
     Query(Query),
@@ -647,6 +667,12 @@ impl EngineHandle {
             return Ok(Vec::new());
         }
         self.request(|reply| Command::ApplyBatch(events, reply))
+    }
+
+    /// Install (or clear) the terminal theme on every live replica and every
+    /// replica bootstrapped from now on, republishing what is visible.
+    pub(crate) fn set_terminal_theme(&self, theme: Option<TerminalTheme>) {
+        let _ = self.request(|reply| Command::SetTheme(theme, reply));
     }
 
     /// Forget a terminal and its projection after the owner thread applies

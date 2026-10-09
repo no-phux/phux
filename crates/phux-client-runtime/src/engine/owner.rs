@@ -129,6 +129,10 @@ impl Owner {
                 Command::ApplyBatch(events, reply) => {
                     let _ = reply.send(self.apply_batch(events));
                 }
+                Command::SetTheme(theme, reply) => {
+                    self.set_theme(theme);
+                    let _ = reply.send(());
+                }
                 Command::Lifecycle(lifecycle) => self.lifecycle(lifecycle),
                 Command::Query(query) => self.query(query),
                 #[cfg(feature = "engine")]
@@ -447,6 +451,42 @@ impl Owner {
             effects,
             error: result.as_ref().err().map(EngineApplyError::from_kernel),
         }
+    }
+
+    /// Theme every published replica and every later bootstrap, then
+    /// republish the visible terminals. Without the libghostty engine there
+    /// are no colours to set.
+    #[cfg_attr(
+        not(feature = "engine"),
+        allow(
+            clippy::unused_self,
+            clippy::needless_pass_by_ref_mut,
+            clippy::missing_const_for_fn
+        )
+    )]
+    fn set_theme(&mut self, theme: Option<super::TerminalTheme>) {
+        #[cfg(feature = "engine")]
+        {
+            let rgb = |[r, g, b]: [u8; 3]| libghostty_vt::style::RgbColor { r, g, b };
+            let theme = theme.map(|theme| phux_client_core::engine::ghostty::TerminalTheme {
+                ansi16: theme.ansi16.map(rgb),
+                foreground: rgb(theme.foreground),
+                background: rgb(theme.background),
+                cursor: rgb(theme.cursor),
+            });
+            self.kernel.adapter_mut().set_theme(theme);
+            let visible: Vec<_> = self.visible.iter().cloned().collect();
+            for id in &visible {
+                if let Some(replica) = self.kernel.published_engine_mut(id)
+                    && let Err(error) = replica.apply_theme(theme.as_ref())
+                {
+                    tracing::warn!(terminal = %id, %error, "terminal theme not applied");
+                }
+            }
+            self.publish_damaged(visible);
+        }
+        #[cfg(not(feature = "engine"))]
+        let _ = theme;
     }
 
     #[cfg(feature = "engine")]

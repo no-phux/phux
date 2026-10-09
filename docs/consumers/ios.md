@@ -21,6 +21,17 @@ and `bbccc3ad88739d6c37aec985d2407dc41b92631a` for attach roles
 `set_attach_viewer`).
 Neither surface has a mobile consumer yet.
 
+## Terminal theme
+
+`RemoteClient.setTerminalTheme(theme:)` installs a `WireTerminalTheme`
+(exactly sixteen `ansi16` colours plus `foreground`, `background`, and
+`cursor`) as the defaults every grid is resolved with (ADR-0157), now and
+on every later `connect`; `nil` clears it. A program's OSC colour changes
+still win over it. The mapping from a `colors.toml` is the one
+[Cockpit's guide](./cockpit.md#terminal-theme) lists, and `phux theme
+show NAME --json` prints it as `ansi16`. Requires a `PHUX_REV` that
+includes this surface.
+
 ## Agent session records
 
 The `uniffi` lane streams every agent session (ADR-0103) running in a pane

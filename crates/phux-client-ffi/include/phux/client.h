@@ -787,6 +787,16 @@ typedef struct PhuxGridRgb {
     uint8_t r, g, b;
 } PhuxGridRgb;
 
+/* Client-side terminal colours (ADR-0157): palette 0..15 plus the default
+ * foreground, background, and cursor. Initialize size = sizeof(struct),
+ * version = PHUX_CLIENT_ABI_VERSION. */
+typedef struct PhuxTerminalTheme {
+    size_t size;
+    uint32_t version;
+    PhuxGridRgb ansi16[16];
+    PhuxGridRgb foreground, background, cursor;
+} PhuxTerminalTheme;
+
 typedef struct PhuxGridCellMetadata {
     uint8_t foreground_kind;
     uint8_t foreground_palette_index; /* meaningful only for PALETTE */
@@ -1106,6 +1116,13 @@ PhuxClientResult phux_client_terminal_grid(PhuxClient *client, const PhuxResourc
  * default colors use the renderer's configured fallback (also swapped under
  * reverse_colors); missing cursor color uses its configured cursor fallback. */
 PhuxClientResult phux_client_terminal_grid_metadata(const PhuxClient *client, const PhuxResourceId *terminal_id, PhuxTerminalGridMetadata *out_metadata);
+/* Install (non-NULL) or clear (NULL) the client-side terminal theme
+ * (ADR-0157). Additive to ABI version 2. The colours become every replica's
+ * defaults now and on later connections; an application's OSC 4/10/11/12
+ * still override them and OSC 104/110/111/112 revert to the theme. Cleared,
+ * grid metadata reports has_foreground/has_background false again. Visible
+ * terminals republish. A wrong size or version is PHUX_CLIENT_INVALID_ARGUMENT. */
+PhuxClientResult phux_client_set_terminal_theme(PhuxClient *client, const PhuxTerminalTheme *theme);
 /**
  * Reports whether the published Ghostty terminal's effective mouse-tracking
  * state is active (X10, normal, button, or any-event). Returns

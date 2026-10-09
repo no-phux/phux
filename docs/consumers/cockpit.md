@@ -127,6 +127,21 @@ batches of at most 256 frames or 1 MiB, publishing each grid once per batch.
 embedded lane that Cockpit's tests stage exact frames through; nothing in
 production drives it.
 
+## Terminal theme
+
+`phux_client_set_terminal_theme` installs a theme's palette 0..15 and its
+default foreground, background, and cursor (ADR-0157) as the defaults of
+every remote replica, now and after every reconnect; NULL clears them.
+They are defaults, not overrides: a program's OSC 4/10/11/12 still wins,
+and OSC 104/110/111/112 revert to the theme. Visible terminals republish,
+and `PhuxTerminalGridMetadata.palette` carries the result. Fill the struct
+from a `colors.toml` with the fixed mapping: 0 `background`, 1..6 `red`
+`green` `yellow` `blue` `magenta` `cyan`, 7 `foreground`, 8 `muted`,
+9..14 the `bright_*` variants, 15 `bright_foreground`, cursor
+`bright_foreground` (`phux theme show NAME --json` prints exactly this as
+`ansi16`). Cleared, `has_foreground` / `has_background` report false
+again and Cockpit's own fallback applies.
+
 ## Clipboard (OSC 52)
 
 OSC 52 (the terminal-to-host clipboard-write escape) is unsupported on the

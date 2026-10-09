@@ -145,6 +145,9 @@ impl ControlPlane {
             Arc::clone(&self.publication),
         )
         .map_err(|error| ControlError::Protocol(error.to_string()))?;
+        if self.terminal_theme.is_some() {
+            engine.set_terminal_theme(self.terminal_theme);
+        }
         if let Some(previous) = self.engine.replace(engine) {
             previous.stop();
         }
