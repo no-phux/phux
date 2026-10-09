@@ -25,6 +25,26 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   or server restart without restarting the app; recover the selected session
   by its confirmed name when a replacement server reuses numeric IDs.
 
+## [0.35.0](https://github.com/no-phux/phux/compare/cockpit-v0.34.0...cockpit-v0.35.0) (2026-10-09)
+
+
+### Features
+
+* **clients:** session menus, directory terminals, and a folder on create ([#1115](https://github.com/no-phux/phux/issues/1115)) ([c6b2ff2](https://github.com/no-phux/phux/commit/c6b2ff20be7efb25aa9b28dd93d8434160f0d4cc))
+* **clients:** share session host, directory, and project grouping ([#1108](https://github.com/no-phux/phux/issues/1108)) ([0f0e081](https://github.com/no-phux/phux/commit/0f0e0813e39b17541236ad9f988352e522b0ac7d))
+* **cockpit:** park clipboard and pty results during replay ([#1133](https://github.com/no-phux/phux/issues/1133)) ([88f45bf](https://github.com/no-phux/phux/commit/88f45bf626126b4c5e246c58a9939bb4627bed74))
+* **cockpit:** reorder tabs by drag and close other local tabs ([#1130](https://github.com/no-phux/phux/issues/1130)) ([dd57965](https://github.com/no-phux/phux/commit/dd57965ec9f06a059d82fd20e060c1fdcb42814f))
+* **cockpit:** retain exact-source pane and tab close outcomes ([#1128](https://github.com/no-phux/phux/issues/1128)) ([53fb814](https://github.com/no-phux/phux/commit/53fb8140c65ebc7127e752a7c6800396ae45fd47))
+* **cockpit:** take a folder on New Session and remember sessions ([#1117](https://github.com/no-phux/phux/issues/1117)) ([e72b0c9](https://github.com/no-phux/phux/commit/e72b0c922f407161fed0a8bcf1f8868ada1e6f4c))
+
+
+### Bug Fixes
+
+* **clients:** name the captured token file when a loopback dial fails ([#1121](https://github.com/no-phux/phux/issues/1121)) ([63bcffe](https://github.com/no-phux/phux/commit/63bcffee155e96c14601a2f4adc03875c161200e))
+* **cockpit:** open the navigator on the current row ([#1135](https://github.com/no-phux/phux/issues/1135)) ([9be1fd3](https://github.com/no-phux/phux/commit/9be1fd3e6fb90ecd6be128385ed65483087f2851))
+* **cockpit:** run model tests on the pinned Node 24 ([#1138](https://github.com/no-phux/phux/issues/1138)) ([0c0a256](https://github.com/no-phux/phux/commit/0c0a25683c8808c8499434970d75d3b542fbe8c9))
+* **cockpit:** show navigator status in the results viewport ([28e5a55](https://github.com/no-phux/phux/commit/28e5a559fdf2b5774d3c1da23d7a1663441e9002))
+
 ## [0.34.0](https://github.com/no-phux/phux/compare/cockpit-v0.33.1...cockpit-v0.34.0) (2026-10-08)
 
 
