@@ -34,7 +34,9 @@ const FILE_LINES: &[(&str, usize)] = &[
     ("attach/driver/main_loop.rs", 200),
     // SessionLoop used to be one 3653-line impl. It is split by wake-up
     // source, and each file is pinned at the size that split landed.
-    ("attach/driver/loop_state/frames.rs", 758),
+    // +2 for ADR-0158: the clipboard-write policy lives in its own
+    // `frames/clipboard.rs`; frames.rs only declares it and calls it once.
+    ("attach/driver/loop_state/frames.rs", 760),
     ("attach/driver/loop_state/mod.rs", 710),
     ("attach/driver/loop_state/paint.rs", 665),
     ("attach/driver/loop_state/inventory.rs", 419),

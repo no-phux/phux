@@ -185,7 +185,7 @@ pub(in crate::attach) fn handle_server_frame<W: crate::attach::RenderSink>(
     let apply_span = is_output.then(|| tracing::debug_span!("vt_apply"));
     let apply_guard = apply_span.as_ref().map(tracing::Span::enter);
     let apply_timer = is_output.then(|| phux_client::perf::VT_APPLY.timer());
-    let kernel_route = route_engine_frame(&frame, engine_kernel, kernel_effects);
+    let mut kernel_route = route_engine_frame(&frame, engine_kernel, kernel_effects);
     drop(apply_timer);
     drop(apply_guard);
     if let Some(verdict) = kernel_route_verdict(&kernel_route, &frame) {
@@ -227,7 +227,9 @@ pub(in crate::attach) fn handle_server_frame<W: crate::attach::RenderSink>(
         defer_paint,
         frame_span: &frame_span,
     };
+    let clipboard_writes = std::mem::take(&mut kernel_route.clipboard_writes);
     let mut outcome = dispatch_frame(&mut ctx, frame, kernel_route)?;
+    outcome.clipboard_writes = clipboard_writes;
     outcome.chrome_dirty |= history_chrome_dirty;
     Ok(outcome)
 }

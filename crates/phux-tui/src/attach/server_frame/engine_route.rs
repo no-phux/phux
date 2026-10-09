@@ -42,6 +42,8 @@ pub(super) struct KernelRoute {
     /// replica published or its cache reported a healthy state. Last word
     /// per pane wins; panes absent here keep their flag.
     pub(super) history_degraded: HashMap<ResourceId, bool>,
+    /// OSC 52 writes from live output (ADR-0158), for the driver's policy.
+    pub(super) clipboard_writes: Vec<(ResourceId, phux_client_core::engine::ClipboardText)>,
 }
 impl KernelRoute {
     pub(super) fn damaged(&self, terminal_id: &ResourceId) -> bool {
@@ -573,6 +575,14 @@ fn collect_route_effects(route: &mut KernelRoute, effects: &KernelEffectBuffer) 
                 status @ phux_client_core::session::KernelStatus::ResyncRequired { .. },
             ) => {
                 tracing::warn!(?status, "session kernel status");
+            }
+            KernelEffect::Status(phux_client_core::session::KernelStatus::Engine {
+                key,
+                status: phux_client_core::engine::EngineStatus::ClipboardWrite(text),
+            }) => {
+                route
+                    .clipboard_writes
+                    .push((key.terminal_id.clone(), text.clone()));
             }
             // Title, bell, and history paging are routine (an agent's spinner
             // retitles its pane several times a second): debug, not warn.

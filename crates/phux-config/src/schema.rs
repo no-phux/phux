@@ -136,6 +136,11 @@ pub struct DefaultsCfg {
     /// (ADR-0048). `false` leaves the host's native selection untouched.
     pub mouse: bool,
 
+    /// What the client does with an OSC 52 clipboard write from the pane it
+    /// is focused on (ADR-0158).
+    #[serde(rename = "clipboard-write")]
+    pub clipboard_write: ClipboardWrite,
+
     /// How a freshly-spawned pane chooses its working directory.
     #[serde(rename = "cwd-inheritance")]
     pub cwd_inheritance: CwdInheritance,
@@ -176,6 +181,7 @@ impl Default for DefaultsCfg {
             approval_max_pending: DEFAULT_APPROVAL_MAX_PENDING,
             approval_max_pending_total: DEFAULT_APPROVAL_MAX_PENDING_TOTAL,
             mouse: true,
+            clipboard_write: ClipboardWrite::default(),
             cwd_inheritance: CwdInheritance::default(),
             spawn_on_attach: None,
             session_name_template: "${cwd-basename}".to_owned(),
@@ -284,6 +290,20 @@ impl Default for LimitsCfg {
 /// Shipped `limits.metadata-value-bytes`: 256 KiB, `docs/spec/L3.md` §2's
 /// recommended cap.
 pub const DEFAULT_METADATA_VALUE_BYTES: u32 = 256 * 1024;
+
+/// What a client does with an OSC 52 clipboard write from a pane
+/// (`defaults.clipboard-write`, ADR-0158). Ghostty's `clipboard-write`.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub enum ClipboardWrite {
+    /// Set the host clipboard (default, as Ghostty and tmux).
+    #[default]
+    Allow,
+    /// Ask before setting it.
+    Ask,
+    /// Drop the write.
+    Deny,
+}
 
 /// How a newly-spawned pane chooses its working directory
 /// (`defaults.cwd-inheritance`).

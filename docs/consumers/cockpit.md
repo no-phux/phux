@@ -144,10 +144,10 @@ again and Cockpit's own fallback applies.
 
 ## Clipboard (OSC 52)
 
-OSC 52 (the terminal-to-host clipboard-write escape) is unsupported on the
-remote attach path. Letting a remote pane write Cockpit's local clipboard
-crosses a trust boundary comparable to a remote filesystem write. No status
-effect carries it, and none is planned; changing this requires an ADR.
+OSC 52 (the terminal-to-host clipboard-write escape) is governed by
+[ADR-0158](../adr/0158-pane-clipboard-writes-are-client-policy.md): the client
+focused on the pane honours it under `defaults.clipboard-write`. Cockpit does
+not deliver it yet and drops it; the TUI does.
 
 ## Build
 

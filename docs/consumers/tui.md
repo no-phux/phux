@@ -571,6 +571,18 @@ one would press Enter), or whenever the text contains the bracketed-paste
 terminator `ESC [ 201 ~`. A modal names what would happen; Enter or `y`
 delivers the paste, Esc or `n` drops it. Other pastes go straight through.
 
+## Clipboard writes from panes
+
+A program in the focused pane can set the clipboard with OSC 52 (Vim's
+`"+y` over SSH, tmux `set-clipboard`, `pbcopy` shims), as in Ghostty
+([ADR-0158](../adr/0158-pane-clipboard-writes-are-client-policy.md)). The
+client re-emits the write to its outer terminal, so that terminal's own
+clipboard permission still applies. `defaults.clipboard-write` decides first:
+`allow` (default) sets it, `ask` shows a prompt naming the pane (Enter
+allows, Esc denies), `deny` drops it. Writes from unfocused panes, writes
+replayed on attach or reconnect, and writes over 1 MiB are dropped.
+Clipboard reads (`OSC 52 ; ?`) are never answered.
+
 ## Command palette, pickers, and settings
 
 `C-a :` (`command-palette`) and `C-a ?` (`show-help`) open the same Commands

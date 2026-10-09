@@ -253,7 +253,12 @@ pub fn copy_to_host_clipboard<W: Write>(
     if text.is_empty() {
         return Ok(());
     }
-    out.write_all(&osc52_set_clipboard(&text))?;
+    write_host_clipboard(out, &text)
+}
+
+/// Set the host clipboard to `text` with OSC 52 on the outer terminal.
+pub fn write_host_clipboard<W: Write>(out: &mut W, text: &str) -> io::Result<()> {
+    out.write_all(&osc52_set_clipboard(text))?;
     out.flush()
 }
 

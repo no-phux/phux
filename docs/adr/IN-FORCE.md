@@ -177,6 +177,7 @@ by a newer one, the newer line is the operative reading.
 - [0049](./0049-client-local-focus-and-advisory-attention.md) Focus is client-local and never in shared layout metadata; agent attention is advisory.
 - [0048](./0048-drag-to-resize-and-default-mouse-capture.md) The client captures outer-terminal mouse by default; divider drags commit through `SET_METADATA`.
 - [0045](./0045-client-side-copy-mode.md) Copy-mode is a client-local projection over the pane's own engine, never a wire feature.
+- [0158](./0158-pane-clipboard-writes-are-client-policy.md) An OSC 52 write from a pane is honoured by the client focused on that pane, from its own replica and only from live output, under a per-client `defaults.clipboard-write` policy (`allow` by default, `ask`, `deny`); clipboard reads stay unsupported.
 - [0029](./0029-one-cursor-authority-and-repaint-scheduler.md) One end-of-frame cursor emitter and one `RepaintLevel` accumulator drained per loop iteration.
 - [0026](./0026-overlays-theme-stack-single-dispatch.md) Chrome and overlays share one theme, a real stack, and a single dispatch path.
 - [0020](./0020-layered-render.md) ratatui renders chrome around holes that libghostty pane interiors fill.
@@ -207,7 +208,6 @@ by a newer one, the newer line is the operative reading.
 Drafted and under review; none of these governs anything yet.
 
 - [0157](./0157-themes-are-colors-toml-files-every-client-reads.md) A theme is an Omarchy-schema `colors.toml` in `$XDG_DATA_HOME/phux/themes/<name>`, installed by URL or by a plugin, chosen by `[theme] name`; every client maps the same keys onto its chrome and the ANSI-16 palette.
-- [0158](./0158-pane-clipboard-writes-are-client-policy.md) An OSC 52 write from a pane is honoured by the client focused on that pane, from its own replica and only from live output, under a per-client `clipboard.write` policy (`allow` by default, `ask`, `deny`); clipboard reads stay unsupported.
 - [0132](./0132-swarm-members-are-coordinator-clients.md) Swarm members are coordinator clients; TUI/Cockpit/mobile are projections; a Run may bind no Terminal.
 - [0092](./0092-durable-work-coordinator-authority.md) Durable objectives, runs, and evidence belong to a coordinator, not to any client.
 - [0087](./0087-elastic-status-bar-space.md) The `spacer` widget is paid from the status row's leftover width, split evenly.
