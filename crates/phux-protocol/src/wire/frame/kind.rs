@@ -1900,6 +1900,23 @@ impl FrameKind {
     ) -> Result<(Self, &[u8]), DecodeError> {
         Decoder::with_bootstrap_limits(input, limits).read_frame()
     }
+
+    /// Decode one frame whose payload byte fields alias `input`.
+    ///
+    /// [`Self::decode`] copies those fields because a borrowed slice cannot
+    /// keep the buffer alive. This entry point is the client read path: the
+    /// frame is already a frozen view of the socket buffer, and the payload
+    /// stays that view until the caller drops it. `limits` is the negotiated
+    /// bootstrap ceiling; `None` uses the spec maximum.
+    pub fn decode_shared(
+        input: &bytes::Bytes,
+        limits: Option<crate::caps::BootstrapLimits>,
+    ) -> Result<(Self, bytes::Bytes), DecodeError> {
+        let mut decoder = Decoder::on_shared(input, limits);
+        let (frame, tail) = decoder.read_frame()?;
+        let rest = decoder.share_exact(tail);
+        Ok((frame, rest))
+    }
 }
 
 /// Write one tagged `ResourceId` field. A local id (every id on the live

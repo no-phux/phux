@@ -68,6 +68,8 @@ pub struct Decoder<'a> {
     max_bootstrap_chunk_bytes: u32,
     /// Connection-negotiated maximum `HISTORY_PAGE.payload` bytes.
     max_history_page_bytes: u32,
+    /// When set, payload fields are views of this buffer instead of copies.
+    shared: Option<bytes::Bytes>,
 }
 
 impl<'a> Decoder<'a> {
@@ -80,7 +82,44 @@ impl<'a> Decoder<'a> {
             body_end: None,
             max_bootstrap_chunk_bytes: MAX_BOOTSTRAP_CHUNK_BYTES,
             max_history_page_bytes: MAX_HISTORY_PAGE_BYTES,
+            shared: None,
         }
+    }
+
+    /// Decode `input` in place. Payload fields alias `input`.
+    pub(crate) fn on_shared(input: &'a bytes::Bytes, limits: Option<BootstrapLimits>) -> Self {
+        let (max_bootstrap_chunk_bytes, max_history_page_bytes) = limits.map_or(
+            (MAX_BOOTSTRAP_CHUNK_BYTES, MAX_HISTORY_PAGE_BYTES),
+            |limits| (limits.max_chunk_bytes(), limits.max_history_page_bytes()),
+        );
+        Self {
+            input: input.as_ref(),
+            pos: 0,
+            body_end: None,
+            max_bootstrap_chunk_bytes,
+            max_history_page_bytes,
+            shared: Some(input.clone()),
+        }
+    }
+
+    /// A payload field as a view of [`Self::on_shared`]'s buffer, or a copy
+    /// when this decoder borrows a plain slice.
+    pub(crate) fn share_exact(&self, value: &[u8]) -> bytes::Bytes {
+        if value.is_empty() {
+            return bytes::Bytes::new();
+        }
+        let Some(parent) = &self.shared else {
+            return bytes::Bytes::copy_from_slice(value);
+        };
+        let base = parent.as_ptr() as usize;
+        let start = value.as_ptr() as usize;
+        let parent_end = base + parent.len();
+        let value_end = start.saturating_add(value.len());
+        if start >= base && value_end <= parent_end {
+            let offset = start - base;
+            return parent.slice(offset..offset + value.len());
+        }
+        bytes::Bytes::copy_from_slice(value)
     }
 
     /// Wrap `input` with the payload limits negotiated in `HELLO_OK`, checked
@@ -93,6 +132,7 @@ impl<'a> Decoder<'a> {
             body_end: None,
             max_bootstrap_chunk_bytes: limits.max_chunk_bytes(),
             max_history_page_bytes: limits.max_history_page_bytes(),
+            shared: None,
         }
     }
 
@@ -572,7 +612,7 @@ impl<'a> Decoder<'a> {
             match id {
                 f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
                 f::SEQ => seq = Some(sub!(value, Decoder::read_u64_be)),
-                f::BYTES => bytes = Some(bytes::Bytes::copy_from_slice(value)),
+                f::BYTES => bytes = Some(self.share_exact(value)),
                 f::STREAM_ID => stream_id = Some(sub!(value, decode_stream_id)),
                 f::BOOTSTRAP_ID => bootstrap_id = Some(sub!(value, decode_bootstrap_id)),
                 _ => {}

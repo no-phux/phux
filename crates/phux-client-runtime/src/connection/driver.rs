@@ -422,7 +422,7 @@ impl<'a> Pump<'a> {
                 };
                 (fed, pongs)
             } else {
-                (control.feed_bytes_batch(&frames), Vec::new())
+                (control.feed_shared_batch(&frames), Vec::new())
             };
             (fed, control.take_outbound(), pongs)
         };
