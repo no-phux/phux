@@ -156,14 +156,12 @@ test "captured token file provenance survives registry rewrite" {
     try rewrite(&registry, "ws://127.0.0.1:1");
     try self.open(.{});
     try awaitFailed(self);
-    // The runtime reports why the dial failed. The provenance that matters
-    // here is structural: the rewritten registry never displaced the
-    // captured identity, so a retry still carries the row the user chose.
-    // Asserting the captured token PATH in the message needs an enrolled
-    // routable fixture, because a loopback dial requires no bearer and so
-    // never reads the file (phux-akpf).
+    // The capture still names its token file after the registry rewrite.
+    // The connected dial reads that file before it opens a socket, including
+    // on loopback, so a missing file fails with the captured path.
     var buffer: [remote.max_text_bytes]u8 = undefined;
-    try std.testing.expect(self.remote_status.failureInto(&buffer).len != 0);
+    const first = self.remote_status.failureInto(&buffer);
+    try std.testing.expect(std.mem.indexOf(u8, first, "captured-token-file") != null);
     try std.testing.expectEqualStrings("mini", self.registryIdentity().?.name);
     try std.testing.expectEqualStrings("ws://127.0.0.1:1", self.registryIdentity().?.endpoint);
     self.stop();

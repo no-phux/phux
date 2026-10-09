@@ -324,6 +324,26 @@ fn classify(name: &str, error: &phux_dial::DialError) -> ConnectionEnd {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn a_loopback_dial_names_a_missing_captured_token_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let token = dir.path().join("captured-token-file");
+        let mut target = Target::ws("ws://127.0.0.1:1");
+        target.name = "mini".to_owned();
+        target.token_file = Some(token);
+        let Err(err) = dial(&target, ConnectOptions::default()).await else {
+            panic!("a missing token file must refuse the dial");
+        };
+        let text = match err {
+            ConnectionEnd::Refused(text) | ConnectionEnd::Dropped(Some(text)) => text,
+            other => panic!("unexpected end: {other:?}"),
+        };
+        assert!(
+            text.contains("captured-token-file"),
+            "dial must name the captured token file, got {text}"
+        );
+    }
+
     #[test]
     fn a_rebind_socket_keeps_the_peer_family() {
         let v4 = unspecified_like("127.0.0.1:4433".parse().expect("addr"));
