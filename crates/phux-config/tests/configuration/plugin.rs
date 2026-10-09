@@ -22,6 +22,10 @@ fn checked_in_example_manifests_load() -> Result<(), Box<dyn std::error::Error>>
     assert_eq!(loaded.workspaces[0].id, "ops-bench");
     assert_eq!(loaded.workspaces[0].panes[0].pane, "board");
 
+    let loaded = plugin::load_plugin_manifest(&examples.join("theme-pack/phux-plugin.toml"))?;
+    assert_eq!(loaded.themes[0].name, "phux-dark");
+    assert!(loaded.themes[0].path.join("colors.toml").is_file());
+
     let loaded = plugin::load_plugin_manifest(&examples.join("continuum/phux-plugin.toml"))?;
     assert_eq!(loaded.id, "com.phux.demo.continuum");
     assert_eq!(loaded.actions[0].id, "autosave");
@@ -628,6 +632,61 @@ fn min_phux_version_gate_accepts_current_and_rejects_future_or_malformed()
                 assert!(message.contains(needle), "{what}: {message}");
             }
         }
+    }
+    Ok(())
+}
+
+/// `[[themes]]` (ADR-0157): a usable name and a relative directory holding
+/// `colors.toml` load with the directory resolved under the plugin root;
+/// a bad name, a climbing path, or a missing palette file is refused.
+#[test]
+fn plugin_manifest_loads_and_validates_themes() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = TempDir::new()?;
+    common::write(
+        dir.path(),
+        "themes/night/colors.toml",
+        "mode = \"dark\"\nbackground = \"#000000\"\nforeground = \"#ffffff\"\n",
+    );
+    let manifest_path = write_manifest(
+        dir.path(),
+        &manifest(
+            "example.theme-pack",
+            "[[themes]]\nname = \"night\"\npath = \"themes/night\"\n",
+        ),
+    );
+    let loaded = plugin::load_plugin_manifest(&manifest_path)?;
+    assert_eq!(loaded.themes.len(), 1);
+    assert_eq!(loaded.themes[0].name, "night");
+    assert_eq!(
+        loaded.themes[0].path,
+        loaded.plugin_root.join("themes/night")
+    );
+
+    for (body, needle) in [
+        (
+            "[[themes]]\nname = \"Night Sky\"\npath = \"themes/night\"\n",
+            "theme name",
+        ),
+        (
+            "[[themes]]\nname = \"night\"\npath = \"../night\"\n",
+            "climb",
+        ),
+        (
+            "[[themes]]\nname = \"day\"\npath = \"themes/day\"\n",
+            "has no colors.toml",
+        ),
+        (
+            "[[themes]]\nname = \"night\"\npath = \"themes/night\"\n\
+             [[themes]]\nname = \"night\"\npath = \"themes/night\"\n",
+            "duplicate",
+        ),
+    ] {
+        let path = write_manifest(dir.path(), &manifest("example.theme-pack", body));
+        let err = plugin::load_plugin_manifest(&path)
+            .err()
+            .ok_or("expected a refusal")?
+            .to_string();
+        assert!(err.contains(needle), "{body}: {err}");
     }
     Ok(())
 }

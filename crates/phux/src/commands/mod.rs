@@ -295,6 +295,7 @@ pub(crate) mod status;
 pub(crate) mod stdio_bridge;
 pub(crate) mod supervise;
 pub(crate) mod tag;
+pub(crate) mod theme;
 pub(crate) mod toml_registry;
 pub(crate) mod update;
 pub(crate) mod upgrade;
@@ -367,6 +368,14 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
             ServiceAction::PruneLogs { .. } => Some("service prune-logs"),
         },
         Command::Plugin { .. } => Some("plugin"),
+        // `set` rings the reload doorbell after editing the file.
+        Command::Theme { action } => match action {
+            ThemeAction::Set { .. } => None,
+            ThemeAction::List { .. }
+            | ThemeAction::Show { .. }
+            | ThemeAction::Install { .. }
+            | ThemeAction::Remove { .. } => Some("theme"),
+        },
         Command::Host { .. } => Some("host"),
         Command::Relay { .. } => Some("relay"),
         // Minting asks the server what it has bound (ADR-0141); the
@@ -2055,6 +2064,18 @@ pub(crate) enum Command {
         action: PluginAction,
     },
 
+    /// Install, list, and select colour themes
+    ///
+    /// A theme is a directory holding an Omarchy-schema `colors.toml`.
+    /// Installed themes live under the phux data dir; enabled plugins may
+    /// contribute more. `set` edits `[theme] name` in your config and
+    /// signals attached clients to repaint; everything else is local.
+    #[usage(help_heading = "Maintain", display_order = 59)]
+    Theme {
+        #[usage(subcommand)]
+        action: ThemeAction,
+    },
+
     /// Inspect a git workspace and its worktrees
     ///
     /// This is a local repo operation: it never contacts a running phux server
@@ -2835,6 +2856,78 @@ pub(crate) enum TagAction {
 
         #[usage(flatten)]
         json: JsonOpt,
+    },
+}
+
+/// `phux theme <action>` — the theme catalog.
+#[derive(Debug, Subcommands)]
+pub(crate) enum ThemeAction {
+    /// List installed and plugin-provided themes; `*` marks the selected one.
+    #[usage(alias = "ls")]
+    List {
+        /// Emit a stable JSON document instead of human text.
+        #[usage(long)]
+        json: bool,
+    },
+
+    /// Show a theme's resolved colours, or the selected theme's when NAME
+    /// is omitted.
+    ///
+    /// Prints the mode, every semantic colour after Omarchy's fallback
+    /// cascade, the shared palette-0..15 mapping, and the foreground-on-
+    /// background contrast ratio. A client that does not read plugin
+    /// manifests uses `--json` here to resolve a name.
+    Show {
+        /// Catalog name. Omit for the theme `config.toml` selects.
+        name: Option<String>,
+
+        /// Emit a stable JSON document instead of human text.
+        #[usage(long)]
+        json: bool,
+    },
+
+    /// Select a theme: write `[theme] name` (or `file`) and signal a reload.
+    ///
+    /// With NAME, the catalog entry must exist and load. With `--file`, any
+    /// `colors.toml` path is accepted (`~/` expands), so pointing it at
+    /// `~/.local/state/omarchy/current/theme/colors.toml` follows the Omarchy
+    /// theme switcher. The other key is removed so exactly one selects.
+    /// Explicit `[theme]` slot keys keep overriding the selected theme.
+    Set {
+        /// Catalog name (see `phux theme list`).
+        name: Option<String>,
+
+        /// A `colors.toml` to follow instead of a catalog name.
+        #[usage(long, value_name = "PATH")]
+        file: Option<std::path::PathBuf>,
+    },
+
+    /// Install a theme from a git URL or a local directory.
+    ///
+    /// SOURCE is cloned with the system `git` (or copied) into the managed
+    /// theme directory (`$XDG_DATA_HOME/phux/themes`, else
+    /// `~/.local/share/phux/themes`) under a name derived from the URL as
+    /// Omarchy derives it: the last path segment minus `.git`, an
+    /// `omarchy-` or `phux-` prefix, and a `-theme` suffix. It must hold
+    /// `colors.toml` at its root. Installing the same name again replaces
+    /// it. Nothing in a theme is executed.
+    Install {
+        /// Git URL or local theme directory.
+        #[usage(value_name = "SOURCE")]
+        source: String,
+
+        /// Emit a stable JSON document instead of human text.
+        #[usage(long)]
+        json: bool,
+    },
+
+    /// Remove an installed theme by name.
+    ///
+    /// A plugin-provided theme is refused here: disable the plugin instead.
+    #[usage(visible_aliases = ["rm"])]
+    Remove {
+        /// Catalog name.
+        name: String,
     },
 }
 

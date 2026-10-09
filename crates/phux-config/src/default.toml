@@ -532,7 +532,14 @@ right = [
 # ("#7aa2f7") and ANSI indices ("12"). See docs/consumers/tui.md section
 # 4.4 for what each slot paints.
 #
+# Two keys select a whole palette underneath the slots: `name` is an
+# installed theme (`phux theme list`, `phux theme install URL`) and
+# `file` is any Omarchy-schema colors.toml, e.g. Omarchy's own current
+# theme. Slots set here still override the selected theme.
+#
 # [theme]
+# name            = "tokyo-night"
+# file            = "~/.local/state/omarchy/current/theme/colors.toml"
 # accent          = "#bef264"  # modal titles, query caret, active focus
 # title           = "#bef264"  # section/window titles (tracks accent)
 # chord           = "#86efac"  # keybinding chords in help + which-key

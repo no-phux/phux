@@ -213,8 +213,10 @@ impl TuiSettings {
                 &diagnostics,
             )));
         }
+        let theme = Theme::from_cfg(&cfg.theme, &manifests);
         Self::assemble(
             cfg,
+            theme,
             keybindings,
             resolver,
             status_bar,
@@ -244,8 +246,11 @@ impl TuiSettings {
         if let Some(diagnostic) = diagnostics.first() {
             return Err(diagnostic.to_string());
         }
+        // A `[theme] name` that resolves to nothing is a config error too.
+        let theme = Theme::resolve(&cfg.theme, &manifests).map_err(|err| err.to_string())?;
         Ok(Self::assemble(
             cfg,
+            theme,
             keybindings,
             resolver,
             status_bar,
@@ -256,8 +261,13 @@ impl TuiSettings {
     }
 
     /// The policy-independent tail of both builds.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one value per policy-dependent piece the two builds resolve differently"
+    )]
     fn assemble(
         cfg: &Config,
+        theme: Theme,
         keybindings: KeybindingsCfg,
         resolver: Resolver,
         mut status_bar: Option<StatusBarPainter>,
@@ -265,7 +275,6 @@ impl TuiSettings {
         plugin_panes: Vec<PluginPaneEntry>,
         plugin_sidebar: Vec<PluginSectionSpec>,
     ) -> Self {
-        let theme = Theme::from_cfg(&cfg.theme);
         // The attention hint's chip color comes from the theme's
         // `attention` slot rather than a hardcoded SGR in the painter.
         if let Some(sb) = status_bar.as_mut() {
