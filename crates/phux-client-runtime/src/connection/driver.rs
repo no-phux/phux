@@ -305,6 +305,7 @@ impl<'a> Pump<'a> {
         // snapshots it is about to replay.
         self.signals.resync.mark_unchanged();
         self.signals.nudge.mark_unchanged();
+        self.signals.rebind.mark_unchanged();
         Ok(())
     }
 
@@ -323,6 +324,7 @@ impl<'a> Pump<'a> {
             // A paused read has a backlog the peer just sent: it is alive,
             // and a probe answer could not be read before its deadline.
             () = signal(&mut self.signals.nudge) => if reading { self.start_probe().await } else { Ok(()) },
+            () = signal(&mut self.signals.rebind) => self.rebind(reading).await,
             () = wait_for_probe(&mut self.probe_deadline), if self.probe_deadline.is_some() => {
                 Err(ConnectionEnd::Dropped(Some("liveness probe timed out".to_owned())))
             }
@@ -356,6 +358,25 @@ impl<'a> Pump<'a> {
             self.probe_deadline = Some(Box::pin(tokio::time::sleep(self.options.probe_timeout)));
         }
         Ok(())
+    }
+
+    /// The path changed: migrate a QUIC connection onto a fresh socket,
+    /// then probe, so a path the peer cannot validate drops into the
+    /// ladder instead of hanging on a silent socket. A failed rebind is
+    /// a drop too: the redial binds afresh, which is the fallback.
+    async fn rebind(&mut self, reading: bool) -> Result<(), ConnectionEnd> {
+        let migrated = self
+            .io
+            .rebind(self.name)
+            .map_err(|error| ConnectionEnd::Dropped(Some(error)))?;
+        if migrated {
+            tracing::info!(host = self.name, "migrated to a fresh socket");
+        }
+        if reading {
+            self.start_probe().await
+        } else {
+            Ok(())
+        }
     }
 
     async fn expire_inputs(&mut self) -> Result<(), ConnectionEnd> {
@@ -496,10 +517,11 @@ mod tests {
     struct WriteFixture {
         io: Io,
         // Keep the unread peer alive so the writer waits instead of failing.
-        _peer: tokio::io::DuplexStream,
+        peer: tokio::io::DuplexStream,
         shared: Shared,
         signals: Signals,
         close: watch::Sender<bool>,
+        rebind: watch::Sender<u64>,
     }
 
     impl WriteFixture {
@@ -507,6 +529,7 @@ mod tests {
             let (stream, peer) = tokio::io::duplex(capacity);
             let (reader, writer) = tokio::io::split(stream);
             let (close, close_rx) = watch::channel(false);
+            let (rebind, rebind_rx) = watch::channel(0);
             Self {
                 io: Io::Stream {
                     reader: Box::new(reader),
@@ -514,17 +537,58 @@ mod tests {
                     pending: BytesMut::new(),
                     quic: None,
                 },
-                _peer: peer,
+                peer,
                 shared: Arc::new(Mutex::new(ControlPlane::new(ControlOptions::default()))),
                 signals: Signals {
                     outbound: Arc::new(Notify::new()),
                     resync: watch::channel(0).1,
                     nudge: watch::channel(0).1,
+                    rebind: rebind_rx,
                     close: close_rx,
                 },
                 close,
+                rebind,
             }
         }
+    }
+
+    /// A path change on a lane with nothing to migrate still probes: the
+    /// PING goes out right behind HELLO, and its silence is what drops a
+    /// socket the new path cannot carry.
+    #[tokio::test]
+    async fn a_path_change_probes_a_plain_stream() {
+        use tokio::io::AsyncReadExt as _;
+        let mut fixture = WriteFixture::new(64 * 1024);
+        let wake: Wake = Arc::new(|| {});
+        let mut pump = Pump::new(
+            "rebind",
+            &mut fixture.io,
+            ConnectOptions::default(),
+            &fixture.shared,
+            &mut fixture.signals,
+            &wake,
+        );
+        let running = pump.run();
+        tokio::pin!(running);
+        assert!(running.as_mut().now_or_never().is_none());
+        fixture.rebind.send_modify(|n| *n += 1);
+        assert!(running.as_mut().now_or_never().is_none());
+
+        let mut written = BytesMut::with_capacity(4096);
+        let mut peer = fixture.peer;
+        while let Some(Ok(read)) = peer.read_buf(&mut written).now_or_never() {
+            if read == 0 {
+                break;
+            }
+        }
+        let mut types = Vec::new();
+        while let Ok(Some(frame)) = phux_protocol::wire::framing::split_frame(&mut written) {
+            types.push(frame[LENGTH_PREFIX_LEN]);
+        }
+        assert!(
+            types.contains(&TYPE_PING),
+            "a probe follows the path change; wrote {types:?}"
+        );
     }
 
     #[tokio::test]

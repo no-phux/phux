@@ -213,6 +213,9 @@ pub struct Signals {
     pub resync: watch::Receiver<u64>,
     /// Cut a backoff short; probe an attached socket.
     pub nudge: watch::Receiver<u64>,
+    /// The network path changed: move a QUIC connection onto a fresh
+    /// socket (connection migration), then probe it.
+    pub rebind: watch::Receiver<u64>,
     /// End the session for good.
     pub close: watch::Receiver<bool>,
 }

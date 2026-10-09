@@ -579,6 +579,15 @@ impl RemoteClient {
         }
     }
 
+    /// The device's network path changed: a QUIC connection migrates onto
+    /// a fresh socket and keeps its incarnation, then every lane probes as
+    /// `nudge` does. Call from the path monitor instead of `nudge`.
+    pub fn network_path_changed(&self) {
+        if let Some(client) = self.runtime_client() {
+            client.network_path_changed();
+        }
+    }
+
     pub fn stop_connection(&self) {
         if let Some(client) = self.runtime_client() {
             client.close();

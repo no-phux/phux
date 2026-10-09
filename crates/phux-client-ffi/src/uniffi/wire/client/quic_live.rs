@@ -540,6 +540,31 @@ fn a_phone_enrolls_and_attaches_through_a_relay_to_a_paired_server() {
     phone.stop_connection();
 }
 
+/// A path change migrates the QUIC connection: the next round trip lands on
+/// the same incarnation, with no redial.
+#[test]
+fn a_path_change_keeps_the_incarnation_over_a_fresh_socket() {
+    let server = QuicServer::start();
+    let remote = RemoteClient::new(format!("quic://{}", server.addr), 80, 24, None, None);
+    remote.connect().expect("connect");
+    remote.attach_session(SESSION.to_owned());
+    let mut seen = Vec::new();
+    let epoch = publish_until(&remote, &mut seen, |publication| {
+        publication.status == WireStatus::Attached && publication.topology.is_some()
+    })
+    .connection_epoch;
+
+    remote.network_path_changed();
+    remote.refresh_topology();
+    let mut seen = Vec::new();
+    let after = publish_until(&remote, &mut seen, |publication| {
+        publication.events.contains(&WireEvent::TopologyChanged)
+    });
+    assert_eq!(after.connection_epoch, epoch, "no redial: {seen:?}");
+    assert_eq!(after.status, WireStatus::Attached);
+    remote.stop_connection();
+}
+
 #[test]
 fn unpinned_routable_quic_fails_closed() {
     // TEST-NET-1: never routed, so only the pin rule can end this dial.

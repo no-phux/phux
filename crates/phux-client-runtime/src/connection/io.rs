@@ -85,6 +85,28 @@ impl Io {
         }
     }
 
+    /// Move a QUIC connection onto a fresh UDP socket of the same family:
+    /// QUIC connection migration, which keeps the incarnation and every
+    /// stream. `Ok(false)` on the other lanes, which have no such move.
+    pub(super) fn rebind(&mut self, name: &str) -> Result<bool, String> {
+        let Self::Stream {
+            quic: Some((endpoint, _)),
+            ..
+        } = self
+        else {
+            return Ok(false);
+        };
+        let local = endpoint
+            .local_addr()
+            .map_err(|error| format!("{name}: rebind: no local address: {error}"))?;
+        let socket = std::net::UdpSocket::bind(unspecified_like(local))
+            .map_err(|error| format!("{name}: rebind: bind a fresh socket: {error}"))?;
+        endpoint
+            .rebind(socket)
+            .map_err(|error| format!("{name}: rebind: {error}"))?;
+        Ok(true)
+    }
+
     pub(super) fn close(self) {
         if let Self::Stream {
             quic: Some((endpoint, connection)),
@@ -94,6 +116,17 @@ impl Io {
             connection.close(quinn::VarInt::from_u32(0), b"session closed");
             endpoint.close(quinn::VarInt::from_u32(0), b"");
         }
+    }
+}
+
+/// The unspecified address of `addr`'s family, port 0: what a fresh
+/// socket that can still reach the same peer binds.
+const fn unspecified_like(addr: std::net::SocketAddr) -> std::net::SocketAddr {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+    if addr.is_ipv6() {
+        SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0)
+    } else {
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
     }
 }
 
@@ -290,6 +323,14 @@ fn classify(name: &str, error: &phux_dial::DialError) -> ConnectionEnd {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rebind_socket_keeps_the_peer_family() {
+        let v4 = unspecified_like("127.0.0.1:4433".parse().expect("addr"));
+        let v6 = unspecified_like("[::1]:4433".parse().expect("addr"));
+        assert!(v4.is_ipv4() && v4.port() == 0);
+        assert!(v6.is_ipv6() && v6.port() == 0);
+    }
 
     #[test]
     fn complete_frames_are_delivered_before_a_later_malformed_frame() {
