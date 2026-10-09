@@ -159,6 +159,7 @@ CURRENT_PID_FILE=''
 CURRENT_SOCKET=''
 CURRENT_APP_PID=''
 CURRENT_APP_IDENTITY=''
+CURRENT_APP_STARTED=''
 COORDINATOR_PID=''
 COORDINATOR_IDENTITY=''
 TRACKED_SHELL_PIDS=()
@@ -169,6 +170,10 @@ LAST_ARTIFACT=''
 
 process_identity() {
     /bin/ps -ww -p "$1" -o lstart= -o command= 2>/dev/null
+}
+
+process_started() {
+    /bin/ps -p "$1" -o lstart= 2>/dev/null
 }
 
 process_state() {
@@ -200,6 +205,14 @@ identity_matches() {
 }
 
 app_identity_matches() {
+    identity_matches "${CURRENT_APP_PID}" "${CURRENT_APP_IDENTITY}" && return 0
+    # env execs the app in the same owned child. Its argv changes, but its
+    # birth time and parent do not. Rebind only that expected executable.
+    [[ -n "${CURRENT_APP_PID}" && -n "${CURRENT_APP_STARTED}" ]] || return 1
+    [[ "$(process_started "${CURRENT_APP_PID}" || true)" == "${CURRENT_APP_STARTED}" ]] || return 1
+    [[ "$(process_ppid "${CURRENT_APP_PID}" || true)" == "$$" ]] || return 1
+    [[ "$(process_comm "${CURRENT_APP_PID}" || true)" == "${EXECUTABLE_NAME}" ]] || return 1
+    CURRENT_APP_IDENTITY="$(process_identity "${CURRENT_APP_PID}" || true)"
     identity_matches "${CURRENT_APP_PID}" "${CURRENT_APP_IDENTITY}"
 }
 
@@ -370,6 +383,9 @@ await_app_exit() {
             fail_cycle 'shutdown timed out before the app exited'
         /bin/sleep 0.1
     done
+    if [[ -n "$(process_state "${CURRENT_APP_PID}" || true)" ]] && ! is_zombie "${CURRENT_APP_PID}"; then
+        fail_cycle 'app identity changed while it was still alive during shutdown'
+    fi
     wait "${CURRENT_APP_PID}" 2>/dev/null || true
     [[ -z "$(process_identity "${CURRENT_APP_PID}" || true)" ]] ||
         fail_cycle 'app PID still exists after shutdown'
@@ -478,17 +494,22 @@ terminate_pid() {
 }
 
 cleanup_owned_processes() {
-    local index
+    local index state
 
+    app_identity_matches || true
     terminate_pid "${CURRENT_APP_PID}" "${CURRENT_APP_IDENTITY}"
     if [[ -n "${CURRENT_APP_PID}" ]]; then
-        wait "${CURRENT_APP_PID}" 2>/dev/null || true
+        state="$(process_state "${CURRENT_APP_PID}" || true)"
+        if [[ -z "${state}" || "${state}" == Z* ]]; then
+            wait "${CURRENT_APP_PID}" 2>/dev/null || true
+        else
+            printf 'warning: app PID %s is still alive; refusing an unbounded reap\n' "${CURRENT_APP_PID}" >&2
+        fi
     fi
     if [[ -z "${COORDINATOR_PID}" ]]; then
         adopt_coordinator_quietly
     fi
     if coordinator_identity_matches; then
-        "${CLI}" --socket "${CURRENT_SOCKET}" kill --server >/dev/null 2>&1 || true
         terminate_pid "${COORDINATOR_PID}" "${COORDINATOR_IDENTITY}"
     fi
     for ((index = 0; index < ${#TRACKED_SHELL_PIDS[@]}; index++)); do
@@ -496,6 +517,7 @@ cleanup_owned_processes() {
     done
     CURRENT_APP_PID=''
     CURRENT_APP_IDENTITY=''
+    CURRENT_APP_STARTED=''
     COORDINATOR_PID=''
     COORDINATOR_IDENTITY=''
 }
@@ -620,7 +642,9 @@ launch_app() {
         2> "${CURRENT_CYCLE_DIR}/app.stderr" &
     CURRENT_APP_PID=$!
     CURRENT_APP_IDENTITY="$(process_identity "${CURRENT_APP_PID}" || true)"
-    [[ -n "${CURRENT_APP_IDENTITY}" ]] || fail_cycle 'app exited immediately after launch'
+    CURRENT_APP_STARTED="$(process_started "${CURRENT_APP_PID}" || true)"
+    [[ -n "${CURRENT_APP_IDENTITY}" && -n "${CURRENT_APP_STARTED}" ]] ||
+        fail_cycle 'app exited immediately after launch'
 }
 
 run_cycle() {
@@ -649,6 +673,7 @@ for ((CURRENT_CYCLE = 1; CURRENT_CYCLE <= CYCLES; CURRENT_CYCLE++)); do
     CURRENT_SOCKET="${SOCKET_DIR}/c${CURRENT_CYCLE}.sock"
     CURRENT_APP_PID=''
     CURRENT_APP_IDENTITY=''
+    CURRENT_APP_STARTED=''
     COORDINATOR_PID=''
     COORDINATOR_IDENTITY=''
     TRACKED_SHELL_PIDS=()
@@ -657,6 +682,7 @@ for ((CURRENT_CYCLE = 1; CURRENT_CYCLE <= CYCLES; CURRENT_CYCLE++)); do
     run_cycle
     CURRENT_APP_PID=''
     CURRENT_APP_IDENTITY=''
+    CURRENT_APP_STARTED=''
     COORDINATOR_PID=''
     COORDINATOR_IDENTITY=''
 done

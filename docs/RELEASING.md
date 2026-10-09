@@ -551,6 +551,13 @@ DMG, verifies the downloaded copies and their `SHA256SUMS`, updates and
 remotely verifies `Casks/phux-cockpit.rb`, records signing status in the notes,
 and only then publishes the draft.
 
+Packaged lifecycle qualification uses the soak harness from the workflow
+revision, preserved before checking out the product tag. A harness repair can
+therefore qualify the same immutable archive source on recovery. The soak
+binds an app's env-to-executable transition to the same birth time and owned
+parent before accepting its new command identity; failure cleanup never waits
+indefinitely for a still-live child whose identity it cannot prove.
+
 Developer ID and notarization credentials are optional by policy, but never
 partial. No Apple secrets means an explicitly ad-hoc-signed release and a cask
 that removes quarantine with a caveat. Any Developer ID secret requires all

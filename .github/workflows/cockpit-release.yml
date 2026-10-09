@@ -51,6 +51,15 @@ jobs:
       PHUX_ZIG_CACHE_MODE: shared
       PHUX_ZIG_BUILD_TIMEOUT: "0"
     steps:
+      # Qualification uses the workflow's reviewed harness even when recovering
+      # an immutable older tag; every product build below remains on that tag.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.workflow_sha }}
+          path: .runner-tools
+      - name: Preserve the current soak harness before tag checkout
+        run: cp .runner-tools/clients/cockpit/scripts/soak-macos-app.sh "$RUNNER_TEMP/cockpit-soak-macos-app.sh"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -205,7 +214,7 @@ jobs:
       - name: Soak packaged application lifecycle
         timeout-minutes: 15
         run: |
-          clients/cockpit/scripts/soak-macos-app.sh \
+          bash "$RUNNER_TEMP/cockpit-soak-macos-app.sh" \
             --app "clients/cockpit/zig-out/release/Phux Cockpit.app" \
             --cycles 10 \
             --artifacts clients/cockpit/zig-out/soak-release
