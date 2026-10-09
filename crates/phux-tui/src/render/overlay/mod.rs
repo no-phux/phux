@@ -18,6 +18,7 @@ use crate::render::{ChromeBreakpoints, Theme};
 pub mod copy_mode;
 pub mod line_edit;
 pub mod menu;
+pub mod paste_confirm;
 pub mod path_picker;
 pub mod pending;
 pub mod prompt;
@@ -31,6 +32,7 @@ pub mod widgets;
 
 pub use copy_mode::{CopyModeOverlay, CopySearchRequest, CopySearchResult, CopySearchView};
 pub use menu::{ContextMenu, MenuRow};
+pub use paste_confirm::PasteConfirmOverlay;
 pub use path_picker::PathPicker;
 pub use pending::PendingOverlay;
 pub use prompt::PromptOverlay;
@@ -190,6 +192,8 @@ pub enum OverlayCommand {
     /// Keep copy-mode active and search the focused pane's loaded history;
     /// the dispatcher answers through [`OverlayState::apply_copy_search`].
     Search(CopySearchRequest),
+    /// Close the overlay and deliver this confirmed paste to the focused pane.
+    Paste(phux_protocol::input::paste::PasteEvent),
 }
 
 /// What [`OverlayState::handle_key`] hands back to the dispatcher.
@@ -210,6 +214,8 @@ pub enum OverlayOutcome {
     ReloadConfig,
     /// Search the focused pane for copy-mode and hand the result back.
     Search(CopySearchRequest),
+    /// Deliver a paste the user confirmed.
+    Paste(phux_protocol::input::paste::PasteEvent),
 }
 
 /// Stacked overlay state: the top captures input; rendering walks the stack
@@ -220,6 +226,9 @@ pub struct OverlayState {
     stack: Vec<Box<dyn RenderOverlay>>,
     /// The attach's `[chrome]` breakpoints, stamped onto every pushed overlay.
     breakpoints: ChromeBreakpoints,
+    /// The last press that entered copy-mode, outliving the overlay so a
+    /// repeat press counts as a double- or triple-click.
+    last_click: Option<copy_mode::ClickRecord>,
 }
 
 impl std::fmt::Debug for OverlayState {
@@ -227,17 +236,31 @@ impl std::fmt::Debug for OverlayState {
         f.debug_struct("OverlayState")
             .field("depth", &self.stack.len())
             .field("breakpoints", &self.breakpoints)
+            .field("last_click", &self.last_click)
             .finish()
     }
 }
 
 impl OverlayState {
+    /// Count a copy-mode press on `pane`'s `(col, row)` at `now`: 1 for a
+    /// single click, 2 for a double, 3 for a triple.
+    pub fn count_click(
+        &mut self,
+        pane: &phux_protocol::ResourceId,
+        col: u16,
+        row: u16,
+        now: std::time::Instant,
+    ) -> u8 {
+        copy_mode::ClickRecord::press(&mut self.last_click, pane, col, row, now)
+    }
+
     /// Empty state — no overlay active, shipped breakpoints.
     #[must_use]
     pub const fn new() -> Self {
         Self {
             stack: Vec::new(),
             breakpoints: ChromeBreakpoints::DEFAULT,
+            last_click: None,
         }
     }
 
@@ -394,6 +417,10 @@ impl OverlayState {
             OverlayCommand::ScrollViewport(delta) => OverlayOutcome::ScrollViewport(delta),
             OverlayCommand::ReloadConfig => OverlayOutcome::ReloadConfig,
             OverlayCommand::Search(req) => OverlayOutcome::Search(req),
+            OverlayCommand::Paste(paste) => {
+                self.dismiss();
+                OverlayOutcome::Paste(paste)
+            }
         }
     }
 

@@ -8,6 +8,9 @@
 //! by the dispatcher against the pane's loaded history; the overlay keeps the
 //! hits in document rows so they stay put while the viewport scrolls.
 
+use std::time::{Duration, Instant};
+
+use phux_protocol::ResourceId;
 use phux_protocol::input::key::{KeyEvent, PhysicalKey};
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use ratatui::buffer::Buffer;
@@ -109,6 +112,52 @@ pub struct CopySearchView<'a> {
     pub current: Option<usize>,
 }
 
+/// The longest gap between presses that still counts as a repeat click.
+const REPEAT_CLICK: Duration = Duration::from_millis(500);
+
+/// The last mouse press that entered copy-mode, kept by
+/// [`super::OverlayState`] across overlays so a second and third press on the
+/// same cell count as double- and triple-clicks (Ghostty: word, line).
+#[derive(Debug, Clone)]
+pub(super) struct ClickRecord {
+    pane: ResourceId,
+    col: u16,
+    row: u16,
+    at: Instant,
+    count: u8,
+}
+
+impl ClickRecord {
+    /// Record a press on `pane`'s `(col, row)` at `now` and return its count:
+    /// 1, 2, or 3, a fourth repeat starting over at 1 as Ghostty's does.
+    pub(super) fn press(
+        last: &mut Option<Self>,
+        pane: &ResourceId,
+        col: u16,
+        row: u16,
+        now: Instant,
+    ) -> u8 {
+        let count = match last.as_ref() {
+            Some(prev)
+                if prev.pane == *pane
+                    && (prev.col, prev.row) == (col, row)
+                    && now.saturating_duration_since(prev.at) <= REPEAT_CLICK =>
+            {
+                prev.count % 3 + 1
+            }
+            _ => 1,
+        };
+        *last = Some(Self {
+            pane: pane.clone(),
+            col,
+            row,
+            at: now,
+            count,
+        });
+        count
+    }
+}
+
 /// Copy-mode overlay state.
 #[derive(Debug)]
 pub struct CopyModeOverlay {
@@ -139,6 +188,10 @@ pub struct CopyModeOverlay {
     search_input: Option<(LineEdit, bool)>,
     /// The last committed search, repeated by `n`/`N`.
     search: Option<SearchState>,
+    /// What a release without a drag copies: the word or line under a
+    /// double- or triple-click (Ghostty). `None` dismisses, as a single
+    /// click does.
+    click_grab: Option<SelectionGrab>,
 }
 
 impl CopyModeOverlay {
@@ -162,6 +215,7 @@ impl CopyModeOverlay {
             mouse_anchor_viewport_row: None,
             search_input: None,
             search: None,
+            click_grab: None,
         }
     }
 
@@ -290,6 +344,12 @@ impl CopyModeOverlay {
     pub fn set_mouse_anchor_screen(&mut self, anchor: ScreenSelectionPoint) {
         self.mouse_anchor_screen = Some(anchor);
         self.mouse_anchor_viewport_row = Some(i32::from(self.anchor_row));
+    }
+
+    /// Make a release without a drag copy `grab` at the pressed cell (the
+    /// dispatcher counts clicks: two grab the word, three the line).
+    pub const fn set_click_grab(&mut self, grab: Option<SelectionGrab>) {
+        self.click_grab = grab;
     }
 
     /// Advance the selection mode `Char -> Line -> Rect -> Char` (the
@@ -609,9 +669,12 @@ impl RenderOverlay for CopyModeOverlay {
                 self.set_cursor_from_mouse(mouse);
                 self.selecting_with_mouse = false;
                 if self.anchor_row == self.cursor_row && self.anchor_col == self.cursor_col {
-                    // A click without a drag exits so a mouse-initiated entry
-                    // cannot trap the keyboard.
-                    OverlayCommand::Dismiss
+                    // A repeated click copies its word or line; a single
+                    // click exits so a mouse-initiated entry cannot trap the
+                    // keyboard.
+                    self.click_grab.map_or(OverlayCommand::Dismiss, |grab| {
+                        OverlayCommand::Copy(self.copy_request_with(grab))
+                    })
                 } else {
                     OverlayCommand::Copy(self.copy_request())
                 }
@@ -810,6 +873,80 @@ mod tests {
         assert_eq!(
             overlay.handle_mouse(&mouse(MouseAction::Release, MouseButton::Left, 4.0, 2.0)),
             OverlayCommand::Dismiss
+        );
+    }
+
+    #[test]
+    fn repeat_presses_on_one_cell_count_to_three_then_start_over() {
+        let pane = ResourceId::local(1);
+        let t0 = Instant::now();
+        let mut last = None;
+        let counts: Vec<u8> = (0..4)
+            .map(|i| {
+                ClickRecord::press(&mut last, &pane, 5, 2, t0 + Duration::from_millis(100 * i))
+            })
+            .collect();
+        assert_eq!(counts, [1, 2, 3, 1]);
+    }
+
+    #[test]
+    fn a_slow_moved_or_other_pane_press_is_a_single_click() {
+        let pane = ResourceId::local(1);
+        let at = Instant::now();
+        let first = || {
+            let mut last = None;
+            ClickRecord::press(&mut last, &pane, 5, 2, at);
+            last
+        };
+        let slow = at + REPEAT_CLICK + Duration::from_millis(1);
+        assert_eq!(
+            ClickRecord::press(&mut first(), &pane, 5, 2, slow),
+            1,
+            "too slow"
+        );
+        assert_eq!(
+            ClickRecord::press(&mut first(), &pane, 6, 2, at),
+            1,
+            "another cell"
+        );
+        let other = ResourceId::local(2);
+        assert_eq!(
+            ClickRecord::press(&mut first(), &other, 5, 2, at),
+            1,
+            "another pane"
+        );
+    }
+
+    /// A repeated click's release copies the dispatcher's word or line grab
+    /// at the pressed cell; dragging after it still copies the drag.
+    #[test]
+    fn a_repeated_click_copies_its_grab_at_the_pressed_cell() {
+        let mut overlay = CopyModeOverlay::new(0, 0, 80, 24);
+        overlay.set_click_grab(Some(SelectionGrab::Word));
+        overlay.handle_mouse(&mouse(MouseAction::Press, MouseButton::Left, 6.0, 3.0));
+        let OverlayCommand::Copy(req) =
+            overlay.handle_mouse(&mouse(MouseAction::Release, MouseButton::Left, 6.0, 3.0))
+        else {
+            panic!("a double-click copies its word");
+        };
+        assert_eq!(
+            (req.grab, req.cursor_row, req.cursor_col),
+            (SelectionGrab::Word, 3, 6)
+        );
+
+        let mut overlay = CopyModeOverlay::new(0, 0, 80, 24);
+        overlay.set_click_grab(Some(SelectionGrab::Line));
+        overlay.handle_mouse(&mouse(MouseAction::Press, MouseButton::Left, 6.0, 3.0));
+        overlay.handle_mouse(&mouse(MouseAction::Motion, MouseButton::Left, 9.0, 3.0));
+        let OverlayCommand::Copy(req) =
+            overlay.handle_mouse(&mouse(MouseAction::Release, MouseButton::Left, 9.0, 3.0))
+        else {
+            panic!("a drag copies");
+        };
+        assert_eq!(
+            req.grab,
+            SelectionGrab::Rect,
+            "the drag wins over the click grab"
         );
     }
 

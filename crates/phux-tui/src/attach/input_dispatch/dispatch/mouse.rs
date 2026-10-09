@@ -19,6 +19,10 @@ use super::{
     terminal_in_alt_screen, terminal_wants_mouse_tracking, wheel_scroll_delta,
 };
 
+use std::time::Instant;
+
+use crate::render::overlay::{SelectionGrab, SelectionMode};
+
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -465,7 +469,9 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
 
     /// Drag-to-copy (tmux): a left press on a pane whose app does not track
     /// the mouse, or any Ctrl-left press, starts a copy-mode selection;
-    /// motion and release then route through the overlay stage.
+    /// motion and release then route through the overlay stage. As in
+    /// Ghostty, a double-click copies the word, a triple-click the line, and
+    /// an Alt-drag selects a rectangle.
     fn begin_drag_to_copy(&mut self, routed: &MouseEvent, target: &ResourceId) -> bool {
         let force_copy = routed.mods.contains(ModSet::CTRL);
         if !is_left_press(routed)
@@ -492,11 +498,23 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
                 col: point.x,
                 row: point.y,
             });
+        let count = self
+            .ctx
+            .overlays
+            .count_click(target, mouse_col, mouse_row, Instant::now());
         let mut overlay =
             crate::render::overlay::CopyModeOverlay::new(mouse_row, mouse_col, rect.w, rect.h);
         if let Some(anchor) = anchor {
             overlay.set_mouse_anchor_screen(anchor);
         }
+        if routed.mods.contains(ModSet::ALT) {
+            overlay.mode = SelectionMode::Rect;
+        }
+        overlay.set_click_grab(match count {
+            2 => Some(SelectionGrab::Word),
+            3 => Some(SelectionGrab::Line),
+            _ => None,
+        });
         self.ctx.overlays.push(Box::new(overlay));
         // Seed anchor + cursor from the (pane-local) press.
         let _ = self.ctx.overlays.handle_mouse(routed);
