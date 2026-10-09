@@ -152,10 +152,12 @@ test("selects and persists RPC targets through standard UI without invoking cust
     "phux_rendered_snapshot", "phux_targets",
   ]);
   // Identity is still declared at session boundaries only. Per-turn events
-  // feed the AgentSession stream and must not write detector state.
+  // feed the AgentSession stream and must not write detector state; message
+  // events feed transcript entries unless PHUX_AGENT_TRANSCRIPT=0.
+  const transcriptEvents = process.env.PHUX_AGENT_TRANSCRIPT === "0" ? [] : ["message_update", "message_end"];
   assert.deepEqual(events, [
     "session_start", "session_tree", "before_agent_start", "session_compact",
-    "session_start", "agent_start", "tool_execution_start", "tool_execution_end",
+    "session_start", "agent_start", ...transcriptEvents, "tool_execution_start", "tool_execution_end",
     "ui_prompt_start", "project_trust", "agent_settled", "session_shutdown",
   ]);
 
@@ -202,4 +204,21 @@ test("selects and persists RPC targets through standard UI without invoking cust
   assert.equal(persisted.length, 1);
   assert.equal(persisted[0]?.type, "phux-target");
   assert.deepEqual(persisted[0]?.data, store.snapshot.selection);
+});
+
+test("PHUX_AGENT_TRANSCRIPT=0 registers no transcript handlers", () => {
+  const registrations = (env: NodeJS.ProcessEnv): string[] => {
+    const events: string[] = [];
+    const api = {
+      appendEntry: () => {},
+      on: (name: string) => { events.push(name); },
+      registerTool: () => {},
+      registerCommand: () => {},
+    } as unknown as ExtensionAPI;
+    registerPhuxExtension(api, { cli: new PhuxCli({ runner: async () => { throw new Error("unused"); } }), env });
+    return events;
+  };
+  assert.ok(registrations({}).includes("message_end"), "on by default");
+  const optedOut = registrations({ PHUX_AGENT_TRANSCRIPT: "0" });
+  assert.ok(!optedOut.includes("message_update") && !optedOut.includes("message_end"));
 });
