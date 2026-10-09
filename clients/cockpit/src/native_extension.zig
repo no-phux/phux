@@ -9869,6 +9869,31 @@ test "shipping overlays use SDK dialog and sheet shells with owner geometry" {
     try rig.dispatch(.palette_close);
 }
 
+test "agentsessionreplace shipping Sessions command retires the Agents inspector" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.agents_open);
+    try std.testing.expect(rig.app_state.model.agentsMode);
+    try std.testing.expect(rig.app_state.model.mainAgentsOpen);
+    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "Agent inspection details"));
+    try std.testing.expect(!try compiledViewHasLabel(&rig.app_state.model, 0, "Search navigator"));
+
+    const painted = bridge.engine.?.model.wsAtConst(0).?.window_id;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .native_command = .{
+        .name = "navigator.sessions",
+        .window_id = if (painted == 0) 1 else painted,
+        .view_label = canvas_label,
+    } });
+
+    try std.testing.expect(!rig.app_state.model.agentsMode);
+    try std.testing.expect(!rig.app_state.model.mainAgentsOpen);
+    try std.testing.expect(rig.app_state.model.mainPaletteOpen);
+    try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.navigatorView);
+    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "Search navigator"));
+    try std.testing.expect(!try compiledViewHasLabel(&rig.app_state.model, 0, "Agent inspection details"));
+}
+
 test "shipping empty session stays inline in terminal space without modal semantics" {
     var rig = try Rig.start();
     defer rig.stop();

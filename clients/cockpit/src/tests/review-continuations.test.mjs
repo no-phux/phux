@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { initialModel, update, windows } from '../core.ts';
+import { commandMsg, initialModel, update, windows } from '../core.ts';
 import { navigationScopedRequest, navigationPage } from '../protocol.ts';
 const bytes = text => new TextEncoder().encode(text);
 const step = (model, msg) => { const value = update(model, msg); return Array.isArray(value) ? value : [value, null]; };
@@ -288,6 +288,20 @@ test('leaving Agents for Sessions or Commands retires the inspector surface', ()
     assert.equal(model.mainPaletteOpen, true, destination.kind);
     assert.equal(model.navigatorView, destination.kind === 'sessions_open' ? 1 : 4, destination.kind);
   }
+});
+
+test('the shipping Sessions command retires an open Agents inspector', () => {
+  let [model] = step(initialModel()[0], { kind: 'agents_open' });
+  assert.equal(model.agentsMode, true);
+  assert.equal(model.mainAgentsOpen, true);
+  const message = commandMsg('navigator.sessions');
+  assert.deepEqual(message, { kind: 'navigator_open', view: 1 });
+  [model] = step(model, message);
+  assert.equal(model.agentsMode, false);
+  assert.equal(model.mainAgentsOpen, false);
+  assert.equal(model.mainPaletteOpen, true);
+  assert.equal(model.navigatorView, 1);
+  assert.equal(model.paletteOpen, true);
 });
 
 test('New Window and window closure retire the Settings transaction first', () => {
