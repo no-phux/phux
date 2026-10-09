@@ -10,6 +10,22 @@ use crate::attach::outcome::AttachEnd;
 use crate::attach::paint::StatusBarPaint;
 use crate::render::chrome::status_bar::Notice;
 
+/// A `phux.session.project/v1` broadcast. The driver joins the name to a session id.
+pub(in crate::attach) fn project_tag_outcome(value: Option<&[u8]>) -> FrameOutcome {
+    let project_tag = match value.and_then(phux_protocol::wire::frame::decode_session_project) {
+        Some((name, project)) => ProjectTagFrame::Set {
+            name: name.to_owned(),
+            project: project.to_owned(),
+        },
+        None => ProjectTagFrame::Cleared,
+    };
+    FrameOutcome {
+        project_tag,
+        chrome_dirty: true,
+        ..FrameOutcome::default()
+    }
+}
+
 /// What one frame did to the stored `phux.session.project/v1` tag.
 ///
 /// `Absent` is the default so a frame that never mentions the key leaves the

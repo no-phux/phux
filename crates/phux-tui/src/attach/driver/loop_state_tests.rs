@@ -7,6 +7,7 @@ use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ServerFeatureSet};
 use phux_protocol::ids::SessionId;
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
+use phux_protocol::wire::frame::SESSION_NAME_KEY;
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 
 fn initial_attached() -> FrameKind {

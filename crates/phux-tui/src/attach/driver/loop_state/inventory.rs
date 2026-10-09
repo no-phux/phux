@@ -1,10 +1,9 @@
-//! Host inventory, the serving host, and session rename.
+//! Host inventory and the serving host.
 
 use super::{
-    AttachError, Command, CommandResult, CommandValue, Connection, FrameKind, FrameOutcome,
-    HostAnswers, Notice, ProjectTagFrame, RepaintAccumulator, Scope, apply_graph_rename,
-    federation_notices, host_answers, host_inventory_overdue, sync_agent_meta_subscriptions,
-    unexplained_unreachable_notices,
+    AttachError, Command, CommandResult, CommandValue, Connection, FrameKind, HostAnswers, Notice,
+    RepaintAccumulator, Scope, federation_notices, host_answers, host_inventory_overdue,
+    sync_agent_meta_subscriptions, unexplained_unreachable_notices,
 };
 
 impl super::SessionLoop {
@@ -37,60 +36,7 @@ impl super::SessionLoop {
         self.reconcile_peer_agents(conn).await?;
         // The fleet's other half. Rides the same deferred
         // sweep, so it costs the first paint nothing.
-        self.request_serving_host(conn).await?;
-        self.request_project_tag(conn).await?;
-        self.request_host_inventory(conn).await
-    }
-
-    /// Read the one stored project tag. The subscribe in bootstrap only
-    /// delivers later writes.
-    pub(super) async fn request_project_tag(
-        &mut self,
-        conn: &mut Connection,
-    ) -> Result<(), AttachError> {
-        if self.peers.project_tag_pending.is_some() {
-            return Ok(());
-        }
-        let request_id = self.take_request_id();
-        self.peers.project_tag_pending = Some(request_id);
-        super::super::session_io::send_unless_peer_gone(
-            conn,
-            &FrameKind::GetMetadata {
-                request_id,
-                scope: Scope::Global,
-                key: phux_protocol::wire::frame::SESSION_PROJECT_KEY.to_owned(),
-            },
-        )
-        .await
-    }
-
-    /// Join the stored project tag to the session that still has that name.
-    pub(super) fn fold_project_tag(&mut self, value: Option<&[u8]>) {
-        self.peers.project_tag_pending = None;
-        self.peers.stored_project_tag = value
-            .and_then(phux_protocol::wire::frame::decode_session_project)
-            .map(|(name, project)| (name.to_owned(), project.to_owned()));
-        self.apply_stored_project_tag();
-    }
-
-    /// Rebuild `project_tags` from the stored tag and the current session names.
-    pub(super) fn apply_stored_project_tag(&mut self) {
-        let mut next = std::collections::HashMap::new();
-        if let Some((name, project)) = &self.peers.stored_project_tag
-            && let Some(session) = self
-                .peers
-                .sessions
-                .iter()
-                .find(|session| session.name == *name)
-        {
-            next.insert(session.id, project.clone());
-        }
-        if next == self.peers.project_tags {
-            return;
-        }
-        self.peers.project_tags = next;
-        self.peers.chrome_dirty = true;
-        self.session_picker_dirty = true;
+        self.request_sidebar_facts(conn).await
     }
 
     /// Read the server's identity after first paint without blocking the frame loop.
@@ -168,8 +114,7 @@ impl super::SessionLoop {
                 self.peers.hosts = snapshot.hosts().to_vec();
                 let sessions_changed = self.peers.sessions != snapshot.sessions;
                 if sessions_changed {
-                    self.peers.sessions.clone_from(&snapshot.sessions);
-                    self.apply_stored_project_tag();
+                    self.adopt_listed_sessions(&snapshot.sessions);
                 }
                 // Sweep only when the graph the sweep reads actually moved.
                 if sessions_changed || self.snapshot_graph_changed(snapshot) {
@@ -238,33 +183,6 @@ impl super::SessionLoop {
         }
     }
 
-    /// Apply a `phux.session.name/v1` broadcast to the cached graph and
-    /// (when it names this client's session) the status-bar name.
-    pub(super) fn fold_session_rename(
-        &mut self,
-        outcome: &mut FrameOutcome,
-        repaint: &mut RepaintAccumulator,
-    ) {
-        let Some((current, new_name)) = outcome.session_rename.take() else {
-            return;
-        };
-        apply_graph_rename(&mut self.peers.sessions, &current, &new_name);
-        self.peers.chrome_dirty = true;
-        self.session_picker_dirty = true;
-        self.note_chrome_change(repaint);
-    }
-
-    /// Apply a `phux.session.project/v1` broadcast to the picker tags.
-    pub(super) fn fold_project_tag_outcome(&mut self, outcome: &mut FrameOutcome) {
-        let stored = match std::mem::take(&mut outcome.project_tag) {
-            ProjectTagFrame::Absent => return,
-            ProjectTagFrame::Cleared => None,
-            ProjectTagFrame::Set { name, project } => Some((name, project)),
-        };
-        self.peers.stored_project_tag = stored;
-        self.apply_stored_project_tag();
-    }
-
     /// The `GET_STATE` barrier after a local rename: the snapshot is
     /// authoritative, so a refused write leaves the current name in place.
     pub(super) fn confirm_session_rename(
@@ -277,7 +195,7 @@ impl super::SessionLoop {
                 let Some(pending) = self.rename_pending.take() else {
                     return;
                 };
-                self.peers.sessions.clone_from(&snapshot.sessions);
+                self.adopt_listed_sessions(&snapshot.sessions);
                 self.adopt_snapshot_graph(snapshot);
                 if let Some(id) = pending.session_id.or(self.peers.focused_session) {
                     let roster: Vec<_> = snapshot

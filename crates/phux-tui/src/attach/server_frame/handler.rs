@@ -32,9 +32,7 @@ use phux_client::layout_ops::{
 
 use super::engine_route::{KernelRoute, is_terminal, route_engine_frame};
 use super::index::{AgentMetaIndex, note_agent_change};
-use super::outcome::{
-    FrameOutcome, ProjectTagFrame, frame_kind_label, input_authority_notice, pane_label,
-};
+use super::outcome::{FrameOutcome, frame_kind_label, input_authority_notice, pane_label};
 use crate::attach::session_mirror::SessionMirror;
 
 /// The per-frame inputs [`handle_server_frame`] reads beside the mirror: the
@@ -1002,7 +1000,7 @@ fn handle_metadata_changed<W: crate::attach::RenderSink>(
         return Ok(apply_session_rename_broadcast(ctx, value.as_deref()));
     }
     if key == phux_protocol::wire::frame::SESSION_PROJECT_KEY && matches!(scope, Scope::Global) {
-        return Ok(apply_project_tag_broadcast(value.as_deref()));
+        return Ok(super::outcome::project_tag_outcome(value.as_deref()));
     }
     let Some(LayoutKeyOwner::Session(key_session)) = layout_key_scope_session(scope, key) else {
         return Ok(FrameOutcome::default());
@@ -1601,22 +1599,6 @@ fn apply_keep_empty_broadcast<W: crate::attach::RenderSink>(
         *ctx.keep_empty_session = keep;
     }
     FrameOutcome::default()
-}
-
-/// A `phux.session.project/v1` broadcast. The driver joins the name to a session id.
-fn apply_project_tag_broadcast(value: Option<&[u8]>) -> FrameOutcome {
-    let project_tag = match value.and_then(phux_protocol::wire::frame::decode_session_project) {
-        Some((name, project)) => ProjectTagFrame::Set {
-            name: name.to_owned(),
-            project: project.to_owned(),
-        },
-        None => ProjectTagFrame::Cleared,
-    };
-    FrameOutcome {
-        project_tag,
-        chrome_dirty: true,
-        ..FrameOutcome::default()
-    }
 }
 
 /// A `phux.session.name/v1` broadcast: rename our status name when it names
