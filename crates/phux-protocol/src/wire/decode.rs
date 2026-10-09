@@ -5,28 +5,27 @@ use super::error::DecodeError;
 use super::field;
 use super::frame::Scope;
 use super::frame::{
-    CloseReason, DetachReason, ErrorCode, FrameKind, HistoryRejectionReason,
-    HistoryTombstoneReason, MAX_FRAME_LEN, MAX_HISTORY_CURSOR_BYTES, MAX_HISTORY_PAGE_ROWS,
-    MAX_INPUT_TERMINAL_REPLY_BYTES, MAX_RESOURCE_NATIVE_ID_BYTES, MAX_RESOURCE_PROVIDER_BYTES,
-    SpawnResource, TYPE_ATTACH, TYPE_ATTACH_READY, TYPE_ATTACHED, TYPE_BELL, TYPE_BOOTSTRAP_BEGIN,
-    TYPE_BOOTSTRAP_CHUNK, TYPE_BOOTSTRAP_READY, TYPE_BOOTSTRAP_TOMBSTONE, TYPE_COMMAND,
-    TYPE_COMMAND_RESULT, TYPE_DELETE_METADATA, TYPE_DETACH, TYPE_DETACHED, TYPE_DIRECTORY_LISTING,
-    TYPE_ERROR, TYPE_EVENT, TYPE_FRAME_ACK, TYPE_FRAME_COMPRESSED, TYPE_GET_METADATA, TYPE_HELLO,
-    TYPE_HELLO_OK, TYPE_HISTORY_PAGE, TYPE_HISTORY_REJECTED, TYPE_HISTORY_REQUEST,
-    TYPE_HISTORY_TOMBSTONE, TYPE_INPUT_FOCUS, TYPE_INPUT_KEY, TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE,
-    TYPE_INPUT_TERMINAL_REPLY, TYPE_LIST_DIRECTORY, TYPE_LIST_METADATA, TYPE_METADATA_CHANGED,
-    TYPE_METADATA_KEYS, TYPE_METADATA_VALUE, TYPE_MOVE_RESOURCE, TYPE_PATH_QUERY,
-    TYPE_PATH_RESULTS, TYPE_PING, TYPE_PONG, TYPE_RESIZE_TERMINAL, TYPE_RESOURCE_CLOSED,
-    TYPE_RESOURCE_MOVED, TYPE_RESOURCE_OUTPUT, TYPE_RESOURCE_SPAWNED, TYPE_SET_METADATA,
-    TYPE_SPAWN_RESOURCE, TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA, TYPE_VIEWPORT_RESIZE,
-    TombstoneReason, decode_actor_ref, decode_agent_event, decode_attach_target,
-    decode_bootstrap_codec, decode_bootstrap_id, decode_bootstrap_profile,
-    decode_bootstrap_stream_profile, decode_command, decode_command_result,
-    decode_directory_listing, decode_env, decode_focus_event, decode_idempotency_key,
-    decode_key_event, decode_list_directory, decode_metadata_scope_key, decode_mouse_event,
-    decode_move_result, decode_paste_event, decode_query, decode_results, decode_scope,
-    decode_spawn_result, decode_stream_id, decode_string_list, decode_terminal_id,
-    decode_viewport_info,
+    decode_actor_ref, decode_agent_event, decode_attach_target, decode_bootstrap_codec,
+    decode_bootstrap_id, decode_bootstrap_profile, decode_bootstrap_stream_profile, decode_command,
+    decode_command_result, decode_directory_listing, decode_env, decode_focus_event,
+    decode_idempotency_key, decode_key_event, decode_list_directory, decode_metadata_scope_key,
+    decode_mouse_event, decode_move_result, decode_paste_event, decode_query, decode_results,
+    decode_scope, decode_spawn_result, decode_stream_id, decode_string_list, decode_terminal_id,
+    decode_viewport_info, CloseReason, DetachReason, ErrorCode, FrameKind, HistoryRejectionReason,
+    HistoryTombstoneReason, SpawnResource, TombstoneReason, MAX_FRAME_LEN,
+    MAX_HISTORY_CURSOR_BYTES, MAX_HISTORY_PAGE_ROWS, MAX_INPUT_TERMINAL_REPLY_BYTES,
+    MAX_RESOURCE_NATIVE_ID_BYTES, MAX_RESOURCE_PROVIDER_BYTES, TYPE_ATTACH, TYPE_ATTACHED,
+    TYPE_ATTACH_READY, TYPE_BELL, TYPE_BOOTSTRAP_BEGIN, TYPE_BOOTSTRAP_CHUNK, TYPE_BOOTSTRAP_READY,
+    TYPE_BOOTSTRAP_TOMBSTONE, TYPE_COMMAND, TYPE_COMMAND_RESULT, TYPE_DELETE_METADATA, TYPE_DETACH,
+    TYPE_DETACHED, TYPE_DIRECTORY_LISTING, TYPE_ERROR, TYPE_EVENT, TYPE_FRAME_ACK,
+    TYPE_FRAME_COMPRESSED, TYPE_GET_METADATA, TYPE_HELLO, TYPE_HELLO_OK, TYPE_HISTORY_PAGE,
+    TYPE_HISTORY_REJECTED, TYPE_HISTORY_REQUEST, TYPE_HISTORY_TOMBSTONE, TYPE_INPUT_FOCUS,
+    TYPE_INPUT_KEY, TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE, TYPE_INPUT_TERMINAL_REPLY,
+    TYPE_LIST_DIRECTORY, TYPE_LIST_METADATA, TYPE_METADATA_CHANGED, TYPE_METADATA_KEYS,
+    TYPE_METADATA_VALUE, TYPE_MOVE_RESOURCE, TYPE_PATH_QUERY, TYPE_PATH_RESULTS, TYPE_PING,
+    TYPE_PONG, TYPE_RESIZE_TERMINAL, TYPE_RESOURCE_CLOSED, TYPE_RESOURCE_MOVED,
+    TYPE_RESOURCE_OUTPUT, TYPE_RESOURCE_SPAWNED, TYPE_SET_METADATA, TYPE_SPAWN_RESOURCE,
+    TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA, TYPE_VIEWPORT_RESIZE,
 };
 use super::info::{decode_client_id, decode_session_snapshot};
 use crate::caps::{
@@ -68,6 +67,8 @@ pub struct Decoder<'a> {
     max_bootstrap_chunk_bytes: u32,
     /// Connection-negotiated maximum `HISTORY_PAGE.payload` bytes.
     max_history_page_bytes: u32,
+    /// When set, payload fields are views of this buffer instead of copies.
+    shared: Option<bytes::Bytes>,
 }
 
 impl<'a> Decoder<'a> {
@@ -80,7 +81,44 @@ impl<'a> Decoder<'a> {
             body_end: None,
             max_bootstrap_chunk_bytes: MAX_BOOTSTRAP_CHUNK_BYTES,
             max_history_page_bytes: MAX_HISTORY_PAGE_BYTES,
+            shared: None,
         }
+    }
+
+    /// Decode `input` in place. Payload fields alias `input`.
+    pub(crate) fn on_shared(input: &'a bytes::Bytes, limits: Option<BootstrapLimits>) -> Self {
+        let (max_bootstrap_chunk_bytes, max_history_page_bytes) = limits.map_or(
+            (MAX_BOOTSTRAP_CHUNK_BYTES, MAX_HISTORY_PAGE_BYTES),
+            |limits| (limits.max_chunk_bytes(), limits.max_history_page_bytes()),
+        );
+        Self {
+            input: input.as_ref(),
+            pos: 0,
+            body_end: None,
+            max_bootstrap_chunk_bytes,
+            max_history_page_bytes,
+            shared: Some(input.clone()),
+        }
+    }
+
+    /// A payload field as a view of [`Self::on_shared`]'s buffer, or a copy
+    /// when this decoder borrows a plain slice.
+    pub(crate) fn share_exact(&self, value: &[u8]) -> bytes::Bytes {
+        if value.is_empty() {
+            return bytes::Bytes::new();
+        }
+        let Some(parent) = &self.shared else {
+            return bytes::Bytes::copy_from_slice(value);
+        };
+        let base = parent.as_ptr() as usize;
+        let start = value.as_ptr() as usize;
+        let parent_end = base + parent.len();
+        let value_end = start.saturating_add(value.len());
+        if start >= base && value_end <= parent_end {
+            let offset = start - base;
+            return parent.slice(offset..offset + value.len());
+        }
+        bytes::Bytes::copy_from_slice(value)
     }
 
     /// Wrap `input` with the payload limits negotiated in `HELLO_OK`, checked
@@ -93,6 +131,7 @@ impl<'a> Decoder<'a> {
             body_end: None,
             max_bootstrap_chunk_bytes: limits.max_chunk_bytes(),
             max_history_page_bytes: limits.max_history_page_bytes(),
+            shared: None,
         }
     }
 
@@ -572,7 +611,7 @@ impl<'a> Decoder<'a> {
             match id {
                 f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
                 f::SEQ => seq = Some(sub!(value, Decoder::read_u64_be)),
-                f::BYTES => bytes = Some(bytes::Bytes::copy_from_slice(value)),
+                f::BYTES => bytes = Some(self.share_exact(value)),
                 f::STREAM_ID => stream_id = Some(sub!(value, decode_stream_id)),
                 f::BOOTSTRAP_ID => bootstrap_id = Some(sub!(value, decode_bootstrap_id)),
                 _ => {}

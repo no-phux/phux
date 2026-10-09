@@ -14,10 +14,10 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use bytes::{Bytes, BytesMut};
-use phux_protocol::ResourceId;
 use phux_protocol::ids::{BootstrapId, StreamId};
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::FrameKind;
+use phux_protocol::ResourceId;
 
 std::thread_local! {
     static COUNTING: Cell<bool> = const { Cell::new(false) };
@@ -149,8 +149,36 @@ fn hot_frames_encode_into_a_reused_buffer_without_allocating() {
     );
 }
 
-/// Decoding `RESOURCE_OUTPUT` copies the payload out of the transport buffer
-/// exactly once and allocates nothing else.
+/// A borrowed slice still copies the payload once. A shared buffer does not:
+/// `decode_shared` aliases the frozen frame.
+#[test]
+fn resource_output_decode_shared_aliases_the_socket_buffer() {
+    let payload = Bytes::from(vec![b'x'; 4096]);
+    let mut wire = BytesMut::new();
+    output(&payload).encode(&mut wire);
+    let frame = wire.freeze();
+    let (decoded, tail) = FrameKind::decode_shared(&frame, None).unwrap();
+    assert!(tail.is_empty());
+    let FrameKind::ResourceOutput { bytes, .. } = decoded else {
+        panic!("resource output");
+    };
+    assert_eq!(bytes.as_ref(), payload.as_ref());
+    let frame_start = frame.as_ptr() as usize;
+    let frame_end = frame_start + frame.len();
+    let payload_start = bytes.as_ptr() as usize;
+    assert!(
+        payload_start >= frame_start && payload_start + bytes.len() <= frame_end,
+        "payload must alias the frozen frame"
+    );
+    let (allocs, allocated) = measure(|| {
+        let (again, _) = FrameKind::decode_shared(&frame, None).unwrap();
+        std::hint::black_box(again);
+    });
+    assert_eq!(allocs, 0, "shared decode allocates {allocated} bytes");
+}
+
+/// Decoding `RESOURCE_OUTPUT` from a borrowed slice copies the payload out of
+/// the transport buffer exactly once and allocates nothing else.
 #[test]
 fn resource_output_decode_owns_its_payload_with_one_copy() {
     let payload = Bytes::from(vec![b'x'; 4096]);

@@ -146,6 +146,39 @@ impl ControlPlane {
         Ok(frame)
     }
 
+    /// Decode a frame that is already a view of the socket buffer. Payload
+    /// bytes alias that buffer instead of being copied.
+    fn decode_shared_frame(&self, bytes: &Bytes) -> Result<FrameKind, ControlError> {
+        let (frame, tail) = FrameKind::decode_shared(bytes, self.decode_limits())
+            .map_err(|error| ControlError::Protocol(format!("invalid protocol frame: {error}")))?;
+        if !tail.is_empty() {
+            return Err(ControlError::Protocol(
+                "protocol message contained trailing bytes".to_owned(),
+            ));
+        }
+        Ok(frame)
+    }
+
+    /// [`Self::feed_bytes_batch`] for frames that are frozen socket views.
+    pub fn feed_shared_batch(&mut self, frames: &[Bytes]) -> Result<(), ControlError> {
+        let mut engine_events = Vec::new();
+        let mut deferred_error = None;
+        for bytes in frames {
+            let frame = match self.decode_shared_frame(bytes) {
+                Ok(frame) => frame,
+                Err(error) => {
+                    return self.error_after_engine_batch(
+                        &mut engine_events,
+                        &mut deferred_error,
+                        error,
+                    );
+                }
+            };
+            self.queue_or_feed_frame(frame, &mut engine_events, &mut deferred_error)?;
+        }
+        self.finish_batch(engine_events, deferred_error)
+    }
+
     fn queue_or_feed_frame(
         &mut self,
         frame: FrameKind,
@@ -515,9 +548,9 @@ fn history_rejection_reason(reason: WireRejection) -> Result<HistoryRejectionRea
 
 #[cfg(test)]
 mod tests {
-    use super::{ClassifiedFrame, EngineEvent, FrameKind, classify_engine_frame};
-    use phux_protocol::ResourceId;
+    use super::{classify_engine_frame, ClassifiedFrame, EngineEvent, FrameKind};
     use phux_protocol::ids::{BootstrapId, StreamId};
+    use phux_protocol::ResourceId;
 
     /// The decoded payload moves into the engine event: an output flood, a
     /// bootstrap, or a history page is not copied a second time on its way

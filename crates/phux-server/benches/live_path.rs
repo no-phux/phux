@@ -24,7 +24,7 @@
 //! - `wire`: the server writer encoding one `RESOURCE_OUTPUT` per consumer
 //!   into its reused batch buffer, then one client framing that frame off
 //!   its socket buffer and decoding it (`split_frame` + `freeze` +
-//!   `FrameKind::decode`, the `phux-client-runtime` read path).
+//!   `FrameKind::decode_shared`, the `phux-client-runtime` read path).
 //!
 //! `PHUX_LIVE_PATH_TABLE_ONLY=1` prints the table and skips Criterion.
 
@@ -44,10 +44,10 @@ use std::time::{Duration, Instant};
 use bytes::{Bytes, BytesMut};
 use criterion::{BenchmarkId, Criterion, Throughput};
 use libghostty_vt::Terminal as GhosttyTerminal;
-use phux_protocol::ResourceId;
 use phux_protocol::ids::{BootstrapId, StreamId};
 use phux_protocol::wire::frame::FrameKind;
 use phux_protocol::wire::framing;
+use phux_protocol::ResourceId;
 use phux_server::grid::{ConsumerReference, SnapshotSynthesizer};
 
 std::thread_local! {
@@ -247,6 +247,8 @@ fn server_encode(frame: &FrameKind, batches: &mut [BytesMut]) -> usize {
 }
 
 /// One client's read half: frame it off the socket buffer and decode it.
+/// Payload bytes stay a view of that buffer (`FrameKind::decode_shared`),
+/// the same call `phux-client-runtime` makes on a driver read.
 fn client_decode(socket: &mut BytesMut, wire: &[u8]) -> FrameKind {
     socket.clear();
     socket.extend_from_slice(wire);
@@ -254,7 +256,7 @@ fn client_decode(socket: &mut BytesMut, wire: &[u8]) -> FrameKind {
         .expect("framing")
         .expect("one whole frame")
         .freeze();
-    FrameKind::decode(&frame).expect("decode").0
+    FrameKind::decode_shared(&frame, None).expect("decode").0
 }
 
 fn print_table() {

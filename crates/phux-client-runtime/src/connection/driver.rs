@@ -6,12 +6,12 @@ use std::time::Duration;
 use bytes::Bytes;
 use tokio::sync::watch;
 
-use super::io::{Io, dial};
-use super::{ConnectOptions, ConnectionEnd, Shared, Signals, Target, Wake, lock};
+use super::io::{dial, Io};
+use super::{lock, ConnectOptions, ConnectionEnd, Shared, Signals, Target, Wake};
 use phux_protocol::wire::frame::{FrameKind, TYPE_PING};
 use phux_protocol::wire::framing::LENGTH_PREFIX_LEN;
 
-use crate::control::{ControlError, InboundDelivery, Status, encode};
+use crate::control::{encode, ControlError, InboundDelivery, Status};
 
 enum Decision {
     Stop,
@@ -422,7 +422,7 @@ impl<'a> Pump<'a> {
                 };
                 (fed, pongs)
             } else {
-                (control.feed_bytes_batch(&frames), Vec::new())
+                (control.feed_shared_batch(&frames), Vec::new())
             };
             (fed, control.take_outbound(), pongs)
         };
@@ -509,7 +509,7 @@ mod tests {
 
     use bytes::BytesMut;
     use futures_util::FutureExt;
-    use tokio::sync::{Notify, watch};
+    use tokio::sync::{watch, Notify};
 
     use super::*;
     use crate::control::{ControlOptions, ControlPlane};
