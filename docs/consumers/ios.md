@@ -17,5 +17,6 @@ revision-pinned artifact (ADR-0133, ADR-0135). Its pin must be at least
 `7093116a955103cbd1a606e1fcfa2694c6a1625f` for the cwd/command/exit status
 effects (`KernelStatus::Cwd`, `CommandStarted`, `CommandFinished`, `Exited`)
 and `bbccc3ad88739d6c37aec985d2407dc41b92631a` for attach roles
-(`RolePolicy`, ADR-0127; not yet settable through `phux-client-core`).
+(`RolePolicy`, ADR-0127; the `uniffi` lane declares it with
+`set_attach_viewer`).
 Neither surface has a mobile consumer yet.
