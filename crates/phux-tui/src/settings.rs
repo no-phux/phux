@@ -216,7 +216,6 @@ impl TuiSettings {
         let theme = Theme::from_cfg(&cfg.theme, &manifests);
         Self::assemble(
             cfg,
-            theme,
             keybindings,
             resolver,
             status_bar,
@@ -224,6 +223,7 @@ impl TuiSettings {
             plugin_panes,
             plugin_sidebar,
         )
+        .with_theme(theme)
     }
 
     /// Build strictly: any widget or binding failure fails the build.
@@ -250,37 +250,38 @@ impl TuiSettings {
         let theme = Theme::resolve(&cfg.theme, &manifests).map_err(|err| err.to_string())?;
         Ok(Self::assemble(
             cfg,
-            theme,
             keybindings,
             resolver,
             status_bar,
             plugin_actions,
             plugin_panes,
             plugin_sidebar,
-        ))
+        )
+        .with_theme(theme))
     }
 
-    /// The policy-independent tail of both builds.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one value per policy-dependent piece the two builds resolve differently"
-    )]
+    /// Adopt `theme`, including the status bar's theme-derived colours: the
+    /// attention chip rides the `attention` slot rather than a hardcoded SGR.
+    fn with_theme(mut self, theme: Theme) -> Self {
+        if let Some(sb) = self.status_bar.as_mut() {
+            sb.set_attention_color(theme.attention);
+            sb.set_fill(theme.surface);
+        }
+        self.theme = theme;
+        self
+    }
+
+    /// The policy-independent tail of both builds; [`Self::with_theme`]
+    /// supplies the theme, which the two builds resolve differently.
     fn assemble(
         cfg: &Config,
-        theme: Theme,
         keybindings: KeybindingsCfg,
         resolver: Resolver,
-        mut status_bar: Option<StatusBarPainter>,
+        status_bar: Option<StatusBarPainter>,
         plugin_actions: Vec<PluginActionEntry>,
         plugin_panes: Vec<PluginPaneEntry>,
         plugin_sidebar: Vec<PluginSectionSpec>,
     ) -> Self {
-        // The attention hint's chip color comes from the theme's
-        // `attention` slot rather than a hardcoded SGR in the painter.
-        if let Some(sb) = status_bar.as_mut() {
-            sb.set_attention_color(theme.attention);
-            sb.set_fill(theme.surface);
-        }
         Self {
             which_key: WhichKey {
                 enabled: keybindings.which_key,
@@ -288,7 +289,7 @@ impl TuiSettings {
             },
             keybindings: Some(keybindings),
             resolver: Some(resolver),
-            theme,
+            theme: Theme::default(),
             chrome: ChromeBreakpoints::from_cfg(&cfg.chrome),
             status_bar,
             plugin_actions,
