@@ -18,6 +18,8 @@
 //!   `DividerCell`s to VT).
 //! - [`predict`] — Mosh-class predictive local echo over the pane mirror.
 //! - [`input_replay`] — acknowledged input ordering and reconnect policy.
+//! - [`ask`] — the ADR-0035 ask-sentinel reader every answer path guards
+//!   with.
 //!
 //! # Frontend boundary
 //!
@@ -31,6 +33,7 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::private_intra_doc_links)]
 
+pub mod ask;
 pub mod engine;
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub mod grid;

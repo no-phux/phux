@@ -95,13 +95,16 @@ impl ControlPlane {
                 question,
                 suggestions,
                 elapsed_seconds,
-            } => self.push_event(Event::AgentAsked {
-                terminal_id,
-                question_id: id,
-                text: question,
-                suggestions,
-                waiting_seconds: elapsed_seconds,
-            }),
+            } => {
+                self.live_asks.insert(terminal_id.clone(), id.clone());
+                self.push_event(Event::AgentAsked {
+                    terminal_id,
+                    question_id: id,
+                    text: question,
+                    suggestions,
+                    waiting_seconds: elapsed_seconds,
+                });
+            }
             AgentEvent::CommandStarted => self.push_event(Event::CommandStarted { terminal_id }),
             AgentEvent::CommandFinished { exit_code } => self.push_event(Event::CommandFinished {
                 terminal_id,
@@ -146,6 +149,7 @@ impl ControlPlane {
         reason: phux_protocol::wire::frame::CloseReason,
     ) -> bool {
         self.forget_agent_metadata(terminal_id);
+        self.live_asks.remove(terminal_id);
         self.listings.forget(terminal_id);
         let was_known = self.own_spawns.contains(terminal_id)
             || self.terminal_attached.contains(terminal_id)

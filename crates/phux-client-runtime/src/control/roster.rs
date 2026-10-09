@@ -209,13 +209,17 @@ impl ControlPlane {
         key: RosterKey,
         value: Option<Vec<u8>>,
     ) {
-        self.push_event(match key {
+        let event = match key {
             RosterKey::Agent => Event::AgentMetadata { terminal_id, value },
-            RosterKey::Asked => Event::AgentAskedState {
-                terminal_id,
-                asked: asked_level(value.as_ref()),
-            },
-        });
+            RosterKey::Asked => {
+                let asked = asked_level(value.as_ref());
+                if !asked {
+                    self.live_asks.remove(&terminal_id);
+                }
+                Event::AgentAskedState { terminal_id, asked }
+            }
+        };
+        self.push_event(event);
     }
 
     /// Preserve extension frames exactly once. Only our own read correlations

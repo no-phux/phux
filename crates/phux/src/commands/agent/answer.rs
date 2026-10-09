@@ -20,17 +20,13 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use phux_client::agent_prompt::{ApplyVerdict, supports_acknowledged_input};
-use phux_client::ask::{AskMarker, deliver_answer, parse_ask_title};
+use phux_client::ask::{AskMarker, MAX_ANSWER_BYTES, deliver_answer, parse_ask_title};
 use phux_client::attach::connection::Connection;
 use phux_protocol::ids::InputOperationId;
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::json_err::codes;
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target_for_input};
-
-/// Longest answer this verb will type, in bytes (the ask side's own ceiling);
-/// longer is prose, for `phux agent prompt`.
-const MAX_ANSWER_BYTES: usize = 4096;
 
 /// A refusal: code, diagnostic, remedy, and exit status, decided together.
 #[derive(Debug)]
