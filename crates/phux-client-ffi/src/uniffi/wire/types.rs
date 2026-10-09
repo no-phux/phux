@@ -586,6 +586,32 @@ pub enum WireEvent {
         /// Whether `attention` was declared, derived, or an unsupported word.
         attention_reading: AgentAttentionReading,
     },
+    /// Records from an agent session (ADR-0103): the `AgentSession`
+    /// resource `agent_session_id`, running in the pane
+    /// `parent_terminal_id`, streams `AgentEventsJsonlV1` records, and the
+    /// bridge subscribes every one whose pane this connection streams.
+    /// `jsonl` holds zero or more complete records, one JSON object per
+    /// line (`{"seq","ts_ms","type","data"}`; key order is not
+    /// significant), including the `phux.transcript/v1` entries
+    /// `provider_raw` records carry (ADR-0156). `seq` is the newest
+    /// record's server-assigned sequence, 0 when there is none.
+    ///
+    /// `Retained` is the session's whole retained stream: replace every
+    /// record held for it. It arrives once per subscription, again after a
+    /// reconnect or a resync. `Live` appends one live output frame.
+    /// `Closed` has no records: the session ended, nothing follows, and
+    /// its records may be dropped. `parent_terminal_id`, `provider` and
+    /// `native_id` repeat the server's catalog on every event, so a
+    /// consumer needs no topology join.
+    AgentRecords {
+        agent_session_id: String,
+        parent_terminal_id: Option<String>,
+        provider: Option<String>,
+        native_id: Option<String>,
+        kind: AgentRecordsKind,
+        seq: u64,
+        jsonl: String,
+    },
     /// The server reported an ERROR frame.
     ServerError { message: String },
     /// The transport dropped; the runtime is reconnecting. Delivered only by
@@ -597,6 +623,17 @@ pub enum WireEvent {
     /// questions, attention, input fences) resets here, not at an ordinary
     /// `TopologyChanged`. Delivered only by `take_publication`.
     ConnectionOpened { connection_epoch: u64 },
+}
+
+/// What a `WireEvent::AgentRecords` carries.
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentRecordsKind {
+    /// The whole retained stream; replaces every record held.
+    Retained,
+    /// One live output frame, appended.
+    Live,
+    /// The session ended; no records follow.
+    Closed,
 }
 
 /// One coherent sample of the session for a polling UI (`take_publication`):

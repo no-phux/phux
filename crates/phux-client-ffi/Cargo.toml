@@ -98,9 +98,9 @@ napi = ["dep:napi", "dep:napi-derive"]
 libghostty-vt.workspace = true
 phux-client-core = { workspace = true, features = ["native-engine"] }
 phux-protocol.workspace = true
-# The kernel hands the bridge decoded AgentEventsJsonlV1 records; the C ABI
-# carries them as JSON lines again, so the same workspace-pinned encoder
-# re-emits them. No new crate enters the lockfile.
+# The kernel hands the bridge decoded AgentEventsJsonlV1 records; both the C
+# ABI and the UniFFI surface carry them as JSON lines again, so the same
+# workspace-pinned encoder re-emits them. No new crate enters the lockfile.
 serde_json.workspace = true
 # The C ABI re-encodes the bridge's decoded records as JSON-line bytes.
 # Optional: `c-abi` only, see [features].

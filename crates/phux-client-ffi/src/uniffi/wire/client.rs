@@ -12,6 +12,8 @@ use phux_client_runtime::control::{Observation, SpawnRequest};
 use crate::uniffi::engine;
 
 #[cfg(test)]
+mod agent_records;
+#[cfg(test)]
 mod quic_live;
 mod search;
 mod selection;
@@ -170,6 +172,9 @@ pub struct RemoteClient {
     input_deliveries: Mutex<Vec<WireInputDelivery>>,
     authoritative_damage: Mutex<HashSet<ResourceId>>,
     generations: Mutex<HashMap<ResourceId, u64>>,
+    /// Every `AgentSession` resource lowered as `WireEvent::AgentRecords`:
+    /// a second close the server sends for one is not a pane closing.
+    agent_sessions: Mutex<HashSet<ResourceId>>,
 }
 
 #[uniffi::export]
@@ -328,6 +333,7 @@ impl RemoteClient {
                 scrollback_lines: SCROLLBACK_LINES,
                 attach: None,
                 attach_role: self.attach_role(),
+                subscribe_agent_sessions: true,
                 ..phux_client_runtime::control::ControlOptions::default()
             },
             connect: ConnectOptions::default(),
@@ -753,6 +759,7 @@ impl RemoteClient {
             input_deliveries: Mutex::new(Vec::new()),
             authoritative_damage: Mutex::new(HashSet::new()),
             generations: Mutex::new(HashMap::new()),
+            agent_sessions: Mutex::new(HashSet::new()),
         })
     }
 }
@@ -940,6 +947,11 @@ impl RemoteClient {
     /// bookkeeping) or a fact with no Swift
     /// vocabulary.
     fn project_event(&self, event: Event, projected: &mut Vec<WireEvent>) {
+        if let Event::TerminalClosed { terminal_id, .. } = &event
+            && self.agent_sessions.lock().unwrap().contains(terminal_id)
+        {
+            return;
+        }
         let event = match event::terminal_signal(event) {
             Ok(signal) => return projected.extend(Option::<WireEvent>::from(signal)),
             Err(event) => event,
@@ -997,7 +1009,53 @@ impl RemoteClient {
             Event::TerminalsClosed { request_id, error } => {
                 projected.push(WireEvent::TerminalsClosed { request_id, error });
             }
+            Event::AgentRecords {
+                terminal_id,
+                records,
+                retained,
+                session,
+            } => {
+                let kind = if retained {
+                    AgentRecordsKind::Retained
+                } else {
+                    AgentRecordsKind::Live
+                };
+                let seq = records.last().map_or(0, |record| record.seq);
+                let jsonl = crate::projection::agent_records::jsonl(&records);
+                projected.push(self.agent_records(terminal_id, session, kind, seq, jsonl));
+            }
+            Event::AgentSessionClosed {
+                terminal_id,
+                session,
+            } => projected.push(self.agent_records(
+                terminal_id,
+                session,
+                AgentRecordsKind::Closed,
+                0,
+                String::new(),
+            )),
             _ => {}
+        }
+    }
+
+    fn agent_records(
+        &self,
+        terminal_id: ResourceId,
+        session: phux_client_runtime::control::AgentSessionInfo,
+        kind: AgentRecordsKind,
+        seq: u64,
+        jsonl: String,
+    ) -> WireEvent {
+        let agent_session_id = id::encode(&terminal_id);
+        self.agent_sessions.lock().unwrap().insert(terminal_id);
+        WireEvent::AgentRecords {
+            agent_session_id,
+            parent_terminal_id: session.parent.as_ref().map(id::encode),
+            provider: session.provider,
+            native_id: session.native_id,
+            kind,
+            seq,
+            jsonl,
         }
     }
 }
