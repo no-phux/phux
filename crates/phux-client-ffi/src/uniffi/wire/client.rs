@@ -506,6 +506,40 @@ impl RemoteClient {
         let _ = self.with_terminal(&terminal_id, Client::kill_terminal);
     }
 
+    /// Write one client-owned `Global` metadata key (L3 §3): the push grant
+    /// `phux.push/v1/<device>` (ADR-0155), or any key the server stores as
+    /// an ordinary value. Returns the request id, or 0 when offline (nothing
+    /// is sent then). `SET_METADATA` has no success reply on the wire; a
+    /// writer that needs confirmation reads the key back.
+    pub fn set_global_metadata(&self, key: String, value: Vec<u8>) -> u32 {
+        let Some(client) = self.runtime_client() else {
+            return 0;
+        };
+        let request_id = client.next_request_id();
+        client.queue_frame(&phux_protocol::wire::frame::FrameKind::SetMetadata {
+            request_id,
+            scope: phux_protocol::wire::frame::Scope::Global,
+            key,
+            value,
+        });
+        request_id
+    }
+
+    /// Delete one client-owned `Global` metadata key. Returns the request
+    /// id, or 0 when offline.
+    pub fn delete_global_metadata(&self, key: String) -> u32 {
+        let Some(client) = self.runtime_client() else {
+            return 0;
+        };
+        let request_id = client.next_request_id();
+        client.queue_frame(&phux_protocol::wire::frame::FrameKind::DeleteMetadata {
+            request_id,
+            scope: phux_protocol::wire::frame::Scope::Global,
+            key,
+        });
+        request_id
+    }
+
     /// Close several panes as one all-or-nothing `CLOSE_TAB_RESOURCES`
     /// (a whole session, say: its panes from `topology()`). Returns the
     /// request id the `WireEvent::TerminalsClosed` reply correlates by, or
@@ -1077,6 +1111,11 @@ mod tests {
             WireResizeOutcome::Unavailable
         );
         assert_eq!(remote.close_terminals(vec!["1".into(), "2".into()]), 0);
+        assert_eq!(
+            remote.set_global_metadata("phux.push/v1/d".into(), b"{}".to_vec()),
+            0
+        );
+        assert_eq!(remote.delete_global_metadata("phux.push/v1/d".into()), 0);
         assert!(matches!(
             remote.projection_selection_text("1".into()),
             Err(search::SearchError::Unavailable)

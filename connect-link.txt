@@ -1,0 +1,1 @@
+https://phux.sh/connect?url=wss://100.121.38.91:8787&quic=quic://100.121.38.91:8788&name=powerhouse&fp=E9:63:5D:1F:93:FD:03:60:D6:AF:03:C9:D2:52:9E:A0:12:47:B3:29:04:18:7F:7C:5F:01:29:54:CF:91:37:28&token=13bccb8df2bdd21b28f5cdeb61651144b6f3f0e65cd286319e465dd0bdc80f06
