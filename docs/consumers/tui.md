@@ -533,8 +533,20 @@ selection.
 Enter copies the current selection and exits. Esc exits without copying.
 A left-button drag inside the pane selects and, on release, copies and
 exits; a click with no drag exits, so a mouse-initiated entry cannot
-trap the keyboard. The wheel scrolls the local viewport. Resizing the
-terminal **keeps** copy-mode open and adopts the new size.
+trap the keyboard. As in Ghostty, a double-click copies the word under the
+pointer, a triple-click the whole line, and an Alt-drag selects a rectangle
+(block). Repeat clicks count when they land on the same cell within 500 ms.
+The wheel scrolls the local viewport. Resizing the terminal **keeps**
+copy-mode open and adopts the new size.
+
+## Paste protection
+
+A paste the focused pane would receive as typed input asks first, following
+Ghostty's `clipboard-paste-protection`: when the pane's program has not
+enabled bracketed paste (DEC 2004) and the text contains a line break (each
+one would press Enter), or whenever the text contains the bracketed-paste
+terminator `ESC [ 201 ~`. A modal names what would happen; Enter or `y`
+delivers the paste, Esc or `n` drops it. Other pastes go straight through.
 
 ## Command palette, pickers, and settings
 

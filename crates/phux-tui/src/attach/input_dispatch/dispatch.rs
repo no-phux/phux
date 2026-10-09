@@ -9,6 +9,7 @@ use phux_protocol::input::InputEvent;
 use phux_protocol::input::focus::FocusEvent;
 use phux_protocol::input::key::{ModSet, PhysicalKey};
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
+use phux_protocol::input::paste::PasteEvent;
 use phux_protocol::wire::frame::FrameKind;
 
 use crate::attach::actions::{self, PendingSplit};
@@ -242,6 +243,12 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         }
         if is_key_press(&ev) && self.snap_focused_viewport() {
             change.layout_changed = true;
+        }
+        if let InputEvent::Paste(paste) = &ev
+            && self.hold_unsafe_paste(paste)
+        {
+            change.layout_changed = true;
+            return Ok(change);
         }
         change.predicted = self.feed_predict(&ev);
         change.layout_changed |= self.forward_to_focused_pane(ev).await?;
@@ -485,6 +492,9 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
                 // The cursor, selection, or viewport moved: repaint.
                 Ok(true)
             }
+            OverlayOutcome::Paste(paste) => {
+                self.forward_to_focused_pane(InputEvent::Paste(paste)).await
+            }
             // Overlay consumed the event but nothing else to do.
             OverlayOutcome::None => Ok(false),
         }
@@ -547,6 +557,31 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
                 slot.renderer.read_grapheme_at(walk, r, c).ok().flatten()
             });
         matches!(outcome, PredictionOutcome::Predicted)
+    }
+
+    /// Ghostty's paste protection: a paste the focused pane would take as
+    /// typed input (see [`crate::attach::paste_safety`]) waits behind a
+    /// confirmation overlay instead of reaching the pane.
+    fn hold_unsafe_paste(&mut self, paste: &PasteEvent) -> bool {
+        let Some(pane) = self.input_target() else {
+            return false;
+        };
+        let bracketed = published_terminal(self.ctx.engine_kernel, &pane)
+            .and_then(|terminal| terminal.mode(Mode::BRACKETED_PASTE).ok())
+            .unwrap_or(false);
+        if !crate::attach::paste_safety::needs_confirmation(&paste.data, bracketed) {
+            return false;
+        }
+        let lines = crate::attach::paste_safety::line_count(&paste.data);
+        self.ctx
+            .overlays
+            .push(Box::new(crate::render::overlay::PasteConfirmOverlay::new(
+                paste.clone(),
+                lines,
+                bracketed,
+                self.ctx.theme,
+            )));
+        true
     }
 
     /// Forward key/focus/paste input to the focused pane (ADR-0019). Input
