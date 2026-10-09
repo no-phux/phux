@@ -8,19 +8,19 @@
             <row cross="center" gap="8">
               <icon name="folder-open" width="16" height="16" />
               <text grow="1" size="heading">{navigatorTitle}</text>
-              <button size="sm" variant="ghost" on-press="agents_open">Agents</button>
+              <if test="{navigatorBrowse}"><button size="sm" variant="ghost" on-press="agents_open">Agents</button></if>
               <button size="sm" variant="ghost" icon="x" label="Close navigator" on-press="palette_close" />
 
             </row>
             <if test="{navigatorView == 4}"><text foreground="text_muted" overflow="ellipsis">{title}</text></if>
-            <tabs gap="4" label="Navigator views">
+            <if test="{navigatorBrowse}"><tabs gap="4" label="Navigator views">
               <button size="sm" variant="ghost" selected="{navigatorView == 0}" on-press="palette_open">All work</button>
               <button size="sm" variant="ghost" selected="{navigatorView == 1}" on-press="sessions_open">Sessions</button>
               <button size="sm" variant="ghost" selected="{navigatorView == 2}" on-press="machines_open">Machines</button>
               <button size="sm" variant="ghost" selected="{navigatorView == 3}" on-press="windows_open">Windows</button>
               <spacer grow="1" />
               <button size="sm" variant="ghost" selected="{navigatorView == 4}" on-press="commands_open">Commands</button>
-            </tabs>
+            </tabs></if>
             <if test="{navigatorView == 4}"><input text="{palettequery}" placeholder="Type a command" autofocus="true" on-input="palette_edit" on-submit="palette_submit" label="Search commands" /></if>
             <else><input text="{palettequery}" placeholder="Search by name, machine or directory" autofocus="true" on-input="palette_edit" on-submit="palette_submit" label="Search navigator" /></else>
             <scroll grow="1" value="{navigatorScroll}" on-scroll="navigator_scrolled" label="Navigator results">

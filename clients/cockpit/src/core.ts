@@ -331,6 +331,9 @@ export interface Model {
   /// stay in the footer once a destination has rows.
   readonly navigatorNoticeInResults: boolean;
   readonly navigatorNoticeInFooter: boolean;
+  /// Sessions, Machines, and Windows open as one destination. All work and
+  /// Commands keep the view strip and the Agents button.
+  readonly navigatorBrowse: boolean;
   /// Connect to Host (remote-hosts.ts): an app-wide modal like the switcher,
   /// presented in whichever window invoked it (the snapshot's active window).
   /// `hostQuery` survives a failure so a retry is one keystroke;
@@ -2718,6 +2721,7 @@ export function initialModel(): [Model, Cmd<Msg>] {
       paletteNotice: NO_BYTES,
       navigatorNoticeInResults: false,
       navigatorNoticeInFooter: false,
+      navigatorBrowse: true,
       hostOpen: false,
       toolPurpose: 0,
       toolToken: NO_BYTES,
@@ -5272,8 +5276,9 @@ function placeNavigatorNotice(model: Model): Model {
   const show = model.paletteOpen && model.paletteNotice.length > 0;
   const inResults = show && (model.paletteLoading || navigatorListEmpty(model));
   const inFooter = show && !inResults;
-  if (model.navigatorNoticeInResults === inResults && model.navigatorNoticeInFooter === inFooter) return model;
-  return { ...model, navigatorNoticeInResults: inResults, navigatorNoticeInFooter: inFooter };
+  const browse = !model.paletteOpen || model.navigatorView === 0 || model.navigatorView === 4;
+  if (model.navigatorNoticeInResults === inResults && model.navigatorNoticeInFooter === inFooter && model.navigatorBrowse === browse) return model;
+  return { ...model, navigatorNoticeInResults: inResults, navigatorNoticeInFooter: inFooter, navigatorBrowse: browse };
 }
 
 function presentNavigatorNotice(planned: UpdatePlan): UpdatePlan {

@@ -61,6 +61,18 @@ test('CmdK opens the searchable Sessions switcher', () => {
   assert.equal(model.paletteLoading, true);
   assert.equal(model.navigatorNoticeInResults, true);
   assert.equal(model.navigatorNoticeInFooter, false);
+  assert.equal(model.navigatorBrowse, false);
+});
+
+test('All work and Commands keep the destination strip', () => {
+  for (const name of ['tabs.palette', 'commands.open']) {
+    const [model] = step(initialModel()[0], commandMsg(name));
+    assert.equal(model.navigatorBrowse, true, name);
+  }
+  for (const name of ['navigator.machines', 'navigator.windows']) {
+    const [model] = step(initialModel()[0], commandMsg(name));
+    assert.equal(model.navigatorBrowse, false, name);
+  }
 });
 
 test('an empty command search keeps its notice in the results and a match keeps the key hint in the footer', () => {

@@ -9637,11 +9637,21 @@ test "compiled navigator destinations are one exclusive segmented control in the
         var built = try measureWindow(&rig.app_state.model, 0, .init(1100, 640));
         defer built.arena.deinit();
         try std.testing.expectEqual(@as(usize, 1), overlayKindCount(built.measured, .dialog));
+        const focused = case.view >= 1 and case.view <= 3;
+        try std.testing.expectEqual(!focused, rig.app_state.model.navigatorBrowse);
         var segments: usize = 0;
+        var saw_views = false;
         for (built.measured.nodes) |entry| {
             if (entry.widget.kind == .segmented_control) segments += 1;
+            if (std.mem.eql(u8, entry.widget.semantics.label, "Navigator views")) saw_views = true;
         }
-        // Five destination buttons plus their one owning Tabs register.
+        if (focused) {
+            try std.testing.expect(!saw_views);
+            try std.testing.expect(findWidgetByText(built.measured, .segmented_control, case.label) == null);
+            continue;
+        }
+        // Commands keeps the strip: five destination buttons plus their Tabs register.
+        try std.testing.expect(saw_views);
         try std.testing.expectEqual(@as(usize, 6), segments);
         const selected = findWidgetByText(built.measured, .segmented_control, case.label) orelse
             return error.TestExpectedNavigatorDestination;
@@ -9844,6 +9854,7 @@ test "shipping overlays use SDK dialog and sheet shells with owner geometry" {
 
     try rig.dispatch(.host_open);
     try expectSingleOverlay(&rig.app_state.model, 0, .dialog, .host_close, "Machine destination");
+    try std.testing.expect(engineInputSuspended());
     var purpose_two = rig.app_state.model;
     purpose_two.toolPurpose = 2;
     try expectSingleOverlay(&purpose_two, 0, .dialog, .host_close, "Choose Editor in Settings");
@@ -9851,10 +9862,12 @@ test "shipping overlays use SDK dialog and sheet shells with owner geometry" {
 
     try rig.dispatch(.dir_open);
     try expectSingleOverlay(&rig.app_state.model, 0, .dialog, .dir_close, "Filter directories");
+    try std.testing.expect(engineInputSuspended());
     try rig.dispatch(.dir_close);
 
     try rig.dispatch(.rename_open);
     try expectSingleOverlay(&rig.app_state.model, 0, .dialog, .rename_close, "New session name");
+    try std.testing.expect(engineInputSuspended());
     try rig.dispatch(.rename_close);
 
     try rig.dispatch(.settings_open);
@@ -9865,8 +9878,14 @@ test "shipping overlays use SDK dialog and sheet shells with owner geometry" {
     try std.testing.expect(!rig.app_state.model.settingsOpen);
 
     try rig.dispatch(.agents_open);
-    try expectSingleOverlay(&rig.app_state.model, 0, .sheet, .palette_close, "Refresh");
+    try expectSingleOverlay(&rig.app_state.model, 0, .dialog, .palette_close, "Refresh");
+    try std.testing.expect(engineInputSuspended());
     try rig.dispatch(.palette_close);
+}
+
+fn engineInputSuspended() bool {
+    const engine = bridge.engine orelse return false;
+    return engine.input_suspended;
 }
 
 test "agentsessionreplace shipping Sessions command retires the Agents inspector" {
@@ -9892,6 +9911,12 @@ test "agentsessionreplace shipping Sessions command retires the Agents inspector
     try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.navigatorView);
     try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "Search navigator"));
     try std.testing.expect(!try compiledViewHasLabel(&rig.app_state.model, 0, "Agent inspection details"));
+    try std.testing.expect(!rig.app_state.model.navigatorBrowse);
+    try std.testing.expect(!try compiledViewHasLabel(&rig.app_state.model, 0, "Navigator views"));
+
+    try rig.dispatch(.palette_open);
+    try std.testing.expect(rig.app_state.model.navigatorBrowse);
+    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "Navigator views"));
 }
 
 test "shipping empty session stays inline in terminal space without modal semantics" {
