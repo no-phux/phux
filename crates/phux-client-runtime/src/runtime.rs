@@ -554,6 +554,12 @@ impl Client {
             .with(|control| control.acquire_input(terminal_id, seize))
     }
 
+    /// Install or clear the client-side terminal theme; see
+    /// [`crate::control::ControlPlane::set_terminal_theme`].
+    pub fn set_terminal_theme(&self, theme: Option<crate::engine::TerminalTheme>) {
+        self.inner.with(|control| control.set_terminal_theme(theme));
+    }
+
     /// Release the terminal's input lease; see
     /// [`crate::control::ControlPlane::release_input`].
     #[must_use]

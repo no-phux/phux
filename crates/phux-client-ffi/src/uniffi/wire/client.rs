@@ -167,6 +167,9 @@ pub struct RemoteClient {
     /// Whether every `ATTACH` declares the watch-only role (ADR-0127), set
     /// by [`RemoteClient::set_attach_viewer`].
     attach_viewer: Mutex<bool>,
+    /// The client-side terminal theme (ADR-0157), set by
+    /// [`RemoteClient::set_terminal_theme`] and carried into every connect.
+    terminal_theme: Mutex<Option<phux_client_runtime::engine::TerminalTheme>>,
     client: Mutex<Option<Client>>,
     listener: Mutex<Option<Arc<dyn WireListener>>>,
     input_deliveries: Mutex<Vec<WireInputDelivery>>,
@@ -341,7 +344,25 @@ impl RemoteClient {
         if let Some(listener) = self.listener.lock().unwrap().clone() {
             client.set_listener(Arc::new(ListenerProjection(listener)));
         }
+        if let Some(theme) = *self.terminal_theme.lock().unwrap() {
+            client.set_terminal_theme(Some(theme));
+        }
         *slot = Some(client);
+        Ok(())
+    }
+
+    /// Install (or clear, with `None`) the client-side terminal theme
+    /// (ADR-0157): palette 0..=15 and the default foreground, background,
+    /// and cursor every grid is resolved with. An application's OSC colour
+    /// changes still win. Applies immediately when connected and to every
+    /// later `connect`. Fails, changing nothing, unless `ansi16` holds
+    /// exactly sixteen colours.
+    pub fn set_terminal_theme(&self, theme: Option<WireTerminalTheme>) -> Result<(), WireError> {
+        let theme = theme.map(TryInto::try_into).transpose()?;
+        *self.terminal_theme.lock().unwrap() = theme;
+        if let Some(client) = self.runtime_client() {
+            client.set_terminal_theme(theme);
+        }
         Ok(())
     }
 
@@ -785,6 +806,7 @@ impl RemoteClient {
             learned_authority: Arc::new(Mutex::new(None)),
             client_identity: Mutex::new(phux_client_runtime::TlsClientIdentity::None),
             attach_viewer: Mutex::new(false),
+            terminal_theme: Mutex::new(None),
             client: Mutex::new(None),
             listener: Mutex::new(None),
             input_deliveries: Mutex::new(Vec::new()),

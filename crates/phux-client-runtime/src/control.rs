@@ -392,6 +392,7 @@ pub struct ControlPlane {
     engine: Option<EngineHandle>,
     engine_config: Option<EngineConfig>,
     history_config: Option<HistoryCacheConfig>,
+    terminal_theme: Option<crate::engine::TerminalTheme>,
     #[cfg(feature = "engine")]
     publication: Arc<Publication>,
     topology: Option<Topology>,
@@ -482,6 +483,7 @@ impl ControlPlane {
             engine: None,
             engine_config: None,
             history_config: None,
+            terminal_theme: None,
             #[cfg(feature = "engine")]
             publication: Arc::new(Publication::new()),
             topology: None,
@@ -532,6 +534,17 @@ impl ControlPlane {
     /// through its runtime client rather than a builder.
     pub fn set_history_config(&mut self, config: HistoryCacheConfig) {
         self.history_config = Some(config.normalized());
+    }
+
+    /// Install (or clear, with `None`) the client-side terminal theme
+    /// (ADR-0157). It applies to every replica now and on every later
+    /// connection, and outlives reconnects; an application's own OSC colour
+    /// changes still win over it.
+    pub fn set_terminal_theme(&mut self, theme: Option<crate::engine::TerminalTheme>) {
+        self.terminal_theme = theme;
+        if let Some(engine) = &self.engine {
+            engine.set_terminal_theme(theme);
+        }
     }
 
     // ----- observation -------------------------------------------------

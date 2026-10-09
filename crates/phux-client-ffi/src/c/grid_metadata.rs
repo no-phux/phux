@@ -9,7 +9,9 @@ use phux_client_core::grid::{self, CursorWidth};
 use phux_client_runtime::publication::{GridFrame, Rgb};
 
 use crate::c::error::{BridgeError, check_struct, terminal_id_in};
-use crate::c::{ABI_VERSION, PhuxClient, PhuxClientResult, PhuxResourceId, with_client_ref};
+use crate::c::{
+    ABI_VERSION, PhuxClient, PhuxClientResult, PhuxResourceId, with_client_mut, with_client_ref,
+};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -179,4 +181,135 @@ pub unsafe extern "C" fn phux_client_terminal_grid_metadata(
         unsafe { out_metadata.write(cache.metadata.view) };
         Ok(())
     })
+}
+
+/// Client-side terminal colours (ADR-0157): palette entries 0..=15 plus the
+/// default foreground, background, and cursor.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PhuxTerminalTheme {
+    /// `size_of::<PhuxTerminalTheme>()`.
+    pub size: usize,
+    /// [`ABI_VERSION`].
+    pub version: u32,
+    /// Palette entries 0..=15.
+    pub ansi16: [PhuxGridRgb; 16],
+    /// Default foreground.
+    pub foreground: PhuxGridRgb,
+    /// Default background.
+    pub background: PhuxGridRgb,
+    /// Default cursor colour.
+    pub cursor: PhuxGridRgb,
+}
+
+impl From<&PhuxTerminalTheme> for phux_client_runtime::engine::TerminalTheme {
+    fn from(theme: &PhuxTerminalTheme) -> Self {
+        let rgb = |c: PhuxGridRgb| [c.r, c.g, c.b];
+        Self {
+            ansi16: theme.ansi16.map(rgb),
+            foreground: rgb(theme.foreground),
+            background: rgb(theme.background),
+            cursor: rgb(theme.cursor),
+        }
+    }
+}
+
+/// Install (non-null `theme`) or clear (null) the client-side terminal theme.
+///
+/// The colours become every replica's defaults now and on every later
+/// connection; an application's OSC 4 / 10 / 11 / 12 still override them and
+/// OSC 104 / 110 / 111 / 112 revert to the theme. Cleared, the grid metadata
+/// reports `has_foreground` / `has_background` false again, so the renderer's
+/// own fallback applies. Visible terminals republish with the new colours.
+///
+/// # Safety
+///
+/// `client` must be live on its owning thread. A non-null `theme` must be
+/// readable for its `size` and `version` fields, and for the whole struct
+/// when those pass validation.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_set_terminal_theme(
+    client: *mut PhuxClient,
+    theme: *const PhuxTerminalTheme,
+) -> PhuxClientResult {
+    with_client_mut(client, |client| {
+        let theme = if theme.is_null() {
+            None
+        } else {
+            // SAFETY: the caller promises readable size/version fields.
+            let (size, version) = unsafe { ((*theme).size, (*theme).version) };
+            check_struct(size, size_of::<PhuxTerminalTheme>(), version)?;
+            // SAFETY: validated as a whole struct above.
+            Some(phux_client_runtime::engine::TerminalTheme::from(unsafe {
+                &*theme
+            }))
+        };
+        client.runtime.set_terminal_theme(theme);
+        Ok(())
+    })
+}
+
+#[cfg(test)]
+mod theme_tests {
+    use super::*;
+    use crate::c::phux_client_free;
+    use crate::c::test_support::new_client;
+
+    fn theme() -> PhuxTerminalTheme {
+        PhuxTerminalTheme {
+            size: size_of::<PhuxTerminalTheme>(),
+            version: ABI_VERSION,
+            ansi16: std::array::from_fn(|i| {
+                let v = u8::try_from(i).expect("16 entries");
+                PhuxGridRgb { r: v, g: v, b: v }
+            }),
+            foreground: PhuxGridRgb {
+                r: 250,
+                g: 250,
+                b: 250,
+            },
+            background: PhuxGridRgb {
+                r: 10,
+                g: 10,
+                b: 10,
+            },
+            cursor: PhuxGridRgb { r: 200, g: 0, b: 0 },
+        }
+    }
+
+    #[test]
+    fn a_theme_is_validated_converted_and_clearable() {
+        let client = new_client();
+        let good = theme();
+        assert_eq!(
+            unsafe { phux_client_set_terminal_theme(client, &raw const good) },
+            PhuxClientResult::Ok
+        );
+        assert_eq!(
+            unsafe { phux_client_set_terminal_theme(client, ptr::null()) },
+            PhuxClientResult::Ok
+        );
+        let mut stale = theme();
+        stale.version = ABI_VERSION + 1;
+        assert_eq!(
+            unsafe { phux_client_set_terminal_theme(client, &raw const stale) },
+            PhuxClientResult::InvalidArgument
+        );
+        let mut short = theme();
+        short.size = size_of::<usize>();
+        assert_eq!(
+            unsafe { phux_client_set_terminal_theme(client, &raw const short) },
+            PhuxClientResult::InvalidArgument
+        );
+        assert_eq!(
+            unsafe { phux_client_set_terminal_theme(ptr::null_mut(), &raw const good) },
+            PhuxClientResult::InvalidArgument
+        );
+        unsafe { phux_client_free(client) };
+
+        let converted = phux_client_runtime::engine::TerminalTheme::from(&good);
+        assert_eq!(converted.ansi16[7], [7, 7, 7]);
+        assert_eq!(converted.background, [10, 10, 10]);
+        assert_eq!(converted.cursor, [200, 0, 0]);
+    }
 }
