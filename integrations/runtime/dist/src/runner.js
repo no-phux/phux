@@ -14,8 +14,18 @@ export const nodeProcessRunner = (request) => new Promise((resolve, reject) => {
         env: request.env,
         shell: false,
         detached: true,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: [request.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
     });
+    if (request.stdin !== undefined && child.stdin !== null) {
+        // A child that exits without reading must not fail the run with EPIPE.
+        child.stdin.on("error", () => { });
+        child.stdin.end(request.stdin);
+    }
+    const { stdout, stderr } = child;
+    if (stdout === null || stderr === null) {
+        reject(new Error("phux subprocess started without output pipes"));
+        return;
+    }
     const stdoutChunks = [];
     const stderrChunks = [];
     let stdoutBytes = 0;
@@ -33,7 +43,7 @@ export const nodeProcessRunner = (request) => new Promise((resolve, reject) => {
         forceKill = setTimeout(() => killProcessGroup(child, "SIGKILL"), 1_000);
         forceKill.unref();
     };
-    child.stdout.on("data", (chunk) => {
+    stdout.on("data", (chunk) => {
         if (termination !== "completed")
             return;
         const remaining = maxStdoutBytes - stdoutBytes;
@@ -47,7 +57,7 @@ export const nodeProcessRunner = (request) => new Promise((resolve, reject) => {
         stdoutChunks.push(chunk);
         stdoutBytes += chunk.length;
     });
-    child.stderr.on("data", (chunk) => {
+    stderr.on("data", (chunk) => {
         if (termination !== "completed")
             return;
         const remaining = maxStderrBytes - stderrBytes;

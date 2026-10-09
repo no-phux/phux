@@ -225,3 +225,9 @@ export declare class AgentSessionEmitter {
     finish(options?: ExecutionOptions): Promise<void>;
     private open;
 }
+/**
+ * JSON for a record's data with every lone UTF-16 surrogate replaced by
+ * U+FFFD. `JSON.stringify` writes a lone surrogate as a `\ud8xx` escape that a
+ * strict UTF-8 parser (the phux CLI's) refuses, which would drop the record.
+ */
+export declare function wellFormedJson(value: unknown): string;

@@ -36,8 +36,17 @@ var nodeProcessRunner = (request) => new Promise((resolve, reject) => {
     env: request.env,
     shell: false,
     detached: true,
-    stdio: ["ignore", "pipe", "pipe"]
+    stdio: [request.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"]
   });
+  if (request.stdin !== undefined && child.stdin !== null) {
+    child.stdin.on("error", () => {});
+    child.stdin.end(request.stdin);
+  }
+  const { stdout, stderr } = child;
+  if (stdout === null || stderr === null) {
+    reject(new Error("phux subprocess started without output pipes"));
+    return;
+  }
   const stdoutChunks = [];
   const stderrChunks = [];
   let stdoutBytes = 0;
@@ -55,7 +64,7 @@ var nodeProcessRunner = (request) => new Promise((resolve, reject) => {
     forceKill = setTimeout(() => killProcessGroup(child, "SIGKILL"), 1000);
     forceKill.unref();
   };
-  child.stdout.on("data", (chunk) => {
+  stdout.on("data", (chunk) => {
     if (termination !== "completed")
       return;
     const remaining = maxStdoutBytes - stdoutBytes;
@@ -69,7 +78,7 @@ var nodeProcessRunner = (request) => new Promise((resolve, reject) => {
     stdoutChunks.push(chunk);
     stdoutBytes += chunk.length;
   });
-  child.stderr.on("data", (chunk) => {
+  stderr.on("data", (chunk) => {
     if (termination !== "completed")
       return;
     const remaining = maxStderrBytes - stderrBytes;
@@ -914,14 +923,15 @@ class PhuxCli {
       if (typeof options.data !== "object" || Array.isArray(options.data)) {
         throw new TypeError("data must be a JSON object");
       }
-      args.push("--data", JSON.stringify(options.data));
+      args.push("--data", "-");
     }
+    const stdin = options.data === undefined ? undefined : wellFormedJson(options.data);
     args.push("--json");
     this.pushSocket(args);
     const started = Date.now();
     for (let attempt = 0;; attempt += 1) {
       try {
-        return await this.jsonCommand("agent emit", args, options, parseAgentEmitResult);
+        return await this.jsonCommand("agent emit", args, options, parseAgentEmitResult, stdin);
       } catch (error) {
         const delay = Math.min(UPGRADE_RETRY_BASE_MS * 2 ** attempt, UPGRADE_RETRY_MAX_DELAY_MS);
         if (!isUpgradeSealRefusal(error) || Date.now() - started + delay > UPGRADE_RETRY_BUDGET_MS) {
@@ -1163,14 +1173,14 @@ class PhuxCli {
       ended: result.termination === "completed"
     };
   }
-  async jsonCommand(verb, args, options, parser) {
-    const result = await this.completed(verb, args, options, false);
+  async jsonCommand(verb, args, options, parser, stdin) {
+    const result = await this.completed(verb, args, options, false, stdin);
     return parseJson(verb, this.executable, result.stdout, args, parser);
   }
-  async completed(verb, args, options, allowNonzero) {
+  async completed(verb, args, options, allowNonzero, stdin) {
     let result;
     try {
-      result = await this.execute(args, options);
+      result = await this.execute(args, options, stdin);
     } catch (cause) {
       const message = isMissingExecutable(cause) ? `phux executable ${JSON.stringify(this.executable)} was not found; install phux or configure its absolute path` : `could not start phux executable ${JSON.stringify(this.executable)}: ${errorText(cause)}`;
       throw new PhuxError("unavailable", message, {
@@ -1184,7 +1194,7 @@ class PhuxCli {
     }
     return result;
   }
-  execute(args, options) {
+  execute(args, options, stdin) {
     const request = {
       executable: this.executable,
       args,
@@ -1193,7 +1203,8 @@ class PhuxCli {
       ...options.signal === undefined ? {} : { signal: options.signal },
       timeoutMs: options.timeoutMs ?? 1e4,
       maxStdoutBytes: this.maxStdoutBytes,
-      maxStderrBytes: this.maxStderrBytes
+      maxStderrBytes: this.maxStderrBytes,
+      ...stdin === undefined ? {} : { stdin }
     };
     return this.runner(request);
   }
@@ -1558,6 +1569,10 @@ class AgentSessionEmitter {
     }
     await this.emit("session_start", { provider: this.provider, native_id: nativeId }, options);
   }
+}
+var LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
+function wellFormedJson(value) {
+  return JSON.stringify(value, (_key, item) => typeof item === "string" ? item.replace(LONE_SURROGATE, "\uFFFD") : item);
 }
 
 // ../runtime/src/awareness.ts

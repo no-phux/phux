@@ -18,6 +18,16 @@ test("node runner passes metacharacters as literal argv without a shell", async 
   assert.equal(result.stdout, literal);
 });
 
+test("node runner writes stdin and closes it", async () => {
+  const result = await nodeProcessRunner({
+    executable: process.execPath,
+    args: ["-e", "process.stdin.pipe(process.stdout)"],
+    stdin: "{\"text\":\"é😀\"}",
+  });
+  assert.equal(result.termination, "completed");
+  assert.equal(result.stdout, "{\"text\":\"é😀\"}");
+});
+
 test("node runner propagates AbortSignal", async () => {
   const controller = new AbortController();
   const pending = nodeProcessRunner({
