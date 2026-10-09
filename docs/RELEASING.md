@@ -115,6 +115,11 @@ same treatment. The account allows
 closed PR's live runs and deletes its merge-ref caches. Concurrency groups use
 the `mini-v1-` namespace.
 
+The Linux Rust lanes collect the restored mbx store before compiling, never
+between a build and its objects export. Pending export groups reference action
+results that GC can evict. Post-build headroom cleanup removes Cargo downloads
+only; it leaves those action results and their objects intact.
+
 Root release targets:
 
 | Target | Standard runner | Build userspace |
