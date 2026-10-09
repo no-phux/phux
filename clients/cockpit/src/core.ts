@@ -1150,8 +1150,18 @@ function navigationRowsForPage(model: Model, page: NavigationPage): readonly Swi
   return rows;
 }
 
+function currentNavigationIndex(rows: readonly SwitcherRow[]): number {
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i];
+    if (row !== undefined && row.current && row.selectable) return i;
+  }
+  return 0;
+}
+
 function reconcileNavigationSelection(model: Model): Model {
-  if (model.paletteSelection.length === 0 && !model.paletteRefreshing) return highlightNavigation(model, 0);
+  if (model.paletteSelection.length === 0 && !model.paletteRefreshing) {
+    return highlightNavigation(model, currentNavigationIndex(model.paletteRows));
+  }
   for (let i = 0; i < model.paletteRows.length; i += 1) {
     if (sameBytes(model.paletteRows[i].target, model.paletteSelection)) return highlightNavigation(model, i);
   }

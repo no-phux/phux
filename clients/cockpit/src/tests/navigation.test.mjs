@@ -91,6 +91,26 @@ test('new terminal and reconnect use the native adopted window', () => {
   assert.equal(reconnect.payload[11], 255);
 });
 
+test('an opened navigator lands on the engine current row', () => {
+  const model = open();
+  const head = navigationRequest(revision, 0, bytes(''));
+  const indices = [10, 20, 30];
+  const records = indices.flatMap(index => {
+    const label = bytes(`terminal ${index}`);
+    const identity = target(index);
+    return [index % 256, Math.floor(index / 256), label.length, identity.length, 0, ...identity, ...label];
+  });
+  const flags = [1, 1, 3];
+  const metadata = indices.flatMap((index, position) => [0, flags[position], 0]);
+  const body = new Uint8Array([...head, 3, 0, 3, ...records, 0x4e, ...metadata]);
+  const [loaded] = step(model, { kind: 'navigation_loaded', body });
+  assert.equal(loaded.paletteCursor, 2);
+  assert.equal(loaded.paletteRows[2].current, true);
+  assert.equal(loaded.paletteRows[2].highlighted, true);
+  assert.equal(loaded.paletteRows[0].highlighted, false);
+  assert.deepEqual(loaded.paletteSelection, loaded.paletteRows[2].target);
+});
+
 test('transport pages accumulate into a scrollable catalog and preserve captured targets', () => {
   let model = open();
   let request;
