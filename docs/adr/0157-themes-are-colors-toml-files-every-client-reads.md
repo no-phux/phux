@@ -44,12 +44,13 @@ field.
    Omarchy schema. phux reads the keys it needs and applies Omarchy's
    fallback rules for derived shades; unknown keys are ignored. `mode`
    is required. Nothing in a theme is executed.
-2. **Catalog.** `$XDG_DATA_HOME/phux/themes/<name>/` is the one place a
-   theme is looked up by name. Entries arrive two ways: `phux theme
-   install <git-url>` clones a theme repo there (name derived from the
-   URL as Omarchy does), and a plugin declares `[[themes]]` entries
-   (`name`, `path`) that `phux plugin install` and `enable` symlink into
-   the catalog. `phux theme list|show|set|remove` manage it.
+2. **Catalog.** A name resolves first against
+   `$XDG_DATA_HOME/phux/themes/<name>/`, where `phux theme install
+   <git-url>` clones a theme repo (name derived from the URL as Omarchy
+   does), then against the `[[themes]]` entries (`name`, `path`) of
+   enabled plugins. `phux theme list|show|set|remove` manage it, and
+   `phux theme show --json` is how a client that does not parse plugin
+   manifests reads a resolved theme.
 3. **Selection.** `[theme]` gains two reserved keys. `name = "<catalog
    name>"` selects an installed theme; `file = "<path>"` points at any
    `colors.toml` directly, so `file =
