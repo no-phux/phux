@@ -392,15 +392,15 @@ describe("bridge spawn", () => {
     attachedClientCount: 0,
   });
 
-  test("spawns in the requested session, and in the home session otherwise", () => {
+  test("spawns in the named session, in the window session when unnamed, and nowhere when the id is missing", () => {
     scenario((bridge, client) => {
       // The scenario's target session is "s".
       client.sessions = [session(1, "s"), session(2, "projB")];
       wake(client, [{ kind: "TopologyChanged" }]);
       bridge.spawn({ sessionId: 2, cwd: "/work/projB" });
       bridge.spawn({});
-      bridge.spawn({ sessionId: 99 });
-      expect(client.spawned.map((options) => options.sessionId)).toEqual([2, 1, 1]);
+      expect(bridge.spawn({ sessionId: 99 })).toBeUndefined();
+      expect(client.spawned.map((options) => options.sessionId)).toEqual([2, 1]);
       expect(client.spawned[0]).toEqual({
         cwd: "/work/projB",
         identity: { serverId: "server-a", connectionEpoch: "1" },

@@ -59,7 +59,9 @@ export function Sidebar(props: SidebarProps): JSX.Element {
     return groupByProject(tagged).map((group) => ({
       project: group.project,
       sessions: group.sessions.flatMap((line) => {
-        const match = tagged.find((item) => item.name === line.name && item.project === line.project);
+        const match = tagged.find(
+          (item) => item.name === line.name && item.project === line.project,
+        );
         return match ? [match.session] : [];
       }),
     }));
@@ -107,67 +109,67 @@ export function Sidebar(props: SidebarProps): JSX.Element {
                 <SectionHeader title={group.project ?? "Sessions"} count={group.sessions.length} />
               </Show>
               <For each={group.sessions}>
-          {(session): JSX.Element => {
-            const panes = (): DesktopPane[] =>
-              props.panes.filter((pane) => pane.sessionId === session.id);
-            const closed = (): boolean => collapsed()[session.name] === true;
-            return (
-              <div style={column({ gap: 1 })}>
-                <div
-                  onClick={() =>
-                    setCollapsed((current) => ({ ...current, [session.name]: !closed() }))
-                  }
-                  style={row({
-                    gap: 6,
-                    height: 26,
-                    paddingLeft: 6,
-                    paddingRight: 8,
-                    borderRadius: radius.small,
-                    cursor: "pointer",
-                    hover: { backgroundColor: colors().hover },
-                  })}
-                >
-                  <Icon
-                    name={closed() ? "chevronRight" : "chevronDown"}
-                    size={11}
-                    color={colors().faint}
-                  />
-                  <Label weight={600} color={colors().subtext} grow>
-                    {session.name}
-                  </Label>
-                  <Show when={session.name === props.homeSession}>
-                    <Pill color={colors().accent} subtle>
-                      home
-                    </Pill>
-                  </Show>
-                  <Label size={uiFont.small} color={colors().faint}>
-                    {String(panes().length)}
-                  </Label>
-                  <Show when={props.newTerminalIn}>
-                    <IconButton
-                      icon="plus"
-                      label={`New terminal in ${session.name}`}
-                      run={() => props.newTerminalIn?.(session.id)}
-                    />
-                  </Show>
-                </div>
-                <Show when={!closed()}>
-                  <For each={panes()}>
-                    {(pane): JSX.Element => (
-                      <PaneRow
-                        pane={pane}
-                        agent={props.agents[pane.terminalId]}
-                        focused={props.focusedTerminal === pane.terminalId}
-                        visible={props.visibleTerminals.has(pane.terminalId)}
-                        views={props.viewCount(pane.terminalId)}
-                        open={() => props.open(pane)}
-                      />
-                    )}
-                  </For>
-                </Show>
-              </div>
-            );
-          }}
+                {(session): JSX.Element => {
+                  const panes = (): DesktopPane[] =>
+                    props.panes.filter((pane) => pane.sessionId === session.id);
+                  const closed = (): boolean => collapsed()[session.name] === true;
+                  return (
+                    <div style={column({ gap: 1 })}>
+                      <div
+                        onClick={() =>
+                          setCollapsed((current) => ({ ...current, [session.name]: !closed() }))
+                        }
+                        style={row({
+                          gap: 6,
+                          height: 26,
+                          paddingLeft: 6,
+                          paddingRight: 8,
+                          borderRadius: radius.small,
+                          cursor: "pointer",
+                          hover: { backgroundColor: colors().hover },
+                        })}
+                      >
+                        <Icon
+                          name={closed() ? "chevronRight" : "chevronDown"}
+                          size={11}
+                          color={colors().faint}
+                        />
+                        <Label weight={600} color={colors().subtext} grow>
+                          {session.name}
+                        </Label>
+                        <Show when={session.name === props.homeSession}>
+                          <Pill color={colors().accent} subtle>
+                            home
+                          </Pill>
+                        </Show>
+                        <Label size={uiFont.small} color={colors().faint}>
+                          {String(panes().length)}
+                        </Label>
+                        <Show when={props.newTerminalIn}>
+                          <IconButton
+                            icon="plus"
+                            label={`New terminal in ${session.name}`}
+                            run={() => props.newTerminalIn?.(session.id)}
+                          />
+                        </Show>
+                      </div>
+                      <Show when={!closed()}>
+                        <For each={panes()}>
+                          {(pane): JSX.Element => (
+                            <PaneRow
+                              pane={pane}
+                              agent={props.agents[pane.terminalId]}
+                              focused={props.focusedTerminal === pane.terminalId}
+                              visible={props.visibleTerminals.has(pane.terminalId)}
+                              views={props.viewCount(pane.terminalId)}
+                              open={() => props.open(pane)}
+                            />
+                          )}
+                        </For>
+                      </Show>
+                    </div>
+                  );
+                }}
               </For>
             </div>
           )}
