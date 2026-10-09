@@ -6,9 +6,9 @@ actions. It does not run inside the phux server.
 ```sh
 export XDG_CONFIG_HOME="$PWD/examples/plugins/continuum/config"
 
-cargo run -q -p phux -- config plugins --json
-cargo run -q -p phux -- config run com.phux.demo.continuum autosave --json
-cargo run -q -p phux -- config run com.phux.demo.continuum restore-latest --json
+cargo run -q -p phux --bin phux -- config plugins --json
+cargo run -q -p phux --bin phux -- config run com.phux.demo.continuum autosave --json
+cargo run -q -p phux --bin phux -- config run com.phux.demo.continuum restore-latest --json
 ```
 
 `autosave` writes `phux workspace save` output to a profile archive. `restore-latest`

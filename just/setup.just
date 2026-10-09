@@ -28,7 +28,7 @@ setup-check:
 [group('setup')]
 [doc('Scaffold a starter config into a worktree-local XDG dir (./.phux-xdg).')]
 scaffold-config:
-    XDG_CONFIG_HOME="{{justfile_directory()}}/.phux-xdg" cargo run -q -p phux -- config init
+    XDG_CONFIG_HOME="{{justfile_directory()}}/.phux-xdg" cargo run -q -p phux --bin phux -- config init
 
 
 # Rust's native manifest, verified Zig manifest, Mise, the Nix flake, CI,

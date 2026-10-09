@@ -6,9 +6,9 @@ your real `~/.config/phux/config.toml`. From the repository root:
 ```sh
 export XDG_CONFIG_HOME="$PWD/examples/plugins/agent-tools/config"
 
-cargo run -q -p phux -- config plugins          # com.phux.demo.agent-tools 0.1.0 (enabled)
-cargo run -q -p phux -- config run com.phux.demo.agent-tools inspect
-cargo run -q -p phux -- config run com.phux.demo.agent-tools inspect --json
+cargo run -q -p phux --bin phux -- config plugins          # com.phux.demo.agent-tools 0.1.0 (enabled)
+cargo run -q -p phux --bin phux -- config run com.phux.demo.agent-tools inspect
+cargo run -q -p phux --bin phux -- config run com.phux.demo.agent-tools inspect --json
 ```
 
 `just plugin-demo` runs the same discover/validate/run sequence. Every action

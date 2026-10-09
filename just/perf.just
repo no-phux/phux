@@ -17,7 +17,7 @@ trace-attach session="default" level="phux=debug":
     set -euo pipefail
     log="/tmp/phux-trace-$(date +%s).json"
     echo "[trace] -> $log  (PHUX_LOG_FORMAT=json, RUST_LOG={{level}}); reproduce the issue, then detach"
-    PHUX_LOG="$log" PHUX_LOG_FORMAT=json RUST_LOG="{{level}}" cargo run -q -p phux -- attach {{session}} || true
+    PHUX_LOG="$log" PHUX_LOG_FORMAT=json RUST_LOG="{{level}}" cargo run -q -p phux --bin phux -- attach {{session}} || true
     echo "[trace] session ended -> hand off this file: $log"
     echo "[trace] quick peek at the slowest renders:"
     jq -rc 'select(.fields.message=="close" and (.span.name|test("render|handle_server_frame|synthesize|tick_emit"))) | [.fields["time.busy"], .span.name, (.span.changed_row_count//.span.out_bytes//"")] | @tsv' "$log" 2>/dev/null | sort -h | tail -15 || true
@@ -29,7 +29,7 @@ trace-attach session="default" level="phux=debug":
 [group('perf')]
 [doc('Live performance telemetry of the running server (ADR-0096).')]
 perf interval="1":
-    cargo run -q -p phux -- perf --watch {{interval}}
+    cargo run -q -p phux --bin phux -- perf --watch {{interval}}
 
 
 # Reproducible echo latency: an isolated release server, a probe pane and a

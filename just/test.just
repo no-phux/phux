@@ -122,7 +122,7 @@ plugin-demo:
     #!/usr/bin/env bash
     set -euo pipefail
     export XDG_CONFIG_HOME="{{justfile_directory()}}/examples/plugins/agent-tools/config"
-    demo() { cargo run -q -p phux -- "$@"; }
+    demo() { cargo run -q -p phux --bin phux -- "$@"; }
     demo config plugins
     demo config plugins --json
     demo config run com.phux.demo.agent-tools inspect
