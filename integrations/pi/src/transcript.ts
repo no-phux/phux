@@ -109,7 +109,14 @@ export class PiTranscript {
   private readonly summaries = new Map<string, string>();
   private readonly saturated = new Set<string>();
 
-  constructor(gate: TranscriptGate = new TranscriptGate()) {
+  /**
+   * `includeToolOutput` is `PHUX_AGENT_TRANSCRIPT=full`: by default a tool
+   * entry carries its name, summary, and status, and `output` stays empty.
+   */
+  constructor(
+    gate: TranscriptGate = new TranscriptGate(),
+    private readonly includeToolOutput = false,
+  ) {
     this.gate = gate;
   }
 
@@ -152,7 +159,7 @@ export class PiTranscript {
         call_id: event.toolCallId,
         summary,
         status: event.isError ? "error" : "ok",
-        output: toolOutput(event.result),
+        output: this.includeToolOutput ? toolOutput(event.result) : "",
       },
     }]);
   }

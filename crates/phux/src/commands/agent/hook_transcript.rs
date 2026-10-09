@@ -6,9 +6,11 @@
 //! provider_raw --data -` on stdin. Prints nothing for any other event.
 //!
 //! - `UserPromptSubmit`: a `user` entry with the prompt text.
-//! - `PostToolUse` (and `PostToolUseFailure`): a `tool` entry keyed by
-//!   `tool_use_id`, a one-line summary of `tool_input`, and the tail of
-//!   `tool_response`.
+//! - `PostToolUse` and `PostToolUseFailure`: a `tool` entry keyed by
+//!   `tool_use_id` with the tool name, a one-line summary of `tool_input`,
+//!   and `ok` or `error`. Its `output` is empty unless
+//!   `PHUX_AGENT_TRANSCRIPT=full`, which adds the tail of `tool_response`:
+//!   tool output and file contents are not on the pane's screen.
 //! - `Stop`: the turn's last assistant message, from `last_assistant_message`
 //!   when Claude supplies it, else read from the tail of `transcript_path`.
 //!
@@ -40,6 +42,7 @@ const TRANSCRIPT_TAIL_BYTES: u64 = 4 * 1024 * 1024;
 const SUMMARY_KEYS: &[&str] = &[
     "command",
     "file_path",
+    "notebook_path",
     "path",
     "pattern",
     "url",
@@ -47,6 +50,26 @@ const SUMMARY_KEYS: &[&str] = &[
     "description",
     "prompt",
 ];
+
+/// `tool_input` keys that carry file contents or edit bodies; never summarized.
+const CONTENT_KEYS: &[&str] = &[
+    "content",
+    "contents",
+    "new_string",
+    "old_string",
+    "newText",
+    "oldText",
+    "new_source",
+    "edits",
+    "text",
+    "body",
+    "data",
+    "patch",
+    "diff",
+];
+
+/// Longest value shown per argument in a fallback summary, in characters.
+const SUMMARY_VALUE_CHARS: usize = 80;
 
 pub(super) fn run() -> ExitCode {
     let mut raw = Vec::new();
@@ -60,7 +83,8 @@ pub(super) fn run() -> ExitCode {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_millis());
-    if let Some(data) = render(&raw, now_ms, read_last_assistant) {
+    let full = std::env::var("PHUX_AGENT_TRANSCRIPT").is_ok_and(|mode| mode == "full");
+    if let Some(data) = render(&raw, now_ms, full, read_last_assistant) {
         let mut out = std::io::stdout().lock();
         // A closed stdout (the wrapper gave up) is not this helper's problem.
         let _ = writeln!(out, "{data}");
@@ -70,18 +94,19 @@ pub(super) fn run() -> ExitCode {
 }
 
 /// The record `data` for one raw hook payload, or `None` when the event has
-/// no transcript entry. `transcript` reads `(message id, text)` of the last
+/// no transcript entry. `full` adds tool output. `transcript` reads `(message id, text)` of the last
 /// assistant message from a transcript path; injected for tests.
 fn render(
     raw: &[u8],
     now_ms: u128,
+    full: bool,
     transcript: impl Fn(&Path) -> Option<(String, String)>,
 ) -> Option<Value> {
     let payload: Value = serde_json::from_slice(raw).ok()?;
     let entry = match payload.get("hook_event_name")?.as_str()? {
         "UserPromptSubmit" => prompt_entry(&payload, now_ms)?,
-        "PostToolUse" => tool_entry(&payload, false)?,
-        "PostToolUseFailure" => tool_entry(&payload, true)?,
+        "PostToolUse" => tool_entry(&payload, false, full)?,
+        "PostToolUseFailure" => tool_entry(&payload, true, full)?,
         "Stop" => assistant_entry(&payload, now_ms, transcript)?,
         _ => return None,
     };
@@ -111,20 +136,24 @@ fn prompt_entry(payload: &Value, now_ms: u128) -> Option<TranscriptEntry> {
     ))
 }
 
-fn tool_entry(payload: &Value, failed: bool) -> Option<TranscriptEntry> {
+fn tool_entry(payload: &Value, failed: bool, full: bool) -> Option<TranscriptEntry> {
     let name = payload.get("tool_name")?.as_str()?;
     let call_id = payload
         .get("tool_use_id")
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty())?;
     let response = payload.get("tool_response").unwrap_or(&Value::Null);
-    let (status, output) = if failed {
-        let error = payload.get("error").map(value_text).unwrap_or_default();
-        (ToolStatus::Error, error)
-    } else if response_failed(response) {
-        (ToolStatus::Error, value_text(response))
+    let status = if failed || response_failed(response) {
+        ToolStatus::Error
     } else {
-        (ToolStatus::Ok, value_text(response))
+        ToolStatus::Ok
+    };
+    // Tool output and file contents are not on the pane's screen; only
+    // `PHUX_AGENT_TRANSCRIPT=full` carries them (ADR-0156).
+    let output = match (full, failed) {
+        (false, _) => String::new(),
+        (true, true) => payload.get("error").map(value_text).unwrap_or_default(),
+        (true, false) => value_text(response),
     };
     Some(TranscriptEntry {
         tool: Some(TranscriptTool {
@@ -163,23 +192,44 @@ fn assistant_entry(
     ))
 }
 
-/// A one-line summary of a tool's arguments: the most telling string field
-/// when one is present, else the arguments as compact JSON.
+/// A one-line summary of a tool's arguments: the first naming argument (a
+/// command, path, pattern, URL, query) when present, else `key=value` for its
+/// scalar arguments, values cut short and [`CONTENT_KEYS`] left out. Never the
+/// arguments' bodies.
 fn summarize_input(input: &Value) -> String {
-    let named = SUMMARY_KEYS
-        .iter()
-        .find_map(|key| input.get(*key).and_then(Value::as_str))
-        .filter(|text| !text.trim().is_empty());
-    let summary = match (named, input) {
-        (Some(text), _) => text.to_owned(),
-        (None, Value::Null) => String::new(),
-        (None, Value::String(text)) => text.clone(),
-        (None, other) => other.to_string(),
+    let summary = match input {
+        Value::String(text) => text.clone(),
+        Value::Object(object) => {
+            let named = SUMMARY_KEYS
+                .iter()
+                .find_map(|key| object.get(*key).and_then(Value::as_str))
+                .filter(|text| !text.trim().is_empty());
+            named.map_or_else(
+                || {
+                    object
+                        .iter()
+                        .filter(|(key, _)| !CONTENT_KEYS.contains(&key.as_str()))
+                        .map(|(key, value)| format!("{key}={}", scalar_summary(value)))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                },
+                str::to_owned,
+            )
+        }
+        _ => String::new(),
     };
     one_line(
         &summary,
         phux_client::agent_transcript::MAX_TOOL_SUMMARY_CHARS,
     )
+}
+
+fn scalar_summary(value: &Value) -> String {
+    match value {
+        Value::String(text) => one_line(text, SUMMARY_VALUE_CHARS),
+        Value::Number(_) | Value::Bool(_) | Value::Null => value.to_string(),
+        Value::Array(_) | Value::Object(_) => "\u{2026}".to_owned(),
+    }
 }
 
 fn response_failed(response: &Value) -> bool {
@@ -324,7 +374,12 @@ mod tests {
     }
 
     fn render_json(payload: &Value) -> Option<Value> {
-        render(payload.to_string().as_bytes(), 1_700, no_transcript)
+        render(payload.to_string().as_bytes(), 1_700, false, no_transcript)
+    }
+
+    /// `PHUX_AGENT_TRANSCRIPT=full`: tool entries carry their output.
+    fn render_full(payload: &Value) -> Option<Value> {
+        render(payload.to_string().as_bytes(), 1_700, true, no_transcript)
     }
 
     #[test]
@@ -351,9 +406,73 @@ mod tests {
         );
     }
 
+    /// The default carries what the pane shows: the tool, a one-line summary,
+    /// and its status. Output and file contents need `full`.
+    #[test]
+    fn by_default_a_tool_entry_carries_no_output() {
+        let read = json!({
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Read",
+            "tool_use_id": "t1",
+            "tool_input": { "file_path": "/repo/.env" },
+            "tool_response": { "type": "text", "file": { "filePath": "/repo/.env", "content": "API_KEY=SECRET" } }
+        });
+        let data = render_json(&read).expect("an entry");
+        assert_eq!(
+            data["entry"]["tool"],
+            json!({
+                "name": "Read",
+                "call_id": "t1",
+                "summary": "/repo/.env",
+                "status": "ok",
+                "output": ""
+            })
+        );
+        assert!(!data.to_string().contains("SECRET"));
+        let full = render_full(&read).expect("an entry");
+        assert_eq!(full["entry"]["tool"]["output"], "API_KEY=SECRET");
+
+        let failed = render_json(&json!({
+            "hook_event_name": "PostToolUseFailure",
+            "tool_name": "Bash",
+            "tool_use_id": "t2",
+            "tool_input": { "command": "false" },
+            "error": "SECRET exit 1"
+        }))
+        .expect("an entry");
+        assert_eq!(failed["entry"]["tool"]["status"], "error");
+        assert_eq!(failed["entry"]["tool"]["output"], "");
+    }
+
+    /// Summaries name what a call acts on and never carry a body.
+    #[test]
+    fn summaries_leave_out_file_contents_and_edit_bodies() {
+        let summary = |input: Value| super::summarize_input(&input);
+        assert_eq!(
+            summary(json!({ "file_path": "a.rs", "content": "SECRET" })),
+            "a.rs"
+        );
+        assert_eq!(
+            summary(json!({ "notebook_path": "n.ipynb", "new_source": "SECRET" })),
+            "n.ipynb"
+        );
+        assert_eq!(
+            summary(json!({
+                "server": "x",
+                "content": "SECRET",
+                "body": "SECRET",
+                "nested": { "a": 1 },
+                "long": "y".repeat(200)
+            })),
+            format!("long={} nested=\u{2026} server=x", "y".repeat(80))
+        );
+        assert_eq!(summary(json!(["SECRET"])), "");
+        assert_eq!(summary(Value::Null), "");
+    }
+
     #[test]
     fn post_tool_use_becomes_a_tool_entry_keyed_by_the_call() {
-        let data = render_json(&json!({
+        let data = render_full(&json!({
             "hook_event_name": "PostToolUse",
             "tool_name": "Bash",
             "tool_use_id": "toolu_01",
@@ -382,7 +501,7 @@ mod tests {
 
     #[test]
     fn tool_errors_and_shapes_are_read() {
-        let failed = render_json(&json!({
+        let failed = render_full(&json!({
             "hook_event_name": "PostToolUse",
             "tool_name": "mcp__phux__phux_ls",
             "tool_use_id": "t2",
@@ -391,14 +510,14 @@ mod tests {
         }))
         .expect("an entry");
         let tool = &failed["entry"]["tool"];
-        assert_eq!(tool["summary"], "{\"all\":true}");
+        assert_eq!(tool["summary"], "all=true");
         assert_eq!(tool["output"], "boom\n{\"is_error\":true}");
         assert_eq!(
             tool["status"], "ok",
             "only an object-level flag is an error"
         );
 
-        let flagged = render_json(&json!({
+        let flagged = render_full(&json!({
             "hook_event_name": "PostToolUse",
             "tool_name": "Edit",
             "tool_use_id": "t3",
@@ -410,7 +529,7 @@ mod tests {
         assert_eq!(flagged["entry"]["tool"]["summary"], "/repo/src/lib.rs");
         assert_eq!(flagged["entry"]["tool"]["output"], "String not found");
 
-        let failure = render_json(&json!({
+        let failure = render_full(&json!({
             "hook_event_name": "PostToolUseFailure",
             "tool_name": "Bash",
             "tool_use_id": "t4",
@@ -424,7 +543,7 @@ mod tests {
 
     #[test]
     fn tool_fields_stay_within_their_caps() {
-        let data = render_json(&json!({
+        let data = render_full(&json!({
             "hook_event_name": "PostToolUse",
             "tool_name": "Bash",
             "tool_use_id": "t5",
@@ -454,7 +573,7 @@ mod tests {
         assert_eq!(supplied["entry"]["text"], "All green.");
 
         let payload = json!({ "hook_event_name": "Stop", "transcript_path": "/t.jsonl" });
-        let read = render(payload.to_string().as_bytes(), 1, |path| {
+        let read = render(payload.to_string().as_bytes(), 1, false, |path| {
             assert_eq!(path, Path::new("/t.jsonl"));
             Some(("msg_9".to_owned(), "Done.".to_owned()))
         })
@@ -489,8 +608,8 @@ mod tests {
                 None
             );
         }
-        assert_eq!(render(b"", 0, no_transcript), None);
-        assert_eq!(render(b"not json", 0, no_transcript), None);
+        assert_eq!(render(b"", 0, false, no_transcript), None);
+        assert_eq!(render(b"not json", 0, false, no_transcript), None);
         assert_eq!(
             render_json(&json!({ "hook_event_name": "UserPromptSubmit", "prompt": "  " })),
             None

@@ -793,6 +793,7 @@ fn the_generated_claude_shim_feeds_the_agent_session_stream() {
         &server.await_transcript(&target, "tool", DETECT_DEADLINE),
         "tool",
     );
+    // Tool output is not on the screen; only PHUX_AGENT_TRANSCRIPT=full carries it.
     assert_eq!(tool["id"], "toolu_e2e", "{tool}");
     assert_eq!(
         tool["tool"],
@@ -801,7 +802,7 @@ fn the_generated_claude_shim_feeds_the_agent_session_stream() {
             "call_id": "toolu_e2e",
             "summary": "echo INPUT-MARKER",
             "status": "ok",
-            "output": "OUTPUT-MARKER"
+            "output": ""
         }),
         "{tool}"
     );

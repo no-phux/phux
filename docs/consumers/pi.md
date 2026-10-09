@@ -279,10 +279,13 @@ a native transcript while the pane's TUI stays the session: each user
 message, the assistant reply (streamed as partials at most every 250 ms while
 it grows, then final under the same id), visible thinking once a thinking
 block ends, and each tool call as one entry keyed by its call id (running
-with an argument summary, then ok or error with an output tail). Text is cut
-to keep each record under 16 KiB. Transcript records are on by default,
-because the pane's scrollback already shows the same text to the same
-clients; set `PHUX_AGENT_TRANSCRIPT=0` before startup to turn them off.
+with an argument summary, then ok or error). Text is cut
+to keep each record under 16 KiB, and the text reaches `phux` on stdin, never
+on a command line. Transcript records are on by default, because the pane
+already shows the same text to the same clients; set
+`PHUX_AGENT_TRANSCRIPT=0` before startup to turn them off. Tool output and
+file contents are not on the screen, so tool entries carry an empty `output`
+unless `PHUX_AGENT_TRANSCRIPT=full`, which adds the last 4 KiB.
 
 Writes are serialized, debounced, and best-effort. Changing the selected control
 target or navigating the session tree does not move the hosting declaration or

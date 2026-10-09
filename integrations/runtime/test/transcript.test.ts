@@ -13,6 +13,7 @@ import {
   summarizeArgs,
   transcriptData,
   transcriptEnabled,
+  transcriptMode,
   utf8Length,
   type TranscriptEntry,
 } from "../src/transcript.js";
@@ -82,12 +83,23 @@ test("head and tail cuts never split a code point", () => {
 test("argument summaries name what the call acts on", () => {
   assert.equal(summarizeArgs({ command: "cargo test\n -p x", timeout: 5 }), "cargo test -p x");
   assert.equal(summarizeArgs({ path: "src/lib.rs", offset: 1 }), "src/lib.rs");
-  assert.equal(summarizeArgs({ all: true }), '{"all":true}');
+  assert.equal(summarizeArgs({ all: true, n: 3 }), "all=true n=3");
+  assert.equal(summarizeArgs({ path: "/repo/.env", offset: 0 }), "/repo/.env", "a read names the path only");
+  assert.equal(summarizeArgs({ file_path: "a.rs", content: "SECRET" }), "a.rs");
+  assert.equal(summarizeArgs({ notebook_path: "n.ipynb", new_source: "SECRET" }), "n.ipynb");
+  const fallback = summarizeArgs({ server: "x", content: "SECRET", body: "SECRET", nested: { a: 1 }, long: "y".repeat(200) });
+  assert.equal(fallback, `server=x nested=\u2026 long=${"y".repeat(80)}`);
   assert.equal(summarizeArgs(undefined), "");
+  assert.equal(summarizeArgs(["SECRET"]), "");
   assert.equal(summarizeArgs("raw"), "raw");
 });
 
 test("the opt-out is exactly 0", () => {
+  assert.equal(transcriptMode(undefined), "default");
+  assert.equal(transcriptMode("1"), "default");
+  assert.equal(transcriptMode("full"), "full");
+  assert.equal(transcriptMode("FULL"), "default");
+  assert.equal(transcriptMode("0"), "off");
   assert.equal(transcriptEnabled(undefined), true);
   assert.equal(transcriptEnabled("1"), true);
   assert.equal(transcriptEnabled(""), true);

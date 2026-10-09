@@ -9,12 +9,13 @@ import { fileURLToPath } from "node:url";
 const root = new URL("../", import.meta.url);
 const script = fileURLToPath(new URL("../scripts/phux-hook.sh", import.meta.url));
 
-// The eight registrations and the arm each one dispatches to.
+// The nine registrations and the arm each one dispatches to.
 const ARMS = {
   SessionStart: "start",
   UserPromptSubmit: "working",
   PreToolUse: "tool-start",
   PostToolUse: "tool-end",
+  PostToolUseFailure: "tool-end",
   PermissionRequest: "blocked",
   Notification: "blocked",
   Stop: "done",
@@ -274,4 +275,23 @@ test("transcript entries ride provider_raw on stdin by default and PHUX_AGENT_TR
   }
   const [silent] = await driven({ ...base, FAKE_TRANSCRIPT: "" }, [["working", "{}", f("UserPromptSubmit")]]);
   assert.ok(silent.every((line) => !line.includes("provider_raw")), "an empty helper answer emits nothing");
+});
+
+test("a failed tool ends with ok:false, and no temp file outlives a hook", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "phux-claude-tmp-"));
+  try {
+    const entry = '{"provider":"claude","schema":"phux.transcript/v1","entry":{"id":"t","role":"tool","text":"","truncated":false,"final":true}}';
+    const env = { FAKE_FEATURES: '["resource_kinds"]', FAKE_TRANSCRIPT: entry, TMPDIR: tmp };
+    const [failed, ok] = await driven(env, [
+      ["tool-end", "{}", { FAKE_FIELDS: "sess-1 PostToolUseFailure Bash - 0 - -" }],
+      ["tool-end", "{}", { FAKE_FIELDS: "sess-1 PostToolUse Bash - 0 - -" }],
+    ]);
+    assert.equal(failed[2], 'agent emit @42 --type tool_end --data {"tool_name":"Bash","ok":false}');
+    assert.equal(ok[2], 'agent emit @42 --type tool_end --data {"tool_name":"Bash"}');
+    assert.ok(failed.includes(`stdin:${entry}`));
+    const { readdir } = await import("node:fs/promises");
+    assert.deepEqual(await readdir(tmp), [], "payload and entry files are removed");
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
 });

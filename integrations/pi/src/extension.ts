@@ -3,7 +3,7 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 
-import { transcriptEnabled } from "@phux/integration-runtime/transcript";
+import { transcriptMode } from "@phux/integration-runtime/transcript";
 
 import { PhuxCli } from "./adapter.js";
 import {
@@ -140,7 +140,8 @@ export function registerPhuxExtension(
 
   registerPhuxLifecycle(pi, store, {
     cli,
-    transcript: transcriptEnabled(environment.PHUX_AGENT_TRANSCRIPT),
+    transcript: transcriptMode(environment.PHUX_AGENT_TRANSCRIPT) !== "off",
+    transcriptToolOutput: transcriptMode(environment.PHUX_AGENT_TRANSCRIPT) === "full",
     ...(environment.PHUX_TERMINAL_ID === undefined ? {} : { hostTerminal: environment.PHUX_TERMINAL_ID }),
     onError: (error) => {
       const message = error instanceof Error ? error.message : String(error);

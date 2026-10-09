@@ -36,6 +36,13 @@ hook_chars=0
 hook_reason=-
 hook_source=-
 payload=
+entry=
+# The payload copy and a transcript entry are removed however the hook
+# leaves, including Claude killing it at its timeout.
+trap 'rm -f ${payload:+"$payload"} ${entry:+"$entry"}' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 if [ ! -t 0 ] && payload=$(mktemp 2>/dev/null); then
   cat > "$payload" 2>/dev/null || :
   fields=$("$phux" agent hook-payload < "$payload" 2>/dev/null) || fields=
@@ -110,6 +117,7 @@ emit_transcript() {
     emit_once "$entry" --type provider_raw --data -
   fi
   rm -f "$entry"
+  entry=
 }
 
 case "$1" in
@@ -131,7 +139,11 @@ case "$1" in
     emit_raw
     ;;
   tool-end)
-    emit_tool tool_end
+    if [ "$hook_event" = PostToolUseFailure ] && [ "$hook_tool" != - ]; then
+      emit tool_end "{\"tool_name\":\"$hook_tool\",\"ok\":false}"
+    else
+      emit_tool tool_end
+    fi
     emit_transcript
     emit_raw
     ;;
@@ -166,9 +178,7 @@ case "$1" in
     run_phux agent clear "$target"
     ;;
   *)
-    [ -z "$payload" ] || rm -f "$payload"
     exit 2
     ;;
 esac
-[ -z "$payload" ] || rm -f "$payload"
 exit 0

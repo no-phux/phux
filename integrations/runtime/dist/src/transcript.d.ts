@@ -42,6 +42,15 @@ export type TranscriptData = {
     readonly entry: TranscriptEntry;
 };
 /** Transcript records are on unless the variable is exactly `0`. */
+export type TranscriptMode = "off" | "default" | "full";
+/**
+ * `PHUX_AGENT_TRANSCRIPT`: exactly `0` is off; exactly `full` adds tool
+ * output; anything else, unset included, is the default, which carries what
+ * the pane shows (prompts, replies, tool names, one-line summaries, status)
+ * and never tool output or file contents.
+ */
+export declare function transcriptMode(value: string | undefined): TranscriptMode;
+/** Transcript records are on unless the variable is exactly `0`. */
 export declare function transcriptEnabled(value: string | undefined): boolean;
 export declare function utf8Length(text: string): number;
 /** The longest prefix of `text` within `maxBytes` UTF-8 bytes, never splitting a code point. */
@@ -52,7 +61,12 @@ export declare function keepTail(text: string, maxBytes: number): string;
 export declare function cleanText(text: string): string;
 /** `text` cleaned, whitespace collapsed to single spaces, cut to `maxChars` code points. */
 export declare function oneLine(text: string, maxChars: number): string;
-/** A one-line summary of tool arguments, at most MAX_TOOL_SUMMARY_CHARS. */
+/**
+ * A one-line summary of tool arguments, at most MAX_TOOL_SUMMARY_CHARS: the
+ * first naming argument (a command, path, pattern, URL, query) when present,
+ * else `key=value` for scalar arguments, values cut short and content-bearing
+ * keys (file contents, edit bodies) left out. Never the arguments' bodies.
+ */
 export declare function summarizeArgs(args: unknown): string;
 /**
  * The bounded `provider_raw` data for one entry: escapes and controls

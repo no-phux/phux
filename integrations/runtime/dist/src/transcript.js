@@ -19,9 +19,20 @@ export const MAX_TOOL_OUTPUT_BYTES = 4 * 1024;
 export const MAX_LABEL_BYTES = 256;
 /** Minimum spacing between two partials of one entry. */
 export const PARTIAL_MIN_INTERVAL_MS = 250;
+/**
+ * `PHUX_AGENT_TRANSCRIPT`: exactly `0` is off; exactly `full` adds tool
+ * output; anything else, unset included, is the default, which carries what
+ * the pane shows (prompts, replies, tool names, one-line summaries, status)
+ * and never tool output or file contents.
+ */
+export function transcriptMode(value) {
+    if (value === "0")
+        return "off";
+    return value === "full" ? "full" : "default";
+}
 /** Transcript records are on unless the variable is exactly `0`. */
 export function transcriptEnabled(value) {
-    return value !== "0";
+    return transcriptMode(value) !== "off";
 }
 const encoder = new TextEncoder();
 export function utf8Length(text) {
@@ -66,32 +77,43 @@ function label(text) {
     return keepHead(oneLine(text, MAX_LABEL_BYTES), MAX_LABEL_BYTES);
 }
 /** Keys of a tool's arguments that name what it acts on, most telling first. */
-const SUMMARY_KEYS = ["command", "file_path", "path", "pattern", "url", "query", "description", "prompt"];
-/** A one-line summary of tool arguments, at most MAX_TOOL_SUMMARY_CHARS. */
+const SUMMARY_KEYS = [
+    "command", "file_path", "notebook_path", "path", "pattern", "url", "query", "description", "prompt",
+];
+/** Argument keys that carry file contents or edit bodies; never summarized. */
+const CONTENT_KEYS = new Set([
+    "content", "contents", "new_string", "old_string", "newText", "oldText", "new_source",
+    "edits", "text", "body", "data", "patch", "diff",
+]);
+/** Longest value shown per argument in a fallback summary, in characters. */
+const SUMMARY_VALUE_CHARS = 80;
+/**
+ * A one-line summary of tool arguments, at most MAX_TOOL_SUMMARY_CHARS: the
+ * first naming argument (a command, path, pattern, URL, query) when present,
+ * else `key=value` for scalar arguments, values cut short and content-bearing
+ * keys (file contents, edit bodies) left out. Never the arguments' bodies.
+ */
 export function summarizeArgs(args) {
-    let summary = "";
-    if (typeof args === "string") {
-        summary = args;
+    if (args === null || typeof args !== "object" || Array.isArray(args)) {
+        return typeof args === "string" ? oneLine(args, MAX_TOOL_SUMMARY_CHARS) : "";
     }
-    else if (args !== null && typeof args === "object" && !Array.isArray(args)) {
-        const record = args;
-        const named = SUMMARY_KEYS
-            .map((key) => record[key])
-            .find((value) => typeof value === "string" && value.trim().length > 0);
-        summary = named ?? safeJson(args);
-    }
-    else if (args !== undefined && args !== null) {
-        summary = safeJson(args);
-    }
-    return oneLine(summary, MAX_TOOL_SUMMARY_CHARS);
+    const record = args;
+    const named = SUMMARY_KEYS
+        .map((key) => record[key])
+        .find((value) => typeof value === "string" && value.trim().length > 0);
+    if (named !== undefined)
+        return oneLine(named, MAX_TOOL_SUMMARY_CHARS);
+    const pairs = Object.entries(record)
+        .filter(([key]) => !CONTENT_KEYS.has(key))
+        .map(([key, value]) => `${key}=${scalarSummary(value)}`);
+    return oneLine(pairs.join(" "), MAX_TOOL_SUMMARY_CHARS);
 }
-function safeJson(value) {
-    try {
-        return JSON.stringify(value) ?? "";
-    }
-    catch {
-        return "";
-    }
+function scalarSummary(value) {
+    if (typeof value === "string")
+        return oneLine(value, SUMMARY_VALUE_CHARS);
+    if (typeof value === "number" || typeof value === "boolean" || value === null)
+        return String(value);
+    return "\u2026";
 }
 /**
  * The bounded `provider_raw` data for one entry: escapes and controls

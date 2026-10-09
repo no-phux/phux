@@ -104,6 +104,7 @@ and acts only when `PHUX_TERMINAL_ID` names Claude's own pane:
 | `UserPromptSubmit` | `prompt` with `{"chars": N}`, then a `user` transcript entry | | `phux agent report-state working` |
 | `PreToolUse` | `tool_start` with `{"tool_name": "..."}`; `tool_input` is never sent | | (new registration; nothing) |
 | `PostToolUse` | `tool_end` with `{"tool_name": "..."}`, then a `tool` transcript entry | | (new registration; nothing) |
+| `PostToolUseFailure` | `tool_end` with `{"tool_name": "...", "ok": false}`, then a `tool` transcript entry with status `error` | | (new registration; nothing) |
 | `PermissionRequest` | `ask` | `phux ask`, so the TUI and fleet chrome keep their exact timing | `phux agent report-state blocked` |
 | `Notification` (the permission, idle-prompt, and elicitation matchers) | `notification` with the hook's `kind` | `phux ask` | `phux agent report-state blocked` |
 | `Stop` | the reply as an `assistant` transcript entry, then `stop` | | `phux agent report-state done` |
@@ -123,11 +124,14 @@ a hub relaying a pane it does not own), `session open` refuses with
 character count, and tool records carry the tool's name. The conversation
 rides `provider_raw` records in the `phux.transcript/v1` convention
 ([ADR-0156](../adr/0156-agent-transcript-records.md)): the prompt, each
-finished tool call as a one-line argument summary and an output tail of at
-most 4 KiB, and the turn's last reply, each record under 16 KiB. They are on
-by default because the pane's scrollback already shows the same text to the
-same clients; `PHUX_AGENT_TRANSCRIPT=0` in Claude's environment turns them
-off. Payload text reaches `phux` on stdin only, never on a command line.
+finished or failed tool call as its name, a one-line argument summary (a
+command or path, never file contents or edit bodies), and its status, and the
+turn's last reply, each record under 16 KiB. They are on by default because
+the pane already shows the same text to the same clients;
+`PHUX_AGENT_TRANSCRIPT=0` in Claude's environment turns them off. Tool output
+and file contents are not on the screen, so tool entries carry an empty
+`output` unless `PHUX_AGENT_TRANSCRIPT=full`, which adds the last 4 KiB.
+Payload text reaches `phux` on stdin only, never on a command line.
 The hook's whole raw stdin JSON is emitted as another `provider_raw` record
 only when `PHUX_AGENT_EMIT_RAW=1` is set in Claude's environment; it is off
 by default and the shim never sets it. The retained stream is bounded by

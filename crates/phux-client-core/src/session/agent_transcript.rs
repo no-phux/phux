@@ -73,7 +73,9 @@ pub struct TranscriptTool {
     pub summary: String,
     /// Where the call stands.
     pub status: ToolStatus,
-    /// Tail of the result, at most [`MAX_TOOL_OUTPUT_BYTES`]; empty while running.
+    /// Tail of the result, at most [`MAX_TOOL_OUTPUT_BYTES`]; empty while
+    /// running, and empty unless the producer runs with
+    /// `PHUX_AGENT_TRANSCRIPT=full`.
     pub output: String,
 }
 

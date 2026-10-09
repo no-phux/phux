@@ -69,7 +69,7 @@ test("streaming partials are throttled, grow, and give way to the final", () => 
 });
 
 test("a tool call is one id: running with its summary, then its result", () => {
-  const transcript = mapper({ now: 0 });
+  const transcript = new PiTranscript(new TranscriptGate(() => 0), true);
   const [running] = transcript.toolStart({ toolCallId: "call-1", toolName: "bash", args: { command: "ls\n -la" } });
   assert.deepEqual(running, {
     provider: "pi",
@@ -109,4 +109,16 @@ test("a partial that had to be cut stops the stream until its final", () => {
   const [final] = transcript.messageEnd(partial(`${long}more`));
   assert.equal(final?.entry.final, true);
   assert.equal(final?.entry.truncated, true);
+});
+
+test("by default a tool entry carries no output; full mode adds it", () => {
+  const result = { content: [{ type: "text", text: "API_KEY=SECRET" }] };
+  const [ended] = mapper({ now: 0 }).toolEnd({ toolCallId: "c", toolName: "read", isError: false, result });
+  assert.equal(ended?.entry.tool?.output, "");
+  assert.equal(ended?.entry.tool?.status, "ok");
+  const [full] = new PiTranscript(new TranscriptGate(() => 0), true)
+    .toolEnd({ toolCallId: "c", toolName: "read", isError: false, result });
+  assert.equal(full?.entry.tool?.output, "API_KEY=SECRET");
+  const [read] = mapper({ now: 0 }).toolStart({ toolCallId: "r", toolName: "read", args: { path: "/repo/.env" } });
+  assert.equal(read?.entry.tool?.summary, "/repo/.env", "a read names the path, never the contents");
 });

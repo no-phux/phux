@@ -66,6 +66,8 @@ export interface PhuxLifecycleOptions {
    * On unless false; the extension maps `PHUX_AGENT_TRANSCRIPT=0` to false.
    */
   readonly transcript?: boolean;
+  /** Include tool output in tool entries (`PHUX_AGENT_TRANSCRIPT=full`); off by default. */
+  readonly transcriptToolOutput?: boolean;
   /** The transcript mapper; injectable so tests control its clock. */
   readonly transcriptMapper?: PiTranscript;
 }
@@ -393,7 +395,8 @@ export function registerPhuxLifecycle(
   });
   // Per-turn events feed the AgentSession stream and never write `state`.
   // Transcript entries ride `provider_raw` beside the typed records.
-  const transcript = options.transcript === false ? null : options.transcriptMapper ?? new PiTranscript();
+  const transcript = options.transcript === false ? null : options.transcriptMapper ??
+    new PiTranscript(undefined, options.transcriptToolOutput === true);
   const emitTranscript = (records: readonly Readonly<Record<string, unknown>>[]): void => {
     for (const data of records) lifecycle.emit("provider_raw", data);
   };

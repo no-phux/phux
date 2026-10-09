@@ -39,6 +39,7 @@ const HOOKS: &[(&str, &str, &str)] = &[
     ("UserPromptSubmit", "", "working"),
     ("PreToolUse", "", "tool-start"),
     ("PostToolUse", "", "tool-end"),
+    ("PostToolUseFailure", "", "tool-end"),
     ("PermissionRequest", "", "blocked"),
     (
         "Notification",
@@ -472,6 +473,7 @@ emit_transcript() {{
     run_phux agent emit "$target" --type provider_raw --data - < "$entry"
   fi
   rm -f "$entry"
+  entry=
 }}
 
 # The session-stream arms. Typed records never carry prompt text or tool
@@ -498,7 +500,11 @@ stream_state() {{
       emit_raw
       ;;
     tool-end)
-      emit_tool tool_end
+      if [ "$hook_event" = PostToolUseFailure ] && [ "$hook_tool" != - ]; then
+        emit tool_end "{{\"tool_name\":\"$hook_tool\",\"ok\":false}}"
+      else
+        emit_tool tool_end
+      fi
       emit_transcript
       emit_raw
       ;;
@@ -563,9 +569,15 @@ set_state() {{
 
 if [ "${{1:-}}" = "--phux-hook" ]; then
   [ "$#" -eq 2 ] || exit 2
+  # The payload copy and a transcript entry are removed however the hook
+  # leaves, including Claude killing it at its timeout.
+  entry=
+  trap 'rm -f ${{payload:+"$payload"}} ${{entry:+"$entry"}}' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
   read_payload
   set_state "$2"
-  [ -z "$payload" ] || rm -f "$payload"
   exit 0
 fi
 
@@ -1025,6 +1037,16 @@ mod tests {
                 ],
             ),
             (
+                "tool-end",
+                fields("PostToolUseFailure", "Bash", "-", "0", "-", "-"),
+                vec![
+                    "agent hook-payload",
+                    "status --json",
+                    "agent emit @42 --type tool_end --data {\"tool_name\":\"Bash\",\"ok\":false}",
+                    "agent hook-transcript",
+                ],
+            ),
+            (
                 "blocked",
                 fields("PermissionRequest", "Bash", "-", "0", "-", "-"),
                 vec![
@@ -1361,6 +1383,25 @@ mod tests {
             !silent.iter().any(|line| line.contains("provider_raw")),
             "an empty helper answer emits nothing: {silent:?}"
         );
+
+        // The payload copy and the entry file are removed when the hook exits.
+        let tmp = tempfile::tempdir().expect("scratch TMPDIR");
+        let tmpdir = tmp.path().to_str().expect("utf-8 path");
+        for arm in ["working", "tool-end", "done", "start"] {
+            let log = h.hook_env(
+                arm,
+                "{}",
+                STREAMING,
+                fields,
+                false,
+                &[("FAKE_TRANSCRIPT", entry), ("TMPDIR", tmpdir)],
+            );
+            assert!(!log.is_empty());
+            let left: Vec<_> = std::fs::read_dir(tmp.path())
+                .expect("read TMPDIR")
+                .collect();
+            assert!(left.is_empty(), "arm `{arm}` left temp files: {left:?}");
+        }
     }
 
     /// The launch path's exit trap runs `clear` at most once, however the
