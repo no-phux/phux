@@ -15,6 +15,9 @@ behavior, follow the cross-link to the ADR or to the relevant
 
 ## Files
 
+- [`2026-10-09-rex.md`](./2026-10-09-rex.md) —
+  October 2026 public surface of Rex, and the phux gaps still open
+  against it.
 - [`2026-09-20-cockpit-craft.md`](./2026-09-20-cockpit-craft.md) —
   scratch direction for the Cockpit craft work (`phux-3gpg`).
 - [`2026-09-09-superlogical-demo/`](./2026-09-09-superlogical-demo/README.md) —
