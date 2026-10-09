@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/no-phux/phux/compare/claude-plugin-v0.4.1...claude-plugin-v0.5.0) (2026-10-09)
+
+
+### Features
+
+* **agent:** native agent transcripts over provider_raw (phux.transcript/v1, ADR-0156) ([#1106](https://github.com/no-phux/phux/issues/1106)) ([5b1c728](https://github.com/no-phux/phux/commit/5b1c728357aae676d222a96c94acfb6294d101eb))
+
+
+### Bug Fixes
+
+* **integrations:** align plugins with current harness APIs ([ddee98e](https://github.com/no-phux/phux/commit/ddee98e339e9b76fe6a2a5c62450813ff0cb4cfb))
+
 ## [0.4.1](https://github.com/no-phux/phux/compare/claude-plugin-v0.4.0...claude-plugin-v0.4.1) (2026-10-07)
 
 

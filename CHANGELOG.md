@@ -9,6 +9,58 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.55.0](https://github.com/no-phux/phux/compare/v0.54.0...v0.55.0) (2026-10-09)
+
+
+### Features
+
+* **agent:** native agent transcripts over provider_raw (phux.transcript/v1, ADR-0156) ([#1106](https://github.com/no-phux/phux/issues/1106)) ([5b1c728](https://github.com/no-phux/phux/commit/5b1c728357aae676d222a96c94acfb6294d101eb))
+* **client-ffi:** answer an ask by id through the acknowledged lane ([b1c1cde](https://github.com/no-phux/phux/commit/b1c1cde3f00225cf0aa1e2ab97dad3353e4a4222))
+* **client-ffi:** lower session close, viewer role, resize and selection to UniFFI ([b419607](https://github.com/no-phux/phux/commit/b4196071fe020b1698beb345eca99c4eb36f90b9))
+* **client-ffi:** surface agent session records in the UniFFI lane ([#1110](https://github.com/no-phux/phux/issues/1110)) ([98e6744](https://github.com/no-phux/phux/commit/98e67442c08d27857692a4986d44125767b144ed))
+* **client-ffi:** write and delete a Global metadata key from UniFFI ([e12d9af](https://github.com/no-phux/phux/commit/e12d9af2512fdd0e40761a446838a944a20017f7))
+* **client-runtime:** client-side terminal theme over C ABI and UniFFI ([e8e6c1a](https://github.com/no-phux/phux/commit/e8e6c1a2497fec66f1dfdeae3dcc82565aeba2f0))
+* **client-runtime:** migrate a QUIC connection on a network path change ([078971e](https://github.com/no-phux/phux/commit/078971e2e42cfe4202208de3b7a6727a1907ba29))
+* **clients:** session menus, directory terminals, and a folder on create ([#1115](https://github.com/no-phux/phux/issues/1115)) ([c6b2ff2](https://github.com/no-phux/phux/commit/c6b2ff20be7efb25aa9b28dd93d8434160f0d4cc))
+* **clients:** share session host, directory, and project grouping ([#1108](https://github.com/no-phux/phux/issues/1108)) ([0f0e081](https://github.com/no-phux/phux/commit/0f0e0813e39b17541236ad9f988352e522b0ac7d))
+* **config:** theme catalog, plugin [[themes]], and phux theme CLI ([3ac7216](https://github.com/no-phux/phux/commit/3ac7216dec6da6572ece36c583fb47b7853ddda5))
+* **server:** push an ask to an absent phone through its gateway ([bd69aa4](https://github.com/no-phux/phux/commit/bd69aa4a3f095b863b3479cc58d19a077c517e61))
+* **site:** make desktop alpha a first-party install option ([#1139](https://github.com/no-phux/phux/issues/1139)) ([e356d1d](https://github.com/no-phux/phux/commit/e356d1d64f1005c59d51e14596aafd494f9cffc2))
+* **tui:** click selection and paste protection, as in Ghostty ([#1131](https://github.com/no-phux/phux/issues/1131)) ([98e5881](https://github.com/no-phux/phux/commit/98e5881b15ae7fd0e023b0a88dacbc624e740eb7))
+
+
+### Bug Fixes
+
+* **ci:** bound the mbx objects export to free disk ([#1126](https://github.com/no-phux/phux/issues/1126)) ([aa78f2c](https://github.com/no-phux/phux/commit/aa78f2c87df7ba2df7e39b0e7c693ff594556a1b))
+* **clients:** name the captured token file when a loopback dial fails ([#1121](https://github.com/no-phux/phux/issues/1121)) ([63bcffe](https://github.com/no-phux/phux/commit/63bcffee155e96c14601a2f4adc03875c161200e))
+* **integrations:** align plugins with current harness APIs ([ddee98e](https://github.com/no-phux/phux/commit/ddee98e339e9b76fe6a2a5c62450813ff0cb4cfb))
+* **relay:** record the consumer SNI rustls accepted ([#1127](https://github.com/no-phux/phux/issues/1127)) ([c54e7ff](https://github.com/no-phux/phux/commit/c54e7fffa2dc5c1e6c5595697e59e0fd21e89d6c))
+* **server:** apply pane cwd before spawn returns ([#1119](https://github.com/no-phux/phux/issues/1119)) ([6087cf0](https://github.com/no-phux/phux/commit/6087cf059628e7bc1216e434ee0f221816247fe2))
+* **server:** promote a running server into a hub on config reload ([#1124](https://github.com/no-phux/phux/issues/1124)) ([39d2159](https://github.com/no-phux/phux/commit/39d2159bf0b030302ffff0689746205e16da12e7))
+* **site:** register WebMCP tools as ModelContextTool dictionaries ([#1123](https://github.com/no-phux/phux/issues/1123)) ([b308a1c](https://github.com/no-phux/phux/commit/b308a1c0f364b1cc296388b015a083fc07b06649))
+* **update:** strip the " (deleted)" suffix from the running binary's path ([#1111](https://github.com/no-phux/phux/issues/1111)) ([b7a0291](https://github.com/no-phux/phux/commit/b7a02912265bfbd7c22e636451490d0579fa1d10))
+
+
+### Performance
+
+* **protocol:** decode inbound payloads as views of the socket buffer ([#1107](https://github.com/no-phux/phux/issues/1107)) ([68bb7dc](https://github.com/no-phux/phux/commit/68bb7dc57faefaf1bdc18e9ed9a5fd2b4b1575bf))
+
+
+### Refactors
+
+* **tui:** adopt the theme after assembly instead of a new argument ([1b790ac](https://github.com/no-phux/phux/commit/1b790acf92533b27cb6b2151761fe70e34ec4a90))
+
+
+### Documentation
+
+* **adr:** accept ADR-0155 ([bd685d4](https://github.com/no-phux/phux/commit/bd685d46ec5b672efb245bc9fbcf21418221f87f))
+* **adr:** propose 0158, pane clipboard writes as client-side policy ([97f8d43](https://github.com/no-phux/phux/commit/97f8d4318d9a52239020e13e063d1b3ce29f3fc7))
+* **adr:** propose colors.toml themes shared by every client ([86c16d0](https://github.com/no-phux/phux/commit/86c16d0352fad50c1c5b4c536610e9af6c1c34fb))
+* **adr:** resolve theme names through the catalog, not symlinks ([e886711](https://github.com/no-phux/phux/commit/e88671150d251465ecdc765a2630eda0def6e004))
+* **remote-access:** registrations are one-way, so a fleet needs one per direction ([31d882a](https://github.com/no-phux/phux/commit/31d882a826ea313567305086346ea43d4029ea0c))
+* **research:** recon Rex public surface in October 2026 ([#1109](https://github.com/no-phux/phux/issues/1109)) ([c2fab9b](https://github.com/no-phux/phux/commit/c2fab9beeb9a90d07481f20a6aa61f0c289bb2d3))
+* **research:** record the workspace slice that landed ([#1113](https://github.com/no-phux/phux/issues/1113)) ([910fe22](https://github.com/no-phux/phux/commit/910fe22ea5ea002bb93f5a9f60d4c28343222ddd))
+
 ## [0.54.0](https://github.com/no-phux/phux/compare/v0.53.1...v0.54.0) (2026-10-08)
 
 
