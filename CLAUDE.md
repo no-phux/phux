@@ -66,6 +66,9 @@ Authoritative docs, in order of priority:
 - [`docs/architecture/`](./docs/architecture/) — internal structure.
 - [`docs/consumers/tui.md`](./docs/consumers/tui.md) — TUI consumer surface.
 - [`docs/operations.md`](./docs/operations.md) — errors, logging, security.
+- [`docs/remote-access.md`](./docs/remote-access.md) — host registration,
+  overlays, relays; registries are per machine and one-way (§"A fleet that
+  sees itself").
 - [`docs/vision.md`](./docs/vision.md) — the long arc.
 - [`docs/adr/`](./docs/adr/) — decisions, with rationale and tradeoffs.
 
