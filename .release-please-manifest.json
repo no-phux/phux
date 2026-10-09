@@ -1,7 +1,7 @@
 {
   ".": "0.55.0",
   "clients/cockpit": "0.35.0",
-  "clients/desktop": "0.1.0-alpha.9",
+  "clients/desktop": "0.1.0-alpha.10",
   "integrations/pi": "0.5.0",
   "integrations/claude": "0.5.0"
 }
