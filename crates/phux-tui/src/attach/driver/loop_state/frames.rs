@@ -384,24 +384,9 @@ impl super::SessionLoop {
         Ok(self.take_foreign_pane_metadata(frame, repaint))
     }
 
-    /// The sidebar's serving-host read. `None` means this frame was that reply.
+    /// Sidebar metadata reads. `None` means this frame was one of them.
     fn take_serving_host_metadata(&mut self, frame: FrameKind) -> Option<FrameKind> {
-        match frame {
-            FrameKind::MetadataValue { request_id, value }
-                if self.peers.serving_host_pending == Some(request_id) =>
-            {
-                self.fold_serving_host(value.as_deref());
-                None
-            }
-            FrameKind::Error {
-                request_id: Some(request_id),
-                ..
-            } if self.peers.serving_host_pending == Some(request_id) => {
-                self.peers.serving_host_pending = None;
-                None
-            }
-            other => Some(other),
-        }
+        self.take_sidebar_metadata(frame)
     }
 
     /// A peer session's persisted-layout GET. `None` means this frame was it.

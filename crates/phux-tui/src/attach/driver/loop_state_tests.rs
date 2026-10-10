@@ -7,6 +7,7 @@ use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ServerFeatureSet};
 use phux_protocol::ids::SessionId;
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
+use phux_protocol::wire::frame::SESSION_NAME_KEY;
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 
 fn initial_attached() -> FrameKind {
@@ -1556,6 +1557,61 @@ async fn session_rename_broadcast_updates_peer_roster_without_reattach() {
         .find(|session| session.id == SessionId::new(2))
         .expect("peer row remains");
     assert_eq!(peer.name, "notes");
+}
+
+/// A `phux.session.project/v1` broadcast fills the picker from the wire, not a test map.
+#[tokio::test(flavor = "current_thread")]
+async fn project_tag_broadcast_groups_the_session_picker() {
+    use crate::attach::input_dispatch::session_picker_rows;
+    use crate::render::overlay::select_list::SelectKind;
+    use phux_protocol::wire::frame::{SESSION_PROJECT_KEY, encode_session_project};
+
+    let (mut state, mut client, _server, mut out) =
+        bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    state
+        .peers
+        .sessions
+        .push(SessionInfo::new(SessionId::new(2), "api"));
+    state
+        .peers
+        .sessions
+        .push(SessionInfo::new(SessionId::new(3), "web"));
+    state
+        .apply_server_frame(
+            &mut client,
+            &mut out,
+            None,
+            FrameKind::MetadataChanged {
+                scope: Scope::Global,
+                key: SESSION_PROJECT_KEY.to_owned(),
+                value: Some(encode_session_project("api", "phux")),
+                actor: None,
+            },
+            true,
+            &mut RepaintAccumulator::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        state
+            .peers
+            .project_tags
+            .get(&SessionId::new(2))
+            .map(String::as_str),
+        Some("phux")
+    );
+    assert!(!state.peers.project_tags.contains_key(&SessionId::new(3)));
+    let rows = session_picker_rows(
+        &state
+            .peers
+            .inputs(&crate::attach::review::ReviewIndex::default()),
+        &Workspace::default(),
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.label == "phux" && row.kind == SelectKind::Header),
+        "the live picker must group by the wire project tag: {rows:?}"
+    );
 }
 
 async fn answer_rename_barrier(

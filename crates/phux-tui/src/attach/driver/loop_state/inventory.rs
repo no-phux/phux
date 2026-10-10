@@ -1,10 +1,9 @@
-//! Host inventory, the serving host, and session rename.
+//! Host inventory and the serving host.
 
 use super::{
-    AttachError, Command, CommandResult, CommandValue, Connection, FrameKind, FrameOutcome,
-    HostAnswers, Notice, RepaintAccumulator, Scope, apply_graph_rename, federation_notices,
-    host_answers, host_inventory_overdue, sync_agent_meta_subscriptions,
-    unexplained_unreachable_notices,
+    AttachError, Command, CommandResult, CommandValue, Connection, FrameKind, HostAnswers, Notice,
+    RepaintAccumulator, Scope, federation_notices, host_answers, host_inventory_overdue,
+    sync_agent_meta_subscriptions, unexplained_unreachable_notices,
 };
 
 impl super::SessionLoop {
@@ -37,8 +36,7 @@ impl super::SessionLoop {
         self.reconcile_peer_agents(conn).await?;
         // The fleet's other half. Rides the same deferred
         // sweep, so it costs the first paint nothing.
-        self.request_serving_host(conn).await?;
-        self.request_host_inventory(conn).await
+        self.request_sidebar_facts(conn).await
     }
 
     /// Read the server's identity after first paint without blocking the frame loop.
@@ -116,7 +114,7 @@ impl super::SessionLoop {
                 self.peers.hosts = snapshot.hosts().to_vec();
                 let sessions_changed = self.peers.sessions != snapshot.sessions;
                 if sessions_changed {
-                    self.peers.sessions.clone_from(&snapshot.sessions);
+                    self.adopt_listed_sessions(&snapshot.sessions);
                 }
                 // Sweep only when the graph the sweep reads actually moved.
                 if sessions_changed || self.snapshot_graph_changed(snapshot) {
@@ -185,22 +183,6 @@ impl super::SessionLoop {
         }
     }
 
-    /// Apply a `phux.session.name/v1` broadcast to the cached graph and
-    /// (when it names this client's session) the status-bar name.
-    pub(super) fn fold_session_rename(
-        &mut self,
-        outcome: &mut FrameOutcome,
-        repaint: &mut RepaintAccumulator,
-    ) {
-        let Some((current, new_name)) = outcome.session_rename.take() else {
-            return;
-        };
-        apply_graph_rename(&mut self.peers.sessions, &current, &new_name);
-        self.peers.chrome_dirty = true;
-        self.session_picker_dirty = true;
-        self.note_chrome_change(repaint);
-    }
-
     /// The `GET_STATE` barrier after a local rename: the snapshot is
     /// authoritative, so a refused write leaves the current name in place.
     pub(super) fn confirm_session_rename(
@@ -213,7 +195,7 @@ impl super::SessionLoop {
                 let Some(pending) = self.rename_pending.take() else {
                     return;
                 };
-                self.peers.sessions.clone_from(&snapshot.sessions);
+                self.adopt_listed_sessions(&snapshot.sessions);
                 self.adopt_snapshot_graph(snapshot);
                 if let Some(id) = pending.session_id.or(self.peers.focused_session) {
                     let roster: Vec<_> = snapshot

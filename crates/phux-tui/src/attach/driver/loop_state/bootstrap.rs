@@ -1,11 +1,11 @@
 //! First paint, subscriptions, and the acknowledged-input journal.
 
 use super::{
-    AttachClaim, AttachEnd, AttachError, AttachMoment, AttachTarget, CONFIG_RELOAD_KEY, Connection,
-    DEFAULT_GROUP_ID, FrameKind, FrameStep, LoopExit, Notice, RepaintAccumulator, SESSION_NAME_KEY,
-    Scope, SidebarReservation, ToastOverlay, apply_initial_notice, attach_participants,
-    detached_loop_exit, emit_bootstrap_workspace_reflow, finish_onboarding_claim, layout_key,
-    send_attach, send_unless_peer_gone, undelivered_notices,
+    AttachClaim, AttachEnd, AttachError, AttachMoment, AttachTarget, Connection, DEFAULT_GROUP_ID,
+    FrameKind, FrameStep, LoopExit, Notice, RepaintAccumulator, Scope, SidebarReservation,
+    ToastOverlay, apply_initial_notice, attach_participants, detached_loop_exit,
+    emit_bootstrap_workspace_reflow, finish_onboarding_claim, layout_key, send_attach,
+    send_unless_peer_gone, undelivered_notices,
 };
 
 impl super::SessionLoop {
@@ -124,25 +124,7 @@ impl super::SessionLoop {
             after_seq: None,
         })
         .await?;
-        // The `phux config reload` doorbell.
-        conn.send(&FrameKind::SubscribeMetadata {
-            scope: Scope::Global,
-            key: CONFIG_RELOAD_KEY.to_owned(),
-        })
-        .await?;
-        // ADR-0105: follow the keep-empty mark, so a mark set or cleared after
-        // attach still decides whether the last pane's close detaches.
-        conn.send(&FrameKind::SubscribeMetadata {
-            scope: Scope::Global,
-            key: phux_protocol::wire::frame::SESSION_KEEP_EMPTY_KEY.to_owned(),
-        })
-        .await?;
-        // Session renames, so the roster and status name follow them.
-        conn.send(&FrameKind::SubscribeMetadata {
-            scope: Scope::Global,
-            key: SESSION_NAME_KEY.to_owned(),
-        })
-        .await?;
+        self.subscribe_global_session_keys(conn).await?;
         if subscribe_layout && let Some(session) = self.peers.focused_session {
             // Fetch and watch this session's persisted layout (best effort).
             let key = layout_key(session);

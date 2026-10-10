@@ -5,11 +5,9 @@
 //! (input, frames, paint, inventory, bootstrap, panes, peers) so this
 //! type is not a single 3k-line impl.
 //!
-//! [`SessionLoop`] owns every local the attach loop carries across
-//! iterations; one named handler per wake-up source (`on_stdin`,
-//! `on_server_frame`, `on_resize`, `on_status_tick`, ...) turns the
-//! `select!` into a readable dispatch over what just happened. Every
-//! session-scoped field is rebuilt on each [`SessionLoop::new`], so a
+//! [`SessionLoop`] owns every local the attach loop carries across iterations.
+//! One named handler per wake-up source turns the `select!` into a dispatch.
+//! Every session-scoped field is rebuilt on each [`SessionLoop::new`], so a
 //! re-attach starts from a clean slate (no stale pane mirror, no
 //! carried-over predict queue).
 
@@ -28,8 +26,7 @@ pub(super) use phux_client_core::session::SessionKernel;
 pub(super) use phux_protocol::caps::ServerFeature;
 pub(super) use phux_protocol::ids::{ClientId, ResourceId, SatelliteHost};
 pub(super) use phux_protocol::wire::frame::{
-    AttachTarget, CONFIG_RELOAD_KEY, Command, CommandResult, CommandValue, FrameKind,
-    SESSION_NAME_KEY, Scope,
+    AttachTarget, Command, CommandResult, CommandValue, FrameKind, Scope,
 };
 pub(super) use tokio::signal::unix::{Signal, SignalKind, signal};
 
@@ -57,7 +54,7 @@ pub(super) use crate::attach::path_picker;
 pub(super) use crate::attach::plugin_actions::{self, PluginRunResult};
 pub(super) use crate::attach::repaint::{PaintPacer, RepaintAccumulator, RepaintLevel};
 pub(super) use crate::attach::server_frame::{
-    FrameEnv, FrameOutcome, attach_participants, handle_server_frame,
+    FrameEnv, FrameOutcome, ProjectTagFrame, attach_participants, handle_server_frame,
 };
 pub(super) use crate::attach::session_mirror::SessionMirror;
 pub(super) use crate::attach::tty_input::TtyInput;
@@ -707,4 +704,5 @@ mod inventory;
 mod paint;
 mod panes;
 mod peers;
+mod project_tag;
 mod step;

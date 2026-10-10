@@ -999,6 +999,9 @@ fn handle_metadata_changed<W: crate::attach::RenderSink>(
     if key == SESSION_NAME_KEY && matches!(scope, Scope::Global) {
         return Ok(apply_session_rename_broadcast(ctx, value.as_deref()));
     }
+    if key == phux_protocol::wire::frame::SESSION_PROJECT_KEY && matches!(scope, Scope::Global) {
+        return Ok(super::outcome::project_tag_outcome(value.as_deref()));
+    }
     let Some(LayoutKeyOwner::Session(key_session)) = layout_key_scope_session(scope, key) else {
         return Ok(FrameOutcome::default());
     };
