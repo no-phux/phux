@@ -22,6 +22,7 @@ pub(super) fn archive_from_snapshot(
     layouts: &HashMap<SessionId, Workspace>,
     projects: &HashMap<String, String>,
     hosts: &HashMap<String, String>,
+    directories: &HashMap<String, String>,
 ) -> (WorkspaceArchive, Vec<String>) {
     let windows_by_session = windows_by_session(&snapshot.windows);
     let panes_by_window = panes_by_window(&snapshot.resources);
@@ -44,11 +45,11 @@ pub(super) fn archive_from_snapshot(
                 agent_sessions,
                 &mut warnings,
             );
-            let (cwd, pane_host) = focused_place(session, snapshot);
+            let (pane_cwd, pane_host) = focused_place(session, snapshot);
             WorkspaceSession {
                 name: session.name.clone(),
                 active: session.id == snapshot.focused_session,
-                cwd,
+                cwd: directories.get(&session.name).cloned().or(pane_cwd),
                 host: pane_host.or_else(|| hosts.get(&session.name).cloned()),
                 project: projects.get(&session.name).cloned(),
                 command: None,
@@ -416,6 +417,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
+            &HashMap::new(),
         );
         assert!(warnings.is_empty(), "{warnings:?}");
 
@@ -468,6 +470,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
+            &HashMap::new(),
         );
         assert!(warnings.is_empty(), "{warnings:?}");
 
@@ -502,6 +505,7 @@ mod tests {
             &HashMap::new(),
             &projects,
             &HashMap::new(),
+            &HashMap::new(),
         );
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(archive.sessions[0].host.as_deref(), Some("edge"));
@@ -535,10 +539,41 @@ mod tests {
             &HashMap::new(),
             &projects,
             &hosts,
+            &HashMap::new(),
         );
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(archive.sessions[0].host.as_deref(), Some("edge"));
         assert_eq!(archive.sessions[0].cwd.as_deref(), Some("/src/api"));
         assert_eq!(archive.sessions[0].project.as_deref(), Some("phux"));
+    }
+
+    #[test]
+    fn a_stored_directory_wins_over_the_process_cwd() {
+        let session = SessionInfo::new(SessionId::new(1), "api")
+            .with_active_window(Some(WindowId::new(2)))
+            .with_window_count(1);
+        let pane_id = ResourceId::local(4);
+        let window = WindowInfo::new(WindowId::new(2), SessionId::new(1), "main")
+            .with_active_resource(Some(pane_id.clone()));
+        let pane = ResourceInfo::new(pane_id, WindowId::new(2), 80, 24)
+            .with_cwd(Some("/tmp/server".to_owned()));
+        let snapshot =
+            SessionSnapshot::new(SessionId::new(1), WindowId::new(2), ResourceId::local(4))
+                .with_sessions(vec![session])
+                .with_windows(vec![window])
+                .with_resources(vec![pane]);
+        let mut directories = HashMap::new();
+        directories.insert("api".to_owned(), "/src/api".to_owned());
+
+        let (archive, warnings) = archive_from_snapshot(
+            &snapshot,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &directories,
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(archive.sessions[0].cwd.as_deref(), Some("/src/api"));
     }
 }

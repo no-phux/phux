@@ -534,21 +534,16 @@ pub(crate) fn clear_agent_host_env(cmd: &mut CommandBuilder) {
     }
 }
 
-/// Env key that carries a requested cwd the child cannot enter. Stripped
-/// before exec; the registry still records it so a workspace save keeps the
-/// archived directory.
-const RECORDED_CWD_ENV: &str = "PHUX_RECORDED_CWD";
-
 /// Apply a wire-supplied cwd to `cmd`.
 ///
 /// A cwd already on `cmd` (from a server-wide override command) wins. A path
-/// that is not an enterable directory is not given to the child, so a stale
+/// that is not an enterable directory is dropped with a warning, so a stale
 /// client path degrades to the default directory instead of failing the
-/// spawn. The requested path is kept in an environment variable until
-/// [`take_recorded_directory`] stamps the registry and removes it.
-/// `session` is for the log only.
+/// spawn. `session` is for the log only. The archived directory string is
+/// kept on `phux.session.directory/v1` by workspace restore, not on this
+/// child.
 pub fn apply_spawn_cwd(builder: &mut CommandBuilder, cwd: Option<&str>, session: &str) {
-    let Some(path) = cwd.filter(|path| !path.is_empty()) else {
+    let Some(path) = cwd else {
         return;
     };
     if builder.get_cwd().is_some() {
@@ -563,26 +558,7 @@ pub fn apply_spawn_cwd(builder: &mut CommandBuilder, cwd: Option<&str>, session:
             "wire cwd is not an enterable directory; \
              falling back to the default spawn directory",
         );
-        builder.env(RECORDED_CWD_ENV, path);
     }
-}
-
-/// The directory to record for this pane: the requested cwd when the child
-/// cannot enter it, otherwise the child's cwd. Removes the recorded-cwd
-/// environment variable so the child never sees it.
-pub fn take_recorded_directory(builder: &mut CommandBuilder) -> Option<std::path::PathBuf> {
-    let recorded = builder
-        .get_env(RECORDED_CWD_ENV)
-        .map(std::path::PathBuf::from);
-    if recorded.is_some() {
-        builder.env_remove(RECORDED_CWD_ENV);
-    }
-    recorded.or_else(|| {
-        builder
-            .get_cwd()
-            .map(std::path::PathBuf::from)
-            .or_else(|| std::env::current_dir().ok())
-    })
 }
 
 /// `path` is a directory the child can `chdir` into (search permission, not
@@ -932,22 +908,6 @@ mod writer_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_missing_directory_is_recorded_and_not_given_to_the_child() {
-        let mut cmd = CommandBuilder::new("true");
-        apply_spawn_cwd(&mut cmd, Some("/src/api"), "api");
-        assert!(
-            cmd.get_cwd().is_none(),
-            "the child must not chdir to a missing path"
-        );
-        let recorded = take_recorded_directory(&mut cmd);
-        assert_eq!(recorded.as_deref(), Some(std::path::Path::new("/src/api")));
-        assert!(
-            cmd.get_env(RECORDED_CWD_ENV).is_none(),
-            "the recorded-cwd env must be stripped before exec"
-        );
-    }
 
     /// `phux spawn nosuch` printed "spawn failed: spawn failed: Unable to
     /// spawn nosuch because:" and then the server's whole `PATH`, several

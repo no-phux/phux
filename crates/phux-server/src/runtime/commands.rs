@@ -124,11 +124,7 @@ fn register_pty_command(
     terminal: phux_core::ids::ResourceId,
     cmd: &mut portable_pty::CommandBuilder,
 ) -> phux_protocol::ids::ResourceId {
-    stamp_spawn_cwd(
-        s,
-        terminal,
-        crate::terminal_actor::take_recorded_directory(cmd),
-    );
+    stamp_spawn_cwd(s, terminal, spawn_cwd_of(cmd));
     let wire = s.intern_terminal_wire(terminal);
     crate::terminal_actor::apply_terminal_id(cmd, &wire);
     crate::terminal_actor::apply_server_socket(cmd, s.server_socket_path());
@@ -411,6 +407,14 @@ pub(crate) fn spawn_pane_with_pty_and_colors(
         crate::hooks::HookEvent::after_new_pane(&wire_terminal_id, session_name.as_deref()),
     );
     Ok(Some(terminal))
+}
+
+/// The directory a PTY child spawned from `cmd` starts in: the builder's cwd,
+/// else the server's own (which the child inherits).
+fn spawn_cwd_of(cmd: &portable_pty::CommandBuilder) -> Option<std::path::PathBuf> {
+    cmd.get_cwd()
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
 }
 
 /// Stamp a new pane's spawn cwd onto its registry descriptor; without it the
