@@ -261,6 +261,12 @@ pub enum DesktopEvent {
         code: Option<u16>,
         message: String,
     },
+    /// One `phux.session.project/v1` value. An empty `session_name` or a
+    /// missing `project` clears the tag.
+    SessionProject {
+        session_name: String,
+        project: Option<String>,
+    },
 }
 
 impl From<event::Lifecycle> for DesktopEvent {
@@ -393,6 +399,10 @@ fn encode_activity(value: Event) -> Option<DesktopEvent> {
         Event::AgentMetadata { terminal_id, value } => {
             Some(agent_badge(&terminal_id, value.as_deref()))
         }
+        Event::SessionProject { name, project } => Some(DesktopEvent::SessionProject {
+            session_name: name,
+            project,
+        }),
         Event::InputDelivery {
             delivery_id,
             outcome: value,

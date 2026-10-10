@@ -112,6 +112,21 @@ function scenario(
 }
 
 describe("bridge wakes", () => {
+  test("a project-tag event joins the session name to its id", () => {
+    scenario((bridge, client) => {
+      client.sessions = [
+        { id: 2, name: "api", windowCount: 1, attachedClientCount: 1 },
+        { id: 3, name: "web", windowCount: 1, attachedClientCount: 1 },
+      ];
+      wake(client, [{ kind: "TopologyChanged" }]);
+      wake(client, [{ kind: "SessionProject", sessionName: "api", project: "phux" }]);
+      expect(bridge.projects().get(2)).toBe("phux");
+      expect(bridge.projects().has(3)).toBe(false);
+      wake(client, [{ kind: "SessionProject", sessionName: "" }]);
+      expect(bridge.projects().size).toBe(0);
+    });
+  });
+
   test("server replacement retires badges before accepting the new server's batch", () => {
     scenario((bridge, client) => {
       wake(client, [{ kind: "TopologyChanged" }, badge("local:1"), badge("local:2")]);

@@ -74,6 +74,8 @@ export interface Bridge {
   fenced(terminalId: string): boolean;
   homeSession(): DesktopSession | undefined;
   panes(): DesktopPane[];
+  /** Session id to `phux.session.project/v1` tag. Empty when the tag is absent. */
+  projects(): ReadonlyMap<number, string>;
   /** Ask the server for a fresh session list after a create or rename. */
   refreshTopology(): void;
   /**
@@ -115,7 +117,8 @@ export function structural(event: DesktopEvent): boolean {
   return !(
     event.kind === "TerminalChanged" ||
     event.kind === "InputDelivery" ||
-    event.kind === "AgentBadge"
+    event.kind === "AgentBadge" ||
+    event.kind === "SessionProject"
   );
 }
 
@@ -145,6 +148,7 @@ export function createBridge(
   const [topology, setTopology] = createSignal<DesktopTopology | undefined>();
   const [server, setServer] = createSignal<DesktopServerInfo | undefined>();
   const [agents, setAgents] = createSignal<Record<string, AgentInfo>>({});
+  const [projectTag, setProjectTag] = createSignal<{ name: string; project: string } | undefined>();
   const [revision, setRevision] = createSignal(0);
   // One strictly increasing tick per drain feeds every paint revision, so a
   // revision never repeats a value, even for a terminal whose signal was
@@ -176,7 +180,7 @@ export function createBridge(
     let all = events.length === 0;
     for (const event of events) {
       if (event.kind === "TerminalChanged") output.add(event.terminalId);
-      else if (event.kind !== "AgentBadge") all = true;
+      else if (event.kind !== "AgentBadge" && event.kind !== "SessionProject") all = true;
       // Bumping every terminal re-runs whatever still reads this one, which
       // then subscribes to a fresh signal instead of the dropped one.
       if (event.kind === "Closed") terminalRevisions.delete(event.terminalId);
@@ -201,12 +205,25 @@ export function createBridge(
             (event, index) => event.kind !== "AgentBadge" || (acceptBadges && index > boundary),
           );
     for (const event of current) {
-      if (startsConnection(event)) setAgents({});
+      if (startsConnection(event)) {
+        setAgents({});
+        setProjectTag(undefined);
+      }
       if (event.kind === "ServerError") setError(event.message);
       if (event.kind === "AgentBadge") noteAgent(event);
+      if (event.kind === "SessionProject") noteProject(event);
       if (event.kind === "Closed") forgetAgent(event.terminalId);
     }
     listener(current);
+  }
+
+  function noteProject(event: Extract<DesktopEvent, { kind: "SessionProject" }>): void {
+    const project = event.project;
+    if (!event.sessionName || !project) {
+      setProjectTag(undefined);
+      return;
+    }
+    setProjectTag({ name: event.sessionName, project });
   }
 
   function noteAgent(event: Extract<DesktopEvent, { kind: "AgentBadge" }>): void {
@@ -415,6 +432,15 @@ export function createBridge(
     },
     homeSession,
     panes: () => topology()?.panes ?? [],
+    projects: () => {
+      const tag = projectTag();
+      const projects = new Map<number, string>();
+      if (!tag) return projects;
+      for (const session of topology()?.sessions ?? []) {
+        if (session.name === tag.name) projects.set(session.id, tag.project);
+      }
+      return projects;
+    },
     refreshTopology: () => {
       if (closed || status() !== "Attached") return;
       client().refreshTopology();

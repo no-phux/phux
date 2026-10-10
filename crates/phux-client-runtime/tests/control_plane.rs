@@ -329,6 +329,122 @@ fn negotiated() -> (ControlPlane, u32) {
     (plane, attach_id)
 }
 
+/// A manually driven attach does not allocate a project-tag read. Cockpit
+/// answers the first metadata GET as workspace layout.
+#[test]
+fn a_manual_lifecycle_attach_does_not_fetch_the_project_tag() {
+    use phux_protocol::wire::frame::{SESSION_PROJECT_KEY, Scope, ViewportInfo};
+
+    let mut plane = ControlPlane::new(ControlOptions {
+        automatic_lifecycle: false,
+        ..ControlOptions::default()
+    });
+    plane.connection_opened();
+    let _ = plane.take_outbound();
+    plane
+        .feed(hello_ok(PROTOCOL_VERSION.patch))
+        .expect("HELLO_OK");
+    assert!(plane.attach_explicit(
+        7,
+        AttachTarget::ByName("main".to_owned()),
+        ViewportInfo::new(20, 4),
+        false,
+        0,
+        None,
+    ));
+    let _ = plane.take_outbound();
+    plane
+        .feed(FrameKind::Attached {
+            attach_id: 7,
+            snapshot: two_session_snapshot(false),
+            initial_client_id: ClientId::new(1),
+        })
+        .unwrap();
+    let outbound: Vec<FrameKind> = plane
+        .take_outbound()
+        .iter()
+        .map(|frame| decode(frame))
+        .collect();
+    assert!(
+        outbound.iter().all(|frame| !matches!(
+            frame,
+            FrameKind::GetMetadata { scope: Scope::Global, key, .. }
+                | FrameKind::SubscribeMetadata { scope: Scope::Global, key }
+                if key == SESSION_PROJECT_KEY
+        )),
+        "a manual attach must leave project-tag reads to the embedder: {outbound:?}"
+    );
+}
+
+/// Attach subscribes to `phux.session.project/v1` and a stored value becomes
+/// one event. The test feeds the frames; it does not insert the tag by hand.
+#[test]
+fn attach_reads_the_session_project_tag_into_an_event() {
+    use phux_protocol::wire::frame::{SESSION_PROJECT_KEY, Scope, encode_session_project};
+
+    let (mut plane, attach_id) = negotiated();
+    plane
+        .feed(FrameKind::Attached {
+            attach_id,
+            snapshot: two_session_snapshot(false),
+            initial_client_id: ClientId::new(1),
+        })
+        .unwrap();
+    let outbound: Vec<FrameKind> = plane
+        .take_outbound()
+        .iter()
+        .map(|frame| decode(frame))
+        .collect();
+    assert!(
+        outbound.iter().any(|frame| matches!(
+            frame,
+            FrameKind::SubscribeMetadata { scope: Scope::Global, key }
+                if key == SESSION_PROJECT_KEY
+        )),
+        "attach must subscribe to the project tag: {outbound:?}"
+    );
+    let request_id = outbound
+        .iter()
+        .find_map(|frame| match frame {
+            FrameKind::GetMetadata {
+                request_id,
+                scope: Scope::Global,
+                key,
+            } if key == SESSION_PROJECT_KEY => Some(*request_id),
+            _ => None,
+        })
+        .expect("attach GETs the project tag");
+    plane
+        .feed(FrameKind::MetadataValue {
+            request_id,
+            value: Some(encode_session_project("beta", "phux")),
+        })
+        .unwrap();
+    assert!(
+        plane.take_events().iter().any(|event| matches!(
+            event,
+            Event::SessionProject { name, project }
+                if name == "beta" && project.as_deref() == Some("phux")
+        )),
+        "the GET value must surface as a session project event"
+    );
+    plane
+        .feed(FrameKind::MetadataChanged {
+            scope: Scope::Global,
+            key: SESSION_PROJECT_KEY.to_owned(),
+            value: None,
+            actor: None,
+        })
+        .unwrap();
+    assert!(
+        plane.take_events().iter().any(|event| matches!(
+            event,
+            Event::SessionProject { name, project } if name.is_empty() && project.is_none()
+        )),
+        "a tombstone must clear the project tag"
+    );
+}
+
 fn attach(plane: &mut ControlPlane, attach_id: u32, bytes: &[u8]) {
     attach_with_history(plane, attach_id, bytes, None);
 }
