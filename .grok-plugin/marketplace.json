@@ -1,0 +1,14 @@
+{
+  "name": "phux",
+  "owner": {
+    "name": "phall"
+  },
+  "plugins": [
+    {
+      "name": "phux",
+      "description": "Expose shared phux terminals as Grok tools and lifecycle metadata.",
+      "version": "0.1.0",
+      "source": "./integrations/grok"
+    }
+  ]
+}
