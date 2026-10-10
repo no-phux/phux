@@ -9,8 +9,9 @@ use std::path::Path;
 
 use phux_protocol::ids::{GroupId, ResourceId, SatelliteHost};
 use phux_protocol::wire::frame::{
-    FrameKind, SESSION_HOST_KEY, SESSION_PROJECT_KEY, Scope, decode_session_host,
-    decode_session_project, encode_session_host, encode_session_project,
+    FrameKind, SESSION_DIRECTORY_KEY, SESSION_HOST_KEY, SESSION_PROJECT_KEY, Scope,
+    decode_session_directory, decode_session_host, decode_session_project,
+    encode_session_directory, encode_session_host, encode_session_project,
 };
 
 use crate::attach::AttachError;
@@ -50,6 +51,14 @@ pub async fn fetch_project_by_session(socket_path: &Path) -> HashMap<String, Str
 /// missing server yields an empty map.
 pub async fn fetch_host_by_session(socket_path: &Path) -> HashMap<String, String> {
     fetch_named_tag(socket_path, SESSION_HOST_KEY, decode_session_host).await
+}
+
+/// The stored `phux.session.directory/v1` value, keyed by session name.
+///
+/// Same shape as [`fetch_project_by_session`]: at most one entry, and a
+/// missing server yields an empty map.
+pub async fn fetch_directory_by_session(socket_path: &Path) -> HashMap<String, String> {
+    fetch_named_tag(socket_path, SESSION_DIRECTORY_KEY, decode_session_directory).await
 }
 
 async fn fetch_named_tag(
@@ -109,6 +118,27 @@ pub async fn set_session_host(
         name,
         host,
         encode_session_host,
+    )
+    .await
+}
+
+/// Write `phux.session.directory/v1` for `name` and read it back.
+///
+/// # Errors
+///
+/// [`SessionProjectError`] when the server cannot be reached, refuses the
+/// read, or returns a different value.
+pub async fn set_session_directory(
+    socket_path: &Path,
+    name: &str,
+    directory: &str,
+) -> Result<(), SessionProjectError> {
+    set_named_tag(
+        socket_path,
+        SESSION_DIRECTORY_KEY,
+        name,
+        directory,
+        encode_session_directory,
     )
     .await
 }

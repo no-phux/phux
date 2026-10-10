@@ -536,10 +536,12 @@ pub(crate) fn clear_agent_host_env(cmd: &mut CommandBuilder) {
 
 /// Apply a wire-supplied cwd to `cmd`.
 ///
-/// A cwd already on `cmd` (from a server-wide override command) wins. A path that is not an enterable
-/// directory is dropped with a warning, so a stale client path degrades to
-/// the default directory instead of failing the spawn. `session` is for
-/// the log only.
+/// A cwd already on `cmd` (from a server-wide override command) wins. A path
+/// that is not an enterable directory is dropped with a warning, so a stale
+/// client path degrades to the default directory instead of failing the
+/// spawn. `session` is for the log only. The archived directory string is
+/// kept on `phux.session.directory/v1` by workspace restore, not on this
+/// child.
 pub fn apply_spawn_cwd(builder: &mut CommandBuilder, cwd: Option<&str>, session: &str) {
     let Some(path) = cwd else {
         return;

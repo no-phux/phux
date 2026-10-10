@@ -107,8 +107,15 @@ async fn capture_archive(
     }
     let projects = phux_client::workspace_place::fetch_project_by_session(socket_path).await;
     let hosts = phux_client::workspace_place::fetch_host_by_session(socket_path).await;
-    let (archive, reconcile_warnings) =
-        archive_from_snapshot(&snapshot, &agent_sessions, &layouts, &projects, &hosts);
+    let directories = phux_client::workspace_place::fetch_directory_by_session(socket_path).await;
+    let (archive, reconcile_warnings) = archive_from_snapshot(
+        &snapshot,
+        &agent_sessions,
+        &layouts,
+        &projects,
+        &hosts,
+        &directories,
+    );
     for warning in bridge_warnings
         .iter()
         .chain(&layout_warnings)
@@ -445,6 +452,17 @@ async fn restore_one_session(
         rollback_session(socket_path, &created).await;
         return Err(err.to_string());
     }
+    if let Some(directory) = create.cwd.as_deref().filter(|cwd| !cwd.is_empty())
+        && let Err(err) = phux_client::workspace_place::set_session_directory(
+            socket_path,
+            &create.name,
+            directory,
+        )
+        .await
+    {
+        rollback_session(socket_path, &created).await;
+        return Err(err.to_string());
+    }
     Ok(SessionOutcome { warnings })
 }
 
@@ -524,18 +542,11 @@ async fn replay_or_keep_local(
         Err(err) if keep_local_when_host_unroutable(host, &err) => {
             let host_name = host.unwrap_or("");
             warnings.push(format!(
-                "could not place this session on host {host_name:?}: {err}; kept it on this server"
+                "could not place this session on host {host_name}: {err}; kept the local session and its host tag"
             ));
-            replay_split_tree(
-                socket_path,
-                seed,
-                seed_position,
-                windows,
-                None,
-                created,
-                warnings,
-            )
-            .await
+            // The seed pane already exists. Spawning the tree again with no
+            // satellite would drop the archived host.
+            Ok(())
         }
         Err(err) => Err(err),
     }

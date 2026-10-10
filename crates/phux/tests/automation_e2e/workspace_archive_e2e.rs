@@ -215,6 +215,96 @@ fn workspace_save_captures_and_restore_replays_a_real_split_tree() {
     );
 }
 
+/// Restoring an archive whose session is on host `edge`, in `/src/api`, and
+/// tagged `phux` keeps that organization. The directory does not have to
+/// exist: the child falls back, and the registry still records the request.
+#[test]
+#[ignore = "spawns real phux servers; run explicitly when validating workspace archives."]
+fn restore_keeps_edge_host_src_api_directory_and_phux_project() {
+    let dest = start("edge");
+    let archive_dir = tempfile::tempdir().expect("archive tempdir");
+    let archive = archive_dir.path().join("edge.json");
+    let resaved = archive_dir.path().join("resaved.json");
+    std::fs::write(
+        &archive,
+        r#"{
+            "schema_version": 2,
+            "sessions": [
+                {
+                    "name": "api",
+                    "host": "edge",
+                    "cwd": "/src/api",
+                    "project": "phux",
+                    "windows": []
+                }
+            ]
+        }"#,
+    )
+    .expect("write archive");
+    let socket = dest.socket_text();
+
+    let (code, stdout, stderr) =
+        run(&["workspace", "restore", "--plan", &archive.to_string_lossy()]);
+    assert_eq!(code, 0, "restore --plan failed: {stderr}");
+    assert!(
+        stdout.contains("api host=edge directory=/src/api project=phux"),
+        "plan must print the archived organization: {stdout}"
+    );
+
+    let (code, stdout, stderr) = run(&[
+        "workspace",
+        "restore",
+        &archive.to_string_lossy(),
+        "--socket",
+        &socket,
+    ]);
+    assert_eq!(code, 0, "workspace restore failed: {stderr} {stdout}");
+    let summary: serde_json::Value = serde_json::from_str(&stdout).expect("restore summary JSON");
+    assert!(
+        summary["failed"].as_array().is_none_or(Vec::is_empty),
+        "restore must not report a failure: {summary} {stderr}"
+    );
+    assert!(
+        summary["restored"]
+            .as_array()
+            .expect("restored array")
+            .iter()
+            .any(|name| name == "api"),
+        "api must be restored: {summary}"
+    );
+
+    let (code, _stdout, stderr) = run(&[
+        "workspace",
+        "save",
+        "--socket",
+        &socket,
+        "--output",
+        &resaved.to_string_lossy(),
+    ]);
+    assert_eq!(code, 0, "workspace save after restore failed: {stderr}");
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&resaved).expect("read resaved archive"))
+            .expect("resaved archive JSON");
+    let session = saved["sessions"]
+        .as_array()
+        .expect("sessions")
+        .iter()
+        .find(|session| session["name"] == "api")
+        .expect("api session was saved");
+    assert_eq!(
+        session["host"], "edge",
+        "host tag was not applied: {session}"
+    );
+    assert_eq!(
+        session["cwd"], "/src/api",
+        "archived directory was not recorded: {session}"
+    );
+    assert_eq!(
+        session["project"], "phux",
+        "project tag was not applied: {session}"
+    );
+}
+
 /// The one window of the archive's `split-bench` session.
 fn split_bench_window(archive: &serde_json::Value) -> serde_json::Value {
     let sessions = archive["sessions"].as_array().expect("sessions array");

@@ -353,6 +353,29 @@ pub fn decode_session_host(value: &[u8]) -> Option<(&str, &str)> {
     decode_named_tag(value)
 }
 
+/// Global key for the directory a session is organized in.
+///
+/// Stored, not intercepted (`docs/spec/L3.md` §3.1). Value: `name\0directory`,
+/// both non-empty UTF-8. A `GET` returns the stored bytes. `DELETE` clears
+/// the tag. Workspace save uses this tag when it is set, so a directory the
+/// child could not enter still round-trips. The pane's own cwd stays the
+/// directory the process actually started in.
+pub const SESSION_DIRECTORY_KEY: &str = "phux.session.directory/v1";
+
+/// Encode a [`SESSION_DIRECTORY_KEY`] value: `name\0directory`.
+#[must_use]
+pub fn encode_session_directory(name: &str, directory: &str) -> Vec<u8> {
+    encode_named_tag(name, directory)
+}
+
+/// Decode a [`SESSION_DIRECTORY_KEY`] value into `(name, directory)`.
+///
+/// `None` unless both sides are non-empty UTF-8 with no extra NULs.
+#[must_use]
+pub fn decode_session_directory(value: &[u8]) -> Option<(&str, &str)> {
+    decode_named_tag(value)
+}
+
 fn encode_named_tag(name: &str, value: &str) -> Vec<u8> {
     let mut bytes = name.as_bytes().to_vec();
     bytes.push(0);
