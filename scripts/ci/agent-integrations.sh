@@ -10,6 +10,7 @@ cd "$root"
 
 bash scripts/doctor.sh integrations
 node scripts/check-agent-integration-versions.mjs
+node --test integrations/grok/test/package.test.mjs
 
 # Incidental install audits are off; the explicit audit inside each
 # package's gates script still runs. Same switch as integration-check.

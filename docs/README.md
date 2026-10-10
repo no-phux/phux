@@ -31,8 +31,9 @@ the references cover commands, protocols, and implementation.
 ## Run coding agents
 
 Start with [coding-agent getting started](./consumers/getting-started.md), then
-choose [Claude Code](./consumers/claude.md), [Pi](./consumers/pi.md),
-[OpenCode V2](./consumers/opencode-v2.md), or [MCP](./consumers/mcp.md).
+choose [Claude Code](./consumers/claude.md), [Grok](./consumers/grok.md),
+[Pi](./consumers/pi.md), [OpenCode V2](./consumers/opencode-v2.md), or
+[MCP](./consumers/mcp.md).
 For scripts and advanced automation, use the [agent CLI guide](./consumers/agents.md).
 
 ## Connect machines

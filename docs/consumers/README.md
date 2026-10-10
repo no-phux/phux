@@ -17,7 +17,7 @@ establish release availability.
 |---|---|
 | Work interactively in a terminal | [Terminal UI](./tui.md) or the [first-run walkthrough](../QUICKSTART.md) |
 | Use the native macOS app | [Cockpit](./cockpit.md) |
-| Connect OMP, Claude, Pi, OpenCode, or an MCP host | [Coding-agent getting started](./getting-started.md) |
+| Connect OMP, Claude, Grok, Pi, OpenCode, or an MCP host | [Coding-agent getting started](./getting-started.md) |
 | Read and drive terminals from a script | [Agent CLI guide](./agents.md) |
 | Record a pane or an attached session | [Recording](./recording.md) |
 | Try the browser demo or build your own browser client | [Web client](./web.md) |
@@ -25,6 +25,7 @@ establish release availability.
 ### Host integrations
 
 - [Claude Code](./claude.md): plugin tools and hooks, plus optional launch shim.
+- [Grok](./grok.md): the same MCP tools and lifecycle hooks for Grok Build.
 - [OMP](./omp.md): native terminal tools and bounded observations; locally installable.
 - [Pi](./pi.md): target selection, saved targets, and fleet awareness.
 - [OpenCode V2](./opencode-v2.md): source-loaded plugin; not a published package.

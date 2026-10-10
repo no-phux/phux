@@ -16,6 +16,7 @@ integration.
 | You use | Start here | What you get |
 |---|---|---|
 | Claude Code | [Claude plugin first run](./claude.md#first-shared-terminal-walkthrough) | Native MCP tools and identity/attention hooks. An optional launch shim has a separate job. |
+| Grok | [Grok plugin first run](./grok.md#first-shared-terminal-walkthrough) | The same MCP tools and lifecycle hooks for Grok Build and the `grok` bot. |
 | Pi | [Pi first run](./pi.md#first-shared-terminal-walkthrough) | A pane chooser, saved targets, terminal tools, and fleet context. |
 | Oh My Pi | [Native OMP setup](./omp.md#install-and-load) | CLI-backed terminal tools and branch-local targets; no lifecycle producer. |
 | OpenCode V2 | [OpenCode checkout setup](./opencode-v2.md#first-shared-terminal-walkthrough) | A source-loaded plugin that works in sibling terminals. Not a published package. |
