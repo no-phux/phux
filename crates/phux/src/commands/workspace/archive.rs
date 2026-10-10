@@ -524,18 +524,11 @@ async fn replay_or_keep_local(
         Err(err) if keep_local_when_host_unroutable(host, &err) => {
             let host_name = host.unwrap_or("");
             warnings.push(format!(
-                "could not place this session on host {host_name:?}: {err}; kept it on this server"
+                "could not place this session on host {host_name}: {err}; kept the local session and its host tag"
             ));
-            replay_split_tree(
-                socket_path,
-                seed,
-                seed_position,
-                windows,
-                None,
-                created,
-                warnings,
-            )
-            .await
+            // The seed pane already exists. Spawning the tree again with no
+            // satellite would drop the archived host.
+            Ok(())
         }
         Err(err) => Err(err),
     }
