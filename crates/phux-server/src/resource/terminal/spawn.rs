@@ -544,7 +544,7 @@ const RECORDED_CWD_ENV: &str = "PHUX_RECORDED_CWD";
 /// A cwd already on `cmd` (from a server-wide override command) wins. A path
 /// that is not an enterable directory is not given to the child, so a stale
 /// client path degrades to the default directory instead of failing the
-/// spawn. The requested path is kept on `RECORDED_CWD_ENV` until
+/// spawn. The requested path is kept in an environment variable until
 /// [`take_recorded_directory`] stamps the registry and removes it.
 /// `session` is for the log only.
 pub fn apply_spawn_cwd(builder: &mut CommandBuilder, cwd: Option<&str>, session: &str) {
@@ -568,8 +568,8 @@ pub fn apply_spawn_cwd(builder: &mut CommandBuilder, cwd: Option<&str>, session:
 }
 
 /// The directory to record for this pane: the requested cwd when the child
-/// cannot enter it, otherwise the child's cwd. Removes [`RECORDED_CWD_ENV`]
-/// so the child never sees it.
+/// cannot enter it, otherwise the child's cwd. Removes the recorded-cwd
+/// environment variable so the child never sees it.
 pub fn take_recorded_directory(builder: &mut CommandBuilder) -> Option<std::path::PathBuf> {
     let recorded = builder
         .get_env(RECORDED_CWD_ENV)
