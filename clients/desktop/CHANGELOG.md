@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.0-alpha.11](https://github.com/no-phux/phux/compare/desktop-v0.1.0-alpha.10...desktop-v0.1.0-alpha.11) (2026-10-10)
+
+
+### Bug Fixes
+
+* **desktop:** group the sidebar by the stored project tag ([#1160](https://github.com/no-phux/phux/issues/1160)) ([69bfa7a](https://github.com/no-phux/phux/commit/69bfa7a4f637a6810940684096ca58848b122e63))
+
 ## [0.1.0-alpha.10](https://github.com/no-phux/phux/compare/desktop-v0.1.0-alpha.9...desktop-v0.1.0-alpha.10) (2026-10-09)
 
 
