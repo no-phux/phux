@@ -25,6 +25,8 @@ export interface DisplayPrefs {
   paddingY: number;
   /** Opacity kept by panes that are not focused (1 = no dimming). */
   unfocusedOpacity: number;
+  /** Terminal default-background opacity; lower values reveal native window blur. */
+  terminalOpacity: number;
   /** Apply the Ghostty config's keybinds over the built-in ones. */
   ghosttyKeys: boolean;
 }
@@ -43,6 +45,7 @@ export const defaultDisplay: DisplayPrefs = {
   paddingX: 8,
   paddingY: 6,
   unfocusedOpacity: 1,
+  terminalOpacity: 0.92,
   ghosttyKeys: true,
 };
 
@@ -269,6 +272,10 @@ export function parseDisplay(value: unknown): DisplayPrefs {
       typeof value.unfocusedOpacity === "number"
         ? value.unfocusedOpacity
         : defaultDisplay.unfocusedOpacity,
+    terminalOpacity:
+      typeof value.terminalOpacity === "number"
+        ? value.terminalOpacity
+        : defaultDisplay.terminalOpacity,
     ghosttyKeys: value.ghosttyKeys !== false,
   });
 }
@@ -300,6 +307,7 @@ export function sanitizeDisplay(display: DisplayPrefs): DisplayPrefs {
     paddingX: clamp(Math.round(finite(display.paddingX, defaultDisplay.paddingX)), 0, 64),
     paddingY: clamp(Math.round(finite(display.paddingY, defaultDisplay.paddingY)), 0, 64),
     unfocusedOpacity: clamp(roundTo(finite(display.unfocusedOpacity, 1), 100), 0.15, 1),
+    terminalOpacity: clamp(roundTo(finite(display.terminalOpacity, 1), 100), 0.55, 1),
     ghosttyKeys: display.ghosttyKeys,
   };
 }

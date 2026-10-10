@@ -3,7 +3,7 @@ import type { DesktopPane, DesktopSession } from "../../native/generated/index";
 import type { AgentInfo } from "../bridge/desktop";
 import { IconButton, Icon, Label, Pill, StatusDot, column, row, usePalette } from "../ui/controls";
 import { agentColors, radius, uiFont } from "../ui/theme";
-import { groupByProject } from "../workspace/place";
+import { groupByProject, terminalHost } from "../workspace/place";
 
 export interface SidebarProps {
   width: number;
@@ -55,22 +55,23 @@ export function Sidebar(props: SidebarProps): JSX.Element {
     );
   });
   const sessionGroups = createMemo(() => {
-    const tagged = sessions().map((session) => {
-      const project = props.projects?.get(session.id);
-      return project === undefined
-        ? { name: session.name, session }
-        : { name: session.name, project, session };
-    });
+    const tagged = sessions().map((session) => ({
+      name: session.name,
+      project: props.projects?.get(session.id),
+      host: sessionHost(session.id, props.panes),
+      session,
+    }));
     return groupByProject(tagged).map((group) => ({
       project: group.project,
-      sessions: group.sessions.flatMap((line) => {
-        const match = tagged.find(
-          (item) => item.name === line.name && item.project === line.project,
-        );
-        return match ? [match.session] : [];
-      }),
+      host: group.host,
+      sessions: group.sessions.map((line) => line.session),
     }));
   });
+  const hasGroups = createMemo(
+    () =>
+      (props.projects !== undefined && props.projects.size > 0) ||
+      props.panes.some((pane) => terminalHost(pane.terminalId) !== undefined),
+  );
 
   return (
     <div
@@ -110,8 +111,8 @@ export function Sidebar(props: SidebarProps): JSX.Element {
         <For each={sessionGroups()}>
           {(group): JSX.Element => (
             <div style={column({ gap: 1 })}>
-              <Show when={props.projects && props.projects.size > 0}>
-                <SectionHeader title={group.project ?? "Sessions"} count={group.sessions.length} />
+              <Show when={hasGroups()}>
+                <SectionHeader title={groupTitle(group)} count={group.sessions.length} />
               </Show>
               <For each={group.sessions}>
                 {(session): JSX.Element => {
@@ -229,6 +230,23 @@ export function Sidebar(props: SidebarProps): JSX.Element {
       </div>
     </div>
   );
+}
+
+function sessionHost(sessionId: number, panes: readonly DesktopPane[]): string | undefined {
+  const hosts = [
+    ...new Set(
+      panes
+        .filter((pane) => pane.sessionId === sessionId)
+        .map((pane) => terminalHost(pane.terminalId))
+        .filter((host): host is string => host !== undefined),
+    ),
+  ];
+  return hosts.length === 1 ? hosts[0] : hosts.length > 1 ? "mixed remote" : undefined;
+}
+
+function groupTitle(group: { project?: string | undefined; host?: string | undefined }): string {
+  if (group.project && group.host) return `${group.project} · ${group.host}`;
+  return group.project ?? group.host ?? "Local sessions";
 }
 
 function SectionHeader(props: { title: string; count: number }): JSX.Element {

@@ -127,11 +127,13 @@ describe("layout snapshot", () => {
       sidebarWidth: 9000,
       themeId: "neon",
       fontFamily: "   ",
+      terminalOpacity: 0.1,
     });
     expect(clean.fontSize).toBe(28);
     expect(clean.lineHeight).toBe(defaultDisplay.lineHeight);
     expect(clean.sidebarWidth).toBe(SIDEBAR_MAX);
     expect(clean.themeId).toBe(defaultDisplay.themeId);
     expect(clean.fontFamily).toBe(defaultDisplay.fontFamily);
+    expect(clean.terminalOpacity).toBe(0.55);
   });
 });

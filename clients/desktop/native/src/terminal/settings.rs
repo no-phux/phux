@@ -156,10 +156,16 @@ fn number(value: &Value, minimum: f32, maximum: f32) -> Option<f32> {
 
 fn color(value: &Value) -> Option<gpui::Hsla> {
     let hex = value.as_str()?.strip_prefix('#')?;
-    if hex.len() != 6 {
+    if hex.len() != 6 && hex.len() != 8 {
         return None;
     }
-    Some(gpui::rgb(u32::from_str_radix(hex, 16).ok()?).into())
+    let rgb = u32::from_str_radix(&hex[..6], 16).ok()?;
+    let alpha = if hex.len() == 8 {
+        f32::from(u8::from_str_radix(&hex[6..], 16).ok()?) / 255.
+    } else {
+        1.
+    };
+    Some(gpui::rgb(rgb).opacity(alpha))
 }
 
 #[cfg(test)]
@@ -187,8 +193,12 @@ mod tests {
         settings.set("font", &json!({"size": -1, "lineHeight": 1000000}));
         assert_eq!(settings.font_size, 14.);
         assert_eq!(settings.line_height, 1.25);
-        settings.set("theme", &json!({"foreground": "#123456"}));
+        settings.set(
+            "theme",
+            &json!({"foreground": "#123456", "background": "#123456cc"}),
+        );
         assert!(settings.foreground.is_some());
+        assert!(settings.background.expect("alpha background").a < 1.);
         settings.set("theme", &Value::Null);
         assert!(settings.foreground.is_none());
         let sixteen: Vec<_> = (0..16).map(|index| format!("#0000{index:02x}")).collect();

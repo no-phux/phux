@@ -47,7 +47,7 @@ import { Pane, quotePaths } from "./terminal/pane";
 import type { HostAction, TerminalTheme } from "./terminal-element";
 import { PaletteContext } from "./ui/controls";
 import type { IconName } from "./ui/icons";
-import { palette, themeById, themes, type Theme } from "./ui/theme";
+import { palette, themeById, themes, withAlpha, type Theme } from "./ui/theme";
 import { ghosttyPrefs, ghosttyTheme, parseGhostty } from "./settings/ghostty";
 import {
   clampRatio,
@@ -359,7 +359,7 @@ function DesktopApp(props: AppProps): JSX.Element {
   const terminalTheme = createMemo<TerminalTheme>(() => {
     const theme: TerminalTheme = {
       foreground: colors().foreground,
-      background: colors().background,
+      background: withAlpha(colors().background, prefs().terminalOpacity),
       cursor: colors().cursor,
       selectionForeground: colors().selectionForeground ?? colors().foreground,
       selectionBackground: colors().selection,
@@ -1722,7 +1722,7 @@ function DesktopApp(props: AppProps): JSX.Element {
           flexDirection: "column",
           width: "100%",
           height: "100%",
-          backgroundColor: colors().background,
+          backgroundColor: withAlpha(colors().background, prefs().terminalOpacity),
           cursor:
             drag()?.kind === "sidebar" || (drag()?.kind === "split" && drag()?.axis === "row")
               ? "col-resize"
@@ -2062,6 +2062,7 @@ const WINDOW = {
   minWidth: 640,
   minHeight: 420,
   titlebarTransparent: true,
+  windowBackground: "blurred",
   trafficLightX: 14,
   trafficLightY: 14,
 } as const;

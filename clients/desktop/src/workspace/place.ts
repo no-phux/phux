@@ -10,13 +10,14 @@ export interface Place {
 
 export interface SessionLine {
   name: string;
-  host?: string;
-  project?: string;
+  host?: string | undefined;
+  project?: string | undefined;
 }
 
-export interface ProjectGroup {
-  project?: string;
-  sessions: SessionLine[];
+export interface ProjectGroup<T extends SessionLine = SessionLine> {
+  project?: string | undefined;
+  host?: string | undefined;
+  sessions: T[];
 }
 
 function blank(value: string | undefined): string | undefined {
@@ -33,24 +34,40 @@ export function placeFor(focused: Place | undefined, explicit?: Place): Place {
   return place;
 }
 
-/** Group by project tag. Tags sort. Untagged is last. Input order is kept. */
-export function groupByProject(sessions: readonly SessionLine[]): ProjectGroup[] {
-  const tags: Array<string | undefined> = [];
+export function terminalHost(terminalId: string | undefined): string | undefined {
+  if (!terminalId?.startsWith("satellite:")) return undefined;
+  const rest = terminalId.slice("satellite:".length);
+  const terminalSeparator = rest.lastIndexOf(":");
+  const host = terminalSeparator < 0 ? rest : rest.slice(0, terminalSeparator);
+  return blank(host);
+}
+
+/** Group by project tag, then remote host. Tags sort. Untagged/local is last. Input order is kept. */
+export function groupByProject<T extends SessionLine>(sessions: readonly T[]): ProjectGroup<T>[] {
+  const keys: Array<{ project?: string | undefined; host?: string | undefined }> = [];
   for (const session of sessions) {
-    const tag = blank(session.project);
-    if (!tags.includes(tag)) tags.push(tag);
+    const key = { project: blank(session.project), host: blank(session.host) };
+    if (!keys.some((item) => item.project === key.project && item.host === key.host))
+      keys.push(key);
   }
-  tags.sort((left, right) => {
-    if (left === right) return 0;
-    if (left === undefined) return 1;
-    if (right === undefined) return -1;
-    return left < right ? -1 : 1;
-  });
-  return tags.flatMap((tag) => {
-    const members = sessions.filter((session) => blank(session.project) === tag);
+  keys.sort(
+    (left, right) => compareKey(left.project, right.project) || compareKey(left.host, right.host),
+  );
+  return keys.flatMap((key) => {
+    const members = sessions.filter(
+      (session) => blank(session.project) === key.project && blank(session.host) === key.host,
+    );
     if (members.length === 0) return [];
-    const group: ProjectGroup = { sessions: members };
-    if (tag !== undefined) group.project = tag;
+    const group: ProjectGroup<T> = { sessions: members };
+    if (key.project !== undefined) group.project = key.project;
+    if (key.host !== undefined) group.host = key.host;
     return [group];
   });
+}
+
+function compareKey(left: string | undefined, right: string | undefined): number {
+  if (left === right) return 0;
+  if (left === undefined) return 1;
+  if (right === undefined) return -1;
+  return left < right ? -1 : 1;
 }

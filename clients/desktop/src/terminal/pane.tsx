@@ -186,7 +186,7 @@ export function Pane(props: PaneProps): JSX.Element {
               right: 0,
               bottom: 0,
               pointerEvents: "none",
-              backgroundColor: `${props.theme.background}${alpha(props.dim)}`,
+              backgroundColor: fade(props.theme.background, props.dim),
             }}
           />
         </Show>
@@ -196,10 +196,11 @@ export function Pane(props: PaneProps): JSX.Element {
   );
 }
 
-function alpha(amount: number): string {
-  return Math.round(Math.min(1, Math.max(0, amount)) * 255)
+function fade(color: string, amount: number): string {
+  const suffix = Math.round(Math.min(1, Math.max(0, amount)) * 255)
     .toString(16)
     .padStart(2, "0");
+  return `${color.slice(0, 7)}${suffix}`;
 }
 
 /** POSIX shell quoting for dropped paths, so a drop is text, never a command. */

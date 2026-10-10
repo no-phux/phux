@@ -97,7 +97,9 @@ If you have a Ghostty config (`~/.config/ghostty/config`, or the Application
 Support copy), the first launch adopts it: font family and size,
 `adjust-cell-width/height` percentages, colours including the 16-colour
 palette and a named `theme`, window padding, `unfocused-split-opacity`,
-`split-divider-color`, and `macos-option-as-alt`. Your `keybind` lines replace
+`split-divider-color`, and `macos-option-as-alt`. Settings also exposes
+**Terminal glass**, which lowers the default terminal background opacity over
+the native blurred window background. Your `keybind` lines replace
 the built-in chords where an equivalent command exists, including non-Command
 chords such as `ctrl+tab`, `shift+enter` or a bare `f12`. Besides splits, tabs,
 fonts, scrolling and search, that covers `text:` and `esc:` (typed as keys:

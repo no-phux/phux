@@ -202,6 +202,13 @@ export function Settings(props: {
                 more={() => props.update({ unfocusedOpacity: props.prefs.unfocusedOpacity + 0.05 })}
                 reset={() => props.update({ unfocusedOpacity: 1 })}
               />
+              <Stepper
+                label="Terminal glass"
+                value={`${Math.round(props.prefs.terminalOpacity * 100)}%`}
+                less={() => props.update({ terminalOpacity: props.prefs.terminalOpacity - 0.05 })}
+                more={() => props.update({ terminalOpacity: props.prefs.terminalOpacity + 0.05 })}
+                reset={() => props.update({ terminalOpacity: defaultDisplay.terminalOpacity })}
+              />
             </Group>
             <Group title="Input">
               <Toggle

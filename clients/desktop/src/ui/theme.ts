@@ -255,6 +255,13 @@ export function mix(from: string, to: string, amount: number): string {
 }
 
 /** Whichever of two candidates contrasts more with `fill`. */
+export function withAlpha(color: string, amount: number): string {
+  const suffix = Math.round(Math.min(1, Math.max(0, amount)) * 255)
+    .toString(16)
+    .padStart(2, "0");
+  return `${color.slice(0, 7)}${suffix}`;
+}
+
 export function readableOn(fill: string, dark: string, light: string): string {
   const target = luminance(fill);
   const darkGap = Math.abs(target - luminance(dark));
