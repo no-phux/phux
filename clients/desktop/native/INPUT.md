@@ -1,7 +1,7 @@
 ---
 audience: agents, contributors
 stability: evolving
-last-reviewed: 2026-09-30
+last-reviewed: 2026-10-10
 ---
 
 # Native terminal input
@@ -23,9 +23,11 @@ test-only: shipping builds must not enable `input-fixture`.
   rejected on a bound entity, so an old IME callback cannot re-arm; viewport
   changes reject actions until matching geometry is painted.
 - Key events: `Consumed` and admission errors stop propagation; `Platform`
-  reaches native text/menu handling. Printable key-down only saves metadata and
-  the platform commit sends the text; named/control/Option-as-Alt keys send on
-  key-down. JS never sends a second text event.
+  reaches native text/menu handling. Text-producing and dead keys defer
+  key-down until the platform commits text. Control characters, including
+  Enter's newline and Tab's tab character on macOS, send key atoms on key-down
+  instead of waiting for a text callback. Control/Option-as-Alt keys also send
+  on key-down. JS never sends a second text event.
 - Pointer and scroll use the painter's hitbox and GPUI capture so releases and
   drags reach the originating view. Initial hits in grid padding are rejected.
 - Copy/Paste bind to `copy_selection` and `paste_text`. A clipboard paste is
