@@ -2342,59 +2342,78 @@ ${notice}` : ""}${suffix}`, truncated };
 }
 
 // src/parent.ts
-var PARENT_PANE_RULE = "phux owns the terminals. This OpenCode process may be running inside a phux pane. Do not type into that pane: phux_run, phux_send_keys, phux_paste, and phux_agent_prompt refuse it. Create a sibling with phux_create or phux_spawn, then run shell work there. The built-in shell runs on that selected sibling and refuses when the only pane is this agent. Use phux_agent_prompt only for agent panes, not phux_run. Do not use OpenCode's built-in terminal or PTY for that work.";
+var PARENT_PANE_RULE = "Run commands with the built-in shell tool, including builds and tests; use its background option for dev servers and watchers. Use the phux tools only when a terminal itself is the point: an interactive program (REPL, TUI, debugger) you must drive, a long-running process the user should watch in a pane, or another agent's pane you observe or prompt. Never spawn a terminal just to run a command. Reuse a terminal you already spawned, and close it with phux_kill when done; this session's terminals are closed when it is deleted. This OpenCode process may itself run in a phux pane; phux refuses input into that pane.";
 function parentPane(value) {
   return normalizeTerminalIdentity(value);
 }
 
-// src/shell.ts
-function redirectShell(input) {
-  const siblings = uniqueSiblings(input.siblings, input.parent);
-  if (siblings.length > 1) {
-    return {
-      kind: "refuse",
-      reason: "Several sibling panes are selected. Use phux_run with an exact target."
-    };
+// src/terminals.ts
+var OWNED_TAG = "opencode-owned";
+var DEFAULT_MAX_TERMINALS = 4;
+
+class OwnedTerminals {
+  cli;
+  limit;
+  bySession = new Map;
+  constructor(cli, limit = DEFAULT_MAX_TERMINALS) {
+    this.cli = cli;
+    this.limit = limit;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 64) {
+      throw new RangeError("maxTerminals must be an integer from 1 through 64");
+    }
   }
-  const sibling = siblings[0];
-  if (sibling !== undefined) {
-    return {
-      kind: "run",
-      command: phuxRunCommand(input.executable, input.socket, sibling, input.command, timeoutSeconds(input.timeoutMs))
-    };
+  owned(sessionID) {
+    return this.bySession.get(sessionID) ?? [];
   }
-  if (input.parent !== null) {
-    return {
-      kind: "refuse",
-      reason: "Refusing OpenCode's shell: the only pane is this agent. Create a sibling with phux_create, select it, then retry."
-    };
+  async admit(sessionID, signal) {
+    const owned = this.owned(sessionID);
+    if (owned.length < this.limit)
+      return;
+    const listed = (await this.cli.ls({ timeoutMs: 1e4, ...signal === undefined ? {} : { signal } })).terminals;
+    const live = new Set(listed);
+    const remaining = listed.length === 0 ? [...owned] : owned.filter((target) => target.includes("/") || live.has(target));
+    this.set(sessionID, remaining);
+    if (remaining.length < this.limit)
+      return;
+    throw new Error(`This session already owns ${String(remaining.length)} phux terminals (${remaining.join(", ")}). ` + "Reuse one, or close one with phux_kill before spawning another.");
   }
-  return { kind: "passthrough" };
-}
-function uniqueSiblings(targets, parent) {
-  const found = new Set;
-  for (const target of targets) {
-    const normalized = normalizeTerminalIdentity(target);
-    if (normalized === null || normalized === parent)
-      continue;
-    found.add(normalized);
+  async add(sessionID, target) {
+    this.set(sessionID, [...this.owned(sessionID).filter((owned) => owned !== target), target]);
+    await this.cli.tag("add", target, [OWNED_TAG], { timeoutMs: 5000 }).catch(() => {
+      return;
+    });
   }
-  return [...found];
+  async kill(sessionID, target, signal) {
+    const owned = this.owned(sessionID);
+    if (!owned.includes(target)) {
+      throw new Error(`${target} was not spawned by this session; phux_kill only closes terminals this session owns (${owned.join(", ") || "none"}).`);
+    }
+    await this.cli.kill(target, { timeoutMs: 1e4, ...signal === undefined ? {} : { signal } }).catch((error) => {
+      if (!isGone(error))
+        throw error;
+    });
+    this.set(sessionID, owned.filter((entry) => entry !== target));
+  }
+  async release(sessionID) {
+    const owned = this.owned(sessionID);
+    this.bySession.delete(sessionID);
+    await Promise.all(owned.map((target) => this.cli.kill(target, { timeoutMs: 5000 }).catch(() => {
+      return;
+    })));
+  }
+  async releaseAll() {
+    await Promise.all([...this.bySession.keys()].map((sessionID) => this.release(sessionID)));
+  }
+  set(sessionID, targets) {
+    if (targets.length === 0)
+      this.bySession.delete(sessionID);
+    else
+      this.bySession.set(sessionID, targets);
+  }
 }
-function timeoutSeconds(timeoutMs) {
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
-    return 30;
-  return Math.min(86400, Math.max(1, Math.ceil(timeoutMs / 1000)));
-}
-function shellQuote(value) {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
-function phuxRunCommand(executable, socket, target, command, seconds) {
-  const parts = [shellQuote(executable), "run", "--json", "--timeout", String(seconds)];
-  if (socket !== undefined && socket.length > 0)
-    parts.push("--socket", shellQuote(socket));
-  parts.push(shellQuote(target), shellQuote(command));
-  return parts.join(" ");
+function isGone(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /not found|no such|does not exist|unknown (pane|terminal)/i.test(message);
 }
 
 // src/index.ts
@@ -2414,10 +2433,10 @@ var src_default = Plugin.define({
       ...options.lifecycleTimeoutMs === undefined ? {} : { timeoutMs: options.lifecycleTimeoutMs }
     });
     const awareness = new PhuxContextAwareness(cli, {
-      enabled: options.contextAwareness ?? contextAwarenessEnabled(environment.PHUX_CONTEXT_AWARENESS),
+      enabled: options.contextAwareness ?? contextAwarenessEnabled(environment.PHUX_CONTEXT_AWARENESS, false),
       ...options.contextTimeoutMs === undefined ? {} : { timeoutMs: options.contextTimeoutMs }
     });
-    const latestContext = new Map;
+    const terminals = new OwnedTerminals(cli, options.maxTerminals ?? DEFAULT_MAX_TERMINALS);
     const contextIdentity = (sessionID) => {
       const self = normalizeTerminalIdentity(identityTarget);
       const selected = selectedTargets.get(sessionID) ?? environmentTarget;
@@ -2426,7 +2445,7 @@ var src_default = Plugin.define({
         ...selected === undefined ? {} : { selected }
       };
     };
-    const tools = createPhuxTools({
+    const shared = createPhuxTools({
       cli,
       ...environmentTarget === undefined ? {} : { environmentTarget },
       ...parent === null ? {} : { parentTarget: parent },
@@ -2436,22 +2455,13 @@ var src_default = Plugin.define({
           selectedTargets.set(context.sessionID, target);
       }
     });
-    await ctx.shell.hook("create.before", async (event) => {
-      const decision = redirectShell({
-        command: event.command,
-        parent,
-        siblings: [...selectedTargets.values()],
-        executable: options.executable ?? "phux",
-        ...options.socket === undefined ? {} : { socket: options.socket },
-        timeoutMs: event.timeout
-      });
-      if (decision.kind === "refuse")
-        throw new Error(decision.reason);
-      if (decision.kind === "run")
-        event.command = decision.command;
-    });
+    const tools = [
+      ...SHARED_TOOLS.map((name) => shared[name]),
+      ownedSpawn(shared.phux_spawn, terminals, selectedTargets),
+      killTool(terminals, selectedTargets)
+    ];
     await ctx.tool.transform((editor) => {
-      for (const tool of Object.values(tools)) {
+      for (const tool of tools) {
         editor.add({
           name: tool.name,
           description: tool.description,
@@ -2463,12 +2473,9 @@ var src_default = Plugin.define({
     });
     await ctx.session.hook("context", async (event) => {
       event.system.push({ type: "text", text: PARENT_PANE_RULE });
-      const emission = await awareness.next(event.sessionID, contextIdentity(event.sessionID));
+      const emission = await awareness.checkpoint(event.sessionID, contextIdentity(event.sessionID));
       if (emission !== null)
-        latestContext.set(event.sessionID, emission.text);
-      const text = latestContext.get(event.sessionID);
-      if (text !== undefined)
-        event.system.push({ type: "text", text });
+        event.system.push({ type: "text", text: emission.text });
     });
     if (options.serverLifecycle === true) {
       await ctx.tool.hook("execute.before", async (event) => {
@@ -2484,8 +2491,8 @@ var src_default = Plugin.define({
         const deleted = deletedSessionId(event);
         if (deleted !== undefined) {
           awareness.delete(deleted);
-          latestContext.delete(deleted);
           selectedTargets.delete(deleted);
+          await terminals.release(deleted);
         }
         if (options.serverLifecycle === true)
           await applyServerEvent(lifecycle, event);
@@ -2503,11 +2510,54 @@ var src_default = Plugin.define({
       });
       if (options.serverLifecycle === true)
         await lifecycle.dispose();
+      await terminals.releaseAll();
       selectedTargets.clear();
-      latestContext.clear();
     };
   }
 });
+var SHARED_TOOLS = [
+  "phux_panes",
+  "phux_run",
+  "phux_send_keys",
+  "phux_paste",
+  "phux_snapshot",
+  "phux_wait",
+  "phux_agent_prompt",
+  "phux_agent_wait",
+  "phux_resource_wait",
+  "phux_status"
+];
+var TARGET2 = { type: "string", minLength: 2, maxLength: 512, pattern: "^(?:[^/\\s]+/)?@[0-9]+$", description: "Exact @N or host/@N returned by phux_spawn." };
+function ownedSpawn(spawn, terminals, selectedTargets) {
+  return {
+    ...spawn,
+    description: "Open a terminal pane for an interactive program (REPL, TUI, debugger) or a long-running process the user should watch. " + "Not for ordinary commands: use the shell tool. command is argv, not shell text. " + "The pane becomes this session's default phux target, counts against a per-session cap, and is closed by phux_kill or when the session is deleted. " + "Set retain_seconds to keep output and exit status for phux_resource_wait after exit; target places it beside an exact pane.",
+    async execute(input, context) {
+      await terminals.admit(context.sessionID, context.signal);
+      const result = await spawn.execute(input, context);
+      const target = result.metadata.target;
+      if (typeof target === "string") {
+        await terminals.add(context.sessionID, target);
+        selectedTargets.set(context.sessionID, target);
+      }
+      return result;
+    }
+  };
+}
+function killTool(terminals, selectedTargets) {
+  return {
+    name: "phux_kill",
+    description: "Close a terminal this session opened with phux_spawn. Refuses panes it did not spawn.",
+    input: { type: "object", properties: { target: TARGET2 }, required: ["target"], additionalProperties: false },
+    async execute(input, context) {
+      await terminals.kill(context.sessionID, input.target, context.signal);
+      if (selectedTargets.get(context.sessionID) === input.target)
+        selectedTargets.delete(context.sessionID);
+      return { content: `kill target=${input.target}
+closed`, metadata: { operation: "kill", target: input.target } };
+    }
+  };
+}
 function readOptions(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value))
     return {};
@@ -2518,7 +2568,8 @@ function readOptions(value) {
     ...typeof record.lifecycleTimeoutMs === "number" ? { lifecycleTimeoutMs: record.lifecycleTimeoutMs } : {},
     ...typeof record.contextAwareness === "boolean" ? { contextAwareness: record.contextAwareness } : {},
     ...typeof record.contextTimeoutMs === "number" ? { contextTimeoutMs: record.contextTimeoutMs } : {},
-    ...typeof record.serverLifecycle === "boolean" ? { serverLifecycle: record.serverLifecycle } : {}
+    ...typeof record.serverLifecycle === "boolean" ? { serverLifecycle: record.serverLifecycle } : {},
+    ...typeof record.maxTerminals === "number" ? { maxTerminals: record.maxTerminals } : {}
   };
 }
 function cliOptions(options, environment) {

@@ -45,9 +45,9 @@ test("packed plugin loads outside the checkout with only its declared dependency
     expect(JSON.parse(output)).toEqual({
       id: "phux",
       tools: [
-        "phux_agent_prompt", "phux_agent_wait", "phux_create", "phux_list", "phux_panes",
-        "phux_paste", "phux_resource_wait", "phux_run", "phux_runtime_info", "phux_send_keys",
-        "phux_snapshot", "phux_spawn", "phux_status", "phux_wait",
+        "phux_agent_prompt", "phux_agent_wait", "phux_kill", "phux_panes", "phux_paste",
+        "phux_resource_wait", "phux_run", "phux_send_keys", "phux_snapshot", "phux_spawn",
+        "phux_status", "phux_wait",
       ],
     });
   } finally {

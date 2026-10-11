@@ -13,16 +13,16 @@ afterEach(() => {
   restoreEnvironment("PHUX_TARGET", savedTarget);
 });
 
-test("selection is session-local, deletion forgets it, and sibling creation never moves identity", async () => {
+test("selection is session-local, deletion forgets it, and spawning never moves identity", async () => {
   process.env.PHUX_TERMINAL_ID = "7";
   process.env.PHUX_TARGET = "@9";
   const calls = fakeCli();
   const host = await setupHost();
   try {
-    await host.execute("phux_create", { name: "worker-a" }, "a");
+    await host.execute("phux_spawn", {}, "a");
     await host.execute("phux_snapshot", {}, "a");
     await host.execute("phux_snapshot", {}, "b");
-    await host.execute("phux_create", { name: "worker-b" }, "b");
+    await host.execute("phux_spawn", {}, "b");
     await host.execute("phux_snapshot", {}, "a");
     await host.execute("phux_snapshot", {}, "b");
     expect(calls.snapshots).toEqual(["@10", "@9", "@10", "@11"]);
@@ -49,7 +49,7 @@ test("standalone explicit target remains identity when another target is selecte
   const calls = fakeCli();
   const host = await setupHost();
   try {
-    await host.execute("phux_create", { name: "worker" }, "a");
+    await host.execute("phux_spawn", {}, "a");
     await host.before({ sessionID: "a", tool: "phux_snapshot", id: "call" });
     expect(calls.identities).toEqual([["host/@9", "opencode:a"]]);
     await host.execute("phux_snapshot", {}, "a");
@@ -59,22 +59,77 @@ test("standalone explicit target remains identity when another target is selecte
   }
 });
 
-test("built-in shell runs on the selected sibling and refuses the parent pane", async () => {
+test("the built-in shell is never rewritten or refused", async () => {
   process.env.PHUX_TERMINAL_ID = "7";
   fakeCli();
   const host = await setupHost();
   try {
-    const parentOnly = { command: "pwd", cwd: "/tmp", timeout: 30_000, shell: "bash", env: {} };
-    await expect(host.shellBefore(parentOnly)).rejects.toThrow("only pane");
-    expect(parentOnly.command).toBe("pwd");
-    await host.execute("phux_create", { name: "worker" }, "a");
-    const sibling = { command: "pwd", cwd: "/tmp", timeout: 30_000, shell: "bash", env: {} };
-    await host.shellBefore(sibling);
-    expect(sibling.command).toContain("run --json --timeout 30");
-    expect(sibling.command).toContain("'@10'");
-    expect(sibling.command).toContain("'pwd'");
+    expect(host.shellHookCount()).toBe(0);
   } finally {
     await host.close();
+  }
+});
+
+test("the catalog drops session-per-task creation and adds owned kill", async () => {
+  delete process.env.PHUX_TERMINAL_ID;
+  fakeCli();
+  const host = await setupHost();
+  try {
+    expect(host.toolNames()).not.toContain("phux_create");
+    expect(host.toolNames()).not.toContain("phux_list");
+    expect(host.toolNames()).toContain("phux_spawn");
+    expect(host.toolNames()).toContain("phux_kill");
+  } finally {
+    await host.close();
+  }
+});
+
+test("spawned terminals are owned, capped, killable only by their owner, and released", async () => {
+  delete process.env.PHUX_TERMINAL_ID;
+  delete process.env.PHUX_TARGET;
+  const calls = fakeCli();
+  const host = await setupHost(false, { maxTerminals: 2 });
+  try {
+    await host.execute("phux_spawn", {}, "a");
+    await host.execute("phux_spawn", {}, "a");
+    expect(calls.tagged).toEqual(["@10", "@11"]);
+    calls.live.splice(0, calls.live.length, "@10", "@11");
+    await expect(host.execute("phux_spawn", {}, "a")).rejects.toThrow("already owns 2");
+    // An exited pane frees its slot.
+    calls.live.splice(0, calls.live.length, "@11");
+    await host.execute("phux_spawn", {}, "a");
+    await expect(host.execute("phux_kill", { target: "@12" }, "b")).rejects.toThrow("not spawned by this session");
+    await host.execute("phux_kill", { target: "@12" }, "a");
+    expect(calls.killed).toEqual(["@12"]);
+    await host.execute("phux_spawn", {}, "b");
+    await host.event({ type: "session.deleted", data: { sessionID: "a" } });
+    expect(calls.killed).toEqual(["@12", "@11"]);
+  } finally {
+    await host.close();
+  }
+  expect(calls.killed).toEqual(["@12", "@11", "@13"]);
+});
+
+test("fleet context is opt-in and always a full checkpoint", async () => {
+  delete process.env.PHUX_TERMINAL_ID;
+  delete process.env.PHUX_CONTEXT_AWARENESS;
+  fakeCli();
+  const quiet = await setupHost(false, { contextAwareness: undefined });
+  try {
+    const system = await quiet.context("a");
+    expect(system).toHaveLength(1);
+  } finally {
+    await quiet.close();
+  }
+  spyOn(PhuxCli.prototype, "agentList").mockResolvedValue({ schema_version: 1, agents: [] } as never);
+  const aware = await setupHost(false, { contextAwareness: true });
+  try {
+    await aware.context("a");
+    const second = await aware.context("a");
+    expect(second).toHaveLength(2);
+    expect(second[1]).toContain('kind="checkpoint"');
+  } finally {
+    await aware.close();
   }
 });
 
@@ -118,7 +173,16 @@ function fakeCli() {
   const snapshots: string[] = [];
   const identities: unknown[][] = [];
   const sessionWrites: string[] = [];
-  spyOn(PhuxCli.prototype, "create").mockImplementation(async (name) => ({ session: name, terminal_id: next++ }));
+  const tagged: string[] = [];
+  const killed: string[] = [];
+  const live: string[] = [];
+  spyOn(PhuxCli.prototype, "spawn").mockImplementation(async () => ({ terminal_id: next++, satellite: null }));
+  spyOn(PhuxCli.prototype, "tag").mockImplementation(async (_action, target) => {
+    tagged.push(target);
+    return [];
+  });
+  spyOn(PhuxCli.prototype, "kill").mockImplementation(async (target) => { killed.push(target); });
+  spyOn(PhuxCli.prototype, "ls").mockImplementation(async () => ({ terminals: [...live] }) as never);
   spyOn(PhuxCli.prototype, "snapshot").mockImplementation(async (options) => {
     snapshots.push(options.target!);
     return { pane: 7, cols: 80, rows: 24, lines: [], scrollback: [], cursor: { x: 0, y: 0, visible: true } };
@@ -139,21 +203,22 @@ function fakeCli() {
     sessionWrites.push(target);
     return { resource: target, closed: true };
   });
-  return { snapshots, identities, sessionWrites };
+  return { snapshots, identities, sessionWrites, tagged, killed, live };
 }
 
-async function setupHost(serverLifecycle = true) {
+async function setupHost(serverLifecycle = true, extra: Record<string, unknown> = {}) {
   const tools: Record<string, Info> = {};
   const hooks: Record<string, (event: unknown) => Promise<void>> = {};
   const shellHooks: Record<string, (event: { command: string }) => Promise<void>> = {};
+  const sessionHooks: Record<string, (event: unknown) => Promise<void>> = {};
   let deliver!: (entry: { event: unknown; done: () => void } | undefined) => void;
   const context = {
-    options: { contextAwareness: false, serverLifecycle },
+    options: { contextAwareness: false, serverLifecycle, ...extra },
     tool: {
       transform: async (transform: (editor: unknown) => void) => transform({ add: (tool: Info) => { tools[tool.name] = tool; } }),
       hook: async (name: string, hook: (event: unknown) => Promise<void>) => { hooks[name] = hook; },
     },
-    session: { hook: async () => {} },
+    session: { hook: async (name: string, hook: (event: unknown) => Promise<void>) => { sessionHooks[name] = hook; } },
     shell: {
       hook: async (name: string, hook: (event: { command: string }) => Promise<void>) => {
         shellHooks[name] = hook;
@@ -178,7 +243,13 @@ async function setupHost(serverLifecycle = true) {
   const cleanup = await plugin.setup(context);
   return {
     before: (event: unknown) => hooks["execute.before"]!(event),
-    shellBefore: (event: { command: string }) => shellHooks["create.before"]!(event),
+    shellHookCount: () => Object.keys(shellHooks).length,
+    toolNames: () => Object.keys(tools),
+    context: async (sessionID: string) => {
+      const event = { sessionID, system: [] as { text: string }[] };
+      await sessionHooks.context!(event);
+      return event.system.map((part) => part.text);
+    },
     execute: (name: string, input: unknown, sessionID: string, signal = new AbortController().signal) => tools[name]!.execute(input, {
       sessionID, agent: "build", messageID: "message", id: "call", signal, progress: async () => {},
     } as ToolContext),
