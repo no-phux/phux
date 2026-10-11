@@ -25,6 +25,14 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   or server restart without restarting the app; recover the selected session
   by its confirmed name when a replacement server reuses numeric IDs.
 
+## [0.35.3](https://github.com/no-phux/phux/compare/cockpit-v0.35.2...cockpit-v0.35.3) (2026-10-11)
+
+
+### Bug Fixes
+
+* **cockpit:** quiet the focused split accent ([741aefb](https://github.com/no-phux/phux/commit/741aefbee117de8065e9294d01d45e590c83199e))
+* **cockpit:** send remote mouse events in surface pixels ([abb0346](https://github.com/no-phux/phux/commit/abb03460693ce5fac39759bf7e6da6beec9f3209))
+
 ## [0.35.2](https://github.com/no-phux/phux/compare/cockpit-v0.35.1...cockpit-v0.35.2) (2026-10-11)
 
 

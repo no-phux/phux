@@ -9,6 +9,16 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.56.1](https://github.com/no-phux/phux/compare/v0.56.0...v0.56.1) (2026-10-11)
+
+
+### Bug Fixes
+
+* **ci:** isolate release metadata guard fixtures ([#1165](https://github.com/no-phux/phux/issues/1165)) ([48e749c](https://github.com/no-phux/phux/commit/48e749c10b58c6322dbfeb4f22430b24dc5d9ed2))
+* **client-runtime:** replay keyed spawns across reconnects ([63edab4](https://github.com/no-phux/phux/commit/63edab47b82a4cba737d22b8c2d29c84b23e8625))
+* **desktop:** materialize demo CLI under checkout ([1539fbf](https://github.com/no-phux/phux/commit/1539fbf7a80b83d564f0a4b93c8b15ac8f657b7a))
+* **integrations:** stop the OpenCode plugin from hijacking the shell ([c63eec9](https://github.com/no-phux/phux/commit/c63eec9d0c155d3c87822de9dd297c782e93c048))
+
 ## [0.56.0](https://github.com/no-phux/phux/compare/v0.55.1...v0.56.0) (2026-10-11)
 
 
