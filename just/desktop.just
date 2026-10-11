@@ -50,7 +50,11 @@ desktop-app: desktop-install desktop-native-build desktop-cli
 [group('desktop')]
 [doc('Opt-in desktop demo with a checkout-built CLI/addon and disposable private server')]
 desktop-demo: desktop-install desktop-native-build desktop-cli
-    cd clients/desktop && bun scripts/desktop-demo.ts
+    # mbx may place target/debug/phux outside the checkout. Materialize the
+    # checkout-built binary locally so the demo's provenance guard can verify it.
+    mkdir -p clients/desktop/.cache/demo-target/debug
+    cp -L "${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}/debug/phux" clients/desktop/.cache/demo-target/debug/phux
+    cd clients/desktop && CARGO_TARGET_DIR="$PWD/.cache/demo-target" bun scripts/desktop-demo.ts
 
 [group('desktop')]
 [doc('Build and drive a production Solid framework window using the source-built addon')]
