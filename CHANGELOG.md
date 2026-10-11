@@ -9,6 +9,26 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.56.0](https://github.com/no-phux/phux/compare/v0.55.1...v0.56.0) (2026-10-11)
+
+
+### Features
+
+* **integrations:** add a Grok plugin with MCP and lifecycle hooks ([#1163](https://github.com/no-phux/phux/issues/1163)) ([f046694](https://github.com/no-phux/phux/commit/f04669400cd8862489eba58ea87ae15344c5bbc1))
+* **tui:** honour OSC 52 clipboard writes from the focused pane ([#1149](https://github.com/no-phux/phux/issues/1149)) ([405795d](https://github.com/no-phux/phux/commit/405795d1903de12a570509e7cd757b8b1a42c302))
+
+
+### Bug Fixes
+
+* **cli:** keep a workspace session when its host has no route ([#1156](https://github.com/no-phux/phux/issues/1156)) ([89d10e0](https://github.com/no-phux/phux/commit/89d10e0135a67a587b9f29ce971fbbc8fa990372))
+* **cli:** restore a session host tag with its directory and project ([#1157](https://github.com/no-phux/phux/issues/1157)) ([1bf96f4](https://github.com/no-phux/phux/commit/1bf96f4e2dbff30b3311634ffd2509867a6d0512))
+* **cli:** restore a workspace session's host, directory, and project ([#1152](https://github.com/no-phux/phux/issues/1152)) ([68ee18b](https://github.com/no-phux/phux/commit/68ee18ba6d43311027e1d670b80f617fa5431d57))
+* **cockpit:** bind soak identity across exec and bound failure cleanup ([#1158](https://github.com/no-phux/phux/issues/1158)) ([c35c3de](https://github.com/no-phux/phux/commit/c35c3de2b024c6c8e9a2c434a10ebcd57bd5f800))
+* **desktop:** group the sidebar by the stored project tag ([#1160](https://github.com/no-phux/phux/issues/1160)) ([69bfa7a](https://github.com/no-phux/phux/commit/69bfa7a4f637a6810940684096ca58848b122e63))
+* **install:** select current releases by numeric version ([#1153](https://github.com/no-phux/phux/issues/1153)) ([2026075](https://github.com/no-phux/phux/commit/20260753689121590538525894996eac860261a3))
+* **server:** record an archived directory the child cannot enter ([#1161](https://github.com/no-phux/phux/issues/1161)) ([e25cb42](https://github.com/no-phux/phux/commit/e25cb4220b0ddfea93b1944c20c05658f9081a40))
+* **tui:** group the session picker by the stored project tag ([#1159](https://github.com/no-phux/phux/issues/1159)) ([999f1f9](https://github.com/no-phux/phux/commit/999f1f90982466698681a88cbfb01b5584ca7217))
+
 ## [0.55.1](https://github.com/no-phux/phux/compare/v0.55.0...v0.55.1) (2026-10-09)
 
 
