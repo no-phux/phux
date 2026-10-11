@@ -2273,7 +2273,7 @@ function createPhuxTools(runtime) {
 function resolveTarget(explicit, runtime, context) {
   const target = explicit ?? runtime.getSelectedTarget(context) ?? runtime.environmentTarget;
   if (target === undefined)
-    throw new Error("No phux target. Use phux_panes and pass an exact target, or phux_create a sibling shell.");
+    throw new Error("No phux target. Use phux_panes and pass an exact target, or spawn a terminal when a pane is needed.");
   return exactTarget(target);
 }
 function exactTarget(target) {
@@ -2286,7 +2286,7 @@ function writeTarget(explicit, runtime, context) {
   const normalized = target.replace(/@(0+)(?=\d)/, "@");
   const parent = runtime.parentTarget?.replace(/@(0+)(?=\d)/, "@");
   if (parent !== undefined && normalized === parent)
-    throw new Error("Refusing input into the pane hosting this agent. Use phux_create for a sibling shell.");
+    throw new Error("Refusing input into the pane hosting this agent. Use another exact target for phux input; ordinary commands belong in the built-in shell.");
   return target;
 }
 function execution(input, context) {

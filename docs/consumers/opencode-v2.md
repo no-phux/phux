@@ -37,10 +37,11 @@ phux alone does not install it. For a published integration, use
    ```
 
    OpenCode imports the generated `index.js`, not the TypeScript source.
-3. Use the checkout's `opencode.jsonc`, or copy the local-package configuration
-   from the [plugin load instructions](../../integrations/opencode-v2/README.md#build-and-load)
-   into your project's OpenCode configuration, changing the absolute package
-   and socket paths to your own. This is source loading, not an npm install.
+3. Copy the local-package configuration from the
+   [plugin load instructions](../../integrations/opencode-v2/README.md#build-and-load)
+   into your global OpenCode configuration for all projects, or one project's
+   configuration for that project only. Do not load both the primary checkout
+   and a worktree copy at once. This is source loading, not an npm install.
 4. Add the package to global `cli.json` as described in the package README,
    then start `opencode` in a phux pane so its terminal-side companion inherits
    `PHUX_TERMINAL_ID`. Ask it to run `pwd`. **Expected:** it uses its built-in

@@ -21,9 +21,15 @@ describe("parent pane", () => {
       ["phux_agent_prompt", { text: "hello", target: "@7" }],
     ] as const;
     for (const [name, input] of writes) {
-      await expect(tools[name]!.execute(input, context)).rejects.toThrow();
+      await expect(tools[name]!.execute(input, context)).rejects.toThrow("ordinary commands belong in the built-in shell");
     }
     expect(calls).toEqual([]);
+  });
+
+  test("missing target guidance names tools this adapter actually registers", async () => {
+    const tools = createPhuxTools(fakeRuntime([]));
+    await expect(tools.phux_snapshot!.execute({}, context)).rejects.toThrow("phux_panes");
+    await expect(tools.phux_snapshot!.execute({}, context)).rejects.not.toThrow("phux_create");
   });
 
   test("allows sibling input and parent observation without confusing remote IDs", async () => {

@@ -33,7 +33,10 @@ Configure OpenCode V2 with an absolute package directory:
 
 Omit `socket` to use the phux CLI's environment/default selection. `phux` must
 be available on PATH, or set the plugin's `executable` option to its path.
-This repository's `opencode.jsonc` already selects the local package.
+Configure the package once: globally if you want phux tools in every project,
+or in a project's `opencode.jsonc` if you only want them there. Do not register
+both the primary checkout and a worktree copy in the same location: OpenCode
+loads both plugin entries, and a stale bundle can override the newer tools.
 
 The terminal companion must also be listed in global `cli.json` (`plugins`),
 since the shared OpenCode service cannot know which phux pane is displaying a
@@ -50,7 +53,8 @@ still supply tools globally, but **do not assume its `PHUX_TERMINAL_ID` names
 the active TUI pane** when the service is shared. Server-side lifecycle is off
 by default to avoid competing claims; `serverLifecycle: true` is only for a
 dedicated server permanently bound to one pane without the CLI companion.
-Tools need an explicit target unless the service was started inside that pane.
+Tools need an explicit target until this OpenCode session selects a spawned pane
+or the service has a fixed `PHUX_TARGET`.
 
 To move the package without the checkout, build it, run `bun pm pack`, and
 install the resulting tarball in the destination project with
@@ -101,9 +105,9 @@ selection. Output is bounded; run and wait operations default to a 30-second
 phux deadline plus a 5-second local subprocess allowance. Short calls default
 to 10 seconds. Native tool cancellation propagates to the CLI subprocess.
 
-When the server itself is launched in phux, `PHUX_TERMINAL_ID` identifies its pane. Tools
+When the server itself is launched in phux, `PHUX_TERMINAL_ID` identifies its pane. Phux tools
 refuse shell input, key injection, paste, and agent prompts into that pane;
-reads are allowed. Create a sibling for shell work. Lifecycle metadata stays on
+reads are allowed. Use OpenCode's built-in shell for ordinary commands. Lifecycle metadata stays on
 the hosting pane and never follows a selected worker. For a standalone launch,
 an explicit `PHUX_TARGET` is the fixed lifecycle identity and initial tool
 target; without either identity, no pane is labelled OpenCode.
