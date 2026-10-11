@@ -307,6 +307,7 @@ impl ControlPlane {
         self.push_event(Event::Attached { attach_id });
         self.publish_viewport();
         self.replay_preserving_subscriptions();
+        self.replay_pending_spawns();
         Ok(())
     }
 
@@ -436,7 +437,7 @@ impl ControlPlane {
     // ----- lifecycle frames ------------------------------------------------
 
     pub(super) fn resource_spawned(&mut self, request_id: u32, result: &SpawnResult) -> bool {
-        if !matches!(self.pending.get(&request_id), Some(Pending::Spawn)) {
+        if !matches!(self.pending.get(&request_id), Some(Pending::Spawn { .. })) {
             return false;
         }
         self.pending.remove(&request_id);
@@ -498,7 +499,7 @@ impl ControlPlane {
         };
         let error = command_result_error(&result);
         match pending {
-            Pending::Spawn => {
+            Pending::Spawn { .. } => {
                 return Err(ControlError::Protocol(
                     "spawn request received COMMAND_RESULT instead of RESOURCE_SPAWNED".to_owned(),
                 ));
