@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.0-alpha.12](https://github.com/no-phux/phux/compare/desktop-v0.1.0-alpha.11...desktop-v0.1.0-alpha.12) (2026-10-11)
+
+
+### Features
+
+* **desktop:** add glass terminal polish ([7ef60b2](https://github.com/no-phux/phux/commit/7ef60b2ad0286c8cb3f8a22c08950ca23fe1e281))
+
 ## [0.1.0-alpha.11](https://github.com/no-phux/phux/compare/desktop-v0.1.0-alpha.10...desktop-v0.1.0-alpha.11) (2026-10-10)
 
 
