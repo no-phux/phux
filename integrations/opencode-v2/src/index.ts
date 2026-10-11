@@ -8,17 +8,20 @@ import {
 } from "../../runtime/src/awareness.js";
 import { deletedSessionId, applyServerEvent } from "./events.js";
 import { OpenCodeLifecycle } from "./lifecycle.js";
-import { createPhuxTools } from "../../runtime/src/tools.js";
+import { createPhuxTools, type PhuxToolDefinition, type ToolContext } from "../../runtime/src/tools.js";
 import { PARENT_PANE_RULE, parentPane } from "./parent.js";
-import { redirectShell } from "./shell.js";
+import { DEFAULT_MAX_TERMINALS, OwnedTerminals } from "./terminals.js";
 
 
 export interface PhuxOpenCodeV2Options {
   readonly executable?: string;
   readonly socket?: string;
   readonly lifecycleTimeoutMs?: number;
+  /** Inject a fleet inventory into every request. Off by default: phux_panes answers on demand. */
   readonly contextAwareness?: boolean;
   readonly contextTimeoutMs?: number;
+  /** Live terminals one OpenCode session may own through phux_spawn. */
+  readonly maxTerminals?: number;
   /** Only for a dedicated pane-bound server; ordinary presence belongs to the TUI. */
   readonly serverLifecycle?: boolean;
 }
@@ -26,9 +29,10 @@ export interface PhuxOpenCodeV2Options {
 /**
  * OpenCode V2 server plugin.
  *
- * phux owns the PTY. This plugin is the AgentSession producer and the tool
- * surface for sibling terminals. It does not create an OpenCode PTY and it
- * does not dial a remote OpenCode server.
+ * OpenCode's built-in shell stays a local subprocess for ordinary commands.
+ * phux supplies terminals only where a terminal is the point: interactive
+ * programs, processes the user watches, and other agents' panes. Panes the
+ * agent spawns are owned by its session and closed with it.
  */
 export default Plugin.define({
   id: "phux",
@@ -47,10 +51,10 @@ export default Plugin.define({
       ...(options.lifecycleTimeoutMs === undefined ? {} : { timeoutMs: options.lifecycleTimeoutMs }),
     });
     const awareness = new PhuxContextAwareness(cli, {
-      enabled: options.contextAwareness ?? contextAwarenessEnabled(environment.PHUX_CONTEXT_AWARENESS),
+      enabled: options.contextAwareness ?? contextAwarenessEnabled(environment.PHUX_CONTEXT_AWARENESS, false),
       ...(options.contextTimeoutMs === undefined ? {} : { timeoutMs: options.contextTimeoutMs }),
     });
-    const latestContext = new Map<string, string>();
+    const terminals = new OwnedTerminals(cli, options.maxTerminals ?? DEFAULT_MAX_TERMINALS);
     const contextIdentity = (sessionID: string) => {
       const self = normalizeTerminalIdentity(identityTarget);
       const selected = selectedTargets.get(sessionID) ?? environmentTarget;
@@ -60,7 +64,7 @@ export default Plugin.define({
       };
     };
 
-    const tools = createPhuxTools({
+    const shared = createPhuxTools({
       cli,
       ...(environmentTarget === undefined ? {} : { environmentTarget }),
       ...(parent === null ? {} : { parentTarget: parent }),
@@ -69,22 +73,14 @@ export default Plugin.define({
         if (context !== undefined) selectedTargets.set(context.sessionID, target);
       },
     });
-
-    await ctx.shell.hook("create.before", async (event) => {
-      const decision = redirectShell({
-        command: event.command,
-        parent,
-        siblings: [...selectedTargets.values()],
-        executable: options.executable ?? "phux",
-        ...(options.socket === undefined ? {} : { socket: options.socket }),
-        timeoutMs: event.timeout,
-      });
-      if (decision.kind === "refuse") throw new Error(decision.reason);
-      if (decision.kind === "run") event.command = decision.command;
-    });
+    const tools = [
+      ...SHARED_TOOLS.map((name) => shared[name]!),
+      ownedSpawn(shared.phux_spawn!, terminals, selectedTargets),
+      killTool(terminals, selectedTargets),
+    ];
 
     await ctx.tool.transform((editor) => {
-      for (const tool of Object.values(tools)) {
+      for (const tool of tools) {
         editor.add({
           name: tool.name,
           description: tool.description,
@@ -97,10 +93,10 @@ export default Plugin.define({
 
     await ctx.session.hook("context", async (event) => {
       event.system.push({ type: "text", text: PARENT_PANE_RULE });
-      const emission = await awareness.next(event.sessionID, contextIdentity(event.sessionID));
-      if (emission !== null) latestContext.set(event.sessionID, emission.text);
-      const text = latestContext.get(event.sessionID);
-      if (text !== undefined) event.system.push({ type: "text", text });
+      // The system prompt is rebuilt per request, so only a full checkpoint is
+      // meaningful here; a delta would arrive without its base.
+      const emission = await awareness.checkpoint(event.sessionID, contextIdentity(event.sessionID));
+      if (emission !== null) event.system.push({ type: "text", text: emission.text });
     });
 
     if (options.serverLifecycle === true) {
@@ -118,8 +114,8 @@ export default Plugin.define({
         const deleted = deletedSessionId(event);
         if (deleted !== undefined) {
           awareness.delete(deleted);
-          latestContext.delete(deleted);
           selectedTargets.delete(deleted);
+          await terminals.release(deleted);
         }
         if (options.serverLifecycle === true) await applyServerEvent(lifecycle, event);
       }
@@ -133,12 +129,69 @@ export default Plugin.define({
       controller.abort();
       await events.catch(() => undefined);
       if (options.serverLifecycle === true) await lifecycle.dispose();
+      await terminals.releaseAll();
       selectedTargets.clear();
-      latestContext.clear();
     };
   },
 });
 
+/**
+ * The shared catalog minus what OpenCode already does better or what invites
+ * misuse: phux_create made a named session per task, and phux_list and
+ * phux_runtime_info duplicate phux_panes and phux_status.
+ */
+const SHARED_TOOLS = [
+  "phux_panes",
+  "phux_run",
+  "phux_send_keys",
+  "phux_paste",
+  "phux_snapshot",
+  "phux_wait",
+  "phux_agent_prompt",
+  "phux_agent_wait",
+  "phux_resource_wait",
+  "phux_status",
+] as const;
+
+const TARGET = { type: "string", minLength: 2, maxLength: 512, pattern: "^(?:[^/\\s]+/)?@[0-9]+$", description: "Exact @N or host/@N returned by phux_spawn." };
+
+function ownedSpawn(
+  spawn: PhuxToolDefinition<any>,
+  terminals: OwnedTerminals,
+  selectedTargets: Map<string, string>,
+): PhuxToolDefinition<any> {
+  return {
+    ...spawn,
+    description:
+      "Open a terminal pane for an interactive program (REPL, TUI, debugger) or a long-running process the user should watch. " +
+      "Not for ordinary commands: use the shell tool. command is argv, not shell text. " +
+      "The pane becomes this session's default phux target, counts against a per-session cap, and is closed by phux_kill or when the session is deleted. " +
+      "Set retain_seconds to keep output and exit status for phux_resource_wait after exit; target places it beside an exact pane.",
+    async execute(input, context: ToolContext) {
+      await terminals.admit(context.sessionID, context.signal);
+      const result = await spawn.execute(input, context);
+      const target = result.metadata.target;
+      if (typeof target === "string") {
+        await terminals.add(context.sessionID, target);
+        selectedTargets.set(context.sessionID, target);
+      }
+      return result;
+    },
+  };
+}
+
+function killTool(terminals: OwnedTerminals, selectedTargets: Map<string, string>): PhuxToolDefinition<any> {
+  return {
+    name: "phux_kill",
+    description: "Close a terminal this session opened with phux_spawn. Refuses panes it did not spawn.",
+    input: { type: "object", properties: { target: TARGET }, required: ["target"], additionalProperties: false },
+    async execute(input: { target: string }, context: ToolContext) {
+      await terminals.kill(context.sessionID, input.target, context.signal);
+      if (selectedTargets.get(context.sessionID) === input.target) selectedTargets.delete(context.sessionID);
+      return { content: `kill target=${input.target}\nclosed`, metadata: { operation: "kill", target: input.target } };
+    },
+  };
+}
 
 function readOptions(value: unknown): PhuxOpenCodeV2Options {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return {};
@@ -150,6 +203,7 @@ function readOptions(value: unknown): PhuxOpenCodeV2Options {
     ...(typeof record.contextAwareness === "boolean" ? { contextAwareness: record.contextAwareness } : {}),
     ...(typeof record.contextTimeoutMs === "number" ? { contextTimeoutMs: record.contextTimeoutMs } : {}),
     ...(typeof record.serverLifecycle === "boolean" ? { serverLifecycle: record.serverLifecycle } : {}),
+    ...(typeof record.maxTerminals === "number" ? { maxTerminals: record.maxTerminals } : {}),
   };
 }
 
