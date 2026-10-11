@@ -54,7 +54,13 @@ pub(super) fn uses_text(event: &KeyDownEvent, option_as_alt: bool) -> bool {
     if mods.control || (mods.alt && option_as_alt) {
         return false;
     }
-    event.keystroke.key_char.is_some()
+    // macOS gives Enter and Tab a key_char, but handles them as commands,
+    // not text commits. Send their key atoms instead of waiting for insertText.
+    event
+        .keystroke
+        .key_char
+        .as_ref()
+        .is_some_and(|text| text.chars().all(|ch| !ch.is_control()))
 }
 
 pub(super) fn event(stroke: &Keystroke, action: KeyAction) -> KeyEvent {
@@ -86,6 +92,56 @@ mod tests {
         assert_eq!(physical_key("f26"), PhysicalKey::Unidentified);
         assert_eq!(physical_key("!"), PhysicalKey::Digit1);
         assert_eq!(physical_key("漢"), PhysicalKey::Unidentified);
+    }
+
+    #[test]
+    fn control_characters_do_not_wait_for_platform_text_commits() {
+        for (name, text) in [
+            ("enter", "\n"),
+            ("enter", "\r"),
+            ("return", "\r"),
+            ("tab", "\t"),
+            ("backspace", "\u{7f}"),
+            ("escape", "\u{1b}"),
+        ] {
+            for shift in [false, true] {
+                let down = KeyDownEvent {
+                    keystroke: Keystroke {
+                        key: name.into(),
+                        key_char: Some(text.into()),
+                        modifiers: Modifiers {
+                            shift,
+                            ..Default::default()
+                        },
+                    },
+                    is_held: false,
+                    prefer_character_input: false,
+                };
+                assert!(!uses_text(&down, false), "{name}, shift={shift}");
+            }
+        }
+    }
+
+    #[test]
+    fn printable_and_dead_keys_still_use_platform_commits() {
+        for (key, text) in [
+            ("a", "a"),
+            ("space", " "),
+            ("e", ""),
+            ("漢", "漢"),
+            ("e", "e\u{301}"),
+        ] {
+            let down = KeyDownEvent {
+                keystroke: Keystroke {
+                    key: key.into(),
+                    key_char: Some(text.into()),
+                    modifiers: Modifiers::default(),
+                },
+                is_held: false,
+                prefer_character_input: false,
+            };
+            assert!(uses_text(&down, false), "{text:?}");
+        }
     }
 
     #[test]
