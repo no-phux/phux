@@ -25,6 +25,14 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   or server restart without restarting the app; recover the selected session
   by its confirmed name when a replacement server reuses numeric IDs.
 
+## [0.35.2](https://github.com/no-phux/phux/compare/cockpit-v0.35.1...cockpit-v0.35.2) (2026-10-11)
+
+
+### Bug Fixes
+
+* **cli:** restore a workspace session's host, directory, and project ([#1152](https://github.com/no-phux/phux/issues/1152)) ([68ee18b](https://github.com/no-phux/phux/commit/68ee18ba6d43311027e1d670b80f617fa5431d57))
+* **cockpit:** bind soak identity across exec and bound failure cleanup ([#1158](https://github.com/no-phux/phux/issues/1158)) ([c35c3de](https://github.com/no-phux/phux/commit/c35c3de2b024c6c8e9a2c434a10ebcd57bd5f800))
+
 ## [0.35.1](https://github.com/no-phux/phux/compare/cockpit-v0.35.0...cockpit-v0.35.1) (2026-10-09)
 
 
