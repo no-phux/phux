@@ -1035,17 +1035,7 @@ fn keyed_spawn_replays_after_lost_reply_with_the_same_key_and_correlation() {
     plane
         .feed(hello_ok_with(&[ServerFeature::SpawnIdempotency]))
         .unwrap();
-    let first_attach = plane
-        .take_outbound()
-        .into_iter()
-        .find_map(|frame| {
-            if let FrameKind::Attach { attach_id, .. } = decode(&frame) {
-                Some(attach_id)
-            } else {
-                None
-            }
-        })
-        .unwrap();
+    let first_attach = outbound_attach_id(&mut plane);
     attach(&mut plane, first_attach, b"home");
     let _ = plane.take_outbound();
     let _ = plane.take_events();
@@ -1070,7 +1060,26 @@ fn keyed_spawn_replays_after_lost_reply_with_the_same_key_and_correlation() {
     plane
         .feed(hello_ok_with(&[ServerFeature::SpawnIdempotency]))
         .unwrap();
-    let next_attach = plane
+    finish_reconnected_attach(&mut plane);
+    let replayed = plane.take_outbound();
+    assert!(replayed.iter().any(|frame| *frame == sent[0]));
+    plane
+        .feed(FrameKind::ResourceSpawned {
+            request_id,
+            result: SpawnResult::Replayed {
+                id: ResourceId::local(9),
+                instance: None,
+            },
+        })
+        .unwrap();
+    assert!(plane.take_events().iter().any(|event| matches!(event,
+        Event::TerminalSpawned { request_id: id, terminal_id: Some(id_value), error: None }
+            if *id == request_id && *id_value == ResourceId::local(9)
+    )));
+}
+
+fn outbound_attach_id(plane: &mut ControlPlane) -> u32 {
+    plane
         .take_outbound()
         .into_iter()
         .find_map(|frame| {
@@ -1080,7 +1089,11 @@ fn keyed_spawn_replays_after_lost_reply_with_the_same_key_and_correlation() {
                 None
             }
         })
-        .unwrap();
+        .unwrap()
+}
+
+fn finish_reconnected_attach(plane: &mut ControlPlane) {
+    let next_attach = outbound_attach_id(plane);
     plane
         .feed(FrameKind::Attached {
             attach_id: next_attach,
@@ -1114,21 +1127,6 @@ fn keyed_spawn_replays_after_lost_reply_with_the_same_key_and_correlation() {
             attach_id: next_attach,
         })
         .unwrap();
-    let replayed = plane.take_outbound();
-    assert!(replayed.iter().any(|frame| *frame == sent[0]));
-    plane
-        .feed(FrameKind::ResourceSpawned {
-            request_id,
-            result: SpawnResult::Replayed {
-                id: ResourceId::local(9),
-                instance: None,
-            },
-        })
-        .unwrap();
-    assert!(plane.take_events().iter().any(|event| matches!(event,
-        Event::TerminalSpawned { request_id: id, terminal_id: Some(id_value), error: None }
-            if *id == request_id && *id_value == ResourceId::local(9)
-    )));
 }
 
 #[test]
