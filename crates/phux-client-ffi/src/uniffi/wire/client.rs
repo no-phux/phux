@@ -194,6 +194,9 @@ pub fn initial_connect_budget_millis() -> u64 {
 
 #[uniffi::export]
 impl RemoteClient {
+    /// A zero `cols` or `rows` casts no window-size vote (ADR-0145): attaches
+    /// and spawns then carry no geometry, and the client sizes exactly the
+    /// panes it shows with [`Self::resize_terminal`].
     #[uniffi::constructor]
     pub fn new(
         url: String,
@@ -327,15 +330,7 @@ impl RemoteClient {
         }
         let target = self.target()?;
         let options = ClientOptions {
-            control: phux_client_runtime::control::ControlOptions {
-                client_name: "phux-mobile".to_owned(),
-                viewport: (*self.cols.lock().unwrap(), *self.rows.lock().unwrap()),
-                scrollback_lines: SCROLLBACK_LINES,
-                attach: None,
-                attach_role: self.attach_role(),
-                subscribe_agent_sessions: true,
-                ..phux_client_runtime::control::ControlOptions::default()
-            },
+            control: self.control_options(),
             connect: ConnectOptions::default(),
         };
         let client = Runtime::connect(target, options).map_err(|error| WireError::Runtime {
@@ -787,6 +782,21 @@ impl RemoteClient {
 }
 
 impl RemoteClient {
+    /// The control options the next `connect` uses. The viewport is the
+    /// constructor's or the last `resize_viewport`'s, unclamped: zero is the
+    /// no-vote contract, not a size.
+    fn control_options(&self) -> phux_client_runtime::control::ControlOptions {
+        phux_client_runtime::control::ControlOptions {
+            client_name: "phux-mobile".to_owned(),
+            viewport: (*self.cols.lock().unwrap(), *self.rows.lock().unwrap()),
+            scrollback_lines: SCROLLBACK_LINES,
+            attach: None,
+            attach_role: self.attach_role(),
+            subscribe_agent_sessions: true,
+            ..phux_client_runtime::control::ControlOptions::default()
+        }
+    }
+
     fn build(
         url: String,
         cols: u16,
@@ -797,8 +807,8 @@ impl RemoteClient {
     ) -> Arc<Self> {
         Arc::new(Self {
             url,
-            cols: Mutex::new(cols.max(1)),
-            rows: Mutex::new(rows.max(1)),
+            cols: Mutex::new(cols),
+            rows: Mutex::new(rows),
             fingerprint,
             token,
             authority: Mutex::new(None),
@@ -1117,6 +1127,22 @@ impl Drop for RemoteClient {
 mod tests {
     use super::*;
     use phux_protocol::wire::frame::{FrameKind, RESOURCE_AGENT_KEY, RolePolicy, Scope};
+
+    /// A zero constructor viewport reaches the runtime as zero, the no-vote
+    /// contract, while an explicit `resize_viewport` still votes at least 1x1.
+    #[test]
+    fn a_zero_viewport_casts_no_vote_until_one_is_requested() {
+        let remote = RemoteClient::new("unused".into(), 0, 0, None, None);
+        let options = remote.control_options();
+        assert_eq!(options.viewport, (0, 0));
+        assert!(!phux_client_runtime::control::ControlPlane::new(options).votes_on_geometry());
+
+        let sized = RemoteClient::new("unused".into(), 80, 24, None, None);
+        assert_eq!(sized.control_options().viewport, (80, 24));
+
+        remote.resize_viewport(0, 0);
+        assert_eq!(remote.control_options().viewport, (1, 1));
+    }
 
     /// The parity verbs before a connection exists refuse without panicking,
     /// the viewer switch shapes the next attach, and a batch close reply
