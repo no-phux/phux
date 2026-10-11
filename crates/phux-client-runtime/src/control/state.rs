@@ -8,11 +8,23 @@ impl ControlPlane {
     /// Resolve every outstanding correlation as failed: the socket that
     /// carried it is gone. Topology refreshes drop silently, as a fresh
     /// `ATTACHED` is on its way.
-    pub(super) fn fail_pending(&mut self, message: &str) {
+    pub(super) fn fail_pending(&mut self, message: &str, retry_spawns: bool) {
         let pending: Vec<(u32, Pending)> = self.pending.drain().collect();
         for (request_id, pending) in pending {
             match pending {
-                Pending::Spawn => {
+                Pending::Spawn {
+                    replay: Some(frame),
+                    ..
+                } if retry_spawns => {
+                    self.pending.insert(
+                        request_id,
+                        Pending::Spawn {
+                            replay: Some(frame),
+                            needs_replay: true,
+                        },
+                    );
+                }
+                Pending::Spawn { .. } => {
                     self.push_event(Event::TerminalSpawned {
                         request_id,
                         terminal_id: None,
@@ -65,6 +77,45 @@ impl ControlPlane {
                         },
                     });
                 }
+            }
+        }
+    }
+
+    /// Reissue only keyed spawns. A lost reply says nothing about whether the
+    /// server ran the operation; its dedupe record makes this repeat safe.
+    pub(super) fn replay_pending_spawns(&mut self) {
+        let mut requests: Vec<_> = self
+            .pending
+            .iter()
+            .filter_map(|(id, pending)| {
+                if let Pending::Spawn {
+                    replay: Some(frame),
+                    needs_replay: true,
+                } = pending
+                {
+                    Some((*id, frame.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        requests.sort_unstable_by_key(|(id, _)| *id);
+        for (request_id, frame) in requests {
+            if self.server_has(ServerFeature::SpawnIdempotency) {
+                self.queue_frame(&frame);
+                if let Some(Pending::Spawn { needs_replay, .. }) = self.pending.get_mut(&request_id)
+                {
+                    *needs_replay = false;
+                }
+            } else {
+                self.pending.remove(&request_id);
+                self.push_event(Event::TerminalSpawned {
+                    request_id,
+                    terminal_id: None,
+                    error: Some(
+                        "the new server cannot safely retry this spawn; check its panes".to_owned(),
+                    ),
+                });
             }
         }
     }

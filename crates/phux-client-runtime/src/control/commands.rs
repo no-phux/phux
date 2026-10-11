@@ -2,7 +2,9 @@
 
 use std::collections::HashSet;
 
+use phux_protocol::ids::IdempotencyKey;
 use phux_protocol::wire::frame::InputMode;
+use phux_protocol::wire::frame::SpawnResource;
 
 use super::{
     AttachTarget, Command, ControlPlane, Event, FrameKind, GroupId, Observation, Pending,
@@ -290,7 +292,6 @@ impl ControlPlane {
     /// server pumps the new terminal's output to this client.
     pub fn spawn_terminal(&mut self, request: SpawnRequest) -> u32 {
         let request_id = self.next_request_id();
-        self.pending.insert(request_id, Pending::Spawn);
         // A spawn into the attached (home) session needs no owner; any
         // other session is addressed through one of its existing panes.
         let target_session = request.session_id.or(self.selected_session);
@@ -301,7 +302,16 @@ impl ControlPlane {
                     .as_ref()
                     .and_then(|topology| topology.first_pane_of(session).cloned())
             });
-        self.queue_frame(&FrameKind::SpawnResource {
+        let keyed =
+            self.status == Status::Attached && self.server_has(ServerFeature::SpawnIdempotency);
+        // UUID v4 sets the version bits, so its bytes cannot be all zero.
+        let resource = keyed.then(|| {
+            Box::new(
+                SpawnResource::default()
+                    .with_idempotency_key(IdempotencyKey::new(uuid::Uuid::new_v4().into_bytes())),
+            )
+        });
+        let frame = FrameKind::SpawnResource {
             request_id,
             group: GroupId::new(1),
             command: request.command,
@@ -311,12 +321,20 @@ impl ControlPlane {
             satellite: None,
             owner_terminal,
             agent_session: None,
-            resource: None,
+            resource,
             // Without a geometry vote the server's default size applies.
             initial_size: request
                 .initial_size
                 .or_else(|| self.votes_on_geometry().then_some(self.viewport())),
-        });
+        };
+        self.pending.insert(
+            request_id,
+            Pending::Spawn {
+                replay: keyed.then(|| frame.clone()),
+                needs_replay: false,
+            },
+        );
+        self.queue_frame(&frame);
         request_id
     }
 

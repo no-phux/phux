@@ -1025,6 +1025,134 @@ fn own_spawns_are_never_attached_a_second_time() {
 }
 
 #[test]
+fn keyed_spawn_replays_after_lost_reply_with_the_same_key_and_correlation() {
+    let mut plane = ControlPlane::new(ControlOptions {
+        attach: Some(AttachTarget::ByName("main".to_owned())),
+        ..ControlOptions::default()
+    });
+    plane.connection_opened();
+    let _ = plane.take_outbound();
+    plane
+        .feed(hello_ok_with(&[ServerFeature::SpawnIdempotency]))
+        .unwrap();
+    let first_attach = plane
+        .take_outbound()
+        .into_iter()
+        .find_map(|frame| {
+            if let FrameKind::Attach { attach_id, .. } = decode(&frame) {
+                Some(attach_id)
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    attach(&mut plane, first_attach, b"home");
+    let _ = plane.take_outbound();
+    let _ = plane.take_events();
+
+    let request_id = plane.spawn_terminal(SpawnRequest::default());
+    let sent = plane.take_outbound();
+    assert_eq!(sent.len(), 1);
+    let FrameKind::SpawnResource {
+        resource: Some(resource),
+        ..
+    } = decode(&sent[0])
+    else {
+        panic!("spawn must carry a resource key");
+    };
+    assert!(resource.idempotency_key.is_some());
+    plane.connection_lost(Some("socket closed after send".to_owned()));
+    plane.connection_opened();
+    let _ = plane.take_outbound();
+    assert!(!plane.take_events().iter().any(|event| matches!(event,
+        Event::TerminalSpawned { request_id: id, .. } if *id == request_id
+    )));
+    plane
+        .feed(hello_ok_with(&[ServerFeature::SpawnIdempotency]))
+        .unwrap();
+    let next_attach = plane
+        .take_outbound()
+        .into_iter()
+        .find_map(|frame| {
+            if let FrameKind::Attach { attach_id, .. } = decode(&frame) {
+                Some(attach_id)
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    plane
+        .feed(FrameKind::Attached {
+            attach_id: next_attach,
+            snapshot: snapshot(),
+            initial_client_id: ClientId::new(2),
+        })
+        .unwrap();
+    let stream_id = StreamId::new(2).unwrap();
+    let bootstrap_id = BootstrapId::new(2).unwrap();
+    plane
+        .feed(FrameKind::BootstrapBegin {
+            terminal_id: terminal(),
+            stream_id,
+            bootstrap_id,
+            profile: BootstrapStreamProfile::SynthesizedVtRaw,
+            cols: 20,
+            rows: 4,
+            base_seq: 0,
+        })
+        .unwrap();
+    plane
+        .feed(FrameKind::BootstrapReady {
+            terminal_id: terminal(),
+            stream_id,
+            bootstrap_id,
+            history_cursor: None,
+        })
+        .unwrap();
+    plane
+        .feed(FrameKind::AttachReady {
+            attach_id: next_attach,
+        })
+        .unwrap();
+    let replayed = plane.take_outbound();
+    assert!(replayed.iter().any(|frame| *frame == sent[0]));
+    plane
+        .feed(FrameKind::ResourceSpawned {
+            request_id,
+            result: SpawnResult::Replayed {
+                id: ResourceId::local(9),
+                instance: None,
+            },
+        })
+        .unwrap();
+    assert!(plane.take_events().iter().any(|event| matches!(event,
+        Event::TerminalSpawned { request_id: id, terminal_id: Some(id_value), error: None }
+            if *id == request_id && *id_value == ResourceId::local(9)
+    )));
+}
+
+#[test]
+fn unkeyed_spawn_is_not_retried_after_a_lost_connection() {
+    let (mut plane, attach_id) = negotiated();
+    attach(&mut plane, attach_id, b"home");
+    let _ = plane.take_outbound();
+    let _ = plane.take_events();
+    let request_id = plane.spawn_terminal(SpawnRequest::default());
+    let sent = plane.take_outbound();
+    assert!(matches!(
+        decode(&sent[0]),
+        FrameKind::SpawnResource { resource: None, .. }
+    ));
+    plane.connection_lost(Some("socket closed".to_owned()));
+    plane.connection_opened();
+    assert!(plane.take_events().iter().any(|event| matches!(event,
+        Event::TerminalSpawned { request_id: id, terminal_id: None, error: Some(_) }
+            if *id == request_id
+    )));
+    assert!(!plane.take_outbound().iter().any(|frame| *frame == sent[0]));
+}
+
+#[test]
 fn a_connection_without_a_geometry_vote_never_sizes_terminals_implicitly() {
     let mut plane = ControlPlane::new(ControlOptions {
         attach: Some(AttachTarget::ByName("main".to_owned())),
