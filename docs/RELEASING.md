@@ -146,6 +146,11 @@ sets `unit_mode=narrow` and builds that integration test instead. Pushes to
 `main` keep the full pool. The required `ci` aggregate rejects failed or cancelled lanes and
 retains the visible `check`/`test` job names.
 
+Release-metadata routing tests use disposable Git histories and fixed manifest,
+lockfile, and skill fixtures. They do not assume every component file contains
+the root version: independent integration and desktop releases can leave those
+versions different without changing the routing contract.
+
 | Change | Product validation |
 |---|---|
 | Handwritten docs, including Cockpit README | Compile-free guards |

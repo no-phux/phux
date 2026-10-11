@@ -1,7 +1,8 @@
 # @phux/opencode-v2
 
 Private OpenCode V2 plugin, pinned to the public `@opencode/plugin@2.0.26`
-contract. phux owns the terminals; OpenCode owns its session and permissions.
+contract. OpenCode keeps its own shell, sessions, and permissions; phux supplies
+terminals only where a terminal is the point.
 
 ## Build and load
 
@@ -57,20 +58,44 @@ install the resulting tarball in the destination project with
 to the absolute installed `node_modules/@phux/opencode-v2` directory. The package
 is private; this is local artifact installation, not a public registry release.
 
+## When the agent uses phux
+
+OpenCode's built-in shell is a local subprocess with native background jobs and
+completion notifications. It is the right tool for builds, tests, git, and
+nearly every command, so the plugin leaves it alone. The phux tools are for the
+cases a subprocess cannot cover:
+
+- an interactive program the agent must drive (REPL, TUI, debugger);
+- a long-running process the user should be able to watch in a pane;
+- another agent's pane to observe or prompt.
+
+A stable system rule says this every request. It never names a pane, so it does
+not disturb prompt caching.
+
 ## Tools and safety
 
-The complete shared tool catalog is registered through OpenCode's native tool
-transform API, with a native permission action for each tool name:
+Tools register through OpenCode's native tool transform API as Code Mode tools,
+with a native permission action for each tool name:
 
-- Discovery: `phux_list`, `phux_panes`.
-- Terminal creation: `phux_create`, `phux_spawn`.
-- Shell control: `phux_run`, `phux_send_keys`, `phux_paste`.
+- Discovery: `phux_panes`.
+- Owned terminals: `phux_spawn`, `phux_kill`.
+- Terminal control: `phux_run`, `phux_send_keys`, `phux_paste`.
 - Observation: `phux_snapshot`, `phux_wait`.
 - Agent control: `phux_agent_prompt`, `phux_agent_wait`, `phux_resource_wait`.
-- Diagnostics: `phux_status`, `phux_runtime_info`.
+- Diagnostics: `phux_status`.
 
-Use direct `@N` or `host/@N` selectors. Creating a terminal selects it only for
-the calling OpenCode session. Target precedence is an explicit tool target,
+The shared runtime's `phux_create`, `phux_list`, and `phux_runtime_info` are not
+registered here. Creating a named session per task left sessions behind, and the
+other two duplicate `phux_panes` and `phux_status`.
+
+A pane from `phux_spawn` belongs to the OpenCode session that spawned it. It
+becomes that session's default target and carries the `opencode-owned` tag. Each
+session may own `maxTerminals` live panes (default 4); further spawns are refused
+until one exits or is closed with `phux_kill`. `phux_kill` closes only panes the
+calling session owns. Deleting the session, or shutting down the plugin, kills
+its panes. After a crash, `phux kill '#opencode-owned'` clears strays.
+
+Use direct `@N` or `host/@N` selectors. Target precedence is an explicit tool target,
 that session's selection, then `PHUX_TARGET`. Session deletion forgets its
 selection. Output is bounded; run and wait operations default to a 30-second
 phux deadline plus a 5-second local subprocess allowance. Short calls default
@@ -90,15 +115,14 @@ Only one OpenCode session at a time owns the hosting pane's lifecycle stream.
 The CLI companion keeps that owner in sync with the visible tab even when the
 service is shared or multiple terminal clients show different sessions.
 
-The context hook adds the parent-pane rule and fleet context. Set
-`PHUX_CONTEXT_AWARENESS=0` or `contextAwareness: false` to disable fleet context;
-the parent-pane rule remains. Options also include `lifecycleTimeoutMs` and
-`contextTimeoutMs`.
+Fleet context is off by default; `phux_panes` answers on demand. Set
+`PHUX_CONTEXT_AWARENESS=1` or `contextAwareness: true` to add a full fleet
+checkpoint to every request. It costs one `phux agent list` per request and
+changes the system prompt whenever any pane changes state. Options also include
+`maxTerminals`, `lifecycleTimeoutMs`, and `contextTimeoutMs`.
 
-When a sibling pane is selected, OpenCode's built-in shell runs as `phux run`
-on that sibling. If the only pane is the one hosting this agent, the shell
-refuses. The plugin does not replace the terminal widget or PTY API, and it
-does not tunnel the OpenCode server. Use `phux attach` for a remote view.
+The plugin does not hook OpenCode's shell, replace the terminal widget or PTY
+API, or tunnel the OpenCode server. Use `phux attach` for a remote view.
 Satellite targets work through the phux CLI and its configured local hub socket.
 
 ## Verification
@@ -109,5 +133,6 @@ bun run gates
 
 The package gate typechecks, builds, then tests. Its packed-artifact regression
 loads the tarball outside the checkout and checks registration against the
-public SDK. Source tests cover cross-session selection/deletion, lifecycle
-identity, parent write protection, and cancellation.
+public SDK. Source tests cover cross-session selection/deletion, terminal
+ownership and release, lifecycle identity, parent write protection, and
+cancellation.

@@ -368,9 +368,9 @@ grey — a "selected" tab that light stops being a tab and becomes a button.
 far*. State is said with the accent, and this app has exactly one accent verb —
 lime, reserved for "where you are". The selected tab carries the pack's own
 2pt indicator (`tabs_indicator_thickness`); a split pane is a rounded card
-(`radius.md`) with a hairline border, and the focused pane wears the SDK's
-ring-offset accent ring (`stroke.focus` / `stroke.focus_offset`) in the
-gutter — never on the grid, and never a different inset than its neighbours.
+(`radius.md`) with a neutral hairline border. The focused pane gets one 32pt
+accent dash (`control_height_sm` wide, `stroke.focus` tall) inside its top
+gutter, not a second perimeter around a large terminal and never on the grid.
 `accent` on `surface` measures **14.10:1**, four and a half times the floor.
 
 Shadows are not an option and never were: a shadow works by darkening what is

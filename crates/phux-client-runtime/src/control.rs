@@ -348,7 +348,10 @@ pub struct ProjectionFence {
 /// right event.
 #[derive(Debug, Clone)]
 enum Pending {
-    Spawn,
+    Spawn {
+        replay: Option<FrameKind>,
+        needs_replay: bool,
+    },
     AttachTerminal(ResourceId),
     DetachTerminal(ResourceId),
     Kill(ResourceId),
@@ -822,7 +825,7 @@ impl ControlPlane {
         self.selected_session = None;
         self.input_replay.connection_lost();
         self.reset_extension_correlations("the connection ended before the server answered");
-        self.fail_pending("connection replaced before the server answered");
+        self.fail_pending("connection replaced before the server answered", true);
         self.push_event(Event::ConnectionOpened {
             connection_epoch: self.connection_epoch,
         });
@@ -860,7 +863,7 @@ impl ControlPlane {
         self.error = Some(message.into());
         self.strand_durable("the connection failed before the operation completed");
         self.strand_extensions("the connection failed before the operation completed");
-        self.fail_pending("the connection failed before the server answered");
+        self.fail_pending("the connection failed before the server answered", false);
         self.set_status(Status::Failed);
     }
 
@@ -871,7 +874,7 @@ impl ControlPlane {
         let _ = self.take_inbound();
         self.strand_durable("the client closed before the operation completed");
         self.strand_extensions("the client closed before the operation completed");
-        self.fail_pending("the client closed before the server answered");
+        self.fail_pending("the client closed before the server answered", false);
         if let Some(engine) = &self.engine {
             engine.reset_connection();
         }
