@@ -165,7 +165,7 @@ fn color(value: &Value) -> Option<gpui::Hsla> {
     } else {
         1.
     };
-    Some(gpui::rgb(rgb).opacity(alpha))
+    Some(gpui::rgb(rgb).opacity(alpha).into())
 }
 
 #[cfg(test)]
