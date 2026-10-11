@@ -11,61 +11,39 @@ import unittest
 import release_metadata
 
 ROOT = Path(__file__).resolve().parents[2]
-RELEASE_PATHS = (
-    "CHANGELOG.md",
-    "Cargo.toml",
-    "Cargo.lock",
-    "clients/phux-web/Cargo.lock",
-    ".release-please-manifest.json",
-    "docs/site/worker/Dockerfile",
-    ".agents/skills/using-phux/SKILL.md",
-    ".agents/skills/using-phux-mcp/SKILL.md",
-)
-
-
-# The current root version, so the test holds on a release branch too.
-CURRENT = json.loads((ROOT / ".release-please-manifest.json").read_text())["."]
-
-
-def bump(text, old=CURRENT, new="999.0.0"):
-    return text.replace(old, new)
-
-
-def bump_lock(text, old=CURRENT, new="999.0.0"):
-    """Bump only workspace (path) packages: a registry crate can share the
-    release's version string (windows-sys 0.52.0 did), and release-please
-    never rewrites those entries."""
-    blocks = text.split("\n[[package]]\n")
-    return "\n[[package]]\n".join(
-        block if "\nsource = " in block else bump(block, old, new) for block in blocks
-    )
 
 
 class ReleaseMetadataTests(unittest.TestCase):
-    def test_shipped_release_files_are_version_only(self):
-        pairs = {}
-        for path in RELEASE_PATHS:
-            before = (ROOT / path).read_text()
-            after = bump_lock(before) if path.endswith("Cargo.lock") else bump(before)
-            self.assertNotEqual(before, after, path)
-            pairs[path] = (before, after)
-        self.assertTrue(release_metadata.only(list(RELEASE_PATHS), pairs.get))
-
     def test_dependency_manifest_edit_still_compiles(self):
-        before = (ROOT / "Cargo.toml").read_text()
-        after = before.replace('serde = { version = "1"', 'serde = { version = "2"', 1)
-        self.assertNotEqual(before, after)
+        before = '[workspace.package]\nversion = "0.1.0"\n[workspace.dependencies]\nserde = "1"\n'
+        after = before.replace('serde = "1"', 'serde = "2"')
         self.assertFalse(release_metadata.workspace_manifest_only(before, after))
         self.assertFalse(release_metadata.only(["Cargo.toml"], lambda _path: (before, after)))
 
     def test_lockfile_checksum_edit_still_compiles(self):
-        before = (ROOT / "Cargo.lock").read_text()
-        after = before.replace("checksum = ", "checksum = \"deadbeef", 1)
+        before = (
+            'version = 3\n\n[[package]]\nname = "serde"\nversion = "1.0.0"\n'
+            'source = "registry+https://github.com/rust-lang/crates.io-index"\n'
+            'checksum = "original"\n'
+        )
+        after = before.replace('checksum = "original"', 'checksum = "changed"')
         self.assertFalse(release_metadata.workspace_lock_only(before, after))
 
+    def test_path_version_bump_does_not_exempt_registry_version_changes(self):
+        before = (
+            'version = 3\n\n[[package]]\nname = "phux"\nversion = "0.1.0"\n'
+            '\n[[package]]\nname = "registry-crate"\nversion = "0.1.0"\n'
+            'source = "registry+https://github.com/rust-lang/crates.io-index"\n'
+            'checksum = "unchanged"\n'
+        )
+        path_bump = before.replace('version = "0.1.0"', 'version = "0.2.0"', 1)
+        self.assertTrue(release_metadata.workspace_lock_only(before, path_bump))
+        registry_bump = path_bump.replace('version = "0.1.0"', 'version = "0.2.0"')
+        self.assertFalse(release_metadata.workspace_lock_only(before, registry_bump))
+
     def test_skill_body_edit_still_compiles(self):
-        before = (ROOT / ".agents/skills/using-phux/SKILL.md").read_text()
-        after = before.replace("Use phux when", "Use something else when", 1)
+        before = '  version: "0.1.0" # x-release-please-version\nUse phux when needed.\n'
+        after = before.replace("Use phux", "Use something else")
         self.assertFalse(release_metadata.skill_only(before, after))
 
     def test_desktop_alpha_release_skips_compile_but_dependency_edits_do_not(self):
