@@ -366,6 +366,107 @@ fn ring_overflow_evicts_oldest_but_keeps_counting() {
 }
 
 #[test]
+fn stamped_bounds_and_small_chunk_reconnect_preserve_a_decodable_stream() {
+    phux_server_testkit::run_local(async {
+        use phux_protocol::caps::{BootstrapCapabilities, BootstrapLimits, ClientCapabilities};
+        use phux_server_testkit::{SOCKET_CONNECT_DEADLINE, wait_for_raw_socket};
+
+        let (server, mut owner) = start(|_| {}).await;
+        let (_parent, session) = parent_and_session(&mut owner, FOREVER).await;
+        let prefix = "{\"type\":\"provider_raw\",\"data\":{\"text\":\"";
+        let suffix = "\"}}";
+        let oversized = format!(
+            "{prefix}{}{suffix}",
+            "x".repeat(16_383 - prefix.len() - suffix.len())
+        );
+        let result = command(
+            &mut owner,
+            3,
+            Command::AppendResourceOutput {
+                terminal_id: session.clone(),
+                bytes: format!("{{\"type\":\"prompt\"}}\n{oversized}").into_bytes(),
+            },
+        )
+        .await;
+        assert!(
+            matches!(
+                result,
+                CommandResult::Error {
+                    code: ErrorCode::RecordInvalid,
+                    ..
+                }
+            ),
+            "{result:?}"
+        );
+        let accepted = format!("{prefix}{}{suffix}", "é".repeat(8_000));
+        let live = append_as_owner(&mut owner, 4, &session, &accepted).await;
+        let parsed = phux_client_core::session::agent_stream::parse_records(&live)
+            .expect("live codec accepts canonical line");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].seq, 1, "rejected batch consumed no sequence");
+
+        // Reconnect twice with a budget that splits both JSON and UTF-8.
+        for _ in 0..2 {
+            let mut late = wait_for_raw_socket(&server.socket, SOCKET_CONNECT_DEADLINE).await;
+            let version = phux_protocol::PROTOCOL_VERSION;
+            send_frame(
+                &mut late,
+                &FrameKind::Hello {
+                    client_name: "small-agent-chunks".to_owned(),
+                    protocol_major: version.major,
+                    protocol_minor: version.minor,
+                    protocol_patch: version.patch,
+                    client_caps: ClientCapabilities::new().with_bootstrap(
+                        BootstrapCapabilities::new()
+                            .with_limits(BootstrapLimits::new(7, 1024).unwrap()),
+                    ),
+                },
+            )
+            .await;
+            wait_frame(&mut late, "HELLO_OK", |frame| {
+                matches!(frame, FrameKind::HelloOk { .. }).then_some(())
+            })
+            .await;
+            attach_resource(&mut late, 100, &session).await;
+            let mut retained = Vec::new();
+            let mut next_chunk = 0;
+            wait_frame(&mut late, "bounded agent bootstrap", |frame| match frame {
+                FrameKind::BootstrapBegin {
+                    terminal_id,
+                    base_seq,
+                    ..
+                } if terminal_id == session => {
+                    assert_eq!(base_seq, 1);
+                    None
+                }
+                FrameKind::BootstrapChunk {
+                    terminal_id,
+                    chunk_seq,
+                    payload,
+                    ..
+                } if terminal_id == session => {
+                    assert_eq!(chunk_seq, next_chunk);
+                    next_chunk += 1;
+                    assert!(!payload.is_empty() && payload.len() <= 7);
+                    retained.extend_from_slice(&payload);
+                    None
+                }
+                FrameKind::BootstrapReady { terminal_id, .. } if terminal_id == session => Some(()),
+                _ => None,
+            })
+            .await;
+            assert_eq!(retained, live);
+            assert_eq!(
+                phux_client_core::session::agent_stream::parse_records(&retained).unwrap(),
+                parsed
+            );
+        }
+        drop(owner);
+        server.stop().await;
+    });
+}
+
+#[test]
 fn terminal_facet_commands_refuse_an_agent_session_and_vice_versa() {
     phux_server_testkit::run_local(async {
         let (server, mut owner) = start(|_| {}).await;

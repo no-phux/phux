@@ -353,7 +353,11 @@ enum Pending {
         needs_replay: bool,
     },
     AttachTerminal(ResourceId),
-    DetachTerminal(ResourceId),
+    DetachTerminal {
+        terminal_id: ResourceId,
+        /// Admission withdrawn eagerly, but restored if the server refuses.
+        was_attached: bool,
+    },
     Kill(ResourceId),
     Close,
     RefreshTopology,

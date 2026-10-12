@@ -13,7 +13,7 @@ use phux_protocol::{
 
 use agent_stream::{
     AgentEventRecord, AgentLog, AgentRecordError, AgentSessionState, AgentSessionStatus,
-    parse_records,
+    BootstrapRecordDecoder, parse_records,
 };
 
 use crate::engine::{
@@ -1070,6 +1070,7 @@ struct AgentStaging {
     accepted_bytes: usize,
     accepted_chunks: usize,
     started_at_ms: u64,
+    decoder: BootstrapRecordDecoder,
 }
 
 /// Kernel state for one `AgentSession` resource: no replica, a record log.
@@ -1974,6 +1975,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
             accepted_bytes: 0,
             accepted_chunks: 0,
             started_at_ms,
+            decoder: BootstrapRecordDecoder::default(),
         }) {
             stream.retired.insert(
                 generation_of(&old.key),
@@ -2088,7 +2090,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
             Self::retire_agent_generation(stream, terminal_id, generation, base_seq, effects);
             return Err(error);
         }
-        match parse_records(payload) {
+        match staging.decoder.push(payload) {
             Ok(records) => {
                 staging.records.extend(records);
                 staging.next_chunk_seq = chunk_seq.checked_add(1);
@@ -2142,6 +2144,16 @@ impl<E: EngineAdapter> SessionKernel<E> {
         let Some(staging) = stream.staging.take() else {
             return Err(KernelError::MissingStaging(terminal_id.clone()));
         };
+        if let Err(error) = staging.decoder.finish() {
+            Self::retire_agent_generation(
+                stream,
+                terminal_id,
+                generation,
+                staging.base_seq,
+                effects,
+            );
+            return Err(KernelError::AgentRecord(error));
+        }
         let retained = !matches!(
             staging.key.profile,
             BootstrapStreamProfile::AgentEventsJsonlResumeV1 { .. }

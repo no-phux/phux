@@ -3455,6 +3455,408 @@ fn agent_records_effect(effects: &EffectBuffer) -> Option<(ResourceId, Vec<u64>,
     })
 }
 
+fn assert_agent_fragment_publication(fragments: &[&[u8]]) {
+    let agent = terminal(2);
+    let mut kernel = kernel(ReadyMode::ChunkFirst);
+    let mut effects = EffectBuffer::new();
+    agent_begin(
+        &mut kernel,
+        &agent,
+        stream(3),
+        bootstrap(4),
+        2,
+        &mut effects,
+    )
+    .unwrap();
+    for (index, payload) in fragments.iter().enumerate() {
+        kernel
+            .update(
+                chunk(
+                    &agent,
+                    stream(3),
+                    bootstrap(4),
+                    u32::try_from(index).unwrap(),
+                    payload,
+                ),
+                &mut effects,
+            )
+            .unwrap();
+        assert!(effects.is_empty());
+        let view = kernel.agent_session(&agent).unwrap();
+        assert!(!view.published);
+        assert!(view.log.is_empty());
+    }
+    kernel
+        .update(ready(&agent, stream(3), bootstrap(4), None), &mut effects)
+        .unwrap();
+    assert_eq!(
+        agent_records_effect(&effects),
+        Some((agent.clone(), vec![1, 2], true))
+    );
+    let view = kernel.agent_session(&agent).unwrap();
+    assert_eq!(view.state.status, AgentSessionStatus::Blocked);
+    assert_eq!(
+        view.log.last().unwrap().data_str("question"),
+        Some("déployer 🦀?")
+    );
+}
+
+#[test]
+fn agent_bootstrap_records_accept_every_byte_split_and_empty_chunks() {
+    let payload = format!(
+        "{}{}",
+        agent_line(1, "prompt", "{}"),
+        agent_line(2, "ask", r#"{"question":"déployer 🦀?"}"#)
+    );
+    let bytes = payload.as_bytes();
+    for split in 0..=bytes.len() {
+        assert_agent_fragment_publication(&[&bytes[..split], b"", &bytes[split..]]);
+    }
+    for width in 1..=bytes.len() {
+        assert_agent_fragment_publication(&bytes.chunks(width).collect::<Vec<_>>());
+    }
+}
+
+#[test]
+fn agent_bootstrap_accepts_exact_record_limit_including_split_lf() {
+    let agent = terminal(2);
+    let mut kernel = kernel(ReadyMode::ChunkFirst);
+    let mut effects = EffectBuffer::new();
+    let mut line = agent_line(1, "stop", "{}").into_bytes();
+    line.pop();
+    line.resize(super::agent_stream::MAX_RECORD_BYTES - 1, b' ');
+    agent_begin(
+        &mut kernel,
+        &agent,
+        stream(3),
+        bootstrap(4),
+        1,
+        &mut effects,
+    )
+    .unwrap();
+    kernel
+        .update(
+            chunk(&agent, stream(3), bootstrap(4), 0, &line),
+            &mut effects,
+        )
+        .unwrap();
+    let staging = kernel.agents[&agent].staging.as_ref().unwrap();
+    assert!(staging.records.is_empty(), "no decoding before LF");
+    kernel
+        .update(
+            chunk(&agent, stream(3), bootstrap(4), 1, b"\n"),
+            &mut effects,
+        )
+        .unwrap();
+    kernel
+        .update(ready(&agent, stream(3), bootstrap(4), None), &mut effects)
+        .unwrap();
+    assert_eq!(agent_records_effect(&effects), Some((agent, vec![1], true)));
+}
+
+fn assert_agent_replacement_failure(kernel: &SessionKernel<FakeAdapter>, effects: &EffectBuffer) {
+    let view = kernel.agent_session(&terminal(2)).unwrap();
+    assert!(view.published);
+    assert_eq!(view.state.status, AgentSessionStatus::Done);
+    assert_eq!(view.log.len(), 1);
+    assert_eq!(view.log.last().unwrap().seq, 1);
+    assert!(agent_records_effect(effects).is_none());
+    assert!(effects.as_slice().iter().any(|effect| matches!(effect,
+        KernelEffect::Status(KernelStatus::ResyncRequired {
+            bootstrap_id, reason: TombstoneReason::CodecFailure, ..
+        }) if *bootstrap_id == bootstrap(5)
+    )));
+    assert!(kernel.agents[&terminal(2)].staging.is_none());
+}
+
+fn published_agent_with_record() -> SessionKernel<FakeAdapter> {
+    let mut kernel = published_agent_for_batches(0);
+    apply_agent_batch(&mut kernel, &mut EffectBuffer::new(), 1, &[(1, "stop")]).unwrap();
+    kernel
+}
+
+fn padded_agent_wire_record(seq: u64, wire_bytes: usize) -> Vec<u8> {
+    let mut line = agent_line(seq, "stop", "{}").into_bytes();
+    line.pop();
+    line.resize(wire_bytes - 1, b' ');
+    line.push(b'\n');
+    line
+}
+
+#[test]
+fn agent_record_parser_counts_lf_and_untrimmed_whitespace_at_the_limit() {
+    use super::agent_stream::{AgentRecordError, MAX_RECORD_BYTES, parse_records};
+    let exact = padded_agent_wire_record(1, MAX_RECORD_BYTES);
+    let oversize = padded_agent_wire_record(1, MAX_RECORD_BYTES + 1);
+    for record in [&exact, &oversize] {
+        for bytes in [record.as_slice(), &record[..record.len() - 1]] {
+            if record.len() == MAX_RECORD_BYTES {
+                assert_eq!(parse_records(bytes).unwrap().len(), 1);
+            } else {
+                assert_eq!(
+                    parse_records(bytes),
+                    Err(AgentRecordError::Oversize(MAX_RECORD_BYTES + 1))
+                );
+            }
+        }
+    }
+    assert!(
+        parse_records(&vec![b' '; MAX_RECORD_BYTES - 1])
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        parse_records(&vec![b' '; MAX_RECORD_BYTES]),
+        Err(AgentRecordError::Oversize(MAX_RECORD_BYTES + 1))
+    );
+}
+
+#[test]
+fn agent_bootstrap_rejects_record_one_byte_over_wire_limit_with_or_without_lf() {
+    use super::agent_stream::{AgentRecordError, MAX_RECORD_BYTES};
+    let oversize = padded_agent_wire_record(1, MAX_RECORD_BYTES + 1);
+    for bytes in [oversize.as_slice(), &oversize[..oversize.len() - 1]] {
+        let agent = terminal(2);
+        let mut kernel = published_agent_with_record();
+        let mut effects = EffectBuffer::new();
+        agent_begin(
+            &mut kernel,
+            &agent,
+            stream(3),
+            bootstrap(5),
+            1,
+            &mut effects,
+        )
+        .unwrap();
+        assert!(matches!(
+            kernel.update(
+                chunk(&agent, stream(3), bootstrap(5), 0, bytes),
+                &mut effects
+            ),
+            Err(KernelError::AgentRecord(AgentRecordError::Oversize(16_385)))
+        ));
+        assert_agent_replacement_failure(&kernel, &effects);
+    }
+}
+
+#[test]
+fn agent_live_record_wire_limit_includes_lf_and_whitespace() {
+    use super::agent_stream::{AgentRecordError, MAX_RECORD_BYTES};
+    let agent = terminal(2);
+    let mut kernel = published_agent_for_batches(0);
+    let mut effects = EffectBuffer::new();
+    let exact = padded_agent_wire_record(1, MAX_RECORD_BYTES);
+    kernel
+        .update(
+            output(&agent, stream(3), bootstrap(4), 1, &exact),
+            &mut effects,
+        )
+        .unwrap();
+    assert_eq!(
+        agent_records_effect(&effects),
+        Some((agent.clone(), vec![1], false))
+    );
+    let oversize = padded_agent_wire_record(2, MAX_RECORD_BYTES + 1);
+    assert!(matches!(
+        kernel.update(
+            output(&agent, stream(3), bootstrap(4), 2, &oversize),
+            &mut effects
+        ),
+        Err(KernelError::AgentRecord(AgentRecordError::Oversize(16_385)))
+    ));
+    assert!(agent_records_effect(&effects).is_none());
+    assert_eq!(kernel.agent_session(&agent).unwrap().log.len(), 1);
+}
+
+#[test]
+fn agent_bootstrap_rejects_oversize_before_lf_and_preserves_published_state() {
+    let agent = terminal(2);
+    for suffix in [b" ".as_slice(), b" \n".as_slice()] {
+        let mut kernel = published_agent_with_record();
+        let mut effects = EffectBuffer::new();
+        agent_begin(
+            &mut kernel,
+            &agent,
+            stream(3),
+            bootstrap(5),
+            2,
+            &mut effects,
+        )
+        .unwrap();
+        kernel
+            .update(
+                chunk(
+                    &agent,
+                    stream(3),
+                    bootstrap(5),
+                    0,
+                    &vec![b' '; super::agent_stream::MAX_RECORD_BYTES - 1],
+                ),
+                &mut effects,
+            )
+            .unwrap();
+        assert!(matches!(
+            kernel.update(
+                chunk(&agent, stream(3), bootstrap(5), 1, suffix),
+                &mut effects
+            ),
+            Err(KernelError::AgentRecord(super::AgentRecordError::Oversize(
+                16_385
+            )))
+        ));
+        assert_agent_replacement_failure(&kernel, &effects);
+        assert!(matches!(
+            kernel.update(ready(&agent, stream(3), bootstrap(5), None), &mut effects),
+            Err(KernelError::RetiredGeneration { .. })
+        ));
+    }
+}
+
+#[test]
+fn agent_bootstrap_rejects_trailing_line_at_ready_without_replacing_published_state() {
+    let agent = terminal(2);
+    let complete = agent_line(2, "ask", "{}");
+    for tail in [
+        b"{".as_slice(),
+        complete.trim_end().as_bytes(),
+        b" ",
+        &[0xf0, 0x9f],
+    ] {
+        let mut kernel = published_agent_with_record();
+        let mut effects = EffectBuffer::new();
+        agent_begin(
+            &mut kernel,
+            &agent,
+            stream(3),
+            bootstrap(5),
+            2,
+            &mut effects,
+        )
+        .unwrap();
+        kernel
+            .update(
+                chunk(&agent, stream(3), bootstrap(5), 0, complete.as_bytes()),
+                &mut effects,
+            )
+            .unwrap();
+        kernel
+            .update(
+                chunk(&agent, stream(3), bootstrap(5), 1, tail),
+                &mut effects,
+            )
+            .unwrap();
+        assert!(matches!(
+            kernel.update(ready(&agent, stream(3), bootstrap(5), None), &mut effects),
+            Err(KernelError::AgentRecord(super::AgentRecordError::Json(_)))
+        ));
+        assert_agent_replacement_failure(&kernel, &effects);
+    }
+}
+
+#[test]
+fn agent_bootstrap_malformed_complete_line_preserves_published_state() {
+    let agent = terminal(2);
+    let mut kernel = published_agent_with_record();
+    let mut effects = EffectBuffer::new();
+    agent_begin(
+        &mut kernel,
+        &agent,
+        stream(3),
+        bootstrap(5),
+        2,
+        &mut effects,
+    )
+    .unwrap();
+    let bytes = format!("{}{{bad json}}\n", agent_line(2, "ask", "{}"));
+    assert!(matches!(
+        kernel.update(
+            chunk(&agent, stream(3), bootstrap(5), 0, bytes.as_bytes()),
+            &mut effects
+        ),
+        Err(KernelError::AgentRecord(_))
+    ));
+    assert_agent_replacement_failure(&kernel, &effects);
+}
+
+#[test]
+fn agent_bootstrap_replacement_and_release_reset_partial_decoder() {
+    let agent = terminal(2);
+    let mut kernel = kernel(ReadyMode::ChunkFirst);
+    let mut effects = EffectBuffer::new();
+    agent_begin(
+        &mut kernel,
+        &agent,
+        stream(3),
+        bootstrap(4),
+        0,
+        &mut effects,
+    )
+    .unwrap();
+    kernel
+        .update(
+            chunk(&agent, stream(3), bootstrap(4), 0, b"{partial"),
+            &mut effects,
+        )
+        .unwrap();
+    agent_begin(
+        &mut kernel,
+        &agent,
+        stream(3),
+        bootstrap(5),
+        1,
+        &mut effects,
+    )
+    .unwrap();
+    kernel
+        .update(
+            chunk(
+                &agent,
+                stream(3),
+                bootstrap(5),
+                0,
+                agent_line(1, "stop", "{}").as_bytes(),
+            ),
+            &mut effects,
+        )
+        .unwrap();
+    kernel
+        .update(ready(&agent, stream(3), bootstrap(5), None), &mut effects)
+        .unwrap();
+    assert_eq!(
+        agent_records_effect(&effects),
+        Some((agent.clone(), vec![1], true))
+    );
+    agent_begin(
+        &mut kernel,
+        &agent,
+        stream(3),
+        bootstrap(6),
+        1,
+        &mut effects,
+    )
+    .unwrap();
+    kernel
+        .update(
+            chunk(&agent, stream(3), bootstrap(6), 0, b"{partial"),
+            &mut effects,
+        )
+        .unwrap();
+    assert!(kernel.release_terminal(&agent));
+    agent_begin(
+        &mut kernel,
+        &agent,
+        stream(3),
+        bootstrap(6),
+        0,
+        &mut effects,
+    )
+    .unwrap();
+    kernel
+        .update(ready(&agent, stream(3), bootstrap(6), None), &mut effects)
+        .unwrap();
+    assert_eq!(agent_records_effect(&effects), Some((agent, vec![], true)));
+}
+
 #[test]
 #[allow(
     clippy::cognitive_complexity,

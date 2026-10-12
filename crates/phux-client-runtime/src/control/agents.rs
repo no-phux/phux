@@ -297,7 +297,7 @@ impl ControlPlane {
             let admitted = resource
                 .parent
                 .as_ref()
-                .is_some_and(|parent| self.kernel_knows(parent));
+                .is_some_and(|parent| self.terminal_is_admitted(parent));
             if admitted {
                 self.follow_agent_session(resource)?;
             }
@@ -384,28 +384,71 @@ impl ControlPlane {
     /// in a pane this connection streams.
     pub(super) fn release_agents_of(&mut self, parent: &ResourceId) {
         let epoch = self.connection_epoch;
-        let children: Vec<(ResourceId, bool)> = self
+        let children: Vec<ResourceId> = self
             .agent_subscriptions
             .iter()
             .filter(|(_, subscription)| subscription.info.parent.as_ref() == Some(parent))
-            .map(|(id, subscription)| (id.clone(), subscription.connection == epoch))
+            .map(|(id, _)| id.clone())
             .collect();
-        for (terminal_id, streamed) in children {
-            if streamed {
-                let request_id = self.next_request_id();
-                self.pending.insert(request_id, Pending::AgentRelease);
-                self.queue_frame(&FrameKind::Command {
-                    request_id,
-                    command: Command::DetachResource {
-                        terminal_id: terminal_id.clone(),
-                    },
-                });
-            }
-            if let Some(engine) = &self.engine {
-                let _ = engine.detach(terminal_id.clone());
-            }
-            self.end_agent_subscription(&terminal_id);
+        for terminal_id in children {
+            self.release_agent_subscription(&terminal_id, epoch);
         }
+    }
+
+    fn release_agent_subscription(&mut self, terminal_id: &ResourceId, epoch: u64) {
+        if self
+            .agent_subscriptions
+            .get(terminal_id)
+            .is_some_and(|subscription| subscription.connection == epoch)
+        {
+            let request_id = self.next_request_id();
+            self.pending.insert(request_id, Pending::AgentRelease);
+            self.queue_frame(&FrameKind::Command {
+                request_id,
+                command: Command::DetachResource {
+                    terminal_id: terminal_id.clone(),
+                },
+            });
+        }
+        // Losing admission ends a subscription, not the actual resource.
+        // Detach leaves it eligible for a later subscription in this incarnation.
+        if let Some(engine) = &self.engine {
+            let _ = engine.detach(terminal_id.clone());
+        }
+        self.end_agent_subscription(terminal_id);
+    }
+
+    /// A reconnect may attach the selected session rather than the old home.
+    /// Keep old subscriptions until all replayed admissions have answered:
+    /// neither ATTACHED nor an inventory alone proves their parents unstreamed.
+    pub(super) fn retire_unadmitted_agent_subscriptions(&mut self) {
+        if self.status != super::Status::Attached || self.agent_admissions_pending() {
+            return;
+        }
+        let orphaned: Vec<_> = self
+            .agent_subscriptions
+            .iter()
+            .filter(|(_, subscription)| {
+                !subscription
+                    .info
+                    .parent
+                    .as_ref()
+                    .is_some_and(|parent| self.terminal_is_admitted(parent))
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for terminal_id in orphaned {
+            self.release_agent_subscription(&terminal_id, self.connection_epoch);
+        }
+    }
+
+    fn agent_admissions_pending(&self) -> bool {
+        self.pending.values().any(|pending| {
+            matches!(
+                pending,
+                Pending::AttachTerminal(_) | Pending::DetachTerminal { .. } | Pending::Spawn { .. }
+            )
+        })
     }
 
     /// A new server incarnation: every followed session is gone, and its

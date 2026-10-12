@@ -315,6 +315,7 @@ impl ControlPlane {
         self.publish_viewport();
         self.replay_preserving_subscriptions();
         self.replay_pending_spawns();
+        self.retire_unadmitted_agent_subscriptions();
         Ok(())
     }
 
@@ -471,6 +472,7 @@ impl ControlPlane {
             self.fence_topology_read();
             self.queue_refresh_topology();
         }
+        self.retire_unadmitted_agent_subscriptions();
         true
     }
 
@@ -505,41 +507,16 @@ impl ControlPlane {
             return Ok(());
         };
         let error = command_result_error(&result);
+        if self.resolve_subscription_result(request_id, &pending, error.as_deref())? {
+            self.queue_durable_frames();
+            self.retire_unadmitted_agent_subscriptions();
+            return Ok(());
+        }
         match pending {
             Pending::Spawn { .. } => {
                 return Err(ControlError::Protocol(
                     "spawn request received COMMAND_RESULT instead of RESOURCE_SPAWNED".to_owned(),
                 ));
-            }
-            Pending::AttachTerminal(terminal_id) => {
-                if error.is_some() {
-                    self.terminal_attached.remove(&terminal_id);
-                    self.stream_recoveries.remove(&terminal_id);
-                } else {
-                    // Agents running in a pane admitted after the topology
-                    // listed them.
-                    self.subscribe_catalogued_agents()?;
-                }
-                self.push_event(Event::TerminalAttached {
-                    request_id,
-                    terminal_id,
-                    error,
-                });
-            }
-            Pending::DetachTerminal(terminal_id) => {
-                if error.is_none() {
-                    self.attach_terminals.remove(&terminal_id);
-                    self.agent_streams.remove(&terminal_id);
-                    if let Some(engine) = &self.engine {
-                        let _ = engine.detach(terminal_id.clone());
-                    }
-                    self.release_agents_of(&terminal_id);
-                }
-                self.push_event(Event::TerminalDetached {
-                    request_id,
-                    terminal_id,
-                    error,
-                });
             }
             Pending::Kill(terminal_id) => {
                 self.push_event(Event::TerminalKilled {
@@ -554,10 +531,10 @@ impl ControlPlane {
             Pending::RefreshTopology => {
                 self.resolve_topology_read(result)?;
             }
-            Pending::AgentSubscription(terminal_id) => {
-                self.agent_subscription_answered(&terminal_id, error.is_some());
-            }
-            Pending::AgentRelease => {}
+            Pending::AttachTerminal(_)
+            | Pending::DetachTerminal { .. }
+            | Pending::AgentSubscription(_)
+            | Pending::AgentRelease => {}
             Pending::Extension => {
                 self.push_event(Event::CommandResult { request_id, result });
             }
@@ -566,7 +543,76 @@ impl ControlPlane {
             }
         }
         self.queue_durable_frames();
+        self.retire_unadmitted_agent_subscriptions();
         Ok(())
+    }
+
+    /// Resolve stream-admission replies before unrelated command outcomes.
+    /// Returns false for a command that does not change subscriptions.
+    fn resolve_subscription_result(
+        &mut self,
+        request_id: u32,
+        pending: &Pending,
+        error: Option<&str>,
+    ) -> Result<bool, ControlError> {
+        match pending {
+            Pending::AttachTerminal(terminal_id) => {
+                if error.is_some() {
+                    self.terminal_attached.remove(terminal_id);
+                    self.stream_recoveries.remove(terminal_id);
+                } else {
+                    self.subscribe_catalogued_agents()?;
+                }
+                self.push_event(Event::TerminalAttached {
+                    request_id,
+                    terminal_id: terminal_id.clone(),
+                    error: error.map(str::to_owned),
+                });
+            }
+            Pending::DetachTerminal {
+                terminal_id,
+                was_attached,
+            } => {
+                self.resolve_terminal_detach(terminal_id, *was_attached, error.is_none());
+                self.push_event(Event::TerminalDetached {
+                    request_id,
+                    terminal_id: terminal_id.clone(),
+                    error: error.map(str::to_owned),
+                });
+            }
+            Pending::AgentSubscription(terminal_id) => {
+                self.agent_subscription_answered(terminal_id, error.is_some());
+            }
+            Pending::AgentRelease => {}
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    /// A detach acknowledgement releases the stream; refusal restores only
+    /// an admission whose resource remained live while the request was pending.
+    fn resolve_terminal_detach(
+        &mut self,
+        terminal_id: &ResourceId,
+        was_attached: bool,
+        accepted: bool,
+    ) {
+        if accepted {
+            self.attach_terminals.remove(terminal_id);
+            self.terminal_attached.remove(terminal_id);
+            self.agent_streams.remove(terminal_id);
+            if let Some(engine) = &self.engine {
+                let _ = engine.detach(terminal_id.clone());
+            }
+            self.release_agents_of(terminal_id);
+        } else if was_attached
+            && self
+                .engine
+                .as_ref()
+                .is_none_or(|engine| !engine.is_closed(terminal_id))
+        {
+            self.terminal_attached.insert(terminal_id.clone());
+        }
     }
 
     /// Apply a `GET_STATE` snapshot on a live connection: terminals the
@@ -585,7 +631,7 @@ impl ControlPlane {
                 .panes
                 .retain(|pane| !engine.is_closed(&pane.terminal_id));
         }
-        if self.attached_session.is_none() {
+        if self.attached_session.is_none() && self.active_attach_id.is_none() {
             // A browsing connection has no attach barrier; its first
             // topology is the moment it becomes usable.
             self.attached_once = true;
@@ -594,6 +640,7 @@ impl ControlPlane {
         self.error = None;
         self.topology = Some(topology);
         self.reconcile_agent_sessions(snapshot, true)?;
+        self.retire_unadmitted_agent_subscriptions();
         self.push_event(Event::TopologySnapshot {
             attach_id: None,
             snapshot: snapshot.clone(),
