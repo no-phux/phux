@@ -9,6 +9,14 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.56.2](https://github.com/no-phux/phux/compare/v0.56.1...v0.56.2) (2026-10-12)
+
+
+### Bug Fixes
+
+* **client-ffi:** a zero constructor viewport casts no geometry vote ([bfbca78](https://github.com/no-phux/phux/commit/bfbca789348bea92ea73e94fce2e52fabb0a86a0))
+* **opencode:** avoid duplicate phux plugins in worktrees ([#1175](https://github.com/no-phux/phux/issues/1175)) ([d87474d](https://github.com/no-phux/phux/commit/d87474d3c3e8041644ccadeb9ac71f7fb320d18f))
+
 ## [0.56.1](https://github.com/no-phux/phux/compare/v0.56.0...v0.56.1) (2026-10-11)
 
 
