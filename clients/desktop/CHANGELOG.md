@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.0-alpha.13](https://github.com/no-phux/phux/compare/desktop-v0.1.0-alpha.12...desktop-v0.1.0-alpha.13) (2026-10-11)
+
+
+### Bug Fixes
+
+* **desktop:** materialize demo CLI under checkout ([1539fbf](https://github.com/no-phux/phux/commit/1539fbf7a80b83d564f0a4b93c8b15ac8f657b7a))
+
 ## [0.1.0-alpha.12](https://github.com/no-phux/phux/compare/desktop-v0.1.0-alpha.11...desktop-v0.1.0-alpha.12) (2026-10-11)
 
 
