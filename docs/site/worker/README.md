@@ -34,7 +34,7 @@ The bytes are the **real phux wire** (`phux-protocol` 0.9). EdgeSession answers
 
 | File                | Role                                                                                              |
 | ------------------- | ------------------------------------------------------------------------------------------------- |
-| `wrangler.jsonc`    | Worker + DO bindings + migrations + tuning vars + the CompiledWasm rule                           |
+| `../infra/demo.run.ts` | Worker + DO bindings + container + tuning vars (Alchemy; WASM is uploaded as a compiled module) |
 | `src/index.ts`      | Worker front door: routing, rate-limit, global-cap reserve, token mint, handoff                   |
 | `src/global-cap.ts` | `GlobalCapDO` — global concurrency counter + per-IP rate limiter (self-healing via alarm)         |
 | `src/session.ts`    | `SessionDO` — instantiates phux-edge WASM, pipes the WS, idle/hard-max close, cap release         |
@@ -77,10 +77,11 @@ coherent with that phux revision.
 
 ## Deploy
 
-Pushed automatically by `.github/workflows/deploy-worker.yml` on relevant
-worker/package/smoke changes. Native mode requires Workers Paid with Containers
-enabled and Docker available to Wrangler. Manually: set the `SESSION_TOKEN_SECRET` secret once
-(`bunx wrangler secret put SESSION_TOKEN_SECRET`), then `bun run worker:deploy`.
+Pushed automatically by `.github/workflows/site-deploy-worker.yml` on relevant
+worker/infra/package/smoke changes. Native mode requires Workers Paid with Containers
+enabled and Docker available to Alchemy. Manually: set the `SESSION_TOKEN_SECRET` secret once
+(`bunx wrangler secret put SESSION_TOKEN_SECRET --name phux-demo`), then `bun run worker:deploy`
+(the `phux` Alchemy profile; see `../infra/README.md`).
 CI uses the exact phux wire and allowed Origin to verify native greeting, command
 execution, and graceful edge fallback. A six-hour synthetic verifies native
 independently; manual dispatch supports on-demand probes and fallback exercises.
@@ -94,9 +95,8 @@ passed through GitHub Actions.
 ## Local dev
 
 ```sh
-bun run dev:worker     # wrangler dev → Worker + DOs at :8787
-# worker/.dev.vars:  SESSION_TOKEN_SECRET = "anything"
-#                    ALLOWED_ORIGINS = "http://localhost:4321"
+bun run dev:worker     # alchemy dev → Worker + DOs (edge only) at :8787
+# optional infra/.env: SESSION_TOKEN_SECRET=…  (dev values otherwise)
 ```
 
 Build and test only the native image:

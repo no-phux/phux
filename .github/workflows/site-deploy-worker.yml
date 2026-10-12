@@ -1,14 +1,15 @@
 name: site-deploy-worker
 
 # Deploy the live-demo Worker (docs/site/worker): edge fallback DO + native
-# container image. The built phux-edge WASM is committed, so no Rust toolchain
-# is needed in CI.
+# container image, declared in docs/site/infra/demo.run.ts (Alchemy). The built
+# phux-edge WASM is committed, so no Rust toolchain is needed in CI.
 
 on:
   push:
     branches: [main]
     paths:
       - "docs/site/worker/**"
+      - "docs/site/infra/**"
       - "docs/site/edge/**"
       - "docs/site/package.json"
       - "docs/site/bun.lock"
@@ -38,40 +39,52 @@ jobs:
         working-directory: docs/site
         run: bun install --frozen-lockfile
 
+      - name: Install infra dependencies
+        working-directory: docs/site/infra
+        run: bun install --frozen-lockfile
+
       - name: Validate Worker
         working-directory: docs/site
         run: |
           bun run test
           bun run worker:check
-          bun run worker:dry-run
+          bun --cwd infra run check
 
       - name: Capture current Worker version
         id: previous
-        working-directory: docs/site
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          previous="$(bunx wrangler versions list --cwd worker --json | jq -r '.[0].id // empty')"
+          set -euo pipefail
+          previous="$(
+            curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/phux-demo/deployments" \
+              | jq -r '.result.deployments[0].versions[0].version_id // empty'
+          )"
           echo "version=$previous" >> "$GITHUB_OUTPUT"
-          echo "Previous Worker version: \`$previous\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Previous Worker version: \`$previous\` (site-rollback-worker.yml)" >> "$GITHUB_STEP_SUMMARY"
 
+      # CI starts from empty Alchemy state and re-adopts the Worker by its
+      # alchemy:* tags and the container application by name. Docker builds
+      # and pushes the native image.
       - name: Deploy Worker + Durable Objects
-        working-directory: docs/site
-        run: bun run worker:deploy
+        working-directory: docs/site/infra
+        run: bunx alchemy deploy demo.run.ts --stage prod --yes --no-input
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Wait for container rollout
-        working-directory: docs/site
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           for _ in {1..30}; do
-            info="$(bunx wrangler containers info a032bc35-604a-4f1e-93a6-aad2aed206cf)"
-            if ! jq -e 'has("active_rollout_id")' <<<"$info" >/dev/null; then
+            info="$(curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/containers/applications/a032bc35-604a-4f1e-93a6-aad2aed206cf" \
+              | jq '.result')"
+            if ! jq -e '.active_rollout_id // empty' <<<"$info" >/dev/null; then
               echo "container_rollout ready=true"
               exit 0
             fi

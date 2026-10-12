@@ -33,15 +33,6 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: latest
-      - name: Install dependencies
-        working-directory: docs/site
-        run: bun install --frozen-lockfile
       - name: Refuse pre-auth rollback
         if: ${{ inputs.authenticated_baseline != true }}
         run: |
@@ -49,13 +40,19 @@ jobs:
           echo "Use the native-control kill switch for emergency containment." >&2
           exit 1
       - name: Roll back Worker version
-        working-directory: docs/site
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: >-
-          bunx wrangler rollback "${{ inputs.version }}" --cwd worker --name phux-demo
-          --message "${{ inputs.reason }}" --yes
+          VERSION: ${{ inputs.version }}
+          REASON: ${{ inputs.reason }}
+        run: |
+          set -euo pipefail
+          jq -n --arg version "$VERSION" --arg reason "$REASON" \
+            '{strategy: "percentage", versions: [{version_id: $version, percentage: 100}], annotations: {"workers/message": $reason}}' \
+            | curl -fsS -X POST -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+                -H "content-type: application/json" --data @- \
+                "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/phux-demo/deployments" \
+            | jq -e '.success' >/dev/null
       - name: Verify authentication boundary
         run: |
           response="$(curl --fail --silent --show-error \
