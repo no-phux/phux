@@ -4,7 +4,7 @@ Two production deploys provide a native shell with an edge fallback:
 
 | Piece                                                                                                          | Cloudflare product | Cost                                      |
 | -------------------------------------------------------------------------------------------------------------- | ------------------ | ----------------------------------------- |
-| The static site (`dist/`, incl. the committed wasm client) — a Workers static-assets worker (`wrangler.jsonc`) | **Workers**        | free                                      |
+| The static site (`dist/`, incl. the committed wasm client) — a Workers static-assets worker (`infra/alchemy.run.ts`) | **Workers**        | free                                      |
 | Edge fallback (`SessionDO` running **phux-edge**) | **Workers / Durable Objects** | low/free-tier usage; no container |
 | Production `?mode=native` (`PhuxSessionContainer`) | **Workers Containers** | Workers Paid + `lite` runtime/build storage |
 
@@ -13,18 +13,21 @@ adds no container runtime cost. Native requires Workers Paid. The site also
 works without the backend (`PUBLIC_PHUX_DEMO_WS` empty → the terminal shows
 "coming online").
 
-Both deploy on push to `main` via GitHub Actions (below). No manual wrangler.
+Both deploy on push to `main` via GitHub Actions (below). The site Worker is
+declared with [Alchemy](https://alchemy.run) in `infra/`; the demo Worker
+still uses `worker/wrangler.jsonc`.
 
 ---
 
 ## 1. The site → Workers static assets
 
-A Workers static-assets worker (`phux-site`, config in `wrangler.jsonc`) with
-a small host router (`host/index.ts`). Deploys via `site-deploy.yml` at the
-phux repo root, or manually with `bun run deploy`. Build `bun run build`,
-output `dist`; the wasm client is committed under `src/lib/phux-web/`, so no
-Rust/Zig is needed. Custom domains `phux.sh` (product) and `docs.phux.sh`
-(documentation) are declared in `wrangler.jsonc` and attach on deploy. The
+A Workers static-assets worker (`phux-site`, declared in
+`infra/alchemy.run.ts`) with a small host router (`host/index.ts`). Deploys
+via `site-deploy.yml` at the phux repo root, or manually with `bun run deploy`
+(`alchemy deploy --stage prod --profile phux`; see `infra/README.md`). Build
+`bun run build`, output `dist`; the wasm client is committed under
+`src/lib/phux-web/`, so no Rust/Zig is needed. Custom domains `phux.sh`
+(product) and `docs.phux.sh` (documentation) are declared on the Worker. The
 worker runs first (`run_worker_first`) so a docs path on `phux.sh` 301s to
 the same path on `docs.phux.sh`, and `docs.phux.sh/` 301s to `/overview`.
 
@@ -41,11 +44,11 @@ skills only; the same allowlist is mirrored to `no-phux/skills` for
 `auth.md`, Content Signals + `Agentmap` in `robots.txt`, and RFC 8288 `Link`
 headers on HTML responses.
 
-Two DNS facts live only in the Cloudflare zone (phux.sh) and are NOT managed
-by this repo: DNSSEC is enabled (registrar is Cloudflare, so the DS record is
-published automatically), and the DNS-AID records `_mcp._agents` (SVCB+HTTPS,
-pointing at the hosted MCP endpoint) and `_index._agents` (TXT, pointing at
-the ARD catalog). Recreate them if the zone is ever rebuilt.
+Two DNS facts are NOT managed by this repo: DNSSEC is enabled (registrar is
+Cloudflare, so the DS record is published automatically), and the DNS-AID
+records `_mcp._agents` (SVCB+HTTPS, pointing at the hosted MCP endpoint) and
+`_index._agents` (TXT, pointing at the ARD catalog) are declared in the
+private `no-phux/ops` Alchemy stack.
 
 ### Telemetry (`/telemetry`)
 
@@ -59,8 +62,8 @@ Static assets and the dashboard's own polling are excluded.
 The demo worker has no Durable Object of its own for this: it forwards
 session events to `POST /api/telemetry/ingest` on the site worker
 (`TELEMETRY_INGEST_URL` var). Both workers share the `TELEMETRY_INGEST_KEY`
-secret (`wrangler secret put TELEMETRY_INGEST_KEY` in `docs/site` and
-`docs/site/worker`); without it on either side, telemetry silently stops —
+secret (`wrangler secret put TELEMETRY_INGEST_KEY --name phux-site` and
+`--cwd worker`); without it on either side, telemetry silently stops —
 the demo door is never affected.
 
 ### Privacy-respecting analytics (private ops repo)
@@ -89,9 +92,9 @@ the invite. It reuses the phux-mobile release lane's team API key, set as
 Worker secrets:
 
 ```bash
-printf %s "$KEY_ID" | bunx wrangler secret put ASC_KEY_ID
-printf %s "$ISSUER_ID" | bunx wrangler secret put ASC_ISSUER_ID
-bunx wrangler secret put ASC_PRIVATE_KEY < ~/.appstoreconnect/private_keys/AuthKey_$KEY_ID.p8
+printf %s "$KEY_ID" | bunx wrangler secret put ASC_KEY_ID --name phux-site
+printf %s "$ISSUER_ID" | bunx wrangler secret put ASC_ISSUER_ID --name phux-site
+bunx wrangler secret put ASC_PRIVATE_KEY --name phux-site < ~/.appstoreconnect/private_keys/AuthKey_$KEY_ID.p8
 ```
 
 The first external group is used unless `ASC_BETA_GROUP` (a group name) or
@@ -164,23 +167,24 @@ paths are scoped to `docs/site/**`.
    Exact recipe — a token's permissions cannot be edited from the API later,
    only in the dashboard, so get this right at creation:
    - Account (this account): **Workers Scripts : Edit**, **Containers : Write**
-   - Zone `phux.sh`: **Workers Routes : Edit** (wrangler reconciles the
-     declared custom domains by reading the zone's routes table on every
-     deploy; without this scope, deploys fail with code 10000 on
-     `/zones/.../workers/routes`)
+   - Zone `phux.sh`: **Workers Routes : Edit** (the demo's wrangler deploy
+     reconciles its custom domain and `phux.sh/auth/*` route by reading the
+     zone's routes table on every deploy; without this scope, deploys fail
+     with code 10000 on `/zones/.../workers/routes`)
    - Zone Resources: Include → `phux.sh`
    Verify before wiring CI: `CLOUDFLARE_API_TOKEN=<token> bunx wrangler deploy
-   --dry-run` should pass, and the same for `--cwd worker`. Grab your
-   **Account ID**.
+   --dry-run --cwd worker` should pass, and `bun run plan` in `infra/` with
+   that token in the environment. Grab your **Account ID**.
 2. **Repo secrets** (Settings → Secrets and variables → Actions):
    ```
    CLOUDFLARE_API_TOKEN   = <token>
    CLOUDFLARE_ACCOUNT_ID  = <account id>
    ```
 3. **Custom domains** attach once (`phux.sh` and `docs.phux.sh` on the site
-   worker, `shell.phux.sh` on the demo worker — all are declared in the
-   wrangler configs, so `bun run deploy` / `bun run worker:deploy` attach
-   them; the zone must live in the same account).
+   worker, `shell.phux.sh` on the demo worker — declared in
+   `infra/alchemy.run.ts` and `worker/wrangler.jsonc`, so `bun run deploy` /
+   `bun run worker:deploy` attach them; the zone must live in the same
+   account).
 
    **Pages-migration wart, learned the hard way:** deleting a Pages project
    does not reliably remove the zone CNAME its custom domain created. The

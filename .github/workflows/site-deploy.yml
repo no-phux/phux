@@ -73,9 +73,15 @@ jobs:
         working-directory: docs/site
         run: bun run check:links
 
+      # infra/alchemy.run.ts declares the Worker. CI starts from empty state
+      # and Alchemy re-adopts the live Worker by its alchemy:* tags.
+      - name: Install infra dependencies
+        working-directory: docs/site/infra
+        run: bun install --frozen-lockfile
+
       - name: Deploy site worker (static assets)
-        working-directory: docs/site
-        run: bunx wrangler deploy
+        working-directory: docs/site/infra
+        run: bunx alchemy deploy --stage prod --yes --no-input
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -140,7 +146,7 @@ jobs:
           echo "docs surface and member routes verified"
 
       # The curl installers are the assets whose ROUTES cannot be proven before
-      # a deploy: `wrangler.jsonc` sets html_handling, and an extensionless
+      # a deploy: `infra/alchemy.run.ts` sets html_handling, and an extensionless
       # asset is an unusual shape for it to resolve. Everything else about the
       # scripts is gated in `just ci` (scripts/check-install-surface.sh), so this
       # step only answers "does the URL people are told to pipe to sh actually
