@@ -38,7 +38,7 @@ impl ControlPlane {
                         error: Some(message.to_owned()),
                     });
                 }
-                Pending::DetachTerminal(terminal_id) => {
+                Pending::DetachTerminal { terminal_id, .. } => {
                     self.push_event(Event::TerminalDetached {
                         request_id,
                         terminal_id,
