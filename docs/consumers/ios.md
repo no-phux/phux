@@ -32,6 +32,27 @@ still win over it. The mapping from a `colors.toml` is the one
 show NAME --json` prints it as `ansi16`. Requires a `PHUX_REV` that
 includes this surface.
 
+## Attention grade and triage order
+
+The `uniffi` lane exports the attention policy as pure functions
+([ADR-0166](../adr/0166-client-attention-policy-lives-in-the-binding-crate.md)).
+None of them needs a `RemoteClient`.
+
+| Function | Meaning |
+|---|---|
+| `attentionGrade(status:agent:)` | An `AttentionGrade` (`none` < `low` < `normal` < `high`) for a `PaneStatus` and an optional `DeclaredAgent` (`state`, `attention`, as `agentStateChanged` carried them; `nil` when the pane has no record). A waiting pane never grades below `normal`. |
+| `agentFlagsUrgency(agent:)` | Whether the record declares more attention than its state derives. Only a flagged record grades `high`. |
+| `triageOrder(panes:)` | The input indices of `[TriagePane]` in triage order: waiting, then failures, then the rest. The grade orders panes inside the waiting band only. Ties go to the activity minute (most recent first), then to input order. |
+| `activityMinute(lastActivityUnixMs:)` | The minute triage ranks by, or `Int64.min` when there has been no activity. Pass Unix milliseconds rounded down. |
+
+The shared cases live in
+[`crates/phux-client-ffi/fixtures/attention.json`](../../crates/phux-client-ffi/fixtures/attention.json).
+A platform test fetches the file at its pin,
+`https://raw.githubusercontent.com/no-phux/phux/$PHUX_REV/crates/phux-client-ffi/fixtures/attention.json`,
+and checks every `grade` case against `attentionGrade` and every `triage`
+case's `order` (pane ids) against `triageOrder`. The file's `about` field
+describes its encoding. Requires a `PHUX_REV` that includes this surface.
+
 ## Agent session records
 
 The `uniffi` lane streams every agent session (ADR-0103) running in a pane
@@ -55,7 +76,7 @@ the connection reopened. `closed` carries no records and ends the session:
 it closed, its pane was detached, or the server restarted (after which its id
 may name a new pane).
 
-A `PHUX_REV` including [ADR-0159](../adr/0159-agent-streams-resume-from-committed-records.md)
+A `PHUX_REV` including [ADR-0166](../adr/0159-agent-streams-resume-from-committed-records.md)
 resumes automatically when the server advertises `AGENT_STREAM_RESUME`.
 An evicted cursor or an older server gets `retained` instead. A successful
 empty resume emits no record event and leaves the prefix intact. The runtime

@@ -213,7 +213,10 @@ fn raw(value: &serde_json::Value) -> String {
     bounded
 }
 
-const fn derived_attention(state: AgentState) -> AgentAttention {
+/// The level `docs/spec/L3.md` §3.7 derives from `state` alone, for a record
+/// that declares no `attention`. [`super::attention`] reads it too, so the
+/// derivation and the urgency flag built on it cannot drift apart.
+pub(crate) const fn derived_attention(state: AgentState) -> AgentAttention {
     match state {
         AgentState::Blocked => AgentAttention::High,
         AgentState::Working => AgentAttention::Normal,

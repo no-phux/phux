@@ -1,0 +1,1495 @@
+{
+  "schema": "phux.attention-fixture/v1",
+  "about": "Shared cases for phux-client-ffi projection::attention (ADR-0166). Statuses: working, asked, blocked, idle, done (with exit). agent null means no phux.agent/v1 record; otherwise state and the effective attention as projection::agent resolves them. last_activity_unix_ms is Unix milliseconds or null. grade is attention_grade(status, agent); order is triage_order(panes) mapped to ids.",
+  "grade": [
+    {
+      "status": "asked",
+      "agent": null,
+      "grade": "normal"
+    },
+    {
+      "status": "asked",
+      "agent": {
+        "state": "idle",
+        "attention": "none"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "asked",
+      "agent": {
+        "state": "idle",
+        "attention": "low"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "asked",
+      "agent": {
+        "state": "idle",
+        "attention": "normal"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "asked",
+      "agent": {
+        "state": "idle",
+        "attention": "high"
+      },
+      "grade": "high"
+    },
+    {
+      "status": "asked",
+      "agent": {
+        "state": "working",
+        "attention": "none"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "asked",
+      "agent": {
+        "state": "working",
+        "attention": "low"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "asked",
+      "agent": {
+        "state": "working",
+        "attention": "normal"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "asked",
+      "agent": {
+        "state": "working",
+        "attention": "high"
+      },
+      "grade": "high"
+    },
+    {
+      "status": "asked",
+      "agent": {
+        "state": "blocked",
+        "attention": "none"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "asked",
+      "agent": {
+        "state": "blocked",
+        "attention": "low"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "asked",
+      "agent": {
+        "state": "blocked",
+        "attention": "normal"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "asked",
+      "agent": {
+        "state": "blocked",
+        "attention": "high"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "asked",
+      "agent": {
+        "state": "done",
+        "attention": "none"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "asked",
+      "agent": {
+        "state": "done",
+        "attention": "low"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "asked",
+      "agent": {
+        "state": "done",
+        "attention": "normal"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "asked",
+      "agent": {
+        "state": "done",
+        "attention": "high"
+      },
+      "grade": "high"
+    },
+    {
+      "status": "asked",
+      "agent": {
+        "state": "unknown",
+        "attention": "none"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "asked",
+      "agent": {
+        "state": "unknown",
+        "attention": "low"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "asked",
+      "agent": {
+        "state": "unknown",
+        "attention": "normal"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "asked",
+      "agent": {
+        "state": "unknown",
+        "attention": "high"
+      },
+      "grade": "high"
+    },
+    {
+      "status": "blocked",
+      "agent": null,
+      "grade": "normal"
+    },
+    {
+      "status": "blocked",
+      "agent": {
+        "state": "idle",
+        "attention": "none"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "blocked",
+      "agent": {
+        "state": "idle",
+        "attention": "low"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "blocked",
+      "agent": {
+        "state": "idle",
+        "attention": "normal"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "blocked",
+      "agent": {
+        "state": "idle",
+        "attention": "high"
+      },
+      "grade": "high"
+    },
+    {
+      "status": "blocked",
+      "agent": {
+        "state": "working",
+        "attention": "none"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "blocked",
+      "agent": {
+        "state": "working",
+        "attention": "low"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "blocked",
+      "agent": {
+        "state": "working",
+        "attention": "normal"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "blocked",
+      "agent": {
+        "state": "working",
+        "attention": "high"
+      },
+      "grade": "high"
+    },
+    {
+      "status": "blocked",
+      "agent": {
+        "state": "blocked",
+        "attention": "none"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "blocked",
+      "agent": {
+        "state": "blocked",
+        "attention": "low"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "blocked",
+      "agent": {
+        "state": "blocked",
+        "attention": "normal"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "blocked",
+      "agent": {
+        "state": "blocked",
+        "attention": "high"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "blocked",
+      "agent": {
+        "state": "done",
+        "attention": "none"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "blocked",
+      "agent": {
+        "state": "done",
+        "attention": "low"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "blocked",
+      "agent": {
+        "state": "done",
+        "attention": "normal"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "blocked",
+      "agent": {
+        "state": "done",
+        "attention": "high"
+      },
+      "grade": "high"
+    },
+    {
+      "status": "blocked",
+      "agent": {
+        "state": "unknown",
+        "attention": "none"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "blocked",
+      "agent": {
+        "state": "unknown",
+        "attention": "low"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "blocked",
+      "agent": {
+        "state": "unknown",
+        "attention": "normal"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "blocked",
+      "agent": {
+        "state": "unknown",
+        "attention": "high"
+      },
+      "grade": "high"
+    },
+    {
+      "status": "working",
+      "agent": null,
+      "grade": "normal"
+    },
+    {
+      "status": "working",
+      "agent": {
+        "state": "idle",
+        "attention": "none"
+      },
+      "grade": "none"
+    },
+    {
+      "status": "working",
+      "agent": {
+        "state": "idle",
+        "attention": "low"
+      },
+      "grade": "low"
+    },
+    {
+      "status": "working",
+      "agent": {
+        "state": "idle",
+        "attention": "normal"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "working",
+      "agent": {
+        "state": "idle",
+        "attention": "high"
+      },
+      "grade": "high"
+    },
+    {
+      "status": "working",
+      "agent": {
+        "state": "working",
+        "attention": "none"
+      },
+      "grade": "none"
+    },
+    {
+      "status": "working",
+      "agent": {
+        "state": "working",
+        "attention": "low"
+      },
+      "grade": "low"
+    },
+    {
+      "status": "working",
+      "agent": {
+        "state": "working",
+        "attention": "normal"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "working",
+      "agent": {
+        "state": "working",
+        "attention": "high"
+      },
+      "grade": "high"
+    },
+    {
+      "status": "working",
+      "agent": {
+        "state": "blocked",
+        "attention": "none"
+      },
+      "grade": "none"
+    },
+    {
+      "status": "working",
+      "agent": {
+        "state": "blocked",
+        "attention": "low"
+      },
+      "grade": "low"
+    },
+    {
+      "status": "working",
+      "agent": {
+        "state": "blocked",
+        "attention": "normal"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "working",
+      "agent": {
+        "state": "blocked",
+        "attention": "high"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "working",
+      "agent": {
+        "state": "done",
+        "attention": "none"
+      },
+      "grade": "none"
+    },
+    {
+      "status": "working",
+      "agent": {
+        "state": "done",
+        "attention": "low"
+      },
+      "grade": "low"
+    },
+    {
+      "status": "working",
+      "agent": {
+        "state": "done",
+        "attention": "normal"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "working",
+      "agent": {
+        "state": "done",
+        "attention": "high"
+      },
+      "grade": "high"
+    },
+    {
+      "status": "working",
+      "agent": {
+        "state": "unknown",
+        "attention": "none"
+      },
+      "grade": "none"
+    },
+    {
+      "status": "working",
+      "agent": {
+        "state": "unknown",
+        "attention": "low"
+      },
+      "grade": "low"
+    },
+    {
+      "status": "working",
+      "agent": {
+        "state": "unknown",
+        "attention": "normal"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "working",
+      "agent": {
+        "state": "unknown",
+        "attention": "high"
+      },
+      "grade": "high"
+    },
+    {
+      "status": "idle",
+      "agent": null,
+      "grade": "normal"
+    },
+    {
+      "status": "idle",
+      "agent": {
+        "state": "idle",
+        "attention": "none"
+      },
+      "grade": "none"
+    },
+    {
+      "status": "idle",
+      "agent": {
+        "state": "idle",
+        "attention": "low"
+      },
+      "grade": "low"
+    },
+    {
+      "status": "idle",
+      "agent": {
+        "state": "idle",
+        "attention": "normal"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "idle",
+      "agent": {
+        "state": "idle",
+        "attention": "high"
+      },
+      "grade": "high"
+    },
+    {
+      "status": "idle",
+      "agent": {
+        "state": "working",
+        "attention": "none"
+      },
+      "grade": "none"
+    },
+    {
+      "status": "idle",
+      "agent": {
+        "state": "working",
+        "attention": "low"
+      },
+      "grade": "low"
+    },
+    {
+      "status": "idle",
+      "agent": {
+        "state": "working",
+        "attention": "normal"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "idle",
+      "agent": {
+        "state": "working",
+        "attention": "high"
+      },
+      "grade": "high"
+    },
+    {
+      "status": "idle",
+      "agent": {
+        "state": "blocked",
+        "attention": "none"
+      },
+      "grade": "none"
+    },
+    {
+      "status": "idle",
+      "agent": {
+        "state": "blocked",
+        "attention": "low"
+      },
+      "grade": "low"
+    },
+    {
+      "status": "idle",
+      "agent": {
+        "state": "blocked",
+        "attention": "normal"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "idle",
+      "agent": {
+        "state": "blocked",
+        "attention": "high"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "idle",
+      "agent": {
+        "state": "done",
+        "attention": "none"
+      },
+      "grade": "none"
+    },
+    {
+      "status": "idle",
+      "agent": {
+        "state": "done",
+        "attention": "low"
+      },
+      "grade": "low"
+    },
+    {
+      "status": "idle",
+      "agent": {
+        "state": "done",
+        "attention": "normal"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "idle",
+      "agent": {
+        "state": "done",
+        "attention": "high"
+      },
+      "grade": "high"
+    },
+    {
+      "status": "idle",
+      "agent": {
+        "state": "unknown",
+        "attention": "none"
+      },
+      "grade": "none"
+    },
+    {
+      "status": "idle",
+      "agent": {
+        "state": "unknown",
+        "attention": "low"
+      },
+      "grade": "low"
+    },
+    {
+      "status": "idle",
+      "agent": {
+        "state": "unknown",
+        "attention": "normal"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "idle",
+      "agent": {
+        "state": "unknown",
+        "attention": "high"
+      },
+      "grade": "high"
+    },
+    {
+      "status": "done",
+      "exit": 0,
+      "agent": null,
+      "grade": "normal"
+    },
+    {
+      "status": "done",
+      "exit": 0,
+      "agent": {
+        "state": "idle",
+        "attention": "none"
+      },
+      "grade": "none"
+    },
+    {
+      "status": "done",
+      "exit": 0,
+      "agent": {
+        "state": "idle",
+        "attention": "low"
+      },
+      "grade": "low"
+    },
+    {
+      "status": "done",
+      "exit": 0,
+      "agent": {
+        "state": "idle",
+        "attention": "normal"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "done",
+      "exit": 0,
+      "agent": {
+        "state": "idle",
+        "attention": "high"
+      },
+      "grade": "high"
+    },
+    {
+      "status": "done",
+      "exit": 0,
+      "agent": {
+        "state": "working",
+        "attention": "none"
+      },
+      "grade": "none"
+    },
+    {
+      "status": "done",
+      "exit": 0,
+      "agent": {
+        "state": "working",
+        "attention": "low"
+      },
+      "grade": "low"
+    },
+    {
+      "status": "done",
+      "exit": 0,
+      "agent": {
+        "state": "working",
+        "attention": "normal"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "done",
+      "exit": 0,
+      "agent": {
+        "state": "working",
+        "attention": "high"
+      },
+      "grade": "high"
+    },
+    {
+      "status": "done",
+      "exit": 0,
+      "agent": {
+        "state": "blocked",
+        "attention": "none"
+      },
+      "grade": "none"
+    },
+    {
+      "status": "done",
+      "exit": 0,
+      "agent": {
+        "state": "blocked",
+        "attention": "low"
+      },
+      "grade": "low"
+    },
+    {
+      "status": "done",
+      "exit": 0,
+      "agent": {
+        "state": "blocked",
+        "attention": "normal"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "done",
+      "exit": 0,
+      "agent": {
+        "state": "blocked",
+        "attention": "high"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "done",
+      "exit": 0,
+      "agent": {
+        "state": "done",
+        "attention": "none"
+      },
+      "grade": "none"
+    },
+    {
+      "status": "done",
+      "exit": 0,
+      "agent": {
+        "state": "done",
+        "attention": "low"
+      },
+      "grade": "low"
+    },
+    {
+      "status": "done",
+      "exit": 0,
+      "agent": {
+        "state": "done",
+        "attention": "normal"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "done",
+      "exit": 0,
+      "agent": {
+        "state": "done",
+        "attention": "high"
+      },
+      "grade": "high"
+    },
+    {
+      "status": "done",
+      "exit": 0,
+      "agent": {
+        "state": "unknown",
+        "attention": "none"
+      },
+      "grade": "none"
+    },
+    {
+      "status": "done",
+      "exit": 0,
+      "agent": {
+        "state": "unknown",
+        "attention": "low"
+      },
+      "grade": "low"
+    },
+    {
+      "status": "done",
+      "exit": 0,
+      "agent": {
+        "state": "unknown",
+        "attention": "normal"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "done",
+      "exit": 0,
+      "agent": {
+        "state": "unknown",
+        "attention": "high"
+      },
+      "grade": "high"
+    },
+    {
+      "status": "done",
+      "exit": 1,
+      "agent": null,
+      "grade": "normal"
+    },
+    {
+      "status": "done",
+      "exit": 1,
+      "agent": {
+        "state": "idle",
+        "attention": "none"
+      },
+      "grade": "none"
+    },
+    {
+      "status": "done",
+      "exit": 1,
+      "agent": {
+        "state": "idle",
+        "attention": "low"
+      },
+      "grade": "low"
+    },
+    {
+      "status": "done",
+      "exit": 1,
+      "agent": {
+        "state": "idle",
+        "attention": "normal"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "done",
+      "exit": 1,
+      "agent": {
+        "state": "idle",
+        "attention": "high"
+      },
+      "grade": "high"
+    },
+    {
+      "status": "done",
+      "exit": 1,
+      "agent": {
+        "state": "working",
+        "attention": "none"
+      },
+      "grade": "none"
+    },
+    {
+      "status": "done",
+      "exit": 1,
+      "agent": {
+        "state": "working",
+        "attention": "low"
+      },
+      "grade": "low"
+    },
+    {
+      "status": "done",
+      "exit": 1,
+      "agent": {
+        "state": "working",
+        "attention": "normal"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "done",
+      "exit": 1,
+      "agent": {
+        "state": "working",
+        "attention": "high"
+      },
+      "grade": "high"
+    },
+    {
+      "status": "done",
+      "exit": 1,
+      "agent": {
+        "state": "blocked",
+        "attention": "none"
+      },
+      "grade": "none"
+    },
+    {
+      "status": "done",
+      "exit": 1,
+      "agent": {
+        "state": "blocked",
+        "attention": "low"
+      },
+      "grade": "low"
+    },
+    {
+      "status": "done",
+      "exit": 1,
+      "agent": {
+        "state": "blocked",
+        "attention": "normal"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "done",
+      "exit": 1,
+      "agent": {
+        "state": "blocked",
+        "attention": "high"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "done",
+      "exit": 1,
+      "agent": {
+        "state": "done",
+        "attention": "none"
+      },
+      "grade": "none"
+    },
+    {
+      "status": "done",
+      "exit": 1,
+      "agent": {
+        "state": "done",
+        "attention": "low"
+      },
+      "grade": "low"
+    },
+    {
+      "status": "done",
+      "exit": 1,
+      "agent": {
+        "state": "done",
+        "attention": "normal"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "done",
+      "exit": 1,
+      "agent": {
+        "state": "done",
+        "attention": "high"
+      },
+      "grade": "high"
+    },
+    {
+      "status": "done",
+      "exit": 1,
+      "agent": {
+        "state": "unknown",
+        "attention": "none"
+      },
+      "grade": "none"
+    },
+    {
+      "status": "done",
+      "exit": 1,
+      "agent": {
+        "state": "unknown",
+        "attention": "low"
+      },
+      "grade": "low"
+    },
+    {
+      "status": "done",
+      "exit": 1,
+      "agent": {
+        "state": "unknown",
+        "attention": "normal"
+      },
+      "grade": "normal"
+    },
+    {
+      "status": "done",
+      "exit": 1,
+      "agent": {
+        "state": "unknown",
+        "attention": "high"
+      },
+      "grade": "high"
+    }
+  ],
+  "triage": [
+    {
+      "name": "asked_then_failure_then_rest",
+      "panes": [
+        {
+          "id": "a",
+          "status": "idle",
+          "agent": null,
+          "last_activity_unix_ms": null
+        },
+        {
+          "id": "b",
+          "status": "asked",
+          "agent": null,
+          "last_activity_unix_ms": null
+        },
+        {
+          "id": "c",
+          "status": "done",
+          "exit": 1,
+          "agent": null,
+          "last_activity_unix_ms": null
+        },
+        {
+          "id": "d",
+          "status": "idle",
+          "agent": null,
+          "last_activity_unix_ms": null
+        }
+      ],
+      "order": [
+        "b",
+        "c",
+        "a",
+        "d"
+      ]
+    },
+    {
+      "name": "recency_across_minute_buckets",
+      "panes": [
+        {
+          "id": "old",
+          "status": "idle",
+          "agent": null,
+          "last_activity_unix_ms": 978313200000
+        },
+        {
+          "id": "recent",
+          "status": "idle",
+          "agent": null,
+          "last_activity_unix_ms": 978313320000
+        }
+      ],
+      "order": [
+        "recent",
+        "old"
+      ]
+    },
+    {
+      "name": "same_minute_keeps_input_order",
+      "panes": [
+        {
+          "id": "first",
+          "status": "idle",
+          "agent": null,
+          "last_activity_unix_ms": 978313201000
+        },
+        {
+          "id": "second",
+          "status": "idle",
+          "agent": null,
+          "last_activity_unix_ms": 978313259000
+        }
+      ],
+      "order": [
+        "first",
+        "second"
+      ]
+    },
+    {
+      "name": "stable_on_first_seen_order",
+      "panes": [
+        {
+          "id": "one",
+          "status": "idle",
+          "agent": null,
+          "last_activity_unix_ms": null
+        },
+        {
+          "id": "two",
+          "status": "idle",
+          "agent": null,
+          "last_activity_unix_ms": null
+        },
+        {
+          "id": "three",
+          "status": "idle",
+          "agent": null,
+          "last_activity_unix_ms": null
+        }
+      ],
+      "order": [
+        "one",
+        "two",
+        "three"
+      ]
+    },
+    {
+      "name": "preserves_count",
+      "panes": [
+        {
+          "id": "a",
+          "status": "asked",
+          "agent": null,
+          "last_activity_unix_ms": null
+        },
+        {
+          "id": "b",
+          "status": "idle",
+          "agent": null,
+          "last_activity_unix_ms": null
+        },
+        {
+          "id": "c",
+          "status": "done",
+          "exit": 0,
+          "agent": null,
+          "last_activity_unix_ms": null
+        },
+        {
+          "id": "d",
+          "status": "working",
+          "agent": null,
+          "last_activity_unix_ms": null
+        },
+        {
+          "id": "e",
+          "status": "asked",
+          "agent": {
+            "state": "working",
+            "attention": "high"
+          },
+          "last_activity_unix_ms": null
+        },
+        {
+          "id": "f",
+          "status": "asked",
+          "agent": {
+            "state": "blocked",
+            "attention": "low"
+          },
+          "last_activity_unix_ms": null
+        }
+      ],
+      "order": [
+        "e",
+        "a",
+        "f",
+        "b",
+        "c",
+        "d"
+      ]
+    },
+    {
+      "name": "urgent_waiter_above_routine",
+      "panes": [
+        {
+          "id": "routine",
+          "status": "asked",
+          "agent": {
+            "state": "blocked",
+            "attention": "normal"
+          },
+          "last_activity_unix_ms": null
+        },
+        {
+          "id": "urgent",
+          "status": "asked",
+          "agent": {
+            "state": "working",
+            "attention": "high"
+          },
+          "last_activity_unix_ms": null
+        }
+      ],
+      "order": [
+        "urgent",
+        "routine"
+      ]
+    },
+    {
+      "name": "urgent_waiter_first_from_either_input_order",
+      "panes": [
+        {
+          "id": "urgent",
+          "status": "asked",
+          "agent": {
+            "state": "working",
+            "attention": "high"
+          },
+          "last_activity_unix_ms": null
+        },
+        {
+          "id": "routine",
+          "status": "asked",
+          "agent": {
+            "state": "blocked",
+            "attention": "normal"
+          },
+          "last_activity_unix_ms": null
+        }
+      ],
+      "order": [
+        "urgent",
+        "routine"
+      ]
+    },
+    {
+      "name": "blocked_record_does_not_outrank_fresh_hook_only_ask",
+      "panes": [
+        {
+          "id": "old-blocked",
+          "status": "blocked",
+          "agent": {
+            "state": "blocked",
+            "attention": "high"
+          },
+          "last_activity_unix_ms": 978313200000
+        },
+        {
+          "id": "fresh-hook-only",
+          "status": "asked",
+          "agent": null,
+          "last_activity_unix_ms": 978313320000
+        }
+      ],
+      "order": [
+        "fresh-hook-only",
+        "old-blocked"
+      ]
+    },
+    {
+      "name": "equal_grade_waiters_keep_first_seen_order",
+      "panes": [
+        {
+          "id": "one",
+          "status": "asked",
+          "agent": {
+            "state": "blocked",
+            "attention": "normal"
+          },
+          "last_activity_unix_ms": null
+        },
+        {
+          "id": "two",
+          "status": "asked",
+          "agent": {
+            "state": "blocked",
+            "attention": "normal"
+          },
+          "last_activity_unix_ms": null
+        },
+        {
+          "id": "three",
+          "status": "asked",
+          "agent": {
+            "state": "blocked",
+            "attention": "normal"
+          },
+          "last_activity_unix_ms": null
+        }
+      ],
+      "order": [
+        "one",
+        "two",
+        "three"
+      ]
+    },
+    {
+      "name": "ungraded_waiter_ties_with_explicit_normal",
+      "panes": [
+        {
+          "id": "no-record",
+          "status": "asked",
+          "agent": null,
+          "last_activity_unix_ms": null
+        },
+        {
+          "id": "normal",
+          "status": "asked",
+          "agent": {
+            "state": "blocked",
+            "attention": "normal"
+          },
+          "last_activity_unix_ms": null
+        }
+      ],
+      "order": [
+        "no-record",
+        "normal"
+      ]
+    },
+    {
+      "name": "sub_rank_never_leaks_across_bands",
+      "panes": [
+        {
+          "id": "idle",
+          "status": "idle",
+          "agent": null,
+          "last_activity_unix_ms": null
+        },
+        {
+          "id": "failed",
+          "status": "done",
+          "exit": 1,
+          "agent": null,
+          "last_activity_unix_ms": null
+        },
+        {
+          "id": "quiet-waiter",
+          "status": "asked",
+          "agent": {
+            "state": "idle",
+            "attention": "none"
+          },
+          "last_activity_unix_ms": null
+        }
+      ],
+      "order": [
+        "quiet-waiter",
+        "failed",
+        "idle"
+      ]
+    },
+    {
+      "name": "grade_on_non_waiting_pane_changes_nothing",
+      "panes": [
+        {
+          "id": "failed",
+          "status": "done",
+          "exit": 1,
+          "agent": null,
+          "last_activity_unix_ms": null
+        },
+        {
+          "id": "urgent-idle",
+          "status": "idle",
+          "agent": {
+            "state": "working",
+            "attention": "high"
+          },
+          "last_activity_unix_ms": null
+        }
+      ],
+      "order": [
+        "failed",
+        "urgent-idle"
+      ]
+    },
+    {
+      "name": "grade_outranks_recency_within_waiting_band",
+      "panes": [
+        {
+          "id": "recent-routine",
+          "status": "asked",
+          "agent": {
+            "state": "blocked",
+            "attention": "normal"
+          },
+          "last_activity_unix_ms": 978313320000
+        },
+        {
+          "id": "old-urgent",
+          "status": "asked",
+          "agent": {
+            "state": "working",
+            "attention": "high"
+          },
+          "last_activity_unix_ms": 978313200000
+        }
+      ],
+      "order": [
+        "old-urgent",
+        "recent-routine"
+      ]
+    },
+    {
+      "name": "asking_pane_first_for_session_switcher",
+      "panes": [
+        {
+          "id": "beta:1",
+          "status": "idle",
+          "agent": null,
+          "last_activity_unix_ms": null
+        },
+        {
+          "id": "beta:2",
+          "status": "asked",
+          "agent": null,
+          "last_activity_unix_ms": null
+        }
+      ],
+      "order": [
+        "beta:2",
+        "beta:1"
+      ]
+    },
+    {
+      "name": "no_activity_sorts_after_any_activity",
+      "panes": [
+        {
+          "id": "never",
+          "status": "idle",
+          "agent": null,
+          "last_activity_unix_ms": null
+        },
+        {
+          "id": "once",
+          "status": "idle",
+          "agent": null,
+          "last_activity_unix_ms": 978307200000
+        }
+      ],
+      "order": [
+        "once",
+        "never"
+      ]
+    },
+    {
+      "name": "before_reference_date_truncates_toward_zero",
+      "panes": [
+        {
+          "id": "a",
+          "status": "idle",
+          "agent": null,
+          "last_activity_unix_ms": 978307141000
+        },
+        {
+          "id": "b",
+          "status": "idle",
+          "agent": null,
+          "last_activity_unix_ms": 978307259000
+        },
+        {
+          "id": "c",
+          "status": "idle",
+          "agent": null,
+          "last_activity_unix_ms": 978307139000
+        }
+      ],
+      "order": [
+        "a",
+        "b",
+        "c"
+      ]
+    }
+  ]
+}

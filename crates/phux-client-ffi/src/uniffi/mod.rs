@@ -16,6 +16,9 @@
 //! binding-local state a polling consumer needs. The isolated [`engine`]
 //! module serves connectionless playground and test terminals.
 
+// Attention grading and the triage order: pure functions (ADR-0166).
+mod attention;
+
 // The VT engine grid surface (ADR-0007), and the local playground terminal
 // built on it.
 mod engine;

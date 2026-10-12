@@ -11,6 +11,7 @@
 
 pub mod agent;
 pub mod agent_records;
+pub mod attention;
 pub mod event;
 pub mod grid;
 pub mod id;
