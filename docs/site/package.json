@@ -18,11 +18,10 @@
     "build:client": "bash scripts/build-client.sh",
     "build:edge": "bash scripts/build-edge.sh",
     "dev:live": "bash scripts/dev-live.sh",
-    "dev:worker": "wrangler dev --cwd worker",
+    "dev:worker": "bun --cwd infra run dev:demo",
     "deploy": "bun run build && bun --cwd infra run deploy",
     "worker:check": "tsc --project worker/tsconfig.json",
-    "worker:dry-run": "wrangler deploy --dry-run --cwd worker",
-    "worker:deploy": "wrangler deploy --cwd worker",
+    "worker:deploy": "bun --cwd infra run deploy:demo",
     "worker:smoke-native": "bun run scripts/smoke-native.ts",
     "worker:smoke-fallback": "bun run scripts/smoke-native.ts --exercise-fallback"
   },
@@ -51,8 +50,7 @@
     "playwright-core": "^1.63.0",
     "sharp": "0.35.5",
     "tailwindcss": "^4.3.3",
-    "typescript": "7.1.0-dev.20261005.1",
-    "wrangler": "^4.147.0"
+    "typescript": "7.1.0-dev.20261005.1"
   },
   "overrides": {
     "nanoid": "3.3.20",

@@ -72,7 +72,7 @@ export function routeRequest(host: string, url: URL): HostRoute {
   }
 
   // Only the production marketing host bounces docs paths. Preview
-  // (workers.dev) and local wrangler serve the whole tree so a single
+  // (workers.dev) and local dev serve the whole tree so a single
   // deploy can be reviewed.
   if (isSiteHost(host) && isDocsPath(path)) {
     return redirectOn(DOCS_HOST, path, url.search);

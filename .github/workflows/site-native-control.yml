@@ -33,12 +33,18 @@ jobs:
       - name: Install dependencies
         working-directory: docs/site
         run: bun install --frozen-lockfile
+      - name: Install infra dependencies
+        working-directory: docs/site/infra
+        run: bun install --frozen-lockfile
+      # Redeploys the stack with NATIVE_ENABLED overridden (infra/demo.run.ts).
+      # The next ordinary site-deploy-worker run sets it back to true.
       - name: Deploy native kill-switch setting
-        working-directory: docs/site
+        working-directory: docs/site/infra
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: bunx wrangler deploy --cwd worker --var NATIVE_ENABLED:${{ inputs.enabled }}
+          PHUX_NATIVE_ENABLED: ${{ inputs.enabled }}
+        run: bunx alchemy deploy demo.run.ts --stage prod --yes --no-input
       - name: Verify edge remains healthy
         working-directory: docs/site
         env:

@@ -108,24 +108,27 @@ describe("native mode routing", () => {
 
 describe("native container configuration", () => {
   test("declares the native lite container without replacing SessionDO", async () => {
-    const config = await Bun.file(new URL("../wrangler.jsonc", import.meta.url)).text();
-    expect(config).toContain('"name": "SESSION", "class_name": "SessionDO"');
-    expect(config).toContain('"name": "RATE_LIMIT", "class_name": "RateLimitDO"');
-    expect(config).toContain('"name": "PHUX_SESSION"');
-    expect(config).toContain('"class_name": "PhuxSessionContainer"');
-    expect(config).toContain('"instance_type": "lite"');
-    expect(config).toContain('"max_instances": 30');
-    expect(config).toContain('"tag": "v2"');
-    expect(config).toContain('"tag": "v3"');
-    expect(config).toContain('"NATIVE_HARD_MAX_MS": "300000"');
-    expect(config).toContain('"NATIVE_CONCURRENCY_CAP": "25"');
-    expect(config).toContain('"NATIVE_ENABLED": "true"');
-    expect(config).toContain('"NATIVE_STARTUP_TIMEOUT_MS": "8000"');
-    expect(config).toContain('"NATIVE_PER_IP_CAP": "1"');
-    expect(config).toContain('"NATIVE_RATE_LIMIT_PER_MIN": "2"');
-    expect(config).toContain('"NATIVE_PER_ACCOUNT_CAP": "1"');
-    expect(config).toContain('"NATIVE_LAUNCHES_PER_HOUR": "6"');
-    expect(config).toContain('"NATIVE_DAILY_MS": "1800000"');
+    const config = await Bun.file(
+      new URL("../../infra/demo.run.ts", import.meta.url),
+    ).text();
+    expect(config).toContain('SESSION: Cloudflare.DurableObject("SESSION", { className: "SessionDO" })');
+    expect(config).toContain('className: "RateLimitDO"');
+    expect(config).toContain('PHUX_SESSION: Cloudflare.Container("PHUX_SESSION", {');
+    // The application Wrangler created, adopted by name rather than duplicated.
+    expect(config).toContain('name: "phux-demo-phuxsessioncontainer"');
+    expect(config).toContain('className: "PhuxSessionContainer"');
+    expect(config).toContain('instanceType: "lite"');
+    expect(config).toContain("maxInstances: 30");
+    expect(config).toContain('NATIVE_HARD_MAX_MS: "300000"');
+    expect(config).toContain('NATIVE_CONCURRENCY_CAP: "25"');
+    expect(config).toContain("NATIVE_ENABLED: nativeEnabled()");
+    expect(config).toContain('if (value === undefined || value === "") return "true";');
+    expect(config).toContain('NATIVE_STARTUP_TIMEOUT_MS: "8000"');
+    expect(config).toContain('NATIVE_PER_IP_CAP: "1"');
+    expect(config).toContain('NATIVE_RATE_LIMIT_PER_MIN: "2"');
+    expect(config).toContain('NATIVE_PER_ACCOUNT_CAP: "1"');
+    expect(config).toContain('NATIVE_LAUNCHES_PER_HOUR: "6"');
+    expect(config).toContain('NATIVE_DAILY_MS: "1800000"');
   });
 
   test("runs the image as the unprivileged guest user", async () => {

@@ -36,8 +36,6 @@ public/.well-known/agent-skills/
 
 # alchemy (local state/bundles; CI rebuilds state from the Workers' tags)
 .alchemy/
-# wrangler (the demo worker until it moves to alchemy)
-.wrangler/
 
 # native dev bridge build
 

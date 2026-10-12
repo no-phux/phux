@@ -194,5 +194,5 @@ The documentation host redirects these marketing pages and media to `phux.sh`.
 
 The host Worker serves MP4 byte ranges through Cloudflare's native Cache API
 so the player can seek. The internal cache is keyed by the static asset's ETag;
-client cache directives remain unchanged. Verify seeking against `wrangler dev`
-or the deployed Worker, not only Astro preview, which has different media serving.
+client cache directives remain unchanged. Verify seeking against the deployed
+Worker, not only Astro preview, which has different media serving.
