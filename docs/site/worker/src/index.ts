@@ -64,10 +64,10 @@ export interface Env extends AuthEnv {
   // Private ops pipeline (no-phux/ops) over a same-account service binding.
   ANALYTICS?: { fetch(input: Request): Promise<Response> };
 
-  SESSION_TOKEN_SECRET: string; // secret (wrangler secret put)
+  SESSION_TOKEN_SECRET: string; // secret (wrangler secret put --name phux-demo)
   SYNTHETIC_TOKEN_SECRET?: string; // shared only with the production monitor
   GITHUB_APP_ID?: string;
-  GITHUB_APP_PRIVATE_KEY?: string; // secret (wrangler secret put)
+  GITHUB_APP_PRIVATE_KEY?: string; // secret (wrangler secret put --name phux-demo)
   IDLE_KILL_MS: string;
   HARD_MAX_MS: string;
   NATIVE_HARD_MAX_MS: string;

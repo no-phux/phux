@@ -5,7 +5,7 @@ Two production deploys provide a native shell with an edge fallback:
 | Piece                                                                                                          | Cloudflare product | Cost                                      |
 | -------------------------------------------------------------------------------------------------------------- | ------------------ | ----------------------------------------- |
 | The static site (`dist/`, incl. the committed wasm client) — a Workers static-assets worker (`infra/alchemy.run.ts`) | **Workers**        | free                                      |
-| Edge fallback (`SessionDO` running **phux-edge**) | **Workers / Durable Objects** | low/free-tier usage; no container |
+| Edge fallback (`SessionDO` running **phux-edge**), `infra/demo.run.ts` | **Workers / Durable Objects** | low/free-tier usage; no container |
 | Production `?mode=native` (`PhuxSessionContainer`) | **Workers Containers** | Workers Paid + `lite` runtime/build storage |
 
 The fallback runs the phux server itself as WASM inside a Durable Object, so it
@@ -13,9 +13,9 @@ adds no container runtime cost. Native requires Workers Paid. The site also
 works without the backend (`PUBLIC_PHUX_DEMO_WS` empty → the terminal shows
 "coming online").
 
-Both deploy on push to `main` via GitHub Actions (below). The site Worker is
-declared with [Alchemy](https://alchemy.run) in `infra/`; the demo Worker
-still uses `worker/wrangler.jsonc`.
+Both deploy on push to `main` via GitHub Actions (below). Both Workers are
+declared with [Alchemy](https://alchemy.run) in `infra/` (`alchemy.run.ts`
+for the site, `demo.run.ts` for the demo); see `infra/README.md`.
 
 ---
 
@@ -63,7 +63,7 @@ The demo worker has no Durable Object of its own for this: it forwards
 session events to `POST /api/telemetry/ingest` on the site worker
 (`TELEMETRY_INGEST_URL` var). Both workers share the `TELEMETRY_INGEST_KEY`
 secret (`wrangler secret put TELEMETRY_INGEST_KEY --name phux-site` and
-`--cwd worker`); without it on either side, telemetry silently stops —
+`--name phux-demo`); without it on either side, telemetry silently stops —
 the demo door is never affected.
 
 ### Privacy-respecting analytics (private ops repo)
@@ -133,8 +133,8 @@ of edge cache so a fix propagates while somebody is still running the broken one
 `site-deploy-worker.yml` deploys it on relevant worker, package, lockfile, and smoke
 script changes. The committed **phux-edge** WASM still needs no Rust build. With
 the container binding,
-Wrangler also needs a working Docker daemon to build and upload the linux/amd64
-image. Do not deploy native configuration until the Cloudflare account is on
+Alchemy also needs a working Docker daemon to build and upload the linux/amd64
+image to the existing `phux-demo-phuxsessioncontainer` application. Do not deploy native configuration until the Cloudflare account is on
 Workers Paid and Containers is enabled.
 
 The shell that runs in the DO is `phux-edge` (`edge/`, Rust→WASM). Rebuild it
@@ -167,14 +167,12 @@ paths are scoped to `docs/site/**`.
    Exact recipe — a token's permissions cannot be edited from the API later,
    only in the dashboard, so get this right at creation:
    - Account (this account): **Workers Scripts : Edit**, **Containers : Write**
-   - Zone `phux.sh`: **Workers Routes : Edit** (the demo's wrangler deploy
-     reconciles its custom domain and `phux.sh/auth/*` route by reading the
-     zone's routes table on every deploy; without this scope, deploys fail
-     with code 10000 on `/zones/.../workers/routes`)
+   - Zone `phux.sh`: **Workers Routes : Edit** (the demo deploy reconciles
+     its `phux.sh/auth/*` route on every deploy)
    - Zone Resources: Include → `phux.sh`
-   Verify before wiring CI: `CLOUDFLARE_API_TOKEN=<token> bunx wrangler deploy
-   --dry-run --cwd worker` should pass, and `bun run plan` in `infra/` with
-   that token in the environment. Grab your **Account ID**.
+   Verify before wiring CI: `bun run plan` and `bun run plan:demo` in
+   `infra/` with that token (and `CLOUDFLARE_ACCOUNT_ID`) in the environment
+   should pass. Grab your **Account ID**.
 2. **Repo secrets** (Settings → Secrets and variables → Actions):
    ```
    CLOUDFLARE_API_TOKEN   = <token>
@@ -182,7 +180,7 @@ paths are scoped to `docs/site/**`.
    ```
 3. **Custom domains** attach once (`phux.sh` and `docs.phux.sh` on the site
    worker, `shell.phux.sh` on the demo worker — declared in
-   `infra/alchemy.run.ts` and `worker/wrangler.jsonc`, so `bun run deploy` /
+   `infra/alchemy.run.ts` and `infra/demo.run.ts`, so `bun run deploy` /
    `bun run worker:deploy` attach them; the zone must live in the same
    account).
 
@@ -208,8 +206,8 @@ paths are scoped to `docs/site/**`.
    new host, or in-app scanning breaks for everyone on the old build.
 4. **Session and OAuth secrets** on the Worker (after the first deploy):
    ```sh
-   openssl rand -hex 32 | bunx wrangler secret put SESSION_TOKEN_SECRET --cwd worker
-   openssl rand -hex 32 | bunx wrangler secret put AUTH_COOKIE_SECRET --cwd worker
+   openssl rand -hex 32 | bunx wrangler secret put SESSION_TOKEN_SECRET --name phux-demo
+   openssl rand -hex 32 | bunx wrangler secret put AUTH_COOKIE_SECRET --name phux-demo
    ```
    Generate the production monitor credential once, install the same value in
    the Worker and the repository's `PHUX_SYNTHETIC_TOKEN` Actions secret, then
@@ -217,7 +215,7 @@ paths are scoped to `docs/site/**`.
    header, which browser WebSockets cannot set.
    ```sh
    monitor_secret="$(openssl rand -hex 32)"
-   printf %s "$monitor_secret" | bunx wrangler secret put SYNTHETIC_TOKEN_SECRET --cwd worker
+   printf %s "$monitor_secret" | bunx wrangler secret put SYNTHETIC_TOKEN_SECRET --name phux-demo
    gh secret set PHUX_SYNTHETIC_TOKEN --body "$monitor_secret"
    unset monitor_secret
    ```
@@ -252,12 +250,12 @@ paths are scoped to `docs/site/**`.
      --arg google_id "$GOOGLE_OIDC_CLIENT_ID" \
      --arg google_secret "$GOOGLE_OIDC_CLIENT_SECRET" \
      '{GITHUB_OAUTH_CLIENT_ID:$github_id,GITHUB_OAUTH_CLIENT_SECRET:$github_secret,GOOGLE_OIDC_CLIENT_ID:$google_id,GOOGLE_OIDC_CLIENT_SECRET:$google_secret}' \
-     | bunx wrangler secret bulk --cwd worker
+     | bunx wrangler secret bulk --name phux-demo
    ```
    Provider access and ID tokens are used only to verify identity during the
    callback and are never persisted or sent to the browser.
 6. **Wire site → Worker:** the Worker owns the `shell.phux.sh` custom
-   domain from `worker/wrangler.jsonc`. Set the repo **variable**
+   domain from `infra/demo.run.ts`. Set the repo **variable**
    `PUBLIC_PHUX_DEMO_WS = wss://shell.phux.sh/session` and push (or re-run
    `deploy-site`). The build inlines it.
 7. **Native prerequisite:** confirm Workers Paid, Containers entitlement, and
@@ -301,7 +299,7 @@ Cloudflare Worker secrets, not this repository or GitHub Actions.
    openssl pkcs8 -topk8 -nocrypt -in ~/Downloads/<app-name>.*.private-key.pem -out /tmp/phux-github-app.pkcs8.pem
    jq -n --arg app_id '<numeric app id>' --rawfile private_key /tmp/phux-github-app.pkcs8.pem \
      '{GITHUB_APP_ID:$app_id,GITHUB_APP_PRIVATE_KEY:$private_key}' \
-     | bunx wrangler secret bulk --cwd worker
+     | bunx wrangler secret bulk --name phux-demo
    rm /tmp/phux-github-app.pkcs8.pem
    ```
 
@@ -324,7 +322,7 @@ After that: **push to `main` → it deploys.** Free.
 
 ## Lifecycle / abuse guardrails (server-side)
 
-`worker/wrangler.jsonc` + the DOs: secret-keyed per-IP rate-limit objects, a
+`infra/demo.run.ts` (tuning vars) + the DOs: secret-keyed per-IP rate-limit objects, a
 global concurrency cap,
 and the DO self-closes on idle (2 min) / hard-max (10 min). Generous, because a
 session is ~free (a DO holding a WebSocket — no container).
@@ -362,9 +360,9 @@ rollback. A version from before the auth boundary is not a valid rollback target
 ## Local dev
 
 ```sh
-bun run dev:worker        # wrangler dev — the Worker + DOs (edge) at :8787
-#   set worker/.dev.vars:  SESSION_TOKEN_SECRET = "anything"
-#                         ALLOWED_ORIGINS = "http://localhost:4321"
+bun run dev:worker        # alchemy dev — the Worker + DOs (edge only) at :8787
+#   optional infra/.env: SESSION_TOKEN_SECRET=…, AUTH_COOKIE_SECRET=…
+#                        (dev values otherwise); ALLOWED_ORIGINS defaults to http://localhost:4321
 PUBLIC_PHUX_DEMO_WS=ws://localhost:8787/session bun run dev   # the site, pointed at it
 ```
 
@@ -394,14 +392,13 @@ two/minute limit. Neither path logs frame contents.
 
 Every deployment records the previous Cloudflare Worker version in its Actions
 summary. Roll back that exact version with the private `rollback-worker`
-workflow, or one authenticated command:
+workflow, which creates a 100% deployment of it through the Cloudflare API.
+The next deploy from `main` rolls forward again.
 
-```sh
-bunx wrangler rollback <previous-version-id> --cwd worker --name phux-demo --message "rollback" --yes
-```
-
-Cloudflare Versions can split Worker traffic with `wrangler versions deploy`,
-but container image rollout and per-IP admission make an unattended canary
-unsafe here. There is no automatic rollback. Use the manual pre-activation smoke
-and explicit version rollback. No native container data is durable. Never remove
-or rewrite historical `v1`/`v2` migrations.
+Cloudflare Versions can split Worker traffic, but container image rollout and
+per-IP admission make an unattended canary unsafe here. There is no automatic
+rollback. Use the manual pre-activation smoke and explicit version rollback. No
+native container data is durable. Alchemy derives Durable Object migrations
+from the Worker's `alchemy:dos` tag, keyed by the `env` binding name: never
+rename a DO binding or class in `infra/demo.run.ts` without its
+`transferredFrom`/rename semantics, or the class's data is deleted.

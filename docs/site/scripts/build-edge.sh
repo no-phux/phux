@@ -3,7 +3,7 @@
 #
 # phux-edge (edge/) is the phux server compiled to WASM: it speaks the real phux
 # wire (phux-protocol) and is backed by a curated shell. The SessionDO imports
-# the output. We commit the built artifact (worker/edge/) so `wrangler deploy`
+# the output. We commit the built artifact (worker/edge/) so the deploy
 # and CI don't need the Rust/wasm toolchain.
 #
 # Requires the phux nix devshell (rust 1.99 + wasm-pack), or a local
