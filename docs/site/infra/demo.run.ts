@@ -62,7 +62,11 @@ export default Alchemy.Stack(
       // document requests to that hostname before they reach this Worker.
       // Only /auth/ paths belong here — narrowing keeps /auth.md (the site's
       // agent-auth document) on the static site worker.
-      routes: [{ pattern: "phux.sh/auth/*", zoneName: "phux.sh" }],
+      // Pinned by id: the deploy token has Workers Routes Edit on phux.sh, not
+      // Zone Read for a by-name lookup.
+      routes: [
+        { pattern: "phux.sh/auth/*", zoneId: "efe8d7a4ec74ca0561c8915a77714f93" },
+      ],
       workersDev: false,
       observability: {
         enabled: true,
