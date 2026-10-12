@@ -181,17 +181,21 @@ impl ApprovalOutcome {
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum Command {
-    /// Subscribe to one Terminal's content stream (SPEC §5.1): a fresh
+    /// Subscribe to one resource's content stream (SPEC §5.1): a fresh
     /// bootstrap generation, then `RESOURCE_OUTPUT`. Does not resize.
     /// Re-attaching replaces the generation. The verb a federation hub relays
     /// for two-hop attach (ADR-0007 §4).
     AttachResource {
-        /// The Terminal whose content stream to subscribe to.
+        /// The resource whose content stream to subscribe to.
         terminal_id: ResourceId,
         /// Attach intent (ADR-0127, SPEC §8.1), one trailing byte; `None`
-        /// writes nothing and means `{ PRIMARY, NEVER }`. Send `Some` only to
-        /// a server advertising `ATTACH_ROLES`.
+        /// writes nothing unless a cursor follows, in which case the canonical
+        /// `{ PRIMARY, NEVER }` byte occupies the role slot. Send a non-default
+        /// policy only to a server advertising `ATTACH_ROLES`.
         role_policy: Option<super::RolePolicy>,
+        /// Last committed agent record. Send only when the server advertises
+        /// `AgentStreamResume`; Terminal resources reject a cursor.
+        agent_after_seq: Option<u64>,
     },
     /// Drop the caller's output and event subscriptions on `terminal_id`
     /// (SPEC §5.1). Idempotent, so it never races a natural close into an

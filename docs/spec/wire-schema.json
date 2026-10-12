@@ -336,7 +336,8 @@
         {"id":5,"name":"COLS","type":"u16","presence":"required"},
         {"id":6,"name":"ROWS","type":"u16","presence":"required"},
         {"id":7,"name":"OUTPUT_MODE","type":"u8","presence":"required"},
-        {"id":8,"name":"BASE_SEQ","type":"u64","presence":"required"}
+        {"id":8,"name":"BASE_SEQ","type":"u64","presence":"required"},
+        {"id":9,"name":"RESUME_AFTER_SEQ","type":"u64","presence":"optional"}
       ]
     },
     {

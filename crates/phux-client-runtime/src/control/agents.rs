@@ -1,6 +1,7 @@
 //! Agent-event folding, topology-driven terminal closure, and the runtime's
 //! own `AgentSession` subscriptions.
 
+use phux_protocol::caps::ServerFeatureExt;
 use phux_protocol::wire::frame::{CloseReason, Command, FrameKind};
 use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
 
@@ -217,6 +218,27 @@ impl ControlPlane {
 }
 
 impl ControlPlane {
+    /// Safe committed sequence for an `AgentSession` resume request.
+    ///
+    /// The current server must advertise resume support. The owner-thread
+    /// query reads only committed kernel state, which survives reconnect to
+    /// the same incarnation and is reset before a new incarnation is admitted.
+    #[must_use]
+    pub fn agent_after_seq(&self, terminal_id: &ResourceId) -> Option<u64> {
+        if !self.handshake_ready
+            || !self
+                .server
+                .as_ref()
+                .is_some_and(|server| server.has_ext(ServerFeatureExt::AgentStreamResume))
+        {
+            return None;
+        }
+        self.engine
+            .as_ref()?
+            .agent_stream_info(terminal_id)
+            .map(|committed| committed.last_seq)
+    }
+
     pub(super) const fn subscribes_agent_sessions(&self) -> bool {
         self.options.subscribe_agent_sessions && self.options.automatic_lifecycle
     }
@@ -331,11 +353,13 @@ impl ControlPlane {
         let request_id = self.next_request_id();
         self.pending
             .insert(request_id, Pending::AgentSubscription(resource.id.clone()));
+        let agent_after_seq = self.agent_after_seq(&resource.id);
         self.queue_frame(&FrameKind::Command {
             request_id,
             command: Command::AttachResource {
                 terminal_id: resource.id,
                 role_policy: self.options.attach_role,
+                agent_after_seq,
             },
         });
         Ok(())

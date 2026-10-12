@@ -80,6 +80,7 @@ fn attach_terminal_only_consumer_receives_terminal_closed() {
         let subscribe = Command::AttachResource {
             terminal_id: victim.clone(),
             role_policy: None,
+            agent_after_seq: None,
         };
         // The reply proves the subscription is installed before the kill.
         assert_eq!(

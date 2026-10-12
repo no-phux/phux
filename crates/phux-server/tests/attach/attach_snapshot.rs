@@ -215,6 +215,7 @@ fn resource_attach_replays_existing_scrollback_in_both_synthesized_profiles() {
                     command: Command::AttachResource {
                         terminal_id: pane.clone(),
                         role_policy: None,
+                        agent_after_seq: None,
                     },
                 },
             )

@@ -91,6 +91,16 @@ pub(crate) fn path_refusal(root: &str, message: impl Into<String>) -> PathQueryE
     }
 }
 
+/// Only identity/kind facts and the selected Terminal profile survive between
+/// routing calls; they are cleared at every link incarnation boundary.
+#[derive(Debug, Default)]
+pub(crate) struct RelayCatalog {
+    kinds: HashMap<u32, phux_protocol::ids::ResourceKind>,
+    terminal_profile: Option<BootstrapProfile>,
+}
+
+pub(crate) type ResourceKindCatalog = Arc<Mutex<RelayCatalog>>;
+
 /// One hub consumer's registration on a link's return leg.
 #[derive(Debug)]
 pub(crate) struct ProxySubscription {
@@ -112,8 +122,11 @@ pub(crate) struct ProxySubscription {
     /// snapshot lands (L1 §9.1). Event-only subscriptions carry no snapshot
     /// and must flow at once.
     pub(crate) awaits_snapshot: bool,
-    /// The downstream connection's bootstrap selection. Content
-    /// subscriptions must match the link exactly; event-only may be `None`.
+    /// Known resource kind; `AgentSession` codecs are independent of the
+    /// connection's negotiated Terminal profile.
+    pub(crate) resource_kind: Option<phux_protocol::ids::ResourceKind>,
+    /// The downstream connection's Terminal bootstrap selection. Terminal
+    /// subscriptions must match the link exactly; `AgentSession` is kind-fixed.
     pub(crate) bootstrap_profile: Option<BootstrapProfile>,
     /// Exact per-frame bounds selected by the downstream connection.
     pub(crate) bootstrap_limits: Option<BootstrapLimits>,
@@ -295,6 +308,8 @@ pub(crate) struct RelayMailbox {
     pub(crate) journal: Option<crate::state::SharedState>,
     /// This satellite's incarnation fence (L1 §9.1); survives reconnects.
     pub(crate) operations: super::operation_fence::OperationFence,
+    /// Kinds learned on this link, shared with its routing handle.
+    pub(crate) resource_kinds: ResourceKindCatalog,
 }
 
 /// The `dropped` count of a satellite's link-level `journal_gap`.
@@ -339,6 +354,7 @@ pub(crate) struct RelayHandle {
     /// Issue-order token source shared by every handle for this host, so
     /// all of its subscribe/detach operations are totally ordered.
     seq: Arc<AtomicU64>,
+    resource_kinds: ResourceKindCatalog,
 }
 
 impl RelayHandle {
@@ -346,18 +362,21 @@ impl RelayHandle {
     pub(crate) fn new(host: SatelliteHost) -> (Self, RelayMailbox) {
         let (tx, rx) = mpsc::channel(RELAY_MAILBOX);
         let (unsub_tx, unsub_rx) = mpsc::unbounded_channel();
+        let resource_kinds = Arc::new(Mutex::new(RelayCatalog::default()));
         (
             Self {
                 host,
                 tx,
                 unsub_tx,
                 seq: Arc::new(AtomicU64::new(1)),
+                resource_kinds: Arc::clone(&resource_kinds),
             },
             RelayMailbox {
                 requests: rx,
                 unsubscribes: unsub_rx,
                 journal: None,
                 operations: super::operation_fence::OperationFence::default(),
+                resource_kinds,
             },
         )
     }
@@ -370,6 +389,51 @@ impl RelayHandle {
     /// The satellite host this handle relays to.
     pub(crate) const fn host(&self) -> &SatelliteHost {
         &self.host
+    }
+
+    pub(crate) fn known_resource_kind(
+        &self,
+        terminal: u32,
+    ) -> Option<phux_protocol::ids::ResourceKind> {
+        self.resource_kinds
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .kinds
+            .get(&terminal)
+            .copied()
+    }
+
+    pub(crate) fn needs_kind_for_profile(&self, profile: BootstrapProfile) -> bool {
+        self.resource_kinds
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .terminal_profile
+            .is_some_and(|selected| selected != profile)
+    }
+
+    /// Read the connection's known kind, falling back to the existing bounded
+    /// inventory request for a direct target never previously enumerated.
+    pub(crate) async fn resource_kind(
+        &self,
+        terminal: u32,
+    ) -> Result<phux_protocol::ids::ResourceKind, CommandResult> {
+        if let Some(kind) = self.known_resource_kind(terminal) {
+            return Ok(kind);
+        }
+        match self
+            .command(Command::GetState {
+                scope: phux_protocol::wire::frame::StateScope::Server,
+            })
+            .await
+        {
+            CommandResult::OkWith(phux_protocol::wire::frame::CommandValue::State(_)) => self
+                .known_resource_kind(terminal)
+                .ok_or_else(|| CommandResult::Error {
+                    code: ErrorCode::TerminalNotFound,
+                    message: format!("unknown satellite resource: {terminal}"),
+                }),
+            refusal => Err(refusal),
+        }
     }
 
     /// Relay `command` and await the result. Fails fast with a typed error on
@@ -1048,7 +1112,13 @@ pub(crate) struct RelaySession {
     pending: HashMap<u32, PendingCommand>,
     enforce_bootstrap_flow: bool,
     /// Relayed spawns awaiting `RESOURCE_SPAWNED`, in the shared id space.
-    pending_spawns: HashMap<u32, oneshot::Sender<SpawnResult>>,
+    pending_spawns: HashMap<
+        u32,
+        (
+            oneshot::Sender<SpawnResult>,
+            phux_protocol::ids::ResourceKind,
+        ),
+    >,
     /// Relayed listings awaiting `DIRECTORY_LISTING`, in the same id space.
     pending_listings: HashMap<u32, PendingListing>,
     pending_paths: HashMap<u32, PendingPathQuery>,
@@ -1084,6 +1154,7 @@ pub(crate) struct RelaySession {
     incarnation: super::operation_fence::Incarnation,
     /// Incarnation fence shared with the link's other sessions (L1 §9.1).
     operations: super::operation_fence::OperationFence,
+    resource_kinds: Option<ResourceKindCatalog>,
 }
 
 impl RelaySession {
@@ -1135,6 +1206,7 @@ impl RelaySession {
             journal: None,
             incarnation: None,
             operations: super::operation_fence::OperationFence::default(),
+            resource_kinds: None,
         }
     }
 
@@ -1161,6 +1233,17 @@ impl RelaySession {
 
     pub(crate) const fn set_satellite_features_ext(&mut self, features: ServerFeatureExtSet) {
         self.satellite_features_ext = features;
+    }
+
+    pub(crate) fn set_resource_kinds(&mut self, resource_kinds: ResourceKindCatalog) {
+        {
+            let mut catalog = resource_kinds
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            catalog.kinds.clear();
+            catalog.terminal_profile = Some(self.bootstrap_profile);
+        }
+        self.resource_kinds = Some(resource_kinds);
     }
 
     /// Before a first explicit attach, fence any automatic SPAWN generation
@@ -1210,40 +1293,7 @@ impl RelaySession {
                 command,
                 reply,
                 subscribe,
-            } => {
-                if let Some(refusal) = self.command_rejection(&command) {
-                    let _ = reply.send(refusal);
-                    return None;
-                }
-                if let Some(sub) = subscribe.as_ref()
-                    && let Some((code, message)) = self.subscription_rejection(sub)
-                {
-                    let _ = reply.send(CommandResult::Error { code, message });
-                    return None;
-                }
-                // Register the rider with the enqueue, remembering how to
-                // roll it back.
-                let subscription = subscribe.map(|sub| {
-                    let (terminal, client) = (sub.terminal, sub.client);
-                    if sub.awaits_snapshot {
-                        self.explicit_content.insert(terminal);
-                    }
-                    let effect = self.register_subscriber(sub);
-                    (terminal, client, effect)
-                });
-                let request_id = self.allocate_request_id();
-                self.pending.insert(
-                    request_id,
-                    PendingCommand {
-                        reply,
-                        subscription,
-                    },
-                );
-                Some(self.encode(&FrameKind::Command {
-                    request_id,
-                    command: link_attach_command(command, self.satellite_features),
-                }))
-            }
+            } => self.enqueue_command(command, reply, subscribe),
             RelayRequest::Keyed {
                 command,
                 actor,
@@ -1276,7 +1326,13 @@ impl RelaySession {
                     return None;
                 }
                 let request_id = self.allocate_request_id();
-                self.pending_spawns.insert(request_id, reply);
+                let kind = spawn
+                    .resource
+                    .as_ref()
+                    .map_or(phux_protocol::ids::ResourceKind::Terminal, |resource| {
+                        resource.kind
+                    });
+                self.pending_spawns.insert(request_id, (reply, kind));
                 Some(self.encode(&FrameKind::SpawnResource {
                     request_id,
                     group: spawn.group,
@@ -1307,6 +1363,68 @@ impl RelaySession {
             // Frames were produced by [`Self::prepare_request`].
             RelayRequest::MirrorTerminal { .. } => None,
         }
+    }
+
+    fn enqueue_command(
+        &mut self,
+        mut command: Command,
+        reply: oneshot::Sender<CommandResult>,
+        subscribe: Option<ProxySubscription>,
+    ) -> Option<Vec<u8>> {
+        if let Some(refusal) = self.command_rejection(&command) {
+            let _ = reply.send(refusal);
+            return None;
+        }
+        if let Some(sub) = subscribe.as_ref()
+            && let Some((code, message)) = self.subscription_rejection(sub)
+        {
+            let _ = reply.send(CommandResult::Error { code, message });
+            return None;
+        }
+        // One upstream generation fans out to every content consumer.
+        // A cursor belongs to one consumer, so a shared generation
+        // must be an explicit full replacement for all of them.
+        let shared_content = subscribe.as_ref().is_none_or(|sub| {
+            self.subscribers
+                .get(&sub.terminal)
+                .is_some_and(|subscribers| {
+                    subscribers
+                        .iter()
+                        .any(|existing| existing.client != sub.client)
+                })
+        });
+        if shared_content
+            && let Command::AttachResource {
+                agent_after_seq, ..
+            } = &mut command
+        {
+            *agent_after_seq = None;
+        }
+        // Register the rider with the enqueue, remembering how to roll it back.
+        let subscription = subscribe.map(|sub| {
+            let (terminal, client) = (sub.terminal, sub.client);
+            if sub.awaits_snapshot {
+                self.explicit_content.insert(terminal);
+            }
+            let effect = self.register_subscriber(sub);
+            (terminal, client, effect)
+        });
+        let request_id = self.allocate_request_id();
+        self.pending.insert(
+            request_id,
+            PendingCommand {
+                reply,
+                subscription,
+            },
+        );
+        Some(self.encode(&FrameKind::Command {
+            request_id,
+            command: link_attach_command(
+                command,
+                self.satellite_features,
+                self.satellite_features_ext,
+            ),
+        }))
     }
 
     /// `SUBSCRIBE_METADATA` plus a `GET_METADATA` per allowlisted key, once
@@ -1551,9 +1669,10 @@ impl RelaySession {
         if !subscription.awaits_snapshot {
             return None;
         }
-        if subscription.bootstrap_profile == Some(self.bootstrap_profile)
-            && subscription.bootstrap_limits == Some(self.bootstrap_limits)
-        {
+        let profile_matches = subscription.resource_kind
+            == Some(phux_protocol::ids::ResourceKind::AgentSession)
+            || subscription.bootstrap_profile == Some(self.bootstrap_profile);
+        if profile_matches && subscription.bootstrap_limits == Some(self.bootstrap_limits) {
             return None;
         }
         Some((
@@ -1581,6 +1700,7 @@ impl RelaySession {
             awaits_snapshot,
             bootstrap_profile: _,
             bootstrap_limits: _,
+            resource_kind: _,
         } = subscription;
         self.orphaned_by_delivery.remove(&terminal);
         let subs = self.subscribers.entry(terminal).or_default();
@@ -1927,6 +2047,15 @@ impl RelaySession {
             self.fan_out(id, &frame);
             return;
         };
+        if let AgentEvent::ResourceSpawned { kind, .. } = &event
+            && let Some(catalog) = &self.resource_kinds
+        {
+            catalog
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .kinds
+                .insert(id, *kind);
+        }
         satellite_gap_as_source_gap(&mut event);
         self.mirror_satellite_lease_state(id, &event, stamp.as_deref().map(|s| s.seq));
         // L1 §9.1: a keyed operation's event names the consumer that sent
@@ -2211,6 +2340,13 @@ impl RelaySession {
         let Some(id) = self.retag_inbound(Some(terminal_id)) else {
             return;
         };
+        if let Some(catalog) = &self.resource_kinds {
+            catalog
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .kinds
+                .remove(&id);
+        }
         if let Some(subscribers) = self.subscribers.get_mut(&id) {
             for subscriber in subscribers {
                 subscriber.retire_after_flush = true;
@@ -2254,13 +2390,20 @@ impl RelaySession {
     /// Fail in-flight commands, notify subscribers, clear registries. Once
     /// per session.
     pub(crate) fn teardown(&mut self, why: &str) {
+        if let Some(catalog) = &self.resource_kinds {
+            let mut catalog = catalog
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            catalog.kinds.clear();
+            catalog.terminal_profile = None;
+        }
         for (_, pending) in self.pending.drain() {
             let _ = pending.reply.send(CommandResult::Error {
                 code: ErrorCode::SatelliteUnreachable,
                 message: format!("satellite {} is unreachable: {why}", self.host),
             });
         }
-        for (_, reply) in self.pending_spawns.drain() {
+        for (_, (reply, _)) in self.pending_spawns.drain() {
             let _ = reply.send(SpawnResult::Err(SpawnError::SatelliteUnreachable(format!(
                 "satellite {} is unreachable: {why}",
                 self.host
@@ -2332,7 +2475,8 @@ impl RelaySession {
     pub(crate) fn prune_abandoned(&mut self) -> usize {
         let before = self.pending_request_count();
         self.pending.retain(|_, pending| !pending.reply.is_closed());
-        self.pending_spawns.retain(|_, reply| !reply.is_closed());
+        self.pending_spawns
+            .retain(|_, (reply, _)| !reply.is_closed());
         self.pending_listings
             .retain(|_, pending| !pending.reply.is_closed());
         self.pending_paths
@@ -2381,6 +2525,21 @@ impl RelaySession {
     fn resolve_pending(&mut self, request_id: u32, result: CommandResult) {
         match self.pending.remove(&request_id) {
             Some(pending) => {
+                if let CommandResult::OkWith(phux_protocol::wire::frame::CommandValue::State(
+                    snapshot,
+                )) = &result
+                    && let Some(catalog) = &self.resource_kinds
+                {
+                    let mut catalog = catalog
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    catalog.kinds.clear();
+                    for resource in &snapshot.resources {
+                        if let Some(id) = resource.id.local_id() {
+                            catalog.kinds.insert(id, resource.kind);
+                        }
+                    }
+                }
                 if matches!(result, CommandResult::Error { .. })
                     && let Some((terminal, client, effect)) = pending.subscription
                 {
@@ -2444,7 +2603,7 @@ impl RelaySession {
     /// Resolve a spawn reply, re-tagging the new id to this host; a
     /// `Satellite`-tagged id in the reply becomes `SpawnFailed`.
     fn resolve_pending_spawn(&mut self, request_id: u32, result: SpawnResult) {
-        let Some(reply) = self.pending_spawns.remove(&request_id) else {
+        let Some((reply, kind)) = self.pending_spawns.remove(&request_id) else {
             debug!(
                 satellite = %self.host,
                 request_id,
@@ -2452,6 +2611,15 @@ impl RelaySession {
             );
             return;
         };
+        if let SpawnResult::Ok(ResourceId::Local { id }) = &result
+            && let Some(catalog) = &self.resource_kinds
+        {
+            catalog
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .kinds
+                .insert(*id, kind);
+        }
         let retagged = retag_spawn_result(&self.host, result);
         // A dropped receiver (consumer timed out / disconnected) is fine.
         let _ = reply.send(retagged);
@@ -2485,6 +2653,16 @@ impl RelaySession {
         }
     }
 
+    fn accepts_stream_profile(&self, profile: BootstrapStreamProfile) -> bool {
+        match profile {
+            BootstrapStreamProfile::AgentEventsJsonlV1 => true,
+            BootstrapStreamProfile::AgentEventsJsonlResumeV1 { .. } => self
+                .satellite_features_ext
+                .contains(ServerFeatureExt::AgentStreamResume),
+            _ => Some(profile) == self.expected_stream_profile(),
+        }
+    }
+
     fn begin_bootstrap_flow(
         &mut self,
         terminal: u32,
@@ -2492,7 +2670,7 @@ impl RelaySession {
         bootstrap_id: BootstrapId,
         profile: BootstrapStreamProfile,
     ) -> Result<(), String> {
-        if Some(profile) != self.expected_stream_profile() {
+        if !self.accepts_stream_profile(profile) {
             return Err(format!(
                 "satellite {} sent BOOTSTRAP_BEGIN profile {profile:?}, negotiated {:?}",
                 self.host, self.bootstrap_profile
@@ -2632,7 +2810,7 @@ impl RelaySession {
         };
         if flow.stream_id != stream_id
             || flow.bootstrap_id != bootstrap_id
-            || Some(flow.profile) != self.expected_stream_profile()
+            || !self.accepts_stream_profile(flow.profile)
         {
             return Err(format!(
                 "satellite {} sent {frame_name} for a non-active bootstrap identity on terminal {terminal}",
@@ -3590,19 +3768,27 @@ pub(crate) fn satellite_route(terminal_id: &ResourceId) -> Option<(SatelliteHost
 ///
 /// The link is one identity shared by every consumer, so only a deliberate
 /// takeover crosses, and only to a satellite advertising `ATTACH_ROLES`.
-pub(crate) fn link_attach_command(command: Command, satellite: ServerFeatureSet) -> Command {
+pub(crate) fn link_attach_command(
+    command: Command,
+    satellite: ServerFeatureSet,
+    satellite_ext: ServerFeatureExtSet,
+) -> Command {
     let Command::AttachResource {
         terminal_id,
         role_policy,
+        agent_after_seq,
     } = command
     else {
         return command;
     };
     let role_policy = role_policy
         .filter(|policy| policy.takes_over() && satellite.contains(ServerFeature::AttachRoles));
+    let agent_after_seq =
+        agent_after_seq.filter(|_| satellite_ext.contains(ServerFeatureExt::AgentStreamResume));
     Command::AttachResource {
         terminal_id,
         role_policy,
+        agent_after_seq,
     }
 }
 
@@ -3618,6 +3804,7 @@ pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Co
         Command::AttachResource {
             terminal_id,
             role_policy,
+            agent_after_seq,
         } => {
             let (host, id) = satellite_route(terminal_id)?;
             // The consumer's intent rides unchanged; the link command is
@@ -3627,6 +3814,7 @@ pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Co
                 Command::AttachResource {
                     terminal_id: ResourceId::local(id),
                     role_policy: *role_policy,
+                    agent_after_seq: *agent_after_seq,
                 },
             ))
         }
@@ -3835,6 +4023,7 @@ mod tests {
     ) {
         let wire = session.handle_request(RelayRequest::Subscribe {
             subscription: ProxySubscription {
+                resource_kind: None,
                 terminal,
                 client,
                 out_tx,
@@ -3869,9 +4058,11 @@ mod tests {
             command: Command::AttachResource {
                 terminal_id: ResourceId::local(terminal),
                 role_policy: None,
+                agent_after_seq: None,
             },
             reply,
             subscribe: Some(ProxySubscription {
+                resource_kind: None,
                 terminal,
                 client,
                 out_tx,
@@ -3962,25 +4153,36 @@ mod tests {
         let attach = |role_policy| Command::AttachResource {
             terminal_id: ResourceId::local(3),
             role_policy,
+            agent_after_seq: None,
         };
         let roles = ServerFeatureSet::with(&[ServerFeature::AttachRoles]);
         let takeover = Some(RolePolicy::TAKEOVER);
         assert_eq!(
-            link_attach_command(attach(takeover), roles),
+            link_attach_command(attach(takeover), roles, ServerFeatureExtSet::new()),
             attach(takeover)
         );
         assert_eq!(
-            link_attach_command(attach(takeover), ServerFeatureSet::new()),
+            link_attach_command(
+                attach(takeover),
+                ServerFeatureSet::new(),
+                ServerFeatureExtSet::new()
+            ),
             attach(None),
             "a satellite without the bit gets a plain attach; the hub seizes after it",
         );
         for held in [RolePolicy::VIEWER, RolePolicy::PRIMARY] {
-            assert_eq!(link_attach_command(attach(Some(held)), roles), attach(None));
+            assert_eq!(
+                link_attach_command(attach(Some(held)), roles, ServerFeatureExtSet::new()),
+                attach(None)
+            );
         }
         let detach = Command::DetachResource {
             terminal_id: ResourceId::local(3),
         };
-        assert_eq!(link_attach_command(detach.clone(), roles), detach);
+        assert_eq!(
+            link_attach_command(detach.clone(), roles, ServerFeatureExtSet::new()),
+            detach
+        );
     }
 
     #[test]
@@ -4044,6 +4246,7 @@ mod tests {
             Command::AttachResource {
                 terminal_id: sat.clone(),
                 role_policy: None,
+                agent_after_seq: None,
             },
             Command::DetachResource {
                 terminal_id: sat.clone(),
@@ -4313,9 +4516,11 @@ mod tests {
             command: Command::AttachResource {
                 terminal_id: ResourceId::local(7),
                 role_policy: None,
+                agent_after_seq: None,
             },
             reply,
             subscribe: Some(ProxySubscription {
+                resource_kind: None,
                 terminal: 7,
                 client: ClientId(1),
                 out_tx,
@@ -4350,9 +4555,11 @@ mod tests {
             command: Command::AttachResource {
                 terminal_id: ResourceId::local(8),
                 role_policy: None,
+                agent_after_seq: None,
             },
             reply,
             subscribe: Some(ProxySubscription {
+                resource_kind: None,
                 terminal: 8,
                 client: ClientId(2),
                 out_tx,
@@ -4650,6 +4857,7 @@ mod tests {
             .expect("fill downstream mailbox");
         let wire = session.handle_request(RelayRequest::Subscribe {
             subscription: ProxySubscription {
+                resource_kind: None,
                 terminal: 9,
                 client: ClientId(1),
                 out_tx,
@@ -5854,6 +6062,7 @@ mod tests {
             let (out_tx, _out_rx) = mpsc::channel(1);
             let wire = session.handle_request(RelayRequest::Subscribe {
                 subscription: ProxySubscription {
+                    resource_kind: None,
                     terminal: 9,
                     client: ClientId(1),
                     out_tx,
@@ -6041,6 +6250,7 @@ mod tests {
 
         let (new_tx, mut new_rx) = mpsc::channel(2);
         let registration = session.register_subscriber(ProxySubscription {
+            resource_kind: None,
             terminal: 9,
             client: ClientId(1),
             out_tx: new_tx,
@@ -6994,9 +7204,11 @@ mod tests {
             command: Command::AttachResource {
                 terminal_id: ResourceId::local(9),
                 role_policy: None,
+                agent_after_seq: None,
             },
             reply,
             subscribe: Some(ProxySubscription {
+                resource_kind: None,
                 terminal: 9,
                 client: ClientId(1),
                 out_tx,
@@ -7167,6 +7379,7 @@ mod tests {
         let (out_tx, mut out_rx) = mpsc::channel(8);
         handle.subscribe(
             ProxySubscription {
+                resource_kind: None,
                 terminal: 9,
                 client: ClientId(1),
                 out_tx,
@@ -7205,9 +7418,11 @@ mod tests {
             command: Command::AttachResource {
                 terminal_id: ResourceId::local(9),
                 role_policy: None,
+                agent_after_seq: None,
             },
             reply,
             subscribe: Some(ProxySubscription {
+                resource_kind: None,
                 terminal: 9,
                 client: ClientId(1),
                 out_tx,
@@ -7273,9 +7488,11 @@ mod tests {
             command: Command::AttachResource {
                 terminal_id: ResourceId::local(9),
                 role_policy: None,
+                agent_after_seq: None,
             },
             reply: reply_b,
             subscribe: Some(ProxySubscription {
+                resource_kind: None,
                 terminal: 9,
                 client: ClientId(2),
                 out_tx: tx_b.clone(),
@@ -7348,9 +7565,11 @@ mod tests {
             command: Command::AttachResource {
                 terminal_id: ResourceId::local(9),
                 role_policy: None,
+                agent_after_seq: None,
             },
             reply,
             subscribe: Some(ProxySubscription {
+                resource_kind: None,
                 terminal: 9,
                 client: ClientId(1),
                 out_tx,
@@ -7833,5 +8052,315 @@ mod tests {
             )
             .contains("down")
         );
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one wire scenario table covers the capability and shared-generation matrix"
+    )]
+    #[test]
+    fn agent_resume_relay_routes_cursors_only_with_support_and_a_sole_consumer() {
+        for (supports_resume, shared, cursor) in [
+            (false, false, Some(1)),
+            (true, false, Some(1)),
+            (true, true, Some(1)),
+            (true, false, None),
+        ] {
+            let limits = BootstrapLimits::default();
+            let mut session = RelaySession::new_negotiated(
+                host(),
+                limits,
+                BootstrapProfile::SynthesizedVtRaw,
+                ServerFeatureSet::with(&[ServerFeature::ResourceKinds]),
+            );
+            if supports_resume {
+                session.set_satellite_features_ext(ServerFeatureExtSet::with(&[
+                    ServerFeatureExt::AgentStreamResume,
+                ]));
+            }
+            let (first_tx, mut first_rx) = mpsc::channel(16);
+            if shared {
+                attach(&mut session, 7, ClientId(2), first_tx);
+            }
+            let (out_tx, mut out_rx) = mpsc::channel(16);
+            let (reply, _result) = oneshot::channel();
+            let wire = session.handle_request(RelayRequest::Command {
+                command: Command::AttachResource {
+                    terminal_id: ResourceId::local(7),
+                    role_policy: None,
+                    agent_after_seq: cursor,
+                },
+                reply,
+                subscribe: Some(ProxySubscription {
+                    resource_kind: Some(phux_protocol::ids::ResourceKind::AgentSession),
+                    terminal: 7,
+                    client: ClientId(1),
+                    out_tx,
+                    consumer_cancel: CancellationToken::new(),
+                    seq: 1,
+                    awaits_snapshot: true,
+                    bootstrap_profile: Some(native_profile()),
+                    bootstrap_limits: Some(limits),
+                }),
+            });
+            let resume = cursor.is_some() && supports_resume && !shared;
+            let FrameKind::Command {
+                command:
+                    Command::AttachResource {
+                        agent_after_seq, ..
+                    },
+                ..
+            } = FrameKind::decode(&wire).expect("attach frame").0
+            else {
+                panic!("relay did not encode ATTACH_RESOURCE");
+            };
+            assert_eq!(agent_after_seq, resume.then_some(1));
+            let profile = if resume {
+                BootstrapStreamProfile::AgentEventsJsonlResumeV1 { after_seq: 1 }
+            } else {
+                BootstrapStreamProfile::AgentEventsJsonlV1
+            };
+            let stream_id = StreamId::new(1).expect("stream");
+            let bootstrap_id = BootstrapId::new(2).expect("generation");
+            for frame in [
+                FrameKind::BootstrapBegin {
+                    terminal_id: ResourceId::local(7), stream_id, bootstrap_id,
+                    profile, cols: 0, rows: 0, base_seq: 3,
+                },
+                FrameKind::BootstrapChunk {
+                    terminal_id: ResourceId::local(7), stream_id, bootstrap_id, chunk_seq: 0,
+                    payload: bytes::Bytes::from_static(b"{\"seq\":2,\"ts_ms\":1,\"type\":\"ask\"}\n{\"seq\":3,\"ts_ms\":1,\"type\":\"stop\"}\n"),
+                },
+                FrameKind::BootstrapReady {
+                    terminal_id: ResourceId::local(7), stream_id, bootstrap_id, history_cursor: None,
+                },
+                FrameKind::ResourceOutput {
+                    terminal_id: ResourceId::local(7), stream_id, bootstrap_id, seq: 4,
+                    bytes: bytes::Bytes::from_static(b"{\"seq\":4,\"ts_ms\":1,\"type\":\"prompt\"}\n"),
+                },
+            ] {
+                session.handle_inbound(&encode(&frame)).expect("valid agent stream");
+            }
+            let Outbound::Frame(FrameKind::BootstrapBegin {
+                profile: observed, ..
+            }) = out_rx.try_recv().expect("BEGIN")
+            else {
+                panic!("BEGIN")
+            };
+            assert_eq!(observed, profile);
+            assert!(matches!(
+                out_rx.try_recv().expect("CHUNK"),
+                Outbound::Frame(FrameKind::BootstrapChunk { .. })
+            ));
+            assert!(matches!(
+                out_rx.try_recv().expect("READY"),
+                Outbound::Frame(FrameKind::BootstrapReady { .. })
+            ));
+            assert!(matches!(
+                out_rx.try_recv().expect("live"),
+                Outbound::Frame(FrameKind::ResourceOutput { seq: 4, .. })
+            ));
+            if shared {
+                assert!(matches!(
+                    first_rx.try_recv().expect("shared BEGIN"),
+                    Outbound::Frame(FrameKind::BootstrapBegin {
+                        profile: BootstrapStreamProfile::AgentEventsJsonlV1,
+                        ..
+                    })
+                ));
+            }
+            session
+                .handle_inbound(&encode(&FrameKind::BootstrapTombstone {
+                    terminal_id: ResourceId::local(7),
+                    stream_id,
+                    bootstrap_id,
+                    reason: TombstoneReason::ExplicitReattach,
+                    last_valid_seq: 4,
+                }))
+                .expect("agent generation can be retired");
+            session
+                .handle_inbound(&encode(&FrameKind::BootstrapBegin {
+                    terminal_id: ResourceId::local(7),
+                    stream_id,
+                    bootstrap_id: BootstrapId::new(3).expect("replacement"),
+                    profile,
+                    cols: 0,
+                    rows: 0,
+                    base_seq: 4,
+                }))
+                .expect("a fresh agent generation follows the tombstone");
+        }
+    }
+
+    #[test]
+    fn agent_resume_relay_rejects_unadvertised_resume_profiles_and_retags_the_cursor() {
+        let routed = route_to_satellite(&Command::AttachResource {
+            terminal_id: ResourceId::satellite(host(), 7),
+            role_policy: None,
+            agent_after_seq: Some(42),
+        })
+        .expect("satellite route");
+        assert_eq!(
+            routed.1,
+            Command::AttachResource {
+                terminal_id: ResourceId::local(7),
+                role_policy: None,
+                agent_after_seq: Some(42),
+            }
+        );
+        let mut session = RelaySession::new_negotiated(
+            host(),
+            BootstrapLimits::default(),
+            BootstrapProfile::SynthesizedVtRaw,
+            ServerFeatureSet::with(&[ServerFeature::ResourceKinds]),
+        );
+        assert!(
+            session
+                .handle_inbound(&encode(&FrameKind::BootstrapBegin {
+                    terminal_id: ResourceId::local(7),
+                    stream_id: StreamId::new(1).expect("stream"),
+                    bootstrap_id: BootstrapId::new(1).expect("generation"),
+                    profile: BootstrapStreamProfile::AgentEventsJsonlResumeV1 { after_seq: 0 },
+                    cols: 0,
+                    rows: 0,
+                    base_seq: 0,
+                }))
+                .is_err()
+        );
+    }
+
+    fn kind_snapshot() -> phux_protocol::wire::info::SessionSnapshot {
+        use phux_protocol::ids::{ResourceKind, SessionId, WindowId};
+        use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
+        SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(8))
+            .with_resources(vec![
+                ResourceInfo::resource(ResourceId::local(7), ResourceKind::AgentSession),
+                ResourceInfo::new(ResourceId::local(8), WindowId::new(1), 80, 24),
+            ])
+    }
+
+    #[tokio::test]
+    async fn relay_kind_lookup_uses_one_bounded_inventory_then_only_learned_facts() {
+        use phux_protocol::ids::ResourceKind;
+        let (relay, mut mailbox) = RelayHandle::new(host());
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
+        session.set_resource_kinds(Arc::clone(&mailbox.resource_kinds));
+        assert!(relay.needs_kind_for_profile(native_profile()));
+        assert!(!relay.needs_kind_for_profile(BootstrapProfile::SynthesizedVtRaw));
+        let resolve = async {
+            let request = mailbox
+                .requests
+                .recv()
+                .await
+                .expect("one inventory request");
+            let wire = session.handle_request(request);
+            let FrameKind::Command {
+                request_id,
+                command:
+                    Command::GetState {
+                        scope: StateScope::Server,
+                    },
+            } = decode(&wire)
+            else {
+                panic!("kind fallback must use the existing bounded server inventory");
+            };
+            session
+                .handle_inbound(&encode(&FrameKind::CommandResult {
+                    request_id,
+                    result: CommandResult::OkWith(CommandValue::State(kind_snapshot())),
+                }))
+                .expect("inventory response");
+        };
+        let (kind, ()) = tokio::join!(relay.resource_kind(7), resolve);
+        assert_eq!(kind.expect("agent kind"), ResourceKind::AgentSession);
+        assert_eq!(
+            relay.resource_kind(7).await.expect("cached agent"),
+            ResourceKind::AgentSession
+        );
+        assert_eq!(
+            relay.resource_kind(8).await.expect("cached terminal"),
+            ResourceKind::Terminal
+        );
+        assert!(
+            mailbox.requests.try_recv().is_err(),
+            "enumeration must not refetch per resource"
+        );
+
+        session
+            .handle_inbound(&encode(&FrameKind::ResourceClosed {
+                terminal_id: ResourceId::local(7),
+                exit_status: None,
+                reason: phux_protocol::wire::frame::CloseReason::Exited,
+                signal: None,
+            }))
+            .expect("close invalidates the learned kind");
+        assert_eq!(relay.known_resource_kind(7), None);
+        assert_eq!(relay.known_resource_kind(8), Some(ResourceKind::Terminal));
+        session.teardown("disconnected");
+        assert_eq!(relay.known_resource_kind(8), None);
+        assert!(!relay.needs_kind_for_profile(native_profile()));
+    }
+
+    #[test]
+    fn relay_kind_facts_follow_spawn_events_replies_and_connection_incarnations() {
+        use phux_protocol::ids::ResourceKind;
+        let (relay, mailbox) = RelayHandle::new(host());
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
+        session.set_resource_kinds(Arc::clone(&mailbox.resource_kinds));
+        session
+            .handle_inbound(&encode(&FrameKind::Event {
+                terminal: Some(ResourceId::local(9)),
+                event: AgentEvent::ResourceSpawned {
+                    kind: ResourceKind::AgentSession,
+                    parent: None,
+                },
+                stamp: None,
+            }))
+            .expect("spawn event");
+        assert_eq!(
+            relay.known_resource_kind(9),
+            Some(ResourceKind::AgentSession)
+        );
+
+        let (reply, mut result) = oneshot::channel();
+        let mut request = spawn_request(reply);
+        if let RelayRequest::Spawn { spawn, .. } = &mut request {
+            spawn.resource = Some(Box::new(
+                phux_protocol::wire::frame::SpawnResource::agent_session(
+                    ResourceId::local(8),
+                    "test",
+                ),
+            ));
+        }
+        let FrameKind::SpawnResource { request_id, .. } = decode(&session.handle_request(request))
+        else {
+            panic!("spawn request")
+        };
+        session
+            .handle_inbound(&encode(&FrameKind::ResourceSpawned {
+                request_id,
+                result: SpawnResult::Ok(ResourceId::local(10)),
+            }))
+            .expect("spawn response");
+        assert!(matches!(
+            result.try_recv().expect("spawn result"),
+            SpawnResult::Ok(_)
+        ));
+        assert_eq!(
+            relay.known_resource_kind(10),
+            Some(ResourceKind::AgentSession)
+        );
+
+        let mut replacement = RelaySession::new_negotiated(
+            host(),
+            BootstrapLimits::default(),
+            native_profile(),
+            ServerFeatureSet::with(&[ServerFeature::ResourceKinds]),
+        );
+        replacement.set_resource_kinds(Arc::clone(&mailbox.resource_kinds));
+        assert_eq!(relay.known_resource_kind(9), None);
+        assert_eq!(relay.known_resource_kind(10), None);
+        assert!(!relay.needs_kind_for_profile(native_profile()));
+        assert!(relay.needs_kind_for_profile(BootstrapProfile::SynthesizedVtRaw));
     }
 }

@@ -1242,3 +1242,91 @@ fn an_envelope_may_not_declare_more_than_the_negotiated_bounds() {
         "a truthful envelope within the negotiated bounds must still decode"
     );
 }
+
+#[test]
+fn agent_resume_profile_round_trips_field_nine_and_full_profiles_omit_it() {
+    let frame = |profile| FrameKind::BootstrapBegin {
+        terminal_id: ResourceId::local(7),
+        stream_id: stream(1),
+        bootstrap_id: bootstrap(2),
+        profile,
+        cols: 0,
+        rows: 0,
+        base_seq: 5,
+    };
+    let full = frame(BootstrapStreamProfile::AgentEventsJsonlV1);
+    assert_eq!(encoded_field_ids(&full), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+    for after_seq in [0, 3, 5] {
+        let resume = frame(BootstrapStreamProfile::AgentEventsJsonlResumeV1 { after_seq });
+        assert_round_trip(&resume);
+        assert_eq!(encoded_field_ids(&resume), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(
+            FrameKind::decode(&encode_without_field(&resume, 9))
+                .unwrap()
+                .0,
+            full
+        );
+    }
+}
+
+#[test]
+fn resume_field_rejects_terminal_profiles_invalid_modes_lengths_and_future_cuts() {
+    let with_cursor = |profile, cols, rows, cursor: &[u8], override_mode: Option<u8>| {
+        let frame = FrameKind::BootstrapBegin {
+            terminal_id: ResourceId::local(7),
+            stream_id: stream(1),
+            bootstrap_id: bootstrap(2),
+            profile,
+            cols,
+            rows,
+            base_seq: 5,
+        };
+        let mut encoded = BytesMut::new();
+        frame.encode(&mut encoded);
+        let mut fields = encoded[5..].to_vec();
+        tlv_field(&mut fields, 9, cursor);
+        if let Some(mode) = override_mode {
+            tlv_field(&mut fields, 7, &[mode]);
+        }
+        framed(TYPE_BOOTSTRAP_BEGIN, &fields)
+    };
+    for profile in [
+        BootstrapStreamProfile::SynthesizedVtRaw,
+        BootstrapStreamProfile::SynthesizedVtStateSync,
+        BootstrapStreamProfile::NativeState {
+            codec: EngineCodec::LibghosttyCheckpointV2,
+        },
+    ] {
+        assert_eq!(
+            FrameKind::decode(&with_cursor(profile, 80, 24, &3u64.to_be_bytes(), None))
+                .unwrap_err(),
+            DecodeError::InvalidBootstrapProfile
+        );
+    }
+    for length in [0, 1, 7, 9] {
+        assert!(
+            FrameKind::decode(&with_cursor(
+                BootstrapStreamProfile::AgentEventsJsonlV1,
+                0,
+                0,
+                &vec![0; length],
+                None,
+            ))
+            .is_err()
+        );
+    }
+    for (cols, rows, after_seq, mode) in [(0, 0, 6u64, None), (80, 24, 3, None), (0, 0, 3, Some(1))]
+    {
+        assert_eq!(
+            FrameKind::decode(&with_cursor(
+                BootstrapStreamProfile::AgentEventsJsonlV1,
+                cols,
+                rows,
+                &after_seq.to_be_bytes(),
+                mode,
+            ))
+            .unwrap_err(),
+            DecodeError::InvalidBootstrapProfile
+        );
+    }
+}

@@ -46,6 +46,7 @@ fn attach_resource(pane: &ResourceId, role_policy: Option<RolePolicy>) -> Comman
     Command::AttachResource {
         terminal_id: pane.clone(),
         role_policy,
+        agent_after_seq: None,
     }
 }
 

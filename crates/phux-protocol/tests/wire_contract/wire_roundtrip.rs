@@ -1628,6 +1628,7 @@ fn command_variants_round_trip() {
         commands.push(Command::AttachResource {
             terminal_id: terminal_id.clone(),
             role_policy: None,
+            agent_after_seq: None,
         });
         commands.push(Command::DetachResource { terminal_id });
     }
@@ -3102,4 +3103,56 @@ fn session_attach_without_a_role_matches_its_golden_bytes() {
         let _ = write!(hex, "{byte:02x}");
     }
     assert_eq!(hex, GOLDEN);
+}
+
+#[test]
+fn agent_attach_cursor_preserves_legacy_bytes_and_uses_a_canonical_role_slot() {
+    use phux_protocol::wire::frame::RolePolicy;
+    let frame = |role_policy, agent_after_seq| FrameKind::Command {
+        request_id: 9,
+        command: Command::AttachResource {
+            terminal_id: ResourceId::local(7),
+            role_policy,
+            agent_after_seq,
+        },
+    };
+    let golden = |body: &[u8]| {
+        let mut fields = Vec::new();
+        tlv_field(&mut fields, 1, &9u32.to_be_bytes());
+        tlv_field(&mut fields, 2, body);
+        framed_tlv(0x31, &fields)
+    };
+    for (role, slot) in [
+        (None, None),
+        (Some(RolePolicy::PRIMARY), Some(0)),
+        (Some(RolePolicy::VIEWER), Some(1)),
+        (Some(RolePolicy::TAKEOVER), Some(2)),
+    ] {
+        let mut body = vec![1, 0, 0, 0, 0, 7];
+        if let Some(slot) = slot {
+            body.push(slot);
+        }
+        let mut encoded = BytesMut::new();
+        frame(role, None).encode(&mut encoded);
+        assert_eq!(encoded.as_ref(), golden(&body));
+        assert_eq!(FrameKind::decode(&encoded).unwrap().0, frame(role, None));
+    }
+    let mut body = vec![1, 0, 0, 0, 0, 7, 0];
+    body.extend_from_slice(&0x0102_0304_0506_0708u64.to_be_bytes());
+    let mut encoded = BytesMut::new();
+    frame(None, Some(0x0102_0304_0506_0708)).encode(&mut encoded);
+    assert_eq!(encoded.as_ref(), golden(&body));
+    assert_eq!(
+        FrameKind::decode(&encoded).unwrap().0,
+        frame(Some(RolePolicy::PRIMARY), Some(0x0102_0304_0506_0708)),
+        "the role's omission canonicalizes to its explicit default slot"
+    );
+    for length in 1..8 {
+        let mut partial = vec![1, 0, 0, 0, 0, 7, 0];
+        partial.extend(std::iter::repeat_n(0, length));
+        assert!(
+            FrameKind::decode(&golden(&partial)).is_err(),
+            "partial cursor: {length}"
+        );
+    }
 }

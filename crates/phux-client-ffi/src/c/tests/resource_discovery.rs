@@ -738,3 +738,461 @@ fn assert_closed_agent_precedes_stale_inventory(withdraw_first: bool) {
         phux_client_free(client);
     }
 }
+
+fn attached_resume_client() -> *mut PhuxClient {
+    use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExtSet};
+    let client = new_client();
+    let caps = test_support::caps(&[]).with_features_ext(ServerFeatureExtSet::with(&[
+        ServerFeatureExt::AgentStreamResume,
+    ]));
+    let hello = test_support::hello_ok(caps, phux_protocol::BootstrapProfile::SynthesizedVtRaw);
+    test_support::negotiate_frame(client, &hello);
+    test_support::queue_attach(client, 7);
+    complete_resource_attach(client, snapshot(true));
+    client
+}
+
+fn agent_bootstrap_frames(
+    generation: u64,
+    profile: phux_protocol::BootstrapStreamProfile,
+    base_seq: u64,
+    payload: String,
+) -> Vec<FrameKind> {
+    let terminal_id = ResourceId::local(MIXED_AGENT);
+    let stream_id = phux_protocol::StreamId::new(AGENT_STREAM).unwrap();
+    let bootstrap_id = phux_protocol::BootstrapId::new(generation).unwrap();
+    let mut frames = vec![FrameKind::BootstrapBegin {
+        terminal_id: terminal_id.clone(),
+        stream_id,
+        bootstrap_id,
+        profile,
+        cols: 0,
+        rows: 0,
+        base_seq,
+    }];
+    if !payload.is_empty() {
+        frames.push(FrameKind::BootstrapChunk {
+            terminal_id: terminal_id.clone(),
+            stream_id,
+            bootstrap_id,
+            chunk_seq: 0,
+            payload: payload.into(),
+        });
+    }
+    frames.push(FrameKind::BootstrapReady {
+        terminal_id,
+        stream_id,
+        bootstrap_id,
+        history_cursor: None,
+    });
+    frames
+}
+
+fn feed_agent_bootstrap(client: *mut PhuxClient, frames: Vec<FrameKind>) {
+    for frame in frames {
+        assert_eq!(feed(client, &frame), PhuxClientResult::Ok);
+    }
+}
+
+/// Copy the observable ABI batches into the host's log before clearing borrows.
+fn drain_agent_log(
+    client: *mut PhuxClient,
+    log: &mut Vec<serde_json::Value>,
+) -> Vec<(u32, u64, u64)> {
+    // SAFETY: the fixture exclusively owns the live client and copies its spans.
+    unsafe {
+        let mut modes = Vec::new();
+        for index in 0..phux_client_effect_count(client) {
+            let effect = effect_at(client, index);
+            if effect.kind != EFFECT_AGENT_RECORDS {
+                continue;
+            }
+            modes.push((effect.detail, effect.bootstrap_id, effect.seq));
+            if effect.detail == AGENT_RECORDS_RETAINED {
+                log.clear();
+            }
+            log.extend(
+                effect_bytes(&effect)
+                    .split(|byte| *byte == b'\n')
+                    .filter(|line| !line.is_empty())
+                    .map(|line| serde_json::from_slice::<serde_json::Value>(line).unwrap()),
+            );
+        }
+        assert_eq!(phux_client_effect_clear(client), PhuxClientResult::Ok);
+        modes
+    }
+}
+
+#[test]
+fn c_agent_resume_appends_once_empty_resume_preserves_and_full_empty_replaces() {
+    use phux_protocol::BootstrapStreamProfile::{AgentEventsJsonlResumeV1, AgentEventsJsonlV1};
+    let client = attached_resume_client();
+    open_agent_stream(client);
+    let mut log = Vec::new();
+    assert_eq!(
+        drain_agent_log(client, &mut log),
+        vec![(AGENT_RECORDS_RETAINED, 5, 2), (AGENT_RECORDS_LIVE, 5, 3)]
+    );
+    feed_agent_bootstrap(
+        client,
+        agent_bootstrap_frames(
+            6,
+            AgentEventsJsonlResumeV1 { after_seq: 3 },
+            5,
+            record(4, "tool_end", "{}") + &record(5, "stop", "{}"),
+        ),
+    );
+    assert_eq!(
+        drain_agent_log(client, &mut log),
+        vec![(AGENT_RECORDS_LIVE, 6, 5)]
+    );
+    assert_eq!(
+        log.iter()
+            .map(|line| line["seq"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 4, 5],
+        "resume keeps prior history and delivers only the suffix once"
+    );
+    assert_eq!(log[4]["type"], "stop");
+    feed_agent_bootstrap(
+        client,
+        agent_bootstrap_frames(
+            7,
+            AgentEventsJsonlV1,
+            5,
+            record(4, "tool_end", "{}") + &record(5, "stop", "{}"),
+        ),
+    );
+    assert_eq!(
+        drain_agent_log(client, &mut log),
+        vec![(AGENT_RECORDS_RETAINED, 7, 5)]
+    );
+    assert_eq!(
+        log.len(),
+        2,
+        "eviction fallback replaces rather than duplicates the retained ring"
+    );
+    assert_eq!(log[0]["seq"], 4);
+    feed_agent_bootstrap(
+        client,
+        agent_bootstrap_frames(
+            8,
+            AgentEventsJsonlResumeV1 { after_seq: 5 },
+            5,
+            String::new(),
+        ),
+    );
+    assert!(drain_agent_log(client, &mut log).is_empty());
+    assert_eq!(log.len(), 2);
+    assert_eq!(
+        feed(
+            client,
+            &FrameKind::ResourceOutput {
+                terminal_id: ResourceId::local(MIXED_AGENT),
+                stream_id: phux_protocol::StreamId::new(AGENT_STREAM).unwrap(),
+                bootstrap_id: phux_protocol::BootstrapId::new(8).unwrap(),
+                seq: 6,
+                bytes: record(6, "ask", r#"{"question":"keep?"}"#).into(),
+            }
+        ),
+        PhuxClientResult::Ok
+    );
+    assert_eq!(
+        drain_agent_log(client, &mut log),
+        vec![(AGENT_RECORDS_LIVE, 8, 6)]
+    );
+    assert_eq!(log.len(), 3);
+    assert_eq!(log[2]["data"]["question"], "keep?");
+    feed_agent_bootstrap(
+        client,
+        agent_bootstrap_frames(9, AgentEventsJsonlV1, 6, String::new()),
+    );
+    assert_eq!(
+        drain_agent_log(client, &mut log),
+        vec![(AGENT_RECORDS_RETAINED, 9, 0)]
+    );
+    assert!(
+        log.is_empty(),
+        "an empty full bootstrap clears host history"
+    );
+    // SAFETY: fixture owns the client through final free.
+    unsafe { phux_client_free(client) };
+}
+
+#[test]
+fn c_failed_resume_does_not_publish_suffix_or_replace_committed_generation() {
+    let client = attached_resume_client();
+    open_agent_stream(client);
+    let mut log = Vec::new();
+    let _ = drain_agent_log(client, &mut log);
+    let frames = agent_bootstrap_frames(
+        6,
+        phux_protocol::BootstrapStreamProfile::AgentEventsJsonlResumeV1 { after_seq: 3 },
+        5,
+        record(5, "stop", "{}"),
+    );
+    for frame in &frames[..2] {
+        assert_eq!(feed(client, frame), PhuxClientResult::Ok);
+    }
+    assert_ne!(feed(client, &frames[2]), PhuxClientResult::Ok);
+    assert!(drain_agent_log(client, &mut log).is_empty());
+    assert_eq!(log.len(), 3);
+    assert_eq!(
+        feed(
+            client,
+            &FrameKind::ResourceClosed {
+                terminal_id: ResourceId::local(MIXED_AGENT),
+                exit_status: None,
+                reason: phux_protocol::wire::frame::CloseReason::Exited,
+                signal: None,
+            }
+        ),
+        PhuxClientResult::Ok
+    );
+    let effect = effect_at(client, 0);
+    assert_eq!(
+        (effect.detail, effect.stream_id, effect.bootstrap_id),
+        (AGENT_RECORDS_CLOSED, 4, 5)
+    );
+    // SAFETY: fixture owns the client through final free.
+    unsafe { phux_client_free(client) };
+}
+
+#[test]
+fn c_workspace_reconnect_cursor_comes_from_the_same_incarnations_committed_runtime_log() {
+    use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExtSet};
+    for (same_incarnation, supports_resume, expected) in [
+        (true, true, Some(3)),
+        (true, false, None),
+        (false, true, None),
+    ] {
+        let client = new_client();
+        let caps = test_support::caps(&[]).with_features_ext(ServerFeatureExtSet::with(&[
+            ServerFeatureExt::AgentStreamResume,
+        ]));
+        let hello = test_support::hello_ok(caps, phux_protocol::BootstrapProfile::SynthesizedVtRaw);
+        test_support::negotiate_frame(client, &hello);
+        test_support::queue_attach(client, 7);
+        complete_resource_attach(client, snapshot(true));
+        answer_read(client, snapshot(true));
+        let request_id = subscription(client);
+        open_agent_stream(client);
+        assert_eq!(
+            feed(
+                client,
+                &FrameKind::CommandResult {
+                    request_id,
+                    result: CommandResult::Ok,
+                }
+            ),
+            PhuxClientResult::Ok
+        );
+        let _ = outgoing(client);
+        // SAFETY: the owning-thread fixture drives the same lifecycle as the
+        // connected driver, without a socket or production state.
+        unsafe {
+            (*client).inner.control().connection_lost(None);
+            (*client).inner.control().connection_opened();
+            (*client).inner.process_runtime_events().unwrap();
+        }
+        let mut replacement_hello = hello;
+        if let FrameKind::HelloOk {
+            server_id,
+            server_caps,
+            ..
+        } = &mut replacement_hello
+        {
+            if !same_incarnation {
+                *server_id = b"restarted".to_vec();
+            }
+            if !supports_resume {
+                *server_caps = test_support::caps(&[]);
+            }
+        }
+        assert_eq!(feed(client, &replacement_hello), PhuxClientResult::Ok);
+        let _ = outgoing(client);
+        test_support::queue_attach(client, 7);
+        complete_resource_attach(client, snapshot(true));
+        answer_read(client, snapshot(true));
+        let frames = outgoing(client);
+        assert!(
+            matches!(frames.as_slice(), [FrameKind::Command {
+            command: Command::AttachResource { terminal_id, agent_after_seq, .. },
+            ..
+        }] if *terminal_id == ResourceId::local(MIXED_AGENT) && *agent_after_seq == expected),
+            "{frames:?}"
+        );
+        // SAFETY: fixture owns the client through final free.
+        unsafe { phux_client_free(client) };
+    }
+}
+
+fn reconnect_with_undelivered_records(
+    same_incarnation: bool,
+    prefix_delivered: bool,
+) -> (*mut PhuxClient, Vec<serde_json::Value>) {
+    use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExtSet};
+    let client = attached_resume_client();
+    open_agent_stream(client);
+    let mut log = Vec::new();
+    if prefix_delivered {
+        let _ = drain_agent_log(client, &mut log);
+        assert_eq!(log.len(), 3);
+    }
+    assert_eq!(
+        feed(
+            client,
+            &FrameKind::ResourceOutput {
+                terminal_id: ResourceId::local(MIXED_AGENT),
+                stream_id: phux_protocol::StreamId::new(AGENT_STREAM).unwrap(),
+                bootstrap_id: phux_protocol::BootstrapId::new(AGENT_BOOTSTRAP).unwrap(),
+                seq: 4,
+                bytes: record(4, "tool_end", "{}").into(),
+            }
+        ),
+        PhuxClientResult::Ok
+    );
+    // Leave this committed batch undelivered at transport loss. A prefix
+    // already drained and cleared must not be delivered a second time.
+    // Terminal damage still takes the ordinary transient reset path.
+    assert_eq!(
+        feed(
+            client,
+            &FrameKind::ResourceOutput {
+                terminal_id: ResourceId::local(MIXED_TERMINAL),
+                stream_id: phux_protocol::StreamId::new(1).unwrap(),
+                bootstrap_id: phux_protocol::BootstrapId::new(1).unwrap(),
+                seq: 1,
+                bytes: bytes::Bytes::from_static(b"terminal transient"),
+            }
+        ),
+        PhuxClientResult::Ok
+    );
+    let _ = outgoing(client);
+    // SAFETY: exclusively owned fixture drives the connected driver's loss
+    // boundary without a socket or production state.
+    unsafe {
+        (*client).inner.control().connection_lost(None);
+        (*client).inner.control().connection_opened();
+        (*client).inner.process_runtime_events().unwrap();
+        assert_eq!(phux_client_effect_count(client), 0);
+    }
+    let caps = test_support::caps(&[]).with_features_ext(ServerFeatureExtSet::with(&[
+        ServerFeatureExt::AgentStreamResume,
+    ]));
+    let mut hello = test_support::hello_ok(caps, phux_protocol::BootstrapProfile::SynthesizedVtRaw);
+    if !same_incarnation && let FrameKind::HelloOk { server_id, .. } = &mut hello {
+        *server_id = b"restarted".to_vec();
+    }
+    assert_eq!(feed(client, &hello), PhuxClientResult::Ok);
+    let _ = outgoing(client);
+    test_support::queue_attach(client, 7);
+    assert_eq!(
+        feed(client, &attached_frame(7, snapshot(true))),
+        PhuxClientResult::Ok
+    );
+    feed_bootstrap(
+        client,
+        &ResourceId::local(MIXED_TERMINAL),
+        (2, 2),
+        (80, 24),
+        b"",
+    );
+    assert!(
+        drain_agent_log(client, &mut log).is_empty(),
+        "old deliveries must wait until the catalog can rebind the host epoch"
+    );
+    assert_eq!(
+        feed(client, &FrameKind::AttachReady { attach_id: 7 }),
+        PhuxClientResult::Ok
+    );
+    (client, log)
+}
+
+#[test]
+fn c_undelivered_committed_records_survive_reconnect_without_a_consumer_gap() {
+    for (same_incarnation, prefix_delivered) in [(true, false), (true, true), (false, false)] {
+        let (client, mut log) =
+            reconnect_with_undelivered_records(same_incarnation, prefix_delivered);
+        let delivered = drain_agent_log(client, &mut log);
+        if same_incarnation {
+            let mut expected = if prefix_delivered {
+                Vec::new()
+            } else {
+                vec![(AGENT_RECORDS_RETAINED, 5, 2), (AGENT_RECORDS_LIVE, 5, 3)]
+            };
+            expected.push((AGENT_RECORDS_LIVE, 5, 4));
+            assert_eq!(delivered, expected);
+            assert_eq!(
+                log.iter()
+                    .map(|line| line["seq"].as_u64().unwrap())
+                    .collect::<Vec<_>>(),
+                vec![1, 2, 3, 4]
+            );
+        } else {
+            assert!(
+                delivered.is_empty(),
+                "new incarnation cannot receive old records"
+            );
+            assert!(log.is_empty());
+        }
+        answer_read(client, snapshot(true));
+        let queued = outgoing(client);
+        let expected = same_incarnation.then_some(4);
+        assert!(
+            queued
+                .iter()
+                .any(|frame| matches!(frame, FrameKind::Command {
+            command: Command::AttachResource { agent_after_seq, .. }, ..
+        } if *agent_after_seq == expected)),
+            "{queued:?}"
+        );
+        let profile = if same_incarnation {
+            phux_protocol::BootstrapStreamProfile::AgentEventsJsonlResumeV1 { after_seq: 4 }
+        } else {
+            phux_protocol::BootstrapStreamProfile::AgentEventsJsonlV1
+        };
+        let cut = if same_incarnation { 4 } else { 1 };
+        let payload = if same_incarnation {
+            String::new()
+        } else {
+            record(1, "prompt", r#"{"new":true}"#)
+        };
+        feed_agent_bootstrap(client, agent_bootstrap_frames(6, profile, cut, payload));
+        let resumed = drain_agent_log(client, &mut log);
+        if same_incarnation {
+            assert!(resumed.is_empty());
+            assert_eq!(log.len(), 4);
+            assert_eq!(
+                feed(
+                    client,
+                    &FrameKind::ResourceOutput {
+                        terminal_id: ResourceId::local(MIXED_AGENT),
+                        stream_id: phux_protocol::StreamId::new(AGENT_STREAM).unwrap(),
+                        bootstrap_id: phux_protocol::BootstrapId::new(6).unwrap(),
+                        seq: 5,
+                        bytes: record(5, "ask", r#"{"question":"no gap?"}"#).into(),
+                    }
+                ),
+                PhuxClientResult::Ok
+            );
+            assert_eq!(
+                drain_agent_log(client, &mut log),
+                vec![(AGENT_RECORDS_LIVE, 6, 5)]
+            );
+            assert_eq!(
+                log.iter()
+                    .map(|line| line["seq"].as_u64().unwrap())
+                    .collect::<Vec<_>>(),
+                vec![1, 2, 3, 4, 5]
+            );
+            assert_eq!(log[4]["data"]["question"], "no gap?");
+        } else {
+            assert_eq!(resumed, vec![(AGENT_RECORDS_RETAINED, 6, 1)]);
+            assert_eq!(log.len(), 1);
+            assert_eq!(log[0]["data"]["new"], true);
+        }
+        // SAFETY: fixture owns this client through final free.
+        unsafe { phux_client_free(client) };
+    }
+}

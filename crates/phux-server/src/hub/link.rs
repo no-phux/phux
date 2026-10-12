@@ -575,6 +575,7 @@ pub(crate) async fn run_link<T: LinkTransport>(
         unsubscribes: unsub_rx,
         journal,
         operations,
+        resource_kinds,
     } = mailbox;
     let mut inbox = LinkInbox {
         host: &host,
@@ -614,6 +615,7 @@ pub(crate) async fn run_link<T: LinkTransport>(
                     &cancel,
                     journal.as_ref(),
                     &operations,
+                    Arc::clone(&resource_kinds),
                 );
                 match session.await {
                     Some(reason) => {
@@ -735,7 +737,8 @@ impl LinkInbox<'_> {
 /// runs on every path.
 #[allow(
     clippy::future_not_send,
-    reason = "ADR-0014: runs on the server's LocalSet inside run_link"
+    clippy::too_many_arguments,
+    reason = "ADR-0014: one LocalSet session receives its connection, queues, and incarnation-scoped shared facts"
 )]
 async fn run_relay_session<C: LinkConn>(
     host: &SatelliteHost,
@@ -745,11 +748,13 @@ async fn run_relay_session<C: LinkConn>(
     cancel: &CancellationToken,
     journal: Option<&crate::state::SharedState>,
     operations: &super::operation_fence::OperationFence,
+    resource_kinds: super::relay::ResourceKindCatalog,
 ) -> Option<String> {
     let mut session = match negotiated_relay_session(host, &conn) {
         Ok(session) => session,
         Err(error) => return Some(error),
     };
+    session.set_resource_kinds(resource_kinds);
     session.set_journal(journal.cloned());
     // ADR-0127: publish what this satellite advertised for dispatch.
     if let Some(journal) = journal {
@@ -2541,6 +2546,7 @@ mod tests {
                     let super::super::relay::RelayMailbox {
                         mut requests,
                         mut unsubscribes,
+                        resource_kinds,
                         ..
                     } = mailbox;
                     run_relay_session(
@@ -2551,6 +2557,7 @@ mod tests {
                         &session_cancel,
                         None,
                         &super::super::operation_fence::OperationFence::default(),
+                        resource_kinds,
                     )
                     .await
                 });
@@ -2559,6 +2566,7 @@ mod tests {
                 tokio::pin!(started);
                 relay.subscribe(
                     super::super::relay::ProxySubscription {
+                        resource_kind: None,
                         terminal: 9,
                         client: crate::state::ClientId(7),
                         out_tx,
@@ -2624,6 +2632,7 @@ mod tests {
                     let super::super::relay::RelayMailbox {
                         mut requests,
                         mut unsubscribes,
+                        resource_kinds,
                         ..
                     } = mailbox;
                     run_relay_session(
@@ -2634,6 +2643,7 @@ mod tests {
                         &CancellationToken::new(),
                         None,
                         &super::super::operation_fence::OperationFence::default(),
+                        resource_kinds,
                     )
                     .await
                 });
@@ -2642,6 +2652,7 @@ mod tests {
                 tokio::pin!(started);
                 relay.subscribe(
                     super::super::relay::ProxySubscription {
+                        resource_kind: None,
                         terminal: 9,
                         client: crate::state::ClientId(7),
                         out_tx,

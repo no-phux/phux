@@ -43,6 +43,7 @@ impl super::SessionLoop {
             command: Command::AttachResource {
                 terminal_id: terminal_id.clone(),
                 role_policy: crate::attach::attach_role::pane_attach_role(),
+                agent_after_seq: None,
             },
         };
         if let Err(error) = send_unless_peer_gone(conn, &frame).await {

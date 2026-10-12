@@ -2861,6 +2861,7 @@ async fn negotiate_hello(
                 ServerFeatureExt::PathQuery,
                 ServerFeatureExt::ResizeCellPx,
                 ServerFeatureExt::CommittedTeardown,
+                ServerFeatureExt::AgentStreamResume,
             ]))
             .with_compression(compression),
         server_id: state.with(|server| server.server_incarnation().as_bytes().to_vec()),
@@ -4119,6 +4120,7 @@ async fn bind_terminal_stream(
         selection.profile,
         selection.limits,
         token,
+        None,
     )
     .await
     {
@@ -5144,6 +5146,7 @@ fn subscribe_via_hub(
             // Stamped by `subscribe` at enqueue.
             seq: 0,
             awaits_snapshot: false,
+            resource_kind: None,
             bootstrap_profile: None,
             bootstrap_limits: None,
         },
@@ -6274,7 +6277,7 @@ mod writer_close_tests {
         root_token: CancellationToken,
     ) -> Recorder {
         let recorder = Recorder::default();
-        handle_client(
+        Box::pin(handle_client(
             reader,
             recorder.clone(),
             SharedState::new(),
@@ -6284,7 +6287,7 @@ mod writer_close_tests {
             None,
             TransportType::UnixSocket,
             false,
-        )
+        ))
         .await
         .expect("clean close");
         recorder
@@ -6335,7 +6338,7 @@ mod writer_close_tests {
         script.eof = true;
         let recorder = Recorder::default();
         LocalSet::new()
-            .run_until(handle_client(
+            .run_until(Box::pin(handle_client(
                 script,
                 recorder.clone(),
                 state,
@@ -6345,7 +6348,7 @@ mod writer_close_tests {
                 None,
                 TransportType::UnixSocket,
                 false,
-            ))
+            )))
             .await
             .expect("clean close");
         let decoded = recorder

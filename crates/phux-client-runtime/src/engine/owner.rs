@@ -260,6 +260,9 @@ impl Owner {
             Query::IsClosed(id, reply) => {
                 let _ = reply.send(self.is_closed(&id));
             }
+            Query::AgentStreamInfo(id, reply) => {
+                let _ = reply.send(self.kernel.agent_stream_info(&id));
+            }
             Query::InputEligibility(id, reply) => {
                 let _ = reply.send(self.kernel.input_eligibility(&id));
             }

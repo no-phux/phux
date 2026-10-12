@@ -52,11 +52,15 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
         Command::AttachResource {
             terminal_id,
             role_policy,
+            agent_after_seq,
         } => {
             enc.write_u8(COMMAND_TAG_ATTACH_RESOURCE);
             encode_terminal_id(terminal_id, enc);
-            if let Some(policy) = role_policy {
-                enc.write_u8(policy.to_u8());
+            if role_policy.is_some() || agent_after_seq.is_some() {
+                enc.write_u8(role_policy.unwrap_or_default().to_u8());
+            }
+            if let Some(after_seq) = agent_after_seq {
+                enc.write_u64_be(*after_seq);
             }
         }
         Command::DetachResource { terminal_id } => {
@@ -349,6 +353,11 @@ fn decode_terminal_subscription_command(
                 None
             } else {
                 Some(super::RolePolicy::from_u8(dec.read_u8()?))
+            },
+            agent_after_seq: if dec.at_body_end() {
+                None
+            } else {
+                Some(dec.read_u64_be()?)
             },
         },
         COMMAND_TAG_DETACH_RESOURCE => Command::DetachResource {

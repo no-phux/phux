@@ -302,6 +302,7 @@ fn attach_frame(request_id: u32, terminal_id: ResourceId) -> FrameKind {
         command: Command::AttachResource {
             terminal_id,
             role_policy: crate::attach::attach_role::pane_attach_role(),
+            agent_after_seq: None,
         },
     }
 }

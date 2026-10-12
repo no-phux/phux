@@ -1884,7 +1884,8 @@ fn switching_to_a_satellite_session_opens_or_focuses_its_pane() {
         command,
         &Command::AttachResource {
             terminal_id: satellite_id("edge", 9),
-            role_policy: None
+            role_policy: None,
+            agent_after_seq: None
         }
     );
 

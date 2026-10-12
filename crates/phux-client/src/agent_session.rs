@@ -471,6 +471,7 @@ pub async fn log(
             Command::AttachResource {
                 terminal_id: resource.clone(),
                 role_policy: conn.observer_role_policy(),
+                agent_after_seq: None,
             },
         )
         .await?

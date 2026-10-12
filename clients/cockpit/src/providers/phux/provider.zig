@@ -1622,8 +1622,8 @@ const ConnectedFixture = struct {
         }
     }
 
-    fn finishAttach(self: *ConnectedFixture, remote: *PhuxProvider) !void {
-        try self.fixture("attached.bin");
+    fn finishAttach(self: *ConnectedFixture, remote: *PhuxProvider, fixture_name: []const u8) !void {
+        try self.fixture(fixture_name);
         try self.awaitProvider(remote, .attached);
         for ([_][]const u8{ "workspace_initial_metadata.bin", "workspace_initial_state.bin" }, 0..) |name, index| {
             const path = try std.fmt.allocPrint(std.testing.allocator, "src/providers/phux/fixtures/{s}", .{name});
@@ -1653,7 +1653,7 @@ test "connected stop open retires once and recovers attachment workspace and inp
     try wire.hello(false);
     try wire.awaitProvider(self, .negotiated);
     try wire.expectAttach(0, 0, "");
-    try wire.finishAttach(self);
+    try wire.finishAttach(self, "attached.bin");
     var refs: [1]provider.TerminalRef = undefined;
     try std.testing.expectEqual(@as(usize, 1), self.terminalRefs(&refs));
     const old_owner = self.owner(refs[0]).?;
@@ -1675,7 +1675,7 @@ test "connected stop open retires once and recovers attachment workspace and inp
     try std.testing.expectEqual(generation + 1, self.connectionEpoch());
     try std.testing.expect(!self.ownerIsCurrent(old_owner));
     try wire.expectAttach(2, 1, "");
-    try wire.finishAttach(self);
+    try wire.finishAttach(self, "attached_reconnect.bin");
     try std.testing.expectEqualStrings("fixture", self.sessionCatalog()[0].name);
     try std.testing.expectEqual(@as(?u32, 1), self.selectedSessionId());
     const current = self.owner(refs[0]).?;
@@ -1697,7 +1697,7 @@ test "connected stop open retires once and recovers attachment workspace and inp
     try wire.awaitProvider(self, .negotiated);
     try std.testing.expectEqual(generation + 2, self.connectionEpoch());
     try wire.expectAttach(2, 1, "");
-    try wire.finishAttach(self);
+    try wire.finishAttach(self, "attached_resync.bin");
     try std.testing.expect(self.ownerIsCurrent(self.owner(refs[0]).?));
 }
 

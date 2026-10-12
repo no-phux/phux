@@ -928,6 +928,7 @@ async fn attach_terminal_until_ok(hub: &mut UnixStream, sat_id: &ResourceId) -> 
     let (result, frames) = command_until_linked(hub, 5000, || Command::AttachResource {
         terminal_id: sat_id.clone(),
         role_policy: None,
+        agent_after_seq: None,
     })
     .await;
     assert_eq!(result, CommandResult::Ok, "ATTACH_RESOURCE through the hub");

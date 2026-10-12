@@ -304,7 +304,7 @@ pub enum Event {
         /// `true` when `records` is a generation's whole retained stream,
         /// delivered once when it publishes (after a subscription, a
         /// reconnect, or a resync), and replaces every record held for the
-        /// resource. `false` for one live output frame appended to it.
+        /// resource. `false` for appends, including a resumed bootstrap suffix.
         retained: bool,
         /// The resource's parent and provider identity.
         session: AgentSessionInfo,

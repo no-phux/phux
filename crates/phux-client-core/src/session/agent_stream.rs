@@ -382,6 +382,13 @@ impl AgentLog {
         self.records.push_back(record);
     }
 
+    /// Copy only the suffix that can survive this batch's bounded retention.
+    pub(super) fn append(&mut self, records: &[AgentEventRecord]) {
+        for record in &records[records.len().saturating_sub(self.capacity)..] {
+            self.push(record.clone());
+        }
+    }
+
     /// Drop every retained record.
     pub fn clear(&mut self) {
         self.records.clear();

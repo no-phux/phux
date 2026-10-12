@@ -752,6 +752,20 @@ pub(crate) async fn handle_command(
         send_result(out_tx, request_id, result).await;
         return;
     }
+    if let Command::AttachResource {
+        terminal_id,
+        agent_after_seq: Some(_),
+        ..
+    } = &command
+        && state.with(|s| {
+            s.terminal_from_wire(terminal_id)
+                .and_then(|core| s.resource_handle(core))
+                .is_some_and(|handle| handle.kind == crate::resource::ResourceKind::Terminal)
+        })
+    {
+        send_result(out_tx, request_id, invalid_agent_cursor()).await;
+        return;
+    }
 
     // ADR-0109: a verb that drives or reads a resource another connection
     // spawned counts as attaching it; noted before the verb runs.
@@ -789,11 +803,17 @@ pub(crate) async fn handle_command(
         Command::AttachResource {
             terminal_id,
             role_policy,
+            agent_after_seq,
         } => {
             // Absent is `{ PRIMARY, NEVER }` (ADR-0127); an invalid policy
             // was refused before routing.
             let role = role_policy.unwrap_or_default();
-            if defer_subscription {
+            let is_terminal = state.with(|s| {
+                s.terminal_from_wire(&terminal_id)
+                    .and_then(|core| s.resource_handle(core))
+                    .is_some_and(|handle| handle.kind == crate::resource::ResourceKind::Terminal)
+            });
+            if defer_subscription && is_terminal {
                 // Content starts at STREAM_BIND on the stream's mailbox.
                 subscribe_deferred_attach(state, client_id, &terminal_id, out_tx, role).await
             } else {
@@ -807,6 +827,7 @@ pub(crate) async fn handle_command(
                     bootstrap_limits,
                     connection_token,
                     role,
+                    agent_after_seq,
                 )
                 .await
             }
@@ -1100,6 +1121,7 @@ async fn handle_attach_terminal(
     bootstrap_limits: BootstrapLimits,
     connection_token: &CancellationToken,
     role: RolePolicy,
+    agent_after_seq: Option<u64>,
 ) -> CommandResult {
     let subscription =
         match subscribe_attach_terminal(state, client_id, terminal_id, out_tx, Some(role)) {
@@ -1128,6 +1150,7 @@ async fn handle_attach_terminal(
         bootstrap_profile,
         bootstrap_limits,
         connection_token,
+        agent_after_seq,
     )
     .await
     {
@@ -1195,14 +1218,8 @@ pub(crate) async fn bootstrap_attach_terminal(
     bootstrap_profile: BootstrapProfile,
     bootstrap_limits: BootstrapLimits,
     connection_token: &CancellationToken,
+    agent_after_seq: Option<u64>,
 ) -> Result<(), AttachResourceFailure> {
-    let Some(stream_profile) = crate::runtime::attach::bootstrap_stream_profile(bootstrap_profile)
-    else {
-        return Err(AttachResourceFailure {
-            code: ErrorCode::CodecUnavailable,
-            message: "ATTACH_RESOURCE selected an unsupported bootstrap profile".to_owned(),
-        });
-    };
     // A non-Terminal stream has its own bootstrap shape (ADR-0103 §4).
     if handle.kind == crate::resource::ResourceKind::AgentSession {
         return match crate::runtime::resource_commands::attach_agent_session(
@@ -1214,6 +1231,7 @@ pub(crate) async fn bootstrap_attach_terminal(
             content_tx,
             bootstrap_limits,
             connection_token,
+            agent_after_seq,
         )
         .await
         {
@@ -1224,6 +1242,13 @@ pub(crate) async fn bootstrap_attach_terminal(
             ))),
         };
     }
+    let Some(stream_profile) = crate::runtime::attach::bootstrap_stream_profile(bootstrap_profile)
+    else {
+        return Err(AttachResourceFailure {
+            code: ErrorCode::CodecUnavailable,
+            message: "ATTACH_RESOURCE selected an unsupported bootstrap profile".to_owned(),
+        });
+    };
 
     let Some(bootstrap_id) = state.with_mut(|s| s.next_attach_terminal_bootstrap_id(client_id))
     else {
@@ -1376,6 +1401,13 @@ async fn subscribe_deferred_attach(
             CommandResult::Ok
         }
         Err(refusal) => refusal,
+    }
+}
+
+fn invalid_agent_cursor() -> CommandResult {
+    CommandResult::Error {
+        code: ErrorCode::InvalidCommand,
+        message: "an agent resume cursor is valid only for AgentSession resources".to_owned(),
     }
 }
 
@@ -2087,6 +2119,7 @@ async fn handle_satellite_command(
             Command::AttachResource {
                 terminal_id,
                 role_policy,
+                ..
             } => {
                 relay_satellite_attach(
                     &SatelliteLeaseTarget::new(state, host, client_id, terminal_id),
@@ -2111,6 +2144,7 @@ async fn handle_satellite_command(
                     bootstrap_profile,
                     bootstrap_limits,
                     state.with(|server| server.client_connection_cancellation(client_id)),
+                    None,
                 )
                 .await;
                 settle_satellite_event_filter(state, client_id, change, &result);
@@ -2315,6 +2349,7 @@ async fn relay_stream_establishing(
     bootstrap_profile: BootstrapProfile,
     bootstrap_limits: BootstrapLimits,
     consumer_cancel: Option<CancellationToken>,
+    resource_kind: Option<phux_protocol::ids::ResourceKind>,
 ) -> CommandResult {
     let Some(terminal) = terminal_id.local_id() else {
         return relay.command(command.clone()).await;
@@ -2338,6 +2373,7 @@ async fn relay_stream_establishing(
                 // Stamped by `command_subscribing` at enqueue.
                 seq: 0,
                 awaits_snapshot: content,
+                resource_kind,
                 bootstrap_profile: content.then_some(bootstrap_profile),
                 bootstrap_limits: content.then_some(bootstrap_limits),
             },
@@ -2550,6 +2586,25 @@ async fn relay_satellite_attach(
     let state = target.state;
     let local = phux_protocol::ids::ResourceId::local(target.terminal);
     let wire = phux_protocol::ids::ResourceId::satellite(target.host.clone(), target.terminal);
+    // Known kinds avoid inventory work. Unknown full attaches need kind only
+    // when the Terminal profiles differ; cursors always require AgentSession.
+    let cursor = matches!(
+        command,
+        Command::AttachResource {
+            agent_after_seq: Some(_),
+            ..
+        }
+    );
+    let mut kind = relay.known_resource_kind(target.terminal);
+    if kind.is_none() && (cursor || relay.needs_kind_for_profile(bootstrap_profile)) {
+        kind = Some(match relay.resource_kind(target.terminal).await {
+            Ok(kind) => kind,
+            Err(refusal) => return refusal,
+        });
+    }
+    if cursor && kind != Some(phux_protocol::ids::ResourceKind::AgentSession) {
+        return invalid_agent_cursor();
+    }
     // Narrow before the relay so no input slips through; widen only once the
     // satellite accepted the attach.
     let (was_attached, was_viewer, narrowed) = state.with_mut(|s| {
@@ -2576,6 +2631,7 @@ async fn relay_satellite_attach(
         bootstrap_profile,
         bootstrap_limits,
         state.with(|s| s.client_connection_cancellation(target.client_id)),
+        kind,
     )
     .await;
     if matches!(attached, CommandResult::Error { .. }) {
@@ -4777,6 +4833,7 @@ mod hub_detach_fence_tests {
             session
                 .handle_request_checked(RelayRequest::Subscribe {
                     subscription: ProxySubscription {
+                        resource_kind: None,
                         terminal: 7,
                         client,
                         out_tx,
@@ -4994,6 +5051,7 @@ mod relay_satellite_attach_role_tests {
             let command = Command::AttachResource {
                 terminal_id: local.clone(),
                 role_policy: Some(role),
+                agent_after_seq: None,
             };
             let target = SatelliteLeaseTarget::new(&self.state, &self.host, self.client_id, &local);
             let attach = relay_satellite_attach(

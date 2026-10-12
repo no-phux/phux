@@ -135,7 +135,14 @@ impl ControlPlane {
             scrollback_lines: self.options.scrollback_lines,
             history: self.history_config,
         };
-        let same = self.engine_config.as_ref() == Some(&config);
+        // Explicit history policies override the requested scrollback depth.
+        // Compare effective settings so reconnect does not discard committed
+        // agent records for a change in an unused default.
+        let same = self.engine_config.as_ref().is_some_and(|previous| {
+            previous.profile == config.profile
+                && previous.limits == config.limits
+                && previous.history() == config.history()
+        });
         if self.engine.is_some() && same {
             return Ok(());
         }

@@ -108,6 +108,7 @@ impl Session {
             command: Command::AttachResource {
                 terminal_id: declaration.terminal_id.clone(),
                 role_policy: None,
+                agent_after_seq: None,
             },
         }));
         outcome.badges = true;

@@ -7,7 +7,7 @@
 use phux_client_runtime::control::{ControlOptions, ControlPlane};
 use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, Layer, LayerSet, ServerCapabilities,
-    ServerFeatureSet,
+    ServerFeatureExt, ServerFeatureExtSet, ServerFeatureSet,
 };
 use phux_protocol::ids::{BootstrapId, ClientId, SessionId, StreamId, WindowId};
 use phux_protocol::wire::frame::{CloseReason, Command, CommandResult, FrameKind};
@@ -88,6 +88,10 @@ fn agent_subscription(frames: &[FrameKind]) -> u32 {
 /// Open a connection to the server incarnation `server_id` and return the
 /// attach id its `ATTACH` carried.
 fn handshake(client: &Client, server_id: u8) -> u32 {
+    handshake_capabilities(client, server_id, false)
+}
+
+fn handshake_capabilities(client: &Client, server_id: u8, supports_resume: bool) -> u32 {
     client.with_control(ControlPlane::connection_opened);
     let _ = client.take_outbound();
     client
@@ -97,7 +101,12 @@ fn handshake(client: &Client, server_id: u8) -> u32 {
             protocol_patch: PROTOCOL_VERSION.patch,
             server_caps: ServerCapabilities::new()
                 .with_layers(LayerSet::with(&[Layer::L3]))
-                .with_features(ServerFeatureSet::new()),
+                .with_features(ServerFeatureSet::new())
+                .with_features_ext(if supports_resume {
+                    ServerFeatureExtSet::with(&[ServerFeatureExt::AgentStreamResume])
+                } else {
+                    ServerFeatureExtSet::new()
+                }),
             server_id: vec![server_id; 16],
             selected_profile: BootstrapProfile::SynthesizedVtRaw,
             bootstrap_limits: BootstrapLimits::default(),
@@ -128,8 +137,9 @@ fn attach_to(
         })
         .expect("ATTACHED");
     let queued = outgoing(client);
-    let stream_id = StreamId::new(1).expect("nonzero");
-    let bootstrap_id = BootstrapId::new(1).expect("nonzero");
+    let generation = client.with_control(|control| control.connection_epoch());
+    let stream_id = StreamId::new(generation).expect("nonzero");
+    let bootstrap_id = BootstrapId::new(generation).expect("nonzero");
     for pane in panes {
         for frame in [
             FrameKind::BootstrapBegin {
@@ -162,13 +172,20 @@ fn attach_to(
 /// configures it, attached to `snapshot` with the terminal bootstrapped.
 /// Returns the frames the attach queued.
 fn attached(snapshot: SessionSnapshot) -> (Arc<RemoteClient>, Vec<FrameKind>) {
+    attached_capabilities(snapshot, false)
+}
+
+fn attached_capabilities(
+    snapshot: SessionSnapshot,
+    supports_resume: bool,
+) -> (Arc<RemoteClient>, Vec<FrameKind>) {
     let client = Runtime::embedded(ControlOptions {
         attach: Some(AttachTarget::ByName("working".into())),
         viewport: (80, 24),
         subscribe_agent_sessions: true,
         ..ControlOptions::default()
     });
-    let attach_id = handshake(&client, 0xAB);
+    let attach_id = handshake_capabilities(&client, 0xAB, supports_resume);
     let queued = attach_to(&client, attach_id, snapshot, &[terminal()]);
     let remote = RemoteClient::new("unused".into(), 80, 24, None, None);
     *remote.client.lock().unwrap() = Some(client);
@@ -646,5 +663,286 @@ fn detaching_a_pane_releases_and_ends_its_agent_sessions() {
             }] if parent == "local:8"
         ),
         "{events:?}"
+    );
+}
+
+fn commit_agent_bootstrap(
+    client: &Client,
+    generation: u64,
+    profile: BootstrapStreamProfile,
+    base_seq: u64,
+    payload: String,
+) {
+    let stream_id = StreamId::new(4).unwrap();
+    let bootstrap_id = BootstrapId::new(generation).unwrap();
+    client
+        .feed(FrameKind::BootstrapBegin {
+            terminal_id: agent(),
+            stream_id,
+            bootstrap_id,
+            profile,
+            cols: 0,
+            rows: 0,
+            base_seq,
+        })
+        .expect("agent bootstrap begin");
+    if !payload.is_empty() {
+        client
+            .feed(FrameKind::BootstrapChunk {
+                terminal_id: agent(),
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 0,
+                payload: payload.into_bytes().into(),
+            })
+            .expect("agent bootstrap chunk");
+    }
+    client
+        .feed(FrameKind::BootstrapReady {
+            terminal_id: agent(),
+            stream_id,
+            bootstrap_id,
+            history_cursor: None,
+        })
+        .expect("agent bootstrap ready");
+}
+
+fn apply_agent_events(log: &mut Vec<serde_json::Value>, events: &[WireEvent]) {
+    for event in events {
+        if let WireEvent::AgentRecords { kind, jsonl, .. } = event {
+            if *kind == AgentRecordsKind::Retained {
+                log.clear();
+            }
+            log.extend(lines(jsonl));
+        }
+    }
+}
+
+#[test]
+fn uniffi_same_incarnation_reconnect_resumes_only_the_suffix_without_duplicate_history() {
+    let (remote, queued) = attached_capabilities(snapshot(true), true);
+    assert!(queued.iter().any(|frame| matches!(
+        frame,
+        FrameKind::Command {
+            command: Command::AttachResource {
+                agent_after_seq: None,
+                ..
+            },
+            ..
+        }
+    )));
+    open_agent_stream(&remote, agent_subscription(&queued));
+    let initial = agent_events(remote.take_events());
+    let mut log = Vec::new();
+    apply_agent_events(&mut log, &initial);
+    assert_eq!(log.len(), 3);
+    let client = remote.runtime_client().expect("connected");
+    client.with_control(|control| control.connection_lost(None));
+    let attach_id = handshake_capabilities(&client, 0xAB, true);
+    let queued = attach_to(&client, attach_id, snapshot(true), &[terminal()]);
+    let request_id = agent_subscription(&queued);
+    assert!(
+        queued.iter().any(|frame| matches!(
+            frame,
+            FrameKind::Command {
+                command: Command::AttachResource {
+                    agent_after_seq: Some(3),
+                    ..
+                },
+                ..
+            }
+        )),
+        "{queued:?}"
+    );
+    commit_agent_bootstrap(
+        &client,
+        6,
+        BootstrapStreamProfile::AgentEventsJsonlResumeV1 { after_seq: 3 },
+        5,
+        record(4, "tool_end", "{}") + &record(5, "stop", r#"{"answer":"done"}"#),
+    );
+    client
+        .feed(FrameKind::CommandResult {
+            request_id,
+            result: CommandResult::Ok,
+        })
+        .unwrap();
+    let resumed = agent_events(remote.take_events());
+    assert!(
+        matches!(resumed.as_slice(), [WireEvent::AgentRecords {
+        kind: AgentRecordsKind::Live,
+        seq: 5,
+        parent_terminal_id: Some(parent),
+        provider: Some(provider),
+        ..
+    }] if parent == "local:30" && provider == "claude"),
+        "{resumed:?}"
+    );
+    apply_agent_events(&mut log, &resumed);
+    assert_eq!(
+        log.iter()
+            .map(|line| line["seq"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 4, 5]
+    );
+    assert_eq!(log[4]["type"], "stop");
+    assert_eq!(log[4]["data"]["answer"], "done");
+}
+
+#[test]
+fn uniffi_empty_resume_preserves_history_and_empty_full_bootstrap_clears_it() {
+    let (remote, queued) = attached_capabilities(snapshot(true), true);
+    open_agent_stream(&remote, agent_subscription(&queued));
+    let mut log = Vec::new();
+    apply_agent_events(&mut log, &agent_events(remote.take_events()));
+    let client = remote.runtime_client().unwrap();
+    commit_agent_bootstrap(
+        &client,
+        6,
+        BootstrapStreamProfile::AgentEventsJsonlV1,
+        3,
+        record(2, "prompt", r#"{"length":3}"#) + &record(3, "ask", "{}"),
+    );
+    let fallback = agent_events(remote.take_events());
+    assert!(
+        matches!(
+            fallback.as_slice(),
+            [WireEvent::AgentRecords {
+                kind: AgentRecordsKind::Retained,
+                seq: 3,
+                ..
+            }]
+        ),
+        "{fallback:?}"
+    );
+    apply_agent_events(&mut log, &fallback);
+    assert_eq!(log.len(), 2, "eviction fallback replaces the prefix");
+    assert_eq!(log[0]["seq"], 2);
+    commit_agent_bootstrap(
+        &client,
+        7,
+        BootstrapStreamProfile::AgentEventsJsonlResumeV1 { after_seq: 3 },
+        3,
+        String::new(),
+    );
+    let resumed = agent_events(remote.take_events());
+    assert!(resumed.is_empty(), "{resumed:?}");
+    assert_eq!(log.len(), 2);
+    client
+        .feed(FrameKind::ResourceOutput {
+            terminal_id: agent(),
+            stream_id: StreamId::new(4).unwrap(),
+            bootstrap_id: BootstrapId::new(7).unwrap(),
+            seq: 4,
+            bytes: record(4, "ask", r#"{"question":"ready?"}"#)
+                .into_bytes()
+                .into(),
+        })
+        .unwrap();
+    let live = agent_events(remote.take_events());
+    assert!(matches!(
+        live.as_slice(),
+        [WireEvent::AgentRecords {
+            kind: AgentRecordsKind::Live,
+            seq: 4,
+            ..
+        }]
+    ));
+    apply_agent_events(&mut log, &live);
+    assert_eq!(log.len(), 3);
+    assert_eq!(log[2]["data"]["question"], "ready?");
+    commit_agent_bootstrap(
+        &client,
+        8,
+        BootstrapStreamProfile::AgentEventsJsonlV1,
+        4,
+        String::new(),
+    );
+    let replacement = agent_events(remote.take_events());
+    assert!(
+        matches!(replacement.as_slice(), [WireEvent::AgentRecords {
+        kind: AgentRecordsKind::Retained,
+        seq: 0,
+        jsonl,
+        ..
+    }] if jsonl.is_empty()),
+        "{replacement:?}"
+    );
+    apply_agent_events(&mut log, &replacement);
+    assert!(log.is_empty());
+}
+
+#[test]
+fn uniffi_reconnect_does_not_request_cursor_without_capability_or_across_incarnations() {
+    for (server_id, supports_resume) in [(0xAB, false), (0xCD, true)] {
+        let (remote, queued) = attached_capabilities(snapshot(true), true);
+        open_agent_stream(&remote, agent_subscription(&queued));
+        let _ = remote.take_events();
+        let client = remote.runtime_client().unwrap();
+        client.with_control(|control| control.connection_lost(None));
+        let attach_id = handshake_capabilities(&client, server_id, supports_resume);
+        let queued = attach_to(&client, attach_id, snapshot(true), &[terminal()]);
+        assert!(
+            queued.iter().any(|frame| matches!(
+                frame,
+                FrameKind::Command {
+                    command: Command::AttachResource {
+                        agent_after_seq: None,
+                        ..
+                    },
+                    ..
+                }
+            )),
+            "{queued:?}"
+        );
+    }
+}
+
+#[test]
+fn uniffi_failed_resume_keeps_prior_history_and_the_committed_cursor() {
+    let (remote, queued) = attached_capabilities(snapshot(true), true);
+    open_agent_stream(&remote, agent_subscription(&queued));
+    let mut log = Vec::new();
+    apply_agent_events(&mut log, &agent_events(remote.take_events()));
+    let client = remote.runtime_client().unwrap();
+    let stream_id = StreamId::new(4).unwrap();
+    let bootstrap_id = BootstrapId::new(6).unwrap();
+    for frame in [
+        FrameKind::BootstrapBegin {
+            terminal_id: agent(),
+            stream_id,
+            bootstrap_id,
+            profile: BootstrapStreamProfile::AgentEventsJsonlResumeV1 { after_seq: 3 },
+            cols: 0,
+            rows: 0,
+            base_seq: 5,
+        },
+        FrameKind::BootstrapChunk {
+            terminal_id: agent(),
+            stream_id,
+            bootstrap_id,
+            chunk_seq: 0,
+            payload: record(5, "stop", "{}").into_bytes().into(),
+        },
+    ] {
+        client.feed(frame).unwrap();
+    }
+    assert!(
+        client
+            .feed(FrameKind::BootstrapReady {
+                terminal_id: agent(),
+                stream_id,
+                bootstrap_id,
+                history_cursor: None,
+            })
+            .is_err()
+    );
+    let rejected = agent_events(remote.take_events());
+    assert!(rejected.is_empty(), "{rejected:?}");
+    assert_eq!(log.len(), 3);
+    assert_eq!(log[2]["type"], "ask");
+    assert_eq!(
+        client.with_control(|control| control.agent_after_seq(&agent())),
+        Some(3)
     );
 }

@@ -110,7 +110,6 @@ enum EventProjection {
 
 pub(crate) struct AgentStream {
     pub generation: Option<(u64, u64)>,
-    pub retained_pending: bool,
 }
 
 /// Retained C view and the immutable runtime frame that backs it.
@@ -147,6 +146,9 @@ pub(crate) struct Client {
     /// Borrow-retained copy of `ControlPlane::take_outbound()`.
     pub outgoing: Vec<Vec<u8>>,
     pub owned_effects: Vec<OwnedEffect>,
+    /// Committed agent deliveries held until a same-incarnation attached
+    /// catalog lets the host rebind their transport epoch.
+    pending_agent_effects: Vec<OwnedEffect>,
     pub effect_count: usize,
     pub render: HashMap<ResourceId, RenderCache>,
     pub selection_buf: Vec<u8>,
@@ -246,6 +248,7 @@ impl Client {
             runtime,
             outgoing: Vec::new(),
             owned_effects: Vec::new(),
+            pending_agent_effects: Vec::new(),
             effect_count: 0,
             render: HashMap::new(),
             selection_buf: Vec::new(),
@@ -302,15 +305,14 @@ impl Client {
         self.agent_streams.contains_key(id)
     }
 
-    pub(crate) fn open_agent_generation(
-        &mut self,
-        id: &ResourceId,
-        stream_id: StreamId,
-        bootstrap_id: BootstrapId,
-    ) {
+    pub(crate) fn sync_agent_generation(&mut self, id: &ResourceId) {
+        let generation = self
+            .control()
+            .engine()
+            .and_then(|engine| engine.agent_stream_info(id))
+            .map(|info| (info.stream_id.get(), info.bootstrap_id.get()));
         if let Some(state) = self.agent_streams.get_mut(id) {
-            state.generation = Some((stream_id.get(), bootstrap_id.get()));
-            state.retained_pending = true;
+            state.generation = generation;
         }
     }
 
@@ -367,6 +369,7 @@ impl Client {
         self.retire_connection();
         self.render.clear();
         self.control().close();
+        self.pending_agent_effects.clear();
         self.detached = true;
     }
 
@@ -431,7 +434,10 @@ impl Client {
         }
         let info = self.control().engine()?.replica_info(id).ok()?;
         Some(match info.profile {
-            phux_protocol::BootstrapStreamProfile::AgentEventsJsonlV1 => ResourceKind::AgentSession,
+            phux_protocol::BootstrapStreamProfile::AgentEventsJsonlV1
+            | phux_protocol::BootstrapStreamProfile::AgentEventsJsonlResumeV1 { .. } => {
+                ResourceKind::AgentSession
+            }
             _ => ResourceKind::Terminal,
         })
     }
@@ -706,6 +712,9 @@ impl Client {
             attached |= self.process_runtime_event(event)?;
         }
         self.sync_server_features();
+        if self.control().status() == RuntimeStatus::Attached {
+            self.owned_effects.append(&mut self.pending_agent_effects);
+        }
         self.publish_effects();
         self.drain_outbound();
         Ok(attached)
@@ -713,7 +722,11 @@ impl Client {
 
     pub(crate) fn process_runtime_event(&mut self, event: Event) -> Result<bool, BridgeError> {
         if matches!(event, Event::ConnectionLost { .. }) {
-            self.owned_effects.clear();
+            self.pending_agent_effects.extend(
+                self.owned_effects
+                    .drain(..)
+                    .filter(|effect| effect.kind == crate::c::types::EFFECT_AGENT_RECORDS),
+            );
             self.effect_count = 0;
         }
         if matches!(
@@ -750,10 +763,7 @@ impl Client {
                     if resource.kind == ResourceKind::AgentSession {
                         self.agent_streams
                             .entry(resource.id.clone())
-                            .or_insert(AgentStream {
-                                generation: None,
-                                retained_pending: false,
-                            });
+                            .or_insert(AgentStream { generation: None });
                     }
                 }
                 self.sessions = crate::c::workspace::session_summaries(snapshot.clone())?;
@@ -881,8 +891,9 @@ impl Client {
             Event::AgentRecords {
                 terminal_id,
                 records,
+                retained,
                 ..
-            } => self.agent_records_effect(terminal_id, &records),
+            } => self.agent_records_effect(terminal_id, &records, retained),
             Event::KernelSend(send) => self.process_send(send)?,
             Event::Frame(frame) => crate::c::dispatch_extension_frame(self, *frame)?,
             event => return Ok(EventProjection::Next(event)),
@@ -947,7 +958,7 @@ impl Client {
             );
             effect.stream_id = stream_id;
             effect.bootstrap_id = bootstrap_id;
-            self.owned_effects.push(effect);
+            self.push_agent_effect(effect);
         } else {
             crate::c::operations::release_terminal(self, id)?;
             self.operations.observe_resource_closed(id);
@@ -1022,16 +1033,12 @@ impl Client {
         &mut self,
         id: ResourceId,
         records: &[phux_client_core::session::agent_stream::AgentEventRecord],
+        retained: bool,
     ) {
-        let (generation, retained) =
-            self.agent_streams
-                .get_mut(&id)
-                .map_or((None, false), |state| {
-                    (
-                        state.generation,
-                        std::mem::replace(&mut state.retained_pending, false),
-                    )
-                });
+        let generation = self
+            .agent_streams
+            .get(&id)
+            .and_then(|state| state.generation);
         let detail = if retained {
             crate::c::types::AGENT_RECORDS_RETAINED
         } else {
@@ -1043,7 +1050,17 @@ impl Client {
         effect.bootstrap_id = bootstrap_id;
         effect.seq = records.last().map_or(0, |record| record.seq);
         effect.bytes = crate::projection::agent_records::jsonl(records).into_bytes();
-        self.owned_effects.push(effect);
+        self.push_agent_effect(effect);
+    }
+
+    pub(crate) fn push_agent_effect(&mut self, effect: OwnedEffect) {
+        if !self.pending_agent_effects.is_empty()
+            || self.control().status() != RuntimeStatus::Attached
+        {
+            self.pending_agent_effects.push(effect);
+        } else {
+            self.owned_effects.push(effect);
+        }
     }
 
     fn sync_server_features(&mut self) {
@@ -1061,6 +1078,11 @@ impl Client {
             return;
         };
         self.protocol_ready = true;
+        if self.server_id != server.id {
+            // An incarnation reset cannot replay committed effects from the
+            // prior server into an identically numbered new resource.
+            self.pending_agent_effects.clear();
+        }
         self.server_id.clone_from(&server.id);
         self.list_directory = server.has(ServerFeature::ListDirectory);
         self.list_directory_host = server.has(ServerFeature::ListDirectoryHost);

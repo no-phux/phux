@@ -981,6 +981,7 @@ fn queue_terminal_attach(
         command: Command::AttachResource {
             terminal_id: id.clone(),
             role_policy,
+            agent_after_seq: None,
         },
     })?;
     if !client.control().admit_external_attach(&id, role_policy) {

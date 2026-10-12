@@ -68,9 +68,19 @@ async fn append(stream: &mut UnixStream, request_id: u32, session: &ResourceId, 
 }
 
 async fn attach_resource(stream: &mut UnixStream, request_id: u32, terminal_id: &ResourceId) {
+    attach_after(stream, request_id, terminal_id, None).await;
+}
+
+async fn attach_after(
+    stream: &mut UnixStream,
+    request_id: u32,
+    terminal_id: &ResourceId,
+    agent_after_seq: Option<u64>,
+) {
     let attach = Command::AttachResource {
         terminal_id: terminal_id.clone(),
         role_policy: None,
+        agent_after_seq,
     };
     send_frame(
         stream,
@@ -103,6 +113,7 @@ async fn bootstrap(
 ) -> ((u16, u16), BootstrapStreamProfile, u64, Vec<u8>) {
     let mut begin = None;
     let mut chunks = Vec::new();
+    let mut generation = None;
     wait_frame(stream, "bootstrap", |frame| match frame {
         FrameKind::BootstrapBegin {
             terminal_id,
@@ -110,20 +121,44 @@ async fn bootstrap(
             rows,
             profile,
             base_seq,
+            bootstrap_id,
             ..
         } if &terminal_id == session => {
             begin = Some(((cols, rows), profile, base_seq));
+            generation = Some(bootstrap_id);
             None
         }
         FrameKind::BootstrapChunk {
             terminal_id,
             payload,
+            bootstrap_id,
             ..
         } if &terminal_id == session => {
+            assert_eq!(
+                Some(bootstrap_id),
+                generation,
+                "chunk from an old generation"
+            );
             chunks.extend_from_slice(&payload);
             None
         }
-        FrameKind::BootstrapReady { terminal_id, .. } if &terminal_id == session => Some(()),
+        FrameKind::BootstrapReady {
+            terminal_id,
+            bootstrap_id,
+            ..
+        } if &terminal_id == session => {
+            assert_eq!(
+                Some(bootstrap_id),
+                generation,
+                "READY from an old generation"
+            );
+            Some(())
+        }
+        FrameKind::ResourceOutput { terminal_id, .. }
+            if &terminal_id == session && begin.is_some() =>
+        {
+            panic!("old-generation live output interleaved with the bootstrap");
+        }
         _ => None,
     })
     .await;
@@ -718,6 +753,209 @@ fn stream_evidence_and_reported_state_project_onto_the_parents_agent_record() {
         );
         await_agent_record(&mut owner, 300, &parent, "\"state\":\"blocked\"").await;
 
+        drop((owner, watcher));
+        server.stop().await;
+    });
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one production connection exercises the resume/replace and reattach ordering contract"
+)]
+fn agent_resume_dispatches_suffix_empty_and_full_fallback_then_one_live_generation() {
+    phux_server_testkit::run_local(async {
+        let (server, mut owner) = start(|_| {}).await;
+        let (_parent, session) = parent_and_session(&mut owner, FOREVER).await;
+        append(
+            &mut owner,
+            10,
+            &session,
+            "{\"type\":\"prompt\"}\n{\"type\":\"ask\"}\n{\"type\":\"stop\"}",
+        )
+        .await;
+        let mut watcher = UnixStream::connect(&server.socket).await.unwrap();
+        send_frame(
+            &mut watcher,
+            &FrameKind::Hello {
+                client_name: "agent-resume-test".to_owned(),
+                protocol_major: phux_protocol::PROTOCOL_VERSION.major,
+                protocol_minor: phux_protocol::PROTOCOL_VERSION.minor,
+                protocol_patch: phux_protocol::PROTOCOL_VERSION.patch,
+                client_caps: phux_protocol::caps::ClientCapabilities::new(),
+            },
+        )
+        .await;
+        let caps = wait_frame(&mut watcher, "resume capability", |frame| match frame {
+            FrameKind::HelloOk { server_caps, .. } => Some(server_caps),
+            _ => None,
+        })
+        .await;
+        assert!(
+            caps.features_ext
+                .contains(phux_protocol::caps::ServerFeatureExt::AgentStreamResume)
+        );
+        attach_after(&mut watcher, 100, &session, Some(1)).await;
+        let (grid, profile, base_seq, suffix) = bootstrap(&mut watcher, &session).await;
+        assert_eq!(grid, (0, 0));
+        assert_eq!(
+            profile,
+            BootstrapStreamProfile::AgentEventsJsonlResumeV1 { after_seq: 1 }
+        );
+        assert_eq!(base_seq, 3);
+        assert_eq!(record_seqs(&suffix), [2, 3]);
+
+        attach_after(&mut watcher, 101, &session, Some(3)).await;
+        let (_, profile, base_seq, empty) = bootstrap(&mut watcher, &session).await;
+        assert_eq!(
+            profile,
+            BootstrapStreamProfile::AgentEventsJsonlResumeV1 { after_seq: 3 }
+        );
+        assert_eq!(base_seq, 3);
+        assert!(empty.is_empty());
+
+        attach_after(&mut watcher, 102, &session, Some(4)).await;
+        let (_, profile, base_seq, full) = bootstrap(&mut watcher, &session).await;
+        assert_eq!(profile, BootstrapStreamProfile::AgentEventsJsonlV1);
+        assert_eq!(base_seq, 3);
+        assert_eq!(record_seqs(&full), [1, 2, 3]);
+        append(
+            &mut owner,
+            11,
+            &session,
+            "{\"type\":\"prompt\"}\n{\"type\":\"stop\"}",
+        )
+        .await;
+        let first_live = next_output(&mut watcher, &session).await;
+        assert_eq!((first_live.0, record_seqs(&first_live.1)), (5, vec![4, 5]));
+        send_frame(
+            &mut watcher,
+            &FrameKind::Command {
+                request_id: 103,
+                command: Command::GetState {
+                    scope: phux_protocol::wire::frame::StateScope::Server,
+                },
+            },
+        )
+        .await;
+        wait_frame(&mut watcher, "live generation fence", |frame| match frame {
+            FrameKind::ResourceOutput { terminal_id, .. } if terminal_id == session => {
+                panic!("a replaced agent pump emitted duplicate live output");
+            }
+            FrameKind::CommandResult {
+                request_id: 103,
+                result,
+            } => {
+                assert!(matches!(result, CommandResult::OkWith(_)));
+                Some(())
+            }
+            _ => None,
+        })
+        .await;
+        drop((owner, watcher));
+        server.stop().await;
+    });
+}
+
+#[test]
+fn agent_resume_dispatcher_handles_empty_zero_budget_and_evicted_boundaries() {
+    phux_server_testkit::run_local(async {
+        let (server, mut owner) = start(|cfg| cfg.agent_log_bytes = 0).await;
+        let (_parent, session) = parent_and_session(&mut owner, FOREVER).await;
+        let mut watcher = server.connect().await;
+        attach_after(&mut watcher, 100, &session, Some(0)).await;
+        let (_, profile, seq, payload) = bootstrap(&mut watcher, &session).await;
+        assert_eq!(
+            profile,
+            BootstrapStreamProfile::AgentEventsJsonlResumeV1 { after_seq: 0 }
+        );
+        assert_eq!(seq, 0);
+        assert!(payload.is_empty());
+        attach_resource(&mut watcher, 101, &session).await;
+        let (_, profile, _, payload) = bootstrap(&mut watcher, &session).await;
+        assert_eq!(profile, BootstrapStreamProfile::AgentEventsJsonlV1);
+        assert!(
+            payload.is_empty(),
+            "empty full replacement still reaches READY"
+        );
+        append(
+            &mut owner,
+            10,
+            &session,
+            "{\"type\":\"prompt\"}\n{\"type\":\"ask\"}\n{\"type\":\"stop\"}",
+        )
+        .await;
+        for (request, cursor, expected) in [
+            (102, 1, BootstrapStreamProfile::AgentEventsJsonlV1),
+            (
+                103,
+                2,
+                BootstrapStreamProfile::AgentEventsJsonlResumeV1 { after_seq: 2 },
+            ),
+        ] {
+            attach_after(&mut watcher, request, &session, Some(cursor)).await;
+            let (_, profile, seq, payload) = bootstrap(&mut watcher, &session).await;
+            assert_eq!(profile, expected);
+            assert_eq!(seq, 3);
+            assert_eq!(record_seqs(&payload), [3]);
+        }
+        append(&mut owner, 11, &session, "{\"type\":\"prompt\"}").await;
+        let (seq, payload) = next_output(&mut watcher, &session).await;
+        assert_eq!((seq, record_seqs(&payload)), (4, vec![4]));
+        drop((owner, watcher));
+        server.stop().await;
+    });
+}
+
+#[test]
+fn terminal_agent_cursor_is_invalid_before_role_or_content_subscription_changes() {
+    use phux_protocol::input::InputEvent;
+    use phux_protocol::input::focus::FocusEvent;
+    use phux_protocol::wire::frame::RolePolicy;
+    phux_server_testkit::run_local(async {
+        let (server, mut owner) = start(|_| {}).await;
+        let parent = spawned(&mut owner, 1, sh(FOREVER)).await;
+        let mut watcher = server.connect().await;
+        let route = || Command::RouteInput {
+            terminal_id: parent.clone(),
+            event: InputEvent::Focus(FocusEvent::Gained),
+        };
+        let before_input = command(&mut watcher, 100, route()).await;
+        let before = state(&mut owner, 2).await;
+        for (request_id, role_policy) in [(101, RolePolicy::VIEWER), (102, RolePolicy::TAKEOVER)] {
+            let result = command(
+                &mut watcher,
+                request_id,
+                Command::AttachResource {
+                    terminal_id: parent.clone(),
+                    role_policy: Some(role_policy),
+                    agent_after_seq: Some(0),
+                },
+            )
+            .await;
+            assert!(matches!(
+                result,
+                CommandResult::Error {
+                    code: ErrorCode::InvalidCommand,
+                    ..
+                }
+            ));
+        }
+        assert_eq!(
+            command(&mut watcher, 103, route()).await,
+            before_input,
+            "no viewer mark was installed"
+        );
+        let after = state(&mut owner, 3).await;
+        let holder = |snapshot: &phux_protocol::wire::info::SessionSnapshot| {
+            snapshot
+                .resources
+                .iter()
+                .find(|resource| resource.id == parent)
+                .unwrap()
+                .input_holder
+        };
+        assert_eq!(holder(&after), holder(&before), "no lease takeover");
         drop((owner, watcher));
         server.stop().await;
     });

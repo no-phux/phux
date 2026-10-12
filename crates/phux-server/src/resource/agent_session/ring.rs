@@ -49,6 +49,11 @@ impl RecordRing {
         self.records.iter()
     }
 
+    /// A retained suffix without visiting records before `start`.
+    pub fn records_from(&self, start: usize) -> impl ExactSizeIterator<Item = &Bytes> {
+        self.records.range(start..)
+    }
+
     /// How many records eviction has dropped.
     #[must_use]
     pub const fn dropped(&self) -> u64 {

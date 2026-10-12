@@ -459,6 +459,15 @@ fn stream_samples() -> Vec<FrameKind> {
             rows: 24,
             base_seq: 0,
         },
+        FrameKind::BootstrapBegin {
+            terminal_id: terminal(),
+            stream_id: stream(),
+            bootstrap_id: generation(),
+            profile: BootstrapStreamProfile::AgentEventsJsonlResumeV1 { after_seq: 5 },
+            cols: 0,
+            rows: 0,
+            base_seq: 8,
+        },
         FrameKind::BootstrapChunk {
             terminal_id: terminal(),
             stream_id: stream(),

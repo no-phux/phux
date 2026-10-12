@@ -528,6 +528,12 @@ the reply to `KILL_RESOURCE`, `KILL_RESOURCE_IF`, `KILL_RESOURCES`, and
 resources from every state view and journaled their closes, so a client need
 not wait for their processes to be reaped. Through a hub it speaks for the
 hub's own resources; a satellite's kill commits on the satellite.
+`features_ext.AGENT_STREAM_RESUME = 0x00000008` ([L1.md](./L1.md) §4.8)
+says `ATTACH_RESOURCE` accepts a committed AgentSession sequence cursor and
+answers with either a contiguous resumed suffix or an explicit whole-ring
+replacement. A client requires the bit before sending the cursor. A hub
+checks its satellite's bit before forwarding one; a satellite without it
+keeps the full-bootstrap behavior.
 `ACKNOWLEDGED_INPUT = 0x10`, `FILE_UPLOAD = 0x20`,
 `MOVE_RESOURCE = 0x40`, `TERMINAL_REPLY = 0x80`, `SHUTDOWN = 0x100`,
 `SPAWN_INITIAL_SIZE = 0x200`, `REPORT_AGENT_STATE = 0x400`,
