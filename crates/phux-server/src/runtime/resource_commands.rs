@@ -663,6 +663,7 @@ mod tests {
         let generation = phux_protocol::ids::BootstrapId::new(1).unwrap();
         let cut = AgentSessionBootstrap {
             base_seq: 2,
+            resume_after_seq: None,
             records: vec![
                 Bytes::from_static(b"first\n"),
                 Bytes::from_static(b"second\n"),
@@ -715,6 +716,7 @@ mod tests {
     fn empty_agent_bootstrap_has_only_begin_and_ready() {
         let cut = AgentSessionBootstrap {
             base_seq: 0,
+            resume_after_seq: None,
             records: Vec::new(),
             dropped: 0,
             ended: false,

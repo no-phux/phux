@@ -619,7 +619,7 @@ mod tests {
     fn stamped_oversize_refuses_the_batch_before_any_mutation() {
         let (mut actor, _facet, handle) = engine();
         append(&mut actor, "{\"type\":\"prompt\"}").expect("seed");
-        let before = actor.bootstrap();
+        let before = actor.bootstrap(None);
         let mut subscriber = handle.output.subscribe();
         let prefix = "{\"type\":\"provider_raw\",\"data\":{\"text\":\"";
         let suffix = "\"}}";
@@ -636,7 +636,7 @@ mod tests {
             Err(AppendRejection::Invalid(RecordError::Oversized { .. }))
         ));
         assert_eq!(
-            actor.bootstrap(),
+            actor.bootstrap(None),
             before,
             "ring, sequence and ended unchanged"
         );
