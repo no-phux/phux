@@ -478,6 +478,20 @@ pub async fn log(
     if let CommandResult::Error { code, message } = result {
         return Err(map_refusal(resource, code, message));
     }
+    // Once the attach is accepted, every read/bind/subscription failure must
+    // release the observer pump as well as its local transport binding.
+    let outcome = read_log(conn, resource, options, primed.into_iter(), &mut sink).await;
+    detach(conn, resource).await;
+    outcome
+}
+
+async fn read_log(
+    conn: &mut Connection,
+    resource: &ResourceId,
+    options: LogOptions,
+    mut pending: std::vec::IntoIter<FrameKind>,
+    sink: &mut impl FnMut(AgentEventRecord) -> bool,
+) -> Result<LogOutcome, AgentSessionError> {
     conn.bind_terminal(resource).await?;
     if options.follow {
         conn.send(&FrameKind::SubscribeEvents {
@@ -490,40 +504,48 @@ pub async fn log(
     // Retained records: everything up to BOOTSTRAP_READY, usually all in
     // `primed` (the server pushes the transcript ahead of the ack).
     let mut reader = Reader::new(resource.clone());
-    let mut retained: Vec<AgentEventRecord> = Vec::new();
-    let mut ready = false;
-    let mut pending = primed.into_iter();
-    while !ready {
+    let (retained, closed) = read_retained(conn, &mut reader, &mut pending).await?;
+    let retained_count = retained.len();
+    let skip = options
+        .tail
+        .map_or(0, |tail| retained_count.saturating_sub(tail));
+    let mut delivered = 0;
+    let end = if !deliver(retained.into_iter().skip(skip), sink, &mut delivered) {
+        LogEnd::Stopped
+    } else if closed {
+        LogEnd::SessionClosed
+    } else if options.follow {
+        follow(conn, &mut reader, pending, sink, &mut delivered).await?
+    } else {
+        LogEnd::Retained
+    };
+    Ok(LogOutcome {
+        retained: retained_count,
+        delivered,
+        end,
+    })
+}
+
+/// Stage retained output until the server proves the transcript complete.
+async fn read_retained(
+    conn: &mut Connection,
+    reader: &mut Reader,
+    pending: &mut std::vec::IntoIter<FrameKind>,
+) -> Result<(Vec<AgentEventRecord>, bool), AgentSessionError> {
+    let mut retained = Vec::new();
+    loop {
         let frame = match pending.next() {
             Some(frame) => frame,
             None => conn.recv().await?,
         };
         match reader.absorb(frame)? {
             Absorbed::Records(records) => retained.extend(records),
-            // A session closed mid-bootstrap still answers with what it kept.
-            Absorbed::Ready | Absorbed::Closed => ready = true,
+            // A session closed mid-bootstrap still answers with complete lines.
+            Absorbed::Ready => return Ok((retained, false)),
+            Absorbed::Closed => return Ok((retained, true)),
             Absorbed::Nothing => {}
         }
     }
-
-    let retained_count = retained.len();
-    let skip = options
-        .tail
-        .map_or(0, |tail| retained_count.saturating_sub(tail));
-    let mut delivered = 0;
-    let end = if !deliver(retained.into_iter().skip(skip), &mut sink, &mut delivered) {
-        LogEnd::Stopped
-    } else if options.follow {
-        follow(conn, &mut reader, pending, &mut sink, &mut delivered).await?
-    } else {
-        LogEnd::Retained
-    };
-    detach(conn, resource).await;
-    Ok(LogOutcome {
-        retained: retained_count,
-        delivered,
-        end,
-    })
 }
 
 /// Hand `records` to `sink`, counting each; `false` once the sink stops.
@@ -615,27 +637,24 @@ impl Reader {
 
     fn absorb(&mut self, frame: FrameKind) -> Result<Absorbed, AgentSessionError> {
         match frame {
-            FrameKind::BootstrapBegin { terminal_id, .. } if terminal_id == self.resource => {
-                // A replacement generation drops the previous half-line.
-                self.buffer.clear();
-                Ok(Absorbed::Nothing)
-            }
-            FrameKind::BootstrapChunk {
-                terminal_id,
-                payload,
-                ..
-            } if terminal_id == self.resource => self.decode(&payload).map(Absorbed::Records),
-            FrameKind::BootstrapReady { terminal_id, .. } if terminal_id == self.resource => {
-                Ok(Absorbed::Ready)
-            }
+            bootstrap @ (FrameKind::BootstrapBegin { .. }
+            | FrameKind::BootstrapChunk { .. }
+            | FrameKind::BootstrapReady { .. }) => self.absorb_bootstrap(bootstrap),
             FrameKind::ResourceOutput {
                 terminal_id, bytes, ..
-            } if terminal_id == self.resource => self.decode(&bytes).map(Absorbed::Records),
-            FrameKind::Event {
+            } if terminal_id == self.resource => self.decode_live(&bytes).map(Absorbed::Records),
+            FrameKind::ResourceClosed {
+                terminal_id: terminal,
+                ..
+            }
+            | FrameKind::Event {
                 terminal: Some(terminal),
                 event: AgentEvent::ResourceClosed { .. },
                 ..
-            } if terminal == self.resource => Ok(Absorbed::Closed),
+            } if terminal == self.resource => {
+                self.finish()?;
+                Ok(Absorbed::Closed)
+            }
             FrameKind::Error {
                 request_id: None,
                 message,
@@ -653,25 +672,77 @@ impl Reader {
         }
     }
 
+    fn absorb_bootstrap(&mut self, frame: FrameKind) -> Result<Absorbed, AgentSessionError> {
+        match frame {
+            FrameKind::BootstrapBegin { terminal_id, .. } if terminal_id == self.resource => {
+                // A replacement generation drops the previous half-line.
+                self.buffer.clear();
+                Ok(Absorbed::Nothing)
+            }
+            FrameKind::BootstrapChunk {
+                terminal_id,
+                payload,
+                ..
+            } if terminal_id == self.resource => self.decode(&payload).map(Absorbed::Records),
+            FrameKind::BootstrapReady { terminal_id, .. } if terminal_id == self.resource => {
+                self.finish()?;
+                Ok(Absorbed::Ready)
+            }
+            _ => Ok(Absorbed::Nothing),
+        }
+    }
+
     /// Append `bytes` to the line buffer and decode every complete line.
     fn decode(&mut self, bytes: &[u8]) -> Result<Vec<AgentEventRecord>, AgentSessionError> {
-        self.buffer.extend_from_slice(bytes);
         let mut records = Vec::new();
-        while let Some(end) = self.buffer.iter().position(|byte| *byte == b'\n') {
-            let line: Vec<u8> = self.buffer.drain(..=end).collect();
-            let line = &line[..line.len() - 1];
-            if line.iter().all(u8::is_ascii_whitespace) {
-                continue;
+        for fragment in bytes.split_inclusive(|byte| *byte == b'\n') {
+            let content = fragment.strip_suffix(b"\n").unwrap_or(fragment);
+            let wire_len = self
+                .buffer
+                .len()
+                .saturating_add(content.len())
+                .saturating_add(1);
+            if wire_len > MAX_RECORD_BYTES {
+                return Err(self.protocol_error(format!(
+                    "record of {wire_len} bytes exceeds the {MAX_RECORD_BYTES}-byte codec limit"
+                )));
             }
-            let record: AgentEventRecord = serde_json::from_slice(line).map_err(|err| {
-                AttachError::Protocol(format!(
-                    "malformed AgentEventsJsonlV1 record on {}: {err}",
-                    crate::selector::format_terminal_id(&self.resource)
-                ))
-            })?;
-            records.push(record);
+            self.buffer.extend_from_slice(content);
+            if fragment.ends_with(b"\n") {
+                if !self.buffer.iter().all(u8::is_ascii_whitespace) {
+                    let record = serde_json::from_slice(&self.buffer)
+                        .map_err(|error| self.protocol_error(error))?;
+                    records.push(record);
+                }
+                self.buffer.clear();
+            }
         }
         Ok(records)
+    }
+
+    /// Live output carries complete records, unlike bootstrap chunks.
+    fn decode_live(&mut self, bytes: &[u8]) -> Result<Vec<AgentEventRecord>, AgentSessionError> {
+        let records = self.decode(bytes)?;
+        self.finish()?;
+        if records.is_empty() {
+            return Err(self.protocol_error("live output carried no records"));
+        }
+        Ok(records)
+    }
+
+    fn finish(&self) -> Result<(), AgentSessionError> {
+        if !self.buffer.is_empty() {
+            return Err(self.protocol_error("incomplete JSONL record (missing LF)"));
+        }
+        Ok(())
+    }
+
+    fn protocol_error(&self, reason: impl std::fmt::Display) -> AgentSessionError {
+        AttachError::Protocol(format!(
+            "malformed AgentEventsJsonlV1 record on {}: {reason}",
+            crate::selector::format_terminal_id(&self.resource)
+        ))
+        .into()
     }
 }
 
@@ -1010,5 +1081,239 @@ mod tests {
             reader.decode(b"not json\n"),
             Err(AgentSessionError::Transport(AttachError::Protocol(_)))
         ));
+    }
+
+    fn ready_frame() -> FrameKind {
+        FrameKind::BootstrapReady {
+            terminal_id: session(),
+            stream_id: phux_protocol::ids::StreamId::new(1).unwrap(),
+            bootstrap_id: phux_protocol::ids::BootstrapId::new(1).unwrap(),
+            history_cursor: None,
+        }
+    }
+
+    fn closed_frame() -> FrameKind {
+        FrameKind::ResourceClosed {
+            terminal_id: session(),
+            exit_status: None,
+            reason: phux_protocol::wire::frame::CloseReason::Unknown,
+            signal: None,
+        }
+    }
+
+    fn live_frame(bytes: &[u8]) -> FrameKind {
+        FrameKind::ResourceOutput {
+            terminal_id: session(),
+            stream_id: phux_protocol::ids::StreamId::new(1).unwrap(),
+            bootstrap_id: phux_protocol::ids::BootstrapId::new(1).unwrap(),
+            seq: 1,
+            bytes: bytes::Bytes::copy_from_slice(bytes),
+        }
+    }
+
+    #[test]
+    fn reader_record_bound_includes_lf_and_precedes_buffer_growth() {
+        let empty = "{\"seq\":1,\"ts_ms\":1,\"type\":\"provider_raw\",\"data\":{\"text\":\"\"}}\n";
+        let line = empty.replace(
+            "\"text\":\"\"",
+            &format!(
+                "\"text\":\"{}\"",
+                "x".repeat(MAX_RECORD_BYTES - empty.len())
+            ),
+        );
+        assert_eq!(line.len(), MAX_RECORD_BYTES);
+        let mut reader = Reader::new(session());
+        assert!(
+            reader
+                .decode(&line.as_bytes()[..line.len() - 1])
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(reader.buffer.len(), MAX_RECORD_BYTES - 1);
+        assert_eq!(reader.decode(b"\n").unwrap().len(), 1);
+        for suffix in [b"x".as_slice(), b"x\n".as_slice()] {
+            let mut reader = Reader::new(session());
+            reader.decode(&line.as_bytes()[..line.len() - 1]).unwrap();
+            assert!(matches!(
+                reader.decode(suffix),
+                Err(AgentSessionError::Transport(AttachError::Protocol(_)))
+            ));
+            assert_eq!(
+                reader.buffer.len(),
+                MAX_RECORD_BYTES - 1,
+                "oversize was never appended"
+            );
+        }
+        let mut reader = Reader::new(session());
+        assert!(
+            reader.decode(&vec![b' '; MAX_RECORD_BYTES]).is_err(),
+            "blank bytes cannot bypass the bound"
+        );
+        assert!(reader.buffer.is_empty());
+    }
+
+    #[test]
+    fn reader_fragments_preserve_utf8_and_multiple_complete_records() {
+        let payload = b"{\"seq\":1,\"ts_ms\":10,\"type\":\"prompt\",\"data\":{\"text\":\"caf\xc3\xa9\"}}\n{\"seq\":2,\"ts_ms\":20,\"type\":\"stop\",\"data\":{}}\n";
+        for width in 1..=payload.len() {
+            let mut reader = Reader::new(session());
+            let mut records = Vec::new();
+            for bytes in payload.chunks(width) {
+                records.extend(reader.decode(bytes).unwrap());
+                assert!(reader.decode(b"").unwrap().is_empty());
+            }
+            assert_eq!(records.len(), 2);
+            assert_eq!(records[0].data["text"], "café");
+            assert_eq!(records[1].seq, 2);
+            assert!(matches!(
+                reader.absorb(ready_frame()).unwrap(),
+                Absorbed::Ready
+            ));
+        }
+    }
+
+    #[test]
+    fn reader_rejects_incomplete_ready_close_and_live_records() {
+        for end in [
+            ready_frame(),
+            closed_frame(),
+            FrameKind::Event {
+                terminal: Some(session()),
+                event: AgentEvent::ResourceClosed { exit_status: None },
+                stamp: None,
+            },
+        ] {
+            let mut reader = Reader::new(session());
+            reader.decode(b"{\"seq\":1").unwrap();
+            assert!(matches!(
+                reader.absorb(end),
+                Err(AgentSessionError::Transport(AttachError::Protocol(_)))
+            ));
+        }
+        let partial = b"{\"seq\":1,\"ts_ms\":1,\"type\":\"stop\",\"data\":{}}\n{";
+        for payload in [partial.as_slice(), b"", b"\n"] {
+            let mut reader = Reader::new(session());
+            assert!(
+                matches!(
+                    reader.absorb(live_frame(payload)),
+                    Err(AgentSessionError::Transport(AttachError::Protocol(_)))
+                ),
+                "a valid prefix cannot hide a partial or empty live batch"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn malformed_bootstrap_publishes_nothing_and_detaches() {
+        assert_failed_bootstrap_detaches(b"{partial").await;
+    }
+
+    #[tokio::test]
+    async fn malformed_json_already_refused_by_the_decoder_still_detaches() {
+        assert_failed_bootstrap_detaches(b"not json\n").await;
+    }
+
+    async fn assert_failed_bootstrap_detaches(payload: &[u8]) {
+        let spec = ScriptSpec::new()
+            .server_features(kinds())
+            .agent_log_bootstrap_bytes(&session(), payload, false);
+        let (_dir, socket, server) = serve(spec);
+        let mut conn = Connection::connect(&socket).await.unwrap();
+        let mut records = Vec::new();
+        let error = log(&mut conn, &session(), LogOptions::default(), |record| {
+            records.push(record);
+            true
+        })
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                AgentSessionError::Transport(AttachError::Protocol(_))
+            ),
+            "{error:?}"
+        );
+        assert!(records.is_empty());
+        drop(conn);
+        let seen = server.await.unwrap();
+        assert!(
+            seen.iter().any(|frame| matches!(frame, FrameKind::Command {
+            command: Command::DetachResource { terminal_id }, ..
+        } if *terminal_id == session())),
+            "failure must detach: {seen:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_live_batch_publishes_no_prefix_and_detaches() {
+        let spec = ScriptSpec::new()
+            .server_features(kinds())
+            .agent_log_bootstrap(&session(), &[])
+            .push(live_frame(
+                b"{\"seq\":1,\"ts_ms\":1,\"type\":\"stop\",\"data\":{}}\n{",
+            ));
+        let (_dir, socket, server) = serve(spec);
+        let mut conn = Connection::connect(&socket).await.unwrap();
+        let mut records = Vec::new();
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                log(
+                    &mut conn,
+                    &session(),
+                    LogOptions {
+                        follow: true,
+                        tail: None
+                    },
+                    |record| {
+                        records.push(record);
+                        true
+                    }
+                )
+            )
+            .await
+            .expect("malformed live frame must fail promptly")
+            .is_err()
+        );
+        assert!(records.is_empty());
+        drop(conn);
+        let seen = server.await.unwrap();
+        assert!(seen.iter().any(|frame| matches!(frame, FrameKind::Command {
+            command: Command::DetachResource { terminal_id }, ..
+        } if *terminal_id == session())));
+    }
+
+    #[tokio::test]
+    async fn closed_bootstrap_completes_a_follow_without_waiting_for_another_close() {
+        let payload = b"{\"seq\":1,\"ts_ms\":1,\"type\":\"stop\",\"data\":{}}\n";
+        let spec = ScriptSpec::new()
+            .server_features(kinds())
+            .agent_log_bootstrap_bytes(&session(), payload, true);
+        let (_dir, socket, server) = serve(spec);
+        let mut conn = Connection::connect(&socket).await.unwrap();
+        let mut records = Vec::new();
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            log(
+                &mut conn,
+                &session(),
+                LogOptions {
+                    follow: true,
+                    tail: None,
+                },
+                |record| {
+                    records.push(record);
+                    true
+                },
+            ),
+        )
+        .await
+        .expect("already closed stream must finish")
+        .unwrap();
+        assert_eq!(outcome.end, LogEnd::SessionClosed);
+        assert_eq!((outcome.retained, outcome.delivered), (1, 1));
+        assert_eq!(records.len(), 1);
+        drop(conn);
+        server.await.unwrap();
     }
 }

@@ -234,6 +234,38 @@ impl ScriptSpec {
         self
     }
 
+    /// An agent bootstrap carrying exact JSONL bytes (possibly malformed).
+    /// Frame order stays fixed: BEGIN, CHUNK, then READY, or `RESOURCE_CLOSED`
+    /// when `closed` models a resource ending during its bootstrap.
+    #[must_use]
+    pub fn agent_log_bootstrap_bytes(
+        mut self,
+        session: &ResourceId,
+        bytes: &[u8],
+        closed: bool,
+    ) -> Self {
+        self = self.agent_log_bootstrap(session, &[]);
+        let ready = self.priming.pop();
+        self.priming.push(FrameKind::BootstrapChunk {
+            terminal_id: session.clone(),
+            stream_id: FIXTURE_STREAM_ID,
+            bootstrap_id: FIXTURE_BOOTSTRAP_ID,
+            chunk_seq: 0,
+            payload: Bytes::copy_from_slice(bytes),
+        });
+        if closed {
+            self.priming.push(FrameKind::ResourceClosed {
+                terminal_id: session.clone(),
+                exit_status: None,
+                reason: phux_protocol::wire::frame::CloseReason::Unknown,
+                signal: None,
+            });
+        } else {
+            self.priming.extend(ready);
+        }
+        self
+    }
+
     /// The `COMMAND_RESULT` every `APPEND_RESOURCE_OUTPUT` is answered with:
     /// `OkWith(Json({"seq", "ts_ms"}))` for the stamped header, or
     /// `Error { code, .. }` for one of the typed refusals.
