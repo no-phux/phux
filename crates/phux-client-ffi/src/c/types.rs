@@ -23,14 +23,16 @@ pub const DETACH_REASON_UNSTATED: u32 = 0xFFFF;
 
 /// `PhuxClientEffect.kind` carrying `AgentEventsJsonlV1` records.
 ///
-/// One effect holds one or more complete records from an `AgentSession`
-/// resource stream. The bridge never rewrites or splits records; `bytes` is
-/// the wire payload byte-for-byte.
+/// One effect holds zero or more complete records from an `AgentSession`
+/// resource stream. The kernel validated and decoded them; `bytes` re-encodes
+/// their JSON-lines shape without splitting records.
 pub const EFFECT_AGENT_RECORDS: u32 = 4;
 /// `detail` on an `AGENT_RECORDS` effect: the complete retained backlog of a
-/// stream generation, published once at `BOOTSTRAP_READY`.
+/// stream generation, published at `BOOTSTRAP_READY`. Replace all records held,
+/// including when the batch is empty.
 pub const AGENT_RECORDS_RETAINED: u32 = 1;
-/// `detail` on an `AGENT_RECORDS` effect: records from one live output frame.
+/// `detail` on an `AGENT_RECORDS` effect: an incremental batch to append, from
+/// live output or a retained resume suffix committed at `BOOTSTRAP_READY`.
 pub const AGENT_RECORDS_LIVE: u32 = 2;
 /// `detail` on an `AGENT_RECORDS` effect: the resource closed; `bytes` is
 /// empty and the resource leaves the resource list.

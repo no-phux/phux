@@ -102,12 +102,22 @@ pub(in crate::wire) fn decode_bootstrap_profile(
 pub(in crate::wire) const fn decode_bootstrap_stream_profile(
     codec: BootstrapCodec,
     output_mode: u8,
+    resume_after_seq: Option<u64>,
 ) -> Result<BootstrapStreamProfile, DecodeError> {
-    match (codec, output_mode) {
-        (BootstrapCodec::Native(codec), 0) => Ok(BootstrapStreamProfile::NativeState { codec }),
-        (BootstrapCodec::SynthesizedVtV1, 0) => Ok(BootstrapStreamProfile::SynthesizedVtRaw),
-        (BootstrapCodec::SynthesizedVtV1, 1) => Ok(BootstrapStreamProfile::SynthesizedVtStateSync),
-        (BootstrapCodec::AgentEventsJsonlV1, 0) => Ok(BootstrapStreamProfile::AgentEventsJsonlV1),
+    match (codec, output_mode, resume_after_seq) {
+        (BootstrapCodec::Native(codec), 0, None) => {
+            Ok(BootstrapStreamProfile::NativeState { codec })
+        }
+        (BootstrapCodec::SynthesizedVtV1, 0, None) => Ok(BootstrapStreamProfile::SynthesizedVtRaw),
+        (BootstrapCodec::SynthesizedVtV1, 1, None) => {
+            Ok(BootstrapStreamProfile::SynthesizedVtStateSync)
+        }
+        (BootstrapCodec::AgentEventsJsonlV1, 0, None) => {
+            Ok(BootstrapStreamProfile::AgentEventsJsonlV1)
+        }
+        (BootstrapCodec::AgentEventsJsonlV1, 0, Some(after_seq)) => {
+            Ok(BootstrapStreamProfile::AgentEventsJsonlResumeV1 { after_seq })
+        }
         _ => Err(DecodeError::InvalidBootstrapProfile),
     }
 }

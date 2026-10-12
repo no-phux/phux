@@ -228,7 +228,8 @@ pub enum FrameKind {
         message: String,
     },
 
-    /// `BOOTSTRAP_BEGIN` — declares one replacement replica generation.
+    /// `BOOTSTRAP_BEGIN` — declares one replica generation. Agent streams
+    /// either replace the retained log or append a cursor-anchored suffix.
     BootstrapBegin {
         /// Target terminal.
         terminal_id: ResourceId,
@@ -236,8 +237,8 @@ pub enum FrameKind {
         stream_id: StreamId,
         /// New generation for this stream.
         bootstrap_id: BootstrapId,
-        /// Concrete stream profile. Its variants encode the `codec` and
-        /// `output_mode` fields without permitting native `StateSync`.
+        /// Concrete stream profile: codec, output mode, and optional agent
+        /// resume anchor. Native `StateSync` is not permitted.
         profile: BootstrapStreamProfile,
         /// Authoritative PTY width at the actor cut.
         cols: u16,
@@ -1442,10 +1443,9 @@ impl FrameKind {
         u32_field(enc, field::attach_ready::ATTACH_ID, attach_id);
     }
 
-    /// Write the profile half of `BOOTSTRAP_BEGIN`: codec, geometry, base seq.
-    ///
-    /// The stream profile projects onto the wire as a `(codec, output_mode)`
-    /// pair; native state always means raw, byte-identical PTY continuation.
+    /// Write the profile half of `BOOTSTRAP_BEGIN`: codec, geometry, cut,
+    /// and optional agent resume anchor. Native state always means raw,
+    /// byte-identical PTY continuation.
     fn encode_bootstrap_begin_profile(
         enc: &mut Encoder<'_>,
         profile: BootstrapStreamProfile,
@@ -1463,7 +1463,8 @@ impl FrameKind {
             BootstrapStreamProfile::SynthesizedVtStateSync => {
                 (BootstrapCodec::SynthesizedVtV1, OutputMode::StateSync)
             }
-            BootstrapStreamProfile::AgentEventsJsonlV1 => {
+            BootstrapStreamProfile::AgentEventsJsonlV1
+            | BootstrapStreamProfile::AgentEventsJsonlResumeV1 { .. } => {
                 (BootstrapCodec::AgentEventsJsonlV1, OutputMode::Raw)
             }
         };
@@ -1478,6 +1479,9 @@ impl FrameKind {
             output_mode.as_wire(),
         );
         u64_field(enc, field::bootstrap_begin::BASE_SEQ, base_seq);
+        if let BootstrapStreamProfile::AgentEventsJsonlResumeV1 { after_seq } = profile {
+            u64_field(enc, field::bootstrap_begin::RESUME_AFTER_SEQ, after_seq);
+        }
     }
 
     /// Write the `BOOTSTRAP_CHUNK` payload.

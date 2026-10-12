@@ -2861,6 +2861,7 @@ async fn negotiate_hello(
                 ServerFeatureExt::PathQuery,
                 ServerFeatureExt::ResizeCellPx,
                 ServerFeatureExt::CommittedTeardown,
+                ServerFeatureExt::AgentStreamResume,
             ]))
             .with_compression(compression),
         server_id: state.with(|server| server.server_incarnation().as_bytes().to_vec()),
@@ -4119,6 +4120,7 @@ async fn bind_terminal_stream(
         selection.profile,
         selection.limits,
         token,
+        None,
     )
     .await
     {
@@ -5144,6 +5146,7 @@ fn subscribe_via_hub(
             // Stamped by `subscribe` at enqueue.
             seq: 0,
             awaits_snapshot: false,
+            resource_kind: None,
             bootstrap_profile: None,
             bootstrap_limits: None,
         },

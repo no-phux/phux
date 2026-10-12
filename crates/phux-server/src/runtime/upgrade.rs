@@ -502,6 +502,7 @@ impl AgentSessionSeal {
                     .send(BootstrapRequest {
                         reply,
                         seal: Some(false),
+                        after_seq: None,
                     })
                     .await
                     .is_ok()
@@ -536,6 +537,7 @@ impl Drop for AgentSessionSeal {
             let unseal = || BootstrapRequest {
                 reply: oneshot::channel().0,
                 seal: Some(false),
+                after_seq: None,
             };
             if let Err(mpsc::error::TrySendError::Full(_)) = bootstrap.try_send(unseal()) {
                 // A full mailbox must not leave the stream sealed for good.
@@ -1219,7 +1221,11 @@ mod tests {
                 // queued unseal was applied, without depending on select order.
                 let (reply, received) = oneshot::channel();
                 bootstrap
-                    .send(BootstrapRequest { reply, seal: None })
+                    .send(BootstrapRequest {
+                        reply,
+                        seal: None,
+                        after_seq: None,
+                    })
                     .await
                     .unwrap();
                 assert_eq!(received.await.unwrap().base_seq, 1);
@@ -1277,6 +1283,7 @@ mod tests {
     fn empty_agent_cut() -> AgentSessionBootstrap {
         AgentSessionBootstrap {
             base_seq: 0,
+            resume_after_seq: None,
             records: Vec::new(),
             dropped: 0,
             ended: false,
@@ -1290,6 +1297,7 @@ mod tests {
             .try_send(BootstrapRequest {
                 reply: oneshot::channel().0,
                 seal: None,
+                after_seq: None,
             })
             .unwrap();
         let (healthy, mut healthy_rx) = mpsc::channel(1);
@@ -1326,6 +1334,7 @@ mod tests {
             .try_send(BootstrapRequest {
                 reply: oneshot::channel().0,
                 seal: None,
+                after_seq: None,
             })
             .unwrap();
         let mut seal = AgentSessionSeal {
@@ -1474,6 +1483,7 @@ mod tests {
             .try_send(BootstrapRequest {
                 reply: oneshot::channel().0,
                 seal: None,
+                after_seq: None,
             })
             .unwrap();
         let (plan, listener, original) = unexecutable_plan(AgentSessionSeal {

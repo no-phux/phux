@@ -206,6 +206,7 @@ impl ControlPlane {
             command: Command::AttachResource {
                 terminal_id: terminal_id.clone(),
                 role_policy: self.options.attach_role,
+                agent_after_seq: None,
             },
         });
         // ATTACH_RESOURCE does not resize; reflow the terminal to this

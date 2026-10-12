@@ -404,6 +404,8 @@ pub const Host = struct {
     /// Agent sessions from the resource catalog, with the state their record
     /// streams declare. Never a replica: see agent_sessions.zig.
     agents: agent_sessions.Registry = .{},
+    /// Incarnation owning committed agent evidence across transport epochs.
+    agent_server_id: []u8 = &.{},
     attached_session_id: ?u32 = null,
     /// The rename state last read from this connection's client: its
     /// session-list revision and status. A new client starts from zero.
@@ -458,6 +460,7 @@ pub const Host = struct {
     pub fn destroy(host: *Host) void {
         host.path_results.deinit();
         host.agents.deinit(host.gpa);
+        host.gpa.free(host.agent_server_id);
         host.workspace_store.deinit(host.gpa);
         host.clearSearchResults(null);
         for (host.terminals.items) |*terminal| terminal.deinit(host.gpa);
@@ -2142,14 +2145,20 @@ pub const Host = struct {
         };
         const id = try remoteFromC(effect.terminal_id);
         const payload = try effectSlice(effect.bytes);
-        const limit = if (kind == .retained) max_agent_retained_bytes else max_agent_records_bytes;
-        if (payload.len > limit) return error.Protocol;
         const generation: provider.Generation = .{
             .epoch_id = host.client_generation,
             .stream_id = effect.stream_id,
             .bootstrap_id = effect.bootstrap_id,
             .last_seq = effect.seq,
         };
+        // LIVE also carries a retained resume suffix. Its new committed
+        // generation can contain the whole retained-ring budget, not one frame.
+        const resumed = if (host.agents.findConst(id)) |session|
+            if (session.generation) |current| !current.sameReplica(generation) else false
+        else
+            false;
+        const limit = if (kind == .retained or resumed) max_agent_retained_bytes else max_agent_records_bytes;
+        if (payload.len > limit) return error.Protocol;
         const changed = if (reintroduced)
             host.agents.withdrawRecordsGeneration(id, generation)
         else
@@ -2162,6 +2171,7 @@ pub const Host = struct {
     /// good roster stands. Spans are borrowed; `adopt` copies what it keeps.
     fn refreshResources(host: *Host) !void {
         if (host.state() != .attached) return;
+        try host.observeAgentIncarnation(host.serverId() orelse return error.Protocol);
         const count = c.phux_client_resource_count(host.client);
         var entries: std.ArrayListUnmanaged(agent_sessions.Entry) = .empty;
         defer entries.deinit(host.gpa);
@@ -2174,6 +2184,18 @@ pub const Host = struct {
             try host.appendAgentIdentity(&identities, raw);
         }
         try host.adoptAgentCatalog(entries.items, identities.items);
+    }
+
+    fn observeAgentIncarnation(host: *Host, server_id: []const u8) !void {
+        if (std.mem.eql(u8, host.agent_server_id, server_id)) {
+            host.agents.reconnectEpoch(host.client_generation);
+            return;
+        }
+        const owned = try host.gpa.dupe(u8, server_id);
+        host.gpa.free(host.agent_server_id);
+        host.agent_server_id = owned;
+        if (host.agents.all().len != 0) host.metadata_changed = true;
+        host.agents.clear(host.gpa);
     }
 
     fn appendAgentEntry(host: *Host, entries: *std.ArrayListUnmanaged(agent_sessions.Entry), raw: c.PhuxResourceInfo) !void {
@@ -2888,6 +2910,63 @@ test "retained agent backlog above one append remains valid" {
     try std.testing.expectEqual(AgentState.blocked, host.agentSessions()[0].state());
 }
 
+test "agent resume retains evidence only across the same server incarnation" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    try host.observeAgentIncarnation("same-server");
+    const catalog = [_]c.PhuxResourceInfo{resourceInfoFixture(9, c.PHUX_RESOURCE_AGENT_SESSION, null, "claude", "session", "working")};
+    try adoptCatalogFixture(host, &catalog);
+    var effect = agentRecordsEffect(9, c.PHUX_CLIENT_AGENT_RECORDS_RETAINED, "{\"seq\":1,\"type\":\"ask\",\"data\":{\"question\":\"keep?\"}}");
+    try host.captureAgentRecords(&effect);
+    const epoch = host.client_generation;
+    host.retirePreviousConnection(try host.nextGeneration());
+    try host.observeAgentIncarnation("same-server");
+    try adoptCatalogFixture(host, &catalog);
+    try std.testing.expectEqual(AgentState.blocked, host.agentSessions()[0].state());
+    try std.testing.expectEqualStrings("keep?", host.agentSessions()[0].latest_evidence.?.reason.slice());
+    try std.testing.expectEqual(epoch + 1, host.agentSessions()[0].epoch_id);
+    effect.detail = c.PHUX_CLIENT_AGENT_RECORDS_LIVE;
+    // The C queue can deliver an original old-generation batch only after
+    // this catalog rebind. It must apply before the newer resumed suffix.
+    effect.seq = 2;
+    effect.bytes = bytes("{\"seq\":2,\"type\":\"ask\",\"data\":{\"question\":\"late?\"}}");
+    try host.captureAgentRecords(&effect);
+    try std.testing.expectEqualStrings("late?", host.agentSessions()[0].latest_evidence.?.reason.slice());
+    effect.stream_id += 1;
+    effect.bootstrap_id += 1;
+    effect.seq = 3;
+    effect.bytes = bytes("{\"seq\":3,\"type\":\"provider_raw\"}");
+    try host.captureAgentRecords(&effect);
+    try std.testing.expectEqual(AgentState.blocked, host.agentSessions()[0].state());
+    try std.testing.expectEqual(@as(?u64, 3), host.agentSessions()[0].last_record_seq);
+    try std.testing.expectEqualStrings("late?", host.agentSessions()[0].latest_evidence.?.reason.slice());
+    host.metadata_changed = false;
+    try host.captureAgentRecords(&effect);
+    try std.testing.expect(!host.metadata_changed);
+    // Eviction fallback is a full replacement, including its empty form.
+    effect.detail = c.PHUX_CLIENT_AGENT_RECORDS_RETAINED;
+    effect.bootstrap_id += 1;
+    effect.seq = 0;
+    effect.bytes = bytes("");
+    try host.captureAgentRecords(&effect);
+    try std.testing.expectEqual(AgentState.working, host.agentSessions()[0].state());
+    try std.testing.expect(host.agentSessions()[0].latest_evidence == null);
+    try std.testing.expect(host.agentSessions()[0].last_record_seq == null);
+    effect.detail = c.PHUX_CLIENT_AGENT_RECORDS_LIVE;
+    effect.seq = 4;
+    effect.bytes = bytes("{\"seq\":4,\"type\":\"ask\"}");
+    try host.captureAgentRecords(&effect);
+    try std.testing.expectEqual(AgentState.blocked, host.agentSessions()[0].state());
+    host.retirePreviousConnection(try host.nextGeneration());
+    try host.observeAgentIncarnation("restarted-server");
+    try adoptCatalogFixture(host, &catalog);
+    try std.testing.expectEqual(AgentState.working, host.agentSessions()[0].state());
+    try std.testing.expect(host.agentSessions()[0].latest_evidence == null);
+    try std.testing.expect(host.agentSessions()[0].generation == null);
+}
+
 test "ABI generations fence evidence and same-state updates invalidate metadata" {
     var bridge = transport.Bridge.init(std.testing.allocator);
     defer bridge.deinit();
@@ -2976,6 +3055,9 @@ test "same-drain reintroduced catalog membership survives queued older CLOSED" {
     // the membership result of omission followed by reappearance in one drain.
     try adoptCatalogFixture(host, &catalog);
     host.metadata_changed = false;
+    // An empty successful resume commits this newer generation in C without
+    // sending records. Cockpit still knows only the preceding retained batch.
+    effect.bootstrap_id += 1;
     effect.detail = c.PHUX_CLIENT_AGENT_RECORDS_CLOSED;
     effect.bytes = bytes("");
     try host.captureAgentRecordDelivery(&effect, true);
@@ -4571,4 +4653,28 @@ test "retiring a connection keeps published canvases and order while fencing its
     // A published terminal survives as a frozen canvas, not as a live one.
     try std.testing.expectEqual(provider.Phase.reconnecting, retired.phase);
     try std.testing.expect(!retired.seen_in_attach);
+}
+
+test "empty agent resume permits newer authoritative closure and fences older closures" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    try adoptCatalogFixture(host, &.{resourceInfoFixture(9, c.PHUX_RESOURCE_AGENT_SESSION, null, "claude", "session", "working")});
+    var effect = agentRecordsEffect(9, c.PHUX_CLIENT_AGENT_RECORDS_RETAINED, "{\"seq\":1,\"type\":\"ask\"}");
+    try host.captureAgentRecords(&effect);
+    var older = effect;
+    older.bootstrap_id -= 1;
+    older.detail = c.PHUX_CLIENT_AGENT_RECORDS_CLOSED;
+    older.bytes = bytes("");
+    try host.captureAgentRecordDelivery(&older, false);
+    try std.testing.expectEqual(@as(usize, 1), host.agentSessions().len);
+    try std.testing.expectEqual(AgentState.blocked, host.agentSessions()[0].state());
+    // READY on an empty resume sends no records, then CLOSED carries its
+    // committed newer identity. No full-prefix copy is needed to authorize it.
+    effect.bootstrap_id += 1;
+    effect.detail = c.PHUX_CLIENT_AGENT_RECORDS_CLOSED;
+    effect.bytes = bytes("");
+    try host.captureAgentRecordDelivery(&effect, false);
+    try std.testing.expectEqual(@as(usize, 0), host.agentSessions().len);
 }

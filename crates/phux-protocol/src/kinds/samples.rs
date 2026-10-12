@@ -81,6 +81,7 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
             Command::AttachResource {
                 terminal_id: terminal(),
                 role_policy: None,
+                agent_after_seq: None,
             },
             &C_ATTACH_RESOURCE,
         ),

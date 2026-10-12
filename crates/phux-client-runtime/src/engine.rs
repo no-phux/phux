@@ -25,6 +25,7 @@ use phux_client_core::grid::GridProjector;
 use phux_client_core::history::HistoryCacheConfig;
 #[cfg(feature = "engine")]
 use phux_client_core::history::{DocumentAnchorId, HistoryStatus};
+pub use phux_client_core::session::AgentStreamInfo;
 #[cfg(feature = "engine")]
 use phux_client_core::session::ClosedReplica;
 use phux_client_core::session::{
@@ -472,7 +473,7 @@ pub struct EngineConfig {
 }
 
 impl EngineConfig {
-    fn history(&self) -> HistoryCacheConfig {
+    pub(crate) fn history(&self) -> HistoryCacheConfig {
         self.history.unwrap_or_else(|| HistoryCacheConfig {
             max_materialized_rows: self.scrollback_lines as usize,
             request_max_bytes: self.limits.max_history_page_bytes(),
@@ -527,6 +528,7 @@ enum Lifecycle {
 enum Query {
     HasProjection(ResourceId, Sender<bool>),
     IsClosed(ResourceId, Sender<bool>),
+    AgentStreamInfo(ResourceId, Sender<Option<AgentStreamInfo>>),
     InputEligibility(ResourceId, Sender<InputEligibility>),
     InputReady(ResourceId, Sender<bool>),
     #[cfg(feature = "engine")]
@@ -707,6 +709,17 @@ impl EngineHandle {
     pub fn is_closed(&self, terminal_id: &ResourceId) -> bool {
         self.request(|reply| Command::Query(Query::IsClosed(terminal_id.clone(), reply)))
             .unwrap_or(false)
+    }
+
+    /// The kernel's committed agent generation and record cursor.
+    ///
+    /// Returns `None` before successful READY or after detach, closure, or
+    /// incarnation replacement. Staged or rejected records never advance it.
+    #[must_use]
+    pub fn agent_stream_info(&self, terminal_id: &ResourceId) -> Option<AgentStreamInfo> {
+        self.request(|reply| Command::Query(Query::AgentStreamInfo(terminal_id.clone(), reply)))
+            .ok()
+            .flatten()
     }
 
     /// The kernel's current input eligibility for one terminal.

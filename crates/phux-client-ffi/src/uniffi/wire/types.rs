@@ -632,8 +632,9 @@ pub enum WireEvent {
     /// record's server-assigned sequence, 0 when there is none.
     ///
     /// `Retained` is the session's whole retained stream: replace every
-    /// record held for it. It arrives once per subscription, again after a
-    /// reconnect or a resync. `Live` appends one live output frame.
+    /// record held for it, even when empty. `Live` appends an incremental
+    /// batch from live output or a retained resume suffix after reconnect or
+    /// resync. An empty successful resume need not emit an event.
     /// `Closed` has no records: the session ended, its pane was detached,
     /// or the server restarted; nothing follows, and its records may be
     /// dropped. The id may name a fresh pane or session after a restart. `parent_terminal_id`, `provider` and
@@ -666,7 +667,7 @@ pub enum WireEvent {
 pub enum AgentRecordsKind {
     /// The whole retained stream; replaces every record held.
     Retained,
-    /// One live output frame, appended.
+    /// An incremental batch from live output or a retained resume suffix, appended.
     Live,
     /// The session ended; no records follow.
     Closed,

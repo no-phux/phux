@@ -522,16 +522,18 @@ typedef struct PhuxOperationResult {
 /**
  * PHUX_CLIENT_EFFECT_AGENT_RECORDS carries AgentEventsJsonlV1 records from an
  * AgentSession resource (PhuxResourceInfo.kind == PHUX_RESOURCE_AGENT_SESSION).
- * terminal_id is the resource id, stream_id/bootstrap_id the generation its
- * BOOTSTRAP_BEGIN opened, detail a PhuxClientAgentRecordsKind, and bytes zero
+ * terminal_id is the resource id, stream_id/bootstrap_id its committed
+ * generation, detail a PhuxClientAgentRecordsKind, and bytes zero
  * or more complete records, one JSON object per line
  * ({"seq","ts_ms","type","data"}; key order is not significant). The kernel
  * validated every record before it reached the bridge; a stream whose payload
  * fails validation retires its generation with a STATUS RESYNC_REQUIRED effect
- * instead. RETAINED is the whole retained backlog of a generation, delivered
- * once at BOOTSTRAP_READY; LIVE is one live output frame; seq is the newest
- * record's server-assigned sequence for both. CLOSED has empty bytes and
- * retires the resource from the catalog. Hosts must tolerate effect kinds they
+ * instead. RETAINED replaces the whole retained backlog, even when empty, at
+ * BOOTSTRAP_READY; LIVE appends an incremental batch, from a live output frame
+ * or a retained resume suffix at BOOTSTRAP_READY. An empty successful resume
+ * need not emit an effect. seq is the newest record's server-assigned sequence,
+ * or zero for an empty replacement. CLOSED has empty bytes and retires the
+ * resource from the catalog. Hosts must tolerate effect kinds they
  * do not recognise; new kinds are additive.
  */
 typedef enum PhuxClientEffectKind {

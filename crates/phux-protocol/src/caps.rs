@@ -676,8 +676,14 @@ pub enum BootstrapStreamProfile {
     SynthesizedVtRaw,
     /// Synthesized VT bootstrap followed by `StateSync` bytes.
     SynthesizedVtStateSync,
-    /// Agent-event JSONL records, raw live: every `AgentSession` stream.
+    /// Full retained agent-event JSONL replacement, followed by raw live records.
     AgentEventsJsonlV1,
+    /// Agent-event JSONL suffix appended after an already committed record.
+    /// The server advertises `AgentStreamResume` before accepting a cursor.
+    AgentEventsJsonlResumeV1 {
+        /// Last record already committed by the consumer.
+        after_seq: u64,
+    },
 }
 
 /// Select one explicit profile and the negotiated payload bounds.
@@ -1066,6 +1072,9 @@ pub enum ServerFeatureExt {
     /// (`docs/spec/L1.md` §5.2): the next `GET_STATE` already omits the
     /// killed resources, so a client need not wait for their reap.
     CommittedTeardown = 0x0000_0004,
+    /// `ATTACH_RESOURCE` accepts an agent cursor and explicitly distinguishes
+    /// a resumed suffix from a full retained-ring replacement.
+    AgentStreamResume = 0x0000_0008,
 }
 
 /// Known bits in `HELLO_OK.server_caps.features_ext`.
@@ -1075,7 +1084,8 @@ pub struct ServerFeatureExtSet(u32);
 impl ServerFeatureExtSet {
     const KNOWN: u32 = ServerFeatureExt::PathQuery as u32
         | ServerFeatureExt::ResizeCellPx as u32
-        | ServerFeatureExt::CommittedTeardown as u32;
+        | ServerFeatureExt::CommittedTeardown as u32
+        | ServerFeatureExt::AgentStreamResume as u32;
 
     /// No extended features.
     #[must_use]

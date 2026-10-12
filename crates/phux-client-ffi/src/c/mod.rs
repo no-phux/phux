@@ -615,7 +615,12 @@ fn apply_server_frame(
     if consume_retired_close(client, &frame) {
         return Ok(false);
     }
-    let agent_generation = agent_generation(&frame);
+    let agent_generation = match &frame {
+        FrameKind::BootstrapReady { terminal_id, .. } if client.is_agent_stream(terminal_id) => {
+            Some(terminal_id.clone())
+        }
+        _ => None,
+    };
     let validation = validate_runtime_frame(client, &frame);
     let runtime_result = {
         let mut control = client.control();
@@ -630,41 +635,15 @@ fn apply_server_frame(
         drop(control);
         result.map_err(control_error)
     };
-    record_agent_generation(client, runtime_result.is_ok(), agent_generation);
+    if runtime_result.is_ok()
+        && let Some(id) = agent_generation
+    {
+        client.sync_agent_generation(&id);
+    }
     let attached = client.process_runtime_events()?;
     runtime_result?;
     follow_negotiated_session(client)?;
     Ok(attached)
-}
-
-type AgentGeneration = (
-    phux_protocol::ResourceId,
-    phux_protocol::StreamId,
-    phux_protocol::BootstrapId,
-);
-
-fn agent_generation(frame: &FrameKind) -> Option<AgentGeneration> {
-    let FrameKind::BootstrapBegin {
-        terminal_id,
-        stream_id,
-        bootstrap_id,
-        profile: phux_protocol::BootstrapStreamProfile::AgentEventsJsonlV1,
-        ..
-    } = frame
-    else {
-        return None;
-    };
-    Some((terminal_id.clone(), *stream_id, *bootstrap_id))
-}
-
-fn record_agent_generation(
-    client: &mut Client,
-    accepted: bool,
-    generation: Option<AgentGeneration>,
-) {
-    if accepted && let Some((terminal_id, stream_id, bootstrap_id)) = generation {
-        client.open_agent_generation(&terminal_id, stream_id, bootstrap_id);
-    }
 }
 
 fn follow_negotiated_session(client: &mut Client) -> Result<(), BridgeError> {
@@ -707,6 +686,7 @@ fn validate_runtime_frame(client: &Client, frame: &FrameKind) -> Result<(), Brid
             let agent_profile = matches!(
                 profile,
                 phux_protocol::BootstrapStreamProfile::AgentEventsJsonlV1
+                    | phux_protocol::BootstrapStreamProfile::AgentEventsJsonlResumeV1 { .. }
             );
             if client.is_agent_stream(terminal_id) != agent_profile {
                 return Err(BridgeError::protocol(
@@ -3124,7 +3104,10 @@ mod tests {
             feed(client, &attached_frame(7, snapshot)),
             PhuxClientResult::Ok
         );
-        feed_bootstrap(client, &terminal, (1, 1), (80, 24), b"");
+        // A real server mints a fresh generation for every transport attach.
+        // SAFETY: this fixture exclusively owns the client.
+        let generation = unsafe { (*client).inner.control().connection_epoch() };
+        feed_bootstrap(client, &terminal, (1, generation), (80, 24), b"");
         assert_eq!(
             feed(client, &FrameKind::AttachReady { attach_id: 7 }),
             PhuxClientResult::Ok

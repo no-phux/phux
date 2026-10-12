@@ -789,6 +789,7 @@ impl<'a> Decoder<'a> {
         let mut rows = None;
         let mut output_mode = None;
         let mut base_seq = None;
+        let mut resume_after_seq = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
                 f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
@@ -799,10 +800,21 @@ impl<'a> Decoder<'a> {
                 f::ROWS => rows = Some(sub!(value, Decoder::read_u16_be)),
                 f::OUTPUT_MODE => output_mode = Some(sub!(value, Decoder::read_u8)),
                 f::BASE_SEQ => base_seq = Some(sub!(value, Decoder::read_u64_be)),
+                f::RESUME_AFTER_SEQ => {
+                    if value.len() != 8 {
+                        return Err(DecodeError::InvalidBootstrapProfile);
+                    }
+                    resume_after_seq = Some(sub!(value, Decoder::read_u64_be));
+                }
                 _ => {}
             }
         }
-        let profile = decode_bootstrap_stream_profile(req(codec)?, req(output_mode)?)?;
+        let profile =
+            decode_bootstrap_stream_profile(req(codec)?, req(output_mode)?, resume_after_seq)?;
+        let base_seq = req(base_seq)?;
+        if resume_after_seq.is_some_and(|after_seq| after_seq > base_seq) {
+            return Err(DecodeError::InvalidBootstrapProfile);
+        }
         let (cols, rows) = checked_bootstrap_dimensions(profile, cols, rows)?;
         Ok(FrameKind::BootstrapBegin {
             terminal_id: req(terminal_id)?,
@@ -811,7 +823,7 @@ impl<'a> Decoder<'a> {
             profile,
             cols,
             rows,
-            base_seq: req(base_seq)?,
+            base_seq,
         })
     }
 
@@ -1828,6 +1840,7 @@ fn checked_bootstrap_dimensions(
     let gridless = matches!(
         profile,
         crate::caps::BootstrapStreamProfile::AgentEventsJsonlV1
+            | crate::caps::BootstrapStreamProfile::AgentEventsJsonlResumeV1 { .. }
     );
     if gridless != (cols == 0 && rows == 0) {
         return Err(DecodeError::InvalidBootstrapProfile);

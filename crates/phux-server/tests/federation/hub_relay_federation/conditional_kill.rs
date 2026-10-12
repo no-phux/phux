@@ -120,6 +120,7 @@ fn another_hub_consumer_attaching_or_typing_refuses_the_kill_at_the_hub() {
         let attach = Command::AttachResource {
             terminal_id: pane.clone(),
             role_policy: None,
+            agent_after_seq: None,
         };
         let attached = command(&mut other, 8101, attach).await;
         assert!(

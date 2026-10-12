@@ -123,10 +123,7 @@ fn subscribe(client: &mut Client, resource: &ResourceInfo) -> Result<(), BridgeE
         .map_err(crate::c::control_error)?;
     client.agent_streams.insert(
         resource.id.clone(),
-        crate::c::client::AgentStream {
-            generation: None,
-            retained_pending: false,
-        },
+        crate::c::client::AgentStream { generation: None },
     );
     client
         .workspace
@@ -135,11 +132,13 @@ fn subscribe(client: &mut Client, resource: &ResourceInfo) -> Result<(), BridgeE
         .remove(&resource.id);
     let request_id = client.workspace.reserve_internal()?;
     let role_policy = client.next_attach_role();
+    let agent_after_seq = client.control().agent_after_seq(&resource.id);
     client.queue_frame(&FrameKind::Command {
         request_id,
         command: Command::AttachResource {
             terminal_id: resource.id.clone(),
             role_policy,
+            agent_after_seq,
         },
     })?;
     client
@@ -184,7 +183,7 @@ fn withdraw(client: &mut Client, id: &ResourceId, notify: bool) -> Result<(), Br
         );
         effect.stream_id = stream_id;
         effect.bootstrap_id = bootstrap_id;
-        client.owned_effects.push(effect);
+        client.push_agent_effect(effect);
         client.publish_effects();
     }
     // One borrow: two `client.control()` temporaries would both live to

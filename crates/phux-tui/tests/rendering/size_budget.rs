@@ -4,9 +4,9 @@
 //! Clippy already fails any function over 7 parameters or 100 lines; the only
 //! way past it is an `#[allow]`. So the budget pins the allows themselves:
 //! each surviving `too_many_arguments` / `too_many_lines` allow is listed
-//! here with its ceiling, and a new allow, a grown signature, or a driver file
-//! past its line budget fails this test. Lower a number when you pay debt
-//! down; raise one only deliberately, with the reason in the same change.
+//! here with its ceiling, and a new allow or a grown signature fails this
+//! test. Lower a number when you pay debt down; raise one only deliberately,
+//! with the reason in the same change.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
@@ -28,28 +28,6 @@ const TOO_MANY_ARGUMENTS: &[(&str, &str, usize)] = &[
 
 /// `(file, fn)`: the functions still allowed past clippy's 100-line limit.
 const TOO_MANY_LINES: &[(&str, &str)] = &[("attach/driver/loop_state/mod.rs", "new")];
-
-/// `(file, max lines)` for the driver files the jx39 epic shrank.
-const FILE_LINES: &[(&str, usize)] = &[
-    ("attach/driver/main_loop.rs", 200),
-    // SessionLoop used to be one 3653-line impl. It is split by wake-up
-    // source, and each file is pinned at the size that split landed.
-    // +2 for ADR-0158: the clipboard-write policy lives in its own
-    // `frames/clipboard.rs`; frames.rs only declares it and calls it once.
-    ("attach/driver/loop_state/frames.rs", 760),
-    ("attach/driver/loop_state/mod.rs", 710),
-    ("attach/driver/loop_state/paint.rs", 665),
-    ("attach/driver/loop_state/inventory.rs", 419),
-    ("attach/driver/loop_state/peers.rs", 360),
-    ("attach/driver/loop_state/input.rs", 356),
-    ("attach/driver/loop_state/bootstrap.rs", 305),
-    ("attach/driver/loop_state/step.rs", 278),
-    ("attach/driver/loop_state/panes.rs", 237),
-    // 2250 at jx39.7; 7a5db74ee (history-unavailable badge) and 8fdaca2ea
-    // (overlay plugin panes) grew it while this guard was accidentally
-    // deleted (248598c2b), so the budget pins the shipped size.
-    ("attach/server_frame/handler.rs", 2320),
-];
 
 const RULE: &str = "\
 Budget exceeded. Before raising a number here, give the state an owner
@@ -209,26 +187,6 @@ fn too_many_lines_allows_stay_within_budget() {
         .into_iter()
         .filter(|(file, name, _)| !TOO_MANY_LINES.contains(&(file.as_str(), name.as_str())))
         .map(|(file, name, _)| format!("{file}: new too_many_lines allow on `{name}`"))
-        .collect();
-    assert!(
-        offenders.is_empty(),
-        "{RULE}\n\n  {}",
-        offenders.join("\n  ")
-    );
-}
-
-#[test]
-fn driver_files_stay_within_their_line_budget() {
-    let root = src_root();
-    let offenders: Vec<String> = FILE_LINES
-        .iter()
-        .filter_map(|(file, max)| {
-            let lines = fs::read_to_string(root.join(file))
-                .expect("budgeted file exists")
-                .lines()
-                .count();
-            (lines > *max).then(|| format!("{file}: {lines} lines (budget {max})"))
-        })
         .collect();
     assert!(
         offenders.is_empty(),

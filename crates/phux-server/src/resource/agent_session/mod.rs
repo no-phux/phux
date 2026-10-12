@@ -67,11 +67,14 @@ pub enum AppendRejection {
     Closed,
 }
 
-/// A request for the stream's bootstrap: everything the ring retains.
+/// A request for an atomic stream cut, optionally resuming retained records.
 #[derive(Debug)]
 pub struct BootstrapRequest {
     /// Where the retained records are returned.
     pub reply: oneshot::Sender<AgentSessionBootstrap>,
+    /// Last committed consumer record; `None` requests the full retained ring.
+    /// Upgrade seal/unseal requests always use `None`.
+    pub after_seq: Option<u64>,
     /// Graceful upgrade only (ADR-0032): `Some(true)` seals the stream at
     /// this cut, so no append can be acked and then lost before the re-exec;
     /// `Some(false)` lifts the seal when the upgrade does not happen. `None`
@@ -85,7 +88,10 @@ pub struct AgentSessionBootstrap {
     /// The stream sequence the cut includes; live output resumes at
     /// `base_seq + 1`.
     pub base_seq: u64,
-    /// Retained records, oldest first, each a complete stamped JSONL line.
+    /// `Some` means `records` is a contiguous suffix after this cursor;
+    /// `None` means a full retained replacement, including on eviction.
+    pub resume_after_seq: Option<u64>,
+    /// Selected records, oldest first, each a complete stamped JSONL line.
     pub records: Vec<Bytes>,
     /// Records retention has evicted; non-zero means the replay starts
     /// mid-session.
@@ -272,15 +278,32 @@ impl AgentSessionActor {
         if let Some(seal) = request.seal {
             self.sealed = seal;
         }
-        let _ = request.reply.send(self.bootstrap());
+        // An upgrade must carry the full ring, even if a caller supplied a
+        // consumer cursor together with a seal/unseal request.
+        let after_seq = if request.seal.is_none() {
+            request.after_seq
+        } else {
+            None
+        };
+        let _ = request.reply.send(self.bootstrap(after_seq));
     }
 
-    /// The current bootstrap cut: the retained ring plus the sequence it
-    /// reaches.
-    fn bootstrap(&self) -> AgentSessionBootstrap {
+    /// Select the suffix directly by sequence arithmetic. The ring is a
+    /// contiguous tail ending at `base_seq`, even after byte-budget pruning;
+    /// no JSON parsing or traversal of records preceding the cursor is needed.
+    fn bootstrap(&self, after_seq: Option<u64>) -> AgentSessionBootstrap {
+        let base_seq = self.core.seq();
+        let retained = self.ring.len();
+        let suffix_len = after_seq
+            .and_then(|after_seq| base_seq.checked_sub(after_seq))
+            .and_then(|count| usize::try_from(count).ok())
+            .filter(|count| *count <= retained);
+        let resume_after_seq = suffix_len.and(after_seq);
+        let start = suffix_len.map_or(0, |count| retained - count);
         AgentSessionBootstrap {
-            base_seq: self.core.seq(),
-            records: self.ring.records().cloned().collect(),
+            base_seq,
+            resume_after_seq,
+            records: self.ring.records_from(start).cloned().collect(),
             dropped: self.ring.dropped(),
             ended: self.ended.load(Ordering::Relaxed),
         }
@@ -410,6 +433,114 @@ mod tests {
         rx.blocking_recv().expect("the engine always replies")
     }
 
+    fn cut(
+        actor: &mut AgentSessionActor,
+        after_seq: Option<u64>,
+        seal: Option<bool>,
+    ) -> AgentSessionBootstrap {
+        let (reply, mut rx) = oneshot::channel();
+        actor.handle_bootstrap(BootstrapRequest {
+            reply,
+            after_seq,
+            seal,
+        });
+        rx.try_recv().expect("the actor replies synchronously")
+    }
+
+    #[test]
+    fn resume_selects_the_first_boundary_a_batch_suffix_and_an_empty_cut() {
+        let (mut actor, _facet, _handle) = engine();
+        append(
+            &mut actor,
+            "{\"type\":\"prompt\"}\n{\"type\":\"ask\"}\n{\"type\":\"stop\"}",
+        )
+        .expect("accepted batch");
+        let full = cut(&mut actor, None, None);
+        let boundary = cut(&mut actor, Some(0), None);
+        assert_eq!(boundary.resume_after_seq, Some(0));
+        assert_eq!(boundary.records, full.records);
+        let inside = cut(&mut actor, Some(1), None);
+        assert_eq!(inside.resume_after_seq, Some(1));
+        assert_eq!(inside.base_seq, 3);
+        assert_eq!(inside.records, full.records[1..]);
+        let at_cut = cut(&mut actor, Some(3), None);
+        assert_eq!(at_cut.resume_after_seq, Some(3));
+        assert_eq!(at_cut.base_seq, 3);
+        assert!(at_cut.records.is_empty());
+        assert_eq!(
+            cut(&mut actor, Some(4), None),
+            full,
+            "future cursor replaces"
+        );
+    }
+
+    #[test]
+    fn evicted_cursor_replaces_but_the_first_retained_boundary_resumes() {
+        let (mut actor, _facet, _handle) = engine();
+        actor.ring = RecordRing::new(0);
+        append(
+            &mut actor,
+            "{\"type\":\"prompt\"}\n{\"type\":\"ask\"}\n{\"type\":\"stop\"}",
+        )
+        .expect("accepted");
+        let full = cut(&mut actor, None, None);
+        assert_eq!(
+            full.records.len(),
+            1,
+            "zero-byte budget keeps the newest record"
+        );
+        assert_eq!(full.dropped, 2);
+        assert_eq!(cut(&mut actor, Some(1), None), full, "cursor was evicted");
+        let boundary = cut(&mut actor, Some(2), None);
+        assert_eq!(boundary.resume_after_seq, Some(2));
+        assert_eq!(boundary.records, full.records);
+        assert!(cut(&mut actor, Some(3), None).records.is_empty());
+    }
+
+    #[test]
+    fn an_empty_ring_resumes_only_at_its_cut() {
+        let (mut actor, _facet, _handle) = engine();
+        let empty = cut(&mut actor, Some(0), None);
+        assert_eq!(empty.resume_after_seq, Some(0));
+        assert!(empty.records.is_empty());
+        assert_eq!(cut(&mut actor, Some(1), None).resume_after_seq, None);
+        actor.core.seq = 9;
+        assert_eq!(cut(&mut actor, Some(9), None).resume_after_seq, Some(9));
+        assert_eq!(cut(&mut actor, Some(8), None).resume_after_seq, None);
+        assert_eq!(cut(&mut actor, Some(10), None).resume_after_seq, None);
+    }
+
+    #[test]
+    fn upgrade_cuts_ignore_consumer_cursors_and_preserve_the_full_stream() {
+        let (mut actor, _facet, _handle) = engine();
+        append(&mut actor, "{\"type\":\"prompt\"}\n{\"type\":\"stop\"}").expect("accepted");
+        let full = cut(&mut actor, None, None);
+        let carried = cut(&mut actor, Some(2), Some(true));
+        assert_eq!(carried, full, "sealing carries every retained record");
+        assert!(matches!(
+            append(&mut actor, "{\"type\":\"prompt\"}"),
+            Err(AppendRejection::Overflow(_))
+        ));
+        assert_eq!(cut(&mut actor, Some(2), Some(false)), full);
+        let mut restored = AgentSessionActor::restore(
+            ResourceId::default(),
+            "claude",
+            None,
+            CancellationToken::new(),
+            4096,
+            carried,
+        )
+        .actor;
+        assert_eq!(cut(&mut restored, None, None), full);
+        assert_eq!(
+            append(&mut restored, "{\"type\":\"session_end\"}")
+                .expect("accepted end")
+                .first_seq,
+            3
+        );
+        assert!(cut(&mut restored, None, None).ended);
+    }
+
     #[test]
     fn the_facet_resolves_and_carries_its_provenance() {
         let (_actor, facet, handle) = engine();
@@ -439,7 +570,7 @@ mod tests {
         .expect("accepted");
         assert_eq!((batch.first_seq, batch.last_seq), (2, 3));
         assert_eq!(batch.evidence, Some(StreamEvidence::Working));
-        let bootstrap = actor.bootstrap();
+        let bootstrap = actor.bootstrap(None);
         assert_eq!(bootstrap.base_seq, 3);
         assert_eq!(bootstrap.records.len(), 3);
         assert!(
@@ -455,7 +586,7 @@ mod tests {
         let rejection = append(&mut actor, "{\"type\":\"stop\"}\n{\"type\":\"nope\"}")
             .expect_err("the batch is refused");
         assert!(matches!(rejection, AppendRejection::Invalid(_)));
-        let bootstrap = actor.bootstrap();
+        let bootstrap = actor.bootstrap(None);
         assert_eq!(bootstrap.base_seq, 1, "no sequence was consumed");
         assert_eq!(bootstrap.records.len(), 1);
     }
@@ -484,7 +615,7 @@ mod tests {
         for _ in 0..8 {
             append(&mut actor, "{\"type\":\"tool_end\"}").expect("accepted");
         }
-        let bootstrap = actor.bootstrap();
+        let bootstrap = actor.bootstrap(None);
         assert_eq!(bootstrap.base_seq, 8, "every record still took a sequence");
         assert!(bootstrap.dropped > 0, "the ring evicted its oldest records");
         assert_eq!(
@@ -498,7 +629,7 @@ mod tests {
     fn a_restored_engine_continues_the_carried_stream() {
         let (mut old, _facet, _handle) = engine();
         append(&mut old, "{\"type\":\"prompt\"}\n{\"type\":\"stop\"}").expect("accepted");
-        let mut carried = old.bootstrap();
+        let mut carried = old.bootstrap(None);
         carried.dropped = 5;
         let bundle = AgentSessionActor::restore(
             ResourceId::default(),
@@ -509,11 +640,11 @@ mod tests {
             carried.clone(),
         );
         let mut actor = bundle.actor;
-        assert_eq!(actor.bootstrap(), carried, "the cut replays unchanged");
+        assert_eq!(actor.bootstrap(None), carried, "the cut replays unchanged");
         let next = append(&mut actor, "{\"type\":\"session_end\"}").expect("accepted");
         assert_eq!(next.first_seq, 3, "the sequence continues");
 
-        let ended = actor.bootstrap();
+        let ended = actor.bootstrap(None);
         assert!(ended.ended);
         let bundle = AgentSessionActor::restore(
             ResourceId::default(),
@@ -539,6 +670,7 @@ mod tests {
         actor.handle_bootstrap(BootstrapRequest {
             reply,
             seal: Some(true),
+            after_seq: None,
         });
         assert_eq!(rx.try_recv().expect("the cut").base_seq, 1);
         assert!(matches!(
@@ -548,6 +680,7 @@ mod tests {
         actor.handle_bootstrap(BootstrapRequest {
             reply: oneshot::channel().0,
             seal: Some(false),
+            after_seq: None,
         });
         let next = append(&mut actor, "{\"type\":\"stop\"}").expect("unsealed");
         assert_eq!(next.first_seq, 2, "the refused append consumed nothing");
@@ -582,6 +715,7 @@ mod tests {
                     .send(BootstrapRequest {
                         reply,
                         seal: Some(true),
+                        after_seq: None,
                     })
                     .await
                     .expect("the actor is running");
@@ -593,6 +727,7 @@ mod tests {
                     .try_send(BootstrapRequest {
                         reply: oneshot::channel().0,
                         seal: Some(false),
+                        after_seq: None,
                     })
                     .expect("the bootstrap mailbox has room");
                 let (reply, accepted) = oneshot::channel();

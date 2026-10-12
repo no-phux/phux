@@ -122,7 +122,7 @@ pub const State = enum(u8) {
 /// What one record says about the session, or nothing when it is narration.
 pub const Evidence = enum { working, blocked, done, retract };
 
-/// The `PhuxClientAgentRecordsKind` this host understands.
+/// RETAINED replaces; LIVE appends live records or a committed resume suffix.
 pub const RecordsKind = enum { retained, live, closed };
 
 pub const Error = error{ Protocol, OutOfMemory };
@@ -254,6 +254,16 @@ pub const Registry = struct {
         registry.clearIdentities(gpa);
     }
 
+    /// A verified same-incarnation reconnect keeps committed stream evidence,
+    /// but deliveries from the previous connection must retain their old fence.
+    pub fn reconnectEpoch(registry: *Registry, epoch_id: u64) void {
+        for (registry.sessions.items) |*session| {
+            session.epoch_id = epoch_id;
+            if (session.generation) |*generation| generation.epoch_id = epoch_id;
+            if (session.retired_generation) |*generation| generation.epoch_id = epoch_id;
+        }
+    }
+
     pub fn all(registry: *const Registry) []const Session {
         return registry.sessions.items;
     }
@@ -371,8 +381,8 @@ pub const Registry = struct {
         return applyBatch(gpa, session, kind, payload);
     }
 
-    /// Production delivery must carry the ABI generation. Catalog membership
-    /// alone cannot authorize a live frame from a replaced bootstrap.
+    /// Production delivery carries the ABI's committed generation. Incremental
+    /// resume suffixes may open a newer generation without replacing evidence.
     pub fn applyRecordsGeneration(
         registry: *Registry,
         gpa: std.mem.Allocator,
@@ -398,9 +408,10 @@ pub const Registry = struct {
     /// catalog membership and fencing delayed replay of the withdrawn stream.
     pub fn withdrawRecordsGeneration(registry: *Registry, id: RemoteId, generation: provider.Generation) bool {
         const session = registry.find(id) orelse return false;
-        const current = session.generation orelse return false;
-        if (!current.sameReplica(generation)) return false;
-        session.retired_generation = current;
+        if (session.generation == null or !acceptGeneration(session, generation, .closed)) return false;
+        // Empty resume advances the committed generation without a records
+        // delivery. Fence the authoritative close, not the last visible batch.
+        session.retired_generation = generation;
         session.generation = null;
         session.stream_state = null;
         session.latest_evidence = null;
@@ -631,7 +642,7 @@ fn acceptGeneration(session: *const Session, incoming: provider.Generation, kind
     if (incoming.epoch_id != session.epoch_id) return false;
     if (session.generation) |current| {
         if (current.sameReplica(incoming)) return true;
-        return kind == .retained and generationAfter(incoming, current);
+        return generationAfter(incoming, current);
     }
     if (session.retired_generation) |retired| {
         return kind != .live and generationAfter(incoming, retired);
@@ -721,6 +732,38 @@ test "retained replacement discards evidence absent from the new backlog" {
     _ = try registry.applyRecords(gpa, localId(9), .live, "{\"type\":\"ask\"}");
     _ = try registry.applyRecords(gpa, localId(9), .retained, "{\"type\":\"provider_raw\"}");
     try testing.expectEqual(State.working, registry.find(localId(9)).?.state());
+}
+
+test "incremental resume adopts a newer generation without replacing prior evidence" {
+    const gpa = testing.allocator;
+    var registry: Registry = .{};
+    defer registry.deinit(gpa);
+    const id = localId(9);
+    try registry.adopt(gpa, &.{.{ .id = id, .epoch_id = 1, .state = "working" }});
+    const old: provider.Generation = .{ .epoch_id = 1, .stream_id = 4, .bootstrap_id = 5 };
+    _ = try registry.applyRecordsGeneration(gpa, id, old, .retained, "{\"seq\":3,\"type\":\"ask\",\"data\":{\"question\":\"keep?\"}}");
+    var resumed = old;
+    resumed.bootstrap_id += 1;
+    try testing.expect(try registry.applyRecordsGeneration(gpa, id, resumed, .live, "{\"seq\":4,\"type\":\"provider_raw\"}"));
+    const session = registry.find(id).?;
+    try testing.expectEqual(State.blocked, session.state());
+    try testing.expectEqualStrings("keep?", session.latest_evidence.?.reason.slice());
+    try testing.expectEqual(@as(?u64, 4), session.last_record_seq);
+    try testing.expect(session.generation.?.sameReplica(resumed));
+    // Repeated suffix delivery and a previous generation cannot rewrite evidence.
+    try testing.expect(!try registry.applyRecordsGeneration(gpa, id, resumed, .live, "{\"seq\":3,\"type\":\"stop\"}\n{\"seq\":4,\"type\":\"stop\"}"));
+    try testing.expect(!try registry.applyRecordsGeneration(gpa, id, old, .live, "{\"seq\":5,\"type\":\"stop\"}"));
+    try testing.expectEqual(State.blocked, session.state());
+    try testing.expectEqual(@as(?u64, 4), session.last_record_seq);
+    // No-record append is not a replacement. A full empty replacement is.
+    resumed.bootstrap_id += 1;
+    _ = try registry.applyRecordsGeneration(gpa, id, resumed, .live, "");
+    try testing.expectEqualStrings("keep?", session.latest_evidence.?.reason.slice());
+    resumed.bootstrap_id += 1;
+    _ = try registry.applyRecordsGeneration(gpa, id, resumed, .retained, "");
+    try testing.expectEqual(State.working, session.state());
+    try testing.expect(session.latest_evidence == null);
+    try testing.expect(session.last_record_seq == null);
 }
 
 test "generation replacement fences stale live retained and closed delivery" {

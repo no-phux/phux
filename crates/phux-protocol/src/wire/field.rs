@@ -195,6 +195,8 @@ pub mod bootstrap_begin {
     pub const OUTPUT_MODE: u32 = 7;
     /// Actor cut sequence (`u64`).
     pub const BASE_SEQ: u32 = 8;
+    /// Last agent record committed by the consumer (`u64`); agent/raw only.
+    pub const RESUME_AFTER_SEQ: u32 = 9;
 }
 
 /// `BOOTSTRAP_CHUNK` body fields (`docs/spec/L1.md` §4.3).

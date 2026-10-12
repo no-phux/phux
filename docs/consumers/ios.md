@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-10-09
+last-reviewed: 2026-10-11
 ---
 
 # iOS client
@@ -47,13 +47,23 @@ the connection streams, and delivers its records as
 | `seq` | The newest record's server sequence, 0 when there is none. |
 | `jsonl` | Complete `AgentEventsJsonlV1` records, one JSON object per line. |
 
-`retained` is the session's whole retained stream, delivered once per
-subscription and again after a reconnect or a resync: replace every record
-held for the session. `live` appends one output frame. `closed` carries no
-records and ends the session: it closed, its pane was detached, or the
-server restarted (after which its id may name a new pane). The parent and provider fields repeat on every
-event, so mapping a transcript to its pane needs no join. Transcript entries
-are `provider_raw` records in the `phux.transcript/v1` convention
-(ADR-0156). The case is additive: generated bindings ship with the native
-slices they match, so no version gates it, but an exhaustive Swift `switch`
-or Kotlin `when` over `WireEvent` must name it when re-pinning.
+`retained` replaces every record held for the session with the server's whole
+retained stream, even when `jsonl` is empty. `live` appends incremental records:
+either one live output frame or a committed reconnect suffix. Preserve the
+prefix across a same-incarnation transport loss; do not clear it just because
+the connection reopened. `closed` carries no records and ends the session:
+it closed, its pane was detached, or the server restarted (after which its id
+may name a new pane).
+
+A `PHUX_REV` including [ADR-0159](../adr/0159-agent-streams-resume-from-committed-records.md)
+resumes automatically when the server advertises `AGENT_STREAM_RESUME`.
+An evicted cursor or an older server gets `retained` instead. A successful
+empty resume emits no record event and leaves the prefix intact. The runtime
+owns the cursor; mobile consumers must not infer it from packet arrival.
+
+The parent and provider fields repeat on every event, so mapping a transcript
+to its pane needs no join. Transcript entries are `provider_raw` records in
+the `phux.transcript/v1` convention (ADR-0156). Generated bindings ship with
+the native slices they match; an exhaustive Swift `switch` or Kotlin `when`
+over `WireEvent` must name `agentRecords` when re-pinning. Resume adds no
+new event case or enum value.

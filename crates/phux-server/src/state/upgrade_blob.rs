@@ -443,6 +443,7 @@ pub(crate) async fn request_agent_session_cut(
     let request = BootstrapRequest {
         reply,
         seal: seal.then_some(true),
+        after_seq: None,
     };
     bootstrap.send(request).await.ok()?;
     rx.await.ok()
@@ -452,6 +453,7 @@ pub(crate) async fn request_agent_session_cut(
 fn agent_session_cut(carried: &AgentSessionBlob) -> AgentSessionBootstrap {
     AgentSessionBootstrap {
         base_seq: carried.base_seq,
+        resume_after_seq: None,
         records: carried
             .records
             .iter()

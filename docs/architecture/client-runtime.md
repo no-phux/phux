@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-10-09
+last-reviewed: 2026-10-11
 ---
 
 # The client runtime
@@ -54,16 +54,26 @@ each successful per-terminal attach reconciles the listed sessions: a new one
 is declared to the kernel and subscribed with `ATTACH_RESOURCE` (no resize);
 the `GET_STATE` every announced spawn triggers picks up a new session; a
 refused subscription is retried by the next read. Records arrive as the
-lossless `Event::AgentRecords` (`retained` is the whole stream after a
-subscription, reconnect or resync; otherwise one live frame), carrying the
+lossless `Event::AgentRecords` (`retained` replaces the whole retained stream;
+otherwise records append, from live output or a resumed suffix), carrying the
 parent and provider identity the catalog listed. A close, a `GET_STATE` that
 no longer lists the session, a detach of its pane (which also sends
 `DETACH_RESOURCE` for it), or a new server incarnation yields
 `Event::AgentSessionClosed` once; a later server close of that id is not a
-`TerminalClosed`. Every resubscription replays the session's whole retained
-ring (tracked as phux-urxjy). The C ABI
-leaves the option off: its workspace refresh subscribes the same streams
-itself.
+`TerminalClosed`. Same-incarnation reconnects preserve the kernel's committed
+log, derived state, and sequence watermark. With `AGENT_STREAM_RESUME`, the
+plane queries `EngineHandle::agent_stream_info` and requests only the suffix
+after that committed sequence; evicted cursors and older servers receive full
+replacement ([ADR-0159](../adr/0159-agent-streams-resume-from-committed-records.md)).
+Unpublished staging never advances the cursor. An empty resume keeps the log;
+an empty full bootstrap clears it. The C ABI leaves the option off: its
+workspace refresh subscribes the same streams itself, using the plane's
+capability/incarnation-gated cursor query.
+Committed C ABI batches not yet drained survive transport loss, but wait until
+the next attach rebinds the host catalog before becoming visible again. A new
+incarnation discards them. Engine reuse compares the effective history policy:
+an explicit binding policy overrides the attach's default scrollback depth and
+must not lose a committed resume anchor when that unused default changes.
 
 In `Runtime::embedded`, the consumer owns the socket and feeds frames directly.
 Harnesses use this lane for synthetic frames, as do the C ABI's

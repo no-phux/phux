@@ -51,12 +51,12 @@ fn hello() -> FrameKind {
     }
 }
 
-fn attached() -> [FrameKind; 5] {
+fn attached(generation: u64) -> [FrameKind; 5] {
     let terminal_id = ResourceId::local(7);
     let session_id = SessionId::new(1);
     let window_id = WindowId::new(1);
     let stream_id = StreamId::new(7).expect("nonzero stream");
-    let bootstrap_id = BootstrapId::new(1).expect("nonzero bootstrap");
+    let bootstrap_id = BootstrapId::new(generation).expect("nonzero bootstrap");
     let snapshot = SessionSnapshot::new(session_id, window_id, terminal_id.clone())
         .with_sessions(vec![SessionInfo::new(session_id, "fixture")])
         .with_windows(vec![WindowInfo::new(window_id, session_id, "fixture")])
@@ -212,22 +212,8 @@ impl Client {
             } if id == SessionId::new(1)));
             self.feed(attached);
             assert_eq!(phux_client_state(self.0), PhuxClientState::Attached);
-            // ATTACH_READY starts the shared workspace's automatic read:
-            // exactly one GET_METADATA and one GET_STATE, nothing else.
-            assert_eq!(phux_client_outgoing_count(self.0), 2);
-            for index in 0..2 {
-                let mut bytes = PhuxBytes::default();
-                assert_eq!(
-                    phux_client_outgoing_get(self.0, index, &raw mut bytes),
-                    PhuxClientResult::Ok
-                );
-                let (frame, _) = FrameKind::decode(slice::from_raw_parts(bytes.data, bytes.len))
-                    .expect("FFI emits a canonical frame");
-                assert!(matches!(
-                    frame,
-                    FrameKind::GetMetadata { .. } | FrameKind::Command { .. }
-                ));
-            }
+            // Workspace discovery is exercised by its own fixtures; discard
+            // its traffic before the payload and input checks below.
             assert_eq!(phux_client_outgoing_clear(self.0), PhuxClientResult::Ok);
         }
     }
@@ -756,8 +742,7 @@ fn verify_keep_empty(hello: &[u8], standby: &[u8], attached: &[u8], workspace: &
         assert!(matches!(client.take_outgoing(), FrameKind::Attach { .. }));
         client.feed(attached);
         assert_eq!(phux_client_state(client.0), PhuxClientState::Attached);
-        // The automatic workspace read: metadata, then registry.
-        assert_eq!(phux_client_outgoing_count(client.0), 2);
+        // The workspace fixtures answer discovery independently of traffic count.
         assert_eq!(phux_client_outgoing_clear(client.0), PhuxClientResult::Ok);
         client.feed(workspace);
         assert_eq!(phux_client_state(client.0), PhuxClientState::Attached);
@@ -870,7 +855,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         PathBuf::from,
     );
     let hello = encode(&[hello()]);
-    let attached = encode(&attached());
+    let attached_reconnect = encode(&attached(2));
+    let attached_resync = encode(&attached(3));
+    let attached = encode(&attached(1));
     let client = Client::new();
     client.negotiate_and_attach(&hello, &attached);
     let terminal = PhuxResourceId {
@@ -920,6 +907,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     std::fs::write(output.join("workspace_empty.bin"), &workspace_empty)?;
     std::fs::write(output.join("hello.bin"), &hello)?;
     std::fs::write(output.join("attached.bin"), &attached)?;
+    std::fs::write(output.join("attached_reconnect.bin"), &attached_reconnect)?;
+    std::fs::write(output.join("attached_resync.bin"), &attached_resync)?;
     std::fs::write(output.join("hello_directory.bin"), &hello_directory)?;
     std::fs::write(
         output.join("hello_directory_host.bin"),

@@ -356,6 +356,7 @@ fn samples(world: &World) -> Vec<FrameKind> {
         command(Command::AttachResource {
             terminal_id: t.clone(),
             role_policy: None,
+            agent_after_seq: None,
         }),
         command(Command::DetachResource {
             terminal_id: t.clone(),
@@ -897,6 +898,7 @@ fn rows(world: &mut World) -> Vec<Row> {
             command(Command::AttachResource {
                 terminal_id: t.clone(),
                 role_policy: None,
+                agent_after_seq: None,
             }),
             "bind,observe",
         ),

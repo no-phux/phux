@@ -957,6 +957,7 @@ impl Session {
                 command: Command::AttachResource {
                     terminal_id,
                     role_policy: None,
+                    agent_after_seq: None,
                 },
             })],
             panes: true,

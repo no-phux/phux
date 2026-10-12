@@ -131,6 +131,7 @@ by a newer one, the newer line is the operative reading.
 
 ## Agents
 
+- [0159](./0159-agent-streams-resume-from-committed-records.md) A reconnect resumes an AgentSession after its committed record sequence; eviction or an incompatible shared relay cut yields an explicit full replacement, never a silent gap.
 - [0156](./0156-agent-transcript-records.md) First-party Pi and Claude integrations append the conversation as `provider_raw` records in the `phux.transcript/v1` convention, on by default with what the pane shows; tool output needs `PHUX_AGENT_TRANSCRIPT=full`, and `=0` opts out.
 - [0155](./0155-host-originated-push-through-a-blind-gateway.md) A suspended phone is pushed by its own server through a blind first-party gateway, with a content-free notice and a per-device grant under `phux.push/v1/<device>`.
 - [0151](./0151-live-agent-sessions-bridge-into-native-restore.md) Save archives a shell-started agent's live `AgentSession` native id when an enabled integration claims and can resume it.

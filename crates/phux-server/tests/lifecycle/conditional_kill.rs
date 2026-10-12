@@ -70,6 +70,7 @@ fn conditional_kill_takes_only_panes_still_the_callers() {
         let attach_own = Command::AttachResource {
             terminal_id: own.clone(),
             role_policy: None,
+            agent_after_seq: None,
         };
         assert!(matches!(
             command(&mut spawner, 2, attach_own).await,

@@ -176,6 +176,7 @@ pub(crate) async fn spawn_agent_session(
         out_tx,
         bootstrap_limits,
         connection_token,
+        None,
     )
     .await;
     debug!(
@@ -401,11 +402,14 @@ async fn publish_stream_evidence(
     }
 }
 
-/// Bootstrap a consumer onto an `AgentSession` stream (ADR-0103 §4):
-/// `BEGIN` (profile `AgentEventsJsonlV1`, grid `0 x 0`), the retained ring in
-/// chunks, and `READY` with no history cursor, then live records. The live
-/// subscription precedes the cut so nothing appended between them is lost.
-#[allow(clippy::too_many_arguments)]
+/// Bootstrap an `AgentSession` at one atomic cut: a full retained replacement
+/// or a cursor-anchored suffix, followed by live records. The live subscription
+/// precedes the cut so nothing appended between them is lost.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "one ordered subscription/cut/retirement/publication transaction with negotiated context"
+)]
 pub(crate) async fn attach_agent_session(
     state: &SharedState,
     client_id: ClientId,
@@ -415,6 +419,7 @@ pub(crate) async fn attach_agent_session(
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     limits: BootstrapLimits,
     connection_token: &CancellationToken,
+    after_seq: Option<u64>,
 ) -> CommandResult {
     let Ok(session) = handle.agent_session() else {
         return CommandResult::Error {
@@ -431,11 +436,18 @@ pub(crate) async fn attach_agent_session(
     };
     let stream_id = crate::runtime::attach::stream_id_from(client_id.0);
     let live = handle.output.subscribe();
+    // Await the old task's exit before BEGIN: no prior generation may leak
+    // output between this replacement's bootstrap frames.
+    crate::runtime::pump::stop_output(state, client_id, core).await;
 
     let (reply, rx) = oneshot::channel();
     if session
         .bootstrap
-        .send(BootstrapRequest { reply, seal: None })
+        .send(BootstrapRequest {
+            reply,
+            seal: None,
+            after_seq,
+        })
         .await
         .is_err()
     {
@@ -458,6 +470,25 @@ pub(crate) async fn attach_agent_session(
         );
     }
 
+    let (cancel, done, last_seq, prior) =
+        state.with_mut(|s| s.replace_attach_terminal_pump(client_id, core, bootstrap_id));
+    let pump_done = done.clone().drop_guard();
+    if let Some((prior_id, prior_done, prior_seq)) = prior {
+        prior_done.cancelled().await;
+        let tombstone = FrameKind::BootstrapTombstone {
+            terminal_id: terminal_id.clone(),
+            stream_id,
+            bootstrap_id: prior_id,
+            reason: phux_protocol::wire::frame::TombstoneReason::ExplicitReattach,
+            last_valid_seq: prior_seq.load(std::sync::atomic::Ordering::Acquire),
+        };
+        if out_tx.send(Outbound::Frame(tombstone)).await.is_err() {
+            return CommandResult::Error {
+                code: ErrorCode::ResourceExhausted,
+                message: "the client went away before its replacement bootstrap".to_owned(),
+            };
+        }
+    }
     for frame in bootstrap_frames(terminal_id, stream_id, bootstrap_id, &cut, limits) {
         if out_tx.send(Outbound::Frame(frame)).await.is_err() {
             return CommandResult::Error {
@@ -466,24 +497,26 @@ pub(crate) async fn attach_agent_session(
             };
         }
     }
+    last_seq.store(cut.base_seq, std::sync::atomic::Ordering::Release);
 
     let pump_out = out_tx.clone();
     let pump_terminal = terminal_id.clone();
-    let cancel = connection_token.child_token();
-    let done = CancellationToken::new();
-    let pump_done = done.clone();
+    let connection_cancel = connection_token.clone();
     let handle = tokio::task::spawn_local(async move {
-        live_pump(
-            live,
-            pump_out,
-            pump_terminal,
-            stream_id,
-            bootstrap_id,
-            cut.base_seq,
-            cancel,
-        )
-        .await;
-        pump_done.cancel();
+        let _done = pump_done;
+        tokio::select! {
+            () = connection_cancel.cancelled() => {}
+            () = live_pump(
+                live,
+                pump_out,
+                pump_terminal,
+                stream_id,
+                bootstrap_id,
+                cut.base_seq,
+                cancel,
+                last_seq,
+            ) => {}
+        }
     });
     state.with_mut(|s| {
         s.track_terminal_output_pump(client_id, core, handle.abort_handle(), done, None);
@@ -505,7 +538,11 @@ fn bootstrap_frames(
         terminal_id: terminal_id.clone(),
         stream_id,
         bootstrap_id,
-        profile: BootstrapStreamProfile::AgentEventsJsonlV1,
+        profile: cut
+            .resume_after_seq
+            .map_or(BootstrapStreamProfile::AgentEventsJsonlV1, |after_seq| {
+                BootstrapStreamProfile::AgentEventsJsonlResumeV1 { after_seq }
+            }),
         cols: 0,
         rows: 0,
         base_seq: cut.base_seq,
@@ -546,6 +583,10 @@ fn bootstrap_frames(
 
 /// Forward live records to one attached consumer until it detaches or the
 /// session closes.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "stream identity, cut, cancellation, and the shared delivery cursor"
+)]
 async fn live_pump(
     mut live: tokio::sync::broadcast::Receiver<PaneOutput>,
     out_tx: tokio::sync::mpsc::Sender<Outbound>,
@@ -554,6 +595,7 @@ async fn live_pump(
     bootstrap_id: phux_protocol::ids::BootstrapId,
     base_seq: u64,
     cancel: CancellationToken,
+    last_seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
 ) {
     loop {
         let output = tokio::select! {
@@ -578,8 +620,9 @@ async fn live_pump(
                 {
                     return;
                 }
+                last_seq.store(seq, std::sync::atomic::Ordering::Release);
             }
-            // A session has no grid to resync and no generation to tombstone.
+            // A session has no grid to resync.
             Ok(PaneOutput::Resync { .. } | PaneOutput::Control { .. }) => {}
             Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                 warn!(

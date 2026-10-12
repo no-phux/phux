@@ -80,11 +80,12 @@ fn attached_harness() -> Box<PhuxClient> {
 /// Bootstraps the focused session's panes and releases the barrier, which
 /// issues the initial workspace read.
 fn release_attach(client: &mut PhuxClient) {
+    let generation = client.inner.control().connection_epoch();
     for id in [1, 2] {
         test_support::feed_bootstrap(
             client,
             &ResourceId::local(id),
-            (id.into(), 1),
+            (id.into(), generation),
             (80, 24),
             b"",
         );

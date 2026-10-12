@@ -1,7 +1,7 @@
 ---
 audience: humans, consumers
 stability: evolving
-last-reviewed: 2026-09-21
+last-reviewed: 2026-10-11
 ---
 
 # Cockpit
@@ -51,6 +51,13 @@ tags, independently of the `phux` binary.
 
 AgentSession resources appear as rows under their parent terminal, not as
 panes. See [Concepts](../CONCEPTS.md) for product maturity.
+Their committed transcript survives a same-server reconnect
+([ADR-0159](../adr/0159-agent-streams-resume-from-committed-records.md)).
+The C bridge distinguishes full retained replacement from incremental records;
+incremental records may start a newer resumed bootstrap, not just continue a
+live generation. Cockpit keeps the prefix until an explicit full replacement
+or close. Eviction, an older server, or incompatible shared satellite cursors
+fall back to a full replacement; a server restart clears the old incarnation.
 
 ## Limits
 

@@ -190,6 +190,7 @@ column is the base status word plus at most one relationship clause, about
 | [0156](./0156-agent-transcript-records.md) | Agent transcripts ride provider_raw as phux.transcript/v1 | Accepted (amends [0103](./0103-agent-session-resource-and-producer-fed-streams.md)) |
 | [0157](./0157-themes-are-colors-toml-files-every-client-reads.md) | Themes are Omarchy-schema `colors.toml` files in one catalog, read natively by every client | Proposed |
 | [0158](./0158-pane-clipboard-writes-are-client-policy.md) | Pane clipboard writes are a client-side, policy-gated effect | Accepted |
+| [0159](./0159-agent-streams-resume-from-committed-records.md) | Agent streams resume from committed records, with explicit replacement on eviction | Accepted (builds on [0103](./0103-agent-session-resource-and-producer-fed-streams.md), [0061](./0061-capabilities-add-versions-break.md)) |
 
 ## When to write an ADR
 
