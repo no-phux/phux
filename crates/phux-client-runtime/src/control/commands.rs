@@ -230,9 +230,14 @@ impl ControlPlane {
         self.terminal_roles.remove(terminal_id);
         self.geometry_bootstrapped.remove(terminal_id);
         let request_id = self.next_request_id();
-        self.pending
-            .insert(request_id, Pending::DetachTerminal(terminal_id.clone()));
-        self.terminal_attached.remove(terminal_id);
+        let was_attached = self.terminal_attached.remove(terminal_id);
+        self.pending.insert(
+            request_id,
+            Pending::DetachTerminal {
+                terminal_id: terminal_id.clone(),
+                was_attached,
+            },
+        );
         self.queue_frame(&FrameKind::Command {
             request_id,
             command: Command::DetachResource {

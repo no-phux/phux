@@ -1,8 +1,8 @@
 //! Typed view of one `AgentSession` resource's `AgentEventsJsonlV1` stream.
 //!
 //! An `AgentSession` resource never has a terminal replica. Its bootstrap
-//! chunks and live output carry complete JSON-lines records, and the kernel
-//! parses every byte here before anything leaves it: frontends receive
+//! chunks may fragment JSON-lines records; live output carries complete records.
+//! The kernel parses every byte here before anything leaves it: frontends receive
 //! [`AgentEventRecord`]s and a derived [`AgentSessionState`], never raw bytes.
 
 use std::collections::VecDeque;
@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use super::agent_transcript::TranscriptEntry;
 
-/// Upper bound on one record line, matching the producer-side limit.
+/// Upper bound on one record line including its LF terminator, matching the producer.
 pub const MAX_RECORD_BYTES: usize = 16 * 1024;
 
 /// Default number of retained records per session log.
@@ -136,6 +136,8 @@ pub enum AgentRecordError {
 ///
 /// Empty lines (including the trailing newline) are skipped. A payload with
 /// no records at all decodes to an empty vector.
+/// An optional missing final LF is tolerated, but still counts toward the
+/// record bound. Whitespace counts before trimming, including on blank lines.
 ///
 /// # Errors
 /// Any malformed line fails the whole payload; the caller retires the
@@ -144,16 +146,67 @@ pub enum AgentRecordError {
 pub fn parse_records(bytes: &[u8]) -> Result<Vec<AgentEventRecord>, AgentRecordError> {
     let mut records = Vec::new();
     for line in bytes.split(|byte| *byte == b'\n') {
+        let wire_length = line.len().saturating_add(1);
+        if wire_length > MAX_RECORD_BYTES {
+            return Err(AgentRecordError::Oversize(wire_length));
+        }
         let line = trim_ascii(line);
         if line.is_empty() {
             continue;
         }
-        if line.len() > MAX_RECORD_BYTES {
-            return Err(AgentRecordError::Oversize(line.len()));
-        }
         records.push(parse_record(line)?);
     }
     Ok(records)
+}
+
+/// Bootstrap framing is independent of JSONL and even UTF-8 boundaries.
+/// Only the unfinished line is buffered here; decoded records remain staged
+/// by the kernel until READY. Reserve one byte of the record bound for LF.
+pub(super) struct BootstrapRecordDecoder {
+    line: Vec<u8>,
+}
+
+impl Default for BootstrapRecordDecoder {
+    fn default() -> Self {
+        Self {
+            line: Vec::with_capacity(MAX_RECORD_BYTES - 1),
+        }
+    }
+}
+
+impl BootstrapRecordDecoder {
+    pub(super) fn push(&mut self, bytes: &[u8]) -> Result<Vec<AgentEventRecord>, AgentRecordError> {
+        let mut records = Vec::new();
+        for fragment in bytes.split_inclusive(|byte| *byte == b'\n') {
+            let content = fragment.strip_suffix(b"\n").unwrap_or(fragment);
+            let wire_length = self
+                .line
+                .len()
+                .saturating_add(content.len())
+                .saturating_add(1);
+            if wire_length > MAX_RECORD_BYTES {
+                return Err(AgentRecordError::Oversize(wire_length));
+            }
+            self.line.extend_from_slice(content);
+            if fragment.ends_with(b"\n") {
+                let line = trim_ascii(&self.line);
+                if !line.is_empty() {
+                    records.push(parse_record(line)?);
+                }
+                self.line.clear();
+            }
+        }
+        Ok(records)
+    }
+
+    pub(super) fn finish(&self) -> Result<(), AgentRecordError> {
+        if !self.line.is_empty() {
+            return Err(AgentRecordError::Json(
+                "incomplete JSONL record at bootstrap READY (missing LF)".to_owned(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn trim_ascii(line: &[u8]) -> &[u8] {

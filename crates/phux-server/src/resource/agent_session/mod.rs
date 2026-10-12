@@ -319,14 +319,27 @@ impl AgentSessionActor {
             return;
         };
         let ts_ms = record::now_ms();
+        // Stamping adds server-owned fields and may expand escaped data.
+        // Validate every canonical line before consuming any sequence or
+        // publishing state: even the last record can refuse the whole batch.
+        let lines: Result<Vec<_>, _> = records
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| entry.stamp_bounded(first_seq + index as u64, ts_ms))
+            .collect();
+        let lines = match lines {
+            Ok(lines) => lines,
+            Err(error) => {
+                let _ = reply.send(Err(AppendRejection::Invalid(error)));
+                return;
+            }
+        };
         let mut evidence = None;
         let mut ask = None;
         let mut payload = Vec::with_capacity(bytes.len() + records.len() * 48);
-        for entry in &records {
-            let Some(seq) = self.core.next_seq() else {
-                break;
-            };
-            let line = entry.stamp(seq, ts_ms);
+        for (entry, line) in records.iter().zip(lines) {
+            // The entire range was checked above, before any mutation.
+            let _ = self.core.next_seq();
             payload.extend_from_slice(&line);
             self.ring.push(line);
             if let Some(found) = entry.evidence() {
@@ -469,6 +482,39 @@ mod tests {
             append(&mut actor, "{\"type\":\"prompt\"}"),
             Err(AppendRejection::Invalid(RecordError::AfterSessionEnd))
         );
+    }
+
+    #[test]
+    fn stamped_oversize_refuses_the_batch_before_any_mutation() {
+        let (mut actor, _facet, handle) = engine();
+        append(&mut actor, "{\"type\":\"prompt\"}").expect("seed");
+        let before = actor.bootstrap();
+        let mut subscriber = handle.output.subscribe();
+        let prefix = "{\"type\":\"provider_raw\",\"data\":{\"text\":\"";
+        let suffix = "\"}}";
+        let oversized = format!(
+            "{prefix}{}{suffix}",
+            "x".repeat(record::MAX_RECORD_BYTES - 1 - prefix.len() - suffix.len())
+        );
+        assert_eq!(oversized.len() + 1, record::MAX_RECORD_BYTES);
+        let batch = format!(
+            "{{\"type\":\"ask\",\"data\":{{\"question\":\"continue?\"}}}}\n{oversized}\n{{\"type\":\"session_end\"}}"
+        );
+        assert!(matches!(
+            append(&mut actor, &batch),
+            Err(AppendRejection::Invalid(RecordError::Oversized { .. }))
+        ));
+        assert_eq!(
+            actor.bootstrap(),
+            before,
+            "ring, sequence and ended unchanged"
+        );
+        assert!(matches!(
+            subscriber.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+        let accepted = append(&mut actor, "{\"type\":\"stop\"}").expect("still open");
+        assert_eq!((accepted.first_seq, accepted.last_seq), (2, 2));
     }
 
     #[test]

@@ -10,7 +10,7 @@ use std::fmt;
 
 use serde_json::{Map, Value};
 
-/// Largest single record the codec accepts, in bytes (ADR-0103 §2).
+/// Largest single record the codec accepts, including LF (L1 §7.1).
 pub const MAX_RECORD_BYTES: usize = 16 * 1024;
 
 /// The closed v1 `type` vocabulary (ADR-0103 §2). A record naming anything
@@ -195,6 +195,17 @@ impl ValidRecord {
         line.push_str("}\n");
         bytes::Bytes::from(line)
     }
+
+    /// Stamp a record and enforce the codec limit on the canonical wire
+    /// shape, including its terminating newline.
+    pub(super) fn stamp_bounded(&self, seq: u64, ts_ms: u64) -> Result<bytes::Bytes, RecordError> {
+        let line = self.stamp(seq, ts_ms);
+        let len = line.len();
+        if len > MAX_RECORD_BYTES {
+            return Err(RecordError::Oversized { len });
+        }
+        Ok(line)
+    }
 }
 
 /// Validate one `APPEND_RESOURCE_OUTPUT` payload into records.
@@ -211,12 +222,15 @@ pub fn validate(bytes: &[u8], already_ended: bool) -> Result<Vec<ValidRecord>, R
     let mut ended = already_ended;
     let mut records = Vec::new();
     for line in text.split('\n') {
+        // An optional missing final LF is normalized by stamping, so reserve
+        // it here as well. Check before trimming: whitespace is still bytes.
+        let len = line.len().saturating_add(1);
+        if len > MAX_RECORD_BYTES {
+            return Err(RecordError::Oversized { len });
+        }
         let line = line.trim_matches(|c: char| c == '\r' || c == ' ' || c == '\t');
         if line.is_empty() {
             continue;
-        }
-        if line.len() > MAX_RECORD_BYTES {
-            return Err(RecordError::Oversized { len: line.len() });
         }
         if ended {
             return Err(RecordError::AfterSessionEnd);
@@ -390,5 +404,42 @@ mod tests {
                 b"{\"seq\":7,\"ts_ms\":1700000000000,\"type\":\"prompt\",\"data\":{\"len\":4}}\n"
             )
         );
+    }
+
+    #[test]
+    fn canonical_record_limit_includes_newline_and_server_fields() {
+        let mut record =
+            one("{\"type\":\"provider_raw\",\"data\":{\"text\":\"\"}}").expect("valid");
+        let overhead = record.stamp(u64::MAX, u64::MAX).len();
+        record.data.insert(
+            "text".to_owned(),
+            Value::String("x".repeat(MAX_RECORD_BYTES - overhead)),
+        );
+        let line = record
+            .stamp_bounded(u64::MAX, u64::MAX)
+            .expect("exact bound");
+        assert_eq!(line.len(), MAX_RECORD_BYTES);
+        record.data["text"] = Value::String("x".repeat(MAX_RECORD_BYTES - overhead + 1));
+        assert_eq!(
+            record.stamp_bounded(u64::MAX, u64::MAX),
+            Err(RecordError::Oversized {
+                len: MAX_RECORD_BYTES + 1
+            })
+        );
+    }
+
+    #[test]
+    fn producer_record_limit_counts_lf_and_untrimmed_whitespace() {
+        let mut line = "{\"type\":\"provider_raw\"}".to_owned();
+        line.push_str(&" ".repeat(MAX_RECORD_BYTES - 1 - line.len()));
+        for suffix in ["", "\n"] {
+            assert!(validate(format!("{line}{suffix}").as_bytes(), false).is_ok());
+            assert_eq!(
+                validate(format!("{line} {suffix}").as_bytes(), false),
+                Err(RecordError::Oversized {
+                    len: MAX_RECORD_BYTES + 1
+                })
+            );
+        }
     }
 }
