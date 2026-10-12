@@ -36,6 +36,8 @@ public/.well-known/agent-skills/
 
 # alchemy (local state/bundles; CI rebuilds state from the Workers' tags)
 .alchemy/
+# wrangler CLI cache (`bunx wrangler secret put …` still writes it)
+.wrangler/
 
 # native dev bridge build
 
