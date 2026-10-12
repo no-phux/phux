@@ -1030,6 +1030,7 @@ fn c_workspace_reconnect_cursor_comes_from_the_same_incarnations_committed_runti
 fn reconnect_with_undelivered_records(
     same_incarnation: bool,
     prefix_delivered: bool,
+    explicit_loss: bool,
 ) -> (*mut PhuxClient, Vec<serde_json::Value>) {
     use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExtSet};
     let client = attached_resume_client();
@@ -1072,7 +1073,9 @@ fn reconnect_with_undelivered_records(
     // SAFETY: exclusively owned fixture drives the connected driver's loss
     // boundary without a socket or production state.
     unsafe {
-        (*client).inner.control().connection_lost(None);
+        if explicit_loss {
+            (*client).inner.control().connection_lost(None);
+        }
         (*client).inner.control().connection_opened();
         (*client).inner.process_runtime_events().unwrap();
         assert_eq!(phux_client_effect_count(client), 0);
@@ -1111,9 +1114,14 @@ fn reconnect_with_undelivered_records(
 
 #[test]
 fn c_undelivered_committed_records_survive_reconnect_without_a_consumer_gap() {
-    for (same_incarnation, prefix_delivered) in [(true, false), (true, true), (false, false)] {
+    for (same_incarnation, prefix_delivered, explicit_loss) in [
+        (true, false, true),
+        (true, true, true),
+        (false, false, true),
+        (true, false, false),
+    ] {
         let (client, mut log) =
-            reconnect_with_undelivered_records(same_incarnation, prefix_delivered);
+            reconnect_with_undelivered_records(same_incarnation, prefix_delivered, explicit_loss);
         let delivered = drain_agent_log(client, &mut log);
         if same_incarnation {
             let mut expected = if prefix_delivered {
@@ -1195,4 +1203,22 @@ fn c_undelivered_committed_records_survive_reconnect_without_a_consumer_gap() {
         // SAFETY: fixture owns this client through final free.
         unsafe { phux_client_free(client) };
     }
+}
+
+#[test]
+fn catalog_removal_preserves_replayed_generation_before_subscription_ack() {
+    let (client, mut log) = reconnect_with_undelivered_records(true, false, true);
+    let _ = drain_agent_log(client, &mut log);
+    answer_read(client, snapshot(true));
+    let _ = subscription(client);
+    // The new wire subscription is still pending. A subsequent authoritative
+    // removal must close the committed generation, not invent generation zero.
+    refresh(client, 1, snapshot(false));
+    let closed = effect_at(client, 0);
+    assert_eq!(
+        (closed.detail, closed.stream_id, closed.bootstrap_id),
+        (AGENT_RECORDS_CLOSED, AGENT_STREAM, AGENT_BOOTSTRAP)
+    );
+    // SAFETY: fixture owns this client through final free.
+    unsafe { phux_client_free(client) };
 }

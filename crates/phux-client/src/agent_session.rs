@@ -468,11 +468,7 @@ pub async fn log(
         .request(
             REQUEST_ATTACH,
             // A log follower only reads (ADR-0127).
-            Command::AttachResource {
-                terminal_id: resource.clone(),
-                role_policy: conn.observer_role_policy(),
-                agent_after_seq: None,
-            },
+            Command::attach_agent_session(resource.clone(), conn.observer_role_policy(), None),
         )
         .await?
         .into_parts();

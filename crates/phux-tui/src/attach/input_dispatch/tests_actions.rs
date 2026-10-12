@@ -1882,11 +1882,7 @@ fn switching_to_a_satellite_session_opens_or_focuses_its_pane() {
     };
     assert_eq!(
         command,
-        &Command::AttachResource {
-            terminal_id: satellite_id("edge", 9),
-            role_policy: None,
-            agent_after_seq: None
-        }
+        &Command::attach_terminal(satellite_id("edge", 9), None),
     );
 
     let mut open = Workspace::single(tid(1));

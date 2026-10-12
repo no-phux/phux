@@ -38,7 +38,7 @@ use phux_protocol::ids::{BootstrapId, GroupId, ResourceId, SatelliteHost, Stream
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, ControlAction, DirectoryErrorCode, DirectoryListingError,
     DirectoryListingResult, ErrorCode, FrameKind, HistoryTombstoneReason, PathErrorCode,
-    PathQueryError, PathQueryResult, Scope, SpawnError, SpawnResult, TombstoneReason,
+    PathQueryError, PathQueryResult, RolePolicy, Scope, SpawnError, SpawnResult, TombstoneReason,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -3764,6 +3764,19 @@ pub(crate) fn satellite_route(terminal_id: &ResourceId) -> Option<(SatelliteHost
     }
 }
 
+/// Rebuild a filtered attach. A cursor is an agent resume; no cursor uses the
+/// terminal constructor because that is the same no-cursor wire shape.
+const fn forwarded_attach(
+    resource_id: ResourceId,
+    role_policy: Option<RolePolicy>,
+    after_seq: Option<u64>,
+) -> Command {
+    match after_seq {
+        Some(after_seq) => Command::attach_agent_session(resource_id, role_policy, Some(after_seq)),
+        None => Command::attach_terminal(resource_id, role_policy),
+    }
+}
+
 /// The command a hub's link sends for a consumer's attach (ADR-0127).
 ///
 /// The link is one identity shared by every consumer, so only a deliberate
@@ -3785,11 +3798,7 @@ pub(crate) fn link_attach_command(
         .filter(|policy| policy.takes_over() && satellite.contains(ServerFeature::AttachRoles));
     let agent_after_seq =
         agent_after_seq.filter(|_| satellite_ext.contains(ServerFeatureExt::AgentStreamResume));
-    Command::AttachResource {
-        terminal_id,
-        role_policy,
-        agent_after_seq,
-    }
+    forwarded_attach(terminal_id, role_policy, agent_after_seq)
 }
 
 /// If `command` targets one satellite-owned terminal, the host and the
@@ -3811,11 +3820,7 @@ pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Co
             // decided at dispatch (ADR-0127).
             Some((
                 host,
-                Command::AttachResource {
-                    terminal_id: ResourceId::local(id),
-                    role_policy: *role_policy,
-                    agent_after_seq: *agent_after_seq,
-                },
+                forwarded_attach(ResourceId::local(id), *role_policy, *agent_after_seq),
             ))
         }
         Command::DetachResource { terminal_id } => {
@@ -4055,11 +4060,7 @@ mod tests {
         let selected_limits = session.bootstrap_limits;
         let (reply, _rx) = oneshot::channel();
         let wire = session.handle_request(RelayRequest::Command {
-            command: Command::AttachResource {
-                terminal_id: ResourceId::local(terminal),
-                role_policy: None,
-                agent_after_seq: None,
-            },
+            command: Command::attach_terminal(ResourceId::local(terminal), None),
             reply,
             subscribe: Some(ProxySubscription {
                 resource_kind: None,
@@ -4150,11 +4151,7 @@ mod tests {
     #[test]
     fn hub_relays_role_policy_to_the_satellite_when_it_advertises_attach_roles() {
         use phux_protocol::wire::frame::RolePolicy;
-        let attach = |role_policy| Command::AttachResource {
-            terminal_id: ResourceId::local(3),
-            role_policy,
-            agent_after_seq: None,
-        };
+        let attach = |role_policy| Command::attach_terminal(ResourceId::local(3), role_policy);
         let roles = ServerFeatureSet::with(&[ServerFeature::AttachRoles]);
         let takeover = Some(RolePolicy::TAKEOVER);
         assert_eq!(
@@ -4243,11 +4240,7 @@ mod tests {
     fn route_to_satellite_covers_every_per_terminal_command() {
         let sat = ResourceId::satellite("devbox", 3);
         let commands = [
-            Command::AttachResource {
-                terminal_id: sat.clone(),
-                role_policy: None,
-                agent_after_seq: None,
-            },
+            Command::attach_terminal(sat.clone(), None),
             Command::DetachResource {
                 terminal_id: sat.clone(),
             },
@@ -4513,11 +4506,7 @@ mod tests {
         let (out_tx, _out_rx) = mpsc::channel(8);
         let (reply, mut reply_rx) = oneshot::channel();
         let wire = session.handle_request_checked(RelayRequest::Command {
-            command: Command::AttachResource {
-                terminal_id: ResourceId::local(7),
-                role_policy: None,
-                agent_after_seq: None,
-            },
+            command: Command::attach_terminal(ResourceId::local(7), None),
             reply,
             subscribe: Some(ProxySubscription {
                 resource_kind: None,
@@ -4552,11 +4541,7 @@ mod tests {
         let (out_tx, _out_rx) = mpsc::channel(8);
         let (reply, mut reply_rx) = oneshot::channel();
         let wire = session.handle_request_checked(RelayRequest::Command {
-            command: Command::AttachResource {
-                terminal_id: ResourceId::local(8),
-                role_policy: None,
-                agent_after_seq: None,
-            },
+            command: Command::attach_terminal(ResourceId::local(8), None),
             reply,
             subscribe: Some(ProxySubscription {
                 resource_kind: None,
@@ -7201,11 +7186,7 @@ mod tests {
         let (out_tx, mut out_rx) = mpsc::channel(8);
         let (reply, _received) = oneshot::channel();
         let request = RelayRequest::Command {
-            command: Command::AttachResource {
-                terminal_id: ResourceId::local(9),
-                role_policy: None,
-                agent_after_seq: None,
-            },
+            command: Command::attach_terminal(ResourceId::local(9), None),
             reply,
             subscribe: Some(ProxySubscription {
                 resource_kind: None,
@@ -7415,11 +7396,7 @@ mod tests {
         let (out_tx, mut out_rx) = mpsc::channel(8);
         let (reply, mut reply_rx) = oneshot::channel();
         let wire = session.handle_request(RelayRequest::Command {
-            command: Command::AttachResource {
-                terminal_id: ResourceId::local(9),
-                role_policy: None,
-                agent_after_seq: None,
-            },
+            command: Command::attach_terminal(ResourceId::local(9), None),
             reply,
             subscribe: Some(ProxySubscription {
                 resource_kind: None,
@@ -7485,11 +7462,7 @@ mod tests {
 
         let (reply_b, mut reply_rx_b) = oneshot::channel();
         let wire = session.handle_request(RelayRequest::Command {
-            command: Command::AttachResource {
-                terminal_id: ResourceId::local(9),
-                role_policy: None,
-                agent_after_seq: None,
-            },
+            command: Command::attach_terminal(ResourceId::local(9), None),
             reply: reply_b,
             subscribe: Some(ProxySubscription {
                 resource_kind: None,
@@ -7562,11 +7535,7 @@ mod tests {
         subscribe(&mut session, 9, ClientId(1), out_tx.clone());
         let (reply, _reply_rx) = oneshot::channel();
         let wire = session.handle_request(RelayRequest::Command {
-            command: Command::AttachResource {
-                terminal_id: ResourceId::local(9),
-                role_policy: None,
-                agent_after_seq: None,
-            },
+            command: Command::attach_terminal(ResourceId::local(9), None),
             reply,
             subscribe: Some(ProxySubscription {
                 resource_kind: None,
@@ -8085,11 +8054,7 @@ mod tests {
             let (out_tx, mut out_rx) = mpsc::channel(16);
             let (reply, _result) = oneshot::channel();
             let wire = session.handle_request(RelayRequest::Command {
-                command: Command::AttachResource {
-                    terminal_id: ResourceId::local(7),
-                    role_policy: None,
-                    agent_after_seq: cursor,
-                },
+                command: Command::attach_agent_session(ResourceId::local(7), None, cursor),
                 reply,
                 subscribe: Some(ProxySubscription {
                     resource_kind: Some(phux_protocol::ids::ResourceKind::AgentSession),
@@ -8194,19 +8159,15 @@ mod tests {
 
     #[test]
     fn agent_resume_relay_rejects_unadvertised_resume_profiles_and_retags_the_cursor() {
-        let routed = route_to_satellite(&Command::AttachResource {
-            terminal_id: ResourceId::satellite(host(), 7),
-            role_policy: None,
-            agent_after_seq: Some(42),
-        })
+        let routed = route_to_satellite(&Command::attach_agent_session(
+            ResourceId::satellite(host(), 7),
+            None,
+            Some(42),
+        ))
         .expect("satellite route");
         assert_eq!(
             routed.1,
-            Command::AttachResource {
-                terminal_id: ResourceId::local(7),
-                role_policy: None,
-                agent_after_seq: Some(42),
-            }
+            Command::attach_agent_session(ResourceId::local(7), None, Some(42)),
         );
         let mut session = RelaySession::new_negotiated(
             host(),

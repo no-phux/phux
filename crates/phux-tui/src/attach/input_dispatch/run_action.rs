@@ -299,11 +299,10 @@ fn open_existing_pane(
 fn attach_frame(request_id: u32, terminal_id: ResourceId) -> FrameKind {
     FrameKind::Command {
         request_id,
-        command: Command::AttachResource {
+        command: Command::attach_terminal(
             terminal_id,
-            role_policy: crate::attach::attach_role::pane_attach_role(),
-            agent_after_seq: None,
-        },
+            crate::attach::attach_role::pane_attach_role(),
+        ),
     }
 }
 

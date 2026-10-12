@@ -13,7 +13,8 @@ use std::ptr;
 use std::sync::Arc;
 
 use phux_client_core::history::{HistoryCacheConfig, HistoryLoadState, HistoryStatus};
-use phux_client_core::session::ReplicaKey;
+use phux_client_core::session::agent_stream::{AgentPublication, AgentRecordMode};
+use phux_client_core::session::{AgentStreamInfo, ReplicaKey};
 use phux_client_runtime::control::{
     ControlOptions, Event, InboundDelivery, Status as RuntimeStatus,
 };
@@ -108,10 +109,6 @@ enum EventProjection {
     Next(Event),
 }
 
-pub(crate) struct AgentStream {
-    pub generation: Option<(u64, u64)>,
-}
-
 /// Retained C view and the immutable runtime frame that backs it.
 pub(crate) struct RenderCache {
     pub frame: Arc<GridFrame>,
@@ -146,9 +143,9 @@ pub(crate) struct Client {
     /// Borrow-retained copy of `ControlPlane::take_outbound()`.
     pub outgoing: Vec<Vec<u8>>,
     pub owned_effects: Vec<OwnedEffect>,
-    /// Committed agent deliveries held until a same-incarnation attached
-    /// catalog lets the host rebind their transport epoch.
-    pending_agent_effects: Vec<OwnedEffect>,
+    /// Receipts for staged effects; explicit effect clearing accepts them.
+    /// Transport retirement drops views without accepting the publications.
+    agent_receipts: Vec<Arc<AgentPublication>>,
     pub effect_count: usize,
     pub render: HashMap<ResourceId, RenderCache>,
     pub selection_buf: Vec<u8>,
@@ -157,7 +154,7 @@ pub(crate) struct Client {
     pub search_results: Vec<PhuxSearchResult>,
     pub sessions: Vec<SessionSummary>,
     pub resources: Vec<ResourceSummary>,
-    pub agent_streams: HashMap<ResourceId, AgentStream>,
+    pub agent_streams: HashMap<ResourceId, Option<AgentStreamInfo>>,
     pub operations: crate::c::operations::Operations,
     pub workspace: crate::c::workspace::SharedWorkspace,
     pub server_id: Vec<u8>,
@@ -199,8 +196,8 @@ impl Client {
     ///
     /// `deliver_inbound` is [`InboundDelivery::Queued`] in either lane: this
     /// ABI's per-frame hooks (retired-close suppression, bootstrap-profile
-    /// validation, agent-generation tracking) read workspace-subscription
-    /// state that only the owning thread may touch, so the decode point
+    /// validation) read workspace-subscription state that only the owning
+    /// thread may touch, so the decode point
     /// stays here even when the runtime owns the socket.
     pub(crate) fn control_options(limits: &Limits) -> (ControlOptions, HistoryCacheConfig) {
         let bootstrap_limits =
@@ -248,7 +245,7 @@ impl Client {
             runtime,
             outgoing: Vec::new(),
             owned_effects: Vec::new(),
-            pending_agent_effects: Vec::new(),
+            agent_receipts: Vec::new(),
             effect_count: 0,
             render: HashMap::new(),
             selection_buf: Vec::new(),
@@ -305,17 +302,6 @@ impl Client {
         self.agent_streams.contains_key(id)
     }
 
-    pub(crate) fn sync_agent_generation(&mut self, id: &ResourceId) {
-        let generation = self
-            .control()
-            .engine()
-            .and_then(|engine| engine.agent_stream_info(id))
-            .map(|info| (info.stream_id.get(), info.bootstrap_id.get()));
-        if let Some(state) = self.agent_streams.get_mut(id) {
-            state.generation = generation;
-        }
-    }
-
     pub(crate) fn reset_borrows(&mut self) {
         for cache in self.render.values_mut() {
             cache.metadata.valid = false;
@@ -369,13 +355,13 @@ impl Client {
         self.retire_connection();
         self.render.clear();
         self.control().close();
-        self.pending_agent_effects.clear();
         self.detached = true;
     }
 
     /// Retire binding-owned correlations, not the runtime's reconnect or
     /// durable-operation state. Published immutable frames remain displayable.
     fn retire_connection(&mut self) {
+        self.agent_receipts.clear();
         self.operations.disconnect();
         self.workspace.disconnect();
         self.directory.disconnect();
@@ -707,31 +693,29 @@ impl Client {
 
     pub(crate) fn process_runtime_events(&mut self) -> Result<bool, BridgeError> {
         let mut attached = false;
-        let events = self.runtime.take_events();
+        let events = self.runtime.take_events_leased();
         for event in events {
             attached |= self.process_runtime_event(event)?;
         }
         self.sync_server_features();
-        if self.control().status() == RuntimeStatus::Attached {
-            self.owned_effects.append(&mut self.pending_agent_effects);
-        }
         self.publish_effects();
         self.drain_outbound();
         Ok(attached)
     }
 
     pub(crate) fn process_runtime_event(&mut self, event: Event) -> Result<bool, BridgeError> {
-        if matches!(event, Event::ConnectionLost { .. }) {
-            self.pending_agent_effects.extend(
-                self.owned_effects
-                    .drain(..)
-                    .filter(|effect| effect.kind == crate::c::types::EFFECT_AGENT_RECORDS),
-            );
+        if matches!(
+            event,
+            Event::ConnectionLost { .. } | Event::ConnectionOpened { .. }
+        ) {
+            self.owned_effects.clear();
             self.effect_count = 0;
         }
         if matches!(
             event,
-            Event::ConnectionLost { .. } | Event::StatusChanged(RuntimeStatus::Failed)
+            Event::ConnectionLost { .. }
+                | Event::ConnectionOpened { .. }
+                | Event::StatusChanged(RuntimeStatus::Failed)
         ) {
             self.retire_connection();
             return Ok(false);
@@ -763,7 +747,7 @@ impl Client {
                     if resource.kind == ResourceKind::AgentSession {
                         self.agent_streams
                             .entry(resource.id.clone())
-                            .or_insert(AgentStream { generation: None });
+                            .or_insert(None);
                     }
                 }
                 self.sessions = crate::c::workspace::session_summaries(snapshot.clone())?;
@@ -888,12 +872,19 @@ impl Client {
         event: Event,
     ) -> Result<EventProjection, BridgeError> {
         match event {
-            Event::AgentRecords {
+            Event::AgentPublication { publication, .. } => {
+                self.agent_publication_effect(publication);
+            }
+            Event::AgentSessionClosed {
                 terminal_id,
-                records,
-                retained,
+                stream,
                 ..
-            } => self.agent_records_effect(terminal_id, &records, retained),
+            } => {
+                if let Some(view) = self.agent_streams.get_mut(&terminal_id) {
+                    *view = stream;
+                }
+                self.finish_terminal_close(&terminal_id)?;
+            }
             Event::KernelSend(send) => self.process_send(send)?,
             Event::Frame(frame) => crate::c::dispatch_extension_frame(self, *frame)?,
             event => return Ok(EventProjection::Next(event)),
@@ -950,7 +941,9 @@ impl Client {
         self.workspace.subscriptions.cancel(id);
         self.workspace.subscriptions.mark_closed(id);
         if let Some(stream) = self.agent_streams.remove(id) {
-            let (stream_id, bootstrap_id) = stream.generation.unwrap_or((0, 0));
+            let (stream_id, bootstrap_id) = stream.map_or((0, 0), |info| {
+                (info.stream_id.get(), info.bootstrap_id.get())
+            });
             let mut effect = OwnedEffect::simple(
                 crate::c::types::EFFECT_AGENT_RECORDS,
                 crate::c::types::AGENT_RECORDS_CLOSED,
@@ -958,7 +951,7 @@ impl Client {
             );
             effect.stream_id = stream_id;
             effect.bootstrap_id = bootstrap_id;
-            self.push_agent_effect(effect);
+            self.owned_effects.push(effect);
         } else {
             crate::c::operations::release_terminal(self, id)?;
             self.operations.observe_resource_closed(id);
@@ -1029,38 +1022,33 @@ impl Client {
         self.owned_effects.push(effect);
     }
 
-    fn agent_records_effect(
-        &mut self,
-        id: ResourceId,
-        records: &[phux_client_core::session::agent_stream::AgentEventRecord],
-        retained: bool,
-    ) {
-        let generation = self
-            .agent_streams
-            .get(&id)
-            .and_then(|state| state.generation);
-        let detail = if retained {
-            crate::c::types::AGENT_RECORDS_RETAINED
-        } else {
-            crate::c::types::AGENT_RECORDS_LIVE
-        };
-        let mut effect = OwnedEffect::simple(crate::c::types::EFFECT_AGENT_RECORDS, detail, id);
-        let (stream_id, bootstrap_id) = generation.unwrap_or((0, 0));
-        effect.stream_id = stream_id;
-        effect.bootstrap_id = bootstrap_id;
-        effect.seq = records.last().map_or(0, |record| record.seq);
-        effect.bytes = crate::projection::agent_records::jsonl(records).into_bytes();
-        self.push_agent_effect(effect);
+    pub(crate) fn accept_agent_publications(&mut self) {
+        let mut control = self.runtime.control();
+        for publication in self.agent_receipts.drain(..) {
+            control.accept_agent_publication(&publication);
+        }
     }
 
-    pub(crate) fn push_agent_effect(&mut self, effect: OwnedEffect) {
-        if !self.pending_agent_effects.is_empty()
-            || self.control().status() != RuntimeStatus::Attached
-        {
-            self.pending_agent_effects.push(effect);
-        } else {
+    fn agent_publication_effect(&mut self, publication: Arc<AgentPublication>) {
+        self.agent_streams
+            .insert(publication.resource_id.clone(), Some(publication.stream));
+        if let Some(batch) = crate::projection::agent_records::project(&publication) {
+            let detail = match batch.mode {
+                AgentRecordMode::Replace => crate::c::types::AGENT_RECORDS_RETAINED,
+                AgentRecordMode::Append => crate::c::types::AGENT_RECORDS_LIVE,
+            };
+            let mut effect = OwnedEffect::simple(
+                crate::c::types::EFFECT_AGENT_RECORDS,
+                detail,
+                publication.resource_id.clone(),
+            );
+            effect.stream_id = batch.stream.stream_id.get();
+            effect.bootstrap_id = batch.stream.bootstrap_id.get();
+            effect.seq = batch.seq;
+            effect.bytes = batch.jsonl.into_bytes();
             self.owned_effects.push(effect);
         }
+        self.agent_receipts.push(publication);
     }
 
     fn sync_server_features(&mut self) {
@@ -1078,11 +1066,6 @@ impl Client {
             return;
         };
         self.protocol_ready = true;
-        if self.server_id != server.id {
-            // An incarnation reset cannot replay committed effects from the
-            // prior server into an identically numbered new resource.
-            self.pending_agent_effects.clear();
-        }
         self.server_id.clone_from(&server.id);
         self.list_directory = server.has(ServerFeature::ListDirectory);
         self.list_directory_host = server.has(ServerFeature::ListDirectoryHost);

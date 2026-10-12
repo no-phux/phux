@@ -138,6 +138,13 @@ impl ControlPlane {
         // Explicit history policies override the requested scrollback depth.
         // Compare effective settings so reconnect does not discard committed
         // agent records for a change in an unused default.
+        //
+        // A real profile, limits, or effective-history change still replaces
+        // the owner: those values are constructor-private on the kernel, and
+        // this crate cannot transplant agent streams. Resume cursors stay a
+        // live kernel query. Delivery stamps are never aliased onto the new
+        // owner. The publication journal is control-plane state and survives
+        // a same-incarnation rebuild; incarnation reset discards it.
         let same = self.engine_config.as_ref().is_some_and(|previous| {
             previous.profile == config.profile
                 && previous.limits == config.limits
@@ -316,6 +323,7 @@ impl ControlPlane {
         self.replay_preserving_subscriptions();
         self.replay_pending_spawns();
         self.retire_unadmitted_agent_subscriptions();
+        self.release_agent_delivery();
         Ok(())
     }
 
@@ -639,14 +647,15 @@ impl ControlPlane {
         }
         self.error = None;
         self.topology = Some(topology);
-        self.reconcile_agent_sessions(snapshot, true)?;
-        self.retire_unadmitted_agent_subscriptions();
         self.push_event(Event::TopologySnapshot {
             attach_id: None,
             snapshot: snapshot.clone(),
         });
         self.push_event(Event::TopologyChanged);
+        self.reconcile_agent_sessions(snapshot, true)?;
+        self.retire_unadmitted_agent_subscriptions();
         self.sync_agent_metadata();
+        self.reconcile_agent_delivery_catalog(snapshot);
         Ok(())
     }
 }
