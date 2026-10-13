@@ -61,6 +61,13 @@ async function widths(page: Page, name: string) {
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `${name}: no page overflow at ${width}`);
     assert.ok(await page.locator(".pterm").evaluate((term) => term.scrollWidth <= term.clientWidth), `${name}: no frame overflow at ${width}`);
     assert.ok(await page.locator("canvas").evaluate((canvas: HTMLCanvasElement) => Math.abs(canvas.width - canvas.getBoundingClientRect().width) < 1), "canvas stays native-sized, not CSS-scaled");
+    assert.ok(await page.locator(".pterm-head").evaluate((node) => node.getBoundingClientRect().height <= 54), `${name}: single compact header at ${width}`);
+    assert.ok(await page.locator(".pterm-pane-controls").evaluate((node) => node.getBoundingClientRect().height <= 54), `${name}: single-row pane toolbar at ${width}`);
+    const targets = await page.locator(".pterm-pane-controls button").evaluateAll((nodes) => nodes.map((node) => {
+      const rect = node.getBoundingClientRect();
+      return { width: rect.width, height: rect.height, icon: node.querySelector('svg[aria-hidden="true"]') !== null };
+    }));
+    assert.ok(targets.every((target) => target.width >= 44 && target.height >= 44 && target.icon), "compact icons retain full-size accessible hit targets");
     await page.screenshot({ path: `${artifacts}/${name}-${width}.png`, fullPage: true });
   }
 }
@@ -74,7 +81,7 @@ async function paneControls(page: Page) {
   await page.locator('canvas[data-phux-pane-count="4"]').waitFor();
   assert.ok(await page.getByRole("button", { name: "Split pane left/right", exact: true }).isDisabled());
   assert.ok(await page.getByRole("button", { name: "Split top/bottom", exact: true }).isDisabled());
-  await page.getByRole("button", { name: "Close pane", exact: true }).click();
+  await page.getByRole("button", { name: "Close view", exact: true }).click();
   await page.locator('canvas[data-phux-pane-count="3"]').waitFor();
   assert.deepEqual(await page.evaluate(() => window.__terminalFixture?.actions), ["split:vertical", "split:horizontal", "next", "split:vertical", "close-pane"]);
   assert.ok(await page.locator("canvas").evaluate((canvas) => canvas === document.activeElement), "pane actions return input focus");

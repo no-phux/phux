@@ -87,7 +87,7 @@ async function splitAndFocus(page: Page, dpr: number) {
   const third = await page.locator("canvas").getAttribute("data-phux-focused-pane");
   await page.getByRole("button", { name: "Next pane", exact: true }).click();
   await page.waitForFunction((previous) => document.querySelector("canvas")?.getAttribute("data-phux-focused-pane") !== previous, third);
-  await page.getByRole("button", { name: "Close pane", exact: true }).click();
+  await page.getByRole("button", { name: "Close view", exact: true }).click();
   await page.locator('canvas[data-phux-pane-count="2"]').waitFor();
   assert.ok(await page.locator("canvas").evaluate((canvas) => canvas.parentElement!.contains(document.activeElement)), "pane controls restore focus");
 }

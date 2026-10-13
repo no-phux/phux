@@ -78,16 +78,31 @@ export function TerminalOverlay(props: LaunchProps & {
   return <div className="pterm-overlay" key={props.phase}>{panels[props.phase]}</div>;
 }
 
+function PaneIcon({ children }: { children: ReactNode }) {
+  return <svg className="pterm-pane-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+    {children}
+  </svg>;
+}
+
 export function PaneControls({ panes, error, splitVertical, splitHorizontal, nextPane, closePane }: {
   panes: PaneView; error: string; splitVertical: () => void; splitHorizontal: () => void;
   nextPane: () => void; closePane: () => void;
 }) {
   return <nav className="pterm-pane-controls" aria-label="Pane controls">
-    <span>{panes.count} / 4 panes</span>
-    <button className="pterm-split-primary" aria-label="Split pane left/right" title="Split left/right" disabled={panes.pending || panes.count >= 4} onClick={splitVertical}>Split pane</button>
-    <button aria-label="Split top/bottom" title="Split top/bottom" disabled={panes.pending || panes.count >= 4} onClick={splitHorizontal}>Top/bottom</button>
-    <button disabled={panes.pending || panes.count < 2} onClick={nextPane}>Next pane</button>
-    <button disabled={panes.pending || panes.count < 2} onClick={closePane}>Close view</button>
+    <button className="pterm-split-primary" aria-label="Split pane left/right" title="Split left/right" disabled={panes.pending || panes.count >= 4} onClick={splitVertical}>
+      <PaneIcon><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M12 4v16" /></PaneIcon>
+      <span>Split pane</span>
+    </button>
+    <button aria-label="Split top/bottom" title="Split top/bottom" disabled={panes.pending || panes.count >= 4} onClick={splitHorizontal}>
+      <PaneIcon><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 12h18" /></PaneIcon>
+    </button>
+    <button aria-label="Next pane" title="Next pane" disabled={panes.pending || panes.count < 2} onClick={nextPane}>
+      <PaneIcon><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M12 4v16m3-11 3 3-3 3m-3-3h6" /></PaneIcon>
+    </button>
+    <button aria-label="Close view" title="Close view" disabled={panes.pending || panes.count < 2} onClick={closePane}>
+      <PaneIcon><rect x="3" y="4" width="18" height="16" rx="2" /><path d="m9 9 6 6m0-6-6 6" /></PaneIcon>
+    </button>
+    <span className="pterm-pane-count">{panes.count} / 4<span className="pterm-pane-count-label"> panes</span></span>
     <span className="pterm-pane-status" role="status">{error || (panes.pending ? "Updating panes…" : "")}</span>
   </nav>;
 }
