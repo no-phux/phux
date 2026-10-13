@@ -20,10 +20,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use phux_client_ffi::{
-    ABI_VERSION, PhuxArrangementGroup, PhuxArrangementInfo, PhuxArrangementMutation,
-    PhuxAttachOptions, PhuxBytes, PhuxCatalogTerminal, PhuxClient, PhuxClientOptions,
-    PhuxClientResult, PhuxClientState, PhuxConnectOptions, PhuxKeyEvent, PhuxResourceId,
-    PhuxResourceInfo, PhuxSessionInfo, PhuxTerminalGridView, phux_client_arrangement_group_get,
+    ABI_VERSION, PHUX_ARRANGEMENT_BACKEND_ORGANIZATION, PHUX_ARRANGEMENT_STATE_AUTHORITATIVE,
+    PhuxArrangementGroup, PhuxArrangementInfo, PhuxArrangementMutation, PhuxAttachOptions,
+    PhuxBytes, PhuxCatalogTerminal, PhuxClient, PhuxClientOptions, PhuxClientResult,
+    PhuxClientState, PhuxConnectOptions, PhuxKeyEvent, PhuxResourceId, PhuxResourceInfo,
+    PhuxSessionInfo, PhuxTerminalGridView, phux_client_arrangement_group_get,
     phux_client_arrangement_info, phux_client_arrangement_mutate, phux_client_arrangement_refresh,
     phux_client_catalog_terminal_get, phux_client_connect, phux_client_connection_epoch,
     phux_client_connection_error, phux_client_feed_frame, phux_client_free,
@@ -550,14 +551,20 @@ fn retained_handle_recovers_arrangement_catalog_and_seed_terminal_after_restart(
             );
             poll_until(client.0, "fresh arrangement metadata and catalog", || {
                 let info = arrangement_info(client.0);
-                info.revision > previous_revision && info.state == 1 && info.status == 2
+                info.revision > previous_revision
+                    && info.state == PHUX_ARRANGEMENT_STATE_AUTHORITATIVE
+                    && info.status == 2
             })
             .await;
             let info = arrangement_info(client.0);
             assert_eq!(
-                (info.group_count, info.terminal_count),
-                (0, 1),
-                "a fresh session is unarranged; no arrangement is synthesized"
+                info.backend, PHUX_ARRANGEMENT_BACKEND_ORGANIZATION,
+                "every session has a stored arrangement from creation"
+            );
+            assert_eq!(
+                (info.group_count, info.unarranged_count, info.terminal_count),
+                (0, 1, 1),
+                "the seed terminal runs unarranged; no arrangement is synthesized"
             );
             let mut catalog = PhuxCatalogTerminal::default();
             let mut listed_session = PhuxSessionInfo::default();

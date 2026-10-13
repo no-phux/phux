@@ -354,13 +354,16 @@ fn negotiation_seeds_the_replica_and_records_reach_the_abi() {
         ),
         (1, 1, 0)
     );
-    assert_ne!(work_record.flags & SESSION_ORGANIZED, 0);
-    assert_ne!(work_record.flags & SESSION_FOCUSED, 0);
-    assert_eq!(work_record.flags & SESSION_INBOX, 0);
+    assert_ne!(work_record.flags & PHUX_SESSION_RECORD_ORGANIZED, 0);
+    assert_ne!(work_record.flags & PHUX_SESSION_RECORD_FOCUSED, 0);
+    assert_eq!(work_record.flags & PHUX_SESSION_RECORD_INBOX, 0);
     let inbox_record = session_record(&h, 1);
-    assert_ne!(inbox_record.flags & SESSION_INBOX, 0);
-    assert_ne!(inbox_record.flags & SESSION_AWAITING_ORGANIZATION, 0);
-    assert_ne!(inbox_record.flags & SESSION_EMPTY, 0);
+    assert_ne!(inbox_record.flags & PHUX_SESSION_RECORD_INBOX, 0);
+    assert_ne!(
+        inbox_record.flags & PHUX_SESSION_RECORD_AWAITING_ORGANIZATION,
+        0
+    );
+    assert_ne!(inbox_record.flags & PHUX_SESSION_RECORD_EMPTY, 0);
 
     // The frozen session summary still reads.
     let mut summary = PhuxSessionInfo::default();

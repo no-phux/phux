@@ -37,18 +37,20 @@ pub(crate) const INTERNAL_START: u32 = 0x8000_0000;
 
 /// `PhuxArrangementInfo.state`: nothing published yet, or the connection
 /// ended.
-pub const STATE_UNAVAILABLE: u32 = 0;
+pub const PHUX_ARRANGEMENT_STATE_UNAVAILABLE: u32 = 0;
 /// The session has no stored arrangement: its members are not arranged.
-pub const STATE_UNARRANGED: u32 = 1;
+pub const PHUX_ARRANGEMENT_STATE_UNARRANGED: u32 = 1;
 /// A stored arrangement, confirmed by the server.
-pub const STATE_AUTHORITATIVE: u32 = 2;
+pub const PHUX_ARRANGEMENT_STATE_AUTHORITATIVE: u32 = 2;
 /// The last good publication, after a read or edit failed.
-pub const STATE_LAST_GOOD_WITH_ERROR: u32 = 3;
+pub const PHUX_ARRANGEMENT_STATE_LAST_GOOD_WITH_ERROR: u32 = 3;
 
+/// `PhuxArrangementInfo.backend`: nothing published yet.
+pub const PHUX_ARRANGEMENT_BACKEND_NONE: u32 = 0;
 /// `PhuxArrangementInfo.backend`: the legacy layout metadata value.
-pub const BACKEND_LEGACY: u32 = 1;
+pub const PHUX_ARRANGEMENT_BACKEND_LEGACY: u32 = 1;
 /// The session's stored arrangement, edited by compare-and-swap.
-pub const BACKEND_ORGANIZATION: u32 = 2;
+pub const PHUX_ARRANGEMENT_BACKEND_ORGANIZATION: u32 = 2;
 
 /// Which document a transaction reads and writes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,7 +120,7 @@ impl Default for SharedArrangement {
         Self {
             selected: 0,
             revision: 0,
-            state: STATE_UNAVAILABLE,
+            state: PHUX_ARRANGEMENT_STATE_UNAVAILABLE,
             authoritative: false,
             request: 0,
             status: 0,
@@ -156,7 +158,7 @@ impl SharedArrangement {
         // Retain the last publication's identity and arrays for frozen display.
         // Revoking its authority must not require consumers to allocate a new
         // copy just to observe an interrupted transaction's unknown outcome.
-        self.state = STATE_UNAVAILABLE;
+        self.state = PHUX_ARRANGEMENT_STATE_UNAVAILABLE;
         self.authoritative = false;
         if self.pending.take().is_some() {
             self.status = 4;
@@ -166,7 +168,7 @@ impl SharedArrangement {
 
     fn fail(&mut self, error: &BridgeError) {
         self.pending = None;
-        self.state = STATE_LAST_GOOD_WITH_ERROR;
+        self.state = PHUX_ARRANGEMENT_STATE_LAST_GOOD_WITH_ERROR;
         self.status = 3;
         self.message = bounded(&error.message);
     }
@@ -205,12 +207,12 @@ impl SharedArrangement {
 
     /// `PhuxArrangementInfo.backend`: `0` before any publication.
     pub(super) const fn backend_code(&self) -> u32 {
-        if self.state == STATE_UNAVAILABLE && self.revision == 0 {
-            return 0;
+        if self.state == PHUX_ARRANGEMENT_STATE_UNAVAILABLE && self.revision == 0 {
+            return PHUX_ARRANGEMENT_BACKEND_NONE;
         }
         match self.backend {
-            Backend::Legacy => BACKEND_LEGACY,
-            Backend::Organization(_) => BACKEND_ORGANIZATION,
+            Backend::Legacy => PHUX_ARRANGEMENT_BACKEND_LEGACY,
+            Backend::Organization(_) => PHUX_ARRANGEMENT_BACKEND_ORGANIZATION,
         }
     }
 
@@ -289,7 +291,7 @@ fn stored_arrangement(client: &Client) -> Option<ArrangementKey> {
 /// away.
 pub(crate) fn organization_changed(client: &mut Client) {
     let ws = &client.arrangement;
-    if ws.selected == 0 || ws.state == STATE_UNAVAILABLE {
+    if ws.selected == 0 || ws.state == PHUX_ARRANGEMENT_STATE_UNAVAILABLE {
         return;
     }
     let current = stored_arrangement(client);
@@ -789,7 +791,7 @@ fn publish(
     if !topology_equal(&ws.topology, &topology)
         || !catalog_equal(&ws.catalog, &catalog)
         || ws.authoritative != authoritative
-        || ws.state == STATE_UNAVAILABLE
+        || ws.state == PHUX_ARRANGEMENT_STATE_UNAVAILABLE
         || ws.revision == 0
     {
         ws.revision = ws
@@ -805,9 +807,9 @@ fn publish(
     ws.roots = roots;
     ws.authoritative = authoritative;
     ws.state = if authoritative {
-        STATE_AUTHORITATIVE
+        PHUX_ARRANGEMENT_STATE_AUTHORITATIVE
     } else {
-        STATE_UNARRANGED
+        PHUX_ARRANGEMENT_STATE_UNARRANGED
     };
     Ok(())
 }

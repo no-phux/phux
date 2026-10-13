@@ -46,16 +46,16 @@ pub const LIFETIME_PERSISTENT: u32 = 1;
 pub const LIFETIME_EPHEMERAL: u32 = 2;
 
 /// `PHUX_SESSION_RECORD_FOCUSED`.
-pub const SESSION_FOCUSED: u32 = 0x1;
+pub const PHUX_SESSION_RECORD_FOCUSED: u32 = 0x1;
 /// `PHUX_SESSION_RECORD_AWAITING_ORGANIZATION`.
-pub const SESSION_AWAITING_ORGANIZATION: u32 = 0x2;
+pub const PHUX_SESSION_RECORD_AWAITING_ORGANIZATION: u32 = 0x2;
 /// `PHUX_SESSION_RECORD_INBOX`.
-pub const SESSION_INBOX: u32 = 0x4;
+pub const PHUX_SESSION_RECORD_INBOX: u32 = 0x4;
 /// `PHUX_SESSION_RECORD_ORGANIZED`: the replica holds the record, so
 /// `revision`, `arrangement_key`, and the state counts are its values.
-pub const SESSION_ORGANIZED: u32 = 0x8;
+pub const PHUX_SESSION_RECORD_ORGANIZED: u32 = 0x8;
 /// `PHUX_SESSION_RECORD_EMPTY`.
-pub const SESSION_EMPTY: u32 = 0x10;
+pub const PHUX_SESSION_RECORD_EMPTY: u32 = 0x10;
 
 /// `PhuxOrgKind` values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -846,19 +846,19 @@ pub unsafe extern "C" fn phux_client_session_record_get(
         };
         let mut flags = 0;
         if session.focused {
-            flags |= SESSION_FOCUSED;
+            flags |= PHUX_SESSION_RECORD_FOCUSED;
         }
         if org.awaiting_organization {
-            flags |= SESSION_AWAITING_ORGANIZATION;
+            flags |= PHUX_SESSION_RECORD_AWAITING_ORGANIZATION;
         }
         if org.inbox {
-            flags |= SESSION_INBOX;
+            flags |= PHUX_SESSION_RECORD_INBOX;
         }
         if org.known {
-            flags |= SESSION_ORGANIZED;
+            flags |= PHUX_SESSION_RECORD_ORGANIZED;
         }
         if members == 0 {
-            flags |= SESSION_EMPTY;
+            flags |= PHUX_SESSION_RECORD_EMPTY;
         }
         *out = PhuxSessionRecord {
             size: out.size,
@@ -1316,6 +1316,23 @@ pub unsafe extern "C" fn phux_client_expire_operations(
     })
 }
 
+macro_rules! sized_defaults {
+    ($($ty:ty),*) => {$(
+        impl Default for $ty {
+            /// A zeroed record whose `size` and `version` are initialized, as
+            /// every getter requires.
+            fn default() -> Self {
+                // SAFETY: every field is an integer, a bool, a byte array, or
+                // a nullable span or id whose all-zero value is valid.
+                let mut value: Self = unsafe { std::mem::zeroed() };
+                value.size = mem::size_of::<Self>();
+                value.version = crate::c::ABI_VERSION;
+                value
+            }
+        }
+    )*};
+}
+
 // ----- exports: results --------------------------------------------------------
 
 /// One request's result.
@@ -1459,6 +1476,14 @@ pub unsafe extern "C" fn phux_client_org_result_release(
         Ok(())
     })
 }
+
+sized_defaults!(
+    PhuxOrganizationInfo,
+    PhuxSessionRecord,
+    PhuxResourceRecord,
+    PhuxOrgResult,
+    PhuxOrgTarget
+);
 
 #[cfg(test)]
 mod tests;
