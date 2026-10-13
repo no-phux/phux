@@ -62,11 +62,12 @@ impl Desktop {
         self.phux = options.phux;
         self.socket = options.socket;
         self.home_session = options.session.clone();
-        let paths = settings::layout_paths(&self.socket, &options.session);
+        let socket = self.socket.display().to_string();
+        let paths = crate::workspace::layout_paths(&socket, &options.session);
         self.layout = if options.layout_path.as_os_str().is_empty() { paths.layout } else { options.layout_path };
         self.quick_layout = paths.quick;
-        self.legacy_layout = paths.legacy_layout;
-        self.legacy_quick = paths.legacy_quick;
+        self.legacy_layout = Some(paths.legacy_layout);
+        self.legacy_quick = Some(paths.legacy_quick);
         if !self.fonts {
             crate::fonts::install(cx);
             self.fonts = true;
@@ -288,9 +289,10 @@ impl Desktop {
 
     fn arm_hotkeys(&mut self, cx: &mut Context<Self>) {
         let ghostty = settings::parse_ghostty(settings::read_ghostty_config().as_deref().unwrap_or(""));
-        let enabled = self.windows.first().and_then(|opened| {
-            opened.desk.read(cx).ok().map(|desk| desk.prefs.ghostty_keys)
-        }).unwrap_or(true);
+        let enabled = self
+            .windows
+            .first()
+            .is_some_and(|opened| opened.desk.read(cx).prefs.ghostty_keys);
         if enabled {
             self.register_hotkeys(&ghostty, cx);
         }

@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use gpui::prelude::*;
 use gpui::{Context, Entity, Window};
 use phux_client_runtime::{Client, ViewId};
 use phux_protocol::ResourceId;
@@ -38,7 +39,7 @@ impl Panes {
         if let Some(slot) = self.by_placement.get(placement_id) {
             if slot.view == view && &slot.terminal == terminal {
                 let entity = slot.entity.clone();
-                let _ = entity.update_in(cx, |terminal, window, cx| {
+                entity.update(cx, |terminal, cx| {
                     terminal.configure(settings, window, cx);
                 });
                 return entity;
@@ -60,9 +61,9 @@ impl Panes {
         }
     }
 
-    pub fn focus(&self, placement_id: &str, cx: &mut Context<Desk>) {
+    pub fn focus(&self, placement_id: &str, window: &mut Window, cx: &mut Context<Desk>) {
         if let Some(slot) = self.by_placement.get(placement_id) {
-            let _ = slot.entity.update_in(cx, |terminal, window, cx| {
+            slot.entity.update(cx, |terminal, cx| {
                 window.focus(terminal.focus_handle(), cx);
             });
         }

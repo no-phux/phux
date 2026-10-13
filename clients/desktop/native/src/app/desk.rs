@@ -6,18 +6,20 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AppContext, Context, Entity, FocusHandle, KeyDownEvent, Subscription, Task, Window, px,
+    App, AppContext, Context, Entity, FocusHandle, KeyDownEvent, Subscription, Task, Window, px,
 };
 use phux_client_runtime::control::{DeliveryOutcome, Event, PathAnswer, Status};
-use phux_client_runtime::{Client, Scroll, TextRegion};
+use phux_client_runtime::engine::{Scroll, TextRegion};
+use phux_client_runtime::Client;
 use phux_protocol::ResourceId;
+use phux_protocol::ids::SatelliteHost;
 
 use crate::connection::path::{self as paths};
 use crate::connection::{AgentInfo, Connection};
 use crate::settings::{self, DisplayPrefs};
 use crate::terminal::{HostAction, Settings as TerminalSettings};
 use crate::workspace::layout::{Axis, Direction, Placement};
-use crate::workspace::persist::{self, LayoutStore};
+use crate::workspace::persist::{self, FileLayoutStore};
 use crate::workspace::{Workspace, WorkspaceOptions};
 
 use super::actions::Run;
@@ -66,7 +68,7 @@ pub struct Toast {
     pub terminal: Option<ResourceId>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Modal {
     None,
     Commands,
@@ -107,7 +109,7 @@ pub struct Desk {
     pub connect_error: Option<String>,
     pub layout_blocked: bool,
     pub persist_writes: bool,
-    store: LayoutStore,
+    store: FileLayoutStore,
     last_saved: Option<persist::SavedLayout>,
     panes: Panes,
     agent_seen: HashMap<ResourceId, String>,
@@ -117,6 +119,7 @@ pub struct Desk {
     content_origin: gpui::Point<gpui::Pixels>,
     content_size: gpui::Size<gpui::Pixels>,
     tab_centers: Vec<(String, f32)>,
+    viewport: gpui::Size<gpui::Pixels>,
     _wake: Option<Task<()>>,
     _clock: Option<Task<()>>,
     _subs: Vec<Subscription>,
@@ -145,9 +148,10 @@ impl Desk {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let store = persist::file_layout_store(&request.layout_path, request.legacy_layout.as_deref());
-        let blocked = store.blocked();
-        let saved = store.initial().cloned();
+        let store = FileLayoutStore::new(request.layout_path.clone(), request.legacy_layout.clone());
+        let loaded = persist::load_layout(&store.read());
+        let blocked = loaded.blocked;
+        let saved = loaded.initial;
         let text = settings::read_ghostty_config();
         let ghostty = settings::parse_ghostty(text.as_deref().unwrap_or(""));
         let mut prefs = saved
@@ -155,15 +159,15 @@ impl Desk {
             .map(|layout| layout.display.clone())
             .unwrap_or_else(|| {
                 if text.is_some() {
-                    settings::ghostty_prefs(&DisplayPrefs::default(), &ghostty)
+                    settings::ghostty_prefs(&settings::default_display(), &ghostty)
                 } else {
-                    DisplayPrefs::default()
+                    settings::default_display()
                 }
             });
         if request.role == WindowRole::Quick {
-            prefs = persist::quick_display(&prefs);
+            prefs = persist::quick_display(Some(&prefs), saved.as_ref());
         }
-        prefs = prefs.sanitize();
+        prefs = settings::sanitize_display(&prefs);
         let focus = cx.focus_handle();
         let mut desk = Self {
             desktop,
@@ -193,6 +197,7 @@ impl Desk {
             content_origin: gpui::point(px(0.), px(40.)),
             content_size: gpui::size(px(800.), px(600.)),
             tab_centers: Vec::new(),
+            viewport: gpui::size(px(1320.), px(840.)),
             _wake: None,
             _clock: None,
             _subs: Vec::new(),
@@ -257,10 +262,14 @@ impl Desk {
     }
 
     fn on_activity(&mut self, cx: &mut Context<Self>) {
-        let Some(link) = self.link.as_mut() else { return };
-        let events = link.connection.drain();
-        let answers = link.connection.take_path_answers();
-        let epoch = link.connection.connection_epoch();
+        let (events, answers, epoch) = {
+            let Some(link) = self.link.as_mut() else { return };
+            (
+                link.connection.drain(),
+                link.connection.take_path_answers(),
+                link.connection.connection_epoch(),
+            )
+        };
         if self.agent_epoch != Some(epoch) || events.iter().any(crate::connection::starts_connection) {
             self.agent_seen.clear();
             self.toasts.retain(|toast| toast.kind != ToastKind::Agent);
@@ -269,8 +278,10 @@ impl Desk {
         for event in &events {
             self.note_event(event);
         }
-        link.workspace.handle(&events, &link.connection);
-        link.workspace.settle(&link.connection);
+        if let Some(link) = self.link.as_mut() {
+            link.workspace.handle(&events, &link.connection);
+            link.workspace.settle(&link.connection);
+        }
         self.take_notices();
         self.note_agents();
         for answer in answers {
@@ -344,7 +355,7 @@ impl Desk {
     fn take_notices(&mut self) {
         let Some(link) = self.link.as_mut() else { return };
         for notice in link.workspace.take_notices() {
-            let kind = if notice.is_error() { ToastKind::Error } else { ToastKind::Info };
+            let kind = if notice.kind == "error" { ToastKind::Error } else { ToastKind::Info };
             self.toast(kind, &notice.title, notice.body.clone());
         }
     }
@@ -385,15 +396,15 @@ impl Desk {
         self.run_catalog(id, window, cx);
     }
 
-    fn run_classified(&mut self, command: settings::ClassifiedCommand, window: &mut Window, cx: &mut Context<Self>) {
-        use settings::ClassifiedCommand::*;
+    fn run_classified(&mut self, command: settings::BoundAction, window: &mut Window, cx: &mut Context<Self>) {
+        use settings::BoundAction::*;
         match command {
             Ignore => {}
             Send(text) => self.send_text(&text, cx),
-            WriteFile { region, mode } => self.write_file(region, mode, window, cx),
+            WriteFile { region, mode } => self.write_file(&region, &mode, window, cx),
             FontSize(size) => self.update_prefs(|prefs| prefs.font_size = size, cx),
-            ScrollLines(rows) => self.scroll_lines(rows),
-            PromptJump(prompts) => self.jump_prompt(prompts),
+            ScrollLines(rows) => self.scroll_lines(rows as i64),
+            PromptJump(prompts) => self.jump_prompt(prompts as i64),
         }
     }
 
@@ -422,7 +433,7 @@ impl Desk {
             "close" => self.workspace_call(|link| link.workspace.close_pane(&link.connection, None)),
             "close-tab" => {
                 if let Some(id) = self.active_tab_id() {
-                    self.workspace_mut(|link| link.workspace.close_tab(&id));
+                    self.workspace_mut(|link| link.workspace.close_tab(&link.connection, &id));
                 }
             }
             "zoom" => self.workspace_mut(|link| link.workspace.toggle_zoom()),
@@ -495,7 +506,7 @@ impl Desk {
     fn after_command(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.take_notices();
         self.retain_panes();
-        self.focus_terminal(cx);
+        self.focus_terminal(window, cx);
         self.sync_title(window);
         cx.notify();
     }
@@ -512,15 +523,13 @@ impl Desk {
         if chord.is_empty() {
             return;
         }
-        let settings_chord = settings::key_chord(&settings::KeyLike {
-            key: Some(event.keystroke.key.to_string()),
-            is_held: event.is_held,
-            modifiers: Some(settings::KeyModifiers {
-                cmd: event.keystroke.modifiers.platform,
-                alt: event.keystroke.modifiers.alt,
-                ctrl: event.keystroke.modifiers.control,
-                shift: event.keystroke.modifiers.shift,
-            }),
+        let settings_chord = settings::key_chord(&settings::KeyChord {
+            key: event.keystroke.key.to_string(),
+            held: event.is_held,
+            cmd: event.keystroke.modifiers.platform,
+            alt: event.keystroke.modifiers.alt,
+            ctrl: event.keystroke.modifiers.control,
+            shift: event.keystroke.modifiers.shift,
         });
         let chord = if settings_chord.is_empty() { chord } else { settings_chord };
         if let Some(id) = self.binding(&chord) {
@@ -549,11 +558,15 @@ impl Desk {
     }
 
     pub fn app_chords(&self) -> Vec<String> {
-        settings::app_chords(&self.ghostty(), self.prefs.ghostty_keys)
+        let ghostty = self.ghostty();
+        let keymap = settings::effective_keymap(&ghostty, self.prefs.ghostty_keys);
+        settings::app_chords(&keymap)
     }
 
     pub fn shown_chord(&self, id: &str) -> Option<String> {
-        settings::shown_chords(&self.ghostty(), self.prefs.ghostty_keys)
+        let ghostty = self.ghostty();
+        let keymap = settings::effective_keymap(&ghostty, self.prefs.ghostty_keys);
+        settings::shown_chords(&keymap, &settings::default_chords())
             .into_iter()
             .find(|(command, _)| command == id)
             .map(|(_, chord)| settings::display_chord(&chord))
@@ -568,12 +581,12 @@ impl Desk {
         }
     }
 
-    pub fn close_modal(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub fn close_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if matches!(self.modal, Modal::Path) {
             self.picker = None;
         }
         self.modal = Modal::None;
-        self.focus_terminal(cx);
+        self.focus_terminal(window, cx);
         cx.notify();
     }
 
@@ -589,7 +602,7 @@ impl Desk {
 
     pub(crate) fn update_prefs(&mut self, change: impl FnOnce(&mut DisplayPrefs), cx: &mut Context<Self>) {
         change(&mut self.prefs);
-        self.prefs = self.prefs.clone().sanitize();
+        self.prefs = settings::sanitize_display(&self.prefs);
         self.persist();
         self.sync_bindings(cx);
         cx.notify();
@@ -610,19 +623,19 @@ impl Desk {
                         &server,
                         &link.workspace.tabs,
                         &self.prefs,
-                        &link.workspace.active_id,
+                        Some(link.workspace.active_id.as_str()),
                     ));
                 }
             }
         } else if let Some(saved) = self.last_saved.as_mut() {
             saved.display = self.prefs.clone();
         } else if self.link.as_ref().and_then(|link| link.connection.server_id()).is_none() {
-            self.last_saved = Some(persist::save_layout("", &[], &self.prefs, ""));
+            self.last_saved = Some(persist::save_layout("", &[], &self.prefs, None));
         } else {
             return;
         }
         if let Some(saved) = &self.last_saved {
-            if let Err(error) = self.store.write(saved) {
+            if let Err(error) = self.store.write(&persist::layout_value(saved)) {
                 self.toast(ToastKind::Error, "Could not save desktop layout", Some(error.to_string()));
             }
         }
@@ -692,7 +705,7 @@ impl Desk {
     fn import_ghostty(&mut self, cx: &mut Context<Self>) {
         let ghostty = self.ghostty();
         let next = settings::ghostty_prefs(&self.prefs, &ghostty);
-        self.prefs = next.sanitize();
+        self.prefs = settings::sanitize_display(&next);
         self.persist();
         self.sync_bindings(cx);
         cx.notify();
@@ -714,14 +727,14 @@ impl Desk {
 
     fn open_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let desk = cx.entity().downgrade();
-        let prompt = window.prompt_for_paths(gpui::PathPromptOptions {
+        let prompt = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: false,
             directories: true,
             multiple: false,
             prompt: Some("Open".into()),
         });
         cx.spawn_in(window, async move |_, cx| {
-            let paths = prompt.await.ok().flatten().unwrap_or_default();
+            let paths = prompt.await.ok().and_then(Result::ok).flatten().unwrap_or_default();
             if let Some(path) = paths.into_iter().next() {
                 let _ = desk.update(cx, |desk, cx| {
                     let cwd = path.display().to_string();
@@ -884,16 +897,16 @@ impl Desk {
     }
 
     pub fn close_tab(&mut self, id: &str) {
-        self.workspace_mut(|link| link.workspace.close_tab(id));
+        self.workspace_mut(|link| link.workspace.close_tab(&link.connection, id));
     }
 
-    pub fn focus_placement(&mut self, tab_id: &str, placement_id: &str, cx: &mut Context<Self>) {
+    pub fn focus_placement(&mut self, tab_id: &str, placement_id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.workspace_mut(|link| link.workspace.focus_placement(tab_id, placement_id));
-        self.focus_terminal(cx);
+        self.focus_terminal(window, cx);
         cx.notify();
     }
 
-    fn focus_terminal(&mut self, cx: &mut Context<Self>) {
+    fn focus_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !matches!(self.modal, Modal::None) {
             return;
         }
@@ -901,7 +914,7 @@ impl Desk {
             return;
         }
         if let Some(id) = self.focused_placement().map(|placement| placement.id.clone()) {
-            self.panes.focus(&id, cx);
+            self.panes.focus(&id, window, cx);
         }
     }
 
@@ -1000,22 +1013,22 @@ impl Desk {
         }
     }
 
-    fn write_file(&mut self, region: settings::WriteRegion, mode: settings::WriteMode, _window: &mut Window, cx: &mut Context<Self>) {
+    fn write_file(&mut self, region: &str, mode: &str, _window: &mut Window, cx: &mut Context<Self>) {
         let Some(view) = self.focused_view() else { return };
         let Some(client) = self.client() else { return };
         let text = match region {
-            settings::WriteRegion::Selection => self.selection_text().unwrap_or_default(),
-            settings::WriteRegion::Scrollback => region_text(&client, view, TextRegion::History),
-            settings::WriteRegion::Screen => region_text(&client, view, TextRegion::Screen),
+            "selection" => self.selection_text().unwrap_or_default(),
+            "scrollback" => region_text(&client, view, TextRegion::History),
+            _ => region_text(&client, view, TextRegion::Screen),
         };
         if text.is_empty() {
-            self.toast(ToastKind::Info, if matches!(region, settings::WriteRegion::Selection) { "Nothing selected" } else { "Nothing to write" }, None);
+            self.toast(ToastKind::Info, if region == "selection" { "Nothing selected" } else { "Nothing to write" }, None);
             return;
         }
         let name = match region {
-            settings::WriteRegion::Selection => "selection.txt",
-            settings::WriteRegion::Scrollback => "scrollback.txt",
-            settings::WriteRegion::Screen => "screen.txt",
+            "selection" => "selection.txt",
+            "scrollback" => "scrollback.txt",
+            _ => "screen.txt",
         };
         let path = match host::write_temp_file(name, &text) {
             Ok(path) => path,
@@ -1026,9 +1039,9 @@ impl Desk {
         };
         let shown = path.display().to_string();
         match mode {
-            settings::WriteMode::Paste => self.paste_text(&host::quote_dropped_paths(&[path])),
-            settings::WriteMode::Copy => self.host_action(HostAction::CopyText(shown), cx),
-            settings::WriteMode::Open => self.host_action(HostAction::Open(shown), cx),
+            "paste" => self.paste_text(&host::quote_dropped_paths(&[path])),
+            "copy" => self.host_action(HostAction::CopyText(shown), cx),
+            _ => self.host_action(HostAction::Open(shown), cx),
         }
     }
 
@@ -1136,11 +1149,11 @@ impl Desk {
         };
         let features = self.link.as_ref().map(|link| link.connection.features()).unwrap_or_default();
         let attached = self.link.as_ref().is_some_and(|link| link.connection.status == Status::Attached);
-        if !paths::can_offer_path_picker(&features, attached, Some(&target)) {
+        if !paths::can_offer_path_picker(Some(features.as_slice()), attached, Some(&target)) {
             self.toast(ToastKind::Info, "Insert Path is unavailable", Some("This server does not offer host path search. Update phux on the host.".into()));
             return;
         }
-        let root = self.pane_cwd(target_terminal(&target)).unwrap_or_else(|| "~".into());
+        let root = self.pane_cwd(crate::connection::parse_terminal(&target.terminal_id).as_ref()).unwrap_or_else(|| "~".into());
         self.picker = Some(paths::begin_picker(target, root.clone()));
         self.modal = Modal::Path;
         self.query_paths(root, String::new());
@@ -1152,14 +1165,20 @@ impl Desk {
             self.close_path_picker();
             return;
         };
-        if !paths::same_target(paths::picker_target(&active), Some(&current)) {
+        if !paths::same_target(&active.target, Some(&current)) {
             self.close_path_picker();
             return;
         }
-        let host = paths::host_for_terminal(paths::target_terminal(&current));
+        let host = paths::host_for_terminal(&current.terminal_id).map(SatelliteHost::new);
         let id = self.link.as_ref().map(|link| link.connection.path_query(root.clone(), query.clone(), !query.is_empty(), host)).unwrap_or(0);
         self.picker = Some(if id == 0 {
-            paths::unavailable(active, root, query)
+            let mut failed = active;
+            failed.root = root;
+            failed.query = query;
+            failed.pending = None;
+            failed.rows.clear();
+            failed.message = "Path search is unavailable on this server.".into();
+            failed
         } else {
             paths::start_query(active, id, &query)
         });
@@ -1168,11 +1187,13 @@ impl Desk {
     pub fn insert_path(&mut self, path: String) {
         let Some(active) = self.picker.clone() else { return };
         let current = self.path_target();
-        let ready = current.as_ref().and_then(|target| target_terminal_id(target)).is_some_and(|id| {
-            self.link.as_ref().is_some_and(|link| link.connection.ready(id))
+        let ready = current.as_ref().and_then(|target| crate::connection::parse_terminal(&target.terminal_id)).is_some_and(|id| {
+            self.link.as_ref().is_some_and(|link| link.connection.ready(&id))
         });
         let Some(text) = paths::prepared_insertion(Some(&active), &path, current.as_ref(), ready) else {
-            self.picker = Some(paths::with_message(active, "The pane changed or is not ready; nothing was inserted."));
+            let mut rejected = active;
+            rejected.message = "The pane changed or is not ready; nothing was inserted.".into();
+            self.picker = Some(rejected);
             return;
         };
         let before = self.toasts.len();
@@ -1198,7 +1219,7 @@ impl Desk {
     fn pin_picker(&mut self) {
         let Some(active) = self.picker.clone() else { return };
         let attached = self.link.as_ref().is_some_and(|link| link.connection.status == Status::Attached);
-        if !attached || !paths::same_target(paths::picker_target(&active), self.path_target().as_ref()) {
+        if !attached || !paths::same_target(&active.target, self.path_target().as_ref()) {
             self.close_path_picker();
         }
     }
@@ -1211,30 +1232,30 @@ impl Desk {
         let placement = self.focused_placement()?;
         let link = self.link.as_ref()?;
         let server = link.connection.server_id()?;
-        Some(paths::target_for(
-            placement.terminal_label.clone(),
-            placement.id.clone(),
-            server,
-            link.connection.connection_epoch(),
-        ))
+        Some(paths::PathTarget {
+            terminal_id: placement.terminal_label.clone(),
+            placement_id: placement.id.clone(),
+            server_id: server,
+            epoch: link.connection.connection_epoch().to_string(),
+        })
     }
 
     pub fn terminal_settings(&self, placement: &Placement, focused: bool) -> Option<TerminalSettings> {
         let terminal = placement.terminal_id.clone()?;
         let colors = self.palette();
-        let opacity = crate::settings::theme::with_alpha(&colors.background, self.prefs.terminal_opacity);
+        let opacity = crate::settings::theme::with_alpha(&colors.theme.background, self.prefs.terminal_opacity);
         let mut settings = TerminalSettings::default();
         settings.font = gpui::font(self.prefs.font_family.clone());
-        settings.font_size = self.prefs.font_size;
-        settings.line_height = self.prefs.line_height;
-        settings.cell_width_scale = self.prefs.cell_width;
-        settings.cell_height_scale = self.prefs.cell_height;
-        settings.foreground = Some(super::color::from_hex(&colors.foreground));
+        settings.font_size = self.prefs.font_size as f32;
+        settings.line_height = self.prefs.line_height as f32;
+        settings.cell_width_scale = self.prefs.cell_width as f32;
+        settings.cell_height_scale = self.prefs.cell_height as f32;
+        settings.foreground = Some(super::color::from_hex(&colors.theme.foreground));
         settings.background = Some(super::color::from_hex(&opacity));
-        settings.cursor = Some(super::color::from_hex(&colors.cursor));
-        settings.selection_background = super::color::from_hex(&colors.selection);
-        settings.selection_foreground = super::color::from_hex(colors.selection_foreground.as_deref().unwrap_or(&colors.foreground));
-        settings.palette = colors.palette.as_ref().and_then(|entries| {
+        settings.cursor = Some(super::color::from_hex(&colors.theme.cursor));
+        settings.selection_background = super::color::from_hex(&colors.theme.selection);
+        settings.selection_foreground = super::color::from_hex(colors.theme.selection_foreground.as_deref().unwrap_or(&colors.theme.foreground));
+        settings.palette = colors.theme.palette.as_ref().and_then(|entries| {
             let mut parsed = [gpui::Hsla::default(); 16];
             if entries.len() != 16 {
                 return None;
@@ -1256,7 +1277,8 @@ impl Desk {
 
     pub fn palette(&self) -> crate::settings::theme::Palette {
         let extra = settings::ghostty_theme(&self.ghostty());
-        let theme = crate::settings::theme::theme_by_id(&self.prefs.theme_id, extra.as_slice());
+        let extras = extra.as_ref().map(std::slice::from_ref).unwrap_or(&[]);
+        let theme = crate::settings::theme::theme_by_id(&self.prefs.theme_id, extras);
         crate::settings::theme::palette(&theme)
     }
 
@@ -1398,6 +1420,33 @@ impl Desk {
         self.content_size = size;
     }
 
+    pub fn set_viewport(&mut self, size: gpui::Size<gpui::Pixels>) {
+        self.viewport = size;
+    }
+
+    pub fn frame_report(&self, cx: &gpui::App) -> crate::diag::FrameReport {
+        let mut placements = Vec::new();
+        let mut painted = Vec::new();
+        if let Some(link) = &self.link {
+            if let Some(tab) = link.workspace.tabs.iter().find(|tab| tab.id == link.workspace.active_id) {
+                for placement in crate::workspace::layout::placements(&tab.root) {
+                    placements.push((placement.id.clone(), placement.terminal_label.clone()));
+                    let Some(entity) = self.panes.get(&placement.id) else { continue };
+                    let observation = entity.read(cx).painted();
+                    let bounds = observation.geometry.bounds;
+                    painted.push(crate::diag::PaintedPane {
+                        placement_id: placement.id.clone(),
+                        terminal_id: placement.terminal_label.clone(),
+                        generation: observation.frame.as_ref().map(|frame| frame.generation).unwrap_or(0),
+                        bounds,
+                        unclipped: pane_unclipped(self.viewport, bounds),
+                    });
+                }
+            }
+        }
+        crate::diag::FrameReport { session: self.session.clone(), placements, painted }
+    }
+
     pub fn set_tab_centers(&mut self, centers: Vec<(String, f32)>) {
         self.tab_centers = centers;
     }
@@ -1417,7 +1466,7 @@ impl Desk {
     pub fn drag_move(&mut self, x: f32, y: f32, cx: &mut Context<Self>) {
         match self.drag.as_mut() {
             Some(Drag::Sidebar) => {
-                let width = x.round().clamp(crate::settings::SIDEBAR_MIN, crate::settings::SIDEBAR_MAX);
+                let width = f64::from(x).round().clamp(crate::settings::SIDEBAR_MIN, crate::settings::SIDEBAR_MAX);
                 self.prefs.sidebar_width = width;
                 cx.notify();
             }
@@ -1425,8 +1474,8 @@ impl Desk {
                 let id = id.clone();
                 let axis = *axis;
                 let ratio = match axis {
-                    Axis::Row => ((x - f32::from(self.content_origin.x)) / f32::from(self.content_size.width).max(1.)),
-                    Axis::Column => ((y - f32::from(self.content_origin.y)) / f32::from(self.content_size.height).max(1.)),
+                    Axis::Row => (x - self.content_origin.x.as_f32()) / self.content_size.width.as_f32().max(1.),
+                    Axis::Column => (y - self.content_origin.y.as_f32()) / self.content_size.height.as_f32().max(1.),
                 };
                 self.workspace_mut(|link| link.workspace.resize_split(&id, ratio));
                 cx.notify();
@@ -1527,12 +1576,15 @@ pub fn tab_title(desk: &Desk, tab: &crate::workspace::layout::DeskTab) -> String
     desk.pane_title(focus.and_then(|placement| placement.terminal_id.as_ref()))
 }
 
-fn target_terminal<'a>(target: &'a paths::PathTarget) -> Option<&'a ResourceId> {
-    paths::target_terminal_id(target)
-}
-
-fn target_terminal_id(target: &paths::PathTarget) -> Option<&ResourceId> {
-    paths::target_terminal_id(target)
+fn pane_unclipped(viewport: gpui::Size<gpui::Pixels>, bounds: gpui::Bounds<gpui::Pixels>) -> bool {
+    let right = bounds.origin.x.as_f32() + bounds.size.width.as_f32();
+    let bottom = bounds.origin.y.as_f32() + bounds.size.height.as_f32();
+    bounds.origin.x.as_f32() >= 0.
+        && bounds.origin.y.as_f32() >= 0.
+        && right <= viewport.width.as_f32()
+        && bottom <= viewport.height.as_f32()
+        && bounds.size.width.as_f32() > 0.
+        && bounds.size.height.as_f32() > 0.
 }
 
 impl gpui::Render for Desk {
@@ -1542,7 +1594,7 @@ impl gpui::Render for Desk {
 }
 
 impl gpui::Focusable for Desk {
-    fn focus_handle(&self, _cx: &AppContext) -> FocusHandle {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus.clone()
     }
 }

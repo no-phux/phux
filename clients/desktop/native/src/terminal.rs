@@ -128,8 +128,7 @@ impl Terminal {
         &self.focus
     }
 
-    /// The last paint, including glyph positions when `terminal-fixtures` is on.
-    #[cfg(feature = "terminal-fixtures")]
+    /// The last paint. Glyph positions are filled only with `terminal-fixtures`.
     pub fn painted(&self) -> paint::Observation {
         self.observation
             .lock()
@@ -228,7 +227,7 @@ impl Render for Terminal {
             .on_key_up(move |event, window, cx| input_host::on_key_up(&up, event, window, cx))
             .on_mouse_down(MouseButton::Left, {
                 let press = press.clone();
-                cx.listener(move |this, event, window, cx| {
+                cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
                     if event.modifiers.platform
                         && let Some(url) = press.read(cx).link_at(event.position)
                     {

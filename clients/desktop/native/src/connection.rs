@@ -4,7 +4,7 @@
 //! the sole [`Listener`] and wakes a bounded channel; it does not poll and it
 //! does not retry a refused command.
 
-mod path;
+pub mod path;
 
 pub use path::{
     PathRow, PathTarget, PickerState, accept_path_answer, begin_picker, can_offer_path_picker,
@@ -16,7 +16,8 @@ use phux_client_ffi::projection::{agent::badge, id, status};
 use phux_client_runtime::control::{
     Event, PaneDescriptor, PathAnswer, ServerInfo, SpawnRequest, Status, Topology,
 };
-use phux_client_runtime::{Client, ClientOptions, ControlOptions, Listener, Runtime, Target};
+use phux_client_runtime::control::ControlOptions;
+use phux_client_runtime::{Client, ClientOptions, Listener, Runtime, Target};
 use phux_protocol::ResourceId;
 use phux_protocol::caps::ServerFeature;
 use phux_protocol::wire::frame::{AttachTarget, RolePolicy};
@@ -448,6 +449,14 @@ impl Connection {
         for id in output {
             self.paint.insert(id, self.paint_clock);
         }
+    }
+}
+
+fn note_project(tag: &mut Option<(String, String)>, name: &str, project: Option<&str>) {
+    match project.map(str::trim).filter(|project| !project.is_empty()) {
+        Some(project) => *tag = Some((name.to_owned(), project.to_owned())),
+        None if tag.as_ref().is_some_and(|(tagged, _)| tagged == name) => *tag = None,
+        None => {}
     }
 }
 

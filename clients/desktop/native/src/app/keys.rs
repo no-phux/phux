@@ -42,7 +42,8 @@ pub fn shell_chord(platform: bool, ctrl: bool, alt: bool, shift: bool, key: &str
     if held {
         return String::new();
     }
-    let name = match key.to_ascii_lowercase().as_str() {
+    let lower = key.to_ascii_lowercase();
+    let name = match lower.as_str() {
         "comma" => ",",
         "equal" => "=",
         "minus" => "-",

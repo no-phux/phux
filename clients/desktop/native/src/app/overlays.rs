@@ -1,9 +1,10 @@
 //! Palettes, settings, find, path picker, and confirm dialogs. Text entry uses Kit [`Input`].
 
+use gpui::prelude::*;
 use gpui::{Context, IntoElement, ParentElement, Styled, Window, div, px};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::WindowExt;
+use crate::connection::path::{self as paths};
 
 use crate::settings::theme::Palette;
 use crate::settings::{self, DisplayPrefs};
@@ -49,8 +50,8 @@ pub fn layer(desk: &mut Desk, colors: &Palette, window: &mut Window, cx: &mut Co
     }
 }
 
-pub fn find_bar(desk: &mut Desk, find: &FindState, colors: &Palette, window: &mut Window, cx: &mut Context<Desk>) -> impl IntoElement {
-    let input = desk.input(window, cx, InputSlot::Find, &find.query);
+pub fn find_bar(desk: &mut Desk, query: String, case_sensitive: bool, colors: &Palette, window: &mut Window, cx: &mut Context<Desk>) -> gpui::AnyElement {
+    let input = desk.input(window, cx, InputSlot::Find, &query);
     div()
         .absolute()
         .top(px(8.))
@@ -64,9 +65,9 @@ pub fn find_bar(desk: &mut Desk, find: &FindState, colors: &Palette, window: &mu
         .flex()
         .items_center()
         .gap(px(6.))
-        .child(div().flex_grow().child(Input::new(&input).appearance(false)))
+        .child(div().flex_grow(1.).child(Input::new(&input).appearance(false)))
         .child(div().text_xs().text_color(from_hex(&colors.muted)).child(desk.find_status()))
-        .child(Button::new("find-case").label(if find.case_sensitive { "Aa" } else { "aa" }).ghost().on_click(cx.listener(|desk, _, _, cx| {
+        .child(Button::new("find-case").label(if case_sensitive { "Aa" } else { "aa" }).ghost().on_click(cx.listener(|desk, _, _, cx| {
             let case = !desk.find.as_ref().map(|find| find.case_sensitive).unwrap_or(false);
             let query = desk.find.as_ref().map(|find| find.query.clone()).unwrap_or_default();
             desk.run_search(query, case);
@@ -75,6 +76,7 @@ pub fn find_bar(desk: &mut Desk, find: &FindState, colors: &Palette, window: &mu
         .child(Button::new("find-prev").label("Prev").ghost().on_click(cx.listener(|desk, _, window, cx| desk.execute("find-prev", window, cx))))
         .child(Button::new("find-next").label("Next").ghost().on_click(cx.listener(|desk, _, window, cx| desk.execute("find-next", window, cx))))
         .child(Button::new("find-close").label("Close").ghost().on_click(cx.listener(|desk, _, window, cx| desk.execute("find-close", window, cx))))
+        .into_any_element()
 }
 
 fn palette(
@@ -91,7 +93,7 @@ fn palette(
     if goto && query.starts_with('>') {
         desk.modal = Modal::Commands;
     }
-    let ranked = settings::rank_items(&items, query.trim_start_matches('>'), |item| format!("{} {}", item.title, item.detail.clone().unwrap_or_default()));
+    let ranked = rank_palette(&items, query.trim_start_matches('>'), |item| format!("{} {}", item.title, item.detail.clone().unwrap_or_default()));
     div()
         .absolute()
         .top(px(72.))
@@ -107,10 +109,14 @@ fn palette(
                 .bg(from_hex(&colors.raised))
                 .border_1()
                 .border_color(from_hex(&colors.border))
-                .occlude()
-                .child(div().p(px(8.)).child(Input::new(&input).placeholder(placeholder)))
+                .id("palette-card")
+                .block_mouse_except_scroll()
+                .child(div().p(px(8.)).child({
+                    input.update(cx, |state, cx| state.set_placeholder(placeholder, window, cx));
+                    Input::new(&input)
+                }))
                 .child(
-                    div().overflow_y_scroll().p(px(6.)).children(ranked.into_iter().take(80).map(|item| {
+                    div().id("palette-rows").overflow_y_scroll().p(px(6.)).children(ranked.into_iter().take(80).map(|item| {
                         let id = item.id.clone();
                         Button::new(id.clone())
                             .label(item.title.clone())
@@ -137,10 +143,11 @@ fn settings_panel(desk: &mut Desk, colors: &Palette, window: &mut Window, cx: &m
         div()
             .size_full()
             .rounded(px(12.))
-            .bg(from_hex(&colors.surface))
+            .bg(from_hex(&colors.theme.surface))
             .border_1()
             .border_color(from_hex(&colors.border))
-            .occlude()
+            .id("settings-card")
+            .block_mouse_except_scroll()
             .flex()
             .flex_col()
             .p(px(16.))
@@ -166,15 +173,19 @@ fn path_panel(desk: &mut Desk, colors: &Palette, window: &mut Window, cx: &mut C
             .bg(from_hex(&colors.raised))
             .border_1()
             .border_color(from_hex(&colors.border))
-            .occlude()
+            .id("path-card")
+            .block_mouse_except_scroll()
             .p(px(10.))
             .flex()
             .flex_col()
             .gap(px(6.))
             .child("Insert Path — host paths only, never this Mac")
-            .child(Input::new(&input).placeholder("Search host paths"))
-            .children(state.as_ref().map(|state| div().text_xs().text_color(from_hex(&colors.muted)).child(paths_message(state))))
-            .child(div().overflow_y_scroll().children(path_rows(desk, colors, cx)))
+            .child({
+                input.update(cx, |state, cx| state.set_placeholder("Search host paths", window, cx));
+                Input::new(&input)
+            })
+            .children(state.as_ref().map(|state| div().text_xs().text_color(from_hex(&colors.muted)).child(state.message.clone())))
+            .child(div().id("path-rows").overflow_y_scroll().children(path_rows(desk, colors, cx)))
             .child(Button::new("path-close").label("Close").ghost().on_click(cx.listener(|desk, _, window, cx| desk.close_modal(window, cx)))),
     )
 }
@@ -199,7 +210,8 @@ fn text_dialog(
             .bg(from_hex(&colors.raised))
             .border_1()
             .border_color(from_hex(&colors.border))
-            .occlude()
+            .id("rename-card")
+            .block_mouse_except_scroll()
             .flex()
             .flex_col()
             .gap(px(8.))
@@ -224,13 +236,20 @@ fn session_dialog(desk: &mut Desk, create: bool, current: String, colors: &Palet
             .p(px(16.))
             .rounded(px(12.))
             .bg(from_hex(&colors.raised))
-            .occlude()
+            .id("session-card")
+            .block_mouse_except_scroll()
             .flex()
             .flex_col()
             .gap(px(8.))
             .child(if create { "New Session" } else { "Rename Session" })
-            .child(Input::new(&name).placeholder("Session name"))
-            .when(create, |column| column.child(Input::new(&directory).placeholder("Directory")))
+            .child({
+                name.update(cx, |state, cx| state.set_placeholder("Session name", window, cx));
+                Input::new(&name)
+            })
+            .when(create, |column| column.child({
+                directory.update(cx, |state, cx| state.set_placeholder("Directory", window, cx));
+                Input::new(&directory)
+            }))
             .child(div().flex().gap(px(8.))
                 .child(Button::new("session-cancel").label("Cancel").ghost().on_click(cx.listener(|desk, _, window, cx| desk.close_modal(window, cx))))
                 .child(Button::new("session-ok").label(if create { "Create" } else { "Rename" }).primary().on_click(cx.listener(move |desk, _, _, cx| {
@@ -259,8 +278,9 @@ fn confirm(
             .rounded(px(12.))
             .bg(from_hex(&colors.raised))
             .border_1()
-            .border_color(from_hex(&colors.danger))
-            .occlude()
+            .border_color(from_hex(&colors.theme.danger))
+            .id("confirm-card")
+            .block_mouse_except_scroll()
             .flex()
             .flex_col()
             .gap(px(8.))
@@ -319,15 +339,15 @@ fn session_items(desk: &Desk) -> Vec<PaletteItem> {
 
 fn path_rows(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> Vec<gpui::AnyElement> {
     let Some(state) = desk.picker.clone() else { return Vec::new() };
-    paths::rows(&state).into_iter().map(|row| {
+    state.rows.iter().map(|row| {
         let path = row.path.clone();
-        let directory = paths::directory_for_terminal(row.kind, &row.path);
+        let directory = paths::directory_for_terminal(&row.kind, &row.path);
         div()
             .h(px(28.))
             .flex()
             .items_center()
             .justify_between()
-            .child(div().text_sm().text_color(from_hex(&colors.foreground)).child(paths::display_path(&row.path)))
+            .child(div().text_sm().text_color(from_hex(&colors.theme.foreground)).child(paths::display_path(&row.path)))
             .child(div().flex().gap(px(4.))
                 .child(Button::new(format!("insert-{}", row.path)).label("Insert").ghost().on_click(cx.listener({
                     let path = path.clone();
@@ -350,7 +370,9 @@ fn theme_buttons(desk: &Desk, themes: &[crate::settings::theme::Theme], prefs: &
     div().flex().flex_wrap().gap(px(6.)).children(themes.iter().map(|theme| {
         let id = theme.id.clone();
         let selected = prefs.theme_id == theme.id;
-        Button::new(format!("theme-{}", theme.id)).label(theme.name.clone()).when(selected, |button| button.primary()).on_click(cx.listener(move |desk, _, _, cx| {
+        let button = Button::new(format!("theme-{}", theme.id)).label(theme.name.clone());
+        let button = if selected { button.primary() } else { button };
+        button.on_click(cx.listener(move |desk, _, _, cx| {
             let id = id.clone();
             desk.update_theme(id, cx);
         }))
@@ -365,7 +387,7 @@ fn layout_toggles(desk: &Desk, prefs: &DisplayPrefs, cx: &mut Context<Desk>) -> 
 
 fn terminal_controls(desk: &Desk, prefs: &DisplayPrefs, cx: &mut Context<Desk>) -> gpui::Div {
     div().flex().flex_col().gap(px(4.))
-        .child(stepper(desk, "font", "Font size", format!("{}", prefs.font_size), cx, |desk, cx| desk.execute("font-up", &mut *cx, cx), |desk, cx| desk.execute("font-down", &mut *cx, cx)))
+        .child(stepper(desk, "font", "Font size", format!("{}", prefs.font_size), cx, |desk, window, cx| desk.execute("font-up", window, cx), |desk, window, cx| desk.execute("font-down", window, cx)))
         .child(div().text_xs().child(format!("Line height {:.2}  Cell {:.0}%  Padding {}×{}  Unfocused {:.0}%  Glass {:.0}%", prefs.line_height, prefs.cell_width * 100., prefs.padding_x, prefs.padding_y, prefs.unfocused_opacity * 100., prefs.terminal_opacity * 100.)))
         .child(Button::new("line-up").label("Line height +").ghost().on_click(cx.listener(|desk, _, _, cx| desk.bump_line(0.05, cx))))
         .child(Button::new("line-down").label("Line height −").ghost().on_click(cx.listener(|desk, _, _, cx| desk.bump_line(-0.05, cx))))
@@ -375,15 +397,17 @@ fn terminal_controls(desk: &Desk, prefs: &DisplayPrefs, cx: &mut Context<Desk>) 
         .child(Button::new("dim-down").label("Dim unfocused").ghost().on_click(cx.listener(|desk, _, _, cx| desk.bump_dim(-0.05, cx))))
         .child(Button::new("option-alt").label(if prefs.option_as_alt { "Option sends Alt" } else { "Option types characters" }).on_click(cx.listener(|desk, _, window, cx| desk.execute("option-alt", window, cx))))
         .children(crate::settings::FONT_FAMILIES.iter().map(|family| {
-            let family = family.to_owned();
-            Button::new(format!("font-{family}")).label(family.clone()).when(prefs.font_family == family, |button| button.primary()).on_click(cx.listener(move |desk, _, _, cx| desk.set_font(family.clone(), cx)))
+            let family = (*family).to_owned();
+            let button = Button::new(format!("font-{family}")).label(family.clone());
+            let button = if prefs.font_family == family { button.primary() } else { button };
+            button.on_click(cx.listener(move |desk, _, _, cx| desk.set_font(family.clone(), cx)))
         }))
 }
 
 fn shortcut_list(desk: &Desk, colors: &Palette) -> gpui::Div {
     div().flex().flex_col().gap(px(2.)).children(commands::COMMANDS.iter().filter(|command| !is_numbered_tab(command)).filter_map(|command| {
         desk.shown_chord(command.id).map(|chord| {
-            div().flex().justify_between().text_sm().text_color(from_hex(&colors.foreground)).child(command.title).child(chord)
+            div().flex().justify_between().text_sm().text_color(from_hex(&colors.theme.foreground)).child(command.title).child(chord)
         })
     }))
 }
@@ -402,7 +426,7 @@ fn connection_facts(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> gp
     let status = desk.link.as_ref().map(|link| format!("{:?}", link.connection.status)).unwrap_or_else(|| "offline".into());
     let server = desk.link.as_ref().and_then(|link| link.connection.server_id()).unwrap_or_else(|| "—".into());
     let features = desk.link.as_ref().map(|link| link.connection.features().join(", ")).unwrap_or_default();
-    div().flex().flex_col().gap(px(4.)).text_sm().text_color(from_hex(&colors.foreground))
+    div().flex().flex_col().gap(px(4.)).text_sm().text_color(from_hex(&colors.theme.foreground))
         .child(format!("Status {status}"))
         .child(format!("Socket {}", desk.socket.display()))
         .child(format!("Home session {}", desk.session))
@@ -412,7 +436,7 @@ fn connection_facts(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> gp
 }
 
 fn group(title: &str, colors: &Palette, body: impl IntoElement) -> impl IntoElement {
-    div().flex().flex_col().gap(px(6.)).child(div().text_sm().font_weight(gpui::FontWeight::BOLD).text_color(from_hex(&colors.foreground)).child(title.to_owned())).child(body)
+    div().flex().flex_col().gap(px(6.)).child(div().text_sm().font_weight(gpui::FontWeight::BOLD).text_color(from_hex(&colors.theme.foreground)).child(title.to_owned())).child(body)
 }
 
 fn stepper(
@@ -421,14 +445,14 @@ fn stepper(
     label: &str,
     value: String,
     cx: &mut Context<Desk>,
-    more: impl Fn(&mut Desk, &mut Context<Desk>) + 'static,
-    less: impl Fn(&mut Desk, &mut Context<Desk>) + 'static,
+    more: impl Fn(&mut Desk, &mut Window, &mut Context<Desk>) + 'static,
+    less: impl Fn(&mut Desk, &mut Window, &mut Context<Desk>) + 'static,
 ) -> impl IntoElement {
     div().flex().items_center().gap(px(6.))
         .child(label.to_owned())
         .child(value)
-        .child(Button::new(format!("{id}-less")).label("−").ghost().on_click(cx.listener(move |desk, _, _, cx| less(desk, cx))))
-        .child(Button::new(format!("{id}-more")).label("+").ghost().on_click(cx.listener(move |desk, _, _, cx| more(desk, cx))))
+        .child(Button::new(format!("{id}-less")).label("−").ghost().on_click(cx.listener(move |desk, _, window, cx| less(desk, window, cx))))
+        .child(Button::new(format!("{id}-more")).label("+").ghost().on_click(cx.listener(move |desk, _, window, cx| more(desk, window, cx))))
 }
 
 fn is_numbered_tab(command: &CommandSpec) -> bool {
@@ -439,8 +463,29 @@ fn pane_title(pane: &phux_client_runtime::control::PaneDescriptor) -> String {
     pane.title.clone().unwrap_or_else(|| "terminal".into())
 }
 
+fn rank_palette<T: Clone>(items: &[T], query: &str, text: impl Fn(&T) -> String) -> Vec<T> {
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return items.to_vec();
+    }
+    let mut ranked = Vec::new();
+    for item in items {
+        let hay = text(item).to_lowercase();
+        let score = if hay.starts_with(&needle) {
+            0
+        } else if hay.contains(&needle) {
+            1
+        } else {
+            continue;
+        };
+        ranked.push((score, item.clone()));
+    }
+    ranked.sort_by_key(|(score, _)| *score);
+    ranked.into_iter().map(|(_, item)| item).collect()
+}
+
 fn paths_message(state: &crate::connection::path::PickerState) -> String {
-    crate::connection::path::picker_message(state)
+    state.message.clone()
 }
 
 #[derive(Clone)]
@@ -469,18 +514,18 @@ pub enum InputSlot {
     Path,
 }
 
-pub(crate) trait OverlayHost {
+pub(crate) trait OverlayHost: Sized {
     fn run_palette(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>);
     fn input(&mut self, window: &mut Window, cx: &mut Context<Self>, slot: InputSlot, initial: &str) -> gpui::Entity<InputState>;
     fn input_value(&self, cx: &gpui::App, slot: InputSlot) -> String;
     fn on_input(&mut self, slot: InputSlot, value: String, submit: bool, window: &mut Window, cx: &mut Context<Self>);
     fn update_theme(&mut self, id: String, cx: &mut Context<Self>);
     fn set_font(&mut self, family: String, cx: &mut Context<Self>);
-    fn bump_line(&mut self, delta: f32, cx: &mut Context<Self>);
-    fn bump_cell(&mut self, delta: f32, cx: &mut Context<Self>);
-    fn bump_padding(&mut self, delta: f32, cx: &mut Context<Self>);
-    fn bump_glass(&mut self, delta: f32, cx: &mut Context<Self>);
-    fn bump_dim(&mut self, delta: f32, cx: &mut Context<Self>);
+    fn bump_line(&mut self, delta: f64, cx: &mut Context<Self>);
+    fn bump_cell(&mut self, delta: f64, cx: &mut Context<Self>);
+    fn bump_padding(&mut self, delta: f64, cx: &mut Context<Self>);
+    fn bump_glass(&mut self, delta: f64, cx: &mut Context<Self>);
+    fn bump_dim(&mut self, delta: f64, cx: &mut Context<Self>);
     fn toggle_ghostty_keys(&mut self, cx: &mut Context<Self>);
     fn modal_tab(&self) -> Option<String>;
     fn input_entity(&self, slot: InputSlot) -> Option<gpui::Entity<InputState>>;
@@ -488,7 +533,7 @@ pub(crate) trait OverlayHost {
 }
 
 impl OverlayHost for Desk {
-    pub fn run_palette(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+    fn run_palette(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(item) = command_items(self).into_iter().chain(goto_items(self)).chain(session_items(self)).find(|item| item.id == id) {
             self.modal = Modal::None;
             match item.kind {
@@ -506,7 +551,7 @@ impl OverlayHost for Desk {
         }
     }
 
-    pub fn input(&mut self, window: &mut Window, cx: &mut Context<Self>, slot: InputSlot, initial: &str) -> gpui::Entity<InputState> {
+    fn input(&mut self, window: &mut Window, cx: &mut Context<Self>, slot: InputSlot, initial: &str) -> gpui::Entity<InputState> {
         if let Some(existing) = self.input_entity(slot) {
             return existing;
         }
@@ -522,7 +567,7 @@ impl OverlayHost for Desk {
         input
     }
 
-    pub fn input_value(&self, cx: &gpui::App, slot: InputSlot) -> String {
+    fn input_value(&self, cx: &gpui::App, slot: InputSlot) -> String {
         self.input_entity(slot).map(|input| input.read(cx).value().to_string()).unwrap_or_default()
     }
 
@@ -533,7 +578,7 @@ impl OverlayHost for Desk {
                 self.run_search(value, case);
             }
             InputSlot::Path => {
-                let root = crate::connection::path::picker_root(self.picker.as_ref()).unwrap_or_else(|| "~".into());
+                let root = self.picker.as_ref().map(|picker| picker.root.clone()).unwrap_or_else(|| "~".into());
                 self.query_paths(root, value);
             }
             InputSlot::Palette if submit => {
@@ -553,42 +598,42 @@ impl OverlayHost for Desk {
         cx.notify();
     }
 
-    pub fn update_theme(&mut self, id: String, cx: &mut Context<Self>) {
+    fn update_theme(&mut self, id: String, cx: &mut Context<Self>) {
         self.update_prefs(|prefs| prefs.theme_id = id, cx);
     }
 
-    pub fn set_font(&mut self, family: String, cx: &mut Context<Self>) {
+    fn set_font(&mut self, family: String, cx: &mut Context<Self>) {
         self.update_prefs(|prefs| prefs.font_family = family, cx);
     }
 
-    pub fn bump_line(&mut self, delta: f32, cx: &mut Context<Self>) {
+    fn bump_line(&mut self, delta: f64, cx: &mut Context<Self>) {
         self.update_prefs(|prefs| prefs.line_height += delta, cx);
     }
 
-    pub fn bump_cell(&mut self, delta: f32, cx: &mut Context<Self>) {
+    fn bump_cell(&mut self, delta: f64, cx: &mut Context<Self>) {
         self.update_prefs(|prefs| prefs.cell_width += delta, cx);
     }
 
-    pub fn bump_padding(&mut self, delta: f32, cx: &mut Context<Self>) {
+    fn bump_padding(&mut self, delta: f64, cx: &mut Context<Self>) {
         self.update_prefs(|prefs| {
             prefs.padding_x += delta;
             prefs.padding_y += delta;
         }, cx);
     }
 
-    pub fn bump_glass(&mut self, delta: f32, cx: &mut Context<Self>) {
+    fn bump_glass(&mut self, delta: f64, cx: &mut Context<Self>) {
         self.update_prefs(|prefs| prefs.terminal_opacity += delta, cx);
     }
 
-    pub fn bump_dim(&mut self, delta: f32, cx: &mut Context<Self>) {
+    fn bump_dim(&mut self, delta: f64, cx: &mut Context<Self>) {
         self.update_prefs(|prefs| prefs.unfocused_opacity += delta, cx);
     }
 
-    pub fn toggle_ghostty_keys(&mut self, cx: &mut Context<Self>) {
+    fn toggle_ghostty_keys(&mut self, cx: &mut Context<Self>) {
         self.update_prefs(|prefs| prefs.ghostty_keys = !prefs.ghostty_keys, cx);
     }
 
-    pub fn modal_tab(&self) -> Option<String> {
+    fn modal_tab(&self) -> Option<String> {
         match &self.modal {
             Modal::Rename { tab_id } => Some(tab_id.clone()),
             _ => None,

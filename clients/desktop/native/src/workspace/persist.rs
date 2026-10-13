@@ -8,6 +8,8 @@ use super::layout::{Axis, DeskTab, LayoutNode, placements};
 use crate::settings::{DisplayPrefs, default_display, display_value, parse_display, sanitize_display};
 use serde_json::{Map, Value};
 use std::fs::{self, OpenOptions};
+use std::io::{self, Write as _};
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]

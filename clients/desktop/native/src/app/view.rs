@@ -1,5 +1,6 @@
 //! Terminal-first chrome: titlebar, sidebar, split tree, status, overlays.
 
+use gpui::prelude::*;
 use gpui::{
     AnyElement, App, ClickEvent, Context, IntoElement, ParentElement, Pixels, Render, Styled, Window, div, point, px, relative, size,
 };
@@ -23,8 +24,9 @@ const DIVIDER: f32 = 5.;
 pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> impl IntoElement {
     let colors = desk.palette();
     let sidebar = desk.prefs.sidebar_visible && desk.role != desk::WindowRole::Quick;
-    let sidebar_width = if sidebar { desk.prefs.sidebar_width } else { 0. };
+    let sidebar_width = if sidebar { desk.prefs.sidebar_width as f32 } else { 0. };
     let viewport = window.viewport_size();
+    desk.set_viewport(viewport);
     let origin = point(px(sidebar_width), px(TITLEBAR));
     let content = size(
         (viewport.width - px(sidebar_width)).max(px(1.)),
@@ -33,6 +35,14 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
     desk.set_content_bounds(origin, content);
     let title = desk.active_tab().map(|tab| desk::tab_title(desk, tab)).unwrap_or_else(|| "phux".into());
     window.set_window_title(&format!("{title} — phux"));
+    if crate::diag::evidence_pending(cx) {
+        let desk_handle = cx.weak_entity();
+        crate::diag::arm_evidence(
+            Box::new(move |app| desk_handle.upgrade().map(|desk| desk.read(app).frame_report(app))),
+            window,
+            cx,
+        );
+    }
 
     div()
         .id("desk")
@@ -41,7 +51,7 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
         .size_full()
         .flex()
         .flex_col()
-        .bg(from_hex(&crate::settings::theme::with_alpha(&colors.background, desk.prefs.terminal_opacity)))
+        .bg(from_hex(&crate::settings::theme::with_alpha(&colors.theme.background, desk.prefs.terminal_opacity)))
         .on_action(cx.listener(|desk, action: &super::actions::Run, window, cx| {
             desk.execute(&action.id, window, cx);
         }))
@@ -53,19 +63,19 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
         }))
         .on_mouse_move(cx.listener(|desk, event: &gpui::MouseMoveEvent, _window, cx| {
             if event.pressed_button.is_some() {
-                desk.drag_move(f32::from(event.position.x), f32::from(event.position.y), cx);
+                desk.drag_move(event.position.x.as_f32(), event.position.y.as_f32(), cx);
             }
         }))
-        .on_mouse_up(cx.listener(|desk, _: &gpui::MouseUpEvent, _, cx| {
+        .on_mouse_up(gpui::MouseButton::Left, cx.listener(|desk, _: &gpui::MouseUpEvent, _, cx| {
             desk.end_drag();
             cx.notify();
         }))
         .child(titlebar(desk, sidebar, &colors, cx))
         .child(
-            div().flex_grow().flex().min_h(px(0.)).child(if sidebar {
-                AnyElement::from(sidebar_column(desk, &colors, cx))
+            div().flex_grow(1.).flex().min_h(px(0.)).child(if sidebar {
+                sidebar_column(desk, &colors, cx).into_any_element()
             } else {
-                AnyElement::from(div())
+                div().into_any_element()
             })
             .child(main_column(desk, &colors, window, cx)),
         )
@@ -75,6 +85,10 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
 fn titlebar(desk: &Desk, sidebar: bool, colors: &Palette, cx: &mut Context<Desk>) -> impl IntoElement {
     let tabs = desk.link.as_ref().map(|link| link.workspace.tabs.clone()).unwrap_or_default();
     let active = desk.link.as_ref().map(|link| link.workspace.active_id.clone()).unwrap_or_default();
+    let mut buttons = Vec::new();
+    for tab in &tabs {
+        buttons.push(tab_button(desk, tab, &active, colors, cx).into_any_element());
+    }
     div()
         .h(px(TITLEBAR))
         .w_full()
@@ -84,7 +98,7 @@ fn titlebar(desk: &Desk, sidebar: bool, colors: &Palette, cx: &mut Context<Desk>
         .pr(px(8.))
         .gap(px(4.))
         .child(drag_region(cx))
-        .children(tabs.iter().map(|tab| tab_button(desk, tab, &active, colors, cx)))
+        .children(buttons)
         .child(icon_button("new-tab", "New Terminal", "+", cx.listener(|desk, _, window, cx| {
             desk.execute("new", window, cx);
         })))
@@ -101,7 +115,7 @@ fn titlebar(desk: &Desk, sidebar: bool, colors: &Palette, cx: &mut Context<Desk>
 
 fn drag_region(cx: &mut Context<Desk>) -> gpui::AnyElement {
     let region = cx.new(|cx| crate::chrome::DragRegion::new(cx));
-    div().flex_grow().h_full().child(region).into_any_element()
+    div().flex_grow(1.).h_full().child(region).into_any_element()
 }
 
 fn tab_button(desk: &Desk, tab: &DeskTab, active: &str, colors: &Palette, cx: &mut Context<Desk>) -> impl IntoElement {
@@ -118,9 +132,9 @@ fn tab_button(desk: &Desk, tab: &DeskTab, active: &str, colors: &Palette, cx: &m
         .gap(px(6.))
         .rounded(px(6.))
         .bg(if selected { from_hex(&colors.active) } else { gpui::transparent_black() })
-        .child(div().text_sm().text_color(from_hex(&colors.foreground)).child(title))
+        .child(div().text_sm().text_color(from_hex(&colors.theme.foreground)).child(title))
         .children(agent.map(|state| {
-            div().size(px(7.)).rounded_full().bg(from_hex(&theme::agent_color(&state)))
+            div().size(px(7.)).rounded_full().bg(from_hex(agent_swatch(&state)))
         }))
         .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |desk, event: &gpui::MouseDownEvent, _, cx| {
             desk.select_tab(&id);
@@ -140,11 +154,11 @@ fn tab_button(desk: &Desk, tab: &DeskTab, active: &str, colors: &Palette, cx: &m
 
 fn sidebar_column(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl IntoElement {
     div()
-        .w(px(desk.prefs.sidebar_width))
+        .w(px(desk.prefs.sidebar_width as f32))
         .h_full()
         .flex()
         .flex_col()
-        .bg(from_hex(&colors.surface))
+        .bg(from_hex(&colors.theme.surface))
         .child(sidebar_list(desk, colors, cx))
         .child(sidebar_resize(colors, cx))
 }
@@ -156,13 +170,14 @@ fn sidebar_list(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl I
     let mut agent_panes: Vec<_> = panes.iter().filter(|pane| agents.contains_key(&pane.terminal_id)).cloned().collect();
     agent_panes.sort_by_key(|pane| agent_rank(agents.get(&pane.terminal_id)));
     div()
-        .flex_grow()
+        .id("sidebar-list")
+        .flex_grow(1.)
         .overflow_y_scroll()
         .p(px(8.))
         .child(section_label("Agents", agent_panes.len(), colors))
         .children(agent_panes.into_iter().map(|pane| {
             let info = agents.get(&pane.terminal_id).cloned();
-            pane_row(desk, &pane.terminal_id, info.as_ref(), &pane_label(&pane), colors, cx)
+            pane_row(desk, pane.terminal_id.clone(), info, pane_label(&pane), colors, cx).into_any_element()
         }))
         .child(section_label("Sessions", link.map(|link| link.connection.topology.as_ref().map(|topology| topology.sessions.len()).unwrap_or(0)).unwrap_or(0), colors))
         .children(session_rows(desk, colors, cx))
@@ -184,7 +199,7 @@ fn session_rows(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> Vec<An
         div()
             .child(
                 div().h(px(28.)).flex().items_center().justify_between().px(px(6.)).child(
-                    div().text_sm().font_weight(gpui::FontWeight::SEMIBOLD).text_color(from_hex(&colors.foreground)).child(name.clone()),
+                    div().text_sm().font_weight(gpui::FontWeight::SEMIBOLD).text_color(from_hex(&colors.theme.foreground)).child(name.clone()),
                 )
                 .child(icon_button(&format!("session-new-{id}"), "New terminal in session", "+", cx.listener(move |desk, _, _, cx| {
                     desk.new_terminal_in(id);
@@ -195,7 +210,7 @@ fn session_rows(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> Vec<An
                 }))),
             )
             .children(panes.into_iter().map(|pane| {
-                pane_row(desk, &pane.terminal_id, desk.agent(&pane.terminal_id), &pane_label(&pane), colors, cx)
+                pane_row(desk, pane.terminal_id.clone(), desk.agent(&pane.terminal_id).cloned(), pane_label(&pane), colors, cx).into_any_element()
             }))
             .into_any_element()
     }).collect()
@@ -207,7 +222,7 @@ fn open_session_menu(desk: &mut Desk, name: String, window: &mut Window, cx: &mu
     cx.notify();
 }
 
-fn pane_row(desk: &Desk, terminal: &ResourceId, agent: Option<&AgentInfo>, title: &str, colors: &Palette, cx: &mut Context<Desk>) -> impl IntoElement {
+fn pane_row(desk: &Desk, terminal: ResourceId, agent: Option<AgentInfo>, title: String, colors: &Palette, cx: &mut Context<Desk>) -> impl IntoElement {
     let terminal = terminal.clone();
     let focused = desk.focused_placement().and_then(|placement| placement.terminal_id.as_ref()) == Some(&terminal);
     div()
@@ -219,8 +234,8 @@ fn pane_row(desk: &Desk, terminal: &ResourceId, agent: Option<&AgentInfo>, title
         .gap(px(8.))
         .rounded(px(6.))
         .bg(if focused { from_hex(&colors.accent_wash) } else { gpui::transparent_black() })
-        .child(div().size(px(8.)).rounded_full().bg(from_hex(&theme::agent_color(agent.map(|info| info.state.as_str()).unwrap_or("unknown")))))
-        .child(div().text_sm().text_color(from_hex(&colors.foreground)).child(title.to_owned()))
+        .child(div().size(px(8.)).rounded_full().bg(from_hex(agent_swatch(agent.as_ref().map(|info| info.state.as_str()).unwrap_or("unknown")))))
+        .child(div().text_sm().text_color(from_hex(&colors.theme.foreground)).child(title))
         .on_click(cx.listener(move |desk, _, _, cx| {
             desk.reveal_terminal(&terminal);
             cx.notify();
@@ -245,7 +260,7 @@ fn sidebar_resize(colors: &Palette, cx: &mut Context<Desk>) -> impl IntoElement 
 
 fn main_column(desk: &mut Desk, colors: &Palette, window: &mut Window, cx: &mut Context<Desk>) -> impl IntoElement {
     div()
-        .flex_grow()
+        .flex_grow(1.)
         .min_w(px(0.))
         .flex()
         .flex_col()
@@ -257,17 +272,17 @@ fn workspace_body(desk: &mut Desk, colors: &Palette, window: &mut Window, cx: &m
     let zoomed = desk.active_tab().and_then(|tab| tab.zoomed_id.clone());
     let root = desk.active_tab().map(|tab| tab.root.clone());
     div()
-        .flex_grow()
+        .flex_grow(1.)
         .min_h(px(0.))
         .relative()
         .child(if root.is_none() {
-            AnyElement::from(empty_state(desk, colors, cx))
+            empty_state(desk, colors, cx).into_any_element()
         } else if let Some(id) = zoomed {
-            AnyElement::from(zoomed_pane(desk, &id, window, cx))
+            zoomed_pane(desk, &id, window, cx).into_any_element()
         } else if let Some(root) = root {
-            AnyElement::from(split_tree(desk, &root, window, cx))
+            split_tree(desk, &root, window, cx).into_any_element()
         } else {
-            AnyElement::from(div())
+            div().into_any_element()
         })
         .child(toast_stack(desk, colors, cx))
 }
@@ -282,9 +297,9 @@ fn empty_state(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl In
         .items_center()
         .justify_center()
         .gap(px(8.))
-        .child(div().text_color(from_hex(&colors.foreground)).child("phux"))
+        .child(div().text_color(from_hex(&colors.theme.foreground)).child("phux"))
         .child(div().text_sm().text_color(from_hex(&colors.muted)).child(status))
-        .children(error.map(|error| div().text_sm().text_color(from_hex(&colors.danger)).child(error)))
+        .children(error.map(|error| div().text_sm().text_color(from_hex(&colors.theme.danger)).child(error)))
         .child(div().text_sm().text_color(from_hex(&colors.muted)).child(desk.socket.display().to_string()))
         .child(Button::new("empty-new").label("New Terminal").primary().on_click(cx.listener(|desk, _, window, cx| desk.execute("new", window, cx))))
         .child(Button::new("empty-folder").label("Open Folder").on_click(cx.listener(|desk, _, window, cx| desk.execute("folder", window, cx))))
@@ -308,7 +323,7 @@ fn split_tree(desk: &mut Desk, node: &LayoutNode, window: &mut Window, cx: &mut 
                 .when(!horizontal, |column| column.flex_col())
                 .child(div().when(horizontal, |side| side.w(relative(*ratio))).when(!horizontal, |side| side.h(relative(*ratio))).child(split_tree(desk, first, window, cx)))
                 .child(split_divider(id, *axis, cx))
-                .child(div().flex_grow().child(split_tree(desk, second, window, cx)))
+                .child(div().flex_grow(1.).child(split_tree(desk, second, window, cx)))
                 .into_any_element()
         }
     }
@@ -329,15 +344,14 @@ fn split_divider(id: String, axis: Axis, cx: &mut Context<Desk>) -> impl IntoEle
 fn pane_view(desk: &mut Desk, placement: &Placement, window: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
     let focused = desk.focused_placement().map(|item| item.id.as_str()) == Some(placement.id.as_str());
     let colors = desk.palette();
-    let header = placement_header(desk, placement, focused, &colors, cx);
-    let body = if let (Some(terminal), Some(view), Some(settings), Some(client)) = (
-        placement.terminal_id.clone(),
-        placement.view_id,
-        desk.terminal_settings(placement, focused),
-        desk.client(),
-    ) {
-        let entity = desk.panes_mut().entity_for(&placement.id, &terminal, view, settings, &client, window, cx);
-        subscribe_terminal(desk, &placement.id, &entity, window, cx);
+    let placement_id = placement.id.clone();
+    let terminal = placement.terminal_id.clone();
+    let view = placement.view_id;
+    let settings = desk.terminal_settings(placement, focused);
+    let client = desk.client();
+    let body = if let (Some(terminal), Some(view), Some(settings), Some(client)) = (terminal, view, settings, client) {
+        let entity = desk.panes_mut().entity_for(&placement_id, &terminal, view, settings, &client, window, cx);
+        subscribe_terminal(desk, &placement_id, &entity, window, cx);
         div().size_full().child(entity).into_any_element()
     } else {
         div()
@@ -354,17 +368,19 @@ fn pane_view(desk: &mut Desk, placement: &Placement, window: &mut Window, cx: &m
             .into_any_element()
     };
     let find = desk.find.as_ref().filter(|find| find.placement_id == placement.id).cloned();
+    let find_bar = find.map(|state| overlays::find_bar(desk, state.query, state.case_sensitive, &colors, window, cx));
+    let header = placement_header(desk, placement, focused, &colors, cx);
     div()
         .size_full()
         .flex()
         .flex_col()
-        .occlude()
+        .block_mouse_except_scroll()
         .when(!focused && desk.active_tab().is_some_and(|tab| layout::placements(&tab.root).len() > 1), |pane| {
-            pane.opacity(desk.prefs.unfocused_opacity)
+            pane.opacity(desk.prefs.unfocused_opacity as f32)
         })
         .child(header)
-        .child(div().flex_grow().min_h(px(0.)).child(body))
-        .children(find.map(|find| overlays::find_bar(desk, &find, &colors, window, cx)))
+        .child(div().flex_grow(1.).min_h(px(0.)).child(body))
+        .children(find_bar)
         .into_any_element()
 }
 
@@ -373,18 +389,19 @@ fn subscribe_terminal(desk: &mut Desk, placement_id: &str, entity: &gpui::Entity
     if desk.subscribed_terminal(&placement_id) {
         return;
     }
-    let sub = cx.subscribe_in(entity, window, move |desk, _, event, _, cx| {
+    let remembered = placement_id.to_owned();
+    let sub = cx.subscribe_in(entity, window, move |desk, _, event, window, cx| {
         match event {
             TerminalEvent::Activated => {
                 if let Some(tab) = desk.active_tab_id_owned() {
-                    desk.focus_placement(&tab, &placement_id, cx);
+                    desk.focus_placement(&tab, &remembered, window, cx);
                 }
             }
             TerminalEvent::PathsDropped(paths) => desk.drop_paths(paths),
         }
         cx.notify();
     });
-    desk.remember_terminal_sub(placement_id, sub);
+    desk.remember_terminal_sub(placement_id.to_owned(), sub);
 }
 
 fn placement_header(desk: &Desk, placement: &Placement, focused: bool, colors: &Palette, cx: &mut Context<Desk>) -> impl IntoElement {
@@ -392,23 +409,24 @@ fn placement_header(desk: &Desk, placement: &Placement, focused: bool, colors: &
     let agent = placement.terminal_id.as_ref().and_then(|id| desk.agent(id)).cloned();
     let id = placement.id.clone();
     div()
+        .id(gpui::ElementId::Name(format!("header-{id}").into()))
         .h(px(28.))
         .px(px(8.))
         .flex()
         .items_center()
         .justify_between()
-        .bg(from_hex(&colors.surface))
+        .bg(from_hex(&colors.theme.surface))
         .border_b_1()
         .border_color(from_hex(&colors.border))
-        .child(div().flex().items_center().gap(px(6.)).child(div().text_sm().text_color(from_hex(if focused { &colors.foreground } else { &colors.muted })).child(title)).children(agent.map(|info| {
-            div().text_xs().text_color(from_hex(&theme::agent_color(&info.state))).child(info.state)
+        .child(div().flex().items_center().gap(px(6.)).child(div().text_sm().text_color(from_hex(if focused { &colors.theme.foreground } else { &colors.muted })).child(title)).children(agent.map(|info| {
+            div().text_xs().text_color(from_hex(agent_swatch(&info.state))).child(info.state)
         })))
         .child(div().flex().gap(px(4.))
             .child(icon_button(&format!("zoom-{id}"), "Zoom", "Zoom", cx.listener({
                 let id = id.clone();
                 move |desk, _, window, cx| {
                     if let Some(tab) = desk.active_tab_id_owned() {
-                        desk.focus_placement(&tab, &id, cx);
+                        desk.focus_placement(&tab, &id, window, cx);
                     }
                     desk.execute("zoom", window, cx);
                 }
@@ -421,7 +439,7 @@ fn placement_header(desk: &Desk, placement: &Placement, focused: bool, colors: &
             let id = placement.id.clone();
             move |desk, event: &ClickEvent, window, cx| {
                 if let Some(tab) = desk.active_tab_id_owned() {
-                    desk.focus_placement(&tab, &id, cx);
+                    desk.focus_placement(&tab, &id, window, cx);
                 }
                 if event.click_count() >= 2 {
                     desk.execute("zoom", window, cx);
@@ -443,18 +461,18 @@ fn status_bar(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl Int
         .flex()
         .items_center()
         .gap(px(10.))
-        .bg(from_hex(&colors.surface))
+        .bg(from_hex(&colors.theme.surface))
         .border_t_1()
         .border_color(from_hex(&colors.border))
         .text_xs()
         .text_color(from_hex(&colors.muted))
         .child(status)
-        .children(error.map(|error| div().text_color(from_hex(&colors.danger)).child(error)))
+        .children(error.map(|error| div().text_color(from_hex(&colors.theme.danger)).child(error)))
         .child(desk.session.clone())
         .children(geometry)
         .when(scrolled, |bar| bar.child("scrolled back · ⌘L live"))
         .when(fenced, |bar| bar.child("input waiting for presented output"))
-        .child(div().flex_grow())
+        .child(div().flex_grow(1.))
         .child(Button::new("status-live").label("Live").ghost().on_click(cx.listener(|desk, _, window, cx| desk.execute("follow", window, cx))))
         .child(Button::new("status-reconnect").label("Reconnect").ghost().on_click(cx.listener(|desk, _, window, cx| desk.execute("reconnect", window, cx))))
         .child(Button::new("status-settings").label("Settings").ghost().on_click(cx.listener(|desk, _, window, cx| desk.execute("settings", window, cx))))
@@ -478,12 +496,12 @@ fn toast_stack(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl In
                 .bg(from_hex(&colors.raised))
                 .border_1()
                 .border_color(from_hex(match toast.kind {
-                    ToastKind::Error => &colors.danger,
-                    ToastKind::Success => &colors.success,
-                    ToastKind::Agent => &colors.warning,
+                    ToastKind::Error => &colors.theme.danger,
+                    ToastKind::Success => &colors.theme.success,
+                    ToastKind::Agent => &colors.theme.warning,
                     ToastKind::Info => &colors.border,
                 }))
-                .child(div().text_sm().text_color(from_hex(&colors.foreground)).child(toast.title.clone()))
+                .child(div().text_sm().text_color(from_hex(&colors.theme.foreground)).child(toast.title.clone()))
                 .children(toast.body.clone().map(|body| div().text_xs().text_color(from_hex(&colors.muted)).child(body)))
                 .child(Button::new(("dismiss", id as usize)).label("Dismiss").ghost().on_click(cx.listener(move |desk, _, _, cx| {
                     desk.dismiss_toast(id);
@@ -529,6 +547,15 @@ fn strongest_agent(desk: &Desk, tab: &DeskTab) -> Option<String> {
         placement.terminal_id.as_ref().and_then(|id| desk.agent(id)).map(|info| info.state.clone())
     }).collect();
     order.iter().find(|state| states.iter().any(|item| item == *state)).map(|state| (*state).to_owned())
+}
+
+fn agent_swatch(state: &str) -> &'static str {
+    for (name, color) in crate::settings::theme::agent_colors() {
+        if name == state {
+            return color;
+        }
+    }
+    "#7f849c"
 }
 
 
