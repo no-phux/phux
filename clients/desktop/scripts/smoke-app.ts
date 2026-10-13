@@ -21,7 +21,10 @@ if (values.help) {
   );
   process.exit(0);
 }
-assert(values.app && values.phux, "--app and --phux are required (never discovers an installed CLI)");
+assert(
+  values.app && values.phux,
+  "--app and --phux are required (never discovers an installed CLI)",
+);
 assert(
   process.platform === "darwin" && process.arch === "arm64",
   "Requires Apple silicon macOS with a graphical login and Xcode command-line tools",
@@ -30,7 +33,10 @@ const appPath = resolve(values.app);
 const executable = join(appPath, "Contents/MacOS/phux-desktop");
 const phux = resolve(values.phux);
 assert(existsSync(executable) && existsSync(phux), "App executable and explicit CLI must exist");
-assert(!existsSync(join(appPath, "Contents/Resources/phux-desktop-native.darwin-arm64.node")), "Phux.app must not ship a NAPI addon");
+assert(
+  !existsSync(join(appPath, "Contents/Resources/phux-desktop-native.darwin-arm64.node")),
+  "Phux.app must not ship a NAPI addon",
+);
 assert(!isInstalledPhux(phux), "smoke refuses an installed phux CLI");
 const home = mkdtempSync("/tmp/phux-desktop-smoke-");
 const evidence = values.output ? resolve(values.output) : join(home, "evidence");
@@ -65,7 +71,11 @@ const env: Record<string, string> = {
   PS1: "smoke> ",
 };
 const children: Bun.Subprocess[] = [];
-function launch(command: string[], log: string, extra: Record<string, string> = {}): Bun.Subprocess {
+function launch(
+  command: string[],
+  log: string,
+  extra: Record<string, string> = {},
+): Bun.Subprocess {
   const child = Bun.spawn(command, {
     cwd: home,
     env: { ...env, ...extra },
@@ -110,7 +120,10 @@ async function until(label: string, check: () => boolean, child?: Bun.Subprocess
 async function stop(child: Bun.Subprocess, signal: "SIGTERM" | "SIGKILL"): Promise<void> {
   if (child.exitCode !== null) return;
   child.kill(signal);
-  const exited = await Promise.race([child.exited.then(() => true), Bun.sleep(5000).then(() => false)]);
+  const exited = await Promise.race([
+    child.exited.then(() => true),
+    Bun.sleep(5000).then(() => false),
+  ]);
   if (!exited) {
     child.kill("SIGKILL");
     await child.exited;
@@ -139,7 +152,19 @@ for result in request.results ?? [] {
 const marker = "PHUXSURVIVAL";
 let server: Bun.Subprocess | undefined;
 function appArgs(dir: string, smoke: boolean): string[] {
-  const args = [executable, "--socket", socket, "--session", session, "--phux", phux, "--layout", layout, "--evidence", dir];
+  const args = [
+    executable,
+    "--socket",
+    socket,
+    "--session",
+    session,
+    "--phux",
+    phux,
+    "--layout",
+    layout,
+    "--evidence",
+    dir,
+  ];
   if (smoke) args.push("--smoke");
   return args;
 }
@@ -186,7 +211,12 @@ try {
     "isolated server",
     () => {
       const status: unknown = JSON.parse(cli("status", "--json"));
-      return typeof status === "object" && status !== null && "running" in status && status.running === true;
+      return (
+        typeof status === "object" &&
+        status !== null &&
+        "running" in status &&
+        status.running === true
+      );
     },
     server,
   );
@@ -199,7 +229,11 @@ try {
     `PHUX_SMOKE_VALUE=${marker}; printf '%s\\n' "$$" > '${pidFile}'; printf '\\033[2J\\033[H%s\\n' "$PHUX_SMOKE_VALUE"`,
     "Enter",
   );
-  await until("terminal marker", () => cli("snapshot", session).includes(marker) && existsSync(pidFile), server);
+  await until(
+    "terminal marker",
+    () => cli("snapshot", session).includes(marker) && existsSync(pidFile),
+    server,
+  );
   const shellPid = readFileSync(pidFile, "utf8").trim();
   assert(/^\d+$/.test(shellPid), "Shell must report its own PID");
   const smokeDir = join(evidence, "smoke-exit");
@@ -272,7 +306,8 @@ try {
     marker,
     evidence,
     scenarios: ["smoke-exit", "launch", "SIGKILL/relaunch", "SIGTERM/relaunch"],
-    boundary: "App process death, not server death/reboot; PNG marker verified with Vision OCR and presented layout",
+    boundary:
+      "App process death, not server death/reboot; PNG marker verified with Vision OCR and presented layout",
   };
   writeFileSync(join(evidence, "result.json"), `${JSON.stringify(result, null, 2)}\n`);
   console.log(JSON.stringify(result, null, 2));

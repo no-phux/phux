@@ -41,7 +41,11 @@ export function desktopArguments(options: {
   return args;
 }
 
-export function launchDesktop(binary: string, args: string[], env: NodeJS.ProcessEnv): ChildProcess {
+export function launchDesktop(
+  binary: string,
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): ChildProcess {
   return spawn(binary, args, { cwd: root, env, stdio: "inherit" });
 }
 
@@ -68,7 +72,8 @@ if (import.meta.main) {
     if (!process.env.PHUX_BIN || !process.env.PHUX_SOCKET || !process.env.PHUX_DESKTOP_BIN) {
       throw new Error("Demo launcher requires an explicit CLI, socket, and desktop binary");
     }
-    if (!serverStatus(phux, process.env.PHUX_SOCKET)) throw new Error("Private demo server is not running");
+    if (!serverStatus(phux, process.env.PHUX_SOCKET))
+      throw new Error("Private demo server is not running");
   } else {
     ensureServer(phux, process.env.PHUX_SOCKET);
   }

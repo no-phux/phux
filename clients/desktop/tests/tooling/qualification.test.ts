@@ -11,7 +11,9 @@ import {
 } from "../../scripts/host.ts";
 import { infoPlist, packageVersion } from "../../scripts/package-app.ts";
 
-const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+const png = Buffer.from([
+  137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+]);
 
 function evidence(files: Record<string, string | Buffer>): string {
   const dir = mkdtempSync(join(tmpdir(), "phux-evidence-"));
@@ -38,7 +40,11 @@ const interaction = JSON.stringify({
 });
 
 test("presented evidence requires a PNG, a live layout and a matching interaction", () => {
-  const dir = evidence({ "presented.png": png, "layout.json": layout, "interaction.json": interaction });
+  const dir = evidence({
+    "presented.png": png,
+    "layout.json": layout,
+    "interaction.json": interaction,
+  });
   try {
     expect(assertPresentedEvidence(dir, "desktop-smoke").generation).toBe(3);
   } finally {
@@ -58,7 +64,12 @@ test("an ok flag without a presented capture is not success", () => {
 test("a layout that was not presented is rejected", () => {
   const dir = evidence({
     "presented.png": png,
-    "layout.json": JSON.stringify({ session: "desktop-smoke", presented: false, generation: 1, placements: [] }),
+    "layout.json": JSON.stringify({
+      session: "desktop-smoke",
+      presented: false,
+      generation: 1,
+      placements: [],
+    }),
     "interaction.json": interaction,
   });
   try {
@@ -78,9 +89,12 @@ test("qualification refuses installed CLI paths and production sockets", () => {
   const home = "/Users/example";
   expect(installedPhuxCandidates(home)[0]).toBe(`${home}/.local/bin/phux`);
   expect(isInstalledPhux("/opt/homebrew/bin/phux", home)).toBe(true);
-  expect(productionSocketReason("/tmp/phux-example/phux.sock", { USER: "example", TMPDIR: "/var/folders/t" })).toBe(
-    "refusing production socket /tmp/phux-example/phux.sock",
-  );
+  expect(
+    productionSocketReason("/tmp/phux-example/phux.sock", {
+      USER: "example",
+      TMPDIR: "/var/folders/t",
+    }),
+  ).toBe("refusing production socket /tmp/phux-example/phux.sock");
   expect(
     productionSocketReason("/tmp/phux-desktop-smoke-1/run/phux.sock", {
       USER: "example",

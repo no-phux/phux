@@ -25,5 +25,5 @@
     "tests/desktop-demo.test.ts",
     "oxlint.config.ts"
   ],
-  "exclude": ["node_modules", "toolchain", "native", "src", "dist"]
+  "exclude": ["node_modules", "toolchain", "native", "dist"]
 }

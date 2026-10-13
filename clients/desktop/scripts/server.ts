@@ -61,7 +61,8 @@ export function serverStatus(phux: string, socket?: string): Status | undefined 
 
 export function serverSocket(phux: string): string {
   const socket = serverStatus(phux)?.socket;
-  if (typeof socket !== "string") throw new Error("No running phux server after `phux server --ensure`");
+  if (typeof socket !== "string")
+    throw new Error("No running phux server after `phux server --ensure`");
   return socket;
 }
 
@@ -69,7 +70,10 @@ export function sessionNames(phux: string, socket: string): string[] {
   const sessions = serverStatus(phux, socket)?.sessions;
   if (!Array.isArray(sessions)) return [];
   return sessions.flatMap((session: unknown) =>
-    session !== null && typeof session === "object" && "name" in session && typeof session.name === "string"
+    session !== null &&
+    typeof session === "object" &&
+    "name" in session &&
+    typeof session.name === "string"
       ? [session.name]
       : [],
   );

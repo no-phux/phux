@@ -133,7 +133,6 @@ async function stop(child: Bun.Subprocess): Promise<void> {
   }
 }
 
-
 type SavedNode =
   | { kind: "leaf"; id: string; terminalId: string }
   | { kind: "split"; axis: "row" | "column"; ratio: number; first: SavedNode; second: SavedNode };

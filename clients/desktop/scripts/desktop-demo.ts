@@ -5,10 +5,9 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { desktopArguments, launchDesktop } from "./launch-desktop.ts";
-import { assertCheckoutBinary, desktopBinary, desktopRoot, layoutFile, repoRoot, within } from "./host.ts";
+import { assertCheckoutBinary, desktopBinary, layoutFile, repoRoot, within } from "./host.ts";
 import { terminateChild } from "./terminate-child.ts";
 
-const desktop = desktopRoot;
 const repo = repoRoot;
 
 export interface Artifacts {
@@ -20,9 +19,15 @@ export async function checkoutArtifacts(
   binary = resolve(repo, process.env.CARGO_TARGET_DIR ?? "target", "debug/phux"),
   host = desktopBinary("debug"),
 ): Promise<Artifacts> {
-  const [checkout, cli, native] = await Promise.all([realpath(repo), realpath(binary), realpath(host)]);
+  const [checkout, cli, native] = await Promise.all([
+    realpath(repo),
+    realpath(binary),
+    realpath(host),
+  ]);
   if (!within(checkout, cli) || !within(checkout, native)) {
-    throw new Error("Demo requires checkout-built CLI and desktop binary (no installed or external artifacts)");
+    throw new Error(
+      "Demo requires checkout-built CLI and desktop binary (no installed or external artifacts)",
+    );
   }
   assertCheckoutBinary(cli, checkout);
   assertCheckoutBinary(native, checkout);
@@ -34,7 +39,9 @@ export async function checkoutArtifacts(
 
 async function demoEnvironment(sandbox: string, artifacts: Artifacts): Promise<NodeJS.ProcessEnv> {
   const env: NodeJS.ProcessEnv = Object.fromEntries(
-    Object.entries(process.env).filter(([key]) => !key.startsWith("PHUX_") && !key.startsWith("XDG_")),
+    Object.entries(process.env).filter(
+      ([key]) => !key.startsWith("PHUX_") && !key.startsWith("XDG_"),
+    ),
   );
   const dirs = {
     HOME: sandbox,
@@ -47,7 +54,9 @@ async function demoEnvironment(sandbox: string, artifacts: Artifacts): Promise<N
     XDG_DATA_DIRS: resolve(sandbox, "data"),
     XDG_CACHE_HOME: resolve(sandbox, "cache"),
   };
-  await Promise.all(Object.values(dirs).map((path) => mkdir(path, { recursive: true, mode: 0o700 })));
+  await Promise.all(
+    Object.values(dirs).map((path) => mkdir(path, { recursive: true, mode: 0o700 })),
+  );
   return {
     ...env,
     ...dirs,
@@ -61,7 +70,11 @@ async function demoEnvironment(sandbox: string, artifacts: Artifacts): Promise<N
   };
 }
 
-async function waitForServer(binary: string, env: NodeJS.ProcessEnv, signal: AbortSignal): Promise<void> {
+async function waitForServer(
+  binary: string,
+  env: NodeJS.ProcessEnv,
+  signal: AbortSignal,
+): Promise<void> {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
     signal.throwIfAborted();
@@ -84,7 +97,10 @@ async function reap(children: ChildProcess[], sandbox: string): Promise<void> {
     if (result.status === "rejected") failures.push(result.reason);
   }
   if (failures.length > 0) {
-    throw new AggregateError(failures, `Demo child did not exit; retained private sandbox: ${sandbox}`);
+    throw new AggregateError(
+      failures,
+      `Demo child did not exit; retained private sandbox: ${sandbox}`,
+    );
   }
   await rm(sandbox, { recursive: true, force: true });
 }
@@ -114,7 +130,15 @@ export async function runDemo(
     if (controller.signal.aborted) return await interrupted;
     const server = spawn(
       checked.binary,
-      ["--socket", env.PHUX_SOCKET ?? "", "server", "--session", "desktop-demo", "--exit-after-idle", "120"],
+      [
+        "--socket",
+        env.PHUX_SOCKET ?? "",
+        "server",
+        "--session",
+        "desktop-demo",
+        "--exit-after-idle",
+        "120",
+      ],
       { env, cwd: sandbox, stdio: ["ignore", "inherit", "inherit"] },
     );
     children.push(server);
@@ -122,7 +146,11 @@ export async function runDemo(
       server.once("error", reject);
       server.once("exit", () => reject(new Error("Private demo server exited")));
     });
-    const ready = await Promise.race([waitForServer(checked.binary, env, controller.signal), interrupted, serverFailed]);
+    const ready = await Promise.race([
+      waitForServer(checked.binary, env, controller.signal),
+      interrupted,
+      serverFailed,
+    ]);
     if (typeof ready === "number") return ready;
     console.log(`Desktop demo: ${env.PHUX_SOCKET} (temporary state: ${sandbox})`);
     const app = launch(env);
@@ -153,7 +181,11 @@ if (import.meta.main) {
         socket: env.PHUX_SOCKET ?? socket,
         session: env.PHUX_SESSION ?? "desktop-demo",
         phux: artifacts.binary,
-        layout: layoutFile(env.XDG_STATE_HOME ?? "", env.PHUX_SOCKET ?? socket, env.PHUX_SESSION ?? "desktop-demo"),
+        layout: layoutFile(
+          env.XDG_STATE_HOME ?? "",
+          env.PHUX_SOCKET ?? socket,
+          env.PHUX_SESSION ?? "desktop-demo",
+        ),
       }),
       env,
     ),

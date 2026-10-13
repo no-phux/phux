@@ -19,7 +19,10 @@ export function desktopBinary(profile: HostProfile): string {
 
 /** sha256(JSON.stringify([socket, session])) hex, first 24 chars. */
 export function layoutScope(socket: string, session: string): string {
-  return createHash("sha256").update(JSON.stringify([socket, session])).digest("hex").slice(0, 24);
+  return createHash("sha256")
+    .update(JSON.stringify([socket, session]))
+    .digest("hex")
+    .slice(0, 24);
 }
 
 export function layoutFile(stateHome: string, socket: string, session: string): string {
@@ -36,6 +39,11 @@ export function installedPhuxCandidates(home = homedir()): string[] {
   ];
 }
 
+/** Whether `path` is (or resolves to) an installed phux CLI candidate. */
+export function isInstalledPhux(path: string, home = homedir()): boolean {
+  return installedPhuxCandidates(home).some((candidate) => sameFile(path, candidate));
+}
+
 function sameFile(left: string, right: string): boolean {
   if (resolve(left) === resolve(right)) return true;
   if (!existsSync(left) || !existsSync(right)) return false;
@@ -50,24 +58,24 @@ export function within(parent: string, child: string): boolean {
   return path === "" || (path !== ".." && !path.startsWith("../") && !isAbsolute(path));
 }
 
-
 /**
  * Production sockets a qualification run must not attach to.
  * A socket under the temp directory is a harness, even if the path shape matches.
  */
 export function productionSocketReason(
   socket: string,
-  env: { USER?: string; UID?: string; XDG_RUNTIME_DIR?: string; TMPDIR?: string } = process.env,
+  env: Readonly<Record<string, string | undefined>> = process.env,
 ): string | undefined {
   const resolved = resolve(socket);
-  const temp = env.TMPDIR ? resolve(env.TMPDIR) : undefined;
+  const tmpdir = env["TMPDIR"];
+  const temp = tmpdir ? resolve(tmpdir) : undefined;
   if (temp && (resolved === temp || resolved.startsWith(`${temp}/`))) return undefined;
-  const user = env.USER ?? "";
-  const uid = env.UID ?? "";
+  const user = env["USER"] ?? "";
+  const uid = env["UID"] ?? "";
   const banned = [
     user ? `/tmp/phux-${user}/phux.sock` : undefined,
     uid ? `/run/user/${uid}/phux/phux.sock` : undefined,
-    env.XDG_RUNTIME_DIR ? join(env.XDG_RUNTIME_DIR, "phux/phux.sock") : undefined,
+    env["XDG_RUNTIME_DIR"] ? join(env["XDG_RUNTIME_DIR"], "phux/phux.sock") : undefined,
   ].filter((path): path is string => path !== undefined);
   if (banned.some((path) => resolve(path) === resolved)) {
     return `refusing production socket ${socket}`;
@@ -80,7 +88,9 @@ export function assertCheckoutBinary(path: string, repo = repoRoot): void {
   const real = realpathSync(path);
   if (!statSync(real).isFile()) throw new Error(`checkout binary is not a regular file: ${path}`);
   if (!within(repo, real)) {
-    throw new Error("qualification requires a checkout-built binary (no installed or external artifacts)");
+    throw new Error(
+      "qualification requires a checkout-built binary (no installed or external artifacts)",
+    );
   }
   if (isInstalledPhux(real)) {
     throw new Error(`refusing installed phux CLI: ${path}`);

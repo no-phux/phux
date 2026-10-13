@@ -27,7 +27,12 @@ if (import.meta.main) {
   mkdirSync(join(contents, "Resources/fonts"), { recursive: true });
   cpSync(binary, join(contents, "MacOS/phux-desktop"));
   run(["chmod", "755", join(contents, "MacOS/phux-desktop")]);
-  for (const name of ["PaperMono-Regular.ttf", "PaperMono-Medium.ttf", "PaperMono-Bold.ttf", "PaperMono-OFL.txt"]) {
+  for (const name of [
+    "PaperMono-Regular.ttf",
+    "PaperMono-Medium.ttf",
+    "PaperMono-Bold.ttf",
+    "PaperMono-OFL.txt",
+  ]) {
     cpSync(join(fonts, name), join(contents, "Resources/fonts", name));
   }
   renderIcon(join(contents, "Resources/AppIcon.icns"));
@@ -53,7 +58,9 @@ if (import.meta.main) {
 export function packageVersion(text: string): string {
   const metadata: unknown = JSON.parse(text);
   const version =
-    metadata && typeof metadata === "object" && "version" in metadata ? metadata.version : undefined;
+    metadata && typeof metadata === "object" && "version" in metadata
+      ? metadata.version
+      : undefined;
   if (typeof version !== "string" || !/^\d+\.\d+\.\d+(?:-alpha\.\d+)?$/.test(version)) {
     throw new Error("Desktop package.json must contain a release version");
   }
@@ -95,9 +102,25 @@ function renderIcon(output: string): void {
   run(["qlmanage", "-t", "-s", "1024", "-o", work, resolve(root, "packaging/AppIcon.svg")]);
   const master = join(work, "AppIcon.svg.png");
   for (const size of [16, 32, 128, 256, 512]) {
-    run(["sips", "-z", `${size}`, `${size}`, master, "--out", join(iconset, `icon_${size}x${size}.png`)]);
+    run([
+      "sips",
+      "-z",
+      `${size}`,
+      `${size}`,
+      master,
+      "--out",
+      join(iconset, `icon_${size}x${size}.png`),
+    ]);
     const double = size * 2;
-    run(["sips", "-z", `${double}`, `${double}`, master, "--out", join(iconset, `icon_${size}x${size}@2x.png`)]);
+    run([
+      "sips",
+      "-z",
+      `${double}`,
+      `${double}`,
+      master,
+      "--out",
+      join(iconset, `icon_${size}x${size}@2x.png`),
+    ]);
   }
   run(["iconutil", "-c", "icns", iconset, "-o", output]);
   rmSync(work, { recursive: true, force: true });

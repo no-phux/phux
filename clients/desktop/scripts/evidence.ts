@@ -28,7 +28,8 @@ export interface InteractionEvidence {
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === "object" ? value : undefined;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return Object.fromEntries(Object.entries(value));
 }
 
 function readJson(path: string): unknown {
