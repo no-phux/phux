@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Migration: from Session/Window/Pane to the domain model</title>
+<style>
+
+:root{--bg:#101317;--panel:#191e24;--text:#e9edf2;--muted:#a9b3c0;--line:#333e4c;--accent:#88dac4;--code:#11171e}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.7 system-ui,-apple-system,sans-serif}
+a{color:var(--accent)}button{font:inherit;color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:.5rem .8rem;cursor:pointer}button:hover{border-color:var(--accent)}a:focus-visible,button:focus-visible,textarea:focus-visible{outline:3px solid var(--accent);outline-offset:3px}
+.top{padding:1.2rem 2rem;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:1rem}.brand{font-weight:750;letter-spacing:.06em}.badge{color:var(--accent);font-size:.85rem;margin-left:.7rem}.actions{display:flex;flex-wrap:wrap;gap:.6rem}
+.shell{display:grid;grid-template-columns:260px minmax(0,1fr);max-width:1510px;margin:auto}nav{position:sticky;top:0;align-self:start;max-height:100vh;overflow:auto;padding:2rem 1.5rem;font-size:.85rem}nav ul{list-style:none;padding:0}nav li{margin:.6rem 0}nav a{text-decoration:none;color:var(--muted)}nav a:hover{color:var(--accent)}nav .toc>ul>li>a{display:none}nav .toc ul ul{padding:0}nav .toc ul ul ul{display:none}
+main{max-width:1120px;padding:2rem 3rem 6rem;min-width:0}h1{font-size:clamp(2rem,4vw,3.4rem);line-height:1.12;letter-spacing:-.04em;margin:1rem 0 2rem;max-width:900px}h2{font-size:1.65rem;line-height:1.3;margin:4rem 0 1.3rem;padding-top:1.2rem;border-top:1px solid var(--line);scroll-margin-top:1rem}h3{font-size:1.15rem;margin:2rem 0 .7rem;color:var(--accent)}p{margin:1rem 0}li{margin:.4rem 0}strong{font-weight:700}code{font-size:.87em;background:var(--code);padding:.15rem .35rem;border-radius:4px}pre{background:var(--code);border:1px solid var(--line);border-radius:9px;overflow:auto;padding:1.3rem;font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;tab-size:4}pre code{padding:0;background:none;font:inherit}
+.table-wrap{overflow:auto;margin:1.5rem 0}table{border-collapse:collapse;width:100%;font-size:.91rem}th,td{border:1px solid var(--line);padding:.65rem .8rem;text-align:left;vertical-align:top}th{background:var(--panel);font-weight:650}tbody tr:nth-child(even){background:var(--panel)}blockquote{border-left:3px solid var(--accent);margin:1.5rem 0;padding:.2rem 1.2rem;color:var(--muted)}
+.intro{color:var(--muted);font-size:.9rem}.review-note{margin:2rem 0;padding:1rem 1.2rem;background:var(--panel);border:1px solid var(--line);border-radius:9px}.review-note label{display:block;color:var(--accent);font-size:.85rem;font-weight:600;margin-bottom:.6rem}textarea{width:100%;min-height:110px;resize:vertical;padding:.8rem;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:5px;font:inherit;line-height:1.5}.note-status{font-size:.8rem;color:var(--muted);margin-top:.5rem}.footer{color:var(--muted);font-size:.8rem;border-top:1px solid var(--line);padding-top:1rem}.footer code{overflow-wrap:anywhere}
+@media(max-width:900px){.shell{grid-template-columns:1fr}nav{position:static;max-height:320px;border-bottom:1px solid var(--line)}main{padding:1.5rem 1rem 4rem}.top{padding:1rem;align-items:flex-start;flex-direction:column}}
+@media print{body{background:white;color:black;font-size:10pt}nav,.top,.intro{display:none}.shell{display:block}main{max-width:none;padding:0}h2{break-before:page}pre{background:#f5f5f5;border-color:#bbb;font-size:8pt;white-space:pre-wrap}table{font-size:9pt}th,td{border-color:#bbb}th,tbody tr:nth-child(even){background:#f5f5f5}.review-note{background:#fafafa;border-color:#bbb}textarea{background:white;color:black;border:0;min-height:0}.review-note.empty{display:none}.note-status{display:none}a{color:inherit}.footer{color:#444}}
+.orphans{margin:1.5rem 0;padding:1rem 1.2rem;border:1px dashed var(--accent);border-radius:9px}.orphans h2{border:0;margin:0 0 .6rem;padding:0;font-size:1.05rem}.orphans pre{white-space:pre-wrap}
+
+</style>
+</head>
+<body>
+<header class="top"><div><span class="brand">PHUX / MIGRATION</span><span class="badge">PROPOSAL · DRAFT 2 · 12 OCTOBER 2026</span></div><div class="actions"><a href="DESIGN.html">Overview</a><button id="export" type="button">Export notes as Markdown</button><button id="print" type="button">Print / PDF</button><a href="MIGRATION.md">Markdown source</a></div></header>
+<div class="shell"><nav aria-label="Sections"><p><a href="FULL-DESIGN.html">Domain Model</a> · <a href="CONTRACTS.html">Contracts</a> · <a href="PLAN.html">Build Plan</a> · <strong>Migration</strong> · <a href="BROWSER-KIND.html">Browser Kind</a></p><div class="toc">
+<div class="toc">
+<ul>
+<li><a href="#migration-from-sessionwindowpane-to-the-domain-model">Migration: from Session/Window/Pane to the domain model</a><ul>
+<li><a href="#01-terminology-map">01. Terminology map</a></li>
+<li><a href="#02-freeing-the-word-workspace">02. Freeing the word "workspace"</a></li>
+<li><a href="#03-tui-and-tmux-verbs">03. TUI and tmux verbs</a></li>
+<li><a href="#04-cli">04. CLI</a></li>
+<li><a href="#05-mcp-and-agent-tools">05. MCP and agent tools</a></li>
+<li><a href="#06-clients">06. Clients</a></li>
+<li><a href="#07-saved-state">07. Saved state</a></li>
+<li><a href="#08-compatibility-rules">08. Compatibility rules</a></li>
+<li><a href="#09-deleted-at-the-end">09. Deleted at the end</a></li>
+</ul>
+</li>
+</ul>
+</div>
+
+</div></nav>
+<main>
+<h1 id="migration-from-sessionwindowpane-to-the-domain-model">Migration: from Session/Window/Pane to the domain model</h1>
+<p><strong>TL;DR.</strong> Today's tree already behaves more like the new model than its types admit: the server keeps one vestigial Window per session, real tabs live in client layout metadata, and desktop already treats close as release. The migration deletes Window, makes lifecycle typed instead of intercepted, renames four colliding "workspace" concepts, and gives every kill verb an explicit terminate meaning. Order and gates are in <a href="PLAN.html">PLAN.md</a>.</p>
+<h2 id="01-terminology-map">01. Terminology map</h2>
+<table>
+<thead>
+<tr>
+<th>Today</th>
+<th>Becomes</th>
+<th>Evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Core <code>Session{windows, active, keep_empty}</code></td>
+<td><code>Session{members, lifetime, arrangement}</code></td>
+<td><code>crates/phux-core/src/session.rs:57-71</code></td>
+</tr>
+<tr>
+<td>Core <code>Window{slots, layout, active}</code></td>
+<td>Deleted. Slots become members; layout becomes the session arrangement.</td>
+<td><code>crates/phux-core/src/window.rs:21-32</code>; only <code>windows.first()</code> is ever used, <code>crates/phux-server/src/state/session_table.rs:172-179</code></td>
+</tr>
+<tr>
+<td>Pane (a Terminal <code>ResourceId</code> in <code>Window.slots</code>)</td>
+<td>A Terminal resource; on screen, a view</td>
+<td><code>window.rs:21-32</code></td>
+</tr>
+<tr>
+<td><code>ResourceDescriptor.window</code></td>
+<td><code>Resource.session</code></td>
+<td><code>crates/phux-core/src/resource.rs:147-161</code></td>
+</tr>
+<tr>
+<td><code>keep_empty</code></td>
+<td><code>SessionLifetime</code></td>
+<td>ADR-0105</td>
+</tr>
+<tr>
+<td><code>AgentSession</code> kind</td>
+<td>Agent conversation (wire name kept)</td>
+<td>ADR-0103</td>
+</tr>
+<tr>
+<td>Client <code>Workspace{windows: Vec&lt;WindowState&gt;}</code></td>
+<td>Session arrangement, client edit model</td>
+<td><code>crates/phux-client-core/src/layout/mod.rs:161-229</code></td>
+</tr>
+<tr>
+<td><code>phux.tui.layout/v1/&lt;session-id&gt;</code> metadata</td>
+<td>Typed arrangement record</td>
+<td><code>crates/phux-client-core/src/layout/projection.rs:12-21</code></td>
+</tr>
+<tr>
+<td>Session lifecycle via intercepted metadata keys</td>
+<td>Typed organization commands</td>
+<td><code>crates/phux-server/src/runtime/client.rs:4848-4859</code></td>
+</tr>
+<tr>
+<td><code>SessionKernel</code></td>
+<td>Resource synchronization kernel (responsibility unchanged)</td>
+<td>ADR-0100</td>
+</tr>
+<tr>
+<td>phux-web <code>Session</code> (one attach connection)</td>
+<td><code>Connection</code></td>
+<td><code>clients/phux-web/src/session.rs:537-538</code></td>
+</tr>
+<tr>
+<td>Work coordinator <code>WorkSession</code></td>
+<td>Unchanged; never aliases a Session</td>
+<td>ADR-0092</td>
+</tr>
+</tbody>
+</table>
+<h2 id="02-freeing-the-word-workspace">02. Freeing the word "workspace"</h2>
+<p>Six things are called workspace today. The domain Workspace arrives in stage 6; the renames land before it.</p>
+<table>
+<thead>
+<tr>
+<th>Today</th>
+<th>Renamed to</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>phux workspace save</code> and <code>restore</code> (JSON archive)</td>
+<td><code>phux archive export</code> and <code>import</code></td>
+</tr>
+<tr>
+<td><code>phux workspace inspect</code> (git worktrees)</td>
+<td><code>phux project inspect</code> (beside the existing <code>project</code> verb)</td>
+</tr>
+<tr>
+<td><code>phux server --autosave</code> "workspace archive"</td>
+<td>Retired by the org store; the flag keeps working as an export schedule for one release</td>
+</tr>
+<tr>
+<td><code>phux-client-core::layout::Workspace</code></td>
+<td><code>ArrangementDoc</code></td>
+</tr>
+<tr>
+<td>FFI <code>SharedWorkspace</code>, <code>PhuxWorkspace*</code> C types</td>
+<td><code>SharedArrangement</code>, <code>PhuxArrangement*</code></td>
+</tr>
+<tr>
+<td>Plugin manifest <code>workspace</code> profiles and <code>phux_plugin_workspace</code></td>
+<td><code>profile</code> and <code>phux_plugin_profile</code></td>
+</tr>
+<tr>
+<td>Desktop <code>src/workspace/</code>, Cockpit per-OS-window <code>Workspace</code></td>
+<td>Client-internal; renamed when touched, not blocking</td>
+</tr>
+</tbody>
+</table>
+<p>Old CLI spellings stay as hidden aliases for one release and print the new name.</p>
+<h2 id="03-tui-and-tmux-verbs">03. TUI and tmux verbs</h2>
+<p>Rule: a verb named <strong>kill</strong> terminates execution, explicitly, as it always has. A verb named <strong>close</strong> never does.</p>
+<table>
+<thead>
+<tr>
+<th>Binding today (<code>crates/phux-config/src/default.toml:143-170</code>)</th>
+<th>Today</th>
+<th>After</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>x</code> kill-pane</td>
+<td><code>KILL_RESOURCE</code></td>
+<td>Unchanged: terminate that resource. Its view goes away when the resource is removed.</td>
+</tr>
+<tr>
+<td><code>X</code> kill-window</td>
+<td>Kills every leaf of the tab</td>
+<td>Terminate every resource in the group, after a confirm naming the count. A resource that also appears in another group or another session's arrangement is listed in the confirm.</td>
+</tr>
+<tr>
+<td><code>c</code> new-window</td>
+<td>Spawn and add a window</td>
+<td>Create a Terminal resource in the session and add a group to the arrangement.</td>
+</tr>
+<tr>
+<td><code>"</code> <code>%</code> <code>|</code> <code>-</code> split</td>
+<td>Spawn and split</td>
+<td>Create a resource and split the current group.</td>
+</tr>
+<tr>
+<td>(new) <code>close-view</code>, unbound by default, in the context menu</td>
+<td>None</td>
+<td>Remove the view from this arrangement; the resource keeps running and stays listed in the session.</td>
+</tr>
+<tr>
+<td>Context menu "close" (<code>crates/phux-tui/src/attach/context_menu.rs:49,70</code>)</td>
+<td>Kill</td>
+<td>Split into "Close view" and "Kill"</td>
+</tr>
+</tbody>
+</table>
+<p>Shell <code>exit</code> in a pane: the resource's exit policy is <code>Remove</code>, so it disappears, as in tmux. A session started bare (<code>phux</code>) is ephemeral, so exiting its last shell ends the session, as in tmux. A named session stays, empty, until deleted.</p>
+<h2 id="04-cli">04. CLI</h2>
+<table>
+<thead>
+<tr>
+<th>Verb</th>
+<th>After</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>phux</code> (bare)</td>
+<td>Ephemeral auto-named session plus a shell, attach. Today's behavior.</td>
+</tr>
+<tr>
+<td><code>phux new NAME</code></td>
+<td>Persistent session plus a shell. <code>--empty</code> creates no shell, replacing keep-empty. <code>--ephemeral</code> overrides.</td>
+</tr>
+<tr>
+<td><code>phux ls</code></td>
+<td>Sessions with lifetime, member count, and state counts (running, completed, lost); empty sessions included.</td>
+</tr>
+<tr>
+<td><code>phux kill TARGET</code></td>
+<td>Session: the terminate, remove, delete workflow (CONTRACTS §04). Resource: terminate. <code>--server</code> unchanged.</td>
+</tr>
+<tr>
+<td><code>phux rm TARGET</code></td>
+<td>New. Remove an inactive resource, or delete an empty session.</td>
+</tr>
+<tr>
+<td><code>phux relaunch TARGET</code></td>
+<td>New. New activation of a completed resource.</td>
+</tr>
+<tr>
+<td><code>phux restore [SESSION]</code></td>
+<td>New. Relaunch every resource ended by a server restart, in their sessions, with their cwd and agent resume. Replaces <code>workspace restore</code>.</td>
+</tr>
+<tr>
+<td><code>phux rename</code></td>
+<td>Sessions and resources.</td>
+</tr>
+<tr>
+<td><code>phux move-pane</code></td>
+<td>Alias of <code>phux mv</code>, a membership move; process survives (it already does).</td>
+</tr>
+<tr>
+<td><code>insert-pane</code>, <code>swap-pane</code></td>
+<td>Arrangement edits, unchanged in effect.</td>
+</tr>
+</tbody>
+</table>
+<p>Selectors (<code>crates/phux-client/src/selector.rs:7-57</code>) keep their grammar. <code>name:N</code> and <code>name:N.M</code> resolve against the session's shared arrangement: N is the group, M the leaf. New: a resource key prefix, <code>^ab12cd</code>, for addressing a record that has no live handle. <code>@N</code> stays the live-handle form.</p>
+<h2 id="05-mcp-and-agent-tools">05. MCP and agent tools</h2>
+<table>
+<thead>
+<tr>
+<th>Tool (<code>crates/phux-mcp/src/tool_table.rs</code>)</th>
+<th>After</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>phux_ls</code></td>
+<td>Returns keys, lifetime, exec state, and the caller's grant.</td>
+</tr>
+<tr>
+<td><code>phux_kill</code></td>
+<td>Same <code>confirm=true</code> gate; session targets run the workflow; returns per-target results.</td>
+</tr>
+<tr>
+<td><code>phux_new</code></td>
+<td>Takes <code>lifetime</code>.</td>
+</tr>
+<tr>
+<td><code>phux_spawn</code>, <code>phux_launch</code></td>
+<td>Unchanged inputs; return the <code>ResourceKey</code> and live handle.</td>
+</tr>
+<tr>
+<td><code>phux_move_pane</code></td>
+<td>Membership move.</td>
+</tr>
+<tr>
+<td>New <code>phux_relaunch</code>, <code>phux_rm</code></td>
+<td>As the CLI.</td>
+</tr>
+<tr>
+<td><code>phux_workspace</code></td>
+<td>Becomes <code>phux_archive</code> (the archive tool), then stage 6 adds a real <code>phux_workspace</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>Agents call these with their own delegated credential (CONTRACTS §03), so their actions are attributed and scoped.</p>
+<h2 id="06-clients">06. Clients</h2>
+<table>
+<thead>
+<tr>
+<th>Client</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FFI</td>
+<td>Project everything: keys, revisions, lifetime, members, arrangement, exec state, agent conversations, dims. Today it drops <code>keep_empty</code>, windows, agent sessions, and dims (<code>crates/phux-client-ffi/src/projection/topology.rs:14-89</code>).</td>
+</tr>
+<tr>
+<td>Desktop</td>
+<td>Already right: close is release (<code>clients/desktop/src/workspace/controller.ts:145-186</code>). Replace the "Close Session" CLI shell-out (<code>session-cli.ts:11-13</code>) with the runtime command and show the workflow's per-target results.</td>
+</tr>
+<tr>
+<td>Cockpit</td>
+<td>Close Pane and Close Tab "end work" (ADR-0114). Keep that as explicit terminate, relabel the menu items "Kill", and add "Close view". Peer-coordinator tabs already close layout-only.</td>
+</tr>
+<tr>
+<td>Web</td>
+<td>Rename its <code>Session</code> to <code>Connection</code>. Stop auto-creating <code>default</code>; open the most recent session or offer create. Close pane becomes close view; keep kill as an explicit action.</td>
+</tr>
+<tr>
+<td>Mobile</td>
+<td>Host groups become a host filter; saved terminal collections become saved filters. Neither is called a workspace. Separate repos, migrated after FFI lands.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="07-saved-state">07. Saved state</h2>
+<ul>
+<li>First start of a stage-2 server: build the org store from the live registry. Each session gets a key and <code>lifetime = keep_empty ? Persistent : Ephemeral</code>. Each live Terminal becomes a resource bound to its current process as activation 1, with <code>ProcIdentity</code> recorded. The session's <code>phux.tui.layout/v1</code> document becomes its arrangement.</li>
+<li>Existing JSON archives (schema 2, <code>crates/phux/src/commands/workspace/archive/model.rs:5-30</code>) import as new records with provenance; nothing is launched until <code>phux restore</code>.</li>
+<li>The old store is not deleted. Downgrade: stop the server, run the old binary; it ignores <code>org/</code>.</li>
+<li>Conversion is idempotent and keyed by a migration receipt in the store.</li>
+</ul>
+<h2 id="08-compatibility-rules">08. Compatibility rules</h2>
+<ul>
+<li>No wire tag changes meaning. Old clients keep L1 terminal I/O, attach, input, and their metadata-based session operations through the server's translation layer (CONTRACTS §09).</li>
+<li>A legacy destructive operation keeps its destructive meaning; it is never quietly downgraded to a safer one.</li>
+<li>Translation is attributed to the calling client like any other command.</li>
+<li>The translation layer is deleted once every first-party client and the last two released versions speak <code>Organization</code>.</li>
+</ul>
+<h2 id="09-deleted-at-the-end">09. Deleted at the end</h2>
+<ul>
+<li><code>crates/phux-core/src/window.rs</code> and every <code>WindowId</code>, <code>active</code>, and slot.</li>
+<li>The reap cascade's window and keep-empty steps (<code>crates/phux-server/src/state/reap.rs</code>).</li>
+<li>Respawn-in-place of the last shell (<code>crates/phux-server/src/state/sessions.rs:98-110</code>).</li>
+<li>Server exit on zero sessions (<code>crates/phux-server/src/state/bindings.rs:192-196</code>).</li>
+<li>The intercepted session metadata keys and <code>CloseTabResources</code> (<code>command.rs:426-429</code>).</li>
+<li>The <code>--autosave</code> archive writer, after its release of overlap.</li>
+<li>Name-based joins anywhere a key exists.</li>
+</ul>
+<p class="footer">Generated from MIGRATION.md by build.py. No external scripts, fonts, analytics, or network requests. Source SHA-256: <code>6a2a2d17b146010b0e7e8d18c4336561869882457d18cf861ace4da61dcaf4e0</code>.</p>
+</main></div>
+<script>
+
+const storageKey = "phux-domain-review-migration";
+const sourceLabel = "MIGRATION.md, Draft 2 \u00b7 12 October 2026, sha256 6a2a2d17b146010b0e7e8d18c4336561869882457d18cf861ace4da61dcaf4e0";
+let notes = {};
+let storageAvailable = true;
+try { notes = JSON.parse(localStorage.getItem(storageKey) || '{}'); }
+catch { storageAvailable = false; }
+if (!notes || typeof notes !== 'object' || Array.isArray(notes)) notes = {};
+
+function saveNotes(status) {
+  try { localStorage.setItem(storageKey, JSON.stringify(notes)); status.textContent = 'Saved locally in this browser. Export for a portable copy.'; }
+  catch { status.textContent = 'Local saving unavailable. Export your notes before closing this page.'; }
+}
+function notePanel(heading) {
+  const panel = document.createElement('section');
+  panel.className = 'review-note empty';
+  const label = document.createElement('label');
+  label.textContent = 'Your notes · ' + heading.textContent;
+  const field = document.createElement('textarea');
+  field.id = 'note-' + heading.id;
+  label.htmlFor = field.id;
+  field.placeholder = 'What should change? Reference a decision or paragraph here…';
+  field.value = typeof notes[heading.id] === 'string' ? notes[heading.id] : '';
+  panel.classList.toggle('empty', !field.value.trim());
+  const status = document.createElement('div');
+  status.className = 'note-status';
+  status.setAttribute('role', 'status');
+  status.textContent = storageAvailable ? 'Notes save locally. Export to share them.' : 'Local saving unavailable. Export before closing.';
+  field.addEventListener('input', () => {
+    notes[heading.id] = field.value;
+    panel.classList.toggle('empty', !field.value.trim());
+    saveNotes(status);
+  });
+  panel.append(label, field, status);
+  return panel;
+}
+const headings = [...document.querySelectorAll('main h2')];
+const headingIds = new Set(headings.map(h => h.id));
+for (let index = 0; index < headings.length; index += 1) {
+  const panel = notePanel(headings[index]);
+  const next = headings[index + 1];
+  const before = next || document.querySelector('.footer');
+  before.before(panel);
+}
+// Notes written against an earlier draft whose section no longer exists.
+const orphans = Object.entries(notes).filter(([id, text]) => !headingIds.has(id) && typeof text === 'string' && text.trim());
+if (orphans.length) {
+  const box = document.createElement('section');
+  box.className = 'orphans';
+  const title = document.createElement('h2');
+  title.textContent = 'Notes from an earlier draft';
+  box.append(title);
+  for (const [id, text] of orphans) {
+    const label = document.createElement('p');
+    label.textContent = '§ ' + id;
+    const body = document.createElement('pre');
+    body.textContent = text;
+    box.append(label, body);
+  }
+  document.querySelector('main h1').after(box);
+}
+for (const table of document.querySelectorAll('main table')) {
+  const wrap = document.createElement('div');
+  wrap.className = 'table-wrap';
+  table.before(wrap);
+  wrap.append(table);
+}
+function exportNotes() {
+  const parts = ['# ' + document.title + ' — review notes', '', 'Source: ' + sourceLabel, ''];
+  for (const heading of headings) {
+    const field = document.getElementById('note-' + heading.id);
+    if (field.value.trim()) parts.push('## ' + heading.textContent, '', field.value.trim(), '');
+  }
+  for (const [id, text] of orphans) parts.push('## (earlier draft) ' + id, '', text.trim(), '');
+  const blob = new Blob([parts.join('\n')], {type:'text/markdown;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'phux-domain-review-notes.md';
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+document.getElementById('export').addEventListener('click', exportNotes);
+document.getElementById('print').addEventListener('click', () => window.print());
+
+</script>
+</body></html>
