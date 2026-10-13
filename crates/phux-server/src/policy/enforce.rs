@@ -674,6 +674,8 @@ fn undone_operation(s: &ServerState, verbs: Verbs, request: Request<'_>) -> Opti
                 points.push(session(to)?);
             }
             phux_core::InverseEdit::Intake { session: key, .. } => points.push(session(key)?),
+            // Restored after the membership, in a session already covered.
+            phux_core::InverseEdit::Arrangement { .. } => {}
         }
     }
     Some(

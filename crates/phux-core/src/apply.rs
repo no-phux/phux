@@ -861,16 +861,32 @@ fn resource_create(
 }
 
 /// Move `moves` (resource, destination) and build the undo that puts each
-/// back where it was.
+/// back where it was, including the source arrangement a move prunes.
 fn move_with_undo(
     tx: &mut Tx<'_>,
     moves: &[(ResourceKey, SessionKey)],
 ) -> Result<Option<Undo>, Refusal> {
     let mut inverse = Vec::new();
+    let mut layouts = Vec::new();
     let mut touched = Vec::new();
     for &(resource, to) in moves {
-        let from = tx.move_resource(resource, to)?;
-        if from != to {
+        let from = tx.resource(resource).ok_or(Refusal::NotFound)?.session;
+        if let Some(a) = tx
+            .session(from)
+            .and_then(|s| s.arrangement)
+            .and_then(|key| tx.arrangement(key))
+            .filter(|a| a.resources().contains(&resource))
+            && !layouts
+                .iter()
+                .any(|e| matches!(e, InverseEdit::Arrangement { key, .. } if *key == a.key))
+        {
+            touched.push(RecordRef::Arrangement(a.key));
+            layouts.push(InverseEdit::Arrangement {
+                key: a.key,
+                groups: a.groups.clone(),
+            });
+        }
+        if tx.move_resource(resource, to)? != to {
             inverse.push(InverseEdit::Membership { resource, to: from });
             touched.extend([
                 RecordRef::Resource(resource),
@@ -879,6 +895,7 @@ fn move_with_undo(
             ]);
         }
     }
+    inverse.extend(layouts);
     Ok((!inverse.is_empty()).then(|| Undo {
         inverse,
         pins: tx.pins(touched),
@@ -971,13 +988,23 @@ fn organization_undo(
     }
     let mut moves = Vec::new();
     let mut intake = Vec::new();
+    let mut layouts = Vec::new();
     for edit in &undo.inverse {
-        match *edit {
-            InverseEdit::Membership { resource, to } => moves.push((resource, to)),
+        match edit {
+            InverseEdit::Membership { resource, to } => {
+                if tx.session(*to).is_none() {
+                    return Err(Refusal::invalid(
+                        "undo",
+                        "the original session no longer exists",
+                    ));
+                }
+                moves.push((*resource, *to));
+            }
             InverseEdit::Intake {
                 session,
                 awaiting_organization,
-            } => intake.push((session, awaiting_organization)),
+            } => intake.push((*session, *awaiting_organization)),
+            InverseEdit::Arrangement { key, groups } => layouts.push((*key, groups)),
         }
     }
     let mut redo = move_with_undo(tx, &moves)?.unwrap_or(Undo {
@@ -996,6 +1023,17 @@ fn organization_undo(
             awaiting_organization: prior,
         });
         touched.push(RecordRef::Session(session));
+    }
+    for (key, groups) in layouts {
+        let a = tx.arrangement_mut(key).ok_or(Refusal::NotFound)?;
+        a.groups.clone_from(groups);
+        let (owner, revision) = (a.owner, a.revision);
+        tx.events.push(Event::ArrangementChanged {
+            key,
+            owner,
+            revision: Some(revision),
+        });
+        touched.push(RecordRef::Arrangement(key));
     }
     let records: Vec<RecordRef> = redo.pins.iter().map(|p| p.record).chain(touched).collect();
     redo.pins = tx.pins(records);
