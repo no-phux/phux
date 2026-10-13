@@ -1623,6 +1623,220 @@ fn session_picker_groups_by_project_tag() {
         labels,
         ["phux", "api", "web", "Sessions", "notes", "+ New session…"]
     );
+    assert_eq!(items[1].secondary.as_deref(), Some("ephemeral"));
+    assert_eq!(items[1].action.args.get("id"), Some(&Value::Integer(1)));
+}
+
+const TAGGED_PICKER_LABELS: &str = "\
+Local
+aaa
+zeta
+phux
+web
+api
+Sessions
+api
+notes
+edge - 2 sessions
+build
+logs
+idle - connected, no sessions
+down - unreachable: link is down
+mini - 2 sessions
+build
+phall
+spare - connected, no sessions
+xps - unreachable: timed out
++ New session…";
+
+const PLAIN_PICKER_LABELS: &str = "\
+Local
+web
+api
+api
+notes
+zeta
+edge - 2 sessions
+build
+logs
+idle - connected, no sessions
+down - unreachable: link is down
+mini - 2 sessions
+build
+phall
+spare - connected, no sessions
+xps - unreachable: timed out
++ New session…";
+
+fn picker_labels(items: &[crate::render::overlay::SelectItem]) -> String {
+    items
+        .iter()
+        .map(|item| item.label.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn attached_picker_row(
+    items: &[crate::render::overlay::SelectItem],
+    id: i64,
+) -> &crate::render::overlay::SelectItem {
+    items
+        .iter()
+        .find(|item| {
+            item.action.action == "switch-session"
+                && !item.action.args.contains_key("host")
+                && item.action.args.get("id").and_then(Value::as_integer) == Some(id)
+        })
+        .expect("attached-host row")
+}
+
+/// Tagged and untagged rows for one attached host, a satellite, and another
+/// machine. `web` (id 2) is focused. Two sessions share the name `api`.
+fn mixed_project_picker(with_tags: bool) -> Vec<crate::render::overlay::SelectItem> {
+    use phux_protocol::wire::frame::SessionLifetime;
+    use phux_protocol::wire::info::ResourceInfo;
+
+    let sessions = vec![
+        sinfo(1, "api")
+            .with_lifetime(Some(SessionLifetime::Persistent))
+            .with_attached_client_count(2),
+        sinfo(2, "web"),
+        sinfo(4, "api"),
+        sinfo(3, "notes"),
+        sinfo(5, "zeta"),
+    ];
+    let terminal = |id, session| {
+        ResourceInfo::new(
+            ResourceId::local(id),
+            phux_protocol::ids::WindowId::new(1),
+            80,
+            24,
+        )
+        .with_session(Some(SessionId::new(session)))
+    };
+    let resources = vec![terminal(1, 1), terminal(2, 3), terminal(3, 3)];
+    let hosts = host_fixture();
+    let machines = machine_fixture();
+    let origin = crate::attach::hosts::AttachOrigin::Local;
+    let workspace = ArrangementDoc::single(tid(1));
+    let foreign_layouts = HashMap::new();
+    let foreign_agents = HashMap::new();
+    let foreign_attention = std::collections::HashSet::new();
+    let review = crate::attach::review::ReviewIndex::default();
+    let tags = if with_tags {
+        HashMap::from([
+            (SessionId::new(1), "phux".to_owned()),
+            (SessionId::new(2), "phux".to_owned()),
+            (SessionId::new(5), "aaa".to_owned()),
+        ])
+    } else {
+        HashMap::new()
+    };
+    let peers = crate::attach::sidebar_zones::PeerInputs {
+        serving_host: None,
+        origin: Some(&origin),
+        remote_hosts: &machines,
+        hosts: &hosts,
+        sessions: &sessions,
+        focused_session: Some(SessionId::new(2)),
+        windows: &[],
+        resources: &resources,
+        foreign_layouts: &foreign_layouts,
+        foreign_agents: &foreign_agents,
+        foreign_attention: &foreign_attention,
+        project_tags: &tags,
+        review: &review,
+    };
+    session_picker_rows(&peers, &workspace)
+}
+
+/// phux-jx32h: project tags regroup only the attached host. Satellites,
+/// other machines, and unreachable hosts stay, and each local row keeps the
+/// untagged picker's details. Duplicate names join by session id.
+#[test]
+fn session_picker_project_groups_keep_hosts_and_row_details() {
+    let tagged = mixed_project_picker(true);
+    let plain = mixed_project_picker(false);
+    assert_eq!(picker_labels(&tagged), TAGGED_PICKER_LABELS);
+    assert_eq!(picker_labels(&plain), PLAIN_PICKER_LABELS);
+
+    let local = attached_picker_row(&tagged, 1);
+    assert_eq!(local.secondary.as_deref(), Some("1 terminal, 2 attached"));
+    assert_eq!(local.secondary, attached_picker_row(&plain, 1).secondary);
+    assert_eq!(local.action, attached_picker_row(&plain, 1).action);
+    assert!(local.indented);
+    let focused = attached_picker_row(&tagged, 2);
+    assert_eq!(focused.secondary.as_deref(), Some("ephemeral, current"));
+    assert_eq!(focused.label, "web");
+    assert!(!focused.action.args.contains_key("host"));
+    assert_eq!(
+        attached_picker_row(&tagged, 3).secondary.as_deref(),
+        Some("2 terminals, ephemeral")
+    );
+    let duplicate = attached_picker_row(&tagged, 4);
+    assert_eq!(duplicate.label, "api");
+    assert_eq!(duplicate.secondary.as_deref(), Some("ephemeral"));
+    assert_eq!(duplicate.action.args.get("id"), Some(&Value::Integer(4)));
+    assert_eq!(
+        attached_picker_row(&tagged, 3).secondary,
+        attached_picker_row(&plain, 3).secondary
+    );
+    assert_remote_sections_match(&tagged, &plain);
+}
+
+fn assert_remote_sections_match(
+    tagged: &[crate::render::overlay::SelectItem],
+    plain: &[crate::render::overlay::SelectItem],
+) {
+    let tagged_tail: Vec<_> = tagged
+        .iter()
+        .skip_while(|item| item.label != "edge - 2 sessions")
+        .collect();
+    let plain_tail: Vec<_> = plain
+        .iter()
+        .skip_while(|item| item.label != "edge - 2 sessions")
+        .collect();
+    assert_eq!(tagged_tail.len(), plain_tail.len());
+    for (tagged_row, plain_row) in tagged_tail.iter().zip(&plain_tail) {
+        assert_eq!(tagged_row.label, plain_row.label);
+        assert_eq!(tagged_row.secondary, plain_row.secondary);
+        assert_eq!(tagged_row.action, plain_row.action);
+        assert_eq!(tagged_row.is_header(), plain_row.is_header());
+    }
+    let edge = tagged
+        .iter()
+        .find(|item| item.label == "build" && item.action.action == "switch-session")
+        .expect("satellite build");
+    assert_eq!(
+        edge.action.args.get("host"),
+        Some(&Value::String("edge".to_owned()))
+    );
+    assert_eq!(
+        edge.secondary.as_deref(),
+        Some("on edge, 2 windows, 3 panes")
+    );
+    let mini = tagged
+        .iter()
+        .find(|item| item.action.action == "switch-host" && item.label == "phall")
+        .expect("machine phall");
+    assert_eq!(
+        mini.action.args.get("host"),
+        Some(&Value::String("mini".to_owned()))
+    );
+    assert_eq!(
+        mini.secondary.as_deref(),
+        Some("on mini, 1 need you, 2 running, 1 attached")
+    );
+    assert!(
+        tagged
+            .iter()
+            .any(|item| item.is_header() && item.label == "down - unreachable: link is down")
+    );
+    assert!(
+        tagged
+            .iter()
+            .any(|item| item.is_header() && item.label == "xps - unreachable: timed out")
+    );
 }
 
 /// `C-a C` then `x:y` once created a session that `phux attach x:y` reads
