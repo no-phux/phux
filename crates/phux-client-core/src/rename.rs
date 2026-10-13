@@ -1,8 +1,8 @@
 //! One session-rename policy for every frontend.
 //!
 //! Against a server that advertises `ORGANIZATION`, a rename is one
-//! `SESSION_RENAME` naming the session's key and the revision the client
-//! saw ([`org_rename_command`]); its `COMMITTED` or `REFUSED` reply is the
+//! `SESSION_RENAME` naming the session's key ([`org_rename_command`]); the
+//! last writer wins, and its `COMMITTED` or `REFUSED` reply is the
 //! outcome ([`org_rename_verdict`]), and a resend after a lost reply reuses
 //! the operation id.
 //!
@@ -23,7 +23,7 @@
 //! these functions and correlate the barrier themselves. `phux-client`
 //! re-exports this module as `phux_client::rename`.
 
-use phux_protocol::ids::{OperationId, Revision, SessionId, SessionKey};
+use phux_protocol::ids::{OperationId, SessionId, SessionKey};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, FrameKind, Refusal, SESSION_NAME_KEY, Scope, StateScope,
     encode_session_rename,
@@ -211,19 +211,13 @@ pub fn write_frame(request_id: u32, current: &str, new_name: &str) -> FrameKind 
 }
 
 /// The `SESSION_RENAME` for a [`RenamePlan::Send`] against a server that
-/// advertises `ORGANIZATION`: the session's key, the revision the client saw,
-/// and a caller-minted operation id that a resend reuses.
+/// advertises `ORGANIZATION`: the session's key and a caller-minted
+/// operation id that a resend reuses.
 #[must_use]
-pub fn org_rename_command(
-    operation: OperationId,
-    session: SessionKey,
-    expected: Revision,
-    new_name: &str,
-) -> Command {
+pub fn org_rename_command(operation: OperationId, session: SessionKey, new_name: &str) -> Command {
     Command::SessionRename {
         operation,
         session,
-        expected,
         name: new_name.to_owned(),
     }
 }
@@ -428,20 +422,22 @@ mod tests {
     }
 
     #[test]
-    fn org_rename_names_the_key_and_revision_and_reads_the_reply() {
+    fn org_rename_names_the_key_and_reads_the_reply() {
         let operation = OperationId::new([1; 16]).unwrap();
         let session = SessionKey::new([2; 16]).unwrap();
         assert_eq!(
-            org_rename_command(operation, session, Revision::new(4), "notes"),
+            org_rename_command(operation, session, "notes"),
             Command::SessionRename {
                 operation,
                 session,
-                expected: Revision::new(4),
                 name: "notes".to_owned(),
             }
         );
         let committed = CommandResult::OkWith(CommandValue::Committed(Box::new(
-            phux_protocol::wire::frame::Committed::new(operation, Revision::new(5)),
+            phux_protocol::wire::frame::Committed::new(
+                operation,
+                phux_protocol::ids::Revision::new(5),
+            ),
         )));
         assert_eq!(
             org_rename_verdict(&committed),

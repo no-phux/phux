@@ -9,8 +9,10 @@
 //! [`OrgError::OutcomeUnknown`] with that id, so the caller can resend the
 //! same id on a new connection or reconcile from [`fetch`].
 //!
-//! Compare-and-swap edits re-read the records they name and retry when the
-//! server answers `CONFLICT`, at most [`MAX_CAS_ATTEMPTS`] times.
+//! Compare-and-swap edits (moves, relaunch, Inbox resolve, arrangement
+//! replace) re-read the records they name and retry when the server answers
+//! `CONFLICT`, at most [`MAX_CAS_ATTEMPTS`] times. Removes, deletes,
+//! renames, and lifetime changes carry no revision: one round trip each.
 //!
 //! These are the operations behind `phux rm`, `relaunch`, `restore`, `mv`,
 //! bulk move, undo, and Inbox resolve; the CLI and MCP adapters own
@@ -587,8 +589,6 @@ enum Edit<'a> {
         to: SessionKey,
     },
     InboxResolve(SessionKey),
-    SetLifetime(SessionKey, SessionLifetime),
-    RenameResource(ResourceKey, Option<&'a str>),
     ReplaceArrangement(SessionKey, &'a ArrangementDoc),
 }
 
@@ -605,30 +605,12 @@ async fn build(conn: &mut Connection, edit: Edit<'_>) -> Result<Command, OrgErro
                 expected: record.revision,
             }
         }
-        Edit::RenameResource(resource, name) => {
-            let (_, record) = resource_view(conn, resource).await?;
-            Command::ResourceRename {
-                operation,
-                resource,
-                expected: record.revision,
-                name: name.map(str::to_owned),
-            }
-        }
         Edit::InboxResolve(session) => {
             let record = session_in(&session_view(conn, session).await?, &session)?;
             Command::InboxResolve {
                 operation,
                 session,
                 expected: record.revision,
-            }
-        }
-        Edit::SetLifetime(session, lifetime) => {
-            let record = session_in(&session_view(conn, session).await?, &session)?;
-            Command::SessionSetLifetime {
-                operation,
-                session,
-                expected: record.revision,
-                lifetime,
             }
         }
         Edit::Move { resource, to } => {
@@ -947,7 +929,12 @@ pub async fn set_lifetime(
     session: SessionKey,
     lifetime: SessionLifetime,
 ) -> Result<Committed, OrgError> {
-    run_cas(conn, Edit::SetLifetime(session, lifetime)).await
+    let command = Command::SessionSetLifetime {
+        operation: mint_operation(),
+        session,
+        lifetime,
+    };
+    commit(conn, FIRST_REQUEST_ID, command).await
 }
 
 /// Rename (or, with `None`, unname) a resource record.
@@ -960,7 +947,12 @@ pub async fn rename_resource(
     resource: ResourceKey,
     name: Option<&str>,
 ) -> Result<Committed, OrgError> {
-    run_cas(conn, Edit::RenameResource(resource, name)).await
+    let command = Command::ResourceRename {
+        operation: mint_operation(),
+        resource,
+        name: name.map(str::to_owned),
+    };
+    commit(conn, FIRST_REQUEST_ID, command).await
 }
 
 /// Terminate a resource's current activation; the outcome arrives as an

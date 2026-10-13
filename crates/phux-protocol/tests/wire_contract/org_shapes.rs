@@ -215,22 +215,20 @@ fn org_command() -> impl Strategy<Value = Command> {
                     launch: launch.map(Box::new),
                 }
             }),
-        (op(), session_key(), rev(), name()).prop_map(|(operation, session, expected, name)| {
+        (op(), session_key(), name()).prop_map(|(operation, session, name)| {
             Command::SessionRename {
                 operation,
                 session,
-                expected,
                 name,
             }
         }),
-        (op(), session_key(), rev(), lifetime()).prop_map(
-            |(operation, session, expected, lifetime)| Command::SessionSetLifetime {
+        (op(), session_key(), lifetime()).prop_map(|(operation, session, lifetime)| {
+            Command::SessionSetLifetime {
                 operation,
                 session,
-                expected,
                 lifetime,
             }
-        ),
+        }),
         (op(), session_key())
             .prop_map(|(operation, session)| { Command::SessionDelete { operation, session } }),
         (
@@ -306,11 +304,10 @@ fn org_command() -> impl Strategy<Value = Command> {
                     to_expected,
                 }
             ),
-        (op(), resource_key(), rev(), proptest::option::of(name())).prop_map(
-            |(operation, resource, expected, name)| Command::ResourceRename {
+        (op(), resource_key(), proptest::option::of(name())).prop_map(
+            |(operation, resource, name)| Command::ResourceRename {
                 operation,
                 resource,
-                expected,
                 name,
             }
         ),
@@ -805,8 +802,8 @@ fn malformed_organization_events_are_opaque() {
     );
 }
 
-/// An older client still sends `expected` (field 4) on a remove and a
-/// delete; a decoder accepts and drops it. A relaunch body is the old remove
+/// An older client still sends `expected` (field 4) on a remove, a delete,
+/// and the label edits; a decoder accepts and drops it. A relaunch body is the old remove
 /// body, field for field, so retagging it is that old frame.
 #[test]
 fn an_ignored_expected_revision_still_decodes() {

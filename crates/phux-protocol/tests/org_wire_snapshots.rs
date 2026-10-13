@@ -170,7 +170,6 @@ fn command_fixtures() -> Vec<(&'static str, FrameKind)> {
             command(Command::SessionRename {
                 operation: op(),
                 session: session(),
-                expected: rev(4),
                 name: "play".to_owned(),
             }),
         ),
@@ -179,7 +178,6 @@ fn command_fixtures() -> Vec<(&'static str, FrameKind)> {
             command(Command::SessionSetLifetime {
                 operation: op(),
                 session: session(),
-                expected: rev(4),
                 lifetime: SessionLifetime::Persistent,
             }),
         ),
@@ -243,7 +241,6 @@ fn command_fixtures() -> Vec<(&'static str, FrameKind)> {
             command(Command::ResourceRename {
                 operation: op(),
                 resource: resource(),
-                expected: rev(2),
                 name: Some("logs".to_owned()),
             }),
         ),

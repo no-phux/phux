@@ -816,12 +816,10 @@ mod tests {
         let first = state.journal.head() + 1;
 
         let key = state.registry().session_key(session).unwrap();
-        let expected = state.org().session(&key).unwrap().revision;
         let rename = Command {
             operation: state.mint_operation(),
             op: Op::SessionRename {
                 session: key,
-                expected,
                 name: "renamed".to_owned(),
             },
         };

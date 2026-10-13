@@ -103,8 +103,6 @@ pub enum Op {
     SessionRename {
         /// Target.
         session: SessionKey,
-        /// Observed revision.
-        expected: Revision,
         /// New unique label.
         name: String,
     },
@@ -112,8 +110,6 @@ pub enum Op {
     SessionSetLifetime {
         /// Target.
         session: SessionKey,
-        /// Observed revision.
-        expected: Revision,
         /// New lifetime.
         lifetime: SessionLifetime,
     },
@@ -173,8 +169,6 @@ pub enum Op {
     ResourceRename {
         /// Target.
         resource: ResourceKey,
-        /// Observed revision.
-        expected: Revision,
         /// New label, or `None` to clear.
         name: Option<String>,
     },

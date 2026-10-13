@@ -180,26 +180,22 @@ fn translate(
         Command::SessionRename {
             operation,
             session,
-            expected,
             name,
         } => (
             ow::core_operation(&operation),
             Ok(Op::SessionRename {
                 session: ow::core_session_key(&session),
-                expected: rev(expected),
                 name,
             }),
         ),
         Command::SessionSetLifetime {
             operation,
             session,
-            expected,
             lifetime,
         } => (
             ow::core_operation(&operation),
             Ok(Op::SessionSetLifetime {
                 session: ow::core_session_key(&session),
-                expected: rev(expected),
                 lifetime: ow::core_lifetime(lifetime),
             }),
         ),
@@ -294,13 +290,11 @@ fn translate(
         Command::ResourceRename {
             operation,
             resource,
-            expected,
             name,
         } => (
             ow::core_operation(&operation),
             Ok(Op::ResourceRename {
                 resource: ow::core_resource_key(&resource),
-                expected: rev(expected),
                 name,
             }),
         ),
@@ -935,17 +929,6 @@ mod tests {
                 CommandResult::Refused(WireRefusal::NameTaken)
             );
 
-            let outdated = Command::SessionRename {
-                operation: op(3),
-                session,
-                expected: Revision::new(9),
-                name: "renamed".to_owned(),
-            };
-            assert!(matches!(
-                handle(&state, CLIENT, outdated, &root),
-                CommandResult::Refused(WireRefusal::Conflict { .. })
-            ));
-
             let listing = page(&state, OrgFilter::Session(session));
             assert_eq!(listing.sessions.len(), 1);
             let record = listing.sessions[0].clone();
@@ -971,7 +954,6 @@ mod tests {
             let rename = Command::SessionRename {
                 operation: op(4),
                 session,
-                expected: record.revision,
                 name: "renamed".to_owned(),
             };
             let renamed = committed(handle(&state, CLIENT, rename, &root));

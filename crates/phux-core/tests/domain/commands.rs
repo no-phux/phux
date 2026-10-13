@@ -178,16 +178,6 @@ fn session_rename_and_lifetime() {
     assert_eq!(
         h.run(Op::SessionRename {
             session: s,
-            expected: r1.next(),
-            name: "c".to_owned(),
-        })
-        .err(),
-        Some(Refusal::Conflict { current: r1 })
-    );
-    assert_eq!(
-        h.run(Op::SessionRename {
-            session: s,
-            expected: r1,
             name: "b".to_owned(),
         })
         .err(),
@@ -196,7 +186,6 @@ fn session_rename_and_lifetime() {
     assert_eq!(
         h.run(Op::SessionRename {
             session: SessionKey::from_bytes([7; 16]),
-            expected: r1,
             name: "z".to_owned(),
         })
         .err(),
@@ -204,7 +193,6 @@ fn session_rename_and_lifetime() {
     );
     h.run(Op::SessionRename {
         session: s,
-        expected: r1,
         name: "c".to_owned(),
     })
     .expect("rename");
@@ -212,21 +200,17 @@ fn session_rename_and_lifetime() {
     assert_eq!(h.session(s).revision, r1.next());
 
     // Ephemeral on an empty session deletes it.
-    let r2 = h.session(s).revision;
     h.run(Op::SessionSetLifetime {
         session: s,
-        expected: r2,
         lifetime: SessionLifetime::Ephemeral,
     })
     .expect("ephemeral");
     assert!(h.reg.org().session(&s).is_none());
 
     let inbox = h.inbox();
-    let ri = h.session(inbox).revision;
     assert!(matches!(
         h.run(Op::SessionSetLifetime {
             session: inbox,
-            expected: ri,
             lifetime: SessionLifetime::Ephemeral,
         }),
         Err(Refusal::InvalidArgument {
@@ -376,30 +360,23 @@ fn a_deferred_create_is_dormant_until_relaunched() {
 }
 
 #[test]
-fn resource_rename_checks_revision_and_name() {
+fn resource_rename_checks_name_and_last_writer_wins() {
     let mut h = Harness::new();
     let r = h.shell_in(h.inbox());
-    let rev = h.resource(r).revision;
-    assert_eq!(
-        h.run(Op::ResourceRename {
-            resource: r,
-            expected: rev.next(),
-            name: Some("x".to_owned()),
-        })
-        .err(),
-        Some(Refusal::Conflict { current: rev })
-    );
+    h.run(Op::ResourceRename {
+        resource: r,
+        name: Some("x".to_owned()),
+    })
+    .expect("first rename");
     assert!(matches!(
         h.run(Op::ResourceRename {
             resource: r,
-            expected: rev,
             name: Some(String::new()),
         }),
         Err(Refusal::InvalidArgument { field: "name", .. })
     ));
     h.run(Op::ResourceRename {
         resource: r,
-        expected: rev,
         name: Some("build".to_owned()),
     })
     .expect("rename");
@@ -924,7 +901,6 @@ fn undo_restores_membership_only_while_revisions_match() {
     let rename = h
         .run(Op::SessionRename {
             session: a,
-            expected: h.session(a).revision,
             name: "renamed".to_owned(),
         })
         .expect("rename");

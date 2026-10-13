@@ -106,7 +106,6 @@ impl ServerState {
         };
         let op = Op::SessionRename {
             session: record.key,
-            expected: record.revision,
             name: new_name.to_owned(),
         };
         match self.commit(op, actor) {
@@ -284,7 +283,6 @@ impl ServerState {
         }
         let op = Op::SessionSetLifetime {
             session: record.key,
-            expected: record.revision,
             lifetime,
         };
         match self.commit(op, actor) {

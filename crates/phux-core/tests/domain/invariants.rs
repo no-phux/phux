@@ -171,7 +171,6 @@ impl World {
                     owner,
                     Op::SessionRename {
                         session: s,
-                        expected: self.srev(s),
                         name: format!("s{name}"),
                     },
                 )
@@ -187,7 +186,6 @@ impl World {
                     owner,
                     Op::SessionSetLifetime {
                         session: s,
-                        expected: self.srev(s),
                         lifetime,
                     },
                 )

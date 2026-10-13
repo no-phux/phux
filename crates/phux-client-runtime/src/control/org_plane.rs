@@ -757,27 +757,24 @@ impl ControlPlane {
             .ok_or(SubmitError::NotAnOperation)
     }
 
-    /// Rename a session (`SESSION_RENAME` at the replica's revision).
+    /// Rename a session (`SESSION_RENAME`; the last writer wins).
     ///
     /// # Errors
     ///
-    /// [`SubmitError::NotAnOperation`] when the replica does not hold the
-    /// session; [`Self::submit_organization`]'s errors.
+    /// [`Self::submit_organization`]'s errors.
     pub fn rename_session(
         &mut self,
         session: SessionKey,
         name: &str,
     ) -> Result<OperationId, SubmitError> {
-        let expected = self.session_record(&session)?.revision;
         self.submit_organization(Command::SessionRename {
             operation: mint_operation(),
             session,
-            expected,
             name: name.to_owned(),
         })
     }
 
-    /// Make a session persistent or ephemeral.
+    /// Make a session persistent or ephemeral (the last writer wins).
     ///
     /// # Errors
     ///
@@ -787,11 +784,9 @@ impl ControlPlane {
         session: SessionKey,
         lifetime: SessionLifetime,
     ) -> Result<OperationId, SubmitError> {
-        let expected = self.session_record(&session)?.revision;
         self.submit_organization(Command::SessionSetLifetime {
             operation: mint_operation(),
             session,
-            expected,
             lifetime,
         })
     }
@@ -800,7 +795,7 @@ impl ControlPlane {
     ///
     /// # Errors
     ///
-    /// [`Self::submit_organization`]'s errors.
+    /// As [`Self::rename_session`].
     pub fn delete_session(&mut self, session: SessionKey) -> Result<OperationId, SubmitError> {
         self.submit_organization(Command::SessionDelete {
             operation: mint_operation(),
@@ -812,7 +807,8 @@ impl ControlPlane {
     ///
     /// # Errors
     ///
-    /// As [`Self::rename_session`].
+    /// [`SubmitError::NotAnOperation`] when the replica does not hold the
+    /// session; [`Self::submit_organization`]'s errors.
     pub fn inbox_resolve(&mut self, session: SessionKey) -> Result<OperationId, SubmitError> {
         let expected = self.session_record(&session)?.revision;
         self.submit_organization(Command::InboxResolve {
@@ -826,7 +822,7 @@ impl ControlPlane {
     ///
     /// # Errors
     ///
-    /// As [`Self::rename_session`], for the resource or either session.
+    /// As [`Self::inbox_resolve`], for the resource or either session.
     pub fn move_resource(
         &mut self,
         resource: ResourceKey,
@@ -857,7 +853,7 @@ impl ControlPlane {
     ///
     /// # Errors
     ///
-    /// As [`Self::rename_session`]; nothing is submitted when any resource
+    /// As [`Self::inbox_resolve`]; nothing is submitted when any resource
     /// or session is unknown, a resource is duplicated, or capacity is full.
     pub fn move_resources(
         &mut self,
@@ -933,7 +929,7 @@ impl ControlPlane {
     ///
     /// # Errors
     ///
-    /// [`Self::submit_organization`]'s errors.
+    /// As [`Self::rename_session`].
     pub fn remove_resource(&mut self, resource: ResourceKey) -> Result<OperationId, SubmitError> {
         self.submit_organization(Command::ResourceRemove {
             operation: mint_operation(),
@@ -945,7 +941,7 @@ impl ControlPlane {
     ///
     /// # Errors
     ///
-    /// As [`Self::rename_session`].
+    /// As [`Self::inbox_resolve`].
     pub fn relaunch_resource(&mut self, resource: ResourceKey) -> Result<OperationId, SubmitError> {
         let expected = self
             .organization

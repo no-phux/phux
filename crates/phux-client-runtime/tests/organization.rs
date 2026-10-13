@@ -309,7 +309,6 @@ fn an_operation_is_resent_with_the_same_id_after_a_reconnect_and_deduped() {
     let command = Command::SessionRename {
         operation,
         session: skey(1),
-        expected: Revision::new(2),
         name: "again".to_owned(),
     };
     let first = plane.submit_organization(command.clone()).unwrap();

@@ -600,10 +600,9 @@ impl OrgFixture {
             Command::SessionRename {
                 operation,
                 session,
-                expected,
                 name,
             } => {
-                self.check_session(*session, *expected)?;
+                self.session_ref(session).ok_or(Refusal::NotFound)?;
                 if self
                     .sessions
                     .iter()
@@ -620,10 +619,8 @@ impl OrgFixture {
             Command::SessionSetLifetime {
                 operation,
                 session,
-                expected,
                 lifetime,
             } => {
-                self.check_session(*session, *expected)?;
                 let revision = self.bump();
                 let record = self.session_mut(session).ok_or(Refusal::NotFound)?;
                 record.lifetime = *lifetime;
@@ -736,10 +733,9 @@ impl OrgFixture {
             Command::ResourceRename {
                 operation,
                 resource,
-                expected,
                 name,
             } => {
-                self.check_resource(*resource, *expected)?;
+                self.resource_ref(resource).ok_or(Refusal::NotFound)?;
                 let revision = self.bump();
                 let record = self.resource_mut(resource).ok_or(Refusal::NotFound)?;
                 record.name.clone_from(name);
