@@ -172,6 +172,36 @@ pub struct SelectList {
     breakpoints: ChromeBreakpoints,
 }
 
+/// Whether `next` is `prev` with only the session display name changed.
+///
+/// The stable identity is the action plus its host-qualified id (`host` +
+/// `id`). Rows that carry no id, or that differ by any other arg, are not
+/// the same selection.
+fn same_renamed_session(prev: &ResolvedAction, next: &ResolvedAction) -> bool {
+    if prev.action != next.action || !is_session_action(&prev.action) {
+        return false;
+    }
+    let Some(id) = prev.args.get("id").and_then(toml::Value::as_integer) else {
+        return false;
+    };
+    if next.args.get("id").and_then(toml::Value::as_integer) != Some(id) {
+        return false;
+    }
+    if prev.args.get("host") != next.args.get("host") {
+        return false;
+    }
+    prev.args.len() == next.args.len()
+        && prev
+            .args
+            .iter()
+            .all(|(key, value)| key == "name" || next.args.get(key) == Some(value))
+}
+
+/// Actions whose rows name a session the picker can follow across a rename.
+fn is_session_action(action: &str) -> bool {
+    action == "switch-session" || action == "switch-host"
+}
+
 impl SelectList {
     /// Current filter, for server-backed lists which refresh as it changes.
     pub fn query(&self) -> &str {
@@ -215,14 +245,22 @@ impl SelectList {
 
     /// Replace the items in place, keeping the query. The selection follows
     /// the selected row's action (a row inserted above the cursor must not
-    /// change what Enter commits), else keeps its position, snapped.
+    /// change what Enter commits). A session row whose display name changed
+    /// follows its host-qualified id instead. Otherwise the selection keeps
+    /// its position, snapped.
     pub fn replace_items(&mut self, items: Vec<SelectItem>) {
         let kept = self.selected_action();
         self.items = items;
         let indices = self.filtered_indices();
-        if let Some(row) = kept.and_then(|action| self.row_of_action(&indices, &action)) {
-            self.selected = row;
-            return;
+        if let Some(action) = &kept {
+            if let Some(row) = self.row_of_action(&indices, action) {
+                self.selected = row;
+                return;
+            }
+            if let Some(row) = self.row_of_renamed_session(&indices, action) {
+                self.selected = row;
+                return;
+            }
         }
         self.snap_to_selectable(&indices);
     }
@@ -240,6 +278,18 @@ impl SelectList {
         indices
             .iter()
             .position(|&idx| !self.items[idx].is_header() && self.items[idx].action == *action)
+    }
+
+    /// The visible row of the same session as `action` after a rename.
+    ///
+    /// Session rows are keyed by action, host, and stable id. The display
+    /// `name` is the only arg allowed to differ, so a refresh that changes
+    /// anything else (a window, a pane) keeps the position fallback.
+    fn row_of_renamed_session(&self, indices: &[usize], action: &ResolvedAction) -> Option<usize> {
+        indices.iter().position(|&idx| {
+            let item = &self.items[idx];
+            !item.is_header() && same_renamed_session(action, &item.action)
+        })
     }
 
     /// Indices of items to display: every row in source order for an empty
@@ -1098,6 +1148,79 @@ mod tests {
         assert_eq!(sl.selected, 1);
         sl.refresh_items("session-picker", &[SelectItem::new("only", action("only"))]);
         assert_eq!(commit(&mut sl).as_deref(), Some("only"));
+    }
+
+    /// phux-kmlrz: a live rename changes the display name inside the action.
+    /// Selection stays on that session's host-qualified id, including when a
+    /// same-numbered session on another host is listed first.
+    #[test]
+    fn a_live_rename_keeps_the_host_qualified_session() {
+        let mut sl = list(vec![
+            SelectItem::new("alpha", session_switch("alpha", 1, None, None)),
+            SelectItem::new("beta", session_switch("beta", 2, None, None)),
+            SelectItem::new("gamma", session_switch("gamma", 3, None, None)),
+        ])
+        .with_live_key("session-picker");
+        key(&mut sl, PhysicalKey::ArrowDown);
+
+        sl.refresh_items(
+            "session-picker",
+            &[
+                SelectItem::new("other", session_switch("other", 2, Some("edge"), None)),
+                SelectItem::new("alpha", session_switch("alpha", 1, None, None)),
+                SelectItem::new("gamma", session_switch("gamma", 3, None, None)),
+                SelectItem::new("zzz", session_switch("zzz", 2, None, None)),
+            ],
+        );
+        assert_eq!(sl.items[sl.selected].label, "zzz");
+        let kept = &sl.items[sl.selected].action.args;
+        assert_eq!(kept.get("id"), Some(&toml::Value::Integer(2)));
+        assert!(!kept.contains_key("host"));
+    }
+
+    /// Changing anything other than the display name is not a rename. The
+    /// bare session id must not pull the highlight onto a different row.
+    #[test]
+    fn a_non_rename_refresh_keeps_the_selected_position() {
+        let mut sl = list(vec![
+            SelectItem::new("alpha", session_switch("alpha", 1, None, Some(0))),
+            SelectItem::new("beta", session_switch("beta", 2, None, Some(1))),
+            SelectItem::new("gamma", session_switch("gamma", 3, None, Some(0))),
+        ])
+        .with_live_key("session-picker");
+        key(&mut sl, PhysicalKey::ArrowDown);
+        sl.refresh_items(
+            "session-picker",
+            &[
+                SelectItem::new("beta", session_switch("beta", 2, None, None)),
+                SelectItem::new("alpha", session_switch("alpha", 1, None, Some(0))),
+                SelectItem::new("shifted", session_switch("shifted", 9, None, Some(1))),
+                SelectItem::new("gamma", session_switch("gamma", 3, None, Some(0))),
+            ],
+        );
+        assert_eq!(sl.selected, 1);
+        assert_eq!(sl.items[sl.selected].label, "alpha");
+    }
+
+    fn session_switch(
+        name: &str,
+        id: i64,
+        host: Option<&str>,
+        window: Option<i64>,
+    ) -> ResolvedAction {
+        let mut args = BTreeMap::new();
+        args.insert("name".to_owned(), toml::Value::String(name.to_owned()));
+        args.insert("id".to_owned(), toml::Value::Integer(id));
+        if let Some(host) = host {
+            args.insert("host".to_owned(), toml::Value::String(host.to_owned()));
+        }
+        if let Some(window) = window {
+            args.insert("window".to_owned(), toml::Value::Integer(window));
+        }
+        ResolvedAction {
+            action: "switch-session".to_owned(),
+            args,
+        }
     }
 
     #[test]
