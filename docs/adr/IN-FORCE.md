@@ -209,6 +209,7 @@ by a newer one, the newer line is the operative reading.
 
 Drafted and under review; none of these governs anything yet.
 
+- [0166](./0166-client-attention-policy-lives-in-the-binding-crate.md) A pane's attention grade and the triage order are pure functions in `phux-client-ffi`'s `projection/attention.rs`, pinned by a shared JSON fixture and read by every mobile client through `uniffi`.
 - [0157](./0157-themes-are-colors-toml-files-every-client-reads.md) A theme is an Omarchy-schema `colors.toml` in `$XDG_DATA_HOME/phux/themes/<name>`, installed by URL or by a plugin, chosen by `[theme] name`; every client maps the same keys onto its chrome and the ANSI-16 palette.
 - [0132](./0132-swarm-members-are-coordinator-clients.md) Swarm members are coordinator clients; TUI/Cockpit/mobile are projections; a Run may bind no Terminal.
 - [0092](./0092-durable-work-coordinator-authority.md) Durable objectives, runs, and evidence belong to a coordinator, not to any client.

@@ -193,6 +193,7 @@ column is the base status word plus at most one relationship clause, about
 | [0159](./0159-agent-streams-resume-from-committed-records.md) | Agent streams resume from committed records, with explicit replacement on eviction | Accepted (builds on [0103](./0103-agent-session-resource-and-producer-fed-streams.md), [0061](./0061-capabilities-add-versions-break.md)) |
 | [0164](./0164-pair-links-name-the-magicdns-host.md) | Pair links name the host's MagicDNS name | Accepted (builds on [0141](./0141-pair-mints-only-against-a-live-listener.md), [0091](./0091-certificate-names-the-advertised-address.md)) |
 | [0165](./0165-gpui-desktop-replaces-the-solid-host.md) | GPUI desktop replaces the Solid host | Accepted (supersedes [0139](./0139-solid-desktop-over-native-runtime-views.md)) |
+| [0166](./0166-client-attention-policy-lives-in-the-binding-crate.md) | Client attention policy lives in the binding crate | Proposed |
 
 ## When to write an ADR
 
