@@ -93,6 +93,21 @@ impl ServerInterceptedKey {
 }
 
 impl MetadataStore {
+    /// The Group- and Global-scope entries a graceful upgrade carries.
+    /// Terminal-scope values are left for their writers to republish.
+    pub(crate) fn upgrade_entries(&self) -> impl Iterator<Item = (Option<GroupId>, &str, &[u8])> {
+        let group = self.group.iter().flat_map(|(gid, values)| {
+            values
+                .iter()
+                .map(|(key, value)| (Some(*gid), key.as_str(), value.as_slice()))
+        });
+        let global = self
+            .global
+            .iter()
+            .map(|(key, value)| (None, key.as_str(), value.as_slice()));
+        group.chain(global)
+    }
+
     /// Get the value at `(scope, key)`, if any.
     #[must_use]
     pub fn get(&self, scope: &Scope, key: &str) -> Option<Vec<u8>> {

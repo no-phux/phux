@@ -23,8 +23,8 @@ use crate::resource::ResourceHandle;
 use crate::resource::agent_session::{AgentSessionActor, AgentSessionBootstrap, BootstrapRequest};
 use crate::terminal_actor::{PaneUpgradeHandle, TerminalActor, UpgradeHandleRequest};
 use crate::upgrade::blob::{
-    AgentSessionBlob, BLOB_VERSION, Counters, LayoutBlob, PaneBlob, RetainedExitBlob, SessionBlob,
-    SplitDirBlob, StateBlob, WindowBlob,
+    AgentSessionBlob, BLOB_VERSION, Counters, LayoutBlob, MetadataBlob, PaneBlob, RetainedExitBlob,
+    SessionBlob, SplitDirBlob, StateBlob, WindowBlob,
 };
 
 /// What the reversible half of an upgrade collected from live engines: each
@@ -96,7 +96,23 @@ impl ServerState {
                 handoffs.agent_sessions.insert(session, cut);
             }
         }
-        self.assemble_upgrade_blob(listener_fd, &handoffs)
+        self.with_upgrade_metadata(self.assemble_upgrade_blob(listener_fd, &handoffs))
+    }
+
+    /// Attach the carried L3 metadata to an assembled blob. Kept out of
+    /// [`Self::assemble_upgrade_blob`] so a layout write during the handoff
+    /// does not read as a tree change and abort the upgrade.
+    pub(crate) fn with_upgrade_metadata(&self, mut blob: StateBlob) -> StateBlob {
+        blob.metadata = self
+            .metadata
+            .upgrade_entries()
+            .map(|(group, key, value)| MetadataBlob {
+                group: group.map(phux_protocol::ids::GroupId::get),
+                key: key.to_owned(),
+                value: value.to_vec(),
+            })
+            .collect();
+        blob
     }
 
     /// Record the upgrade context (listener fd, path, runtime flags).
@@ -295,6 +311,7 @@ impl ServerState {
             windows,
             panes,
             agent_sessions,
+            metadata: Vec::new(),
         }
     }
 
@@ -550,6 +567,7 @@ impl ServerState {
         fresh.rebuild_agent_sessions(blob, &mut panes);
         fresh.restore_counters(blob);
         self.commit_rebuilt_tree(fresh);
+        self.restore_upgrade_metadata(blob);
         Ok(RebuiltTree {
             exit_watchers: panes.exit_watchers,
             wired_panes: panes.wired,
@@ -613,6 +631,19 @@ impl ServerState {
                 .bind_terminal(core, WireResourceId::local(carried.wire_id));
             self.spawn_resource_actor(core, bundle.handle, token, bundle.actor.run());
             panes.exit_watchers.push((core, bundle.exit_notify));
+        }
+    }
+
+    /// Reinstate the carried Group- and Global-scope metadata. No client is
+    /// connected yet, so there is no one to notify.
+    fn restore_upgrade_metadata(&mut self, blob: &StateBlob) {
+        for entry in &blob.metadata {
+            let scope = entry
+                .group
+                .map_or(phux_protocol::wire::frame::Scope::Global, |gid| {
+                    phux_protocol::wire::frame::Scope::Group(phux_protocol::ids::GroupId::new(gid))
+                });
+            let _ = self.metadata.set(&scope, &entry.key, entry.value.clone());
         }
     }
 
@@ -1177,38 +1208,37 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn the_instance_token_survives_an_upgrade_and_only_an_upgrade() {
         let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let state = ServerState::new();
-                let token = state.idspace.instance();
-                let blob = state.build_upgrade_blob(7).await;
-                assert_eq!(blob.counters.server_instance, Some(*token.as_bytes()));
+        Box::pin(local.run_until(async {
+            let state = ServerState::new();
+            let token = state.idspace.instance();
+            let blob = state.build_upgrade_blob(7).await;
+            assert_eq!(blob.counters.server_instance, Some(*token.as_bytes()));
 
-                let mut upgraded = ServerState::new();
-                assert_ne!(
-                    upgraded.idspace.instance(),
-                    token,
-                    "a cold start mints a new token"
-                );
-                upgraded
-                    .rebuild_from_blob(&blob, |_, _| ())
-                    .expect("rebuild");
-                assert_eq!(upgraded.idspace.instance(), token, "an upgrade keeps it");
+            let mut upgraded = ServerState::new();
+            assert_ne!(
+                upgraded.idspace.instance(),
+                token,
+                "a cold start mints a new token"
+            );
+            upgraded
+                .rebuild_from_blob(&blob, |_, _| ())
+                .expect("rebuild");
+            assert_eq!(upgraded.idspace.instance(), token, "an upgrade keeps it");
 
-                let mut legacy = state.build_upgrade_blob(7).await;
-                legacy.counters.server_instance = None;
-                let mut from_legacy = ServerState::new();
-                let fresh = from_legacy.idspace.instance();
-                from_legacy
-                    .rebuild_from_blob(&legacy, |_, _| ())
-                    .expect("rebuild");
-                assert_eq!(
-                    from_legacy.idspace.instance(),
-                    fresh,
-                    "nothing to restore: the fresh token stands"
-                );
-            })
-            .await;
+            let mut legacy = state.build_upgrade_blob(7).await;
+            legacy.counters.server_instance = None;
+            let mut from_legacy = ServerState::new();
+            let fresh = from_legacy.idspace.instance();
+            from_legacy
+                .rebuild_from_blob(&legacy, |_, _| ())
+                .expect("rebuild");
+            assert_eq!(
+                from_legacy.idspace.instance(),
+                fresh,
+                "nothing to restore: the fresh token stands"
+            );
+        }))
+        .await;
     }
 
     /// The program's title, as an `OSC 2` a pane emitted before the upgrade.
@@ -1408,6 +1438,7 @@ mod tests {
             windows,
             panes,
             agent_sessions: Vec::new(),
+            metadata: Vec::new(),
         }
     }
 
@@ -1641,5 +1672,48 @@ mod tests {
                 );
             })
             .await;
+    }
+
+    /// #1207: a hot-swap upgrade used to drop every Group-scope key, so
+    /// each session's `phux.tui.layout/v1/<id>` vanished and attached TUIs
+    /// fell back to one pane. Group and Global entries must cross; Terminal
+    /// entries are left for their writers.
+    #[tokio::test(flavor = "current_thread")]
+    async fn upgrade_carries_group_and_global_metadata() {
+        use phux_protocol::ids::GroupId;
+        use phux_protocol::wire::frame::Scope;
+
+        let local = tokio::task::LocalSet::new();
+        Box::pin(local.run_until(async {
+            let mut state = ServerState::new();
+            let sid = state.seed_empty_session("work");
+            let wire = state.idspace.intern_session(sid);
+            let layout = format!("phux.tui.layout/v1/{}", wire.get());
+            let group = Scope::Group(GroupId::new(1));
+            let _ = state.metadata.set(&group, &layout, b"tree".to_vec());
+            let _ = state
+                .metadata
+                .set(&Scope::Global, "phux.session.project/v1", b"p".to_vec());
+            let terminal = Scope::Resource(WireResourceId::local(9));
+            let _ = state
+                .metadata
+                .set(&terminal, "phux.agent/v1", b"a".to_vec());
+
+            let blob = state.build_upgrade_blob(7).await;
+            let bytes = blob.to_bytes().expect("serialize");
+            let blob = StateBlob::from_bytes(&bytes).expect("deserialize");
+            let mut fresh = ServerState::new();
+            fresh.rebuild_from_blob(&blob, |_, _| ()).expect("rebuild");
+
+            assert_eq!(fresh.metadata.get(&group, &layout), Some(b"tree".to_vec()));
+            assert_eq!(
+                fresh
+                    .metadata
+                    .get(&Scope::Global, "phux.session.project/v1"),
+                Some(b"p".to_vec())
+            );
+            assert_eq!(fresh.metadata.get(&terminal, "phux.agent/v1"), None);
+        }))
+        .await;
     }
 }

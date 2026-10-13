@@ -12,6 +12,8 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use phux_config::overlay::MagicDns;
+
 use usage::Subcommands;
 
 const DEFAULT_ROTATION_OVERLAP_SECONDS: i64 = 300;
@@ -430,10 +432,13 @@ fn percent_decode(value: &str) -> Result<String, String> {
 
 /// Turn a live listener bind into a device-dialable endpoint. An unspecified
 /// bind (`0.0.0.0`/`::`) uses the first overlay address; loopback is not
-/// advertised to another device.
+/// advertised to another device. An address the host's `MagicDNS` name stands
+/// for is named by that name instead (ADR-0164), so the link survives the
+/// tailnet reassigning the address.
 fn resolve_bound_endpoint(
     scheme: &str,
     overlay: &[IpAddr],
+    magic_dns: Option<&MagicDns>,
     bound: Option<SocketAddr>,
 ) -> Option<String> {
     let bound = bound?;
@@ -447,6 +452,9 @@ fn resolve_bound_endpoint(
     } else {
         bound.ip()
     };
+    if let Some(magic_dns) = magic_dns.filter(|magic_dns| magic_dns.names(ip)) {
+        return Some(format!("{scheme}://{}:{}", magic_dns.name, bound.port()));
+    }
     Some(format!("{scheme}://{}", SocketAddr::new(ip, bound.port())))
 }
 
@@ -455,6 +463,7 @@ fn resolve_bound_endpoint(
 fn resolve_server_url(
     host: Option<&str>,
     overlay: &[IpAddr],
+    magic_dns: Option<&MagicDns>,
     bound_wss: Option<SocketAddr>,
 ) -> Option<String> {
     if let Some(host) = host {
@@ -463,12 +472,16 @@ fn resolve_server_url(
         }
         return Some(format!("wss://{host}"));
     }
-    resolve_bound_endpoint("wss", overlay, bound_wss)
+    resolve_bound_endpoint("wss", overlay, magic_dns, bound_wss)
 }
 
 /// Resolve the preferred raw-QUIC endpoint from the running listener only.
-fn resolve_quic_endpoint(overlay: &[IpAddr], bound_quic: Option<SocketAddr>) -> Option<String> {
-    resolve_bound_endpoint("quic", overlay, bound_quic)
+fn resolve_quic_endpoint(
+    overlay: &[IpAddr],
+    magic_dns: Option<&MagicDns>,
+    bound_quic: Option<SocketAddr>,
+) -> Option<String> {
+    resolve_bound_endpoint("quic", overlay, magic_dns, bound_quic)
 }
 
 /// The words of the refusal when the server has no remote listener bound.
@@ -626,9 +639,14 @@ fn link_refusal(
 }
 
 /// Every server name this pairing run advertises, in SAN / `ServerName`
-/// form: the link host (via [`WsTarget::parse`], the dialer's own parser) and
-/// each overlay address. An unparseable URL contributes nothing.
-fn advertised_names(server_url: Option<&str>, overlay: &[IpAddr]) -> Vec<String> {
+/// form: the link host (via [`WsTarget::parse`], the dialer's own parser),
+/// the `quic` endpoint's host, and each overlay address. An unparseable
+/// endpoint contributes nothing.
+fn advertised_names(
+    server_url: Option<&str>,
+    quic_endpoint: Option<&str>,
+    overlay: &[IpAddr],
+) -> Vec<String> {
     use phux_client::attach::ws::WsTarget;
 
     let mut names: Vec<String> = server_url
@@ -636,6 +654,16 @@ fn advertised_names(server_url: Option<&str>, overlay: &[IpAddr]) -> Vec<String>
         .map(|target| target.server_name)
         .into_iter()
         .collect();
+    let quic_host = quic_endpoint
+        .and_then(|endpoint| endpoint.strip_prefix("quic://"))
+        .and_then(|authority| authority.rsplit_once(':'))
+        .map(|(host, _)| host.trim_matches(['[', ']']).to_owned())
+        .filter(|host| !host.is_empty());
+    if let Some(host) = quic_host
+        && !names.contains(&host)
+    {
+        names.push(host);
+    }
     for addr in overlay {
         let name = phux_server::transport::tls::san_name(*addr);
         if !names.contains(&name) {
@@ -695,7 +723,8 @@ fn render_qr_scaled(payload: &str, scale: u32) -> Result<String, String> {
 /// the certificate is provisioned if absent. Nothing is minted unless the
 /// server on `socket` has a remote listener bound (ADR-0141). With a
 /// reachable wss listener the credentials are also printed as a connect
-/// link, and `--qr` renders it. With `relay` the credential is minted for a
+/// link, followed on a terminal by its QR unless `--no-qr`; `--qr` is the
+/// camera form, the QR alone. With `relay` the credential is minted for a
 /// relay route instead ([`mint_relay_link`]).
 #[allow(
     clippy::needless_pass_by_value,
@@ -703,6 +732,7 @@ fn render_qr_scaled(payload: &str, scale: u32) -> Result<String, String> {
 )]
 #[allow(
     clippy::too_many_arguments,
+    clippy::fn_params_excessive_bools,
     reason = "the existing mint options remain flat for CLI compatibility while the optional action selects lifecycle operations"
 )]
 pub(crate) fn run_pair(
@@ -713,6 +743,7 @@ pub(crate) fn run_pair(
     qr: bool,
     secret_file: Option<PathBuf>,
     expires: Option<String>,
+    no_qr: bool,
     host: Option<String>,
     name: Option<String>,
     json: bool,
@@ -764,6 +795,10 @@ pub(crate) fn run_pair(
     let output = LinkOutput {
         name: name.as_deref(),
         qr,
+        default_qr: shows_default_qr(
+            qr || no_qr || json || secret_file.is_some(),
+            std::io::IsTerminal::is_terminal(&std::io::stdout()),
+        ),
         json,
         secret_file: secret_file.as_deref(),
         expires_at,
@@ -826,7 +861,8 @@ fn present_listener_credential(
         Some(None) => return ExitCode::FAILURE,
         minted_ticket => minted_ticket.flatten(),
     };
-    warn_on_uncovered_names(&certificate.cert, &certificate.key, &addresses.advertised);
+    let checked = addresses.checked_names();
+    warn_on_uncovered_names(&certificate.cert, &certificate.key, &checked);
 
     if !output.json {
         print_overlay_addresses(&addresses.overlay);
@@ -874,6 +910,7 @@ fn present_listener_credential(
         expires_at: output.expires_at,
         expires_label: output.expires_label,
         qr: output.qr,
+        default_qr: output.default_qr,
         secret_file: output.secret_file,
         hide_bearer,
     }) != ExitCode::SUCCESS
@@ -882,6 +919,14 @@ fn present_listener_credential(
     }
     outln!("Token written to {}", tokens.display());
     ExitCode::SUCCESS
+}
+
+/// Whether a mint prints the QR beneath its text link by default: on a
+/// terminal, unless the operator chose another form (`--qr` is the camera
+/// form, `--no-qr` opts out, `--json` and `--secret-file` keep the bearer
+/// off the screen). Piped output stays plain text a script can read.
+const fn shows_default_qr(other_form: bool, stdout_is_terminal: bool) -> bool {
+    !other_form && stdout_is_terminal
 }
 
 /// What a mint's link reaches the server through.
@@ -939,6 +984,8 @@ struct LinkOutput<'a> {
     name: Option<&'a str>,
     /// Render the link as a camera QR and hide the bearer text.
     qr: bool,
+    /// Render the QR beneath the printed link ([`shows_default_qr`]).
+    default_qr: bool,
     /// One JSON document on stdout instead of prose.
     json: bool,
     /// Off-camera file that receives the bearer. Never printed.
@@ -1055,6 +1102,7 @@ fn mint_relay_link(
         expires_at: output.expires_at,
         expires_label: output.expires_label,
         qr: output.qr,
+        default_qr: output.default_qr,
         secret_file: output.secret_file,
         hide_bearer,
     }) != ExitCode::SUCCESS
@@ -1181,21 +1229,53 @@ struct PairAddresses {
     quic_endpoint: Option<String>,
     /// The names a certificate minted for this run must claim.
     advertised: Vec<String>,
+    /// The `MagicDNS` name an endpoint was named by, when one was (ADR-0164).
+    magic_dns_name: Option<String>,
+}
+
+impl PairAddresses {
+    /// The advertised names an existing certificate is warned about. The
+    /// `MagicDNS` name is claimed by a certificate this run generates but is
+    /// not warned about: it stands for an overlay address that is checked,
+    /// the server's own listener provisions most certificates without it,
+    /// and phux's pinning clients never check it (ADR-0164).
+    fn checked_names(&self) -> Vec<String> {
+        self.advertised
+            .iter()
+            .filter(|name| self.magic_dns_name.as_ref() != Some(*name))
+            .cloned()
+            .collect()
+    }
 }
 
 /// Resolve every address this run advertises. Runs before the certificate
 /// is provisioned, because SANs are chosen at generation time (ADR-0091).
+/// `--host` is the operator's own claim about how devices reach the server,
+/// so it keeps the link on addresses rather than consulting `MagicDNS`.
 fn resolve_pair_addresses(host: Option<&str>, live: LiveListeners) -> PairAddresses {
     let overlay = phux_config::overlay::detect();
-    let server_url = resolve_server_url(host, &overlay, live.wss_addr());
-    let quic_endpoint = resolve_quic_endpoint(&overlay, live.quic_addr());
-    let advertised = advertised_names(server_url.as_deref(), &overlay);
+    let magic_dns = host
+        .is_none()
+        .then(phux_config::overlay::detect_magic_dns)
+        .flatten();
+    let server_url = resolve_server_url(host, &overlay, magic_dns.as_ref(), live.wss_addr());
+    let quic_endpoint = resolve_quic_endpoint(&overlay, magic_dns.as_ref(), live.quic_addr());
+    let advertised = advertised_names(server_url.as_deref(), quic_endpoint.as_deref(), &overlay);
+    let magic_dns_name = magic_dns.map(|magic_dns| magic_dns.name).filter(|name| {
+        let named = |endpoint: &Option<String>| {
+            endpoint
+                .as_deref()
+                .is_some_and(|endpoint| endpoint.contains(&format!("://{name}:")))
+        };
+        named(&server_url) || named(&quic_endpoint)
+    });
     PairAddresses {
         overlay,
         live,
         server_url,
         quic_endpoint,
         advertised,
+        magic_dns_name,
     }
 }
 
@@ -1420,6 +1500,8 @@ struct HumanSecret<'a> {
     expires_at: Option<chrono::DateTime<chrono::Utc>>,
     expires_label: Option<&'a str>,
     qr: bool,
+    /// Render the QR beneath the text link (never with `hide_bearer`).
+    default_qr: bool,
     secret_file: Option<&'a Path>,
     hide_bearer: bool,
 }
@@ -1487,6 +1569,10 @@ fn present_human_secret(secret: &HumanSecret<'_>) -> ExitCode {
     }
     if let Some(link) = secret.link {
         print_connect_link(link);
+        // A QR that cannot render has already warned; the text link stands.
+        if secret.default_qr {
+            print_camera_qr(link);
+        }
     }
     ExitCode::SUCCESS
 }
@@ -1934,10 +2020,10 @@ fn pair_document(
 #[cfg(test)]
 mod tests {
     use super::{
-        LiveListeners, ServerPins, advertised_names, build_connect_link, build_connect_link_pinned,
-        build_relay_connect_link, legacy_connect_link, link_refusal, live_listeners, pair_document,
-        parse_connect_link, percent_encode, resolve_quic_endpoint, resolve_server_url,
-        select_relay_connector,
+        LiveListeners, MagicDns, PairAddresses, ServerPins, advertised_names, build_connect_link,
+        build_connect_link_pinned, build_relay_connect_link, legacy_connect_link, link_refusal,
+        live_listeners, pair_document, parse_connect_link, percent_encode, resolve_quic_endpoint,
+        resolve_server_url, select_relay_connector, shows_default_qr,
     };
     use phux_protocol::wire::{
         ListenerDisabledReason, RemoteListenerSlot, RemoteListenerTransport, RemoteListenersReport,
@@ -2049,22 +2135,22 @@ mod tests {
     fn host_flag_wins_and_gets_wss_scheme() {
         // Bare host:port gets the wss:// the remote path always uses.
         assert_eq!(
-            resolve_server_url(Some("100.64.0.2:8787"), &[], None),
+            resolve_server_url(Some("100.64.0.2:8787"), &[], None, None),
             Some("wss://100.64.0.2:8787".to_owned())
         );
         // A full URL passes through untouched (loopback dev path stays ws://).
         assert_eq!(
-            resolve_server_url(Some("ws://127.0.0.1:8787"), &[], None),
+            resolve_server_url(Some("ws://127.0.0.1:8787"), &[], None, None),
             Some("ws://127.0.0.1:8787".to_owned())
         );
         assert_eq!(
-            resolve_server_url(Some("wss://mini.tail-net.ts.net:8787"), &[], None),
+            resolve_server_url(Some("wss://mini.tail-net.ts.net:8787"), &[], None, None),
             Some("wss://mini.tail-net.ts.net:8787".to_owned())
         );
         // The flag also beats the bound listener and a detected overlay address.
         let overlay = [IpAddr::V4(Ipv4Addr::new(100, 64, 0, 9))];
         assert_eq!(
-            resolve_server_url(Some("mini:1"), &overlay, addr("100.64.0.9:2")),
+            resolve_server_url(Some("mini:1"), &overlay, None, addr("100.64.0.9:2")),
             Some("wss://mini:1".to_owned())
         );
     }
@@ -2076,34 +2162,37 @@ mod tests {
         let overlay = [IpAddr::V4(Ipv4Addr::new(100, 64, 0, 2))];
         // The auto-overlay listener binds the overlay address itself.
         assert_eq!(
-            resolve_server_url(None, &overlay, addr("100.64.0.2:8787")),
+            resolve_server_url(None, &overlay, None, addr("100.64.0.2:8787")),
             Some("wss://100.64.0.2:8787".to_owned())
         );
         // A concrete routable bind is dialed as bound, on its real port.
         assert_eq!(
-            resolve_server_url(None, &overlay, addr("192.168.1.5:9000")),
+            resolve_server_url(None, &overlay, None, addr("192.168.1.5:9000")),
             Some("wss://192.168.1.5:9000".to_owned())
         );
         // An unspecified bind is dialed on the overlay address, bound port...
         assert_eq!(
-            resolve_server_url(None, &overlay, addr("0.0.0.0:9001")),
+            resolve_server_url(None, &overlay, None, addr("0.0.0.0:9001")),
             Some("wss://100.64.0.2:9001".to_owned())
         );
         // ...and yields nothing with no overlay address to dial it on.
-        assert_eq!(resolve_server_url(None, &[], addr("0.0.0.0:9001")), None);
+        assert_eq!(
+            resolve_server_url(None, &[], None, addr("0.0.0.0:9001")),
+            None
+        );
         // A loopback bind is unreachable from a device.
         assert_eq!(
-            resolve_server_url(None, &overlay, addr("127.0.0.1:8787")),
+            resolve_server_url(None, &overlay, None, addr("127.0.0.1:8787")),
             None
         );
         // No wss listener bound: no link, whatever the overlay says.
-        assert_eq!(resolve_server_url(None, &overlay, None), None);
+        assert_eq!(resolve_server_url(None, &overlay, None, None), None);
         // A v6 address is bracketed so the URL stays parseable.
         let v6 = [IpAddr::V6(Ipv6Addr::new(
             0xfd7a, 0x115c, 0xa1e0, 0, 0, 0, 0, 1,
         ))];
         assert_eq!(
-            resolve_server_url(None, &v6, addr("[::]:8787")),
+            resolve_server_url(None, &v6, None, addr("[::]:8787")),
             Some("wss://[fd7a:115c:a1e0::1]:8787".to_owned())
         );
     }
@@ -2115,40 +2204,187 @@ mod tests {
     fn derived_quic_endpoint_is_live_and_device_dialable() {
         let v4 = [IpAddr::V4(Ipv4Addr::new(100, 64, 0, 2))];
         assert_eq!(
-            resolve_quic_endpoint(&v4, addr("100.64.0.2:8788")),
+            resolve_quic_endpoint(&v4, None, addr("100.64.0.2:8788")),
             Some("quic://100.64.0.2:8788".to_owned())
         );
         assert_eq!(
-            resolve_quic_endpoint(&v4, addr("192.168.1.5:9000")),
+            resolve_quic_endpoint(&v4, None, addr("192.168.1.5:9000")),
             Some("quic://192.168.1.5:9000".to_owned())
         );
         assert_eq!(
-            resolve_quic_endpoint(&v4, addr("0.0.0.0:9001")),
+            resolve_quic_endpoint(&v4, None, addr("0.0.0.0:9001")),
             Some("quic://100.64.0.2:9001".to_owned())
         );
-        assert_eq!(resolve_quic_endpoint(&[], addr("0.0.0.0:9001")), None);
+        assert_eq!(resolve_quic_endpoint(&[], None, addr("0.0.0.0:9001")), None);
         let v6_only = [IpAddr::V6(Ipv6Addr::LOCALHOST)];
         assert_eq!(
-            resolve_quic_endpoint(&v6_only, addr("0.0.0.0:9001")),
+            resolve_quic_endpoint(&v6_only, None, addr("0.0.0.0:9001")),
             None,
             "an IPv4 wildcard does not make an IPv6 address dialable"
         );
-        assert_eq!(resolve_quic_endpoint(&v4, addr("127.0.0.1:8788")), None);
-        assert_eq!(resolve_quic_endpoint(&v4, None), None);
+        assert_eq!(
+            resolve_quic_endpoint(&v4, None, addr("127.0.0.1:8788")),
+            None
+        );
+        assert_eq!(resolve_quic_endpoint(&v4, None, None), None);
 
         let v6 = [IpAddr::V6(Ipv6Addr::new(
             0xfd7a, 0x115c, 0xa1e0, 0, 0, 0, 0, 1,
         ))];
         assert_eq!(
-            resolve_quic_endpoint(&v6, addr("[::]:8788")),
+            resolve_quic_endpoint(&v6, None, addr("[::]:8788")),
             Some("quic://[fd7a:115c:a1e0::1]:8788".to_owned())
         );
         let mixed = [v4[0], v6[0]];
         assert_eq!(
-            resolve_quic_endpoint(&mixed, addr("[::]:8788")),
+            resolve_quic_endpoint(&mixed, None, addr("[::]:8788")),
             Some("quic://[fd7a:115c:a1e0::1]:8788".to_owned()),
             "a wildcard bind uses an overlay address of the same family"
         );
+    }
+
+    fn magic_dns() -> MagicDns {
+        MagicDns {
+            name: "studio.tail9a8b.ts.net".to_owned(),
+            addresses: vec![
+                IpAddr::V4(Ipv4Addr::new(100, 64, 0, 2)),
+                IpAddr::V6(Ipv6Addr::new(0xfd7a, 0x115c, 0xa1e0, 0, 0, 0, 0, 1)),
+            ],
+        }
+    }
+
+    /// ADR-0164: an endpoint on an address the host's `MagicDNS` name stands
+    /// for is named by that name, on both the wss and quic legs, so the link
+    /// survives the tailnet reassigning the address. Any other address, and
+    /// `--host`, keep the address behaviour.
+    #[test]
+    fn magic_dns_names_the_tailnet_endpoints() {
+        let magic = magic_dns();
+        let magic = Some(&magic);
+        let v4 = [IpAddr::V4(Ipv4Addr::new(100, 64, 0, 2))];
+        let v6 = [IpAddr::V6(Ipv6Addr::new(
+            0xfd7a, 0x115c, 0xa1e0, 0, 0, 0, 0, 1,
+        ))];
+
+        // The auto-overlay bind, and a wildcard bind dialed on the overlay.
+        assert_eq!(
+            resolve_server_url(None, &v4, magic, addr("100.64.0.2:8787")),
+            Some("wss://studio.tail9a8b.ts.net:8787".to_owned())
+        );
+        assert_eq!(
+            resolve_server_url(None, &v4, magic, addr("0.0.0.0:9001")),
+            Some("wss://studio.tail9a8b.ts.net:9001".to_owned())
+        );
+        assert_eq!(
+            resolve_quic_endpoint(&v4, magic, addr("100.64.0.2:8788")),
+            Some("quic://studio.tail9a8b.ts.net:8788".to_owned())
+        );
+        assert_eq!(
+            resolve_quic_endpoint(&v6, magic, addr("[::]:8788")),
+            Some("quic://studio.tail9a8b.ts.net:8788".to_owned()),
+            "the name stands for the v6 tailnet address too, unbracketed"
+        );
+
+        // A bind the name does not resolve to keeps its address.
+        assert_eq!(
+            resolve_server_url(None, &v4, magic, addr("192.168.1.5:9000")),
+            Some("wss://192.168.1.5:9000".to_owned())
+        );
+        assert_eq!(
+            resolve_quic_endpoint(&[], magic, addr("100.64.0.9:8788")),
+            Some("quic://100.64.0.9:8788".to_owned())
+        );
+        // Loopback and unresolvable wildcards are still not advertised.
+        assert_eq!(
+            resolve_quic_endpoint(&v4, magic, addr("127.0.0.1:8788")),
+            None
+        );
+        assert_eq!(
+            resolve_quic_endpoint(&[], magic, addr("0.0.0.0:8788")),
+            None
+        );
+        // `--host` is the operator's claim and wins over the name.
+        assert_eq!(
+            resolve_server_url(Some("100.64.0.2:8787"), &v4, magic, addr("100.64.0.2:8787")),
+            Some("wss://100.64.0.2:8787".to_owned())
+        );
+    }
+
+    /// A `MagicDNS` link is the same shape, and both legs parse: the CLI's own
+    /// parser accepts `quic://NAME:PORT`, and the certificate SANs carry the
+    /// name whichever leg names it.
+    #[test]
+    fn a_magic_dns_link_round_trips_and_names_its_sans() {
+        let magic = magic_dns();
+        let v4 = [IpAddr::V4(Ipv4Addr::new(100, 64, 0, 2))];
+        let url = resolve_server_url(None, &v4, Some(&magic), addr("100.64.0.2:8787"));
+        let quic = resolve_quic_endpoint(&v4, Some(&magic), addr("100.64.0.2:8788"));
+        let link = build_connect_link(
+            url.as_deref().expect("url"),
+            quic.as_deref(),
+            Some("studio"),
+            Some("AB:CD"),
+            "deadbeef",
+        );
+        assert_eq!(
+            link,
+            "https://phux.sh/connect?url=wss://studio.tail9a8b.ts.net:8787\
+             &quic=quic://studio.tail9a8b.ts.net:8788&name=studio&fp=AB:CD&token=deadbeef"
+        );
+        let parsed = parse_connect_link(&link).expect("parse");
+        assert_eq!(
+            parsed.url.as_deref(),
+            Some("wss://studio.tail9a8b.ts.net:8787")
+        );
+        assert_eq!(
+            parsed.quic.as_deref(),
+            Some("quic://studio.tail9a8b.ts.net:8788")
+        );
+
+        assert_eq!(
+            advertised_names(url.as_deref(), quic.as_deref(), &v4),
+            vec!["studio.tail9a8b.ts.net", "100.64.0.2"]
+        );
+        // A QUIC-only server still names its MagicDNS host in the SANs.
+        assert_eq!(
+            advertised_names(None, quic.as_deref(), &v4),
+            vec!["studio.tail9a8b.ts.net", "100.64.0.2"]
+        );
+        assert_eq!(
+            advertised_names(None, Some("quic://[fd7a:115c:a1e0::1]:8788"), &[]),
+            vec!["fd7a:115c:a1e0::1"]
+        );
+    }
+
+    /// The `MagicDNS` name is claimed by a fresh certificate but never warned
+    /// about on an existing one; every other advertised name still is.
+    #[test]
+    fn an_uncovered_magic_dns_name_is_not_warned_about() {
+        let addresses = PairAddresses {
+            overlay: vec![IpAddr::V4(Ipv4Addr::new(100, 64, 0, 2))],
+            live: live(Some("100.64.0.2:8787"), None),
+            server_url: Some("wss://studio.tail9a8b.ts.net:8787".to_owned()),
+            quic_endpoint: None,
+            advertised: vec!["studio.tail9a8b.ts.net".to_owned(), "100.64.0.2".to_owned()],
+            magic_dns_name: Some("studio.tail9a8b.ts.net".to_owned()),
+        };
+        assert_eq!(addresses.checked_names(), vec!["100.64.0.2"]);
+        let without = PairAddresses {
+            magic_dns_name: None,
+            ..addresses
+        };
+        assert_eq!(without.checked_names(), without.advertised);
+    }
+
+    /// The QR beneath the text link is the default only on a terminal, and
+    /// only when no other form was chosen: `--qr` (the camera form),
+    /// `--no-qr`, `--json`, or `--secret-file`.
+    #[test]
+    fn the_default_qr_shows_only_on_a_terminal_with_no_other_form() {
+        assert!(shows_default_qr(false, true));
+        assert!(!shows_default_qr(false, false), "piped output stays text");
+        assert!(!shows_default_qr(true, true), "another form was chosen");
+        assert!(!shows_default_qr(true, false));
     }
 
     /// No listener report, or one with nothing bound, is a refusal naming
@@ -2243,7 +2479,7 @@ mod tests {
         // The link host leads, and the overlay address it was derived from
         // does not repeat.
         assert_eq!(
-            advertised_names(Some("wss://100.64.0.2:8787"), &overlay),
+            advertised_names(Some("wss://100.64.0.2:8787"), None, &overlay),
             vec!["100.64.0.2"]
         );
 
@@ -2251,26 +2487,26 @@ mod tests {
         // `phux pair` prints them all as dialable, so all of them belong in
         // the certificate.
         assert_eq!(
-            advertised_names(Some("wss://mini.tail-net.ts.net:8787"), &overlay),
+            advertised_names(Some("wss://mini.tail-net.ts.net:8787"), None, &overlay),
             vec!["mini.tail-net.ts.net", "100.64.0.2"]
         );
 
         // v6 arrives bracketed in a URL and must be unbracketed in a SAN.
         let v6 = [IpAddr::V6(Ipv6Addr::LOCALHOST)];
         assert_eq!(
-            advertised_names(Some("wss://[fd7a:115c:a1e0::1]:8787"), &v6),
+            advertised_names(Some("wss://[fd7a:115c:a1e0::1]:8787"), None, &v6),
             vec!["fd7a:115c:a1e0::1", "::1"]
         );
 
         // No link at all: still name whatever was detected, since the operator
         // may dial it by hand.
-        assert_eq!(advertised_names(None, &overlay), vec!["100.64.0.2"]);
-        assert!(advertised_names(None, &[]).is_empty());
+        assert_eq!(advertised_names(None, None, &overlay), vec!["100.64.0.2"]);
+        assert!(advertised_names(None, None, &[]).is_empty());
 
         // A URL that will not parse contributes nothing rather than poisoning
         // the list — pairing still has a token to mint.
         assert_eq!(
-            advertised_names(Some("not a url"), &overlay),
+            advertised_names(Some("not a url"), None, &overlay),
             ["100.64.0.2"]
         );
     }
@@ -2334,6 +2570,7 @@ mod tests {
             expires_at: None,
             expires_label: None,
             qr: true,
+            default_qr: false,
             secret_file: Some(Path::new("/tmp/pair-secret")),
             hide_bearer: true,
         };

@@ -22,6 +22,9 @@
 //!   for it: see the `acknowledged` submodule.
 //! * Only local ids reach the lane; satellite ids are hub forwards and stay
 //!   on the main thread.
+//! * Accepted key, mouse, and paste input emits an unjournaled
+//!   `input_activity` to the pane's other subscribers, at most once per
+//!   250 ms per pane (leading edge). Focus does not. The sender is excluded.
 
 mod acknowledged;
 mod credit;
@@ -56,6 +59,47 @@ use crate::terminal_actor::{EncodedInputRequest, InputCredit, TerminalHandle};
 /// Bound on the lane's inbound queue. Attached input waits for room
 /// ([`InputLaneHandle::route`]); a command refuses with `RESOURCE_EXHAUSTED`.
 const INPUT_LANE_CAPACITY: usize = 1024;
+
+/// Leading-edge gap between `input_activity` emissions for one pane.
+/// 250 ms is 4 Hz, so a one-second burst emits at most five events.
+const INPUT_ACTIVITY_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Per-pane leading-edge limiter for `input_activity`.
+#[derive(Default)]
+struct ActivityGate {
+    last: std::collections::HashMap<phux_protocol::ids::ResourceId, std::time::Instant>,
+}
+
+impl ActivityGate {
+    fn admit(&mut self, pane: &phux_protocol::ids::ResourceId, now: std::time::Instant) -> bool {
+        if let Some(prev) = self.last.get(pane)
+            && now.saturating_duration_since(*prev) < INPUT_ACTIVITY_MIN_INTERVAL
+        {
+            return false;
+        }
+        self.last.insert(pane.clone(), now);
+        true
+    }
+}
+
+const fn is_live_input(event: &InputEvent) -> bool {
+    !matches!(event, InputEvent::Focus(_))
+}
+
+const fn is_live_terminal_input(input: &TerminalInput) -> bool {
+    !matches!(input, TerminalInput::Focus(_))
+}
+
+fn note_input_activity(
+    gate: &mut ActivityGate,
+    state: &SharedState,
+    client_id: ClientId,
+    terminal_id: &phux_protocol::ids::ResourceId,
+) {
+    if gate.admit(terminal_id, std::time::Instant::now()) {
+        state.with_mut(|server| server.offer_input_activity(terminal_id, client_id));
+    }
+}
 
 /// One local input operation lifted off the main runtime.
 #[derive(Debug)]
@@ -575,11 +619,12 @@ fn process_attached(
     input: &TerminalInput,
     frame_label: &'static str,
     credit: Option<InputCredit>,
-) {
+) -> bool {
     let is_focus_gained = matches!(
         input,
         TerminalInput::Focus(phux_protocol::input::focus::FocusEvent::Gained)
     );
+    let live = is_live_terminal_input(input);
     let Some(destination) = with_attached_input_destination(
         state,
         client_id,
@@ -587,7 +632,7 @@ fn process_attached(
         frame_label,
         std::convert::identity,
     ) else {
-        return;
+        return false;
     };
     let bytes = encode_input(encoders, destination.pane, &destination.handle, input);
     // Re-gate and send under one state lock, so a lease change cannot slip
@@ -610,6 +655,7 @@ fn process_attached(
             crate::hooks::HookEvent::focus_changed(terminal_id, client_id),
         );
     }
+    accepted && live
 }
 
 /// `INPUT_*` frames have no reply, so a refusal after the gates is pushed as
@@ -771,7 +817,7 @@ fn process_apply_input(
     events: Vec<InputEvent>,
     reservation: AcknowledgedReservation,
     reply: oneshot::Sender<CommandResult>,
-) {
+) -> bool {
     let prepared = match prepare_acknowledged_batch(state, encoders, client_id, terminal_id, events)
     {
         Ok(prepared) => prepared,
@@ -780,7 +826,7 @@ fn process_apply_input(
             drop(reservation);
             cache.set_retryable(operation_id, &result);
             let _ = reply.send(result);
-            return;
+            return false;
         }
     };
 
@@ -796,7 +842,7 @@ fn process_apply_input(
             cache,
             acknowledged_not_written("acknowledged completion waiter unavailable for APPLY_INPUT"),
         );
-        return;
+        return false;
     }
 
     // The waiter now owns the answer. Abandon the ticket *before* dropping a
@@ -840,8 +886,11 @@ fn process_apply_input(
         }
     });
     match handoff {
-        Ok(Ok(())) => {}
-        Ok(Err(result)) | Err(result) => waiter.abandon(ticket, result),
+        Ok(Ok(())) => true,
+        Ok(Err(result)) | Err(result) => {
+            waiter.abandon(ticket, result);
+            false
+        }
     }
 }
 
@@ -871,21 +920,32 @@ fn spawn_input_lane_with_completion_timeout(
             crate::perf::promote_helper_thread("phux-input-lane");
             let mut encoders = std::collections::HashMap::new();
             let mut tickets = TicketSource::default();
+            let mut activity_gate = ActivityGate::default();
             // Everything below is synchronous and non-blocking, so no pane
             // can stall another pane's input.
             while let Some(routed) = rx.blocking_recv() {
                 prune_closed_encoders(&mut encoders);
                 match routed.kind {
-                    RoutedInputKind::Attached { input, frame_label } => process_attached(
-                        &state,
-                        &mut encoders,
-                        routed.client_id,
-                        &routed.terminal_id,
-                        &input,
-                        frame_label,
-                        routed.credit,
-                    ),
+                    RoutedInputKind::Attached { input, frame_label } => {
+                        if process_attached(
+                            &state,
+                            &mut encoders,
+                            routed.client_id,
+                            &routed.terminal_id,
+                            &input,
+                            frame_label,
+                            routed.credit,
+                        ) {
+                            note_input_activity(
+                                &mut activity_gate,
+                                &state,
+                                routed.client_id,
+                                &routed.terminal_id,
+                            );
+                        }
+                    }
                     RoutedInputKind::Headless { event, reply } => {
+                        let live = is_live_input(&event);
                         let result = process_headless(
                             &state,
                             &mut encoders,
@@ -894,6 +954,14 @@ fn spawn_input_lane_with_completion_timeout(
                             event,
                             routed.credit,
                         );
+                        if live && matches!(result, CommandResult::Ok) {
+                            note_input_activity(
+                                &mut activity_gate,
+                                &state,
+                                routed.client_id,
+                                &routed.terminal_id,
+                            );
+                        }
                         let _ = reply.send(result);
                     }
                     RoutedInputKind::Acknowledged {
@@ -901,20 +969,31 @@ fn spawn_input_lane_with_completion_timeout(
                         events,
                         reservation,
                         reply,
-                    } => process_apply_input(
-                        &state,
-                        &mut encoders,
-                        &lane_cache,
-                        &waiter_handle,
-                        tickets.next_ticket(),
-                        completion_timeout,
-                        routed.client_id,
-                        operation_id,
-                        &routed.terminal_id,
-                        events,
-                        reservation,
-                        reply,
-                    ),
+                    } => {
+                        let live = events.iter().any(is_live_input);
+                        if process_apply_input(
+                            &state,
+                            &mut encoders,
+                            &lane_cache,
+                            &waiter_handle,
+                            tickets.next_ticket(),
+                            completion_timeout,
+                            routed.client_id,
+                            operation_id,
+                            &routed.terminal_id,
+                            events,
+                            reservation,
+                            reply,
+                        ) && live
+                        {
+                            note_input_activity(
+                                &mut activity_gate,
+                                &state,
+                                routed.client_id,
+                                &routed.terminal_id,
+                            );
+                        }
+                    }
                 }
             }
             tracing::debug!("input lane thread exiting (channel closed)");
@@ -1811,5 +1890,72 @@ mod tests {
             .await;
         assert_eq!(code(&result), Some(ErrorCode::ResourceExhausted));
         assert!(!admission.is_in_flight(&terminal));
+    }
+
+    /// 1,000 keys spread across one second stay at or under five emissions,
+    /// and a same-instant burst is a single leading edge. A second pane is
+    /// counted on its own.
+    #[test]
+    fn one_thousand_keys_in_one_second_emit_at_most_five() {
+        let pane = phux_protocol::ids::ResourceId::local(3);
+        let other = phux_protocol::ids::ResourceId::local(9);
+        let start = std::time::Instant::now();
+        let mut gate = ActivityGate::default();
+        let mut emitted = 0;
+        for i in 0..1000u32 {
+            let now = start + Duration::from_nanos(u64::from(i) * 1_000_000_000 / 999);
+            if gate.admit(&pane, now) {
+                emitted += 1;
+            }
+        }
+        assert!(emitted <= 5, "1000 keys in 1s emitted {emitted}");
+        assert!(
+            emitted >= 4,
+            "a leading edge across one second emits about 4 Hz, got {emitted}"
+        );
+
+        let mut gate = ActivityGate::default();
+        let mut burst = 0;
+        for _ in 0..1000 {
+            if gate.admit(&pane, start) {
+                burst += 1;
+            }
+        }
+        assert_eq!(burst, 1, "a same-instant burst is one leading edge");
+        assert!(gate.admit(&other, start), "each pane has its own window");
+    }
+
+    /// One accepted paste tells the other subscriber, not the sender, and
+    /// leaves the journal head where it was.
+    #[tokio::test(flavor = "current_thread")]
+    async fn accepted_input_notifies_only_the_other_subscriber() {
+        LocalSet::new()
+            .run_until(async {
+                let mut fx = fixture();
+                let (peer_tx, mut peer_rx) = mpsc::channel(8);
+                let (self_tx, mut self_rx) = mpsc::channel(8);
+                fx.state.with_mut(|server| {
+                    server.set_client_name(fx.client_a, "ada".to_owned());
+                    server.subscribe_events(fx.client_a, Some(fx.pane.wire.clone()), self_tx);
+                    server.subscribe_events(fx.client_b, Some(fx.pane.wire.clone()), peer_tx);
+                });
+                let head = fx.state.with(crate::state::ServerState::journal_head);
+                fx.attached(fx.client_a, b"k");
+                let _ = next_write(&mut fx.pane.writer_rx).await;
+                assert_eq!(fx.state.with(crate::state::ServerState::journal_head), head);
+                match peer_rx.try_recv().expect("peer sees the origin") {
+                    crate::mailbox::Outbound::Frame(
+                        phux_protocol::wire::frame::FrameKind::Event {
+                            event: phux_protocol::wire::frame::AgentEvent::InputActivity { origin },
+                            stamp: None,
+                            ..
+                        },
+                    ) => assert_eq!(origin, "ada"),
+                    other => panic!("peer frame: {other:?}"),
+                }
+                assert!(peer_rx.try_recv().is_err(), "one emission for one paste");
+                assert!(self_rx.try_recv().is_err(), "no self-echo");
+            })
+            .await;
     }
 }

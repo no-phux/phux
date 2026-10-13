@@ -81,6 +81,20 @@ The overview routes readers by task and illustrates the server/client model.
 Its title, summary, and task links come from `OVERVIEW` in `src/lib/site.ts`,
 shared with the generated search representation.
 
+Agent onboarding is a visible reading path, not only discovery metadata. The
+overview offers a copyable handoff prompt, the skills installer, and the hosted
+docs MCP connection. `AGENT_START` supplies both the visible block and its
+Markdown/search representation. Distinguish skills (operating instructions),
+host tools/local MCP (terminal control), and the hosted docs MCP (read-only
+documentation search). Installing one is not consent to mutate terminals.
+
+Every published documentation page has an addressable `.md` representation
+from the same content collection, with source revision and version metadata.
+The article header exposes **Copy page for agent** and **Open Markdown**;
+the link and selectable handoff prompt remain usable without JavaScript.
+`llms.txt` is the short task router. Prefer focused pages over dumping the
+whole documentation archive into an agent's context.
+
 Screenshots and diagrams explain something the prose alone makes hard to see.
 Provide meaningful alternatives; motion is never required to understand a
 workflow. Do not present planned or source-build-only interfaces as equivalent

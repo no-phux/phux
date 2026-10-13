@@ -106,6 +106,7 @@ by a newer one, the newer line is the operative reading.
 - [0108](./0108-a-hub-relays-host-queries-per-request.md) A hub relays a host query that names a satellite (`LIST_DIRECTORY.host`) over that satellite's L3-negotiated link, one request at a time. It does not chain. Routing failure is an `OTHER` refusal naming the host. The agent-metadata mirror is the separate carve-out above.
 - [0107](./0107-satellite-sessions-are-listed-never-adopted.md) A hub lists satellite sessions host-qualified under their own ids; selecting one opens its active pane through the resource relay.
 - [0141](./0141-pair-mints-only-against-a-live-listener.md) `phux pair` mints only after the running server reports a bound remote listener; the connect link names that bind.
+- [0164](./0164-pair-links-name-the-magicdns-host.md) On a MagicDNS tailnet, `phux pair` links name the host's MagicDNS name, not its tailnet address, on both `url` and `quic`; pinning makes the certificate's names irrelevant.
 - [0122](./0122-host-add-is-the-front-door.md) `phux host add HOST` is the one front door for a machine: confirm, start and supervise, pair, probe, register; an attach whose saved route stops answering starts the server over ssh before it re-pairs.
 - [0093](./0093-remote-target-as-a-resolution-ladder.md) `--remote user@host` resolves to a `[[remote]]` entry and reuses the existing dial.
 - [0081](./0081-overlay-auto-listen-and-one-command-pairing.md) The server auto-binds its overlay listener at startup; pairing adds a credential without a restart.

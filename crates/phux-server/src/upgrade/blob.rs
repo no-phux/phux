@@ -4,8 +4,9 @@
 //! On `phux upgrade` the running server serializes its whole live
 //! session/window/pane tree, the per-pane PTY handoff (child PID + master fd +
 //! a replayable VT snapshot), every `AgentSession` bound to a carried pane
-//! (its identity and retained record tail), and the monotonic id counters
-//! into a [`StateBlob`], passes it to the re-exec'd binary through an inherited
+//! (its identity and retained record tail), the Group- and Global-scope L3
+//! metadata (layout keys, session tags), and the monotonic id counters into a
+//! [`StateBlob`], passes it to the re-exec'd binary through an inherited
 //! descriptor, and the new image rebuilds itself from it.
 //!
 //! Identity is by **wire** id (`u32`), never core `SlotMap` id, whose
@@ -68,6 +69,23 @@ pub struct StateBlob {
     /// reader ignores the field and drops the sessions as it always did.
     #[serde(default)]
     pub agent_sessions: Vec<AgentSessionBlob>,
+    /// Group- and Global-scope L3 metadata (SPEC §7.4): the TUI layout keys
+    /// and session tags. Without it every upgrade silently drops each
+    /// session's `phux.tui.layout/v1/<id>` (#1207). Additive: an older blob
+    /// reads as none.
+    #[serde(default)]
+    pub metadata: Vec<MetadataBlob>,
+}
+
+/// One carried L3 metadata entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetadataBlob {
+    /// The Group's wire id, or `None` for Global scope.
+    pub group: Option<u32>,
+    /// The metadata key.
+    pub key: String,
+    /// The stored value.
+    pub value: Vec<u8>,
 }
 
 impl StateBlob {
@@ -401,6 +419,11 @@ mod tests {
                 records: vec![
                     "{\"seq\":9,\"ts_ms\":1,\"type\":\"prompt\",\"data\":{}}\n".to_owned(),
                 ],
+            }],
+            metadata: vec![MetadataBlob {
+                group: Some(1),
+                key: "phux.tui.layout/v1/1".to_owned(),
+                value: vec![0xa1, 0x01],
             }],
         }
     }

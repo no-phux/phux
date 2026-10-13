@@ -2171,6 +2171,9 @@ impl RelaySession {
                     }),
                 })
             }
+            // The origin label stays on the server that saw the key. Relaying
+            // it would publish a client name across the satellite link.
+            AgentEvent::InputActivity { .. } => None,
             AgentEvent::ApprovalRequested { id } | AgentEvent::ApprovalDecided { id, .. }
                 if self.names_hub_approval(id) =>
             {
