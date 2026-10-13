@@ -427,6 +427,11 @@ forbid_fixed release-please-config.json '"package-name"'
 # of release-please.yml.
 require_fixed .github/workflows/release-please.yml 'actions/create-github-app-token'
 forbid_fixed .github/workflows/release-please.yml 'token: ${{ secrets.GITHUB_TOKEN }}'
+# A force-pushed release head is mergeable until sync-lockfile runs, because
+# main does not require checks on the latest push. Hold the PR as draft in the
+# same job as the force-push, and restore it only after the lockfile push.
+require_fixed .github/workflows/release-please.yml 'gh pr ready "$num" --repo "$GITHUB_REPOSITORY" --undo'
+require_fixed .github/workflows/release-please.yml 'gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY"'
 
 require_fixed .github/workflows/publish-crate.yml 'workflow_dispatch'
 require_fixed .github/workflows/publish-crate.yml 'environment: crates-io'
