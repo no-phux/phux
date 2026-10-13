@@ -2434,7 +2434,7 @@ async fn missing_or_partial_layout_places_every_session_pane_and_saves() {
     let focus = ResourceId::local(1);
     let hidden = ResourceId::local(4);
     let foreign = ResourceId::local(7);
-    let stored_partial = Workspace::single(focus.clone()).encode_cbor().unwrap();
+    let stored_partial = ArrangementDoc::single(focus.clone()).encode_cbor().unwrap();
     for stored in [None, Some(stored_partial)] {
         let (a, b) = tokio::net::UnixStream::pair().unwrap();
         let mut client = Connection::from_stream(a);
@@ -2500,9 +2500,9 @@ async fn missing_or_partial_layout_places_every_session_pane_and_saves() {
         let leaves: Vec<ResourceId> = state
             .mirror
             .workspace
-            .windows
+            .groups
             .iter()
-            .filter_map(|window| window.state.tree.as_ref())
+            .filter_map(|group| group.state.tree.as_ref())
             .flat_map(crate::layout::leaves)
             .collect();
         assert_eq!(leaves, [focus.clone(), hidden.clone()], "stored {stored:?}");
@@ -2513,12 +2513,12 @@ async fn missing_or_partial_layout_places_every_session_pane_and_saves() {
             .into_iter()
             .find_map(|frame| match frame {
                 FrameKind::SetMetadata { value, .. } => {
-                    Some(Workspace::decode_cbor(&value).unwrap())
+                    Some(ArrangementDoc::decode_cbor(&value).unwrap())
                 }
                 _ => None,
             })
             .expect("the healed layout is saved");
-        assert_eq!(saved.windows.len(), 2, "stored {stored:?}");
+        assert_eq!(saved.groups.len(), 2, "stored {stored:?}");
         drop(client);
         drop(server);
     }

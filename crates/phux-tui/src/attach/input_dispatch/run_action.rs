@@ -1015,8 +1015,11 @@ fn push_agent_fleet(
         ctx.peers.focused_session,
         ctx.agent_meta,
         &meta,
-        ctx.peers.foreign_layouts,
-        ctx.peers.foreign_agents,
+        crate::attach::fleet::ForeignSessions {
+            layouts: ctx.peers.foreign_layouts,
+            agents: ctx.peers.foreign_agents,
+            terminals: &ctx.peers.terminal_counts(),
+        },
     );
     items.extend(crate::attach::fleet::satellite_agent_items(
         ctx.peers.foreign_agents,

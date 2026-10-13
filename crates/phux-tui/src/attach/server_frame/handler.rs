@@ -4,10 +4,10 @@
 use std::collections::{HashMap, HashSet};
 
 use phux_protocol::ResourceKind;
-use phux_protocol::ids::{ClientId, ResourceId, SessionId};
+use phux_protocol::ids::{ClientId, ResourceId, SessionId, SessionKey};
 use phux_protocol::wire::frame::{
     AgentEvent, CONFIG_RELOAD_KEY, DetachReason, ErrorCode, FrameKind, ResourceLifecycle,
-    SESSION_KEEP_EMPTY_KEY, SESSION_NAME_KEY, Scope, SpawnError, SpawnResult,
+    SESSION_KEEP_EMPTY_KEY, SESSION_NAME_KEY, Scope, SessionLifetime, SpawnError, SpawnResult,
     decode_session_keep_empty, decode_session_rename,
 };
 
@@ -33,7 +33,7 @@ use phux_client::layout_ops::{
 use super::engine_route::{KernelRoute, is_terminal, route_engine_frame};
 use super::index::{AgentMetaIndex, note_agent_change};
 use super::outcome::{FrameOutcome, frame_kind_label, input_authority_notice, pane_label};
-use crate::attach::session_mirror::SessionMirror;
+use crate::attach::session_mirror::{SessionMirror, session_lifetime, unarranged_members};
 
 /// The per-frame inputs [`handle_server_frame`] reads beside the mirror: the
 /// chrome the paint tiles against, and whether this frame may paint at all.
@@ -73,8 +73,12 @@ struct FrameCtx<'a, W: crate::attach::RenderSink> {
     // focus reconcile uses the real `active_window`. A split un-zooms.
     zoomed: &'a mut Option<ResourceId>,
     session_name: &'a mut String,
-    /// ADR-0105: whether the attached session is keep-empty.
-    keep_empty_session: &'a mut bool,
+    /// The attached session's lifetime.
+    lifetime: &'a mut SessionLifetime,
+    /// The attached session's record key, when reported.
+    session_key: &'a mut Option<SessionKey>,
+    /// Terminal-kind members of the attached session.
+    members: &'a mut HashSet<ResourceId>,
     // This client's session, so the layout arm can tell ours from a peer's.
     focused_session: Option<SessionId>,
     /// `Option` so an attach with no configured widgets pays nothing for the
@@ -163,7 +167,9 @@ pub(in crate::attach) fn handle_server_frame<W: crate::attach::RenderSink>(
         focused_resource,
         zoomed,
         session_name,
-        keep_empty_session,
+        lifetime,
+        session_key,
+        members,
         predict,
         pending_splits,
         pending_windows,
@@ -210,7 +216,9 @@ pub(in crate::attach) fn handle_server_frame<W: crate::attach::RenderSink>(
         focused_resource,
         zoomed,
         session_name,
-        keep_empty_session,
+        lifetime,
+        session_key,
+        members,
         focused_session,
         status_bar,
         sidebar,
@@ -393,13 +401,15 @@ fn handle_attached<W: crate::attach::RenderSink>(
     snapshot: &phux_protocol::wire::info::SessionSnapshot,
     initial_client_id: ClientId,
 ) -> Result<FrameOutcome, AttachError> {
-    // ADR-0105: the focused session's keep-empty mark decides what the last
-    // pane's close does, and an empty session has no pane to focus at all.
-    *ctx.keep_empty_session = snapshot
+    // The focused session's lifetime and members decide what an emptied
+    // arrangement does, and an empty session has no pane to focus at all.
+    let focused = snapshot
         .sessions
         .iter()
-        .find(|s| s.id == snapshot.focused_session)
-        .is_some_and(|s| s.keep_empty);
+        .find(|s| s.id == snapshot.focused_session);
+    *ctx.lifetime = focused.map_or(SessionLifetime::Ephemeral, session_lifetime);
+    *ctx.session_key = focused.and_then(|s| s.key);
+    *ctx.members = session_terminals(snapshot);
     if focused_session_is_empty(snapshot) {
         return Ok(attach_empty_session(ctx, snapshot, initial_client_id));
     }
@@ -476,6 +486,14 @@ fn focused_session_is_empty(snapshot: &phux_protocol::wire::info::SessionSnapsho
         .iter()
         .any(|r| r.id == snapshot.focused_resource);
     reports_no_windows && !focus_is_listed
+}
+
+/// The focused session's Terminal-kind members: the panes the attach
+/// bootstraps, arranged or not.
+fn session_terminals(snapshot: &phux_protocol::wire::info::SessionSnapshot) -> HashSet<ResourceId> {
+    super::engine_route::attach_participants(snapshot)
+        .into_iter()
+        .collect()
 }
 
 /// ADR-0105: ATTACHED to a session with no windows: start empty; the graph,
@@ -1133,6 +1151,14 @@ fn handle_terminal_spawned<W: crate::attach::RenderSink>(
     if let Some(title) = ctx.pending_floating.remove(&request_id) {
         return handle_floating_spawned(ctx, title, result);
     }
+    // A local split or window spawns into the attached session.
+    if (ctx.pending_windows.contains_key(&request_id)
+        || ctx.pending_splits.contains_key(&request_id))
+        && let Some(id) = result.spawned_id()
+        && id.is_local()
+    {
+        ctx.members.insert(id.clone());
+    }
     // A parked new-window takes priority (ids are unique across both maps).
     if let Some(pending) = ctx.pending_windows.remove(&request_id) {
         return handle_window_spawned(
@@ -1452,6 +1478,7 @@ fn handle_terminal_closed<W: crate::attach::RenderSink>(
     // reused id still notifies.
     let expected = ctx.expected_closes.remove(terminal_id);
     if let Some(outcome) = close_floating(ctx, terminal_id) {
+        ctx.members.remove(terminal_id);
         return outcome;
     }
     // An AgentSession has no slot or leaf; its close removes only its row.
@@ -1480,9 +1507,15 @@ fn fold_dead_resource<W: crate::attach::RenderSink>(
 ) -> FrameOutcome {
     // Drop the slot even for unknown leaves.
     ctx.panes.remove(terminal_id);
+    let was_member = ctx.members.remove(terminal_id);
     // Find the window holding this leaf (panes can live in any
     // window, not just the active one) and fold it out there.
     let Some(idx) = window_holding_pane(ctx.workspace, terminal_id) else {
+        // An unarranged member ended while nothing is arranged: the
+        // "not arranged" count moved, and the session may have ended with it.
+        if was_member && ctx.workspace.groups.is_empty() {
+            return arrangement_empty(ctx, exit_status, notices, false);
+        }
         return FrameOutcome::default();
     };
     let new_state = match apply_terminal_closed(&ctx.workspace.groups[idx].state, terminal_id) {
@@ -1501,19 +1534,8 @@ fn fold_dead_resource<W: crate::attach::RenderSink>(
     // The fold may have emptied the window; drop any such
     // windows and keep `active` valid.
     ctx.workspace.prune_empty_groups();
-    // Consumer-owned detach policy: nothing left to render means detach,
-    // unless the session is keep-empty (ADR-0105).
-    if ctx.workspace.groups.is_empty() && *ctx.keep_empty_session {
-        return last_pane_closed_keep_empty(ctx, notices);
-    }
     if ctx.workspace.groups.is_empty() {
-        tracing::info!("ResourceClosed folded the last pane; detaching");
-        return FrameOutcome {
-            exit: true,
-            // Carry the status so the CLI can explain the exit.
-            exit_reason: Some(AttachEnd::LastPaneClosed { exit_status }),
-            ..FrameOutcome::default()
-        };
+        return arrangement_empty(ctx, exit_status, notices, true);
     }
     // Re-anchor focus onto the (possibly new) active window.
     *ctx.focused_resource = ctx.workspace.active_group().and_then(|ls| ls.focus.clone());
@@ -1561,25 +1583,58 @@ fn resolve_resource_op<W: crate::attach::RenderSink>(
     (code == Some(ErrorCode::TerminalNotFound)).then(|| fold_missing_resource(ctx, &terminal_id))
 }
 
-/// ADR-0105: a keep-empty session's last pane closed: stay attached, paint
-/// the empty state, and tombstone the dead layout.
-fn last_pane_closed_keep_empty<W: crate::attach::RenderSink>(
+/// A resource close left nothing arranged. The attach policy (R15): detach
+/// only when the session itself ends, which for an ephemeral session is the
+/// moment its last member is gone. Otherwise stay attached and paint the
+/// empty state, which counts members still running with no view.
+/// `emptied` is true when this close folded the last leaf, so the stored
+/// arrangement changes with it.
+fn arrangement_empty<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
+    exit_status: Option<i32>,
     notices: Vec<Notice>,
+    emptied: bool,
 ) -> FrameOutcome {
-    tracing::info!("ResourceClosed folded the last pane of a keep-empty session; staying attached");
+    let running = unarranged_members(ctx.members, ctx.workspace, ctx.panes).len();
+    if running == 0 && *ctx.lifetime == SessionLifetime::Ephemeral {
+        tracing::info!("the ephemeral session's last terminal closed; detaching");
+        return FrameOutcome {
+            exit: true,
+            // Carry the status so the CLI can explain the exit.
+            exit_reason: Some(AttachEnd::LastPaneClosed { exit_status }),
+            ..FrameOutcome::default()
+        };
+    }
+    tracing::info!(running, "nothing is arranged; staying attached");
     *ctx.focused_resource = None;
     *ctx.zoomed = None;
     FrameOutcome {
         layout_replaced: true,
-        clear_layout: true,
+        // A persistent session with nothing left drops its dead layout;
+        // one whose members still run keeps an empty arrangement.
+        clear_layout: emptied && running == 0,
+        emit_set_metadata: emptied && running > 0,
         notices,
         ..FrameOutcome::default()
     }
 }
 
-/// ADR-0105: a `phux.session.keep_empty/v1` broadcast. Only a mark on this
-/// client's own session changes what its last pane's close does.
+/// The session this client is attached to was deleted (R15): detach, as the
+/// server's `SessionKilled` would.
+fn session_deleted() -> FrameOutcome {
+    tracing::info!("the attached session was deleted; detaching");
+    FrameOutcome {
+        exit: true,
+        exit_reason: Some(AttachEnd::Detached {
+            reason: Some(DetachReason::SessionKilled),
+        }),
+        ..FrameOutcome::default()
+    }
+}
+
+/// A legacy server's `phux.session.keep_empty/v1` broadcast: the session's
+/// lifetime as that server spells it. Only a mark on this client's own
+/// session changes what its last pane's close does.
 fn apply_keep_empty_broadcast<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     value: Option<&[u8]>,
@@ -1587,7 +1642,11 @@ fn apply_keep_empty_broadcast<W: crate::attach::RenderSink>(
     if let Some((name, keep)) = value.and_then(decode_session_keep_empty)
         && name == ctx.session_name.as_str()
     {
-        *ctx.keep_empty_session = keep;
+        *ctx.lifetime = if keep {
+            SessionLifetime::Persistent
+        } else {
+            SessionLifetime::Ephemeral
+        };
     }
     FrameOutcome::default()
 }
@@ -1686,6 +1745,48 @@ fn handle_agent_event<W: crate::attach::RenderSink>(
         } if !ctx.panes.contains_key(&terminal) && !ctx.is_agent_session(&terminal) => {
             FrameOutcome {
                 foreign_pane_set_dirty: true,
+                ..FrameOutcome::default()
+            }
+        }
+        FrameKind::Event { event, .. } => fold_org_event(ctx, &event),
+        _ => FrameOutcome::default(),
+    }
+}
+
+/// An organization event (`docs/spec/L1.md` §5.7) about the attached session,
+/// matched by its record key: deletion detaches (R15), a lifetime change
+/// updates what an emptied arrangement does, and a membership change asks
+/// for a fresh inventory.
+fn fold_org_event<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    event: &AgentEvent,
+) -> FrameOutcome {
+    let Some(ours) = *ctx.session_key else {
+        return FrameOutcome::default();
+    };
+    match event {
+        AgentEvent::SessionDeleted { session, .. } if *session == ours => session_deleted(),
+        AgentEvent::SessionLifetimeChanged {
+            session, lifetime, ..
+        } if *session == ours => {
+            *ctx.lifetime = *lifetime;
+            FrameOutcome {
+                chrome_dirty: true,
+                ..FrameOutcome::default()
+            }
+        }
+        AgentEvent::MembershipChanged { from, to, .. } if *from == ours || *to == ours => {
+            FrameOutcome {
+                members_dirty: true,
+                ..FrameOutcome::default()
+            }
+        }
+        AgentEvent::ResourceCreated { session, .. }
+        | AgentEvent::ResourceRemoved { session, .. }
+            if *session == ours =>
+        {
+            FrameOutcome {
+                members_dirty: true,
                 ..FrameOutcome::default()
             }
         }

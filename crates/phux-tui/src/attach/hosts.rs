@@ -344,6 +344,9 @@ mod tests {
                 attached_clients: 0,
                 keep_empty: false,
                 empty: false,
+                lifetime: None,
+                members: 0,
+                exec: phux_core::session_list::ExecCounts::default(),
             }],
         }
     }

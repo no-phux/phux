@@ -1227,7 +1227,10 @@ fn layout_tombstone_resets_to_local_focused_pane() {
     };
     let mut h = H::on(local, &[&tid(1), &tid(2)]);
     assert!(h.send(layout_changed(1, None)).layout_replaced);
-    assert_eq!(h.mirror.workspace, ArrangementDoc::single(tid(2)));
+    assert_eq!(
+        crate::attach::arrangement_shape(&h.mirror.workspace),
+        crate::attach::arrangement_shape(&ArrangementDoc::single(tid(2)))
+    );
     assert_eq!(h.mirror.focused_resource, Some(tid(2)));
 }
 
@@ -2328,24 +2331,26 @@ fn detached_carries_the_servers_reason_into_the_exit() {
     }
 }
 
-/// ADR-0105: the last pane of a keep-empty session closing keeps the attach,
-/// leaves the empty state, and tombstones the dead layout. The mark follows
-/// `keep_empty/v1` broadcasts for this session only.
+/// The last pane of a persistent session closing keeps the attach, leaves
+/// the empty state, and tombstones the dead layout. A legacy server's
+/// `keep_empty/v1` broadcast sets the lifetime, for this session only.
 #[test]
-fn keep_empty_mark_keeps_the_attach_when_the_last_pane_closes() {
-    use phux_protocol::wire::frame::SESSION_KEEP_EMPTY_KEY;
+fn a_persistent_session_stays_attached_when_its_last_pane_closes() {
+    use phux_protocol::wire::frame::{SESSION_KEEP_EMPTY_KEY, SessionLifetime};
     let pane = tid(1);
     let mut h = H::on(ArrangementDoc::single(pane.clone()), &[&pane]);
+    h.mirror.members.insert(pane.clone());
     h.mirror.session_name = "work".to_owned();
     let mark =
         |value: &[u8]| meta_changed(Scope::Global, SESSION_KEEP_EMPTY_KEY, Some(value.to_vec()));
     h.send(mark(b"other\0true"));
-    assert!(
-        !h.mirror.keep_empty_session,
+    assert_eq!(
+        h.mirror.lifetime,
+        SessionLifetime::Ephemeral,
         "another session's mark is not ours"
     );
     h.send(mark(b"work\0true"));
-    assert!(h.mirror.keep_empty_session);
+    assert_eq!(h.mirror.lifetime, SessionLifetime::Persistent);
 
     let outcome = h.send(closed(&pane, Some(0)));
     assert!(!outcome.exit && outcome.exit_reason.is_none());
@@ -2354,6 +2359,100 @@ fn keep_empty_mark_keeps_the_attach_when_the_last_pane_closes() {
     assert!(h.mirror.workspace.groups.is_empty());
     assert_eq!(h.mirror.focused_resource, None);
     assert!(!h.mirror.panes.contains_key(&pane));
+    assert!(h.mirror.members.is_empty());
+}
+
+/// R15: an ephemeral session whose last arranged pane closes stays attached
+/// while another member runs with no view, keeping the empty arrangement;
+/// it detaches when that member ends too, since the session ends with it.
+#[test]
+fn an_emptied_arrangement_stays_attached_while_members_run() {
+    let (shown, hidden) = (tid(1), tid(2));
+    let mut h = H::on(ArrangementDoc::single(shown.clone()), &[&shown, &hidden]);
+    h.mirror.members.extend([shown.clone(), hidden.clone()]);
+
+    let outcome = h.send(closed(&shown, Some(0)));
+    assert!(!outcome.exit, "a member still runs");
+    assert!(outcome.layout_replaced && outcome.emit_set_metadata);
+    assert!(!outcome.clear_layout, "the empty arrangement is kept");
+    assert!(h.mirror.workspace.groups.is_empty());
+    assert_eq!(h.mirror.unarranged_members(), vec![hidden.clone()]);
+
+    let outcome = h.send(closed(&hidden, Some(3)));
+    assert!(outcome.exit);
+    assert_eq!(
+        outcome.exit_reason,
+        Some(AttachEnd::LastPaneClosed {
+            exit_status: Some(3)
+        })
+    );
+}
+
+/// R15: deletion of the attached session detaches; another session's
+/// deletion, or an event before the key is known, does not. A lifetime
+/// change for this session is adopted.
+#[test]
+fn deleting_the_attached_session_detaches() {
+    use phux_protocol::ids::{Revision, SessionKey};
+    use phux_protocol::wire::frame::SessionLifetime;
+    let ours = SessionKey::new([1; 16]).expect("key");
+    let theirs = SessionKey::new([2; 16]).expect("key");
+    let event = |event| FrameKind::Event {
+        terminal: None,
+        event,
+        stamp: None,
+    };
+    let deleted = |session| {
+        event(AgentEvent::SessionDeleted {
+            session,
+            revision: Revision::new(3),
+            name: "scratch".to_owned(),
+        })
+    };
+    let mut h = H::on(ArrangementDoc::single(tid(1)), &[&tid(1)]);
+    assert!(!h.send(deleted(ours)).exit, "no key known yet");
+    h.mirror.session_key = Some(ours);
+    assert!(!h.send(deleted(theirs)).exit);
+    h.send(event(AgentEvent::SessionLifetimeChanged {
+        session: ours,
+        lifetime: SessionLifetime::Persistent,
+        revision: Revision::new(2),
+    }));
+    assert_eq!(h.mirror.lifetime, SessionLifetime::Persistent);
+    let outcome = h.send(deleted(ours));
+    assert!(outcome.exit);
+    assert_eq!(
+        outcome.exit_reason,
+        Some(AttachEnd::Detached {
+            reason: Some(DetachReason::SessionKilled)
+        })
+    );
+}
+
+/// A membership change for this session asks the driver for a fresh
+/// inventory; one between two other sessions does not.
+#[test]
+fn membership_events_for_this_session_refresh_the_members() {
+    use phux_protocol::ids::{ResourceKey, Revision, SessionKey};
+    let ours = SessionKey::new([1; 16]).expect("key");
+    let theirs = SessionKey::new([2; 16]).expect("key");
+    let elsewhere = SessionKey::new([3; 16]).expect("key");
+    let moved = |from, to| FrameKind::Event {
+        terminal: None,
+        event: AgentEvent::MembershipChanged {
+            resource: ResourceKey::new([9; 16]).expect("key"),
+            from,
+            to,
+            from_revision: Revision::new(1),
+            to_revision: Revision::new(1),
+        },
+        stamp: None,
+    };
+    let mut h = H::on(ArrangementDoc::single(tid(1)), &[&tid(1)]);
+    h.mirror.session_key = Some(ours);
+    assert!(h.send(moved(theirs, ours)).members_dirty);
+    assert!(h.send(moved(ours, theirs)).members_dirty);
+    assert!(!h.send(moved(theirs, elsewhere)).members_dirty);
 }
 
 /// A session-rename broadcast updates our status name only when it names us,
@@ -2398,7 +2497,11 @@ fn attaching_to_an_empty_session_starts_and_stays_empty() {
         .with_sessions(vec![SessionInfo::new(sid, "parked").with_keep_empty(true)]);
     let mut h = H::on(ArrangementDoc::single(tid(9)), &[]);
     let outcome = h.send(attached(snapshot, 3));
-    assert!(h.mirror.keep_empty_session);
+    assert_eq!(
+        h.mirror.lifetime,
+        phux_protocol::wire::frame::SessionLifetime::Persistent,
+        "a legacy keep-empty facet reads as persistent"
+    );
     assert_eq!(h.mirror.session_name, "parked");
     assert!(h.mirror.workspace.groups.is_empty());
     assert_eq!(h.mirror.focused_resource, None);
@@ -2923,7 +3026,10 @@ fn the_floating_overlay_closes_with_its_process() {
     assert!(outcome.layout_replaced && !outcome.exit);
     assert!(outcome.notices.is_empty(), "{:?}", outcome.notices);
     assert!(!h.mirror.panes.contains_key(&tid(2)));
-    assert_eq!(h.mirror.workspace, ArrangementDoc::single(tid(1)));
+    assert_eq!(
+        crate::attach::arrangement_shape(&h.mirror.workspace),
+        crate::attach::arrangement_shape(&ArrangementDoc::single(tid(1)))
+    );
     assert_eq!(h.mirror.paint_focus(), Some(tid(1)));
 }
 

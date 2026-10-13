@@ -234,6 +234,7 @@ pub(super) fn foreign_session_window_rows(
 pub(super) fn session_picker_items(
     sessions: &[phux_protocol::wire::info::SessionInfo],
     focused: Option<phux_protocol::ids::SessionId>,
+    terminals: &std::collections::HashMap<phux_protocol::ids::SessionId, usize>,
 ) -> Vec<SelectItem> {
     let mut ordered: Vec<_> = sessions.iter().collect();
     ordered.sort_by(|a, b| {
@@ -245,12 +246,16 @@ pub(super) fn session_picker_items(
     ordered
         .into_iter()
         .map(|s| {
-            let windows = if s.window_count == 1 {
-                "1 window".to_owned()
-            } else {
-                format!("{} windows", s.window_count)
-            };
-            let mut details = vec![windows];
+            let mut details = Vec::new();
+            if let Some(&count) = terminals.get(&s.id) {
+                details.push(count_label(
+                    u16::try_from(count).unwrap_or(u16::MAX),
+                    "terminal",
+                    "terminals",
+                ));
+            }
+            details
+                .push(lifetime_word(crate::attach::session_mirror::session_lifetime(s)).to_owned());
             if Some(s.id) == focused {
                 details.push("current".to_owned());
             }
@@ -295,6 +300,7 @@ pub(in crate::attach) fn session_picker_rows(
     let mut items = host_grouped_session_items(
         peers.sessions,
         peers.focused_session,
+        &peers.terminal_counts(),
         here,
         peers.hosts,
         &peers.other_machines(),
@@ -356,12 +362,13 @@ fn session_switch_row(session: &phux_protocol::wire::info::SessionInfo) -> Selec
 pub(super) fn host_grouped_session_items(
     sessions: &[phux_protocol::wire::info::SessionInfo],
     focused: Option<phux_protocol::ids::SessionId>,
+    terminals: &std::collections::HashMap<phux_protocol::ids::SessionId, usize>,
     here: &str,
     satellites: &[phux_protocol::wire::info::HostInventory],
     machines: &[&HostJson],
     workspace: &ArrangementDoc,
 ) -> Vec<SelectItem> {
-    let local = session_picker_items(sessions, focused);
+    let local = session_picker_items(sessions, focused, terminals);
     if satellites.is_empty() && machines.is_empty() {
         return local;
     }
@@ -397,10 +404,26 @@ fn machine_items(host: &HostJson) -> Vec<SelectItem> {
     };
     let mut items = vec![SelectItem::header(format!("{} - {status}", host.label))];
     items.extend(host.sessions.iter().map(|session| {
-        let mut details = vec![
-            format!("on {}", host.label),
-            count_label(session.windows, "window", "windows"),
-        ];
+        let mut details = vec![format!("on {}", host.label)];
+        // A server that reports lifetimes counts members; an older one
+        // counts its windows.
+        match session.lifetime {
+            Some(lifetime) => {
+                details.push(count_label(
+                    u16::try_from(session.members).unwrap_or(u16::MAX),
+                    "member",
+                    "members",
+                ));
+                details.push(
+                    match lifetime {
+                        phux_core::SessionLifetime::Persistent => "persistent",
+                        phux_core::SessionLifetime::Ephemeral => "ephemeral",
+                    }
+                    .to_owned(),
+                );
+            }
+            None => details.push(count_label(session.windows, "window", "windows")),
+        }
         if session.attached_clients != 0 {
             details.push(format!("{} attached", session.attached_clients));
         }
@@ -497,6 +520,14 @@ pub(super) fn window_holding(
             .as_ref()
             .is_some_and(|tree| crate::layout::leaves(tree).contains(id))
     })
+}
+
+/// How the session picker names a session's lifetime.
+const fn lifetime_word(lifetime: phux_protocol::wire::frame::SessionLifetime) -> &'static str {
+    match lifetime {
+        phux_protocol::wire::frame::SessionLifetime::Persistent => "persistent",
+        phux_protocol::wire::frame::SessionLifetime::Ephemeral => "ephemeral",
+    }
 }
 
 fn count_label(n: u16, one: &str, many: &str) -> String {

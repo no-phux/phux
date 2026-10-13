@@ -302,9 +302,9 @@ impl super::SessionLoop {
         let placed: Vec<ResourceId> = self
             .mirror
             .workspace
-            .windows
+            .groups
             .iter()
-            .filter_map(|window| window.state.tree.as_ref())
+            .filter_map(|group| group.state.tree.as_ref())
             .flat_map(crate::layout::leaves)
             .collect();
         let live = session_terminals(&self.peers.windows, &self.peers.resources, session);
@@ -312,7 +312,7 @@ impl super::SessionLoop {
             .into_iter()
             .filter(|id| !placed.contains(id))
             // A slot means ATTACHED seeded its mirror; a floating overlay
-            // never takes a window (ADR-0147).
+            // never takes a group (ADR-0147).
             .filter(|id| {
                 self.mirror
                     .panes
@@ -327,29 +327,38 @@ impl super::SessionLoop {
         let active = workspace.active;
         for id in unplaced {
             tracing::info!(resource = %id, "placing a live pane the stored layout omits");
-            let name = workspace.default_window_name();
-            workspace.add_window(name, id);
+            let name = workspace.default_group_name();
+            workspace.add_group(name, id);
         }
         workspace.active = active;
         true
     }
 
+    /// Adopt a terminal of this session from the cached graph as its own
+    /// tab; `false` when the graph does not list it in this session.
     pub(super) fn adopt_inventory_resource(&mut self, id: &ResourceId) -> bool {
-        let Some(window) = self.peers.windows.iter().find(|window| {
-            self.peers
-                .focused_session
-                .is_none_or(|session| window.session_id == session)
-                && crate::attach::sidebar_zones::window_contains_terminal(
-                    window,
-                    &self.peers.resources,
-                    id,
-                )
+        let Some(info) = self.peers.resources.iter().find(|info| {
+            info.id == *id
+                && info.kind.is_terminal()
+                && self.peers.focused_session.is_none_or(|session| {
+                    crate::attach::sidebar_zones::resource_session(info, &self.peers.windows)
+                        == Some(session)
+                })
         }) else {
             return false;
         };
-        // `GET_STATE` carries no layout (ADR-0030): adopt the pane alone.
+        // `GET_STATE` carries no layout (ADR-0030): adopt the pane alone. A
+        // legacy server's window names the tab.
         let layout = crate::layout::LayoutNode::Leaf(id.clone());
-        let name = window.name.clone();
+        let name = self
+            .peers
+            .windows
+            .iter()
+            .find(|window| window.id == info.window_id)
+            .map_or_else(
+                || self.mirror.workspace.default_group_name(),
+                |window| window.name.clone(),
+            );
         let inventory_leaves = crate::layout::leaves(&layout);
         if self.mirror.workspace.groups.len() == 1 {
             let bootstrap = self.mirror.workspace.groups[0]

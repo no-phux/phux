@@ -95,3 +95,18 @@ impl From<render::RenderError> for AttachError {
 }
 
 pub use crate::render::chrome::status_bar;
+
+/// An arrangement's groups as `(name, tree and focus)` plus the active index:
+/// what tests compare, since group ids are random.
+#[cfg(test)]
+pub(crate) fn arrangement_shape(
+    doc: &crate::layout::ArrangementDoc,
+) -> (Vec<(String, crate::layout::LayoutState)>, usize) {
+    (
+        doc.groups
+            .iter()
+            .map(|group| (group.name.clone(), group.state.clone()))
+            .collect(),
+        doc.active,
+    )
+}

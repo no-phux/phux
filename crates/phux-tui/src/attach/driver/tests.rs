@@ -1118,8 +1118,11 @@ fn all_floating_overlays_keep_sidebar_visible() {
         None,
         &HashMap::new(),
         &HashMap::new(),
-        &HashMap::new(),
-        &HashMap::new(),
+        crate::attach::fleet::ForeignSessions {
+            layouts: &HashMap::new(),
+            agents: &HashMap::new(),
+            terminals: &HashMap::new(),
+        },
     );
     assert!(!fleet_items.iter().all(SelectItem::is_header));
     let overlays: Vec<(&str, Box<dyn RenderOverlay>)> = vec![

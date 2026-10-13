@@ -98,9 +98,12 @@ pub(in crate::attach) struct FrameOutcome {
     pub(in crate::attach) unreachable_strays: Vec<phux_client::conditional_kill::BoundResource>,
     /// A locally originated layout change: broadcast via `SET_METADATA`.
     pub(in crate::attach) emit_set_metadata: bool,
-    /// ADR-0105: a keep-empty session's last pane closed; delete the stored
-    /// layout.
+    /// A persistent session's last arranged terminal closed with no member
+    /// left running; delete the stored layout.
     pub(in crate::attach) clear_layout: bool,
+    /// The attached session's membership changed on the server: recompute
+    /// its members from a fresh inventory.
+    pub(in crate::attach) members_dirty: bool,
     /// A close/spawn changed survivors' sizes: diff against the pre-frame
     /// rects and `RESIZE_TERMINAL` each changed leaf. Set only by those arms.
     pub(in crate::attach) reflow_panes: bool,

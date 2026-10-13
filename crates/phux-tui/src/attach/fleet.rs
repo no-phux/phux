@@ -92,6 +92,17 @@ pub(super) fn collect_pane_meta(
         .collect()
 }
 
+/// What the fleet knows about sessions other than the attached one.
+#[derive(Clone, Copy)]
+pub(super) struct ForeignSessions<'a> {
+    /// Each peer session's cached arrangement.
+    pub layouts: &'a HashMap<SessionId, ArrangementDoc>,
+    /// Each peer pane's `phux.agent/v1` record.
+    pub agents: &'a HashMap<ResourceId, AgentRecord>,
+    /// How many terminals each session holds in the cached graph.
+    pub terminals: &'a HashMap<SessionId, usize>,
+}
+
 /// Build the dashboard rows. Sessions are headers, current first then by
 /// name. Current-session panes (windows in order, DFS leaves) commit
 /// `focus-pane { window, pane }`; a foreign session with a cached layout
@@ -104,9 +115,13 @@ pub(super) fn fleet_items(
     focused_session: Option<SessionId>,
     agent_meta: &HashMap<ResourceId, AgentRecord>,
     pane_meta: &HashMap<ResourceId, FleetPaneMeta>,
-    foreign_layouts: &HashMap<SessionId, ArrangementDoc>,
-    foreign_agents: &HashMap<ResourceId, AgentRecord>,
+    foreign: ForeignSessions<'_>,
 ) -> Vec<SelectItem> {
+    let ForeignSessions {
+        layouts: foreign_layouts,
+        agents: foreign_agents,
+        terminals,
+    } = foreign;
     let mut ordered: Vec<&SessionInfo> = sessions.iter().collect();
     ordered.sort_by(|a, b| {
         let a_cur = Some(a.id) == focused_session;
@@ -131,7 +146,10 @@ pub(super) fn fleet_items(
                 Some(foreign) => {
                     items.extend(foreign_session_pane_rows(session, foreign, foreign_agents));
                 }
-                None => items.push(foreign_session_row(session)),
+                None => items.push(foreign_session_row(
+                    session,
+                    terminals.get(&session.id).copied(),
+                )),
             }
         }
     }
@@ -160,8 +178,11 @@ pub(super) fn live_fleet_items(
         peers.focused_session,
         agent_meta,
         &meta,
-        peers.foreign_layouts,
-        peers.foreign_agents,
+        ForeignSessions {
+            layouts: peers.foreign_layouts,
+            agents: peers.foreign_agents,
+            terminals: &peers.terminal_counts(),
+        },
     );
     items.extend(satellite_agent_items(
         peers.foreign_agents,
@@ -378,27 +399,33 @@ fn pane_row(
     item
 }
 
-/// A foreign session with no cached layout: one `switch-session` row.
-fn foreign_session_row(session: &SessionInfo) -> SelectItem {
-    let windows = if session.window_count == 1 {
-        "1 window".to_owned()
-    } else {
-        format!("{} windows", session.window_count)
-    };
+/// A foreign session with no cached layout: one `switch-session` row,
+/// naming how many terminals the session holds when the graph lists them.
+fn foreign_session_row(session: &SessionInfo, terminals: Option<usize>) -> SelectItem {
+    let count = terminals.map(|n| {
+        if n == 1 {
+            "1 terminal".to_owned()
+        } else {
+            format!("{n} terminals")
+        }
+    });
     let mut args = BTreeMap::new();
     args.insert("name".to_owned(), toml::Value::String(session.name.clone()));
     args.insert(
         "id".to_owned(),
         toml::Value::Integer(i64::from(session.id.get())),
     );
-    SelectItem::new(
+    let row = SelectItem::new(
         "switch to this session",
         phux_config::keybind::ResolvedAction {
             action: "switch-session".to_owned(),
             args,
         },
-    )
-    .secondary(windows)
+    );
+    match count {
+        Some(count) => row.secondary(count),
+        None => row,
+    }
     .indented()
 }
 
@@ -571,8 +598,11 @@ mod tests {
             None,
             agents,
             meta,
-            &HashMap::new(),
-            &HashMap::new(),
+            ForeignSessions {
+                layouts: &HashMap::new(),
+                agents: &HashMap::new(),
+                terminals: &HashMap::new(),
+            },
         )
     }
 
@@ -584,15 +614,19 @@ mod tests {
     fn groups_current_session_panes_under_header_and_foreign_as_switch_rows() {
         let workspace = two_window_workspace();
         let sessions = [sinfo(1, "work", 2), sinfo(2, "scratch", 3)];
-        // No cached foreign layout: the single switch row.
+        // No cached foreign layout: the single switch row, counting the
+        // session's terminals from the graph.
         let items = fleet_items(
             &workspace,
             &sessions,
             Some(SessionId::new(1)),
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
-            &HashMap::new(),
+            ForeignSessions {
+                layouts: &HashMap::new(),
+                agents: &HashMap::new(),
+                terminals: &HashMap::from([(SessionId::new(2), 3)]),
+            },
         );
         // Current session leads as a header, then one row per pane (3),
         // then the foreign session header + its switch row.
@@ -615,7 +649,7 @@ mod tests {
             items[5].action.args.get("id"),
             Some(&toml::Value::Integer(2))
         );
-        assert_eq!(items[5].secondary.as_deref(), Some("3 windows"));
+        assert_eq!(items[5].secondary.as_deref(), Some("3 terminals"));
     }
 
     #[test]
@@ -844,8 +878,11 @@ mod tests {
             Some(SessionId::new(2)),
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
-            &HashMap::new(),
+            ForeignSessions {
+                layouts: &HashMap::new(),
+                agents: &HashMap::new(),
+                terminals: &HashMap::new(),
+            },
         );
         let headers: Vec<&str> = items
             .iter()
@@ -879,8 +916,11 @@ mod tests {
             Some(SessionId::new(1)),
             &HashMap::new(),
             &HashMap::new(),
-            &foreign_layouts,
-            &foreign_agents,
+            ForeignSessions {
+                layouts: &foreign_layouts,
+                agents: &foreign_agents,
+                terminals: &HashMap::new(),
+            },
         );
         // work (current) header + its 1 pane, then scratch header + 3 pane
         // rows (no switch-session-only fallback).
@@ -941,8 +981,11 @@ mod tests {
             Some(SessionId::new(1)),
             &HashMap::new(),
             &HashMap::new(),
-            &foreign_layouts,
-            &HashMap::new(),
+            ForeignSessions {
+                layouts: &foreign_layouts,
+                agents: &HashMap::new(),
+                terminals: &HashMap::from([(SessionId::new(2), 4)]),
+            },
         );
         let scratch_hdr = items
             .iter()
@@ -952,7 +995,7 @@ mod tests {
         assert!(!items[scratch_hdr + 1].action.args.contains_key("window"));
         assert_eq!(
             items[scratch_hdr + 1].secondary.as_deref(),
-            Some("4 windows")
+            Some("4 terminals")
         );
     }
 

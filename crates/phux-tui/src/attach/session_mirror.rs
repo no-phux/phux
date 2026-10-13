@@ -13,7 +13,9 @@
 use std::collections::{HashMap, HashSet};
 
 use phux_client_core::session::EffectBuffer as KernelEffectBuffer;
-use phux_protocol::ids::ResourceId;
+use phux_protocol::ids::{ResourceId, SessionKey};
+use phux_protocol::wire::frame::SessionLifetime;
+use phux_protocol::wire::info::SessionInfo;
 
 use super::actions::{PendingSplit, PendingWindow};
 use super::pane_state::{AttachKernel, PaneSlot};
@@ -38,8 +40,14 @@ pub(in crate::attach) struct SessionMirror {
     pub(in crate::attach) zoomed: Option<ResourceId>,
     /// The attached session's name; changed only by a confirmed rename.
     pub(in crate::attach) session_name: String,
-    /// ADR-0105: whether the attached session is keep-empty.
-    pub(in crate::attach) keep_empty_session: bool,
+    /// The attached session's lifetime: a persistent session stays, empty if
+    /// need be, after its last terminal ends; an ephemeral one ends with it.
+    pub(in crate::attach) lifetime: SessionLifetime,
+    /// The attached session's record key, when the server reports one; org
+    /// events name sessions by key.
+    pub(in crate::attach) session_key: Option<SessionKey>,
+    /// Terminal-kind members of the attached session, arranged or not.
+    pub(in crate::attach) members: HashSet<ResourceId>,
     /// Local-echo predictions for the focused pane.
     pub(in crate::attach) predict: PredictionState,
     /// Parked split actions awaiting their `RESOURCE_SPAWNED` reply.
@@ -59,6 +67,12 @@ pub(in crate::attach) struct SessionMirror {
 }
 
 impl SessionMirror {
+    /// Members that hold no leaf in the arrangement and are not the floating
+    /// overlay: terminals that keep running with no view, sorted.
+    pub(in crate::attach) fn unarranged_members(&self) -> Vec<ResourceId> {
+        unarranged_members(&self.members, &self.workspace, &self.panes)
+    }
+
     /// The pane that owns paint focus: the floating overlay while one is
     /// open (ADR-0147), else the focused leaf.
     pub(in crate::attach) fn paint_focus(&self) -> Option<ResourceId> {
@@ -76,7 +90,9 @@ impl SessionMirror {
             focused_resource: None,
             zoomed: None,
             session_name: String::new(),
-            keep_empty_session: false,
+            lifetime: SessionLifetime::Ephemeral,
+            session_key: None,
+            members: HashSet::new(),
             predict,
             pending_splits: HashMap::new(),
             pending_windows: HashMap::new(),
@@ -86,4 +102,38 @@ impl SessionMirror {
             agent_meta: AgentMetaIndex::default(),
         }
     }
+}
+
+/// Whether `session` is persistent: its reported lifetime, else the legacy
+/// keep-empty facet from a server that reports no lifetime.
+#[must_use]
+pub(in crate::attach) fn session_lifetime(session: &SessionInfo) -> SessionLifetime {
+    session.lifetime.unwrap_or(if session.keep_empty {
+        SessionLifetime::Persistent
+    } else {
+        SessionLifetime::Ephemeral
+    })
+}
+
+/// `members` that hold no leaf in `workspace` and are not the floating
+/// overlay, sorted.
+pub(in crate::attach) fn unarranged_members(
+    members: &HashSet<ResourceId>,
+    workspace: &ArrangementDoc,
+    panes: &HashMap<ResourceId, PaneSlot>,
+) -> Vec<ResourceId> {
+    let arranged: HashSet<ResourceId> = workspace
+        .groups
+        .iter()
+        .filter_map(|group| group.state.tree.as_ref())
+        .flat_map(crate::layout::leaves)
+        .collect();
+    let floating = super::floating::floating_pane(panes);
+    let mut out: Vec<ResourceId> = members
+        .iter()
+        .filter(|id| !arranged.contains(*id) && Some(*id) != floating)
+        .cloned()
+        .collect();
+    out.sort();
+    out
 }

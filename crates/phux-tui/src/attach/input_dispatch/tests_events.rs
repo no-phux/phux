@@ -1425,8 +1425,8 @@ async fn kill_pane_dismisses_only_the_floating_overlay() {
     assert!(!env.panes.contains_key(&tid(9)));
     assert!(env.fx.expected_closes.contains(&tid(9)));
     assert_eq!(
-        env.fx.workspace,
-        crate::layout::ArrangementDoc::single(tid(1))
+        crate::attach::arrangement_shape(&env.fx.workspace),
+        crate::attach::arrangement_shape(&crate::layout::ArrangementDoc::single(tid(1)))
     );
     // Input is back on the layout pane.
     let sent = env.dispatch(vec![press(PhysicalKey::Q, Some("q"))]).await;
@@ -1466,8 +1466,8 @@ async fn a_non_layout_action_repaints_when_it_dismisses_the_floating_overlay() {
     assert!(!env.panes.contains_key(&tid(9)));
     assert!(env.fx.expected_closes.contains(&tid(9)));
     assert_eq!(
-        env.fx.workspace,
-        crate::layout::ArrangementDoc::single(tid(1))
+        crate::attach::arrangement_shape(&env.fx.workspace),
+        crate::attach::arrangement_shape(&crate::layout::ArrangementDoc::single(tid(1)))
     );
     assert!(
         env.fx.overlays.copy_selection().is_some(),
@@ -1492,8 +1492,8 @@ async fn a_blocked_layout_action_repaints_when_it_dismisses_the_floating_overlay
     assert_eq!(sent.frames.len(), 1, "new-window must stay blocked");
     assert!(!env.panes.contains_key(&tid(9)));
     assert_eq!(
-        env.fx.workspace,
-        crate::layout::ArrangementDoc::single(tid(1))
+        crate::attach::arrangement_shape(&env.fx.workspace),
+        crate::attach::arrangement_shape(&crate::layout::ArrangementDoc::single(tid(1)))
     );
     assert!(
         sent.repainted,

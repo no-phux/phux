@@ -1026,8 +1026,11 @@ fn only_the_fleet_overlay_accepts_a_live_fleet_refresh() {
         None,
         &HashMap::new(),
         &HashMap::new(),
-        &HashMap::new(),
-        &HashMap::new(),
+        crate::attach::fleet::ForeignSessions {
+            layouts: &HashMap::new(),
+            agents: &HashMap::new(),
+            terminals: &HashMap::new(),
+        },
     );
     let mut f = fx(workspace.clone());
     f.run(&bare_action("agent-fleet"));
@@ -1145,8 +1148,11 @@ fn focus_pane_switches_window_and_focuses_leaf() {
         None,
         &HashMap::new(),
         &HashMap::new(),
-        &HashMap::new(),
-        &HashMap::new(),
+        crate::attach::fleet::ForeignSessions {
+            layouts: &HashMap::new(),
+            agents: &HashMap::new(),
+            terminals: &HashMap::new(),
+        },
     );
     let effects = run(&items[1].action.clone(), &mut workspace);
     assert_eq!((workspace.active, effects.set_focus), (0, Some(tid(2))));
@@ -1246,12 +1252,28 @@ fn existing(
 
 #[test]
 fn session_picker_items_include_focused_first_and_commit_switch_session() {
-    let sessions = [sinfo(1, "work"), sinfo(2, "scratch"), sinfo(3, "logs")];
-    let items = session_picker_items(&sessions, Some(SessionId::new(1)));
+    let sessions = [
+        sinfo(1, "work"),
+        sinfo(2, "scratch"),
+        sinfo(3, "logs").with_lifetime(Some(
+            phux_protocol::wire::frame::SessionLifetime::Persistent,
+        )),
+    ];
+    // Terminal counts come from the resource graph; a session the graph does
+    // not list shows none.
+    let terminals = HashMap::from([(SessionId::new(1), 1), (SessionId::new(3), 2)]);
+    let items = session_picker_items(&sessions, Some(SessionId::new(1)), &terminals);
     let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
     assert_eq!(labels, ["work", "logs", "scratch"]);
-    assert_eq!(items[0].secondary.as_deref(), Some("1 window, current"));
-    assert_eq!(items[1].secondary.as_deref(), Some("1 window"));
+    assert_eq!(
+        items[0].secondary.as_deref(),
+        Some("1 terminal, ephemeral, current")
+    );
+    assert_eq!(
+        items[1].secondary.as_deref(),
+        Some("2 terminals, persistent")
+    );
+    assert_eq!(items[2].secondary.as_deref(), Some("ephemeral"));
     assert_eq!(items[0].action.action, "switch-session");
     assert_eq!(
         items[0].action.args.get("name"),
@@ -1546,7 +1568,10 @@ fn move_pane_picker_offers_only_exact_cached_local_destinations() {
     let mut workspace = ArrangementDoc::single(tid(1));
     let effects = run(&bare_action("move-pane"), &mut workspace);
     assert!(effects.bell && effects.move_pane.is_none());
-    assert_eq!(workspace, ArrangementDoc::single(tid(1)));
+    assert_eq!(
+        crate::attach::arrangement_shape(&workspace),
+        crate::attach::arrangement_shape(&ArrangementDoc::single(tid(1)))
+    );
 }
 
 // ---- host-grouped session picker ----------------------------------------------
@@ -1578,6 +1603,7 @@ fn session_picker_groups_rows_by_host() {
     let items = host_grouped_session_items(
         &sessions,
         Some(SessionId::new(1)),
+        &HashMap::new(),
         LOCAL_HOST_HEADER,
         &host_fixture(),
         &[],
@@ -1617,8 +1643,15 @@ fn session_picker_groups_rows_by_host() {
 
     let mut open = ArrangementDoc::single(tid(1));
     open.add_group("edge/build".to_owned(), satellite_id("edge", 9));
-    let items =
-        host_grouped_session_items(&[], None, LOCAL_HOST_HEADER, &host_fixture(), &[], &open);
+    let items = host_grouped_session_items(
+        &[],
+        None,
+        &HashMap::new(),
+        LOCAL_HOST_HEADER,
+        &host_fixture(),
+        &[],
+        &open,
+    );
     let build = items.iter().find(|i| i.label == "build").expect("row");
     assert!(
         build
@@ -1633,6 +1666,7 @@ fn session_picker_groups_rows_by_host() {
     let grouped = host_grouped_session_items(
         &sessions,
         Some(SessionId::new(1)),
+        &HashMap::new(),
         LOCAL_HOST_HEADER,
         &[],
         &[],
@@ -1640,7 +1674,7 @@ fn session_picker_groups_rows_by_host() {
     );
     assert_eq!(
         grouped.len(),
-        session_picker_items(&sessions, Some(SessionId::new(1))).len()
+        session_picker_items(&sessions, Some(SessionId::new(1)), &HashMap::new()).len()
     );
     assert!(grouped.iter().all(|item| !item.is_header()));
 }
@@ -1657,6 +1691,9 @@ fn machine_fixture() -> Vec<phux_core::host_list::HostJson> {
         attached_clients,
         keep_empty: false,
         empty: false,
+        lifetime: None,
+        members: 0,
+        exec: phux_core::session_list::ExecCounts::default(),
     };
     let host = |name: &str, label: &str, kind, sessions: Vec<SessionJson>| HostJson {
         name: name.to_owned(),
@@ -1678,7 +1715,13 @@ fn machine_fixture() -> Vec<phux_core::host_list::HostJson> {
             "mini",
             "mini",
             HostKind::Remote,
-            vec![session("build", 2, 0), session("phall", 1, 1)],
+            vec![session("build", 2, 0), {
+                // A machine whose server reports lifetimes counts members.
+                let mut keyed = session("phall", 1, 1);
+                keyed.lifetime = Some(phux_core::SessionLifetime::Persistent);
+                keyed.members = 3;
+                keyed
+            }],
         ),
         host("spare", "spare", HostKind::Remote, Vec::new()),
         HostJson {
@@ -1701,6 +1744,7 @@ fn session_picker_lists_other_machines() {
     let items = host_grouped_session_items(
         &sessions,
         Some(SessionId::new(1)),
+        &HashMap::new(),
         LOCAL_HOST_HEADER,
         &[],
         &crate::attach::hosts::other_hosts(&hosts, &AttachOrigin::Local),
@@ -1733,10 +1777,14 @@ fn session_picker_lists_other_machines() {
         build.action.args.get("name"),
         Some(&Value::String("build".to_owned()))
     );
-    assert_eq!(build.secondary.as_deref(), Some("on mini, 2 windows"));
+    assert_eq!(
+        build.secondary.as_deref(),
+        Some("on mini, 2 windows"),
+        "a machine that reports no lifetime counts windows"
+    );
     assert_eq!(
         items[4].secondary.as_deref(),
-        Some("on mini, 1 window, 1 attached")
+        Some("on mini, 3 members, persistent, 1 attached")
     );
 
     // Attached to `mini`: its group is the attach stream's, headed by its
@@ -1744,6 +1792,7 @@ fn session_picker_lists_other_machines() {
     let items = host_grouped_session_items(
         &sessions,
         Some(SessionId::new(1)),
+        &HashMap::new(),
         "mini",
         &[],
         &crate::attach::hosts::other_hosts(&hosts, &AttachOrigin::Remote("mini".to_owned())),
@@ -1775,6 +1824,7 @@ fn a_machine_row_commits_switch_host() {
     let items = host_grouped_session_items(
         &[],
         None,
+        &HashMap::new(),
         LOCAL_HOST_HEADER,
         &[],
         &crate::attach::hosts::other_hosts(&hosts, &crate::attach::hosts::AttachOrigin::Local),
@@ -1800,6 +1850,7 @@ fn session_picker_filter_spans_machines() {
     let items = host_grouped_session_items(
         &[sinfo(1, "work"), sinfo(2, "notes")],
         Some(SessionId::new(1)),
+        &HashMap::new(),
         LOCAL_HOST_HEADER,
         &host_fixture(),
         &crate::attach::hosts::other_hosts(&hosts, &crate::attach::hosts::AttachOrigin::Local),
@@ -1844,6 +1895,7 @@ fn session_picker_with_machines_render() {
     let mut items = host_grouped_session_items(
         &[sinfo(1, "work"), sinfo(2, "notes")],
         Some(SessionId::new(1)),
+        &HashMap::from([(SessionId::new(1), 1), (SessionId::new(2), 2)]),
         LOCAL_HOST_HEADER,
         &host_fixture(),
         &crate::attach::hosts::other_hosts(&hosts, &crate::attach::hosts::AttachOrigin::Local),

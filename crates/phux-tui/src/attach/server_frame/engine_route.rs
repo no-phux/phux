@@ -102,11 +102,12 @@ pub(super) fn attach_agent_sessions<'a>(
         .collect()
 }
 
-/// The panes an ATTACH will bootstrap: the focused session's (all its
-/// windows), Terminal-kind only. The snapshot is a whole-workspace view, but
-/// counting other sessions' panes left `ATTACH_READY` unresolvable whenever a
-/// second session existed. A pane whose window is not listed is excluded, so
-/// the failure mode is a late paint rather than an attach that never completes.
+/// The panes an ATTACH will bootstrap: the focused session's members,
+/// arranged or not, Terminal-kind only. The snapshot is a whole-server view,
+/// but counting other sessions' panes left `ATTACH_READY` unresolvable
+/// whenever a second session existed. A pane whose session the snapshot
+/// cannot name is excluded, so the failure mode is a late paint rather than
+/// an attach that never completes.
 pub(in crate::attach) fn attach_participants(snapshot: &SessionSnapshot) -> Vec<ResourceId> {
     session_terminals(
         &snapshot.windows,
@@ -115,21 +116,19 @@ pub(in crate::attach) fn attach_participants(snapshot: &SessionSnapshot) -> Vec<
     )
 }
 
-/// Every Terminal the server places in one of `session`'s windows.
+/// Every Terminal that belongs to `session`, arranged or not, joined through
+/// the same rule as [`phux_client::resource::session_of`].
 pub(in crate::attach) fn session_terminals(
     windows: &[WindowInfo],
     resources: &[ResourceInfo],
     session: SessionId,
 ) -> Vec<ResourceId> {
-    let session_windows: Vec<_> = windows
-        .iter()
-        .filter(|window| window.session_id == session)
-        .map(|window| window.id)
-        .collect();
     resources
         .iter()
         .filter(|pane| is_terminal(pane))
-        .filter(|pane| session_windows.contains(&pane.window_id))
+        .filter(|pane| {
+            crate::attach::sidebar_zones::resource_session(pane, windows) == Some(session)
+        })
         .map(|pane| pane.id.clone())
         .collect()
 }

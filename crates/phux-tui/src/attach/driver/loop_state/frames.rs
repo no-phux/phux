@@ -75,7 +75,7 @@ impl super::SessionLoop {
             if self.place_unplaced_panes() {
                 outcome.layout_replaced = true;
                 outcome.emit_set_metadata = true;
-            } else if key_absent && !self.mirror.workspace.windows.is_empty() {
+            } else if key_absent && !self.mirror.workspace.groups.is_empty() {
                 outcome.emit_set_metadata = true;
             }
         }
@@ -632,6 +632,11 @@ impl super::SessionLoop {
         self.emit_stream_cursor_requests(conn, outcome).await?;
         self.emit_layout_followups(conn, outcome, sidebar, prev_rects)
             .await?;
+        // The server moved a resource into or out of this session: a fresh
+        // graph recomputes the members.
+        if outcome.members_dirty {
+            self.request_host_inventory(conn).await?;
+        }
         // ADR-0147: a floating overlay just opened; state its box size, as a
         // split's reflow does for a new tile.
         if outcome.size_floating {

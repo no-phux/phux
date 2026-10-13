@@ -338,14 +338,16 @@ pub(super) fn paint_full_frame<W: super::RenderSink>(
     seal_frame(block, painted, composed, chrome.status_bar.as_deref_mut())
 }
 
-/// ADR-0105: the empty state's title line.
+/// The empty state's title line.
 pub(super) const EMPTY_SESSION_TITLE: &str = "Empty session";
-/// ADR-0105: the empty state's explanation line.
+/// The empty state's explanation line.
 pub(super) const EMPTY_SESSION_BODY: &str = "Open a new window to start a terminal.";
+/// The not-arranged state's explanation line.
+pub(super) const UNARRANGED_BODY: &str = "Closed views leave their terminals running.";
 
-/// The lines a keep-empty session with no windows shows (ADR-0105). The hint
-/// names the chord bound to `new-window`, or the command palette when no
-/// chord is bound.
+/// The lines a persistent session with no members shows. The hint names the
+/// chord bound to `new-window`, or the command palette when no chord is
+/// bound.
 pub(super) fn empty_session_lines(new_window_chord: Option<&str>) -> [String; 3] {
     let hint = new_window_chord.map_or_else(
         || "Run new-window from the command palette.".to_owned(),
@@ -358,8 +360,24 @@ pub(super) fn empty_session_lines(new_window_chord: Option<&str>) -> [String; 3]
     ]
 }
 
-/// Paint a keep-empty session that holds no windows (ADR-0105): the chrome
-/// as usual and [`empty_session_lines`] centered in the content area. One
+/// The lines a session shows when `running` members have no view (R15). The
+/// hint names the chord bound to `reopen-views`, or the command palette when
+/// no chord is bound.
+pub(super) fn unarranged_lines(running: usize, reopen_chord: Option<&str>) -> [String; 3] {
+    let hint = reopen_chord.map_or_else(
+        || "Run reopen-views from the command palette.".to_owned(),
+        |chord| format!("{chord}  reopen views"),
+    );
+    [
+        format!("{running} running, not arranged"),
+        UNARRANGED_BODY.to_owned(),
+        hint,
+    ]
+}
+
+/// Paint a session with nothing arranged: the chrome as usual and the
+/// empty-state lines ([`empty_session_lines`] or [`unarranged_lines`])
+/// centered in the content area. One
 /// frame block like [`paint_full_frame`]; the cursor ends parked and hidden
 /// at the content origin, since there is no pane to own it.
 pub(super) fn paint_empty_session<W: super::RenderSink>(
@@ -1036,8 +1054,23 @@ mod tests {
         painter
     }
 
-    /// ADR-0105: the empty state says what happened and names the
-    /// `new-window` chord (or the palette), with no pane owning the cursor.
+    /// Members running with no view are counted, with the action that shows
+    /// them again (R15).
+    #[test]
+    fn unarranged_state_counts_running_members_and_names_the_reopen_action() {
+        assert_eq!(
+            unarranged_lines(2, Some("C-a R")),
+            [
+                "2 running, not arranged".to_owned(),
+                "Closed views leave their terminals running.".to_owned(),
+                "C-a R  reopen views".to_owned(),
+            ]
+        );
+        assert!(unarranged_lines(1, None)[2].contains("command palette"));
+    }
+
+    /// The empty state says what happened and names the `new-window` chord
+    /// (or the palette), with no pane owning the cursor.
     #[test]
     fn empty_session_state_names_the_new_window_action() {
         let lines = empty_session_lines(Some("C-a c"));
