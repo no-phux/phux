@@ -9,7 +9,7 @@
     "url": "https://github.com/no-phux/phux.git",
     "directory": "integrations/omp"
   },
-  "files": ["dist", "skills"],
+  "files": ["dist", "skills", "README.md"],
   "exports": {".": "./dist/index.js"},
   "omp": {"extensions": ["./dist/index.js"]},
   "scripts": {

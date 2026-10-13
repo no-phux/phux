@@ -20,6 +20,9 @@ grok plugin marketplace add no-phux/phux
 grok plugin install phux@phux --trust
 ```
 
+Grok updates installed plugins at session start unless
+`plugin_auto_update = false`; `grok plugin update phux` updates on demand.
+
 From a checkout, `grok plugin install ./integrations/grok --trust` loads the
 same plugin. Hooks stay quiet unless `PHUX_TERMINAL_ID` is set, which a phux
 pane exports for its child.

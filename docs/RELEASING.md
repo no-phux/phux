@@ -330,7 +330,10 @@ Linux x86_64, and Linux arm64.
 | `phux`, `phux-mcp` binaries | Homebrew + GitHub release | [`release.yml`](../.github/workflows/release.yml), called by [`publish.yml`](../.github/workflows/publish.yml) |
 | `phux-protocol` crate | crates.io | [`publish-crate.yml`](../.github/workflows/publish-crate.yml), manual dispatch only |
 | `@phux/pi` | npm + GitHub release | `pi-extension-vX.Y.Z`, [`agent-integration-release.yml`](../.github/workflows/agent-integration-release.yml) |
+| `@phux/opencode` (OpenCode V2 plugin) | npm + GitHub release | `opencode-plugin-vX.Y.Z`, [`agent-integration-release.yml`](../.github/workflows/agent-integration-release.yml) |
+| `@phux/omp` (Oh My Pi extension) | npm + GitHub release | `omp-extension-vX.Y.Z`, [`agent-integration-release.yml`](../.github/workflows/agent-integration-release.yml) |
 | Claude Code plugin | repository marketplace + GitHub release | `claude-plugin-vX.Y.Z`, [`.claude-plugin/marketplace.json`](../.claude-plugin/marketplace.json) |
+| Grok plugin | repository marketplace + GitHub release | `grok-plugin-vX.Y.Z`, [`.grok-plugin/marketplace.json`](../.grok-plugin/marketplace.json) |
 | Phux Cockpit | Homebrew cask + GitHub release | `cockpit-vX.Y.Z`, ZIP + DMG + `SHA256SUMS`, [`cockpit-release.yml`](../.github/workflows/cockpit-release.yml) |
 | Phux Desktop Alpha | GitHub prerelease + desktop installer | `desktop-vX.Y.Z-alpha.N`, ZIP + `SHA256SUMS`, [`desktop-release.yml`](../.github/workflows/desktop-release.yml); Apple silicon macOS only |
 | `PhuxFFI.xcframework` (phux-client-ffi for iOS, simulator, macOS) | GitHub release asset on `vX.Y.Z` | [`ffi-xcframework.yml`](../.github/workflows/ffi-xcframework.yml), called by `publish.yml`; see [PhuxFFI xcframework](#phuxffi-xcframework) |

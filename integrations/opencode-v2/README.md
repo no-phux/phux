@@ -10,6 +10,9 @@ terminals only where a terminal is the point.
 opencode plugin add @phux/opencode
 ```
 
+This needs `@phux/opencode` 0.4.0 or newer; 0.3.0 and earlier are the retired
+OpenCode V1 adapter.
+
 Then list the terminal companion in global `cli.json` (see below) as
 `{ "plugins": ["@phux/opencode"] }`. Leave the version off so updates reach
 it: OpenCode never updates plugins on its own, so run `opencode plugin check`

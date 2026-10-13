@@ -35,8 +35,8 @@ alone does not install it.
 
 1. Install phux and complete the [local quickstart](../QUICKSTART.md). Install
    and authenticate OpenCode separately.
-2. Install the plugin with `opencode plugin add @phux/opencode`, globally for
-   all projects or in one project's configuration for that project only. To
+2. Install the plugin with `opencode plugin add @phux/opencode`, which adds it
+   to your global configuration. To
    load a checkout instead, follow the
    [checkout load instructions](../../integrations/opencode-v2/README.md#build-and-load-from-a-checkout);
    do not load both the published package and a checkout at once.

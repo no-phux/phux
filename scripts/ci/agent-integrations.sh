@@ -26,7 +26,8 @@ git diff --exit-code -- integrations/runtime/dist
     bun install --frozen-lockfile
     bun run gates
 )
-git diff --exit-code -- integrations/opencode-v2/index.js
+# index.js and tui.js ship as committed bundles; the release lane checks both.
+git diff --exit-code -- integrations/opencode-v2
 
 (
     cd integrations/omp
