@@ -110,6 +110,7 @@ Agent-facing verbs in the JSON index of `docs/consumers/agents.md` that have no 
 - `phux restore`: an operator's after-restart sweep; an agent relaunches the one pane it means with `phux_relaunch`.
 - `phux rec`: not exposed over MCP yet; a recording is written to a file on the adapter's host.
 - `phux play`: not exposed over MCP yet; playback replays a file from the adapter's host.
+- `phux rec mark`: not exposed over MCP yet; it marks recordings written on the adapter's host.
 
 ## Annotation sources
 

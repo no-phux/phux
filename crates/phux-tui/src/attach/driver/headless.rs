@@ -504,9 +504,9 @@ pub struct CompositedCapture<'a> {
 /// Attaches with a zero viewport, the same non-voting attach as
 /// [`run_headless_rendered`], and composites into `capture.cast_path` at
 /// the caller's cell grid. The grid is a virtual viewport owned by
-/// [`SessionRecorder::create_virtual`]: the size probe never reads the
-/// host terminal, and this function never sends `VIEWPORT_RESIZE` or a
-/// pane resize. Real panes keep the size they had.
+/// [`crate::attach::record::SessionRecorder::create_virtual`]: the size
+/// probe never reads the host terminal, and this function never sends
+/// `VIEWPORT_RESIZE` or a pane resize. Real panes keep the size they had.
 ///
 /// Stops on Ctrl-C, `capture.max_duration`, or the server going away.
 /// Whatever was captured is left as a playable cast.

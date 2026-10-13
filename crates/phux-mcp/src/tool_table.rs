@@ -453,6 +453,10 @@ pub(crate) const CLI_ONLY: &[(&str, &str)] = &[
         "play",
         "not exposed over MCP yet; playback replays a file from the adapter's host",
     ),
+    (
+        "rec mark",
+        "not exposed over MCP yet; it marks recordings written on the adapter's host",
+    ),
 ];
 
 /// The row for `tool`.
