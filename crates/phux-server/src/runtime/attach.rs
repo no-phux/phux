@@ -959,7 +959,6 @@ impl OutputPumpContext {
         )
         .await
         .map_err(|failure| {
-            warn!(?failure, "diagnostic: native publication activation failed");
             // The pane exited while this pump was blocked publishing its
             // replacement to a slow consumer: the pane ended, the client
             // did not.
@@ -1009,18 +1008,12 @@ impl OutputPumpContext {
             });
             let reply = tokio::time::timeout(CAPTURE_WAIT, capture)
                 .await
-                .map_err(|_| {
-                    warn!("diagnostic: final native capture timed out");
-                    PumpFault::PublicationNotActivated
-                })?
+                .map_err(|_| PumpFault::PublicationNotActivated)?
                 .map_err(|failure| match failure {
                     NativeRequestFailure::Unsent | NativeRequestFailure::Dropped => {
                         PumpFault::PaneGone
                     }
-                    NativeRequestFailure::Refused(error) => {
-                        warn!(?error, "diagnostic: final native capture refused");
-                        PumpFault::PublicationNotActivated
-                    }
+                    NativeRequestFailure::Refused(_) => PumpFault::PublicationNotActivated,
                 })?;
             if generation.is_active() {
                 self.out_tx
