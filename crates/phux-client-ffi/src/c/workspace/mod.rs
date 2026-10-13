@@ -14,7 +14,7 @@ pub use types::*;
 
 use crate::c::{client::Client, error::BridgeError};
 use model::{Catalog, Node};
-use phux_client_core::layout::{LAYOUT_METADATA_GROUP, MAX_LAYOUT_METADATA_BYTES, Workspace};
+use phux_client_core::layout::{ArrangementDoc, LAYOUT_METADATA_GROUP, MAX_LAYOUT_METADATA_BYTES};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, FrameKind, Scope, StateScope,
 };
@@ -29,7 +29,7 @@ struct Pending {
     set_id: Option<u32>,
     catalog: Option<Catalog>,
     metadata: Option<MetadataReply>,
-    proposed: Option<Workspace>,
+    proposed: Option<ArrangementDoc>,
 }
 
 enum MetadataReply {
@@ -55,7 +55,7 @@ pub(crate) struct SharedWorkspace {
     pub(super) status: u32,
     pub(super) message: Vec<u8>,
     catalog: Catalog,
-    topology: Workspace,
+    topology: ArrangementDoc,
     nodes: Vec<Node>,
     roots: Vec<u32>,
     pending: Option<Pending>,
@@ -74,7 +74,7 @@ impl Default for SharedWorkspace {
             status: 0,
             message: Vec::new(),
             catalog: Catalog::default(),
-            topology: Workspace::new(),
+            topology: ArrangementDoc::new(),
             nodes: Vec::new(),
             roots: Vec::new(),
             pending: None,
@@ -177,7 +177,7 @@ fn metadata_frame(id: u32, selected: u32) -> FrameKind {
 fn start_read(
     client: &mut Client,
     request: u32,
-    proposed: Option<(Workspace, Vec<u8>)>,
+    proposed: Option<(ArrangementDoc, Vec<u8>)>,
 ) -> Result<(), BridgeError> {
     client.workspace.busy()?;
     if client.outgoing.len() > 125 {
@@ -204,7 +204,7 @@ fn start_read(
 
 fn queue_proposed(
     client: &mut Client,
-    proposed: Option<&(Workspace, Vec<u8>)>,
+    proposed: Option<&(ArrangementDoc, Vec<u8>)>,
 ) -> Result<Option<u32>, BridgeError> {
     let Some((_, bytes)) = proposed else {
         return Ok(None);
@@ -368,11 +368,11 @@ fn complete_snapshot(client: &mut Client, pending: Pending) -> Result<(), Bridge
     Ok(())
 }
 
-fn topology_equal(a: &Workspace, b: &Workspace) -> bool {
-    a.windows.len() == b.windows.len()
-        && a.windows
+fn topology_equal(a: &ArrangementDoc, b: &ArrangementDoc) -> bool {
+    a.groups.len() == b.groups.len()
+        && a.groups
             .iter()
-            .zip(&b.windows)
+            .zip(&b.groups)
             .all(|(a, b)| a.id == b.id && a.name == b.name && a.state.tree == b.state.tree)
 }
 
@@ -437,7 +437,7 @@ pub(crate) fn session_summaries(
 fn publish(
     client: &mut Client,
     catalog: Catalog,
-    topology: Workspace,
+    topology: ArrangementDoc,
     authoritative: bool,
 ) -> Result<(), BridgeError> {
     let (nodes, roots) = model::flatten(&topology)?;

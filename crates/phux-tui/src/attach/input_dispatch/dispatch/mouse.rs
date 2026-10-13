@@ -57,7 +57,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         let content = content_rect(self.ctx.viewport, self.ctx.bar, self.ctx.sidebar);
         // Hit-test the render layout, so a zoomed pane receives the click.
         let decision = {
-            let Some(render_ls) = self.ctx.workspace.render_window(self.ctx.zoomed.as_ref()) else {
+            let Some(render_ls) = self.ctx.workspace.render_group(self.ctx.zoomed.as_ref()) else {
                 tracing::debug!("dropping mouse event: no active window");
                 return Ok(StageOutcome::CONSUMED);
             };
@@ -365,7 +365,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
 
     /// Move client-local focus to the clicked pane.
     fn focus_pane_from_click(&mut self, target: &ResourceId) {
-        if let Some(ls) = self.ctx.workspace.active_window_mut() {
+        if let Some(ls) = self.ctx.workspace.active_group_mut() {
             ls.focus = Some(target.clone());
         }
         self.ctx
@@ -600,7 +600,7 @@ pub(in crate::attach::input_dispatch) fn drag_resize(
     let viewport = ctx.viewport;
     let bar = ctx.bar;
     let sidebar = ctx.sidebar;
-    let Some(ls) = ctx.workspace.active_window_mut() else {
+    let Some(ls) = ctx.workspace.active_group_mut() else {
         return false;
     };
     let pointer = (quantize_cell(mouse.x), quantize_cell(mouse.y));
@@ -765,7 +765,7 @@ pub(in crate::attach::input_dispatch) fn open_context_menu(
 /// windows yet. Used as the window menu's title.
 fn active_window_name(ctx: &DispatchCtx<'_>) -> String {
     ctx.workspace
-        .windows
+        .groups
         .get(ctx.workspace.active)
         .map_or_else(String::new, |w| w.name.clone())
 }

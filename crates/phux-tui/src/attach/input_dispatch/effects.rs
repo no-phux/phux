@@ -15,7 +15,7 @@ use crate::attach::focus::FocusHistory;
 use crate::attach::outcome::AttachError;
 use crate::attach::pane_state::{PaneSlot, reanchor_predict_to_pane};
 use crate::attach::plugin_actions::PluginRunResult;
-use crate::layout::{SplitDir, Workspace};
+use crate::layout::{ArrangementDoc, SplitDir};
 use crate::predict::PredictionState;
 use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
 
@@ -209,9 +209,9 @@ async fn apply_pane_move(
     }
 }
 
-fn pane_coordinates(workspace: &Workspace, target: &ResourceId) -> Option<(usize, usize)> {
+fn pane_coordinates(workspace: &ArrangementDoc, target: &ResourceId) -> Option<(usize, usize)> {
     workspace
-        .windows
+        .groups
         .iter()
         .enumerate()
         .find_map(|(window, item)| {
@@ -699,7 +699,7 @@ pub(in crate::attach) struct PendingSessionRename {
 
 /// Encode the workspace for `SET_METADATA`, logging encode failures.
 /// Returns `None` on failure — caller should not emit a frame in that case.
-pub(in crate::attach) fn encode_layout_or_log(workspace: &Workspace) -> Option<Vec<u8>> {
+pub(in crate::attach) fn encode_layout_or_log(workspace: &ArrangementDoc) -> Option<Vec<u8>> {
     match workspace.encode_cbor() {
         Ok(bytes) => Some(bytes),
         Err(err) => {

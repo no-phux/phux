@@ -75,7 +75,7 @@ pub unsafe extern "C" fn phux_client_workspace_info(
             revision: ws.revision,
             session_id: ws.selected,
             state: ws.state,
-            window_count: count(ws.topology.windows.len())?,
+            window_count: count(ws.topology.groups.len())?,
             node_count: count(ws.nodes.len())?,
             terminal_count: count(ws.catalog.terminals.len())?,
             request_id: ws.request,
@@ -102,7 +102,7 @@ pub unsafe extern "C" fn phux_client_workspace_window_get(
         check_struct(out.size, mem::size_of::<PhuxWorkspaceWindow>(), out.version)?;
         *out = PhuxWorkspaceWindow::default();
         let ws = &client.workspace;
-        let window = ws.topology.windows.get(index).ok_or_else(no_value)?;
+        let window = ws.topology.groups.get(index).ok_or_else(no_value)?;
         *out = PhuxWorkspaceWindow {
             window_id: window.id,
             name: bytes_out(window.name.as_bytes()),

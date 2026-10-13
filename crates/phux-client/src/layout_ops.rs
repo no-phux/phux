@@ -1,5 +1,5 @@
 //! Headless read-modify-write of a session's persisted TUI layout
-//! (`phux.tui.layout/v1/<session>`, a v3 [`Workspace`] envelope) over L3
+//! (`phux.tui.layout/v1/<session>`, a v3 [`ArrangementDoc`] envelope) over L3
 //! metadata, for the CLI and MCP.
 //!
 //! There is deliberately no headless focus mutation (ADR-0049). Writes are
@@ -13,8 +13,8 @@ use thiserror::Error;
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
 use crate::layout::{
-    LayoutDecodeError, LayoutEncodeError, LayoutError, LayoutNode, SplitDir, Workspace, kill_pane,
-    leaves, repair_focus, split_at,
+    ArrangementDoc, LayoutDecodeError, LayoutEncodeError, LayoutError, LayoutNode, SplitDir,
+    kill_pane, leaves, repair_focus, split_at,
 };
 
 pub use crate::layout::{LAYOUT_KEY, layout_key};
@@ -64,7 +64,7 @@ pub fn validate_projection_key(key: &str, session: SessionId) -> Result<(), Layo
     Ok(())
 }
 
-/// One pure mutation of a decoded [`Workspace`].
+/// One pure mutation of a decoded [`ArrangementDoc`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum LayoutMutation {
     /// Insert `new_pane` beside `target`.
@@ -225,10 +225,10 @@ impl<'a> LayoutOps<'a> {
     ///
     /// Returns [`LayoutOpsError::MissingLayout`] when the key is absent, plus
     /// transport, refusal, or envelope decode errors.
-    pub async fn read(&mut self) -> Result<Workspace, LayoutOpsError> {
+    pub async fn read(&mut self) -> Result<ArrangementDoc, LayoutOpsError> {
         let value = self.get_value().await?;
         let bytes = value.ok_or(LayoutOpsError::MissingLayout)?;
-        Workspace::decode_cbor(&bytes).map_err(Into::into)
+        ArrangementDoc::decode_cbor(&bytes).map_err(Into::into)
     }
 
     /// Read this session's layout, writing and confirming `fallback` only
@@ -237,7 +237,10 @@ impl<'a> LayoutOps<'a> {
     /// # Errors
     ///
     /// Returns transport, refusal, or envelope codec errors.
-    pub async fn read_or_seed(&mut self, fallback: Workspace) -> Result<Workspace, LayoutOpsError> {
+    pub async fn read_or_seed(
+        &mut self,
+        fallback: ArrangementDoc,
+    ) -> Result<ArrangementDoc, LayoutOpsError> {
         match self.read().await {
             Ok(workspace) => Ok(workspace),
             Err(LayoutOpsError::MissingLayout) => self.write_and_confirm(&fallback).await,
@@ -251,7 +254,10 @@ impl<'a> LayoutOps<'a> {
     /// # Errors
     ///
     /// Returns transport/envelope errors or a mutation-specific rejection.
-    pub async fn mutate(&mut self, mutation: LayoutMutation) -> Result<Workspace, LayoutOpsError> {
+    pub async fn mutate(
+        &mut self,
+        mutation: LayoutMutation,
+    ) -> Result<ArrangementDoc, LayoutOpsError> {
         let mut workspace = self.read().await?;
         apply_mutation(&mut workspace, &mutation)?;
         self.write_and_confirm(&workspace).await
@@ -265,9 +271,9 @@ impl<'a> LayoutOps<'a> {
     /// Returns transport/envelope errors or a mutation-specific rejection.
     pub async fn mutate_or_seed(
         &mut self,
-        fallback: Workspace,
+        fallback: ArrangementDoc,
         mutation: LayoutMutation,
-    ) -> Result<Workspace, LayoutOpsError> {
+    ) -> Result<ArrangementDoc, LayoutOpsError> {
         let mut workspace = match self.read().await {
             Ok(workspace) => workspace,
             Err(LayoutOpsError::MissingLayout) => fallback,
@@ -299,8 +305,8 @@ impl<'a> LayoutOps<'a> {
     /// write (a concurrent writer, or an oversized value silently dropped).
     pub async fn write_and_confirm(
         &mut self,
-        workspace: &Workspace,
-    ) -> Result<Workspace, LayoutOpsError> {
+        workspace: &ArrangementDoc,
+    ) -> Result<ArrangementDoc, LayoutOpsError> {
         let bytes = workspace.encode_cbor()?;
         let set_request_id = self.allocate_request_id();
         self.conn
@@ -318,7 +324,7 @@ impl<'a> LayoutOps<'a> {
         if read_back != bytes {
             return Err(LayoutOpsError::NotConfirmed);
         }
-        Workspace::decode_cbor(&read_back).map_err(Into::into)
+        ArrangementDoc::decode_cbor(&read_back).map_err(Into::into)
     }
 
     const fn allocate_request_id(&mut self) -> u32 {
@@ -337,7 +343,7 @@ impl<'a> LayoutOps<'a> {
 pub async fn write_layout_on(
     socket_path: &std::path::Path,
     session: SessionId,
-    workspace: &Workspace,
+    workspace: &ArrangementDoc,
     first_request_id: u32,
 ) -> Result<(), LayoutOpsError> {
     let mut conn = Connection::connect(socket_path).await?;
@@ -354,7 +360,7 @@ pub async fn write_layout_on(
 /// Rejects missing/duplicate targets, invalid ratios, same-pane operations,
 /// and closing the final pane.
 pub fn apply_mutation(
-    workspace: &mut Workspace,
+    workspace: &mut ArrangementDoc,
     mutation: &LayoutMutation,
 ) -> Result<(), LayoutOpsError> {
     match mutation {
@@ -384,11 +390,11 @@ pub fn apply_mutation(
 /// The tree of `workspace.windows[index]`, blaming `blame` when the window
 /// carries no tree at all.
 fn window_tree<'a>(
-    workspace: &'a Workspace,
+    workspace: &'a ArrangementDoc,
     index: usize,
     blame: &ResourceId,
 ) -> Result<&'a LayoutNode, LayoutOpsError> {
-    workspace.windows[index]
+    workspace.groups[index]
         .state
         .tree
         .as_ref()
@@ -396,14 +402,17 @@ fn window_tree<'a>(
 }
 
 /// The index of the window holding `target`, or [`LayoutOpsError::ForeignTarget`].
-fn require_window(workspace: &Workspace, target: &ResourceId) -> Result<usize, LayoutOpsError> {
+fn require_window(
+    workspace: &ArrangementDoc,
+    target: &ResourceId,
+) -> Result<usize, LayoutOpsError> {
     find_window(workspace, target).ok_or_else(|| LayoutOpsError::ForeignTarget(target.clone()))
 }
 
 /// Split `target` to make room for `new_pane`, moving focus to the new pane
 /// only when `focus_new_pane` is set.
 fn apply_split(
-    workspace: &mut Workspace,
+    workspace: &mut ArrangementDoc,
     target: &ResourceId,
     new_pane: &ResourceId,
     dir: SplitDir,
@@ -415,9 +424,9 @@ fn apply_split(
     }
     let index = require_window(workspace, target)?;
     let tree = window_tree(workspace, index, target)?;
-    workspace.windows[index].state.tree = Some(split_at(tree, target, new_pane, dir, ratio)?);
+    workspace.groups[index].state.tree = Some(split_at(tree, target, new_pane, dir, ratio)?);
     if focus_new_pane {
-        workspace.windows[index].state.focus = Some(new_pane.clone());
+        workspace.groups[index].state.focus = Some(new_pane.clone());
         workspace.active = index;
     }
     Ok(())
@@ -425,7 +434,7 @@ fn apply_split(
 
 /// Exchange the leaf positions of `first` and `second` across every window.
 fn apply_swap(
-    workspace: &mut Workspace,
+    workspace: &mut ArrangementDoc,
     first: &ResourceId,
     second: &ResourceId,
 ) -> Result<(), LayoutOpsError> {
@@ -434,7 +443,7 @@ fn apply_swap(
     }
     require_window(workspace, first)?;
     require_window(workspace, second)?;
-    for window in &mut workspace.windows {
+    for window in &mut workspace.groups {
         if let Some(tree) = window.state.tree.as_ref() {
             window.state.tree = Some(swap_leaves(tree, first, second)?);
         }
@@ -444,7 +453,7 @@ fn apply_swap(
 }
 
 /// Remove `target`, refusing to close the workspace's final pane.
-fn apply_close(workspace: &mut Workspace, target: &ResourceId) -> Result<(), LayoutOpsError> {
+fn apply_close(workspace: &mut ArrangementDoc, target: &ResourceId) -> Result<(), LayoutOpsError> {
     workspace.close_pane(target).map_err(|err| match err {
         LayoutError::LastPane => LayoutOpsError::LastPane,
         LayoutError::PaneNotInLayout(id) => LayoutOpsError::ForeignTarget(id),
@@ -453,7 +462,7 @@ fn apply_close(workspace: &mut Workspace, target: &ResourceId) -> Result<(), Lay
 }
 
 fn apply_move(
-    workspace: &mut Workspace,
+    workspace: &mut ArrangementDoc,
     source: &ResourceId,
     target: &ResourceId,
     dir: SplitDir,
@@ -486,7 +495,7 @@ fn apply_move(
 /// Re-place `source` next to `target` inside the single window holding both:
 /// collapse the source leaf first, then split the collapsed tree.
 fn move_within_window(
-    workspace: &mut Workspace,
+    workspace: &mut ArrangementDoc,
     index: usize,
     source: &ResourceId,
     target: &ResourceId,
@@ -496,8 +505,8 @@ fn move_within_window(
     let tree = window_tree(workspace, index, source)?;
     let collapsed = kill_pane(tree, source)?.ok_or(LayoutOpsError::LastPane)?;
     let moved = split_at(&collapsed, target, source, dir, ratio)?;
-    workspace.windows[index].state.tree = Some(moved);
-    workspace.windows[index].state.focus = Some(source.clone());
+    workspace.groups[index].state.tree = Some(moved);
+    workspace.groups[index].state.focus = Some(source.clone());
     workspace.active = index;
     Ok(())
 }
@@ -505,7 +514,7 @@ fn move_within_window(
 /// Move `source` out of its window and into `target`'s, repairing the vacated
 /// window's focus and pruning it if it emptied.
 fn move_across_windows(
-    workspace: &mut Workspace,
+    workspace: &mut ArrangementDoc,
     (source_index, target_index): (usize, usize),
     source: &ResourceId,
     target: &ResourceId,
@@ -513,20 +522,20 @@ fn move_across_windows(
     ratio: f32,
 ) -> Result<(), LayoutOpsError> {
     let source_tree = window_tree(workspace, source_index, source)?;
-    workspace.windows[source_index].state.tree = kill_pane(source_tree, source)?;
-    repair_focus(&mut workspace.windows[source_index].state);
+    workspace.groups[source_index].state.tree = kill_pane(source_tree, source)?;
+    repair_focus(&mut workspace.groups[source_index].state);
 
     let target_tree = window_tree(workspace, target_index, target)?;
-    workspace.windows[target_index].state.tree =
+    workspace.groups[target_index].state.tree =
         Some(split_at(target_tree, target, source, dir, ratio)?);
-    workspace.windows[target_index].state.focus = Some(source.clone());
+    workspace.groups[target_index].state.focus = Some(source.clone());
     workspace.active = target_index;
-    workspace.prune_empty_windows();
+    workspace.prune_empty_groups();
     Ok(())
 }
 
-fn find_window(workspace: &Workspace, target: &ResourceId) -> Option<usize> {
-    workspace.windows.iter().position(|window| {
+fn find_window(workspace: &ArrangementDoc, target: &ResourceId) -> Option<usize> {
+    workspace.groups.iter().position(|window| {
         window
             .state
             .tree
@@ -561,7 +570,7 @@ fn swap_leaves(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::{LayoutState, WindowState};
+    use crate::layout::{Group, LayoutState};
     use crate::testkit::{ScriptSpec, ScriptedServer};
     use phux_protocol::wire::frame::ErrorCode;
 
@@ -618,17 +627,17 @@ mod tests {
         }
     }
 
-    fn two_window_workspace() -> Workspace {
-        Workspace {
-            windows: vec![
-                WindowState::new(
+    fn two_window_workspace() -> ArrangementDoc {
+        ArrangementDoc {
+            groups: vec![
+                Group::new(
                     "editor".to_owned(),
                     LayoutState {
                         tree: Some(split(1, 2, SplitDir::Horizontal, 0.6)),
                         focus: Some(tid(1)),
                     },
                 ),
-                WindowState::new("tests".to_owned(), LayoutState::single(tid(3))),
+                Group::new("tests".to_owned(), LayoutState::single(tid(3))),
             ],
             active: 0,
         }
@@ -650,7 +659,7 @@ mod tests {
     #[test]
     fn fixed_v1_fixture_is_refused_without_implicit_rewrite() {
         assert!(matches!(
-            Workspace::decode_cbor(LEGACY_V1_FIXTURE),
+            ArrangementDoc::decode_cbor(LEGACY_V1_FIXTURE),
             Err(LayoutDecodeError::UnsupportedVersion(1))
         ));
     }
@@ -658,7 +667,7 @@ mod tests {
     #[test]
     fn current_fixture_supports_split_and_swap() {
         let fixture = two_window_workspace().encode_cbor().unwrap();
-        let mut workspace = Workspace::decode_cbor(&fixture).unwrap();
+        let mut workspace = ArrangementDoc::decode_cbor(&fixture).unwrap();
 
         apply_mutation(
             &mut workspace,
@@ -670,9 +679,9 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(workspace.windows[1].state.focus, Some(tid(4)));
+        assert_eq!(workspace.groups[1].state.focus, Some(tid(4)));
         assert_eq!(
-            leaves(workspace.windows[1].state.tree.as_ref().unwrap()),
+            leaves(workspace.groups[1].state.tree.as_ref().unwrap()),
             vec![tid(3), tid(4)]
         );
 
@@ -685,11 +694,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            leaves(workspace.windows[0].state.tree.as_ref().unwrap()),
+            leaves(workspace.groups[0].state.tree.as_ref().unwrap()),
             vec![tid(4), tid(2)]
         );
         assert_eq!(
-            leaves(workspace.windows[1].state.tree.as_ref().unwrap()),
+            leaves(workspace.groups[1].state.tree.as_ref().unwrap()),
             vec![tid(3), tid(1)]
         );
     }
@@ -708,10 +717,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(workspace.active, 0);
-        assert_eq!(workspace.windows[0].state.focus, Some(tid(1)));
-        assert_eq!(workspace.windows[1].state.focus, Some(tid(3)));
+        assert_eq!(workspace.groups[0].state.focus, Some(tid(1)));
+        assert_eq!(workspace.groups[1].state.focus, Some(tid(3)));
         assert_eq!(
-            leaves(workspace.windows[1].state.tree.as_ref().unwrap()),
+            leaves(workspace.groups[1].state.tree.as_ref().unwrap()),
             vec![tid(3), tid(4)]
         );
     }
@@ -724,8 +733,8 @@ mod tests {
             left: Box::new(split(1, 2, SplitDir::Vertical, 0.4)),
             right: Box::new(LayoutNode::Leaf(tid(3))),
         };
-        let mut workspace = Workspace {
-            windows: vec![WindowState::new(
+        let mut workspace = ArrangementDoc {
+            groups: vec![Group::new(
                 "1".to_owned(),
                 LayoutState {
                     tree: Some(nested),
@@ -736,10 +745,10 @@ mod tests {
         };
         apply_mutation(&mut workspace, &LayoutMutation::Close { target: tid(2) }).unwrap();
         assert_eq!(
-            leaves(workspace.active_window().unwrap().tree.as_ref().unwrap()),
+            leaves(workspace.active_group().unwrap().tree.as_ref().unwrap()),
             vec![tid(1), tid(3)]
         );
-        assert_eq!(workspace.active_window().unwrap().focus, Some(tid(1)));
+        assert_eq!(workspace.active_group().unwrap().focus, Some(tid(1)));
     }
 
     #[test]
@@ -755,13 +764,13 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(workspace.windows.len(), 1);
+        assert_eq!(workspace.groups.len(), 1);
         assert_eq!(
-            leaves(workspace.windows[0].state.tree.as_ref().unwrap()),
+            leaves(workspace.groups[0].state.tree.as_ref().unwrap()),
             vec![tid(1), tid(2), tid(3)]
         );
-        assert_eq!(workspace.windows[0].state.focus, Some(tid(3)));
-        let LayoutNode::Split { right, .. } = workspace.windows[0].state.tree.as_ref().unwrap()
+        assert_eq!(workspace.groups[0].state.focus, Some(tid(3)));
+        let LayoutNode::Split { right, .. } = workspace.groups[0].state.tree.as_ref().unwrap()
         else {
             panic!("expected outer split");
         };
@@ -771,7 +780,7 @@ mod tests {
     #[test]
     fn malformed_and_foreign_targets_are_rejected_without_mutation() {
         assert!(matches!(
-            Workspace::decode_cbor(b"not cbor"),
+            ArrangementDoc::decode_cbor(b"not cbor"),
             Err(LayoutDecodeError::Cbor(_))
         ));
         let mut workspace = two_window_workspace();
@@ -794,7 +803,7 @@ mod tests {
         assert!(matches!(err, LayoutOpsError::DuplicatePane(id) if id == tid(2)));
         assert!(matches!(
             apply_mutation(
-                &mut Workspace::single(tid(1)),
+                &mut ArrangementDoc::single(tid(1)),
                 &LayoutMutation::Close { target: tid(1) }
             ),
             Err(LayoutOpsError::LastPane)
@@ -844,7 +853,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            leaves(confirmed.windows[0].state.tree.as_ref().unwrap()),
+            leaves(confirmed.groups[0].state.tree.as_ref().unwrap()),
             vec![tid(2), tid(1)]
         );
         drop(client);
@@ -868,9 +877,9 @@ mod tests {
         else {
             panic!("expected SET on request 11, got {:?}", seen.get(1));
         };
-        let written = Workspace::decode_cbor(value).unwrap();
+        let written = ArrangementDoc::decode_cbor(value).unwrap();
         assert_eq!(
-            leaves(written.windows[0].state.tree.as_ref().unwrap()),
+            leaves(written.groups[0].state.tree.as_ref().unwrap()),
             vec![tid(2), tid(1)]
         );
         assert!(
@@ -906,7 +915,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            leaves(confirmed.windows[0].state.tree.as_ref().unwrap()),
+            leaves(confirmed.groups[0].state.tree.as_ref().unwrap()),
             vec![tid(2), tid(1)]
         );
         drop(ops);
@@ -933,7 +942,7 @@ mod tests {
     /// not be accepted as this write's result.
     #[tokio::test]
     async fn write_and_confirm_refuses_a_read_back_that_does_not_match_what_was_written() {
-        let stale = Workspace::single(tid(9)).encode_cbor().unwrap();
+        let stale = ArrangementDoc::single(tid(9)).encode_cbor().unwrap();
         let key = layout_key(SessionId::new(7));
         let spec = ScriptSpec::new()
             .stored_metadata(Scope::Group(DEFAULT_LAYOUT_GROUP_ID), &key, stale)
@@ -941,7 +950,7 @@ mod tests {
         let (mut client, server_task) = scripted(spec);
 
         let result = LayoutOps::new(&mut client, SessionId::new(7), 10)
-            .write_and_confirm(&Workspace::single(tid(1)))
+            .write_and_confirm(&ArrangementDoc::single(tid(1)))
             .await;
         assert!(
             matches!(result, Err(LayoutOpsError::NotConfirmed)),
@@ -968,7 +977,7 @@ mod tests {
     #[tokio::test]
     async fn read_or_seed_initializes_an_absent_layout_and_confirms_it() {
         let (mut client, server_task) = scripted(ScriptSpec::new());
-        let fallback = Workspace::single(tid(7));
+        let fallback = ArrangementDoc::single(tid(7));
 
         let confirmed = LayoutOps::new(&mut client, SessionId::new(3), 20)
             .read_or_seed(fallback.clone())
@@ -992,7 +1001,7 @@ mod tests {
             panic!("expected conditional seed SET, got {:?}", seen.get(1));
         };
         assert_eq!(key, &layout_key(SessionId::new(3)));
-        assert_eq!(Workspace::decode_cbor(value).unwrap(), fallback);
+        assert_eq!(ArrangementDoc::decode_cbor(value).unwrap(), fallback);
         assert!(matches!(
             seen.get(2),
             Some(FrameKind::GetMetadata { request_id: 22, .. })
@@ -1010,7 +1019,7 @@ mod tests {
         let (mut client, server_task) = scripted(spec);
 
         let confirmed = LayoutOps::new(&mut client, SessionId::new(3), 20)
-            .read_or_seed(Workspace::single(tid(99)))
+            .read_or_seed(ArrangementDoc::single(tid(99)))
             .await
             .unwrap();
         assert_eq!(confirmed, existing);

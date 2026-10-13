@@ -27,7 +27,7 @@ use crate::attach::paint::{
 };
 use crate::attach::pane_state::{AttachKernel, PaneSlot, published_test_state};
 use crate::attach::render::{ReplicaWalk, SelectionRect};
-use crate::layout::Workspace;
+use crate::layout::ArrangementDoc;
 use crate::predict::PredictiveConfig;
 use crate::render::chrome::sidebar::SidebarPainter;
 use crate::render::chrome::status_bar::{Notice, StatusBarPainter};
@@ -227,7 +227,7 @@ fn return_notice_commits_onboarding_only_when_fully_published() {
 #[test]
 fn sidebar_reservation_changes_view_rects_for_pty_reflow() {
     let id = ResourceId::local(1);
-    let workspace = Workspace::single(id.clone());
+    let workspace = ArrangementDoc::single(id.clone());
     let viewport = (100, 30);
     let rect = |sidebar| {
         view_rects(
@@ -391,12 +391,12 @@ fn which_key_timeout_pushes_a_passthrough_popup_only_when_pending() {
 fn foreign_replies_cache_clear_and_survive_garbage() {
     let sid = SessionId::new(7);
     let mut peers = PeerWatch::default();
-    let mut ws = Workspace::single(ResourceId::local(1));
-    ws.add_window("logs".to_owned(), ResourceId::local(2));
+    let mut ws = ArrangementDoc::single(ResourceId::local(1));
+    ws.add_group("logs".to_owned(), ResourceId::local(2));
     let bytes = ws.encode_cbor().expect("encode");
     peers.apply_layout_reply(sid, Some(&bytes));
     assert_eq!(
-        peers.foreign_layouts.get(&sid).map(|w| w.windows.len()),
+        peers.foreign_layouts.get(&sid).map(|w| w.groups.len()),
         Some(2)
     );
     peers.apply_layout_reply(sid, Some(b"not cbor"));
@@ -856,7 +856,7 @@ fn shipped_frame_rows(
 ) -> Vec<String> {
     let (cols, rows) = view;
     let id = ResourceId::local(1);
-    let workspace = Workspace::single(id.clone());
+    let workspace = ArrangementDoc::single(id.clone());
     let cfg =
         phux_config::parse_with_defaults("", Path::new("/nonexistent/c.toml")).expect("defaults");
     let mut status_bar = crate::settings::compose_status_bar(&cfg, &[])
@@ -882,7 +882,7 @@ fn shipped_frame_rows(
     };
     paint_full_frame(
         &mut out,
-        &workspace.render_window(None).expect("layout"),
+        &workspace.render_group(None).expect("layout"),
         &mut panes,
         &kernel,
         Some(&id),
@@ -960,7 +960,7 @@ fn shipped_frame_yields_the_sidebar_on_a_narrow_terminal() {
     let content = content_rect(view, Some(Position::Top), sidebar);
     assert_eq!((content.x, content.w), (0, view.0));
     let id = ResourceId::local(1);
-    let workspace = Workspace::single(id.clone());
+    let workspace = ArrangementDoc::single(id.clone());
     let pane_rect = view_rects(&workspace, None, content, view)[&id];
     assert_eq!((pane_rect.x, pane_rect.w), (0, view.0));
     let press_at = |x: u16| MouseEvent {
@@ -970,7 +970,7 @@ fn shipped_frame_yields_the_sidebar_on_a_narrow_terminal() {
         x: f64::from(x),
         y: f64::from(content.y),
     };
-    let ls = workspace.render_window(None).expect("layout");
+    let ls = workspace.render_group(None).expect("layout");
     assert!(matches!(
         route_mouse_event(ls.as_ref(), content, view, &press_at(0)),
         RouteDecision::Pane { target, .. } if target == id
@@ -1006,7 +1006,7 @@ fn overlay_frame(overlay: Box<dyn RenderOverlay>, with_painter: bool) -> (Vec<St
     const VIEW: (u16, u16) = (80, 24);
     let theme = crate::render::Theme::default();
     let id = ResourceId::local(1);
-    let workspace = Workspace::single(id.clone());
+    let workspace = ArrangementDoc::single(id.clone());
     let sidebar = Some(SidebarReservation {
         edge: SidebarEdge::Left,
         width: PROBE_SIDEBAR_W,
@@ -1032,7 +1032,7 @@ fn overlay_frame(overlay: Box<dyn RenderOverlay>, with_painter: bool) -> (Vec<St
     paint_active_overlay(
         &mut out,
         &overlays,
-        workspace.render_window(None).as_deref(),
+        workspace.render_group(None).as_deref(),
         &mut panes,
         &kernel,
         Some(&id),
@@ -1113,7 +1113,7 @@ fn all_floating_overlays_keep_sidebar_visible() {
         ..KeybindingsCfg::default()
     };
     let fleet_items = crate::attach::fleet::fleet_items(
-        &Workspace::single(ResourceId::local(1)),
+        &ArrangementDoc::single(ResourceId::local(1)),
         &[],
         None,
         &HashMap::new(),

@@ -18,7 +18,7 @@ use phux_protocol::ids::ResourceId;
 use super::actions::{PendingSplit, PendingWindow};
 use super::pane_state::{AttachKernel, PaneSlot};
 use super::server_frame::AgentMetaIndex;
-use crate::layout::Workspace;
+use crate::layout::ArrangementDoc;
 use crate::predict::PredictionState;
 
 /// The attached session as this client mirrors it.
@@ -30,11 +30,11 @@ pub(in crate::attach) struct SessionMirror {
     /// Client-local pane slots, keyed by Terminal.
     pub(in crate::attach) panes: HashMap<ResourceId, PaneSlot>,
     /// The multi-window layout mirror.
-    pub(in crate::attach) workspace: Workspace,
+    pub(in crate::attach) workspace: ArrangementDoc,
     /// The focused leaf, when there is one.
     pub(in crate::attach) focused_resource: Option<ResourceId>,
     /// The leaf zoomed to fill its window. Render and reflow geometry go
-    /// through `Workspace::render_window(zoomed)`; a split un-zooms.
+    /// through `ArrangementDoc::render_group(zoomed)`; a split un-zooms.
     pub(in crate::attach) zoomed: Option<ResourceId>,
     /// The attached session's name; changed only by a confirmed rename.
     pub(in crate::attach) session_name: String,
@@ -72,7 +72,7 @@ impl SessionMirror {
             engine_kernel,
             kernel_effects: KernelEffectBuffer::new(),
             panes: HashMap::new(),
-            workspace: Workspace::default(),
+            workspace: ArrangementDoc::default(),
             focused_resource: None,
             zoomed: None,
             session_name: String::new(),

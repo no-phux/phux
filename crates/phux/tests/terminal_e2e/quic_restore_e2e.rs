@@ -21,7 +21,7 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use phux_client::attach::connection::Connection;
-use phux_client::layout::{LayoutNode, SplitDir, Workspace};
+use phux_client::layout::{ArrangementDoc, LayoutNode, SplitDir};
 use phux_client::layout_ops::{LayoutOps, LayoutOpsError, layout_key};
 use phux_protocol::ids::{GroupId, ResourceId, SessionId};
 use phux_protocol::wire::frame::{FrameKind, Scope};
@@ -129,7 +129,7 @@ impl QuicServer {
     /// Persist `workspace` as the session's layout, the way an attached TUI
     /// would have before the pane died. The ordered GET is a barrier proving
     /// the fire-and-forget SET landed before the attach starts.
-    fn write_layout(&self, workspace: &Workspace) {
+    fn write_layout(&self, workspace: &ArrangementDoc) {
         let runtime = runtime();
         runtime.block_on(async {
             let mut conn = Connection::connect(&self.inner.socket)
@@ -162,7 +162,7 @@ impl QuicServer {
         });
     }
 
-    fn read_layout(&self) -> Result<Workspace, LayoutOpsError> {
+    fn read_layout(&self) -> Result<ArrangementDoc, LayoutOpsError> {
         runtime().block_on(async {
             let mut conn = Connection::connect(&self.inner.socket).await?;
             let result = LayoutOps::new(&mut conn, SessionId::new(1), 1).read().await;
@@ -236,8 +236,8 @@ fn quic_attach_survives_a_layout_naming_a_dead_pane() {
 
     // The layout is written after the kill, so nothing has folded the dead
     // leaf out: this is the tree a TUI left behind before the pane died.
-    let mut layout = Workspace::single(live.clone());
-    layout.windows[0].state.tree = Some(LayoutNode::Split {
+    let mut layout = ArrangementDoc::single(live.clone());
+    layout.groups[0].state.tree = Some(LayoutNode::Split {
         dir: SplitDir::Horizontal,
         ratio: 0.5,
         left: Box::new(LayoutNode::Leaf(live.clone())),
@@ -270,7 +270,7 @@ fn quic_attach_survives_a_layout_naming_a_dead_pane() {
         let tree = server
             .read_layout()
             .expect("persisted layout")
-            .windows
+            .groups
             .first()
             .and_then(|window| window.state.tree.clone());
         if tree == Some(LayoutNode::Leaf(live.clone())) {

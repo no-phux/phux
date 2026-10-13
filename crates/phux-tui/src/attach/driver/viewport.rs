@@ -10,20 +10,20 @@ use phux_protocol::wire::frame::{FrameKind, ViewportInfo};
 
 use crate::attach::connection::Connection;
 use crate::attach::outcome::AttachError;
-use crate::layout::{LayoutState, Workspace};
+use crate::layout::{ArrangementDoc, LayoutState};
 
 use super::session_io::send_unless_peer_gone;
 
 /// The zoom- and sidebar-honoring per-leaf rects (empty without a seeded
 /// tree), via the paint path's memoized tiling since it runs every batch.
 pub(super) fn view_rects(
-    workspace: &Workspace,
+    workspace: &ArrangementDoc,
     zoomed: Option<&ResourceId>,
     content: crate::layout::Rect,
     viewport_dims: (u16, u16),
 ) -> HashMap<ResourceId, crate::layout::Rect> {
     workspace
-        .render_window(zoomed)
+        .render_group(zoomed)
         .filter(|ls| ls.tree.is_some())
         .map(|ls| {
             crate::attach::paint::with_tiling(ls.as_ref(), content, viewport_dims, |tiling| {
@@ -38,13 +38,13 @@ pub(super) fn view_rects(
 /// every resize when the server applies it (ADR-0145).
 pub(super) async fn emit_view_reflow(
     conn: &mut Connection,
-    workspace: &Workspace,
+    workspace: &ArrangementDoc,
     zoomed: Option<&ResourceId>,
     prev_rects: &HashMap<ResourceId, crate::layout::Rect>,
     content: crate::layout::Rect,
     cell_px: Option<(u16, u16)>,
 ) -> Result<(), AttachError> {
-    let Some(ls) = workspace.render_window(zoomed) else {
+    let Some(ls) = workspace.render_group(zoomed) else {
         return Ok(());
     };
     emit_layout_reflow(conn, ls.as_ref(), prev_rects, content, cell_px).await
@@ -82,13 +82,13 @@ pub(super) async fn emit_moved_tiles(
 /// paint (ATTACHED only carried a one-pane fallback).
 pub(super) async fn emit_bootstrap_workspace_reflow(
     conn: &mut Connection,
-    workspace: &Workspace,
+    workspace: &ArrangementDoc,
     zoomed: Option<&ResourceId>,
     content: crate::layout::Rect,
     cell_px: Option<(u16, u16)>,
 ) -> Result<(), AttachError> {
     let no_previous_rects = HashMap::new();
-    for (index, window) in workspace.windows.iter().enumerate() {
+    for (index, window) in workspace.groups.iter().enumerate() {
         if index == workspace.active {
             emit_view_reflow(
                 conn,
@@ -231,8 +231,8 @@ mod tests {
     async fn restored_workspace_reflow_sizes_panes_in_every_window() {
         let first = ResourceId::local(1);
         let second = ResourceId::local(2);
-        let mut workspace = Workspace::single(first);
-        workspace.add_window("2".to_owned(), second.clone());
+        let mut workspace = ArrangementDoc::single(first);
+        workspace.add_group("2".to_owned(), second.clone());
         workspace.select(0);
 
         let viewport = (100, 30);
@@ -293,7 +293,7 @@ mod tests {
     #[tokio::test]
     async fn reflow_write_after_peer_close_preserves_final_exit_frame() {
         let terminal_id = ResourceId::local(1);
-        let workspace = Workspace::single(terminal_id.clone());
+        let workspace = ArrangementDoc::single(terminal_id.clone());
         let (client_stream, server_stream) = UnixStream::pair().expect("pair");
         let mut client = Connection::from_stream(client_stream);
         let mut server = Connection::from_stream(server_stream);

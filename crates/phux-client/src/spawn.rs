@@ -18,7 +18,7 @@ use phux_protocol::wire::info::SessionSnapshot;
 
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
-use crate::layout::{SplitDir, Workspace};
+use crate::layout::{ArrangementDoc, SplitDir};
 use crate::layout_ops::LayoutMutation;
 use crate::state::Degradation;
 
@@ -371,7 +371,7 @@ async fn publish_layout(
     };
     let mut layout = layout.map_err(|err| err.to_string())?;
     layout
-        .mutate_or_seed(Workspace::single(placement.owner.clone()), mutation)
+        .mutate_or_seed(ArrangementDoc::single(placement.owner.clone()), mutation)
         .await
         .map(|_workspace| ())
         .map_err(|err| err.to_string())

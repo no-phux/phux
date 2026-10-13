@@ -4,7 +4,7 @@
 //! independent-session add/close cases. Pass output bytes through the ordinary
 //! FFI frame feeder; no emulator allocation is needed for listings.
 
-use phux_client_core::layout::{self, Workspace};
+use phux_client_core::layout::{self, ArrangementDoc};
 use phux_protocol::wire::frame::{CommandResult, CommandValue, FrameKind};
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 use phux_protocol::{ResourceId, SessionId, WindowId};
@@ -57,7 +57,7 @@ fn pair(
     state: u32,
     metadata: u32,
     extra: bool,
-    topology: Option<&Workspace>,
+    topology: Option<&ArrangementDoc>,
 ) -> Result<(), Box<dyn Error>> {
     write_pair(
         directory,
@@ -65,7 +65,9 @@ fn pair(
         state,
         metadata,
         snapshot(extra),
-        topology.map(Workspace::encode_topology_cbor).transpose()?,
+        topology
+            .map(ArrangementDoc::encode_topology_cbor)
+            .transpose()?,
     )
 }
 
@@ -106,8 +108,8 @@ fn cutover_fixtures(directory: &Path) -> Result<(), Box<dyn Error>> {
         snapshot(false),
         Some(b"\xa3\x67version\x02\x67windows\x80\x74focused_window_index\x00".to_vec()),
     )?;
-    let mut topology = Workspace::single(ResourceId::local(7));
-    topology.add_window(String::new(), ResourceId::local(8));
+    let mut topology = ArrangementDoc::single(ResourceId::local(7));
+    topology.add_group(String::new(), ResourceId::local(8));
     pair(directory, "workspace_add", 13, 14, true, Some(&topology))
 }
 
@@ -128,7 +130,7 @@ fn sibling_session_fixtures(directory: &Path) -> Result<(), Box<dyn Error>> {
         0,
         1,
         snapshot.clone(),
-        Some(Workspace::single(ResourceId::local(7)).encode_topology_cbor()?),
+        Some(ArrangementDoc::single(ResourceId::local(7)).encode_topology_cbor()?),
     )?;
     let mut added_snapshot = snapshot.clone();
     added_snapshot
@@ -140,8 +142,8 @@ fn sibling_session_fixtures(directory: &Path) -> Result<(), Box<dyn Error>> {
         80,
         24,
     ));
-    let mut added = Workspace::single(ResourceId::local(7));
-    added.add_window(String::new(), ResourceId::local(8));
+    let mut added = ArrangementDoc::single(ResourceId::local(7));
+    added.add_group(String::new(), ResourceId::local(8));
     write_pair(
         directory,
         "workspace_session2_add",
@@ -156,7 +158,7 @@ fn sibling_session_fixtures(directory: &Path) -> Result<(), Box<dyn Error>> {
         2,
         3,
         snapshot,
-        Some(Workspace::new().encode_topology_cbor()?),
+        Some(ArrangementDoc::new().encode_topology_cbor()?),
     )
 }
 
@@ -166,13 +168,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         .ok_or("output directory required")?;
     let directory = Path::new(&directory);
     std::fs::create_dir_all(directory)?;
-    let mut topology = Workspace::single(ResourceId::local(7));
+    let mut topology = ArrangementDoc::single(ResourceId::local(7));
     pair(directory, "workspace_initial", 0, 1, false, None)?;
     pair(directory, "workspace_refresh", 2, 3, true, Some(&topology))?;
-    topology.windows[0].name = "renamed".into();
+    topology.groups[0].name = "renamed".into();
     pair(directory, "workspace_rename", 4, 5, true, Some(&topology))?;
-    topology.windows[0].state.tree = Some(layout::split_at(
-        topology.windows[0]
+    topology.groups[0].state.tree = Some(layout::split_at(
+        topology.groups[0]
             .state
             .tree
             .as_ref()
@@ -183,7 +185,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         0.5,
     )?);
     pair(directory, "workspace_split", 7, 8, true, Some(&topology))?;
-    if let Some(layout::LayoutNode::Split { ratio, .. }) = &mut topology.windows[0].state.tree {
+    if let Some(layout::LayoutNode::Split { ratio, .. }) = &mut topology.groups[0].state.tree {
         *ratio = 0.7;
     }
     pair(directory, "workspace_resize", 10, 11, true, Some(&topology))?;

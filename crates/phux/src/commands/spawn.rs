@@ -617,14 +617,14 @@ mod tests {
                 let FrameKind::SetMetadata { value, .. } = layout.recv().await else {
                     panic!("expected layout SET");
                 };
-                let workspace =
-                    phux_client::layout::Workspace::decode_cbor(&value).expect("placed workspace");
+                let workspace = phux_client::layout::ArrangementDoc::decode_cbor(&value)
+                    .expect("placed workspace");
                 assert_eq!(
-                    workspace.active_window().unwrap().focus,
+                    workspace.active_group().unwrap().focus,
                     Some(ResourceId::local(1))
                 );
                 assert_eq!(
-                    leaves(workspace.active_window().unwrap().tree.as_ref().unwrap()),
+                    leaves(workspace.active_group().unwrap().tree.as_ref().unwrap()),
                     vec![ResourceId::local(1), ResourceId::local(3)]
                 );
                 let FrameKind::GetMetadata { request_id, .. } = layout.recv().await else {

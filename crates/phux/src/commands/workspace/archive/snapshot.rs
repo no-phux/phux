@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use phux_client::agent_session_record::AgentSessionRecord;
 use phux_client::layout::{
-    LayoutNode, LayoutState, SplitDir, WindowState, Workspace, kill_pane, leaves,
+    ArrangementDoc, Group, LayoutNode, LayoutState, SplitDir, kill_pane, leaves,
 };
 use phux_protocol::ids::{ResourceId, SessionId, WindowId};
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
@@ -19,7 +19,7 @@ use super::model::{
 pub(super) fn archive_from_snapshot(
     snapshot: &SessionSnapshot,
     agent_sessions: &HashMap<ResourceId, AgentSessionRecord>,
-    layouts: &HashMap<SessionId, Workspace>,
+    layouts: &HashMap<SessionId, ArrangementDoc>,
     projects: &HashMap<String, String>,
     hosts: &HashMap<String, String>,
     directories: &HashMap<String, String>,
@@ -111,7 +111,7 @@ fn focused_place(
 /// normally) go into a synthesized `"unplaced"` window, with a warning.
 fn archive_windows_for_session(
     session: &SessionInfo,
-    layout: Option<&Workspace>,
+    layout: Option<&ArrangementDoc>,
     windows_by_session: &BTreeMap<SessionId, Vec<&WindowInfo>>,
     panes_by_window: &BTreeMap<WindowId, Vec<&ResourceInfo>>,
     resources_by_id: &HashMap<ResourceId, &ResourceInfo>,
@@ -164,13 +164,13 @@ fn archive_windows_for_session(
 /// window that loses every leaf. Returns the surviving windows (with whether
 /// each was active) and, in registry order, the live panes left unplaced.
 fn reconcile_layout(
-    layout: &Workspace,
+    layout: &ArrangementDoc,
     live_ids: &[ResourceId],
-) -> (Vec<(bool, WindowState)>, Vec<ResourceId>) {
+) -> (Vec<(bool, Group)>, Vec<ResourceId>) {
     let live: HashSet<ResourceId> = live_ids.iter().cloned().collect();
     let mut placed: HashSet<ResourceId> = HashSet::new();
-    let mut kept = Vec::with_capacity(layout.windows.len());
-    for (index, window) in layout.windows.iter().enumerate() {
+    let mut kept = Vec::with_capacity(layout.groups.len());
+    for (index, window) in layout.groups.iter().enumerate() {
         let Some(mut tree) = window.state.tree.clone() else {
             continue;
         };
@@ -192,7 +192,7 @@ fn reconcile_layout(
         placed.extend(leaves(&tree));
         kept.push((
             index == layout.active,
-            WindowState {
+            Group {
                 id: window.id,
                 name: window.name.clone(),
                 state: LayoutState {
@@ -238,7 +238,7 @@ fn unplaced_window(
 /// leaf order (what restore indexes), with cwd, title, and agent session looked
 /// up per leaf.
 fn archive_window_from_layout(
-    window: &WindowState,
+    window: &Group,
     active: bool,
     resources_by_id: &HashMap<ResourceId, &ResourceInfo>,
     agent_sessions: &HashMap<ResourceId, AgentSessionRecord>,

@@ -1,6 +1,6 @@
 use super::*;
 use crate::attach::pane_state::PaneSlot;
-use crate::layout::Workspace;
+use crate::layout::ArrangementDoc;
 use phux_client::agent_meta::AgentRecord;
 use phux_protocol::WindowId;
 use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ServerFeatureSet};
@@ -112,13 +112,13 @@ async fn queued_rename_cannot_write_before_initial_metadata_is_processed() {
             let written = tokio::time::timeout(Duration::from_secs(1), async {
                 loop {
                     if let FrameKind::SetMetadata { value, .. } = server.recv().await.unwrap() {
-                        break Workspace::decode_cbor(&value).unwrap();
+                        break ArrangementDoc::decode_cbor(&value).unwrap();
                     }
                 }
             })
             .await
             .unwrap();
-            assert_eq!(written.windows[0].name, "renamed");
+            assert_eq!(written.groups[0].name, "renamed");
         }
         drop(client);
         drop(server);
@@ -341,7 +341,7 @@ async fn late_bound_reflow_uses_current_zoom_and_chrome_once() {
     let bound = ResourceId::local(2);
     let offscreen = ResourceId::local(3);
     let workspace = &mut state.mirror.workspace;
-    workspace.active_window_mut().unwrap().tree = Some(
+    workspace.active_group_mut().unwrap().tree = Some(
         crate::layout::split_at(
             &crate::layout::LayoutNode::Leaf(first.clone()),
             &first,
@@ -351,7 +351,7 @@ async fn late_bound_reflow_uses_current_zoom_and_chrome_once() {
         )
         .unwrap(),
     );
-    workspace.add_window("offscreen".into(), offscreen.clone());
+    workspace.add_group("offscreen".into(), offscreen.clone());
     workspace.select(0);
     state.mirror.zoomed = Some(bound.clone());
     state.viewport_dims = (120, 40);
@@ -595,7 +595,7 @@ fn seed_cached_peer(state: &mut SessionLoop, peer_id: &ResourceId) {
     state
         .peers
         .foreign_layouts
-        .insert(SessionId::new(2), Workspace::single(peer_id.clone()));
+        .insert(SessionId::new(2), ArrangementDoc::single(peer_id.clone()));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -711,7 +711,7 @@ async fn peer_layout_broadcast_discovers_and_subscribes_new_agent_leaves() {
     let frame = FrameKind::MetadataChanged {
         scope: Scope::Group(phux_client::layout_ops::DEFAULT_LAYOUT_GROUP_ID),
         key: phux_client::layout_ops::layout_key(SessionId::new(2)),
-        value: Some(Workspace::single(id.clone()).encode_cbor().unwrap()),
+        value: Some(ArrangementDoc::single(id.clone()).encode_cbor().unwrap()),
         actor: None,
     };
     state
@@ -812,7 +812,7 @@ async fn a_refused_spawned_attach_sends_one_kill_for_its_pane() {
         pane.host().map(phux_protocol::ids::SatelliteHost::as_str),
         Some("edge")
     );
-    assert_eq!(state.mirror.workspace.windows.len(), 1, "no window opened");
+    assert_eq!(state.mirror.workspace.groups.len(), 1, "no window opened");
     let refused_kill = FrameKind::Error {
         request_id: Some(*kill_id),
         code: ErrorCode::SatelliteUnreachable,
@@ -838,7 +838,7 @@ async fn an_unreachable_satellite_refusal_sends_no_kill() {
     .await;
 
     assert_eq!(kills_sent(&mut client, &mut server).await, Vec::new());
-    assert_eq!(state.mirror.workspace.windows.len(), 1, "no window opened");
+    assert_eq!(state.mirror.workspace.groups.len(), 1, "no window opened");
 }
 
 /// A successful attach opens the window and kills nothing.
@@ -863,7 +863,7 @@ async fn a_successful_spawned_attach_sends_no_kill() {
         .unwrap();
 
     assert_eq!(kills_sent(&mut client, &mut server).await, Vec::new());
-    assert_eq!(state.mirror.workspace.windows.len(), 2, "the window opened");
+    assert_eq!(state.mirror.workspace.groups.len(), 2, "the window opened");
 }
 
 // ---- phux-c2td.23: retried kills for stray satellite panes ---------------
@@ -996,12 +996,12 @@ async fn a_down_satellite_pane_keeps_its_slot_and_replays_on_return() {
     let local = ResourceId::local(1);
     let sat = ResourceId::satellite(SatelliteHost::new("devbox"), 7);
     let workspace = &mut state.mirror.workspace;
-    *workspace = Workspace::single(local.clone());
+    *workspace = ArrangementDoc::single(local.clone());
     let tree = workspace
-        .active_window()
+        .active_group()
         .and_then(|window| window.tree.clone())
         .expect("tree");
-    workspace.active_window_mut().expect("window").tree = Some(
+    workspace.active_group_mut().expect("window").tree = Some(
         crate::layout::split_at(
             &tree,
             &local,
@@ -1016,7 +1016,7 @@ async fn a_down_satellite_pane_keeps_its_slot_and_replays_on_return() {
     state.mirror.panes.insert(sat.clone(), slot);
 
     let leaves = |state: &SessionLoop| {
-        let window = state.mirror.workspace.active_window();
+        let window = state.mirror.workspace.active_group();
         crate::layout::leaves(window.and_then(|w| w.tree.as_ref()).expect("tree"))
     };
 
@@ -1193,7 +1193,7 @@ async fn an_adopted_stray_is_not_killed_on_retry() {
             state
                 .mirror
                 .workspace
-                .add_window("edge".to_owned(), spawned_edge_pane());
+                .add_group("edge".to_owned(), spawned_edge_pane());
         } else {
             state.mirror.pending_windows.insert(
                 901,
@@ -1461,7 +1461,7 @@ async fn an_adopted_bound_stray_is_not_killed_conditionally() {
     state
         .mirror
         .workspace
-        .add_window("edge".to_owned(), spawned_edge_pane());
+        .add_group("edge".to_owned(), spawned_edge_pane());
     answer_inventory(&mut state, &mut client, vec![edge_row(true)]).await;
     assert_eq!(kill_commands(&mut client, &mut server).await, Vec::new());
 }
@@ -1605,7 +1605,7 @@ async fn project_tag_broadcast_groups_the_session_picker() {
         &state
             .peers
             .inputs(&crate::attach::review::ReviewIndex::default()),
-        &Workspace::default(),
+        &ArrangementDoc::default(),
     );
     assert!(
         rows.iter()
@@ -1824,20 +1824,20 @@ async fn resource_pick_focuses_inventory_pane_without_a_tui_layout() {
     state.resolve_cross_session_pick();
     assert_eq!(state.mirror.focused_resource.as_ref(), Some(&target));
     assert!(
-        state.mirror.workspace.windows.iter().any(|window| window
+        state.mirror.workspace.groups.iter().any(|window| window
             .state
             .tree
             .as_ref()
             .is_some_and(|tree| crate::layout::leaves(tree).contains(&target))),
         "inventory window is adopted: {:?}",
-        state.mirror.workspace.windows
+        state.mirror.workspace.groups
     );
     state.pick.resource = Some(target.clone());
-    state.mirror.workspace = Workspace::single(target.clone());
-    state.mirror.workspace.windows[0].name = "review".into();
+    state.mirror.workspace = ArrangementDoc::single(target.clone());
+    state.mirror.workspace.groups[0].name = "review".into();
     state.resolve_cross_session_pick();
     assert_eq!(state.mirror.focused_resource.as_ref(), Some(&target));
-    assert_eq!(state.mirror.workspace.windows.len(), 1);
+    assert_eq!(state.mirror.workspace.groups.len(), 1);
 }
 
 fn wide_sidebar() -> SidebarReservation {
@@ -1856,7 +1856,7 @@ fn done_reviewer() -> AgentRecord {
 }
 
 fn seed_local_agent(state: &mut SessionLoop, id: &ResourceId, record: &AgentRecord) {
-    if !state.mirror.workspace.windows.iter().any(|window| {
+    if !state.mirror.workspace.groups.iter().any(|window| {
         window
             .state
             .tree
@@ -1866,7 +1866,7 @@ fn seed_local_agent(state: &mut SessionLoop, id: &ResourceId, record: &AgentReco
         state
             .mirror
             .workspace
-            .add_window("agent".to_owned(), id.clone());
+            .add_group("agent".to_owned(), id.clone());
     }
     state
         .mirror
@@ -2250,7 +2250,7 @@ async fn fold_of_a_foreign_agent_record_raises_the_fleet_and_the_drain_chrome() 
 #[tokio::test(flavor = "current_thread")]
 async fn fold_of_a_foreign_layout_raises_the_fleet_and_the_drain_chrome() {
     let peer_session = SessionId::new(2);
-    let layout = Workspace::single(ResourceId::local(9))
+    let layout = ArrangementDoc::single(ResourceId::local(9))
         .encode_cbor()
         .unwrap();
     let (repaint, state) = fold(FrameOutcome {
@@ -2345,7 +2345,7 @@ async fn fold_of_a_replaced_layout_raises_a_full_repaint_and_the_fleet() {
 /// for the leaves whose rect moved.
 #[tokio::test(flavor = "current_thread")]
 async fn resize_pane_resizes_the_panes_whose_tiles_moved() {
-    use crate::layout::{LayoutNode, LayoutState, SplitDir, WindowState, split_at};
+    use crate::layout::{Group, LayoutNode, LayoutState, SplitDir, split_at};
     use phux_config::keybind::parse_chord;
 
     let (mut state, mut client, mut server, mut out) =
@@ -2362,8 +2362,8 @@ async fn resize_pane_resizes_the_panes_whose_tiles_moved() {
         0.5,
     )
     .expect("split");
-    state.mirror.workspace = Workspace {
-        windows: vec![WindowState::new(
+    state.mirror.workspace = ArrangementDoc {
+        groups: vec![Group::new(
             "0".to_owned(),
             LayoutState {
                 tree: Some(tree),

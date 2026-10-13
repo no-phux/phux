@@ -1,7 +1,7 @@
 use super::*;
 use crate::c::test_support;
 use crate::c::*;
-use phux_client_core::layout::{self, LayoutNode, LayoutState, WindowState};
+use phux_client_core::layout::{self, Group, LayoutNode, LayoutState};
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, WindowInfo};
 use phux_protocol::{ResourceId, SessionId, WindowId};
 
@@ -147,7 +147,7 @@ fn finish(client: &mut PhuxClient, registry: SessionSnapshot, metadata: Option<V
     );
 }
 
-fn split_workspace() -> Workspace {
+fn split_workspace() -> ArrangementDoc {
     let a = ResourceId::local(1);
     let tree = layout::split_at(
         &LayoutNode::Leaf(a.clone()),
@@ -157,8 +157,8 @@ fn split_workspace() -> Workspace {
         0.3,
     )
     .unwrap();
-    Workspace {
-        windows: vec![WindowState::new(
+    ArrangementDoc {
+        groups: vec![Group::new(
             "editor".into(),
             LayoutState {
                 tree: Some(tree),
@@ -177,7 +177,7 @@ fn initial_attachment_waits_for_confirmed_metadata_before_publishing_topology() 
         assert_eq!(client.inner.workspace.catalog.terminals.len(), 3);
         assert_eq!(client.inner.sessions.len(), 2);
         assert_eq!(client.inner.workspace.state, 0);
-        assert!(client.inner.workspace.topology.windows.is_empty());
+        assert!(client.inner.workspace.topology.groups.is_empty());
         release_attach(&mut client);
         let pending = client.inner.workspace.pending.as_ref().unwrap();
         let state_id = pending.state_id.unwrap();
@@ -192,7 +192,7 @@ fn initial_attachment_waits_for_confirmed_metadata_before_publishing_topology() 
         assert_eq!(client.inner.workspace.state, 0);
         assert_eq!(client.inner.workspace.status, 1);
         assert!(client.inner.workspace.nodes.is_empty());
-        assert!(client.inner.workspace.topology.windows.is_empty());
+        assert!(client.inner.workspace.topology.groups.is_empty());
         feed(
             &mut client,
             FrameKind::CommandResult {
@@ -205,7 +205,7 @@ fn initial_attachment_waits_for_confirmed_metadata_before_publishing_topology() 
             if metadata.is_some() { 2 } else { 1 }
         );
         assert_eq!(
-            client.inner.workspace.topology.windows.len(),
+            client.inner.workspace.topology.groups.len(),
             if metadata.is_some() { 1 } else { 2 }
         );
     }
@@ -440,7 +440,7 @@ fn removed_seed_can_be_placed_in_a_new_window() {
         registry(1, false),
         Some(split_workspace().encode_cbor().unwrap()),
     );
-    let retained = client.inner.workspace.topology.windows[0].id;
+    let retained = client.inner.workspace.topology.groups[0].id;
     let mut remove = edit(&client, 2, 3);
     remove.terminal_id = terminal_id_out(&ResourceId::local(1));
     mutate(&mut client, &remove);
@@ -448,15 +448,15 @@ fn removed_seed_can_be_placed_in_a_new_window() {
     add.terminal_id = terminal_id_out(&ResourceId::local(1));
     add.name = bytes_out(b"reused seed");
     mutate(&mut client, &add);
-    assert_eq!(client.inner.workspace.topology.windows.len(), 2);
-    assert_eq!(client.inner.workspace.topology.windows[0].id, retained);
-    assert_ne!(client.inner.workspace.topology.windows[1].id, retained);
+    assert_eq!(client.inner.workspace.topology.groups.len(), 2);
+    assert_eq!(client.inner.workspace.topology.groups[0].id, retained);
+    assert_ne!(client.inner.workspace.topology.groups[1].id, retained);
 }
 
 #[test]
 fn external_registry_changes_preserve_attached_session_without_replicas() {
     let mut client = harness();
-    assert_eq!(client.inner.workspace.topology.windows.len(), 2);
+    assert_eq!(client.inner.workspace.topology.groups.len(), 2);
     let before = client.inner.workspace.revision;
     let mut snapshot = registry(2, true);
     snapshot.sessions[0].name = "renamed externally".into();
@@ -466,9 +466,9 @@ fn external_registry_changes_preserve_attached_session_without_replicas() {
     assert_eq!(ws.selected, 1);
     assert!(ws.catalog.sessions[0].focused);
     assert!(!ws.catalog.sessions[1].focused);
-    assert_eq!(ws.topology.windows.len(), 2);
+    assert_eq!(ws.topology.groups.len(), 2);
     assert_eq!(
-        ws.topology.windows[1].state.focus,
+        ws.topology.groups[1].state.focus,
         Some(ResourceId::local(3))
     );
     assert!(ws.revision > before);
@@ -483,7 +483,7 @@ fn topology_ignores_remote_focus_and_client_count_noise() {
     let bytes = split_workspace().encode_cbor().unwrap();
     refresh(&mut client, 1, registry(2, false), Some(bytes.clone()));
     assert_eq!(
-        client.inner.workspace.topology.windows[0].state.focus,
+        client.inner.workspace.topology.groups[0].state.focus,
         Some(ResourceId::local(1))
     );
     let revision = client.inner.workspace.revision;
@@ -698,7 +698,7 @@ fn edit(client: &PhuxClient, request: u32, kind: u32) -> PhuxWorkspaceMutation {
         expected_revision: client.inner.workspace.revision,
         session_id: 1,
         kind,
-        window_id: client.inner.workspace.topology.windows[0].id,
+        window_id: client.inner.workspace.topology.groups[0].id,
         ..PhuxWorkspaceMutation::default()
     }
 }
@@ -736,7 +736,7 @@ fn mutations_round_trip_stable_identity_and_preserve_local_focus() {
         registry(1, true),
         Some(split_workspace().encode_cbor().unwrap()),
     );
-    let original = client.inner.workspace.topology.windows[0].id;
+    let original = client.inner.workspace.topology.groups[0].id;
     let mut split = edit(&client, 2, 2);
     split.terminal_id = terminal_id_out(&ResourceId::local(2));
     split.new_terminal_id = terminal_id_out(&ResourceId::local(3));
@@ -754,10 +754,10 @@ fn mutations_round_trip_stable_identity_and_preserve_local_focus() {
     let mut remove = edit(&client, 5, 3);
     remove.terminal_id = terminal_id_out(&ResourceId::local(1));
     mutate(&mut client, &remove);
-    assert_eq!(client.inner.workspace.topology.windows[0].id, original);
-    assert_eq!(client.inner.workspace.topology.windows[0].name, "renamed");
+    assert_eq!(client.inner.workspace.topology.groups[0].id, original);
+    assert_eq!(client.inner.workspace.topology.groups[0].name, "renamed");
     assert_eq!(
-        client.inner.workspace.topology.windows[0].state.focus,
+        client.inner.workspace.topology.groups[0].state.focus,
         Some(ResourceId::local(2))
     );
     assert_eq!(client.inner.workspace.catalog.terminals.len(), 4);
@@ -815,13 +815,13 @@ fn retired_is_registry_absence_not_missing_replica_and_satellites_never_alias() 
     assert_eq!(catalog.terminals.last().unwrap().session, 0);
     let adopted = model::adopt(
         Some(&split_workspace().encode_cbor().unwrap()),
-        &Workspace::new(),
+        &ArrangementDoc::new(),
         &catalog,
         1,
     )
     .unwrap();
     assert_eq!(
-        layout::leaves(adopted.windows[0].state.tree.as_ref().unwrap()).len(),
+        layout::leaves(adopted.groups[0].state.tree.as_ref().unwrap()).len(),
         2
     );
     let mut snapshot = registry(1, false);
@@ -829,9 +829,9 @@ fn retired_is_registry_absence_not_missing_replica_and_satellites_never_alias() 
     let catalog = Catalog::from_snapshot(snapshot, 1).unwrap();
     let pruned =
         model::adopt(Some(&adopted.encode_cbor().unwrap()), &adopted, &catalog, 1).unwrap();
-    assert_eq!(pruned.windows[0].id, adopted.windows[0].id);
+    assert_eq!(pruned.groups[0].id, adopted.groups[0].id);
     assert_eq!(
-        pruned.windows[0].state.tree,
+        pruned.groups[0].state.tree,
         Some(LayoutNode::Leaf(ResourceId::local(2)))
     );
 }
@@ -901,8 +901,8 @@ fn add_reorder_remove_and_last_pane_is_refused() {
     split.direction = 2;
     split.ratio = 0.5;
     mutate(&mut client, &split);
-    assert_eq!(client.inner.workspace.topology.windows.len(), 1);
-    let original = client.inner.workspace.topology.windows[0].id;
+    assert_eq!(client.inner.workspace.topology.groups.len(), 1);
+    let original = client.inner.workspace.topology.groups[0].id;
     let mut add = edit(&client, 2, 1);
     add.terminal_id = terminal_id_out(&ResourceId::local(3));
     add.name = bytes_out(b"new window");
@@ -910,14 +910,14 @@ fn add_reorder_remove_and_last_pane_is_refused() {
     let mut reorder = edit(&client, 3, 4);
     reorder.index = 1;
     mutate(&mut client, &reorder);
-    assert_eq!(client.inner.workspace.topology.windows[1].id, original);
+    assert_eq!(client.inner.workspace.topology.groups[1].id, original);
     assert_eq!(client.inner.workspace.topology.active, 1);
     for (request, id) in [(4, 3), (5, 1)] {
         let mut remove = edit(&client, request, 3);
         remove.terminal_id = terminal_id_out(&ResourceId::local(id));
         mutate(&mut client, &remove);
     }
-    assert_eq!(client.inner.workspace.topology.windows.len(), 1);
+    assert_eq!(client.inner.workspace.topology.groups.len(), 1);
     let queued = client.inner.outgoing.len();
     let before = client.inner.workspace.topology.clone();
     let mut last = edit(&client, 6, 3);
@@ -933,9 +933,9 @@ fn add_reorder_remove_and_last_pane_is_refused() {
         &mut client,
         7,
         registry(1, true),
-        Some(Workspace::new().encode_topology_cbor().unwrap()),
+        Some(ArrangementDoc::new().encode_topology_cbor().unwrap()),
     );
-    assert!(client.inner.workspace.topology.windows.is_empty());
+    assert!(client.inner.workspace.topology.groups.is_empty());
     assert_eq!(client.inner.workspace.catalog.terminals.len(), 4);
 }
 
@@ -947,7 +947,7 @@ fn last_pane_close_is_refused_without_queueing() {
         1,
         registry(1, false),
         Some(
-            Workspace::single(ResourceId::local(1))
+            ArrangementDoc::single(ResourceId::local(1))
                 .encode_cbor()
                 .unwrap(),
         ),
@@ -977,14 +977,14 @@ fn close_repairs_focus_onto_surviving_leaf() {
     let mut remove = edit(&client, 2, 3);
     remove.terminal_id = terminal_id_out(&ResourceId::local(2));
     mutate(&mut client, &remove);
-    assert_eq!(client.inner.workspace.topology.windows.len(), 1);
+    assert_eq!(client.inner.workspace.topology.groups.len(), 1);
     assert_eq!(
-        client.inner.workspace.topology.windows[0].state.focus,
+        client.inner.workspace.topology.groups[0].state.focus,
         Some(ResourceId::local(1))
     );
     assert_eq!(
         layout::leaves(
-            client.inner.workspace.topology.windows[0]
+            client.inner.workspace.topology.groups[0]
                 .state
                 .tree
                 .as_ref()
@@ -997,15 +997,15 @@ fn close_repairs_focus_onto_surviving_leaf() {
 #[test]
 fn close_prunes_empty_window_and_keeps_survivor_focus() {
     let mut client = harness();
-    assert_eq!(client.inner.workspace.topology.windows.len(), 2);
-    let survivor = client.inner.workspace.topology.windows[1].id;
+    assert_eq!(client.inner.workspace.topology.groups.len(), 2);
+    let survivor = client.inner.workspace.topology.groups[1].id;
     let mut remove = edit(&client, 1, 3);
     remove.terminal_id = terminal_id_out(&ResourceId::local(1));
     mutate(&mut client, &remove);
-    assert_eq!(client.inner.workspace.topology.windows.len(), 1);
-    assert_eq!(client.inner.workspace.topology.windows[0].id, survivor);
+    assert_eq!(client.inner.workspace.topology.groups.len(), 1);
+    assert_eq!(client.inner.workspace.topology.groups[0].id, survivor);
     assert_eq!(
-        client.inner.workspace.topology.windows[0].state.focus,
+        client.inner.workspace.topology.groups[0].state.focus,
         Some(ResourceId::local(2))
     );
     assert_eq!(client.inner.workspace.topology.active, 0);
@@ -1030,7 +1030,7 @@ fn registry_is_read_after_metadata_and_both_replies_stage_atomically() {
         }
     ));
     let mut topology = split_workspace();
-    topology.add_window("new external".into(), ResourceId::local(3));
+    topology.add_group("new external".into(), ResourceId::local(3));
     let revision = client.inner.workspace.revision;
     let pending = client.inner.workspace.pending.as_ref().unwrap();
     let (metadata_id, state_id) = (pending.metadata_id, pending.state_id.unwrap());
@@ -1058,9 +1058,9 @@ fn registry_is_read_after_metadata_and_both_replies_stage_atomically() {
         },
     );
     assert_eq!(client.inner.workspace.status, 2);
-    assert_eq!(client.inner.workspace.topology.windows.len(), 2);
+    assert_eq!(client.inner.workspace.topology.groups.len(), 2);
     assert_eq!(
-        client.inner.workspace.topology.windows[1].name,
+        client.inner.workspace.topology.groups[1].name,
         "new external"
     );
 }
@@ -1069,20 +1069,20 @@ fn registry_is_read_after_metadata_and_both_replies_stage_atomically() {
 fn workspace_limits_refuse_instead_of_truncating() {
     for ratio in [0.0, 1.0, f32::NAN, f32::INFINITY] {
         let mut workspace = split_workspace();
-        let Some(LayoutNode::Split { ratio: value, .. }) = &mut workspace.windows[0].state.tree
+        let Some(LayoutNode::Split { ratio: value, .. }) = &mut workspace.groups[0].state.tree
         else {
             panic!("split")
         };
         *value = ratio;
         assert!(model::flatten(&workspace).is_err());
     }
-    let mut many = Workspace::new();
+    let mut many = ArrangementDoc::new();
     for i in 1..=33 {
-        many.add_window(i.to_string(), ResourceId::local(i));
+        many.add_group(i.to_string(), ResourceId::local(i));
     }
     assert!(model::flatten(&many).is_err());
-    let mut long_name = Workspace::single(ResourceId::local(1));
-    long_name.windows[0].name = "é".repeat(2049);
+    let mut long_name = ArrangementDoc::single(ResourceId::local(1));
+    long_name.groups[0].name = "é".repeat(2049);
     assert!(model::flatten(&long_name).is_err());
     let mut deep = LayoutNode::Leaf(ResourceId::local(1));
     for id in 2..=67 {
@@ -1093,8 +1093,8 @@ fn workspace_limits_refuse_instead_of_truncating() {
             right: Box::new(LayoutNode::Leaf(ResourceId::local(id))),
         };
     }
-    let deep = Workspace {
-        windows: vec![WindowState::new(
+    let deep = ArrangementDoc {
+        groups: vec![Group::new(
             "deep".into(),
             LayoutState {
                 tree: Some(deep),
@@ -1105,10 +1105,10 @@ fn workspace_limits_refuse_instead_of_truncating() {
     };
     assert!(model::flatten(&deep).is_err());
     let mut duplicate = split_workspace();
-    duplicate.add_window("duplicate".into(), ResourceId::local(1));
+    duplicate.add_group("duplicate".into(), ResourceId::local(1));
     assert!(model::flatten(&duplicate).is_err());
-    let over_nodes = Workspace {
-        windows: vec![WindowState::new(
+    let over_nodes = ArrangementDoc {
+        groups: vec![Group::new(
             "wide".into(),
             LayoutState {
                 tree: Some(balanced_tree(1, 257)),
@@ -1147,7 +1147,7 @@ fn atomic_window_removal_is_presentation_only_and_wrong_kind_isolated() {
     );
     let remove = edit(&client, 2, 7);
     mutate(&mut client, &remove);
-    assert!(client.inner.workspace.topology.windows.is_empty());
+    assert!(client.inner.workspace.topology.groups.is_empty());
     assert_eq!(client.inner.workspace.catalog.terminals.len(), 4);
     // SAFETY: live client, fresh request.
     assert_eq!(

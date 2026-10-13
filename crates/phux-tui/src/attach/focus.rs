@@ -3,7 +3,7 @@
 
 use phux_protocol::ResourceId;
 
-use crate::layout::{self, Workspace};
+use crate::layout::{self, ArrangementDoc};
 
 /// Client-local pane focus and the session names this client has attached.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -68,17 +68,17 @@ impl FocusHistory {
     pub(super) fn target(
         &mut self,
         current: Option<&ResourceId>,
-        workspace: &Workspace,
+        workspace: &ArrangementDoc,
     ) -> Option<ResourceId> {
         self.repair(current, workspace);
         self.previous.clone()
     }
 
     /// Drop history when its pane closed/disappeared or equals current focus.
-    pub(super) fn repair(&mut self, current: Option<&ResourceId>, workspace: &Workspace) {
+    pub(super) fn repair(&mut self, current: Option<&ResourceId>, workspace: &ArrangementDoc) {
         let valid = self.previous.as_ref().is_some_and(|previous| {
             Some(previous) != current
-                && workspace.windows.iter().any(|window| {
+                && workspace.groups.iter().any(|window| {
                     window
                         .state
                         .tree
@@ -107,8 +107,8 @@ mod tests {
 
     #[test]
     fn repeated_transitions_toggle_and_stale_history_is_cleared() {
-        let mut workspace = Workspace::single(tid(1));
-        workspace.add_window("2".to_owned(), tid(2));
+        let mut workspace = ArrangementDoc::single(tid(1));
+        workspace.add_group("2".to_owned(), tid(2));
         workspace.select(0);
         let mut current = Some(tid(1));
         let mut history = FocusHistory::default();
@@ -118,7 +118,7 @@ mod tests {
         history.transition(&mut current, Some(tid(1)));
         assert_eq!(history.target(current.as_ref(), &workspace), Some(tid(2)));
 
-        workspace.windows.pop();
+        workspace.groups.pop();
         history.repair(current.as_ref(), &workspace);
         assert_eq!(history.previous(), None);
     }

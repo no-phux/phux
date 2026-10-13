@@ -16,7 +16,7 @@ use phux_config::widget::WindowInfo;
 use phux_protocol::ids::ResourceId;
 
 use crate::attach::pane_state::PaneSlot;
-use crate::layout::Workspace;
+use crate::layout::ArrangementDoc;
 use crate::render::chrome::sidebar_sections::{
     MAX_PLUGIN_SECTIONS, PluginSection, PluginSectionRow, PluginSectionSpec,
 };
@@ -119,7 +119,7 @@ fn collapse_home(cwd: &str, home: Option<&str>) -> String {
 #[must_use]
 pub(in crate::attach) fn project(
     specs: &[PluginSectionSpec],
-    workspace: &Workspace,
+    workspace: &ArrangementDoc,
     windows: &[WindowInfo],
     panes: &HashMap<ResourceId, PaneSlot>,
     agents: &HashMap<ResourceId, AgentRecord>,
@@ -129,7 +129,7 @@ pub(in crate::attach) fn project(
     }
     let home = std::env::var("HOME").ok();
     let mut facts = Vec::new();
-    for (index, window) in workspace.windows.iter().enumerate() {
+    for (index, window) in workspace.groups.iter().enumerate() {
         let label = windows
             .get(index)
             .map_or(window.name.as_str(), |w| w.name.as_str());
@@ -183,10 +183,10 @@ mod tests {
     }
 
     /// Window 0 holds pane 1; window 1 splits panes 2 | 3.
-    fn workspace() -> Workspace {
-        let mut ws = Workspace::single(rid(1));
-        ws.add_window("build".to_owned(), rid(2));
-        ws.windows[1].state.tree = Some(LayoutNode::Split {
+    fn workspace() -> ArrangementDoc {
+        let mut ws = ArrangementDoc::single(rid(1));
+        ws.add_group("build".to_owned(), rid(2));
+        ws.groups[1].state.tree = Some(LayoutNode::Split {
             dir: SplitDir::Horizontal,
             ratio: 0.5,
             left: Box::new(LayoutNode::Leaf(rid(2))),

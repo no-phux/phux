@@ -289,7 +289,7 @@ impl HeadlessSession {
 
         let layout_state = mirror
             .workspace
-            .render_window(mirror.zoomed.as_ref())
+            .render_group(mirror.zoomed.as_ref())
             .map_or_else(
                 crate::layout::LayoutState::default,
                 std::borrow::Cow::into_owned,
@@ -504,7 +504,7 @@ mod sidebar_tests {
         };
         let mut session = HeadlessSession::new(kernel, chrome, (100, 24));
         let id = ResourceId::local(1);
-        session.mirror.workspace = crate::layout::Workspace::single(id.clone());
+        session.mirror.workspace = crate::layout::ArrangementDoc::single(id.clone());
         session.mirror.session_name = "work".to_owned();
         session.mirror.agent_meta.records.insert(
             id,
@@ -555,12 +555,12 @@ mod sidebar_tests {
         };
         let mut session = HeadlessSession::new(kernel, chrome, (80, 24));
         let (left, right) = (ResourceId::local(1), ResourceId::local(2));
-        let mut workspace = crate::layout::Workspace::single(left.clone());
+        let mut workspace = crate::layout::ArrangementDoc::single(left.clone());
         let tree = workspace
-            .active_window()
+            .active_group()
             .and_then(|window| window.tree.clone())
             .expect("tree");
-        workspace.active_window_mut().expect("window").tree = Some(
+        workspace.active_group_mut().expect("window").tree = Some(
             crate::layout::split_at(
                 &tree,
                 &left,

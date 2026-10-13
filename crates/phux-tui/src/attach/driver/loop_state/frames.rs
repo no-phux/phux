@@ -557,7 +557,7 @@ impl super::SessionLoop {
         let ls = self
             .mirror
             .workspace
-            .render_window(self.mirror.zoomed.as_ref())?;
+            .render_group(self.mirror.zoomed.as_ref())?;
         ls.tree.as_ref().map(|_| {
             crate::attach::multi_pane::compute_layout_in(
                 ls.as_ref(),
