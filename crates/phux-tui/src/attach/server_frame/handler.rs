@@ -1682,6 +1682,11 @@ fn handle_agent_event<W: crate::attach::RenderSink>(
             event: AgentEvent::CommandFinished { exit_code },
             ..
         } => fold_command_finished(ctx, &terminal, exit_code),
+        FrameKind::Event {
+            terminal: Some(terminal),
+            event: AgentEvent::InputActivity { origin },
+            ..
+        } => fold_input_activity(ctx, &terminal, origin),
         // Another session's pane set changed (server-wide event subscription).
         FrameKind::Event {
             terminal: Some(terminal),
@@ -1785,6 +1790,22 @@ fn fold_cwd_changed<W: crate::attach::RenderSink>(
         // Unchanged value, or a pane we have no slot for yet — the
         // next cwd_changed (or the ATTACHED seed) covers it.
         _ => FrameOutcome::default(),
+    }
+}
+
+/// A peer just sent input. Restart the fading origin badge on the rail.
+fn fold_input_activity<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    terminal: &ResourceId,
+    origin: String,
+) -> FrameOutcome {
+    let Some(slot) = ctx.panes.get_mut(terminal) else {
+        return FrameOutcome::default();
+    };
+    slot.note_input_origin(origin, std::time::Instant::now());
+    FrameOutcome {
+        chrome_dirty: true,
+        ..FrameOutcome::default()
     }
 }
 

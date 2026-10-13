@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-09-12
+last-reviewed: 2026-10-13
 ---
 
 # Appendix B — Reserved ranges
@@ -142,9 +142,10 @@ and a decoder maps an unallocated tag to `Unknown { tag }` ([L1.md §1.1](./L1.m
 with the native v2 version byte that follows tag `1` in a dump.
 
 `AgentEvent` tags ([L1.md §7.1](./L1.md)) allocate sequentially from `0x00`:
-`0x00..=0x0c` are taken, the last two (`journal_gap`, `source_gap`) by
-ADR-0123. A decoder skips an unknown tag by its length prefix, so a new tag is
-additive. `ControlAction` (the `terminal_control` action byte) allocates
+`0x00..=0x0f` are taken. `0x0b journal_gap` and `0x0c source_gap` are
+ADR-0123, `0x0d approval_requested` and `0x0e approval_decided` are ADR-0128,
+and `0x0f input_activity` is the unjournaled input-origin notice. A decoder
+skips an unknown tag by its length prefix, so a new tag is additive. `ControlAction` (the `terminal_control` action byte) allocates
 sequentially from `0`: `0..=9` are taken, `9 EXPIRED` by ADR-0123, which also
 fixes the rule under which a server may send a value an older decoder cannot
 read ([L1.md §7.1](./L1.md)).

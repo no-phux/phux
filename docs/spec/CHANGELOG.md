@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-10-09
+last-reviewed: 2026-10-13
 ---
 
 # Wire-protocol changelog
@@ -18,6 +18,7 @@ must equal `PROTOCOL_VERSION` in `crates/phux-protocol/src/lib.rs`;
 
 | Version | Date       | Notes                                        |
 |---------|------------|----------------------------------------------|
+| 0.9.0-draft.59 | 2026-10-13 | `AgentEvent::InputActivity` at tag `0x0f` on the existing `EVENT` frame ([L1.md](./L1.md) §7.1). Body is one positional `origin: str`. Unjournaled: stamp absent, journal and `after_seq` untouched, a full mailbox drops it with no `journal_gap`. The reference server emits it from the input lane on accepted key, mouse, or paste, at most once per 250 ms per Terminal (leading edge), never to the sending client. `origin` is the HELLO `client_name` or the fallback `client:<id>`; the body never carries a `credential_id`. No new frame kind and no HELLO capability bit, so an older decoder reads the tag as `Unknown` by length. A hub drops the event rather than relaying an origin label. The reference TUI paints the label as a fading badge on the pane rail. Additive per §6.3; `PROTOCOL_VERSION` stays `0.9.0`. |
 | 0.9.0-draft.58 | 2026-10-11 | phux-urxjy ([ADR-0159](../adr/0159-agent-streams-resume-from-committed-records.md)): capability-gated AgentSession sequence resume. New `features_ext.AGENT_STREAM_RESUME = 0x00000008`; `ATTACH_RESOURCE` gains trailing `agent_after_seq: u64` after its role byte. `BOOTSTRAP_BEGIN` gains optional field 9 `resume_after_seq`, valid only for the agent JSONL/raw profile. An accepted cursor appends the contiguous suffix through the atomic cut; an evicted or future cursor receives a whole-ring replacement with field 9 absent. Same-incarnation clients retain their committed log/state; closure or incarnation change clears the cursor. No-cursor command/bootstrap bytes remain unchanged. Additive per proto §6.3; `PROTOCOL_VERSION` remains `0.9.0`. |
 | 0.9.0-draft.57 | 2026-10-09 | Session directory tags. [L3.md](./L3.md) §3.1 adds stored Global key `phux.session.directory/v1` (`name\0directory`). The server does not interpret it. A workspace save uses this tag when it is set, and the focused pane's directory otherwise. **No wire bytes change:** no tag, field, frame, verb, error code, or capability is added, and `PROTOCOL_VERSION` stays `0.9.0`. |
 | 0.9.0-draft.56 | 2026-10-09 | Session host tags. [L3.md](./L3.md) §3.1 adds stored Global key `phux.session.host/v1` (`name\0host`). The server does not interpret it. A workspace save uses a focused satellite pane's host when the pane has one, and this tag otherwise. **No wire bytes change:** no tag, field, frame, verb, error code, or capability is added, and `PROTOCOL_VERSION` stays `0.9.0`. |
