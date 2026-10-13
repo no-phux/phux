@@ -347,10 +347,7 @@ impl World {
                 let mut tree: Option<LayoutNode<EntryRef>> = None;
                 for resource in members {
                     self.entries = self.entries.wrapping_add(1);
-                    let leaf = LayoutNode::Leaf(EntryRef {
-                        entry: [self.entries; 16],
-                        resource,
-                    });
+                    let leaf = LayoutNode::Leaf(EntryRef::member([self.entries; 16], resource));
                     tree = Some(match tree {
                         None => leaf,
                         Some(t) => LayoutNode::Split {

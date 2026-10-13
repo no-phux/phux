@@ -33,8 +33,8 @@ pub use activation::{
 pub use actor::{Actor, PrincipalId, Verb};
 pub use apply::apply;
 pub use arrangement::{
-    Arrangement, ArrangementError, ArrangementOwner, EntryRef, Group, LayoutError, LayoutNode,
-    SplitDir,
+    Arrangement, ArrangementError, ArrangementOwner, EntryRef, EntryTarget, Group, LayoutError,
+    LayoutNode, SplitDir,
 };
 pub use command::{
     Applied, Command, Created, Effect, NewResource, Op, Refusal, Reply, SourcePin, TerminateMode,
