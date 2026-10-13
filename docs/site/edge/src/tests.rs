@@ -75,6 +75,7 @@ fn attach_resource(session: &mut EdgeSession, id: ResourceId) -> Vec<FrameKind> 
             command: Command::AttachResource {
                 terminal_id: id,
                 role_policy: None,
+                agent_after_seq: None,
             },
         },
     )

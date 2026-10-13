@@ -105,11 +105,7 @@ impl Session {
             .insert(request_id, declaration.terminal_id.clone());
         outcome.send.push(encode(&FrameKind::Command {
             request_id,
-            command: Command::AttachResource {
-                terminal_id: declaration.terminal_id.clone(),
-                role_policy: None,
-                agent_after_seq: None,
-            },
+            command: Command::attach_agent_session(declaration.terminal_id.clone(), None, None),
         }));
         outcome.badges = true;
         outcome

@@ -213,8 +213,10 @@ Default prefix `C-a`. Override it in one line of config.
 
 ### Which-key
 
-Pause after the prefix to see a panel of live continuations; numeric window
-jumps share one `0-9` row. Any continuation dismisses the panel and runs
+Pause after the prefix to see a panel of live continuations, grouped under
+Pane, Window, Session, and phux. Keys bound to the same action share a row,
+a directional family shares one (`h j k l  focus`), and numeric window jumps
+share one `0-9` row. Any continuation dismisses the panel and runs
 normally. Typing before the delay prevents it from appearing. Esc dismisses
 it and cancels the pending prefix.
 
@@ -373,10 +375,10 @@ doubled.
 `[sidebar]` docks a vertical strip on the left (default) or right. It is
 **on by default**. `C-a b` (`toggle-sidebar`) flips it for the life of
 the attach; `[sidebar] enabled` seeds that choice at attach only. Panes
-tile into the remaining content rect. Default `width = 0` sizes
-automatically: a quarter of the viewport, bounded to 28–40 columns. A
-positive width is exact. Automatic width depends only on viewport size,
-so changing titles never reflows work.
+tile into the remaining content rect. Default `width = 20` is exact.
+`width = 0` sizes automatically: a quarter of the viewport, bounded to
+28–40 columns. Automatic width depends only on viewport size, so
+changing titles never reflows work.
 
 The strip runs the full height of the terminal. The status bar yields
 its columns rather than spanning underneath. After the footer row, the
@@ -586,8 +588,10 @@ Clipboard reads (`OSC 52 ; ?`) are never answered.
 ## Command palette, pickers, and settings
 
 `C-a :` (`command-palette`) and `C-a ?` (`show-help`) open the same Commands
-overlay. Actions show their live chords, grouped under Pane, Window, Session,
-and View. Typing fuzzy-filters the list; Enter runs the selected action.
+overlay. Actions show a short title and their live chord (nothing when
+unbound), grouped under Pane, Window, Session, and View. Typing
+fuzzy-filters titles, chords, and canonical action names (`kill-pane` finds
+"Close pane"); Enter runs the selected action.
 Navigate with arrows / `C-n` / `C-p` (`j` / `k` when the query is empty),
 PageUp / PageDown, Home / End, or the wheel. Enabled plugin `[[actions]]`
 and hostable `[[panes]]` appear under Plugin.

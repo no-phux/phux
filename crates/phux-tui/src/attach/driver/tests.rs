@@ -1093,7 +1093,7 @@ fn command_palette_keeps_sidebar_visible() {
         "{all}"
     );
     assert!(
-        !strip.contains('┌') && !strip.contains('└'),
+        !strip.contains('╭') && !strip.contains('╰'),
         "modal intruded into the strip:\n{strip}"
     );
     insta::assert_snapshot!("palette_over_sidebar", all);

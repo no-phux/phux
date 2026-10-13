@@ -991,6 +991,10 @@ struct App {
     canvas: HtmlCanvasElement,
     ctx: CanvasRenderingContext2d,
     metrics: Metrics,
+    canvas_geometry: Cell<crate::canvas::CanvasGeometry>,
+    host_paths_enabled: bool,
+    /// The explicit hosted edge backend has no event stream or host filesystem.
+    hosted_edge: bool,
     prefix: Cell<bool>,
     /// Cursor blink phase; toggled by an interval in `run`.
     cursor_on: Cell<bool>,
@@ -1034,10 +1038,32 @@ type AppReady = (Rc<RefCell<App>>, oneshot::Receiver<Result<(), String>>);
 
 impl App {
     fn send(&self, frames: Vec<Vec<u8>>) -> Result<(), String> {
-        for f in frames {
+        for f in frames
+            .into_iter()
+            .filter(|frame| self.permits_outbound(frame))
+        {
             self.tx.send(&f)?;
         }
         Ok(())
+    }
+
+    /// Apply the backend policy before HELLO, without changing codec capabilities.
+    fn configure_hosted_backend(&mut self, preamble: &JsValue) {
+        self.hosted_edge = js_sys::Reflect::get(preamble, &JsValue::from_str("backend"))
+            .ok()
+            .and_then(|backend| backend.as_string())
+            .as_deref()
+            == Some("edge");
+        self.host_paths_enabled &= !self.hosted_edge;
+    }
+
+    /// SUBSCRIBE_EVENTS is a base native operation (not EventJournal replay).
+    /// The curated edge shell has no event stream. Omit both startup and kernel
+    /// post-ready registrations there; never hide its inbound errors or alter
+    /// native subscriptions, even when the negotiated codec is synthesized.
+    fn permits_outbound(&self, frame: &[u8]) -> bool {
+        !self.hosted_edge
+            || frame.get(4) != Some(&phux_protocol::wire::frame::TYPE_SUBSCRIBE_EVENTS)
     }
 
     fn signal_ready(&self) {
@@ -1175,6 +1201,10 @@ impl App {
 
     /// Toggle the cursor blink phase and redraw only the cursor's row.
     fn blink(&self) {
+        if self.canvas_geometry.get().dpr != crate::canvas::device_pixel_ratio() {
+            self.request_paint();
+            return;
+        }
         self.cursor_on.set(!self.cursor_on.get());
         if self.session.viewport_scrolled() {
             return;
@@ -1211,6 +1241,7 @@ impl App {
                 &overlay,
             );
             self.ctx.restore();
+            self.paint_pane_border(&pane, true);
         }
     }
 
@@ -1230,70 +1261,88 @@ impl App {
             panes[0].1.cols = cols;
             panes[0].1.rows = rows;
         }
-        let w = u32::from(cols) * (self.metrics.cell_w as u32);
-        let h = u32::from(rows) * (self.metrics.cell_h as u32);
-        if self.canvas.width() != w {
-            self.canvas.set_width(w);
+        let geometry = crate::canvas::CanvasGeometry::new(
+            &self.metrics,
+            cols,
+            rows,
+            crate::canvas::device_pixel_ratio(),
+        );
+        if geometry.prepare(&self.canvas, &self.ctx).is_err() {
+            return;
         }
-        if self.canvas.height() != h {
-            self.canvas.set_height(h);
-        }
-        self.ctx.set_fill_style_str("#303442");
-        self.ctx.fill_rect(0.0, 0.0, f64::from(w), f64::from(h));
+        self.canvas_geometry.set(geometry);
+        self.ctx.set_fill_style_str("#0b0b0d");
+        self.ctx
+            .fill_rect(0.0, 0.0, geometry.width, geometry.height);
         let focused = self.session.focused_pane();
         for (id, rect) in &panes {
             let active = focused.as_ref() == Some(id);
-            self.ctx.save();
-            let x = f64::from(rect.x) * self.metrics.cell_w;
-            let y = f64::from(rect.y) * self.metrics.cell_h;
-            let width = f64::from(rect.cols) * self.metrics.cell_w;
-            let height = f64::from(rect.rows) * self.metrics.cell_h;
-            let _ = self.ctx.translate(x, y);
-            self.ctx.begin_path();
-            self.ctx.rect(0.0, 0.0, width, height);
-            self.ctx.clip();
-            if active {
-                let overlay = Overlay {
-                    selected: self.selected_cells(grid.cols),
-                    marks: &marks,
-                };
-                render_selected(
-                    &self.ctx,
-                    &grid,
-                    &self.metrics,
-                    self.cursor_on.get() && !self.session.viewport_scrolled(),
-                    &overlay,
-                );
-            } else if let Some(terminal) = self.session.pane_terminal(id) {
-                render_selected(
-                    &self.ctx,
-                    &terminal.grid(),
-                    &self.metrics,
-                    false,
-                    &Overlay::default(),
-                );
-            }
-            self.ctx.restore();
+            self.paint_pane(id, rect, active, &grid, &marks);
             if panes.len() > 1 {
-                self.ctx
-                    .set_stroke_style_str(if active { "#8bb4ff" } else { "#555b6b" });
-                self.ctx.set_line_width(if active { 2.0 } else { 1.0 });
-                self.ctx.stroke_rect(
-                    x + 1.0,
-                    y + 1.0,
-                    (width - 2.0).max(0.0),
-                    (height - 2.0).max(0.0),
-                );
+                self.paint_pane_border(rect, active);
             }
         }
         if self.bell_showing() {
             self.ctx.set_fill_style_str(BELL_FLASH_FILL);
-            self.ctx.fill_rect(0.0, 0.0, f64::from(w), f64::from(h));
+            self.ctx
+                .fill_rect(0.0, 0.0, geometry.width, geometry.height);
         }
         self.painted.replace(Some(grid));
         self.painted_marks.replace(marks);
         self.publish_title();
         self.place_input_surface();
+    }
+
+    fn paint_pane(
+        &self,
+        id: &phux_protocol::ids::ResourceId,
+        rect: &crate::PaneRect,
+        active: bool,
+        grid: &phux_vt_web::Grid,
+        marks: &[Mark],
+    ) {
+        self.ctx.save();
+        let _ = self.ctx.translate(
+            f64::from(rect.x) * self.metrics.cell_w,
+            f64::from(rect.y) * self.metrics.cell_h,
+        );
+        self.ctx.begin_path();
+        self.ctx.rect(
+            0.0,
+            0.0,
+            f64::from(rect.cols) * self.metrics.cell_w,
+            f64::from(rect.rows) * self.metrics.cell_h,
+        );
+        self.ctx.clip();
+        if active {
+            let overlay = Overlay {
+                selected: self.selected_cells(grid.cols),
+                marks,
+            };
+            render_selected(
+                &self.ctx,
+                grid,
+                &self.metrics,
+                self.cursor_on.get() && !self.session.viewport_scrolled(),
+                &overlay,
+            );
+        } else if let Some(terminal) = self.session.pane_terminal(id) {
+            render_selected(
+                &self.ctx,
+                &terminal.grid(),
+                &self.metrics,
+                false,
+                &Overlay::default(),
+            );
+        }
+        self.ctx.restore();
+    }
+
+    fn paint_pane_border(&self, rect: &crate::PaneRect, active: bool) {
+        if self.session.pane_rects().len() <= 1 {
+            return;
+        }
+        crate::canvas::paint_pane_border(&self.ctx, &self.metrics, rect, active);
     }
 
     /// Whether the visual bell is on screen now.
@@ -1382,9 +1431,9 @@ impl App {
     /// size scaled by however CSS, page zoom, or the device pixel ratio
     /// shows the canvas.
     fn css_cell(&self, rect: &web_sys::DomRect) -> (f64, f64) {
-        let scale_x = rect.width() / f64::from(self.canvas.width().max(1));
-        let scale_y = rect.height() / f64::from(self.canvas.height().max(1));
-        (self.metrics.cell_w * scale_x, self.metrics.cell_h * scale_y)
+        self.canvas_geometry
+            .get()
+            .css_cell(&self.metrics, rect.width(), rect.height())
     }
 
     /// The viewport cell under a pointer event.
@@ -1560,6 +1609,18 @@ impl Drop for App {
     }
 }
 
+fn measured_canvas_context(
+    canvas: &HtmlCanvasElement,
+) -> Result<(CanvasRenderingContext2d, Metrics), JsValue> {
+    let ctx: CanvasRenderingContext2d = canvas
+        .get_context("2d")?
+        .ok_or_else(|| JsValue::from_str("no 2D context"))?
+        .dyn_into()?;
+    let metrics = Metrics::measure(&ctx)?;
+    crate::canvas::publish_metrics(canvas, &metrics)?;
+    Ok((ctx, metrics))
+}
+
 /// Grab the canvas context and assemble an [`App`] around a preloaded engine
 /// and established transport send half.
 fn build_app(
@@ -1570,13 +1631,14 @@ fn build_app(
     rows: u16,
     synthesized_only: bool,
 ) -> Result<AppReady, JsValue> {
-    let ctx: CanvasRenderingContext2d = canvas
-        .get_context("2d")?
-        .ok_or_else(|| JsValue::from_str("no 2D context"))?
-        .dyn_into()?;
-
+    let (ctx, metrics) = measured_canvas_context(&canvas)?;
     let (ready_tx, ready_rx) = oneshot::channel();
-    let metrics = Metrics::measure(&ctx)?;
+    let canvas_geometry = Cell::new(crate::canvas::CanvasGeometry::new(
+        &metrics,
+        cols,
+        rows,
+        crate::canvas::device_pixel_ratio(),
+    ));
     let mut session = if synthesized_only {
         crate::Session::new_synthesized_compat(vt, cols, rows)
     } else {
@@ -1592,6 +1654,9 @@ fn build_app(
         canvas,
         ctx,
         metrics,
+        canvas_geometry,
+        host_paths_enabled: !synthesized_only,
+        hosted_edge: false,
         prefix: Cell::new(false),
         cursor_on: Cell::new(true),
         wheel_carry: Cell::new(0.0),
@@ -1849,6 +1914,7 @@ fn hosted_message_callback(
             }
             match js_sys::JSON::parse(&text) {
                 Ok(value) => {
+                    app.borrow_mut().configure_hosted_backend(&value);
                     emit_hosted(&callback, &value);
                     if !hello_sent.replace(true) {
                         send_handshake(&app);
@@ -3406,6 +3472,108 @@ mod tests {
         Some(url) => url,
         None => "ws://127.0.0.1:47654/",
     };
+
+    #[wasm_bindgen_test]
+    async fn renderer_host_picker_is_absent_for_demo_but_preserved_for_native_sessions() {
+        let vt = Vt::load().await.unwrap();
+        let document = web_sys::window().unwrap().document().unwrap();
+        for (synthesized_only, backend) in [(true, "native"), (false, "native"), (false, "edge")] {
+            let parent = document.create_element("div").unwrap();
+            let canvas = test_canvas();
+            parent.append_child(&canvas).unwrap();
+            // No live server: the picker must not perform discovery during install.
+            let ws = WebSocket::new("ws://127.0.0.1:1/").unwrap();
+            let tx = super::WireTx::Ws(super::WsTx::new(ws));
+            let (app, _ready) =
+                super::build_app(&vt, tx, canvas.clone(), 80, 24, synthesized_only).unwrap();
+            let preamble = js_sys::JSON::parse(&format!("{{\"backend\":\"{backend}\"}}")).unwrap();
+            app.borrow_mut().configure_hosted_backend(&preamble);
+            super::path_picker::install(&app).unwrap();
+            assert_eq!(
+                parent
+                    .query_selector("#phux-path-picker")
+                    .unwrap()
+                    .is_none(),
+                synthesized_only || backend == "edge"
+            );
+            assert!(!app.borrow().session.path_pending());
+            assert!(canvas.has_attribute("data-phux-cell-width"));
+            assert!(canvas.has_attribute("data-phux-cell-height"));
+            app.borrow_mut().dispose();
+            assert!(
+                parent
+                    .query_selector("#phux-path-picker")
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+
+    fn startup_frames(app: &mut super::App) -> Vec<Vec<u8>> {
+        let mut sent = app.session.handshake();
+        let mut inbound = FrameBuffer::new();
+        inbound.push(&attached_chunk(b"ready"));
+        while let Some(bytes) = inbound.next_frame() {
+            let (frame, _) = FrameKind::decode(&bytes).unwrap();
+            let outcome = app.session.on_frame(frame);
+            assert!(outcome.fatal.is_none());
+            sent.extend(outcome.send);
+        }
+        sent
+    }
+
+    #[wasm_bindgen_test]
+    async fn hosted_edge_policy_omits_only_event_registrations_without_changing_hello() {
+        let vt = Vt::load().await.unwrap();
+        let subscribe_type = phux_protocol::wire::frame::TYPE_SUBSCRIBE_EVENTS;
+        for backend in ["edge", "native", "unknown"] {
+            let ws = WebSocket::new("ws://127.0.0.1:1/").unwrap();
+            let tx = super::WireTx::Ws(super::WsTx::new(ws));
+            let (app, _ready) = super::build_app(&vt, tx, test_canvas(), 80, 24, false).unwrap();
+            let mut app = app.borrow_mut();
+            let hello = app.session.handshake();
+            let preamble = js_sys::JSON::parse(&format!("{{\"backend\":\"{backend}\"}}")).unwrap();
+            app.configure_hosted_backend(&preamble);
+            assert_eq!(
+                app.session.handshake(),
+                hello,
+                "native codec capabilities are unchanged"
+            );
+            let all = startup_frames(&mut app);
+            let registrations: Vec<_> = all
+                .iter()
+                .filter(|frame| frame[4] == subscribe_type)
+                .collect();
+            assert_eq!(
+                registrations.len(),
+                2,
+                "pre-attach and post-ready kernel subscriptions"
+            );
+            let sent: Vec<_> = all
+                .iter()
+                .filter(|frame| app.permits_outbound(frame))
+                .collect();
+            let expected: Vec<_> = all
+                .iter()
+                .filter(|frame| backend != "edge" || frame[4] != subscribe_type)
+                .collect();
+            assert_eq!(sent, expected, "no other operation is suppressed");
+            assert_eq!(app.host_paths_enabled, backend != "edge");
+            assert_eq!(
+                app.send(vec![registrations[0].clone()]).is_ok(),
+                backend == "edge",
+                "edge never transmits the unsupported request; native still uses its transport"
+            );
+            let error = app.session.on_frame(FrameKind::Error {
+                request_id: None,
+                code: phux_protocol::wire::frame::ErrorCode::UnknownMessageType,
+                message: "genuine operation refusal".to_owned(),
+            });
+            assert!(error.panes, "inbound errors are still published");
+            assert_eq!(app.session.pane_error(), Some("genuine operation refusal"));
+            app.dispose();
+        }
+    }
 
     #[wasm_bindgen_test]
     fn poisoned_framing_stops_pump_and_invokes_close() {

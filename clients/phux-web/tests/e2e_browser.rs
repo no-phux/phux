@@ -169,7 +169,11 @@ async fn resize_reflows_the_live_terminal_and_canvas() {
     );
     // Paint lands on the next animation frame using the loaded bundled face.
     let (cell_w, cell_h) = metrics::measured(&canvas).cell_px();
-    let expected = (100 * u32::from(cell_w), 30 * u32::from(cell_h));
+    let dpr = web_sys::window().unwrap().device_pixel_ratio();
+    let expected = (
+        (100.0 * f64::from(cell_w) * dpr).round() as u32,
+        (30.0 * f64::from(cell_h) * dpr).round() as u32,
+    );
     for _ in 0..POLLS {
         if (canvas.width(), canvas.height()) == expected {
             break;

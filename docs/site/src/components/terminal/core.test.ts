@@ -3,6 +3,7 @@ import {
   ctrlLatchOf,
   parseHostedEvent,
   terminalGeometry,
+  terminalCellMetrics,
   THUMB_KEYS,
 } from "./core";
 
@@ -52,6 +53,26 @@ describe("hosted client events", () => {
 });
 
 describe("initial terminal geometry", () => {
+  test.each([320, 390, 768, 872, 1280])("refits measured 9px cells within a %ipx frame", (width) => {
+    const metrics = terminalCellMetrics({ phuxCellWidth: "9", phuxCellHeight: "16" });
+    const grid = terminalGeometry(width, 330, 110, 24, metrics);
+    expect(grid.cols).toBe(Math.min(110, Math.floor(width / 9)));
+    expect(grid.cols * metrics.width).toBeLessThanOrEqual(width);
+    expect(grid.rows * metrics.height).toBeLessThanOrEqual(330);
+  });
+
+  test("cell measurements remain logical CSS pixels at DPR 2", () => {
+    const metrics = terminalCellMetrics({ phuxCellWidth: "9.25", phuxCellHeight: "16.5" });
+    expect(terminalGeometry(872, 384, 110, 24, metrics)).toEqual({ cols: 94, rows: 23 });
+  });
+
+  test.each([undefined, "", "0", "-1", "NaN", "Infinity", "9px"])("uses premount defaults for invalid metric %s", (value) => {
+    expect(terminalCellMetrics({ phuxCellWidth: value, phuxCellHeight: value })).toEqual({ width: 8, height: 16 });
+  });
+
+  test("tiny frames do not force a minimum grid wider than their container", () => {
+    expect(terminalGeometry(90, 80, 100, 24, { width: 9, height: 16 })).toEqual({ cols: 10, rows: 5 });
+  });
   test("fits readable cells into the mobile container instead of scaling 100 columns", () => {
     const grid = terminalGeometry(358, 330, 100, 24);
     expect(grid).toEqual({ cols: 44, rows: 20 });

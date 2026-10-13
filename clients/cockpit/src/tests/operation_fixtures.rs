@@ -86,11 +86,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "reattach-request.bin",
         vec![FrameKind::Command {
             request_id: 2,
-            command: Command::AttachResource {
-                terminal_id: ResourceId::local(7),
-                role_policy: None,
-                agent_after_seq: None,
-            },
+            command: Command::attach_terminal(ResourceId::local(7), None),
         }],
     )?;
     write(
@@ -193,11 +189,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "attach-satellite-request.bin",
         vec![FrameKind::Command {
             request_id: 2,
-            command: Command::AttachResource {
-                terminal_id: satellite.clone(),
-                role_policy: None,
-                agent_after_seq: None,
-            },
+            command: Command::attach_terminal(satellite.clone(), None),
         }],
     )?;
     write(
@@ -240,11 +232,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "attach-local-request.bin",
         vec![FrameKind::Command {
             request_id: 1,
-            command: Command::AttachResource {
-                terminal_id: local.clone(),
-                role_policy: None,
-                agent_after_seq: None,
-            },
+            command: Command::attach_terminal(local.clone(), None),
         }],
     )?;
     write(

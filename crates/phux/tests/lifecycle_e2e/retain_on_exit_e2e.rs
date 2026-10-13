@@ -314,11 +314,7 @@ fn spawn_retain_then_wait_exit_after_the_fact_reads_status() {
         let attach = request(
             &mut waiter,
             1004,
-            Command::AttachResource {
-                terminal_id: pane.clone(),
-                role_policy: None,
-                agent_after_seq: None,
-            },
+            Command::attach_terminal(pane.clone(), None),
         )
         .await;
         assert!(matches!(attach, CommandResult::Ok), "{attach:?}");

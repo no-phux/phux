@@ -7,6 +7,7 @@
 
 #![deny(missing_docs)]
 
+pub mod canvas;
 pub mod client;
 mod fonts;
 pub mod framing;
@@ -206,7 +207,7 @@ fn canvas_by_id(canvas_id: &str) -> Result<web_sys::HtmlCanvasElement, JsValue> 
 }
 
 /// Cell geometry + font for the canvas renderer. A monospace cell grid: every
-/// cell is `cell_w`×`cell_h` device pixels.
+/// cell is `cell_w`×`cell_h` logical CSS pixels; DPR only scales the backing store.
 #[derive(Clone, Debug)]
 pub struct Metrics {
     /// Cell width in pixels.

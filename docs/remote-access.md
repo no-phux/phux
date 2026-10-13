@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors
 stability: evolving
-last-reviewed: 2026-10-09
+last-reviewed: 2026-10-13
 ---
 
 # Remote access
@@ -475,9 +475,17 @@ phux pair revoke <credential-id>
 
 For a phone or tablet `phux pair` also prints a one-tap
 `https://phux.sh/connect?url=…&quic=…&fp=…[&ca=…][&enroll=…]&token=…` Universal Link (an https
-link so only the app owning the domain receives the bearer token), a
-`phux://connect?…` spelling for older app builds, and with `--qr` a terminal
-QR of the same link. Treat all three like the token itself. `url` names the
+link so only the app owning the domain receives the bearer token) and a
+`phux://connect?…` spelling for older app builds. Treat both like the token.
+`phux pair --qr` is the form to film: it scales a terminal QR to the window,
+prints whether the credential expires, and does not print the bearer or the
+link (both exist only inside the QR). `--expires 15m` (also `24h`, `7d`, up
+to 30 days) sets that absolute expiry; with no `--expires` the line says the
+credential does not expire, which is the wrong thing to leave in a recording.
+`phux pair --secret-file PATH` pre-pairs off camera: PATH is created mode
+0600 with the bearer and link, and neither is printed. `--json` still prints
+the bearer for `phux host add` and cannot combine with `--qr` or
+`--secret-file`. `url` names the
 address the server's WSS listener is bound to (the overlay address for a
 `0.0.0.0`/`::` bind), or `--host HOST:PORT` (or a full `ws://`/`wss://` URL)
 when the device reaches the server some other way, such as a MagicDNS name or
@@ -511,8 +519,11 @@ it too. An app or CLI that predates `sni` refuses the link because
 ([ADR-0149](adr/0149-relay-routes-ride-the-tls-server-name-everywhere.md)).
 
 ```sh
-# Credentials + a scannable one-tap QR for the device:
-phux pair --qr --name studio-mini
+# Film the scan. The bearer is only in the QR, and it expires:
+phux pair --qr --expires 15m --name studio-mini
+
+# Pre-pair off camera. The bearer is only in the file:
+phux pair --secret-file ~/pair-secret --expires 15m --name studio-mini
 ```
 
 Prefer QUIC where UDP is open — it handles roaming and connection migration
@@ -591,7 +602,7 @@ export PHUX_OVERLAY_ADDRS=10.77.0.2
 # For a deliberately configured server instead:
 phux server --quic 10.77.0.2:8788 --listen 10.77.0.2:8787
 # In another shell with the same environment and profile:
-phux pair --qr --name studio
+phux pair --qr --expires 15m --name studio
 ```
 
 Do not start a second server over an existing service; configure its concrete

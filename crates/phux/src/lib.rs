@@ -221,6 +221,20 @@ const fn pair_qr_with_action(cli: &Cli) -> Option<&'static str> {
         ),
         Some(Command::Pair {
             action: Some(_),
+            secret_file: Some(_),
+            ..
+        }) => Some(
+            "phux: --secret-file belongs to minting a credential; it cannot combine with ls, prune, rotate, or revoke",
+        ),
+        Some(Command::Pair {
+            action: Some(_),
+            expires: Some(_),
+            ..
+        }) => Some(
+            "phux: --expires belongs to minting a credential; it cannot combine with ls, prune, rotate, or revoke",
+        ),
+        Some(Command::Pair {
+            action: Some(_),
             relay_route: Some(_),
             ..
         }) => Some(
@@ -1411,6 +1425,8 @@ fn dispatch(
             tokens,
             cert,
             qr,
+            secret_file,
+            expires,
             host,
             name,
             json,
@@ -1425,6 +1441,8 @@ fn dispatch(
             tokens,
             cert,
             qr,
+            secret_file,
+            expires,
             host,
             name,
             json,

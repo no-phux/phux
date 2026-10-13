@@ -58,6 +58,10 @@ required-features = ["c-abi"]
 name = "connected_flood"
 required-features = ["c-abi"]
 
+[[test]]
+name = "agent_resume_live"
+required-features = ["c-abi"]
+
 [features]
 # Cockpit's lane and the shipped default: the `extern "C"` surface
 # `include/phux/client.h` declares. `cargo build -p phux-client-ffi` links no

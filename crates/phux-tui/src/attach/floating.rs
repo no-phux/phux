@@ -136,7 +136,7 @@ pub(in crate::attach) fn paint_floating_frame<W: Write>(
         format!(" {} ", crate::render::clip_text(title, inner_w - 2))
     };
     let label_w = crate::render::display_width(&label);
-    let top = format!("┌{label}{}┐", "─".repeat(inner_w.saturating_sub(label_w)));
+    let top = format!("╭{label}{}╮", "─".repeat(inner_w.saturating_sub(label_w)));
     crate::attach::render::write_cup(out, outer.y, outer.x)?;
     out.write_all(top.as_bytes())?;
     for row in 1..outer.h - 1 {
@@ -145,7 +145,7 @@ pub(in crate::attach) fn paint_floating_frame<W: Write>(
         crate::attach::render::write_cup(out, outer.y + row, outer.x + outer.w - 1)?;
         out.write_all("│".as_bytes())?;
     }
-    let bottom = format!("└{}┘", "─".repeat(inner_w));
+    let bottom = format!("╰{}╯", "─".repeat(inner_w));
     crate::attach::render::write_cup(out, outer.y + outer.h - 1, outer.x)?;
     out.write_all(bottom.as_bytes())?;
     out.write_all(b"\x1b[0m")
@@ -207,8 +207,8 @@ mod tests {
         let frame = floating_box(rect(0, 0, 30, 10));
         paint_floating_frame(&mut out, frame, "Agent Board", &Theme::default()).expect("paint");
         let text = String::from_utf8(out).expect("utf8");
-        assert!(text.contains("┌ Agent Board ─"), "{text:?}");
-        assert!(text.contains('┐') && text.contains('└') && text.contains('┘'));
+        assert!(text.contains("╭ Agent Board ─"), "{text:?}");
+        assert!(text.contains('╮') && text.contains('╰') && text.contains('╯'));
         assert_eq!(
             text.matches('│').count(),
             usize::from(frame.outer.h - 2) * 2

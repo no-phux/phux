@@ -10,6 +10,13 @@
 # GITHUB_TOKEN never gets ci and cannot merge. The same applies to the
 # lockfile commit pushed onto that PR. Both authenticate as the release App.
 #
+# release-please force-pushes the release branch and drops the lockfile commit
+# sync-lockfile added. main does not require checks on the latest push, so that
+# unsynced head is mergeable until sync runs — #1105 merged in that window and
+# left integration drafts that publish will not ship, because ci failed on the
+# unsynced commit. Hold a ready PR as draft in this job, before it exits, and
+# let sync mark it ready only after the lockfile push lands.
+#
 # Do not set last-release-sha. It is a bootstrap pin release-please never
 # ignores, so the changelog grows from that commit forever.
 #
@@ -45,6 +52,9 @@ jobs:
       # `pr` contains only the first PR. Desktop releases can be separate,
       # so synchronize every returned branch, including the root release PR.
       prs: ${{ steps.rp.outputs.prs || '[]' }}
+      # Ready PRs returned to draft until sync-lockfile pushes. Empty when
+      # nothing was updated, or the hold step did not run.
+      held_prs: ${{ steps.hold.outputs.held_prs || '[]' }}
     steps:
       # Fail closed and loudly if the App is not configured, rather than falling
       # back to GITHUB_TOKEN and silently opening an unmergeable release PR.
@@ -74,6 +84,38 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+      # Same job as the force-push, before this job exits. A later job is too
+      # late: the unsynced head is mergeable for as long as a runner takes to
+      # start, and main's ruleset accepts the previous head's green ci.
+      - name: Hold ready release PRs until lockfiles sync
+        id: hold
+        if: steps.rp.outputs.prs_created == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PRS: ${{ steps.rp.outputs.prs }}
+        run: |
+          set -euo pipefail
+          held='[]'
+          if [ -n "${PRS:-}" ] && [ "$PRS" != "null" ] && [ "$PRS" != "[]" ]; then
+            held_nums=()
+            numbers="$(printf '%s' "$PRS" | jq -er '.[].number')"
+            while IFS= read -r num; do
+              [ -n "$num" ] || continue
+              meta="$(gh pr view "$num" --repo "$GITHUB_REPOSITORY" --json state,isDraft --jq '[.state,(.isDraft|tostring)] | @tsv')"
+              state="${meta%%$'\t'*}"
+              draft="${meta#*$'\t'}"
+              if [ "$state" = "OPEN" ] && [ "$draft" = "false" ]; then
+                gh pr ready "$num" --repo "$GITHUB_REPOSITORY" --undo
+                held_nums+=("$num")
+                echo "held #$num as draft until lockfile sync finishes"
+              fi
+            done <<< "$numbers"
+            if [ "${#held_nums[@]}" -gt 0 ]; then
+              held="$(printf '%s\n' "${held_nums[@]}" | jq -R 'tonumber' | jq -s -c .)"
+            fi
+          fi
+          echo "held_prs=$held" >> "$GITHUB_OUTPUT"
 
       # `force-tag-creation: true` makes release-please create refs immediately
       # for draft releases. Do not recreate that behavior here: one owner keeps
@@ -200,3 +242,28 @@ jobs:
           git add docs/site/worker/Dockerfile
           git commit -m "chore: sync native demo source with the release version"
           git push origin "HEAD:${PR_BRANCH}"
+
+      # After every push this job makes. Restoring earlier lets a non-strict
+      # ruleset merge the lockfile commit before the source pin lands.
+      - name: Release the merge hold
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          HELD_PRS: ${{ needs.release-please.outputs.held_prs || '[]' }}
+          PR_NUMBER: ${{ matrix.pr.number }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$HELD_PRS" | jq -e --argjson n "$PR_NUMBER" 'index($n) != null' >/dev/null; then
+            echo "#$PR_NUMBER was not held"
+            exit 0
+          fi
+          meta="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json state,isDraft --jq '[.state,(.isDraft|tostring)] | @tsv')"
+          state="${meta%%$'\t'*}"
+          draft="${meta#*$'\t'}"
+          if [ "$state" != "OPEN" ]; then
+            echo "#$PR_NUMBER is $state; leaving it alone"
+            exit 0
+          fi
+          if [ "$draft" = "true" ]; then
+            gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY"
+            echo "restored #$PR_NUMBER to ready for review"
+          fi

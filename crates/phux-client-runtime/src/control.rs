@@ -53,6 +53,7 @@ use crate::engine::{EngineError, Scroll};
 #[cfg(feature = "engine")]
 use crate::publication::Publication;
 
+mod agent_delivery;
 mod agents;
 mod commands;
 mod events;
@@ -67,7 +68,10 @@ mod roster;
 mod state;
 mod topology;
 
-pub use events::{AgentSessionInfo, DeliveryOutcome, Event, Observation, Status};
+pub use events::{
+    AgentPublication, AgentRecordMode, AgentSessionInfo, DeliveryOutcome, Event, Observation,
+    Status,
+};
 pub use extensions::{
     DirectoryChild, DirectoryFailure, DirectoryListing, FileUploadOutcome, FileUploadReceipt,
     MAX_PATH_ANSWERS, PathAnswer, PathFailure, PathMatch, PathMatchKind, PathSearchStatus,
@@ -127,8 +131,8 @@ pub struct ControlOptions {
     pub auto_attach_foreign_spawns: bool,
     /// Stream every `AgentSession` resource (ADR-0103) whose parent Terminal
     /// this connection streams: subscribe it with a per-resource attach,
-    /// re-read the topology when one is announced, and surface its records
-    /// as [`Event::AgentRecords`] and its end as
+    /// re-read the topology when one is announced, and surface its commits
+    /// as [`Event::AgentPublication`] and its end as
     /// [`Event::AgentSessionClosed`]. Needs `automatic_lifecycle`, which
     /// owns the request ids those attaches use.
     pub subscribe_agent_sessions: bool,
@@ -439,6 +443,8 @@ pub struct ControlPlane {
     /// later close the server sends for one is not a pane closing. Ids are
     /// unique within an incarnation, so a restart clears it.
     retired_agents: HashSet<ResourceId>,
+    /// Undrained committed agent publications and close stamps.
+    agent_delivery: agent_delivery::AgentDelivery,
     /// This connection's identity on the server, from `ATTACHED`; what an
     /// input lease's `holder` is compared against.
     own_client_id: Option<ClientId>,
@@ -511,6 +517,7 @@ impl ControlPlane {
             agent_catalog: Vec::new(),
             agent_subscriptions: HashMap::new(),
             retired_agents: HashSet::new(),
+            agent_delivery: agent_delivery::AgentDelivery::default(),
             own_client_id: None,
             pending: HashMap::new(),
             request_seq: 1,
@@ -793,6 +800,10 @@ impl ControlPlane {
             | self.terminal_attached.remove(terminal_id)
             | self.own_spawns.remove(terminal_id)
             | self.agent_streams.remove(terminal_id);
+        // Detach discards undrained publications. A later
+        // `AgentSessionDeclared` clears that fence so the same id can commit
+        // again. The stamp is taken here, before the kernel forgets the stream.
+        let _ = self.agent_delivery.retire(terminal_id);
         let detached = self
             .engine
             .as_ref()
@@ -809,6 +820,7 @@ impl ControlPlane {
     /// `HELLO`. Frames still queued from the previous connection are
     /// discarded, as they were built against per-connection state.
     pub fn connection_opened(&mut self) {
+        self.park_agent_delivery();
         self.roster = roster::RosterRecovery::default();
         self.geometry_bootstrapped.clear();
         self.connection_epoch = self.connection_epoch.saturating_add(1);
@@ -845,6 +857,7 @@ impl ControlPlane {
 
     /// The transport dropped; the driver will walk the ladder.
     pub fn connection_lost(&mut self, message: Option<String>) {
+        self.park_agent_delivery();
         self.live_connection_epoch = None;
         let _ = self.take_inbound();
         self.handshake_ready = false;
@@ -873,6 +886,7 @@ impl ControlPlane {
 
     /// The session ends at the consumer's request.
     pub fn close(&mut self) {
+        self.discard_agent_delivery();
         self.live_connection_epoch = None;
         self.handshake_ready = false;
         let _ = self.take_inbound();

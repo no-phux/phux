@@ -293,7 +293,9 @@ green run, 0-asset drafts), so `scripts/check-release-drift.mjs` asserts:
 | Every version in `.release-please-manifest.json` has its tag | A release prepared, merged, and then never cut |
 
 A failing drift run means a release is stuck, not that the check is broken; the
-failure message carries the exact dispatch command to unstick it.
+failure message carries the exact dispatch command to unstick it. publish
+still refuses a tag whose `ci.yml` is not green, so re-dispatching it does not
+ship a release commit that failed ci.
 
 Post-release verification:
 
@@ -400,7 +402,12 @@ release PR (via a TOML jsonpath updater configured in
 PR (including when desktop has a separate PR). For a root release it runs
 `cargo update --workspace` in the root and standalone browser workspace, then
 synchronizes root path-crate versions in the desktop and site-edge lockfiles.
-Release-please cannot update those lockfiles itself.
+Release-please cannot update those lockfiles itself. It also force-pushes the
+release branch on later main commits, which drops the lockfile commit.
+main does not require status checks on the latest push, so that unsynced head
+stays mergeable until sync runs. The release-please job returns a ready PR to
+draft before it exits, and sync marks it ready again only after the lockfile
+push lands. Do not merge the PR while that hold is on.
 
 The same job pushes the synchronized source commit before regenerating the
 native demo's `PHUX_REVISION`, archive checksum, and original/patched lockfile

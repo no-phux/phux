@@ -3,13 +3,13 @@ source: crates/phux-tui/src/attach/driver/tests.rs
 expression: "rows.iter().map(|r| r.trim_end()).collect::<Vec<_>>().join(\"\\n\")"
 ---
  Agents            ├────────────────────────────────────────────────────────────
-   —               │PANE-BASE
+   none            │PANE-BASE
                    │
                    │
                    │
                    │
                    │
-                   │┌ command palette ─────────────────────────────────────────┐
+                   │╭ command palette ─────────────────────────────────────────╮
                    ││ >                                                        │
                    ││ detach                                                   │
                    ││ new-window                                               │
@@ -19,7 +19,7 @@ expression: "rows.iter().map(|r| r.trim_end()).collect::<Vec<_>>().join(\"\\n\")
    ● w1-agent      ││                                                          │
                    ││                                                          │
                    ││                                                          │
-                   │└──────────────────────────────────────────────────────────┘
+                   │╰──────────────────────────────────────────────────────────╯
                    │
                    │
                    │

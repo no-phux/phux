@@ -14,7 +14,7 @@ use super::{
 #[derive(Debug)]
 pub(super) struct AgentSubscription {
     /// What the catalog last said about it.
-    info: AgentSessionInfo,
+    pub(super) info: AgentSessionInfo,
     /// The connection epoch its `ATTACH_RESOURCE` went out on; any other
     /// value (0 after a refusal) means it is not subscribed on this one.
     connection: u64,
@@ -192,9 +192,12 @@ impl ControlPlane {
         self.own_spawns.remove(terminal_id);
         self.agent_streams.remove(terminal_id);
         // A subscribed agent stream ends as itself, never as a pane.
+        // Retire delivery even when this id was not a runtime subscription,
+        // so a close cannot replay a leased or held publication later.
         if self.end_agent_subscription(terminal_id) {
             return true;
         }
+        let _ = self.agent_delivery.retire(terminal_id);
         if let Some(topology) = self.topology.as_mut() {
             topology
                 .panes
@@ -249,6 +252,48 @@ impl ControlPlane {
             .get(terminal_id)
             .map(|subscription| subscription.info.clone())
             .unwrap_or_default()
+    }
+
+    /// Apply an authoritative registry snapshot to agent delivery admission.
+    ///
+    /// `snapshot` is a full registry read (`GET_STATE`, or the C workspace
+    /// registry), never a partial `ATTACHED` view. Listed `AgentSession` ids
+    /// are admitted. If this connection is already attached, their withheld
+    /// publications release into the existing event queue in commit order.
+    /// Omitted committed streams are forgotten, including their resume cursor;
+    /// any withheld publications are discarded. That release is local: no detach frame
+    /// and no close event. A later `AgentSessionDeclared` may admit the id
+    /// again for new commits; discarded rows do not return.
+    ///
+    /// Automatic subscription closes stay in `reconcile_agent_sessions`.
+    /// Call this after that retirement so a subscribed id is closed once.
+    pub fn reconcile_agent_delivery_catalog(&mut self, snapshot: &SessionSnapshot) {
+        let listed: std::collections::HashSet<_> = snapshot
+            .resources
+            .iter()
+            .filter(|resource| resource.kind == ResourceKind::AgentSession)
+            .map(|resource| &resource.id)
+            .collect();
+        let omitted = self.agent_delivery.ids_absent(&listed);
+        for id in &omitted {
+            let _ = self.agent_delivery.retire(id);
+            self.agent_streams.remove(id);
+            if let Some(engine) = &self.engine {
+                let _ = engine.detach(id.clone());
+            }
+        }
+        self.events.retain(|event| match event {
+            Event::AgentPublication { publication, .. } => {
+                listed.contains(&publication.resource_id)
+            }
+            _ => true,
+        });
+        for id in &listed {
+            self.agent_delivery.admit(id);
+        }
+        if self.status == super::Status::Attached {
+            self.release_agent_delivery();
+        }
     }
 
     /// Follow the `AgentSession` resources a topology lists. A `GET_STATE`
@@ -330,6 +375,7 @@ impl ControlPlane {
         {
             return Ok(());
         }
+        self.agent_delivery.admit(&resource.id);
         let info = session_info(&resource);
         self.apply_engine(EngineEvent::AgentSessionDeclared {
             terminal_id: resource.id.clone(),
@@ -356,11 +402,11 @@ impl ControlPlane {
         let agent_after_seq = self.agent_after_seq(&resource.id);
         self.queue_frame(&FrameKind::Command {
             request_id,
-            command: Command::AttachResource {
-                terminal_id: resource.id,
-                role_policy: self.options.attach_role,
+            command: Command::attach_agent_session(
+                resource.id,
+                self.options.attach_role,
                 agent_after_seq,
-            },
+            ),
         });
         Ok(())
     }
@@ -372,9 +418,11 @@ impl ControlPlane {
         };
         self.agent_streams.remove(terminal_id);
         self.retired_agents.insert(terminal_id.clone());
+        let stream = self.agent_delivery.retire(terminal_id);
         self.push_event(Event::AgentSessionClosed {
             terminal_id: terminal_id.clone(),
             session: subscription.info,
+            stream,
         });
         true
     }
@@ -458,6 +506,7 @@ impl ControlPlane {
         for terminal_id in ended {
             self.end_agent_subscription(&terminal_id);
         }
+        self.discard_agent_delivery();
         self.agent_catalog.clear();
         self.retired_agents.clear();
     }

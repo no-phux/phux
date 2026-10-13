@@ -42,12 +42,10 @@ impl Shell {
         }
         let mut o = String::new();
         o.push_str("\x1b[2J\x1b[H"); // clear + home
-        o.push_str(&logo());
-        o.push_str("\r\n");
+        o.push_str(&format!("  {VIOLET}{BOLD}Welcome to phux.{RESET}\r\n"));
         o.push_str(&format!(
-            "  {DIM}a real phux session, served from the edge — type into it.{RESET}\r\n\r\n"
+            "  Type {BOLD}help{RESET} to explore, then split a pane.\r\n\r\n"
         ));
-        o.push_str(&format!("  try:  {BOLD}help{RESET}   {BOLD}demo{RESET}   {BOLD}ls{RESET}   {BOLD}demo links{RESET}\r\n\r\n"));
         o.push_str(&self.prompt());
         o.push_str(&self.line);
         o.into_bytes()
@@ -557,7 +555,18 @@ fn links() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::PortfolioShell;
+    use super::{PortfolioShell, Shell};
+
+    #[test]
+    fn welcome_is_concise_and_keeps_real_ansi_output() {
+        let greeting = String::from_utf8(Shell::new("demo", "").greeting()).unwrap();
+        assert!(greeting.starts_with("\x1b[2J\x1b[H"));
+        assert!(greeting.contains("Welcome to phux."));
+        assert!(greeting.contains("to explore, then split a pane."));
+        assert!(!greeting.contains("served from the edge"));
+        assert!(!greeting.contains("try:"));
+        assert!(greeting.ends_with(" $ "));
+    }
 
     #[test]
     fn invalid_portfolio_data_fails_closed() {

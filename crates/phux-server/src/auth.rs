@@ -1024,16 +1024,32 @@ fn rotate_credential_at(
 
 /// Mint a generation-one credential, first revoking any live credential
 /// matching `previous_secret_hex` (`phux host add` re-enrollment), in one
-/// rewrite.
+/// rewrite. The replacement does not expire.
 pub fn mint_token_replacing(
     path: &Path,
     previous_secret_hex: &str,
 ) -> Result<MintedCredential, AuthError> {
+    mint_terminal_credential(path, Some(previous_secret_hex), None)
+}
+
+/// Mint a generation-one terminal credential.
+///
+/// `replacing` revokes any live credential whose bearer matches that hex
+/// secret in the same rewrite. `expires_at` bounds later admission; `None`
+/// leaves the credential valid until it is revoked. The bearer is returned
+/// once and stored only as a verifier.
+pub fn mint_terminal_credential(
+    path: &Path,
+    replacing: Option<&str>,
+    expires_at: Option<DateTime<Utc>>,
+) -> Result<MintedCredential, AuthError> {
     with_store_lock(path, || {
-        let previous = decode_secret(previous_secret_hex)?;
+        let previous = replacing.map(decode_secret).transpose()?;
         let mut file = load_file_for_update(path)?;
         let now = Utc::now();
-        if let Some(id) = credential_id_for_secret(&file, &previous) {
+        if let Some(previous) = previous
+            && let Some(id) = credential_id_for_secret(&file, &previous)
+        {
             for record in file.credentials.iter_mut().filter(|record| record.id == id) {
                 if record.revoked_at.is_none() {
                     record.revoked_at = Some(now);
@@ -1047,7 +1063,7 @@ pub fn mint_token_replacing(
             principal: format!("remote-consumer:{id}"),
             scopes: vec![TERMINAL_CONTROL_SCOPE.to_owned()],
             issued_at: now,
-            expires_at: None,
+            expires_at,
             revoked_at: None,
             generation: 1,
             last_seen: None,

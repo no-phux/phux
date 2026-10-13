@@ -588,9 +588,10 @@ right = [
 # The footer keeps a single New window row; Commands and Settings live on
 # the palette and the context menu.
 #
-# Width 0 (the default) adapts to one quarter of the viewport, bounded to
-# 28–40 columns. A positive width reserves exactly that many columns.
-# It docks on the `position` edge ("left" or "right")
+# Width 20 (the default) fits a badge, a name, and a right-hand tag and
+# leaves the terminal its columns. A positive width reserves exactly that
+# many columns; 0 adapts to one quarter of the viewport, bounded to 28–40
+# columns, for longer names on a wide terminal. It docks on the `position` edge ("left" or "right")
 # and the panes tile into the remaining area. `prefix-b` turns it off, and
 # that choice now sticks across session switches for the life of the
 # attach.
@@ -605,7 +606,7 @@ right = [
 #
 # [sidebar]
 # enabled = true
-# width = 0
+# width = 20
 # position = "left"
 
 # Responsive-chrome breakpoints. The chrome adapts to small terminals

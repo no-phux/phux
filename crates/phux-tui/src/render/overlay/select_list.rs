@@ -61,6 +61,9 @@ pub struct SelectItem {
     pub indented: bool,
     /// Paint the label in the theme's `attention` slot (unless selected).
     pub attention: bool,
+    /// Extra words a query matches but the row never shows (the palette's
+    /// canonical action name, so `kill-pane` still finds "Close pane").
+    pub keywords: Option<String>,
 }
 
 impl SelectItem {
@@ -74,6 +77,7 @@ impl SelectItem {
             kind: SelectKind::Item,
             indented: false,
             attention: false,
+            keywords: None,
         }
     }
 
@@ -90,6 +94,7 @@ impl SelectItem {
             kind: SelectKind::Header,
             indented: false,
             attention: false,
+            keywords: None,
         }
     }
 
@@ -97,6 +102,13 @@ impl SelectItem {
     #[must_use]
     pub fn secondary(mut self, secondary: impl Into<String>) -> Self {
         self.secondary = Some(secondary.into());
+        self
+    }
+
+    /// Let a query match `keywords` too, without painting them.
+    #[must_use]
+    pub fn keywords(mut self, keywords: impl Into<String>) -> Self {
+        self.keywords = Some(keywords.into());
         self
     }
 
@@ -120,11 +132,15 @@ impl SelectItem {
         matches!(self.kind, SelectKind::Header)
     }
 
-    /// The text a query matches: label plus secondary (so chords filter too).
+    /// The text a query matches: label, then any [`Self::keywords`], then
+    /// the secondary (so chords filter too).
     fn filter_text(&self) -> String {
-        self.secondary
-            .as_ref()
-            .map_or_else(|| self.label.clone(), |sec| format!("{} {sec}", self.label))
+        let mut text = self.label.clone();
+        for extra in [&self.keywords, &self.secondary].into_iter().flatten() {
+            text.push(' ');
+            text.push_str(extra);
+        }
+        text
     }
 }
 
@@ -939,8 +955,8 @@ mod tests {
         assert!(text.contains("item-7"), "{text}");
 
         // Only an overflowing list paints a scrollbar.
-        assert!(render_to_string(&long_list(40), 40, 16).contains('█'));
-        assert!(!render_to_string(&long_list(3), 40, 16).contains('█'));
+        assert!(render_to_string(&long_list(40), 40, 16).contains('┃'));
+        assert!(!render_to_string(&long_list(3), 40, 16).contains('┃'));
     }
 
     /// The scrollbar runs beside the list rows only: the thumb starts on the
@@ -955,12 +971,12 @@ mod tests {
         let bottom = modal.y + modal.height - 1;
         assert_eq!(
             buf[(right, modal.y + 2)].symbol(),
-            "█",
+            "┃",
             "thumb on the first list row"
         );
         assert_eq!(
             buf[(right, bottom)].symbol(),
-            "┘",
+            "╯",
             "bottom-right corner survives"
         );
     }

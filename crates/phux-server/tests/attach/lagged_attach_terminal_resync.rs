@@ -127,11 +127,7 @@ async fn lagged(exit_after: bool, retained: bool) -> Lagged {
     let mut watcher = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
     let attach = FrameKind::Command {
         request_id: 100,
-        command: Command::AttachResource {
-            terminal_id: pane.clone(),
-            role_policy: None,
-            agent_after_seq: None,
-        },
+        command: Command::attach_terminal(pane.clone(), None),
     };
     send_frame(&mut watcher, &attach).await;
     let mut oracle = Oracle::default();

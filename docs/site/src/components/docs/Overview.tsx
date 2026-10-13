@@ -1,8 +1,28 @@
 import { OVERVIEW } from "../../lib/site";
 
 export function OverviewBody() {
+  const { pitch } = OVERVIEW;
   return (
     <div className="docs-overview">
+      <section className="overview-pitch" aria-labelledby="overview-pitch-title">
+        <h2 id="overview-pitch-title">{pitch.headline}</h2>
+        <p>
+          {pitch.text}
+          <a href={pitch.linkHref}>{pitch.linkLabel}</a>.
+        </p>
+        {/*
+          TODO: iOS availability wording. Patrick has not chosen between a
+          TestFlight link and "coming soon". Keep the line below neutral.
+          Do not add a TestFlight URL or a coming-soon claim until that
+          choice is made.
+        */}
+        <p className="overview-ios">
+          {pitch.iosBefore}
+          <a href={pitch.iosHref}>{pitch.iosLabel}</a>
+          {pitch.iosAfter}
+        </p>
+      </section>
+
       <div className="overview-actions">
         <a className="overview-primary" href="/quickstart">Quickstart <span aria-hidden="true">→</span></a>
         <a href="/performance">Performance <span aria-hidden="true">→</span></a>

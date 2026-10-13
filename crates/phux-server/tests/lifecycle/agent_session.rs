@@ -77,11 +77,7 @@ async fn attach_after(
     terminal_id: &ResourceId,
     agent_after_seq: Option<u64>,
 ) {
-    let attach = Command::AttachResource {
-        terminal_id: terminal_id.clone(),
-        role_policy: None,
-        agent_after_seq,
-    };
+    let attach = Command::attach_agent_session(terminal_id.clone(), None, agent_after_seq);
     send_frame(
         stream,
         &FrameKind::Command {
@@ -926,11 +922,7 @@ fn terminal_agent_cursor_is_invalid_before_role_or_content_subscription_changes(
             let result = command(
                 &mut watcher,
                 request_id,
-                Command::AttachResource {
-                    terminal_id: parent.clone(),
-                    role_policy: Some(role_policy),
-                    agent_after_seq: Some(0),
-                },
+                Command::attach_agent_session(parent.clone(), Some(role_policy), Some(0)),
             )
             .await;
             assert!(matches!(

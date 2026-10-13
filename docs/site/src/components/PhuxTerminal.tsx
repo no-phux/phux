@@ -4,11 +4,13 @@ import {
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
 } from "react";
 import {
   ctrlLatchOf,
   mountPhuxTerminal,
   terminalGeometry,
+  terminalCellMetrics,
   THUMB_KEYS,
   warmPhuxTerminal,
   type HostedEvent,
@@ -25,6 +27,8 @@ import {
 } from "./terminal/embed-status";
 import { nativeAuthStartUrl } from "./terminal/auth-start";
 import { SITE } from "../lib/site";
+import { TerminalHeader, TerminalOverlay, PaneControls, SessionControls, TerminalInfo, type TerminalPhase as Phase } from "./TerminalChrome";
+import "./PhuxTerminal.css";
 
 interface Props {
   wsUrl?: string;
@@ -36,10 +40,8 @@ interface Props {
   autoStart?: boolean;
   focusOnStart?: boolean;
   statusParentOrigin?: string;
+  headerActions?: ReactNode;
 }
-
-type Phase =
-  "idle" | "checking" | "unlock" | "connecting" | "live" | "closed" | "error";
 
 interface Identity {
   authenticated: true;
@@ -142,6 +144,7 @@ export default function PhuxTerminal({
   autoStart = false,
   focusOnStart = false,
   statusParentOrigin,
+  headerActions,
 }: Props) {
   const canvasPrefix = `phux-term-${useId().replace(/[:]/g, "")}`;
   const canvasHost = useRef<HTMLDivElement | null>(null);
@@ -290,6 +293,7 @@ export default function PhuxTerminal({
         window.innerHeight * 0.55,
         cols,
         rows,
+        terminalCellMetrics(host.querySelector("canvas")?.dataset ?? {}),
       );
       current.client?.resize(geometry.cols, geometry.rows);
     };
@@ -348,27 +352,30 @@ export default function PhuxTerminal({
         },
         { signal: current.abort.signal },
       );
-      await Promise.all([
-        mountPhuxTerminal({
-          wsUrl,
-          canvasId: canvas.id,
-          ...geometry,
-          mode: selectedMode,
-          signal: current.abort.signal,
-          onEvent(event) {
-            if (!isCurrent()) return;
-            if (event.type === "phux.session.v1") accepted = true;
-            handleEvent(event);
-          },
-        }).then((mounted) => {
-          if (!isCurrent()) mounted.close();
-          else {
-            current.client = mounted;
-            observeSize(current);
-          }
-        }),
-        waitForMeaningfulCanvasPaint(canvas, { signal: current.abort.signal }),
-      ]);
+      const mounted = await mountPhuxTerminal({
+        wsUrl,
+        canvasId: canvas.id,
+        ...geometry,
+        mode: selectedMode,
+        signal: current.abort.signal,
+        onEvent(event) {
+          if (!isCurrent()) return;
+          if (event.type === "phux.session.v1") accepted = true;
+          handleEvent(event);
+        },
+      });
+      if (!isCurrent()) {
+        mounted.close();
+        return;
+      }
+      current.client = mounted;
+      // Mount publishes measured cell metrics before resolving. Refit first:
+      // the initial 8px estimate must never become the visible live geometry.
+      observeSize(current);
+      await waitForMeaningfulCanvasPaint(canvas, {
+        signal: current.abort.signal,
+        isGeometryReady: () => canvas.getBoundingClientRect().width <= (canvas.parentElement?.clientWidth ?? 0),
+      });
       if (!isCurrent()) return;
       if (!accepted)
         throw new Error("The server did not accept the hosted session.");
@@ -530,23 +537,16 @@ export default function PhuxTerminal({
   const running = phase === "live" || phase === "connecting";
   return (
     <div
-      className={`pterm${native ? " pterm-native" : ""}`}
+      className={`pterm terminal-surface${native ? " pterm-native" : ""}`}
       data-status={phase}
     >
-      <header className="pterm-head">
-        <span className="pterm-mark">{SITE.name} / hosted</span>
-        <span className="pterm-state" aria-live="polite">
-          {phase}
-        </span>
-        <span className="pterm-head-spacer" />
-        {session && (
-          <b>{session.backend === "native" ? "Linux" : "edge WASM"}</b>
-        )}
-        {secondsLeft !== null && (
-          <span title="Session time remaining">{formatTime(secondsLeft)}</span>
-        )}
-      </header>
-      <div className="pterm-screen">
+      <TerminalHeader phase={phase} backend={session?.backend} timeLeft={secondsLeft === null ? null : formatTime(secondsLeft)} actions={headerActions}>
+        <TerminalInfo native={native} backend={session?.backend} identity={identity}
+          startupMs={startupMs} live={phase === "live"} focused={panes.focused}>
+          <SessionControls phase={phase} identity={identity} release={release} logout={() => { void logout(); }} />
+        </TerminalInfo>
+      </TerminalHeader>
+      <div className="pterm-screen" style={{ minHeight: `calc(clamp(160px, 55svh, ${Math.max(10, rows) * 16}px) + 16px)` }}>
         {poster && !running && (
           <img
             className="pterm-poster"
@@ -558,96 +558,9 @@ export default function PhuxTerminal({
           />
         )}
         <div ref={canvasHost} className="pterm-canvas-host" />
-        {phase !== "live" && (
-          <div className="pterm-overlay">
-            {phase === "checking" && (
-              <p className="pterm-label" role="status">
-                checking native access…
-              </p>
-            )}
-            {phase === "unlock" && (
-              <div className="pterm-unlock">
-                <span className="pterm-kicker">NATIVE ACCESS</span>
-                <h2>Open a real Linux shell.</h2>
-                <p>
-                  Five disposable minutes. No outbound network or persistence.
-                  Or try the smaller edge WASM shell without signing in.
-                </p>
-                {authMessage && (
-                  <p className="pterm-auth-error" role="alert">
-                    {authMessage}
-                  </p>
-                )}
-                <a
-                  className="pterm-standalone"
-                  href="/embed"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  Open standalone shell
-                </a>
-                <div className="pterm-actions">
-                  <button onClick={() => beginAuth("github")}>
-                    Continue with GitHub
-                  </button>
-                  <button onClick={() => beginAuth("google")}>
-                    Continue with Google
-                  </button>
-                  <button
-                    className="is-quiet"
-                    onPointerEnter={warm}
-                    onFocus={warm}
-                    onClick={() => void launch("demo")}
-                  >
-                    Use instant edge shell
-                  </button>
-                </div>
-              </div>
-            )}
-            {phase === "idle" &&
-              (wsUrl ? (
-                <div className="pterm-actions">
-                  <button
-                    className="pterm-launch"
-                    onPointerEnter={warm}
-                    onFocus={warm}
-                    onClick={() => void launch()}
-                  >
-                    {native
-                      ? "Launch native Linux shell"
-                      : "Launch edge WASM shell"}
-                  </button>
-                  {native && (
-                    <button
-                      className="is-quiet"
-                      onPointerEnter={warm}
-                      onFocus={warm}
-                      onClick={() => void launch("demo")}
-                    >
-                      Use instant edge shell
-                    </button>
-                  )}
-                </div>
-              ) : (
-                <span className="pterm-dim pterm-label">
-                  Live demo is not configured.
-                </span>
-              ))}
-            {phase === "connecting" && (
-              <span className="pterm-dim pterm-label" role="status">
-                Connecting and waiting for the first terminal frame…
-              </span>
-            )}
-            {(phase === "closed" || phase === "error") && (
-              <div className="pterm-retry" role="status">
-                <p>{message}</p>
-                <button className="pterm-launch" onClick={release}>
-                  Return to controls
-                </button>
-              </div>
-            )}
-          </div>
-        )}
+        <TerminalOverlay phase={phase} native={native} configured={Boolean(wsUrl)}
+          authMessage={authMessage} message={message} warm={warm}
+          launch={(selected) => { void launch(selected); }} beginAuth={beginAuth} release={release} />
       </div>
       {phase === "live" && (
         <div
@@ -691,106 +604,12 @@ export default function PhuxTerminal({
           ))}
         </div>
       )}
-      {phase === "live" && (
-        <nav className="pterm-pane-controls" aria-label="Pane controls">
-          <span>
-            {panes.count} / 4 panes
-            {panes.focused ? ` · terminal ${panes.focused}` : ""}
-          </span>
-          <button
-            disabled={panes.pending || panes.count >= 4}
-            onClick={() => paneAction((client) => client.splitPane("vertical"))}
-          >
-            Split left/right
-          </button>
-          <button
-            disabled={panes.pending || panes.count >= 4}
-            onClick={() =>
-              paneAction((client) => client.splitPane("horizontal"))
-            }
-          >
-            Split top/bottom
-          </button>
-          <button
-            disabled={panes.pending || panes.count < 2}
-            onClick={() => paneAction((client) => client.focusNextPane())}
-          >
-            Next pane
-          </button>
-          <button
-            disabled={panes.pending || panes.count < 2}
-            onClick={() => paneAction((client) => client.closePane())}
-          >
-            Close pane
-          </button>
-          <span className="pterm-pane-status" role="status">
-            {paneError || (panes.pending ? "Updating panes…" : "")}
-          </span>
-        </nav>
-      )}
-      <nav className="pterm-controls" aria-label="Shell controls">
-        <span>
-          {native && identity
-            ? `${identity.provider} / ${identity.display}`
-            : "no sign-in / disposable"}
-        </span>
-        {startupMs !== null && phase === "live" && (
-          <span title="Measured in this browser from launch to accepted session and visible terminal output">
-            Ready in {(startupMs / 1_000).toFixed(1)}s
-          </span>
-        )}
-        <span className="pterm-control-spacer" />
-        {running && (
-          <button onClick={release}>
-            {phase === "connecting" ? "Cancel launch" : "Release session"}
-          </button>
-        )}
-        {identity && <button onClick={() => void logout()}>Sign out</button>}
-      </nav>
-      <aside className="pterm-facts" aria-live="polite">
-        <span>
-          <b>runtime</b>{" "}
-          {session
-            ? session.backend === "native"
-              ? "Linux"
-              : "edge WASM"
-            : native
-              ? "Linux requested"
-              : "edge WASM"}
-        </span>
-        <span>
-          <b>egress</b> blocked
-        </span>
-        <span>
-          <b>storage</b> temporary
-        </span>
-        {fallback && <p>{fallbackCopy[fallback]}</p>}
-        {!native && (
-          <p>
-            Real shell output. Limited edge commands; not the native Linux
-            toolchain.
-          </p>
-        )}
-      </aside>
-      {phase === "live" && (
-        <aside className="pterm-shortcuts" aria-label="Terminal pane shortcuts">
-          <span>
-            <kbd>Ctrl+a</kbd> <kbd>%</kbd> split left/right
-          </span>
-          <span>
-            <kbd>Ctrl+a</kbd> <kbd>&quot;</kbd> split top/bottom
-          </span>
-          <span>
-            <kbd>Ctrl+a</kbd> <kbd>o</kbd> next pane
-          </span>
-          <span>
-            <kbd>Ctrl+a</kbd> <kbd>x</kbd> close pane
-          </span>
-          <span>
-            Click a pane to type there. Each pane has its own terminal.
-          </span>
-        </aside>
-      )}
+      {phase === "live" && <PaneControls panes={panes} error={paneError}
+        splitVertical={() => paneAction((client) => client.splitPane("vertical"))}
+        splitHorizontal={() => paneAction((client) => client.splitPane("horizontal"))}
+        nextPane={() => paneAction((client) => client.focusNextPane())}
+        closePane={() => paneAction((client) => client.closePane())} />}
+      {fallback && <p className="pterm-fallback" role="status">{fallbackCopy[fallback]}</p>}
     </div>
   );
 }

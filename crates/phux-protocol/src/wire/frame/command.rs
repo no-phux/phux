@@ -184,7 +184,9 @@ pub enum Command {
     /// Subscribe to one resource's content stream (SPEC §5.1): a fresh
     /// bootstrap generation, then `RESOURCE_OUTPUT`. Does not resize.
     /// Re-attaching replaces the generation. The verb a federation hub relays
-    /// for two-hop attach (ADR-0007 §4).
+    /// for two-hop attach (ADR-0007 §4). Construct with
+    /// [`Self::attach_terminal`] or [`Self::attach_agent_session`]; the fields
+    /// below are the unchanged wire shape.
     AttachResource {
         /// The resource whose content stream to subscribe to.
         terminal_id: ResourceId,
@@ -434,6 +436,42 @@ pub enum Command {
 }
 
 impl Command {
+    /// Subscribe to a Terminal content stream (SPEC §5.1).
+    ///
+    /// Carries no agent cursor. Send a non-default `role_policy` only to a
+    /// server advertising `ATTACH_ROLES`. `None` is `{ PRIMARY, NEVER }` and
+    /// writes no role byte.
+    #[must_use]
+    pub const fn attach_terminal(
+        resource_id: ResourceId,
+        role_policy: Option<super::RolePolicy>,
+    ) -> Self {
+        Self::AttachResource {
+            terminal_id: resource_id,
+            role_policy,
+            agent_after_seq: None,
+        }
+    }
+
+    /// Subscribe to an `AgentSession` record stream (SPEC §5.1, ADR-0159).
+    ///
+    /// `after_seq` is the last committed record, or `None` for a full
+    /// bootstrap. Send a cursor only when the server advertises
+    /// `AgentStreamResume`; `None` keeps the no-cursor bytes. A Terminal
+    /// rejects a cursor.
+    #[must_use]
+    pub const fn attach_agent_session(
+        resource_id: ResourceId,
+        role_policy: Option<super::RolePolicy>,
+        after_seq: Option<u64>,
+    ) -> Self {
+        Self::AttachResource {
+            terminal_id: resource_id,
+            role_policy,
+            agent_after_seq: after_seq,
+        }
+    }
+
     /// The trailing `operation_id` of a keyed supervisory command
     /// (`docs/spec/L1.md` §5.1.1), or `None`.
     #[must_use]
