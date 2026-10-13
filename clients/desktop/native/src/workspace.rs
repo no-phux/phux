@@ -19,8 +19,8 @@ pub use persist::{
 };
 pub use place::{ProjectGroup, SessionLine, group_by_project, place_for, terminal_host};
 pub use session::{
-    close_session_args, create_session_args, create_session_error, rename_session_args,
-    rename_session_error, window_session,
+    create_session_args, create_session_error, rename_session_args, rename_session_error,
+    window_session,
 };
 
 use crate::connection::{Connection, parse_terminal, terminal_label};

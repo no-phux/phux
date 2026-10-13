@@ -12,27 +12,24 @@ import { ensureServer, ensureSession, serverSocket, serverStatus } from "./serve
 const root = desktopRoot;
 const repo = repoRoot;
 
+/**
+ * Without `session` the app opens the owner's Inbox (or the most recent
+ * session) and keys its layout to that session itself.
+ */
 export function desktopArguments(options: {
   socket: string;
-  session: string;
+  session?: string;
   phux: string;
-  layout: string;
+  layout?: string;
   evidence?: string;
   smoke?: boolean;
   fresh?: boolean;
   quick?: boolean;
   terminal?: string;
 }): string[] {
-  const args = [
-    "--socket",
-    options.socket,
-    "--session",
-    options.session,
-    "--phux",
-    options.phux,
-    "--layout",
-    options.layout,
-  ];
+  const args = ["--socket", options.socket, "--phux", options.phux];
+  if (options.session) args.push("--session", options.session);
+  if (options.layout) args.push("--layout", options.layout);
   if (options.evidence) args.push("--evidence", options.evidence);
   if (options.smoke) args.push("--smoke");
   if (options.fresh) args.push("--fresh");
@@ -78,21 +75,30 @@ if (import.meta.main) {
     ensureServer(phux, process.env.PHUX_SOCKET);
   }
   const socketPath = process.env.PHUX_SOCKET || serverSocket(phux);
-  const sessionName = process.env.PHUX_SESSION ?? "desktop";
-  if (!demo) ensureSession(phux, socketPath, sessionName);
+  // An explicit session is created when missing; otherwise the app opens the Inbox.
+  const sessionName = process.env.PHUX_SESSION || undefined;
+  if (!demo && sessionName) ensureSession(phux, socketPath, sessionName);
   const state = process.env.XDG_STATE_HOME ?? resolve(process.env.HOME ?? "", ".local/state");
+  const layout =
+    process.env.PHUX_DESKTOP_LAYOUT ??
+    (sessionName ? layoutFile(state, socketPath, sessionName) : undefined);
   const child = launchDesktop(
     desktop,
     desktopArguments({
       socket: socketPath,
-      session: sessionName,
+      ...(sessionName ? { session: sessionName } : {}),
       phux,
-      layout: process.env.PHUX_DESKTOP_LAYOUT ?? layoutFile(state, socketPath, sessionName),
+      ...(layout ? { layout } : {}),
       ...(process.env.PHUX_DESKTOP_EVIDENCE ? { evidence: process.env.PHUX_DESKTOP_EVIDENCE } : {}),
       ...(process.env.PHUX_DESKTOP_FRESH === "1" ? { fresh: true } : {}),
       ...(process.env.PHUX_DESKTOP_QUICK === "1" ? { quick: true } : {}),
     }),
-    { ...process.env, PHUX_BIN: phux, PHUX_SOCKET: socketPath, PHUX_SESSION: sessionName },
+    {
+      ...process.env,
+      PHUX_BIN: phux,
+      PHUX_SOCKET: socketPath,
+      ...(sessionName ? { PHUX_SESSION: sessionName } : {}),
+    },
   );
   child.once("error", (error) => {
     console.error(error);

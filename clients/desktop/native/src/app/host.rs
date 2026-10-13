@@ -9,23 +9,27 @@ use std::process::Command;
 const MISSING_CLI: &str =
     "Install the phux CLI from https://phux.sh/install so the desktop can change sessions.";
 
-/// Start the server the launch used, then the home session. A demo supervisor is not restarted.
-pub fn ensure_server(phux: &Path, socket: &Path, session: &str) -> Option<String> {
+/// Start the server the launch used, then name the session to open: `session`
+/// (created persistent when missing), or with no session, the Inbox or the
+/// most recent session. A demo supervisor is not restarted.
+pub fn ensure_server(phux: &Path, socket: &Path, session: &str) -> Result<String, String> {
     if std::env::var_os("PHUX_DESKTOP_DEMO").is_some() {
-        return Some(
+        return Err(
             "The private demo server stopped. Relaunch the demo to start a new sandbox.".into(),
         );
     }
     if phux.as_os_str().is_empty() {
-        return Some(
+        return Err(
             "Install the phux CLI from https://phux.sh/install so the desktop can start a server."
                 .into(),
         );
     }
-    restart(phux, socket, session).err()
+    restart(phux, socket)?;
+    let requested = Some(session).filter(|name| !name.trim().is_empty());
+    crate::connection::home::open_home(phux, socket, requested)
 }
 
-fn restart(phux: &Path, socket: &Path, session: &str) -> Result<(), String> {
+fn restart(phux: &Path, socket: &Path) -> Result<(), String> {
     let explicit = std::env::var("PHUX_SOCKET")
         .ok()
         .filter(|value| !value.is_empty());
@@ -43,15 +47,11 @@ fn restart(phux: &Path, socket: &Path, session: &str) -> Result<(), String> {
             socket.display()
         ));
     }
-    if !session_names(phux, socket)?
-        .iter()
-        .any(|name| name == session)
-    {
-        run(phux, socket_args(socket, &["new", "--json", "-s", session]))?;
-    }
     Ok(())
 }
 
+/// `phux new` for a server without `ORGANIZATION`; the CLI makes a session it
+/// is given a name for persistent.
 pub fn create_session(phux: &Path, socket: &Path, name: &str, directory: &str) -> Option<String> {
     if name.trim().is_empty() {
         return Some("A session needs a name.".into());
@@ -96,9 +96,10 @@ pub fn rename_session(phux: &Path, socket: &Path, current: &str, next: &str) -> 
     .err()
 }
 
-pub fn close_session(phux: &Path, socket: &Path, name: &str) -> Option<String> {
+/// `phux kill` for a server without `ORGANIZATION`, which has no kill workflow.
+pub fn kill_session(phux: &Path, socket: &Path, name: &str) -> Option<String> {
     if name.trim().is_empty() {
-        return Some("Close needs a session name.".into());
+        return Some("Kill needs a session name.".into());
     }
     if phux.as_os_str().is_empty() {
         return Some(MISSING_CLI.into());
@@ -187,28 +188,6 @@ fn server_socket(phux: &Path) -> Result<PathBuf, String> {
         .and_then(|socket| socket.as_str())
         .map(PathBuf::from)
         .ok_or_else(|| "No running phux server after `phux server --ensure`".to_owned())
-}
-
-fn session_names(phux: &Path, socket: &Path) -> Result<Vec<String>, String> {
-    let output = Command::new(phux)
-        .args(socket_args(socket, &["status", "--json"]))
-        .output()
-        .map_err(|error| error.to_string())?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    let value: serde_json::Value =
-        serde_json::from_str(text.trim()).unwrap_or(serde_json::Value::Null);
-    let Some(sessions) = value.get("sessions").and_then(|item| item.as_array()) else {
-        return Ok(Vec::new());
-    };
-    Ok(sessions
-        .iter()
-        .filter_map(|session| {
-            session
-                .get("name")
-                .and_then(|name| name.as_str())
-                .map(str::to_owned)
-        })
-        .collect())
 }
 
 /// Shell-quote dropped paths. A drop is text, never a command.

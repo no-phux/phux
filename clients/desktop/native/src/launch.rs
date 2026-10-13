@@ -3,7 +3,9 @@
 //!
 //! Resolution never writes over or upgrades anything. An explicit `--phux`,
 //! `--socket` or `--session` always wins over discovery, so a qualification
-//! run can pin a same-checkout CLI and a temporary socket.
+//! run can pin a same-checkout CLI and a temporary socket. Without
+//! `--session`, the window opens the owner's Inbox, else the most recent
+//! session; it never creates one ([`crate::connection::home`]).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -12,6 +14,7 @@ use anyhow::{Context as _, bail};
 use phux_protocol::ResourceId;
 
 use crate::app::{self, AppOptions};
+use crate::connection::home::open_home;
 use crate::diag;
 
 /// Everything the command line can say.
@@ -134,40 +137,6 @@ fn ensure_server(phux: &Path, socket: Option<&Path>) -> anyhow::Result<PathBuf> 
         .context("no running phux server after `phux server --ensure`")
 }
 
-fn session_names(phux: &Path, socket: &Path) -> Vec<String> {
-    let socket = socket.to_string_lossy();
-    phux_json(phux, &["--socket", &socket, "status", "--json"])
-        .ok()
-        .and_then(|status| status["sessions"].as_array().cloned())
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|session| session["name"].as_str().map(str::to_owned))
-        .collect()
-}
-
-/// An explicit choice, else `default`, else the first session, else `default`.
-fn pick_session(requested: Option<String>, names: &[String]) -> String {
-    requested
-        .or_else(|| {
-            names
-                .iter()
-                .any(|name| name == "default")
-                .then(|| "default".to_owned())
-        })
-        .or_else(|| names.first().cloned())
-        .unwrap_or_else(|| "default".to_owned())
-}
-
-fn ensure_session(phux: &Path, socket: &Path, name: &str, names: &[String]) -> anyhow::Result<()> {
-    if names.iter().any(|known| known == name) {
-        return Ok(());
-    }
-    let socket = socket.to_string_lossy();
-    phux_json(phux, &["--socket", &socket, "new", "--json", "-s", name])
-        .map(drop)
-        .with_context(|| format!("could not create phux session {name:?}"))
-}
-
 /// What the window opens on. A failure still opens the window, with the
 /// reason shown in place of the inventory.
 struct Resolved {
@@ -190,7 +159,7 @@ fn resolve(options: &Options) -> Resolved {
     let Some(phux) = find_phux(options.phux.clone()) else {
         return Resolved {
             socket: explicit_socket.unwrap_or_default(),
-            session: requested.unwrap_or_else(|| "default".to_owned()),
+            session: requested.unwrap_or_default(),
             phux: PathBuf::from("phux"),
             error: Some(
                 "Install the phux CLI from https://phux.sh/install so the desktop can start a server."
@@ -203,22 +172,25 @@ fn resolve(options: &Options) -> Resolved {
         Err(error) => {
             return Resolved {
                 socket: explicit_socket.unwrap_or_default(),
-                session: requested.unwrap_or_else(|| "default".to_owned()),
+                session: requested.unwrap_or_default(),
                 phux,
                 error: Some(format!("{error:#}")),
             };
         }
     };
-    let names = session_names(&phux, &socket);
-    let session = pick_session(requested, &names);
-    let error = ensure_session(&phux, &socket, &session, &names)
-        .err()
-        .map(|error| format!("{error:#}"));
-    Resolved {
-        socket,
-        session,
-        phux,
-        error,
+    match open_home(&phux, &socket, requested.as_deref()) {
+        Ok(session) => Resolved {
+            socket,
+            session,
+            phux,
+            error: None,
+        },
+        Err(error) => Resolved {
+            socket,
+            session: requested.unwrap_or_default(),
+            phux,
+            error: Some(error),
+        },
     }
 }
 
@@ -326,14 +298,5 @@ mod tests {
             parse(&["-psn_0_12345"]).expect("finder arg"),
             Options::default()
         );
-    }
-
-    #[test]
-    fn session_choice_prefers_explicit_then_default_then_first() {
-        let names = ["work".to_owned(), "default".to_owned()];
-        assert_eq!(pick_session(Some("x".into()), &names), "x");
-        assert_eq!(pick_session(None, &names), "default");
-        assert_eq!(pick_session(None, &names[..1]), "work");
-        assert_eq!(pick_session(None, &[]), "default");
     }
 }

@@ -85,7 +85,7 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
             }
             name.update(cx, |input, cx| input.focus(window, cx));
         }
-        Modal::CloseSession { .. } | Modal::Terminate { .. } => window.focus(&desk.focus, cx),
+        Modal::KillSession { .. } | Modal::Terminate { .. } => window.focus(&desk.focus, cx),
     }
 }
 
@@ -315,13 +315,13 @@ pub fn layer(
         Modal::Settings => super::settings_panel::panel(desk, colors, window, cx),
         Modal::Rename { .. } => rename_dialog(desk, colors, cx),
         Modal::Session { create, .. } => session_dialog(desk, create, colors, cx),
-        Modal::CloseSession { name } => confirm(
-            format!("Close {name}?"),
-            "This ends the panes in that session. The window stays on this server.",
-            "Close Session",
+        Modal::KillSession { name, .. } => confirm(
+            format!("Kill {name}?"),
+            "This ends every process in the session, for every client, and deletes it. Closing a pane, tab, or window never does this.",
+            "Kill Session",
             colors,
             cx,
-            |desk, window, cx| desk.confirm_close_session(window, cx),
+            |desk, window, cx| desk.confirm_kill_session(window, cx),
         ),
         Modal::Terminate { title, .. } => confirm(
             format!("Terminate {title}?"),
