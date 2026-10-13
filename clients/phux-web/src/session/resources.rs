@@ -19,6 +19,7 @@ impl Connection {
         if attach_id != ATTACH_ID {
             return self.protocol_failure("ATTACHED used the wrong attach identifier");
         }
+        self.learn_session_key(&snapshot);
         // Only Terminal-kind resources build panes and gate the
         // barrier; an AgentSession bound to one of them is declared
         // to the kernel as a record stream and projected as a badge.
@@ -297,11 +298,11 @@ impl Connection {
                 .take()
                 .and_then(|layout| layout.remove(&terminal_id));
             if self
-                .pending_close
+                .pending_kill
                 .as_ref()
-                .is_some_and(|(_, id)| id == &terminal_id)
+                .is_some_and(|pending| pending.target == terminal_id)
             {
-                self.pending_close = None;
+                self.pending_kill = None;
             }
             if self
                 .pending_split

@@ -526,12 +526,21 @@ impl Client {
         pane_action(&self.app, PaneAction::Next)
     }
 
-    /// Close the focused terminal while preserving the other panes.
+    /// Close the focused pane's view; its terminal keeps running.
+    ///
+    /// # Errors
+    /// Refuses the last view or a pending operation.
+    pub fn close_view(&self) -> Result<(), JsValue> {
+        pane_action(&self.app, PaneAction::CloseView)
+    }
+
+    /// Kill the focused terminal, ending its process, while preserving the
+    /// other panes.
     ///
     /// # Errors
     /// Refuses the last pane or a pending operation.
-    pub fn close_pane(&self) -> Result<(), JsValue> {
-        pane_action(&self.app, PaneAction::Close)
+    pub fn kill_pane(&self) -> Result<(), JsValue> {
+        pane_action(&self.app, PaneAction::Kill)
     }
 
     /// Send one on-screen key as typed at the terminal: a named key
@@ -3058,21 +3067,21 @@ fn forward_wheel(app: &Rc<RefCell<App>>, at: &web_sys::MouseEvent, delta_y: f64,
 enum PaneAction<'a> {
     Split(&'a str),
     Next,
-    Close,
+    CloseView,
+    Kill,
 }
 
 fn pane_action(app: &Rc<RefCell<App>>, action: PaneAction<'_>) -> Result<(), JsValue> {
     let mut app = app.borrow_mut();
     let old_focus = app.session.focused_pane();
     let result = match action {
-        PaneAction::Split(axis) => app.session.split_pane_frame(axis).map(Some),
-        PaneAction::Close => app.session.close_pane_frame().map(Some),
-        PaneAction::Next => app.session.focus_next_pane().map(|()| None),
+        PaneAction::Split(axis) => app.session.split_pane_frame(axis).map(|frame| vec![frame]),
+        PaneAction::CloseView => app.session.close_view(),
+        PaneAction::Kill => app.session.kill_pane_frame().map(|frame| vec![frame]),
+        PaneAction::Next => app.session.focus_next_pane().map(|()| Vec::new()),
     };
-    let result = result.and_then(|frame| {
-        if let Some(frame) = frame
-            && let Err(message) = app.tx.send(&frame)
-        {
+    let result = result.and_then(|frames| {
+        if let Err(message) = app.send(frames) {
             app.fail(&message);
             return Err(message);
         }
@@ -3085,6 +3094,7 @@ fn pane_action(app: &Rc<RefCell<App>>, action: PaneAction<'_>) -> Result<(), JsV
         app.focus_changed(old_focus);
     }
     app.publish_panes();
+    app.request_paint();
     result.map_err(|message| JsValue::from_str(&message))
 }
 
@@ -3110,7 +3120,7 @@ fn pane_keydown(app: &Rc<RefCell<App>>, event: &KeyboardEvent) -> bool {
         "%" => PaneAction::Split("vertical"),
         "\"" => PaneAction::Split("horizontal"),
         "o" => PaneAction::Next,
-        "x" => PaneAction::Close,
+        "x" => PaneAction::Kill,
         "Shift" | "Control" | "Alt" | "Meta" => {
             app.borrow().prefix.set(true);
             return false;

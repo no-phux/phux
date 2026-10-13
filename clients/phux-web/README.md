@@ -27,6 +27,12 @@ back as `INPUT_KEY` frames. Both transports carry the identical wire; the
 WebTransport stream is length-prefixed frames reassembled by
 `framing::FrameBuffer`, a WebSocket message is one frame.
 
+After `HELLO_OK` the client picks a session before it attaches. A server
+advertising `ORGANIZATION` is asked for its organization page and the client
+opens the owner's Inbox session; any other server is asked for its state and
+the client opens its most recent session. Only a server with no sessions at all
+gets a `default` session created.
+
 The `start_webtransport` entry point supervises post-connect transport loss:
 each replacement attempt has bounded WT and HELLO setup, then retries through
 the authenticated WebSocket fallback after a short delay. Direct `run*` Rust
@@ -73,7 +79,8 @@ await start_webtransport("https://host:4433/session", "wss://host/session",
 const client = await start_hosted(url, "my-canvas", 100, 24, onEvent, signal);
 client.split_pane("vertical"); // side-by-side; "horizontal" stacks panes
 client.focus_next_pane();
-client.close_pane();           // keeps at least one terminal
+client.close_pane();           // closes the view only; the terminal keeps running
+client.kill_pane();            // ends the focused terminal; keeps at least one pane
 client.send_key("Escape");     // an on-screen key: named key or one character
 client.set_ctrl_latch(true);   // Ctrl for the next typed key; fires phux-modifiers
 // client.resize(cols, rows) resizes the view; client.close() releases it
