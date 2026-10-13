@@ -86,15 +86,14 @@ export default function HeroDemo({ wsUrl = "" }: { wsUrl?: string }) {
   return (
     <div className="hero-demo">
       <a
-        className="hero-term"
+        className="hero-term terminal-surface"
         href="/embed"
         data-demo-launch
-        tabIndex={-1}
-        aria-hidden="true"
+        aria-label="Open terminal demo"
       >
         <span className="hero-term-bar">
-          <span>{SITE.name} · work</span>
-          <span className="hero-term-try">Try it live ↗</span>
+          <span>{SITE.name} <span className="hero-term-preview">/ preview</span></span>
+          <span className="hero-term-try">Open terminal <span aria-hidden="true">↗</span></span>
         </span>
         <span className="hero-term-panes">
           <span className="hero-term-pane">
@@ -123,7 +122,7 @@ export default function HeroDemo({ wsUrl = "" }: { wsUrl?: string }) {
       </noscript>
       <dialog
         ref={dialog}
-        className="mux-dialog"
+        className="mux-dialog terminal-surface"
         aria-labelledby={`${id}-title`}
         aria-describedby={`${id}-description`}
         onCancel={(event) => {
@@ -133,39 +132,17 @@ export default function HeroDemo({ wsUrl = "" }: { wsUrl?: string }) {
         onClose={() => setOpen(false)}
       >
         <header className="mux-dialog-head">
-          <div>
-            <span className="mux-eyebrow">HOSTED DEMO</span>
-            <h2 id={`${id}-title`}>{SITE.name} in your browser</h2>
+          <h2 id={`${id}-title`}>{SITE.name}</h2>
+          <div className="mux-mode-row" role="group" aria-label="Terminal runtime">
+            <button type="button" aria-pressed={mode === "demo"}
+              onClick={() => { setAuthError(""); setMode("demo"); }}>Demo</button>
+            <button type="button" aria-pressed={mode === "native"}
+              onClick={() => setMode("native")}>Linux shell</button>
           </div>
-          <button
-            type="button"
-            className="mux-close"
-            onClick={() => setOpen(false)}
-            aria-label="Close live terminal"
-          >
-            Close <span aria-hidden="true">×</span>
+          <button type="button" className="mux-close" onClick={() => setOpen(false)} aria-label="Close live terminal">
+            <span aria-hidden="true">×</span>
           </button>
         </header>
-        <div
-          className="mux-mode-row"
-          role="group"
-          aria-label="Terminal runtime"
-        >
-          <button
-            type="button"
-            aria-pressed={mode === "demo"}
-            onClick={() => setMode("demo")}
-          >
-            Edge tour <small>no sign-in</small>
-          </button>
-          <button
-            type="button"
-            aria-pressed={mode === "native"}
-            onClick={() => setMode("native")}
-          >
-            Linux shell <small>sign-in required</small>
-          </button>
-        </div>
         {authError && (
           <p className="mux-dialog-description" role="alert">
             {authError}
@@ -173,16 +150,9 @@ export default function HeroDemo({ wsUrl = "" }: { wsUrl?: string }) {
         )}
         <p className="mux-dialog-description" id={`${id}-description`}>
           {mode === "demo" ? (
-            <>
-              A curated shell over the {SITE.name} protocol, with no processes
-              or network. Split with <kbd>Ctrl+a</kbd> <kbd>%</kbd>, then try{" "}
-              <code>help</code> or <code>demo</code>.
-            </>
+            <>A limited demo shell, no sign-in. Try <code>help</code> or <code>demo</code>, then split a pane.</>
           ) : (
-            <>
-              A disposable Linux environment. Split with <kbd>Ctrl+a</kbd>{" "}
-              <kbd>%</kbd>. Capacity is limited; the edge tour is the fallback.
-            </>
+            <>A disposable Linux shell. Sign-in required; limited capacity with an edge fallback.</>
           )}
         </p>
         {open &&
