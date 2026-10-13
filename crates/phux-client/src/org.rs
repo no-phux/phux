@@ -577,8 +577,6 @@ async fn resource_view(
 /// attempt.
 #[derive(Debug, Clone, Copy)]
 enum Edit<'a> {
-    RemoveResource(ResourceKey),
-    DeleteSession(SessionKey),
     Relaunch(ResourceKey),
     Move {
         resource: ResourceKey,
@@ -599,14 +597,6 @@ enum Edit<'a> {
 async fn build(conn: &mut Connection, edit: Edit<'_>) -> Result<Command, OrgError> {
     let operation = mint_operation();
     Ok(match edit {
-        Edit::RemoveResource(resource) => {
-            let (_, record) = resource_view(conn, resource).await?;
-            Command::ResourceRemove {
-                operation,
-                resource,
-                expected: record.revision,
-            }
-        }
         Edit::Relaunch(resource) => {
             let (_, record) = resource_view(conn, resource).await?;
             Command::ResourceRelaunch {
@@ -622,14 +612,6 @@ async fn build(conn: &mut Connection, edit: Edit<'_>) -> Result<Command, OrgErro
                 resource,
                 expected: record.revision,
                 name: name.map(str::to_owned),
-            }
-        }
-        Edit::DeleteSession(session) => {
-            let record = session_in(&session_view(conn, session).await?, &session)?;
-            Command::SessionDelete {
-                operation,
-                session,
-                expected: record.revision,
             }
         }
         Edit::InboxResolve(session) => {
@@ -742,7 +724,12 @@ pub async fn remove_resource(
     conn: &mut Connection,
     resource: ResourceKey,
 ) -> Result<Committed, OrgError> {
-    run_cas(conn, Edit::RemoveResource(resource)).await
+    let operation = mint_operation();
+    let command = Command::ResourceRemove {
+        operation,
+        resource,
+    };
+    commit(conn, FIRST_REQUEST_ID, command).await
 }
 
 /// `phux rm` for a session: delete an empty session.
@@ -754,7 +741,9 @@ pub async fn delete_session(
     conn: &mut Connection,
     session: SessionKey,
 ) -> Result<Committed, OrgError> {
-    run_cas(conn, Edit::DeleteSession(session)).await
+    let operation = mint_operation();
+    let command = Command::SessionDelete { operation, session };
+    commit(conn, FIRST_REQUEST_ID, command).await
 }
 
 /// `phux relaunch`: start a new activation of an inactive resource.
@@ -1119,7 +1108,7 @@ mod tests {
         let gone = fixture.resource(work, Some(ExecState::Completed));
         let fixture = fixture.inject_conflicts(2);
         let (mut conn, server, _dir) = connect(org_spec(fixture)).await;
-        remove_resource(&mut conn, gone).await.unwrap();
+        relaunch(&mut conn, gone).await.unwrap();
         drop(conn);
         let seen = server.await.unwrap();
         let removes = seen
@@ -1128,7 +1117,7 @@ mod tests {
                 matches!(
                     f,
                     phux_protocol::wire::frame::FrameKind::Command {
-                        command: Command::ResourceRemove { .. },
+                        command: Command::ResourceRelaunch { .. },
                         ..
                     }
                 )

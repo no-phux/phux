@@ -121,8 +121,6 @@ pub enum Op {
     SessionDelete {
         /// Target.
         session: SessionKey,
-        /// Observed revision.
-        expected: Revision,
     },
     /// Create a resource in a session (the Inbox session when `None`).
     ResourceCreate {
@@ -193,8 +191,6 @@ pub enum Op {
     ResourceRemove {
         /// Target.
         resource: ResourceKey,
-        /// Observed revision.
-        expected: Revision,
     },
     /// Start a new activation from the record's launch spec.
     ResourceRelaunch {

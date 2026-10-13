@@ -102,12 +102,7 @@ fn agent_conversations_bind_to_a_terminal_and_outlive_it_as_records() {
         outcome: Outcome::Exit(ExitOutcome::exited(0)),
     })
     .expect("ended");
-    let rev = h.resource(t).revision;
-    h.run(Op::ResourceRemove {
-        resource: t,
-        expected: rev,
-    })
-    .expect("removed");
+    h.run(Op::ResourceRemove { resource: t }).expect("removed");
     assert!(h.reg.resource(tid).is_none());
     assert_eq!(h.reg.resource(aid).and_then(|d| d.parent), None);
     assert_eq!(

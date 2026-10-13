@@ -154,7 +154,6 @@ fn org_command_samples() -> Vec<(Command, &'static Rule)> {
             Command::SessionDelete {
                 operation: operation(),
                 session: session_key(),
-                expected: rev,
             },
             &C_SESSION_DELETE,
         ),
@@ -219,7 +218,6 @@ fn org_command_samples() -> Vec<(Command, &'static Rule)> {
             Command::ResourceRemove {
                 operation: operation(),
                 resource: resource_key(),
-                expected: rev,
             },
             &C_RESOURCE_REMOVE,
         ),

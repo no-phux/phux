@@ -29,7 +29,6 @@ enum Step {
     },
     Delete {
         s: usize,
-        stale: bool,
     },
     CreateResource {
         s: usize,
@@ -87,7 +86,7 @@ fn step() -> impl Strategy<Value = Step> {
             .prop_map(|(ephemeral, name)| Step::CreateSession { ephemeral, name }),
         (i(), 0..6_u8).prop_map(|(s, name)| Step::Rename { s, name }),
         (i(), any::<bool>()).prop_map(|(s, ephemeral)| Step::SetLifetime { s, ephemeral }),
-        (i(), any::<bool>()).prop_map(|(s, stale)| Step::Delete { s, stale }),
+        i().prop_map(|s| Step::Delete { s }),
         (i(), any::<bool>(), any::<bool>()).prop_map(|(s, retain, inbox)| Step::CreateResource {
             s,
             retain,
@@ -146,11 +145,7 @@ impl World {
             .map_or(ActivationId::FIRST, |a| a.id)
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        clippy::cognitive_complexity,
-        reason = "one arm per step kind"
-    )]
+    #[expect(clippy::too_many_lines, reason = "one arm per step kind")]
     fn op_for(&mut self, step: &Step) -> Option<(Actor, Op)> {
         let sessions = self.sessions();
         let resources = self.resources();
@@ -197,16 +192,9 @@ impl World {
                     },
                 )
             }
-            Step::Delete { s, stale } => {
+            Step::Delete { s } => {
                 let s = pick(&sessions, *s)?;
-                let rev = self.srev(s);
-                (
-                    owner,
-                    Op::SessionDelete {
-                        session: s,
-                        expected: if *stale { rev.next() } else { rev },
-                    },
-                )
+                (owner, Op::SessionDelete { session: s })
             }
             Step::CreateResource { s, retain, inbox } => (
                 owner,
@@ -302,13 +290,7 @@ impl World {
             }
             Step::Remove { r } => {
                 let r = pick(&resources, *r)?;
-                (
-                    owner,
-                    Op::ResourceRemove {
-                        resource: r,
-                        expected: self.rrev(r),
-                    },
-                )
+                (owner, Op::ResourceRemove { resource: r })
             }
             Step::Relaunch { r } => {
                 let r = pick(&resources, *r)?;

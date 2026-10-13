@@ -156,7 +156,7 @@ fn dispatch(tx: &mut Tx<'_>, op: &Op, fresh: &mut dyn FreshKeys) -> Result<Out, 
             expected,
             lifetime,
         } => session_set_lifetime(tx, *session, *expected, *lifetime),
-        Op::SessionDelete { session, expected } => session_delete(tx, *session, *expected),
+        Op::SessionDelete { session } => session_delete(tx, *session),
         Op::ResourceCreate { session, resource } => resource_create(tx, fresh, *session, resource),
         Op::ResourceMove {
             resource,
@@ -183,7 +183,7 @@ fn dispatch(tx: &mut Tx<'_>, op: &Op, fresh: &mut dyn FreshKeys) -> Result<Out, 
             activation,
             mode,
         } => resource_terminate(tx, *resource, *activation, *mode),
-        Op::ResourceRemove { resource, expected } => resource_remove(tx, *resource, *expected),
+        Op::ResourceRemove { resource } => resource_remove(tx, *resource),
         Op::ResourceRelaunch { resource, expected } => resource_relaunch(tx, *resource, *expected),
         Op::ArrangementReplace {
             owner,
@@ -789,9 +789,9 @@ fn session_set_lifetime(
     Ok(Out::ok(Some(revision)))
 }
 
-/// Membership is checked before the revision, so a member added after the
-/// caller looked reports [`Refusal::NotEmpty`], not a conflict.
-fn session_delete(tx: &mut Tx<'_>, key: SessionKey, expected: Revision) -> Result<Out, Refusal> {
+/// No revision check: emptiness is the guard, so a member added after the
+/// caller looked refuses [`Refusal::NotEmpty`].
+fn session_delete(tx: &mut Tx<'_>, key: SessionKey) -> Result<Out, Refusal> {
     let s = tx.session(key).ok_or(Refusal::NotFound)?;
     if key == tx.org.authority().inbox_session {
         return Err(Refusal::invalid(
@@ -804,7 +804,6 @@ fn session_delete(tx: &mut Tx<'_>, key: SessionKey, expected: Revision) -> Resul
             members: u32::try_from(s.members.len()).unwrap_or(u32::MAX),
         });
     }
-    tx.checked_session(key, expected)?;
     tx.delete_session(key);
     Ok(Out::ok(None))
 }
@@ -1118,8 +1117,9 @@ fn require_inactive(r: &Resource) -> Result<(), Refusal> {
     }
 }
 
-fn resource_remove(tx: &mut Tx<'_>, key: ResourceKey, expected: Revision) -> Result<Out, Refusal> {
-    require_inactive(tx.checked_resource(key, expected)?)?;
+/// No revision check: inactivity is the guard.
+fn resource_remove(tx: &mut Tx<'_>, key: ResourceKey) -> Result<Out, Refusal> {
+    require_inactive(tx.resource(key).ok_or(Refusal::NotFound)?)?;
     tx.remove_resource(key);
     Ok(Out::ok(None))
 }

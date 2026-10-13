@@ -558,11 +558,8 @@ impl ServerState {
         let Some(record) = self.sessions.registry.record(resource) else {
             return;
         };
-        let (key, expected) = (record.key, record.revision);
-        if let Err(refusal) = self.commit_system(Op::ResourceRemove {
-            resource: key,
-            expected,
-        }) {
+        let key = record.key;
+        if let Err(refusal) = self.commit_system(Op::ResourceRemove { resource: key }) {
             tracing::warn!(?resource, %refusal, "record removal refused");
         }
     }

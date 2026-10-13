@@ -231,13 +231,8 @@ fn org_command() -> impl Strategy<Value = Command> {
                 lifetime,
             }
         ),
-        (op(), session_key(), rev()).prop_map(|(operation, session, expected)| {
-            Command::SessionDelete {
-                operation,
-                session,
-                expected,
-            }
-        }),
+        (op(), session_key())
+            .prop_map(|(operation, session)| { Command::SessionDelete { operation, session } }),
         (
             op(),
             session_key(),
@@ -330,11 +325,10 @@ fn org_command() -> impl Strategy<Value = Command> {
                 },
             }
         }),
-        (op(), resource_key(), rev()).prop_map(|(operation, resource, expected)| {
+        (op(), resource_key()).prop_map(|(operation, resource)| {
             Command::ResourceRemove {
                 operation,
                 resource,
-                expected,
             }
         }),
         (op(), resource_key(), rev()).prop_map(|(operation, resource, expected)| {
@@ -808,6 +802,36 @@ fn malformed_organization_events_are_opaque() {
     assert!(
         matches!(event, AgentEvent::Unknown { tag: 0x13, .. }),
         "{event:?}"
+    );
+}
+
+/// An older client still sends `expected` (field 4) on a remove and a
+/// delete; a decoder accepts and drops it. A relaunch body is the old remove
+/// body, field for field, so retagging it is that old frame.
+#[test]
+fn an_ignored_expected_revision_still_decodes() {
+    let operation = IdempotencyKey::new([3; 16]).unwrap();
+    let resource = ResourceKey::new([5; 16]).unwrap();
+    let mut bytes = encode(&FrameKind::Command {
+        request_id: 7,
+        command: Command::ResourceRelaunch {
+            operation,
+            resource,
+            expected: Revision::new(9),
+        },
+    });
+    // The nested tag, then field id 1 (`operation`).
+    let at = bytes.windows(2).position(|w| w == [0x29, 0x01]).unwrap();
+    bytes[at] = 0x28;
+    assert_eq!(
+        decode(&bytes).unwrap(),
+        FrameKind::Command {
+            request_id: 7,
+            command: Command::ResourceRemove {
+                operation,
+                resource,
+            },
+        }
     );
 }
 

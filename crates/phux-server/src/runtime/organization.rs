@@ -203,15 +203,10 @@ fn translate(
                 lifetime: ow::core_lifetime(lifetime),
             }),
         ),
-        Command::SessionDelete {
-            operation,
-            session,
-            expected,
-        } => (
+        Command::SessionDelete { operation, session } => (
             ow::core_operation(&operation),
             Ok(Op::SessionDelete {
                 session: ow::core_session_key(&session),
-                expected: rev(expected),
             }),
         ),
         Command::ResourceCreate {
@@ -320,12 +315,10 @@ fn translate(
         Command::ResourceRemove {
             operation,
             resource,
-            expected,
         } => (
             ow::core_operation(&operation),
             Ok(Op::ResourceRemove {
                 resource: ow::core_resource_key(&resource),
-                expected: rev(expected),
             }),
         ),
         Command::ResourceRelaunch {

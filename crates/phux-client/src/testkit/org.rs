@@ -633,11 +633,7 @@ impl OrgFixture {
                 }
                 Ok((ok(Committed::new(*operation, revision)), None))
             }
-            Command::SessionDelete {
-                operation,
-                session,
-                expected,
-            } => {
+            Command::SessionDelete { operation, session } => {
                 let record = self.session_ref(session).ok_or(Refusal::NotFound)?;
                 if Some(*session) == self.inbox {
                     return Err(Refusal::InvalidArgument {
@@ -650,7 +646,6 @@ impl OrgFixture {
                         members: record.members,
                     });
                 }
-                self.check_session(*session, *expected)?;
                 self.delete_session(session);
                 let revision = self.bump();
                 Ok((ok(Committed::new(*operation, revision)), None))
@@ -768,9 +763,8 @@ impl OrgFixture {
             Command::ResourceRemove {
                 operation,
                 resource,
-                expected,
             } => {
-                self.check_resource(*resource, *expected)?;
+                self.resource_ref(resource).ok_or(Refusal::NotFound)?;
                 self.require_inactive(resource)?;
                 let session = self.drop_resource(resource).ok_or(Refusal::NotFound)?;
                 let revision = self.bump();
