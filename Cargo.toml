@@ -110,6 +110,10 @@ smallvec = "1.16"
 proptest = "1"
 insta = { version = "1", features = ["yaml"] }
 tempfile = "3"
+# The server's organization store (ADR-0162): transactional SQLite with
+# indexed membership and durable receipts. `bundled` compiles a pinned
+# SQLite from source instead of linking the host's.
+rusqlite = { version = "0.37", features = ["bundled"] }
 # East Asian Width + Emoji presentation width lookup for the predict
 # layer (phux-9gw.1.4). The predictive-echo state needs to know how many
 # terminal cells a Unicode scalar consumes before queueing a prediction —

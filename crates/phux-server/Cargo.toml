@@ -122,6 +122,9 @@ portable-pty-adopt.workspace = true
 # Upgrade handoff: clear FD_CLOEXEC and carry the blob in a temp file.
 rustix = { version = "1.1", default-features = false, features = ["std", "fs", "process"] }
 tempfile.workspace = true
+# The organization store (ADR-0162): sessions, resources, arrangements, and
+# receipts commit in one SQLite transaction before memory changes.
+rusqlite.workspace = true
 
 # The native terminal engine (needs zig 0.16.x); target-gated to keep its
 # C/Zig library off wasm.
