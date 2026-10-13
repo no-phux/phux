@@ -1,5 +1,7 @@
 .pterm {
   position: relative;
+  display: flex;
+  flex-direction: column;
   width: min(920px, 100%);
   min-width: 0;
   max-width: 100%;
@@ -14,9 +16,9 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 12px;
-  min-height: 44px;
-  padding: 6px 16px;
+  gap: 8px;
+  min-height: 52px;
+  padding: 4px 12px;
   box-sizing: border-box;
   border-bottom: 1px solid var(--terminal-rule);
   color: var(--terminal-dim);
@@ -35,13 +37,14 @@
 }
 .pterm[data-status="live"] .pterm-state::before { background: #9ece6a; }
 .pterm-screen {
+  order: 2;
   position: relative;
   min-height: clamp(160px, 55svh, 384px);
   min-width: 0;
-  overflow: auto;
+  overflow: hidden;
   background: var(--terminal-bg);
 }
-.pterm-canvas-host { width: 100%; min-width: 0; }
+.pterm-canvas-host { width: calc(100% - 16px); min-width: 0; margin: 8px auto; }
 .pterm-canvas { display: block; margin: 0 auto; image-rendering: pixelated; outline: none; }
 .pterm-canvas:focus-visible { outline: 1px solid var(--terminal-focus); outline-offset: -1px; }
 .pterm:not([data-status="live"]) .pterm-canvas-host { position: absolute; visibility: hidden; }
@@ -79,24 +82,24 @@
 .pterm-unlock .pterm-auth-error, .pterm-pane-status { color: var(--terminal-warning); }
 .pterm-unlock .pterm-auth-error { margin-top: 12px; }
 .pterm-standalone { display: inline-flex; align-items: center; min-height: 44px; margin-top: 8px; color: var(--terminal-dim); font-size: 12px; text-decoration: underline; }
-.pterm-pane-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; padding: 4px 12px; border-top: 1px solid var(--terminal-rule); }
+.pterm-pane-controls { order: 1; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; padding: 6px 12px; border-bottom: 1px solid var(--terminal-rule); background: var(--terminal-surface); }
 .pterm-pane-controls > span:first-child { margin-right: auto; color: var(--terminal-dim); font-size: 12px; }
 .pterm-pane-controls button, .pterm-controls button { border-color: transparent; font-size: 12px; }
 .pterm-pane-status { flex-basis: 100%; font-size: 12px; }
 .pterm-pane-status:empty { display: none; }
-.pterm-footer { position: relative; border-top: 1px solid var(--terminal-rule); }
-.pterm-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 44px; padding: 4px 156px 4px 16px; color: var(--terminal-dim); font-size: 12px; }
-.pterm-info summary { position: absolute; top: 4px; right: 12px; display: flex; align-items: center; min-height: 44px; padding: 0 8px; color: var(--terminal-muted); cursor: pointer; font-size: 12px; list-style: none; }
+
+.pterm-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--terminal-rule); color: var(--terminal-dim); font-size: 12px; }
+.pterm-info summary { display: flex; align-items: center; min-width: 44px; min-height: 44px; padding: 0 4px; color: var(--terminal-muted); cursor: pointer; font-size: 12px; list-style: none; }
 .pterm-info summary::-webkit-details-marker { display: none; }
 .pterm-info summary::after { content: "+"; margin-left: 10px; }
 .pterm-info[open] summary::after { content: "−"; }
-.pterm-info-body { border-top: 1px solid var(--terminal-rule); padding: 16px; background: var(--terminal-surface); }
+.pterm-info-body { position: absolute; top: 52px; right: 0; left: 0; z-index: 4; max-height: min(420px, 65dvh); overflow: auto; border-block: 1px solid var(--terminal-rule); padding: 16px; background: var(--terminal-surface); box-shadow: 0 12px 24px #0006; }
 .pterm-facts, .pterm-shortcuts { display: flex; flex-wrap: wrap; gap: 8px 24px; color: var(--terminal-muted); font-size: 12px; }
 .pterm-facts b { color: var(--terminal-fg); font-weight: 500; margin-right: 6px; }
 .pterm-info-note { margin: 12px 0 0; color: var(--terminal-dim); font-size: 12px; line-height: 1.65; }
 .pterm-shortcuts { margin-top: 16px; }
 .pterm-shortcuts kbd { font: 11px var(--font-code); padding: 2px 4px; border: 1px solid var(--terminal-rule); border-radius: 3px; color: var(--terminal-fg); }
-.pterm-fallback { margin: 0; padding: 12px 16px; border-top: 1px solid var(--terminal-rule); color: var(--terminal-warning); font-size: 12px; }
+.pterm-fallback { order: 4; margin: 0; padding: 12px 16px; border-top: 1px solid var(--terminal-rule); color: var(--terminal-warning); font-size: 12px; }
 /* Keep client-owned find/path controls readable without changing their wiring. */
 .pterm-canvas-host :is(#phux-path-picker, .phux-find) { padding: 8px 14px; border-bottom: 1px solid var(--terminal-rule); color: var(--terminal-muted); font-size: 12px; }
 .pterm-canvas-host :is(.phux-find, .phux-path-panel) { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
@@ -107,24 +110,45 @@
 .pterm .phux-path-panel label { display: flex; flex-direction: column; gap: 4px; }
 .pterm .phux-path-results { display: flex; flex-direction: column; align-items: start; gap: 4px; width: 100%; max-height: 180px; overflow: auto; }
 .pterm .phux-path-status { width: 100%; }
-.pterm-keys { display: none; }
-@media (pointer: coarse) {
+.pterm-keys { order: 3; display: none; }
+@media (pointer: coarse), (max-width: 600px) {
   .pterm-keys { display: grid; grid-template-columns: repeat(8, minmax(44px, 1fr)); gap: 4px; padding: 6px; overflow-x: auto; border-top: 1px solid var(--terminal-rule); }
   .pterm-keys button { padding: 0; min-width: 44px; user-select: none; -webkit-user-select: none; }
   .pterm-keys button[aria-pressed="true"] { color: var(--terminal-bg); background: var(--terminal-fg); }
 }
 @media (max-width: 600px) {
-  .pterm-head { padding-inline: 12px; gap: 8px; }
+  .pterm-head { padding-inline: 8px; gap: 4px; font-size: 11px; }
+  .pterm-head .pterm-mark { display: none; }
+  .pterm-head:has(.mux-mode-row) .pterm-state { font-size: 0; }
+  .pterm-head:has(.mux-mode-row) .pterm-state::before { margin-right: 3px; }
+  .pterm-head:has(.mux-mode-row) .pterm-state::after { content: "…"; font-size: 11px; }
+  .pterm[data-status="live"] .pterm-head:has(.mux-mode-row) .pterm-state::after { content: "Live"; }
+  .pterm-head .mux-mode-row button { padding-inline: 8px; }
+  .pterm-head .mux-close { padding: 0; }
+  .pterm-head .pterm-info summary::after { margin-left: 4px; }
   .pterm-keys { grid-template-columns: repeat(4, minmax(44px, 1fr)); }
   .pterm-overlay { padding: 24px 16px; }
   .pterm-actions { grid-template-columns: 1fr; }
-  .pterm-pane-controls > span:first-child { flex-basis: 100%; padding-inline: 8px; }
+  .pterm-pane-controls > span:first-child { font-size: 11px; padding-inline: 4px; }
   .pterm-pane-controls { padding-inline: 4px; }
-  .pterm-pane-controls button { flex: 1; padding-inline: 6px; }
-  .pterm-controls { padding-left: 12px; }
+  .pterm-pane-controls button { padding-inline: 8px; }
+  .pterm-pane-controls { display: grid; grid-template-columns: repeat(2, minmax(44px, 1fr)); gap: 4px; }
+  .pterm-pane-controls > span:first-child, .pterm-pane-status { grid-column: 1 / -1; }
+  .pterm-pane-controls > span:first-child { margin-right: 0; }
 }
 @keyframes terminal-enter { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) {
   .pterm-overlay { animation: none; }
   .pterm button { transition: none; }
 }
+
+.pterm button.pterm-split-primary { background: var(--terminal-fg); color: var(--terminal-bg); border-color: var(--terminal-fg); font-weight: 600; }
+.pterm button.pterm-split-primary:not(:disabled):hover { background: #d4d4d8; color: var(--terminal-bg); }
+.pterm button:focus-visible, .pterm summary:focus-visible { outline: 2px solid var(--terminal-focus); outline-offset: -2px; }
+.pterm-timer { font-variant-numeric: tabular-nums; }
+/* Runtime choices are header navigation, not competing action buttons. */
+.pterm-head .mux-mode-row button, .pterm-head .mux-close { border-color: transparent; background: transparent; color: var(--terminal-muted); }
+.pterm-head .mux-mode-row button { font-size: 12px; }
+.pterm-head .mux-mode-row button[aria-pressed="true"] { color: var(--terminal-fg); }
+.pterm-head .mux-close { font-size: 20px; }
+.pterm-head .mux-mode-row button:hover, .pterm-head .mux-close:hover { background: var(--terminal-raised); color: var(--terminal-fg); }

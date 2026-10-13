@@ -4,11 +4,13 @@ import {
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
 } from "react";
 import {
   ctrlLatchOf,
   mountPhuxTerminal,
   terminalGeometry,
+  terminalCellMetrics,
   THUMB_KEYS,
   warmPhuxTerminal,
   type HostedEvent,
@@ -38,6 +40,7 @@ interface Props {
   autoStart?: boolean;
   focusOnStart?: boolean;
   statusParentOrigin?: string;
+  headerActions?: ReactNode;
 }
 
 interface Identity {
@@ -141,6 +144,7 @@ export default function PhuxTerminal({
   autoStart = false,
   focusOnStart = false,
   statusParentOrigin,
+  headerActions,
 }: Props) {
   const canvasPrefix = `phux-term-${useId().replace(/[:]/g, "")}`;
   const canvasHost = useRef<HTMLDivElement | null>(null);
@@ -289,6 +293,7 @@ export default function PhuxTerminal({
         window.innerHeight * 0.55,
         cols,
         rows,
+        terminalCellMetrics(host.querySelector("canvas")?.dataset ?? {}),
       );
       current.client?.resize(geometry.cols, geometry.rows);
     };
@@ -347,27 +352,30 @@ export default function PhuxTerminal({
         },
         { signal: current.abort.signal },
       );
-      await Promise.all([
-        mountPhuxTerminal({
-          wsUrl,
-          canvasId: canvas.id,
-          ...geometry,
-          mode: selectedMode,
-          signal: current.abort.signal,
-          onEvent(event) {
-            if (!isCurrent()) return;
-            if (event.type === "phux.session.v1") accepted = true;
-            handleEvent(event);
-          },
-        }).then((mounted) => {
-          if (!isCurrent()) mounted.close();
-          else {
-            current.client = mounted;
-            observeSize(current);
-          }
-        }),
-        waitForMeaningfulCanvasPaint(canvas, { signal: current.abort.signal }),
-      ]);
+      const mounted = await mountPhuxTerminal({
+        wsUrl,
+        canvasId: canvas.id,
+        ...geometry,
+        mode: selectedMode,
+        signal: current.abort.signal,
+        onEvent(event) {
+          if (!isCurrent()) return;
+          if (event.type === "phux.session.v1") accepted = true;
+          handleEvent(event);
+        },
+      });
+      if (!isCurrent()) {
+        mounted.close();
+        return;
+      }
+      current.client = mounted;
+      // Mount publishes measured cell metrics before resolving. Refit first:
+      // the initial 8px estimate must never become the visible live geometry.
+      observeSize(current);
+      await waitForMeaningfulCanvasPaint(canvas, {
+        signal: current.abort.signal,
+        isGeometryReady: () => canvas.getBoundingClientRect().width <= (canvas.parentElement?.clientWidth ?? 0),
+      });
       if (!isCurrent()) return;
       if (!accepted)
         throw new Error("The server did not accept the hosted session.");
@@ -532,8 +540,13 @@ export default function PhuxTerminal({
       className={`pterm terminal-surface${native ? " pterm-native" : ""}`}
       data-status={phase}
     >
-      <TerminalHeader phase={phase} backend={session?.backend} timeLeft={secondsLeft === null ? null : formatTime(secondsLeft)} />
-      <div className="pterm-screen" style={{ minHeight: `clamp(160px, 55svh, ${Math.max(10, rows) * 16}px)` }}>
+      <TerminalHeader phase={phase} backend={session?.backend} timeLeft={secondsLeft === null ? null : formatTime(secondsLeft)} actions={headerActions}>
+        <TerminalInfo native={native} backend={session?.backend} identity={identity}
+          startupMs={startupMs} live={phase === "live"} focused={panes.focused}>
+          <SessionControls phase={phase} identity={identity} release={release} logout={() => { void logout(); }} />
+        </TerminalInfo>
+      </TerminalHeader>
+      <div className="pterm-screen" style={{ minHeight: `calc(clamp(160px, 55svh, ${Math.max(10, rows) * 16}px) + 16px)` }}>
         {poster && !running && (
           <img
             className="pterm-poster"
@@ -596,11 +609,6 @@ export default function PhuxTerminal({
         splitHorizontal={() => paneAction((client) => client.splitPane("horizontal"))}
         nextPane={() => paneAction((client) => client.focusNextPane())}
         closePane={() => paneAction((client) => client.closePane())} />}
-      <div className="pterm-footer">
-        <SessionControls phase={phase} identity={identity} release={release} logout={() => { void logout(); }} />
-        <TerminalInfo native={native} backend={session?.backend} identity={identity}
-          startupMs={startupMs} live={phase === "live"} focused={panes.focused} />
-      </div>
       {fallback && <p className="pterm-fallback" role="status">{fallbackCopy[fallback]}</p>}
     </div>
   );

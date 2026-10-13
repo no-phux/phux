@@ -181,16 +181,35 @@ export async function warmPhuxTerminal(): Promise<void> {
   await loadTerminal();
 }
 
-/** Match the renderer's 8 × 16 px cells without shrinking text on phones. */
+interface CellMetrics { width: number; height: number }
+const DEFAULT_CELL_METRICS: CellMetrics = { width: 8, height: 16 };
+
+function positiveMetric(value: string | undefined, fallback: number): number {
+  const measured = Number(value);
+  return Number.isFinite(measured) && measured > 0 ? measured : fallback;
+}
+
+/** Renderer measurements are logical CSS pixels, never backing-store pixels. */
+export function terminalCellMetrics(dataset: {
+  phuxCellWidth?: string; phuxCellHeight?: string;
+}): CellMetrics {
+  return {
+    width: positiveMetric(dataset.phuxCellWidth, DEFAULT_CELL_METRICS.width),
+    height: positiveMetric(dataset.phuxCellHeight, DEFAULT_CELL_METRICS.height),
+  };
+}
+
+/** Fit the grid without scaling glyphs; defaults apply only before mount. */
 export function terminalGeometry(
   width: number,
   height: number,
   cols: number,
   rows: number,
+  cells: CellMetrics = DEFAULT_CELL_METRICS,
 ) {
   return {
-    cols: Math.max(20, Math.min(cols, Math.floor(width / 8))),
-    rows: Math.max(10, Math.min(rows, Math.floor(height / 16))),
+    cols: Math.max(1, Math.min(cols, Math.floor(width / cells.width))),
+    rows: Math.max(1, Math.min(rows, Math.floor(height / cells.height))),
   };
 }
 

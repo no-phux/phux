@@ -27,6 +27,13 @@ impl PickerBinding {
 }
 
 pub(super) fn install(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
+    if !app.borrow().host_paths_enabled {
+        return Ok(());
+    }
+    install_host_picker(app)
+}
+
+fn install_host_picker(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
     let document = app
         .borrow()
         .canvas

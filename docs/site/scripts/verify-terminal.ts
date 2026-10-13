@@ -51,6 +51,8 @@ async function open(page: Page) {
 async function live(page: Page, expectFocus = true) {
   await page.locator('.pterm[data-status="live"]').waitFor();
   if (expectFocus) assert.ok(await page.locator("canvas").evaluate((canvas) => canvas === document.activeElement), "live terminal receives keyboard focus");
+  assert.ok(await page.locator("canvas").evaluate((canvas) => canvas.getBoundingClientRect().width <= canvas.parentElement!.clientWidth), "measured 9px geometry fits before the first live paint");
+  assert.equal(await page.locator(".pterm-head").count(), 1, "one terminal header");
 }
 async function widths(page: Page, name: string) {
   for (const width of [320, 390, 768, 1280]) {
@@ -63,14 +65,14 @@ async function widths(page: Page, name: string) {
   }
 }
 async function paneControls(page: Page) {
-  await page.getByRole("button", { name: "Split left/right", exact: true }).click();
+  await page.getByRole("button", { name: "Split pane left/right", exact: true }).click();
   await page.locator('canvas[data-phux-pane-count="2"]').waitFor();
   await page.getByRole("button", { name: "Split top/bottom", exact: true }).click();
   await page.locator('canvas[data-phux-pane-count="3"]').waitFor();
   await page.getByRole("button", { name: "Next pane", exact: true }).click();
-  await page.getByRole("button", { name: "Split left/right", exact: true }).click();
+  await page.getByRole("button", { name: "Split pane left/right", exact: true }).click();
   await page.locator('canvas[data-phux-pane-count="4"]').waitFor();
-  assert.ok(await page.getByRole("button", { name: "Split left/right", exact: true }).isDisabled());
+  assert.ok(await page.getByRole("button", { name: "Split pane left/right", exact: true }).isDisabled());
   assert.ok(await page.getByRole("button", { name: "Split top/bottom", exact: true }).isDisabled());
   await page.getByRole("button", { name: "Close pane", exact: true }).click();
   await page.locator('canvas[data-phux-pane-count="3"]').waitFor();
@@ -118,6 +120,7 @@ try {
   assert.ok(await mobile.getByRole("toolbar", { name: "Terminal keys" }).isVisible());
   for (const width of [320, 390]) {
     await mobile.setViewportSize({ width, height: 844 });
+    await mobile.waitForTimeout(100);
     const targets = await mobile.locator(".pterm-keys button").evaluateAll((nodes) => nodes.map((node) => {
       const rect = node.getBoundingClientRect();
       const bar = node.parentElement!.getBoundingClientRect();
@@ -145,6 +148,7 @@ try {
   await live(authPage, false);
   assert.equal(await authPage.locator(".pterm-screen").evaluate((screen) => screen.getBoundingClientRect().height), screenBefore, "screen space stays stable from sign-in to live");
   await widths(authPage, "terminal-standalone");
+  await authPage.locator(".pterm-info summary").click();
   await authPage.getByRole("button", { name: "Release session" }).click();
   await authPage.locator('.pterm[data-status="unlock"]').waitFor();
   await authPage.goto(`${base}/?auth=error&auth_error=configuration`);

@@ -6,6 +6,7 @@ type Timer = number | ReturnType<typeof setTimeout>;
 interface CanvasLike {
   width: number;
   height: number;
+  getBoundingClientRect?(): { width: number };
   getContext(contextId: "2d"): {
     getImageData(x: number, y: number, width: number, height: number): ImageData;
   } | null;
@@ -15,12 +16,19 @@ interface ReadinessOptions {
   timeoutMs?: number;
   pollIntervalMs?: number;
   signal?: AbortSignal;
+  isGeometryReady?: () => boolean;
   now?: () => number;
   setTimer?: (
     callback: () => void,
     delay: number,
   ) => Timer;
   clearTimer?: (timer: Timer) => void;
+}
+
+function backingScale(canvas: CanvasLike): number {
+  const logicalWidth = canvas.getBoundingClientRect?.().width ?? canvas.width;
+  if (logicalWidth <= 0) return 1;
+  return Math.max(1, canvas.width / logicalWidth);
 }
 
 export function hasMeaningfulCanvasPaint(canvas: CanvasLike): boolean {
@@ -32,7 +40,7 @@ export function hasMeaningfulCanvasPaint(canvas: CanvasLike): boolean {
   const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
   const sampleCount = Math.ceil(pixels.length / 8);
   const requiredSamples = Math.min(
-    MIN_NON_DOMINANT_SAMPLES,
+    MIN_NON_DOMINANT_SAMPLES * backingScale(canvas) ** 2,
     Math.max(1, Math.floor(sampleCount * 0.1)),
   );
   const colors = new Map<number, number>();
@@ -82,7 +90,7 @@ export function waitForMeaningfulCanvasPaint(
     const onAbort = () => finish(new DOMException("Aborted", "AbortError"));
     const check = () => {
       try {
-        if (hasMeaningfulCanvasPaint(canvas)) {
+        if (options.isGeometryReady?.() !== false && hasMeaningfulCanvasPaint(canvas)) {
           finish();
           return;
         }
