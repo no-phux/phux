@@ -1,16 +1,16 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-10-05
+last-reviewed: 2026-10-13
 ---
 
 # Protocol reference
 
 **TL;DR.** The normative terminal wire. HELLO fixes version, layers, and
-bootstrap; L1 is required, L3 is optional, L2 is unused. Start with the
-tutorial to implement a consumer, or the catalogs to look up a frame.
-Durable work is a different endpoint. Encoding and reserved appendices
-are the codec source of truth.
+bootstrap; L1 is required, L3 is optional, and organization is a feature
+over L1 commands. Start with the tutorial to implement a consumer, or the
+catalogs to look up a frame. Durable work is a different endpoint.
+Encoding and reserved appendices are the codec source of truth.
 
 ---
 
@@ -26,10 +26,15 @@ focus, and paste events. HELLO is the one negotiation: it admits
 `major.minor` (this version: `0.9`), intersects layers, and selects one
 bootstrap profile. After HELLO_OK those terms do not change.
 
-L1 is required. L3 is optional and opted into via `HELLO.layers`. L2 is a
-hole: the discriminant range is reserved and unused
-([L2.md](./L2.md)). Grouping is L3 metadata plus client logic; atomic
-multi-terminal teardown is the L1 `KILL_RESOURCES` op.
+L1 is required. L3 is optional and opted into via `HELLO.layers`. The L2
+layer bit and discriminant range stay reserved. Sessions are server
+records: every resource belongs to exactly one session, and a session has
+an explicit lifetime and an optional shared arrangement. A server that
+advertises `ORGANIZATION` takes typed organization commands on the L1
+`COMMAND` envelope, each with an operation id and an expected revision,
+and journals every change with its actor ([L2.md](./L2.md)). Older clients
+keep using the session and layout keys in L3, which the server translates.
+Atomic multi-terminal teardown is the L1 `KILL_RESOURCES` op.
 
 The coordinator is a different endpoint with its own HELLO, version, and
 frame catalog ([coordinator.md](./coordinator.md)). It is not step 2 of
@@ -53,7 +58,7 @@ terminal onboarding. A client that only wants terminals never speaks it.
 | [workload-auth.md](./workload-auth.md) | mTLS workload authentication, canonical endpoint-owned scopes, registry intersection, and live revocation |
 | [coordinator.md](./coordinator.md) | Separate durable-work endpoint — authority, operations, snapshots, events, and Terminal bindings |
 | [L1.md](./L1.md) | Terminal substrate — the REQUIRED conformance tier |
-| [L2.md](./L2.md) | Reserved, unused — no collection tier (dissolved per ADR-0030) |
+| [L2.md](./L2.md) | Organization model — sessions, membership, lifetime, Inbox, arrangements, revisions, refusals (commands in L1 §5.7) |
 | [L3.md](./L3.md) | Metadata storage — OPTIONAL |
 | [input.md](./input.md) | INPUT_KEY / INPUT_MOUSE / INPUT_FOCUS / INPUT_PASTE / INPUT_RAW |
 | [appendix-encoding.md](./appendix-encoding.md) | Encoding primitives and the normative payload shape (positional, big-endian, length-prefixed) |
