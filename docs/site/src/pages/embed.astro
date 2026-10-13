@@ -11,13 +11,18 @@ import { SITE } from "../lib/site";
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <meta name="robots" content="noindex" />
-    <meta name="theme-color" content="#08080b" />
+    <meta name="theme-color" content="#0b0b0d" />
     <title>{SITE.name} — hosted terminal</title>
     <AuthReturn />
   </head>
   <body>
     <main>
       <h1>{SITE.name} hosted terminal</h1>
+      <div class="embed-frame">
+        <nav class="embed-nav" aria-label="Terminal navigation" hidden>
+          <a href="/">← phux</a>
+          <span>Browser terminal</span>
+        </nav>
       <PhuxTerminal
         client:load
         wsUrl={SITE.demoWsUrl}
@@ -27,16 +32,25 @@ import { SITE } from "../lib/site";
         autoStart
         statusParentOrigin="https://phall.io"
       />
+        <noscript><p>This terminal needs JavaScript. <a href="https://docs.phux.sh/quickstart/install">Install phux locally instead.</a></p></noscript>
+      </div>
     </main>
   </body>
 </html>
+
+<script>
+  // Embedded clients keep their host's navigation; standalone gets a way back.
+  if (window.self === window.top) {
+    document.querySelector<HTMLElement>(".embed-nav")?.removeAttribute("hidden");
+  }
+</script>
 
 <style>
   html,
   body {
     min-height: 100%;
     margin: 0;
-    background: #08080b;
+    background: #0b0b0d;
   }
   body {
     padding: 0;
@@ -56,14 +70,11 @@ import { SITE } from "../lib/site";
     overflow: hidden;
     clip: rect(0 0 0 0);
   }
-  :global(.pterm) {
-    border: 0;
-    border-radius: 0;
-    max-width: 100%;
-    box-shadow: none;
-  }
-  :global(.pterm-canvas:focus-visible) {
-    outline: 1px solid #66666f;
-    outline-offset: -1px;
-  }
+  .embed-frame { width: min(920px, 100%); min-width: 0; }
+  .embed-nav { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; color: #aaaab1; font-size: 12px; }
+  .embed-nav[hidden] { display: none; }
+  .embed-nav a { display: inline-flex; align-items: center; min-height: 44px; color: #ededee; }
+  .embed-nav a:hover { text-decoration: underline; }
+  noscript p { color: #aaaab1; font-size: 13px; }
+  noscript a { text-decoration: underline; }
 </style>
