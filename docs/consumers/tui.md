@@ -791,15 +791,12 @@ hook on `agent-state-changed` is the notifier edge. Hooks are
 
 ## Status
 
-<!-- impl-status: spec-only; probe: close-view -->
-> **Status: spec-only.** The reference TUI still reads tabs from the
-> `phux.tui.layout/v1` metadata key, has no `close-view` action, kills a
-> window without a confirm, and keeps a session's lifetime as the legacy
-> keep-empty mark.
-
-| Gap | Today | Owner | Tracked |
-|---|---|---|---|
-| Close view, kill confirm, and arrangement groups | Tabs come from the layout metadata key; the context menu's close kills; there is no "not arranged" state. | [ADR-0160](../adr/0160-sessions-own-resources-and-window-is-retired.md), [ADR-0161](../adr/0161-organization-is-typed-commands-behind-a-feature-bit.md) | phux-3q58 |
+<!-- impl-status: shipped; probe: close-view,KillConfirmOverlay -->
+> **Status: shipped.** `close-view`, the `kill-window` confirm, and the
+> "N running, not arranged" state ship. Against a server that advertises
+> organization, tabs are the session's arrangement record; against an
+> older server they come from the `phux.tui.layout/v1` metadata key and
+> the session's lifetime from its keep-empty mark.
 
 ## Where to go next
 
