@@ -30,8 +30,10 @@ on:
   workflow_dispatch:
 
 concurrency:
+  # Match the Worker deploy lane: never cancel mid-wrangler / mid-verify.
+  # Queuing is cheap (Astro build p50 ~1m) and a half-applied deploy is not.
   group: mini-v1-site-deploy
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
