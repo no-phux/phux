@@ -227,7 +227,11 @@ write to the same pane is refused as busy (`RESOURCE_EXHAUSTED`), so
 serialize writes to one pane.
 
 `phux agent start` starts an agent in an existing shell pane without
-creating, splitting, moving, or focusing layout.
+creating, splitting, moving, or focusing layout. The agent runs on a
+delegated credential, not yours: the typed line sets `PHUX_SOCKET` to a
+socket of its own whose grant is `INVENTORY`, `OBSERVE`, `INPUT`, and `BIND`
+on that pane's session, on your behalf
+([ADR-0163](../adr/0163-actors-and-delegated-agent-grants.md) §5).
 
 ## 5. Observe: snapshot, wait, watch, ask
 
@@ -937,7 +941,8 @@ delivered; retry safe), `delivery_unknown` (never resend),
 `invalid_agent_name`, `unsupported_agent_kind`,
 `agent_detection_unavailable`, `agent_name_conflict`, `target_not_shell`,
 `invalid_launch_argv`, `ambiguous_integration`, `agent_start_timeout`,
-`agent_kind_mismatch`. Resource: `wrong_resource_kind`, `not_producer`,
+`agent_kind_mismatch`, `delegation_failed` (the agent's credential could not
+be minted, so nothing was typed). Resource: `wrong_resource_kind`, `not_producer`,
 `record_invalid`, `overflow`, `unsupported_server`. Offline explain:
 `capture_unreadable`, `capture_invalid`, `unknown_agent_kind`. Watch:
 `unknown_event_name`.

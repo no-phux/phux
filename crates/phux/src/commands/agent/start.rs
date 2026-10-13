@@ -20,6 +20,12 @@
 //! The available-shell precondition reads the server-published
 //! `phux.pane-occupant/v1` record, cross-checked against OSC-133 marks;
 //! `--force` skips it.
+//!
+//! The agent never runs on the caller's authority (ADR-0163 §5): before
+//! typing, this verb mints a delegated credential on the pane's session and
+//! the typed line sets `PHUX_SOCKET` to that credential's socket, so every
+//! phux command the agent issues is attributed to it and confined to its
+//! grant. A launch that fails before anything is typed revokes it.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -38,12 +44,20 @@ use phux_client::attach::connection::{Answer, Connection};
 use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::{InputOperationId, ResourceId};
 use phux_protocol::input::InputEvent;
-use phux_protocol::wire::frame::{FrameKind, Scope};
+use phux_protocol::wire::frame::{FrameKind, OrgFilter, Scope};
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::json_err::codes;
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target_for_input};
 use crate::exit_codes::{EXIT_FAILURE, EXIT_SUCCESS, EXIT_USAGE, EXIT_WAIT_TIMEOUT};
+
+/// First request id of the delegation round trips, clear of the ids the
+/// bind and the input batch use on the same connection.
+const DELEGATION_REQUEST_ID: u32 = 0x5100;
+
+/// The environment variable that points the agent's phux commands at its
+/// delegated credential's socket.
+const SOCKET_ENV: &str = "PHUX_SOCKET";
 
 /// Version of the `agent start` result document.
 const RESULT_SCHEMA_VERSION: u8 = 1;
@@ -291,8 +305,13 @@ pub(super) fn start(req: &StartRequest<'_>, socket: Option<PathBuf>) -> ExitCode
 struct Plan {
     /// Canonical detection-manifest kind slug.
     kind: String,
-    /// The one line to type.
+    /// The one line to type, before the delegated socket is known; checked
+    /// here so every refusal it can raise happens before a round trip.
     line: String,
+    /// The resolved argv the line runs.
+    argv: Vec<String>,
+    /// The environment the line exports.
+    env: BTreeMap<String, String>,
     resolved_cwd: PathBuf,
     integration_id: String,
     timeout: Duration,
@@ -386,6 +405,8 @@ fn preflight(req: &StartRequest<'_>) -> Result<Plan, Refusal> {
     Ok(Plan {
         kind,
         line,
+        argv: argv.clone(),
+        env,
         resolved_cwd: resolved.cwd.clone(),
         integration_id,
         timeout: Duration::from_secs(req.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS)),
@@ -483,8 +504,28 @@ async fn drive(
         return emit(req.json, &refusal);
     }
 
+    let delegation = match delegate(&mut conn, &terminal).await {
+        Ok(delegation) => delegation,
+        Err(refusal) => {
+            rollback_bind(&mut conn, &terminal, &bound_bytes).await;
+            return emit(req.json, &refusal);
+        }
+    };
+    let line = match delegated_line(plan, delegation.as_ref()) {
+        Ok(line) => line,
+        Err(refusal) => {
+            revoke(&mut conn, delegation.as_ref()).await;
+            rollback_bind(&mut conn, &terminal, &bound_bytes).await;
+            return emit(req.json, &refusal);
+        }
+    };
+
     let started = Instant::now();
-    if let Err(refusal) = submit_line(plan, &mut conn, &terminal, &bound_bytes).await {
+    let typed = submit_line(&line, &mut conn, &terminal, &bound_bytes).await;
+    if let Err((refusal, wrote_nothing)) = typed {
+        if wrote_nothing {
+            revoke(&mut conn, delegation.as_ref()).await;
+        }
         return emit(req.json, &refusal);
     }
     if req.no_wait {
@@ -539,16 +580,100 @@ fn satellite_refusal(terminal: &ResourceId) -> Refusal {
     )
 }
 
+/// Mint the agent's delegated credential on `terminal`'s session
+/// (ADR-0163 §5): `INVENTORY`, `OBSERVE`, `INPUT`, and `BIND` there, on
+/// behalf of the caller. `None` from a server without organization records,
+/// which predates delegation; the agent then inherits the shell's socket.
+async fn delegate(
+    conn: &mut Connection,
+    terminal: &ResourceId,
+) -> Result<Option<phux_client::delegation::Delegation>, Refusal> {
+    if !phux_client::org::supported(conn) {
+        return Ok(None);
+    }
+    let failed = |message: String| {
+        Refusal::new(
+            codes::DELEGATION_FAILED,
+            message,
+            "`phux agent start` mints the agent's credential over the owner's socket; run it \
+             outside a delegated agent, against a server that serves `DELEGATE_AGENT`",
+            EXIT_FAILURE,
+        )
+    };
+    let inventory = phux_client::org::fetch(conn, OrgFilter::All, DELEGATION_REQUEST_ID)
+        .await
+        .map_err(|err| failed(format!("could not read the pane's session: {err}")))?;
+    let session = inventory
+        .resource_by_live(terminal)
+        .map(|record| record.session)
+        .ok_or_else(|| {
+            failed(format!(
+                "{} has no session record to delegate",
+                phux_client::selector::format_terminal_id(terminal)
+            ))
+        })?;
+    phux_client::delegation::delegate_agent(
+        conn,
+        DELEGATION_REQUEST_ID.wrapping_add(0x100),
+        phux_client::org::mint_operation(),
+        session,
+        0,
+    )
+    .await
+    .map(Some)
+    .map_err(|err| {
+        failed(format!(
+            "could not delegate a credential to the agent: {err}"
+        ))
+    })
+}
+
+/// Withdraw `delegation` after a launch that typed nothing. Best effort: a
+/// credential left behind lapses at its expiry.
+async fn revoke(conn: &mut Connection, delegation: Option<&phux_client::delegation::Delegation>) {
+    let Some(delegation) = delegation else {
+        return;
+    };
+    if let Err(err) = phux_client::delegation::revoke_delegation(
+        conn,
+        DELEGATION_REQUEST_ID.wrapping_add(0x200),
+        phux_client::org::mint_operation(),
+        &delegation.credential_id,
+    )
+    .await
+    {
+        eprintln!(
+            "phux: warning: could not revoke the unused agent credential {}: {err}",
+            delegation.credential_id
+        );
+    }
+}
+
+/// The line to type: the plan's, exporting `PHUX_SOCKET` as the delegated
+/// credential's socket when there is one.
+fn delegated_line(
+    plan: &Plan,
+    delegation: Option<&phux_client::delegation::Delegation>,
+) -> Result<String, Refusal> {
+    let Some(delegation) = delegation else {
+        return Ok(plan.line.clone());
+    };
+    let mut env = plan.env.clone();
+    env.insert(SOCKET_ENV.to_owned(), delegation.socket_path.clone());
+    shell_line(&plan.argv, &env).map_err(|err| shell_line_refusal(&plan.integration_id, &err))
+}
+
 /// Type the launch line with acknowledged input. On failure the name bind
 /// is rolled back only when provably nothing was typed; otherwise a running
-/// agent would be left without a handle.
+/// agent would be left without a handle. The error says whether nothing
+/// was typed.
 async fn submit_line(
-    plan: &Plan,
+    line: &str,
     conn: &mut Connection,
     terminal: &ResourceId,
     bound_bytes: &[u8],
-) -> Result<(), Refusal> {
-    let events = submit_events(&plan.line);
+) -> Result<(), (Refusal, bool)> {
+    let events = submit_events(line);
     let operation_id = new_operation_id();
     let Err(failure) = apply_input(conn, terminal, operation_id, events).await else {
         return Ok(());
@@ -556,7 +681,7 @@ async fn submit_line(
     if failure.wrote_nothing {
         rollback_bind(conn, terminal, bound_bytes).await;
     }
-    Err(failure.refusal)
+    Err((failure.refusal, failure.wrote_nothing))
 }
 
 /// Wait for the agent to reach a ready state and report the outcome.
@@ -1359,6 +1484,35 @@ mod tests {
     /// The kind comparison is what turns "something started" into "the thing
     /// I asked for started". An absent kind is reported, not failed: an
     /// explicit hook writer may own the record and stand the detector down.
+    /// The typed line exports the delegated socket through `env`, quoted like
+    /// every other word, and a server without delegation types the plan's.
+    #[test]
+    fn the_typed_line_points_the_agent_at_its_delegated_socket() {
+        let plan = Plan {
+            kind: "codex".to_owned(),
+            line: "'codex' '--x'".to_owned(),
+            argv: argv(&["codex", "--x"]),
+            env: BTreeMap::from([("A".to_owned(), "1".to_owned())]),
+            resolved_cwd: PathBuf::from("/"),
+            integration_id: "codex".to_owned(),
+            timeout: Duration::from_secs(1),
+        };
+        let delegation = |socket: &str| {
+            phux_client::delegation::Delegation::new(
+                "delegated:1".to_owned(),
+                phux_protocol::ids::SessionKey::new([1; 16]).expect("non-zero"),
+                socket.to_owned(),
+                0,
+            )
+        };
+        assert_eq!(
+            delegated_line(&plan, Some(&delegation("/tmp/phux d/agent's.sock"))).unwrap(),
+            r"env 'A=1' 'PHUX_SOCKET=/tmp/phux d/agent'\''s.sock' 'codex' '--x'"
+        );
+        assert_eq!(delegated_line(&plan, None).unwrap(), plan.line);
+        assert!(delegated_line(&plan, Some(&delegation("/tmp/a\nb"))).is_err());
+    }
+
     #[test]
     fn kind_verdict_separates_confirmed_absent_and_wrong() {
         let with = |kind: Option<&str>| AgentRecord {
