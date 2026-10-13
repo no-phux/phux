@@ -156,6 +156,16 @@ const MAX_CLIENT_TERMINAL_STREAMS: usize = 127;
 const TERMINAL_STREAM_OPEN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 const TERMINAL_FRAME_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// How many `GET_METADATA`s [`Connection::request_metadata_many`] keeps in
+/// flight. 64 requests of about 40 bytes stay well inside the smallest
+/// socket buffer a platform ships (8 KiB on macOS).
+pub const METADATA_WINDOW: usize = 64;
+
+/// The request id of the `index`th read in a batch numbered from `first`.
+fn request_id_at(first: u32, index: usize) -> u32 {
+    first.wrapping_add(u32::try_from(index).unwrap_or(u32::MAX))
+}
+
 impl Multistream {
     fn new(conn: quinn::Connection) -> Self {
         let (frames_tx, frames_rx) = tokio::sync::mpsc::channel(MUX_FRAME_CHANNEL);
@@ -1318,6 +1328,87 @@ impl Connection {
         .await
     }
 
+    /// One `GET_METADATA` per `(scope, key)`, pipelined: answers come back
+    /// in `reads` order, a refusal as an `Err` answer, interleaved frames
+    /// kept. Request ids run from `first_request_id`.
+    ///
+    /// Reads go out [`METADATA_WINDOW`] at a time, each window in one write,
+    /// so `n` reads cost `n / METADATA_WINDOW` round trips instead of `n`.
+    /// The window stays small enough that its requests always fit the
+    /// socket buffer: a server that stops reading while its replies queue
+    /// cannot block this write and deadlock the pair.
+    ///
+    /// # Errors
+    ///
+    /// Transport and decode failures; a server that closes before answering
+    /// every read is [`AttachError::Disconnected`].
+    pub async fn request_metadata_many(
+        &mut self,
+        first_request_id: u32,
+        reads: Vec<(Scope, String)>,
+    ) -> Result<Reply<Vec<Answer<Option<Vec<u8>>>>>, AttachError> {
+        let mut answers: Vec<Option<Answer<Option<Vec<u8>>>>> = vec![None; reads.len()];
+        let mut interleaved = Vec::new();
+        let mut reads = reads.into_iter();
+        let mut window_start = 0;
+        while window_start < answers.len() {
+            let window_end = answers.len().min(window_start + METADATA_WINDOW);
+            self.cork();
+            let mut sent = Ok(());
+            for (index, (scope, key)) in (window_start..window_end).zip(reads.by_ref()) {
+                sent = self
+                    .send(&FrameKind::GetMetadata {
+                        request_id: request_id_at(first_request_id, index),
+                        scope,
+                        key,
+                    })
+                    .await;
+                if sent.is_err() {
+                    break;
+                }
+            }
+            let shipped = self.uncork().await;
+            sent?;
+            shipped?;
+            let mut pending = window_end - window_start;
+            while pending > 0 {
+                let frame = self.recv().await?;
+                // proto.md §9: an `ERROR` carrying a read's id answers it.
+                let index = match &frame {
+                    FrameKind::MetadataValue { request_id, .. }
+                    | FrameKind::Error {
+                        request_id: Some(request_id),
+                        ..
+                    } => usize::try_from(request_id.wrapping_sub(first_request_id)).ok(),
+                    _ => None,
+                }
+                .filter(|index| (window_start..window_end).contains(index))
+                .filter(|index| answers[*index].is_none());
+                let Some(index) = index else {
+                    interleaved.push(frame);
+                    continue;
+                };
+                answers[index] = Some(match frame {
+                    FrameKind::Error { code, message, .. } => Err(Refusal { code, message }),
+                    FrameKind::MetadataValue { value, .. } => Ok(value),
+                    other => {
+                        interleaved.push(other);
+                        continue;
+                    }
+                });
+                pending -= 1;
+            }
+            window_start = window_end;
+        }
+        Ok(Reply {
+            result: answers
+                .into_iter()
+                .map(|answer| answer.unwrap_or(Ok(None)))
+                .collect(),
+            interleaved,
+        })
+    }
+
     /// Send one `LIST_METADATA` and wait for its `METADATA_KEYS`, keeping
     /// interleaved frames.
     ///
@@ -2104,6 +2195,82 @@ mod tests {
             .expect("the read must resolve; a timeout here is the wedge itself")
             .expect("metadata reply")
         })
+    }
+
+    /// A swarm's metadata reads cost one round trip per [`METADATA_WINDOW`],
+    /// not one per read. The server answers nothing until a whole window
+    /// has arrived, so a client that waited on each read would wedge here.
+    /// It answers each window backwards, refusing every seventh read and
+    /// pushing a notice, so answers are matched by id, not by order.
+    #[test]
+    fn metadata_reads_pipeline_one_round_trip_per_window() {
+        const READS: usize = 1000;
+        let (answers, interleaved, round_trips) = block_on(async {
+            let (client_stream, server_stream) = UnixStream::pair().expect("pair");
+            let mut server = Connection::from_stream(server_stream);
+            let server = tokio::task::spawn_local(async move {
+                let mut round_trips = 0;
+                let mut received = 0;
+                while received < READS {
+                    let window = METADATA_WINDOW.min(READS - received);
+                    let mut ids = Vec::with_capacity(window);
+                    while ids.len() < window {
+                        match server.recv().await.expect("read") {
+                            FrameKind::GetMetadata { request_id, .. } => ids.push(request_id),
+                            other => panic!("expected GET_METADATA, got {other:?}"),
+                        }
+                    }
+                    received += window;
+                    round_trips += 1;
+                    server
+                        .send(&FrameKind::Error {
+                            request_id: None,
+                            code: ErrorCode::UnsupportedSatelliteRoute,
+                            message: "edge is unreachable".to_owned(),
+                        })
+                        .await
+                        .expect("notice");
+                    for request_id in ids.into_iter().rev() {
+                        let reply = if request_id % 7 == 0 {
+                            refusal(request_id)
+                        } else {
+                            metadata_value(request_id, Some(&request_id.to_le_bytes()))
+                        };
+                        server.send(&reply).await.expect("answer");
+                    }
+                }
+                round_trips
+            });
+            let mut client = Connection::from_stream(client_stream);
+            let reads = (0..READS)
+                .map(|n| {
+                    let pane = ResourceId::local(u32::try_from(n).expect("small"));
+                    (Scope::Resource(pane), "phux.agent/v1".to_owned())
+                })
+                .collect();
+            let (answers, interleaved) =
+                tokio::time::timeout(WEDGE_TIMEOUT, client.request_metadata_many(100, reads))
+                    .await
+                    .expect("the reads must resolve; a timeout here is a read per round trip")
+                    .expect("metadata replies")
+                    .into_parts();
+            drop(client);
+            (answers, interleaved, server.await.expect("server"))
+        });
+        assert_eq!(round_trips, READS.div_ceil(METADATA_WINDOW));
+        assert_eq!(answers.len(), READS);
+        for (index, answer) in answers.iter().enumerate() {
+            let request_id = 100 + u32::try_from(index).expect("small");
+            if request_id % 7 == 0 {
+                assert!(answer.is_err(), "read {index} was refused");
+            } else {
+                assert_eq!(
+                    answer.as_ref().expect("answered").as_deref(),
+                    Some(&request_id.to_le_bytes()[..])
+                );
+            }
+        }
+        assert_eq!(interleaved.len(), round_trips, "one notice per window");
     }
 
     /// One `SPAWN_RESOURCE` round trip against `script`.

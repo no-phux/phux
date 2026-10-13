@@ -19,13 +19,14 @@ use phux_protocol::wire::info::{
 
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
+use crate::layout::wire::HandleMap;
 use crate::layout_ops::{LayoutOps, LayoutOpsError};
 use crate::org::{OrgError, OrgInventory};
 use crate::resource;
 use crate::selector::format_terminal_id;
 use crate::state::{Degradation, StateView};
 
-/// The `GET_STATE` view a session listing (`phux ls`, `phux status`, MCP
+/// The `GET_STATE` view a session listing (`phux ls -l`, `phux status`, MCP
 /// `phux_ls`) is built from.
 ///
 /// It carries window counts as a TUI shows them ([`count_layout_windows`])
@@ -37,8 +38,20 @@ use crate::state::{Degradation, StateView};
 /// [`crate::state::get_state_on`]'s errors, or a transport failure while
 /// reading layouts or records.
 pub async fn listing_view(conn: &mut Connection) -> Result<StateView, AttachError> {
-    let mut view = crate::state::get_state_on(conn).await?;
+    let mut view = glance_view(conn).await?;
     count_layout_windows(conn, &mut view).await?;
+    Ok(view)
+}
+
+/// [`listing_view`] without the window counts, which the glance never
+/// prints and which cost a read per session: one `GET_STATE` and the
+/// organization records, whatever the fleet's size.
+///
+/// # Errors
+///
+/// As [`listing_view`].
+pub async fn glance_view(conn: &mut Connection) -> Result<StateView, AttachError> {
+    let mut view = crate::state::get_state_on(conn).await?;
     if crate::org::supported(conn) {
         match crate::org::fetch(conn, OrgFilter::All, LAYOUT_READ_FIRST_REQUEST_ID - 0x100).await {
             Ok(inventory) => view = view.with_organization(Some(inventory)),
@@ -66,6 +79,9 @@ const LAYOUT_READ_FIRST_REQUEST_ID: u32 = 0x4c00;
 /// not read, keeps the server's count. Use a dedicated, unsubscribed
 /// connection.
 ///
+/// With organization records in `view`, each arrangement is read by its key
+/// from those records; a session without one costs no read.
+///
 /// # Errors
 ///
 /// Transport failures only; every other layout read failure keeps the
@@ -74,6 +90,9 @@ pub async fn count_layout_windows(
     conn: &mut Connection,
     view: &mut StateView,
 ) -> Result<(), AttachError> {
+    if crate::org::supported(conn) {
+        return count_arrangement_groups(conn, view).await;
+    }
     let mut request_id = LAYOUT_READ_FIRST_REQUEST_ID;
     for session in &mut view.snapshot_mut().sessions {
         let read = LayoutOps::new(conn, session.id, request_id).read().await;
@@ -87,6 +106,49 @@ pub async fn count_layout_windows(
             }
             Err(_) => {}
         }
+    }
+    Ok(())
+}
+
+/// [`count_layout_windows`] on a server that keeps organization records: the
+/// group count of each session's arrangement, placed with that session's
+/// members as [`LayoutOps::read`] places them. Without the records (a
+/// refused read) every session keeps the server's count.
+async fn count_arrangement_groups(
+    conn: &mut Connection,
+    view: &mut StateView,
+) -> Result<(), AttachError> {
+    let Some(organization) = view.organization() else {
+        return Ok(());
+    };
+    let mut counts = Vec::new();
+    let mut request_id = LAYOUT_READ_FIRST_REQUEST_ID;
+    for (index, session) in view.snapshot().sessions.iter().enumerate() {
+        let Some(record) = organization.session_by_live(session.id) else {
+            continue;
+        };
+        let Some(key) = record.arrangement else {
+            continue;
+        };
+        let read = crate::org::arrangement(conn, request_id, key).await;
+        request_id = request_id.wrapping_add(1);
+        match read {
+            Ok(value) => {
+                let handles = HandleMap::from_pairs(
+                    organization
+                        .members(&record.key)
+                        .map(|member| (member.key, member.live.clone())),
+                );
+                let (document, _) = crate::layout::wire::from_protocol(&value.document, &handles);
+                counts.push((index, document.groups.len()));
+            }
+            Err(OrgError::Attach(err)) => return Err(err),
+            Err(_) => {}
+        }
+    }
+    let sessions = &mut view.snapshot_mut().sessions;
+    for (index, groups) in counts {
+        sessions[index].window_count = u16::try_from(groups).unwrap_or(u16::MAX);
     }
     Ok(())
 }
@@ -374,6 +436,74 @@ mod tests {
             .map(|s| (s.name.as_str(), s.window_count))
             .collect();
         assert_eq!(counts, [("tabbed", 2), ("headless", 1)]);
+    }
+
+    /// With organization records the tabs are the arrangement's groups, read
+    /// once per arranged session by key, with one inventory for the whole
+    /// listing; a session without an arrangement costs no read.
+    #[tokio::test]
+    async fn listing_counts_windows_from_each_arrangement_with_one_inventory() {
+        use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExtSet};
+        use phux_protocol::wire::frame::{
+            ArrangementDoc as WireDoc, ArrangementGroup, ArrangementNode, Command, EntryRef,
+            EntryTarget, FrameKind,
+        };
+
+        use crate::testkit::{OrgFixture, ScriptSpec, serve_one};
+
+        let mut fixture = OrgFixture::new();
+        let tabbed = fixture.session("tabbed", SessionLifetime::Persistent);
+        let (a, b) = (fixture.shell(tabbed), fixture.shell(tabbed));
+        let group = |n: u8, key| ArrangementGroup {
+            id: [n; 16],
+            name: None,
+            tree: ArrangementNode::Leaf(EntryRef {
+                entry: [n; 16],
+                target: EntryTarget::Member(key),
+            }),
+        };
+        fixture.arrangement(
+            tabbed,
+            WireDoc {
+                groups: vec![group(1, a), group(2, b)],
+            },
+        );
+        let headless = fixture.session("headless", SessionLifetime::Persistent);
+        fixture.shell(headless);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let spec = ScriptSpec::new()
+            .server_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]))
+            .organization(fixture);
+        let (socket, server) = serve_one(dir.path(), spec);
+        let mut conn = Connection::connect(&socket).await.expect("connect");
+
+        let view = listing_view(&mut conn).await.expect("listing");
+        drop(conn);
+        let seen = server.await.expect("scripted server task");
+        let mut counts: Vec<(&str, u16)> = view
+            .snapshot()
+            .sessions
+            .iter()
+            .map(|s| (s.name.as_str(), s.window_count))
+            .collect();
+        counts.sort_unstable();
+        assert_eq!(counts, [("headless", 1), ("tabbed", 2)]);
+        let commands: Vec<&Command> = seen
+            .iter()
+            .filter_map(|frame| match frame {
+                FrameKind::Command { command, .. } => Some(command),
+                _ => None,
+            })
+            .collect();
+        let inventories = commands
+            .iter()
+            .filter(|c| matches!(c, Command::GetOrganization { .. }))
+            .count();
+        let arrangements = commands
+            .iter()
+            .filter(|c| matches!(c, Command::ArrangementGet { .. }))
+            .count();
+        assert_eq!((inventories, arrangements), (1, 1), "{commands:?}");
     }
 
     /// A snapshot from a hub: one local session, a live satellite with one

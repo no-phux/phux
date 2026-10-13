@@ -86,9 +86,11 @@ pub async fn clear_record(
 
 /// Fetch every pane's decoded `phux.agent/v1` record over one connection.
 ///
-/// One sequential `GET_METADATA` per pane. Missing, invalid, or refused
-/// records are absent; a transport failure returns what was collected.
-/// Interleaved degradation notices are appended to `notices` in order.
+/// The reads are pipelined ([`Connection::request_metadata_many`]), so a
+/// swarm costs a handful of round trips, not one per pane. Missing,
+/// invalid, or refused records are absent; a transport failure returns
+/// nothing. Interleaved degradation notices are appended to `notices` in
+/// order.
 pub async fn fetch_index(
     socket_path: &Path,
     snapshot: &SessionSnapshot,
@@ -117,19 +119,48 @@ pub async fn fetch_index_on<'a>(
     first_request_id: u32,
     notices: &mut Vec<String>,
 ) -> HashMap<ResourceId, AgentRecord> {
-    let mut index = HashMap::new();
-    let mut request_id = first_request_id;
-    for pane in panes {
-        let Ok((answer, degradation)) = get_record(conn, pane, request_id).await else {
-            return index;
-        };
-        request_id = request_id.wrapping_add(1);
-        notices.extend(degradation.notices().iter().cloned());
-        if let Ok(Some(record)) = answer {
-            index.insert(pane.clone(), record);
-        }
-    }
-    index
+    let panes: Vec<&ResourceId> = panes.into_iter().collect();
+    let Ok((answers, degradation)) = get_records(conn, &panes, first_request_id).await else {
+        return HashMap::new();
+    };
+    notices.extend(degradation.notices().iter().cloned());
+    panes
+        .into_iter()
+        .zip(answers)
+        .filter_map(|(pane, answer)| Some((pane.clone(), answer.ok()??)))
+        .collect()
+}
+
+/// One pipelined `GET_METADATA` per pane for its agent record, answers in
+/// `panes` order; a refusal stays distinct from "no record".
+///
+/// # Errors
+///
+/// Transport and decode failures from
+/// [`Connection::request_metadata_many`].
+pub async fn get_records(
+    conn: &mut Connection,
+    panes: &[&ResourceId],
+    first_request_id: u32,
+) -> Result<(Vec<Answer<Option<AgentRecord>>>, Degradation), AttachError> {
+    let reads = panes
+        .iter()
+        .map(|pane| {
+            (
+                Scope::Resource((*pane).clone()),
+                RESOURCE_AGENT_KEY.to_owned(),
+            )
+        })
+        .collect();
+    let (answers, interleaved) = conn
+        .request_metadata_many(first_request_id, reads)
+        .await?
+        .into_parts();
+    let answers = answers
+        .into_iter()
+        .map(|answer| answer.map(|value| value.as_deref().and_then(parse_agent_record)))
+        .collect();
+    Ok((answers, Degradation::from_interleaved(&interleaved)))
 }
 
 #[cfg(test)]
