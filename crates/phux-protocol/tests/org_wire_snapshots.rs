@@ -19,9 +19,9 @@ use phux_protocol::kinds::Verb;
 use phux_protocol::wire::frame::{
     ActivationInfo, ActorRef, AgentEvent, ArrangementDoc, ArrangementGroup, ArrangementNode,
     ArrangementOwner, ArrangementValue, Command, CommandResult, CommandValue, Committed,
-    Delegation, EntryRef, EntryTarget, ExecState, ExitPolicy, FrameKind, LaunchSpec, LiveTarget,
-    MoveItem, OrgFilter, OrganizationPage, Outcome, RecordRevision, Refusal, ResourceRecord,
-    SessionLifetime, SessionRecord, SplitDirection, TerminateMode,
+    Delegation, EntryRef, EntryTarget, ExecState, ExitPolicy, FrameKind, LaunchMode, LaunchSpec,
+    LiveTarget, MoveItem, OrgFilter, OrganizationPage, Outcome, RecordRevision, Refusal,
+    ResourceRecord, SessionLifetime, SessionRecord, SplitDirection, TerminateMode,
 };
 
 /// `xxd`-style dump, the same rendering `frame_wire_snapshots.rs` uses.
@@ -200,6 +200,19 @@ fn command_fixtures() -> Vec<(&'static str, FrameKind)> {
                 launch: Some(Box::new(launch())),
                 name: Some("build".to_owned()),
                 on_exit: ExitPolicy::Retain,
+                launch_mode: LaunchMode::Immediate,
+            }),
+        ),
+        (
+            "snap_org_resource_create_deferred",
+            command(Command::ResourceCreate {
+                operation: op(),
+                session: session(),
+                kind: ResourceKind::Terminal,
+                launch: Some(Box::new(launch())),
+                name: Some("build".to_owned()),
+                on_exit: ExitPolicy::Retain,
+                launch_mode: LaunchMode::Deferred,
             }),
         ),
         (

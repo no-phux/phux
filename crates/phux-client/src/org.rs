@@ -19,12 +19,13 @@
 use phux_protocol::ResourceId;
 use phux_protocol::caps::ServerFeatureExt;
 use phux_protocol::ids::{
-    AuthorityId, KEY_MIN_PREFIX, OperationId, ResourceKey, Revision, SessionId, SessionKey,
+    AuthorityId, KEY_MIN_PREFIX, OperationId, ResourceKey, ResourceKind, Revision, SessionId,
+    SessionKey,
 };
 use phux_protocol::wire::frame::{
-    ArrangementValue, Command, CommandValue, Committed, ErrorCode, ExecState, MAX_ORG_BATCH,
-    MoveItem, OrgFilter, OrganizationPage, Outcome, Refusal, ResourceRecord, SessionLifetime,
-    SessionRecord, TerminateMode,
+    ArrangementDoc, ArrangementValue, Command, CommandValue, Committed, ErrorCode, ExecState,
+    ExitPolicy, LaunchMode, LaunchSpec, MAX_ORG_BATCH, MoveItem, OrgFilter, OrganizationPage,
+    Outcome, Refusal, ResourceRecord, SessionLifetime, SessionRecord, TerminateMode,
 };
 
 use crate::attach::AttachError;
@@ -355,6 +356,28 @@ impl OrgInventory {
             })
             .collect()
     }
+
+    /// What `phux restore` relaunches, in record order: every resource a
+    /// server restart ended ([`Self::ended_by_restart`]) and every Terminal
+    /// never started (a dormant record, such as an imported archive's pane),
+    /// optionally only in `session`.
+    #[must_use]
+    pub fn restorable(&self, session: Option<&SessionKey>) -> Vec<&ResourceRecord> {
+        let ended: Vec<ResourceKey> = self
+            .ended_by_restart(session)
+            .into_iter()
+            .map(|record| record.key)
+            .collect();
+        self.resources
+            .iter()
+            .filter(|resource| {
+                ended.contains(&resource.key)
+                    || (resource.activation.is_none()
+                        && resource.kind == ResourceKind::Terminal
+                        && session.is_none_or(|key| resource.session == *key))
+            })
+            .collect()
+    }
 }
 
 /// What a key prefix names.
@@ -517,6 +540,7 @@ enum Edit<'a> {
     InboxResolve(SessionKey),
     SetLifetime(SessionKey, SessionLifetime),
     RenameResource(ResourceKey, Option<&'a str>),
+    ReplaceArrangement(SessionKey, &'a ArrangementDoc),
 }
 
 /// The command for `edit` against freshly read records, under a fresh
@@ -587,6 +611,9 @@ async fn build(conn: &mut Connection, edit: Edit<'_>) -> Result<Command, OrgErro
                 to_expected: to_record.revision,
             }
         }
+        Edit::ReplaceArrangement(session, document) => {
+            replace_command(conn, operation, session, document).await?
+        }
         Edit::MoveMany { resources, to } => {
             let all = fetch(conn, OrgFilter::All, FIRST_REQUEST_ID).await?;
             let to_record = session_in(&all, &to)?;
@@ -607,6 +634,26 @@ async fn build(conn: &mut Connection, edit: Edit<'_>) -> Result<Command, OrgErro
                 to_expected: to_record.revision,
             }
         }
+    })
+}
+
+/// `ARRANGEMENT_REPLACE` of `session`'s arrangement at its current revision.
+async fn replace_command(
+    conn: &mut Connection,
+    operation: OperationId,
+    session: SessionKey,
+    document: &ArrangementDoc,
+) -> Result<Command, OrgError> {
+    let record = session_in(&session_view(conn, session).await?, &session)?;
+    let key = record
+        .arrangement
+        .ok_or_else(|| OrgError::NotFound(format!("arrangement of {session}")))?;
+    let current = arrangement(conn, FIRST_REQUEST_ID, key).await?;
+    Ok(Command::ArrangementReplace {
+        operation,
+        arrangement: key,
+        expected: current.revision,
+        document: document.clone(),
     })
 }
 
@@ -669,8 +716,57 @@ pub async fn relaunch(conn: &mut Connection, resource: ResourceKey) -> Result<Co
     run_cas(conn, Edit::Relaunch(resource)).await
 }
 
-/// `phux restore [SESSION]`: relaunch every resource a server restart ended,
-/// in their sessions, one result per resource in page order.
+/// Create one resource record of `kind` in `session` (`RESOURCE_CREATE`).
+///
+/// It starts from `launch`, or, under [`LaunchMode::Deferred`], stays a
+/// dormant record holding `launch` until [`relaunch`] or [`restore`] starts
+/// it. The record is removed when its process exits.
+///
+/// # Errors
+///
+/// A refusal (an unknown session, a deferred create with no `launch`);
+/// transport failures.
+pub async fn create_resource(
+    conn: &mut Connection,
+    session: SessionKey,
+    kind: ResourceKind,
+    launch: Option<LaunchSpec>,
+    launch_mode: LaunchMode,
+) -> Result<Committed, OrgError> {
+    commit(
+        conn,
+        FIRST_REQUEST_ID,
+        Command::ResourceCreate {
+            operation: mint_operation(),
+            session,
+            kind,
+            launch: launch.map(Box::new),
+            name: None,
+            on_exit: ExitPolicy::Remove,
+            launch_mode,
+        },
+    )
+    .await
+}
+
+/// Replace `session`'s arrangement with `document` (key space), against
+/// its current revision.
+///
+/// # Errors
+///
+/// [`OrgError::NotFound`] when the session has no arrangement; a refusal
+/// for a document naming a non-member; transport failures.
+pub async fn replace_session_arrangement(
+    conn: &mut Connection,
+    session: SessionKey,
+    document: &ArrangementDoc,
+) -> Result<Committed, OrgError> {
+    run_cas(conn, Edit::ReplaceArrangement(session, document)).await
+}
+
+/// `phux restore [SESSION]`: relaunch every restorable resource
+/// ([`OrgInventory::restorable`]), in their sessions, one result per
+/// resource in page order.
 ///
 /// # Errors
 ///
@@ -682,7 +778,7 @@ pub async fn restore(
     let filter = session.map_or(OrgFilter::All, OrgFilter::Session);
     let view = fetch(conn, filter, FIRST_REQUEST_ID).await?;
     let targets: Vec<ResourceKey> = view
-        .ended_by_restart(session.as_ref())
+        .restorable(session.as_ref())
         .into_iter()
         .map(|record| record.key)
         .collect();
@@ -692,6 +788,31 @@ pub async fn restore(
         results.push((key, result));
     }
     Ok(results)
+}
+
+/// [`restore`] for the session named `name`, over a fresh connection to
+/// `socket_path`.
+///
+/// # Errors
+///
+/// [`OrgError::Attach`] when the server cannot be reached,
+/// [`OrgError::NotFound`] when no session has that name, or a failure to
+/// read the records; each relaunch reports its own result.
+pub async fn restore_session_on(
+    socket_path: &std::path::Path,
+    name: &str,
+) -> Result<Vec<(ResourceKey, Result<Committed, OrgError>)>, OrgError> {
+    let mut conn = Connection::connect(socket_path)
+        .await
+        .map_err(OrgError::Attach)?;
+    let session = fetch(&mut conn, OrgFilter::All, FIRST_REQUEST_ID)
+        .await?
+        .session_named(name)
+        .map(|record| record.key)
+        .ok_or_else(|| OrgError::NotFound(name.to_owned()))?;
+    let results = restore(&mut conn, Some(session)).await;
+    drop(conn);
+    results
 }
 
 /// `phux mv`: move one resource's membership into session `to`. The process
@@ -963,6 +1084,51 @@ mod tests {
             })
             .count();
         assert_eq!(removes, 3, "two conflicts, then the commit");
+    }
+
+    #[tokio::test]
+    async fn a_deferred_create_is_dormant_until_restore_starts_it() {
+        let mut fixture = OrgFixture::new();
+        let work = fixture.session("work", SessionLifetime::Persistent);
+        let (mut conn, server, _dir) = connect(org_spec(fixture)).await;
+        let committed = create_resource(
+            &mut conn,
+            work,
+            ResourceKind::Terminal,
+            Some(LaunchSpec::new(vec!["sh".to_owned()])),
+            LaunchMode::Deferred,
+        )
+        .await
+        .unwrap();
+        let key = committed.resource.expect("a record was created");
+        assert!(committed.target.is_none(), "nothing launched");
+        let view = fetch(&mut conn, OrgFilter::All, 1).await.unwrap();
+        assert!(view.resource(&key).unwrap().activation.is_none());
+        let restorable: Vec<ResourceKey> = view
+            .restorable(Some(&work))
+            .into_iter()
+            .map(|record| record.key)
+            .collect();
+        assert_eq!(restorable, vec![key]);
+        let restored = restore(&mut conn, Some(work)).await.unwrap();
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].0, key);
+        assert!(restored[0].1.is_ok());
+        drop(conn);
+        let seen = server.await.unwrap();
+        assert!(
+            seen.iter().any(|f| matches!(
+                f,
+                phux_protocol::wire::frame::FrameKind::Command {
+                    command: Command::ResourceCreate {
+                        launch_mode: LaunchMode::Deferred,
+                        ..
+                    },
+                    ..
+                }
+            )),
+            "{seen:?}"
+        );
     }
 
     #[tokio::test]

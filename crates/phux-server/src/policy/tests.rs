@@ -566,6 +566,7 @@ fn organization_samples(world: &World, t: &WireResourceId) -> Vec<FrameKind> {
             launch: None,
             name: None,
             on_exit: ExitPolicy::Remove,
+            launch_mode: phux_protocol::wire::frame::LaunchMode::Immediate,
         }),
         command(Command::ResourceMove {
             operation: op,

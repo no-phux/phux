@@ -3,9 +3,10 @@
 //!
 //! An archive is a JSON document of sessions, windows, panes, split trees,
 //! and resumable agent sessions. Importing one never starts a process
-//! ([`import_archive`]): it recreates each missing session empty and
-//! persistent, with its host, project, and directory. Starting the archived
-//! panes in those sessions is [`relaunch_imported`], a separate step that
+//! ([`import_archive`]): it recreates each missing session persistent, with
+//! its host, project, and directory, and each archived local pane as a
+//! dormant resource record placed in the session's arrangement. `phux
+//! restore` starts them, as does [`relaunch_imported`], the separate step
 //! `phux project open` runs right after the import.
 
 use std::collections::{HashMap, HashSet};
@@ -17,9 +18,10 @@ use std::process::ExitCode;
 use phux_client::attach::connection::Connection;
 use phux_client::layout::{ArrangementDoc, Group, LayoutNode, LayoutState, SplitDir};
 use phux_client::layout_ops::LayoutOps;
-use phux_protocol::ids::ResourceId;
+use phux_protocol::ids::{ResourceId, ResourceKey, ResourceKind, SessionKey};
 use phux_protocol::wire::frame::{
-    Command, ExitPolicy, LaunchSpec, OrgFilter, SessionLifetime, SpawnResult,
+    ArrangementDoc as WireDoc, ArrangementGroup, ArrangementNode, Command, EntryRef, EntryTarget,
+    LaunchMode, LaunchSpec, OrgFilter, SessionLifetime, SpawnResult, SplitDirection,
 };
 use phux_server::runtime::default_socket_path;
 
@@ -373,6 +375,11 @@ pub(crate) struct Imported {
     sessions: Vec<model::CreateRequest>,
     /// Whether the sessions exist yet: `false` only under [`Legacy::Defer`].
     created: bool,
+    /// Sessions whose archived panes exist as dormant records, by name.
+    /// [`relaunch_imported`] relaunches those instead of spawning panes.
+    dormant: HashSet<String>,
+    /// Panes imported as a plain shell instead of their archived agent.
+    warnings: Vec<model::RestoreWarning>,
     /// Archived sessions a session of the same name already covers.
     skipped_existing: Vec<String>,
     /// Sessions the import could not create.
@@ -392,16 +399,17 @@ impl Imported {
                 .collect(),
             skipped_existing: self.skipped_existing.clone(),
             failed: self.failed.clone(),
-            warnings: Vec::new(),
+            warnings: self.warnings.clone(),
         }
     }
 }
 
 /// Recreate the sessions of an already-validated `archive` that are missing
 /// on the server at `socket_path`, without starting any process (R16): each
-/// becomes an empty, persistent session carrying the archived host, project,
-/// and directory. A session that cannot be created is reported in
-/// [`Imported`] rather than aborting the rest.
+/// becomes a persistent session carrying the archived host, project, and
+/// directory, with its local panes as dormant records in its arrangement
+/// ([`import_dormant_panes`]). A session that cannot be created is reported
+/// in [`Imported`] rather than aborting the rest.
 ///
 /// # Errors
 ///
@@ -430,6 +438,8 @@ pub(crate) async fn import_archive(
             Legacy::Defer => Ok(Imported {
                 sessions: plan.creates,
                 created: false,
+                dormant: HashSet::new(),
+                warnings: Vec::new(),
                 skipped_existing: plan.skipped_existing,
                 failed: Vec::new(),
             }),
@@ -437,13 +447,26 @@ pub(crate) async fn import_archive(
     }
     let mut sessions = Vec::with_capacity(plan.creates.len());
     let mut failed = Vec::new();
+    let mut dormant = HashSet::new();
+    let mut warnings = Vec::new();
     for create in plan.creates {
         let imported = match check_agent_ownership(&create) {
             Ok(()) => create_imported_session(socket_path, &create).await,
             Err(reason) => Err(reason),
         };
         match imported {
-            Ok(()) => sessions.push(create),
+            Ok(outcome) => {
+                warnings.extend(outcome.warnings.into_iter().map(|message| {
+                    model::RestoreWarning {
+                        session: create.name.clone(),
+                        message,
+                    }
+                }));
+                if outcome.dormant {
+                    dormant.insert(create.name.clone());
+                }
+                sessions.push(create);
+            }
             Err(reason) => failed.push(model::FailedRestore {
                 name: create.name,
                 reason,
@@ -453,16 +476,20 @@ pub(crate) async fn import_archive(
     Ok(Imported {
         sessions,
         created: true,
+        dormant,
+        warnings,
         skipped_existing: plan.skipped_existing,
         failed,
     })
 }
 
 /// Start the archived panes of the sessions [`import_archive`] recreated:
-/// each session's seed pane (resuming its native agent session when it can),
-/// then the rest of its split tree. A session whose relaunch fails has every
-/// pane started for it closed again and stays imported, empty; it is
-/// reported in the summary rather than aborting the rest.
+/// a session imported with dormant records relaunches them in place, as
+/// `phux restore SESSION` does; any other session starts its seed pane
+/// (resuming its native agent session when it can), then the rest of its
+/// split tree. A session whose spawned relaunch fails has every pane started
+/// for it closed again and stays imported, empty; it is reported in the
+/// summary rather than aborting the rest.
 ///
 /// # Errors
 ///
@@ -486,10 +513,15 @@ pub(crate) async fn relaunch_imported(
     }
     let mut restored = Vec::with_capacity(imported.sessions.len());
     let mut failed = imported.failed;
-    let mut warnings = Vec::new();
+    let mut warnings = imported.warnings;
     for create in imported.sessions {
         let name = create.name.clone();
-        match relaunch_one_session(socket_path, create, imported.created).await {
+        let outcome = if imported.dormant.contains(&name) {
+            relaunch_dormant_session(socket_path, &name).await
+        } else {
+            relaunch_one_session(socket_path, create, imported.created).await
+        };
+        match outcome {
             Ok(outcome) => {
                 warnings.extend(outcome.warnings.into_iter().map(|message| {
                     model::RestoreWarning {
@@ -543,17 +575,23 @@ fn check_agent_ownership(create: &model::CreateRequest) -> Result<(), String> {
     Ok(())
 }
 
+/// What [`create_imported_session`] made besides the session.
+struct ImportOutcome {
+    /// Whether its panes exist as dormant records.
+    dormant: bool,
+    /// Panes imported as a plain shell instead of their archived agent.
+    warnings: Vec<String>,
+}
+
 /// Import one archived session as records: the session, persistent, tagged
-/// with its archived host, project, and directory. Nothing starts.
-///
-/// TODO(R23): also create each archived pane as a dormant resource record
-/// (`RESOURCE_CREATE` with a deferred launch), so `phux restore` and
-/// `phux relaunch` start them later. Until the deferred launch exists the
-/// session is imported empty and the panes live only in the archive.
+/// with its archived host, project, and directory, then its local panes as
+/// dormant records ([`import_dormant_panes`]). Nothing starts. A session
+/// saved on another host gets no dormant panes: [`relaunch_imported`]
+/// places its panes on that host.
 async fn create_imported_session(
     socket_path: &Path,
     create: &model::CreateRequest,
-) -> Result<(), String> {
+) -> Result<ImportOutcome, String> {
     let mut conn = Connection::connect(socket_path)
         .await
         .map_err(|err| format!("could not reach the server: {err}"))?;
@@ -561,7 +599,6 @@ async fn create_imported_session(
     let outcome = phux_client::session::create_empty_session(&mut conn, &create.name, &mut notices)
         .await
         .map_err(|err| format!("could not create the session: {err}"))?;
-    drop(conn);
     for notice in notices {
         eprintln!("phux: warning: partial results — {notice}");
     }
@@ -575,7 +612,262 @@ async fn create_imported_session(
         }
         other => return Err(format!("the server did not create it: {other:?}")),
     }
-    tag_session(socket_path, create).await
+    tag_session(socket_path, create).await?;
+    if create.host.as_deref().is_some_and(|host| !host.is_empty()) {
+        return Ok(ImportOutcome {
+            dormant: false,
+            warnings: Vec::new(),
+        });
+    }
+    let warnings = import_dormant_panes(&mut conn, create).await;
+    drop(conn);
+    let warnings = warnings?;
+    Ok(ImportOutcome {
+        dormant: true,
+        warnings,
+    })
+}
+
+/// What one archived pane runs: its command, directory, environment, and
+/// native agent session. The seed pane's come from the session's plan.
+struct PaneSource<'a> {
+    command: Option<&'a Vec<String>>,
+    cwd: Option<&'a str>,
+    env: &'a std::collections::BTreeMap<String, String>,
+    agent_session: Option<&'a model::WorkspaceAgentSession>,
+    role: &'static str,
+}
+
+impl<'a> PaneSource<'a> {
+    fn seed(create: &'a model::CreateRequest) -> Self {
+        Self {
+            command: create.command.as_ref(),
+            cwd: create.cwd.as_deref(),
+            env: &create.env,
+            agent_session: create.agent_session.as_ref(),
+            role: "seed pane",
+        }
+    }
+
+    fn pane(pane: &'a model::WorkspacePane) -> Self {
+        Self {
+            command: pane.command.as_ref(),
+            cwd: pane.cwd.as_deref(),
+            env: &pane.env,
+            agent_session: pane.agent_session.as_ref(),
+            role: "restored pane",
+        }
+    }
+}
+
+/// The launch spec one archived pane is stored with: its resolved native
+/// agent session (argv, directory, environment, and the provenance the
+/// server installs at each launch) when it has one, else its own command.
+fn pane_launch(source: &PaneSource<'_>, warnings: &mut Vec<String>) -> Result<LaunchSpec, String> {
+    let prepared = prepare_pane_agent(source.agent_session, source.cwd, source.role, warnings)?;
+    let Some(session) = prepared else {
+        return Ok(LaunchSpec::new(source.command.cloned().unwrap_or_default())
+            .with_cwd(source.cwd.map(str::to_owned))
+            .with_env(source.env.clone().into_iter().collect()));
+    };
+    let restore = session
+        .record
+        .encode()
+        .map_err(|err| format!("could not encode agent session provenance: {err}"))?;
+    Ok(LaunchSpec::new(session.argv.clone())
+        .with_cwd(Some(session.cwd.display().to_string()))
+        .with_env(session.env.clone().into_iter().collect())
+        .with_restore(Some(restore)))
+}
+
+/// Create every archived pane of the imported session `create` as a dormant
+/// resource record and place them in its arrangement as the archive laid
+/// them out. A failure removes the records made and deletes the session, so
+/// a failed import leaves nothing behind. Returns the agent fallback
+/// warnings.
+async fn import_dormant_panes(
+    conn: &mut Connection,
+    create: &model::CreateRequest,
+) -> Result<Vec<String>, String> {
+    let session = phux_client::org::fetch(conn, OrgFilter::All, 1)
+        .await
+        .map_err(|err| format!("could not read the session records: {err}"))?
+        .session_named(&create.name)
+        .map(|record| record.key)
+        .ok_or_else(|| format!("session {:?} is gone", create.name))?;
+    let mut warnings = Vec::new();
+    let mut made = Vec::new();
+    let result = match create_dormant_records(conn, session, create, &mut made, &mut warnings).await
+    {
+        Ok(keys) if keys.iter().all(Vec::is_empty) => Ok(()),
+        Ok(keys) => {
+            let document = imported_arrangement(&create.windows, &keys);
+            phux_client::org::replace_session_arrangement(conn, session, &document)
+                .await
+                .map(drop)
+                .map_err(|err| format!("could not arrange the imported panes: {err}"))
+        }
+        Err(err) => Err(err),
+    };
+    if let Err(err) = result {
+        for key in made {
+            let _ = phux_client::org::remove_resource(conn, key).await;
+        }
+        let _ = phux_client::org::delete_session(conn, session).await;
+        return Err(err);
+    }
+    Ok(warnings)
+}
+
+/// Create the dormant records, one row of keys per archived window. A
+/// session with no windows but a seed command or agent gets one seed pane.
+async fn create_dormant_records(
+    conn: &mut Connection,
+    session: SessionKey,
+    create: &model::CreateRequest,
+    made: &mut Vec<ResourceKey>,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<Vec<ResourceKey>>, String> {
+    let mut rows: Vec<Vec<PaneSource<'_>>> = create
+        .windows
+        .iter()
+        .enumerate()
+        .map(|(window_index, window)| {
+            window
+                .panes
+                .iter()
+                .enumerate()
+                .map(|(pane_index, pane)| {
+                    if create.seed_position == Some((window_index, pane_index)) {
+                        PaneSource::seed(create)
+                    } else {
+                        PaneSource::pane(pane)
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    if create.windows.is_empty() && (create.command.is_some() || create.agent_session.is_some()) {
+        rows.push(vec![PaneSource::seed(create)]);
+    }
+    let mut keys = Vec::with_capacity(rows.len());
+    for row in rows {
+        let mut row_keys = Vec::with_capacity(row.len());
+        for source in row {
+            let launch = pane_launch(&source, warnings)?;
+            let committed = phux_client::org::create_resource(
+                conn,
+                session,
+                ResourceKind::Terminal,
+                Some(launch),
+                LaunchMode::Deferred,
+            )
+            .await
+            .map_err(|err| format!("could not import an archived pane: {err}"))?;
+            let key = committed
+                .resource
+                .ok_or_else(|| "the server created no pane record".to_owned())?;
+            made.push(key);
+            row_keys.push(key);
+        }
+        keys.push(row_keys);
+    }
+    Ok(keys)
+}
+
+/// The imported session's arrangement: one group per archived window with
+/// panes, its archived split tree mapped onto that window's `keys` (a linear
+/// chain without a captured layout, or for a corrupt one).
+fn imported_arrangement(windows: &[WorkspaceWindow], keys: &[Vec<ResourceKey>]) -> WireDoc {
+    let groups = keys
+        .iter()
+        .enumerate()
+        .filter_map(|(index, row)| {
+            let window = windows.get(index);
+            let tree = window
+                .and_then(|window| window.layout.as_ref())
+                .and_then(|node| wire_node_from_archive(node, row))
+                .or_else(|| wire_chain(row))?;
+            Some(ArrangementGroup {
+                id: phux_client::layout::fresh_id(),
+                name: window
+                    .map(|window| window.name.clone())
+                    .filter(|name| !name.is_empty()),
+                tree,
+            })
+        })
+        .collect();
+    WireDoc { groups }
+}
+
+fn wire_leaf(key: ResourceKey) -> ArrangementNode {
+    ArrangementNode::Leaf(EntryRef {
+        entry: phux_client::layout::fresh_id(),
+        target: EntryTarget::Member(key),
+    })
+}
+
+/// [`layout_node_from_archive`] in key space.
+fn wire_node_from_archive(
+    node: &model::WorkspaceLayoutNode,
+    keys: &[ResourceKey],
+) -> Option<ArrangementNode> {
+    match node {
+        model::WorkspaceLayoutNode::Pane { pane } => keys.get(*pane).copied().map(wire_leaf),
+        model::WorkspaceLayoutNode::Split {
+            dir,
+            ratio,
+            left,
+            right,
+        } => Some(ArrangementNode::Split {
+            dir: match dir {
+                model::WorkspaceSplitDir::Horizontal => SplitDirection::Horizontal,
+                model::WorkspaceSplitDir::Vertical => SplitDirection::Vertical,
+            },
+            ratio: ratio.clamp(0.05, 0.95),
+            first: Box::new(wire_node_from_archive(left, keys)?),
+            second: Box::new(wire_node_from_archive(right, keys)?),
+        }),
+    }
+}
+
+/// [`linear_chain`] in key space; `None` for no keys.
+fn wire_chain(keys: &[ResourceKey]) -> Option<ArrangementNode> {
+    let mut rest = keys.iter().rev();
+    let mut tree = wire_leaf(*rest.next()?);
+    for key in rest {
+        tree = ArrangementNode::Split {
+            dir: SplitDirection::Horizontal,
+            ratio: 0.5,
+            first: Box::new(wire_leaf(*key)),
+            second: Box::new(tree),
+        };
+    }
+    Some(tree)
+}
+
+/// Relaunch the dormant panes of the imported session `name` in place.
+async fn relaunch_dormant_session(
+    socket_path: &Path,
+    name: &str,
+) -> Result<SessionOutcome, String> {
+    let results = phux_client::org::restore_session_on(socket_path, name)
+        .await
+        .map_err(|err| format!("could not relaunch its panes: {err}"))?;
+    let refused: Vec<String> = results
+        .into_iter()
+        .filter_map(|(key, result)| result.err().map(|err| format!("{key}: {err}")))
+        .collect();
+    if refused.is_empty() {
+        Ok(SessionOutcome {
+            warnings: Vec::new(),
+        })
+    } else {
+        Err(format!(
+            "could not relaunch its panes: {}",
+            refused.join("; ")
+        ))
+    }
 }
 
 /// Write a recreated session's archived host, project, and directory.
@@ -619,17 +911,12 @@ async fn launch_into_session(
         .session_named(name)
         .map(|record| record.key)
         .ok_or_else(|| format!("session {name:?} is gone"))?;
-    let committed = phux_client::org::commit(
+    let committed = phux_client::org::create_resource(
         &mut conn,
-        2,
-        Command::ResourceCreate {
-            operation: phux_client::org::mint_operation(),
-            session,
-            kind: phux_protocol::ids::ResourceKind::Terminal,
-            launch: Some(Box::new(launch)),
-            name: None,
-            on_exit: ExitPolicy::Remove,
-        },
+        session,
+        ResourceKind::Terminal,
+        Some(launch),
+        LaunchMode::Immediate,
     )
     .await
     .map_err(|err| format!("could not start the seed pane: {err}"))?;

@@ -37,7 +37,7 @@ pub struct NewResource {
     #[serde(default)]
     pub name: Option<String>,
     /// How it starts. `Some` commits a launch intent in the same
-    /// transaction; a Terminal requires one.
+    /// transaction unless `launch_mode` defers it; a Terminal requires one.
     #[serde(default)]
     pub launch: Option<LaunchSpec>,
     /// What an observed exit does to the record.
@@ -45,6 +45,21 @@ pub struct NewResource {
     /// The resource it is bound to (an agent conversation's Terminal).
     #[serde(default)]
     pub parent: Option<ResourceKey>,
+    /// Whether `launch` starts now or waits for [`Op::ResourceRelaunch`].
+    #[serde(default)]
+    pub launch_mode: LaunchMode,
+}
+
+/// Whether a created resource starts executing in its creating transaction.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LaunchMode {
+    /// Commit the launch intent: the first activation starts.
+    #[default]
+    Immediate,
+    /// Store the launch spec on a dormant record with no activation;
+    /// [`Op::ResourceRelaunch`] starts it.
+    Deferred,
 }
 
 /// A source session and the revision the caller observed, for

@@ -6,9 +6,9 @@
 
 use phux_core::{
     ActivationId, Actor, ArrangementOwner, Attrs, Command, Effect, EntryRef, Event, ExecState,
-    ExitOutcome, Group, LayoutNode, NewResource, Op, Outcome, PrincipalId, ProcIdentity, Refusal,
-    Reply, ResourceKey, ResourceKind, Revision, SessionKey, SessionLifetime, SourcePin, SplitDir,
-    TerminateMode, Verb,
+    ExitOutcome, Group, LaunchMode, LayoutNode, NewResource, Op, Outcome, PrincipalId,
+    ProcIdentity, Refusal, Reply, ResourceKey, ResourceKind, Revision, SessionKey, SessionLifetime,
+    SourcePin, SplitDir, TerminateMode, Verb,
 };
 
 use crate::support::{Harness, created, job, shell};
@@ -290,6 +290,68 @@ fn resource_create_defaults_to_inbox_and_validates_kind() {
         }),
         Err(Refusal::InvalidArgument {
             field: "launch",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn a_deferred_create_is_dormant_until_relaunched() {
+    let mut h = Harness::new();
+    let s = h.create_session("work", SessionLifetime::Persistent);
+    let applied = h
+        .run(Op::ResourceCreate {
+            session: Some(s),
+            resource: NewResource {
+                launch_mode: LaunchMode::Deferred,
+                ..job()
+            },
+        })
+        .expect("deferred create");
+    assert!(applied.effects.is_empty(), "nothing launches");
+    assert!(matches!(applied.reply, Reply::Ok { .. }));
+    assert!(
+        !applied
+            .transition
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::ActivationChanged { .. })),
+        "no activation event: {:?}",
+        applied.transition.events
+    );
+    let r = created(&applied).1.expect("resource");
+    let record = h.resource(r);
+    assert!(record.activation.is_none(), "dormant: no activation");
+    assert!(record.launch.is_some(), "the launch spec is stored");
+    assert!(h.session(s).members.contains(&r));
+
+    let relaunched = h
+        .run(Op::ResourceRelaunch {
+            resource: r,
+            expected: record.revision,
+        })
+        .expect("relaunch a dormant record");
+    assert!(matches!(
+        relaunched.effects.as_slice(),
+        [Effect::Launch { activation, .. }] if *activation == A1
+    ));
+    let a = h.resource(r).activation.expect("activation");
+    assert_eq!((a.id, a.state), (A1, ExecState::Starting));
+
+    let without_spec = NewResource {
+        kind: ResourceKind::AgentSession,
+        launch: None,
+        parent: Some(r),
+        launch_mode: LaunchMode::Deferred,
+        ..shell()
+    };
+    assert!(matches!(
+        h.run(Op::ResourceCreate {
+            session: Some(s),
+            resource: without_spec,
+        }),
+        Err(Refusal::InvalidArgument {
+            field: "launch_mode",
             ..
         })
     ));

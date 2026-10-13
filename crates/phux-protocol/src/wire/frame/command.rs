@@ -10,8 +10,8 @@ use crate::wire::info::SessionSnapshot;
 
 use super::org::{
     ArrangementDoc, ArrangementOwner, ArrangementValue, Committed, ExecState, ExitPolicy,
-    LaunchSpec, LiveTarget, MoveItem, OrgFilter, OrganizationPage, Outcome, RecordRevision,
-    Refusal, SessionLifetime, TerminateMode,
+    LaunchMode, LaunchSpec, LiveTarget, MoveItem, OrgFilter, OrganizationPage, Outcome,
+    RecordRevision, Refusal, SessionLifetime, TerminateMode,
 };
 use super::{ActorRef, ErrorCode};
 
@@ -515,6 +515,9 @@ pub enum Command {
         name: Option<String>,
         /// What happens to the record when execution ends.
         on_exit: ExitPolicy,
+        /// Whether the first activation starts now or the record stays
+        /// dormant until relaunched.
+        launch_mode: LaunchMode,
     },
     /// Move one resource between sessions; membership only, no restart.
     ResourceMove {

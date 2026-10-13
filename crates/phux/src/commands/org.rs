@@ -320,25 +320,11 @@ fn finish(
     }
 }
 
-/// What `phux restore` relaunches, in record order: every resource a server
-/// restart ended ([`OrgInventory::ended_by_restart`]) and every Terminal
-/// that was never started (an imported archive's panes), optionally only in
-/// `session`.
+/// What `phux restore` relaunches ([`OrgInventory::restorable`]).
 fn restore_targets(inventory: &OrgInventory, session: Option<&SessionKey>) -> Vec<ResourceKey> {
-    let ended: Vec<ResourceKey> = inventory
-        .ended_by_restart(session)
-        .into_iter()
-        .map(|record| record.key)
-        .collect();
     inventory
-        .resources
-        .iter()
-        .filter(|record| {
-            ended.contains(&record.key)
-                || (record.activation.is_none()
-                    && record.kind == phux_protocol::ids::ResourceKind::Terminal
-                    && session.is_none_or(|key| record.session == *key))
-        })
+        .restorable(session)
+        .into_iter()
         .map(|record| record.key)
         .collect()
 }

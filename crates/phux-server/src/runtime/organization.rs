@@ -173,6 +173,7 @@ fn translate(
                     launch: ow::core_launch(ResourceKind::Terminal, &launch),
                     on_exit: phux_core::ExitPolicy::Remove,
                     parent: None,
+                    launch_mode: phux_core::LaunchMode::Immediate,
                 }),
             }),
         ),
@@ -220,6 +221,7 @@ fn translate(
             launch,
             name,
             on_exit,
+            launch_mode,
         } => {
             let kind = crate::resource::core_kind(kind);
             let op = kind
@@ -243,6 +245,7 @@ fn translate(
                             }),
                         on_exit: ow::core_exit_policy(on_exit),
                         parent: None,
+                        launch_mode: ow::core_launch_mode(launch_mode),
                     },
                 });
             (ow::core_operation(&operation), op)
@@ -551,6 +554,10 @@ fn launch(
             .unwrap_or_default();
         let with_pty = s.attach_create_seeds_pty();
         let cmd = with_pty.then(|| build_command(s, spec, &session));
+        if let phux_core::LaunchSpec::Terminal(t) = spec {
+            let wire = s.intern_terminal_wire(id);
+            super::commands::set_agent_session(s, wire, t.restore.clone());
+        }
         Some((id, with_pty, s.scrollback_limits(), cmd))
     }) else {
         return;
@@ -978,6 +985,69 @@ mod tests {
             let renamed = committed(handle(&state, CLIENT, rename, &root));
             assert_eq!(renamed.revision.get(), record.revision.get() + 1);
             assert!(state.with(|s| s.session_by_name("renamed").is_some()));
+        });
+    }
+
+    #[test]
+    fn a_deferred_create_stays_dormant_until_relaunched_with_its_provenance() {
+        use phux_protocol::wire::frame::{LaunchMode, RESOURCE_AGENT_SESSION_KEY, Scope};
+
+        run(async {
+            let state = SharedState::new();
+            let root = CancellationToken::new();
+            let (session, _) = state.with_mut(|s| s.seed_session("work"));
+            let session = state
+                .with(|s| ow::session_key(s.registry().session_key(session).unwrap()).unwrap());
+            let provenance = br#"{"plugin_id":"p","integration_id":"i","native_id":"n"}"#;
+            let create = Command::ResourceCreate {
+                operation: op(1),
+                session,
+                kind: phux_protocol::ids::ResourceKind::Terminal,
+                launch: Some(Box::new(
+                    LaunchSpec::new(vec!["sh".to_owned()]).with_restore(Some(provenance.to_vec())),
+                )),
+                name: None,
+                on_exit: phux_protocol::wire::frame::ExitPolicy::Remove,
+                launch_mode: LaunchMode::Deferred,
+            };
+            let receipt = committed(handle(&state, CLIENT, create, &root));
+            let resource = receipt.resource.expect("a record");
+            assert!(receipt.target.is_none(), "nothing launched");
+            let listing = page(&state, OrgFilter::Session(session));
+            let record = listing
+                .resources
+                .iter()
+                .find(|r| r.key == resource)
+                .expect("listed")
+                .clone();
+            assert!(record.activation.is_none(), "dormant: no activation");
+            assert!(record.live.is_none(), "dormant: no live handle");
+
+            let relaunch = Command::ResourceRelaunch {
+                operation: op(2),
+                resource,
+                expected: record.revision,
+            };
+            assert!(matches!(
+                handle(&state, CLIENT, relaunch, &root),
+                CommandResult::Accepted { .. }
+            ));
+            let wire = state.with_mut(|s| {
+                let key = phux_core::ResourceKey::from_bytes(*resource.as_bytes());
+                let id = s.registry().resource_id(&key).unwrap();
+                assert!(
+                    s.registry().record(id).unwrap().activation.is_some(),
+                    "the relaunch started an activation"
+                );
+                s.intern_terminal_wire(id)
+            });
+            assert_eq!(
+                state.with(|s| s
+                    .metadata()
+                    .get(&Scope::Resource(wire), RESOURCE_AGENT_SESSION_KEY)),
+                Some(provenance.to_vec()),
+                "the launch installs the stored agent-session provenance"
+            );
         });
     }
 

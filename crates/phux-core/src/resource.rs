@@ -59,6 +59,10 @@ pub struct TerminalLaunch {
     /// Extra environment, in order.
     #[serde(default)]
     pub env: Vec<(String, String)>,
+    /// Opaque agent-session provenance the server installs on the Terminal
+    /// at every activation, so a relaunch resumes the same conversation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore: Option<Vec<u8>>,
 }
 
 /// How an agent conversation binds to its harness.

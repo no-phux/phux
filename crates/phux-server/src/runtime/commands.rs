@@ -104,13 +104,16 @@ fn journal_pane_spawned(
     let _ = s.record_and_fanout(record);
 }
 
-/// Install agent-session provenance on a freshly registered pane.
-fn set_agent_session(
+/// Install agent-session provenance on a freshly registered pane. A value
+/// outside `1..=MAX_AGENT_SESSION_RECORD_BYTES` installs nothing.
+pub(super) fn set_agent_session(
     s: &mut crate::state::ServerState,
     wire: phux_protocol::ids::ResourceId,
     agent_session: Option<Vec<u8>>,
 ) {
-    if let Some(value) = agent_session {
+    if let Some(value) = agent_session.filter(|value| {
+        (1..=phux_protocol::wire::frame::MAX_AGENT_SESSION_RECORD_BYTES).contains(&value.len())
+    }) {
         s.metadata_set(
             &phux_protocol::wire::frame::Scope::Resource(wire),
             phux_protocol::wire::frame::RESOURCE_AGENT_SESSION_KEY,
@@ -275,6 +278,7 @@ pub(crate) fn launch_of(cmd: Option<&portable_pty::CommandBuilder>) -> phux_core
             .collect(),
         cwd: cmd.get_cwd().map(std::path::PathBuf::from),
         env: Vec::new(),
+        restore: None,
     }
 }
 
@@ -481,7 +485,10 @@ pub(crate) fn spawn_pane_with_pty_and_colors(
         let (_, terminal) = s
             .create_terminal(
                 crate::state::TerminalTarget::Session(session),
-                launch_of(Some(&cmd)),
+                phux_core::TerminalLaunch {
+                    restore: agent_session.clone(),
+                    ..launch_of(Some(&cmd))
+                },
                 on_exit,
                 &actor,
             )

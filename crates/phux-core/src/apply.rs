@@ -23,8 +23,8 @@ use crate::activation::{
 use crate::actor::{Actor, PrincipalId, Verb};
 use crate::arrangement::{Arrangement, ArrangementOwner, Group, validate_groups};
 use crate::command::{
-    Applied, Command, Created, Effect, MAX_MOVE_BATCH, NewResource, Op, Refusal, Reply, SourcePin,
-    TerminateMode,
+    Applied, Command, Created, Effect, LaunchMode, MAX_MOVE_BATCH, NewResource, Op, Refusal, Reply,
+    SourcePin, TerminateMode,
 };
 use crate::keys::{
     ActivationId, ArrangementKey, FreshKeys, OperationId, ResourceKey, Revision, SessionKey,
@@ -488,8 +488,9 @@ impl<'a> Tx<'a> {
         self.drop_member(r.session, key);
     }
 
-    /// Create a resource in `session` and, when it has a launch spec, its
-    /// first activation and launch effect.
+    /// Create a resource in `session` and, when it has a launch spec that
+    /// is not deferred, its first activation and launch effect. A deferred
+    /// one stays dormant: no activation until [`Op::ResourceRelaunch`].
     fn create_resource(
         &mut self,
         fresh: &mut dyn FreshKeys,
@@ -498,9 +499,11 @@ impl<'a> Tx<'a> {
     ) -> Result<ResourceKey, Refusal> {
         self.validate_new_resource(spec)?;
         let key = ResourceKey::from_bytes(self.fresh_key(fresh)?);
-        let activation = spec
-            .launch
-            .as_ref()
+        let launch = match spec.launch_mode {
+            LaunchMode::Immediate => spec.launch.as_ref(),
+            LaunchMode::Deferred => None,
+        };
+        let activation = launch
             .map(|_| Activation::starting(ActivationId::FIRST, self.org.instance(), self.now));
         let record = Resource {
             key,
@@ -527,7 +530,7 @@ impl<'a> Tx<'a> {
             session,
             kind: spec.kind,
         });
-        if let Some(launch) = &spec.launch {
+        if let Some(launch) = launch {
             self.events.push(Event::ActivationChanged {
                 resource: key,
                 activation: ActivationId::FIRST,
@@ -556,6 +559,12 @@ impl<'a> Tx<'a> {
             }
             None if spec.kind == ResourceKind::Terminal => {
                 return Err(Refusal::invalid("launch", "a terminal needs a launch spec"));
+            }
+            None if spec.launch_mode == LaunchMode::Deferred => {
+                return Err(Refusal::invalid(
+                    "launch_mode",
+                    "a deferred launch needs a launch spec",
+                ));
             }
             _ => {}
         }

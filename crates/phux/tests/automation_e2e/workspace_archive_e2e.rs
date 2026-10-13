@@ -186,7 +186,7 @@ fn archive_export_captures_a_real_split_tree_and_restore_replays_it() {
             .any(|name| name == "split-bench")
     );
     // An import starts nothing (R16); `phux restore` starts the imported
-    // panes. TODO(R23): passes once an import creates dormant records.
+    // dormant panes.
     let (code, _, stderr) = run(&["restore", "split-bench", "--socket", &dest_socket]);
     assert_eq!(code, 0, "restore split-bench failed: {stderr}");
 
@@ -463,7 +463,7 @@ fn archive_export_reconciles_a_dead_layout_leaf_and_a_headless_spawn() {
         "restore must not report a failure: {summary}"
     );
     // An import starts nothing (R16); `phux restore` starts the imported
-    // panes. TODO(R23): passes once an import creates dormant records.
+    // dormant panes.
     let (code, _, stderr) = run(&["restore", "reconcile-repro", "--socket", &dest_socket]);
     assert_eq!(code, 0, "restore reconcile-repro failed: {stderr}");
 
@@ -553,7 +553,7 @@ fn import_then_restore_starts_archived_command_process() {
             .any(|name| name == "restored-proc")
     );
     // An import starts nothing (R16); `phux restore` starts the imported
-    // panes. TODO(R23): passes once an import creates dormant records.
+    // dormant panes.
     let (code, _, stderr) = run(&["restore", "restored-proc", "--socket", &socket_arg]);
     assert_eq!(code, 0, "restore restored-proc failed: {stderr}");
 
@@ -789,7 +789,7 @@ fn native_agent_session_is_replayed_after_pane_restart_and_rejects_stale_ownersh
             .any(|name| name == "agent-restart")
     );
     // An import starts nothing (R16); `phux restore` starts the imported
-    // panes. TODO(R23): passes once an import creates dormant records.
+    // dormant panes.
     let (code, _, stderr) = run_with_xdg(
         &["restore", "agent-restart", "--socket", &dest_socket],
         &xdg,
@@ -961,7 +961,7 @@ fn shell_started_agent_session_is_archived_and_resumed() {
     );
     assert_eq!(code, 0, "native restore failed: {stderr}");
     // An import starts nothing (R16); `phux restore` starts the imported
-    // panes. TODO(R23): passes once an import creates dormant records.
+    // dormant panes.
     let (code, _, stderr) =
         run_with_xdg(&["restore", "shell-agent", "--socket", &dest_socket], &xdg);
     assert_eq!(code, 0, "restore shell-agent failed: {stderr}");

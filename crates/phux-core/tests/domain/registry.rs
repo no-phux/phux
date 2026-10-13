@@ -19,6 +19,7 @@ fn agent_of(parent: phux_core::ResourceKey) -> NewResource {
         })),
         on_exit: ExitPolicy::Retain,
         parent: Some(parent),
+        launch_mode: phux_core::LaunchMode::Immediate,
     }
 }
 
@@ -46,6 +47,7 @@ fn creation_issues_handles_and_seeds_facets_from_the_launch_spec() {
                 argv: vec!["vim".to_owned()],
                 cwd: Some("/repo".into()),
                 env: Vec::new(),
+                restore: None,
             })),
             ..shell()
         },

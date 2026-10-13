@@ -109,7 +109,8 @@ fn resource_key() -> crate::ids::ResourceKey {
 fn org_command_samples() -> Vec<(Command, &'static Rule)> {
     use crate::ids::{ActivationId, ArrangementKey, Revision, ServerInstance};
     use crate::wire::frame::{
-        ArrangementDoc, ExitPolicy, LiveTarget, MoveItem, OrgFilter, SessionLifetime, TerminateMode,
+        ArrangementDoc, ExitPolicy, LaunchMode, LiveTarget, MoveItem, OrgFilter, SessionLifetime,
+        TerminateMode,
     };
     let rev = Revision::new(1);
     let arrangement = ArrangementKey::new([6; 16]).unwrap();
@@ -166,6 +167,7 @@ fn org_command_samples() -> Vec<(Command, &'static Rule)> {
                 launch: None,
                 name: None,
                 on_exit: ExitPolicy::Remove,
+                launch_mode: LaunchMode::Immediate,
             },
             &C_RESOURCE_CREATE,
         ),

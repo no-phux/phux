@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-30
+last-reviewed: 2026-10-13
 ---
 
 # The phux agent CLI
@@ -485,7 +485,8 @@ base32 digits of a key). A refusal is the error object with the
 organization refusal as its `code` (`not_empty`, `conflict`,
 `execution_uncertain`, ...), exit 2. `restore --json` is
 `{ schema_version: 1, restored: [{ key, result, terminal_id | code, message }] }`,
-one entry per pane a server restart ended; it exits 2 when any was refused.
+one entry per pane a server restart ended or that never started (an
+imported archive's dormant pane); it exits 2 when any was refused.
 
 ### `kill`
 
@@ -957,9 +958,12 @@ A script wanting its own arrangement uses its own key prefix
 (`app.foo.layout/v1`, [metadata protocol](../spec/L3.md) §3.5) and names it
 with `--projection <prefix>.layout/v1/<session-id>` on the spatial and
 placement verbs; a cross-session `move-pane` passes it twice or not at all.
-Durability is `phux workspace save` / `restore`, which read and replay each
+Durability is `phux archive export` / `import`: export writes each
 session's split tree from that envelope
-([ADR-0129](../adr/0129-projections-are-named-by-key.md)).
+([ADR-0129](../adr/0129-projections-are-named-by-key.md)), and import
+recreates the missing sessions with their panes as dormant records in the
+session's arrangement, starting nothing. `phux restore SESSION` then starts
+them (`--json` is the `restore` document in §7).
 
 ## 10. Fallback hierarchy
 

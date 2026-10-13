@@ -116,6 +116,15 @@ pub const fn core_exit_policy(p: frame::ExitPolicy) -> phux_core::ExitPolicy {
     }
 }
 
+/// A wire launch mode in core.
+#[must_use]
+pub const fn core_launch_mode(m: frame::LaunchMode) -> phux_core::LaunchMode {
+    match m {
+        frame::LaunchMode::Immediate => phux_core::LaunchMode::Immediate,
+        frame::LaunchMode::Deferred => phux_core::LaunchMode::Deferred,
+    }
+}
+
 /// An execution state on the wire.
 #[must_use]
 pub const fn exec_state(s: phux_core::ExecState) -> frame::ExecState {
@@ -199,7 +208,8 @@ pub fn launch(spec: &phux_core::LaunchSpec) -> frame::LaunchSpec {
     match spec {
         phux_core::LaunchSpec::Terminal(t) => frame::LaunchSpec::new(t.argv.clone())
             .with_cwd(t.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()))
-            .with_env(t.env.clone()),
+            .with_env(t.env.clone())
+            .with_restore(t.restore.clone()),
         phux_core::LaunchSpec::Agent(a) => frame::LaunchSpec::new(vec![a.provider.clone()])
             .with_restore(a.native_id.as_ref().map(|id| id.as_bytes().to_vec())),
         _ => frame::LaunchSpec::default(),
@@ -219,6 +229,7 @@ pub fn core_launch(
                 argv: spec.command.clone(),
                 cwd: spec.cwd.as_ref().map(std::path::PathBuf::from),
                 env: spec.env.clone(),
+                restore: spec.restore.clone(),
             }))
         }
         phux_core::ResourceKind::AgentSession => {

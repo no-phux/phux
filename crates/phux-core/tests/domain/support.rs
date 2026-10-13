@@ -145,6 +145,7 @@ pub fn shell() -> NewResource {
         launch: Some(LaunchSpec::Terminal(TerminalLaunch::default())),
         on_exit: ExitPolicy::Remove,
         parent: None,
+        launch_mode: phux_core::LaunchMode::Immediate,
     }
 }
 

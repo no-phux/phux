@@ -37,7 +37,8 @@ pub use arrangement::{
     LayoutNode, SplitDir,
 };
 pub use command::{
-    Applied, Command, Created, Effect, NewResource, Op, Refusal, Reply, SourcePin, TerminateMode,
+    Applied, Command, Created, Effect, LaunchMode, NewResource, Op, Refusal, Reply, SourcePin,
+    TerminateMode,
 };
 pub use ids::{ResourceId, SessionId};
 pub use keys::{

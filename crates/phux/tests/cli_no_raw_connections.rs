@@ -47,9 +47,10 @@ const ALLOWLIST: &[(&str, usize, &str)] = &[
     ("whoami.rs", 1, "`GET_METADATA` of `phux.whoami/v1`"),
     (
         "archive.rs",
-        6,
-        "`archive import`'s organization probe and the relaunch's seed \
-         `RESOURCE_CREATE`, which phux-client has no helper for yet",
+        5,
+        "`archive export`'s layout reads, `archive import`'s organization probe and \
+         session create, the relaunch's seed connection, and its rollback \
+         `KILL_RESOURCES`",
     ),
     (
         "org.rs",

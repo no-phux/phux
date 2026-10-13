@@ -26,7 +26,7 @@ use phux_protocol::ids::{
 };
 use phux_protocol::wire::frame::{
     ActivationInfo, ArrangementDoc, ArrangementOwner, ArrangementValue, Command, CommandResult,
-    CommandValue, Committed, EntryTarget, ExecState, ExitPolicy, LiveTarget, OrgFilter,
+    CommandValue, Committed, EntryTarget, ExecState, ExitPolicy, LaunchMode, LiveTarget, OrgFilter,
     OrganizationPage, Outcome, RecordRevision, Refusal, ResourceRecord, SessionLifetime,
     SessionRecord,
 };
@@ -656,12 +656,19 @@ impl OrgFixture {
                 Ok((ok(Committed::new(*operation, revision)), None))
             }
             Command::ResourceCreate {
-                operation, session, ..
+                operation,
+                session,
+                on_exit,
+                launch_mode,
+                ..
             } => {
                 if self.session_ref(session).is_none() {
                     return Err(Refusal::NotFound);
                 }
-                let resource = self.shell(*session);
+                let resource = match launch_mode {
+                    LaunchMode::Deferred => self.member(*session, None, *on_exit, None),
+                    LaunchMode::Immediate => self.shell(*session),
+                };
                 let record = self.resource_ref(&resource).expect("made");
                 let committed = Committed::new(*operation, record.revision)
                     .with_resource(Some(resource))

@@ -728,6 +728,8 @@ pub mod org {
     pub const SOCKET_PATH: u32 = 39;
     /// When a delegated credential expires, Unix milliseconds (`u64`).
     pub const EXPIRES_AT: u32 = 40;
+    /// `LaunchMode` (`u8`); absent = `IMMEDIATE`.
+    pub const LAUNCH_MODE: u32 = 41;
 }
 
 /// Fields of a `LaunchSpec` value (`docs/spec/L1.md` §5.7).

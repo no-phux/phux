@@ -86,6 +86,19 @@ pub enum ExitPolicy {
 }
 
 wire_enum! { to_u8 / from_u8;
+/// Whether a created resource starts executing in the same transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum LaunchMode {
+    /// Commit the launch intent with the record: the first activation starts.
+    #[default]
+    Immediate = 0,
+    /// Store the launch spec without an activation. The record stays dormant
+    /// until a `RESOURCE_RELAUNCH` starts it.
+    Deferred = 1,
+}
+}
+
+wire_enum! { to_u8 / from_u8;
 /// Where one activation is in its execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ExecState {
@@ -1306,6 +1319,7 @@ struct Fields {
     credential: Option<String>,
     socket_path: Option<String>,
     expires_at: Option<u64>,
+    launch_mode: Option<u8>,
 }
 
 impl Fields {
@@ -1335,6 +1349,7 @@ impl Fields {
                 field::org::LAUNCH => out.launch = Some(Box::new(decode_launch(value)?)),
                 field::org::KIND => out.kind = Some(ResourceKind::from_wire(read_u8(value)?)),
                 field::org::ON_EXIT => out.on_exit = Some(read_u8(value)?),
+                field::org::LAUNCH_MODE => out.launch_mode = Some(read_u8(value)?),
                 field::org::FROM => out.from = Some(read_key(value, SessionKey::new)?),
                 field::org::FROM_REVISION => {
                     out.from_revision = Some(Revision::new(read_u64(value)?));
@@ -1430,6 +1445,10 @@ impl Fields {
 
     fn on_exit(&self) -> Result<Option<ExitPolicy>, DecodeError> {
         enum_byte("ExitPolicy", self.on_exit, ExitPolicy::from_u8)
+    }
+
+    fn launch_mode(&self) -> Result<Option<LaunchMode>, DecodeError> {
+        enum_byte("LaunchMode", self.launch_mode, LaunchMode::from_u8)
     }
 
     fn state(&self) -> Result<Option<ExecState>, DecodeError> {
@@ -1580,6 +1599,7 @@ pub(in crate::wire) fn encode_org_command(command: &Command, enc: &mut Encoder<'
             launch,
             name,
             on_exit,
+            launch_mode,
         } => {
             write_operation(enc, operation);
             write_session(enc, field::org::SESSION, session);
@@ -1591,6 +1611,9 @@ pub(in crate::wire) fn encode_org_command(command: &Command, enc: &mut Encoder<'
             }
             write_u8(enc, field::org::KIND, kind.as_wire());
             write_u8(enc, field::org::ON_EXIT, on_exit.to_u8());
+            if *launch_mode != LaunchMode::Immediate {
+                write_u8(enc, field::org::LAUNCH_MODE, launch_mode.to_u8());
+            }
         }
         Command::ResourceMove {
             operation,
@@ -1776,6 +1799,7 @@ pub(in crate::wire) fn decode_org_command(
             session: f.session()?,
             on_exit: f.on_exit()?.unwrap_or_default(),
             kind: f.kind.unwrap_or_default(),
+            launch_mode: f.launch_mode()?.unwrap_or_default(),
             launch: f.launch,
             name: f.name,
         },

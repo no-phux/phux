@@ -19,9 +19,9 @@ use phux_protocol::kinds::Verb;
 use phux_protocol::wire::frame::{
     ActivationInfo, ActorRef, AgentEvent, ArrangementDoc, ArrangementGroup, ArrangementNode,
     ArrangementOwner, ArrangementValue, Command, CommandResult, CommandValue, Committed,
-    Delegation, EntryRef, EntryTarget, EventStamp, ExecState, ExitPolicy, FrameKind, LaunchSpec,
-    LiveTarget, MoveItem, OrgFilter, OrganizationPage, Outcome, RecordRevision, Refusal,
-    ResourceRecord, SessionLifetime, SessionRecord, SplitDirection, TerminateMode,
+    Delegation, EntryRef, EntryTarget, EventStamp, ExecState, ExitPolicy, FrameKind, LaunchMode,
+    LaunchSpec, LiveTarget, MoveItem, OrgFilter, OrganizationPage, Outcome, RecordRevision,
+    Refusal, ResourceRecord, SessionLifetime, SessionRecord, SplitDirection, TerminateMode,
 };
 use phux_protocol::wire::info::{
     ResourceInfo, SessionInfo, SessionSnapshot, TUI_LAYOUT_KEY_PREFIX, tui_layout_key,
@@ -244,22 +244,30 @@ fn org_command() -> impl Strategy<Value = Command> {
             kind(),
             proptest::option::of(launch()),
             proptest::option::of(name()),
+            any::<bool>(),
             any::<bool>()
         )
-            .prop_map(|(operation, session, kind, launch, name, retain)| {
-                Command::ResourceCreate {
-                    operation,
-                    session,
-                    kind,
-                    launch: launch.map(Box::new),
-                    name,
-                    on_exit: if retain {
-                        ExitPolicy::Retain
-                    } else {
-                        ExitPolicy::Remove
-                    },
+            .prop_map(
+                |(operation, session, kind, launch, name, retain, deferred)| {
+                    Command::ResourceCreate {
+                        operation,
+                        session,
+                        kind,
+                        launch: launch.map(Box::new),
+                        name,
+                        on_exit: if retain {
+                            ExitPolicy::Retain
+                        } else {
+                            ExitPolicy::Remove
+                        },
+                        launch_mode: if deferred {
+                            LaunchMode::Deferred
+                        } else {
+                            LaunchMode::Immediate
+                        },
+                    }
                 }
-            }),
+            ),
         (
             op(),
             resource_key(),

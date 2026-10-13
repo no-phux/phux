@@ -463,6 +463,7 @@ impl ServerState {
             launch: Some(LaunchSpec::Terminal(launch)),
             on_exit,
             parent: None,
+            launch_mode: phux_core::LaunchMode::Immediate,
         };
         let op = match target {
             TerminalTarget::Session(session) => Op::ResourceCreate {
@@ -564,6 +565,7 @@ impl ServerState {
                     })),
                     on_exit: ExitPolicy::Remove,
                     parent: Some(parent_key),
+                    launch_mode: phux_core::LaunchMode::Immediate,
                 },
             },
             actor,
