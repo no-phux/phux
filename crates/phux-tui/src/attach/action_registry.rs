@@ -374,6 +374,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "rec-mark",
+        title: "Mark recording",
         category: Category::View,
         description: "Drop an asciicast marker into the recording in progress",
         params: "`label?` (bare chord writes an empty marker)",

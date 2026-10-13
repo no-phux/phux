@@ -322,11 +322,13 @@ fn capture_composited(
         let recorded = phux_tui::attach::record_composited(
             &socket_path,
             attach_target,
-            &cast_path,
-            cols,
-            rows,
-            version,
-            max_duration,
+            phux_tui::attach::CompositedCapture {
+                cast_path: &cast_path,
+                cols,
+                rows,
+                version,
+                max_duration,
+            },
             progress,
         )
         .await;
@@ -434,12 +436,12 @@ async fn composited_attach_target(
     Ok(AttachTarget::ByName(name))
 }
 
-/// The name of the session whose window holds `pane`.
+/// The name of the session that holds `pane`.
 fn session_name_of_pane(
     snapshot: &phux_protocol::wire::info::SessionSnapshot,
     pane: &phux_protocol::ids::ResourceId,
 ) -> Option<String> {
-    let (_, session) = phux_client::spawn::ownership_for_terminal(snapshot, pane)?;
+    let session = phux_client::spawn::ownership_for_terminal(snapshot, pane)?;
     snapshot
         .sessions
         .iter()
