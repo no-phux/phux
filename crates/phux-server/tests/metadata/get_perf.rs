@@ -17,11 +17,7 @@ use crate::common::{attach_pane, connect_as, full_caps};
 
 const SESSION: &str = "perf";
 
-pub(crate) async fn get_perf(
-    stream: &mut UnixStream,
-    request_id: u32,
-    reset: bool,
-) -> PerfReport {
+pub(crate) async fn get_perf(stream: &mut UnixStream, request_id: u32, reset: bool) -> PerfReport {
     let result = command(stream, request_id, Command::GetPerf { reset }).await;
     let CommandResult::OkWith(CommandValue::Json(json)) = result else {
         panic!("GET_PERF must answer OkWith(Json): {result:?}");

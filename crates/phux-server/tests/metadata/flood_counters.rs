@@ -38,7 +38,8 @@ const MAX_READER_BLOCKED: u64 = 1_024;
 fn write_flood(dir: &Path) -> std::path::PathBuf {
     let path = dir.join("flood.txt");
     let mut file = std::fs::File::create(&path).expect("flood file");
-    let line = b"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n";
+    let line =
+        b"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n";
     let mut left = usize::try_from(FLOOD_BYTES).expect("flood fits");
     while left > 0 {
         let n = line.len().min(left);

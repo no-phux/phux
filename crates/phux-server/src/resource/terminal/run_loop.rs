@@ -1546,10 +1546,8 @@ mod icount_join_tests {
 
     #[test]
     fn a_burst_is_one_payload() {
-        let joined = icount_join_pty_burst(vec![
-            Bytes::from_static(b"ab"),
-            Bytes::from_static(b"cd"),
-        ]);
+        let joined =
+            icount_join_pty_burst(vec![Bytes::from_static(b"ab"), Bytes::from_static(b"cd")]);
         assert_eq!(joined.as_ref(), b"abcd");
     }
 
