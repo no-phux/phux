@@ -12,7 +12,7 @@
 
 use std::collections::VecDeque;
 use std::io::{self, Write};
-use std::os::fd::{AsFd, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
@@ -281,23 +281,24 @@ pub(super) fn spawn_stdout_writer() -> (StdoutSink, WriterHandle) {
 /// then makes that thread's `write(2)` return `EAGAIN`, and the thread
 /// exits, so later frames never land. On Linux, reopening `/proc/self/fd/N`
 /// is a new file description, so only this handle is nonblocking.
+#[cfg(target_os = "linux")]
 fn stdout_direct_fd() -> Option<OwnedFd> {
-    #[cfg(target_os = "linux")]
-    {
-        let stdout = io::stdout();
-        let raw = std::os::fd::AsRawFd::as_raw_fd(&stdout.as_fd());
-        let path = format!("/proc/self/fd/{raw}");
-        rustix::fs::open(
-            path,
-            rustix::fs::OFlags::WRONLY | rustix::fs::OFlags::CLOEXEC | rustix::fs::OFlags::NONBLOCK,
-            rustix::fs::Mode::empty(),
-        )
-        .ok()
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        None
-    }
+    let stdout = io::stdout();
+    let raw = std::os::fd::AsRawFd::as_raw_fd(&std::os::fd::AsFd::as_fd(&stdout));
+    let path = format!("/proc/self/fd/{raw}");
+    rustix::fs::open(
+        path,
+        rustix::fs::OFlags::WRONLY | rustix::fs::OFlags::CLOEXEC | rustix::fs::OFlags::NONBLOCK,
+        rustix::fs::Mode::empty(),
+    )
+    .ok()
+}
+
+/// No way to open stdout nonblocking without sharing the writer's file
+/// description here, so the echo frame takes the writer thread.
+#[cfg(not(target_os = "linux"))]
+const fn stdout_direct_fd() -> Option<OwnedFd> {
+    None
 }
 
 /// As [`spawn_stdout_writer`] but writing to an arbitrary sink (tests).
