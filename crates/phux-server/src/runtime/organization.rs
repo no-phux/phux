@@ -1006,7 +1006,11 @@ mod tests {
                 panic!("arrangement");
             };
             assert_eq!(value.revision, Revision::new(1));
-            assert!(value.document.groups.is_empty());
+            assert_eq!(
+                value.document.groups.len(),
+                1,
+                "the seeded terminal is arranged at creation"
+            );
 
             let document = ArrangementDoc {
                 groups: vec![phux_protocol::wire::frame::ArrangementGroup {
