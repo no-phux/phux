@@ -184,6 +184,24 @@ pub fn session_glance(sources: Sources<'_>, session: &SessionInfo) -> SessionGla
     glance
 }
 
+/// A glance over bare `terminals`, named `name`: all a hub can tell of a
+/// satellite's session, since it holds no organization records for it.
+#[must_use]
+pub fn terminals_glance<'a>(
+    sources: Sources<'_>,
+    name: &str,
+    terminals: impl IntoIterator<Item = &'a ResourceInfo>,
+) -> SessionGlance {
+    let mut glance = SessionGlance {
+        name: name.to_owned(),
+        ..SessionGlance::default()
+    };
+    for info in terminals {
+        glance.count(from_snapshot(sources, info).condition);
+    }
+    glance
+}
+
 /// A session's terminals, exceptions first, then by selector.
 #[must_use]
 pub fn members(sources: Sources<'_>, session: &SessionInfo) -> Vec<MemberGlance> {

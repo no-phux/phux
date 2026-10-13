@@ -149,7 +149,15 @@ pub fn find<'a>(snapshot: &'a SessionSnapshot, id: &ResourceId) -> Option<&'a Re
 /// satellite resource behind a hub).
 #[must_use]
 pub fn session_of(snapshot: &SessionSnapshot, id: &ResourceId) -> Option<SessionId> {
-    let info = find(snapshot, id)?;
+    session_of_info(snapshot, find(snapshot, id)?)
+}
+
+/// [`session_of`] for a resource already in hand. A satellite resource's
+/// `session` facet names a session on the satellite, never one of these.
+fn session_of_info(snapshot: &SessionSnapshot, info: &ResourceInfo) -> Option<SessionId> {
+    if !info.id.is_local() {
+        return None;
+    }
     info.session.or_else(|| {
         snapshot
             .windows
@@ -167,7 +175,7 @@ pub fn in_session(
     snapshot
         .resources
         .iter()
-        .filter(move |info| session_of(snapshot, &info.id) == Some(session))
+        .filter(move |info| session_of_info(snapshot, info) == Some(session))
 }
 
 /// Every Terminal-kind resource that belongs to `session`, in snapshot order.

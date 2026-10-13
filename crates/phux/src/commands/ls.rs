@@ -9,8 +9,10 @@ use phux_client::state::{Degradation, StateView};
 use phux_core::activation::SessionLifetime;
 use phux_core::session_list::{ExecCounts, SessionJson, SessionListJson};
 
-use phux_protocol::ids::ResourceId;
-use phux_protocol::wire::info::{HostInventory, HostSessionInfo, SessionInfo, SessionSnapshot};
+use phux_protocol::ids::{ResourceId, SatelliteHost, SessionId};
+use phux_protocol::wire::info::{
+    HostInventory, HostSessionInfo, ResourceInfo, SessionInfo, SessionSnapshot,
+};
 
 use crate::commands::json_err::{self, CliError, codes};
 use crate::commands::partial;
@@ -57,7 +59,12 @@ pub(crate) fn run_ls(json: bool, depth: &Depth, server: ServerSpec) -> ExitCode 
     };
     let listing = rt.block_on(async {
         let mut conn = target.connect().await?;
-        let view = phux_client::session_list::listing_view(&mut conn).await?;
+        // The glance prints no window counts, so it skips their reads.
+        let view = if json || depth.detail {
+            phux_client::session_list::listing_view(&mut conn).await?
+        } else {
+            phux_client::session_list::glance_view(&mut conn).await?
+        };
         let agents = if json || !depth.reads_agents() {
             HashMap::new()
         } else {
@@ -395,7 +402,16 @@ fn glance_lines(sources: Sources<'_>) -> Vec<String> {
         .map(|(row, _)| row)
         .filter(|row| row.to_organize != Some(0))
         .collect();
-    with_hosts(sources.snapshot, collapse(rows))
+    let local = collapse(rows);
+    let snapshot = sources.snapshot;
+    if snapshot.hosts().is_empty() {
+        let mut lines = local;
+        lines.extend(satellite_terminal_glance_lines(sources));
+        return lines;
+    }
+    host_grouped_lines(snapshot, local, |host| {
+        satellite_glance_lines(sources, host)
+    })
 }
 
 /// `local` (this host's lines) placed in the listing's host shape: flat,
@@ -404,7 +420,72 @@ fn with_hosts(snapshot: &SessionSnapshot, local: Vec<String>) -> Vec<String> {
     if snapshot.hosts().is_empty() {
         return flat_session_lines(snapshot, local);
     }
-    host_grouped_lines(snapshot, local)
+    host_grouped_lines(snapshot, local, |host| satellite_host_lines(snapshot, host))
+}
+
+/// One satellite's glance group: its header, then its sessions under the
+/// same rules as this host's ([`collapse`]). Its terminals are left to
+/// `phux ls -l`.
+fn satellite_glance_lines(sources: Sources<'_>, host: &HostInventory) -> Vec<String> {
+    if !host.is_reachable() {
+        return vec![format!("{} (unreachable)", host.host)];
+    }
+    let mut lines = vec![host.host.to_string()];
+    if host.sessions.is_empty() {
+        lines.push("  (no sessions)".to_owned());
+    }
+    let mut by_session: HashMap<SessionId, Vec<&ResourceInfo>> = HashMap::new();
+    for pane in satellite_terminals(sources.snapshot, &host.host) {
+        if let Some(session) = pane.session {
+            by_session.entry(session).or_default().push(pane);
+        }
+    }
+    let rows = host
+        .sessions
+        .iter()
+        .map(|session| {
+            let terminals = by_session.remove(&session.id).unwrap_or_default();
+            let joined = u32::try_from(terminals.len()).unwrap_or(u32::MAX);
+            let mut row = glance::terminals_glance(sources, &session.name, terminals);
+            // A terminal the satellite did not tag with its session is
+            // still in its pane count; it reads as running.
+            row.running += u32::from(session.pane_count).saturating_sub(joined);
+            row.attached_clients = session.attached_client_count;
+            row
+        })
+        .collect();
+    lines.extend(collapse(rows).into_iter().map(|line| format!("  {line}")));
+    lines
+}
+
+/// The flat glance's satellite Terminals, from a hub that does not report
+/// which sessions they belong to: one line per satellite, its terminals
+/// counted (`edge terminals: needs you (1 failed), 11 running`).
+fn satellite_terminal_glance_lines(sources: Sources<'_>) -> Vec<String> {
+    let mut hosts: Vec<&SatelliteHost> = Vec::new();
+    for pane in resource::terminals(sources.snapshot) {
+        if let Some(host) = pane.id.host()
+            && !hosts.contains(&host)
+        {
+            hosts.push(host);
+        }
+    }
+    hosts
+        .into_iter()
+        .map(|host| {
+            let name = format!("{host} terminals");
+            let terminals = satellite_terminals(sources.snapshot, host);
+            glance_text(&glance::terminals_glance(sources, &name, terminals))
+        })
+        .collect()
+}
+
+/// One satellite's Terminals in the merged snapshot, in snapshot order.
+fn satellite_terminals<'a>(
+    snapshot: &'a SessionSnapshot,
+    host: &'a SatelliteHost,
+) -> impl Iterator<Item = &'a ResourceInfo> {
+    resource::terminals(snapshot).filter(move |pane| pane.id.host() == Some(host))
 }
 
 /// How many session lines the glance prints before it collapses the rest
@@ -666,14 +747,18 @@ fn with_key(line: String, key: Option<&str>) -> String {
 /// The host-grouped listing: a [`LOCAL_HOST_LABEL`] header over this host's
 /// sessions, then one header per satellite with its sessions beneath. An
 /// unreachable satellite keeps its header, marked, instead of vanishing.
-fn host_grouped_lines(snapshot: &SessionSnapshot, local: Vec<String>) -> Vec<String> {
+fn host_grouped_lines(
+    snapshot: &SessionSnapshot,
+    local: Vec<String>,
+    satellite: impl Fn(&HostInventory) -> Vec<String>,
+) -> Vec<String> {
     let mut lines = vec![LOCAL_HOST_LABEL.to_owned()];
     if local.is_empty() {
         lines.push("  (no sessions)".to_owned());
     }
     lines.extend(local.into_iter().map(|line| format!("  {line}")));
     for host in snapshot.hosts() {
-        lines.extend(satellite_host_lines(snapshot, host));
+        lines.extend(satellite(host));
     }
     lines
 }
@@ -1349,6 +1434,123 @@ mod tests {
             })
             .collect();
         assert_eq!(super::collapse(few).len(), 3, "no count line when it fits");
+    }
+
+    /// A hub's satellite glances like this host: its sessions that need
+    /// you first, the quiet rest folded into one count, its terminals left
+    /// to `-l`, which still prints every session and terminal.
+    #[test]
+    fn a_satellite_swarm_collapses_like_this_host() {
+        use std::collections::HashMap;
+
+        use phux_client::glance::Sources;
+        use phux_protocol::ids::SatelliteHost;
+        use phux_protocol::wire::frame::ResourceLifecycle;
+        use phux_protocol::wire::info::{ExitFacet, HostInventory, HostSessionInfo, ResourceInfo};
+
+        let edge = SatelliteHost::new("edge");
+        let sessions = (0..500)
+            .map(|n| {
+                HostSessionInfo::new(SessionId::new(n), format!("s{n:03}"))
+                    .with_window_count(1)
+                    .with_pane_count(1)
+            })
+            .collect();
+        let mut snapshot = federated_snapshot().with_hosts(vec![
+            HostInventory::reachable(edge.clone(), sessions),
+            HostInventory::unreachable(SatelliteHost::new("down"), "link is down"),
+        ]);
+        snapshot.resources.extend((0..500).map(|n| {
+            let pane = ResourceInfo::new(
+                ResourceId::satellite(edge.clone(), n),
+                WindowId::new(0),
+                80,
+                24,
+            )
+            .with_session(Some(SessionId::new(n)));
+            if n == 321 {
+                pane.with_lifecycle(ResourceLifecycle::Exited)
+                    .with_exit(Some(ExitFacet::new(0, 0).with_exit_status(Some(2))))
+            } else {
+                pane
+            }
+        }));
+        let agents = HashMap::new();
+        let sources = Sources {
+            snapshot: &snapshot,
+            organization: None,
+            agents: &agents,
+        };
+        let lines = super::glance_lines(sources);
+        assert_eq!(
+            lines[..4],
+            [
+                "This host",
+                "  work: 1 running",
+                "edge",
+                "  s321: needs you (1 failed)",
+            ],
+            "{lines:?}"
+        );
+        assert_eq!(lines[4], "  s000: 1 running");
+        assert_eq!(
+            lines[3 + super::GLANCE_ROWS],
+            "  +480 quiet sessions; `phux ls -l` lists every session"
+        );
+        assert_eq!(lines[4 + super::GLANCE_ROWS], "down (unreachable)");
+        assert_eq!(lines.len(), 5 + super::GLANCE_ROWS);
+
+        let detail = session_lines(&snapshot, None);
+        assert_eq!(detail.len(), 2 + 1 + 500 + 500 + 1, "-l keeps every line");
+    }
+
+    /// A hub that does not say which satellite session a terminal is in
+    /// glances each satellite's terminals as one counted line.
+    #[test]
+    fn unjoined_satellite_terminals_glance_as_one_line_per_host() {
+        use std::collections::HashMap;
+
+        use phux_client::glance::Sources;
+        use phux_protocol::ids::SatelliteHost;
+        use phux_protocol::wire::frame::ResourceLifecycle;
+        use phux_protocol::wire::info::{ExitFacet, ResourceInfo};
+
+        let edge = SatelliteHost::new("edge");
+        let snapshot =
+            SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::new(1))
+                .with_sessions(vec![session("work", 1, 0)])
+                .with_resources(
+                    (0..300)
+                        .map(|n| {
+                            let pane = ResourceInfo::new(
+                                ResourceId::satellite(edge.clone(), n),
+                                WindowId::new(0),
+                                80,
+                                24,
+                            );
+                            if n == 7 {
+                                pane.with_lifecycle(ResourceLifecycle::Exited)
+                                    .with_exit(Some(ExitFacet::new(0, 0).with_exit_status(Some(1))))
+                            } else {
+                                pane
+                            }
+                        })
+                        .collect(),
+                );
+        let agents = HashMap::new();
+        let sources = Sources {
+            snapshot: &snapshot,
+            organization: None,
+            agents: &agents,
+        };
+        assert_eq!(
+            super::glance_lines(sources),
+            [
+                "work: empty",
+                "edge terminals: needs you (1 failed), 299 running"
+            ]
+        );
+        assert_eq!(session_lines(&snapshot, None).len(), 301);
     }
 
     /// The session view lists each terminal, exceptions first: an agent
