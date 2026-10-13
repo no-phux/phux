@@ -414,6 +414,7 @@ fn refusal() -> impl Strategy<Value = Refusal> {
         Just(Refusal::ExecutionUncertain),
         actor().prop_map(|holder| Refusal::LeaseHeld { holder }),
         Just(Refusal::DuplicateOperation),
+        name().prop_map(|reason| Refusal::StoreFailure { reason }),
     ]
 }
 

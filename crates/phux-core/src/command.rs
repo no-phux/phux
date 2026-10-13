@@ -318,6 +318,13 @@ pub enum Refusal {
     /// The same operation id arrived with a different payload.
     #[error("duplicate operation id with a different payload")]
     DuplicateOperation,
+    /// The durable organization store could not commit the transition, so
+    /// nothing changed. Retrying the same operation may succeed.
+    #[error("the organization store failed: {reason}")]
+    StoreFailure {
+        /// What the store reported.
+        reason: String,
+    },
 }
 
 impl Refusal {

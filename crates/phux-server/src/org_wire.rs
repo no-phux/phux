@@ -199,6 +199,9 @@ pub fn refusal(r: &phux_core::Refusal) -> frame::Refusal {
         R::NameTaken => frame::Refusal::NameTaken,
         R::ExecutionUncertain => frame::Refusal::ExecutionUncertain,
         R::DuplicateOperation => frame::Refusal::DuplicateOperation,
+        R::StoreFailure { reason } => frame::Refusal::StoreFailure {
+            reason: reason.clone(),
+        },
     }
 }
 

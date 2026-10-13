@@ -817,6 +817,12 @@ pub enum Refusal {
     },
     /// The operation id was used before with a different payload.
     DuplicateOperation,
+    /// The server's durable organization store could not commit, so nothing
+    /// changed; the same operation may be retried.
+    StoreFailure {
+        /// What the store reported.
+        reason: String,
+    },
     /// A refusal tag this build does not know, body kept verbatim. Produced
     /// only by the decoder.
     Unknown {
@@ -838,6 +844,7 @@ const REFUSAL_NAME_TAKEN: u8 = 0x07;
 const REFUSAL_EXECUTION_UNCERTAIN: u8 = 0x08;
 const REFUSAL_LEASE_HELD: u8 = 0x09;
 const REFUSAL_DUPLICATE_OPERATION: u8 = 0x0a;
+const REFUSAL_STORE_FAILURE: u8 = 0x0b;
 
 impl Refusal {
     /// The stable lowercase name consumers print.
@@ -855,6 +862,7 @@ impl Refusal {
             Self::ExecutionUncertain => "execution_uncertain",
             Self::LeaseHeld { .. } => "lease_held",
             Self::DuplicateOperation => "duplicate_operation",
+            Self::StoreFailure { .. } => "store_failure",
             Self::Unknown { .. } => "unknown",
         }
     }
@@ -1921,6 +1929,10 @@ pub(in crate::wire) fn encode_refusal(refusal: &Refusal, enc: &mut Encoder<'_>) 
                 REFUSAL_LEASE_HELD
             }
             Refusal::DuplicateOperation => REFUSAL_DUPLICATE_OPERATION,
+            Refusal::StoreFailure { reason } => {
+                e.write_str(reason);
+                REFUSAL_STORE_FAILURE
+            }
             Refusal::Unknown { tag, body: raw } => {
                 for byte in raw {
                     e.write_u8(*byte);
@@ -1976,6 +1988,9 @@ pub(in crate::wire) fn decode_refusal(dec: &mut Decoder<'_>) -> Result<Refusal, 
             holder: decode_actor_ref(&mut b)?,
         },
         REFUSAL_DUPLICATE_OPERATION => Refusal::DuplicateOperation,
+        REFUSAL_STORE_FAILURE => Refusal::StoreFailure {
+            reason: b.read_str()?.to_owned(),
+        },
         _ => unknown(),
     };
     Ok(refusal)

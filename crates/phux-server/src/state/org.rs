@@ -91,8 +91,8 @@ pub struct OrgCommit {
 
 /// The [`Refusal`] a failed store write turns into. Nothing changed.
 fn store_refusal(error: &StoreError) -> Refusal {
-    Refusal::Unsupported {
-        capability: format!("durable organization store: {error}"),
+    Refusal::StoreFailure {
+        reason: error.to_string(),
     }
 }
 
@@ -841,7 +841,7 @@ mod tests {
             &Actor::owner(),
         );
         assert!(
-            matches!(refused, Err(Refusal::Unsupported { .. })),
+            matches!(refused, Err(Refusal::StoreFailure { .. })),
             "{refused:?}"
         );
         state.retire_record(terminal, ExitOutcome::exited(0));

@@ -454,6 +454,9 @@ pub fn refusal_sentence(refusal: &Refusal) -> String {
         Refusal::DuplicateOperation => {
             "the operation id was already used for a different request".to_owned()
         }
+        Refusal::StoreFailure { reason } => {
+            format!("the server could not save the change ({reason}); retry")
+        }
         other => format!("refused ({})", other.as_str()),
     }
 }

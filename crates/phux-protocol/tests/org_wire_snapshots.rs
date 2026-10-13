@@ -416,6 +416,12 @@ fn result_fixtures() -> Vec<(&'static str, FrameKind)> {
             refused(Refusal::DuplicateOperation),
         ),
         (
+            "snap_org_result_refused_store_failure",
+            refused(Refusal::StoreFailure {
+                reason: "disk full".to_owned(),
+            }),
+        ),
+        (
             "snap_org_result_committed",
             result(CommandResult::OkWith(CommandValue::Committed(Box::new(
                 Committed::new(op(), rev(5))

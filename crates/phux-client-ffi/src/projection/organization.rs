@@ -88,6 +88,7 @@ pub const fn refusal_code(refusal: &Refusal) -> u32 {
         Refusal::ExecutionUncertain => 9,
         Refusal::LeaseHeld { .. } => 10,
         Refusal::DuplicateOperation => 11,
+        Refusal::StoreFailure { .. } => 12,
         _ => 255,
     }
 }
