@@ -127,12 +127,18 @@ const EmptyTabSettlement = struct {
     placed: bool,
 };
 
+const ArrangedAgainst = struct { epoch: u64, session: u32, revision: u64 };
+
 pub const Edits = struct {
     pub const State = struct {
         mutations: shared_mutations.Coordinator = .{},
         creations: [max_creations]?Creation = @splat(null),
         strays: [max_strays]?Stray = @splat(null),
         empty_tab_settlements: [max_creations]?EmptyTabSettlement = @splat(null),
+        /// The publication the last unarranged placement was asked against:
+        /// a refused placement is not asked again until the arrangement
+        /// moves (`arrangeUnarranged`).
+        arranged_against: ?ArrangedAgainst = null,
     };
     states: std.ArrayList(*State) = .empty,
     // At most one provisional operation owns each physical window.
@@ -167,6 +173,7 @@ pub const Edits = struct {
         for (state.creations) |held| if (held) |entry| self.drop(slot, entry);
         state.creations = @splat(null);
         state.empty_tab_settlements = @splat(null);
+        state.arranged_against = null;
     }
 
     fn drop(self: *Edits, slot: usize, entry: Creation) void {
@@ -584,6 +591,29 @@ pub const Edits = struct {
         return changed;
     }
 
+    /// The peer's shown session publishes no groups and a terminal no group
+    /// shows, as a fresh session's first shell does: place it in a group of
+    /// its own on that peer, as the active coordinator's attachment does
+    /// (`Engine.arrangeUnarranged`). One uncorrelated add at a time, never
+    /// while one of the peer's creations or edits is in flight, and asked at
+    /// most once per connection epoch, session and revision.
+    pub fn arrangeUnarranged(self: *Edits, model: *Model, slot: usize) bool {
+        if (comptime !support.phux_enabled) return false;
+        var peer_view = view(model, slot) catch return false;
+        const published = currentSnapshot(peer_view) catch return false;
+        if (published.windows.len != 0 or published.unarranged_count == 0) return false;
+        if (published.state != .unarranged and published.state != .authoritative) return false;
+        self.ensure(slot) catch return false;
+        const state = self.states.items[slot];
+        if (self.pendingCreations(slot) != 0 or !state.mutations.idle(&peer_view)) return false;
+        const against: ArrangedAgainst = .{ .epoch = peer_view.peer.connectionEpoch(), .session = published.session_id, .revision = published.revision };
+        if (state.arranged_against) |last| if (std.meta.eql(last, against)) return false;
+        const ref = firstInSession(peer_view.peer, published.session_id) orelse return false;
+        state.arranged_against = against;
+        state.mutations.requestArrange(&peer_view, ref) catch return false;
+        return true;
+    }
+
     fn advance(self: *Edits, model: *const Model, peer_view: *PeerView, slot: usize, held: *?Creation) bool {
         const entry = &held.*.?;
         switch (entry.stage) {
@@ -638,6 +668,14 @@ pub const Edits = struct {
         return true;
     }
 };
+
+/// With no groups, every catalog terminal of the session is unarranged.
+fn firstInSession(peer: *const support.PhuxProvider, session: u32) ?TerminalRef {
+    for (peer.catalogTerminals()) |entry| {
+        if (entry.session_id == session) return entry.terminal_ref;
+    }
+    return null;
+}
 
 /// The spawn's (or its satellite attach's) result: its terminal identity,
 /// which must be this coordinator's.

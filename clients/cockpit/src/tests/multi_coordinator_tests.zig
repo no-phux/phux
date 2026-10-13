@@ -949,6 +949,50 @@ test "New Tab, reorder and split with a peer's pane focused go to that peer and 
     try testing.expectEqual(@as(usize, 1), engine.peer_edits.pendingCreations(0));
 }
 
+test "a peer's session with no groups places its unarranged terminal on that peer alone" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var pair = try Pair.start(false);
+    defer pair.engine.destroy();
+    const engine = pair.engine;
+    const model = engine.model;
+    try fixture.attachHostWith(pair.here.host, "hello.bin");
+    try fixture.attachHostUnarranged(pair.mini.host);
+    model.peers.items[0].workspace.authority = pair.mini.providerId();
+    _ = try model.peers.items[0].workspace.apply(model, pair.mini.workspaceSnapshot(), pair.mini.connectionEpoch());
+    _ = countFrames(pair.here);
+    _ = countFrames(pair.mini);
+    var fx: PeerFx = .{};
+    const mini7 = try refOn(pair.mini, 7);
+    try testing.expectEqual(@as(usize, 0), pair.mini.workspaceSnapshot().windows.len);
+    try testing.expect(model.locateTerminal(mini7) == null);
+
+    // mini's session reads with no groups: Cockpit asks mini, and only mini,
+    // for one around its terminal 7.
+    drainMini(&pair, &fx);
+    const pending = engine.peer_edits.states.items[0].mutations.pending[0].?;
+    try testing.expectEqual(.add, pending.mutation.kind);
+    try testing.expect(pending.mutation.terminal_ref.?.eql(mini7));
+    try testing.expect(engine.peer_edits.states.items[0].mutations.pending[1] == null);
+    try testing.expect(model.shared_mutations.pending[0] == null);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+    try testing.expectEqual(.pending, pair.mini.workspaceSnapshot().status);
+
+    // While that add is in flight, another wake asks for nothing more.
+    drainMini(&pair, &fx);
+    try testing.expect(engine.peer_edits.states.items[0].mutations.pending[1] == null);
+
+    // The confirming read echoes the write: mini's terminal 7 shows in a
+    // tab of mini's own, and nothing further is asked.
+    try fixture.confirmLayoutWrite(pair.mini.bridge, 3, "workspace_initial_state.bin", 0, 2);
+    drainMini(&pair, &fx);
+    try testing.expectEqual(@as(usize, 1), pair.mini.workspaceSnapshot().windows.len);
+    try testing.expectEqual(@as(u32, 0), pair.mini.workspaceSnapshot().unarranged_count);
+    try testing.expectEqual(pair.mini.providerId(), tabOwner(model, mini7).?);
+    try testing.expect(engine.peer_edits.states.items[0].mutations.pending[0] == null);
+    try testing.expect(model.shared_mutations.pending[0] == null);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+}
+
 test "a split of a peer's pane lands on that peer, and dragging its divider resizes it there" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
     var pair = try Pair.start(true);
