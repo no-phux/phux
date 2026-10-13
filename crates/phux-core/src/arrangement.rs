@@ -14,7 +14,7 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::keys::{ArrangementKey, ResourceKey, Revision, SessionKey, WorkspaceKey};
+use crate::keys::{ArrangementKey, FreshKeys, ResourceKey, Revision, SessionKey, WorkspaceKey};
 
 /// A node in a binary split tree whose leaves are `L`.
 ///
@@ -324,6 +324,31 @@ pub struct Group {
     pub name: Option<String>,
     /// The group's layout.
     pub tree: LayoutNode<EntryRef>,
+}
+
+/// One unnamed group showing `members` side by side, every leaf an even
+/// share, with ids from `fresh`; `None` for no members. A session created
+/// with members starts with it.
+pub fn first_group(members: &[ResourceKey], fresh: &mut dyn FreshKeys) -> Option<Group> {
+    let mut leaves = members
+        .iter()
+        .map(|member| EntryRef::member(fresh.fresh(), *member));
+    let mut tree = LayoutNode::Leaf(leaves.next()?);
+    for (placed, leaf) in (1_u16..).zip(leaves) {
+        // The `placed` leaves already in `tree` keep `placed / (placed + 1)`.
+        let ratio = f32::from(placed) / (f32::from(placed) + 1.0);
+        tree = LayoutNode::Split {
+            dir: SplitDir::Horizontal,
+            ratio,
+            left: Box::new(tree),
+            right: Box::new(LayoutNode::Leaf(leaf)),
+        };
+    }
+    Some(Group {
+        id: fresh.fresh(),
+        name: None,
+        tree,
+    })
 }
 
 /// What an arrangement belongs to.

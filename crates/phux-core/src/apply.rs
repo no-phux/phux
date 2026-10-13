@@ -21,7 +21,7 @@ use crate::activation::{
     Activation, ExecState, ExitPolicy, Outcome, ProcIdentity, SessionLifetime, Stamp,
 };
 use crate::actor::{Actor, PrincipalId, Verb};
-use crate::arrangement::{Arrangement, ArrangementOwner, Group, validate_groups};
+use crate::arrangement::{Arrangement, ArrangementOwner, Group, first_group, validate_groups};
 use crate::command::{
     Applied, Command, Created, Effect, LaunchMode, MAX_MOVE_BATCH, NewResource, Op, Refusal, Reply,
     SourcePin, TerminateMode,
@@ -605,6 +605,36 @@ impl<'a> Tx<'a> {
         Some(revision)
     }
 
+    /// Give the session `session` this transaction creates its arrangement:
+    /// one unnamed group showing `members` ([`first_group`]), or no groups.
+    fn arrange_new_session(
+        &mut self,
+        fresh: &mut dyn FreshKeys,
+        session: SessionKey,
+        members: &[ResourceKey],
+    ) -> Result<ArrangementKey, Refusal> {
+        let key = ArrangementKey::from_bytes(self.fresh_key(fresh)?);
+        let owner = ArrangementOwner::Session(session);
+        self.arrangements.insert(
+            key,
+            Some(Arrangement {
+                key,
+                owner,
+                groups: first_group(members, fresh).into_iter().collect(),
+                revision: Revision::FIRST,
+            }),
+        );
+        self.session_mut(session)
+            .ok_or(Refusal::NotFound)?
+            .arrangement = Some(key);
+        self.events.push(Event::ArrangementChanged {
+            key,
+            owner,
+            revision: Some(Revision::FIRST),
+        });
+        Ok(key)
+    }
+
     /// Records as deltas (puts, then deletions), events, and effects.
     fn finish(self) -> (Vec<Delta>, Vec<Event>, Vec<Effect>) {
         let org = self.org;
@@ -697,12 +727,13 @@ fn session_create(
         Some(spec) => Some(tx.create_resource(fresh, key, spec)?),
         None => None,
     };
+    let arrangement = tx.arrange_new_session(fresh, key, resource.as_slice())?;
     Ok(Out::created(
         Some(Revision::FIRST),
         Created {
             session: Some(key),
             resource,
-            arrangement: None,
+            arrangement: Some(arrangement),
         },
     ))
 }

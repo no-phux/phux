@@ -69,16 +69,69 @@ fn session_create_commits_session_resource_and_launch_together() {
             Event::ActivationChanged {
                 state: ExecState::Starting,
                 ..
-            }
+            },
+            Event::ArrangementChanged { .. }
         ]
     ));
     assert_eq!(h.resource(r).provenance.operation, applied.operation);
+    // The arrangement comes with the session, its first member placed.
+    let ak = h.session(s).arrangement.expect("arranged at creation");
+    let arrangement = h.reg.org().arrangement(&ak).expect("committed").clone();
+    assert_eq!(arrangement.revision, Revision::FIRST);
+    assert_eq!(arrangement.groups.len(), 1);
+    assert_eq!(arrangement.groups[0].name, None);
+    assert_eq!(arrangement.resources(), vec![r]);
+    assert!(matches!(
+        applied.reply,
+        Reply::Ok { created, .. } if created.arrangement == Some(ak)
+    ));
 
-    // A bare create launches nothing.
+    // A bare create launches nothing and arranges nothing.
     let bare = h
         .run(create("empty", SessionLifetime::Persistent, None))
         .expect("bare");
     assert!(bare.effects.is_empty());
+    let (empty, _) = created(&bare);
+    let ak = h
+        .session(empty.expect("session"))
+        .arrangement
+        .expect("arranged at creation");
+    assert!(
+        h.reg
+            .org()
+            .arrangement(&ak)
+            .expect("committed")
+            .groups
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_first_group_gives_every_member_an_even_share() {
+    let members: Vec<_> = (1..=3_u8)
+        .map(|n| ResourceKey::from_bytes([n; 16]))
+        .collect();
+    let mut keys = phux_core::SequentialKeys::new(*b"groupkey");
+    let group = phux_core::first_group(&members, &mut keys).expect("a group");
+    let LayoutNode::Split {
+        ratio, ref left, ..
+    } = group.tree
+    else {
+        panic!("three members split: {:?}", group.tree);
+    };
+    assert!((ratio - 2.0 / 3.0).abs() < f32::EPSILON);
+    assert!(matches!(
+        **left,
+        LayoutNode::Split { ratio, .. } if (ratio - 0.5).abs() < f32::EPSILON
+    ));
+    let leaves: Vec<ResourceKey> = group
+        .tree
+        .leaves()
+        .into_iter()
+        .filter_map(EntryRef::resource)
+        .collect();
+    assert_eq!(leaves, members);
+    assert!(phux_core::first_group(&[], &mut keys).is_none());
 }
 
 #[test]
@@ -698,7 +751,7 @@ fn moving_out_prunes_the_source_arrangement() {
     };
     h.run(Op::ArrangementReplace {
         owner: ArrangementOwner::Session(a),
-        expected: Revision::ZERO,
+        expected: Revision::FIRST,
         groups: vec![Group {
             id: [5; 16],
             name: None,
@@ -718,7 +771,7 @@ fn moving_out_prunes_the_source_arrangement() {
     .expect("move");
     let arrangement = h.reg.org().arrangement(&ak).expect("kept");
     assert_eq!(arrangement.resources(), vec![r2]);
-    assert_eq!(arrangement.revision, Revision(2));
+    assert_eq!(arrangement.revision, Revision(3));
 }
 
 #[test]
@@ -935,7 +988,9 @@ fn inbox_resolve_clears_intake_and_undo_restores_it() {
 #[test]
 fn arrangement_replace_validates_members_and_revisions() {
     let mut h = Harness::new();
-    let a = h.create_session("a", SessionLifetime::Persistent);
+    // The Inbox of a bare organization has no arrangement yet, so the first
+    // replace creates it.
+    let a = h.inbox();
     let b = h.create_session("b", SessionLifetime::Persistent);
     let mine = h.shell_in(a);
     let theirs = h.shell_in(b);

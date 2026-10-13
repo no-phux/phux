@@ -111,97 +111,11 @@ pub fn fresh_org(instance: InstanceId, now: Stamp) -> Org {
     org
 }
 
-/// The session `session` with an arrangement of its own at revision 1, so
-/// `ARRANGEMENT_REPLACE` always has a key to name. `placed` members are laid
-/// out in one unnamed group; with none, the arrangement has no groups.
-fn arranged(
-    mut session: phux_core::Session,
-    placed: &[phux_core::ResourceKey],
-    keys: &mut OsKeys,
-) -> (phux_core::Session, phux_core::Arrangement) {
-    let key = phux_core::ArrangementKey::from_bytes(keys.fresh());
-    session.arrangement = Some(key);
-    let arrangement = phux_core::Arrangement {
-        key,
-        owner: phux_core::ArrangementOwner::Session(session.key),
-        groups: first_group(placed, keys).into_iter().collect(),
-        revision: phux_core::Revision::FIRST,
-    };
-    (session, arrangement)
-}
-
-/// One unnamed group showing `members` side by side, every leaf an even
-/// share; `None` for no members.
-fn first_group(members: &[phux_core::ResourceKey], keys: &mut OsKeys) -> Option<phux_core::Group> {
-    let mut leaves = members
-        .iter()
-        .map(|member| phux_core::EntryRef::member(keys.fresh(), *member));
-    let mut tree = phux_core::LayoutNode::Leaf(leaves.next()?);
-    for (placed, leaf) in (1_u16..).zip(leaves) {
-        // The `placed` leaves already in `tree` keep `placed / (placed + 1)`.
-        let ratio = f32::from(placed) / (f32::from(placed) + 1.0);
-        tree = phux_core::LayoutNode::Split {
-            dir: phux_core::SplitDir::Horizontal,
-            ratio,
-            left: Box::new(tree),
-            right: Box::new(phux_core::LayoutNode::Leaf(leaf)),
-        };
-    }
-    Some(phux_core::Group {
-        id: keys.fresh(),
-        name: None,
-        tree,
-    })
-}
-
 /// Give every session of `org` that has none an empty arrangement: a first
-/// start and an import, before the records reach the store.
+/// start and an import, before the records reach the store. A session a
+/// command creates gets its arrangement from core in the same transition.
 pub(crate) fn ensure_arrangements(org: &mut Org) {
-    let mut keys = OsKeys;
-    let mut deltas = Vec::new();
-    for session in org.sessions().filter(|s| s.arrangement.is_none()) {
-        let (session, arrangement) = arranged(session.clone(), &[], &mut keys);
-        deltas.push(phux_core::Delta::PutArrangement(arrangement));
-        deltas.push(phux_core::Delta::PutSession(session));
-    }
-    org.commit(&phux_core::Transition {
-        deltas,
-        events: Vec::new(),
-        receipt: None,
-    });
-}
-
-/// Give every session `transition` creates an arrangement in the same
-/// transaction, with its `ArrangementChanged` event. A session created with
-/// its first resource shows it in one group, so every client sees the
-/// launched terminal placed; an empty session's arrangement has no groups.
-/// Core creates sessions without one; the server adds it before the store
-/// sees the transition.
-fn arrange_new_sessions(org: &Org, transition: &mut phux_core::Transition, keys: &mut OsKeys) {
-    let mut added = Vec::new();
-    for delta in &mut transition.deltas {
-        if let phux_core::Delta::PutSession(session) = delta
-            && session.arrangement.is_none()
-            && org.session(&session.key).is_none()
-        {
-            let members = session.members.clone();
-            let (with, arrangement) = arranged(session.clone(), &members, keys);
-            *session = with;
-            added.push(arrangement);
-        }
-    }
-    for arrangement in added {
-        transition
-            .events
-            .push(phux_core::Event::ArrangementChanged {
-                key: arrangement.key,
-                owner: arrangement.owner,
-                revision: Some(arrangement.revision),
-            });
-        transition
-            .deltas
-            .insert(0, phux_core::Delta::PutArrangement(arrangement));
-    }
+    org.ensure_arrangements(&mut OsKeys);
 }
 
 impl ServerState {
@@ -328,18 +242,13 @@ impl ServerState {
         client: Option<ClientId>,
     ) -> Result<OrgCommit, Refusal> {
         let now = now_stamp();
-        let mut applied = phux_core::apply(
+        let applied = phux_core::apply(
             self.sessions.registry.org(),
             cmd,
             actor,
             now,
             &mut self.org.keys,
         )?;
-        arrange_new_sessions(
-            self.sessions.registry.org(),
-            &mut applied.transition,
-            &mut self.org.keys,
-        );
         if applied.replayed {
             return Ok(OrgCommit {
                 applied,
@@ -790,34 +699,6 @@ mod tests {
 
         let empty = state.seed_empty_session("empty").expect("empty session");
         assert!(arrangement_of(&state, empty).groups.is_empty());
-    }
-
-    /// More than one placed member shares the first group evenly.
-    #[test]
-    fn a_first_group_gives_every_member_an_even_share() {
-        let members: Vec<_> = (1..=3_u8)
-            .map(|n| phux_core::ResourceKey::from_bytes([n; 16]))
-            .collect();
-        let group = first_group(&members, &mut OsKeys).expect("a group");
-        let phux_core::LayoutNode::Split {
-            ratio, ref left, ..
-        } = group.tree
-        else {
-            panic!("three members split: {:?}", group.tree);
-        };
-        assert!((ratio - 2.0 / 3.0).abs() < f32::EPSILON);
-        assert!(matches!(
-            **left,
-            phux_core::LayoutNode::Split { ratio, .. } if (ratio - 0.5).abs() < f32::EPSILON
-        ));
-        let arrangement = phux_core::Arrangement {
-            key: phux_core::ArrangementKey::from_bytes([9; 16]),
-            owner: phux_core::ArrangementOwner::Session(phux_core::SessionKey::from_bytes([8; 16])),
-            groups: vec![group],
-            revision: phux_core::Revision::FIRST,
-        };
-        assert_eq!(arrangement.resources(), members);
-        assert!(first_group(&[], &mut OsKeys).is_none());
     }
 
     #[test]

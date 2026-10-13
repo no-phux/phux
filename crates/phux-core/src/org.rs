@@ -15,8 +15,8 @@ use crate::actor::Actor;
 use crate::arrangement::{Arrangement, ArrangementOwner};
 use crate::command::{Op, Reply};
 use crate::keys::{
-    ActivationId, ArrangementKey, AuthorityId, InstanceId, OperationId, ResourceKey, Revision,
-    SessionKey,
+    ActivationId, ArrangementKey, AuthorityId, FreshKeys, InstanceId, OperationId, ResourceKey,
+    Revision, SessionKey,
 };
 use crate::resource::{Resource, ResourceKind};
 use crate::session::{Attrs, Session};
@@ -403,6 +403,34 @@ impl Org {
             RecordRef::Session(k) => self.sessions.get(&k).map(|s| s.revision),
             RecordRef::Resource(k) => self.resources.get(&k).map(|r| r.revision),
             RecordRef::Arrangement(k) => self.arrangements.get(&k).map(|a| a.revision),
+        }
+    }
+
+    /// Give every session that has none an empty arrangement at revision 1,
+    /// with keys from `fresh`: a first start's Inbox and an imported tree,
+    /// before the records reach a store. A session [`crate::apply`] creates
+    /// already has one.
+    pub fn ensure_arrangements(&mut self, fresh: &mut dyn FreshKeys) {
+        let unarranged: Vec<SessionKey> = self
+            .sessions
+            .values()
+            .filter(|s| s.arrangement.is_none())
+            .map(|s| s.key)
+            .collect();
+        for session in unarranged {
+            let key = ArrangementKey::from_bytes(fresh.fresh());
+            self.arrangements.insert(
+                key,
+                Arrangement {
+                    key,
+                    owner: ArrangementOwner::Session(session),
+                    groups: Vec::new(),
+                    revision: Revision::FIRST,
+                },
+            );
+            if let Some(s) = self.sessions.get_mut(&session) {
+                s.arrangement = Some(key);
+            }
         }
     }
 
