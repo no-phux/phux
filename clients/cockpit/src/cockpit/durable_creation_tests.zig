@@ -168,8 +168,7 @@ fn confirmCreation(engine: *engine_module.Engine, kind: enum { add, split }) !vo
         try workspaceReply(engine, "workspace_split_metadata.bin", 8, 5);
         try workspaceReply(engine, "workspace_split_state.bin", 7, 4);
     } else {
-        try workspaceReply(engine, "workspace_add_metadata.bin", 14, 5);
-        try workspaceReply(engine, "workspace_add_state.bin", 13, 4);
+        try fixture.confirmLayoutWrite(engine.model.phux().?.bridge, 5, "workspace_add_state.bin", 13, 4);
     }
     try drain(engine);
     try testing.expectEqual(@as(usize, 0), engine.creation.count());
@@ -215,8 +214,11 @@ test "confirmed placement starts the next queued creation without a timer or ter
         .kind = .add,
         .terminal_ref = refFor(9),
     }, remote.connectionEpoch());
+    // The add's confirming read echoes the layout it wrote.
+    const written = try fixture.queuedLayoutWrite(remote.bridge);
+    defer testing.allocator.free(written);
     remote.bridge.outgoing.reset();
-    try workspaceReply(engine, "workspace_add_metadata.bin", 14, 5);
+    try fixture.stageLayoutValue(remote.bridge, written, 5);
     try workspaceReply(engine, "workspace_add_state.bin", 13, 4);
     try drain(engine);
 
@@ -336,8 +338,8 @@ pub fn incarnationRecovery() !void {
     try reconnectBootstrap(engine, false);
     try testing.expect(model.attachmentPending(ref));
     try testing.expect(model.terminalOwner(ref) == null);
-    try fixture.stageWorkspaceFixture(remote.bridge, "workspace_initial_metadata.bin");
-    try fixture.stageWorkspaceFixture(remote.bridge, "workspace_initial_state.bin");
+    try fixture.stageWorkspaceFixture(remote.bridge, "workspace_arranged_metadata.bin");
+    try fixture.stageWorkspaceFixture(remote.bridge, "workspace_arranged_state.bin");
     try drain(engine);
     try testing.expect(!model.attachmentPending(ref));
     try testing.expect(model.terminalOwner(ref) != null);
@@ -533,8 +535,8 @@ pub fn emptyTitleReconnect() !void {
     _ = try remote.host.drainReadiness();
     try remote.host.attachSessionId(1, .{ .cols = 80, .rows = 24 });
     try feed(engine, "attached.bin");
-    try fixture.stageWorkspaceFixture(remote.bridge, "workspace_initial_metadata.bin");
-    try fixture.stageWorkspaceFixture(remote.bridge, "workspace_initial_state.bin");
+    try fixture.stageWorkspaceFixture(remote.bridge, "workspace_arranged_metadata.bin");
+    try fixture.stageWorkspaceFixture(remote.bridge, "workspace_arranged_state.bin");
     try drain(engine);
     try testing.expectEqualStrings("", engine.model.remotePresentation(ref).?.title);
 }
@@ -672,8 +674,7 @@ pub fn navigationSharedAdmission(fx: anytype) !void {
     try workspaceReply(engine, "workspace_refresh_metadata.bin", 3, 5);
     try workspaceReply(engine, "workspace_refresh_state.bin", 2, 4);
     try drain(engine);
-    try workspaceReply(engine, "workspace_add_metadata.bin", 14, 7);
-    try workspaceReply(engine, "workspace_add_state.bin", 13, 6);
+    try fixture.confirmLayoutWrite(engine.model.phux().?.bridge, 7, "workspace_add_state.bin", 13, 6);
     try drain(engine);
     try testing.expect(model.focusedTerminalRef().?.eql(ref));
     try testing.expectEqual(@as(usize, 2), model.ws().tab_count);
@@ -704,7 +705,7 @@ pub fn sharedCloseAndCatalogAdmission() !void {
     try confirmCreation(engine, .add);
     const ref = refFor(8);
     const owner = remote.owner(ref).?;
-    try testing.expect(command(engine, .native_command, @intFromEnum(protocol.NativeCommand.close_focused_pane)));
+    try testing.expect(command(engine, .native_command, @intFromEnum(protocol.NativeCommand.close_view)));
     try testing.expect(model.locateTerminal(ref) != null);
     try workspaceReply(engine, "workspace_refresh_metadata.bin", 3, 8);
     try workspaceReply(engine, "workspace_refresh_state.bin", 2, 7);
@@ -731,8 +732,7 @@ pub fn sharedCloseAndCatalogAdmission() !void {
     try workspaceReply(engine, "workspace_refresh_metadata.bin", 3, 11);
     try workspaceReply(engine, "workspace_refresh_state.bin", 2, 10);
     try drain(engine);
-    try workspaceReply(engine, "workspace_add_metadata.bin", 14, 13);
-    try workspaceReply(engine, "workspace_add_state.bin", 13, 12);
+    try fixture.confirmLayoutWrite(engine.model.phux().?.bridge, 13, "workspace_add_state.bin", 13, 12);
     try drain(engine);
     try testing.expect(model.locateTerminal(ref) != null);
     try testing.expect(remote.owner(ref) != null);
@@ -794,8 +794,8 @@ pub fn offlineSharedCloseRefuses() !void {
         try fixture.stageFixture(remote.bridge, "hello.bin");
         _ = engine.onPhuxChannel(&ChannelFx{}, .{ .key = support.phux_channel_key, .kind = .data }, null);
         try feed(engine, "attached.bin");
-        try fixture.stageWorkspaceFixture(remote.bridge, "workspace_initial_metadata.bin");
-        try fixture.stageWorkspaceFixture(remote.bridge, "workspace_initial_state.bin");
+        try fixture.stageWorkspaceFixture(remote.bridge, "workspace_arranged_metadata.bin");
+        try fixture.stageWorkspaceFixture(remote.bridge, "workspace_arranged_state.bin");
         try drain(engine);
         try testing.expect(remote.owner(ref) != null);
         // A reconnect publishes durable layout, but cannot reopen a view the
@@ -1100,8 +1100,7 @@ test "creation disconnect preserves already observed shared refusal or confirmat
         try workspaceReply(engine, "workspace_refresh_state.bin", 2, 2);
         try drain(engine);
         if (confirmed) {
-            try workspaceReply(engine, "workspace_add_metadata.bin", 14, 5);
-            try workspaceReply(engine, "workspace_add_state.bin", 13, 4);
+            try fixture.confirmLayoutWrite(engine.model.phux().?.bridge, 5, "workspace_add_state.bin", 13, 4);
         } else {
             try workspaceReply(engine, "workspace_refresh_metadata.bin", 3, 5);
             try workspaceReply(engine, "workspace_refresh_state.bin", 2, 4);
@@ -1117,4 +1116,89 @@ test "creation disconnect preserves already observed shared refusal or confirmat
         try testing.expectEqual(@as(u32, 3), remote.host.operation_ledger.last_id);
         try testing.expectEqual(@as(usize, 1), model.primary.tab_count);
     }
+}
+
+test "kill pane terminates the exact terminal and its pane leaves when the server closes it" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const model = engine.model;
+    const remote = model.phux().?;
+    const ref = refFor(7);
+    try testing.expect(model.locateTerminal(ref) != null);
+    try testing.expect(command(engine, .native_command, @intFromEnum(protocol.NativeCommand.close_focused_pane)));
+    // One close of the terminal and no arrangement edit: the view stays
+    // until the server reports the terminal closed.
+    try testing.expectEqual(@as(usize, 1), remote.bridge.outgoing.pendingCount());
+    try testing.expect(model.shared_mutations.pending[0] == null);
+    try testing.expect(model.locateTerminal(ref) != null);
+    try feed(engine, "detach-ok.bin");
+    try testing.expect(model.locateTerminal(ref) != null);
+    try feed(engine, "remote-killed.bin");
+    try testing.expect(model.locateTerminal(ref) == null);
+}
+
+test "kill tab terminates every terminal the tab shows and close view only edits the arrangement" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const tab_commands = engine_module.tab_commands;
+    for ([_]tab_commands.Action{ .kill, .close }) |action| {
+        const engine = try start();
+        defer engine.destroy();
+        const model = engine.model;
+        const remote = model.phux().?;
+        const target = tab_commands.capture(model, 0, 0).?;
+        var packet: [tab_commands.request_len]u8 = undefined;
+        packet[0] = 1;
+        packet[1] = @intFromEnum(action);
+        std.mem.writeInt(u64, packet[2..10], 41, .little);
+        @memcpy(packet[10..], &target.encode());
+        const receipt = engine.applyTabCommand(&packet);
+        try testing.expectEqual(tab_commands.Reason.none, receipt.reason);
+        try testing.expect(model.locateTerminal(refFor(7)) != null);
+        switch (action) {
+            .kill => {
+                try testing.expectEqual(tab_commands.Status.applied, receipt.status);
+                try testing.expectEqual(@as(usize, 1), remote.bridge.outgoing.pendingCount());
+                try testing.expect(model.shared_mutations.pending[0] == null);
+            },
+            else => {
+                try testing.expectEqual(tab_commands.Status.accepted_pending, receipt.status);
+                try testing.expectEqual(.remove_window, model.shared_mutations.pending[0].?.mutation.kind);
+            },
+        }
+    }
+}
+
+test "close view of a scratch pane is refused: it has no session to keep running in" {
+    const engine = try engine_module.Engine.create(testing.allocator, testing.io);
+    defer engine.destroy();
+    try testing.expect(engine.model.phux() == null);
+    const before = engine.model.provider.activeCount();
+    try testing.expect(!command(engine, .native_command, @intFromEnum(protocol.NativeCommand.close_view)));
+    try testing.expectEqual(before, engine.model.provider.activeCount());
+}
+
+test "a terminal of the attached session that no group shows is placed in a group of its own" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try engine_module.Engine.create(testing.allocator, testing.io);
+    defer engine.destroy();
+    const remote = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = "/fixture.sock" }, null, "test");
+    model_module.attachPhuxProvider(engine.model, remote);
+    try fixture.attachHostUnarranged(remote.host);
+    remote.attach_queued = true;
+    try drain(engine);
+    const model = engine.model;
+    // The session reads with no groups: Cockpit asks for one around 7.
+    try testing.expectEqual(@as(usize, 0), remote.workspaceSnapshot().windows.len);
+    const pending = model.shared_mutations.pending[0].?;
+    try testing.expectEqual(.add, pending.mutation.kind);
+    try testing.expect(pending.mutation.terminal_ref.?.eql(refFor(7)));
+    try testing.expectEqual(.pending, remote.workspaceSnapshot().status);
+    // The confirming read echoes the write; the registry is unchanged.
+    try fixture.confirmLayoutWrite(remote.bridge, 3, "workspace_initial_state.bin", 0, 2);
+    try drain(engine);
+    try testing.expectEqual(@as(usize, 1), remote.workspaceSnapshot().windows.len);
+    try testing.expectEqual(@as(u32, 0), remote.workspaceSnapshot().unarranged_count);
+    try testing.expect(model.locateTerminal(refFor(7)) != null);
+    try testing.expect(model.shared_mutations.pending[0] == null);
 }

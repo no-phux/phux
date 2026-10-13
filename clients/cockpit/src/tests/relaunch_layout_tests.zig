@@ -715,7 +715,7 @@ test "the active coordinator's first projection landing after the restored peer'
     defer launch.engine.destroy();
     const model = launch.engine.model;
     var fx: PeerFx = .{};
-    try restoreMini(&launch, &fx, null, "workspace_initial_metadata.bin", "workspace_initial_state.bin");
+    try restoreMini(&launch, &fx, null, "workspace_arranged_metadata.bin", "workspace_arranged_state.bin");
     try testing.expectEqual(@as(?contract.ProviderId, launch.mini.providerId()), frontTab(model).authority);
     try testing.expect(model.locateTerminal(try refOn(launch.here, 7)) == null);
 
@@ -734,7 +734,7 @@ test "the active coordinator's first projection landing after the restored peer'
     defer second.engine.destroy();
     const second_model = second.engine.model;
     var second_fx: PeerFx = .{};
-    try restoreMini(&second, &second_fx, null, "workspace_initial_metadata.bin", "workspace_initial_state.bin");
+    try restoreMini(&second, &second_fx, null, "workspace_arranged_metadata.bin", "workspace_arranged_state.bin");
     // What a navigation to that terminal leaves for its projection.
     second_model.shared_workspace.desired_terminal = try refOn(second.here, 7);
     second.projectHere(&second_fx);

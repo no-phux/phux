@@ -548,8 +548,8 @@ pub const PeerSession = struct { coordinator: support.ProviderId, id: u32, attac
 /// Bound on the session name an `EmptyPick` keeps for display.
 pub const max_empty_pick_name_bytes: usize = 64;
 
-/// A peer's keep-empty session with no windows, picked in the switcher
-/// (ADR-0105). The window it was picked in shows the Empty session state
+/// A peer's persistent session with no members, picked in the switcher
+/// (ADR-0160). The window it was picked in shows the Empty session state
 /// instead of attaching it (native/empty_session.zig). New Tab sets
 /// `tab_requested`, which shows the session on that peer; `tab_queued` once
 /// its first tab's spawn is on its way there.

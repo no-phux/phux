@@ -2829,8 +2829,8 @@ const Rig = struct {
         _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
         try std.testing.expectEqual(.attached, remote.state());
         try std.testing.expectEqual(@as(u32, 0), engine.model.shared_workspace.session);
-        try std.testing.expect(remote.bridge.incoming.stage(@embedFile("providers/phux/fixtures/workspace_initial_metadata.bin")));
-        try std.testing.expect(remote.bridge.incoming.stage(@embedFile("providers/phux/fixtures/workspace_initial_state.bin")));
+        try std.testing.expect(remote.bridge.incoming.stage(@embedFile("providers/phux/fixtures/workspace_arranged_metadata.bin")));
+        try std.testing.expect(remote.bridge.incoming.stage(@embedFile("providers/phux/fixtures/workspace_arranged_state.bin")));
         _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
         try std.testing.expectEqual(@as(usize, 1), engine.model.remote_inventory_count);
         const ref = engine.model.focusedTerminalRef().?;
@@ -3708,7 +3708,7 @@ fn matchesTabMenu(menu: []const canvas.WidgetContextMenuItem, previous_disabled:
     const next = tabMenuItem(menu, "Move Right") orelse return false;
     if (previous_disabled != !menu[previous - 1].enabled) return false;
     if (next_disabled != !menu[next - 1].enabled) return false;
-    return tabMenuItem(menu, "Close Tab") != null;
+    return tabMenuItem(menu, "Close View") != null and tabMenuItem(menu, "Kill Tab") != null;
 }
 
 fn tabMenuHost(rig: *Rig, previous_disabled: bool, next_disabled: bool) !TabMenuHost {
@@ -3727,7 +3727,7 @@ fn tabMenuHostIn(rig: *Rig, window_id: native_sdk.platform.WindowId, label: []co
             .window_id = window_id,
             .label = label,
             .move_next_item = tabMenuItem(node.widget.context_menu, "Move Right").?,
-            .close_item = tabMenuItem(node.widget.context_menu, "Close Tab").?,
+            .close_item = tabMenuItem(node.widget.context_menu, "Close View").?,
         };
     }
     return error.TestExpectedTabMenu;
@@ -4765,7 +4765,7 @@ test "shipping secondary Phux menu retains the captured attachment after focus m
     _ = try first.drainReadiness();
     try fixture.stageFixture(first.bridge, "attached.bin");
     _ = try first.drainReadiness();
-    try fixture.stageWorkspaceFixture(first.bridge, "workspace_initial_metadata.bin");
+    try fixture.stageWorkspaceFixture(first.bridge, "workspace_arranged_metadata.bin");
     try fixture.stageFixture(first.bridge, "workspace_sessions_a_state.bin");
     _ = try first.drainReadiness();
     model.shared_workspace.attachment_id = first.context_id;
@@ -4784,7 +4784,7 @@ test "shipping secondary Phux menu retains the captured attachment after focus m
     _ = engine.onPeerChannel(&setup_fx, .{ .key = engine.peerChannelKey(slot), .kind = .data }, null);
     try fixture.stageFixture(second.bridge, "attached_session_b.bin");
     _ = engine.onPeerChannel(&setup_fx, .{ .key = engine.peerChannelKey(slot), .kind = .data }, null);
-    try fixture.stageWorkspaceFixture(second.bridge, "workspace_initial_metadata.bin");
+    try fixture.stageWorkspaceFixture(second.bridge, "workspace_arranged_metadata.bin");
     try fixture.stageFixture(second.bridge, "workspace_session_b_state.bin");
     _ = engine.onPeerChannel(&setup_fx, .{ .key = engine.peerChannelKey(slot), .kind = .data }, null);
     const second_owner = second.owner(ref).?;
@@ -5379,7 +5379,38 @@ test "shipping platform shortcut executes once and rejects the superseded regist
     try std.testing.expectEqual(before + 1, bridge.engine.?.model.ws().tab_count);
 }
 
-test "shipping Cmd W confirms a shared non-last tab close and remains responsive" {
+test "shipping Cmd W kills the focused Phux terminal and leaves the arrangement to the server" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.attachSharedTabFixture();
+    try rig.settleCurrent();
+    const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+    // Terminal 7, the live replica; the second tab's terminal is catalog-only.
+    const killing = engine.model.focusedTerminalRef().?;
+    const shortcut = for (rig.harness.null_platform.configuredShortcuts()) |item| {
+        if (std.mem.eql(u8, item.key, "w") and item.modifiers.command) break item;
+    } else return error.TestExpectedCloseShortcut;
+    remote.bridge.outgoing.reset();
+
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .shortcut = .{
+        .id = shortcut.id,
+        .key = shortcut.key,
+        .modifiers = shortcut.modifiers,
+        .window_id = 1,
+    } });
+    // One close of the exact terminal, and no arrangement edit: the pane
+    // stays until the server reports the terminal closed.
+    try std.testing.expectEqual(@as(usize, 1), remote.bridge.outgoing.pendingCount());
+    try std.testing.expect(engine.model.shared_mutations.pending[0] == null);
+    try std.testing.expect(remote.workspaceSnapshot().status != .pending);
+    try std.testing.expectEqual(@as(usize, 2), engine.model.ws().tab_count);
+    try std.testing.expect(engine.model.locateTerminal(killing) != null);
+}
+
+test "shipping Close View confirms a shared non-last tab close and remains responsive" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
     defer rig.stop();
@@ -5391,16 +5422,8 @@ test "shipping Cmd W confirms a shared non-last tab close and remains responsive
     try rig.dispatch(.{ .select_tab = 1 });
     try rig.settleCurrent();
     const closing = engine.model.focusedTerminalRef().?;
-    const shortcut = for (rig.harness.null_platform.configuredShortcuts()) |item| {
-        if (std.mem.eql(u8, item.key, "w") and item.modifiers.command) break item;
-    } else return error.TestExpectedCloseShortcut;
 
-    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .shortcut = .{
-        .id = shortcut.id,
-        .key = shortcut.key,
-        .modifiers = shortcut.modifiers,
-        .window_id = 1,
-    } });
+    try rig.dispatch(core.commandMsg("terminal.close-view").?);
     try std.testing.expectEqual(@as(usize, 2), engine.model.ws().tab_count);
     const pending = engine.model.shared_mutations.pending[0] orelse return error.TestExpectedSharedClose;
     try std.testing.expectEqual(.remove, pending.mutation.kind);

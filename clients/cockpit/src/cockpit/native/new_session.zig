@@ -1,5 +1,6 @@
 //! New Session's captured destination and correlated asynchronous result.
-//! The provider hook performs the real coordinator operation with keep_empty.
+//! The provider hook performs the real coordinator operation for a persistent
+//! session: Cockpit's New Session survives its last member (ADR-0160).
 const std = @import("std");
 const windows = @import("ts_window_navigation.zig");
 
@@ -170,7 +171,7 @@ pub const Controller = struct {
         if (entry.phase != .ready or entry.cancelled) return;
         if (!entry.windowCurrent(engine)) return entry.refuse("The invoking window was closed. Open New Session again.");
         if (!engine.newSessionDestinationCurrent(entry.destination)) return entry.refuse("The destination connection changed. Open New Session again.");
-        const id = engine.sendNewSession(entry.destination, name, directory, true) catch |err| {
+        const id = engine.sendNewSession(entry.destination, name, directory, .persistent) catch |err| {
             var reason: [max_text_bytes]u8 = undefined;
             entry.refuse(std.fmt.bufPrint(&reason, "Could not create the session ({s}). Check the machine connection and try again.", .{@errorName(err)}) catch "Could not create the session. Check the machine connection and try again.");
             return;
@@ -242,7 +243,7 @@ const Fixture = struct {
     current: bool = true,
     fail_send: bool = false,
     sent: u32 = 0,
-    keep: bool = false,
+    lifetime: enum { unknown, persistent, ephemeral } = .unknown,
     outcomes: [2]Outcome = .{ .pending, .pending },
     released: u32 = 0,
     released_destination: ?Destination = null,
@@ -253,10 +254,10 @@ const Fixture = struct {
     pub fn newSessionDestinationCurrent(self: *@This(), _: Destination) bool {
         return self.current;
     }
-    pub fn sendNewSession(self: *@This(), _: Destination, _: []const u8, _: []const u8, keep: bool) !u32 {
+    pub fn sendNewSession(self: *@This(), _: Destination, _: []const u8, _: []const u8, lifetime: @FieldType(@This(), "lifetime")) !u32 {
         if (self.fail_send) return error.ConnectionUnavailable;
         self.sent += 1;
-        self.keep = keep;
+        self.lifetime = lifetime;
         return self.sent;
     }
     pub fn pollNewSession(self: *@This(), _: Destination, id: u32) Outcome {
@@ -280,7 +281,7 @@ fn testRequest(kind: Kind, token: u64, name: []const u8, out: []u8) []const u8 {
     return out[0 .. 11 + name.len];
 }
 
-test "new session keeps empty and correlates concurrent out of order results" {
+test "new session is persistent and correlates concurrent out of order results" {
     var model: Fixture.Model = .{};
     var engine: Fixture = .{ .model = &model };
     var controller: Controller = .{};
@@ -291,7 +292,7 @@ test "new session keeps empty and correlates concurrent out of order results" {
     _ = try controller.handle(&engine, .{}, testRequest(.create, 1, "Build", &request), &response);
     _ = try controller.handle(&engine, .{}, testRequest(.create, 1, "Build", &request), &response);
     try std.testing.expectEqual(@as(u32, 1), engine.sent);
-    try std.testing.expect(engine.keep);
+    try std.testing.expectEqual(.persistent, engine.lifetime);
     engine.window = 1;
     engine.provider = 8;
     _ = try controller.handle(&engine, .{}, testRequest(.describe, 0, "", &request), &response);

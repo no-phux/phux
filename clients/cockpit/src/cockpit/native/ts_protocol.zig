@@ -74,6 +74,9 @@ pub const NativeCommand = enum(u8) {
     paste_cancel = 27,
     /// Seize the focused terminal's input lease from the client driving it.
     take_over_input = 28,
+    /// Close View: remove the focused pane from its session's arrangement.
+    /// Its terminal keeps running and stays a member of the session.
+    close_view = 29,
 };
 
 pub fn decodeNativeCommand(raw: u8) ?NativeCommand {
@@ -106,6 +109,7 @@ pub fn decodeNativeCommand(raw: u8) ?NativeCommand {
         26 => .paste_confirm,
         27 => .paste_cancel,
         28 => .take_over_input,
+        29 => .close_view,
         else => null,
     };
 }

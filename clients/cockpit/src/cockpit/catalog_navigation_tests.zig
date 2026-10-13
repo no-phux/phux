@@ -101,8 +101,7 @@ pub fn admission(fx: anytype) !void {
     try workspaceReply(engine, "workspace_refresh_metadata.bin", 3, 5);
     try workspaceReply(engine, "workspace_refresh_state.bin", 2, 4);
     try drain(engine);
-    try workspaceReply(engine, "workspace_add_metadata.bin", 14, 7);
-    try workspaceReply(engine, "workspace_add_state.bin", 13, 6);
+    try fixture.confirmLayoutWrite(engine.model.phux().?.bridge, 7, "workspace_add_state.bin", 13, 6);
     try drain(engine);
     try testing.expect(model.focusedTerminalRef().?.eql(ref));
     try testing.expect(model.locateTerminal(ref) != null);
@@ -165,8 +164,8 @@ pub fn reconnectProvenance() !void {
     try remote.host.attachSessionId(1, .{ .cols = 80, .rows = 24 });
     try fixture.stageFixture(remote.bridge, "attached.bin");
     _ = try remote.host.drainReadiness();
-    try fixture.stageWorkspaceFixture(remote.bridge, "workspace_initial_metadata.bin");
-    try fixture.stageWorkspaceFixture(remote.bridge, "workspace_initial_state.bin");
+    try fixture.stageWorkspaceFixture(remote.bridge, "workspace_arranged_metadata.bin");
+    try fixture.stageWorkspaceFixture(remote.bridge, "workspace_arranged_state.bin");
     _ = try remote.host.drainReadiness();
     try testing.expect(during_session.resolve(engine.model) == null);
     try testing.expect(during_terminal.resolve(engine.model) == null);

@@ -8,6 +8,7 @@ pub const LocalResourceId = provider_contract.LocalResourceId;
 pub const RemoteResourceId = provider_contract.RemoteResourceId;
 pub const ResourceId = provider_contract.ResourceId;
 pub const TerminalRef = provider_contract.TerminalRef;
+pub const SessionLifetime = provider_contract.SessionLifetime;
 pub const Generation = provider_contract.Generation;
 pub const ReplicaOwner = provider_contract.ReplicaOwner;
 pub const PixelSize = provider_contract.PixelSize;
@@ -130,7 +131,7 @@ const DisabledPhuxProvider = struct {
         kind: enum { spawn, attach, detach, kill_if },
         status: enum { success, refused, unknown_outcome },
         terminal_ref: ?TerminalRef,
-        error_domain: enum { none, spawn, protocol },
+        error_domain: enum { none, spawn, protocol, organization },
         error_code: u32,
         instance: ?[16]u8 = null,
 
@@ -152,7 +153,7 @@ const DisabledPhuxProvider = struct {
         window_count: u16,
         attached_client_count: u16,
         focused: bool,
-        keep_empty: bool = false,
+        lifetime: SessionLifetime = .unknown,
         empty: bool = false,
     };
     const SyncDelta = struct {
@@ -292,6 +293,7 @@ const DisabledPhuxProvider = struct {
         return &.{};
     }
     pub fn refreshStandby(_: *DisabledPhuxProvider) void {}
+    pub fn expireOperations(_: *DisabledPhuxProvider) void {}
     pub fn agentSessions(_: *const DisabledPhuxProvider) []const @This().AgentSession {
         return &.{};
     }

@@ -12,6 +12,11 @@ const native_sdk = @import("native_sdk");
 
 const canvas = native_sdk.canvas;
 
+/// Whether a session survives its last member (ADR-0160). `persistent`
+/// stays, empty, until deleted; `ephemeral` is deleted with its last member.
+/// `unknown` is a server that reports neither.
+pub const SessionLifetime = enum(u32) { unknown = 0, persistent = 1, ephemeral = 2 };
+
 /// Stable identity of a provider instance. The local provider has one fixed
 /// identity; the Phux provider keeps its identity across reconnects.
 pub const ProviderId = enum(u64) {

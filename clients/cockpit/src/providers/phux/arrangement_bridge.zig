@@ -1,4 +1,4 @@
-//! Transactional owning copy of the C workspace publication. No emulator slots.
+//! Transactional owning copy of the C arrangement publication. No emulator slots.
 const std = @import("std");
 const contract = @import("provider_contract");
 const ws = contract.workspace;
@@ -65,14 +65,14 @@ fn bytes(value: []const u8) c.PhuxBytes {
 }
 
 /// Returned pointers borrow the caller-owned mutation, never a local ID copy.
-pub fn mutation(value: *const ws.Mutation, request_id: u32, provider_id: contract.ProviderId) !c.PhuxWorkspaceMutation {
+pub fn mutation(value: *const ws.Mutation, request_id: u32, provider_id: contract.ProviderId) !c.PhuxArrangementMutation {
     _ = try text(bytes(value.name));
-    var raw = record(c.PhuxWorkspaceMutation);
+    var raw = record(c.PhuxArrangementMutation);
     raw.request_id = request_id;
     raw.expected_revision = value.expected_revision;
     raw.session_id = value.session_id;
     raw.kind = @intFromEnum(value.kind);
-    raw.window_id = value.window_id;
+    raw.group_id = value.window_id;
     raw.terminal_id = try rawTerminal(&value.terminal_ref, provider_id);
     raw.new_terminal_id = try rawTerminal(&value.new_terminal_ref, provider_id);
     raw.name = bytes(value.name);
@@ -127,13 +127,13 @@ pub const Store = struct {
     }
 
     pub fn capture(self: *Store, gpa: std.mem.Allocator, client: *const c.PhuxClient) !bool {
-        var raw = record(c.PhuxWorkspaceInfo);
-        try check(c.phux_client_workspace_info(client, &raw));
+        var raw = record(c.PhuxArrangementInfo);
+        try check(c.phux_client_arrangement_info(client, &raw));
         return self.captureInfo(gpa, client, raw);
     }
 
     /// Public for adversarial ABI capacity tests. Adoption is all-or-nothing.
-    pub fn captureInfo(self: *Store, gpa: std.mem.Allocator, client: *const c.PhuxClient, raw: c.PhuxWorkspaceInfo) !bool {
+    pub fn captureInfo(self: *Store, gpa: std.mem.Allocator, client: *const c.PhuxClient, raw: c.PhuxArrangementInfo) !bool {
         try validateCounts(raw);
         const message = try text(raw.message);
         const info = try infoFromC(raw);
@@ -157,19 +157,19 @@ pub const Store = struct {
         return self.info.revision != 0 and self.info.revision == info.revision and self.info.session_id == info.session_id;
     }
 
-    fn copyRecords(self: *Store, gpa: std.mem.Allocator, client: *const c.PhuxClient, info: c.PhuxWorkspaceInfo) !void {
-        self.windows = try gpa.alloc(ws.Window, info.window_count);
+    fn copyRecords(self: *Store, gpa: std.mem.Allocator, client: *const c.PhuxClient, info: c.PhuxArrangementInfo) !void {
+        self.windows = try gpa.alloc(ws.Window, info.group_count);
         self.nodes = try gpa.alloc(ws.Node, info.node_count);
         self.catalog = try gpa.alloc(ws.CatalogTerminal, info.terminal_count);
         for (self.windows, 0..) |*window, index| {
-            var raw = record(c.PhuxWorkspaceWindow);
-            try check(c.phux_client_workspace_window_get(client, index, &raw));
+            var raw = record(c.PhuxArrangementGroup);
+            try check(c.phux_client_arrangement_group_get(client, index, &raw));
             if (raw.root_node >= info.node_count) return error.InvalidWorkspace;
-            window.* = .{ .id = raw.window_id, .name = try text(raw.name), .root = raw.root_node };
+            window.* = .{ .id = raw.group_id, .name = try text(raw.name), .root = raw.root_node };
         }
         for (self.nodes, 0..) |*node, index| {
-            var raw = record(c.PhuxWorkspaceNode);
-            try check(c.phux_client_workspace_node_get(client, index, &raw));
+            var raw = record(c.PhuxArrangementNode);
+            try check(c.phux_client_arrangement_node_get(client, index, &raw));
             node.* = try nodeFromC(raw, info.node_count, self.provider_id);
         }
         for (self.catalog, 0..) |*entry, index| {
@@ -185,23 +185,24 @@ pub const Store = struct {
     }
 };
 
-fn validateCounts(raw: c.PhuxWorkspaceInfo) !void {
-    if (raw.window_count > ws.max_windows) return error.WorkspaceCapacity;
+fn validateCounts(raw: c.PhuxArrangementInfo) !void {
+    if (raw.group_count > ws.max_windows) return error.WorkspaceCapacity;
     if (raw.node_count > ws.max_nodes) return error.WorkspaceCapacity;
     if (raw.terminal_count > ws.max_terminals) return error.WorkspaceCapacity;
 }
 
-fn infoFromC(raw: c.PhuxWorkspaceInfo) !ws.Snapshot {
+fn infoFromC(raw: c.PhuxArrangementInfo) !ws.Snapshot {
     return .{
         .revision = raw.revision,
         .session_id = raw.session_id,
         .state = std.enums.fromInt(ws.State, raw.state) orelse return error.InvalidWorkspace,
         .status = std.enums.fromInt(ws.Status, raw.status) orelse return error.InvalidWorkspace,
         .request_id = raw.request_id,
+        .unarranged_count = raw.unarranged_count,
     };
 }
 
-fn nodeFromC(raw: c.PhuxWorkspaceNode, count: u32, provider_id: contract.ProviderId) !ws.Node {
+fn nodeFromC(raw: c.PhuxArrangementNode, count: u32, provider_id: contract.ProviderId) !ws.Node {
     if (raw.kind == 1) return .{ .kind = .leaf, .terminal_ref = try terminalRefFor(provider_id, raw.terminal_id) };
     try validateSplit(raw, count);
     return .{ .kind = switch (raw.kind) {
@@ -211,12 +212,12 @@ fn nodeFromC(raw: c.PhuxWorkspaceNode, count: u32, provider_id: contract.Provide
     }, .first = raw.first, .second = raw.second, .ratio = raw.ratio };
 }
 
-fn validateSplit(raw: c.PhuxWorkspaceNode, count: u32) !void {
+fn validateSplit(raw: c.PhuxArrangementNode, count: u32) !void {
     if (raw.first >= count or raw.second >= count) return error.InvalidWorkspace;
     if (!std.math.isFinite(raw.ratio) or raw.ratio <= 0 or raw.ratio >= 1) return error.InvalidWorkspace;
 }
 
-test "workspace mutation maps every field and borrows the owning satellite IDs" {
+test "arrangement mutation maps every field and borrows the owning satellite IDs" {
     const ref: contract.TerminalRef = .{ .provider_id = .phux, .terminal_id = .{
         .phux = try contract.RemoteResourceId.fromPhux(c.PHUX_RESOURCE_ID_SATELLITE, 91, "remote-builder"),
     } };
@@ -238,13 +239,13 @@ test "workspace mutation maps every field and borrows the owning satellite IDs" 
     // The same mutation addressed to another coordinator names no terminal of
     // it: refused before it reaches the wire.
     try std.testing.expectError(error.InvalidIdentity, mutation(&value, 71, contract.phuxCoordinatorId("mini")));
-    try std.testing.expectEqual(@sizeOf(c.PhuxWorkspaceMutation), raw.size);
+    try std.testing.expectEqual(@sizeOf(c.PhuxArrangementMutation), raw.size);
     try std.testing.expectEqual(c.PHUX_CLIENT_ABI_VERSION, raw.version);
     try std.testing.expectEqual(@as(u32, 71), raw.request_id);
     try std.testing.expectEqual(@as(u64, 44), raw.expected_revision);
     try std.testing.expectEqual(@as(u32, 12), raw.session_id);
     try std.testing.expectEqual(@as(u32, 2), raw.kind);
-    try std.testing.expectEqualSlices(u8, &value.window_id, &raw.window_id);
+    try std.testing.expectEqualSlices(u8, &value.window_id, &raw.group_id);
     try std.testing.expect((try terminalRef(raw.terminal_id)).eql(ref));
     try std.testing.expect((try terminalRef(raw.new_terminal_id)).eql(ref));
     try std.testing.expectEqual(@intFromPtr(value.terminal_ref.?.terminal_id.phux.host().ptr), @intFromPtr(raw.terminal_id.host.data));
@@ -257,7 +258,7 @@ test "workspace mutation maps every field and borrows the owning satellite IDs" 
     try std.testing.expectEqual(@as(u64, 5), raw.path_bits);
 }
 
-test "workspace text and identity copies reject overflow without truncation" {
+test "arrangement text and identity copies reject overflow without truncation" {
     var source = [_]u8{'x'} ** (ws.max_text_bytes + 1);
     const good = try text(bytes(source[0..ws.max_text_bytes]));
     source[0] = 'y';
@@ -271,8 +272,8 @@ test "workspace text and identity copies reject overflow without truncation" {
     try std.testing.expectEqualStrings("build", ref.terminal_id.phux.host());
 }
 
-test "workspace split ratios require two nonempty panes" {
-    var raw = record(c.PhuxWorkspaceNode);
+test "arrangement split ratios require two nonempty panes" {
+    var raw = record(c.PhuxArrangementNode);
     raw.kind = 2;
     raw.first = 0;
     raw.second = 1;

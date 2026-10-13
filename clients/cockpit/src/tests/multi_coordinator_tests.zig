@@ -919,8 +919,7 @@ test "New Tab, reorder and split with a peer's pane focused go to that peer and 
     try miniWorkspaceReply(&pair, "workspace_refresh_metadata.bin", 3, 3);
     try miniWorkspaceReply(&pair, "workspace_refresh_state.bin", 2, 2);
     drainMini(&pair, &fx);
-    try miniWorkspaceReply(&pair, "workspace_add_metadata.bin", 14, 5);
-    try miniWorkspaceReply(&pair, "workspace_add_state.bin", 13, 4);
+    try fixture.confirmLayoutWrite(pair.mini.bridge, 5, "workspace_add_state.bin", 13, 4);
     drainMini(&pair, &fx);
     try testing.expectEqual(@as(usize, 0), engine.peer_edits.pendingCreations(0));
     try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
@@ -1466,7 +1465,7 @@ test "a peer's empty session is listed as empty, and picking it attaches nothing
     try testing.expect((try mini.drainReadiness()).sessions_listed);
     const listed = mini.standbyCatalog();
     try testing.expect(!listed[0].empty);
-    try testing.expect(listed[1].empty and listed[1].keep_empty);
+    try testing.expect(listed[1].empty and listed[1].lifetime == .persistent);
     _ = countFrames(mini);
     _ = countFrames(here);
 
@@ -1601,8 +1600,7 @@ test "New Window with a peer's pane focused opens its tab on that peer, in the n
     try miniWorkspaceReply(&pair, "workspace_refresh_metadata.bin", 3, 3);
     try miniWorkspaceReply(&pair, "workspace_refresh_state.bin", 2, 2);
     drainMini(&pair, &fx);
-    try miniWorkspaceReply(&pair, "workspace_add_metadata.bin", 14, 5);
-    try miniWorkspaceReply(&pair, "workspace_add_state.bin", 13, 4);
+    try fixture.confirmLayoutWrite(pair.mini.bridge, 5, "workspace_add_state.bin", 13, 4);
     drainMini(&pair, &fx);
     const mini8 = try refOn(pair.mini, 8);
     try testing.expectEqual(@as(usize, 0), engine.peer_edits.pendingCreations(0));

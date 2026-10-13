@@ -20,8 +20,8 @@ test "shipping painter applies configured remote theme on every paint without fr
     defer app.deinitModel(&model);
     try remote.host.start("theme");
     inline for (.{ "hello", "attached", "begin", "chunk", "ready", "attach-ready", "tail", "reset-colors" }) |name| try frame(remote, name);
-    try app.PhuxProvider.test_support.stageWorkspaceFixture(remote.bridge, "workspace_initial_metadata.bin");
-    try app.PhuxProvider.test_support.stageWorkspaceFixture(remote.bridge, "workspace_initial_state.bin");
+    try app.PhuxProvider.test_support.stageWorkspaceFixture(remote.bridge, "workspace_arranged_metadata.bin");
+    try app.PhuxProvider.test_support.stageWorkspaceFixture(remote.bridge, "workspace_arranged_state.bin");
     _ = try remote.drainReadiness();
     model.reconcileRemoteTerminals();
     try testing.expect(try model.shared_workspace.apply(&model, remote.workspaceSnapshot(), remote.connectionEpoch()));

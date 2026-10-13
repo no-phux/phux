@@ -387,6 +387,9 @@ pub const Engine = struct {
     creation: durable_creation.Creation = .{},
     session_handoff: ?u64 = null,
     last_workspace_refresh: ?std.Io.Timestamp = null,
+    /// The publication the last unarranged placement was asked against: a
+    /// refused placement is not asked again until the arrangement moves.
+    arranged_against: ?struct { epoch: u64, session: u32, revision: u64 } = null,
     /// Windows a workspace snapshot emptied, for an ended shell whose pane the
     /// snapshot removed before its EXITED arrived (workspace_lifecycle).
     snapshot_emptied: lifecycle.EmptiedWindows = .{},
@@ -787,6 +790,7 @@ pub const Engine = struct {
         // this drain's creation evidence (primary has no peer `holds` path).
         changed = empty_session.pumpAttachment(self, remote) or changed;
         changed = self.settleEmptyAttachment(remote, null, catalog_listed) or changed;
+        changed = self.arrangeUnarranged(remote) or changed;
         self.admitDesiredTerminal();
         if (self.creation.count() == 0 and remote.workspaceSnapshot().status != .pending) model.shared_workspace.releaseUnused(model);
         model.shared_workspace.subscribe(model);
@@ -795,6 +799,35 @@ pub const Engine = struct {
         // waiting for another provider wake strands quiet queues until polling.
         changed = model.shared_mutations.pump(model) or changed;
         return changed;
+    }
+
+    /// A session's arrangement can show none of its terminals: a fresh
+    /// session publishes no groups, its first shell unarranged, and nothing
+    /// is synthesized for it. Cockpit places such a terminal itself, in a
+    /// group of its own, rather than show its window with no tab. One
+    /// placement at a time, never while a creation is placing a terminal;
+    /// each confirmation is a new publication that may place the next.
+    fn arrangeUnarranged(self: *Engine, remote: *support.PhuxProvider) bool {
+        if (comptime !support.phux_enabled) return false;
+        const model = self.model;
+        const published = remote.workspaceSnapshot();
+        if (published.windows.len != 0 or published.unarranged_count == 0) return false;
+        if (published.state != .unarranged and published.state != .authoritative) return false;
+        if (self.creation.count() != 0 or !model.shared_mutations.idle(model)) return false;
+        const against: @TypeOf(self.arranged_against.?) = .{ .epoch = remote.connectionEpoch(), .session = published.session_id, .revision = published.revision };
+        if (self.arranged_against) |last| if (std.meta.eql(last, against)) return false;
+        const ref = firstUnarranged(remote, published.session_id) orelse return false;
+        self.arranged_against = against;
+        model.shared_mutations.requestArrange(model, ref) catch return false;
+        return true;
+    }
+
+    /// With no groups, every catalog terminal of the session is unarranged.
+    fn firstUnarranged(remote: *const support.PhuxProvider, session: u32) ?TerminalRef {
+        for (remote.catalogTerminals()) |entry| {
+            if (entry.session_id == session) return entry.terminal_ref;
+        }
+        return null;
     }
 
     fn projectSharedWorkspace(self: *Engine) !bool {
@@ -880,6 +913,10 @@ pub const Engine = struct {
         // announces only when the list actually changed, so this cannot feed
         // itself.
         for (self.model.peers.items) |entry| if (entry.provider) |peer| peer.refreshStandby();
+        // Organization operations settle on this timer too: a result past its
+        // retry horizon resolves, and a kill workflow times out.
+        if (self.model.phux()) |remote| remote.expireOperations();
+        for (self.model.peers.items) |entry| if (entry.provider) |peer| peer.expireOperations();
         const now = std.Io.Clock.awake.now(self.model.provider.io);
         if (self.last_workspace_refresh) |last| {
             if (last.durationTo(now).toMilliseconds() < 1000) return;
@@ -1171,7 +1208,7 @@ pub const Engine = struct {
 
     fn applyLocalTabAction(self: *Engine, window: usize, index: u8, action: tab_commands.Action, fx: anytype) tab_commands.Status {
         const changed = switch (action) {
-            .close => lifecycle.closeTab(self.model, fx, window, index),
+            .close, .kill => lifecycle.closeTab(self.model, fx, window, index),
             .previous, .next => self.moveLocalTab(window, index, action == .next),
             .others => self.closeOtherLocalTabs(window, index, fx),
         };
@@ -1274,6 +1311,7 @@ pub const Engine = struct {
         const remote = self.model.phuxForTree(tree) orelse return null;
         if (remote.context_id != attachment) return null;
         if (action == .others) return null;
+        if (action == .kill) return if (self.killTerminalsOf(remote, tree)) .applied else .rejected;
         if (action == .close) return self.applySharedTabClose(id, workspace, index, remote, attachment);
         return self.applySharedTabReorder(id, workspace, index, remote, attachment, action == .next);
     }
@@ -1507,7 +1545,7 @@ pub const Engine = struct {
     /// Null when the command does not address a peer's tab or pane.
     fn peerNativeCommand(self: *Engine, command: u8) ?bool {
         return switch (command) {
-            3 => self.peerClosePane(),
+            @intFromEnum(protocol.NativeCommand.close_view) => self.peerClosePane(),
             4 => self.peerCreate(.split_right),
             5 => self.peerCreate(.split_down),
             8, 9 => self.peerReorderSelected(command == 9),
@@ -1582,6 +1620,11 @@ pub const Engine = struct {
             if (!self.applyModelIntent(operation, fx)) return null;
             return .applied;
         }
+        // Kill Pane ends work on whichever coordinator owns the pane. No
+        // arrangement edit is correlated with it: the pane leaves when the
+        // coordinator reports the terminal closed.
+        if (operation.kind == .native_command and operation.argument == @intFromEnum(protocol.NativeCommand.close_focused_pane))
+            return if (self.killFocusedPane(fx)) .applied else null;
         self.admitDurableOperation(id, operation) catch return null;
         if (operationSupersedesFocus(operation)) {
             self.model.shared_workspace.desired_terminal = null;
@@ -1608,7 +1651,7 @@ pub const Engine = struct {
 
     fn admitDurableNative(self: *Engine, id: u64, command: u8) !void {
         switch (command) {
-            3 => {
+            @intFromEnum(protocol.NativeCommand.close_view) => {
                 const ref = self.model.focusedTerminalRef() orelse return error.StaleTarget;
                 if (!self.model.activeOwnsRef(ref)) return error.ForeignCoordinator;
                 try self.model.shared_mutations.requestRemoveCorrelated(self.model, ref, id);
@@ -1630,6 +1673,7 @@ pub const Engine = struct {
 
     fn operationSupersedesFocus(operation: protocol.Intent) bool {
         if (operation.kind != .native_command) return true;
+        if (operation.argument == @intFromEnum(protocol.NativeCommand.close_view)) return true;
         return operation.argument >= 3 and operation.argument <= 5;
     }
 
@@ -2641,8 +2685,8 @@ pub const Engine = struct {
         return new_session_runtime.current(self, destination);
     }
 
-    pub fn sendNewSession(self: *Engine, destination: new_session.Destination, name: []const u8, directory: []const u8, keep_empty: bool) !u32 {
-        return new_session_runtime.send(self, destination, name, directory, keep_empty);
+    pub fn sendNewSession(self: *Engine, destination: new_session.Destination, name: []const u8, directory: []const u8, lifetime: support.SessionLifetime) !u32 {
+        return new_session_runtime.send(self, destination, name, directory, lifetime);
     }
 
     pub fn pollNewSession(self: *Engine, destination: new_session.Destination, request: u32) new_session.Outcome {
@@ -2843,7 +2887,8 @@ pub const Engine = struct {
         const model = self.model;
         const changed = switch (command) {
             .previous_tab, .next_tab, .move_tab_left, .move_tab_right => self.tabCommand(command),
-            .close_focused_pane => self.closeFocusedPane(fx),
+            .close_focused_pane => self.killFocusedPane(fx),
+            .close_view => self.closeFocusedView(),
             .split_right => self.splitFocusedPane(.horizontal),
             .split_down => self.splitFocusedPane(.vertical),
             .previous_pane, .next_pane, .focus_left, .focus_right, .focus_up, .focus_down => self.paneFocusCommand(command),
@@ -3021,16 +3066,50 @@ pub const Engine = struct {
         pane.argv = local.paneArgvIn(cwd, &model.cwd_argv[slot]);
     }
 
-    fn closeFocusedPane(self: *Engine, fx: anytype) bool {
+    /// Kill Pane (Cmd+W): end the focused terminal's work. A Phux terminal
+    /// is terminated on the coordinator that owns it (RESOURCE_TERMINATE
+    /// against an ORGANIZATION server); its pane leaves when that coordinator
+    /// reports it closed, and the coordinator drops it from the session's
+    /// arrangement. A scratch pane ends with its pty.
+    fn killFocusedPane(self: *Engine, fx: anytype) bool {
         const ref = self.model.focusedTerminalRef() orelse return false;
-        if (self.model.phux() != null) {
-            // Another coordinator's pane closes on that coordinator.
-            if (!self.model.activeOwnsRef(ref)) return self.closePeerPane(ref);
-            self.model.shared_mutations.requestRemoveNative(self.model, ref) catch return false;
-            self.supersedeSelection();
-            return true;
-        }
-        return lifecycle.closePane(self.model, fx, ref, true);
+        if (self.model.phux() == null) return lifecycle.closePane(self.model, fx, ref, true);
+        const remote = self.model.phuxForRef(ref) orelse return false;
+        return killTerminals(remote, &.{ref});
+    }
+
+    /// Kill Tab: end the work of every terminal the tab shows, on the
+    /// coordinator that owns the tab.
+    fn killTerminalsOf(_: *Engine, remote: *support.PhuxProvider, tree: *const layout.Tree) bool {
+        var refs: [layout.max_panes]TerminalRef = undefined;
+        const count = tree.terminals(&refs);
+        return killTerminals(remote, refs[0..count]);
+    }
+
+    fn killTerminals(remote: *support.PhuxProvider, refs: []const TerminalRef) bool {
+        if (comptime !support.phux_enabled) return false;
+        if (refs.len == 0) return false;
+        const epoch = remote.connectionEpoch();
+        const request = if (refs.len == 1)
+            remote.requestCloseResource(refs[0], epoch)
+        else
+            remote.requestCloseResources(refs, epoch);
+        _ = request catch return false;
+        return true;
+    }
+
+    /// Close View: remove the focused pane from its session's arrangement on
+    /// the coordinator that owns it. The terminal keeps running and stays a
+    /// member of the session. A scratch pane has no session to stay in, so
+    /// there is no view to close apart from its work.
+    fn closeFocusedView(self: *Engine) bool {
+        const ref = self.model.focusedTerminalRef() orelse return false;
+        if (self.model.phux() == null) return false;
+        // Another coordinator's pane closes on that coordinator.
+        if (!self.model.activeOwnsRef(ref)) return self.closePeerPane(ref);
+        self.model.shared_mutations.requestRemoveNative(self.model, ref) catch return false;
+        self.supersedeSelection();
+        return true;
     }
 
     /// Take Over Input: seize the focused Phux terminal's input lease from the

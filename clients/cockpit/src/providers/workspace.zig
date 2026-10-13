@@ -25,6 +25,8 @@ pub const Text = struct {
     }
 };
 
+/// One group (tab) of the session's arrangement: a split tree of terminal
+/// leaves. Not an OS window.
 pub const Window = struct { id: WindowId, name: Text = .{}, root: u32 };
 pub const Node = struct {
     kind: enum { leaf, horizontal, vertical },
@@ -33,7 +35,9 @@ pub const Node = struct {
     second: u32 = 0,
     ratio: f32 = 0.5,
 };
-pub const State = enum(u32) { unavailable, fallback, authoritative, last_good_error };
+/// `unarranged`: the session has no stored arrangement, so it publishes zero
+/// groups and every terminal is unarranged; nothing is synthesized.
+pub const State = enum(u32) { unavailable, unarranged, authoritative, last_good_error };
 pub const Status = enum(u32) { idle, pending, confirmed, refused, unknown_outcome };
 /// Slices borrow host-owned storage until the next mutable provider call.
 pub const Snapshot = struct {
@@ -45,6 +49,9 @@ pub const Snapshot = struct {
     windows: []const Window = &.{},
     nodes: []const Node = &.{},
     message: []const u8 = &.{},
+    /// Terminals of the session that no group shows. The client places them
+    /// itself; the arrangement never claims a session is empty.
+    unarranged_count: u32 = 0,
 };
 pub const CatalogTerminal = struct {
     terminal_ref: contract.TerminalRef,

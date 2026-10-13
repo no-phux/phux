@@ -169,7 +169,7 @@ export function windowContexts(payload: Uint8Array): readonly WindowContext[] | 
   return at === payload.length ? records : null;
 }
 
-/// A keep-empty session with no windows, as the snapshot offers it: a mask
+/// A persistent session with no members, as the snapshot offers it: a mask
 /// of the windows showing its state (bit 0 is the main window), whether it
 /// was picked in the switcher, whether New Tab is on its way, and its name
 /// and host. `windows` is 0 when no record came.

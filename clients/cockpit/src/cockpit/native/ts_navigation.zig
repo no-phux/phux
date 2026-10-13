@@ -144,7 +144,7 @@ fn coordinatorLabel(model: *const Model, host: []const u8) []const u8 {
 /// The active coordinator's machine: the registered host's label, else
 /// "This Mac". A session row always names where it runs, so a person never
 /// has to infer the machine from which coordinator happens to be active. A
-/// keep-empty session with no windows reads "Empty session" (ADR-0105).
+/// persistent session with no members reads "Empty session" (ADR-0160).
 fn sessionDetail(model: *const Model, id: u32, out: []u8) []const u8 {
     const kind = if (activeSessionEmpty(model, id)) "Empty session" else "Phux session";
     const host = remoteHost(model) orelse "This Mac";
