@@ -158,6 +158,21 @@ jobs:
       - name: leave disk for the mbx objects export
         if: always()
         run: bash scripts/ci/mbx-export-headroom.sh
+      # The action exports only from its success post step. Run 38457963019
+      # compiled the test profile in 10m 37s, failed one assertion, and saved
+      # nothing. Pull requests do not write this archive.
+      - name: export objects when the lane fails
+        id: mbx-fail-export
+        if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.setup.outputs.cache-hit != 'true'
+        env:
+          PHUX_MBX_EXPORT_DIR: ${{ runner.temp }}/phux-mbx-objects
+        run: bash scripts/ci/mbx-export-failed-lane.sh "$PHUX_MBX_EXPORT_DIR"
+      - name: save objects when the lane fails
+        if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.setup.outputs.cache-hit != 'true' && steps.mbx-fail-export.outputs.exported == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/phux-mbx-objects
+          key: ${{ steps.setup.outputs.cache-key }}
 
   # Library changes keep the workspace feature union. A tests/-only diff
   # builds that integration test instead of linking the rest of the pool.
@@ -209,6 +224,21 @@ jobs:
       - name: leave disk for the mbx objects export
         if: always()
         run: bash scripts/ci/mbx-export-headroom.sh
+      # The action exports only from its success post step. Run 38457963019
+      # compiled the test profile in 10m 37s, failed one assertion, and saved
+      # nothing. Pull requests do not write this archive.
+      - name: export objects when the lane fails
+        id: mbx-fail-export
+        if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.setup.outputs.cache-hit != 'true'
+        env:
+          PHUX_MBX_EXPORT_DIR: ${{ runner.temp }}/phux-mbx-objects
+        run: bash scripts/ci/mbx-export-failed-lane.sh "$PHUX_MBX_EXPORT_DIR"
+      - name: save objects when the lane fails
+        if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.setup.outputs.cache-hit != 'true' && steps.mbx-fail-export.outputs.exported == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/phux-mbx-objects
+          key: ${{ steps.setup.outputs.cache-key }}
 
   # x86_64 callgrind counts. ubuntu-24.04 (not the arm check/test lanes):
   # the checked-in baseline is an x86_64 icount-profile number. Skipped when
@@ -258,6 +288,21 @@ jobs:
       - name: leave disk for the mbx objects export
         if: always()
         run: bash scripts/ci/mbx-export-headroom.sh
+      # The action exports only from its success post step. Run 38457963019
+      # compiled the test profile in 10m 37s, failed one assertion, and saved
+      # nothing. Pull requests do not write this archive.
+      - name: export objects when the lane fails
+        id: mbx-fail-export
+        if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.setup.outputs.cache-hit != 'true'
+        env:
+          PHUX_MBX_EXPORT_DIR: ${{ runner.temp }}/phux-mbx-objects
+        run: bash scripts/ci/mbx-export-failed-lane.sh "$PHUX_MBX_EXPORT_DIR"
+      - name: save objects when the lane fails
+        if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.setup.outputs.cache-hit != 'true' && steps.mbx-fail-export.outputs.exported == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/phux-mbx-objects
+          key: ${{ steps.setup.outputs.cache-key }}
 
   # Live main rules require ci + commitlint (verified 2026-09-09). Retain raw
   # check/test names for visibility. A crashed classifier or cheap guard cannot

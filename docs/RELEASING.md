@@ -132,6 +132,11 @@ push could restore it. `ffi-xcframework.yml` does not save that dep cache.
 entry and keeps one copy of the remaining prefixes. One test archive plus
 one zig archive fits; a second ~1 GB dep archive does not.
 
+A failed main lane still exports that archive when the exact key was not
+restored. The action's post step runs only on success. Run 38457963019
+compiled the test profile in 10m 37s, failed one assertion, and saved
+nothing. Pull requests do not write this archive.
+
 The check and icount lanes collect the restored mbx store before compiling,
 never between a build and its objects export. Pending export groups reference
 action results that GC can evict. The cap has to sit above the lane's working
