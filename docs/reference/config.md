@@ -250,8 +250,11 @@ which-key-delay-ms = 400
 "|" = { action = "split-pane", direction = "vertical" }
 "-" = { action = "split-pane", direction = "horizontal" }
 
-# Kill: x kills the focused pane, X (Shift-x) kills the whole window
-# (all its panes). Soft-kill via shell exit; see phux-4li.12.
+# Kill: x terminates the focused pane's terminal; X (Shift-x) terminates
+# every terminal in the window after a confirm naming how many. Soft-kill
+# via shell exit; see phux-4li.12. close-view (unbound; context menu and
+# palette) removes a view and ends nothing; reopen-views shows terminals
+# that run with no view again.
 "x" = "kill-pane"
 "X" = "kill-window"
 
