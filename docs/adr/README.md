@@ -170,7 +170,7 @@ column is the base status word plus at most one relationship clause, about
 | [0136](./0136-hub-mirrors-satellite-agent-metadata.md) | A hub mirrors two satellite agent metadata keys | Accepted (amends [0108](./0108-a-hub-relays-host-queries-per-request.md)) |
 | [0137](./0137-server-feature-word-extends.md) | The ServerFeature u32 is closed; the next bit is a trailing word | Accepted (forward-compat; builds on [0061](./0061-capabilities-add-versions-break.md)) |
 | [0138](./0138-cockpit-rides-the-next-channel.md) | Cockpit rides the next channel, and next queues instead of cancelling | Accepted (builds on [0113](./0113-next-release-channel.md)) |
-| [0139](./0139-solid-desktop-over-native-runtime-views.md) | Solid desktop over native runtime views | Superseded by [0164](./0164-gpui-desktop-replaces-the-solid-host.md) |
+| [0139](./0139-solid-desktop-over-native-runtime-views.md) | Solid desktop over native runtime views | Superseded by [0165](./0165-gpui-desktop-replaces-the-solid-host.md) |
 | [0140](./0140-sidebar-machines-come-from-a-hosts-provider.md) | Sidebar machines come from a hosts provider | Accepted (builds on [0107](./0107-satellite-sessions-are-listed-never-adopted.md)) |
 | [0141](./0141-pair-mints-only-against-a-live-listener.md) | Pair mints only against a live listener | Accepted (amends [0081](./0081-overlay-auto-listen-and-one-command-pairing.md)) |
 | [0142](./0142-host-path-query-is-separate-from-directory-listing.md) | Host path queries do not change directory listings | Accepted (builds on [0137](./0137-server-feature-word-extends.md), [0108](./0108-a-hub-relays-host-queries-per-request.md)) |
