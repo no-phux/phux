@@ -149,7 +149,7 @@ fn sibling_session_fixtures(directory: &Path) -> Result<(), Box<dyn Error>> {
         80,
         24,
     ));
-    let mut added = sibling.clone();
+    let mut added = sibling;
     added.add_group(String::new(), ResourceId::local(8));
     write_pair(
         directory,
@@ -180,7 +180,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let seed = ArrangementDoc::single(ResourceId::local(7));
     let mut topology = seed.clone();
     pair(directory, "workspace_initial", 0, 1, false, None)?;
-    pair(directory, "workspace_arranged", 0, 1, false, Some(&topology))?;
+    pair(
+        directory,
+        "workspace_arranged",
+        0,
+        1,
+        false,
+        Some(&topology),
+    )?;
     pair(directory, "workspace_refresh", 2, 3, true, Some(&topology))?;
     topology.groups[0].name = "renamed".into();
     pair(directory, "workspace_rename", 4, 5, true, Some(&topology))?;

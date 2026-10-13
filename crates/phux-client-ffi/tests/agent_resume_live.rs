@@ -32,14 +32,15 @@ use std::time::{Duration, Instant};
 
 use phux_client_ffi::{
     ABI_VERSION, AGENT_RECORDS_CLOSED, AGENT_RECORDS_LIVE, AGENT_RECORDS_RETAINED,
-    EFFECT_AGENT_RECORDS, PhuxAttachOptions, PhuxBytes, PhuxClient, PhuxClientEffect,
-    PhuxClientOptions, PhuxClientResult, PhuxClientState, PhuxConnectOptions, PhuxResourceInfo,
-    PhuxTerminalGridView, PhuxWorkspaceInfo, RESOURCE_KIND_AGENT_SESSION, phux_client_connect,
+    EFFECT_AGENT_RECORDS, PhuxArrangementInfo, PhuxAttachOptions, PhuxBytes, PhuxClient,
+    PhuxClientEffect, PhuxClientOptions, PhuxClientResult, PhuxClientState, PhuxConnectOptions,
+    PhuxResourceInfo, PhuxTerminalGridView, RESOURCE_KIND_AGENT_SESSION,
+    phux_client_arrangement_info, phux_client_arrangement_refresh, phux_client_connect,
     phux_client_connection_epoch, phux_client_connection_error, phux_client_effect_clear,
     phux_client_effect_count, phux_client_effect_get, phux_client_free, phux_client_nudge,
     phux_client_poll, phux_client_poll_pending, phux_client_queue_attach,
     phux_client_resource_count, phux_client_resource_get, phux_client_state,
-    phux_client_terminal_grid, phux_client_workspace_info, phux_client_workspace_refresh,
+    phux_client_terminal_grid,
 };
 use phux_protocol::ids::{ResourceId, ResourceKind};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
@@ -624,8 +625,8 @@ impl Consumer {
         self.ensure_attached().await;
         // ATTACHED alone has not processed the C lane's authoritative GET_STATE.
         // Drive that reply before waiting for the proxy to see a new subscription.
-        self.until("rebound workspace registry", |client| {
-            workspace_status(client) == 2
+        self.until("rebound arrangement registry", |client| {
+            arrangement_status(client) == 2
         })
         .await;
     }
@@ -1001,13 +1002,13 @@ async fn refresh_until(consumer: &mut Consumer, agent: u32, what: &str) {
     consumer.host_request = consumer.host_request.saturating_add(1);
     let request = consumer.host_request;
     consumer
-        .until("workspace idle", |client| workspace_status(client) != 1)
+        .until("arrangement idle", |client| arrangement_status(client) != 1)
         .await;
-    let refreshed = unsafe { phux_client_workspace_refresh(consumer.client, request) };
+    let refreshed = unsafe { phux_client_arrangement_refresh(consumer.client, request) };
     assert_eq!(
         refreshed,
         PhuxClientResult::Ok,
-        "workspace refresh before {what} ({})",
+        "arrangement refresh before {what} ({})",
         diagnose(consumer.client)
     );
     consumer
@@ -1019,17 +1020,17 @@ async fn refresh_until(consumer: &mut Consumer, agent: u32, what: &str) {
         .await;
 }
 
-fn workspace_status(client: *mut PhuxClient) -> u32 {
-    let mut info = PhuxWorkspaceInfo {
-        size: std::mem::size_of::<PhuxWorkspaceInfo>(),
+fn arrangement_status(client: *mut PhuxClient) -> u32 {
+    let mut info = PhuxArrangementInfo {
+        size: std::mem::size_of::<PhuxArrangementInfo>(),
         version: ABI_VERSION,
-        ..PhuxWorkspaceInfo::default()
+        ..PhuxArrangementInfo::default()
     };
     // SAFETY: callers supply a live client on its owning thread and a writable result.
     assert_eq!(
-        unsafe { phux_client_workspace_info(client, &raw mut info) },
+        unsafe { phux_client_arrangement_info(client, &raw mut info) },
         PhuxClientResult::Ok,
-        "workspace_info"
+        "arrangement_info"
     );
     info.status
 }
