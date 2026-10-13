@@ -21,13 +21,16 @@ main{max-width:1120px;padding:2rem 3rem 6rem;min-width:0}h1{font-size:clamp(2rem
 </style>
 </head>
 <body>
-<header class="top"><div><span class="brand">PHUX / DOMAIN MODEL</span><span class="badge">PROPOSAL · DRAFT 2 · 12 OCTOBER 2026</span></div><div class="actions"><a href="DESIGN.html">Overview</a><button id="export" type="button">Export notes as Markdown</button><button id="print" type="button">Print / PDF</button><a href="FULL-DESIGN.md">Markdown source</a></div></header>
+<header class="top"><div><span class="brand">PHUX / DOMAIN MODEL</span><span class="badge">PROPOSAL · DRAFT 3 · 12 OCTOBER 2026</span></div><div class="actions"><a href="DESIGN.html">Overview</a><button id="export" type="button">Export notes as Markdown</button><button id="print" type="button">Print / PDF</button><a href="FULL-DESIGN.md">Markdown source</a></div></header>
 <div class="shell"><nav aria-label="Sections"><p><strong>Domain Model</strong> · <a href="CONTRACTS.html">Contracts</a> · <a href="PLAN.html">Build Plan</a> · <a href="MIGRATION.html">Migration</a> · <a href="BROWSER-KIND.html">Browser Kind</a></p><div class="toc">
 <div class="toc">
 <ul>
 <li><a href="#phux-domain-model-resources-sessions-workspaces-actors">Phux domain model: resources, sessions, workspaces, actors</a><ul>
 <li><a href="#01-the-product-in-one-paragraph">01. The product in one paragraph</a></li>
-<li><a href="#02-nouns">02. Nouns</a></li>
+<li><a href="#02-nouns">02. Nouns</a><ul>
+<li><a href="#inbox-and-effortless-organization">Inbox and effortless organization</a></li>
+</ul>
+</li>
 <li><a href="#03-identity">03. Identity</a></li>
 <li><a href="#04-actors">04. Actors</a><ul>
 <li><a href="#three-things-called-agent">Three things called "agent"</a></li>
@@ -57,7 +60,7 @@ main{max-width:1120px;padding:2rem 3rem 6rem;min-width:0}h1{font-size:clamp(2rem
 <main>
 <h1 id="phux-domain-model-resources-sessions-workspaces-actors">Phux domain model: resources, sessions, workspaces, actors</h1>
 <p><strong>TL;DR.</strong> Resources are things to work with. Sessions group them on one owning server. Workspaces link sessions across machines. Actors, human or agent, act on all of it through one permission and input-control model. Execution, presentation, and access are separate axes. Proposed design, not shipped behavior.</p>
-<p><strong>Review draft 2 · 12 October 2026.</strong> Draft 1 was one 600-line document; it is now split by altitude. This file is the model. The rest is detail that conforms to it:</p>
+<p><strong>Review draft 3 · 12 October 2026.</strong> Draft 1 was one 600-line document; it is now split by altitude. This file is the model. The rest is detail that conforms to it:</p>
 <table>
 <thead>
 <tr>
@@ -93,8 +96,9 @@ main{max-width:1120px;padding:2rem 3rem 6rem;min-width:0}h1{font-size:clamp(2rem
 </tbody>
 </table>
 <p>Draft 2 changes: actors are a core noun (§04); session lifetime is explicit and archive is cut (§06); a workspace owns its own arrangement and its ownership can transfer (§07); browser detail moved to its own kind contract; failure-handling detail moved to the contracts, which are now written against today's code.</p>
+<p>Draft 3 adds coherent Inbox intake with preserved imported groups, effortless organization and undo, equal first-class human/bot use, and transactional storage with bounded paged inventory rather than a small-fleet JSON assumption.</p>
 <h2 id="01-the-product-in-one-paragraph">01. The product in one paragraph</h2>
-<p>Phux is where a person and their agents organize, reach, and operate work that keeps existing when nobody is looking at it. A terminal is one kind of work, not the definition of the product. The same work means the same thing on desktop, TUI, phone, web, CLI, and agent tools; presentation differs, identity and lifecycle do not.</p>
+<p>Phux is a shared work environment for people and bots. Both organize, reach, and operate the same resources through the same model; neither is an accessory to the other's interface. A terminal is one kind of work, not the definition of the product. The same work means the same thing on desktop, TUI, phone, web, CLI, and agent tools; presentation differs, identity and lifecycle do not.</p>
 <pre><code class="language-text">Workspace: Ship the product                         owned by Laptop
 │
 ├── Session: Frontend ──────────────────────────── on Laptop
@@ -119,6 +123,7 @@ main{max-width:1120px;padding:2rem 3rem 6rem;min-width:0}h1{font-size:clamp(2rem
 └─────────────────────────────────────────────────────────────────┘
 </code></pre>
 <p>Out of scope: moving running processes between hosts, consensus between servers, offline edit merging, the Objective/Run work coordinator, identical layouts on every screen.</p>
+<p>A bot may operate thousands of resources while a person attends to a session's progress, outcomes, and exceptions. That is a difference in attention and presentation, not a second resource model. Aggregation never hides underlying identity, provenance, or failure from an authorized inspection. Bots use bounded typed operations; people use the board, keyboard, and summaries over the same records.</p>
 <h2 id="02-nouns">02. Nouns</h2>
 <table>
 <thead>
@@ -143,6 +148,11 @@ main{max-width:1120px;padding:2rem 3rem 6rem;min-width:0}h1{font-size:clamp(2rem
 <td>Workspace</td>
 <td>A named set of links to sessions, possibly on several machines, plus its arrangement.</td>
 <td>An owner of those sessions or an OS window.</td>
+</tr>
+<tr>
+<td>Inbox</td>
+<td>The default intake view over unorganized work and preserved imported groups.</td>
+<td>A fourth domain entity, a cross-owner session, or permission to flatten existing organization.</td>
 </tr>
 <tr>
 <td>Actor</td>
@@ -189,6 +199,13 @@ Actor     * ── acts on ── *  (through grants; §04)
 <li>Project, directory, repository, and host label are attributes, not organization levels.</li>
 </ul>
 <p><strong>D01.</strong> A resource belongs to exactly one session. Overlapping collections, if ever needed, are saved filters, never shared ownership.</p>
+<p><strong>Workspace is the canonical term.</strong> Host folders, local layout objects, and saved archives are renamed according to their actual roles; there is no competing domain meaning of Workspace. A repository or project is context, not a required hierarchy above Session.</p>
+<h3 id="inbox-and-effortless-organization">Inbox and effortless organization</h3>
+<p>Inbox is a pinned entry point, usable before a workspace exists. Each authority has one persistent ordinary Session designated as its Inbox. Resources created without an explicit session go there, subject to the caller's grants. Explicit quick/ephemeral workflows keep their chosen lifetime; they are not silently converted into Inbox work.</p>
+<p>Migration preserves existing session IDs/membership/arrangements wherever verified conversion permits. Imported sessions are marked awaiting organization and shown as intact groups in Inbox. Truly ungrouped resources go into their owner's Inbox session. The combined Inbox view aggregates reachable authorized owners; it does not create one execution-owning session across machines or transfer execution. Once deliberately organized, imported groups can be cleared from intake without deleting or flattening them.</p>
+<p>Resources move between sessions on the same owner; sessions link into workspaces across owners. The UI offers drag/drop, one keyboard move command, and bulk selection, with an immediately visible destination and undo. No wizard, reconnect, stop/restart, or hidden credential change is required to organize already-accessible work. Cross-owner resource movement is refused with the explicit distinction between organizing and launching work elsewhere.</p>
+<p>Undo is a new authorized, revision-checked organization operation. It reverses recorded membership/link/intake changes only while the receipt is available and the affected state still matches. A conflict is visible; undo does not overwrite another actor's edits, widen a grant, or undo execution. Cross-owner organization and its undo report per-owner outcomes rather than claiming fleet-wide atomicity.</p>
+<p>Inbox is coherent rather than scattered: stable grouping, host labels, selection, aggregate counts, and a clear destination. Offline groups stay visibly last-known. Filtered/paged presentation is allowed; resources are not dropped from inventory merely because a human cannot read them all.</p>
 <h2 id="03-identity">03. Identity</h2>
 <p>Names are labels. Commands, links, arrangements, and saved references resolve through IDs.</p>
 <pre><code class="language-text">SessionRef   = (authority_id, session_id)
@@ -241,7 +258,7 @@ LiveTarget   = (ResourceRef, activation_id, server_instance_id)
 <p><strong>Fencing.</strong> Input and execution commands carry the LiveTarget the client observed. If that activation or instance is gone, the command fails as stale. A saved view never types into a different process because a handle number was reused.</p>
 <p><strong>D02.</strong> One writer per authority. Each authority serializes edits to its own records with expected revisions. Cross-machine anything is links plus observation, never a distributed database.</p>
 <h2 id="04-actors">04. Actors</h2>
-<p>Phux exists so a human and agents can work in the same terminals. The model treats that as a first-class relationship, not a resource kind.</p>
+<p>Phux exists so humans and agents can work in the same environment of resources, sessions, and workspaces. Terminal sharing is one case. The model treats actors as a first-class relationship, not another organization tier or resource kind.</p>
 <h3 id="three-things-called-agent">Three things called "agent"</h3>
 <table>
 <thead>
@@ -297,6 +314,7 @@ LiveTarget   = (ResourceRef, activation_id, server_instance_id)
 <h3 id="attribution">Attribution</h3>
 <p>Each lease change opens a <strong>lease epoch</strong> with its holder recorded. Evidence for a terminal can answer "who was driving between 14:02 and 14:09," without per-keystroke logging. Organization events (create, move, terminate, delete) record the actor directly.</p>
 <p><strong>D09.</strong> Actors are a core noun. Every mutation is attributed; agents act only through grants; a human can always take the keyboard back.</p>
+<p>Equal first-class support does not mean equal grants or identical screens. Bot swarms use bulk operations, pagination, and incremental state; people use grouping, summaries, and exception-driven attention. Either actor can inspect the exact records behind a summary when authorized. Resource count cannot become a reason to attach/render every resource or rewrite the entire organization store on every mutation.</p>
 <h2 id="05-resource-kinds">05. Resource kinds</h2>
 <p>Every resource has stable identity, owner, session, name, kind, revision, provenance, lifecycle state, a capability descriptor, and kind-specific operations with typed results. A resource is not required to have a PTY, grid, process ID, working directory, or a visible surface.</p>
 <table>
@@ -368,8 +386,16 @@ LiveTarget   = (ResourceRef, activation_id, server_instance_id)
 <td>Creates the resource and its membership in one transaction.</td>
 </tr>
 <tr>
+<td>Intake</td>
+<td>Unassigned work enters the owner's persistent Inbox session; imported groups remain intact and are marked awaiting organization.</td>
+</tr>
+<tr>
 <td>Move resource</td>
 <td>Changes membership on the same owner; execution continues.</td>
+</tr>
+<tr>
+<td>Organize in bulk / undo</td>
+<td>Fixed selected resources move in one owner transaction; undo checks the recorded result and current grants/revisions.</td>
 </tr>
 <tr>
 <td>Close the last view</td>
@@ -385,7 +411,7 @@ LiveTarget   = (ResourceRef, activation_id, server_instance_id)
 </tr>
 </tbody>
 </table>
-<p>The UI offers <strong>Move resources, then delete</strong> and <strong>Terminate, remove, then delete</strong> as separate confirmed actions. Neither hides behind a generic Delete. The second is a multi-step workflow with a fixed target set; work added during it survives, and the final delete then refuses.</p>
+<p>The UI offers <strong>Move resources, then delete</strong> and <strong>Terminate, remove, then delete</strong> as separate confirmed actions. Neither hides behind a generic Delete. The second is a multi-step workflow with a fixed target set; work added during it survives, and the final delete then refuses. The designated Inbox session is persistent and cannot be deleted or made ephemeral while it serves that role; its display name is not its identity.</p>
 <p>Session labels are unique per authority among live sessions. Short names that match on more than one authority are refused, never guessed.</p>
 <p>Archive is cut from this design. If it returns, it is a filter on a session attribute, not a lifecycle state with its own refusal rules.</p>
 <p><strong>Lifetime is an explicit attribute, set at create and visible everywhere.</strong> Named sessions are <strong>persistent</strong>: they survive empty. A quick unnamed session, the bare <code>phux</code> tmux-style start, is <strong>ephemeral</strong>: it is deleted in the same transaction that removes its last resource. Either can be switched later. That replaces today's keep-empty flag, which inverted the default and was set by whichever client happened to create the session.</p>
@@ -442,6 +468,7 @@ LiveTarget   = (ResourceRef, activation_id, server_instance_id)
 </tbody>
 </table>
 <p>Linking a session grants nothing. Each viewer needs their own grant on each linked session; inaccessible links show a generic placeholder.</p>
+<p>Organizing an imported session means linking it without moving its resources, then resolving its intake marker on its owner under Organize permission. Across owners those are correlated operations, not a distributed transaction. If the link succeeds but intake resolution fails, the session remains safely visible in Inbox and the partial result is reported. Undo restores the prior link/intake state only with current authorization and revision checks.</p>
 <p>Actions across several owners return one result per owner. There is no cross-host atomic action and no fleet-wide event order. A timeout is reported as unknown, not as failure.</p>
 <p><strong>Why a workspace has a server owner.</strong> A workspace is shared across your devices and readable by agents, so it needs one authoritative copy with revisions. The cost: if the owner sleeps, edits wait. Mitigation: create it on an always-on machine, or transfer it there. The UI defaults to the current machine and keeps the choice out of the way.</p>
 <p><strong>Staging.</strong> Resources, sessions, and actors ship first. Workspaces ship once the client runtime holds sessions from several authorities at once. The model is fixed now so the first stage does not paint it into a corner.</p>
@@ -513,6 +540,7 @@ LiveTarget   = (ResourceRef, activation_id, server_instance_id)
 </table>
 <p>A client-local PTY that ends with its window is allowed, but it is labeled <strong>local only</strong> and is not a shared resource until explicitly published to an owner.</p>
 <p><strong>D06.</strong> Shared arrangements with local adaptation are the default for sessions and workspaces. Personal arrangements are opt-in. Focus is never shared.</p>
+<p>Acceptance: migration opens directly into a coherent Inbox with every authorized imported group accounted for; drag, keyboard, and bulk organization all use the same operations; undo restores grouping without changing activations. A large bot session exposes accurate counts/outcomes and drill-down without mounting thousands of views. Inbox aggregation and workspace observation are paged and incremental, not all-record fan-out at startup.</p>
 <h2 id="09-execution-and-recovery">09. Execution and recovery</h2>
 <p>Existence, execution, reachability, and presentation are independent:</p>
 <table>
@@ -716,12 +744,12 @@ Completed | Failed | (Lost, once proven inactive) ── relaunch ──► new 
 <li>Does the TUI keep tmux's "kill window kills its panes"? <a href="MIGRATION.html#03-tui-and-tmux-verbs">MIGRATION.md</a> proposes a confirmed terminate of the group, never an implied one.</li>
 </ul>
 <p><strong>Review format:</strong> cite a section or decision, then state the change. "D09: agents get own-terminal-only by default." "§06: delete should offer move first."</p>
-<p class="footer">Generated from FULL-DESIGN.md by build.py. No external scripts, fonts, analytics, or network requests. Source SHA-256: <code>f692867a130e63904f5484f911340a7b2c61fa69a6e6cb7201208440c8b41b8b</code>.</p>
+<p class="footer">Generated from FULL-DESIGN.md by build.py. No external scripts, fonts, analytics, or network requests. Source SHA-256: <code>36718c7a8d95f576e37965fb2772c4f385afc3a3fe00be4f1950e9c398677767</code>.</p>
 </main></div>
 <script>
 
 const storageKey = "phux-domain-review-2026-10-12-v1";
-const sourceLabel = "FULL-DESIGN.md, Draft 2 \u00b7 12 October 2026, sha256 f692867a130e63904f5484f911340a7b2c61fa69a6e6cb7201208440c8b41b8b";
+const sourceLabel = "FULL-DESIGN.md, Draft 3 \u00b7 12 October 2026, sha256 36718c7a8d95f576e37965fb2772c4f385afc3a3fe00be4f1950e9c398677767";
 let notes = {};
 let storageAvailable = true;
 try { notes = JSON.parse(localStorage.getItem(storageKey) || '{}'); }

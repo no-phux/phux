@@ -43,6 +43,7 @@ struct Session {
     key: SessionKey,
     name: String,              // unique among live sessions on this authority
     lifetime: SessionLifetime, // Persistent | Ephemeral
+    awaiting_organization: bool, // imported group appears in Inbox until explicitly organized
     members: Vec<ResourceKey>, // order = creation order; presentation order lives in arrangements
     arrangement: Option<ArrangementKey>,
     attrs: Attrs,              // project, directory, host label: descriptive only
@@ -105,6 +106,8 @@ struct Actor {
 
 `ExitPolicy` defaults: an interactive shell started by `new`, `spawn`, or a split is `Remove`, so exiting a shell closes it, as in tmux. Anything started by `launch`, an agent, or with `--keep` is `Retain`, which absorbs ADR-0124's exited-pane retention. Respawning the session's last shell on exit (`crates/phux-server/src/state/sessions.rs:98-110`) is deleted: no implicit launch.
 
+The authority record designates one persistent `inbox_session: SessionKey`. It is a Session, not a new entity kind or a name-based convention. It cannot be deleted or switched to Ephemeral while designated. `awaiting_organization` is a shared intake fact on imported sessions; clearing it removes the intake presentation, not membership or execution. Inbox is a permission-filtered projection over designated Inbox sessions and those marked imported groups, aggregated by the runtime across connected authorities.
+
 ## 03. Access
 
 The five grant categories map onto the existing closed scope matrix (ADR-0098, `crates/phux-protocol/src/kinds.rs:55-68`). Two verbs are new.
@@ -133,13 +136,16 @@ All ride the existing `COMMAND` envelope (`crates/phux-protocol/src/wire/frame/c
 
 | Command | Arguments | Grant | Effect |
 |---|---|---|---|
-| `GetOrganization` | optional session or workspace filter | Observe | Snapshot: records the caller may see, revisions, live handles, journal cursor. |
+| `GetOrganization` | session/workspace/intake filter, page size, cursor | Observe | Bounded page: authorized records, revisions, live handles, aggregate counts, snapshot revision and journal cursor. Cursors are source/filter/principal-scoped; expired snapshots require refresh. |
 | `SessionCreate` | name, lifetime, attrs, optional `launch` | Create (+Create for launch) | Session, plus resource and launch intent when `launch` is set, in one transaction. `Ephemeral` requires `launch`; an ephemeral session is never empty. |
 | `SessionRename` | session, expected, name | Organize | Label only. |
 | `SessionSetLifetime` | session, expected, lifetime | Organize | Persistent and Ephemeral; Ephemeral on an empty session deletes it. |
 | `SessionDelete` | session, expected | Terminate | Only when `members` is empty; else `NotEmpty`. |
 | `ResourceCreate` | session, kind, launch, name, on_exit | Create | Record, membership, and launch intent in one transaction. |
 | `ResourceMove` | resource, from (expected), to (expected) | Organize on both | Membership only. Replaces `MoveResource` 0x2A semantics; the frame stays as a compat alias. |
+| `ResourceMoveMany` | fixed resource keys, source revisions, destination (expected) | Organize on every affected session | Bounded atomic same-owner membership move. Validate each resource/kind/access; no restart. A refused target refuses the whole owner batch. |
+| `InboxResolve` | imported session, expected | Organize | Clears `awaiting_organization`; leaves the session/resources intact. Returns prior intake state in its organization receipt. |
+| `OrganizationUndo` | original operation, expected resulting revisions | Original operation's current grants | Applies the receipt's inverse for supported membership/link/intake edits. Refuses expired receipts, changed state, or revoked authority; never reverses execution. |
 | `ResourceRename` | resource, expected, name | Organize | Label only. |
 | `ResourceTerminate` | live target, mode (graceful or force) | Terminate | Delegated to the executor; result is accepted, then events report the outcome. |
 | `ResourceRemove` | resource, expected | Terminate | Only when execution is proven inactive; writes a tombstone. |
@@ -154,6 +160,8 @@ All ride the existing `COMMAND` envelope (`crates/phux-protocol/src/wire/frame/c
 Kind operations keep their existing commands (`AcquireInput`, `SignalTerminal`, `ApplyInput`, and so on), now addressed by `LiveTarget`. A stale activation fails `Stale` before any effect.
 
 "Kill a session" is a client workflow, not a command: snapshot members and their live targets, `ResourceTerminate` each, `ResourceRemove` each once inactive, then `SessionDelete` with the revision seen at the start. Work added in the meantime survives and makes the final delete fail `NotEmpty`. `phux kill <session>` keeps its meaning by running this workflow.
+
+Drag/drop, keyboard move, bulk selection, and agent organization all submit these same typed operations. Human clients retain the organization receipt for visible undo; agents receive the same receipt. Selection never expands during retries. Workspace linking and remote intake resolution have separate owner results; failure of intake cleanup cannot undo a successfully committed link or make imported work disappear. Batches have advertised bounds; oversized selection is explicitly chunked with per-batch results, never falsely reported as one atomic operation.
 
 ## 05. Results
 
@@ -189,6 +197,8 @@ Network-level timeouts are not results. A client that loses a reply retries with
 - Past the horizon, the runtime never resubmits on its own; it reconciles from `GetOrganization` and tells the caller the outcome is unknown.
 - Records keep the `OperationId` that created them, so a late retry can still be matched against a resource that exists.
 
+Supported organization receipts also record the inverse change and the resulting affected revisions. Undo is itself an idempotent operation with a new OperationId, checked against current state and permissions. Runtime exposes the actual available receipt/undo horizon rather than assuming low-volume usage keeps receipts alive for 24 hours. Execution operations never acquire an inverse merely because their receipt exists.
+
 ## 07. Events
 
 Organization events join the existing journal (ADR-0123; `SUBSCRIBE_EVENTS` 0x41, `EVENT` 0xB3) as new `AgentEvent` variants, carrying today's `EventStamp{seq, ts_ms, actor, operation_id}` (`crates/phux-protocol/src/wire/frame/payload.rs:55-64`). `ActorRef` gains `principal` and `on_behalf_of`.
@@ -196,6 +206,7 @@ Organization events join the existing journal (ADR-0123; `SUBSCRIBE_EVENTS` 0x41
 | Event | Payload |
 |---|---|
 | `SessionCreated`, `SessionRenamed`, `SessionDeleted` | key, name, revision |
+| `SessionIntakeChanged` | session key, awaiting_organization, revision; emitted by InboxResolve and undo restoring intake state |
 | `MembershipChanged` | resource, from, to, revisions |
 | `ResourceCreated`, `ResourceRemoved` | key, session, kind |
 | `ActivationChanged` | resource, activation, state, outcome |
@@ -205,15 +216,21 @@ Organization events join the existing journal (ADR-0123; `SUBSCRIBE_EVENTS` 0x41
 
 A gap or an expired cursor (`JournalGap`) means: refetch `GetOrganization`. Order is per authority only. Terminal bytes stay on their own streams and bootstrap (ADR-0013, ADR-0070).
 
+Organization undo emits the same committed membership/link/intake events as the equivalent direct edit, correlated to its own OperationId. Every observing client therefore reconciles Inbox removal/restoration incrementally; intake state cannot be a private frontend cache.
+
 Intercepted metadata broadcasts (`phux.session.created/v1`, and the rest) keep flowing for old clients until stage 4 retires them.
 
 ## 08. Organization store
 
-**Format.** One JSON document, `<state_dir>/org/v1.json` (`state_dir` is `$XDG_STATE_HOME/phux`), written by atomic rename with fsync of the file and the directory. The schema version is in the document. No new dependency: the organization data is small (hundreds of records), and the write pattern is one writer at human or agent command rates. If profiling shows write cost matters, SQLite replaces the file behind the same `OrgStore` trait, with a migration.
+**Format.** A versioned transactional SQLite organization store, `<state_dir>/org/v1.sqlite3` (`state_dir` is `$XDG_STATE_HOME/phux`), behind `OrgStore`. Use incremental row updates and indexes for owner/session membership, state, and intake queries; never rewrite all records for a single move. Keep one authority writer and bounded transactions, not distributed storage. Resource output stays in its kind-specific stream/evidence storage.
 
-**Contents.** `AuthorityId`, sessions, resources with activations, arrangements, workspaces, tombstones (kept 30 days), receipts (§06), and the last journal sequence number.
+**Scale contract.** People and bot swarms use the same model. Design for thousands of resources and sustained automation mutation rates without assuming hundreds of records or human pacing. Inventory is paginated/filterable, counts are queryable without fetching every record, and subscriptions carry incremental changes. Large arrangements and batches are bounded; runtime exposes partial/paged results instead of silently omitting work. Storage/query/UI performance gates cover large intake, membership moves, receipt churn, and concurrent observation. This is not a promise of unlimited resources or executors; admission and backpressure remain explicit.
 
-**Write discipline.** The server commits a transition by writing the store, then applies it in memory, then acknowledges, then publishes events. If the write fails, the command is refused and memory is unchanged. Activation state changes (started, ended) are written too; they are what makes restart reconciliation possible.
+**Dependency justification.** Transactional persistence is warranted by atomic membership/bulk edits, durable receipts, and indexed inventory under automation load, not by speculative distribution. At implementation, reuse a suitable installed/workspace SQLite binding if available; adding a binding requires a scoped dependency/security review. JSON remains a portable archive format, not the live organization database.
+
+**Contents.** `AuthorityId`, its designated Inbox session, sessions/intake facts, resources with activations, arrangements, workspaces, tombstones (kept 30 days), receipts (§06), migration receipts, and the last journal sequence number.
+
+**Write discipline.** Commit the transition, associated receipts, and journal position in one durable owner transaction; then apply committed state in memory, acknowledge, and publish events. If commit fails, refuse and leave authoritative memory unchanged. Activation changes are persisted too. Recovery reconciles committed execution intents; a database transaction does not make OS launch/termination atomic. Schema migrations are versioned, backed up, and transactional; the owner refuses unsupported store versions rather than guessing.
 
 **Startup reconciliation.** For each activation recorded `Starting`, `Running`, or `Stopping` under a previous `ServerInstance`:
 
@@ -244,7 +261,7 @@ Native agent restore (ADR-0068, ADR-0151) becomes part of the Terminal `LaunchSp
 | `phux-protocol` | Command, result, and event encodings; the capability bit; scope verbs. | Domain rules. |
 | `phux-server` | Authentication, grants, admission, `OrgStore`, committing transitions, dispatching effects to executors, reconciliation. | Client focus, presentation. |
 | Resource executors (`phux-server/src/resource/*`) | Execution, `ProcIdentity`, outcomes, streams. | Membership. |
-| `phux-client-runtime` | Snapshot plus journal reconciliation, operation correlation, retries, one connection stack. | Its own idea of what exists. |
+| `phux-client-runtime` | Paged snapshot/journal reconciliation, permission-filtered multi-owner Inbox, operation/undo correlation, retries, one connection stack. | Its own idea of what exists, unbounded inventory/attachment fan-out. |
 | `phux-client-ffi` | Lossless projection of every record and state above. | Dropping fields. Today it drops `keep_empty`, windows, agent sessions, and dims (`crates/phux-client-ffi/src/projection/topology.rs:14-89`). |
 | Clients (`phux-tui`, desktop, Cockpit, web, mobile) | Views, local arrangement adaptation, focus, controls. | Lifecycle rules, kill-on-close. |
 | `phux-client-core` | Layout tree editing for arrangements, without tokio or ratatui. | Session membership. |

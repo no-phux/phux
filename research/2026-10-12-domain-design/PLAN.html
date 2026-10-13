@@ -21,7 +21,7 @@ main{max-width:1120px;padding:2rem 3rem 6rem;min-width:0}h1{font-size:clamp(2rem
 </style>
 </head>
 <body>
-<header class="top"><div><span class="brand">PHUX / BUILD PLAN</span><span class="badge">PROPOSAL · DRAFT 2 · 12 OCTOBER 2026</span></div><div class="actions"><a href="DESIGN.html">Overview</a><button id="export" type="button">Export notes as Markdown</button><button id="print" type="button">Print / PDF</button><a href="PLAN.md">Markdown source</a></div></header>
+<header class="top"><div><span class="brand">PHUX / BUILD PLAN</span><span class="badge">PROPOSAL · DRAFT 3 · 12 OCTOBER 2026</span></div><div class="actions"><a href="DESIGN.html">Overview</a><button id="export" type="button">Export notes as Markdown</button><button id="print" type="button">Print / PDF</button><a href="PLAN.md">Markdown source</a></div></header>
 <div class="shell"><nav aria-label="Sections"><p><a href="FULL-DESIGN.html">Domain Model</a> · <a href="CONTRACTS.html">Contracts</a> · <strong>Build Plan</strong> · <a href="MIGRATION.html">Migration</a> · <a href="BROWSER-KIND.html">Browser Kind</a></p><div class="toc">
 <div class="toc">
 <ul>
@@ -83,7 +83,8 @@ main{max-width:1120px;padding:2rem 3rem 6rem;min-width:0}h1{font-size:clamp(2rem
 <li>Add <code>SessionKey</code>, <code>ResourceKey</code>, <code>ArrangementKey</code>, <code>Revision</code>, <code>ActivationId</code> (CONTRACTS §01). Keys are 16 random bytes; core takes them from the caller, it does not generate randomness.</li>
 <li>Replace <code>Session{windows, active, keep_empty}</code> with <code>Session{key, name, lifetime, members, arrangement, attrs, revision}</code>.</li>
 <li>Delete <code>Window</code>. Move <code>LayoutNode</code> to <code>arrangement.rs</code>, generic over its leaf. Add <code>Arrangement</code> and its validation (session arrangements reference members only; entry IDs unique; ratios valid).</li>
-<li><code>Resource</code> gains <code>key</code>, <code>session</code>, <code>on_exit</code>, <code>activation</code>; loses <code>window</code>.</li>
+<li><code>Resource</code> gains <code>key</code>, <code>session</code>, <code>on_exit</code>, <code>activation</code>; loses <code>window</code>.
+   The authority designates a persistent Inbox session; imported-session intake facts, bounded bulk moves, and revision-checked organization undo follow the same core rules.</li>
 <li>Add <code>apply(&amp;mut Org, Command, &amp;Actor, now) -&gt; Result&lt;Applied, Refusal&gt;</code> where <code>Applied</code> lists the transition events and the effects (launch, terminate) for the server to run. Every command in CONTRACTS §04 that touches sessions, resources, or arrangements is implemented here.</li>
 <li>Server: the registry wrapper keeps its current behavior through the new types. Today's single window becomes the session's arrangement with one group. The wire is unchanged: <code>GetState</code> still reports one window per session, synthesized from the arrangement.</li>
 </ol>
@@ -91,8 +92,8 @@ main{max-width:1120px;padding:2rem 3rem 6rem;min-width:0}h1{font-size:clamp(2rem
 <p>Proof: property tests over random command sequences. Invariants: every resource is in exactly one session's members; arrangements reference only members; revisions strictly increase; ephemeral sessions are never empty after a commit; no transition ever both removes a resource and leaves its activation running. Existing server and e2e tests pass unchanged.</p>
 <h2 id="stage-2-store-activations-recovery">Stage 2: store, activations, recovery</h2>
 <ol>
-<li><code>OrgStore</code> trait plus the JSON implementation (CONTRACTS §08), with crash-safety tests that cut the write at each step.</li>
-<li>Mint <code>AuthorityId</code> on first start; import the live registry and any <code>phux.tui.layout/v1</code> documents (MIGRATION §07).</li>
+<li><code>OrgStore</code> with transactional SQLite persistence (CONTRACTS §08), versioned migrations, indexed membership/intake queries, durable receipts, and crash/commit-failure tests. Reuse an existing suitable binding where possible; dependency additions need scoped review.</li>
+<li>Mint <code>AuthorityId</code> on first start; import the live registry and any <code>phux.tui.layout/v1</code> documents while preserving groups. Designate the persistent Inbox session and mark imported groups awaiting organization (MIGRATION §07).</li>
 <li>Terminal executor records <code>ProcIdentity</code> (pid, pgid, start time) and reports activation transitions.</li>
 <li>Startup reconciliation: rebind by handover, <code>Lost</code> by matching start time, <code>Unobserved</code> otherwise. Never relaunch.</li>
 <li>Exit policy replaces respawn-in-place and ADR-0124's retention flag. Server lifetime becomes "no live activations and no clients".</li>
@@ -100,6 +101,7 @@ main{max-width:1120px;padding:2rem 3rem 6rem;min-width:0}h1{font-size:clamp(2rem
 </ol>
 <p>Deletes: respawn-in-place, the zero-session exit, the keep-empty reap step.</p>
 <p>Proof: kill the server with SIGKILL mid-session and restart it: records come back; dead shells show <code>Unobserved</code>; a <code>nohup</code> child shows <code>Lost</code>; nothing relaunches. Restart again: same result, no double-counting. Store-write failure leaves memory unchanged.</p>
+<p>Scale proof: seed thousands of resource records across sessions, then measure paged Inbox/inventory, same-owner bulk moves and undo, indexed counts, and receipt churn under sustained mutation plus observers. Assert bounded page/batch sizes, no full-store rewrite per mutation, and no dropped records. Pin measured latency/resource budgets in the implementation gate; do not invent a universal unbounded-fleet promise.</p>
 <h2 id="stage-3-wire">Stage 3: wire</h2>
 <ol>
 <li><code>ServerFeatureExt::Organization</code>; the new <code>Command</code> variants, <code>Refusal</code>, and events (CONTRACTS §04, §05, §07); <code>ActorRef</code> gains principal fields.</li>
@@ -111,15 +113,18 @@ main{max-width:1120px;padding:2rem 3rem 6rem;min-width:0}h1{font-size:clamp(2rem
 <h2 id="stage-4-clients">Stage 4: clients</h2>
 <p>Order matters: runtime and FFI first, because every client reads through them.</p>
 <ol>
-<li><code>phux-client-runtime</code>: snapshot plus journal reconciliation, operation correlation, retry with the same <code>OperationId</code>.</li>
+<li><code>phux-client-runtime</code>: snapshot plus journal reconciliation, operation correlation, retry with the same <code>OperationId</code>.
+   Add bounded paging/intake queries and organization receipts/undo before the UI adapters.</li>
 <li><code>phux-client-ffi</code>: lossless projection; Swift and C bindings regenerated.</li>
 <li><code>phux</code> CLI and <code>phux-mcp</code>: MIGRATION §04 and §05, including <code>rm</code>, <code>relaunch</code>, <code>restore</code>, and the kill workflow.</li>
 <li><code>phux-tui</code>: arrangement groups instead of windows; the verb table in MIGRATION §03.</li>
-<li>Desktop, Cockpit, web: MIGRATION §06.</li>
+<li>Desktop, Cockpit, web: MIGRATION §06.
+   Each exposes coherent Inbox grouping, keyboard organization, bulk selection, and undo; graphical clients also expose drag/drop. All use shared operations, not a private migration model.</li>
 <li>The "workspace" renames (MIGRATION §02), so stage 6 lands on a free name.</li>
 </ol>
 <p>Deletes: client-side session lifecycle via metadata, the TUI layout metadata key (still translated server-side for old clients), the web client's <code>default</code> auto-create.</p>
 <p>Proof: the close-versus-kill matrix runs against each client: close a view and the process survives; kill and it ends; exit a shell and the view goes; exit the last shell of a named session and the session stays. Cross-client: create in CLI, see it in TUI and desktop, rename on one, see it on the others.</p>
+<p>Intake proof: migration lands in Inbox, preserved groups remain recognizable, and drag/keyboard/bulk routes produce the same membership result. Undo restores grouping without changing activations; concurrent edits or revoked grants refuse safely. Large bot sessions show counts/outcomes/exceptions and drill-down without mounting every resource. Stage 4 provides owner-local intake; combined cross-owner Inbox lands with the multi-authority runtime in stage 6.</p>
 <h2 id="stage-5-actors">Stage 5: actors</h2>
 <ol>
 <li>Principal registry: the owner, plus owner-registered agent and automation credentials (building on ADR-0098's workload credentials).</li>
@@ -131,6 +136,7 @@ main{max-width:1120px;padding:2rem 3rem 6rem;min-width:0}h1{font-size:clamp(2rem
 <h2 id="stage-6-workspaces">Stage 6: workspaces</h2>
 <p><code>Workspace</code> records, link and unlink, the workspace arrangement, multi-authority observation in the client runtime, transfer, deleted-link and offline states. Gated on the runtime holding sessions from two authorities at once.</p>
 <p>Proof: the workspace scenarios in the <a href="FULL-DESIGN.html#07-workspaces">domain model</a> against two real servers, one killed mid-test.</p>
+<p>Also prove combined Inbox preserves imported groups from both owners, links sessions without moving execution, and reports link/intake-resolution and undo outcomes per owner. Different human/bot views operate on the same IDs, permissions, records, and events.</p>
 <h2 id="stage-7-browser-kind">Stage 7: browser kind</h2>
 <p><a href="BROWSER-KIND.html">BROWSER-KIND.md</a>, with a real owner-side browser driver. Not started before stage 4 is done.</p>
 <h2 id="working-rules">Working rules</h2>
@@ -139,12 +145,12 @@ main{max-width:1120px;padding:2rem 3rem 6rem;min-width:0}h1{font-size:clamp(2rem
 <li>Every PR that changes behavior updates the doc that owns the behavior in the same PR.</li>
 <li>These research files freeze when the stage 0 ADRs merge; after that the ADRs and <code>docs/</code> are the source of truth.</li>
 </ul>
-<p class="footer">Generated from PLAN.md by build.py. No external scripts, fonts, analytics, or network requests. Source SHA-256: <code>9dd319f653039e21752ea4a203c288d9683ce191079506fd3740acdf30060a5a</code>.</p>
+<p class="footer">Generated from PLAN.md by build.py. No external scripts, fonts, analytics, or network requests. Source SHA-256: <code>3c7676c9af4f0922bb21c8023aff068c9c14ca020d480e7dabb6784822f04694</code>.</p>
 </main></div>
 <script>
 
 const storageKey = "phux-domain-review-plan";
-const sourceLabel = "PLAN.md, Draft 2 \u00b7 12 October 2026, sha256 9dd319f653039e21752ea4a203c288d9683ce191079506fd3740acdf30060a5a";
+const sourceLabel = "PLAN.md, Draft 3 \u00b7 12 October 2026, sha256 3c7676c9af4f0922bb21c8023aff068c9c14ca020d480e7dabb6784822f04694";
 let notes = {};
 let storageAvailable = true;
 try { notes = JSON.parse(localStorage.getItem(storageKey) || '{}'); }

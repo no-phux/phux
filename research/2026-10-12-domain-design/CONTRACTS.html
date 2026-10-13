@@ -21,7 +21,7 @@ main{max-width:1120px;padding:2rem 3rem 6rem;min-width:0}h1{font-size:clamp(2rem
 </style>
 </head>
 <body>
-<header class="top"><div><span class="brand">PHUX / CONTRACTS</span><span class="badge">PROPOSAL · DRAFT 2 · 12 OCTOBER 2026</span></div><div class="actions"><a href="DESIGN.html">Overview</a><button id="export" type="button">Export notes as Markdown</button><button id="print" type="button">Print / PDF</button><a href="CONTRACTS.md">Markdown source</a></div></header>
+<header class="top"><div><span class="brand">PHUX / CONTRACTS</span><span class="badge">PROPOSAL · DRAFT 3 · 12 OCTOBER 2026</span></div><div class="actions"><a href="DESIGN.html">Overview</a><button id="export" type="button">Export notes as Markdown</button><button id="print" type="button">Print / PDF</button><a href="CONTRACTS.md">Markdown source</a></div></header>
 <div class="shell"><nav aria-label="Sections"><p><a href="FULL-DESIGN.html">Domain Model</a> · <strong>Contracts</strong> · <a href="PLAN.html">Build Plan</a> · <a href="MIGRATION.html">Migration</a> · <a href="BROWSER-KIND.html">Browser Kind</a></p><div class="toc">
 <div class="toc">
 <ul>
@@ -125,6 +125,7 @@ main{max-width:1120px;padding:2rem 3rem 6rem;min-width:0}h1{font-size:clamp(2rem
     key: SessionKey,
     name: String,              // unique among live sessions on this authority
     lifetime: SessionLifetime, // Persistent | Ephemeral
+    awaiting_organization: bool, // imported group appears in Inbox until explicitly organized
     members: Vec&lt;ResourceKey&gt;, // order = creation order; presentation order lives in arrangements
     arrangement: Option&lt;ArrangementKey&gt;,
     attrs: Attrs,              // project, directory, host label: descriptive only
@@ -184,6 +185,7 @@ struct Actor {
 </code></pre>
 <p><code>LayoutNode</code> moves out of <code>crates/phux-core/src/window.rs:40-56</code> into <code>arrangement.rs</code> and becomes generic over its leaf. Today's <code>Window</code> (<code>window.rs:21-32</code>) and <code>Session.windows</code>/<code>active</code> (<code>session.rs:57-71</code>) are deleted, not renamed.</p>
 <p><code>ExitPolicy</code> defaults: an interactive shell started by <code>new</code>, <code>spawn</code>, or a split is <code>Remove</code>, so exiting a shell closes it, as in tmux. Anything started by <code>launch</code>, an agent, or with <code>--keep</code> is <code>Retain</code>, which absorbs ADR-0124's exited-pane retention. Respawning the session's last shell on exit (<code>crates/phux-server/src/state/sessions.rs:98-110</code>) is deleted: no implicit launch.</p>
+<p>The authority record designates one persistent <code>inbox_session: SessionKey</code>. It is a Session, not a new entity kind or a name-based convention. It cannot be deleted or switched to Ephemeral while designated. <code>awaiting_organization</code> is a shared intake fact on imported sessions; clearing it removes the intake presentation, not membership or execution. Inbox is a permission-filtered projection over designated Inbox sessions and those marked imported groups, aggregated by the runtime across connected authorities.</p>
 <h2 id="03-access">03. Access</h2>
 <p>The five grant categories map onto the existing closed scope matrix (ADR-0098, <code>crates/phux-protocol/src/kinds.rs:55-68</code>). Two verbs are new.</p>
 <table>
@@ -244,9 +246,9 @@ struct Actor {
 <tbody>
 <tr>
 <td><code>GetOrganization</code></td>
-<td>optional session or workspace filter</td>
+<td>session/workspace/intake filter, page size, cursor</td>
 <td>Observe</td>
-<td>Snapshot: records the caller may see, revisions, live handles, journal cursor.</td>
+<td>Bounded page: authorized records, revisions, live handles, aggregate counts, snapshot revision and journal cursor. Cursors are source/filter/principal-scoped; expired snapshots require refresh.</td>
 </tr>
 <tr>
 <td><code>SessionCreate</code></td>
@@ -283,6 +285,24 @@ struct Actor {
 <td>resource, from (expected), to (expected)</td>
 <td>Organize on both</td>
 <td>Membership only. Replaces <code>MoveResource</code> 0x2A semantics; the frame stays as a compat alias.</td>
+</tr>
+<tr>
+<td><code>ResourceMoveMany</code></td>
+<td>fixed resource keys, source revisions, destination (expected)</td>
+<td>Organize on every affected session</td>
+<td>Bounded atomic same-owner membership move. Validate each resource/kind/access; no restart. A refused target refuses the whole owner batch.</td>
+</tr>
+<tr>
+<td><code>InboxResolve</code></td>
+<td>imported session, expected</td>
+<td>Organize</td>
+<td>Clears <code>awaiting_organization</code>; leaves the session/resources intact. Returns prior intake state in its organization receipt.</td>
+</tr>
+<tr>
+<td><code>OrganizationUndo</code></td>
+<td>original operation, expected resulting revisions</td>
+<td>Original operation's current grants</td>
+<td>Applies the receipt's inverse for supported membership/link/intake edits. Refuses expired receipts, changed state, or revoked authority; never reverses execution.</td>
 </tr>
 <tr>
 <td><code>ResourceRename</code></td>
@@ -348,6 +368,7 @@ struct Actor {
 </table>
 <p>Kind operations keep their existing commands (<code>AcquireInput</code>, <code>SignalTerminal</code>, <code>ApplyInput</code>, and so on), now addressed by <code>LiveTarget</code>. A stale activation fails <code>Stale</code> before any effect.</p>
 <p>"Kill a session" is a client workflow, not a command: snapshot members and their live targets, <code>ResourceTerminate</code> each, <code>ResourceRemove</code> each once inactive, then <code>SessionDelete</code> with the revision seen at the start. Work added in the meantime survives and makes the final delete fail <code>NotEmpty</code>. <code>phux kill &lt;session&gt;</code> keeps its meaning by running this workflow.</p>
+<p>Drag/drop, keyboard move, bulk selection, and agent organization all submit these same typed operations. Human clients retain the organization receipt for visible undo; agents receive the same receipt. Selection never expands during retries. Workspace linking and remote intake resolution have separate owner results; failure of intake cleanup cannot undo a successfully committed link or make imported work disappear. Batches have advertised bounds; oversized selection is explicitly chunked with per-batch results, never falsely reported as one atomic operation.</p>
 <h2 id="05-results">05. Results</h2>
 <pre><code class="language-rust">enum CommandResult&lt;T&gt; {
     Ok { value: T, revision: Option&lt;Revision&gt;, operation: OperationId },
@@ -378,6 +399,7 @@ enum Refusal {
 <li>Past the horizon, the runtime never resubmits on its own; it reconciles from <code>GetOrganization</code> and tells the caller the outcome is unknown.</li>
 <li>Records keep the <code>OperationId</code> that created them, so a late retry can still be matched against a resource that exists.</li>
 </ul>
+<p>Supported organization receipts also record the inverse change and the resulting affected revisions. Undo is itself an idempotent operation with a new OperationId, checked against current state and permissions. Runtime exposes the actual available receipt/undo horizon rather than assuming low-volume usage keeps receipts alive for 24 hours. Execution operations never acquire an inverse merely because their receipt exists.</p>
 <h2 id="07-events">07. Events</h2>
 <p>Organization events join the existing journal (ADR-0123; <code>SUBSCRIBE_EVENTS</code> 0x41, <code>EVENT</code> 0xB3) as new <code>AgentEvent</code> variants, carrying today's <code>EventStamp{seq, ts_ms, actor, operation_id}</code> (<code>crates/phux-protocol/src/wire/frame/payload.rs:55-64</code>). <code>ActorRef</code> gains <code>principal</code> and <code>on_behalf_of</code>.</p>
 <table>
@@ -391,6 +413,10 @@ enum Refusal {
 <tr>
 <td><code>SessionCreated</code>, <code>SessionRenamed</code>, <code>SessionDeleted</code></td>
 <td>key, name, revision</td>
+</tr>
+<tr>
+<td><code>SessionIntakeChanged</code></td>
+<td>session key, awaiting_organization, revision; emitted by InboxResolve and undo restoring intake state</td>
 </tr>
 <tr>
 <td><code>MembershipChanged</code></td>
@@ -419,11 +445,14 @@ enum Refusal {
 </tbody>
 </table>
 <p>A gap or an expired cursor (<code>JournalGap</code>) means: refetch <code>GetOrganization</code>. Order is per authority only. Terminal bytes stay on their own streams and bootstrap (ADR-0013, ADR-0070).</p>
+<p>Organization undo emits the same committed membership/link/intake events as the equivalent direct edit, correlated to its own OperationId. Every observing client therefore reconciles Inbox removal/restoration incrementally; intake state cannot be a private frontend cache.</p>
 <p>Intercepted metadata broadcasts (<code>phux.session.created/v1</code>, and the rest) keep flowing for old clients until stage 4 retires them.</p>
 <h2 id="08-organization-store">08. Organization store</h2>
-<p><strong>Format.</strong> One JSON document, <code>&lt;state_dir&gt;/org/v1.json</code> (<code>state_dir</code> is <code>$XDG_STATE_HOME/phux</code>), written by atomic rename with fsync of the file and the directory. The schema version is in the document. No new dependency: the organization data is small (hundreds of records), and the write pattern is one writer at human or agent command rates. If profiling shows write cost matters, SQLite replaces the file behind the same <code>OrgStore</code> trait, with a migration.</p>
-<p><strong>Contents.</strong> <code>AuthorityId</code>, sessions, resources with activations, arrangements, workspaces, tombstones (kept 30 days), receipts (§06), and the last journal sequence number.</p>
-<p><strong>Write discipline.</strong> The server commits a transition by writing the store, then applies it in memory, then acknowledges, then publishes events. If the write fails, the command is refused and memory is unchanged. Activation state changes (started, ended) are written too; they are what makes restart reconciliation possible.</p>
+<p><strong>Format.</strong> A versioned transactional SQLite organization store, <code>&lt;state_dir&gt;/org/v1.sqlite3</code> (<code>state_dir</code> is <code>$XDG_STATE_HOME/phux</code>), behind <code>OrgStore</code>. Use incremental row updates and indexes for owner/session membership, state, and intake queries; never rewrite all records for a single move. Keep one authority writer and bounded transactions, not distributed storage. Resource output stays in its kind-specific stream/evidence storage.</p>
+<p><strong>Scale contract.</strong> People and bot swarms use the same model. Design for thousands of resources and sustained automation mutation rates without assuming hundreds of records or human pacing. Inventory is paginated/filterable, counts are queryable without fetching every record, and subscriptions carry incremental changes. Large arrangements and batches are bounded; runtime exposes partial/paged results instead of silently omitting work. Storage/query/UI performance gates cover large intake, membership moves, receipt churn, and concurrent observation. This is not a promise of unlimited resources or executors; admission and backpressure remain explicit.</p>
+<p><strong>Dependency justification.</strong> Transactional persistence is warranted by atomic membership/bulk edits, durable receipts, and indexed inventory under automation load, not by speculative distribution. At implementation, reuse a suitable installed/workspace SQLite binding if available; adding a binding requires a scoped dependency/security review. JSON remains a portable archive format, not the live organization database.</p>
+<p><strong>Contents.</strong> <code>AuthorityId</code>, its designated Inbox session, sessions/intake facts, resources with activations, arrangements, workspaces, tombstones (kept 30 days), receipts (§06), migration receipts, and the last journal sequence number.</p>
+<p><strong>Write discipline.</strong> Commit the transition, associated receipts, and journal position in one durable owner transaction; then apply committed state in memory, acknowledge, and publish events. If commit fails, refuse and leave authoritative memory unchanged. Activation changes are persisted too. Recovery reconciles committed execution intents; a database transaction does not make OS launch/termination atomic. Schema migrations are versioned, backed up, and transactional; the owner refuses unsupported store versions rather than guessing.</p>
 <p><strong>Startup reconciliation.</strong> For each activation recorded <code>Starting</code>, <code>Running</code>, or <code>Stopping</code> under a previous <code>ServerInstance</code>:</p>
 <ol>
 <li>If a live-upgrade handover (ADR-0032 <code>StateBlob</code>) vouches for it, rebind it: same activation, new handle.</li>
@@ -474,8 +503,8 @@ enum Refusal {
 </tr>
 <tr>
 <td><code>phux-client-runtime</code></td>
-<td>Snapshot plus journal reconciliation, operation correlation, retries, one connection stack.</td>
-<td>Its own idea of what exists.</td>
+<td>Paged snapshot/journal reconciliation, permission-filtered multi-owner Inbox, operation/undo correlation, retries, one connection stack.</td>
+<td>Its own idea of what exists, unbounded inventory/attachment fan-out.</td>
 </tr>
 <tr>
 <td><code>phux-client-ffi</code></td>
@@ -496,12 +525,12 @@ enum Refusal {
 </table>
 <h2 id="11-connection-and-onboarding">11. Connection and onboarding</h2>
 <p>Unchanged by this design, except: connection setup produces an authenticated principal and grant before any inventory is shown; discovery returns candidates, never inventory; progress names the real stage (finding host, checking trust, authenticating, loading work, mounting view). Target: on an already trusted, provisioned host, picking a saved session reaches an interactive view in under five seconds, measured, not asserted.</p>
-<p class="footer">Generated from CONTRACTS.md by build.py. No external scripts, fonts, analytics, or network requests. Source SHA-256: <code>4b86448af576053c62fcf3255f469298cad9a7669f6f56b353e7d6cd5cec27c4</code>.</p>
+<p class="footer">Generated from CONTRACTS.md by build.py. No external scripts, fonts, analytics, or network requests. Source SHA-256: <code>adc5b01622e8c7d9a4532177d4c8abd430d6eeaf55d0bb9beb832c16e053052b</code>.</p>
 </main></div>
 <script>
 
 const storageKey = "phux-domain-review-contracts";
-const sourceLabel = "CONTRACTS.md, Draft 2 \u00b7 12 October 2026, sha256 4b86448af576053c62fcf3255f469298cad9a7669f6f56b353e7d6cd5cec27c4";
+const sourceLabel = "CONTRACTS.md, Draft 3 \u00b7 12 October 2026, sha256 adc5b01622e8c7d9a4532177d4c8abd430d6eeaf55d0bb9beb832c16e053052b";
 let notes = {};
 let storageAvailable = true;
 try { notes = JSON.parse(localStorage.getItem(storageKey) || '{}'); }
