@@ -54,12 +54,13 @@ pid + version + socket to attribute interleaved writers.
 becomes a client and spawns a server if none is listening on the socket,
 following tmux's auto-spawn convention.
 
-Natural `exit` of a session's last live shell does not reap that
-Terminal. The server replaces the child in place with a fresh default
-shell so Cockpit, the TUI, and headless clients keep a live pane.
-`KILL_RESOURCES` and Close Tab still close the pane; a last-session
-kill still self-exits the server after it has served a client
-([ADR-0131](../adr/0131-last-shell-exit-keeps-a-terminal.md)).
+A resource's exit policy decides what its process exit does: a shell is
+removed, a launched command or agent is retained with its outcome, and
+nothing is respawned. A persistent session stays when its last resource
+goes; an ephemeral one is deleted with it. The server may exit once no
+activation is live and no client is connected; its records stay in the
+organization store
+([ADR-0162](../adr/0162-organization-records-persist-and-activations-reconcile.md)).
 
 ### EOF and native publication
 

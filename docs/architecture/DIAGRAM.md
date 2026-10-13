@@ -25,8 +25,9 @@ are separate boundaries.
 │   SERVER (one per user, one current-thread runtime + LocalSet)     │
 │                                                                    │
 │   ServerState (std::sync::Mutex; never held across an await)       │
-│     registry (sessions, windows, resources + parents) · id bridge  │
-│     L3 metadata store · leases · ResourceTable (ResourceHandles)   │
+│     registry (sessions, resources + parents, arrangements)         │
+│     org store (SQLite) · id bridge · L3 metadata store · leases    │
+│     ResourceTable (ResourceHandles)                                │
 │                                                                    │
 │   one spawn_local task per resource = ResourceCore + kind engine   │
 │   ┌──────────────────────────────┐   ┌──────────────────────────┐  │
@@ -85,8 +86,8 @@ reaches Terminal-only channels through `ResourceHandle::terminal()`. For
 the Terminal kind the engine owns the `libghostty_vt::Terminal`: the full
 parsed grid, modes, parser continuation, and retained history, fed by the
 PTY and supervised on the `LocalSet` ([threading.md](./threading.md)).
-Sessions and windows are grouping metadata over resources, not a
-collection tier ([data-model.md](./data-model.md)).
+Sessions are server records that own resource membership; tabs are groups
+in a session's arrangement ([data-model.md](./data-model.md)).
 
 ### Local replica (client)
 
@@ -125,12 +126,13 @@ type. Details in [transport.md](./transport.md).
 | **Resource** | Server (L1 wire) | Id, kind, optional parent, lifecycle, ordered output stream, bootstrap, events |
 | **Terminal** (kind 0) | Server (L1 facet) | PTY, canonical grid, cols/rows/title/cwd, structured input |
 | **AgentSession** (kind 1) | Server (L1 facet) | Provider, native id, derived state, appended JSONL records; always a Terminal child |
-| **Session / Window** | Server registry + TUI (L3 metadata) | Grouping, layout tree, focus |
-| **Pane** | TUI client | A Terminal-kind resource in a layout slot |
+| **Session** | Server registry + org store | Name, lifetime, members, revision |
+| **Arrangement** | Server registry + org store | Groups (tabs) of split trees naming member resources |
+| **Pane / view** | Each client | One client's presentation of a resource; focus stays here |
 
-The wire defines resources and their facets. The TUI defines sessions,
-windows, and panes as one way to arrange Terminal-kind resources. A headless
-consumer speaks L1 plus whatever L3 keys it chooses.
+The wire defines resources, sessions, and arrangements. Each client
+presents them its own way: the TUI as tabs and panes, Cockpit as tiles. A
+headless consumer speaks L1 and reads organization without mounting views.
 
 ---
 
