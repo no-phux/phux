@@ -131,6 +131,61 @@ class RunnerPolicyTests(unittest.TestCase):
         self.assertIn("cache-key: ${{ steps.mbx-env.outputs.cache_key }}", lane)
         self.assertIn("40 * 1024 * 1024", lane)
         self.assertIn("PHUX_CI_MBX=1", lane)
+        self.assertIn("cache-key:", lane)
+        self.assertIn("steps.mbx-env.outputs.cache_key", lane)
+
+    def test_failed_main_lane_saves_the_objects_archive(self):
+        """A red assertion must not throw away a finished compile.
+
+        Run 38457963019 spent 10m 37s compiling and saved nothing because
+        the action exports only from its success post step. The save stays
+        on pushes to main, and only when this restore missed.
+        """
+        ci = (WORKFLOWS / "ci.yml").read_text()
+        save_if = (
+            "if: failure() && github.event_name == 'push' && "
+            "github.ref == 'refs/heads/main' && steps.setup.outputs.cache-hit != 'true' "
+            "&& steps.mbx-fail-export.outputs.exported == 'true'"
+        )
+        self.assertEqual(ci.count(save_if), 3)
+        self.assertEqual(ci.count("bash scripts/ci/mbx-export-failed-lane.sh"), 3)
+        self.assertNotIn("save-on-pull-request", ci)
+        lane = (ROOT / ".github/actions/setup-rust-lane/action.yml").read_text()
+        self.assertIn("value: ${{ steps.mbx-env.outputs.cache_key }}", lane)
+
+        script = ROOT / "scripts/ci/mbx-export-failed-lane.sh"
+        with tempfile.TemporaryDirectory() as scratch:
+            output = Path(scratch) / "github-output"
+            refused = subprocess.run(
+                ["bash", str(script), str(Path(scratch) / "elsewhere")],
+                check=False, capture_output=True, text=True,
+            )
+            self.assertEqual(refused.returncode, 2)
+            unset = subprocess.run(
+                ["bash", str(script), str(Path(scratch) / "phux-mbx-objects")],
+                check=False, capture_output=True, text=True,
+                env={"PATH": "/usr/bin:/bin", "GITHUB_OUTPUT": str(output)},
+            )
+            self.assertEqual(unset.returncode, 0)
+            self.assertNotIn("exported=true", output.read_text() if output.exists() else "")
+
+            bindir = Path(scratch) / "bin"
+            bindir.mkdir()
+            fake = bindir / "mbx"
+            # mbx cache export --group GROUP --format directory DEST
+            fake.write_text("#!/bin/sh\nmkdir -p \"$7\"\nexit 0\n")
+            fake.chmod(0o755)
+            exported = subprocess.run(
+                ["bash", str(script), str(Path(scratch) / "phux-mbx-objects")],
+                check=False, capture_output=True, text=True,
+                env={
+                    "PATH": f"{bindir}:/usr/bin:/bin",
+                    "MBX_CACHE_EXPORT_GROUP": "group-1",
+                    "GITHUB_OUTPUT": str(output),
+                },
+            )
+            self.assertEqual(exported.returncode, 0, exported.stderr)
+            self.assertIn("exported=true", output.read_text())
 
     def test_export_cleanup_preserves_pending_cache_and_cargo_tools(self):
         """Download cleanup must not evict the current build's export closure."""

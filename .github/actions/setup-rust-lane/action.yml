@@ -47,6 +47,9 @@ outputs:
   cache-hit:
     description: mbx action cache-hit output (exact key restored), for the lane signal step.
     value: ${{ steps.mbx.outputs.cache-hit }}
+  cache-key:
+    description: Primary objects-cache key. A failed main lane saves this same key.
+    value: ${{ steps.mbx-env.outputs.cache_key }}
 
 runs:
   using: composite
