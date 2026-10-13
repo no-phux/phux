@@ -43,11 +43,7 @@ async fn attach_session(stream: &mut UnixStream, role: Option<RolePolicy>) -> Ve
 }
 
 fn attach_resource(pane: &ResourceId, role_policy: Option<RolePolicy>) -> Command {
-    Command::AttachResource {
-        terminal_id: pane.clone(),
-        role_policy,
-        agent_after_seq: None,
-    }
+    Command::attach_terminal(pane.clone(), role_policy)
 }
 
 fn route_input(pane: &ResourceId) -> Command {

@@ -978,11 +978,7 @@ fn queue_terminal_attach(
     let role_policy = client.next_attach_role();
     client.queue_frame(&FrameKind::Command {
         request_id,
-        command: Command::AttachResource {
-            terminal_id: id.clone(),
-            role_policy,
-            agent_after_seq: None,
-        },
+        command: Command::attach_terminal(id.clone(), role_policy),
     })?;
     if !client.control().admit_external_attach(&id, role_policy) {
         return Err(BridgeError::state(

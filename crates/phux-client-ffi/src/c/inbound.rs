@@ -2,7 +2,7 @@
 //!
 //! Every frame still walks the per-frame hooks `phux_client_feed_frame`
 //! walks (epoch fence, retired-close suppression, profile validation,
-//! agent-generation tracking) on the owning thread. What changes is how
+//! workspace reconciliation) on the owning thread. What changes is how
 //! terminal output reaches the engine: a contiguous run of `RESOURCE_OUTPUT`
 //! frames is fed as one batch, so a flood costs one owner-thread apply and
 //! one grid publication per run instead of one per frame. Any other frame

@@ -4,12 +4,55 @@
 //! chunks may fragment JSON-lines records; live output carries complete records.
 //! The kernel parses every byte here before anything leaves it: frontends receive
 //! [`AgentEventRecord`]s and a derived [`AgentSessionState`], never raw bytes.
+//!
+//! [`AgentPublication`] is the commit of one generation. Its stream field is
+//! the committed cursor, including when `records` is empty. The session kernel
+//! admits the resource and enforces the connection-wide staging budget; this
+//! module owns per-agent staging, validation, commit, and retirement.
+
+mod lifecycle;
 
 use std::collections::VecDeque;
 
+use phux_protocol::ResourceId;
 use serde_json::Value;
 
 use super::agent_transcript::TranscriptEntry;
+
+pub(super) use lifecycle::AgentStream;
+
+/// How a committed publication relates to the frontend's retained log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentRecordMode {
+    /// `records` is the whole retained replacement for this generation.
+    ///
+    /// An empty replacement still publishes and clears prior evidence.
+    Replace,
+    /// `records` append to the retained log.
+    ///
+    /// Live output and a resumed bootstrap use this mode. An empty resume
+    /// still publishes so the generation watermark can advance; it does not
+    /// clear evidence already committed.
+    Append,
+}
+
+/// One committed `AgentSession` publication.
+///
+/// `stream` is the authoritative commit watermark, including empty
+/// publications. Callers must not derive identity or the cursor from
+/// `records`. Invalid staging never produces a publication.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentPublication {
+    /// The `AgentSession` resource.
+    pub resource_id: ResourceId,
+    /// Committed stream identity and cursor after this publication.
+    pub stream: super::AgentStreamInfo,
+    /// Whether `records` replace or append the frontend log.
+    pub mode: AgentRecordMode,
+    /// Validated records, in order. Empty when a successful READY cut had
+    /// no suffix.
+    pub records: Vec<AgentEventRecord>,
+}
 
 /// Upper bound on one record line including its LF terminator, matching the producer.
 pub const MAX_RECORD_BYTES: usize = 16 * 1024;

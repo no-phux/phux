@@ -5048,11 +5048,7 @@ mod relay_satellite_attach_role_tests {
             result: CommandResult,
         ) -> CommandResult {
             let local = ResourceId::local(terminal);
-            let command = Command::AttachResource {
-                terminal_id: local.clone(),
-                role_policy: Some(role),
-                agent_after_seq: None,
-            };
+            let command = Command::attach_terminal(local.clone(), Some(role));
             let target = SatelliteLeaseTarget::new(&self.state, &self.host, self.client_id, &local);
             let attach = relay_satellite_attach(
                 &target,

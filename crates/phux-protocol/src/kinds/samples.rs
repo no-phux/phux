@@ -78,11 +78,7 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
     let focus = InputEvent::Focus(FocusEvent::Gained);
     vec![
         (
-            Command::AttachResource {
-                terminal_id: terminal(),
-                role_policy: None,
-                agent_after_seq: None,
-            },
+            Command::attach_terminal(terminal(), None),
             &C_ATTACH_RESOURCE,
         ),
         (

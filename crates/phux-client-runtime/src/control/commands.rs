@@ -21,7 +21,30 @@ impl ControlPlane {
 
     /// Every event queued since the last drain, in order, preceded by one
     /// [`Event::TerminalChanged`] per terminal that changed.
+    ///
+    /// Accepts agent publications in the batch: that drain is delivery
+    /// acceptance. A binding that accepts later, at its own explicit clear
+    /// rather than when a pointer borrow ends, uses [`Self::take_events_leased`].
     pub fn take_events(&mut self) -> Vec<Event> {
+        let events = self.drain_events();
+        self.agent_delivery.accept_drained(&events);
+        events
+    }
+
+    /// Drain events without accepting agent publications.
+    ///
+    /// Returned [`Event::AgentPublication`] arcs stay journaled until
+    /// [`Self::accept_agent_publication`]. That call is delivery acceptance.
+    /// The C adapter's pointer borrow ends on the next mutable call; its
+    /// staged effects persist, and it accepts in `phux_client_effect_clear`.
+    /// Loss or replacement replays any still unaccepted allocation after the
+    /// next catalog and attach are ready.
+    #[must_use]
+    pub fn take_events_leased(&mut self) -> Vec<Event> {
+        self.drain_events()
+    }
+
+    fn drain_events(&mut self) -> Vec<Event> {
         self.events_dropped = 0;
         let mut events: Vec<Event> = self
             .damaged
@@ -203,11 +226,7 @@ impl ControlPlane {
         let (cols, rows) = self.viewport();
         self.queue_frame(&FrameKind::Command {
             request_id,
-            command: Command::AttachResource {
-                terminal_id: terminal_id.clone(),
-                role_policy: self.options.attach_role,
-                agent_after_seq: None,
-            },
+            command: Command::attach_terminal(terminal_id.clone(), self.options.attach_role),
         });
         // ATTACH_RESOURCE does not resize; reflow the terminal to this
         // viewport as a session ATTACH would have. A connection that casts

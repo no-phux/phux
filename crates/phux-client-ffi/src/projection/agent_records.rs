@@ -6,23 +6,60 @@
 //! shape, including the `phux.transcript/v1` entries `provider_raw` records
 //! carry (ADR-0156).
 
-use phux_client_core::session::agent_stream::AgentEventRecord;
+use phux_client_core::session::AgentStreamInfo;
+use phux_client_core::session::agent_stream::{
+    AgentEventRecord, AgentPublication, AgentRecordMode,
+};
+
+/// One representation-neutral foreign record batch.
+pub(crate) struct RecordBatch {
+    pub mode: AgentRecordMode,
+    pub stream: AgentStreamInfo,
+    pub jsonl: String,
+    pub seq: u64,
+}
+
+/// Empty appends advance identity only; empty replacements clear evidence.
+pub(crate) fn project(publication: &AgentPublication) -> Option<RecordBatch> {
+    if publication.mode == AgentRecordMode::Append && publication.records.is_empty() {
+        return None;
+    }
+    Some(RecordBatch {
+        mode: publication.mode,
+        stream: publication.stream,
+        seq: publication.records.last().map_or(0, |record| record.seq),
+        jsonl: jsonl(&publication.records),
+    })
+}
 
 /// `records` as JSON lines; empty for no records.
+///
+/// # Panics
+///
+/// Panics if the JSON encoder violates its in-memory writer or UTF-8 invariants.
 #[must_use]
+#[allow(
+    clippy::expect_used,
+    reason = "borrowed JSON values serialize infallibly into a Vec and the serializer emits UTF-8"
+)]
 pub fn jsonl(records: &[AgentEventRecord]) -> String {
-    let mut lines = String::new();
+    let mut lines = Vec::new();
     for record in records {
-        let line = serde_json::json!({
-            "seq": record.seq,
-            "ts_ms": record.ts_ms,
-            "type": record.kind.as_str(),
-            "data": record.data,
-        });
-        lines.push_str(&line.to_string());
-        lines.push('\n');
+        lines.extend_from_slice(b"{\"data\":");
+        serde_json::to_writer(&mut lines, &record.data)
+            .expect("JSON data serializes into a byte buffer");
+        lines.extend_from_slice(b",\"seq\":");
+        serde_json::to_writer(&mut lines, &record.seq)
+            .expect("record sequence serializes into a byte buffer");
+        lines.extend_from_slice(b",\"ts_ms\":");
+        serde_json::to_writer(&mut lines, &record.ts_ms)
+            .expect("record timestamp serializes into a byte buffer");
+        lines.extend_from_slice(b",\"type\":");
+        serde_json::to_writer(&mut lines, record.kind.as_str())
+            .expect("record kind serializes into a byte buffer");
+        lines.extend_from_slice(b"}\n");
     }
-    lines
+    String::from_utf8(lines).expect("JSON serialization produces UTF-8")
 }
 
 #[cfg(test)]

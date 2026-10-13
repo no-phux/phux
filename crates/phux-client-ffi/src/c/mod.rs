@@ -615,12 +615,6 @@ fn apply_server_frame(
     if consume_retired_close(client, &frame) {
         return Ok(false);
     }
-    let agent_generation = match &frame {
-        FrameKind::BootstrapReady { terminal_id, .. } if client.is_agent_stream(terminal_id) => {
-            Some(terminal_id.clone())
-        }
-        _ => None,
-    };
     let validation = validate_runtime_frame(client, &frame);
     let runtime_result = {
         let mut control = client.control();
@@ -635,11 +629,6 @@ fn apply_server_frame(
         drop(control);
         result.map_err(control_error)
     };
-    if runtime_result.is_ok()
-        && let Some(id) = agent_generation
-    {
-        client.sync_agent_generation(&id);
-    }
     let attached = client.process_runtime_events()?;
     runtime_result?;
     follow_negotiated_session(client)?;
@@ -937,6 +926,7 @@ pub unsafe extern "C" fn phux_client_effect_get(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_effect_clear(client: *mut PhuxClient) -> PhuxClientResult {
     with_client_mut(client, |client| {
+        client.accept_agent_publications();
         client.owned_effects.clear();
         client.publish_effects();
         Ok(())

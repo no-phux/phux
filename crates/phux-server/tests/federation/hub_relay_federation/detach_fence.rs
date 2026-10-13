@@ -155,11 +155,7 @@ async fn detach(client: &mut UnixStream, pane: &ResourceId) {
 }
 
 async fn attach_live(client: &mut UnixStream, pane: &ResourceId) {
-    let attach = Command::AttachResource {
-        terminal_id: pane.clone(),
-        role_policy: None,
-        agent_after_seq: None,
-    };
+    let attach = Command::attach_terminal(pane.clone(), None);
     let (result, frames) = command_via_hub(client, 7000, attach).await;
     assert_eq!(
         result,

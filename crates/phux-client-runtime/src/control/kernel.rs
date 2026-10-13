@@ -68,6 +68,12 @@ impl ControlPlane {
             EngineEvent::Closed { terminal_id, .. } => {
                 self.attach_terminals.remove(terminal_id);
             }
+            EngineEvent::AgentSessionDeclared { terminal_id, .. } => {
+                self.agent_delivery.admit(terminal_id);
+                if self.status == super::Status::Attached {
+                    self.release_agent_delivery();
+                }
+            }
             _ => {}
         }
     }
@@ -118,18 +124,11 @@ impl ControlPlane {
             }
             KernelEffect::Status(status) => self.process_status(status),
             KernelEffect::Job(_) => {}
-            KernelEffect::AgentRecords {
-                terminal_id,
-                records,
-                retained,
-            } => {
-                let session = self.agent_session_info(&terminal_id);
-                self.push_event(Event::AgentRecords {
-                    terminal_id,
-                    records,
-                    retained,
-                    session,
-                });
+            KernelEffect::AgentPublication(publication) => {
+                let session = self.agent_session_info(&publication.resource_id);
+                if let Some(event) = self.agent_delivery.commit(publication, session) {
+                    self.push_event(event);
+                }
             }
         }
     }

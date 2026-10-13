@@ -77,11 +77,7 @@ fn attach_terminal_only_consumer_receives_terminal_closed() {
         };
 
         let mut watcher = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
-        let subscribe = Command::AttachResource {
-            terminal_id: victim.clone(),
-            role_policy: None,
-            agent_after_seq: None,
-        };
+        let subscribe = Command::attach_terminal(victim.clone(), None);
         // The reply proves the subscription is installed before the kill.
         assert_eq!(
             command(&mut watcher, 100, subscribe).await,

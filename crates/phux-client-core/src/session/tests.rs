@@ -10,11 +10,11 @@ use phux_protocol::{
     BootstrapId, BootstrapProfile, BootstrapStreamProfile, ResourceId, ResourceKind, StreamId,
 };
 
-use super::agent_stream::AgentSessionStatus;
+use super::agent_stream::{AgentRecordMode, AgentSessionStatus};
 use super::{
-    EffectBuffer, HistoryRejectionReason, HistoryUnavailableReason, InputBlockReason,
-    InputEligibility, KernelAction, KernelDamage, KernelDamageKind, KernelEffect, KernelError,
-    KernelInput, KernelJob, KernelSend, KernelStatus, MAX_BOOTSTRAP_STAGING_BYTES,
+    AgentStreamInfo, EffectBuffer, HistoryRejectionReason, HistoryUnavailableReason,
+    InputBlockReason, InputEligibility, KernelAction, KernelDamage, KernelDamageKind, KernelEffect,
+    KernelError, KernelInput, KernelJob, KernelSend, KernelStatus, MAX_BOOTSTRAP_STAGING_BYTES,
     MAX_BOOTSTRAP_STAGING_CHUNKS, MAX_BOOTSTRAP_STAGING_LIFETIME_MS, SessionKernel,
     TombstoneRecord,
 };
@@ -3440,18 +3440,35 @@ fn agent_begin(
     )
 }
 
-fn agent_records_effect(effects: &EffectBuffer) -> Option<(ResourceId, Vec<u64>, bool)> {
-    effects.as_slice().iter().find_map(|effect| match effect {
-        KernelEffect::AgentRecords {
-            terminal_id,
-            records,
-            retained,
-        } => Some((
-            terminal_id.clone(),
-            records.iter().map(|record| record.seq).collect(),
-            *retained,
-        )),
-        _ => None,
+fn committed_agent(
+    stream_id: StreamId,
+    bootstrap_id: BootstrapId,
+    last_seq: u64,
+) -> AgentStreamInfo {
+    AgentStreamInfo {
+        stream_id,
+        bootstrap_id,
+        last_seq,
+    }
+}
+
+fn agent_publication(
+    effects: &EffectBuffer,
+) -> Option<(ResourceId, Vec<u64>, AgentRecordMode, AgentStreamInfo)> {
+    effects.as_slice().iter().find_map(|effect| {
+        let KernelEffect::AgentPublication(publication) = effect else {
+            return None;
+        };
+        Some((
+            publication.resource_id.clone(),
+            publication
+                .records
+                .iter()
+                .map(|record| record.seq)
+                .collect(),
+            publication.mode,
+            publication.stream,
+        ))
     })
 }
 
@@ -3490,8 +3507,13 @@ fn assert_agent_fragment_publication(fragments: &[&[u8]]) {
         .update(ready(&agent, stream(3), bootstrap(4), None), &mut effects)
         .unwrap();
     assert_eq!(
-        agent_records_effect(&effects),
-        Some((agent.clone(), vec![1, 2], true))
+        agent_publication(&effects),
+        Some((
+            agent.clone(),
+            vec![1, 2],
+            AgentRecordMode::Replace,
+            committed_agent(stream(3), bootstrap(4), 2),
+        ))
     );
     let view = kernel.agent_session(&agent).unwrap();
     assert_eq!(view.state.status, AgentSessionStatus::Blocked);
@@ -3540,8 +3562,11 @@ fn agent_bootstrap_accepts_exact_record_limit_including_split_lf() {
             &mut effects,
         )
         .unwrap();
-    let staging = kernel.agents[&agent].staging.as_ref().unwrap();
-    assert!(staging.records.is_empty(), "no decoding before LF");
+    assert_eq!(
+        kernel.agents[&agent].staged_record_count(),
+        Some(0),
+        "no decoding before LF"
+    );
     kernel
         .update(
             chunk(&agent, stream(3), bootstrap(4), 1, b"\n"),
@@ -3551,7 +3576,15 @@ fn agent_bootstrap_accepts_exact_record_limit_including_split_lf() {
     kernel
         .update(ready(&agent, stream(3), bootstrap(4), None), &mut effects)
         .unwrap();
-    assert_eq!(agent_records_effect(&effects), Some((agent, vec![1], true)));
+    assert_eq!(
+        agent_publication(&effects),
+        Some((
+            agent,
+            vec![1],
+            AgentRecordMode::Replace,
+            committed_agent(stream(3), bootstrap(4), 1),
+        ))
+    );
 }
 
 fn assert_agent_replacement_failure(kernel: &SessionKernel<FakeAdapter>, effects: &EffectBuffer) {
@@ -3560,13 +3593,13 @@ fn assert_agent_replacement_failure(kernel: &SessionKernel<FakeAdapter>, effects
     assert_eq!(view.state.status, AgentSessionStatus::Done);
     assert_eq!(view.log.len(), 1);
     assert_eq!(view.log.last().unwrap().seq, 1);
-    assert!(agent_records_effect(effects).is_none());
+    assert!(agent_publication(effects).is_none());
     assert!(effects.as_slice().iter().any(|effect| matches!(effect,
         KernelEffect::Status(KernelStatus::ResyncRequired {
             bootstrap_id, reason: TombstoneReason::CodecFailure, ..
         }) if *bootstrap_id == bootstrap(5)
     )));
-    assert!(kernel.agents[&terminal(2)].staging.is_none());
+    assert!(kernel.agents[&terminal(2)].staged_record_count().is_none());
 }
 
 fn published_agent_with_record() -> SessionKernel<FakeAdapter> {
@@ -3653,8 +3686,13 @@ fn agent_live_record_wire_limit_includes_lf_and_whitespace() {
         )
         .unwrap();
     assert_eq!(
-        agent_records_effect(&effects),
-        Some((agent.clone(), vec![1], false))
+        agent_publication(&effects),
+        Some((
+            agent.clone(),
+            vec![1],
+            AgentRecordMode::Append,
+            committed_agent(stream(3), bootstrap(4), 1),
+        ))
     );
     let oversize = padded_agent_wire_record(2, MAX_RECORD_BYTES + 1);
     assert!(matches!(
@@ -3664,7 +3702,7 @@ fn agent_live_record_wire_limit_includes_lf_and_whitespace() {
         ),
         Err(KernelError::AgentRecord(AgentRecordError::Oversize(16_385)))
     ));
-    assert!(agent_records_effect(&effects).is_none());
+    assert!(agent_publication(&effects).is_none());
     assert_eq!(kernel.agent_session(&agent).unwrap().log.len(), 1);
 }
 
@@ -3823,8 +3861,13 @@ fn agent_bootstrap_replacement_and_release_reset_partial_decoder() {
         .update(ready(&agent, stream(3), bootstrap(5), None), &mut effects)
         .unwrap();
     assert_eq!(
-        agent_records_effect(&effects),
-        Some((agent.clone(), vec![1], true))
+        agent_publication(&effects),
+        Some((
+            agent.clone(),
+            vec![1],
+            AgentRecordMode::Replace,
+            committed_agent(stream(3), bootstrap(5), 1),
+        ))
     );
     agent_begin(
         &mut kernel,
@@ -3854,7 +3897,15 @@ fn agent_bootstrap_replacement_and_release_reset_partial_decoder() {
     kernel
         .update(ready(&agent, stream(3), bootstrap(6), None), &mut effects)
         .unwrap();
-    assert_eq!(agent_records_effect(&effects), Some((agent, vec![], true)));
+    assert_eq!(
+        agent_publication(&effects),
+        Some((
+            agent,
+            vec![],
+            AgentRecordMode::Replace,
+            committed_agent(stream(3), bootstrap(6), 0),
+        ))
+    );
 }
 
 #[test]
@@ -3933,8 +3984,13 @@ fn agent_session_bootstraps_into_a_typed_log_and_never_a_replica() {
         .update(ready(&agent, stream_id, bootstrap_id, None), &mut effects)
         .unwrap();
     assert_eq!(
-        agent_records_effect(&effects),
-        Some((agent.clone(), vec![4, 5], true)),
+        agent_publication(&effects),
+        Some((
+            agent.clone(),
+            vec![4, 5],
+            AgentRecordMode::Replace,
+            committed_agent(stream_id, bootstrap_id, 5),
+        )),
         "publication hands the frontend every retained record"
     );
     assert!(
@@ -3967,8 +4023,13 @@ fn agent_session_bootstraps_into_a_typed_log_and_never_a_replica() {
         )
         .unwrap();
     assert_eq!(
-        agent_records_effect(&effects),
-        Some((agent.clone(), vec![6], false))
+        agent_publication(&effects),
+        Some((
+            agent.clone(),
+            vec![6],
+            AgentRecordMode::Append,
+            committed_agent(stream_id, bootstrap_id, 6),
+        ))
     );
     let view = kernel.agent_session(&agent).expect("live");
     assert_eq!(view.state.status, AgentSessionStatus::Done);
@@ -4161,8 +4222,13 @@ fn malformed_agent_records_retire_only_that_generation() {
         .update(ready(&agent, stream_id, next, None), &mut effects)
         .unwrap();
     assert_eq!(
-        agent_records_effect(&effects),
-        Some((agent.clone(), vec![], true))
+        agent_publication(&effects),
+        Some((
+            agent.clone(),
+            vec![],
+            AgentRecordMode::Replace,
+            committed_agent(stream_id, next, 0),
+        ))
     );
     assert!(
         kernel
@@ -4289,8 +4355,13 @@ fn agent_live_batches_advance_by_the_last_record_sequence() {
     )
     .unwrap();
     assert_eq!(
-        agent_records_effect(&effects),
-        Some((terminal(2), vec![1, 2, 3], false))
+        agent_publication(&effects),
+        Some((
+            terminal(2),
+            vec![1, 2, 3],
+            AgentRecordMode::Append,
+            committed_agent(stream(3), bootstrap(4), 3),
+        ))
     );
     let agent = terminal(2);
     let view = kernel.agent_session(&agent).unwrap();
@@ -4298,8 +4369,13 @@ fn agent_live_batches_advance_by_the_last_record_sequence() {
     assert_eq!(view.log.len(), 3);
     apply_agent_batch(&mut kernel, &mut effects, 5, &[(4, "prompt"), (5, "ask")]).unwrap();
     assert_eq!(
-        agent_records_effect(&effects),
-        Some((agent.clone(), vec![4, 5], false))
+        agent_publication(&effects),
+        Some((
+            agent.clone(),
+            vec![4, 5],
+            AgentRecordMode::Append,
+            committed_agent(stream(3), bootstrap(4), 5),
+        ))
     );
     assert_eq!(
         kernel.agent_session(&agent).unwrap().state.status,
@@ -4383,8 +4459,13 @@ fn agent_live_batches_reach_sequence_exhaustion_without_wrapping() {
     )
     .unwrap();
     assert_eq!(
-        agent_records_effect(&effects),
-        Some((terminal(2), vec![u64::MAX - 1, u64::MAX], false))
+        agent_publication(&effects),
+        Some((
+            terminal(2),
+            vec![u64::MAX - 1, u64::MAX],
+            AgentRecordMode::Append,
+            committed_agent(stream(3), bootstrap(4), u64::MAX),
+        ))
     );
     assert!(matches!(
         apply_agent_batch(&mut kernel, &mut effects, 0, &[(0, "ask")]),
@@ -4407,7 +4488,7 @@ fn malformed_later_agent_batch_record_retires_without_partial_publication() {
         &mut effects,
     );
     assert!(matches!(result, Err(KernelError::AgentRecord(_))));
-    assert!(agent_records_effect(&effects).is_none());
+    assert!(agent_publication(&effects).is_none());
     assert!(effects.as_slice().iter().any(|effect| matches!(
         effect,
         KernelEffect::Status(KernelStatus::ResyncRequired {
@@ -4496,8 +4577,13 @@ fn resumed_agent_bootstrap_appends_atomically_and_preserves_derived_state() {
         .update(ready(&agent, stream(5), bootstrap(6), None), &mut effects)
         .unwrap();
     assert_eq!(
-        agent_records_effect(&effects),
-        Some((agent.clone(), vec![3, 4], false))
+        agent_publication(&effects),
+        Some((
+            agent.clone(),
+            vec![3, 4],
+            AgentRecordMode::Append,
+            committed_agent(stream(5), bootstrap(6), 4),
+        ))
     );
     assert_eq!(agent_sequences(&kernel), [1, 2, 3, 4]);
     let view = kernel.agent_session(&agent).unwrap();
@@ -4532,8 +4618,13 @@ fn resumed_agent_bootstrap_appends_atomically_and_preserves_derived_state() {
         .unwrap();
     assert_eq!(agent_sequences(&kernel), [1, 2, 3, 4, 5]);
     assert_eq!(
-        agent_records_effect(&effects),
-        Some((agent.clone(), vec![5], false))
+        agent_publication(&effects),
+        Some((
+            agent.clone(),
+            vec![5],
+            AgentRecordMode::Append,
+            committed_agent(stream(5), bootstrap(6), 5),
+        ))
     );
     assert_eq!(
         kernel.agent_session(&agent).unwrap().state.status,
@@ -4542,7 +4633,7 @@ fn resumed_agent_bootstrap_appends_atomically_and_preserves_derived_state() {
 }
 
 #[test]
-fn empty_agent_resume_is_silent_but_empty_full_bootstrap_replaces() {
+fn empty_agent_resume_publishes_without_clearing_evidence() {
     let mut kernel = published_agent_for_batches(0);
     let mut effects = EffectBuffer::new();
     let agent = terminal(2);
@@ -4551,7 +4642,16 @@ fn empty_agent_resume_is_silent_but_empty_full_bootstrap_replaces() {
     kernel
         .update(ready(&agent, stream(5), bootstrap(6), None), &mut effects)
         .unwrap();
-    assert!(effects.is_empty());
+    assert_eq!(
+        agent_publication(&effects),
+        Some((
+            agent.clone(),
+            vec![],
+            AgentRecordMode::Append,
+            committed_agent(stream(5), bootstrap(6), 1),
+        )),
+        "an empty resume publishes the new generation without clearing evidence"
+    );
     assert_eq!(agent_sequences(&kernel), [1]);
     assert_eq!(
         kernel.agent_stream_info(&agent).unwrap().bootstrap_id,
@@ -4574,8 +4674,13 @@ fn empty_agent_resume_is_silent_but_empty_full_bootstrap_replaces() {
         .update(ready(&agent, stream(7), bootstrap(8), None), &mut effects)
         .unwrap();
     assert_eq!(
-        agent_records_effect(&effects),
-        Some((agent.clone(), vec![], true))
+        agent_publication(&effects),
+        Some((
+            agent.clone(),
+            vec![],
+            AgentRecordMode::Replace,
+            committed_agent(stream(7), bootstrap(8), 1),
+        ))
     );
     assert!(agent_sequences(&kernel).is_empty());
     assert_eq!(
@@ -4616,8 +4721,13 @@ fn agent_eviction_fallback_replaces_the_log_and_rebuilds_state() {
         .update(ready(&agent, stream(5), bootstrap(6), None), &mut effects)
         .unwrap();
     assert_eq!(
-        agent_records_effect(&effects),
-        Some((agent.clone(), vec![5, 6], true))
+        agent_publication(&effects),
+        Some((
+            agent.clone(),
+            vec![5, 6],
+            AgentRecordMode::Replace,
+            committed_agent(stream(5), bootstrap(6), 6),
+        ))
     );
     assert_eq!(agent_sequences(&kernel), [5, 6]);
     assert_eq!(
@@ -4649,13 +4759,13 @@ fn invalid_agent_resume_records_preserve_the_committed_log_state_and_cursor() {
             chunk(&agent, stream(5), bootstrap(6), 0, payload.as_bytes()),
             &mut effects,
         );
-        assert!(agent_records_effect(&effects).is_none());
+        assert!(agent_publication(&effects).is_none());
         let result = kernel.update(ready(&agent, stream(5), bootstrap(6), None), &mut effects);
         assert!(
             result.is_err(),
             "invalid delta {payload:?}: chunk={chunk_result:?}"
         );
-        assert!(agent_records_effect(&effects).is_none());
+        assert!(agent_publication(&effects).is_none());
         assert_eq!(kernel.agent_stream_info(&agent), Some(committed));
         assert_eq!(agent_sequences(&kernel), [1]);
         assert_eq!(
@@ -4748,7 +4858,7 @@ fn agent_resume_rechecks_its_anchor_at_ready() {
             .update(ready(&agent, stream(5), bootstrap(6), None), &mut effects)
             .is_err()
     );
-    assert!(agent_records_effect(&effects).is_none());
+    assert!(agent_publication(&effects).is_none());
     assert_eq!(agent_sequences(&kernel), [1]);
     assert_eq!(kernel.agent_stream_info(&agent), committed);
     assert_eq!(
@@ -4817,7 +4927,16 @@ fn agent_resume_at_sequence_exhaustion_accepts_only_the_empty_suffix() {
     kernel
         .update(ready(&agent, stream(5), bootstrap(6), None), &mut effects)
         .unwrap();
-    assert!(effects.is_empty());
+    assert_eq!(
+        agent_publication(&effects),
+        Some((
+            agent.clone(),
+            vec![],
+            AgentRecordMode::Append,
+            committed_agent(stream(5), bootstrap(6), u64::MAX),
+        )),
+        "an empty suffix still publishes the advanced generation"
+    );
     assert_eq!(kernel.agent_stream_info(&agent).unwrap().last_seq, u64::MAX);
     assert!(matches!(
         kernel.update(
@@ -4867,7 +4986,7 @@ fn full_agent_bootstrap_also_validates_continuity_and_the_cut_before_replacement
                 .update(ready(&agent, stream(5), bootstrap(6), None), &mut effects)
                 .is_err()
         );
-        assert!(agent_records_effect(&effects).is_none());
+        assert!(agent_publication(&effects).is_none());
         assert_eq!(agent_sequences(&kernel), [1]);
         assert_eq!(kernel.agent_stream_info(&agent), committed);
         assert_eq!(
@@ -4913,11 +5032,13 @@ fn large_agent_resume_preserves_state_while_bounding_the_retained_log() {
     assert_eq!(view.log.records().next().unwrap().seq, 3);
     assert_eq!(view.log.last().unwrap().seq, base_seq);
     assert_eq!(view.state.status, AgentSessionStatus::Blocked);
+    let publication = agent_publication(&effects).expect("resume publication");
+    assert_eq!(publication.1.len(), records.len());
+    assert_eq!(publication.2, AgentRecordMode::Append);
     assert_eq!(
-        agent_records_effect(&effects).unwrap().1.len(),
-        records.len()
+        publication.3,
+        committed_agent(stream(5), bootstrap(6), base_seq)
     );
-    assert!(!agent_records_effect(&effects).unwrap().2);
 }
 
 #[test]
@@ -4949,7 +5070,7 @@ fn agent_resume_staging_obeys_the_existing_chunk_ceiling() {
         Err(KernelError::BootstrapStagingLimitExceeded)
     ));
     assert_eq!(kernel.agent_stream_info(&agent), committed);
-    assert!(agent_records_effect(&effects).is_none());
+    assert!(agent_publication(&effects).is_none());
 }
 
 #[test]
@@ -4992,7 +5113,7 @@ fn expired_agent_resume_staging_preserves_the_committed_generation() {
             kernel.agent_session(&agent).unwrap().state.status,
             AgentSessionStatus::Blocked
         );
-        assert!(agent_records_effect(&effects).is_none());
+        assert!(agent_publication(&effects).is_none());
     }
 }
 
