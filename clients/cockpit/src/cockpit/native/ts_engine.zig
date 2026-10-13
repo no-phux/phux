@@ -2888,7 +2888,7 @@ pub const Engine = struct {
         const changed = switch (command) {
             .previous_tab, .next_tab, .move_tab_left, .move_tab_right => self.tabCommand(command),
             .close_focused_pane => self.killFocusedPane(fx),
-            .close_view => self.closeFocusedView(),
+            .close_view => self.closeFocusedView(fx),
             .split_right => self.splitFocusedPane(.horizontal),
             .split_down => self.splitFocusedPane(.vertical),
             .previous_pane, .next_pane, .focus_left, .focus_right, .focus_up, .focus_down => self.paneFocusCommand(command),
@@ -3066,7 +3066,7 @@ pub const Engine = struct {
         pane.argv = local.paneArgvIn(cwd, &model.cwd_argv[slot]);
     }
 
-    /// Kill Pane (Cmd+W): end the focused terminal's work. A Phux terminal
+    /// Kill Pane: end the focused terminal's work. A Phux terminal
     /// is terminated on the coordinator that owns it (RESOURCE_TERMINATE
     /// against an ORGANIZATION server); its pane leaves when that coordinator
     /// reports it closed, and the coordinator drops it from the session's
@@ -3098,13 +3098,15 @@ pub const Engine = struct {
         return true;
     }
 
-    /// Close View: remove the focused pane from its session's arrangement on
-    /// the coordinator that owns it. The terminal keeps running and stays a
-    /// member of the session. A scratch pane has no session to stay in, so
-    /// there is no view to close apart from its work.
-    fn closeFocusedView(self: *Engine) bool {
+    /// Close View (Cmd+W): remove the focused pane from its session's
+    /// arrangement on the coordinator that owns it. The terminal keeps running
+    /// and stays a member of the session. A scratch pane is local only and has
+    /// no session to stay in, so closing its view ends it with its pty.
+    fn closeFocusedView(self: *Engine, fx: anytype) bool {
         const ref = self.model.focusedTerminalRef() orelse return false;
-        if (self.model.phux() == null) return false;
+        if (self.model.phux() == null or self.model.phuxForRef(ref) == null) {
+            return lifecycle.closePane(self.model, fx, ref, true);
+        }
         // Another coordinator's pane closes on that coordinator.
         if (!self.model.activeOwnsRef(ref)) return self.closePeerPane(ref);
         self.model.shared_mutations.requestRemoveNative(self.model, ref) catch return false;

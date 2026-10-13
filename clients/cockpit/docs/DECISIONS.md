@@ -62,8 +62,8 @@ retains an Empty session view after a persistent session's last terminal ends
 ([ADR-0160](../../../docs/adr/0160-sessions-own-resources-and-window-is-retired.md)).
 Cmd+W there closes the client window without ending the named session. The
 last-window close still quits. A verb named kill ends work, and one named close
-never does: Kill Pane (Cmd+W) and Kill Tab terminate, Close View only removes
-the view from the session's arrangement, and OS-window close detaches Phux views
+never does: Kill Pane and Kill Tab terminate and carry no shortcut, Close View (Cmd+W)
+only removes the view from the session's arrangement, and OS-window close detaches Phux views
 and preserves their shared layout.
 
 **Decided 2026-08-10.** When a window's last tab closes, that window goes away.

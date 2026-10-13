@@ -5379,7 +5379,30 @@ test "shipping platform shortcut executes once and rejects the superseded regist
     try std.testing.expectEqual(before + 1, bridge.engine.?.model.ws().tab_count);
 }
 
-test "shipping Cmd W kills the focused Phux terminal and leaves the arrangement to the server" {
+test "shipping Cmd W closes the focused Phux view and terminates nothing" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.attachSharedTabFixture();
+    try rig.settleCurrent();
+    const engine = bridge.engine.?;
+    const shortcut = for (rig.harness.null_platform.configuredShortcuts()) |item| {
+        if (std.mem.eql(u8, item.key, "w") and item.modifiers.command) break item;
+    } else return error.TestExpectedCloseShortcut;
+    try std.testing.expectEqualStrings("terminal.close-view", shortcut.id);
+
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .shortcut = .{
+        .id = shortcut.id,
+        .key = shortcut.key,
+        .modifiers = shortcut.modifiers,
+        .window_id = 1,
+    } });
+    // Closing a view is an arrangement edit, never a terminate.
+    try std.testing.expect(engine.model.shared_mutations.pending[0] != null);
+}
+
+test "shipping Kill Pane kills the focused Phux terminal and leaves the arrangement to the server" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
     defer rig.stop();
@@ -5390,17 +5413,9 @@ test "shipping Cmd W kills the focused Phux terminal and leaves the arrangement 
     const remote = engine.model.phux().?;
     // Terminal 7, the live replica; the second tab's terminal is catalog-only.
     const killing = engine.model.focusedTerminalRef().?;
-    const shortcut = for (rig.harness.null_platform.configuredShortcuts()) |item| {
-        if (std.mem.eql(u8, item.key, "w") and item.modifiers.command) break item;
-    } else return error.TestExpectedCloseShortcut;
     remote.bridge.outgoing.reset();
 
-    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .shortcut = .{
-        .id = shortcut.id,
-        .key = shortcut.key,
-        .modifiers = shortcut.modifiers,
-        .window_id = 1,
-    } });
+    try rig.dispatch(core.commandMsg("terminal.close").?);
     // One close of the exact terminal, and no arrangement edit: the pane
     // stays until the server reports the terminal closed.
     try std.testing.expectEqual(@as(usize, 1), remote.bridge.outgoing.pendingCount());

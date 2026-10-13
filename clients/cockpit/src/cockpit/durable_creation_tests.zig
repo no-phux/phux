@@ -1169,13 +1169,14 @@ test "kill tab terminates every terminal the tab shows and close view only edits
     }
 }
 
-test "close view of a scratch pane is refused: it has no session to keep running in" {
+test "close view of a scratch pane ends it: a local pane has no session to keep running in" {
     const engine = try engine_module.Engine.create(testing.allocator, testing.io);
     defer engine.destroy();
     try testing.expect(engine.model.phux() == null);
     const before = engine.model.provider.activeCount();
-    try testing.expect(!command(engine, .native_command, @intFromEnum(protocol.NativeCommand.close_view)));
-    try testing.expectEqual(before, engine.model.provider.activeCount());
+    try testing.expect(before > 0);
+    try testing.expect(command(engine, .native_command, @intFromEnum(protocol.NativeCommand.close_view)));
+    try testing.expectEqual(before - 1, engine.model.provider.activeCount());
 }
 
 test "a terminal of the attached session that no group shows is placed in a group of its own" {

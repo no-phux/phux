@@ -432,10 +432,10 @@ asks. Phux terminals get the same rule from their replica's mode.
 Secondary-clicking a top or rail tab offers one-step axis movement, Close
 Others, Close View, and Kill Tab. Close View removes the tab from the session's
 arrangement and its terminals keep running; Kill Tab ends every terminal it
-shows. The tab's close button is Close View. The Shell menu's Kill Pane
-(Cmd+W) ends the focused terminal; its Close View only removes the pane from
-the arrangement. A scratch pane has no session to stay in, so it has no Close
-View. The action stays bound to the tab that opened the menu,
+shows. The tab's close button is Close View. The Shell menu's Close View
+(Cmd+W) only removes the pane from the arrangement; its Kill Pane, which has no
+shortcut, ends the focused terminal. A scratch pane is local only, so closing
+its view ends it. The action stays bound to the tab that opened the menu,
 including a background tab owned by another attached Phux session; it never
 selects that tab just to operate on it. Dragging a tab reorders it. Escape, or
 any other pointer cancel, puts that tab back where the drag started. Close
