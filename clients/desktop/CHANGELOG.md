@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.0-alpha.14](https://github.com/no-phux/phux/compare/desktop-v0.1.0-alpha.13...desktop-v0.1.0-alpha.14) (2026-10-13)
+
+
+### Features
+
+* **desktop:** native GPUI desktop replaces the Solid host ([#1211](https://github.com/no-phux/phux/issues/1211)) ([360c651](https://github.com/no-phux/phux/commit/360c651acb8810ac06127ede782b63fd29b87be3))
+* **pair:** name the MagicDNS host in pair links and default the QR on ([#1200](https://github.com/no-phux/phux/issues/1200)) ([5a1310f](https://github.com/no-phux/phux/commit/5a1310f9962c2bb6b1e5e5698e57c009acaeeabb))
+
+
+### Documentation
+
+* **adr:** renumber the GPUI desktop decision to 0165 ([#1214](https://github.com/no-phux/phux/issues/1214)) ([5475aad](https://github.com/no-phux/phux/commit/5475aad4711b4e2a214c47f86bb2a5776b7bca91))
+
 ## [Unreleased]
 
 ### Features
