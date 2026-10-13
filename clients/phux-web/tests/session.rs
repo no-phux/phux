@@ -2023,12 +2023,38 @@ async fn an_organization_server_opens_the_inbox() {
         SessionRecord::new(session_key(5), "imported", Revision::new(1))
             .with_awaiting_organization(true)
             .with_live(Some(SessionId::new(8))),
-        SessionRecord::new(inbox, "Inbox", Revision::new(1)).with_live(Some(SessionId::new(6))),
+        SessionRecord::new(inbox, "Inbox", Revision::new(1))
+            .with_members(1)
+            .with_live(Some(SessionId::new(6))),
     ]);
     let reply = session.on_frame(organization_page(request_id, page));
     assert_eq!(
         attach_target(&reply.send[0]),
         AttachTarget::ById(SessionId::new(6))
+    );
+}
+
+#[wasm_bindgen_test]
+async fn an_empty_inbox_falls_back_to_the_most_recent_session() {
+    let vt = Vt::load().await.expect("load engine");
+    let mut session = Connection::new(&vt, 80, 24);
+    let hello = session.on_frame(hello_with(organization_caps()));
+    let FrameKind::Command { request_id, .. } = decode_one(&hello.send[1]) else {
+        panic!("expected a command");
+    };
+    let inbox = session_key(3);
+    let page = empty_page().with_inbox(Some(inbox)).with_sessions(vec![
+        SessionRecord::new(inbox, "Inbox", Revision::new(1)).with_live(Some(SessionId::new(6))),
+    ]);
+    let reply = session.on_frame(organization_page(request_id, page));
+    let request_id = state_request(&reply.send[0]);
+    let reply = session.on_frame(state_reply(
+        request_id,
+        vec![SessionInfo::new(SessionId::new(7), "default")],
+    ));
+    assert_eq!(
+        attach_target(&reply.send[0]),
+        AttachTarget::ById(SessionId::new(7))
     );
 }
 

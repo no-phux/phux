@@ -116,15 +116,17 @@ impl Connection {
         })
     }
 
-    /// Attach the designated Inbox when the page names it and it is live on
-    /// this server instance.
+    /// Attach the designated Inbox when the page names it, it is live on
+    /// this server instance, and it holds work. An empty Inbox falls through
+    /// to the most recent session, so a browser never opens on nothing while
+    /// a session with terminals exists.
     fn inbox_attach(&mut self, page: &OrganizationPage) -> Option<Vec<u8>> {
         let inbox = page.inbox?;
-        let live = page
-            .sessions
-            .iter()
-            .find(|session| session.key == inbox)?
-            .live?;
+        let record = page.sessions.iter().find(|session| session.key == inbox)?;
+        if record.members == 0 {
+            return None;
+        }
+        let live = record.live?;
         self.session_key = Some(inbox);
         Some(self.attach_frame(AttachTarget::ById(live)))
     }
