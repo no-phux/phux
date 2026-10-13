@@ -3,6 +3,7 @@ use std::process::ExitCode;
 
 use phux_client::attach::AttachError;
 use phux_client::kill::{KillError, ShutdownOutcome};
+use phux_client::org::{self, KillReport, SessionOutcome, TargetOutcome};
 use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::IdempotencyKey;
 use phux_server::runtime::default_socket_path;
@@ -140,9 +141,13 @@ const SHUTDOWN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10
 const SHUTDOWN_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 
 /// `phux kill TARGET` — resolve the selector client-side, then kill. A
-/// whole-session target rides one `KILL_RESOURCES { ids }`; others send one
-/// `KILL_RESOURCE` per Terminal. Exit 0 success, 1 miss / no server, 2 refusal,
-/// 3 an untrustworthy miss on a partial fleet (see [`partial`]).
+/// whole-session target runs the kill workflow against a server that
+/// advertises `ORGANIZATION` (terminate every member, remove each once
+/// inactive, then delete the session) and prints one result line per member;
+/// against an older server it rides one `KILL_RESOURCES { ids }`. Other
+/// targets send one `KILL_RESOURCE` per Terminal. Exit 0 success, 1 miss / no
+/// server, 2 refusal or an incomplete workflow, 3 an untrustworthy miss on a
+/// partial fleet (see [`partial`]).
 ///
 /// With `key` the kill is one keyed command, so a retry answers the first
 /// result (L1 §5.1.1); an `@N` target is then sent as written, without a
@@ -206,6 +211,9 @@ fn report_selected(
             for message in done.interleaved {
                 eprintln!("phux: warning: partial results — {message}");
             }
+            if let Some(report) = &done.report {
+                print!("{}", report_lines(report));
+            }
             ExitCode::SUCCESS
         }
         Err(err) => {
@@ -239,8 +247,18 @@ fn report_selected(
                     }
                     ExitCode::from(2)
                 }
-                KillError::SessionKept { session } => {
-                    eprintln!("phux: kill refused for session {session:?}: the server kept it");
+                KillError::Workflow { ref report, .. } => {
+                    print!("{}", report_lines(report));
+                    eprintln!("phux: {err}");
+                    ExitCode::from(2)
+                }
+                KillError::EmptySessionUnsupported { .. } => {
+                    eprintln!("phux: {err}");
+                    eprintln!("  upgrade the server, or kill its panes instead");
+                    ExitCode::from(2)
+                }
+                KillError::Org(err) => {
+                    eprintln!("phux: kill failed: {err}");
                     ExitCode::from(2)
                 }
                 KillError::Agent(err) => {
@@ -252,9 +270,60 @@ fn report_selected(
     }
 }
 
+/// One line per member of a session kill workflow, then the session's own
+/// outcome: `^abc123  removed`, `session ^def456  deleted`.
+fn report_lines(report: &KillReport) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    for (key, outcome) in &report.targets {
+        let _ = writeln!(
+            out,
+            "^{}  {}",
+            short_key(&key.to_string()),
+            target_word(outcome)
+        );
+    }
+    let _ = writeln!(
+        out,
+        "session ^{}  {}",
+        short_key(&report.session.to_string()),
+        session_word(&report.session_outcome)
+    );
+    out
+}
+
+/// The six-digit display prefix of a key's text, as `phux ls` prints it.
+fn short_key(text: &str) -> &str {
+    text.get(..phux_protocol::ids::KEY_MIN_PREFIX)
+        .unwrap_or(text)
+}
+
+fn target_word(outcome: &TargetOutcome) -> String {
+    match outcome {
+        TargetOutcome::Removed => "removed".to_owned(),
+        TargetOutcome::AlreadyGone => "already gone".to_owned(),
+        TargetOutcome::Refused(refusal) => format!("refused: {}", org::refusal_sentence(refusal)),
+        TargetOutcome::Unknown(reason) => format!("outcome unknown: {reason}"),
+        TargetOutcome::TimedOut => "did not stop in time".to_owned(),
+        TargetOutcome::NoLiveTarget => "runs on another server instance".to_owned(),
+    }
+}
+
+fn session_word(outcome: &SessionOutcome) -> String {
+    match outcome {
+        SessionOutcome::Deleted => "deleted".to_owned(),
+        SessionOutcome::AlreadyGone => "already gone".to_owned(),
+        SessionOutcome::Kept => "kept (a member was not removed)".to_owned(),
+        SessionOutcome::Refused(refusal) => {
+            format!("delete refused: {}", org::refusal_sentence(refusal))
+        }
+        SessionOutcome::Unknown(reason) => format!("delete outcome unknown: {reason}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{REMOTE_SHUTDOWN_REFUSAL, run, run_kill};
+    use super::{REMOTE_SHUTDOWN_REFUSAL, report_lines, run, run_kill};
     use crate::commands::confirm;
     use crate::commands::server_target::ServerSpec;
 
@@ -295,5 +364,36 @@ mod tests {
             matches!(listener.accept(), Err(err) if err.kind() == std::io::ErrorKind::WouldBlock),
             "nothing dialed the server"
         );
+    }
+
+    /// A session kill prints one line per member and one for the session,
+    /// keyed by the six-digit prefix `phux ls` shows.
+    #[test]
+    fn a_kill_report_names_every_member_and_the_session() {
+        use phux_client::org::{KillReport, SessionOutcome, TargetOutcome};
+        use phux_protocol::ids::{ResourceKey, SessionKey};
+        use phux_protocol::wire::frame::Refusal;
+        let a = ResourceKey::new([1; 16]).expect("key");
+        let b = ResourceKey::new([2; 16]).expect("key");
+        let session = SessionKey::new([3; 16]).expect("key");
+        let report = KillReport {
+            session,
+            targets: vec![
+                (a, TargetOutcome::Removed),
+                (b, TargetOutcome::Refused(Refusal::ExecutionUncertain)),
+            ],
+            session_outcome: SessionOutcome::Kept,
+        };
+        let text = report_lines(&report);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 3, "{text}");
+        assert!(
+            lines[0].starts_with(&format!("^{}", &a.to_string()[..6])),
+            "{text}"
+        );
+        assert!(lines[0].ends_with("removed"), "{text}");
+        assert!(lines[1].contains("refused"), "{text}");
+        assert!(lines[2].starts_with("session ^"), "{text}");
+        assert!(lines[2].contains("kept"), "{text}");
     }
 }

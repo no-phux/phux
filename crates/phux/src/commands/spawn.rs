@@ -234,7 +234,7 @@ pub(crate) async fn dispatch_spawn_async(
     .await
 }
 
-/// Resolve an explicit local owner, spawn into its window, then insert the
+/// Resolve an explicit local owner, spawn into its session, then insert the
 /// leaf via [`phux_client::spawn::verify_and_publish_placement`]. If layout
 /// publication fails, kill the new Terminal before returning failure.
 #[allow(
@@ -281,8 +281,7 @@ pub(crate) fn dispatch_spawn_placed(
         let candidates = resolve_targets(socket_path, &selector, &snapshot)
             .await
             .map_err(|err| crate::commands::report_agent_resolve_error(json, &err, false))?;
-        let (owner, owner_window, session) =
-            placement_owner(json, target_text, &snapshot, &candidates)?;
+        let (owner, session) = placement_owner(json, target_text, &snapshot, &candidates)?;
         let FrameKind::SpawnResource { owner_terminal, .. } = &mut frame else {
             return Err(json_err::emit(
                 json,
@@ -308,7 +307,6 @@ pub(crate) fn dispatch_spawn_placed(
         };
         let placement = phux_client::spawn::Placement {
             owner: owner.clone(),
-            owner_window,
             owner_session: session,
             new_pane: new_pane.clone(),
         };
@@ -347,21 +345,14 @@ pub(crate) fn dispatch_spawn_placed(
     })
 }
 
-/// The local pane a placed spawn lands beside, with its window and session;
+/// The local pane a placed spawn lands beside, with its session;
 /// every refusal is reported (as JSON under `json`) and returned in `Err`.
 fn placement_owner(
     json: bool,
     target_text: &str,
     snapshot: &phux_protocol::wire::info::SessionSnapshot,
     candidates: &[ResourceId],
-) -> Result<
-    (
-        ResourceId,
-        phux_protocol::ids::WindowId,
-        phux_protocol::ids::SessionId,
-    ),
-    ExitCode,
-> {
+) -> Result<(ResourceId, phux_protocol::ids::SessionId), ExitCode> {
     let Some(owner) =
         phux_client::selector::pick_target_pane(candidates, &snapshot.focused_resource)
     else {
@@ -386,14 +377,13 @@ fn placement_owner(
             1,
         ));
     }
-    let Some((window, session)) = phux_client::spawn::ownership_for_terminal(snapshot, &owner)
-    else {
+    let Some(session) = phux_client::spawn::ownership_for_terminal(snapshot, &owner) else {
         return Err(placement_failed(
             json,
             "target has no local session ownership".to_owned(),
         ));
     };
-    Ok((owner, window, session))
+    Ok((owner, session))
 }
 
 /// Print the freshly spawned Terminal id — human line or the stable JSON

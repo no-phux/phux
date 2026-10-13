@@ -1105,6 +1105,7 @@ fn dispatch(
             idempotency_key,
             remote,
             empty,
+            ephemeral,
             command,
         }) => match commands::spawn::parse_key_arg(idempotency_key.as_deref(), json) {
             Ok(idempotency_key) => commands::new::run_new(
@@ -1115,6 +1116,7 @@ fn dispatch(
                 commands::new::NewMode {
                     json,
                     empty,
+                    ephemeral,
                     idempotency_key,
                 },
                 command,

@@ -402,6 +402,8 @@ async fn restore_one_session(
         agent_session_preflighted,
         false,
         None,
+        // An archived session was named: persistent.
+        phux_protocol::wire::frame::SessionLifetime::Persistent,
     )
     .await
     .map_err(|_| "could not create the seed pane (see the diagnostic above)".to_owned())?;

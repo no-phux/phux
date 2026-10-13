@@ -270,8 +270,14 @@ async fn phux_ls(args: &Value) -> Result<Value, ToolError> {
     let view = phux_client::session_list::listing_view(&mut conn).await?;
     drop(conn);
     let hosts_complete = view.host_sessions_complete();
+    let organization = view.organization().cloned();
     let (snapshot, degradation) = view.into_parts();
-    let list = phux_client::session_list::document(&snapshot, &degradation, hosts_complete);
+    let list = phux_client::session_list::document(
+        &snapshot,
+        organization.as_ref(),
+        &degradation,
+        hosts_complete,
+    );
     serde_json::to_value(&list)
         .map_err(|err| ToolError::new(format!("failed to serialize session list: {err}")))
 }
@@ -1171,7 +1177,7 @@ mod tests {
         );
         assert_eq!(
             parse_target(&json!({ "target": "work:1.2" })).unwrap(),
-            Selector::Pane("work".to_owned(), selector::WindowRef::Index(1), 2),
+            Selector::Pane("work".to_owned(), selector::GroupRef::Index(1), 2),
         );
         assert_eq!(
             parse_target(&json!({ "target": "@100" })).unwrap(),

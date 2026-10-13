@@ -1,8 +1,10 @@
 use std::process::ExitCode;
 
+use phux_client::org::OrgInventory;
 use phux_client::resource;
 use phux_client::state::{Degradation, StateView};
-use phux_core::session_list::SessionListJson;
+use phux_core::activation::SessionLifetime;
+use phux_core::session_list::{ExecCounts, SessionJson, SessionListJson};
 
 use phux_protocol::wire::info::{HostInventory, HostSessionInfo, SessionInfo, SessionSnapshot};
 
@@ -135,11 +137,14 @@ impl HostProbe {
         };
         match tokio::time::timeout(HOST_DEADLINE, listing).await {
             Ok(Ok(view)) => {
+                let organization = view.organization().cloned();
                 let (snapshot, _) = view.into_parts();
                 let mut sessions: Vec<_> = snapshot
                     .sessions
                     .iter()
-                    .map(phux_client::session_list::session_json)
+                    .map(|s| {
+                        phux_client::session_list::session_json(&snapshot, organization.as_ref(), s)
+                    })
                     .collect();
                 sessions.sort_by(|a, b| a.name.cmp(&b.name));
                 row.reachable = true;
@@ -216,17 +221,7 @@ fn host_list_lines(doc: &HostListJson) -> Vec<String> {
             lines.push("  (no sessions)".to_owned());
         }
         for session in &host.sessions {
-            let windows = if session.windows == 1 {
-                "window"
-            } else {
-                "windows"
-            };
-            lines.push(format!(
-                "  {}: {} {windows}{}",
-                session.name,
-                session.windows,
-                attached_note(session.attached_clients)
-            ));
+            lines.push(format!("  {}", format_row(session)));
         }
     }
     lines
@@ -235,12 +230,18 @@ fn host_list_lines(doc: &HostListJson) -> Vec<String> {
 /// Print one fetched listing in the requested shape.
 fn render_listing(json: bool, view: StateView) -> ExitCode {
     let hosts_complete = view.host_sessions_complete();
+    let organization = view.organization().cloned();
     let (snapshot, degradation) = view.into_parts();
     if json {
         // Not stderr: a `--json` consumer's channel is the document.
-        return print_sessions_json(&snapshot, &degradation, hosts_complete);
+        return print_sessions_json(
+            &snapshot,
+            organization.as_ref(),
+            &degradation,
+            hosts_complete,
+        );
     }
-    print_sessions(&snapshot);
+    print_sessions(&snapshot, organization.as_ref());
     if !hosts_complete && has_satellite_terminals(&snapshot) {
         eprintln!("{HOST_SESSIONS_UNAVAILABLE}");
     }
@@ -270,8 +271,8 @@ const EMPTY_STATE: [&str; 2] = [
 /// Render the session list, one line per session (tmux-`ls`-ish), followed
 /// by satellite Terminals that cannot be joined to hub-local sessions. An
 /// empty server prints [`EMPTY_STATE`] instead of nothing.
-pub(crate) fn print_sessions(snapshot: &SessionSnapshot) {
-    let lines = session_lines(snapshot);
+pub(crate) fn print_sessions(snapshot: &SessionSnapshot, organization: Option<&OrgInventory>) {
+    let lines = session_lines(snapshot, organization);
     if lines.is_empty() {
         for line in EMPTY_STATE {
             outln!("{line}");
@@ -286,12 +287,13 @@ pub(crate) fn print_sessions(snapshot: &SessionSnapshot) {
 /// The human `phux ls` body: name-sorted session lines, each followed by its
 /// panes' agent sessions, then satellite Terminals. Empty exactly when there is
 /// nothing to list ([`EMPTY_STATE`]). A hub reporting a host inventory renders
-/// grouped by host ([`host_grouped_lines`]).
-fn session_lines(snapshot: &SessionSnapshot) -> Vec<String> {
+/// grouped by host ([`host_grouped_lines`]). `organization` supplies each
+/// session's lifetime and execution counts when the server reports them.
+fn session_lines(snapshot: &SessionSnapshot, organization: Option<&OrgInventory>) -> Vec<String> {
     if snapshot.hosts().is_empty() {
-        return flat_session_lines(snapshot);
+        return flat_session_lines(snapshot, organization);
     }
-    host_grouped_lines(snapshot)
+    host_grouped_lines(snapshot, organization)
 }
 
 /// Header for this host's group in the host-grouped listing.
@@ -299,12 +301,19 @@ pub(crate) const LOCAL_HOST_LABEL: &str = "This host";
 
 /// This host's name-sorted session lines with their nested agent-session
 /// lines, unindented.
-fn local_session_lines(snapshot: &SessionSnapshot) -> Vec<String> {
+fn local_session_lines(
+    snapshot: &SessionSnapshot,
+    organization: Option<&OrgInventory>,
+) -> Vec<String> {
     let mut sessions: Vec<_> = snapshot.sessions.iter().collect();
     sessions.sort_by(|a, b| a.name.cmp(&b.name));
     let mut lines: Vec<String> = Vec::new();
     for session in sessions {
-        lines.push(format_session_line(session));
+        lines.push(format_row(&phux_client::session_list::session_json(
+            snapshot,
+            organization,
+            session,
+        )));
         lines.extend(agent_session_lines(snapshot, session));
     }
     lines
@@ -313,9 +322,12 @@ fn local_session_lines(snapshot: &SessionSnapshot) -> Vec<String> {
 /// The host-grouped listing: a [`LOCAL_HOST_LABEL`] header over this host's
 /// sessions, then one header per satellite with its sessions beneath. An
 /// unreachable satellite keeps its header, marked, instead of vanishing.
-fn host_grouped_lines(snapshot: &SessionSnapshot) -> Vec<String> {
+fn host_grouped_lines(
+    snapshot: &SessionSnapshot,
+    organization: Option<&OrgInventory>,
+) -> Vec<String> {
     let mut lines = vec![LOCAL_HOST_LABEL.to_owned()];
-    let local = local_session_lines(snapshot);
+    let local = local_session_lines(snapshot, organization);
     if local.is_empty() {
         lines.push("  (no sessions)".to_owned());
     }
@@ -390,8 +402,11 @@ fn plural(n: u16, one: &str, many: &str) -> String {
 
 /// The pre-host-inventory listing: this host's sessions, then satellite
 /// Terminals that cannot be joined to hub-local sessions.
-fn flat_session_lines(snapshot: &SessionSnapshot) -> Vec<String> {
-    let mut lines = local_session_lines(snapshot);
+fn flat_session_lines(
+    snapshot: &SessionSnapshot,
+    organization: Option<&OrgInventory>,
+) -> Vec<String> {
+    let mut lines = local_session_lines(snapshot, organization);
     for pane in resource::terminals(snapshot) {
         if pane.id.host().is_some() {
             lines.push(format!(
@@ -408,29 +423,23 @@ fn flat_session_lines(snapshot: &SessionSnapshot) -> Vec<String> {
 /// per session child.
 fn agent_session_lines(snapshot: &SessionSnapshot, session: &SessionInfo) -> Vec<String> {
     let mut lines = Vec::new();
-    for window in snapshot
-        .windows
-        .iter()
-        .filter(|window| window.session_id == session.id)
-    {
-        for pane in resource::terminals(snapshot).filter(|pane| pane.window_id == window.id) {
-            let children: Vec<_> = resource::children_of(snapshot, &pane.id).collect();
-            if children.is_empty() {
-                continue;
-            }
+    for pane in resource::terminals_in(snapshot, session.id) {
+        let children: Vec<_> = resource::children_of(snapshot, &pane.id).collect();
+        if children.is_empty() {
+            continue;
+        }
+        lines.push(format!(
+            "  {}",
+            phux_client::selector::format_terminal_id(&pane.id)
+        ));
+        for child in children {
+            let facet = child.agent.as_ref();
+            let provider = facet.map_or("agent session", |facet| facet.provider.as_str());
+            let state = facet.map_or("unknown", |facet| facet.state.as_str());
             lines.push(format!(
-                "  {}",
-                phux_client::selector::format_terminal_id(&pane.id)
+                "    {}: agent session {provider} ({state})",
+                phux_client::selector::format_terminal_id(&child.id)
             ));
-            for child in children {
-                let facet = child.agent.as_ref();
-                let provider = facet.map_or("agent session", |facet| facet.provider.as_str());
-                let state = facet.map_or("unknown", |facet| facet.state.as_str());
-                lines.push(format!(
-                    "    {}: agent session {provider} ({state})",
-                    phux_client::selector::format_terminal_id(&child.id)
-                ));
-            }
         }
     }
     lines
@@ -454,6 +463,74 @@ pub(crate) fn format_session_line(s: &SessionInfo) -> String {
     )
 }
 
+/// One `phux ls` session line from its [`SessionJson`] row: member count
+/// with the members' execution states, window count, lifetime, and attached
+/// clients. A session with no members reads `empty`, so a persistent session
+/// kept after its last process explains itself; the lifetime is omitted when
+/// the server does not report one.
+///
+/// `work: 3 members (2 running, 1 completed), 2 windows, persistent`
+pub(crate) fn format_row(row: &SessionJson) -> String {
+    let mut parts = Vec::new();
+    if row.members == 0 && (row.lifetime.is_some() || row.empty) {
+        parts.push("empty".to_owned());
+    } else {
+        let members = plural32(row.members, "member", "members");
+        let states = exec_summary(&row.exec);
+        parts.push(if states.is_empty() {
+            members
+        } else {
+            format!("{members} ({states})")
+        });
+    }
+    if row.windows > 0 {
+        parts.push(plural(row.windows, "window", "windows"));
+    }
+    if let Some(lifetime) = row.lifetime {
+        parts.push(
+            match lifetime {
+                SessionLifetime::Persistent => "persistent",
+                SessionLifetime::Ephemeral => "ephemeral",
+            }
+            .to_owned(),
+        );
+    }
+    format!(
+        "{}: {}{}",
+        row.name,
+        parts.join(", "),
+        attached_note(row.attached_clients)
+    )
+}
+
+/// The non-zero execution counts, most active first:
+/// `2 running, 1 completed, 1 lost`.
+fn exec_summary(exec: &ExecCounts) -> String {
+    [
+        (exec.starting, "starting"),
+        (exec.running, "running"),
+        (exec.stopping, "stopping"),
+        (exec.completed, "completed"),
+        (exec.failed, "failed"),
+        (exec.lost, "lost"),
+        (exec.abandoned, "abandoned"),
+        (exec.dormant, "not started"),
+    ]
+    .into_iter()
+    .filter(|(n, _)| *n > 0)
+    .map(|(n, label)| format!("{n} {label}"))
+    .collect::<Vec<_>>()
+    .join(", ")
+}
+
+fn plural32(n: u32, one: &str, many: &str) -> String {
+    if n == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{n} {many}")
+    }
+}
+
 /// The ` (N clients attached)` suffix a session line carries, or nothing at
 /// zero. Shared so a satellite session line reads like a local one.
 fn attached_note(clients: u16) -> String {
@@ -469,11 +546,12 @@ fn attached_note(clients: u16) -> String {
 /// `phux_ls` tool also returns, so the two surfaces cannot drift.
 pub(crate) fn print_sessions_json(
     snapshot: &SessionSnapshot,
+    organization: Option<&OrgInventory>,
     degradation: &Degradation,
     hosts_complete: bool,
 ) -> ExitCode {
     let list: SessionListJson =
-        phux_client::session_list::document(snapshot, degradation, hosts_complete);
+        phux_client::session_list::document(snapshot, organization, degradation, hosts_complete);
     crate::output::json(&list)
 }
 
@@ -499,15 +577,22 @@ mod tests {
 
     #[test]
     fn all_hosts_listing_groups_by_machine_and_keeps_a_down_host() {
+        use phux_core::activation::SessionLifetime;
         use phux_core::host_list::{HostJson, HostKind, HostListJson};
-        use phux_core::session_list::SessionJson;
+        use phux_core::session_list::{ExecCounts, SessionJson};
         let session = |name: &str, clients| SessionJson {
             name: name.to_owned(),
             windows: 2,
             attached: clients > 0,
             attached_clients: clients,
-            keep_empty: false,
+            keep_empty: true,
             empty: false,
+            lifetime: Some(SessionLifetime::Persistent),
+            members: 2,
+            exec: ExecCounts {
+                running: 2,
+                ..ExecCounts::default()
+            },
         };
         let doc = HostListJson::new(vec![
             HostJson {
@@ -542,7 +627,7 @@ mod tests {
             super::host_list_lines(&doc),
             [
                 "laptop (this machine)",
-                "  work: 2 windows (1 client attached)",
+                "  work: 2 members (2 running), 2 windows, persistent (1 client attached)",
                 "mini",
                 "  (no sessions)",
                 "xps  unreachable: did not answer within 3s",
@@ -553,7 +638,7 @@ mod tests {
     use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
     use phux_protocol::{ResourceId, SessionId, WindowId};
 
-    use super::{EMPTY_STATE, format_session_line, session_lines};
+    use super::{EMPTY_STATE, format_row, format_session_line, session_lines};
 
     fn session(name: &str, windows: u16, clients: u16) -> SessionInfo {
         SessionInfo::new(SessionId::new(1), name)
@@ -584,7 +669,7 @@ mod tests {
     fn empty_snapshot_yields_no_lines_and_the_empty_state_names_next_commands() {
         let snapshot =
             SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::new(1));
-        assert!(session_lines(&snapshot).is_empty());
+        assert!(session_lines(&snapshot, None).is_empty());
 
         // The two-line empty state: what is missing, then the exact commands
         // that fix it (the `phux host ls` precedent).
@@ -592,6 +677,64 @@ mod tests {
         assert_eq!(EMPTY_STATE[0], "No sessions.");
         assert!(EMPTY_STATE[1].contains("`phux`"));
         assert!(EMPTY_STATE[1].contains("`phux new NAME -- CMD`"));
+    }
+
+    /// `phux ls` shows each session's lifetime, member count, and the
+    /// members' execution states; a member-less session reads `empty`.
+    #[test]
+    fn rows_show_lifetime_members_and_execution_states() {
+        use phux_core::activation::SessionLifetime;
+        use phux_core::session_list::{ExecCounts, SessionJson};
+        let row = |name: &str, lifetime, members, exec, windows| SessionJson {
+            name: name.to_owned(),
+            windows,
+            attached: false,
+            attached_clients: 0,
+            keep_empty: lifetime == Some(SessionLifetime::Persistent),
+            empty: members == 0,
+            lifetime,
+            members,
+            exec,
+        };
+        assert_eq!(
+            format_row(&row(
+                "parked",
+                Some(SessionLifetime::Persistent),
+                0,
+                ExecCounts::default(),
+                0
+            )),
+            "parked: empty, persistent"
+        );
+        assert_eq!(
+            format_row(&row(
+                "work",
+                Some(SessionLifetime::Ephemeral),
+                4,
+                ExecCounts {
+                    running: 2,
+                    completed: 1,
+                    lost: 1,
+                    ..ExecCounts::default()
+                },
+                2
+            )),
+            "work: 4 members (2 running, 1 completed, 1 lost), 2 windows, ephemeral"
+        );
+        assert_eq!(
+            format_row(&row(
+                "old",
+                None,
+                1,
+                ExecCounts {
+                    running: 1,
+                    ..ExecCounts::default()
+                },
+                1
+            )),
+            "old: 1 member (1 running), 1 window",
+            "a server that reports no lifetime gets none printed"
+        );
     }
 
     #[test]
@@ -639,9 +782,9 @@ mod tests {
                     .with_agent(Some(AgentFacet::new("claude", "working"))),
             ]);
         assert_eq!(
-            session_lines(&snapshot),
+            session_lines(&snapshot, None),
             vec![
-                "work: 1 window",
+                "work: 3 members (3 running), 1 window",
                 "  @7",
                 "    @9: agent session claude (working)",
             ]
@@ -694,10 +837,10 @@ mod tests {
     #[test]
     fn host_inventory_groups_the_listing() {
         assert_eq!(
-            session_lines(&federated_snapshot()),
+            session_lines(&federated_snapshot(), None),
             vec![
                 "This host",
-                "  work: 1 window",
+                "  work: 1 member (1 running), 1 window",
                 "edge",
                 "  build: 2 windows, 3 panes (1 client attached)",
                 "down (unreachable)",
@@ -711,7 +854,10 @@ mod tests {
         let snapshot =
             SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::new(1))
                 .with_sessions(vec![session("work", 1, 0)]);
-        assert_eq!(session_lines(&snapshot), vec!["work: 1 window"]);
+        assert_eq!(
+            session_lines(&snapshot, None),
+            vec!["work: 0 members, 1 window"]
+        );
     }
 
     /// A grouped listing keeps each satellite Terminal's `host/@N` selector
@@ -730,10 +876,10 @@ mod tests {
                 24,
             ));
         assert_eq!(
-            session_lines(&snapshot),
+            session_lines(&snapshot, None),
             vec![
                 "This host",
-                "  work: 1 window",
+                "  work: 1 member (1 running), 1 window",
                 "edge",
                 "  build: 2 windows, 3 panes (1 client attached)",
                 "  edge/@9: satellite terminal",
@@ -765,7 +911,10 @@ mod tests {
         let snapshot =
             SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::new(1))
                 .with_sessions(vec![session("beta", 1, 0), session("alpha", 1, 0)]);
-        let lines = session_lines(&snapshot);
-        assert_eq!(lines, vec!["alpha: 1 window", "beta: 1 window"]);
+        let lines = session_lines(&snapshot, None);
+        assert_eq!(
+            lines,
+            vec!["alpha: 0 members, 1 window", "beta: 0 members, 1 window"]
+        );
     }
 }

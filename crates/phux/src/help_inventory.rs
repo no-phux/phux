@@ -334,12 +334,13 @@ fn taught_selector_token(selector: &phux_client::selector::Selector) -> &'static
     match selector {
         Selector::Current => "`.`",
         Selector::Session(_) => "`name`",
-        Selector::Window(..) => "`name:W`",
+        Selector::Group(..) => "`name:W`",
         Selector::Pane(..) => "`name:W.P`",
         Selector::ResourceId(_) => "@N",
         Selector::SatelliteResourceId { .. } => "host/@N",
         Selector::Tag(_) => "#tag",
         Selector::Agent(_) => "%name",
+        Selector::Key(_) => "`^key`",
     }
 }
 
@@ -364,6 +365,7 @@ fn skill_teaches_every_selector_sigil_the_parser_accepts() {
         "work:1.0",
         "#build",
         "%reviewer",
+        "^ab12cd",
     ] {
         let Ok(selector) = phux_client::selector::parse(probe) else {
             continue;

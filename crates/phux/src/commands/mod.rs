@@ -818,6 +818,12 @@ pub(crate) enum Command {
     /// `session-name-template`, disambiguated with fresh `${random-name}`
     /// picks when the template draws one, then a numeric suffix.
     ///
+    /// A session you name is persistent: it stays, empty, after its last
+    /// process exits, until `phux rm` or `phux kill` deletes it. A session
+    /// whose name was generated, like the one bare `phux` starts, is
+    /// ephemeral: it ends with its last process. `--ephemeral` makes a
+    /// named session ephemeral too.
+    ///
     /// With `--json`, creates the session *without* attaching and prints
     /// the seed pane's id as JSON instead. This neither attaches nor
     /// resizes, and the create is atomic server-side (no attach race).
@@ -875,12 +881,17 @@ pub(crate) enum Command {
         #[usage(flatten)]
         remote: RemoteOpt,
 
-        /// Create the session with no terminal. An empty session is
-        /// keep-empty: it survives its last window and only `phux kill`
-        /// removes it. Without `--json` the new session is attached and shows
-        /// an empty state; open a window from there.
-        #[usage(long, conflicts("--command", "--env", "--cwd"))]
+        /// Create the session with no process. It is persistent, so it
+        /// stays until `phux rm` or `phux kill` deletes it. Without `--json`
+        /// the new session is attached and shows an empty state; open a
+        /// window from there.
+        #[usage(long, conflicts("--command", "--env", "--cwd", "--ephemeral"))]
         empty: bool,
+
+        /// Make the session ephemeral: it ends when its last process exits,
+        /// even though you named it.
+        #[usage(long)]
+        ephemeral: bool,
 
         /// Command (and arguments) to run in the seed pane instead of the
         /// default shell. Must follow `--`: `phux new work -- htop`.

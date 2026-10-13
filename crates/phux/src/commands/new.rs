@@ -9,7 +9,7 @@ use phux_client::session::{
 };
 use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::IdempotencyKey;
-use phux_protocol::wire::frame::AttachTarget;
+use phux_protocol::wire::frame::{AttachTarget, SessionLifetime};
 
 use crate::commands::server_target::{ServerSpec, ServerTarget};
 use crate::commands::{
@@ -28,9 +28,13 @@ const RANDOM_NAME_ATTEMPTS: usize = 8;
 /// The name comes from the positional `NAME` or `-s` (a conflict is an error).
 /// A name that already exists is refused; an omitted one renders
 /// `session-name-template`, redrawing a taken `${random-name}` and settling on a
-/// numeric suffix. The create+attach rides `CreateIfMissing`. Only a local
-/// server is auto-spawned. `mode.empty` (ADR-0105) creates a keep-empty session
-/// with no terminal.
+/// numeric suffix. Only a local server is auto-spawned.
+///
+/// Lifetime follows [`session_lifetime`]: a named session is persistent and
+/// is created headless, then attached by name; a generated name, or
+/// `--ephemeral`, makes it ephemeral, and the create+attach rides
+/// `CreateIfMissing`. `mode.empty` creates a persistent session with no
+/// terminal.
 pub(crate) fn run_new(
     name: Option<String>,
     session: Option<String>,
@@ -43,12 +47,14 @@ pub(crate) fn run_new(
     let NewMode {
         json,
         empty,
+        ephemeral,
         idempotency_key,
     } = mode;
     let requested = match requested_session_name(name, session) {
         Ok(requested) => requested,
         Err(code) => return code,
     };
+    let lifetime = session_lifetime(requested.is_some(), empty, ephemeral);
     if let Some(name) = &requested
         && let Err(invalid) = phux_client::rename::check_session_name(name)
     {
@@ -68,7 +74,7 @@ pub(crate) fn run_new(
         if empty {
             return run_new_empty_attached(&rt, &target, requested);
         }
-        return run_new_attached(&rt, &target, requested, command, cwd);
+        return run_new_attached(&rt, &target, requested, command, cwd, lifetime);
     }
     // Clap enforces `--json` => `-s NAME`; this guard only keeps a future caller
     // from panicking.
@@ -79,18 +85,41 @@ pub(crate) fn run_new(
     if empty {
         return run_new_empty_json(&rt, &target, &name);
     }
-    run_new_json(&rt, &target, &name, cwd, command, env, idempotency_key)
+    run_new_json(
+        &rt,
+        &target,
+        &name,
+        cwd,
+        command,
+        env,
+        idempotency_key,
+        lifetime,
+    )
+}
+
+/// The lifetime `phux new` asks for (ADR-0160): an empty session is always
+/// persistent (an ephemeral session is never empty); otherwise
+/// `--ephemeral` wins, and a session the user named is persistent while one
+/// whose name was generated is ephemeral.
+pub(crate) const fn session_lifetime(named: bool, empty: bool, ephemeral: bool) -> SessionLifetime {
+    if empty || (named && !ephemeral) {
+        SessionLifetime::Persistent
+    } else {
+        SessionLifetime::Ephemeral
+    }
 }
 
 /// How `phux new` runs: headless (`--json`), whether the session starts
-/// with no terminal (`--empty`, ADR-0105), and whether the create is keyed
-/// (`--idempotency-key`, ADR-0126).
+/// with no terminal (`--empty`), its lifetime override (`--ephemeral`), and
+/// whether the create is keyed (`--idempotency-key`, ADR-0126).
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct NewMode {
     /// `--json`: create without attaching and print a document.
     pub(crate) json: bool,
-    /// `--empty`: create a keep-empty session with zero windows.
+    /// `--empty`: create a persistent session with no process.
     pub(crate) empty: bool,
+    /// `--ephemeral`: the session ends with its last process.
+    pub(crate) ephemeral: bool,
     /// `--idempotency-key`, already parsed: the create's `request_token`.
     pub(crate) idempotency_key: Option<IdempotencyKey>,
 }
@@ -210,12 +239,18 @@ fn prepare_target(
 }
 
 /// Create a session and attach to it: the interactive `phux new`.
+///
+/// A persistent session is created headless with its lifetime
+/// ([`create_session_via_metadata`]) and then attached by name, because an
+/// attach-time `CreateIfMissing` carries no lifetime and the server makes
+/// such a session ephemeral. An ephemeral one rides `CreateIfMissing`.
 fn run_new_attached(
     rt: &tokio::runtime::Runtime,
     target: &ServerTarget,
     requested: Option<String>,
     command: Vec<String>,
     cwd: Option<PathBuf>,
+    lifetime: SessionLifetime,
 ) -> ExitCode {
     if let Some(path) = target.socket_path()
         && let Err(code) = super::attach::nested_attach_guard(path)
@@ -228,17 +263,41 @@ fn run_new_attached(
         Err(code) => return code,
     };
 
-    // phux-07y: `phux new` never seeds with spawn-on-attach — an
-    // explicitly-created session gets a plain shell (or the `-- CMD`
-    // the user gave, applied per-session via CreateIfMissing).
-    if let Some(path) = target.socket_path()
-        && let Err(err) = ensure_server(path, &name, None, false)
-    {
-        eprintln!("phux: auto-spawn skipped ({err}). Start a server manually with `phux server`.");
-    }
-
-    let session_target =
-        new_session_target(name.clone(), command, seed_cwd(cwd, target.is_remote()));
+    let session_target = if lifetime == SessionLifetime::Persistent {
+        ensure_local_unseeded_server(target, false);
+        let command = if command.is_empty() {
+            None
+        } else {
+            Some(command)
+        };
+        if let Err(code) = rt.block_on(create_session_via_metadata(
+            target,
+            &name,
+            command,
+            seed_cwd(cwd, target.is_remote()),
+            BTreeMap::new(),
+            None,
+            false,
+            false,
+            None,
+            lifetime,
+        )) {
+            return code;
+        }
+        AttachTarget::ByName(name.clone())
+    } else {
+        // phux-07y: `phux new` never seeds with spawn-on-attach — an
+        // explicitly-created session gets a plain shell (or the `-- CMD`
+        // the user gave, applied per-session via CreateIfMissing).
+        if let Some(path) = target.socket_path()
+            && let Err(err) = ensure_server(path, &name, None, false)
+        {
+            eprintln!(
+                "phux: auto-spawn skipped ({err}). Start a server manually with `phux server`."
+            );
+        }
+        new_session_target(name.clone(), command, seed_cwd(cwd, target.is_remote()))
+    };
 
     // The shared resolver picks the per-dial default: prediction off over
     // the local socket unless the config asks for it, on for a remote dial
@@ -303,10 +362,15 @@ fn choose_session_name(requested: Option<String>, existing: &[String]) -> Result
 }
 
 /// `phux new --json` — create a session *without* attaching and print its
-/// seed pane's id. The create is an L3 `SET_METADATA` write of
-/// `phux.session.create/v1` via [`phux_client::session::create_session`]; the
-/// seed-pane id is read back from the nonce-correlated result key. Requires
-/// `-s NAME` (clap-enforced); a name in use is an error.
+/// seed pane's id, via [`phux_client::session::create_session`]: one
+/// `SESSION_CREATE` carrying `lifetime` against a server that advertises
+/// `ORGANIZATION`, else the `phux.session.create/v1` write and its
+/// nonce-correlated read-back. Requires `-s NAME` (clap-enforced); a name in
+/// use is an error.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one argument per `phux new` input; bundling them hides which the JSON path reads"
+)]
 pub(crate) fn run_new_json(
     rt: &tokio::runtime::Runtime,
     target: &ServerTarget,
@@ -315,6 +379,7 @@ pub(crate) fn run_new_json(
     command: Vec<String>,
     env: Vec<(String, String)>,
     idempotency_key: Option<IdempotencyKey>,
+    lifetime: SessionLifetime,
 ) -> ExitCode {
     // A local server must be running to host the new session; the real
     // session is then created without attaching.
@@ -338,6 +403,7 @@ pub(crate) fn run_new_json(
         false,
         true,
         idempotency_key,
+        lifetime,
     )) {
         Ok(terminal_id) => crate::output::json(&new_session_json(name, terminal_id)),
         Err(code) => code,
@@ -346,7 +412,7 @@ pub(crate) fn run_new_json(
 
 /// The `phux new --json` result document: the created session's name and its
 /// seed pane's wire-local id. Pure, so the shape (including `schema_version`)
-/// is unit-testable without a server.
+/// is unit-testable without a server. `phux ls --json` reports the lifetime.
 fn new_session_json(session: &str, terminal_id: u64) -> serde_json::Value {
     serde_json::json!({
         "schema_version": 1,
@@ -355,9 +421,10 @@ fn new_session_json(session: &str, terminal_id: u64) -> serde_json::Value {
     })
 }
 
-/// The `phux new --empty --json` result document (ADR-0105): the same keys
-/// as [`new_session_json`], with `terminal_id` null because no terminal was
-/// started, plus `empty` and `keep_empty`, both `true`.
+/// The `phux new --empty --json` result document: the same keys as
+/// [`new_session_json`], with `terminal_id` null because no terminal was
+/// started, plus `empty` and `keep_empty` (the session is persistent), both
+/// `true`.
 fn empty_session_json(session: &str) -> serde_json::Value {
     serde_json::json!({
         "schema_version": 1,
@@ -368,8 +435,9 @@ fn empty_session_json(session: &str) -> serde_json::Value {
     })
 }
 
-/// Create an empty, keep-empty session (ADR-0105). Refuses before writing
-/// when the server lacks `KeepEmptySessions` (an older one would seed a shell).
+/// Create an empty, persistent session. Refuses before writing when the
+/// server can create no empty session ([`phux_client::session::keep_empty_supported`]:
+/// an older one would seed a shell).
 pub(crate) async fn create_empty_session_via_metadata(
     server: &ServerTarget,
     name: &str,
@@ -400,7 +468,35 @@ pub(crate) async fn create_empty_session_via_metadata(
             format!("server refused the read-back: {refusal}"),
         )),
         CreateEmptyOutcome::NotRegistered => Err(report_session_not_registered(json, name)),
+        CreateEmptyOutcome::Refused(refusal) => Err(report_create_refused(json, name, &refusal)),
     }
+}
+
+/// The server refused the typed `SESSION_CREATE`; nothing was created.
+fn report_create_refused(
+    json: bool,
+    name: &str,
+    refusal: &phux_protocol::wire::frame::Refusal,
+) -> ExitCode {
+    use crate::commands::json_err::{CliError, codes, emit};
+    if matches!(refusal, phux_protocol::wire::frame::Refusal::NameTaken) {
+        return emit(
+            json,
+            &CliError::new(
+                codes::SESSION_EXISTS,
+                format!("session '{name}' already exists"),
+                format!("attach it with `phux attach {name}`, or pick another name"),
+            ),
+            1,
+        );
+    }
+    report_create_failed(
+        json,
+        format!(
+            "server refused it: {}",
+            phux_client::org::refusal_sentence(refusal)
+        ),
+    )
 }
 
 /// The server cannot create a session with no terminal (ADR-0105).
@@ -499,6 +595,7 @@ pub(crate) async fn create_session_via_metadata(
     agent_session_preflighted: bool,
     json: bool,
     idempotency_key: Option<IdempotencyKey>,
+    lifetime: SessionLifetime,
 ) -> Result<u64, ExitCode> {
     let allow_legacy_result = agent_session.is_none();
 
@@ -522,6 +619,7 @@ pub(crate) async fn create_session_via_metadata(
         env: &env,
         agent_session: agent_session.as_deref(),
         idempotency_key,
+        lifetime,
     };
     let mut notices = Vec::new();
     let result = phux_client::session::create_session(
@@ -559,6 +657,7 @@ pub(crate) async fn create_session_via_metadata(
             Err(report_keyed_session_not_registered(json, name))
         }
         CreateOutcome::NotRegistered => Err(report_session_not_registered(json, name)),
+        CreateOutcome::Refused(refusal) => Err(report_create_refused(json, name, &refusal)),
     }
 }
 
@@ -575,6 +674,7 @@ fn report_create_session_error(
             json,
             format!("failed to serialize the create request: {err}"),
         ),
+        CreateSessionError::Org(err) => report_create_failed(json, err),
         CreateSessionError::Layout(err) => crate::commands::json_err::emit(
             json,
             &crate::commands::json_err::CliError::new(
@@ -879,6 +979,19 @@ mod tests {
         assert_eq!(doc["session"], "work");
         assert_eq!(doc["terminal_id"], 2);
         assert_eq!(doc.as_object().map(serde_json::Map::len), Some(3));
+    }
+
+    /// ADR-0160: a session the user names is persistent; a generated name
+    /// is ephemeral; `--ephemeral` overrides a name; `--empty` is always
+    /// persistent, since an ephemeral session is never empty.
+    #[test]
+    fn named_sessions_are_persistent_and_generated_ones_ephemeral() {
+        use phux_protocol::wire::frame::SessionLifetime::{Ephemeral, Persistent};
+        assert_eq!(super::session_lifetime(true, false, false), Persistent);
+        assert_eq!(super::session_lifetime(false, false, false), Ephemeral);
+        assert_eq!(super::session_lifetime(true, false, true), Ephemeral);
+        assert_eq!(super::session_lifetime(false, true, false), Persistent);
+        assert_eq!(super::session_lifetime(true, true, false), Persistent);
     }
 
     /// phux-0db: `phux new` without `--cwd` seeds a local session in the

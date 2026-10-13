@@ -421,6 +421,8 @@ fn bind_session(req: Binding<'_>) -> ExitCode {
         false,
         json,
         None,
+        // A worktree's session is named after it: persistent.
+        phux_protocol::wire::frame::SessionLifetime::Persistent,
     )) {
         // The create already told us the seed pane's id; `--json` just stops
         // throwing it away.

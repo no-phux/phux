@@ -289,6 +289,9 @@ fn build_server_config(
         exit_after_idle: exit_after_idle.map(Duration::from_secs),
         // The one place the `PHUX_*` process configuration is read.
         env: phux_server::ServerEnv::from_process(),
+        // The durable organization store under the instance's state
+        // directory (ADR-0162).
+        org_store: phux_server::OrgStoreLocation::default_path(),
     }
 }
 
