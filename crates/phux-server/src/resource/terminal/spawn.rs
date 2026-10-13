@@ -1805,5 +1805,4 @@ mod drain_tests {
             "EIO means the descriptor is gone; there is nothing left to drain",
         );
     }
-
 }
