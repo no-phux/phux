@@ -2061,6 +2061,7 @@ mod tests {
             windows,
             panes,
             agent_sessions: Vec::new(),
+            metadata: Vec::new(),
         }
     }
 
