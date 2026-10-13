@@ -1401,6 +1401,10 @@ mod canonical_guard_tests {
 
     /// A flood larger than the batch cap comes back intact, in order, and no
     /// handoff is bigger than the cap.
+    ///
+    /// How many kernel reads one handoff folds depends on how far `cat` got
+    /// ahead of the reader, which a real PTY does not fix; the scripted
+    /// sources in `park`'s tests prove the folding itself.
     #[tokio::test(flavor = "current_thread")]
     async fn coalesced_pty_output_keeps_order_and_respects_the_cap() {
         let (pty_rx, input_tx, mut pty) =
@@ -1450,10 +1454,6 @@ mod canonical_guard_tests {
             chunks >= 2,
             "a payload larger than the cap must not arrive as one unlimited read"
         );
-        assert!(
-            max_chunk > 4_095,
-            "coalescing should fold more than one kernel read (max chunk {max_chunk})"
-        );
         let _ = pty.child.kill();
     }
 
@@ -1481,31 +1481,38 @@ mod canonical_guard_tests {
         let _ = pty.child.kill();
     }
 
-    fn collect_for(rx: &mut mpsc::Receiver<PtyEvent>, timeout: Duration) -> Vec<u8> {
-        let deadline = std::time::Instant::now() + timeout;
+    /// Collect pane output until `done` holds for everything received, the
+    /// pane ends, or nothing arrives for [`DELIVERY_DEADLINE`].
+    ///
+    /// Completion is the expected output, never a quiet spell: dropping a
+    /// pane's input writes a newline and `VEOF`, whose echo is a whole line
+    /// that lands before a slow-starting child prints anything.
+    fn collect_until(rx: &mut mpsc::Receiver<PtyEvent>, done: impl Fn(&[u8]) -> bool) -> Vec<u8> {
         let mut got = Vec::new();
-        let mut last_byte: Option<std::time::Instant> = None;
-        while std::time::Instant::now() < deadline {
+        let mut last_progress = std::time::Instant::now();
+        while last_progress.elapsed() < DELIVERY_DEADLINE {
             match rx.try_recv() {
                 Ok(PtyEvent::Bytes { chunk, .. }) => {
                     got.extend_from_slice(&chunk);
-                    last_byte = Some(std::time::Instant::now());
+                    last_progress = std::time::Instant::now();
+                    if done(&got) {
+                        break;
+                    }
                 }
                 Ok(PtyEvent::Eof) | Err(mpsc::error::TryRecvError::Disconnected) => break,
                 Err(mpsc::error::TryRecvError::Empty) => {
-                    // A pane that already printed a line and then went quiet is
-                    // done. Waiting out `timeout` would sit on the promote test's
-                    // `sleep`.
-                    let quiet =
-                        last_byte.is_some_and(|at| at.elapsed() >= Duration::from_millis(50));
-                    if quiet && got.contains(&b'\n') {
-                        break;
-                    }
                     std::thread::sleep(Duration::from_millis(5));
                 }
             }
         }
         got
+    }
+
+    /// Whether `got` holds a whole line that contains `marker`.
+    fn has_line_with(got: &[u8], marker: &[u8]) -> bool {
+        got.windows(marker.len())
+            .position(|window| window == marker)
+            .is_some_and(|at| got[at..].contains(&b'\n'))
     }
 
     /// Idle panes sit on the shared poller. They must not each grow a reader thread.
@@ -1534,7 +1541,7 @@ mod canonical_guard_tests {
         cmd.arg("-c");
         cmd.arg("printf 'hello-from-pty\\n'; sleep 30");
         let (mut rx, _, mut pty) = spawn_pty(cmd, 80, 24).expect("spawn a pane that prints once");
-        let got = collect_for(&mut rx, DELIVERY_DEADLINE);
+        let got = collect_until(&mut rx, |got| has_line_with(got, b"hello-from-pty"));
         assert!(
             got.windows(14).any(|window| window == b"hello-from-pty"),
             "missing prompt bytes in {got:?}"
@@ -1578,7 +1585,7 @@ mod canonical_guard_tests {
         cmd.arg("-c");
         cmd.arg(probe);
         let (mut rx, _, mut pty) = spawn_pty(cmd, 80, 24).expect("spawn probe");
-        let got = collect_for(&mut rx, DELIVERY_DEADLINE);
+        let got = collect_until(&mut rx, |got| has_line_with(got, b"FDSize:"));
         let text = String::from_utf8_lossy(&got);
         assert!(text.contains("CLEAN"), "child inherited fd {high}: {text}");
         let count = text.split_whitespace().find_map(|field| {
