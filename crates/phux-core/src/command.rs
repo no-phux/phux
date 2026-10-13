@@ -203,15 +203,6 @@ pub enum Op {
         /// Observed revision.
         expected: Revision,
     },
-    /// Release a lost activation without proof it ended. Owner only.
-    ResourceAbandon {
-        /// Target.
-        resource: ResourceKey,
-        /// Observed revision.
-        expected: Revision,
-        /// The lost activation.
-        activation: ActivationId,
-    },
     /// Replace an owner's arrangement document.
     ArrangementReplace {
         /// Whose arrangement.

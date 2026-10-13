@@ -60,7 +60,7 @@ moves, not a whole-file rewrite per change.
    idempotent.
 4. **Activations.** An activation records its id, the server instance
    that started it, its state (starting, running, stopping, completed,
-   failed, lost, abandoned), its outcome, and for a Terminal its
+   failed, lost), its outcome, and for a Terminal its
    `ProcIdentity { pid, pgid, start_raw, boot_id }`. `start_raw` is the
    platform's raw process start time; `boot_id` distinguishes boots.
 5. **Startup reconciliation.** For each activation recorded live under a
@@ -68,7 +68,9 @@ moves, not a whole-file rewrite per change.
    that exists on the same boot with the same start time is marked `Lost`;
    anything else is `Completed` with outcome `Unobserved`. Nothing is
    relaunched. A `Lost` resource refuses remove and relaunch until it is
-   terminated by pgid after a recheck or explicitly abandoned. Resources
+   terminated by pgid after a recheck, or a later startup finds the
+   process gone. (`ResourceAbandon` and its `abandoned` state were retired
+   unshipped: no surface sent them.) Resources
    ended by the crash stay as records, flagged, until `phux restore`
    relaunches them.
 6. **Exit policy.** Each resource has `on_exit: Remove | Retain`. A shell

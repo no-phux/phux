@@ -45,15 +45,14 @@ use crate::wire::frame::{
 use crate::wire::frame::{
     COMMAND_TAG_ARRANGEMENT_GET, COMMAND_TAG_ARRANGEMENT_REPLACE, COMMAND_TAG_DELEGATE_AGENT,
     COMMAND_TAG_GET_ORGANIZATION, COMMAND_TAG_INBOX_RESOLVE, COMMAND_TAG_ORGANIZATION_UNDO,
-    COMMAND_TAG_RESOURCE_ABANDON, COMMAND_TAG_RESOURCE_CREATE, COMMAND_TAG_RESOURCE_MOVE,
-    COMMAND_TAG_RESOURCE_MOVE_MANY, COMMAND_TAG_RESOURCE_RELAUNCH, COMMAND_TAG_RESOURCE_REMOVE,
-    COMMAND_TAG_RESOURCE_RENAME, COMMAND_TAG_RESOURCE_TERMINATE, COMMAND_TAG_REVOKE_DELEGATION,
-    COMMAND_TAG_SESSION_CREATE, COMMAND_TAG_SESSION_DELETE, COMMAND_TAG_SESSION_RENAME,
-    COMMAND_TAG_SESSION_SET_LIFETIME, EVENT_TAG_ACTIVATION_CHANGED, EVENT_TAG_ARRANGEMENT_CHANGED,
-    EVENT_TAG_INTAKE_CHANGED, EVENT_TAG_LEASE_CHANGED, EVENT_TAG_MEMBERSHIP_CHANGED,
-    EVENT_TAG_RESOURCE_CREATED, EVENT_TAG_RESOURCE_REMOVED, EVENT_TAG_RESOURCE_RENAMED,
-    EVENT_TAG_SESSION_CREATED, EVENT_TAG_SESSION_DELETED, EVENT_TAG_SESSION_LIFETIME_CHANGED,
-    EVENT_TAG_SESSION_RENAMED,
+    COMMAND_TAG_RESOURCE_CREATE, COMMAND_TAG_RESOURCE_MOVE, COMMAND_TAG_RESOURCE_MOVE_MANY,
+    COMMAND_TAG_RESOURCE_RELAUNCH, COMMAND_TAG_RESOURCE_REMOVE, COMMAND_TAG_RESOURCE_RENAME,
+    COMMAND_TAG_RESOURCE_TERMINATE, COMMAND_TAG_REVOKE_DELEGATION, COMMAND_TAG_SESSION_CREATE,
+    COMMAND_TAG_SESSION_DELETE, COMMAND_TAG_SESSION_RENAME, COMMAND_TAG_SESSION_SET_LIFETIME,
+    EVENT_TAG_ACTIVATION_CHANGED, EVENT_TAG_ARRANGEMENT_CHANGED, EVENT_TAG_INTAKE_CHANGED,
+    EVENT_TAG_LEASE_CHANGED, EVENT_TAG_MEMBERSHIP_CHANGED, EVENT_TAG_RESOURCE_CREATED,
+    EVENT_TAG_RESOURCE_REMOVED, EVENT_TAG_RESOURCE_RENAMED, EVENT_TAG_SESSION_CREATED,
+    EVENT_TAG_SESSION_DELETED, EVENT_TAG_SESSION_LIFETIME_CHANGED, EVENT_TAG_SESSION_RENAMED,
 };
 use crate::wire::frame::{EVENT_TAG_SOURCE_GAP, SESSION_NAME_KEY};
 
@@ -81,8 +80,8 @@ pub enum Verb {
     /// Rename, move membership, edit arrangements, resolve intake, or undo an
     /// organization edit (scope schema v2).
     Organize = 0x40,
-    /// Terminate an activation, remove a resource record, delete a session,
-    /// or abandon a lost activation (scope schema v2).
+    /// Terminate an activation, remove a resource record, or delete a
+    /// session (scope schema v2).
     Terminate = 0x80,
 }
 
@@ -791,8 +790,6 @@ static C_RESOURCE_RELAUNCH: Rule = Rule::verbs(
     &[Verb::Create],
     Subject::KeyedResource,
 );
-static C_RESOURCE_ABANDON: Rule =
-    Rule::verbs("`RESOURCE_ABANDON`", &[Verb::Terminate], GLOBAL_OWNER_UDS);
 static C_ORGANIZATION_UNDO: Rule = Rule::verbs(
     "`ORGANIZATION_UNDO`",
     &[Verb::Organize],
@@ -818,7 +815,7 @@ static C_UNCLASSIFIED: Rule = Rule::deny("Unknown, retired, or otherwise unclass
 /// The nested-command table of workload-auth §6, in spec row order.
 ///
 /// [`classify_command`] returns one of these rows for every decoded command.
-pub static COMMAND_RULES: [&Rule; 43] = [
+pub static COMMAND_RULES: [&Rule; 42] = [
     &C_SPAWN,
     &C_ATTACH_RESOURCE,
     &C_DETACH_RESOURCE,
@@ -856,7 +853,6 @@ pub static COMMAND_RULES: [&Rule; 43] = [
     &C_RESOURCE_TERMINATE,
     &C_RESOURCE_REMOVE,
     &C_RESOURCE_RELAUNCH,
-    &C_RESOURCE_ABANDON,
     &C_ORGANIZATION_UNDO,
     &C_ARRANGEMENT_GET,
     &C_ARRANGEMENT_REPLACE,
@@ -998,7 +994,6 @@ pub fn command_rule(command: &Command) -> &'static Rule {
         Command::ResourceTerminate { .. } => &C_RESOURCE_TERMINATE,
         Command::ResourceRemove { .. } => &C_RESOURCE_REMOVE,
         Command::ResourceRelaunch { .. } => &C_RESOURCE_RELAUNCH,
-        Command::ResourceAbandon { .. } => &C_RESOURCE_ABANDON,
         Command::OrganizationUndo { .. } => &C_ORGANIZATION_UNDO,
         Command::ArrangementGet { .. } => &C_ARRANGEMENT_GET,
         Command::ArrangementReplace { .. } => &C_ARRANGEMENT_REPLACE,
@@ -1547,12 +1542,6 @@ pub static SERVER_METHODS: &[MethodSpec] = &[
         [C_RESOURCE_RELAUNCH],
         ORGANIZATION
     ),
-    dangerous(method!(
-        "RESOURCE_ABANDON",
-        Carrier::Command(COMMAND_TAG_RESOURCE_ABANDON),
-        [C_RESOURCE_ABANDON],
-        ORGANIZATION
-    )),
     method!(
         "INBOX_RESOLVE",
         Carrier::Command(COMMAND_TAG_INBOX_RESOLVE),

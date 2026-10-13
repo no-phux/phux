@@ -1493,11 +1493,11 @@ fn write_actor(enc: &mut Encoder<'_>, field_id: u32, actor: &ActorRef) {
 const fn org_command_tag(command: &Command) -> Option<u8> {
     use super::{
         COMMAND_TAG_ARRANGEMENT_GET, COMMAND_TAG_ARRANGEMENT_REPLACE, COMMAND_TAG_GET_ORGANIZATION,
-        COMMAND_TAG_INBOX_RESOLVE, COMMAND_TAG_ORGANIZATION_UNDO, COMMAND_TAG_RESOURCE_ABANDON,
-        COMMAND_TAG_RESOURCE_CREATE, COMMAND_TAG_RESOURCE_MOVE, COMMAND_TAG_RESOURCE_MOVE_MANY,
-        COMMAND_TAG_RESOURCE_RELAUNCH, COMMAND_TAG_RESOURCE_REMOVE, COMMAND_TAG_RESOURCE_RENAME,
-        COMMAND_TAG_RESOURCE_TERMINATE, COMMAND_TAG_SESSION_CREATE, COMMAND_TAG_SESSION_DELETE,
-        COMMAND_TAG_SESSION_RENAME, COMMAND_TAG_SESSION_SET_LIFETIME,
+        COMMAND_TAG_INBOX_RESOLVE, COMMAND_TAG_ORGANIZATION_UNDO, COMMAND_TAG_RESOURCE_CREATE,
+        COMMAND_TAG_RESOURCE_MOVE, COMMAND_TAG_RESOURCE_MOVE_MANY, COMMAND_TAG_RESOURCE_RELAUNCH,
+        COMMAND_TAG_RESOURCE_REMOVE, COMMAND_TAG_RESOURCE_RENAME, COMMAND_TAG_RESOURCE_TERMINATE,
+        COMMAND_TAG_SESSION_CREATE, COMMAND_TAG_SESSION_DELETE, COMMAND_TAG_SESSION_RENAME,
+        COMMAND_TAG_SESSION_SET_LIFETIME,
     };
     Some(match command {
         Command::GetOrganization { .. } => COMMAND_TAG_GET_ORGANIZATION,
@@ -1512,7 +1512,6 @@ const fn org_command_tag(command: &Command) -> Option<u8> {
         Command::ResourceTerminate { .. } => COMMAND_TAG_RESOURCE_TERMINATE,
         Command::ResourceRemove { .. } => COMMAND_TAG_RESOURCE_REMOVE,
         Command::ResourceRelaunch { .. } => COMMAND_TAG_RESOURCE_RELAUNCH,
-        Command::ResourceAbandon { .. } => COMMAND_TAG_RESOURCE_ABANDON,
         Command::InboxResolve { .. } => COMMAND_TAG_INBOX_RESOLVE,
         Command::OrganizationUndo { .. } => COMMAND_TAG_ORGANIZATION_UNDO,
         Command::ArrangementGet { .. } => COMMAND_TAG_ARRANGEMENT_GET,
@@ -1687,17 +1686,6 @@ pub(in crate::wire) fn encode_org_command(command: &Command, enc: &mut Encoder<'
             write_resource(enc, resource);
             write_u64(enc, field::org::EXPECTED, expected.get());
         }
-        Command::ResourceAbandon {
-            operation,
-            resource,
-            expected,
-            activation,
-        } => {
-            write_operation(enc, operation);
-            write_resource(enc, resource);
-            write_u64(enc, field::org::EXPECTED, expected.get());
-            write_u64(enc, field::org::ACTIVATION, activation.get());
-        }
         Command::OrganizationUndo {
             operation,
             undo,
@@ -1756,11 +1744,11 @@ pub(in crate::wire) fn decode_org_command(
 ) -> Result<Option<Command>, DecodeError> {
     use super::{
         COMMAND_TAG_ARRANGEMENT_GET, COMMAND_TAG_ARRANGEMENT_REPLACE, COMMAND_TAG_GET_ORGANIZATION,
-        COMMAND_TAG_INBOX_RESOLVE, COMMAND_TAG_ORGANIZATION_UNDO, COMMAND_TAG_RESOURCE_ABANDON,
-        COMMAND_TAG_RESOURCE_CREATE, COMMAND_TAG_RESOURCE_MOVE, COMMAND_TAG_RESOURCE_MOVE_MANY,
-        COMMAND_TAG_RESOURCE_RELAUNCH, COMMAND_TAG_RESOURCE_REMOVE, COMMAND_TAG_RESOURCE_RENAME,
-        COMMAND_TAG_RESOURCE_TERMINATE, COMMAND_TAG_SESSION_CREATE, COMMAND_TAG_SESSION_DELETE,
-        COMMAND_TAG_SESSION_RENAME, COMMAND_TAG_SESSION_SET_LIFETIME,
+        COMMAND_TAG_INBOX_RESOLVE, COMMAND_TAG_ORGANIZATION_UNDO, COMMAND_TAG_RESOURCE_CREATE,
+        COMMAND_TAG_RESOURCE_MOVE, COMMAND_TAG_RESOURCE_MOVE_MANY, COMMAND_TAG_RESOURCE_RELAUNCH,
+        COMMAND_TAG_RESOURCE_REMOVE, COMMAND_TAG_RESOURCE_RENAME, COMMAND_TAG_RESOURCE_TERMINATE,
+        COMMAND_TAG_SESSION_CREATE, COMMAND_TAG_SESSION_DELETE, COMMAND_TAG_SESSION_RENAME,
+        COMMAND_TAG_SESSION_SET_LIFETIME,
     };
     let delegation = [
         super::COMMAND_TAG_DELEGATE_AGENT,
@@ -1845,12 +1833,6 @@ pub(in crate::wire) fn decode_org_command(
             operation: f.operation()?,
             resource: f.resource()?,
             expected: f.expected()?,
-        },
-        COMMAND_TAG_RESOURCE_ABANDON => Command::ResourceAbandon {
-            operation: f.operation()?,
-            resource: f.resource()?,
-            expected: f.expected()?,
-            activation: req(f.activation)?,
         },
         COMMAND_TAG_INBOX_RESOLVE => Command::InboxResolve {
             operation: f.operation()?,

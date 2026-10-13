@@ -587,17 +587,6 @@ pub enum Command {
         /// Its expected revision.
         expected: Revision,
     },
-    /// Release a lost activation from management (owner only).
-    ResourceAbandon {
-        /// Caller-generated operation id.
-        operation: OperationId,
-        /// The resource.
-        resource: ResourceKey,
-        /// Its expected revision.
-        expected: Revision,
-        /// The lost activation.
-        activation: ActivationId,
-    },
     /// Clear an imported session's intake mark; members and execution are
     /// untouched.
     InboxResolve {
@@ -721,7 +710,6 @@ impl Command {
             | Self::ResourceTerminate { operation, .. }
             | Self::ResourceRemove { operation, .. }
             | Self::ResourceRelaunch { operation, .. }
-            | Self::ResourceAbandon { operation, .. }
             | Self::InboxResolve { operation, .. }
             | Self::OrganizationUndo { operation, .. }
             | Self::ArrangementReplace { operation, .. } => Some(operation),
@@ -750,7 +738,6 @@ impl Command {
                 | Self::ResourceTerminate { .. }
                 | Self::ResourceRemove { .. }
                 | Self::ResourceRelaunch { .. }
-                | Self::ResourceAbandon { .. }
                 | Self::InboxResolve { .. }
                 | Self::OrganizationUndo { .. }
                 | Self::ArrangementGet { .. }

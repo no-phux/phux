@@ -115,8 +115,8 @@ stopping, completed, failed, or lost, and when it ends it records the real
 outcome: exit status, signal, or "unobserved" when the server was not
 there to see it. *Lost* means the server lost track of a process that may
 still be running; such a resource cannot be removed or relaunched until
-the process is terminated or explicitly abandoned. Relaunching a finished
-resource starts a new activation of the same resource.
+the process is terminated or a later startup finds it gone. Relaunching a
+finished resource starts a new activation of the same resource.
 
 Terminal is a PTY child and a libghostty engine, with columns, rows, a title,
 and a working directory. Typed input, resize, and screen reads are refused on

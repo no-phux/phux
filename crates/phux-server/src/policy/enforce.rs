@@ -613,8 +613,7 @@ fn keyed_resource(s: &ServerState, request: Request<'_>) -> Option<Point> {
     match command {
         Command::ResourceRename { resource, .. }
         | Command::ResourceRemove { resource, .. }
-        | Command::ResourceRelaunch { resource, .. }
-        | Command::ResourceAbandon { resource, .. } => resource_key_point(s, resource),
+        | Command::ResourceRelaunch { resource, .. } => resource_key_point(s, resource),
         _ => None,
     }
 }

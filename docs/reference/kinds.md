@@ -55,7 +55,6 @@ Addressed to the server or the connection rather than to one resource.
 | `RESOURCE_TERMINATE` | command `0x27` | TERMINATE | yes | `organization` (features_ext) | shipped |
 | `RESOURCE_REMOVE` | command `0x28` | TERMINATE | yes | `organization` (features_ext) | shipped |
 | `RESOURCE_RELAUNCH` | command `0x29` | CREATE | yes | `organization` (features_ext) | shipped |
-| `RESOURCE_ABANDON` | command `0x2a` | TERMINATE (owner socket only) | yes | `organization` (features_ext) | shipped |
 | `INBOX_RESOLVE` | command `0x2b` | ORGANIZE | yes | `organization` (features_ext) | shipped |
 | `ORGANIZATION_UNDO` | command `0x2c` | ORGANIZE | yes | `organization` (features_ext) | shipped |
 | `ARRANGEMENT_GET` | command `0x2d` | INVENTORY | no | `organization` (features_ext) | shipped |
@@ -278,7 +277,6 @@ Every command nested in `COMMAND` lands on exactly one row; the envelope alone g
 | `RESOURCE_TERMINATE` | TERMINATE | `NamedTerminal` |
 | `RESOURCE_REMOVE` | TERMINATE | `KeyedResource` |
 | `RESOURCE_RELAUNCH` | CREATE | `KeyedResource` |
-| `RESOURCE_ABANDON` | TERMINATE + owner-UDS transport | `Global { owner_uds_only: true }` |
 | `ORGANIZATION_UNDO` | ORGANIZE | `UndoneOperation` |
 | `ARRANGEMENT_GET` | INVENTORY | `ArrangementOwner` |
 | `ARRANGEMENT_REPLACE` | ORGANIZE | `ArrangementOwner` |

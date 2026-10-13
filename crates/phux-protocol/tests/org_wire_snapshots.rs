@@ -273,15 +273,6 @@ fn command_fixtures() -> Vec<(&'static str, FrameKind)> {
             }),
         ),
         (
-            "snap_org_resource_abandon",
-            command(Command::ResourceAbandon {
-                operation: op(),
-                resource: resource(),
-                expected: rev(2),
-                activation: ActivationId::new(3),
-            }),
-        ),
-        (
             "snap_org_inbox_resolve",
             command(Command::InboxResolve {
                 operation: op(),

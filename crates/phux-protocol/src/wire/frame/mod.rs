@@ -710,7 +710,7 @@ pub(crate) const EVENT_TAG_RESOURCE_RENAMED: u8 = 0x1b;
 
 /// Wire tag for one [`Command`] variant inside the `COMMAND` envelope (SPEC
 /// §5.1); duplicates are E0081. Registry: `docs/spec/appendix-reserved.md`
-/// §2. `0x0a` / `0x0b` are freed and reserved.
+/// §2. `0x0a`, `0x0b`, and `0x2a` are freed and reserved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 enum CommandTag {
@@ -751,7 +751,7 @@ enum CommandTag {
     ResourceTerminate = 0x27,
     ResourceRemove = 0x28,
     ResourceRelaunch = 0x29,
-    ResourceAbandon = 0x2a,
+    // 0x2a is reserved: it was `RESOURCE_ABANDON` and is never reused.
     InboxResolve = 0x2b,
     OrganizationUndo = 0x2c,
     ArrangementGet = 0x2d,
@@ -853,8 +853,6 @@ pub(crate) const COMMAND_TAG_RESOURCE_TERMINATE: u8 = CommandTag::ResourceTermin
 pub(crate) const COMMAND_TAG_RESOURCE_REMOVE: u8 = CommandTag::ResourceRemove as u8;
 /// Wire tag for [`Command::ResourceRelaunch`].
 pub(crate) const COMMAND_TAG_RESOURCE_RELAUNCH: u8 = CommandTag::ResourceRelaunch as u8;
-/// Wire tag for [`Command::ResourceAbandon`].
-pub(crate) const COMMAND_TAG_RESOURCE_ABANDON: u8 = CommandTag::ResourceAbandon as u8;
 /// Wire tag for [`Command::InboxResolve`].
 pub(crate) const COMMAND_TAG_INBOX_RESOLVE: u8 = CommandTag::InboxResolve as u8;
 /// Wire tag for [`Command::OrganizationUndo`].

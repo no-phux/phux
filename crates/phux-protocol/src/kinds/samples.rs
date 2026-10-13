@@ -77,17 +77,16 @@ const fn command_variant(command: &Command) -> usize {
         Command::ResourceTerminate { .. } => 34,
         Command::ResourceRemove { .. } => 35,
         Command::ResourceRelaunch { .. } => 36,
-        Command::ResourceAbandon { .. } => 37,
-        Command::InboxResolve { .. } => 38,
-        Command::OrganizationUndo { .. } => 39,
-        Command::ArrangementGet { .. } => 40,
-        Command::ArrangementReplace { .. } => 41,
-        Command::DelegateAgent { .. } => 42,
-        Command::RevokeDelegation { .. } => 43,
+        Command::InboxResolve { .. } => 37,
+        Command::OrganizationUndo { .. } => 38,
+        Command::ArrangementGet { .. } => 39,
+        Command::ArrangementReplace { .. } => 40,
+        Command::DelegateAgent { .. } => 41,
+        Command::RevokeDelegation { .. } => 42,
     }
 }
 
-const COMMAND_VARIANTS: usize = 44;
+const COMMAND_VARIANTS: usize = 43;
 
 fn operation() -> IdempotencyKey {
     IdempotencyKey::new([3; 16]).unwrap()
@@ -231,15 +230,6 @@ fn org_command_samples() -> Vec<(Command, &'static Rule)> {
                 expected: rev,
             },
             &C_RESOURCE_RELAUNCH,
-        ),
-        (
-            Command::ResourceAbandon {
-                operation: operation(),
-                resource: resource_key(),
-                expected: rev,
-                activation: ActivationId::new(1),
-            },
-            &C_RESOURCE_ABANDON,
         ),
         (
             Command::InboxResolve {
@@ -1141,7 +1131,6 @@ fn dangerous_methods_are_exactly_the_adr_0128_list() {
         "SESSION_DELETE",
         "RESOURCE_TERMINATE",
         "RESOURCE_REMOVE",
-        "RESOURCE_ABANDON",
     ]
     .into_iter()
     .collect();

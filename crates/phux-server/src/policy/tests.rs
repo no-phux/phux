@@ -611,12 +611,6 @@ fn organization_samples(world: &World, t: &WireResourceId) -> Vec<FrameKind> {
             resource: k.resource,
             expected: rev,
         }),
-        command(Command::ResourceAbandon {
-            operation: op,
-            resource: k.resource,
-            expected: rev,
-            activation: ActivationId::new(1),
-        }),
         command(Command::OrganizationUndo {
             operation: op,
             undo: k.operation,
@@ -1280,17 +1274,16 @@ fn rows(world: &mut World) -> Vec<Row> {
         on_terminal(org[8].clone(), "terminate"),
         on_alpha_resource(&org[9], "terminate"),
         on_alpha_resource(&org[10], "create"),
-        denied(org[11].clone()),
         // An undo whose receipt records no inverse needs Global.
-        on_global(org[12].clone(), "organize"),
-        on_alpha(&org[13], "inventory"),
-        on_alpha(&org[14], "organize"),
+        on_global(org[11].clone(), "organize"),
+        on_alpha(&org[12], "inventory"),
+        on_alpha(&org[13], "organize"),
     ]);
     rows.push(on_terminal(
         command(Command::ReleaseInput { terminal_id: t }),
         "bind",
     ));
-    // Owner-socket only, like `RESOURCE_ABANDON`: no scoped grant mints or
+    // Owner-socket only: no scoped grant mints or
     // withdraws a delegation.
     rows.extend(delegation_samples(world).into_iter().map(denied));
     rows
