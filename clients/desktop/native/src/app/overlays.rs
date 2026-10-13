@@ -14,6 +14,7 @@ use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandSt
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{ActiveTheme, Icon, IconName, IndexPath, Sizable};
 use phux_protocol::ResourceId;
+use phux_protocol::ids::SessionKey;
 
 use crate::connection::path::{self as paths};
 use crate::settings::theme::Palette;
@@ -35,7 +36,11 @@ pub enum InputSlot {
 pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) {
     match desk.modal.clone() {
         Modal::None => {}
-        Modal::Commands | Modal::Goto | Modal::WindowSession | Modal::Path => {
+        Modal::Commands
+        | Modal::Goto
+        | Modal::WindowSession
+        | Modal::MoveResources
+        | Modal::Path => {
             let state = palette_state(desk, window, cx);
             state.update(cx, |state, cx| {
                 state.set_query("", window, cx);
@@ -250,6 +255,10 @@ impl Desk {
                 self.after_command(window, cx);
             }
             Target::Session(name) => self.open_session_window(name, window, cx),
+            Target::Move(key, name) => {
+                let selected = self.organization.selected.clone();
+                self.move_resources_to(selected, key, name, window, cx);
+            }
             Target::Path(item) => match item {
                 PathItem::Parent(directory) => self.browse_path(directory, window, cx),
                 PathItem::Row { path, .. } => self.insert_path(path, window, cx),
@@ -265,6 +274,7 @@ enum Target {
     Pane(ResourceId),
     Tab(String),
     Session(String),
+    Move(SessionKey, String),
     Path(PathItem),
 }
 
@@ -310,7 +320,9 @@ pub fn layer(
 ) -> AnyElement {
     let card = match desk.modal.clone() {
         Modal::None => return div().into_any_element(),
-        Modal::Commands | Modal::Goto | Modal::WindowSession => palette(desk, colors, cx),
+        Modal::Commands | Modal::Goto | Modal::WindowSession | Modal::MoveResources => {
+            palette(desk, colors, cx)
+        }
         Modal::Path => path_panel(desk, colors, window, cx),
         Modal::Settings => super::settings_panel::panel(desk, colors, window, cx),
         Modal::Rename { .. } => rename_dialog(desk, colors, cx),
@@ -479,6 +491,7 @@ fn palette(desk: &mut Desk, colors: &Palette, cx: &mut Context<Desk>) -> AnyElem
             goto_sections(desk),
         ),
         Modal::WindowSession => ("Open a window on a session…", session_sections(desk)),
+        Modal::MoveResources => ("Move selected work to a session…", move_sections(desk)),
         _ => ("Run a command…", command_sections(desk)),
     };
     let sections = rank_sections(sections, &query);
@@ -702,6 +715,39 @@ fn session_sections(desk: &Desk) -> Vec<Section> {
         .collect();
     vec![Section {
         label: Some("Sessions"),
+        rows,
+    }]
+}
+
+fn move_sections(desk: &Desk) -> Vec<Section> {
+    let Some(client) = desk.client() else {
+        return Vec::new();
+    };
+    let replica = client.organization();
+    let selected = &desk.organization.selected;
+    let rows = replica
+        .sessions()
+        .iter()
+        .filter(|session| {
+            selected.iter().any(|key| {
+                replica
+                    .resource(key)
+                    .is_some_and(|resource| resource.session != session.key)
+            })
+        })
+        .map(|session| Row {
+            title: session.name.clone(),
+            detail: Some(format!(
+                "Move {} selected · execution stays running",
+                selected.len()
+            )),
+            keywords: session.name.clone(),
+            target: Target::Move(session.key, session.name.clone()),
+            command: None,
+        })
+        .collect();
+    vec![Section {
+        label: Some("Destination session"),
         rows,
     }]
 }

@@ -87,6 +87,7 @@ pub enum Modal {
     Goto,
     Settings,
     Path,
+    MoveResources,
     Rename {
         tab_id: String,
     },
@@ -171,6 +172,7 @@ pub struct Desk {
     creates: HashMap<OperationId, String>,
     /// Kill workflows awaiting their report, with the session name and member labels.
     kills: HashMap<u64, (String, HashMap<ResourceKey, String>)>,
+    pub(crate) organization: super::organization::Organization,
 }
 
 pub struct Link {
@@ -270,6 +272,7 @@ impl Desk {
             closed: false,
             creates: HashMap::new(),
             kills: HashMap::new(),
+            organization: Default::default(),
         };
         if let Some(error) = request.startup_error {
             desk.toast(
@@ -373,6 +376,9 @@ impl Desk {
             self.agent_epoch = Some(epoch);
         }
         for event in &events {
+            if crate::connection::starts_connection(event) {
+                self.organization.connection_changed();
+            }
             self.note_event(event);
         }
         if let Some(link) = self.link.as_mut() {
@@ -402,6 +408,23 @@ impl Desk {
     }
 
     fn note_event(&mut self, event: &Event) {
+        self.note_terminal_event(event);
+        self.note_operation_event(event);
+        self.note_input_event(event);
+        if let Event::Detached { message, .. } = event {
+            self.toast(ToastKind::Error, "Detached", Some(message.clone()));
+        }
+    }
+
+    fn note_operation_event(&mut self, event: &Event) {
+        if let Event::OrganizationOperation { operation, outcome } = event {
+            self.note_organization(*operation, outcome);
+        }
+        self.note_kill_event(event);
+        self.note_create_event(event);
+    }
+
+    fn note_terminal_event(&mut self, event: &Event) {
         if let Event::TerminalClosed {
             terminal_id,
             exit_status,
@@ -426,6 +449,9 @@ impl Desk {
             self.toasts
                 .retain(|toast| toast.terminal.as_ref() != Some(terminal_id));
         }
+    }
+
+    fn note_kill_event(&mut self, event: &Event) {
         if let Event::KillFinished { workflow, report } = event
             && let Some((name, labels)) = self.kills.remove(workflow)
         {
@@ -437,6 +463,9 @@ impl Desk {
             };
             self.toast(kind, &summary.title, Some(summary.body));
         }
+    }
+
+    fn note_create_event(&mut self, event: &Event) {
         if let Event::OrganizationOperation { operation, outcome } = event
             && let Some(name) = self.creates.remove(operation)
         {
@@ -453,9 +482,9 @@ impl Desk {
                 );
             }
         }
-        if let Event::Detached { message, .. } = event {
-            self.toast(ToastKind::Error, "Detached", Some(message.clone()));
-        }
+    }
+
+    fn note_input_event(&mut self, event: &Event) {
         if let Some(message) = crate::connection::refused_input(event) {
             self.toast(ToastKind::Error, "Input not delivered", Some(message));
         }
@@ -562,7 +591,9 @@ impl Desk {
             self.run_classified(classified, window, cx);
             return;
         }
-        self.run_catalog(id, window, cx);
+        if !self.run_organization(id, window, cx) {
+            self.run_catalog(id, window, cx);
+        }
     }
 
     fn run_classified(
@@ -2243,7 +2274,7 @@ impl Desk {
             .and_then(|pane| pane.cwd.clone())
     }
 
-    fn focused_pane(&self) -> Option<&phux_client_runtime::control::PaneDescriptor> {
+    pub(crate) fn focused_pane(&self) -> Option<&phux_client_runtime::control::PaneDescriptor> {
         let terminal = self.focused_terminal()?;
         self.link
             .as_ref()

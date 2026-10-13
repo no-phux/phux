@@ -35,6 +35,28 @@ appear as an empty inventory. A project navigator, tabs, splits, command
 palette, and optional inspector organize the terminal through one command
 surface.
 
+### Inbox organization
+
+Untargeted startup opens the owner's Inbox. The sidebar puts that Session and
+imported Sessions awaiting organization under **Inbox**, preserving their
+existing grouping. **Mark Organized** in an imported Session's menu removes
+it from intake without moving or restarting its work.
+
+- Command-click live work to toggle selection; stopped and non-Terminal
+  records remain selectable in the same sidebar. **Select Work** selects a
+  Session's members.
+- Drag a resource (or its selected group) onto a Session, or use **Move…** /
+  `Cmd-Shift-M` and choose a destination. **Clear** cancels selection.
+- After a committed edit, **Undo** / `Cmd-Option-Z` requests its receipt's
+  inverse through the shared runtime. A conflict, changed permission, expired
+  receipt, or missing original Session is a refusal, not a fabricated success.
+
+One desktop move is atomic and limited to 256 resources. It changes membership,
+never execution identity or process lifetime; closing a local View still only
+detaches it. Only the latest organization edit submitted by that window is
+offered for undo. Local tabs remain a View arrangement, not a shared-arrangement
+editor; Browser resources and cross-machine Workspaces are not implemented.
+
 ## Projects, folders, and worktrees
 
 These are desktop organization terms, not new server resource kinds:

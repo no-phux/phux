@@ -8,11 +8,15 @@ use gpui::{
     MouseButton, MouseMoveEvent, MouseUpEvent, ParentElement, SharedString, Styled, Window, canvas,
     div, px, relative,
 };
+use gpui_kit::base::Disableable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem};
 use gpui_kit::component::{IconName, Sizable};
 use phux_client_runtime::control::{PaneDescriptor, Status};
+use phux_protocol::ResourceKind;
+use phux_protocol::ids::ResourceKey;
+use phux_protocol::wire::frame::ResourceRecord;
 
 use crate::connection::AgentInfo;
 use crate::settings::theme::Palette;
@@ -30,6 +34,25 @@ const STATUS: f32 = 28.;
 const DIVIDER: f32 = 5.;
 /// Left inset that clears the traffic lights.
 const TRAFFIC_LIGHTS: f32 = 78.;
+
+#[derive(Clone)]
+struct ResourceDrag {
+    keys: Vec<ResourceKey>,
+    label: String,
+}
+
+impl gpui::Render for ResourceDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px(px(12.))
+            .py(px(8.))
+            .rounded(px(6.))
+            .bg(gpui::rgb(0x202730))
+            .text_color(gpui::white())
+            .text_sm()
+            .child(self.label.clone())
+    }
+}
 
 pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> impl IntoElement {
     let _frame = crate::diag::FRAME.timer();
@@ -427,6 +450,7 @@ fn sidebar_list(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl I
         .flex()
         .flex_col()
         .gap(px(1.))
+        .child(organization_bar(desk, colors, cx))
         .when(!agent_panes.is_empty(), |list| {
             list.child(section_label("Agents", agent_panes.len(), colors))
                 .children(agent_panes.iter().map(|pane| {
@@ -435,7 +459,6 @@ fn sidebar_list(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl I
                 }))
                 .child(div().h(px(8.)))
         })
-        .child(section_label("Sessions", session_count, colors))
         .when(session_count == 0, |list| {
             list.child(
                 div()
@@ -449,6 +472,71 @@ fn sidebar_list(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl I
         .children(sessions)
 }
 
+fn organization_bar(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> AnyElement {
+    let enabled = desk
+        .link
+        .as_ref()
+        .is_some_and(|link| link.connection.organization());
+    if !enabled {
+        return div().into_any_element();
+    }
+    let count = desk.organization.selected.len();
+    div()
+        .flex()
+        .items_center()
+        .gap(px(4.))
+        .py(px(6.))
+        .child(
+            div()
+                .flex_1()
+                .text_xs()
+                .text_color(from_hex(&colors.muted))
+                .child(if desk.organization.busy() {
+                    "Organizing…".to_owned()
+                } else if count > 0 {
+                    format!("{count} selected")
+                } else {
+                    "⌘ click to select work".to_owned()
+                }),
+        )
+        .when(count > 0, |row| {
+            row.child(
+                Button::new("move-selected-work")
+                    .label("Move…")
+                    .small()
+                    .disabled(desk.organization.busy())
+                    .on_click(cx.listener(|desk, _, window, cx| {
+                        desk.execute("move-resources", window, cx)
+                    })),
+            )
+        })
+        .when(count > 0, |row| {
+            row.child(
+                Button::new("clear-work-selection")
+                    .label("Clear")
+                    .ghost()
+                    .small()
+                    .disabled(desk.organization.busy())
+                    .on_click(cx.listener(|desk, _, _, cx| {
+                        desk.organization.selected.clear();
+                        cx.notify();
+                    })),
+            )
+        })
+        .when(desk.organization.undo.is_some(), |row| {
+            row.child(
+                Button::new("undo-organization")
+                    .label("Undo")
+                    .small()
+                    .disabled(desk.organization.busy())
+                    .on_click(cx.listener(|desk, _, window, cx| {
+                        desk.execute("undo-organization", window, cx)
+                    })),
+            )
+        })
+        .into_any_element()
+}
+
 /// Sessions, home first, grouped by project tag and remote host when either exists.
 fn session_groups(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> Vec<AnyElement> {
     let Some(link) = desk.link.as_ref() else {
@@ -458,6 +546,23 @@ fn session_groups(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> Vec<
         return Vec::new();
     };
     let mut sessions = topology.sessions.clone();
+    let intake_keys: Vec<_> = desk
+        .client()
+        .map(|client| {
+            client
+                .inbox()
+                .sessions
+                .iter()
+                .map(|session| session.key)
+                .collect()
+        })
+        .unwrap_or_default();
+    let intake: Vec<_> = sessions
+        .iter()
+        .filter(|session| session.key.is_some_and(|key| intake_keys.contains(&key)))
+        .cloned()
+        .collect();
+    sessions.retain(|session| !session.key.is_some_and(|key| intake_keys.contains(&key)));
     let home = desk.session.clone();
     sessions.sort_by(|left, right| {
         (left.name != home)
@@ -489,6 +594,15 @@ fn session_groups(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> Vec<
     let grouped =
         !link.connection.projects.is_empty() || lines.iter().any(|line| line.host.is_some());
     let mut rows = Vec::new();
+    if !intake.is_empty() {
+        rows.push(section_label("Inbox", intake.len(), colors).into_any_element());
+        for session in intake {
+            rows.push(session_block(desk, session.id, &session.name, colors, cx));
+        }
+    }
+    if !sessions.is_empty() {
+        rows.push(section_label("Sessions", sessions.len(), colors).into_any_element());
+    }
     for group in place::group_by_project(&lines) {
         if grouped {
             let title = match (&group.project, &group.host) {
@@ -526,6 +640,19 @@ fn session_block(
         .cloned()
         .collect();
     let collapsed = desk.collapsed.contains(name);
+    let intake = link
+        .connection
+        .topology
+        .as_ref()
+        .and_then(|topology| topology.sessions.iter().find(|session| session.id == id))
+        .filter(|session| session.awaiting_organization)
+        .and_then(|session| session.key);
+    let destination = link
+        .connection
+        .topology
+        .as_ref()
+        .and_then(|topology| topology.sessions.iter().find(|session| session.id == id))
+        .and_then(|session| session.key);
     let home = name == desk.session;
     let handle = cx.weak_entity();
     let menu = move |name: String| {
@@ -533,33 +660,66 @@ fn session_block(
         move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
             let rename = handle.clone();
             let kill = handle.clone();
+            let select = handle.clone();
             let (rename_name, kill_name) = (name.clone(), name.clone());
-            menu.item(
-                PopupMenuItem::new("Rename Session…").on_click(move |_, window, cx| {
-                    let current = rename_name.clone();
-                    let _ = rename.update(cx, |desk, cx| {
-                        desk.open_modal(
-                            Modal::Session {
-                                create: false,
-                                current,
-                            },
-                            window,
-                            cx,
-                        )
-                    });
-                }),
-            )
-            .item(
-                PopupMenuItem::new("Kill Session…").on_click(move |_, window, cx| {
+            let menu = menu
+                .item(PopupMenuItem::new("Select Work").on_click(move |_, _, cx| {
+                    let _ = select.update(cx, |desk, cx| desk.select_session_work(id, cx));
+                }))
+                .item(
+                    PopupMenuItem::new("Rename Session…").on_click(move |_, window, cx| {
+                        let current = rename_name.clone();
+                        let _ = rename.update(cx, |desk, cx| {
+                            desk.open_modal(
+                                Modal::Session {
+                                    create: false,
+                                    current,
+                                },
+                                window,
+                                cx,
+                            )
+                        });
+                    }),
+                );
+            if let Some(key) = intake {
+                let organized = handle.clone();
+                let intake_name = name.clone();
+                menu.item(
+                    PopupMenuItem::new("Mark Organized").on_click(move |_, _, cx| {
+                        let name = intake_name.clone();
+                        let _ = organized.update(cx, |desk, cx| desk.resolve_intake(key, name, cx));
+                    }),
+                )
+            } else {
+                menu
+            }
+            .item(PopupMenuItem::new("Kill Session…").on_click(
+                move |_, window, cx| {
                     let name = kill_name.clone();
                     let _ = kill.update(cx, |desk, cx| {
                         desk.open_modal(Modal::KillSession { name, session: id }, window, cx)
                     });
-                }),
-            )
+                },
+            ))
         }
     };
     let toggle_name = name.to_owned();
+    let extra: Vec<ResourceRecord> = destination
+        .and_then(|key| {
+            desk.client().map(|client| {
+                client
+                    .organization()
+                    .resources()
+                    .iter()
+                    .filter(|resource| {
+                        resource.session == key
+                            && !panes.iter().any(|pane| pane.key == Some(resource.key))
+                    })
+                    .cloned()
+                    .collect()
+            })
+        })
+        .unwrap_or_default();
     let header = div()
         .id(SharedString::from(format!("session-{id}")))
         .h(px(28.))
@@ -589,11 +749,14 @@ fn session_block(
         .when(home, |row| {
             row.child(pill("home", &colors.accent_wash, &colors.theme.accent))
         })
+        .when(intake.is_some(), |row| {
+            row.child(pill("Imported", &colors.accent_wash, &colors.theme.accent))
+        })
         .child(
             div()
                 .text_xs()
                 .text_color(from_hex(&colors.faint))
-                .child(panes.len().to_string()),
+                .child((panes.len() + extra.len()).to_string()),
         )
         .child(
             Button::new(SharedString::from(format!("session-new-{id}")))
@@ -617,6 +780,20 @@ fn session_block(
         .on_click(
             cx.listener(move |desk, _, _, cx| desk.toggle_session_collapsed(&toggle_name, cx)),
         )
+        .when_some(destination, |row, key| {
+            let destination_name = name.to_owned();
+            let wash = from_hex(&colors.accent_wash);
+            row.drag_over::<ResourceDrag>(move |style, _, _, _| style.bg(wash))
+                .on_drop(cx.listener(move |desk, drag: &ResourceDrag, window, cx| {
+                    desk.move_resources_to(
+                        drag.keys.clone(),
+                        key,
+                        destination_name.clone(),
+                        window,
+                        cx,
+                    );
+                }))
+        })
         .context_menu(menu(name.to_owned()));
     div()
         .flex()
@@ -624,12 +801,65 @@ fn session_block(
         .gap(px(1.))
         .child(header)
         .when(!collapsed, |block| {
-            block.children(
-                panes
-                    .iter()
-                    .map(|pane| pane_row(desk, pane, colors, cx).into_any_element()),
-            )
+            block
+                .children(
+                    panes
+                        .iter()
+                        .map(|pane| pane_row(desk, pane, colors, cx).into_any_element()),
+                )
+                .children(
+                    extra
+                        .iter()
+                        .map(|resource| record_row(desk, resource, colors, cx)),
+                )
         })
+        .into_any_element()
+}
+
+fn record_row(
+    desk: &Desk,
+    resource: &ResourceRecord,
+    colors: &Palette,
+    cx: &mut Context<Desk>,
+) -> AnyElement {
+    let key = resource.key;
+    let selected = desk.organization.selected.contains(&key);
+    let kind = match resource.kind {
+        ResourceKind::Terminal => "Terminal",
+        ResourceKind::AgentSession => "Agent conversation",
+        _ => "Resource",
+    };
+    let label = resource.name.clone().unwrap_or_else(|| kind.to_owned());
+    let state = resource
+        .activation
+        .as_ref()
+        .map(|activation| format!("{:?}", activation.state))
+        .unwrap_or_else(|| "Not running".to_owned());
+    let drag = ResourceDrag {
+        keys: desk.organization.drag_keys(key),
+        label: format!("Move {label} · drop on a session"),
+    };
+    div()
+        .id(SharedString::from(format!("resource-{key}")))
+        .px(px(10.))
+        .py(px(6.))
+        .rounded(px(6.))
+        .cursor_pointer()
+        .bg(if selected {
+            from_hex(&colors.active)
+        } else {
+            gpui::transparent_black()
+        })
+        .hover(|style| style.bg(from_hex(&colors.hover)))
+        .child(div().text_sm().child(label))
+        .child(
+            div()
+                .text_xs()
+                .text_color(from_hex(&colors.muted))
+                .child(format!("{kind} · {state}")),
+        )
+        .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
+        .on_click(cx.listener(move |desk, _, _, cx| desk.toggle_resource_selection(key, cx)))
         .into_any_element()
 }
 
@@ -640,6 +870,13 @@ fn pane_row(
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
     let terminal = pane.terminal_id.clone();
+    let key = pane.key;
+    let selected = key.is_some_and(|key| desk.organization.selected.contains(&key));
+    let drag = key.map(|key| {
+        let keys = desk.organization.drag_keys(key);
+        let label = format!("Move {} · drop on a session", keys.len());
+        ResourceDrag { keys, label }
+    });
     let focused = desk.focused_terminal().as_ref() == Some(&terminal);
     let visible = desk.active_tab().is_some_and(|tab| {
         layout::placements(&tab.root)
@@ -682,7 +919,7 @@ fn pane_row(
         .gap(px(9.))
         .rounded(px(6.))
         .cursor_pointer()
-        .bg(if focused {
+        .bg(if focused || selected {
             from_hex(&colors.active)
         } else {
             gpui::transparent_black()
@@ -733,8 +970,17 @@ fn pane_row(
                 &colors.muted,
             ))
         })
-        .on_click(cx.listener(move |desk, _, window, cx| {
-            desk.reveal_terminal(&terminal);
+        .when_some(drag, |row, drag| {
+            row.on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
+        })
+        .on_click(cx.listener(move |desk, event: &ClickEvent, window, cx| {
+            if event.modifiers().platform
+                && let Some(key) = key
+            {
+                desk.toggle_resource_selection(key, cx);
+            } else {
+                desk.reveal_terminal(&terminal);
+            }
             desk.after_command(window, cx);
         }))
 }
