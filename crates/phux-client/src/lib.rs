@@ -71,6 +71,8 @@ pub mod tags;
 pub mod workspace_place;
 // `UPGRADE` (`phux upgrade`, ADR-0032).
 pub mod upgrade;
+// Headless uploads through the managed runtime, shared by native consumers.
+pub mod upload;
 // The scripted server every client-side test speaks to.
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;
