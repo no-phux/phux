@@ -91,6 +91,38 @@ their own one-byte tag inside it. Allocated tags:
 | `0x1b` | `KILL_RESOURCE_IF`          | [L1.md §5.2.1](./L1.md) | shipped |
 | `0x1c` | `OPEN_LISTENER`             | [L1.md §5.6](./L1.md) | shipped |
 | `0x1d` | `CLOSE_TAB_RESOURCES`       | [L1.md §5.2.2](./L1.md) | shipped |
+| `0x1e` | `GET_ORGANIZATION`          | [L1.md §5.7](./L1.md) | partial |
+| `0x1f` | `SESSION_CREATE`            | [L1.md §5.7](./L1.md) | partial |
+| `0x20` | `SESSION_RENAME`            | [L1.md §5.7](./L1.md) | partial |
+| `0x21` | `SESSION_SET_LIFETIME`      | [L1.md §5.7](./L1.md) | partial |
+| `0x22` | `SESSION_DELETE`            | [L1.md §5.7](./L1.md) | partial |
+| `0x23` | `RESOURCE_CREATE`           | [L1.md §5.7](./L1.md) | partial |
+| `0x24` | `RESOURCE_MOVE`             | [L1.md §5.7](./L1.md) | partial |
+| `0x25` | `RESOURCE_MOVE_MANY`        | [L1.md §5.7](./L1.md) | partial |
+| `0x26` | `RESOURCE_RENAME`           | [L1.md §5.7](./L1.md) | partial |
+| `0x27` | `RESOURCE_TERMINATE`        | [L1.md §5.7](./L1.md) | partial |
+| `0x28` | `RESOURCE_REMOVE`           | [L1.md §5.7](./L1.md) | partial |
+| `0x29` | `RESOURCE_RELAUNCH`         | [L1.md §5.7](./L1.md) | partial |
+| `0x2a` | `RESOURCE_ABANDON`          | [L1.md §5.7](./L1.md) | partial |
+| `0x2b` | `INBOX_RESOLVE`             | [L1.md §5.7](./L1.md) | partial |
+| `0x2c` | `ORGANIZATION_UNDO`         | [L1.md §5.7](./L1.md) | partial |
+| `0x2d` | `ARRANGEMENT_GET`           | [L1.md §5.7](./L1.md) | partial |
+| `0x2e` | `ARRANGEMENT_REPLACE`       | [L1.md §5.7](./L1.md) | partial |
+| `0x2f`..=`0x34` | workspace commands (create, rename, delete, link, unlink, transfer) | [L2.md](./L2.md) | reserved |
+
+The organization commands are contiguous from `0x1e`, and `0x2f..=0x34` are
+reserved for the six workspace commands of the workspace stage
+([ADR-0161](../adr/0161-organization-is-typed-commands-behind-a-feature-bit.md)).
+A decoder refuses a reserved tag as an unknown command until it is
+allocated. `0x35` is the next open tag.
+
+`AgentEvent` tags ([L1.md §7.1](./L1.md)) allocate sequentially:
+`0x0f..=0x1a` are the organization events of [L1.md §5.7.4](./L1.md).
+`CommandResult` allocates `0x03 REFUSED` and `0x04 ACCEPTED`, sent only in
+reply to an organization command; `CommandValue` allocates
+`0x06 ORGANIZATION_PAGE`, `0x07 ARRANGEMENT`, and `0x08 COMMITTED`.
+`Refusal` tags allocate sequentially from `0x00`; `0x00..=0x0a` are taken
+([L1.md §5.7.3](./L1.md)), and a decoder keeps an unknown one as opaque.
 
 `KILL_RESOURCES` at tag `0x09` reuses the slot freed by the removed
 `CREATE_SESSION` command. Per
