@@ -8,17 +8,17 @@
 //! [`OrgOutcome::NotSent`], and `close_terminals` keeps its legacy
 //! `CLOSE_TAB_RESOURCES` path.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use phux_client_core::layout::ArrangementDoc as HandleDoc;
 use phux_client_core::layout::wire::{WireError, to_protocol};
 use phux_client_core::org_ops::{
-    KillWorkflow, OrgJournal, OrgOutcome, OrgReport, SubmitError, live_target,
+    KillWorkflow, ORG_JOURNAL_MAX_OPS, OrgJournal, OrgOutcome, OrgReport, SubmitError, live_target,
 };
 use phux_protocol::ResourceId;
 use phux_protocol::caps::ServerFeatureExt;
-use phux_protocol::ids::{ArrangementKey, OperationId, ResourceKey, SessionKey};
+use phux_protocol::ids::{ArrangementKey, AuthorityId, OperationId, ResourceKey, SessionKey};
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, Committed, FrameKind, MAX_ORG_BATCH,
     MoveItem, OrgFilter, SessionLifetime, TerminateMode,
@@ -50,6 +50,24 @@ pub(super) struct CloseBatch {
     errors: Vec<String>,
 }
 
+/// Only the current chunk enters the retry journal. Later payloads are built
+/// after a post-receipt inventory read, never by changing a retry's payload.
+#[derive(Debug)]
+struct BulkMove {
+    authority: AuthorityId,
+    to: SessionKey,
+    remaining: VecDeque<(OperationId, Vec<ResourceKey>)>,
+    phase: BulkPhase,
+}
+
+#[derive(Debug)]
+enum BulkPhase {
+    Submitted(OperationId),
+    NeedsSeed,
+    Seeding,
+    Ready,
+}
+
 /// The lane's per-plane state.
 #[derive(Debug, Default)]
 pub(super) struct OrgLane {
@@ -59,6 +77,7 @@ pub(super) struct OrgLane {
     pub(super) ready: bool,
     pub(super) kills: Vec<KillRun>,
     pub(super) closes: Vec<CloseBatch>,
+    moves: Vec<BulkMove>,
     pub(super) next_run: u64,
 }
 
@@ -80,9 +99,14 @@ impl ControlPlane {
             .is_some_and(|server| server.has_ext(ServerFeatureExt::Organization))
     }
 
-    /// Unresolved organization operations, in submission order.
+    /// Unresolved organization operations, including deferred bulk chunks.
     pub fn pending_organization_operations(&self) -> impl Iterator<Item = OperationId> + '_ {
-        self.org.journal.pending()
+        self.org.journal.pending().chain(
+            self.org
+                .moves
+                .iter()
+                .flat_map(|run| run.remaining.iter().map(|(id, _)| *id)),
+        )
     }
 
     // ----- seeding and events --------------------------------------------
@@ -142,6 +166,9 @@ impl ControlPlane {
         let now_ms = self.now_ms();
         let reports = self.org.journal.begin_connection(supported, now_ms);
         self.handle_org_reports(reports);
+        if !supported {
+            self.cancel_bulk_moves("the server does not advertise ORGANIZATION");
+        }
         if supported && self.options.automatic_lifecycle {
             self.queue_org_seed(OrgFilter::All);
         }
@@ -159,6 +186,7 @@ impl ControlPlane {
     pub(super) fn org_strand(&mut self, why: &str) {
         let reports = self.org.journal.drain(why);
         self.handle_org_reports(reports);
+        self.cancel_bulk_moves(why);
         for mut run in std::mem::take(&mut self.org.kills) {
             run.workflow.time_out();
             let id = run.id;
@@ -190,6 +218,7 @@ impl ControlPlane {
             }
             (Pending::OrgPage(_), other) => {
                 self.organization.abandon_seed();
+                self.cancel_waiting_bulk_moves("the post-commit organization read failed");
                 self.push_event(Event::OrganizationUnavailable {
                     message: format!("GET_ORGANIZATION answered {other:?}"),
                 });
@@ -214,18 +243,7 @@ impl ControlPlane {
                 };
                 self.queue_org_read(command, Pending::OrgPage(filter));
             }
-            ReplicaAction::Seeded => {
-                if !self.org.ready
-                    && let Some(authority) = self.organization.authority()
-                {
-                    self.org.ready = true;
-                    let reports = self.org.journal.set_authority(authority);
-                    self.handle_org_reports(reports);
-                    self.flush_org_journal();
-                }
-                self.refresh_kill_runs();
-                self.organization_changed();
-            }
+            ReplicaAction::Seeded => self.org_seeded(),
             ReplicaAction::Reseed => {
                 self.queue_org_seed(OrgFilter::All);
             }
@@ -242,6 +260,21 @@ impl ControlPlane {
                 );
             }
         }
+        self.advance_bulk_moves();
+    }
+
+    fn org_seeded(&mut self) {
+        self.bulk_moves_seeded();
+        if !self.org.ready
+            && let Some(authority) = self.organization.authority()
+        {
+            self.org.ready = true;
+            let reports = self.org.journal.set_authority(authority);
+            self.handle_org_reports(reports);
+            self.flush_org_journal();
+        }
+        self.refresh_kill_runs();
+        self.organization_changed();
     }
 
     /// Route one journal event to the replica and the kill workflows.
@@ -428,12 +461,152 @@ impl ControlPlane {
                 }
                 continue;
             }
+            let cancelled = self.resolve_bulk_move(&report);
             self.push_event(Event::OrganizationOperation {
                 operation: report.operation,
                 outcome: report.outcome,
             });
+            if let Some(run) = cancelled {
+                self.cancel_bulk_tail(run, "a prior bulk move chunk did not commit");
+            }
         }
         self.advance_kill_runs();
+        self.advance_bulk_moves();
+    }
+
+    fn resolve_bulk_move(&mut self, report: &OrgReport) -> Option<BulkMove> {
+        let index = self.org.moves.iter().position(
+            |run| matches!(run.phase, BulkPhase::Submitted(id) if id == report.operation),
+        )?;
+        if matches!(&report.outcome, OrgOutcome::Committed(receipt) if receipt.operation == report.operation)
+            && !self.org.moves[index].remaining.is_empty()
+        {
+            self.org.moves[index].phase = BulkPhase::NeedsSeed;
+            None
+        } else {
+            Some(self.org.moves.remove(index))
+        }
+    }
+
+    fn bulk_moves_seeded(&mut self) {
+        for run in &mut self.org.moves {
+            if matches!(run.phase, BulkPhase::Seeding) {
+                run.phase = BulkPhase::Ready;
+            }
+        }
+    }
+
+    fn cancel_bulk_tail(&mut self, run: BulkMove, why: &str) {
+        for (operation, _) in run.remaining {
+            self.push_event(Event::OrganizationOperation {
+                operation,
+                outcome: OrgOutcome::NotSent {
+                    reason: why.to_owned(),
+                },
+            });
+        }
+    }
+
+    fn cancel_bulk_moves(&mut self, why: &str) {
+        for run in std::mem::take(&mut self.org.moves) {
+            self.cancel_bulk_tail(run, why);
+        }
+    }
+
+    fn cancel_waiting_bulk_moves(&mut self, why: &str) {
+        let (submitted, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.org.moves)
+            .into_iter()
+            .partition(|run| matches!(run.phase, BulkPhase::Submitted(_)));
+        self.org.moves = submitted;
+        for run in waiting {
+            self.cancel_bulk_tail(run, why);
+        }
+    }
+
+    fn advance_bulk_moves(&mut self) {
+        if !self.handshake_ready || !self.org.ready || !self.organization.is_live() {
+            return;
+        }
+        let mut running = Vec::new();
+        for mut run in std::mem::take(&mut self.org.moves) {
+            if self.organization.authority() != Some(run.authority) {
+                self.cancel_bulk_tail(run, "the server now serves a different authority");
+                continue;
+            }
+            match run.phase {
+                BulkPhase::NeedsSeed => {
+                    run.phase = BulkPhase::Seeding;
+                    self.queue_org_seed(OrgFilter::All);
+                }
+                BulkPhase::Ready => {
+                    if !self.organization.is_live() {
+                        running.push(run);
+                        continue;
+                    }
+                    if !self.submit_bulk_chunk(&mut run) {
+                        continue;
+                    }
+                }
+                BulkPhase::Submitted(_) | BulkPhase::Seeding => {}
+            }
+            running.push(run);
+        }
+        self.org.moves = running;
+        self.flush_org_journal();
+    }
+
+    fn submit_bulk_chunk(&mut self, run: &mut BulkMove) -> bool {
+        let Some((operation, resources)) = run.remaining.front() else {
+            return false;
+        };
+        let operation = *operation;
+        let result = self
+            .bulk_move_command(operation, resources, run.to)
+            .and_then(|command| self.org.journal.submit(command, self.now_ms()));
+        if let Err(error) = result {
+            for (operation, _) in run.remaining.drain(..) {
+                self.push_event(Event::OrganizationOperation {
+                    operation,
+                    outcome: OrgOutcome::NotSent {
+                        reason: error.to_string(),
+                    },
+                });
+            }
+            return false;
+        }
+        run.remaining.pop_front();
+        run.phase = BulkPhase::Submitted(operation);
+        true
+    }
+
+    fn bulk_move_command(
+        &self,
+        operation: OperationId,
+        resources: &[ResourceKey],
+        to: SessionKey,
+    ) -> Result<Command, SubmitError> {
+        let to_expected = self.session_record(&to)?.revision;
+        let items = resources
+            .iter()
+            .map(|resource| {
+                let from = self
+                    .organization
+                    .resource(resource)
+                    .ok_or(SubmitError::NotAnOperation)?
+                    .session;
+                Ok(MoveItem {
+                    resource: *resource,
+                    from,
+                    from_expected: self.session_record(&from)?.revision,
+                })
+            })
+            .collect::<Result<Vec<_>, SubmitError>>()?;
+        Ok(Command::ResourceMoveMany {
+            operation,
+            items,
+            to,
+            to_expected,
+        })
     }
 
     // ----- kill workflows --------------------------------------------------
@@ -618,46 +791,67 @@ impl ControlPlane {
 
     /// Move many resources into `to`, chunked at the server's batch bound:
     /// one atomic `RESOURCE_MOVE_MANY` per chunk, each with its own
-    /// operation and outcome.
+    /// operation and outcome. Chunks run sequentially, refreshing the replica
+    /// after each receipt; the whole selection is not atomic. A failed or
+    /// uncertain chunk cancels every remaining chunk as `NotSent`.
     ///
     /// # Errors
     ///
     /// As [`Self::rename_session`]; nothing is submitted when any resource
-    /// or session is unknown.
+    /// or session is unknown, a resource is duplicated, or capacity is full.
     pub fn move_resources(
         &mut self,
         resources: &[ResourceKey],
         to: SessionKey,
     ) -> Result<Vec<OperationId>, SubmitError> {
-        let to_expected = self.session_record(&to)?.revision;
-        let mut chunks = Vec::new();
-        for chunk in resources.chunks(MAX_ORG_BATCH) {
-            let mut items = Vec::with_capacity(chunk.len());
-            for resource in chunk {
-                let from = self
-                    .organization
-                    .resource(resource)
-                    .ok_or(SubmitError::NotAnOperation)?
-                    .session;
-                items.push(MoveItem {
-                    resource: *resource,
-                    from,
-                    from_expected: self.session_record(&from)?.revision,
-                });
-            }
-            chunks.push(items);
+        let mut chunks = self.plan_bulk_move(resources, to)?;
+        let operations = chunks.iter().map(|(id, _)| *id).collect();
+        let Some((operation, first)) = chunks.pop_front() else {
+            return Ok(operations);
+        };
+        let command = self.bulk_move_command(operation, &first, to)?;
+        let authority = self
+            .organization
+            .authority()
+            .ok_or(SubmitError::NotAnOperation)?;
+        self.org.journal.submit(command, self.now_ms())?;
+        if !chunks.is_empty() {
+            self.org.moves.push(BulkMove {
+                authority,
+                to,
+                remaining: chunks,
+                phase: BulkPhase::Submitted(operation),
+            });
         }
-        chunks
-            .into_iter()
-            .map(|items| {
-                self.submit_organization(Command::ResourceMoveMany {
-                    operation: mint_operation(),
-                    items,
-                    to,
-                    to_expected,
-                })
+        if self.handshake_ready && !self.organization_supported() {
+            let reports = self.org.journal.begin_connection(false, self.now_ms());
+            self.handle_org_reports(reports);
+        }
+        self.flush_org_journal();
+        Ok(operations)
+    }
+
+    fn plan_bulk_move(
+        &self,
+        resources: &[ResourceKey],
+        to: SessionKey,
+    ) -> Result<VecDeque<(OperationId, Vec<ResourceKey>)>, SubmitError> {
+        self.session_record(&to)?;
+        if resources.iter().collect::<HashSet<_>>().len() != resources.len() {
+            return Err(SubmitError::NotAnOperation);
+        }
+        let chunks = resources
+            .chunks(MAX_ORG_BATCH)
+            .map(|chunk| {
+                let operation = mint_operation();
+                self.bulk_move_command(operation, chunk, to)?;
+                Ok((operation, chunk.to_vec()))
             })
-            .collect()
+            .collect::<Result<VecDeque<_>, SubmitError>>()?;
+        if self.pending_organization_operations().count() + chunks.len() > ORG_JOURNAL_MAX_OPS {
+            return Err(SubmitError::Full);
+        }
+        Ok(chunks)
     }
 
     /// Undo a committed organization edit by its receipt.
