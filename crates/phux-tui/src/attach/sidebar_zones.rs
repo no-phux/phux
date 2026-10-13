@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use phux_protocol::ids::{ResourceId, SessionId};
 use phux_protocol::wire::info::{HostInventory, ResourceInfo, SessionInfo, WindowInfo};
 
-use crate::layout::Workspace;
+use crate::layout::ArrangementDoc;
 use crate::render::chrome::sidebar::{AgentEntry, SessionRosterEntry, attention_rank};
 use phux_client::agent_meta::{AgentAttention, AgentMetaState, AgentRecord};
 
@@ -39,7 +39,7 @@ pub(super) struct PeerInputs<'a> {
     /// Resources from the same snapshot graph, joined via `ResourceInfo::window_id`.
     pub resources: &'a [ResourceInfo],
     /// Each peer session's persisted pane tree.
-    pub foreign_layouts: &'a HashMap<SessionId, Workspace>,
+    pub foreign_layouts: &'a HashMap<SessionId, ArrangementDoc>,
     /// Each peer pane's `phux.agent/v1` record.
     pub foreign_agents: &'a HashMap<ResourceId, AgentRecord>,
     /// Peer panes that raised an ADR-0035 `Asked`.
@@ -79,17 +79,20 @@ struct PeerLeaf {
 
 /// A persisted TUI workspace with at least one window. An empty entry is
 /// treated as missing so the server graph can still name the session's panes.
-fn persisted_layout<'a>(peers: &'a PeerInputs<'_>, session: SessionId) -> Option<&'a Workspace> {
+fn persisted_layout<'a>(
+    peers: &'a PeerInputs<'_>,
+    session: SessionId,
+) -> Option<&'a ArrangementDoc> {
     peers
         .foreign_layouts
         .get(&session)
-        .filter(|ws| !ws.windows.is_empty())
+        .filter(|ws| !ws.groups.is_empty())
 }
 
 /// Every pane of `workspace` as `(window index, dfs ordinal, id)`.
-fn leaves_with_position(workspace: &Workspace) -> Vec<(usize, usize, ResourceId)> {
+fn leaves_with_position(workspace: &ArrangementDoc) -> Vec<(usize, usize, ResourceId)> {
     let mut out = Vec::new();
-    for (w, window) in workspace.windows.iter().enumerate() {
+    for (w, window) in workspace.groups.iter().enumerate() {
         if let Some(tree) = window.state.tree.as_ref() {
             for (p, id) in crate::layout::leaves(tree).into_iter().enumerate() {
                 out.push((w, p, id));
@@ -446,7 +449,7 @@ fn satellite_roster(hosts: &[HostInventory]) -> Vec<SessionRosterEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::Workspace;
+    use crate::layout::ArrangementDoc;
     use phux_protocol::ids::WindowId;
 
     fn sinfo(id: u32, name: &str) -> SessionInfo {
@@ -497,7 +500,7 @@ mod tests {
         sessions: Vec<SessionInfo>,
         windows: Vec<WindowInfo>,
         resources: Vec<ResourceInfo>,
-        layouts: HashMap<SessionId, Workspace>,
+        layouts: HashMap<SessionId, ArrangementDoc>,
         agents: HashMap<ResourceId, AgentRecord>,
         attention: HashSet<ResourceId>,
         project_tags: HashMap<SessionId, String>,
@@ -526,8 +529,8 @@ mod tests {
 
     /// One peer session, `peer`, holding two panes.
     fn fixture() -> Fixture {
-        let mut ws = Workspace::single(ResourceId::local(10));
-        ws.add_window("two".to_owned(), ResourceId::local(11));
+        let mut ws = ArrangementDoc::single(ResourceId::local(10));
+        ws.add_group("two".to_owned(), ResourceId::local(11));
         let mut layouts = HashMap::new();
         layouts.insert(SessionId::new(2), ws);
         Fixture {
@@ -766,7 +769,7 @@ mod tests {
         let mut f = fixture();
         let sat = ResourceId::satellite("prod-3", 1);
         f.layouts
-            .insert(SessionId::new(2), Workspace::single(sat.clone()));
+            .insert(SessionId::new(2), ArrangementDoc::single(sat.clone()));
         // Even a record cached from somewhere must not promote it.
         f.agents
             .insert(sat, record("claude", AgentMetaState::Blocked));
@@ -864,8 +867,8 @@ mod tests {
             ]
         );
 
-        let mut ws = Workspace::single(ResourceId::local(10));
-        ws.add_window("two".to_owned(), ResourceId::local(11));
+        let mut ws = ArrangementDoc::single(ResourceId::local(10));
+        ws.add_group("two".to_owned(), ResourceId::local(11));
         f.layouts.insert(SessionId::new(2), ws);
         let after = needs_you_queue(Vec::new(), &f.inputs());
         assert_eq!(after.len(), 2, "{after:?}");

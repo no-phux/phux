@@ -98,7 +98,7 @@ pub(super) fn begin_window_drag(ctx: &mut DispatchCtx<'_>, from: usize, strip: W
     if !ctx.layout_read_complete {
         return;
     }
-    let Some(window) = ctx.workspace.windows.get(from).map(|w| w.id) else {
+    let Some(window) = ctx.workspace.groups.get(from).map(|w| w.id) else {
         return;
     };
     *ctx.drag = Some(DragGrab::Window(WindowGrab {
@@ -195,13 +195,13 @@ fn drop_window(ctx: &mut DispatchCtx<'_>, grab: WindowGrab, mouse: &MouseEvent) 
     // Re-resolve the grabbed window: it may have moved or closed mid-drag.
     let Some(from) = ctx
         .workspace
-        .windows
+        .groups
         .iter()
         .position(|w| w.id == grab.window)
     else {
         return false;
     };
-    let moved = ctx.workspace.move_window(from, to);
+    let moved = ctx.workspace.move_group(from, to);
     if moved {
         tracing::debug!(from, to, "window drag: reordered");
     }

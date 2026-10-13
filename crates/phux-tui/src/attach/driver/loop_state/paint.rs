@@ -121,7 +121,7 @@ impl super::SessionLoop {
         let Some(ls) = self
             .mirror
             .workspace
-            .render_window(self.mirror.zoomed.as_ref())
+            .render_group(self.mirror.zoomed.as_ref())
         else {
             return self.paint_empty_state(out, sidebar, level);
         };
@@ -157,7 +157,7 @@ impl super::SessionLoop {
         sidebar: Option<SidebarReservation>,
         level: RepaintLevel,
     ) -> Option<StatusBarPaint> {
-        let showing = self.mirror.keep_empty_session && self.mirror.workspace.windows.is_empty();
+        let showing = self.mirror.keep_empty_session && self.mirror.workspace.groups.is_empty();
         if !showing || matches!(level, RepaintLevel::None) {
             return None;
         }
@@ -204,7 +204,7 @@ impl super::SessionLoop {
         let base = self
             .mirror
             .workspace
-            .render_window(self.mirror.zoomed.as_ref());
+            .render_group(self.mirror.zoomed.as_ref());
         let mut chrome = ChromeCtx::new(
             &mut self.settings,
             &mut self.sidebar_painter,
@@ -293,7 +293,7 @@ impl super::SessionLoop {
         let has_window = self
             .mirror
             .workspace
-            .render_window(self.mirror.zoomed.as_ref())
+            .render_group(self.mirror.zoomed.as_ref())
             .is_some();
         // A failed reload always leaves its toast on top.
         let painted = if self.overlays.is_active() {
@@ -408,7 +408,7 @@ impl super::SessionLoop {
         let Some(layout) = self
             .mirror
             .workspace
-            .render_window(self.mirror.zoomed.as_ref())
+            .render_group(self.mirror.zoomed.as_ref())
         else {
             return;
         };
@@ -622,7 +622,7 @@ impl super::SessionLoop {
             .and_then(|fid| {
                 self.mirror
                     .workspace
-                    .render_window(self.mirror.zoomed.as_ref())
+                    .render_group(self.mirror.zoomed.as_ref())
                     .and_then(|ls| {
                         crate::attach::paint::tiled_rect(
                             ls.as_ref(),

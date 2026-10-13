@@ -231,7 +231,7 @@ impl super::SessionLoop {
         if !self.mirror.workspace.select(idx) {
             tracing::warn!(
                 index = idx,
-                windows = self.mirror.workspace.windows.len(),
+                windows = self.mirror.workspace.groups.len(),
                 "cross-session window pick out of range; keeping restored focus",
             );
             return;
@@ -239,7 +239,7 @@ impl super::SessionLoop {
         let next_focus = self
             .mirror
             .workspace
-            .active_window()
+            .active_group()
             .and_then(|ls| ls.focus.clone());
         self.focus_history
             .transition(&mut self.mirror.focused_resource, next_focus);
@@ -273,7 +273,7 @@ impl super::SessionLoop {
     }
 
     pub(super) fn focus_resource_in_workspace(&mut self, id: &ResourceId) -> bool {
-        let Some(idx) = self.mirror.workspace.windows.iter().position(|window| {
+        let Some(idx) = self.mirror.workspace.groups.iter().position(|window| {
             window
                 .state
                 .tree
@@ -283,7 +283,7 @@ impl super::SessionLoop {
             return false;
         };
         let _ = self.mirror.workspace.select(idx);
-        if let Some(ls) = self.mirror.workspace.active_window_mut() {
+        if let Some(ls) = self.mirror.workspace.active_group_mut() {
             ls.focus = Some(id.clone());
         }
         self.focus_history
@@ -351,8 +351,8 @@ impl super::SessionLoop {
         let layout = crate::layout::LayoutNode::Leaf(id.clone());
         let name = window.name.clone();
         let inventory_leaves = crate::layout::leaves(&layout);
-        if self.mirror.workspace.windows.len() == 1 {
-            let bootstrap = self.mirror.workspace.windows[0]
+        if self.mirror.workspace.groups.len() == 1 {
+            let bootstrap = self.mirror.workspace.groups[0]
                 .state
                 .tree
                 .as_ref()
@@ -360,7 +360,7 @@ impl super::SessionLoop {
                 .unwrap_or_default();
             if bootstrap.len() == 1 && inventory_leaves.iter().any(|leaf| bootstrap.contains(leaf))
             {
-                let w = &mut self.mirror.workspace.windows[0];
+                let w = &mut self.mirror.workspace.groups[0];
                 w.name = name;
                 w.state.tree = Some(layout);
                 w.state.focus = Some(id.clone());
@@ -368,8 +368,8 @@ impl super::SessionLoop {
                 return true;
             }
         }
-        self.mirror.workspace.add_window(name, id.clone());
-        if let Some(ls) = self.mirror.workspace.active_window_mut() {
+        self.mirror.workspace.add_group(name, id.clone());
+        if let Some(ls) = self.mirror.workspace.active_group_mut() {
             ls.tree = Some(layout);
             ls.focus = Some(id.clone());
         }
@@ -382,7 +382,7 @@ impl super::SessionLoop {
         let picked = self
             .mirror
             .workspace
-            .active_window()
+            .active_group()
             .and_then(|ls| ls.tree.as_ref())
             .map(crate::layout::leaves)
             .and_then(|leaves| leaves.get(ord).cloned());
@@ -394,7 +394,7 @@ impl super::SessionLoop {
             );
             return;
         };
-        if let Some(ls) = self.mirror.workspace.active_window_mut() {
+        if let Some(ls) = self.mirror.workspace.active_group_mut() {
             ls.focus = Some(leaf.clone());
         }
         self.focus_history

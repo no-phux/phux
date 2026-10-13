@@ -12,7 +12,7 @@ use crate::attach::copy::extract_selection_text;
 use crate::attach::directory_picker::{DirectorySupport, ListingHost, PendingDirectory};
 use crate::attach::pane_state::{PaneSlot, published_terminal};
 use crate::attach::plugin_panes::HostedPlacement;
-use crate::layout::{LayoutState, SplitDir, Workspace};
+use crate::layout::{ArrangementDoc, LayoutState, SplitDir};
 use crate::render::overlay::{
     CopyRequest, PendingOverlay, PromptOverlay, SelectItem, SelectList, SelectionGrab, ToastOverlay,
 };
@@ -74,8 +74,8 @@ pub(super) fn run_action(
         "find-path" => find_path(resolved, ctx, focused, panes, e),
         "insert-path" => insert_path(resolved, ctx, focused, panes, e),
         "kill-window" => kill_active_window(ctx, e),
-        "next-window" => switch_window(ctx, e, Workspace::next),
-        "previous-window" => switch_window(ctx, e, Workspace::prev),
+        "next-window" => switch_window(ctx, e, ArrangementDoc::next),
+        "previous-window" => switch_window(ctx, e, ArrangementDoc::prev),
         "select-window" => select_window(resolved, ctx, e),
         "move-window" => move_window(resolved, ctx, e),
         "rename-window" => rename_window(resolved, ctx, e),
@@ -461,7 +461,7 @@ fn new_window(
     effects: &mut ActionEffects,
 ) {
     let request_id = ctx.take_request_id();
-    let name = ctx.workspace.default_window_name();
+    let name = ctx.workspace.default_group_name();
     let place = spawn_place(resolved, focused, panes);
     let mut frame = FrameKind::SpawnResource {
         request_id,
@@ -661,7 +661,7 @@ fn placeholder_label(host: &ListingHost, path: &str) -> String {
 fn kill_active_window(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
     let leaves = ctx
         .workspace
-        .active_window()
+        .active_group()
         .and_then(|ls| ls.tree.as_ref().map(crate::layout::leaves))
         .unwrap_or_default();
     if leaves.is_empty() {
@@ -707,19 +707,19 @@ fn move_window(
     effects: &mut ActionEffects,
 ) {
     let from = ctx.workspace.active;
-    let last = ctx.workspace.windows.len().saturating_sub(1);
+    let last = ctx.workspace.groups.len().saturating_sub(1);
     let target = index_arg(resolved)
         .map(|index| index.min(last))
         .or_else(|| {
             let delta = resolved.args.get("delta")?.as_integer()?;
-            Some(offset_index(from, delta, ctx.workspace.windows.len()))
+            Some(offset_index(from, delta, ctx.workspace.groups.len()))
         });
     let Some(to) = target else {
         tracing::warn!(args = ?resolved.args, "move-window needs `index` or `delta`");
         effects.bell = true;
         return;
     };
-    if !ctx.workspace.move_window(from, to) {
+    if !ctx.workspace.move_group(from, to) {
         effects.bell = true;
         return;
     }
@@ -744,7 +744,7 @@ fn rename_window(
     ctx: &mut DispatchCtx<'_>,
     effects: &mut ActionEffects,
 ) {
-    if ctx.workspace.active_window().is_none() {
+    if ctx.workspace.active_group().is_none() {
         tracing::warn!("rename-window: no active window; dropping action");
         effects.bell = true;
         return;
@@ -761,7 +761,7 @@ fn rename_window(
         // `rename-window` with the typed name.
         let current = ctx
             .workspace
-            .windows
+            .groups
             .get(ctx.workspace.active)
             .map(|w| w.name.clone())
             .unwrap_or_default();
@@ -815,7 +815,7 @@ fn resize_pane(
         effects.bell = true;
         return;
     };
-    let Some(ls) = ctx.workspace.active_window_mut() else {
+    let Some(ls) = ctx.workspace.active_group_mut() else {
         effects.bell = true;
         return;
     };
@@ -1103,7 +1103,7 @@ fn focus_pane(
     };
     let target = ctx
         .workspace
-        .windows
+        .groups
         .get(win)
         .and_then(|w| w.state.tree.as_ref())
         .map(crate::layout::leaves)
@@ -1244,7 +1244,7 @@ fn focus_in_window(
     switch_window(ctx, effects, |workspace| {
         workspace.select(index);
     });
-    if let Some(layout) = ctx.workspace.active_window_mut() {
+    if let Some(layout) = ctx.workspace.active_group_mut() {
         layout.focus = Some(target.clone());
     }
     effects.layout_mutated = true;
@@ -1487,7 +1487,7 @@ fn cycle_pane(
     effects: &mut ActionEffects,
     step: impl FnOnce(&LayoutState) -> Option<LayoutState>,
 ) {
-    if let Some(ls) = ctx.workspace.active_window_mut()
+    if let Some(ls) = ctx.workspace.active_group_mut()
         && let Some(new_state) = step(ls)
     {
         let new_focus = new_state.focus.clone();
@@ -1504,7 +1504,7 @@ fn last_pane(ctx: &mut DispatchCtx<'_>, focused: Option<&ResourceId>, effects: &
         effects.bell = true;
         return;
     };
-    let owner = ctx.workspace.windows.iter().position(|window| {
+    let owner = ctx.workspace.groups.iter().position(|window| {
         window
             .state
             .tree
@@ -1517,7 +1517,7 @@ fn last_pane(ctx: &mut DispatchCtx<'_>, focused: Option<&ResourceId>, effects: &
         return;
     };
     ctx.workspace.active = window;
-    ctx.workspace.windows[window].state.focus = Some(target.clone());
+    ctx.workspace.groups[window].state.focus = Some(target.clone());
     effects.layout_mutated = true;
     effects.clear_predict = true;
     effects.set_focus = Some(target);
@@ -1528,7 +1528,7 @@ fn last_pane(ctx: &mut DispatchCtx<'_>, focused: Option<&ResourceId>, effects: &
 fn toggle_zoom(ctx: &DispatchCtx<'_>, effects: &mut ActionEffects) {
     let multi = ctx
         .workspace
-        .active_window()
+        .active_group()
         .and_then(|ls| ls.tree.as_ref())
         .is_some_and(|t| crate::layout::leaves(t).len() > 1);
     if multi {

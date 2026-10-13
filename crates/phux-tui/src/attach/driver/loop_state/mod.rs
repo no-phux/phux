@@ -380,7 +380,7 @@ pub(super) struct SessionLoop {
     /// The attached session as this client mirrors it: the kernel, pane
     /// slots, layout, focus, and the frame-correlated bookkeeping.
     mirror: SessionMirror,
-    /// One-entry focus MRU, deliberately outside Workspace so focus history
+    /// One-entry focus MRU, deliberately outside `ArrangementDoc` so focus history
     /// never persists (ADR-0019).
     focus_history: crate::attach::focus::FocusHistory,
     /// This client's `ClientId` from ATTACHED, for the supervisory badge.

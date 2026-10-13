@@ -18,7 +18,7 @@ use crate::attach::paint::SidebarReservation;
 use crate::attach::pane_state::{AttachKernel, AttentionNavigation, PaneSlot, VcsIndex};
 use crate::attach::plugin_actions::PluginActionEntry;
 use crate::attach::plugin_panes::PluginPaneEntry;
-use crate::layout::{SplitDir, Workspace};
+use crate::layout::{ArrangementDoc, SplitDir};
 use crate::predict::{PredictionState, PredictiveConfig};
 use crate::render::chrome::sidebar::SidebarTargets;
 use crate::render::chrome::status_bar::{Position, StatusBarPainter};
@@ -58,7 +58,7 @@ pub(super) fn test_engine_kernel() -> AttachKernel {
 pub(super) struct CtxFixture {
     pub(super) engine_kernel: AttachKernel,
     pub(super) focus_history: FocusHistory,
-    pub(super) workspace: Workspace,
+    pub(super) workspace: ArrangementDoc,
     pub(super) layout_read_complete: bool,
     pub(super) viewport: (u16, u16),
     pub(super) cell_px: (u16, u16),
@@ -78,7 +78,7 @@ pub(super) struct CtxFixture {
     pub(super) sessions: Vec<phux_protocol::wire::info::SessionInfo>,
     pub(super) hosts: Vec<phux_protocol::wire::info::HostInventory>,
     pub(super) host_refresh_request: bool,
-    pub(super) foreign_layouts: HashMap<phux_protocol::ids::SessionId, Workspace>,
+    pub(super) foreign_layouts: HashMap<phux_protocol::ids::SessionId, ArrangementDoc>,
     pub(super) foreign_agents: HashMap<ResourceId, phux_client::agent_meta::AgentRecord>,
     pub(super) foreign_attention: HashSet<ResourceId>,
     pub(super) focused_session: Option<phux_protocol::ids::SessionId>,
@@ -118,7 +118,7 @@ impl Default for CtxFixture {
         Self {
             engine_kernel: test_engine_kernel(),
             focus_history: FocusHistory::default(),
-            workspace: Workspace::single(tid(1)),
+            workspace: ArrangementDoc::single(tid(1)),
             layout_read_complete: true,
             viewport: (80, 24),
             cell_px: (1, 1),
@@ -177,7 +177,7 @@ impl CtxFixture {
         self.painted_targets = self
             .sidebar_targets
             .clone()
-            .unwrap_or_else(|| targets(0, self.workspace.windows.len(), 0));
+            .unwrap_or_else(|| targets(0, self.workspace.groups.len(), 0));
         DispatchCtx {
             control_dial: None,
             engine_kernel: &mut self.engine_kernel,
@@ -257,7 +257,7 @@ impl CtxFixture {
         action: &phux_config::keybind::ResolvedAction,
         panes: &HashMap<ResourceId, PaneSlot>,
     ) -> ActionEffects {
-        let focused = self.workspace.active_window().and_then(|w| w.focus.clone());
+        let focused = self.workspace.active_group().and_then(|w| w.focus.clone());
         let mut ctx = self.ctx();
         run_action(action, &mut ctx, focused.as_ref(), panes)
     }
@@ -290,7 +290,7 @@ impl CtxFixture {
 }
 
 /// A fixture over `workspace` with request ids starting at 100.
-pub(super) fn fx(workspace: Workspace) -> CtxFixture {
+pub(super) fn fx(workspace: ArrangementDoc) -> CtxFixture {
     CtxFixture {
         workspace,
         next_request_id: 100,
@@ -416,8 +416,8 @@ pub(super) fn act(
 }
 
 /// Two leaves split side by side at `ratio`, focus on the left.
-pub(super) fn two_pane_workspace_at(ratio: f32) -> Workspace {
-    use crate::layout::{LayoutNode, LayoutState, WindowState, split_at};
+pub(super) fn two_pane_workspace_at(ratio: f32) -> ArrangementDoc {
+    use crate::layout::{Group, LayoutNode, LayoutState, split_at};
     let tree = split_at(
         &LayoutNode::Leaf(tid(1)),
         &tid(1),
@@ -426,8 +426,8 @@ pub(super) fn two_pane_workspace_at(ratio: f32) -> Workspace {
         ratio,
     )
     .expect("split");
-    Workspace {
-        windows: vec![WindowState::new(
+    ArrangementDoc {
+        groups: vec![Group::new(
             "1".to_owned(),
             LayoutState {
                 tree: Some(tree),
@@ -438,7 +438,7 @@ pub(super) fn two_pane_workspace_at(ratio: f32) -> Workspace {
     }
 }
 
-pub(super) fn two_pane_workspace() -> Workspace {
+pub(super) fn two_pane_workspace() -> ArrangementDoc {
     two_pane_workspace_at(0.5)
 }
 

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use phux_client::attach::connection::Connection;
-use phux_client::layout::{LayoutNode, LayoutState, SplitDir, WindowState, Workspace};
+use phux_client::layout::{ArrangementDoc, Group, LayoutNode, LayoutState, SplitDir};
 use phux_client::layout_ops::LayoutOps;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{Command, SpawnResult};
@@ -198,7 +198,7 @@ async fn fetch_session_layouts(
     snapshot: &phux_protocol::wire::info::SessionSnapshot,
     projection: Option<&str>,
 ) -> (
-    HashMap<phux_protocol::ids::SessionId, phux_client::layout::Workspace>,
+    HashMap<phux_protocol::ids::SessionId, phux_client::layout::ArrangementDoc>,
     Vec<String>,
 ) {
     let mut layouts = HashMap::new();
@@ -697,12 +697,12 @@ async fn spawn_owned_pane(
     Ok(spawned)
 }
 
-/// Build the restored session's `Workspace` envelope, mapping each archived
+/// Build the restored session's `ArrangementDoc` envelope, mapping each archived
 /// layout onto the fresh pane ids (linear chain without a captured layout).
 fn build_restored_workspace(
     windows: &[WorkspaceWindow],
     pane_ids: &[Vec<Option<ResourceId>>],
-) -> Result<Workspace, String> {
+) -> Result<ArrangementDoc, String> {
     let mut built = Vec::with_capacity(windows.len());
     let mut active_index = 0usize;
     for (window_index, window) in windows.iter().enumerate() {
@@ -728,7 +728,7 @@ fn build_restored_workspace(
         if window.active {
             active_index = built.len();
         }
-        built.push(WindowState::new(
+        built.push(Group::new(
             window.name.clone(),
             LayoutState {
                 tree: Some(tree),
@@ -739,8 +739,8 @@ fn build_restored_workspace(
     if built.is_empty() {
         return Err("workspace restore: the archive named no panes to place".to_owned());
     }
-    Ok(Workspace {
-        windows: built,
+    Ok(ArrangementDoc {
+        groups: built,
         active: active_index,
     })
 }
@@ -793,13 +793,13 @@ pub(super) fn linear_chain(ids: &[ResourceId]) -> LayoutNode {
     tree
 }
 
-/// Write the restored `Workspace` through `LayoutOps`' write-then-confirm, so
+/// Write the restored `ArrangementDoc` through `LayoutOps`' write-then-confirm, so
 /// a dropped over-cap write is reported instead of leaving panes with no
 /// layout.
 async fn write_restored_layout(
     socket_path: &Path,
     seed: &ResourceId,
-    workspace: Workspace,
+    workspace: ArrangementDoc,
 ) -> Result<(), String> {
     let snapshot = phux_client::state::get_state(socket_path)
         .await
@@ -1022,13 +1022,13 @@ mod tests {
         let pane_ids = pane_grid(&[&[10, 11], &[12]]);
 
         let workspace = build_restored_workspace(&windows, &pane_ids).expect("builds");
-        assert_eq!(workspace.windows.len(), 2);
+        assert_eq!(workspace.groups.len(), 2);
         assert_eq!(
             workspace.active, 0,
             "the archived active window stays active"
         );
 
-        let main = &workspace.windows[0];
+        let main = &workspace.groups[0];
         assert_eq!(main.name, "main");
         assert!(matches!(
             main.state.tree,
@@ -1042,7 +1042,7 @@ mod tests {
             vec![ResourceId::local(10), ResourceId::local(11)]
         );
 
-        let logs = &workspace.windows[1];
+        let logs = &workspace.groups[1];
         assert_eq!(logs.name, "logs");
         assert_eq!(
             phux_client::layout::leaves(logs.state.tree.as_ref().unwrap()),

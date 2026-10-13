@@ -1,7 +1,7 @@
 //! Allocation-bounded catalog/topology projection, independent of replicas.
 use std::collections::{HashMap, HashSet};
 
-use phux_client_core::layout::{self, LayoutNode, LayoutState, WindowState, Workspace};
+use phux_client_core::layout::{self, ArrangementDoc, Group, LayoutNode, LayoutState};
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
 use phux_protocol::{ResourceId, ResourceKind, SessionId, WindowId};
 
@@ -93,18 +93,18 @@ impl Catalog {
         })
     }
 
-    pub(super) fn fallback(&self, selected: u32) -> Workspace {
+    pub(super) fn fallback(&self, selected: u32) -> ArrangementDoc {
         let mut terminals: Vec<_> = self
             .terminals
             .iter()
             .filter(|t| t.session == selected)
             .collect();
         terminals.sort_by_key(|t| t.id.local_id());
-        Workspace {
-            windows: terminals
+        ArrangementDoc {
+            groups: terminals
                 .into_iter()
                 .map(|t| {
-                    WindowState::new(
+                    Group::new(
                         t.id.local_id().unwrap_or_default().to_string(),
                         LayoutState::single(t.id.clone()),
                     )
@@ -180,17 +180,17 @@ fn unique<T: Eq + std::hash::Hash>(
     Ok(())
 }
 
-pub(super) fn flatten(workspace: &Workspace) -> Result<(Vec<Node>, Vec<u32>), BridgeError> {
-    if workspace.windows.len() > MAX_WINDOWS {
+pub(super) fn flatten(workspace: &ArrangementDoc) -> Result<(Vec<Node>, Vec<u32>), BridgeError> {
+    if workspace.groups.len() > MAX_WINDOWS {
         return Err(BridgeError::state("workspace exceeds 32 windows"));
     }
     unique(
-        workspace.windows.iter().map(|w| w.id),
+        workspace.groups.iter().map(|w| w.id),
         "duplicate layout window identity",
     )?;
     let mut nodes = Vec::new();
     let mut roots = Vec::new();
-    for window in &workspace.windows {
+    for window in &workspace.groups {
         if window.id == [0; 16] {
             return Err(BridgeError::invalid("unseeded layout window identity"));
         }
@@ -275,30 +275,30 @@ const fn direction(dir: layout::SplitDir) -> u32 {
 
 pub(super) fn adopt(
     bytes: Option<&[u8]>,
-    previous: &Workspace,
+    previous: &ArrangementDoc,
     catalog: &Catalog,
     selected: u32,
-) -> Result<Workspace, BridgeError> {
+) -> Result<ArrangementDoc, BridgeError> {
     let mut workspace = match bytes {
         Some(bytes) => {
             if bytes.len() > layout::MAX_LAYOUT_METADATA_BYTES {
                 return Err(BridgeError::state("layout metadata exceeds 256 KiB"));
             }
-            Workspace::decode_cbor(bytes).map_err(|e| BridgeError::invalid(e.to_string()))?
+            ArrangementDoc::decode_cbor(bytes).map_err(|e| BridgeError::invalid(e.to_string()))?
         }
         None => catalog.fallback(selected),
     };
     // Validate the entire input before pruning; capacity must never silently truncate.
     flatten(&workspace)?;
-    for window in &mut workspace.windows {
+    for window in &mut workspace.groups {
         prune_window(window, catalog, selected);
     }
-    workspace.prune_empty_windows();
+    workspace.prune_empty_groups();
     preserve_focus(&mut workspace, previous);
     Ok(workspace)
 }
 
-fn prune_window(window: &mut WindowState, catalog: &Catalog, selected: u32) {
+fn prune_window(window: &mut Group, catalog: &Catalog, selected: u32) {
     let Some(tree) = &window.state.tree else {
         return;
     };
@@ -313,14 +313,14 @@ fn prune_window(window: &mut WindowState, catalog: &Catalog, selected: u32) {
     }
 }
 
-pub(super) fn preserve_focus(workspace: &mut Workspace, previous: &Workspace) {
-    let active = previous.windows.get(previous.active).map(|w| w.id);
+pub(super) fn preserve_focus(workspace: &mut ArrangementDoc, previous: &ArrangementDoc) {
+    let active = previous.groups.get(previous.active).map(|w| w.id);
     workspace.active = workspace
-        .windows
+        .groups
         .iter()
         .position(|w| Some(w.id) == active)
         .unwrap_or(0);
-    for window in &mut workspace.windows {
+    for window in &mut workspace.groups {
         let leaves = window
             .state
             .tree
@@ -328,7 +328,7 @@ pub(super) fn preserve_focus(workspace: &mut Workspace, previous: &Workspace) {
             .map(layout::leaves)
             .unwrap_or_default();
         let old_focus = previous
-            .windows
+            .groups
             .iter()
             .find(|w| w.id == window.id)
             .and_then(|w| w.state.focus.as_ref());

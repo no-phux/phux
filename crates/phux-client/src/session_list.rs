@@ -62,7 +62,7 @@ pub async fn count_layout_windows(
         request_id = request_id.wrapping_add(1);
         match read {
             Ok(workspace) => {
-                session.window_count = u16::try_from(workspace.windows.len()).unwrap_or(u16::MAX);
+                session.window_count = u16::try_from(workspace.groups.len()).unwrap_or(u16::MAX);
             }
             Err(LayoutOpsError::Transport(err)) => return Err(err),
             Err(_) => {}
@@ -257,15 +257,15 @@ mod tests {
     /// one never laid out keeps the server's count.
     #[tokio::test]
     async fn listing_counts_windows_from_the_layout_envelope() {
-        use crate::layout::{LayoutState, WindowState, Workspace};
+        use crate::layout::{ArrangementDoc, Group, LayoutState};
         use crate::layout_ops::{DEFAULT_LAYOUT_GROUP_ID, layout_key};
         use crate::testkit::{ScriptSpec, ScriptedServer};
         use phux_protocol::wire::frame::Scope;
 
-        let tabs = Workspace {
-            windows: vec![
-                WindowState::new("0".to_owned(), LayoutState::single(ResourceId::local(1))),
-                WindowState::new("1".to_owned(), LayoutState::single(ResourceId::local(2))),
+        let tabs = ArrangementDoc {
+            groups: vec![
+                Group::new("0".to_owned(), LayoutState::single(ResourceId::local(1))),
+                Group::new("1".to_owned(), LayoutState::single(ResourceId::local(2))),
             ],
             active: 1,
         };

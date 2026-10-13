@@ -508,8 +508,8 @@ fn assert_subscription_refusal_preserves_mutation(standalone_error: bool) {
         );
         assert_eq!(pending.revision, before.revision);
         // Independent server-confirmation fixture, not a replay of the outgoing SET bytes.
-        let confirmed = phux_client_core::layout::Workspace {
-            windows: vec![phux_client_core::layout::WindowState {
+        let confirmed = phux_client_core::layout::ArrangementDoc {
+            groups: vec![phux_client_core::layout::Group {
                 id: window.window_id,
                 name: "confirmed rename".into(),
                 state: phux_client_core::layout::LayoutState::single(ResourceId::local(

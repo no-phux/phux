@@ -31,7 +31,7 @@ use phux_protocol::wire::info::SessionInfo;
 
 use super::agent_rows::{AgentSessionRow, AgentSessionRows};
 use super::pane_state::{PaneSlot, VcsIndex};
-use crate::layout::Workspace;
+use crate::layout::ArrangementDoc;
 use crate::render::overlay::SelectItem;
 use phux_client::agent_meta::{AgentAttention, AgentMetaState, AgentRecord};
 
@@ -99,12 +99,12 @@ pub(super) fn collect_pane_meta(
 /// one `switch-session { name }` row. Before any session graph, local panes
 /// list flat.
 pub(super) fn fleet_items(
-    workspace: &Workspace,
+    workspace: &ArrangementDoc,
     sessions: &[SessionInfo],
     focused_session: Option<SessionId>,
     agent_meta: &HashMap<ResourceId, AgentRecord>,
     pane_meta: &HashMap<ResourceId, FleetPaneMeta>,
-    foreign_layouts: &HashMap<SessionId, Workspace>,
+    foreign_layouts: &HashMap<SessionId, ArrangementDoc>,
     foreign_agents: &HashMap<ResourceId, AgentRecord>,
 ) -> Vec<SelectItem> {
     let mut ordered: Vec<&SessionInfo> = sessions.iter().collect();
@@ -126,7 +126,7 @@ pub(super) fn fleet_items(
             items.push(SelectItem::header(session.name.clone()));
             match foreign_layouts
                 .get(&session.id)
-                .filter(|ws| !ws.windows.is_empty())
+                .filter(|ws| !ws.groups.is_empty())
             {
                 Some(foreign) => {
                     items.extend(foreign_session_pane_rows(session, foreign, foreign_agents));
@@ -146,7 +146,7 @@ pub(super) fn fleet_items(
 /// The live fleet dashboard's rows: every session's panes from
 /// [`fleet_items`], then the satellite agents not already open here.
 pub(super) fn live_fleet_items(
-    workspace: &Workspace,
+    workspace: &ArrangementDoc,
     panes: &HashMap<ResourceId, PaneSlot>,
     agent_sessions: &AgentSessionRows,
     agent_meta: &HashMap<ResourceId, AgentRecord>,
@@ -177,7 +177,7 @@ pub(super) fn live_fleet_items(
 pub(super) fn satellite_agent_items(
     agents: &HashMap<ResourceId, AgentRecord>,
     attention: &HashSet<ResourceId>,
-    workspace: &Workspace,
+    workspace: &ArrangementDoc,
 ) -> Vec<SelectItem> {
     let open = open_leaves(workspace);
     let mut rows: Vec<(&ResourceId, &AgentRecord)> = agents
@@ -203,9 +203,9 @@ pub(super) fn satellite_agent_items(
     items
 }
 
-fn open_leaves(workspace: &Workspace) -> HashSet<ResourceId> {
+fn open_leaves(workspace: &ArrangementDoc) -> HashSet<ResourceId> {
     let mut open = HashSet::new();
-    for window in &workspace.windows {
+    for window in &workspace.groups {
         if let Some(tree) = window.state.tree.as_ref() {
             open.extend(crate::layout::leaves(tree));
         }
@@ -251,12 +251,12 @@ fn satellite_agent_row(id: &ResourceId, record: &AgentRecord, asked: bool) -> Se
 
 /// The attached session's pane rows, committing `focus-pane`.
 fn current_session_pane_rows(
-    workspace: &Workspace,
+    workspace: &ArrangementDoc,
     agent_meta: &HashMap<ResourceId, AgentRecord>,
     pane_meta: &HashMap<ResourceId, FleetPaneMeta>,
 ) -> Vec<SelectItem> {
     let mut rows = Vec::new();
-    for (w, window) in workspace.windows.iter().enumerate() {
+    for (w, window) in workspace.groups.iter().enumerate() {
         let leaves = window
             .state
             .tree
@@ -406,11 +406,11 @@ fn foreign_session_row(session: &SessionInfo) -> SelectItem {
 /// one-step `switch-session { name, window, pane }`.
 fn foreign_session_pane_rows(
     session: &SessionInfo,
-    workspace: &Workspace,
+    workspace: &ArrangementDoc,
     foreign_agents: &HashMap<ResourceId, AgentRecord>,
 ) -> Vec<SelectItem> {
     let mut rows = Vec::new();
-    for (w, window) in workspace.windows.iter().enumerate() {
+    for (w, window) in workspace.groups.iter().enumerate() {
         let leaves = window
             .state
             .tree
@@ -513,7 +513,7 @@ fn short_cwd(cwd: &str) -> String {
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
     use super::*;
-    use crate::layout::{LayoutNode, LayoutState, SplitDir, WindowState, split_at};
+    use crate::layout::{Group, LayoutNode, LayoutState, SplitDir, split_at};
 
     fn tid(n: u32) -> ResourceId {
         ResourceId::local(n)
@@ -534,7 +534,7 @@ mod tests {
 
     /// Two windows: window 0 (`main`) split into panes `a`|`b`, window 1
     /// (`logs`) a single pane `c`.
-    fn two_window_workspace_ids(a: u32, b: u32, c: u32) -> Workspace {
+    fn two_window_workspace_ids(a: u32, b: u32, c: u32) -> ArrangementDoc {
         let tree = split_at(
             &LayoutNode::Leaf(tid(a)),
             &tid(a),
@@ -543,16 +543,16 @@ mod tests {
             0.5,
         )
         .expect("split");
-        Workspace {
-            windows: vec![
-                WindowState::new(
+        ArrangementDoc {
+            groups: vec![
+                Group::new(
                     "main".to_owned(),
                     LayoutState {
                         tree: Some(tree),
                         focus: Some(tid(a)),
                     },
                 ),
-                WindowState::new("logs".to_owned(), LayoutState::single(tid(c))),
+                Group::new("logs".to_owned(), LayoutState::single(tid(c))),
             ],
             active: 0,
         }
@@ -561,7 +561,7 @@ mod tests {
     /// Two windows: window 0 split into panes 1|2, window 1 a single pane 3.
     /// Rows for `workspace` alone: no session graph, no foreign state.
     fn local_items(
-        workspace: &Workspace,
+        workspace: &ArrangementDoc,
         agents: &HashMap<ResourceId, AgentRecord>,
         meta: &HashMap<ResourceId, FleetPaneMeta>,
     ) -> Vec<SelectItem> {
@@ -576,7 +576,7 @@ mod tests {
         )
     }
 
-    fn two_window_workspace() -> Workspace {
+    fn two_window_workspace() -> ArrangementDoc {
         two_window_workspace_ids(1, 2, 3)
     }
 
@@ -675,7 +675,7 @@ mod tests {
     /// two rows that both commit the same `focus-pane`.
     #[test]
     fn stream_sessions_outrank_the_record_and_list_one_row_each() {
-        let workspace = Workspace::single(tid(1));
+        let workspace = ArrangementDoc::single(tid(1));
         let mut agents = HashMap::new();
         agents.insert(tid(1), record("reviewer", None, AgentMetaState::Idle));
         let mut meta = HashMap::new();
@@ -716,7 +716,7 @@ mod tests {
     /// With no record the provider names the stream row.
     #[test]
     fn a_stream_without_a_record_is_named_by_its_provider() {
-        let workspace = Workspace::single(tid(1));
+        let workspace = ArrangementDoc::single(tid(1));
         let mut meta = HashMap::new();
         meta.insert(
             tid(1),
@@ -747,7 +747,7 @@ mod tests {
 
     #[test]
     fn no_record_falls_back_to_title_then_placeholder() {
-        let workspace = Workspace::single(tid(1));
+        let workspace = ArrangementDoc::single(tid(1));
         // With a title: the OSC fallback (record outranks it when present).
         let mut meta = HashMap::new();
         meta.insert(
@@ -767,7 +767,7 @@ mod tests {
 
     #[test]
     fn asked_flag_highlights_even_without_a_record() {
-        let workspace = Workspace::single(tid(1));
+        let workspace = ArrangementDoc::single(tid(1));
         let mut meta = HashMap::new();
         meta.insert(
             tid(1),
@@ -785,7 +785,7 @@ mod tests {
 
     #[test]
     fn record_outranks_title_when_both_present() {
-        let workspace = Workspace::single(tid(1));
+        let workspace = ArrangementDoc::single(tid(1));
         let mut agents = HashMap::new();
         agents.insert(tid(1), record("reviewer", None, AgentMetaState::Idle));
         let mut meta = HashMap::new();
@@ -832,7 +832,7 @@ mod tests {
 
     #[test]
     fn sessions_order_current_first_then_by_name() {
-        let workspace = Workspace::single(tid(1));
+        let workspace = ArrangementDoc::single(tid(1));
         let sessions = [
             sinfo(3, "zeta", 1),
             sinfo(1, "alpha", 1),
@@ -858,7 +858,7 @@ mod tests {
     /// A foreign session with a cached layout lists one-step pane rows.
     #[test]
     fn foreign_session_with_cached_layout_lists_one_step_pane_rows() {
-        let workspace = Workspace::single(tid(10));
+        let workspace = ArrangementDoc::single(tid(10));
         let sessions = [sinfo(1, "work", 1), sinfo(2, "scratch", 2)];
         // scratch's persisted layout: window 0 splits panes 20|21, window 1
         // is a single pane 22.
@@ -931,10 +931,10 @@ mod tests {
     /// back to the single switch-session hop.
     #[test]
     fn foreign_session_with_empty_cached_layout_falls_back_to_switch_row() {
-        let workspace = Workspace::single(tid(1));
+        let workspace = ArrangementDoc::single(tid(1));
         let sessions = [sinfo(1, "work", 1), sinfo(2, "scratch", 4)];
         let mut foreign_layouts = HashMap::new();
-        foreign_layouts.insert(SessionId::new(2), Workspace::default());
+        foreign_layouts.insert(SessionId::new(2), ArrangementDoc::default());
         let items = fleet_items(
             &workspace,
             &sessions,
@@ -986,7 +986,7 @@ mod tests {
             },
         );
         let attention = HashSet::from([edge]);
-        let items = satellite_agent_items(&agents, &attention, &Workspace::default());
+        let items = satellite_agent_items(&agents, &attention, &ArrangementDoc::default());
         assert_eq!(items.len(), 3, "one header, two hosts: {items:?}");
         assert_eq!(items[0].label, "reviewer");
         assert!(items[0].is_header());

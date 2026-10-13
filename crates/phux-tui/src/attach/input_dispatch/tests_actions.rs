@@ -16,7 +16,7 @@ use crate::attach::directory_picker::{DirectorySupport, ListingHost};
 use crate::attach::focus::FocusHistory;
 use crate::attach::pane_state::PaneSlot;
 use crate::attach::plugin_panes::{HostedPlacement, PluginPaneEntry};
-use crate::layout::{LayoutNode, LayoutState, SplitDir, WindowState, Workspace, split_at};
+use crate::layout::{ArrangementDoc, Group, LayoutNode, LayoutState, SplitDir, split_at};
 use crate::render::Theme;
 use crate::render::overlay::{CopyModeOverlay, OverlayState, PromptOverlay};
 
@@ -28,7 +28,10 @@ use super::run_action::run_action;
 use super::test_support::*;
 
 /// Run `action` against `workspace` on a current server.
-fn run(action: &phux_config::keybind::ResolvedAction, workspace: &mut Workspace) -> ActionEffects {
+fn run(
+    action: &phux_config::keybind::ResolvedAction,
+    workspace: &mut ArrangementDoc,
+) -> ActionEffects {
     let mut f = fx(std::mem::take(workspace));
     let effects = f.run(action);
     *workspace = f.workspace;
@@ -47,25 +50,24 @@ fn sinfo(id: u32, name: &str) -> SessionInfo {
     SessionInfo::new(SessionId::new(id), name).with_window_count(1)
 }
 
-fn names(workspace: &Workspace) -> Vec<&str> {
-    workspace.windows.iter().map(|w| w.name.as_str()).collect()
+fn names(workspace: &ArrangementDoc) -> Vec<&str> {
+    workspace.groups.iter().map(|w| w.name.as_str()).collect()
 }
 
-fn three_windows() -> Workspace {
-    let mut workspace = Workspace::single(tid(1));
-    workspace.add_window("2".to_owned(), tid(2));
-    workspace.add_window("3".to_owned(), tid(3)); // active = 2
+fn three_windows() -> ArrangementDoc {
+    let mut workspace = ArrangementDoc::single(tid(1));
+    workspace.add_group("2".to_owned(), tid(2));
+    workspace.add_group("3".to_owned(), tid(3)); // active = 2
     workspace
 }
 
 /// Window 0 split into panes 1|2, window 1 a single pane 3 (active).
-fn fleet_workspace() -> Workspace {
+fn fleet_workspace() -> ArrangementDoc {
     let mut workspace = two_pane_workspace();
-    workspace.windows[0].name = "main".to_owned();
-    workspace.windows.push(WindowState::new(
-        "logs".to_owned(),
-        LayoutState::single(tid(3)),
-    ));
+    workspace.groups[0].name = "main".to_owned();
+    workspace
+        .groups
+        .push(Group::new("logs".to_owned(), LayoutState::single(tid(3))));
     workspace.active = 1;
     workspace
 }
@@ -96,7 +98,7 @@ fn satellite_pane(cwd: Option<&str>) -> (CtxFixture, HashMap<ResourceId, PaneSlo
     let mut slot = PaneSlot::new().expect("pane slot");
     slot.cwd = cwd.map(str::to_owned);
     (
-        fx(Workspace::single(pane.clone())),
+        fx(ArrangementDoc::single(pane.clone())),
         HashMap::from([(pane, slot)]),
     )
 }
@@ -148,7 +150,7 @@ fn focused_pane_rect_tracks_rendered_pane_bounds() {
     use crate::layout::Rect;
     use crate::render::chrome::status_bar::Position;
     let mut workspace = two_pane_workspace();
-    workspace.windows[0].state.focus = Some(tid(2));
+    workspace.groups[0].state.focus = Some(tid(2));
     let bottom = Some(Position::Bottom);
     let split = focused_pane_rect_for(&workspace, None, Some(&tid(2)), (80, 24), bottom, None);
     // Row 0 is the pane rail; the bar row is not copy-mode content either.
@@ -230,7 +232,7 @@ fn layout_replace_reclaims_the_focused_pane_rect_for_overlays() {
 fn reload_config_action_raises_only_the_reload_effect() {
     let effects = run(
         &bare_action("reload-config"),
-        &mut Workspace::single(tid(1)),
+        &mut ArrangementDoc::single(tid(1)),
     );
     assert!(effects.reload_config);
     assert!(!effects.layout_mutated && !effects.bell && effects.kill_frames.is_empty());
@@ -238,7 +240,7 @@ fn reload_config_action_raises_only_the_reload_effect() {
 
 #[test]
 fn new_window_parks_pending_and_emits_a_sized_unbound_spawn() {
-    let mut workspace = Workspace::single(tid(1));
+    let mut workspace = ArrangementDoc::single(tid(1));
     let effects = run(&bare_action("new-window"), &mut workspace);
     let (_, pending, frame) = effects.spawn_window.expect("new-window parks a SPAWN");
     assert_eq!(pending.name, "2", "the default name skips the in-use \"1\"");
@@ -248,10 +250,10 @@ fn new_window_parks_pending_and_emits_a_sized_unbound_spawn() {
         matches!(&frame, FrameKind::SpawnResource { resource: None, .. }),
         "{frame:?}"
     );
-    assert_eq!(workspace.windows.len(), 1, "the window opens on reply");
+    assert_eq!(workspace.groups.len(), 1, "the window opens on reply");
 
     // ADR-0105: new-window also works from a keep-empty session's empty state.
-    let effects = run(&bare_action("new-window"), &mut Workspace::default());
+    let effects = run(&bare_action("new-window"), &mut ArrangementDoc::default());
     let (_, _, frame) = effects.spawn_window.expect("spawns from the empty state");
     assert!(matches!(
         frame,
@@ -267,7 +269,7 @@ fn new_window_parks_pending_and_emits_a_sized_unbound_spawn() {
 #[test]
 fn new_window_cwd_and_host_args_ride_the_spawn() {
     let cwd = act("new-window", &[("cwd", "/srv/app".into())]);
-    let (_, _, frame) = run(&cwd, &mut Workspace::single(tid(1)))
+    let (_, _, frame) = run(&cwd, &mut ArrangementDoc::single(tid(1)))
         .spawn_window
         .expect("SPAWN");
     assert!(
@@ -279,7 +281,7 @@ fn new_window_cwd_and_host_args_ride_the_spawn() {
         "new-window",
         &[("cwd", "/home/e/src".into()), ("host", "edge".into())],
     );
-    let (_, _, frame) = run(&hosted, &mut Workspace::single(tid(1)))
+    let (_, _, frame) = run(&hosted, &mut ArrangementDoc::single(tid(1)))
         .spawn_window
         .expect("SPAWN");
     assert!(
@@ -293,7 +295,7 @@ fn new_window_cwd_and_host_args_ride_the_spawn() {
 /// divider column: 40/39), so the server bootstraps it at the right size.
 #[test]
 fn split_pane_spawn_carries_the_new_leafs_tile() {
-    let effects = run(&split_action(), &mut Workspace::single(tid(1)));
+    let effects = run(&split_action(), &mut ArrangementDoc::single(tid(1)));
     let (_, _, frame) = effects.spawn_terminal.expect("split parks a SPAWN");
     assert_eq!(spawn_initial_size_of(&frame), Some((39, 23)));
 }
@@ -303,7 +305,7 @@ fn split_pane_spawn_carries_the_new_leafs_tile() {
 #[test]
 fn spawn_omits_initial_size_when_the_server_did_not_advertise_it() {
     for action in [split_action(), bare_action("new-window")] {
-        let mut f = fx(Workspace::single(tid(1)));
+        let mut f = fx(ArrangementDoc::single(tid(1)));
         f.spawn_initial_size_supported = false;
         let effects = f.run(&action);
         let frame = effects
@@ -328,8 +330,8 @@ fn kill_window_and_kill_pane_emit_correlated_expected_kills() {
     )
     .unwrap();
     let tree = split_at(&tree, &tid(2), &tid(3), SplitDir::Vertical, 0.5).unwrap();
-    let mut workspace = Workspace {
-        windows: vec![WindowState::new(
+    let mut workspace = ArrangementDoc {
+        groups: vec![Group::new(
             "1".to_owned(),
             LayoutState {
                 tree: Some(tree),
@@ -351,16 +353,16 @@ fn kill_window_and_kill_pane_emit_correlated_expected_kills() {
             .collect();
         assert_eq!(targets, killed, "{action}");
         assert_eq!(effects.expected_closes, killed, "{action}");
-        assert_eq!(workspace.windows.len(), 1);
+        assert_eq!(workspace.groups.len(), 1);
     }
-    let effects = run(&bare_action("kill-window"), &mut Workspace::default());
+    let effects = run(&bare_action("kill-window"), &mut ArrangementDoc::default());
     assert!(effects.bell && effects.kill_frames.is_empty());
 }
 
 #[test]
 fn window_navigation_switches_active_without_broadcasting() {
-    let mut workspace = Workspace::single(tid(1));
-    workspace.add_window("2".to_owned(), tid(2));
+    let mut workspace = ArrangementDoc::single(tid(1));
+    workspace.add_group("2".to_owned(), tid(2));
     workspace.select(0);
     let effects = run(&bare_action("next-window"), &mut workspace);
     assert_eq!(workspace.active, 1);
@@ -368,7 +370,7 @@ fn window_navigation_switches_active_without_broadcasting() {
     assert!(!effects.set_metadata, "window switch is per-client");
     assert_eq!(effects.set_focus, Some(tid(2)));
 
-    let mut single = Workspace::single(tid(1));
+    let mut single = ArrangementDoc::single(tid(1));
     let effects = run(&bare_action("next-window"), &mut single);
     assert!(!effects.layout_mutated && !effects.clear_predict);
 
@@ -394,20 +396,20 @@ fn window_navigation_switches_active_without_broadcasting() {
 
 #[test]
 fn last_pane_jumps_across_windows_and_toggles() {
-    let mut f = fx(Workspace::single(tid(1)));
+    let mut f = fx(ArrangementDoc::single(tid(1)));
     let effects = f.run(&bare_action("last-pane"));
     assert!(
         effects.bell && !effects.layout_mutated && effects.set_focus.is_none(),
         "no history"
     );
 
-    f.workspace.add_window("2".to_owned(), tid(2));
+    f.workspace.add_group("2".to_owned(), tid(2));
     f.workspace.select(0);
     f.focus_history = FocusHistory::with_previous(tid(2));
     let effects = f.run(&bare_action("last-pane"));
     assert_eq!(f.workspace.active, 1);
     assert_eq!(
-        f.workspace.active_window().and_then(|w| w.focus.clone()),
+        f.workspace.active_group().and_then(|w| w.focus.clone()),
         Some(tid(2))
     );
     assert!(
@@ -476,11 +478,14 @@ fn move_window_moves_the_active_window_and_clamps() {
 fn toggle_zoom_and_sidebar_request_their_flips() {
     let effects = run(&bare_action("toggle-zoom"), &mut two_pane_workspace());
     assert!(effects.toggle_zoom && effects.layout_mutated && !effects.bell);
-    let effects = run(&bare_action("toggle-zoom"), &mut Workspace::single(tid(1)));
+    let effects = run(
+        &bare_action("toggle-zoom"),
+        &mut ArrangementDoc::single(tid(1)),
+    );
     assert!(effects.bell && !effects.toggle_zoom && !effects.layout_mutated);
     let effects = run(
         &bare_action("toggle-sidebar"),
-        &mut Workspace::single(tid(1)),
+        &mut ArrangementDoc::single(tid(1)),
     );
     assert!(
         effects.toggle_sidebar && effects.layout_mutated && !effects.bell && !effects.toggle_zoom
@@ -498,8 +503,8 @@ async fn apply_effects_flips_sidebar_enabled_state() {
     }
 }
 
-fn root_ratio(workspace: &Workspace) -> f32 {
-    match workspace.active_window().unwrap().tree.as_ref().unwrap() {
+fn root_ratio(workspace: &ArrangementDoc) -> f32 {
+    match workspace.active_group().unwrap().tree.as_ref().unwrap() {
         LayoutNode::Split { ratio, .. } => *ratio,
         other @ LayoutNode::Leaf(_) => panic!("expected root Split, got {other:?}"),
     }
@@ -537,18 +542,18 @@ fn resize_pane_moves_ratio_or_bells() {
 /// prompt and broadcasts nothing until commit.
 #[test]
 fn rename_window_renames_or_prompts() {
-    let mut workspace = Workspace::single(tid(1));
+    let mut workspace = ArrangementDoc::single(tid(1));
     let effects = run(
         &act("rename-window", &[("name", "build".into())]),
         &mut workspace,
     );
-    assert_eq!(workspace.windows[0].name, "build");
+    assert_eq!(workspace.groups[0].name, "build");
     assert!(effects.layout_mutated && effects.set_metadata);
 
-    let mut f = fx(Workspace::single(tid(1)));
+    let mut f = fx(ArrangementDoc::single(tid(1)));
     let effects = f.run(&bare_action("rename-window"));
     assert!(f.overlays.is_active() && effects.layout_mutated && !effects.set_metadata);
-    assert_eq!(f.workspace.windows[0].name, "1");
+    assert_eq!(f.workspace.groups[0].name, "1");
 }
 
 // ---- directories and satellites ---------------------------------------------
@@ -559,7 +564,7 @@ fn rename_window_renames_or_prompts() {
 fn go_to_directory_requests_a_listing() {
     let effects = run(
         &bare_action("go-to-directory"),
-        &mut Workspace::single(tid(1)),
+        &mut ArrangementDoc::single(tid(1)),
     );
     let (pending, frame) = effects.list_directory.expect("LIST_DIRECTORY");
     assert_eq!(
@@ -574,14 +579,14 @@ fn go_to_directory_requests_a_listing() {
 
     let effects = run(
         &act("go-to-directory", &[("path", "/srv".into())]),
-        &mut Workspace::single(tid(1)),
+        &mut ArrangementDoc::single(tid(1)),
     );
     let (_, frame) = effects.list_directory.expect("LIST_DIRECTORY");
     assert!(matches!(&frame, FrameKind::ListDirectory { path, .. } if path == "/srv"));
     assert!(!effects.bell && effects.layout_mutated);
 
     // Without `LIST_DIRECTORY` the older server would drop the frame: bell.
-    let mut f = fx(Workspace::single(tid(1)));
+    let mut f = fx(ArrangementDoc::single(tid(1)));
     f.directory_support =
         DirectorySupport::from_features(ServerFeatureSet::with(&[ServerFeature::SpawnInitialSize]));
     let effects = f.run(&bare_action("go-to-directory"));
@@ -630,7 +635,7 @@ fn insert_path_requires_the_original_focus_and_unchanged_lease() {
         (other.clone(), PaneSlot::new().expect("pane")),
     ]);
     let action = act("insert-path", &[("path", "/a b/it's".into())]);
-    let mut f = fx(Workspace::single(pane.clone()));
+    let mut f = fx(ArrangementDoc::single(pane.clone()));
     f.pending_path = Some(pending_path(&pane, 1));
     let effects = run_action(&action, &mut f.ctx(), Some(&other), &panes);
     assert!(effects.bell);
@@ -648,7 +653,7 @@ fn insert_path_requires_the_original_focus_and_unchanged_lease() {
 #[test]
 fn inserted_path_with_control_bytes_is_rejected_before_paste() {
     let pane = tid(1);
-    let mut f = fx(Workspace::single(pane.clone()));
+    let mut f = fx(ArrangementDoc::single(pane.clone()));
     f.pending_path = Some(pending_path(&pane, 7));
     let panes = HashMap::from([(pane.clone(), PaneSlot::new().expect("pane"))]);
     let action = act("insert-path", &[("path", "/foo\nbar".into())]);
@@ -663,7 +668,7 @@ fn inserted_path_with_control_bytes_is_rejected_before_paste() {
 /// Without the negotiated `PATH_QUERY` bit the picker bells, sending nothing.
 #[test]
 fn unsupported_host_path_query_bells_without_a_wire_request() {
-    let mut f = fx(Workspace::single(tid(1)));
+    let mut f = fx(ArrangementDoc::single(tid(1)));
     f.path_query_supported = false;
     let panes = HashMap::from([(tid(1), PaneSlot::new().expect("pane"))]);
     let effects = f.run_in(&bare_action("find-path"), &panes);
@@ -732,7 +737,7 @@ fn split_pane_follows_the_focused_panes_host() {
     let mut slot = PaneSlot::new().expect("slot");
     slot.cwd = Some("/srv/app".to_owned());
     let panes = HashMap::from([(tid(1), slot)]);
-    let (_, pending, frame) = fx(Workspace::single(tid(1)))
+    let (_, pending, frame) = fx(ArrangementDoc::single(tid(1)))
         .run_in(&split_action(), &panes)
         .spawn_terminal
         .expect("SPAWN");
@@ -779,7 +784,7 @@ fn split_onto_a_host_or_an_existing_satellite_pane() {
     let devbox = SatelliteHost::new("devbox");
     let mut action = split_action();
     action.args.insert("host".to_owned(), "devbox".into());
-    let (_, pending, frame) = run(&action, &mut Workspace::single(tid(1)))
+    let (_, pending, frame) = run(&action, &mut ArrangementDoc::single(tid(1)))
         .spawn_terminal
         .expect("SPAWN");
     assert!(
@@ -794,7 +799,7 @@ fn split_onto_a_host_or_an_existing_satellite_pane() {
     action
         .args
         .insert("resource".to_owned(), "devbox/@7".into());
-    let mut workspace = Workspace::single(tid(1));
+    let mut workspace = ArrangementDoc::single(tid(1));
     let effects = run(&action, &mut workspace);
     let target = satellite_id("devbox", 7);
     let (_, pending, frame) = effects.spawn_terminal.expect("open parks an ATTACH");
@@ -805,7 +810,7 @@ fn split_onto_a_host_or_an_existing_satellite_pane() {
         "{frame:?}"
     );
     assert_eq!(
-        crate::layout::leaves(workspace.active_window().unwrap().tree.as_ref().unwrap()),
+        crate::layout::leaves(workspace.active_group().unwrap().tree.as_ref().unwrap()),
         vec![tid(1)]
     );
 }
@@ -821,7 +826,7 @@ fn plugin_action_records_run_intent_or_bells() {
             ("action", "summarize".into()),
         ],
     );
-    let effects = run(&action, &mut Workspace::single(tid(1)));
+    let effects = run(&action, &mut ArrangementDoc::single(tid(1)));
     assert_eq!(
         effects.run_plugin,
         Some(("com.example.tools".to_owned(), "summarize".to_owned()))
@@ -833,7 +838,7 @@ fn plugin_action_records_run_intent_or_bells() {
 
     let effects = run(
         &bare_action("plugin-action"),
-        &mut Workspace::single(tid(1)),
+        &mut ArrangementDoc::single(tid(1)),
     );
     assert!(effects.bell && effects.run_plugin.is_none());
 }
@@ -853,7 +858,7 @@ fn board(placement: HostedPlacement) -> PluginPaneEntry {
 fn run_plugin_pane(
     plugin: &str,
     placement: HostedPlacement,
-    workspace: Workspace,
+    workspace: ArrangementDoc,
 ) -> ActionEffects {
     let mut f = fx(workspace);
     f.plugin_panes = vec![board(placement)];
@@ -872,7 +877,11 @@ fn plugin_pane_placement_routes_the_spawn() {
         (HostedPlacement::Split, false),
         (HostedPlacement::Zoomed, true),
     ] {
-        let effects = run_plugin_pane("com.example.board", placement, Workspace::single(tid(1)));
+        let effects = run_plugin_pane(
+            "com.example.board",
+            placement,
+            ArrangementDoc::single(tid(1)),
+        );
         let (_, pending, frame) = effects.spawn_terminal.expect("parks a split");
         assert_eq!(pending.focused_at_request, tid(1));
         assert_eq!(pending.zoom_on_spawn, zoom);
@@ -900,7 +909,7 @@ fn plugin_pane_placement_routes_the_spawn() {
     let effects = run_plugin_pane(
         "com.example.board",
         HostedPlacement::Tab,
-        Workspace::single(tid(1)),
+        ArrangementDoc::single(tid(1)),
     );
     let (_, pending, frame) = effects.spawn_window.expect("tab parks a window");
     assert_eq!(pending.name, "Agent Board");
@@ -915,7 +924,7 @@ fn plugin_pane_overlay_parks_a_floating_spawn_at_the_box_size() {
     let effects = run_plugin_pane(
         "com.example.board",
         HostedPlacement::Overlay,
-        Workspace::single(tid(1)),
+        ArrangementDoc::single(tid(1)),
     );
     let (_, title, frame) = effects.spawn_floating.expect("parks a floating spawn");
     assert_eq!(title, "Agent Board");
@@ -936,7 +945,7 @@ fn plugin_pane_overlay_parks_a_floating_spawn_at_the_box_size() {
     let effects = run_plugin_pane(
         "com.example.board",
         HostedPlacement::Overlay,
-        Workspace::default(),
+        ArrangementDoc::default(),
     );
     assert!(effects.spawn_floating.is_some() && !effects.bell);
 }
@@ -946,8 +955,8 @@ fn plugin_pane_overlay_parks_a_floating_spawn_at_the_box_size() {
 #[test]
 fn plugin_pane_unknown_or_unfocused_bells() {
     for (plugin, workspace) in [
-        ("com.example.absent", Workspace::single(tid(1))),
-        ("com.example.board", Workspace::default()),
+        ("com.example.absent", ArrangementDoc::single(tid(1))),
+        ("com.example.board", ArrangementDoc::default()),
     ] {
         let effects = run_plugin_pane(plugin, HostedPlacement::Split, workspace);
         assert!(
@@ -967,7 +976,7 @@ fn palette_committed_action_routes_through_run_action() {
         .iter()
         .find(|i| i.action.action == "detach")
         .expect("detach in palette");
-    assert!(run(&detach.action, &mut Workspace::default()).detach);
+    assert!(run(&detach.action, &mut ArrangementDoc::default()).detach);
 }
 
 /// Each overlay-opening action pushes one overlay without a repaint or bell;
@@ -981,7 +990,7 @@ fn overlay_actions_push_their_overlay() {
         ("getting-started", true),
         ("agent-fleet", false),
     ] {
-        let mut f = fx(Workspace::single(tid(1)));
+        let mut f = fx(ArrangementDoc::single(tid(1)));
         let effects = f.run(&bare_action(action));
         assert_eq!(f.overlays.depth(), 1, "{action}");
         assert_eq!(f.overlays.top_is_passthrough(), passthrough, "{action}");
@@ -990,12 +999,12 @@ fn overlay_actions_push_their_overlay() {
             "{action}"
         );
     }
-    let mut f = fx(Workspace::single(tid(1)));
-    f.workspace.add_window("2".to_owned(), tid(2));
+    let mut f = fx(ArrangementDoc::single(tid(1)));
+    f.workspace.add_group("2".to_owned(), tid(2));
     assert!(!f.run(&bare_action("window-picker")).bell);
     assert!(f.overlays.is_active());
     for action in ["window-picker", "agent-fleet"] {
-        let mut f = fx(Workspace::default());
+        let mut f = fx(ArrangementDoc::default());
         assert!(
             f.run(&bare_action(action)).bell,
             "{action}: nothing to list"
@@ -1010,7 +1019,7 @@ fn overlay_actions_push_their_overlay() {
 fn only_the_fleet_overlay_accepts_a_live_fleet_refresh() {
     use crate::attach::fleet::{FLEET_LIVE_KEY, fleet_items};
 
-    let workspace = Workspace::single(tid(1));
+    let workspace = ArrangementDoc::single(tid(1));
     let fresh = fleet_items(
         &workspace,
         &[],
@@ -1032,8 +1041,8 @@ fn only_the_fleet_overlay_accepts_a_live_fleet_refresh() {
 
 #[test]
 fn current_session_window_rows_commit_select_window() {
-    let mut workspace = Workspace::single(tid(1));
-    workspace.add_window("editor".to_owned(), tid(2));
+    let mut workspace = ArrangementDoc::single(tid(1));
+    workspace.add_group("editor".to_owned(), tid(2));
     workspace.select(0);
     let items = current_session_window_rows(&workspace);
     assert_eq!(items.len(), 2);
@@ -1056,16 +1065,16 @@ fn current_session_window_rows_commit_select_window() {
 /// window }` rows, else (no or an empty layout) one plain switch row.
 #[test]
 fn window_picker_groups_windows_under_their_session() {
-    let mut workspace = Workspace::single(tid(1));
-    workspace.add_window("editor".to_owned(), tid(2));
+    let mut workspace = ArrangementDoc::single(tid(1));
+    workspace.add_group("editor".to_owned(), tid(2));
     let sessions = [sinfo(1, "work"), sinfo(2, "scratch")];
-    let mut scratch = Workspace::single(tid(10));
+    let mut scratch = ArrangementDoc::single(tid(10));
     scratch.rename_active("build".to_owned());
-    scratch.add_window("logs".to_owned(), tid(11));
+    scratch.add_group("logs".to_owned(), tid(11));
 
     for (cached, rows) in [
         (None, 0),
-        (Some(Workspace::default()), 0),
+        (Some(ArrangementDoc::default()), 0),
         (Some(scratch), 2),
     ] {
         let foreign: HashMap<_, _> = cached
@@ -1116,7 +1125,7 @@ fn focus_pane_switches_window_and_focuses_leaf() {
         }
         let effects = run(&focus_pane(1), &mut workspace);
         assert_eq!(workspace.active, 0);
-        assert_eq!(workspace.windows[0].state.focus, Some(tid(2)));
+        assert_eq!(workspace.groups[0].state.focus, Some(tid(2)));
         assert_eq!(effects.set_focus, Some(tid(2)));
         assert!(effects.layout_mutated && !effects.set_metadata && !effects.bell);
     }
@@ -1188,7 +1197,7 @@ fn next_attention_cycles_and_return_consumes_one_origin() {
         Some(tid(1)),
         "cycling kept the first origin"
     );
-    assert_eq!(f.workspace.windows[0].state.focus, Some(tid(1)));
+    assert_eq!(f.workspace.groups[0].state.focus, Some(tid(1)));
     assert!(!returned.set_metadata);
     let consumed = f.run_in(&bare_action("return-from-attention"), &panes);
     assert!(consumed.bell && !consumed.layout_mutated && !consumed.set_metadata);
@@ -1204,7 +1213,7 @@ fn return_from_attention_consumes_a_stale_origin_safely() {
         f.run_in(&bare_action("next-attention"), &panes).set_focus,
         Some(tid(2))
     );
-    f.workspace.windows[0].state = LayoutState::single(tid(2));
+    f.workspace.groups[0].state = LayoutState::single(tid(2));
     let before = f.workspace.clone();
     for _ in 0..2 {
         let effects = f.run_in(&bare_action("return-from-attention"), &panes);
@@ -1250,7 +1259,7 @@ fn session_picker_items_include_focused_first_and_commit_switch_session() {
     );
     assert_eq!(items[0].action.args.get("id"), Some(&Value::Integer(1)));
     // Committing a peer row requests the switch by name and stable id.
-    let effects = run(&items[2].action, &mut Workspace::single(tid(1)));
+    let effects = run(&items[2].action, &mut ArrangementDoc::single(tid(1)));
     assert_eq!(
         effects.reattach,
         existing("scratch", Some(2), None, None, None)
@@ -1266,7 +1275,7 @@ fn session_picker_always_opens_and_requests_a_host_inventory() {
         vec![sinfo(1, "work")],
         vec![sinfo(1, "work"), sinfo(2, "scratch")],
     ] {
-        let mut f = fx(Workspace::single(tid(1)));
+        let mut f = fx(ArrangementDoc::single(tid(1)));
         f.focused_session = (!sessions.is_empty()).then(|| SessionId::new(1));
         f.sessions = sessions;
         assert!(!f.run(&bare_action("session-picker")).bell);
@@ -1279,8 +1288,8 @@ fn session_picker_always_opens_and_requests_a_host_inventory() {
 /// `resource` names local or satellite identity. No name bells.
 #[test]
 fn switch_session_args_build_the_reattach_target() {
-    let mut scratch = Workspace::single(tid(10));
-    scratch.add_window("logs".to_owned(), tid(11));
+    let mut scratch = ArrangementDoc::single(tid(10));
+    scratch.add_group("logs".to_owned(), tid(11));
     let rows = foreign_session_window_rows(&sinfo(2, "scratch"), &scratch);
     assert_eq!(rows.len(), 2);
     let cases = [
@@ -1333,7 +1342,7 @@ fn switch_session_args_build_the_reattach_target() {
         ),
     ];
     for (action, target) in cases {
-        let mut workspace = Workspace::single(tid(1));
+        let mut workspace = ArrangementDoc::single(tid(1));
         let effects = run(&action, &mut workspace);
         assert_eq!(effects.reattach, target, "{:?}", action.args);
         assert!(!effects.bell);
@@ -1344,7 +1353,7 @@ fn switch_session_args_build_the_reattach_target() {
     }
     let effects = run(
         &bare_action("switch-session"),
-        &mut Workspace::single(tid(1)),
+        &mut ArrangementDoc::single(tid(1)),
     );
     assert!(effects.reattach.is_none() && effects.bell);
 }
@@ -1354,7 +1363,7 @@ fn switch_session_args_build_the_reattach_target() {
 fn new_session_creates_or_prompts() {
     let effects = run(
         &act("new-session", &[("name", "scratch".into())]),
-        &mut Workspace::single(tid(1)),
+        &mut ArrangementDoc::single(tid(1)),
     );
     assert_eq!(
         effects.reattach,
@@ -1364,7 +1373,7 @@ fn new_session_creates_or_prompts() {
             host: None,
         })
     );
-    let mut f = fx(Workspace::single(tid(1)));
+    let mut f = fx(ArrangementDoc::single(tid(1)));
     assert!(f.run(&bare_action("new-session")).reattach.is_none());
     assert!(f.overlays.is_active());
 }
@@ -1410,7 +1419,7 @@ fn new_session_and_split_inherit_the_focused_place() {
 /// last-session returns to the previous name; next and previous wrap.
 #[test]
 fn session_navigation_uses_mru_and_name_order() {
-    let mut f = fx(Workspace::single(tid(1)));
+    let mut f = fx(ArrangementDoc::single(tid(1)));
     f.session_name = "beta".to_owned();
     f.focus_history
         .set_sessions(vec!["alpha".to_owned(), "beta".to_owned()]);
@@ -1435,7 +1444,7 @@ fn session_navigation_uses_mru_and_name_order() {
 /// A project tag groups the session picker. Rows still switch sessions.
 #[test]
 fn session_picker_groups_by_project_tag() {
-    let mut f = fx(Workspace::single(tid(1)));
+    let mut f = fx(ArrangementDoc::single(tid(1)));
     f.sessions = vec![sinfo(1, "api"), sinfo(2, "web"), sinfo(3, "notes")];
     f.project_tags.insert(SessionId::new(1), "phux".to_owned());
     f.project_tags.insert(SessionId::new(2), "phux".to_owned());
@@ -1452,7 +1461,7 @@ fn session_picker_groups_by_project_tag() {
 /// as window `y` of `x`: an unaddressable name is refused with a notice.
 #[test]
 fn new_session_refuses_a_name_no_selector_can_address() {
-    let mut f = fx(Workspace::single(tid(1)));
+    let mut f = fx(ArrangementDoc::single(tid(1)));
     let effects = f.run(&act("new-session", &[("name", "x:y".into())]));
     assert!(effects.reattach.is_none(), "{:?}", effects.reattach);
     assert_eq!(
@@ -1466,7 +1475,7 @@ fn new_session_refuses_a_name_no_selector_can_address() {
 
 #[test]
 fn detach_action_requests_detach_effect() {
-    let effects = run(&bare_action("detach"), &mut Workspace::default());
+    let effects = run(&bare_action("detach"), &mut ArrangementDoc::default());
     assert!(effects.detach && !effects.layout_mutated);
 }
 
@@ -1475,8 +1484,8 @@ fn detach_action_requests_detach_effect() {
 #[test]
 fn move_pane_picker_offers_only_exact_cached_local_destinations() {
     let source = tid(1);
-    let mut current = Workspace {
-        windows: vec![WindowState::new(
+    let mut current = ArrangementDoc {
+        groups: vec![Group::new(
             "editor".to_owned(),
             LayoutState {
                 tree: Some(LayoutNode::Split {
@@ -1495,8 +1504,8 @@ fn move_pane_picker_offers_only_exact_cached_local_destinations() {
         )],
         active: 0,
     };
-    let mut cached = Workspace::single(tid(3));
-    cached.windows[0].name = "tests".to_owned();
+    let mut cached = ArrangementDoc::single(tid(3));
+    cached.groups[0].name = "tests".to_owned();
     let sessions = [
         SessionInfo::new(SessionId::new(1), "work"),
         SessionInfo::new(SessionId::new(2), "build"),
@@ -1534,10 +1543,10 @@ fn move_pane_picker_offers_only_exact_cached_local_destinations() {
     );
     assert_eq!(intent.ratio.to_bits(), 0.5_f32.to_bits());
 
-    let mut workspace = Workspace::single(tid(1));
+    let mut workspace = ArrangementDoc::single(tid(1));
     let effects = run(&bare_action("move-pane"), &mut workspace);
     assert!(effects.bell && effects.move_pane.is_none());
-    assert_eq!(workspace, Workspace::single(tid(1)));
+    assert_eq!(workspace, ArrangementDoc::single(tid(1)));
 }
 
 // ---- host-grouped session picker ----------------------------------------------
@@ -1572,7 +1581,7 @@ fn session_picker_groups_rows_by_host() {
         LOCAL_HOST_HEADER,
         &host_fixture(),
         &[],
-        &Workspace::single(tid(1)),
+        &ArrangementDoc::single(tid(1)),
     );
     let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
     assert_eq!(
@@ -1606,8 +1615,8 @@ fn session_picker_groups_rows_by_host() {
         Some("on edge, 2 windows, 3 panes")
     );
 
-    let mut open = Workspace::single(tid(1));
-    open.add_window("edge/build".to_owned(), satellite_id("edge", 9));
+    let mut open = ArrangementDoc::single(tid(1));
+    open.add_group("edge/build".to_owned(), satellite_id("edge", 9));
     let items =
         host_grouped_session_items(&[], None, LOCAL_HOST_HEADER, &host_fixture(), &[], &open);
     let build = items.iter().find(|i| i.label == "build").expect("row");
@@ -1627,7 +1636,7 @@ fn session_picker_groups_rows_by_host() {
         LOCAL_HOST_HEADER,
         &[],
         &[],
-        &Workspace::single(tid(1)),
+        &ArrangementDoc::single(tid(1)),
     );
     assert_eq!(
         grouped.len(),
@@ -1695,7 +1704,7 @@ fn session_picker_lists_other_machines() {
         LOCAL_HOST_HEADER,
         &[],
         &crate::attach::hosts::other_hosts(&hosts, &AttachOrigin::Local),
-        &Workspace::single(tid(1)),
+        &ArrangementDoc::single(tid(1)),
     );
     let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
     assert_eq!(
@@ -1738,7 +1747,7 @@ fn session_picker_lists_other_machines() {
         "mini",
         &[],
         &crate::attach::hosts::other_hosts(&hosts, &AttachOrigin::Remote("mini".to_owned())),
-        &Workspace::single(tid(1)),
+        &ArrangementDoc::single(tid(1)),
     );
     let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
     assert_eq!(
@@ -1769,10 +1778,10 @@ fn a_machine_row_commits_switch_host() {
         LOCAL_HOST_HEADER,
         &[],
         &crate::attach::hosts::other_hosts(&hosts, &crate::attach::hosts::AttachOrigin::Local),
-        &Workspace::single(tid(1)),
+        &ArrangementDoc::single(tid(1)),
     );
     let phall = items.iter().find(|i| i.label == "phall").expect("row");
-    let effects = run(&phall.action, &mut Workspace::single(tid(1)));
+    let effects = run(&phall.action, &mut ArrangementDoc::single(tid(1)));
     assert_eq!(
         effects.switch_host,
         Some(("mini".to_owned(), "phall".to_owned()))
@@ -1794,7 +1803,7 @@ fn session_picker_filter_spans_machines() {
         LOCAL_HOST_HEADER,
         &host_fixture(),
         &crate::attach::hosts::other_hosts(&hosts, &crate::attach::hosts::AttachOrigin::Local),
-        &Workspace::single(tid(1)),
+        &ArrangementDoc::single(tid(1)),
     );
     let press = |key, text: Option<&str>| KeyEvent {
         action: KeyAction::Press,
@@ -1838,7 +1847,7 @@ fn session_picker_with_machines_render() {
         LOCAL_HOST_HEADER,
         &host_fixture(),
         &crate::attach::hosts::other_hosts(&hosts, &crate::attach::hosts::AttachOrigin::Local),
-        &Workspace::single(tid(1)),
+        &ArrangementDoc::single(tid(1)),
     );
     items.push(new_session_item());
     let picker = SelectList::new("Sessions", items, &Theme::default());
@@ -1857,7 +1866,7 @@ fn session_picker_with_machines_render() {
 fn switch_to_satellite(
     host: &str,
     name: &str,
-    workspace: Workspace,
+    workspace: ArrangementDoc,
 ) -> (ActionEffects, CtxFixture) {
     let mut f = fx(workspace);
     f.hosts = host_fixture();
@@ -1873,9 +1882,9 @@ fn switch_to_satellite(
 /// until the attach succeeds. Already open here, it focuses that window.
 #[test]
 fn switching_to_a_satellite_session_opens_or_focuses_its_pane() {
-    let (effects, f) = switch_to_satellite("edge", "build", Workspace::single(tid(1)));
+    let (effects, f) = switch_to_satellite("edge", "build", ArrangementDoc::single(tid(1)));
     assert!(effects.reattach.is_none());
-    assert_eq!(f.workspace.windows.len(), 1);
+    assert_eq!(f.workspace.groups.len(), 1);
     assert!(effects.set_focus.is_none() && !effects.layout_mutated && !effects.set_metadata);
     let [FrameKind::Command { command, .. }] = effects.command_frames.as_slice() else {
         panic!("expected one command frame: {:?}", effects.command_frames);
@@ -1885,11 +1894,11 @@ fn switching_to_a_satellite_session_opens_or_focuses_its_pane() {
         &Command::attach_terminal(satellite_id("edge", 9), None),
     );
 
-    let mut open = Workspace::single(tid(1));
-    open.add_window("edge/build".to_owned(), satellite_id("edge", 9));
+    let mut open = ArrangementDoc::single(tid(1));
+    open.add_group("edge/build".to_owned(), satellite_id("edge", 9));
     open.select(0);
     let (effects, f) = switch_to_satellite("edge", "build", open);
-    assert_eq!((f.workspace.windows.len(), f.workspace.active), (2, 1));
+    assert_eq!((f.workspace.groups.len(), f.workspace.active), (2, 1));
     assert_eq!(effects.set_focus, Some(satellite_id("edge", 9)));
     assert!(effects.command_frames.is_empty());
 }
@@ -1902,12 +1911,12 @@ fn switching_to_an_unreachable_or_unknown_satellite_session_bells() {
         ("nosuch", "build"),
         ("edge", "nosuch"),
     ] {
-        let (effects, f) = switch_to_satellite(host, name, Workspace::single(tid(1)));
+        let (effects, f) = switch_to_satellite(host, name, ArrangementDoc::single(tid(1)));
         assert!(
             effects.bell && effects.reattach.is_none() && effects.command_frames.is_empty(),
             "{host}/{name}"
         );
-        assert_eq!(f.workspace.windows.len(), 1);
+        assert_eq!(f.workspace.groups.len(), 1);
     }
 }
 
@@ -1922,11 +1931,11 @@ fn rename_session_requests_the_effect_or_prompts() {
 
     let effects = run(
         &act("rename-session", &[("name", "notes".into())]),
-        &mut Workspace::single(tid(1)),
+        &mut ArrangementDoc::single(tid(1)),
     );
     assert_eq!(effects.rename_session.as_deref(), Some("notes"));
 
-    let mut f = fx(Workspace::single(tid(1)));
+    let mut f = fx(ArrangementDoc::single(tid(1)));
     f.session_name = "work".to_owned();
     assert!(
         f.run(&bare_action("rename-session"))
@@ -1954,12 +1963,12 @@ fn rename_session_requests_the_effect_or_prompts() {
     let OverlayCommand::Commit(resolved) = prompt.handle_key(&key(PhysicalKey::Enter, None)) else {
         panic!("Enter on a non-empty prompt should commit");
     };
-    let effects = run(&resolved, &mut Workspace::single(tid(1)));
+    let effects = run(&resolved, &mut ArrangementDoc::single(tid(1)));
     assert_eq!(effects.rename_session.as_deref(), Some("notes"));
 }
 
 fn rename_fixture(sessions: &[(u32, &str)]) -> CtxFixture {
-    let mut f = fx(Workspace::single(tid(1)));
+    let mut f = fx(ArrangementDoc::single(tid(1)));
     f.session_name = "work".to_owned();
     f.focused_session = Some(SessionId::new(1));
     f.sessions = sessions

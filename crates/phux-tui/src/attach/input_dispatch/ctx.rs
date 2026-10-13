@@ -12,7 +12,7 @@ use crate::attach::pane_state::AttentionNavigation;
 use crate::attach::plugin_actions::{PluginActionEntry, PluginRunResult};
 use crate::attach::plugin_panes::PluginPaneEntry;
 use crate::attach::sidebar_zones::PeerInputs;
-use crate::layout::{SplitDir, Workspace};
+use crate::layout::{ArrangementDoc, SplitDir};
 use crate::render::overlay::OverlayState;
 use crate::render::{ChromeBreakpoints, Theme};
 
@@ -32,9 +32,9 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// Client-local focus transition/MRU bookkeeping.
     pub focus_history: FocusHistory,
     /// Client-side multi-window mirror. Pane actions operate on the
-    /// active window ([`Workspace::active_window_mut`]); the whole
+    /// active window ([`ArrangementDoc::active_group_mut`]); the whole
     /// workspace is what gets serialized to L3 on a `SET_METADATA`.
-    pub workspace: &'a mut Workspace,
+    pub workspace: &'a mut ArrangementDoc,
     /// A correlated initial layout GET confirmed valid metadata or absence.
     pub layout_read_complete: bool,
     /// Outer-viewport `(cols, rows)`. Used by `apply_resize` to convert

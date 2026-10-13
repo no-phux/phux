@@ -5,7 +5,7 @@ use phux_protocol::ResourceId;
 use phux_protocol::ids::SessionId;
 use phux_protocol::wire::frame::{Command, FrameKind, TerminalSignal};
 
-use crate::layout::{Direction, SplitDir, Workspace};
+use crate::layout::{ArrangementDoc, Direction, SplitDir};
 
 /// A [`phux_config::keybind::ResolvedAction`] with no args.
 pub(super) fn bare_action(action: &str) -> phux_config::keybind::ResolvedAction {
@@ -44,9 +44,9 @@ pub(super) fn focus_pane_action(
 }
 
 /// Flatten a workspace deterministically: window order, then DFS leaf order.
-pub(super) fn ordered_workspace_panes(workspace: &Workspace) -> Vec<(usize, ResourceId)> {
+pub(super) fn ordered_workspace_panes(workspace: &ArrangementDoc) -> Vec<(usize, ResourceId)> {
     workspace
-        .windows
+        .groups
         .iter()
         .enumerate()
         .flat_map(|(window, state)| {
@@ -63,9 +63,9 @@ pub(super) fn ordered_workspace_panes(workspace: &Workspace) -> Vec<(usize, Reso
 }
 
 /// Apply a resolved local focus target without producing shared-layout state.
-pub(super) fn focus_terminal(workspace: &mut Workspace, window: usize, target: ResourceId) {
+pub(super) fn focus_terminal(workspace: &mut ArrangementDoc, window: usize, target: ResourceId) {
     workspace.select(window);
-    if let Some(state) = workspace.active_window_mut() {
+    if let Some(state) = workspace.active_group_mut() {
         state.focus = Some(target);
     }
 }

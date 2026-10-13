@@ -14,7 +14,7 @@
 use std::path::PathBuf;
 
 use phux_client::agent_meta::{AgentMetaState, AgentRecord};
-use phux_client::layout::{SplitDir, Workspace};
+use phux_client::layout::{ArrangementDoc, SplitDir};
 use phux_client::layout_ops::{
     DEFAULT_LAYOUT_GROUP_ID, LayoutMutation, apply_mutation, layout_key,
 };
@@ -94,7 +94,7 @@ fn screen() -> ScreenState {
 
 /// Session `work`'s stored layout holding `panes`, split in order.
 fn layout(panes: &[u32]) -> Vec<u8> {
-    let mut workspace = Workspace::single(ResourceId::local(panes[0]));
+    let mut workspace = ArrangementDoc::single(ResourceId::local(panes[0]));
     for pair in panes.windows(2) {
         apply_mutation(
             &mut workspace,

@@ -29,7 +29,7 @@
 use std::collections::HashMap;
 
 use phux_client::layout::{
-    LayoutDecodeError, LayoutNode as L3Node, SplitDir as L3Dir, Workspace, leaves,
+    ArrangementDoc, LayoutDecodeError, LayoutNode as L3Node, SplitDir as L3Dir, leaves,
 };
 use phux_core::ids::{ResourceId as CoreResourceId, WindowId as CoreWindowId};
 use phux_core::registry::Registry;
@@ -433,11 +433,11 @@ fn l3_and_blob_round_trips_land_back_on_the_corpus_shape() {
 /// decode it back, returning the tree the decoder produced.
 fn round_trip_layout_through_the_envelope(node: &L3Node) -> Result<L3Node, LayoutDecodeError> {
     let first = leaves(node).into_iter().next().expect("a tree has a leaf");
-    let mut workspace = Workspace::single(first);
-    workspace.windows[0].state.tree = Some(node.clone());
+    let mut workspace = ArrangementDoc::single(first);
+    workspace.groups[0].state.tree = Some(node.clone());
     let bytes = workspace.encode_cbor().expect("envelope encodes");
-    let decoded = Workspace::decode_cbor(&bytes)?;
-    Ok(decoded.windows[0]
+    let decoded = ArrangementDoc::decode_cbor(&bytes)?;
+    Ok(decoded.groups[0]
         .state
         .tree
         .clone()

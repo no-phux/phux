@@ -514,7 +514,7 @@ pub struct StatusBarPainter {
     /// `last_row` and force a fresh paint.
     last_viewport: Option<(u16, u16)>,
     /// The window list fed to the `windows` widget. Updated
-    /// by the driver from the `Workspace` and injected into the render
+    /// by the driver from the `ArrangementDoc` and injected into the render
     /// context inside [`Self::paint`]; a change invalidates the cache.
     windows: Vec<WindowInfo>,
     /// A fixed config-error line painted instead of the widgets.

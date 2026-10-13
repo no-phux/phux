@@ -14,7 +14,7 @@ use phux_protocol::wire::frame::{
 
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
-use crate::layout::Workspace;
+use crate::layout::ArrangementDoc;
 use crate::layout_ops::{LayoutOps, LayoutOpsError};
 use crate::rename::{BarrierVerdict, NamedSession, RenamePlan, RenameRefusal};
 use phux_protocol::wire::info::SessionSnapshot;
@@ -318,7 +318,7 @@ pub async fn create_session(
         };
         session_id
     };
-    let fallback = Workspace::single(ResourceId::local(created.terminal_id));
+    let fallback = ArrangementDoc::single(ResourceId::local(created.terminal_id));
     LayoutOps::new(conn, session_id, 10)
         .read_or_seed(fallback)
         .await?;

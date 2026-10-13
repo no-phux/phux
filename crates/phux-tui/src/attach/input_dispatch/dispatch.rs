@@ -22,7 +22,7 @@ use crate::attach::pane_state::{
     PaneSlot, clear_attention_on_input, published_replica, published_terminal,
     reanchor_predict_to_pane,
 };
-use crate::layout::Workspace;
+use crate::layout::ArrangementDoc;
 use crate::predict::{Overlay, PredictionState};
 use crate::render::chrome::sidebar::{SidebarHit, hit_test};
 use crate::render::overlay::{
@@ -269,7 +269,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             .or_else(|| {
                 self.ctx
                     .workspace
-                    .active_window()
+                    .active_group()
                     .and_then(|w| w.focus.as_ref())
             })
             .cloned()
@@ -542,7 +542,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         let Some(fid) = self
             .ctx
             .workspace
-            .active_window()
+            .active_group()
             .and_then(|w| w.focus.as_ref())
         else {
             return false;
@@ -655,7 +655,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         let focused = self
             .ctx
             .workspace
-            .active_window()
+            .active_group()
             .and_then(|w| w.focus.as_ref());
         let origin = focused
             .and_then(|fid| self.panes.get(fid))
@@ -894,7 +894,7 @@ pub(super) fn predicted_split_size(
     ctx: &DispatchCtx<'_>,
     pending: &PendingSplit,
 ) -> Option<(u16, u16)> {
-    let active = ctx.workspace.active_window()?.clone();
+    let active = ctx.workspace.active_group()?.clone();
     spawn_initial_size(ctx, |content| {
         actions::predicted_spawn_dims(&active, pending, content)
     })
@@ -910,7 +910,7 @@ pub(super) const fn set_spawn_initial_size(frame: &mut FrameKind, size: Option<(
 }
 
 pub(in crate::attach) fn focused_pane_rect_for(
-    workspace: &Workspace,
+    workspace: &ArrangementDoc,
     zoomed: Option<&ResourceId>,
     focused_resource: Option<&ResourceId>,
     viewport: (u16, u16),
@@ -922,7 +922,7 @@ pub(in crate::attach) fn focused_pane_rect_for(
         return content;
     };
     workspace
-        .render_window(zoomed)
+        .render_group(zoomed)
         .and_then(|layout| {
             crate::multi_pane::compute_layout_in(&layout, content, viewport)
                 .rects
@@ -937,7 +937,7 @@ pub(in crate::attach) fn focused_pane_rect_for(
 /// copy mode is the overlay that cares.
 pub(in crate::attach) fn sync_overlays_to_focused_pane(
     overlays: &mut OverlayState,
-    workspace: &Workspace,
+    workspace: &ArrangementDoc,
     zoomed: Option<&ResourceId>,
     focused_resource: Option<&ResourceId>,
     viewport: (u16, u16),

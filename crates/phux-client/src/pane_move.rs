@@ -14,7 +14,7 @@ use thiserror::Error;
 
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
-use crate::layout::{LayoutNode, SplitDir, Workspace, leaves};
+use crate::layout::{ArrangementDoc, LayoutNode, SplitDir, leaves};
 use crate::layout_ops::{
     DEFAULT_LAYOUT_GROUP_ID, LayoutMutation, LayoutOps, LayoutOpsError, layout_key,
     validate_projection_key,
@@ -26,7 +26,7 @@ pub struct PaneMoveOutcome {
     /// Fresh server-reported name of the destination session.
     pub destination_session_name: String,
     /// Confirmed destination workspace, suitable for immediate TUI adoption.
-    pub destination_workspace: Workspace,
+    pub destination_workspace: ArrangementDoc,
     /// Whether L1 ownership crossed a session boundary.
     pub cross_session: bool,
 }
@@ -502,23 +502,23 @@ fn sibling_in_window(snapshot: &SessionSnapshot, source: &ResourceId) -> Option<
         .map(|resource| resource.id.clone())
 }
 
-fn workspace_contains(workspace: &Workspace, terminal: &ResourceId) -> bool {
+fn workspace_contains(workspace: &ArrangementDoc, terminal: &ResourceId) -> bool {
     workspace
-        .windows
+        .groups
         .iter()
         .filter_map(|window| window.state.tree.as_ref())
         .any(|tree| leaves(tree).contains(terminal))
 }
 
 fn workspace_has_placement(
-    workspace: &Workspace,
+    workspace: &ArrangementDoc,
     target: &ResourceId,
     moved: &ResourceId,
     dir: SplitDir,
     ratio: f32,
 ) -> bool {
     workspace
-        .windows
+        .groups
         .iter()
         .filter_map(|window| window.state.tree.as_ref())
         .any(|tree| tree_has_placement(tree, target, moved, dir, ratio))
@@ -557,7 +557,7 @@ mod tests {
     use phux_protocol::wire::info::{ResourceInfo, SessionInfo, WindowInfo};
 
     use super::*;
-    use crate::layout::{LayoutState, WindowState};
+    use crate::layout::{Group, LayoutState};
     use crate::testkit::{ScriptSpec, serve_one};
 
     fn tid(id: u32) -> ResourceId {
@@ -573,9 +573,9 @@ mod tests {
         }
     }
 
-    fn workspace(name: &str, tree: LayoutNode, focus: u32) -> Workspace {
-        Workspace {
-            windows: vec![WindowState::new(
+    fn workspace(name: &str, tree: LayoutNode, focus: u32) -> ArrangementDoc {
+        ArrangementDoc {
+            groups: vec![Group::new(
                 name.to_owned(),
                 LayoutState {
                     tree: Some(tree),
@@ -704,7 +704,7 @@ mod tests {
             .unwrap();
         assert!(!outcome.cross_session);
         assert_eq!(
-            outcome.destination_workspace.windows[0].state.focus,
+            outcome.destination_workspace.groups[0].state.focus,
             Some(tid(1)),
             "focus follows the moved Terminal identity"
         );
@@ -729,7 +729,7 @@ mod tests {
         assert!(outcome.cross_session);
         assert_eq!(
             leaves(
-                outcome.destination_workspace.windows[0]
+                outcome.destination_workspace.groups[0]
                     .state
                     .tree
                     .as_ref()
@@ -738,7 +738,7 @@ mod tests {
             vec![tid(3), tid(1)]
         );
         assert_eq!(
-            outcome.destination_workspace.windows[0].state.focus,
+            outcome.destination_workspace.groups[0].state.focus,
             Some(tid(1))
         );
         drop(conn);
@@ -754,13 +754,13 @@ mod tests {
                 FrameKind::SetMetadata { key, value, .. }
                     if key == &layout_key(SessionId::new(1)) =>
                 {
-                    Workspace::decode_cbor(value).ok()
+                    ArrangementDoc::decode_cbor(value).ok()
                 }
                 _ => None,
             })
             .expect("source cleanup write");
         assert_eq!(
-            leaves(source_write.windows[0].state.tree.as_ref().unwrap()),
+            leaves(source_write.groups[0].state.tree.as_ref().unwrap()),
             vec![tid(2)]
         );
     }

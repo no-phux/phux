@@ -18,7 +18,7 @@ use phux_protocol::ids::ResourceId;
 
 use super::paint::{ContentLayout, SidebarReservation, content_layout};
 use super::pane_state::PaneSlot;
-use crate::layout::Workspace;
+use crate::layout::ArrangementDoc;
 use crate::render::Theme;
 use crate::render::chrome::sidebar::SidebarPainter;
 use crate::render::chrome::status_bar::{Position, StatusBarPainter};
@@ -78,7 +78,7 @@ impl<'a> ChromeCtx<'a> {
 #[derive(Clone, Copy)]
 pub(super) struct PaneScene<'a> {
     /// The layout mirror.
-    pub(super) workspace: &'a Workspace,
+    pub(super) workspace: &'a ArrangementDoc,
     /// The client-local pane slots.
     pub(super) panes: &'a HashMap<ResourceId, PaneSlot>,
     /// The focused leaf, when there is one.

@@ -15,7 +15,7 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use phux_client::attach::connection::Connection;
-use phux_client::layout::{LayoutNode, SplitDir, Workspace};
+use phux_client::layout::{ArrangementDoc, LayoutNode, SplitDir};
 use phux_client::layout_ops::{LayoutOps, LayoutOpsError, layout_key};
 use phux_protocol::ids::{GroupId, ResourceId, SessionId};
 use phux_protocol::wire::frame::{FrameKind, Scope};
@@ -118,7 +118,7 @@ impl ServerGuard {
             let mut conn = Connection::connect(&self.socket)
                 .await
                 .expect("connect metadata client");
-            let workspace = Workspace::single(pane.clone());
+            let workspace = ArrangementDoc::single(pane.clone());
             conn.send(&FrameKind::SetMetadata {
                 request_id: 1,
                 scope: Scope::Group(GroupId::new(1)),
@@ -148,11 +148,11 @@ impl ServerGuard {
         });
     }
 
-    fn read_layout(&self) -> Result<Workspace, LayoutOpsError> {
+    fn read_layout(&self) -> Result<ArrangementDoc, LayoutOpsError> {
         self.read_layout_for(SESSION)
     }
 
-    fn read_layout_for(&self, session_name: &str) -> Result<Workspace, LayoutOpsError> {
+    fn read_layout_for(&self, session_name: &str) -> Result<ArrangementDoc, LayoutOpsError> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -222,7 +222,7 @@ impl ServerGuard {
         });
     }
 
-    fn wait_for_layout(&self) -> Workspace {
+    fn wait_for_layout(&self) -> ArrangementDoc {
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
             match self.read_layout() {
@@ -408,8 +408,8 @@ fn split(dir: SplitDir, left: LayoutNode, right: LayoutNode) -> LayoutNode {
 
 fn assert_tree(server: &ServerGuard, expected: LayoutNode) {
     let layout = server.read_layout().expect("persisted layout");
-    assert_eq!(layout.windows.len(), 1);
-    assert_eq!(layout.windows[0].state.tree, Some(expected));
+    assert_eq!(layout.groups.len(), 1);
+    assert_eq!(layout.groups[0].state.tree, Some(expected));
 }
 
 #[test]
@@ -420,7 +420,7 @@ fn spatial_cli_persists_topology_and_preserves_attached_focus() {
     server.seed_layout(&seed);
     let mut attached = AttachedClient::start(&server);
     let initial = server.wait_for_layout();
-    assert_eq!(initial.windows[0].state.tree, Some(leaf(&seed)));
+    assert_eq!(initial.groups[0].state.tree, Some(leaf(&seed)));
     // Metadata was seeded before attach, so `wait_for_layout` can return
     // before this client has subscribed. Chrome resize plus a painted
     // prompt is the attach barrier (client ready *and* the seed shell).
@@ -548,13 +548,13 @@ fn json_created_sessions_are_immediately_layout_ready_for_cross_session_move() {
         server
             .read_layout_for("headless-source")
             .expect("source layout seeded"),
-        Workspace::single(source.clone())
+        ArrangementDoc::single(source.clone())
     );
     assert_eq!(
         server
             .read_layout_for("headless-destination")
             .expect("destination layout seeded"),
-        Workspace::single(destination.clone())
+        ArrangementDoc::single(destination.clone())
     );
 
     let before = run_in_pane(&server, &source, "printf 'ALF7_BEFORE:%s\\n' \"$$\"");
@@ -580,7 +580,7 @@ fn json_created_sessions_are_immediately_layout_ready_for_cross_session_move() {
         .expect("moved destination layout");
     assert_eq!(
         phux_client::layout::leaves(
-            destination_layout.windows[0]
+            destination_layout.groups[0]
                 .state
                 .tree
                 .as_ref()
