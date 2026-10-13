@@ -14,6 +14,7 @@ the key. One dedupe substrate serves input batches and creates.
 
 Status: Accepted
 Date: 2026-09-14
+See [ADR-0161](./0161-organization-is-typed-commands-behind-a-feature-bit.md) for operation ids on organization commands.
 
 ## Context
 

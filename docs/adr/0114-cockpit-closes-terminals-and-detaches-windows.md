@@ -14,6 +14,7 @@ Scratch terminals remain ephemeral. These rules apply to every command surface.
 
 Status: Accepted
 Date: 2026-09-11
+Superseded in part by [ADR-0160](./0160-sessions-own-resources-and-window-is-retired.md): sessions persist by explicit lifetime, not by a Cockpit keep-empty opt-in.
 
 ## Context
 

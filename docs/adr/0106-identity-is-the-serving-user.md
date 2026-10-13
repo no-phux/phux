@@ -15,6 +15,7 @@ with the service manager, not the server.
 
 Status: Accepted
 Date: 2026-09-10
+See [ADR-0163](./0163-actors-and-delegated-agent-grants.md) for the owner principal beside agent and automation credentials.
 
 ## Context
 

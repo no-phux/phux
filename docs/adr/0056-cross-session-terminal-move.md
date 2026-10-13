@@ -14,6 +14,7 @@ caller if the destination layout write fails.
 
 Status: Accepted
 Date: 2026-07-25
+Superseded in part by [ADR-0161](./0161-organization-is-typed-commands-behind-a-feature-bit.md): the move is a typed membership edit, and placement is the typed session arrangement.
 
 ## Context
 

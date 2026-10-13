@@ -14,6 +14,7 @@ kill purges it. Retention is opt-in per spawn and off by default.
 
 Status: Accepted
 Date: 2026-09-14
+Superseded in part by [ADR-0162](./0162-organization-records-persist-and-activations-reconcile.md): the per-spawn retention flag becomes the resource exit policy; the retention mechanism stays.
 
 ## Context
 
