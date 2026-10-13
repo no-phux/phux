@@ -12,12 +12,14 @@ const { values } = parseArgs({
     app: { type: "string" },
     phux: { type: "string" },
     output: { type: "string" },
+    // Hosted CI has only a virtual display, which never confirms a drawable.
+    "allow-unconfirmed-present": { type: "boolean" },
     help: { type: "boolean" },
   },
 });
 if (values.help) {
   console.log(
-    "bun clients/desktop/scripts/smoke-app.ts --app <Phux.app> --phux <same-checkout-cli> [--output <evidence-dir>]",
+    "bun clients/desktop/scripts/smoke-app.ts --app <Phux.app> --phux <same-checkout-cli> [--output <evidence-dir>] [--allow-unconfirmed-present]",
   );
   process.exit(0);
 }
@@ -29,6 +31,7 @@ assert(
   process.platform === "darwin" && process.arch === "arm64",
   "Requires Apple silicon macOS with a graphical login and Xcode command-line tools",
 );
+const allowSubmitted = values["allow-unconfirmed-present"] === true;
 const appPath = resolve(values.app);
 const executable = join(appPath, "Contents/MacOS/phux-desktop");
 const phux = resolve(values.phux);
@@ -171,6 +174,8 @@ function appArgs(dir: string, smoke: boolean): string[] {
   if (smoke) args.push("--smoke");
   return args;
 }
+/** How each capture was shown: confirmed by the display, or only submitted. */
+const presentations: Record<string, string> = {};
 async function capture(label: string, expected = marker): Promise<Bun.Subprocess> {
   const dir = join(evidence, label);
   mkdirSync(dir, { recursive: true });
@@ -178,7 +183,7 @@ async function capture(label: string, expected = marker): Promise<Bun.Subprocess
   await until(
     `${label} presented`,
     () => {
-      assertPresentedEvidence(dir, session);
+      presentations[label] = assertPresentedEvidence(dir, session, allowSubmitted).presentation;
       return true;
     },
     app,
@@ -247,7 +252,11 @@ try {
     () => {
       if (smoked.exitCode === null) return false;
       if (smoked.exitCode !== 0) throw new Error(`--smoke exited ${smoked.exitCode}`);
-      assertPresentedEvidence(smokeDir, session);
+      presentations["smoke-exit"] = assertPresentedEvidence(
+        smokeDir,
+        session,
+        allowSubmitted,
+      ).presentation;
       return true;
     },
     undefined,
@@ -309,6 +318,7 @@ try {
     marker,
     evidence,
     scenarios: ["smoke-exit", "launch", "SIGKILL/relaunch", "SIGTERM/relaunch"],
+    presentations,
     boundary:
       "App process death, not server death/reboot; PNG marker verified with Vision OCR and presented layout",
   };

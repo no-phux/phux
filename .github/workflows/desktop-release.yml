@@ -118,7 +118,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/desktop-qualified"
           ditto -x -k "$RUNNER_TEMP/desktop-release/$ARCHIVE" "$RUNNER_TEMP/desktop-qualified"
           codesign --verify --deep --strict --verbose=2 "$RUNNER_TEMP/desktop-qualified/Phux.app"
-          bun harness/clients/desktop/scripts/smoke-app.ts --app "$RUNNER_TEMP/desktop-qualified/Phux.app" --phux "$GITHUB_WORKSPACE/source/target/release/phux" --output "$RUNNER_TEMP/desktop-evidence"
+          # Hosted runners have only a virtual display, which never confirms a
+          # presented drawable; the evidence records `submitted` instead.
+          bun harness/clients/desktop/scripts/smoke-app.ts --app "$RUNNER_TEMP/desktop-qualified/Phux.app" --phux "$GITHUB_WORKSPACE/source/target/release/phux" --output "$RUNNER_TEMP/desktop-evidence" --allow-unconfirmed-present
       - name: Exercise installer transactions
         run: python3 harness/scripts/test-install-desktop.py
       - name: Retain packaged runtime evidence

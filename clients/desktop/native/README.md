@@ -54,7 +54,9 @@ resolution failure still opens the window, with the reason shown.
   list it in that module's `TABLE`.
 - **`--evidence DIR`:** appends `perf.jsonl` once a second and writes
   `presented.png`, `layout.json` and `interaction.json` for the first frame
-  GPUI reports drawable-presented with a painted terminal. Windows never take
+  whose exact drawable GPUI reports for a visible window with a painted
+  terminal. `presented` says whether the display confirmed it; a virtual
+  display (hosted CI) never does, and `submitted` is then the claim. Windows never take
   focus in this mode. `--smoke` exits 0 after writing. The files are the proof;
   `scripts/smoke-app.ts` checks them.
 
