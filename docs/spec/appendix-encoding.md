@@ -120,6 +120,17 @@ example `Command::GetScreen`'s trailing `cells` flag): a value that ends
 before a trailing nested field decodes that field at its documented default.
 The field-tagged skip-by-length rule of §1 applies at the message-body level.
 
+A nested value MAY instead be a field-tagged record, read with the §1 rules
+inside its parent's length: the `asked`, `pane_spawned`, `journal_gap`, and
+`source_gap` event bodies, the snapshot extension block, and every
+organization command, value, record, and event body
+([L1.md](./L1.md) §5.7). The organization bodies share one field-id space,
+so an id means the same thing in a command, a result, and an event, and a
+new organization field is a new id that every older decoder skips. A
+field-tagged record inside an organization body (a `LaunchSpec`, a session
+or resource record) is itself a field sequence; positional leaves inside it
+(`LiveTarget`, an arrangement document) follow this section.
+
 ### 2.1 Leaf `str` / `bytes` length prefix (u32, not varint)
 
 A `str` or `bytes` value appearing as a leaf inside a positional value is

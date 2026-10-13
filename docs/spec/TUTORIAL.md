@@ -85,8 +85,10 @@ Server replies (frame type 0x80):
   state. Patch differences are compatible, and the server returns its current
   patch.
 - `layers` is intersected once for the connection. `0x01` is L1 only and
-  `0x05` is L1+L3; L2's `0x02` bit remains reserved and unmounted (see
-  [L2.md](./L2.md)).
+  `0x05` is L1+L3; L2's `0x02` bit remains reserved and unmounted.
+  Organization ([L2.md](./L2.md)) is negotiated by the `ORGANIZATION` bit in
+  `features_ext` instead, and its commands ride `COMMAND`
+  ([L1.md](./L1.md) §5.7).
 - `BootstrapCapabilities::new()` offers only the two synthesized compatibility
   profiles. Native is explicit opt-in after a successful engine probe: both
   peers must share the exact official snapshot-v1 codec and all four required features
@@ -376,7 +378,9 @@ This walkthrough covers the happy path. For details:
 - **Full frame catalog and encoding:** [proto.md §7](./proto.md)
 - **Terminal state, snapshots, and flow control:** [L1.md](./L1.md)
 - **All input event types:** [input.md](./input.md)
-- **Metadata, session names, and grouping conventions:** [L3.md](./L3.md)
+- **Sessions, membership, and arrangements:** [L2.md](./L2.md), with the
+  commands in [L1.md §5.7](./L1.md)
+- **Metadata and the legacy session keys:** [L3.md](./L3.md)
 - **Encoding primitives (varints, strings, tagged unions):** [appendix-encoding.md](./appendix-encoding.md)
 
 For the conceptual picture, read [CONCEPTS.md](../CONCEPTS.md).

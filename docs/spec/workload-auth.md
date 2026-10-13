@@ -901,3 +901,13 @@ whose payload Group disagrees; every multi-target partial grant; satellite relay
 bypass; SSH-stdio in both closed modes; remote `SIGNAL(Global)` attempting
 SHUTDOWN; registry ceiling reduction; and absence of secret bytes from argv,
 environment, stdout, stderr, diagnostics, and logs.
+
+Scope-schema cases (§5): bits `0xC0` refused in a v1 image and accepted in a
+v2 one; a v1 `SIGNAL` grant reaching `RESOURCE_TERMINATE` and
+`SESSION_DELETE` and a v1 `CREATE` grant reaching `RESOURCE_MOVE`; a v1 held
+`?signal` reaching no `TERMINATE` row; an `organize` or `terminate` name
+refused in a v1 record; and every legacy row admitting exactly the grants it
+admitted under v1. Organization cases: a resource moving out of a ceiling
+Group by `RESOURCE_MOVE` losing the access it had through that Group in the
+same transaction; a `RESOURCE_MOVE_MANY` with one unauthorized source session
+refused whole; and `RESOURCE_ABANDON` refused off the owner Unix socket.
