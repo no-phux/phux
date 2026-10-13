@@ -419,8 +419,11 @@ fn switches_sessions_and_picks_up_a_foreign_pane_without_redialing() {
 }
 
 /// Feed what a queued-delivery driver retained, as a binding does.
-fn feed_queued(client: &Client) {
+/// Reports whether a frame was waiting, so a drain can tell progress
+/// from an idle socket.
+fn feed_queued(client: &Client) -> bool {
     let (epoch, frames) = client.take_inbound();
+    let fed = !frames.is_empty();
     for frame in frames {
         client
             .with_control(|control| {
@@ -431,6 +434,59 @@ fn feed_queued(client: &Client) {
                 }
             })
             .expect("feed a queued frame");
+    }
+    fed
+}
+
+/// Wakes the flood drain. The runtime calls this off its own thread, and
+/// never while a lock is held.
+#[derive(Debug)]
+struct FloodGate {
+    notify: tokio::sync::Notify,
+}
+
+impl Listener for FloodGate {
+    fn on_activity(&self) {
+        self.notify.notify_one();
+    }
+}
+
+/// The flood is done when the terminal exits. [`DEADLINE`] is idle time
+/// since the last inbound batch or event, not a wall clock over the whole
+/// drain: hosted CI can still be delivering `seq`'s output past 20s.
+async fn wait_for_flood_exit(client: &Client) {
+    let gate = Arc::new(FloodGate {
+        notify: tokio::sync::Notify::new(),
+    });
+    client.set_listener(gate.clone());
+    let mut idle = Instant::now();
+    loop {
+        let fed = feed_queued(client);
+        let events = client.take_events();
+        if events
+            .iter()
+            .any(|event| matches!(event, Event::Exited { .. }))
+        {
+            return;
+        }
+        if fed || !events.is_empty() {
+            idle = Instant::now();
+        }
+        // A batch can land between the drain and this check; the listener
+        // wake is edge-triggered, so do not wait while it is already queued.
+        if client.poll_pending() {
+            assert!(
+                idle.elapsed() < DEADLINE,
+                "timed out waiting for the flood to finish arriving"
+            );
+            continue;
+        }
+        let remaining = DEADLINE.saturating_sub(idle.elapsed());
+        assert!(
+            !remaining.is_zero(),
+            "timed out waiting for the flood to finish arriving"
+        );
+        let _ = tokio::time::timeout(remaining, gate.notify.notified()).await;
     }
 }
 
@@ -489,14 +545,7 @@ fn a_consumer_that_falls_behind_backs_up_the_socket_without_redialing() {
         tokio::time::sleep(Duration::from_millis(1500)).await;
         assert_epoch_held(&client, epoch, "a full queue redialed");
 
-        wait_until("the flood to finish arriving", || {
-            feed_queued(&client);
-            client
-                .take_events()
-                .iter()
-                .any(|event| matches!(event, Event::Exited { .. }))
-        })
-        .await;
+        wait_for_flood_exit(&client).await;
         assert_epoch_held(&client, epoch, "draining redialed");
         assert_eq!(client.status(), Status::Attached);
 
