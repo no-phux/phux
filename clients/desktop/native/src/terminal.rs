@@ -257,6 +257,22 @@ impl Render for Terminal {
                     cx.emit(TerminalEvent::Activated);
                 })
             })
+            // A drag-select or reported press released outside the pane still ends.
+            .on_mouse_up_out(MouseButton::Left, {
+                let release = release.clone();
+                move |event, window, cx| {
+                    release.update(cx, |state, cx| {
+                        let _ = state.mouse_up(event, window, cx);
+                    });
+                }
+            })
+            // Right and middle presses reach mouse-reporting programs (vim mouse=a, tmux).
+            .on_mouse_down(MouseButton::Right, other_press(&press))
+            .on_mouse_down(MouseButton::Middle, other_press(&press))
+            .on_mouse_up(MouseButton::Right, other_release(&release))
+            .on_mouse_up(MouseButton::Middle, other_release(&release))
+            .on_mouse_up_out(MouseButton::Right, other_release(&release))
+            .on_mouse_up_out(MouseButton::Middle, other_release(&release))
             .on_scroll_wheel(move |event, window, cx| {
                 let handled = wheel.update(cx, |state, cx| state.scroll(event, window, cx).unwrap_or(false));
                 if handled {
@@ -303,6 +319,26 @@ impl Render for Terminal {
                 )
                 .size_full(),
             )
+    }
+}
+
+/// A right or middle press: reported to a mouse-reporting program, otherwise left to the window.
+fn other_press(input: &gpui::Entity<crate::input::TerminalInput>) -> impl Fn(&gpui::MouseDownEvent, &mut Window, &mut gpui::App) + 'static {
+    let input = input.clone();
+    move |event, window, cx| {
+        let handled = input.update(cx, |state, cx| state.mouse_down(event, window, cx).unwrap_or(false));
+        if handled {
+            cx.stop_propagation();
+        }
+    }
+}
+
+fn other_release(input: &gpui::Entity<crate::input::TerminalInput>) -> impl Fn(&gpui::MouseUpEvent, &mut Window, &mut gpui::App) + 'static {
+    let input = input.clone();
+    move |event, window, cx| {
+        input.update(cx, |state, cx| {
+            let _ = state.mouse_up(event, window, cx);
+        });
     }
 }
 
