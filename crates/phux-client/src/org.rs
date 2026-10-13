@@ -380,6 +380,57 @@ impl OrgInventory {
     }
 }
 
+/// Display names for the keys one output lists, written `^ab12cd`.
+///
+/// Each is the key's shortest prefix that no other listed key shares, at
+/// least six base32 digits ([`phux_core::Key16::short`]). Session and
+/// resource keys share one namespace, as
+/// [`OrgInventory::resolve_key_prefix`] resolves both.
+#[derive(Debug, Clone, Default)]
+pub struct KeyNames {
+    keys: Vec<phux_core::ResourceKey>,
+}
+
+impl KeyNames {
+    /// Names unique among `keys` (raw key bytes).
+    #[must_use]
+    pub fn new(keys: impl IntoIterator<Item = [u8; 16]>) -> Self {
+        Self {
+            keys: keys
+                .into_iter()
+                .map(phux_core::ResourceKey::from_bytes)
+                .collect(),
+        }
+    }
+
+    /// Names unique among every session and resource record of `inventory`.
+    #[must_use]
+    pub fn of_inventory(inventory: &OrgInventory) -> Self {
+        Self::new(
+            inventory
+                .sessions
+                .iter()
+                .map(|session| *session.key.as_bytes())
+                .chain(
+                    inventory
+                        .resources
+                        .iter()
+                        .map(|resource| *resource.key.as_bytes()),
+                ),
+        )
+    }
+
+    /// `^` and the shortest unique prefix of `key`'s text.
+    #[must_use]
+    pub fn display(&self, key: [u8; 16]) -> String {
+        use phux_core::Key16 as _;
+        format!(
+            "^{}",
+            phux_core::ResourceKey::from_bytes(key).short(self.keys.iter())
+        )
+    }
+}
+
 /// What a key prefix names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyMatch {

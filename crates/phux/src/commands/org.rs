@@ -12,9 +12,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use phux_client::attach::connection::Connection;
-use phux_client::org::{self, KeyMatch, OrgError, OrgInventory};
+use phux_client::org::{self, KeyMatch, KeyNames, OrgError, OrgInventory};
 use phux_client::selector::{self, Selector};
-use phux_protocol::ids::{KEY_MIN_PREFIX, ResourceKey, SessionKey};
+use phux_protocol::ids::{ResourceKey, SessionKey};
 use phux_protocol::wire::frame::{Committed, OrgFilter, ResourceRecord, SessionRecord};
 
 use crate::commands::confirm;
@@ -76,13 +76,10 @@ impl Failure {
     }
 }
 
-/// The six-digit display prefix `phux ls` and `phux kill` print for a key.
-pub(crate) fn short_key(text: &str) -> &str {
-    text.get(..KEY_MIN_PREFIX).unwrap_or(text)
-}
-
-fn key_text(key: &impl std::fmt::Display) -> String {
-    format!("^{}", short_key(&key.to_string()))
+/// `^` and the shortest prefix of `key` no other record of `inventory`
+/// shares ([`KeyNames`]).
+fn key_text(inventory: &OrgInventory, key: [u8; 16]) -> String {
+    KeyNames::of_inventory(inventory).display(key)
 }
 
 /// Connect to `server`, reporting an unreachable server under `verb`.
@@ -240,13 +237,13 @@ pub(crate) fn run_rm(target: &str, yes: bool, json: bool, socket: Option<PathBuf
         let (result, key, line) = match &resolved {
             Target::Session(record) => (
                 org::delete_session(conn, record.key).await,
-                key_text(&record.key),
+                key_text(&inventory, *record.key.as_bytes()),
                 format!("deleted session {:?}", record.name),
             ),
             Target::Resource(record) => (
                 org::remove_resource(conn, record.key).await,
-                key_text(&record.key),
-                format!("removed {}", key_text(&record.key)),
+                key_text(&inventory, *record.key.as_bytes()),
+                format!("removed {}", key_text(&inventory, *record.key.as_bytes())),
             ),
         };
         finish(json, "rm", target, &key, result, &line)
@@ -279,7 +276,7 @@ pub(crate) fn run_relaunch(target: &str, json: bool, socket: Option<PathBuf>) ->
             }
             Err(failure) => return failure.emit(json),
         };
-        let key = key_text(&record.key);
+        let key = key_text(&inventory, *record.key.as_bytes());
         let result = org::relaunch(conn, record.key).await;
         let line = result
             .as_ref()
@@ -359,19 +356,23 @@ pub(crate) fn run_restore(session: Option<&str>, json: bool, socket: Option<Path
             let result = org::relaunch(conn, target).await;
             results.push((target, result));
         }
-        render_restore(json, &results)
+        render_restore(json, &KeyNames::of_inventory(&inventory), &results)
     })
 }
 
 /// The `phux restore` output: one line or document entry per resource.
-fn render_restore(json: bool, results: &[(ResourceKey, Result<Committed, OrgError>)]) -> ExitCode {
+fn render_restore(
+    json: bool,
+    names: &KeyNames,
+    results: &[(ResourceKey, Result<Committed, OrgError>)],
+) -> ExitCode {
     let failed = results.iter().any(|(_, result)| result.is_err());
     if json {
         let entries: Vec<serde_json::Value> = results
             .iter()
             .map(|(key, result)| match result {
                 Ok(committed) => serde_json::json!({
-                    "key": key_text(key),
+                    "key": names.display(*key.as_bytes()),
                     "result": "relaunched",
                     "terminal_id": committed
                         .target
@@ -379,7 +380,7 @@ fn render_restore(json: bool, results: &[(ResourceKey, Result<Committed, OrgErro
                         .map(|live| phux_client::selector::format_terminal_id(&live.resource)),
                 }),
                 Err(err) => serde_json::json!({
-                    "key": key_text(key),
+                    "key": names.display(*key.as_bytes()),
                     "result": "refused",
                     "code": err.code(),
                     "message": err.to_string(),
@@ -396,7 +397,7 @@ fn render_restore(json: bool, results: &[(ResourceKey, Result<Committed, OrgErro
         outln!("Nothing to restore: no pane was ended by a server restart.");
         return ExitCode::SUCCESS;
     }
-    for line in restore_lines(results) {
+    for line in restore_lines(names, results) {
         outln!("{line}");
     }
     if failed {
@@ -406,21 +407,26 @@ fn render_restore(json: bool, results: &[(ResourceKey, Result<Committed, OrgErro
     }
 }
 
-fn restore_lines(results: &[(ResourceKey, Result<Committed, OrgError>)]) -> Vec<String> {
+fn restore_lines(
+    names: &KeyNames,
+    results: &[(ResourceKey, Result<Committed, OrgError>)],
+) -> Vec<String> {
     results
         .iter()
-        .map(|(key, result)| match result {
-            Ok(committed) => committed.target.as_ref().map_or_else(
-                || format!("{}  relaunched", key_text(key)),
-                |live| {
-                    format!(
-                        "{}  relaunched as {}",
-                        key_text(key),
-                        phux_client::selector::format_terminal_id(&live.resource)
-                    )
-                },
-            ),
-            Err(err) => format!("{}  refused: {err}", key_text(key)),
+        .map(|(key, result)| {
+            let key = names.display(*key.as_bytes());
+            match result {
+                Ok(committed) => committed.target.as_ref().map_or_else(
+                    || format!("{key}  relaunched"),
+                    |live| {
+                        format!(
+                            "{key}  relaunched as {}",
+                            phux_client::selector::format_terminal_id(&live.resource)
+                        )
+                    },
+                ),
+                Err(err) => format!("{key}  refused: {err}"),
+            }
         })
         .collect()
 }
@@ -512,7 +518,7 @@ pub(crate) fn run_move_into_session(
             }
             Err(failure) => return failure.emit(json),
         };
-        let key = key_text(&record.key);
+        let key = key_text(&inventory, *record.key.as_bytes());
         let result = org::move_resource(conn, record.key, to).await;
         let line = format!("moved {key} into session {dest:?}");
         finish(json, "mv", source, &key, result, &line)
@@ -550,7 +556,7 @@ pub(crate) fn run_rename_resource(target: &str, new_name: &str, server: ServerSp
             }
             Err(failure) => return failure.emit(false),
         };
-        let key = key_text(&record.key);
+        let key = key_text(&inventory, *record.key.as_bytes());
         let result = org::rename_resource(&mut conn, record.key, Some(new_name)).await;
         drop(conn);
         finish(
@@ -566,16 +572,31 @@ pub(crate) fn run_rename_resource(target: &str, new_name: &str, server: ServerSp
 
 #[cfg(test)]
 mod tests {
+    use phux_protocol::ids::KEY_MIN_PREFIX;
+
     use super::*;
 
+    /// A key prints as its shortest prefix no other listed key shares, at
+    /// least six digits, and that prefix is the protocol key's own text.
     #[test]
-    fn keys_print_as_their_six_digit_prefix() {
-        assert_eq!(short_key("abcdefghij"), "abcdef");
-        assert_eq!(short_key("abc"), "abc");
-        let key = ResourceKey::new([7; 16]).expect("non-zero");
-        let text = key_text(&key);
-        assert!(text.starts_with('^'));
-        assert_eq!(text.len(), 1 + KEY_MIN_PREFIX);
+    fn keys_print_as_their_shortest_unique_prefix() {
+        let mut near = [7; 16];
+        near[15] = 8;
+        let (a, b) = (
+            ResourceKey::new([7; 16]).expect("non-zero"),
+            ResourceKey::new(near).expect("non-zero"),
+        );
+        let alone = KeyNames::new([*a.as_bytes()]).display(*a.as_bytes());
+        assert_eq!(alone.len(), 1 + KEY_MIN_PREFIX);
+        assert!(a.to_string().starts_with(&alone[1..]), "{alone} vs {a}");
+        let crowded = KeyNames::new([*a.as_bytes(), *b.as_bytes()]);
+        let (da, db) = (
+            crowded.display(*a.as_bytes()),
+            crowded.display(*b.as_bytes()),
+        );
+        assert!(da.len() > 1 + KEY_MIN_PREFIX, "{da}");
+        assert_ne!(da, db);
+        assert!(!b.to_string().starts_with(&da[1..]), "{da} also names {b}");
     }
 
     /// A bare session name renames the session; every pane form labels a
@@ -606,7 +627,7 @@ mod tests {
             ),
             (refused, Err(OrgError::Refused(Refusal::ExecutionUncertain))),
         ];
-        let lines = restore_lines(&results);
+        let lines = restore_lines(&KeyNames::default(), &results);
         assert_eq!(lines.len(), 2);
         assert!(lines[0].ends_with("relaunched"), "{lines:?}");
         assert!(lines[1].contains("refused"), "{lines:?}");

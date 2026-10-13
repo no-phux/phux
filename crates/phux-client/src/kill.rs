@@ -397,14 +397,15 @@ impl KillError {
 /// The sentence for a workflow that did not delete its session: every
 /// target that is not gone, and the session's own outcome.
 fn workflow_sentence(label: &str, report: &KillReport) -> String {
+    let names = report_key_names(report);
     let mut parts: Vec<String> = report
         .targets
         .iter()
         .filter(|(_, outcome)| !outcome.is_gone())
         .map(|(key, outcome)| {
             format!(
-                "^{}: {}",
-                short_key(&key.to_string()),
+                "{}: {}",
+                names.display(*key.as_bytes()),
                 target_sentence(outcome)
             )
         })
@@ -423,10 +424,14 @@ fn workflow_sentence(label: &str, report: &KillReport) -> String {
     format!("kill incomplete for {label}: {}", parts.join("; "))
 }
 
-/// The six-digit display prefix of a key's text.
-fn short_key(text: &str) -> &str {
-    text.get(..phux_protocol::ids::KEY_MIN_PREFIX)
-        .unwrap_or(text)
+/// Display names unique among the keys a kill report lists: the session
+/// and every member it targeted.
+#[must_use]
+pub fn report_key_names(report: &KillReport) -> org::KeyNames {
+    org::KeyNames::new(
+        std::iter::once(*report.session.as_bytes())
+            .chain(report.targets.iter().map(|(key, _)| *key.as_bytes())),
+    )
 }
 
 fn target_sentence(outcome: &TargetOutcome) -> String {

@@ -300,23 +300,36 @@ fn session_lines(snapshot: &SessionSnapshot, organization: Option<&OrgInventory>
 pub(crate) const LOCAL_HOST_LABEL: &str = "This host";
 
 /// This host's name-sorted session lines with their nested agent-session
-/// lines, unindented.
+/// lines, unindented. With organization records, each session line ends in
+/// its key (`work: ...  ^ab12cd`), the shortest prefix no other record
+/// shares, so `phux rm ^ab12cd` can address it; the `name:` prefix scripts
+/// match stays as it was.
 fn local_session_lines(
     snapshot: &SessionSnapshot,
     organization: Option<&OrgInventory>,
 ) -> Vec<String> {
     let mut sessions: Vec<_> = snapshot.sessions.iter().collect();
     sessions.sort_by(|a, b| a.name.cmp(&b.name));
+    let names = organization.map(phux_client::org::KeyNames::of_inventory);
     let mut lines: Vec<String> = Vec::new();
     for session in sessions {
-        lines.push(format_row(&phux_client::session_list::session_json(
-            snapshot,
-            organization,
-            session,
-        )));
+        let row = phux_client::session_list::session_json(snapshot, organization, session);
+        let key = organization
+            .and_then(|inventory| inventory.session_by_live(session.id))
+            .zip(names.as_ref())
+            .map(|(record, names)| names.display(*record.key.as_bytes()));
+        lines.push(with_key(format_row(&row), key.as_deref()));
         lines.extend(agent_session_lines(snapshot, session));
     }
     lines
+}
+
+/// `line` with `key`, when there is one, after two spaces.
+fn with_key(line: String, key: Option<&str>) -> String {
+    match key {
+        Some(key) => format!("{line}  {key}"),
+        None => line,
+    }
 }
 
 /// The host-grouped listing: a [`LOCAL_HOST_LABEL`] header over this host's
@@ -638,12 +651,24 @@ mod tests {
     use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
     use phux_protocol::{ResourceId, SessionId, WindowId};
 
-    use super::{EMPTY_STATE, format_row, format_session_line, session_lines};
+    use super::{EMPTY_STATE, format_row, format_session_line, session_lines, with_key};
 
     fn session(name: &str, windows: u16, clients: u16) -> SessionInfo {
         SessionInfo::new(SessionId::new(1), name)
             .with_window_count(windows)
             .with_attached_client_count(clients)
+    }
+
+    /// A session line ends in its key, so the listed prefix is what
+    /// `phux rm ^ab12cd` takes; a server without records prints none.
+    #[test]
+    fn a_session_line_ends_in_its_key() {
+        let line = "work: 1 member (1 running), persistent".to_owned();
+        assert_eq!(
+            with_key(line.clone(), Some("^ab12cd")),
+            "work: 1 member (1 running), persistent  ^ab12cd"
+        );
+        assert_eq!(with_key(line.clone(), None), line);
     }
 
     /// ADR-0105: a session with no windows says so, so a server that stays

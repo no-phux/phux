@@ -274,28 +274,23 @@ fn report_selected(
 /// outcome: `^abc123  removed`, `session ^def456  deleted`.
 fn report_lines(report: &KillReport) -> String {
     use std::fmt::Write as _;
+    let names = phux_client::kill::report_key_names(report);
     let mut out = String::new();
     for (key, outcome) in &report.targets {
         let _ = writeln!(
             out,
-            "^{}  {}",
-            short_key(&key.to_string()),
+            "{}  {}",
+            names.display(*key.as_bytes()),
             target_word(outcome)
         );
     }
     let _ = writeln!(
         out,
-        "session ^{}  {}",
-        short_key(&report.session.to_string()),
+        "session {}  {}",
+        names.display(*report.session.as_bytes()),
         session_word(&report.session_outcome)
     );
     out
-}
-
-/// The six-digit display prefix of a key's text, as `phux ls` prints it.
-fn short_key(text: &str) -> &str {
-    text.get(..phux_protocol::ids::KEY_MIN_PREFIX)
-        .unwrap_or(text)
 }
 
 fn target_word(outcome: &TargetOutcome) -> String {
