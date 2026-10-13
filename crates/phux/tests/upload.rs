@@ -269,11 +269,16 @@ fn cli_and_mcp_upload_to_satellite_retain_only_on_owner_without_terminal_mutatio
     let leaf_root = dir.path().join("leaf-uploads");
     let hub_root = dir.path().join("hub-uploads");
     let input_log = dir.path().join("terminal-input");
+    let ready = dir.path().join("recorder-ready");
+    let baseline = b"upload-calibration-no-newline";
     let leaf = ServerGuard::builder("upload-leaf")
         .env_clear()
         .env("PHUX_UPLOAD_DIR", &leaf_root)
         .env("PHUX_WS_ADDR", listeners::LOOPBACK_ANY_PORT)
-        .seed_command(format!("/bin/sh -c 'cat > {}'", input_log.display()))
+        .seed_command(format!(
+            "/bin/sh -c '/bin/stty -icanon -echo min 1 time 0 && : > \"{}\" && printf ready > \"{}\" && exec /bin/cat >> \"{}\"'",
+            input_log.display(), ready.display(), input_log.display()
+        ))
         .start();
     let addr =
         listeners::bound_listener_addr(&leaf.socket, listeners::RemoteListenerTransport::Wss);
@@ -296,6 +301,10 @@ fn cli_and_mcp_upload_to_satellite_retain_only_on_owner_without_terminal_mutatio
         .enable_all()
         .build()
         .unwrap();
+    wait_for_recorder_bytes(&ready, b"ready");
+    inject_fixture_input(&rt, &leaf, baseline);
+    wait_for_recorder_bytes(&input_log, baseline);
+    // Calibration is intentional fixture input, so take upload snapshots only after it drains.
     let leaf_before = rt
         .block_on(phux_client::state::get_state(&leaf.socket))
         .unwrap();
@@ -345,11 +354,19 @@ fn cli_and_mcp_upload_to_satellite_retain_only_on_owner_without_terminal_mutatio
             "upload changed attached clients, grid, input lease or resources"
         );
     }
-    assert_eq!(
-        std::fs::metadata(&input_log).unwrap().len(),
-        0,
-        "upload injected terminal input"
+    assert_eq!(std::fs::read(&input_log).unwrap(), baseline);
+    // A known newline-free suffix must drain too: don't accept a stalled recorder
+    // as no-input proof. Every recorded byte must be deliberate fixture input.
+    let barrier = b"upload-drain-no-newline";
+    inject_fixture_input(&rt, &leaf, barrier);
+    wait_for_recorder_bytes(
+        &input_log,
+        &[baseline.as_slice(), barrier.as_slice()].concat(),
     );
+    assert_upload_servers_cleaned_up(hub, leaf);
+}
+
+fn assert_upload_servers_cleaned_up(hub: ServerGuard, leaf: ServerGuard) {
     let pids = [hub.pid(), leaf.pid()];
     let sockets = [hub.socket.clone(), leaf.socket.clone()];
     drop(hub);
@@ -360,6 +377,53 @@ fn cli_and_mcp_upload_to_satellite_retain_only_on_owner_without_terminal_mutatio
     for socket in sockets {
         assert!(!socket.exists(), "test socket leaked: {}", socket.display());
     }
+}
+
+fn wait_for_recorder_bytes(path: &std::path::Path, expected: &[u8]) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => panic!("read recorder {}: {error}", path.display()),
+        };
+        assert!(
+            expected.starts_with(&bytes),
+            "unexpected recorder bytes: {bytes:?}"
+        );
+        if bytes == expected {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "recorder did not drain {expected:?}: {bytes:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+fn inject_fixture_input(rt: &tokio::runtime::Runtime, leaf: &ServerGuard, bytes: &[u8]) {
+    rt.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let pane = phux_client::state::get_state(&leaf.socket)
+                .await
+                .unwrap()
+                .snapshot()
+                .focused_resource
+                .clone();
+            assert!(pane.local_id().is_some(), "calibrate only the owned leaf");
+            phux_client::send_keys::paste_to(
+                &leaf.socket,
+                pane,
+                bytes.to_vec(),
+                phux_protocol::input::paste::PasteTrust::Trusted,
+            )
+            .await
+            .unwrap();
+        })
+        .await
+        .expect("fixture input timed out");
+    });
 }
 
 fn assert_two_retained_artifacts(root: &std::path::Path, data: &[u8]) {
