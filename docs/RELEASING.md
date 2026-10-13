@@ -272,7 +272,12 @@ Rust executable directly. It does not ship a JavaScript bundle or a NAPI addon.
 Before uploading, the lane verifies `codesign`, extracts the ZIP, and runs
 `bun clients/desktop/scripts/smoke-app.ts --app <Phux.app> --phux <same-checkout-binary>`
 against isolated server state. The smoke must prove a presented PNG, a live
-layout, and retained sessions across client termination/relaunch; installer
+layout, and retained sessions across client termination/relaunch. Hosted
+runners have only a virtual display, which never confirms a presented
+drawable, so the lane passes `--allow-unconfirmed-present`: the exact drawable
+must still reach a visible window, and the evidence records `submitted`
+rather than `confirmed`. Local qualification keeps confirmation as the bar;
+installer
 transaction checks run separately. After upload, downloaded checksums and bytes
 must match before `gh release edit` publishes the draft with `--draft=false
 --prerelease --latest=false`. Use this draft-aware command: the REST

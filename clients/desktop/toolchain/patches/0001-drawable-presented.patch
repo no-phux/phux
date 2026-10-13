@@ -253,7 +253,7 @@ index fbd5234..66ad8b8 100644
          });
      }
 diff --git a/gpui-pre/src/window.rs b/gpui-pre/src/window.rs
-index 259a451..3ceb8ab 100644
+index 259a451..9c19014 100644
 --- a/gpui-pre/src/window.rs
 +++ b/gpui-pre/src/window.rs
 @@ -6,13 +6,13 @@ use crate::Inspector;
@@ -272,10 +272,14 @@ index 259a451..3ceb8ab 100644
      PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
      PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams,
      RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
-@@ -729,6 +729,42 @@ pub struct DismissEvent;
+@@ -729,6 +729,43 @@ pub struct DismissEvent;
  
  type FrameCallback = Box<dyn FnOnce(&mut Window, &mut App)>;
  
++/// A callback for a submitted drawable's presentation report. `true` means
++/// the display confirmed a nonzero presented time.
++type DrawableCallback = Box<dyn FnOnce(&mut Window, &mut App, bool)>;
++
 +struct DrawableNotice {
 +    drawable_id: u64,
 +    presented: bool,
@@ -286,14 +290,11 @@ index 259a451..3ceb8ab 100644
 +    handle: AnyWindowHandle,
 +    receiver: oneshot::Receiver<DrawableNotice>,
 +    serial: u64,
-+    callbacks: Vec<FrameCallback>,
++    callbacks: Vec<DrawableCallback>,
 +) {
 +    let Ok(notice) = receiver.await else {
 +        return;
 +    };
-+    if !notice.presented {
-+        return;
-+    }
 +    handle
 +        .update(cx, |_, window, cx| {
 +            if window.presentation_serial.get() != serial || window.removed {
@@ -306,7 +307,7 @@ index 259a451..3ceb8ab 100644
 +                return;
 +            }
 +            for callback in callbacks {
-+                callback(window, cx);
++                callback(window, cx, notice.presented);
 +            }
 +        })
 +        .log_err();
@@ -315,17 +316,17 @@ index 259a451..3ceb8ab 100644
  pub(crate) type AnyMouseListener =
      Box<dyn FnMut(&dyn Any, DispatchPhase, &mut Window, &mut App) + 'static>;
  
-@@ -1202,6 +1238,9 @@ pub struct Window {
+@@ -1202,6 +1239,9 @@ pub struct Window {
      pub(crate) next_tooltip_id: TooltipId,
      pub(crate) tooltip_bounds: Option<TooltipBounds>,
      pub(crate) next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
-+    drawable_presented_callbacks: RefCell<Vec<FrameCallback>>,
++    drawable_presented_callbacks: RefCell<Vec<DrawableCallback>>,
 +    presentation_serial: Cell<u64>,
 +    submitted_drawable: Cell<Option<u64>>,
      pub(crate) dirty_views: FxHashSet<EntityId>,
      focus_listeners: SubscriberSet<(), AnyWindowFocusListener>,
      pub(crate) focus_lost_listeners: SubscriberSet<(), AnyObserver>,
-@@ -1841,14 +1880,14 @@ impl Window {
+@@ -1841,14 +1881,14 @@ impl Window {
                                      window.refresh();
                                  }
                                  let arena_clear_needed = window.draw(cx);
@@ -342,7 +343,7 @@ index 259a451..3ceb8ab 100644
                          .log_err();
                  }
  
-@@ -2090,6 +2129,9 @@ impl Window {
+@@ -2090,6 +2130,9 @@ impl Window {
              rendered_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
              next_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
              next_frame_callbacks,
@@ -352,7 +353,7 @@ index 259a451..3ceb8ab 100644
              next_hitbox_id: HitboxId(0),
              next_tooltip_id: TooltipId::default(),
              tooltip_bounds: None,
-@@ -2646,6 +2688,21 @@ impl Window {
+@@ -2646,6 +2689,40 @@ impl Window {
          AsyncWindowContext::new_context(cx.to_async(), self.handle)
      }
  
@@ -361,6 +362,25 @@ index 259a451..3ceb8ab 100644
 +    ///
 +    /// Paint, `on_next_frame`, and command-buffer completion are not this event.
 +    pub fn on_drawable_presented(&self, callback: impl FnOnce(&mut Window, &mut App) + 'static) {
++        self.drawable_presented_callbacks
++            .borrow_mut()
++            .push(Box::new(move |window, cx, presented| {
++                if presented {
++                    callback(window, cx);
++                }
++            }));
++    }
++
++    /// Register work that runs once the platform reports on the scene being
++    /// painted: its exact drawable was submitted to a still-visible native
++    /// window, and `presented` says whether the display confirmed it. A
++    /// virtual display (CI) can report `false` for every drawable. Use
++    /// [`Self::on_drawable_presented`] where only a confirmed presentation
++    /// may count.
++    pub fn on_drawable_reported(
++        &self,
++        callback: impl FnOnce(&mut Window, &mut App, bool) + 'static,
++    ) {
 +        self.drawable_presented_callbacks
 +            .borrow_mut()
 +            .push(Box::new(callback));
@@ -374,14 +394,14 @@ index 259a451..3ceb8ab 100644
      /// Schedule the given closure to be run directly after the current frame is rendered.
      pub fn on_next_frame(&self, callback: impl FnOnce(&mut Window, &mut App) + 'static) {
          RefCell::borrow_mut(&self.next_frame_callbacks).push(Box::new(callback));
-@@ -3480,13 +3537,46 @@ impl Window {
+@@ -3480,13 +3557,46 @@ impl Window {
          self.invalidator.replace_views(views);
      }
  
 +    fn arm_drawable_presentation(
 +        &self,
 +        cx: &App,
-+        callbacks: Vec<FrameCallback>,
++        callbacks: Vec<DrawableCallback>,
 +        serial: u64,
 +    ) -> Option<Box<dyn FnOnce(u64, bool) + Send>> {
 +        if callbacks.is_empty()
@@ -423,7 +443,7 @@ index 259a451..3ceb8ab 100644
          #[cfg(feature = "profiler")]
          self.window_profiler.record_present(
              present_start,
-@@ -3500,9 +3590,9 @@ impl Window {
+@@ -3500,9 +3610,9 @@ impl Window {
  
      /// Presents the most recently drawn frame if it hasn't been presented yet.
      #[cfg(all(test, feature = "profiler"))]

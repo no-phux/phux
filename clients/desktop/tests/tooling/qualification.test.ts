@@ -61,6 +61,26 @@ test("an ok flag without a presented capture is not success", () => {
   }
 });
 
+test("a drawable the display could not confirm passes only when allowed", () => {
+  const dir = evidence({
+    "presented.png": png,
+    "layout.json": JSON.stringify({
+      session: "desktop-smoke",
+      presented: false,
+      submitted: true,
+      generation: 3,
+      placements: [{ id: "pane", terminalId: "local:1" }],
+    }),
+    "interaction.json": interaction,
+  });
+  try {
+    expect(() => assertPresentedEvidence(dir, "desktop-smoke")).toThrow(/not presented/);
+    expect(assertPresentedEvidence(dir, "desktop-smoke", true).presentation).toBe("submitted");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("a layout that was not presented is rejected", () => {
   const dir = evidence({
     "presented.png": png,

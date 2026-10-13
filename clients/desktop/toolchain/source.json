@@ -15,7 +15,7 @@
     }
   },
   "patches": {
-    "patches/0001-drawable-presented.patch": "67e422fda0e372621a2917a32e28ae078b2fd69a53ed07704761631385c332fd",
-    "patches/0002-window-capture.patch": "d5ec45073158c2c8cc4f3bed1a43492c63bfb9af3ee9696aef6c43e664fdc874"
+    "patches/0001-drawable-presented.patch": "e9b53eeadc5d47896d68e537fbc7e8de499972878dc4c47e8f260453cddb75a5",
+    "patches/0002-window-capture.patch": "3b6fab72887b91f5f7ebd5a9004e5541ef763ca75d208c8a82fc2452ee6ba5e0"
   }
 }

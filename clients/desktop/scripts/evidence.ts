@@ -12,9 +12,16 @@ export interface PlacementEvidence {
   terminalId: string;
 }
 
+/**
+ * `confirmed`: the display reported a nonzero presented time for the exact
+ * drawable. `submitted`: that drawable reached a visible window, but the
+ * display could not confirm it (a hosted CI virtual display never does).
+ */
+export type Presentation = "confirmed" | "submitted";
+
 export interface LayoutEvidence {
   session: string;
-  presented: true;
+  presentation: Presentation;
   generation: number;
   placements: PlacementEvidence[];
 }
@@ -36,14 +43,22 @@ function readJson(path: string): unknown {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
-export function assertPresentedEvidence(dir: string, session: string): LayoutEvidence {
+/**
+ * `allowSubmitted` accepts a drawable the display could not confirm. Pass it
+ * only where no real display exists; everywhere else confirmation is the bar.
+ */
+export function assertPresentedEvidence(
+  dir: string,
+  session: string,
+  allowSubmitted = false,
+): LayoutEvidence {
   const image = join(dir, "presented.png");
   if (!existsSync(image)) throw new Error(`${dir}: presented.png is missing`);
   const bytes = readFileSync(image);
   if (bytes.length <= 24 || !bytes.subarray(0, 8).equals(PNG)) {
     throw new Error(`${dir}: presented.png is not a PNG capture`);
   }
-  const layout = parseLayout(readJson(join(dir, "layout.json")), session);
+  const layout = parseLayout(readJson(join(dir, "layout.json")), session, allowSubmitted);
   const interaction = parseInteraction(readJson(join(dir, "interaction.json")));
   if (interaction.presentedGeneration !== layout.generation) {
     throw new Error(`${dir}: interaction generation does not match the presented layout`);
@@ -51,9 +66,16 @@ export function assertPresentedEvidence(dir: string, session: string): LayoutEvi
   return layout;
 }
 
-function parseLayout(value: unknown, session: string): LayoutEvidence {
+function presentation(layout: Record<string, unknown>, allowSubmitted: boolean): Presentation {
+  if (layout.presented === true) return "confirmed";
+  if (allowSubmitted && layout.submitted === true) return "submitted";
+  throw new Error("layout was not presented");
+}
+
+function parseLayout(value: unknown, session: string, allowSubmitted: boolean): LayoutEvidence {
   const layout = record(value);
-  if (!layout || layout.presented !== true) throw new Error("layout was not presented");
+  if (!layout) throw new Error("layout was not presented");
+  const shown = presentation(layout, allowSubmitted);
   if (layout.session !== session) throw new Error(`layout session is not ${session}`);
   if (typeof layout.generation !== "number" || layout.generation <= 0) {
     throw new Error("layout generation must be a presented frame");
@@ -62,7 +84,7 @@ function parseLayout(value: unknown, session: string): LayoutEvidence {
     throw new Error("layout has no placements");
   }
   const placements = layout.placements.map(parsePlacement);
-  return { session, presented: true, generation: layout.generation, placements };
+  return { session, presentation: shown, generation: layout.generation, placements };
 }
 
 function parsePlacement(value: unknown): PlacementEvidence {

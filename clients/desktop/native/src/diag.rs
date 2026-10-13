@@ -7,12 +7,14 @@
 //!   this module adds the window-level rows (`desktop.frame`, `desktop.drain*`)
 //!   and samples everything into `perf.jsonl` once a second when `--evidence`
 //!   is set.
-//! - **Evidence.** With `--evidence DIR`, the first frame GPUI reports as
-//!   drawable-presented on a visible window, with at least one painted
-//!   terminal, is written as `presented.png` (an offscreen render of that
-//!   exact scene), `layout.json` and `interaction.json`. `--smoke` then exits
-//!   0. Nothing here writes a success flag: the files are the proof, and a
-//!   qualification harness checks them.
+//! - **Evidence.** With `--evidence DIR`, the first frame whose exact
+//!   drawable the platform reports for a visible window, with at least one
+//!   painted terminal, is written as `presented.png` (an offscreen render of
+//!   that scene), `layout.json` and `interaction.json`. `presented` in those
+//!   files says whether the display confirmed the drawable; a virtual display
+//!   (hosted CI) never does. `--smoke` then exits 0. Nothing here writes a
+//!   success flag: the files are the proof, and a qualification harness
+//!   checks them.
 //!
 //! Windows never activate under `--evidence`, so qualification runs do not
 //! steal focus from the person at the machine.
@@ -254,13 +256,13 @@ pub fn evidence_pending(cx: &App) -> bool {
         .is_some_and(|evidence| !evidence.written)
 }
 
-/// Read what a desk has painted, inside the drawable-presented callback:
+/// Read what a desk has painted, inside the drawable-reported callback:
 /// after this frame's terminals painted, so the evidence names the
 /// generation actually on screen.
 pub type CollectFrame = Box<dyn FnOnce(&App) -> Option<FrameReport>>;
 
 /// Called by a desk at the end of every render while [`evidence_pending`].
-/// Arms a drawable-presented callback for this frame; the first presented
+/// Arms a drawable-reported callback for this frame; the first reported
 /// frame with a painted terminal writes the evidence, later ones see it
 /// written and return.
 pub fn arm_evidence(collect: CollectFrame, window: &mut Window, cx: &mut App) {
@@ -271,8 +273,9 @@ pub fn arm_evidence(collect: CollectFrame, window: &mut Window, cx: &mut App) {
         "evidence: armed; window visibility {:?}",
         window.native_visibility()
     );
-    window.on_drawable_presented(move |window, cx| {
+    window.on_drawable_reported(move |window, cx, confirmed| {
         PRESENTED.incr();
+        log::debug!("evidence: drawable reported, display confirmed: {confirmed}");
         let visible = window.native_visibility() == gpui::NativeVisibility::Visible;
         let dir = cx.global::<Evidence>().options.dir.clone();
         let painted = collect(cx).and_then(|report| {
@@ -290,7 +293,7 @@ pub fn arm_evidence(collect: CollectFrame, window: &mut Window, cx: &mut App) {
             log::debug!("evidence: presented frame has no painted terminal yet");
             return;
         };
-        match write_evidence(&dir, &report, &pane, visible, window) {
+        match write_evidence(&dir, &report, &pane, visible, confirmed, window) {
             Ok(()) => {
                 cx.global_mut::<Evidence>().written = true;
                 log::info!("evidence written to {}", dir.display());
@@ -309,6 +312,7 @@ fn write_evidence(
     report: &FrameReport,
     pane: &PaintedPane,
     visible: bool,
+    confirmed: bool,
     window: &Window,
 ) -> anyhow::Result<()> {
     let image = window.render_to_image()?;
@@ -323,7 +327,11 @@ fn write_evidence(
         .collect();
     let layout = json!({
         "session": report.session,
-        "presented": true,
+        // The display confirmed a nonzero presented time for this drawable.
+        // A virtual display (hosted CI) reports `false` for every drawable.
+        "presented": confirmed,
+        // The exact drawable was submitted to a visible window and reported.
+        "submitted": true,
         "generation": pane.generation,
         "placements": placements,
     });
