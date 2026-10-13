@@ -248,54 +248,69 @@ pub(super) fn session_picker_items(
     focused: Option<phux_protocol::ids::SessionId>,
     counts: &SessionCounts,
 ) -> Vec<SelectItem> {
-    let needs = |id| counts.needs_you.get(&id).copied().unwrap_or(0);
     let mut ordered: Vec<_> = sessions.iter().collect();
-    ordered.sort_by(|a, b| {
-        let a_current = Some(a.id) == focused;
-        let b_current = Some(b.id) == focused;
-        b_current
-            .cmp(&a_current)
-            .then_with(|| (needs(a.id) == 0).cmp(&(needs(b.id) == 0)))
-            .then_with(|| a.name.cmp(&b.name))
-    });
-
+    ordered.sort_by(|left, right| session_picker_order(focused, counts, left, right));
     ordered
         .into_iter()
-        .map(|s| {
-            let mut details = Vec::new();
-            let waiting = needs(s.id);
-            if waiting > 0 {
-                details.push(format!("{waiting} need you"));
-            }
-            if let Some(&count) = counts.terminals.get(&s.id) {
-                details.push(count_label(
-                    u16::try_from(count).unwrap_or(u16::MAX),
-                    "terminal",
-                    "terminals",
-                ));
-            }
-            if crate::attach::session_mirror::session_lifetime(s)
-                == phux_protocol::wire::frame::SessionLifetime::Ephemeral
-            {
-                details.push("ephemeral".to_owned());
-            }
-            if Some(s.id) == focused {
-                details.push("current".to_owned());
-            }
-            if s.attached_client_count != 0 {
-                details.push(format!("{} attached", s.attached_client_count));
-            }
-            let args = switch_session_args(&s.name, Some(s.id));
-            SelectItem::new(
-                s.name.clone(),
-                phux_config::keybind::ResolvedAction {
-                    action: "switch-session".to_owned(),
-                    args,
-                },
-            )
-            .secondary(details.join(", "))
-        })
+        .map(|session| attached_session_row(session, focused, counts))
         .collect()
+}
+
+/// Focused session first, then sessions with panes that need you, then name.
+/// Equal names keep their input order.
+fn session_picker_order(
+    focused: Option<SessionId>,
+    counts: &SessionCounts,
+    left: &phux_protocol::wire::info::SessionInfo,
+    right: &phux_protocol::wire::info::SessionInfo,
+) -> std::cmp::Ordering {
+    let needs = |id: SessionId| counts.needs_you.get(&id).copied().unwrap_or(0);
+    let left_current = Some(left.id) == focused;
+    let right_current = Some(right.id) == focused;
+    right_current
+        .cmp(&left_current)
+        .then_with(|| (needs(left.id) == 0).cmp(&(needs(right.id) == 0)))
+        .then_with(|| left.name.cmp(&right.name))
+}
+
+/// One attached-host session row: panes that need you, terminal count, an
+/// ephemeral lifetime, the current marker, and attached clients.
+fn attached_session_row(
+    session: &phux_protocol::wire::info::SessionInfo,
+    focused: Option<SessionId>,
+    counts: &SessionCounts,
+) -> SelectItem {
+    let mut details = Vec::new();
+    let waiting = counts.needs_you.get(&session.id).copied().unwrap_or(0);
+    if waiting > 0 {
+        details.push(format!("{waiting} need you"));
+    }
+    if let Some(&count) = counts.terminals.get(&session.id) {
+        details.push(count_label(
+            u16::try_from(count).unwrap_or(u16::MAX),
+            "terminal",
+            "terminals",
+        ));
+    }
+    if crate::attach::session_mirror::session_lifetime(session)
+        == phux_protocol::wire::frame::SessionLifetime::Ephemeral
+    {
+        details.push("ephemeral".to_owned());
+    }
+    if Some(session.id) == focused {
+        details.push("current".to_owned());
+    }
+    if session.attached_client_count != 0 {
+        details.push(format!("{} attached", session.attached_client_count));
+    }
+    SelectItem::new(
+        session.name.clone(),
+        phux_config::keybind::ResolvedAction {
+            action: "switch-session".to_owned(),
+            args: switch_session_args(&session.name, Some(session.id)),
+        },
+    )
+    .secondary(details.join(", "))
 }
 
 /// Header for this host's group in the host-grouped session picker.
@@ -307,45 +322,67 @@ pub(in crate::attach) const SESSION_PICKER_LIVE_KEY: &str = "session-picker";
 
 /// The full session-picker rows (host-grouped sessions plus "+ New
 /// session"), one builder for the open and the live refresh.
+///
+/// A non-empty project tag regroups only the attached host's sessions.
+/// Satellites and other machines stay under their own headers.
 pub(in crate::attach) fn session_picker_rows(
     peers: &PeerInputs<'_>,
     workspace: &ArrangementDoc,
 ) -> Vec<SelectItem> {
-    if peers.project_tags.values().any(|tag| !tag.is_empty()) {
-        let mut items = project_grouped_session_items(peers);
-        items.push(new_session_item());
-        return items;
-    }
     let here = match peers.origin {
         Some(AttachOrigin::Remote(name)) => name.as_str(),
         Some(AttachOrigin::Local) | None => LOCAL_HOST_HEADER,
     };
-    let mut items = host_grouped_session_items(
-        peers.sessions,
-        peers.focused_session,
-        &SessionCounts {
-            terminals: peers.terminal_counts(),
-            needs_you: crate::attach::sidebar_zones::peer_needs_you(peers),
-        },
-        here,
-        peers.hosts,
-        &peers.other_machines(),
-        workspace,
-    );
+    let counts = SessionCounts {
+        terminals: peers.terminal_counts(),
+        needs_you: crate::attach::sidebar_zones::peer_needs_you(peers),
+    };
+    let machines = peers.other_machines();
+    let mut items = if peers.project_tags.values().any(|tag| !tag.is_empty()) {
+        assemble_host_groups(
+            project_grouped_session_items(
+                peers.sessions,
+                peers.focused_session,
+                &counts,
+                peers.project_tags,
+            ),
+            here,
+            peers.hosts,
+            &machines,
+            workspace,
+        )
+    } else {
+        host_grouped_session_items(
+            peers.sessions,
+            peers.focused_session,
+            &counts,
+            here,
+            peers.hosts,
+            &machines,
+            workspace,
+        )
+    };
     items.push(new_session_item());
     items
 }
 
-/// Attached sessions grouped by `phux.session.project/v1`. Untagged sessions
-/// sit under `Sessions`. Each row still commits `switch-session`.
-fn project_grouped_session_items(peers: &PeerInputs<'_>) -> Vec<SelectItem> {
-    let lines: Vec<phux_client_core::organization::SessionLine> = peers
-        .sessions
+/// Attached-host sessions grouped by `phux.session.project/v1`. Untagged
+/// sessions sit under `Sessions`. Each row is an [`attached_session_row`],
+/// joined by session id because names are not unique.
+fn project_grouped_session_items(
+    sessions: &[phux_protocol::wire::info::SessionInfo],
+    focused: Option<SessionId>,
+    counts: &SessionCounts,
+    project_tags: &HashMap<SessionId, String>,
+) -> Vec<SelectItem> {
+    let mut ordered: Vec<_> = sessions.iter().collect();
+    ordered.sort_by(|left, right| session_picker_order(focused, counts, left, right));
+    let lines: Vec<phux_client_core::organization::SessionLine> = ordered
         .iter()
         .map(|session| phux_client_core::organization::SessionLine {
-            name: session.name.clone(),
+            name: project_line_name(session.id),
             host: None,
-            project: peers.project_tags.get(&session.id).cloned(),
+            project: project_tags.get(&session.id).cloned(),
         })
         .collect();
     let mut items = Vec::new();
@@ -356,27 +393,30 @@ fn project_grouped_session_items(peers: &PeerInputs<'_>) -> Vec<SelectItem> {
             .unwrap_or_else(|| "Sessions".to_owned());
         items.push(SelectItem::header(header));
         for line in group.sessions {
-            let Some(session) = peers
-                .sessions
-                .iter()
-                .find(|session| session.name == line.name)
-            else {
+            let Some(session) = session_for_project_line(sessions, &line.name) else {
                 continue;
             };
-            items.push(session_switch_row(session).indented());
+            items.push(attached_session_row(session, focused, counts).indented());
         }
     }
     items
 }
 
-fn session_switch_row(session: &phux_protocol::wire::info::SessionInfo) -> SelectItem {
-    SelectItem::new(
-        session.name.clone(),
-        phux_config::keybind::ResolvedAction {
-            action: "switch-session".to_owned(),
-            args: switch_session_args(&session.name, Some(session.id)),
-        },
-    )
+/// Join key for [`phux_client_core::organization::group_by_project`].
+/// `SessionLine` has no id, and the display name is not unique.
+fn project_line_name(id: SessionId) -> String {
+    format!("id:{}", id.get())
+}
+
+fn session_for_project_line<'a>(
+    sessions: &'a [phux_protocol::wire::info::SessionInfo],
+    name: &str,
+) -> Option<&'a phux_protocol::wire::info::SessionInfo> {
+    let raw = name.strip_prefix("id:")?;
+    let id = raw.parse::<u32>().ok()?;
+    sessions
+        .iter()
+        .find(|session| session.id == SessionId::new(id))
 }
 
 /// Session picker rows grouped by host: with no other host exactly
@@ -394,7 +434,24 @@ pub(super) fn host_grouped_session_items(
     machines: &[&HostJson],
     workspace: &ArrangementDoc,
 ) -> Vec<SelectItem> {
-    let local = session_picker_items(sessions, focused, counts);
+    assemble_host_groups(
+        session_picker_items(sessions, focused, counts),
+        here,
+        satellites,
+        machines,
+        workspace,
+    )
+}
+
+/// The attached-host block, then each satellite and other machine. No other
+/// host returns the block unchanged.
+fn assemble_host_groups(
+    local: Vec<SelectItem>,
+    here: &str,
+    satellites: &[phux_protocol::wire::info::HostInventory],
+    machines: &[&HostJson],
+    workspace: &ArrangementDoc,
+) -> Vec<SelectItem> {
     if satellites.is_empty() && machines.is_empty() {
         return local;
     }
