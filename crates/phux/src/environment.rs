@@ -116,6 +116,7 @@ pub(crate) const ENV_VARS: &[EnvVarSpec] = &[
             "discovery without fallback. First IP is the auto-bind IP.",
             "Explicit --listen/--quic still win. Set in the service env",
             "and pairing shell; this does not install or configure a VPN.",
+            "Set, it also keeps `phux pair` links off MagicDNS names.",
         ],
     },
     EnvVarSpec {
@@ -126,6 +127,8 @@ pub(crate) const ENV_VARS: &[EnvVarSpec] = &[
             "doctor`, and the server's auto-bound remote listener. When",
             "set and PHUX_OVERLAY_ADDRS is unset, it is the only source:",
             "a command reporting nothing disables overlay discovery.",
+            "`phux pair` also reads its `status --json` for the host's",
+            "MagicDNS name, which its links name instead of the address.",
         ],
     },
     EnvVarSpec {

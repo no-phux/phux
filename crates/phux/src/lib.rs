@@ -208,8 +208,8 @@ const fn root_rec_before_verb(cli: &Cli) -> Option<&'static str> {
     }
 }
 
-/// `--qr` belongs to minting a credential. usage-rs lets parent flags
-/// parse next to a subcommand, so the refusal is post-parse.
+/// `--qr` and `--no-qr` belong to minting a credential. usage-rs lets parent
+/// flags parse next to a subcommand, so the refusal is post-parse.
 const fn pair_qr_with_action(cli: &Cli) -> Option<&'static str> {
     match &cli.command {
         Some(Command::Pair {
@@ -232,6 +232,13 @@ const fn pair_qr_with_action(cli: &Cli) -> Option<&'static str> {
             ..
         }) => Some(
             "phux: --expires belongs to minting a credential; it cannot combine with ls, prune, rotate, or revoke",
+        ),
+        Some(Command::Pair {
+            action: Some(_),
+            no_qr: true,
+            ..
+        }) => Some(
+            "phux: --no-qr belongs to minting a credential; it cannot combine with ls, prune, rotate, or revoke",
         ),
         Some(Command::Pair {
             action: Some(_),
@@ -1427,6 +1434,7 @@ fn dispatch(
             qr,
             secret_file,
             expires,
+            no_qr,
             host,
             name,
             json,
@@ -1443,6 +1451,7 @@ fn dispatch(
             qr,
             secret_file,
             expires,
+            no_qr,
             host,
             name,
             json,
