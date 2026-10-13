@@ -61,7 +61,12 @@ impl LaneAhead {
     /// Count one in-flight lane key. The caller keeps the guard until
     /// [`PtyFastPath::enqueue`] has published `pending`, or until the key
     /// is abandoned.
+    ///
+    /// The increment takes the same lock as [`PtyFastPath::try_direct`]'s
+    /// check, so a key cannot pass the check while this count is moving
+    /// from zero to one.
     pub(crate) fn arm(fast: &Arc<PtyFastPath>) -> Self {
+        let _admit = lock(&fast.admit);
         fast.lane_ahead.fetch_add(1, Ordering::AcqRel);
         Self {
             fast: Arc::clone(fast),

@@ -11,6 +11,7 @@
 //! `Send` handles and is used in a few sync contexts; critical sections are
 //! short and never `.await` with the lock held.
 
+use std::cell::Cell;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use phux_protocol::ids::GroupId;
@@ -252,6 +253,32 @@ impl ServerState {
 #[derive(Debug, Clone, Default)]
 pub struct SharedState(Arc<Mutex<ServerState>>);
 
+/// The `ServerState` this thread's [`SharedState::with`] is borrowing, so a
+/// nested `with` on the same state does not lock again.
+#[derive(Clone, Copy)]
+struct BorrowedState {
+    state: *const ServerState,
+    arc: usize,
+}
+
+thread_local! {
+    static BORROWED_STATE: Cell<BorrowedState> = const {
+        Cell::new(BorrowedState {
+            state: std::ptr::null(),
+            arc: 0,
+        })
+    };
+}
+
+/// Restores the previous [`BORROWED_STATE`] cell, including on unwind.
+struct ClearBorrowed(BorrowedState);
+
+impl Drop for ClearBorrowed {
+    fn drop(&mut self) {
+        BORROWED_STATE.with(|cell| cell.set(self.0));
+    }
+}
+
 impl SharedState {
     /// Wrap a fresh [`ServerState`].
     #[must_use]
@@ -275,9 +302,29 @@ impl SharedState {
         self.0.lock().expect("ServerState mutex poisoned")
     }
 
-    /// Scoped immutable access.
+    /// Scoped immutable access. Reentrant on this thread for the same state:
+    /// a nested [`Self::with`] reuses the guard instead of locking again.
     pub fn with<R>(&self, f: impl FnOnce(&ServerState) -> R) -> R {
-        f(&self.lock())
+        let arc = Arc::as_ptr(&self.0) as usize;
+        let current = BORROWED_STATE.with(Cell::get);
+        if current.arc == arc && !current.state.is_null() {
+            // SAFETY: this thread's outer `with` stored `current.state` and
+            // holds that mutex guard until it restores the previous cell.
+            // The Arc address matches, so the pointer is this state, and the
+            // outer borrow is shared.
+            return f(unsafe { &*current.state });
+        }
+        let guard = self.lock();
+        BORROWED_STATE.with(|cell| {
+            cell.set(BorrowedState {
+                state: std::ptr::from_ref(&*guard),
+                arc,
+            });
+        });
+        let restore = ClearBorrowed(current);
+        let result = f(&guard);
+        drop(restore);
+        result
     }
 
     /// Scoped mutable access.

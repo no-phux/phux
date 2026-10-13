@@ -269,7 +269,13 @@ impl CommandDispatch<'_> {
                 operation_id,
                 terminal_id,
                 events,
-            } => lane.begin_apply(self.client_id, operation_id, terminal_id, events),
+            } => lane.begin_apply(
+                self.state,
+                self.client_id,
+                operation_id,
+                terminal_id,
+                events,
+            ),
             Command::RouteInput { terminal_id, event } => {
                 // Same FIFO and the same wait as `INPUT_*` (ADR-0144).
                 let Ok(credit) = self.input_credits.acquire(self.state, &terminal_id).await else {
@@ -282,7 +288,7 @@ impl CommandDispatch<'_> {
                         .await;
                     return;
                 };
-                lane.begin_route(self.client_id, terminal_id, event, credit)
+                lane.begin_route(self.state, self.client_id, terminal_id, event, credit)
             }
             _ => unreachable!("guarded input command"),
         };
@@ -400,6 +406,7 @@ mod input_receipt_capacity_tests {
                 // validation, rather than conflict with a prematurely claimed id.
                 let result = lane
                     .begin_apply(
+                        &state,
                         ClientId(1),
                         operation_id,
                         WireResourceId::local(2),
@@ -428,8 +435,8 @@ mod input_receipt_capacity_tests {
     async fn aborted_blocked_receipt_releases_completion_capacity() {
         tokio::task::LocalSet::new()
             .run_until(async {
-                let lane_owner =
-                    super::super::input_lane::spawn_input_lane(SharedState::new()).unwrap();
+                let state = SharedState::new();
+                let lane_owner = super::super::input_lane::spawn_input_lane(state.clone()).unwrap();
                 let lane = lane_owner.handle();
                 let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(1);
                 out_tx
@@ -437,6 +444,7 @@ mod input_receipt_capacity_tests {
                     .unwrap();
                 let slots = Arc::new(tokio::sync::Semaphore::new(1));
                 let receipt = lane.begin_apply(
+                    &state,
                     ClientId(1),
                     InputOperationId::new([0x45; 16]).unwrap(),
                     WireResourceId::local(1),
@@ -4131,33 +4139,6 @@ async fn teardown_terminal_stream(
     plumbing.drop_stream_binding(terminal_id).await;
 }
 
-/// Count one key that is about to enter the input lane, so [`try_inline_key`]
-/// refuses until that key is in the writer queue or has been dropped.
-fn arm_lane_ahead(
-    state: &SharedState,
-    client_id: ClientId,
-    terminal_id: &WireResourceId,
-    frame_label: &'static str,
-) -> Option<crate::terminal_actor::LaneAhead> {
-    if !phux_perf::echo_hop::fast_path_enabled() {
-        return None;
-    }
-    super::with_attached_input_destination(
-        state,
-        client_id,
-        terminal_id,
-        frame_label,
-        |destination| {
-            destination
-                .handle
-                .fast_pty
-                .as_ref()
-                .map(crate::terminal_actor::LaneAhead::arm)
-        },
-    )
-    .flatten()
-}
-
 /// Write one legacy printable key on the receive task when the PTY writer
 /// is idle. `true` means the event was consumed (written or refused).
 fn try_inline_key(
@@ -4224,8 +4205,9 @@ async fn route_client_input(
     {
         // Arm before the send. `pending` is still zero while this key sits
         // in the lane thread; the next printable would otherwise write the
-        // PTY ahead of Enter or Ctrl-U.
-        let ahead = arm_lane_ahead(state, client_id, &terminal_id, frame_label);
+        // PTY ahead of it. `ROUTE_INPUT` and `APPLY_INPUT` arm in the lane
+        // admission, so every source for the pane shares this count.
+        let ahead = super::input_lane::arm_pane_lane(state, &terminal_id);
         lane.route(
             RoutedInput::attached(client_id, terminal_id, input, frame_label)
                 .with_credit(credit)

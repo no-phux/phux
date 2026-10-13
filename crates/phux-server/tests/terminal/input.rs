@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use phux_protocol::ids::ResourceId;
+use phux_protocol::ids::{InputOperationId, ResourceId};
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::key::{ModSet, PhysicalKey};
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
@@ -118,6 +118,94 @@ fn mixed_input_key_and_route_input_preserve_wire_order() {
         drop(stream);
         join_after_shutdown(shutdown, server).await;
     });
+}
+
+/// A printable writes on the receive task only when this pane has nothing
+/// queued or in flight from any source. Each burst is sent with no wait
+/// between its frames. One `APPLY_INPUT` per pane is in flight at a time, so
+/// the bursts themselves are sequential.
+#[test]
+fn later_keys_wait_behind_routed_and_acknowledged_input() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let ((shutdown, server), mut stream) = seeded(&tmp, CommandBuilder::new("/bin/cat")).await;
+        let pane = attach(&mut stream).await;
+
+        // `ROUTE_INPUT` then `INPUT_KEY`.
+        send_frame(
+            &mut stream,
+            &FrameKind::Command {
+                request_id: 11,
+                command: Command::RouteInput {
+                    terminal_id: pane.clone(),
+                    event: InputEvent::Key(ascii_key('r', PhysicalKey::R)),
+                },
+            },
+        )
+        .await;
+        send_frame(&mut stream, &key(&pane, 'k', PhysicalKey::K)).await;
+        expect_echo(&mut stream, b"rk", &[11]).await;
+
+        // `APPLY_INPUT` then `INPUT_KEY`.
+        send_frame(
+            &mut stream,
+            &FrameKind::Command {
+                request_id: 12,
+                command: Command::ApplyInput {
+                    operation_id: InputOperationId::new([0x21; 16]).expect("non-zero id"),
+                    terminal_id: pane.clone(),
+                    events: vec![InputEvent::Key(ascii_key('p', PhysicalKey::P))],
+                },
+            },
+        )
+        .await;
+        send_frame(&mut stream, &key(&pane, 'q', PhysicalKey::Q)).await;
+        expect_echo(&mut stream, b"pq", &[12]).await;
+
+        // `INPUT_KEY`, `APPLY_INPUT`, `INPUT_KEY`.
+        send_frame(&mut stream, &key(&pane, 'a', PhysicalKey::A)).await;
+        send_frame(
+            &mut stream,
+            &FrameKind::Command {
+                request_id: 13,
+                command: Command::ApplyInput {
+                    operation_id: InputOperationId::new([0x22; 16]).expect("non-zero id"),
+                    terminal_id: pane.clone(),
+                    events: vec![InputEvent::Key(ascii_key('m', PhysicalKey::M))],
+                },
+            },
+        )
+        .await;
+        send_frame(&mut stream, &key(&pane, 'z', PhysicalKey::Z)).await;
+        expect_echo(&mut stream, b"amz", &[13]).await;
+
+        drop(stream);
+        join_after_shutdown(shutdown, server).await;
+    });
+}
+
+/// Read until `needle` has been echoed and every `acks` request has succeeded.
+async fn expect_echo(stream: &mut UnixStream, needle: &[u8], acks: &[u32]) {
+    let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
+    let (mut acc, mut seen) = (Vec::new(), 0usize);
+    while seen < acks.len() || !acc.windows(needle.len()).any(|window| window == needle) {
+        let Ok(Some((_, frame))) = try_recv_typed_before(stream, deadline).await else {
+            panic!(
+                "mixed sources reordered or dropped waiting for {:?} (acks {seen}/{}): {:?}",
+                String::from_utf8_lossy(needle),
+                acks.len(),
+                String::from_utf8_lossy(&acc)
+            );
+        };
+        match frame {
+            FrameKind::ResourceOutput { bytes, .. } => acc.extend_from_slice(&bytes),
+            FrameKind::CommandResult { request_id, result } if acks.contains(&request_id) => {
+                assert_eq!(result, CommandResult::Ok, "{acc:?}");
+                seen += 1;
+            }
+            _ => {}
+        }
+    }
 }
 
 /// A burst of `INPUT_KEY` frames that lands in one socket read reaches the

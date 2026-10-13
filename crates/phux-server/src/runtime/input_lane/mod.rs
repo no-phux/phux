@@ -246,6 +246,30 @@ impl ReceiptFailure {
     }
 }
 
+/// Count one pane key that is about to enter the lane, whatever admitted
+/// it (`INPUT_*`, `ROUTE_INPUT`, or `APPLY_INPUT`). `None` when the fast
+/// path is off or this id has no inline writer: nothing can jump the queue.
+pub(crate) fn arm_pane_lane(
+    state: &SharedState,
+    terminal_id: &phux_protocol::ids::ResourceId,
+) -> Option<LaneAhead> {
+    if !phux_perf::echo_hop::fast_path_enabled() {
+        return None;
+    }
+    state.with(|server| {
+        let crate::state::Resolved::Local(local) = server.resolve_resource(terminal_id) else {
+            return None;
+        };
+        local
+            .handle
+            .terminal()
+            .ok()?
+            .fast_pty
+            .as_ref()
+            .map(LaneAhead::arm)
+    })
+}
+
 impl InputLaneHandle {
     /// Enqueue an input event for off-thread routing, waiting while the
     /// lane's queue is full (ADR-0144). The lane never blocks, so the wait
@@ -270,18 +294,22 @@ impl InputLaneHandle {
     /// the pane input credit the caller waited for, if any.
     pub(crate) fn begin_route(
         &self,
+        state: &SharedState,
         client_id: ClientId,
         terminal_id: phux_protocol::ids::ResourceId,
         event: InputEvent,
         credit: Option<InputCredit>,
     ) -> InputReceipt {
         let (reply, result) = oneshot::channel();
+        // Arm before the send. A later `INPUT_KEY` on this pane must see the
+        // count before this call returns, or it can write ahead of `event`.
+        let lane_ahead = arm_pane_lane(state, &terminal_id);
         let routed = RoutedInput {
             client_id,
             terminal_id,
             kind: RoutedInputKind::Headless { event, reply },
             credit,
-            lane_ahead: None,
+            lane_ahead,
         };
         let failure = match self.tx.try_send(routed) {
             Ok(()) => None,
@@ -307,6 +335,7 @@ impl InputLaneHandle {
     /// batch, returning an owned PTY write/flush completion.
     pub(crate) fn begin_apply(
         &self,
+        state: &SharedState,
         client_id: ClientId,
         operation_id: InputOperationId,
         terminal_id: phux_protocol::ids::ResourceId,
@@ -349,6 +378,7 @@ impl InputLaneHandle {
             return ready_receipt(result);
         };
         let (reply, result) = oneshot::channel();
+        let lane_ahead = arm_pane_lane(state, &terminal_id);
         let routed = RoutedInput {
             client_id,
             terminal_id,
@@ -359,7 +389,7 @@ impl InputLaneHandle {
                 reply,
             },
             credit: None,
-            lane_ahead: None,
+            lane_ahead,
         };
         match self.tx.try_send(routed) {
             Ok(()) => {}
@@ -718,6 +748,7 @@ fn process_headless(
     terminal_id: &phux_protocol::ids::ResourceId,
     event: InputEvent,
     credit: Option<InputCredit>,
+    lane_ahead: Option<LaneAhead>,
 ) -> CommandResult {
     let destination =
         match with_route_input_destination(state, client_id, terminal_id, std::convert::identity) {
@@ -730,7 +761,14 @@ fn process_headless(
     };
     let bytes = encode_input(encoders, destination.pane, &destination.handle, &input);
     match with_route_input_destination(state, client_id, terminal_id, |current| {
-        redeliver(&destination.handle, &current, bytes, &input, credit, None)
+        redeliver(
+            &destination.handle,
+            &current,
+            bytes,
+            &input,
+            credit,
+            lane_ahead,
+        )
     }) {
         Ok(Ok(_)) => CommandResult::Ok,
         Ok(Err(result)) | Err(result) => result,
@@ -851,6 +889,7 @@ fn process_apply_input(
     events: Vec<InputEvent>,
     reservation: AcknowledgedReservation,
     reply: oneshot::Sender<CommandResult>,
+    lane_ahead: Option<LaneAhead>,
 ) -> bool {
     let prepared = match prepare_acknowledged_batch(state, encoders, client_id, terminal_id, events)
     {
@@ -901,7 +940,8 @@ fn process_apply_input(
             ));
         };
         let request = EncodedInputRequest::acknowledged(prepared.bytes, waiter.sink(ticket))
-            .with_credit(credit);
+            .with_credit(credit)
+            .with_lane_ahead(lane_ahead);
         match current.handle.encoded_input.try_send(request) {
             Ok(()) => Ok(()),
             Err(mpsc::error::TrySendError::Full(request)) => {
@@ -989,6 +1029,7 @@ fn spawn_input_lane_with_completion_timeout(
                             &routed.terminal_id,
                             event,
                             routed.credit,
+                            routed.lane_ahead,
                         );
                         if live && matches!(result, CommandResult::Ok) {
                             note_input_activity(
@@ -1020,6 +1061,7 @@ fn spawn_input_lane_with_completion_timeout(
                             events,
                             reservation,
                             reply,
+                            routed.lane_ahead,
                         ) && live
                         {
                             note_input_activity(
@@ -1206,6 +1248,7 @@ mod tests {
         fn apply(&self, id: u8, payloads: &[&[u8]]) -> InputReceipt {
             let events = payloads.iter().map(|bytes| ev(bytes)).collect();
             self.handle().begin_apply(
+                &self.state,
                 self.client_a,
                 operation_id(id),
                 self.pane.wire.clone(),
@@ -1215,7 +1258,7 @@ mod tests {
 
         fn route(&self, client: ClientId, bytes: &[u8]) -> InputReceipt {
             self.handle()
-                .begin_route(client, self.pane.wire.clone(), ev(bytes), None)
+                .begin_route(&self.state, client, self.pane.wire.clone(), ev(bytes), None)
         }
     }
 
@@ -1473,7 +1516,7 @@ mod tests {
                 ];
                 for (id, target, events, want) in cases {
                     let result = handle
-                        .begin_apply(fx.client_a, operation_id(id), target, events)
+                        .begin_apply(&fx.state, fx.client_a, operation_id(id), target, events)
                         .await;
                     assert_eq!(code(&result), Some(want), "operation {id}");
                 }
@@ -1510,10 +1553,10 @@ mod tests {
                 s.register_resource_handle(pane, bundle.handle.clone(), bundle.token.clone());
             (wire, s.new_client_id())
         });
-        let lane = spawn_input_lane(state).expect("spawn lane");
+        let lane = spawn_input_lane(state.clone()).expect("spawn lane");
         let result = lane
             .handle()
-            .begin_apply(client, operation_id(6), wire, vec![ev(b"x")])
+            .begin_apply(&state, client, operation_id(6), wire, vec![ev(b"x")])
             .await;
         assert_eq!(code(&result), Some(ErrorCode::ResourceExhausted));
     }
@@ -1547,11 +1590,16 @@ mod tests {
                         (token, wire)
                     };
                     let client = state.with_mut(crate::state::ServerState::new_client_id);
-                    let lane = spawn_input_lane(state).expect("spawn lane");
+                    let lane = spawn_input_lane(state.clone()).expect("spawn lane");
                     let result = tokio::time::timeout(
                         LANE_DELIVERY_DEADLINE,
-                        lane.handle()
-                            .begin_apply(client, operation_id(8), wire, vec![ev(b"x")]),
+                        lane.handle().begin_apply(
+                            &state,
+                            client,
+                            operation_id(8),
+                            wire,
+                            vec![ev(b"x")],
+                        ),
                     )
                     .await
                     .expect("must not hang");
@@ -1823,6 +1871,7 @@ mod tests {
                 let first = next_write(&mut fx.pane.writer_rx).await;
 
                 let second_receipt = handle.begin_apply(
+                    &fx.state,
                     fx.client_a,
                     operation_id(25),
                     other.wire.clone(),
@@ -1836,7 +1885,13 @@ mod tests {
 
                 let routed = tokio::time::timeout(
                     ACKNOWLEDGED_COMPLETION_TIMEOUT / 2,
-                    handle.begin_route(fx.client_a, other.wire.clone(), ev(b"control"), None),
+                    handle.begin_route(
+                        &fx.state,
+                        fx.client_a,
+                        other.wire.clone(),
+                        ev(b"control"),
+                        None,
+                    ),
                 )
                 .await
                 .expect("ROUTE_INPUT must not wait on another pane's completion");
@@ -1916,8 +1971,10 @@ mod tests {
                 "INPUT_PASTE",
             ))
             .await;
+        let state = SharedState::new();
         let result = handle
             .begin_apply(
+                &state,
                 ClientId(1),
                 operation_id(17),
                 terminal.clone(),

@@ -970,7 +970,7 @@ pub(crate) async fn handle_command(
             // direct one does (ADR-0144).
             Some(lane) => match super::input_lane::acquire_credit(state, &terminal_id).await {
                 Ok(credit) => {
-                    lane.begin_route(client_id, terminal_id, event, credit)
+                    lane.begin_route(state, client_id, terminal_id, event, credit)
                         .await
                 }
                 Err(super::input_lane::InputStalled) => {
@@ -985,7 +985,7 @@ pub(crate) async fn handle_command(
             events,
         } => match input_lane {
             Some(lane) => {
-                lane.begin_apply(client_id, operation_id, terminal_id, events)
+                lane.begin_apply(state, client_id, operation_id, terminal_id, events)
                     .await
             }
             None => CommandResult::Error {

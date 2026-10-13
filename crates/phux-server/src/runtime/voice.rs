@@ -209,8 +209,14 @@ async fn paste_transcript(
     });
     match (input_lane, fresh_operation_id()) {
         (Some(lane), Some(operation_id)) => {
-            lane.begin_apply(client_id, operation_id, terminal_id.clone(), vec![event])
-                .await
+            lane.begin_apply(
+                state,
+                client_id,
+                operation_id,
+                terminal_id.clone(),
+                vec![event],
+            )
+            .await
         }
         _ => handle_route_input(state, client_id, terminal_id, event),
     }
