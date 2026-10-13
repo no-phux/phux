@@ -36,7 +36,8 @@ load are outside the number. The scenarios are:
   (5,000 resources in 200 sessions, 500 in the Inbox, receipts at the
   10,000 cap), so the count covers apply, the store transaction with its
   receipt pruning, the in-memory mirror, and journaling. Syscalls, including
-  the `fsync`, are outside the count
+  the `fsync`, are outside the count. The pinned baseline is about 278,000
+  instructions
 
 `just perf-icount` is the same command locally. Run it inside `nix develop`
 on x86_64. The script takes valgrind from the flake's nixpkgs so the tool's

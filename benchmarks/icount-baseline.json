@@ -9,6 +9,7 @@
     "frame_encode/encode": 1989,
     "history_resync/resync": 7008,
     "history_slice/slice": 438078,
+    "org_commit/commit": 278243,
     "pty_batch_handoff/join": 20217,
     "vt_apply/apply": 357549
   }
