@@ -193,6 +193,8 @@ pub(super) struct UpgradePlan {
     fd_flags: FdFlagsGuard,
     _blob_file: std::fs::File,
     _listener_fd: OwnedFd,
+    /// Each carried delegated socket's duplicated listener (ADR-0163 §5).
+    _delegated_listeners: Vec<OwnedFd>,
     _handoffs: HashMap<phux_core::ids::ResourceId, PaneUpgradeHandle>,
     /// Lifted only if `exec` returns, so the old image keeps streaming.
     agent_seal: AgentSessionSeal,
@@ -246,16 +248,24 @@ pub(super) async fn prepare_upgrade(state: &SharedState) -> Result<UpgradePlan, 
             &tree_identity,
             &handoffs,
         )?;
+        let (blob, delegated_listeners) = super::delegation::carry_delegations(state, blob)?;
 
         let blob_file = stage_blob_file(&blob)?;
         let blob_fd = blob_file.as_raw_fd();
         let executable = pin_validated_executable(flags.upgrade_source_exe.as_deref())?;
         let fd_flags = clear_inherited_cloexec(blob_fd, listener_fd, &blob)?;
-        Ok((handoffs, blob_file, blob_fd, executable, fd_flags))
+        Ok((
+            handoffs,
+            blob_file,
+            blob_fd,
+            executable,
+            fd_flags,
+            delegated_listeners,
+        ))
     }
     .await;
 
-    let (handoffs, blob_file, blob_fd, executable, fd_flags) = match staged {
+    let (handoffs, blob_file, blob_fd, executable, fd_flags, delegated_listeners) = match staged {
         Ok(parts) => parts,
         Err(error) => {
             // Await responsive actors before reporting the failure (#1035).
@@ -274,6 +284,7 @@ pub(super) async fn prepare_upgrade(state: &SharedState) -> Result<UpgradePlan, 
         fd_flags,
         _blob_file: blob_file,
         _listener_fd: listener,
+        _delegated_listeners: delegated_listeners,
         _handoffs: handoffs.panes,
         agent_seal,
     })
@@ -398,7 +409,7 @@ impl InheritedUpgradeEnv {
 }
 
 /// Everything the re-exec'd image must inherit needs `FD_CLOEXEC` cleared: the
-/// blob, the listener, and every pane master.
+/// blob, the listener, every pane master, and every delegated socket.
 fn clear_inherited_cloexec(
     blob_fd: RawFd,
     listener_fd: RawFd,
@@ -411,6 +422,9 @@ fn clear_inherited_cloexec(
         if let Some(master_fd) = pane.master_fd {
             fd_flags.clear_cloexec(master_fd)?;
         }
+    }
+    for delegation in &blob.delegations {
+        fd_flags.clear_cloexec(super::delegation::carried_fd(delegation))?;
     }
     Ok(fd_flags)
 }
@@ -913,6 +927,7 @@ mod tests {
             fd_flags: guard,
             _blob_file: blob_file,
             _listener_fd: tempfile::tempfile().unwrap().into(),
+            _delegated_listeners: Vec::new(),
             _handoffs: HashMap::new(),
             agent_seal: AgentSessionSeal {
                 bootstraps: Vec::new(),
@@ -1466,6 +1481,7 @@ mod tests {
             fd_flags: guard,
             _blob_file: blob_file,
             _listener_fd: dup_listener(listener.as_raw_fd()).unwrap(),
+            _delegated_listeners: Vec::new(),
             _handoffs: HashMap::new(),
             agent_seal: seal,
         };

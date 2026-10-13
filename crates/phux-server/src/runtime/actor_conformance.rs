@@ -47,9 +47,13 @@ const PATIENCE: Duration = Duration::from_secs(5);
 /// The automation credential the non-human, non-delegated cases use.
 const AUTOMATION: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
+/// A paired phone's credential: enrolled for a person.
+const PHONE: &str = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
 /// The owner's socket gets the owner's grant; any other verified credential
 /// gets every verb at Global as itself: a non-human principal whose grant
-/// does not stand in the way, so only lease precedence decides.
+/// does not stand in the way, so only lease precedence decides. [`PHONE`]
+/// is a human principal, as a paired device's registry record makes it.
 #[derive(Debug)]
 struct Automation;
 
@@ -62,10 +66,18 @@ impl PolicyEngine for Automation {
         let grant = if matches!(peer_identity.transport, TransportType::UnixSocket) {
             Ok(ConnectionGrant::owner())
         } else {
+            let phone = credential.is_some_and(|credential| credential.id == PHONE);
             ConnectionGrant::scoped(
                 TerminalScopeSet::parse_all(&["*@global"]).unwrap(),
                 credential.map(|credential| credential.id.clone()),
             )
+            .map(|grant| {
+                if phone {
+                    grant.with_kind(phux_core::actor::PrincipalKind::Human)
+                } else {
+                    grant
+                }
+            })
             .map_err(|error| PolicyError::Internal(error.to_string()))
         };
         Box::pin(async move { grant })
@@ -101,7 +113,7 @@ impl Fixture {
         .unwrap();
         let (alpha, alpha_session) = state.with_mut(|s| {
             s.set_policy_engine(Arc::new(Automation));
-            let session = s.registry().sessions().next().unwrap().0;
+            let session = s.registry().session_of(alpha_core).unwrap();
             (s.intern_terminal_wire(alpha_core), session)
         });
         Self {
@@ -151,6 +163,13 @@ impl Fixture {
     /// An automation credential over QUIC, past `HELLO`.
     async fn automation(&self) -> Connection {
         let connection = self.connect(workload_identity(AUTOMATION, &["*@global"]));
+        connection.hello().await;
+        connection
+    }
+
+    /// A paired phone over QUIC, past `HELLO`.
+    async fn phone(&self) -> Connection {
+        let connection = self.connect(workload_identity(PHONE, &["*@global"]));
         connection.hello().await;
         connection
     }
@@ -563,6 +582,149 @@ async fn delegate_agent_over_the_wire_mints_once_per_operation_and_revokes() {
         );
         agent.finish().await;
         human.finish().await;
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn no_agent_takes_a_paired_devices_lease_and_the_devices_takeover_beats_them() {
+    local(async {
+        let fx = Fixture::new();
+        let phone = fx.phone().await;
+        phone.attach().await;
+        assert_eq!(
+            phone
+                .command(1, acquire(&fx.alpha, InputMode::Cooperative))
+                .await,
+            CommandResult::Ok
+        );
+
+        let owner = fx.human().await;
+        let (delegated, _) = fx.delegated_agent(&owner).await;
+        let automation = fx.automation().await;
+        for agent in [&delegated, &automation] {
+            agent.attach().await;
+            let seized = agent.command(1, acquire(&fx.alpha, InputMode::Seize)).await;
+            assert!(
+                matches!(
+                    seized,
+                    CommandResult::Error {
+                        code: ErrorCode::InputLeaseHeld,
+                        ..
+                    }
+                ),
+                "{seized:?}"
+            );
+            assert_eq!(fx.lease_holder(), Some(phone.client));
+        }
+
+        assert_eq!(
+            phone
+                .command(
+                    2,
+                    Command::ReleaseInput {
+                        terminal_id: fx.alpha.clone(),
+                    },
+                )
+                .await,
+            CommandResult::Ok
+        );
+        assert_eq!(
+            delegated
+                .command(2, acquire(&fx.alpha, InputMode::Cooperative))
+                .await,
+            CommandResult::Ok,
+            "a free lease is the agent's to take"
+        );
+        assert_eq!(
+            phone.command(3, acquire(&fx.alpha, InputMode::Seize)).await,
+            CommandResult::Ok,
+            "the device's deliberate takeover beats the agent"
+        );
+        assert_eq!(fx.lease_holder(), Some(phone.client));
+        for connection in [delegated, automation, owner, phone] {
+            connection.finish().await;
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn deleting_a_session_revokes_its_delegated_credentials_at_once() {
+    local(async {
+        let fx = Fixture::new();
+        let dir = tempfile::tempdir().unwrap();
+        fx.state
+            .with_mut(|s| s.set_server_socket_path(dir.path().join("phux.sock")));
+        let human = fx.human().await;
+        let beta = fx.state.with_mut(|s| s.seed_empty_session("beta")).unwrap();
+        let on_beta = delegate_agent(
+            &fx.state,
+            human.client,
+            beta,
+            DelegationRequest::default(),
+            None,
+            &fx.root,
+        )
+        .unwrap();
+        let on_alpha = delegate_agent(
+            &fx.state,
+            human.client,
+            fx.alpha_session,
+            DelegationRequest::default(),
+            None,
+            &fx.root,
+        )
+        .unwrap();
+        let agent = fx.connect(stamped_identity(owner_peer(), &on_beta.credential));
+        agent.hello().await;
+        let bystander = fx.connect(stamped_identity(owner_peer(), &on_alpha.credential));
+        bystander.hello().await;
+
+        let deleted = fx
+            .state
+            .with_mut(|s| s.delete_emptied_sessions(&[beta], &phux_core::Actor::owner()));
+        assert_eq!(deleted, vec!["beta".to_owned()]);
+
+        let now = Utc::now();
+        assert!(
+            fx.state
+                .with(|s| s.delegation(&on_beta.credential.id, now).is_none()),
+            "the credential is gone with its session"
+        );
+        assert!(fx.state.with(|s| s.connection_revoked(agent.client)));
+        agent
+            .wait_for("DETACHED { AUTHORIZATION_REVOKED }", |frame| {
+                matches!(
+                    frame,
+                    FrameKind::Detached {
+                        reason: Some(
+                            phux_protocol::wire::frame::DetachReason::AuthorizationRevoked
+                        ),
+                        ..
+                    }
+                )
+            })
+            .await;
+        let deadline = Instant::now() + PATIENCE;
+        while on_beta.socket_path.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "the socket file was never removed"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        assert!(
+            fx.state
+                .with(|s| s.delegation(&on_alpha.credential.id, now).is_some()),
+            "another session's credential stands"
+        );
+        assert!(!fx.state.with(|s| s.connection_revoked(bystander.client)));
+        assert!(on_alpha.socket_path.exists());
+        for connection in [agent, bystander, human] {
+            connection.finish().await;
+        }
     })
     .await;
 }

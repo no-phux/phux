@@ -71,6 +71,7 @@ mod tests {
             agent_sessions: Vec::new(),
             metadata: Vec::new(),
             org: None,
+            delegations: Vec::new(),
         }
     }
 

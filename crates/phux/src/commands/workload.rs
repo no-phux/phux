@@ -18,12 +18,31 @@ use phux_server::workload::{
     WorkloadCredential, WorkloadError, WorkloadPaths, WorkloadRegistry,
 };
 use serde_json::json;
-use usage::Subcommands;
+use usage::{Subcommands, ValueEnum};
 
 use super::json_err::{self, CliError, codes};
 
 /// Default credential lifetime: 90 days.
 const DEFAULT_EXPIRY_SECONDS: i64 = 90 * 24 * 60 * 60;
+
+/// Who an enrolled credential is for (ADR-0163 §6): `--principal`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum Principal {
+    /// A device a person uses: its takeover of a terminal's input beats an
+    /// agent's, and no agent can take input from it.
+    Human,
+    /// An unattended workload: a non-human principal.
+    Automation,
+}
+
+impl From<Principal> for workload::EnrolledFor {
+    fn from(principal: Principal) -> Self {
+        match principal {
+            Principal::Human => Self::Human,
+            Principal::Automation => Self::Automation,
+        }
+    }
+}
 
 #[derive(Debug, Subcommands)]
 pub(crate) enum WorkloadAction {
@@ -93,6 +112,14 @@ pub(crate) enum WorkloadAction {
         /// live credentials. One the registry does not hold is ignored.
         #[usage(long, value_name = "CREDENTIAL_ID")]
         replace: Option<String>,
+
+        /// Who the credential is for: `human` (a device a person uses) or
+        /// `automation`. Decides input-lease precedence, never scope.
+        /// Omitted, the credential is a person's device when its ceiling is
+        /// exactly the one `phux host add` and `phux pair --enroll` grant,
+        /// and an automation otherwise.
+        #[usage(long, value_enum)]
+        principal: Option<Principal>,
     },
     /// List enrolled credentials.
     List {
@@ -131,6 +158,7 @@ pub(crate) fn run(action: WorkloadAction, json: bool) -> ExitCode {
             cert_out,
             cert_stdout,
             replace,
+            principal,
         } => add_key(
             &paths,
             &AddKey {
@@ -143,6 +171,7 @@ pub(crate) fn run(action: WorkloadAction, json: bool) -> ExitCode {
                     None => IssuedTo::Nowhere,
                 },
                 replace,
+                principal: principal.map(workload::EnrolledFor::from),
             },
         ),
         WorkloadAction::List { public_keys } => list(&paths, public_keys),
@@ -299,6 +328,7 @@ struct AddKey {
     expires_in: i64,
     issued: IssuedTo,
     replace: Option<String>,
+    principal: Option<workload::EnrolledFor>,
 }
 
 fn add_key(paths: &WorkloadPaths, args: &AddKey) -> Result<Report, CliError> {
@@ -320,6 +350,7 @@ fn add_key(paths: &WorkloadPaths, args: &AddKey) -> Result<Report, CliError> {
             args.scopes.clone(),
             expires_at,
             args.replace.as_deref(),
+            args.principal,
         )
         .map_err(|error| {
             // Nothing admits a certificate whose key the commit refused.
@@ -328,9 +359,13 @@ fn add_key(paths: &WorkloadPaths, args: &AddKey) -> Result<Report, CliError> {
             }
             cli_error(&error)
         })?;
+    let enrolled_for = args
+        .principal
+        .unwrap_or_else(|| workload::EnrolledFor::by_ceiling(&args.scopes));
     let mut prose = vec![
         format!("Enrolled {}", registered.id),
         format!("  scopes:      {}", args.scopes.join(" ")),
+        format!("  principal:   {}", enrolled_for.as_str()),
         format!("  expires:     {}", timestamp(expires_at)),
         format!("  generation:  {}", registered.generation),
     ];
@@ -351,6 +386,7 @@ fn add_key(paths: &WorkloadPaths, args: &AddKey) -> Result<Report, CliError> {
         "credential_id": registered.id,
         "material": material.kind(),
         "scopes": args.scopes,
+        "principal": enrolled_for.as_str(),
         "expires_at": expires_at,
         "registry_generation": registered.generation,
         "certificate_written": written.is_some(),
@@ -514,6 +550,7 @@ fn credential_lines(credential: &WorkloadCredential, now: i64, public_keys: bool
     let mut lines = vec![
         format!("{}  {}", credential.id, status(credential, now)),
         format!("  scopes:  {}", credential.scopes.join(" ")),
+        format!("  principal: {}", credential.enrolled_for().as_str()),
         format!("  expires: {expires}"),
     ];
     if let Some(revoked_at) = credential.revoked_at {
@@ -534,6 +571,7 @@ fn credential_document(
         "credential_id": credential.id,
         "status": status(credential, now),
         "scopes": credential.scopes,
+        "principal": credential.enrolled_for().as_str(),
         "expires_at": credential.expires_at,
         "revoked_at": credential.revoked_at,
     });

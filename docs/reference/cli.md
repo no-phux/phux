@@ -4521,6 +4521,14 @@ Flags:
                                  so a re-enrolled client never holds two live
                                  credentials. One the registry does not hold is
                                  ignored.
+      --principal <PRINCIPAL>    Who the credential is for: `human` (a device a
+                                 person uses) or `automation`. Decides
+                                 input-lease precedence, never scope. Omitted,
+                                 the credential is a person's device when its
+                                 ceiling is exactly the one `phux host add` and
+                                 `phux pair --enroll` grant, and an automation
+                                 otherwise.
+                                 [possible values: human, automation]
   -h, --help                     Print help
 
 Global flags:

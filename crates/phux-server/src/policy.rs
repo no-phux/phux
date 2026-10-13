@@ -26,6 +26,7 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use phux_core::PrincipalId;
+use phux_core::actor::PrincipalKind;
 use phux_protocol::kinds::Verb;
 use phux_protocol::policy::{PeerIdentity, TransportType};
 use phux_protocol::scope::{EffectiveScopeSet, ScopeError, ScopeGrant, Selector, TerminalScopeSet};
@@ -186,6 +187,9 @@ pub struct ConnectionGrant {
     principal: PrincipalId,
     /// The human whose grant a delegated principal exercises.
     on_behalf_of: Option<PrincipalId>,
+    /// Whether the principal is a person, an agent, or an automation: what
+    /// input-lease precedence turns on (ADR-0163 §6).
+    kind: PrincipalKind,
 }
 
 impl ConnectionGrant {
@@ -202,13 +206,14 @@ impl ConnectionGrant {
             revoked: None,
             principal: PrincipalId::Owner,
             on_behalf_of: None,
+            kind: PrincipalKind::Human,
         }
     }
 
     /// A scoped grant of `granted` with no requested attenuation: one
     /// clause per grant (`workload-auth.md` §5.1), bound to `credential_id`.
     /// Its principal is that credential ([`WORKLOAD_PRINCIPAL`] when none is
-    /// named).
+    /// named), an automation until [`Self::with_kind`] says otherwise.
     ///
     /// # Errors
     ///
@@ -234,7 +239,16 @@ impl ConnectionGrant {
             revoked: None,
             principal,
             on_behalf_of: None,
+            kind: PrincipalKind::Automation,
         })
+    }
+
+    /// This grant, acting as a principal of `kind`: how a paired device's
+    /// credential becomes a human principal.
+    #[must_use]
+    pub const fn with_kind(mut self, kind: PrincipalKind) -> Self {
+        self.kind = kind;
+        self
     }
 
     /// A delegated credential's grant (ADR-0163): `granted` exercised by
@@ -255,7 +269,14 @@ impl ConnectionGrant {
         grant.principal = principal;
         grant.on_behalf_of = Some(on_behalf_of);
         grant.expires_at = Some(expires_at);
+        grant.kind = PrincipalKind::Agent;
         Ok(grant)
+    }
+
+    /// What kind of party the principal is.
+    #[must_use]
+    pub const fn kind(&self) -> PrincipalKind {
+        self.kind
     }
 
     /// The authenticated principal this connection acts as.
@@ -496,10 +517,13 @@ fn scoped_grant(
     })?;
     // HELLO carries no scope request (workload-auth §5), so the request is
     // the ceiling: one clause per ceiling grant (§5.1).
-    let mut grant = ConnectionGrant::scoped(ceiling, Some(record.id.clone())).map_err(|_| {
-        debug!(target: POLICY_TARGET, credential = %credential.id, "HELLO refused: effective set over the §5 bound");
-        PolicyError::refused()
-    })?;
+    let mut grant = ConnectionGrant::scoped(ceiling, Some(record.id.clone()))
+        .map_err(|_| {
+            debug!(target: POLICY_TARGET, credential = %credential.id, "HELLO refused: effective set over the §5 bound");
+            PolicyError::refused()
+        })?
+        // A paired device is a person; an automation is not (ADR-0163 §6).
+        .with_kind(record.enrolled_for().kind());
     grant.registry_instance = snapshot.instance_id().map(str::to_owned);
     grant.registry_generation = snapshot.generation();
     grant.expires_at = record

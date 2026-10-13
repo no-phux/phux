@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-10-07
+last-reviewed: 2026-10-13
 ---
 
 # Workload authority over mTLS — authentication and scoped authority
@@ -117,8 +117,15 @@ the material with `PHUX_WORKLOAD_CA`, `PHUX_WORKLOAD_CA_KEY`, or
 `<state-dir>/workload-keys` is the registry of workload credentials.
 Each record contains the client certificate (or raw public key),
 derived credential id, canonical scope ceiling, absolute expiry, and
-optional revocation time. One invalid record makes the loaded snapshot
-malformed. The file obeys the same ownership, mode, no-follow,
+optional revocation time, and optionally who the credential was
+enrolled for: `principal`, `"human"` (a device a person paired) or
+`"automation"`. The field decides input-lease precedence (ADR-0163 §6),
+never scope. A record without it is `human` when its ceiling is exactly
+`inventory,observe,create,bind,input,signal@global`, the ceiling pairing
+grants (§8.1, §8.2), and `automation` otherwise. A ticket enrollment
+(§8.2) SHALL record `human`. A writer SHALL omit the field when no one
+named it, so an older reader keeps loading the file. One invalid record
+makes the loaded snapshot malformed. The file obeys the same ownership, mode, no-follow,
 stable-read, lock, sync, and atomic-replacement rules. Public keys and
 fingerprints are not secrets. A malformed, replaced, or unstable read
 is an empty authority snapshot, never permission to use a cached

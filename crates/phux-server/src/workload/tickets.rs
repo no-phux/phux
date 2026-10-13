@@ -221,10 +221,14 @@ pub fn enroll_with_ticket(
         .issued_chain_pem()
         .ok_or(WorkloadError::MalformedAuthority("a CSR issued no chain"))?
         .to_owned();
-    let registered = prepared.commit(
+    // A ticket is how a person pairs a phone or desktop: its credential is
+    // a human principal (ADR-0163 §6), whatever ceiling the ticket carries.
+    let registered = prepared.commit_replacing(
         &paths.registry,
         redeemed.scopes,
         redeemed.credential_expires_at,
+        None,
+        Some(super::EnrolledFor::Human),
     )?;
     Ok(TicketEnrollment {
         ticket: redeemed.id,

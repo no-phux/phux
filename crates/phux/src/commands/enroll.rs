@@ -872,10 +872,13 @@ fn first_answering_route(
 
 /// The scope `phux host add` enrolls with: every verb on the whole host.
 /// Enrollment grants no authority ssh did not already grant, and an operator
-/// who can run `phux` over ssh there already holds all of it. Spelled out
-/// rather than `*`, which the far host's shell would glob.
-pub(crate) const HOST_ADD_WORKLOAD_SCOPE: &str =
-    "inventory,observe,create,bind,input,signal@global";
+/// who can run `phux` over ssh there already holds all of it.
+///
+/// It is also what marks the credential a person's device (ADR-0163 §6):
+/// `add-key` is not told `--principal human`, so a far host running an
+/// older `phux` still enrolls, and the far host infers a human principal
+/// from exactly this ceiling.
+pub(crate) const HOST_ADD_WORKLOAD_SCOPE: &str = phux_server::workload::PAIRED_DEVICE_SCOPE;
 
 /// The workload identity to register: the previous one when its bearer
 /// still worked (nothing was re-minted) and it is not due for renewal,
