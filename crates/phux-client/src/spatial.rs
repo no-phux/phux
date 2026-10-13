@@ -920,6 +920,25 @@ mod tests {
         server.abort();
     }
 
+    /// A destination placement that fails after ownership moved is
+    /// `destination_layout_failed`, exit 1, naming the failure and rollback.
+    #[test]
+    fn a_failed_destination_placement_is_a_post_ownership_refusal() {
+        let SpatialError::Refused(refusal) = move_error(PaneMoveError::DestinationLayout {
+            error: "pane is not in this session layout".to_owned(),
+            rollback: "the move was undone",
+        }) else {
+            panic!("a destination failure is a refusal");
+        };
+        assert_eq!(refusal.code, codes::DESTINATION_LAYOUT_FAILED);
+        assert_eq!(refusal.exit_code, 1);
+        assert!(!refusal.remedy.is_empty());
+        assert!(
+            refusal.message.contains("the move was undone"),
+            "{refusal:?}"
+        );
+    }
+
     #[test]
     fn ratio_must_be_finite_and_strictly_inside_unit_interval() {
         assert!(validate_ratio(0.3).is_ok());

@@ -642,31 +642,32 @@ fn last_tiny_view_detach_restores_headless_geometry_and_keeps_the_shell() {
 
 #[test]
 #[ignore = "spawns a real server and PTY-backed shells; run in the e2e lane"]
-fn malformed_destination_layout_keeps_the_json_error_contract() {
+fn malformed_legacy_destination_layout_cannot_break_a_cross_session_move() {
     let server = ServerGuard::start();
     let source = json_created_pane(&server, "bad-layout-source");
     let destination = json_created_pane(&server, "bad-layout-destination");
+    // The session arrangement is the record (R17): bytes that do not decode
+    // under the legacy layout key never replace it.
     server.write_layout_bytes("bad-layout-destination", b"not-cbor".to_vec());
 
-    let output = server.command(&[
+    let moved = server.json(&[
         "mv",
         &format!("@{}", source.local_id().expect("source id")),
         &format!("@{}", destination.local_id().expect("destination id")),
         "--json",
     ]);
-    assert_eq!(output.status.code(), Some(1));
-    assert!(
-        output.stdout.is_empty(),
-        "JSON failure must keep stdout empty"
-    );
-    let error: serde_json::Value = serde_json::from_slice(&output.stderr)
-        .unwrap_or_else(|err| panic!("structured stderr: {err}: {:?}", output.stderr));
-    assert_eq!(error["schema_version"], 1);
-    assert_eq!(error["error"]["code"], "destination_layout_failed");
-    assert_eq!(error["exit_code"], 1);
-    assert!(
-        error["remedy"]
-            .as_str()
-            .is_some_and(|remedy| !remedy.is_empty())
+    assert_eq!(moved["cross_session"], true);
+    let destination_layout = server
+        .read_layout_for("bad-layout-destination")
+        .expect("destination arrangement");
+    assert_eq!(
+        phux_client::layout::leaves(
+            destination_layout.groups[0]
+                .state
+                .tree
+                .as_ref()
+                .expect("destination tree")
+        ),
+        vec![destination, source]
     );
 }
