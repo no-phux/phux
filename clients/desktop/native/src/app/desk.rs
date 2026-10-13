@@ -170,8 +170,8 @@ pub struct Desk {
     closed: bool,
     /// Session creates awaiting their outcome, by operation, with the name.
     creates: HashMap<OperationId, String>,
-    /// Kill workflows awaiting their report, with the session name and member labels.
-    kills: HashMap<u64, (String, HashMap<ResourceKey, String>)>,
+    /// Session kills awaiting their outcome, by operation, with the name.
+    kills: HashMap<OperationId, String>,
     pub(crate) organization: super::organization::Organization,
 }
 
@@ -452,16 +452,25 @@ impl Desk {
     }
 
     fn note_kill_event(&mut self, event: &Event) {
-        if let Event::KillFinished { workflow, report } = event
-            && let Some((name, labels)) = self.kills.remove(workflow)
+        if let Event::OrganizationOperation { operation, outcome } = event
+            && let Some(name) = self.kills.remove(operation)
         {
-            let summary = crate::connection::org::kill_summary(&name, report, &labels);
-            let kind = if summary.complete {
-                ToastKind::Success
-            } else {
-                ToastKind::Error
-            };
-            self.toast(kind, &summary.title, Some(summary.body));
+            match outcome {
+                phux_client_core::org_ops::OrgOutcome::Committed(receipt) => {
+                    let ended = receipt.members.unwrap_or(0);
+                    let noun = if ended == 1 { "terminal" } else { "terminals" };
+                    self.toast(
+                        ToastKind::Success,
+                        &format!("Killed {name}"),
+                        Some(format!("{ended} {noun} ended")),
+                    );
+                }
+                other => self.toast(
+                    ToastKind::Error,
+                    &format!("Could not kill {name}"),
+                    Some(crate::connection::org::outcome_sentence(other)),
+                ),
+            }
         }
     }
 
@@ -1328,8 +1337,8 @@ impl Desk {
         self.after_command(window, cx);
     }
 
-    /// Kill `session` by the runtime's kill workflow, which reports each
-    /// member's result; a server without `ORGANIZATION` gets `phux kill`.
+    /// Kill `session` with one `SESSION_KILL`; a server without it gets
+    /// `phux kill`.
     fn kill_session(&mut self, name: &str, session: u32) {
         let Some(link) = self.link.as_ref() else {
             self.toast(
@@ -1339,57 +1348,25 @@ impl Desk {
             );
             return;
         };
-        if !link.connection.organization() {
-            if let Some(failure) = host::kill_session(&self.phux, &self.socket, name) {
-                self.toast(
-                    ToastKind::Error,
-                    "Could not kill the session",
-                    Some(failure),
-                );
-            } else {
-                let _ = link.connection.refresh_topology();
-                self.toast(ToastKind::Success, &format!("Killed {name}"), None);
-            }
-            return;
-        }
         let key = link
             .connection
             .topology
             .as_ref()
             .and_then(|topology| topology.sessions.iter().find(|s| s.id == session))
             .and_then(|descriptor| descriptor.key);
-        let labels: HashMap<ResourceKey, String> = link
-            .connection
-            .panes()
-            .iter()
-            .filter(|pane| pane.session_id == session)
-            .filter_map(|pane| {
-                let label = pane_label(Some(pane), link.connection.group_name(&pane.terminal_id));
-                pane.key.map(|key| (key, label))
-            })
-            .collect();
-        let members = labels.len();
-        match key.and_then(|key| link.connection.kill_session(key)) {
-            Some(workflow) => {
-                self.kills.insert(workflow, (name.to_owned(), labels));
-                self.toast(
-                    ToastKind::Info,
-                    &format!("Killing {name}"),
-                    Some(format!(
-                        "Ending {members} {}…",
-                        if members == 1 {
-                            "terminal"
-                        } else {
-                            "terminals"
-                        }
-                    )),
-                );
-            }
-            None => self.toast(
+        if let Some(operation) = key.and_then(|key| link.connection.kill_session(key)) {
+            self.kills.insert(operation, name.to_owned());
+            return;
+        }
+        if let Some(failure) = host::kill_session(&self.phux, &self.socket, name) {
+            self.toast(
                 ToastKind::Error,
                 "Could not kill the session",
-                Some("Its records are not loaded yet. Try again in a moment.".into()),
-            ),
+                Some(failure),
+            );
+        } else {
+            let _ = link.connection.refresh_topology();
+            self.toast(ToastKind::Success, &format!("Killed {name}"), None);
         }
     }
 

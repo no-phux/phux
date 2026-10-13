@@ -35,10 +35,7 @@ use crate::attach::connection::Connection;
 use crate::layout::wire::HandleMap;
 use crate::state::Degradation;
 
-pub use phux_client_core::org_ops::{
-    KillReport, OrgOutcome, SessionOutcome, TargetOutcome, is_inactive, live_target,
-    refusal_sentence,
-};
+pub use phux_client_core::org_ops::{OrgOutcome, is_inactive, live_target, refusal_sentence};
 
 /// Most attempts a compare-and-swap edit makes before reporting the
 /// conflict.
@@ -997,7 +994,7 @@ mod tests {
         assert_send(&remove_resource(conn, key));
         assert_send(&move_many(conn, &[], to));
         assert_send(&restore(conn, None));
-        assert_send(&crate::kill::kill_session(conn, SessionId::new(1), "work"));
+        assert_send(&crate::kill::kill_session(conn, to, "work"));
         assert_send(&crate::pane_move::move_pane(
             conn,
             ResourceId::local(1),

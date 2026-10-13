@@ -1728,10 +1728,8 @@ Kill a session, window, pane, or the server
 a server-state snapshot to a set of Terminals; the server is then asked to kill
 each.
 
-Killing a whole session terminates every member, removes each once it has
-stopped, then deletes the session, and prints one summary line plus one line per
-member that was not removed (`-v`: every member). Work added to the session
-meanwhile survives, and the session is then kept.
+Killing a whole session ends every member, work added meanwhile included,
+deletes the session, and prints one summary line.
 
 `--server` stops the server process instead, ending every session on it. Local
 socket only: the server accepts that stop on its local socket alone, so
@@ -1763,8 +1761,6 @@ Flags:
                                   terminal, and when stdin is not one it refuses
                                   with exit 2 having sent nothing. `--server`
                                   never asks.
-  -v, --verbose                   Print one line per member of a killed session,
-                                  not a summary.
       --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
                                   machine instead of the local socket,
                                   ssh-style: `--remote me@mini`. Same target

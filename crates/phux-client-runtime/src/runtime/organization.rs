@@ -1,9 +1,7 @@
-//! The organization surface of a runtime client: the replica, the typed
-//! organization commands, and the kill-session workflow, serialized by the
-//! control owner. Each call delegates to the matching
-//! [`crate::control::ControlPlane`] method; outcomes arrive as
-//! [`crate::control::Event::OrganizationOperation`] and
-//! [`crate::control::Event::KillFinished`].
+//! The organization surface of a runtime client: the replica and the typed
+//! organization commands, serialized by the control owner. Each call
+//! delegates to the matching [`crate::control::ControlPlane`] method;
+//! outcomes arrive as [`crate::control::Event::OrganizationOperation`].
 
 use phux_client_core::layout::ArrangementDoc;
 use phux_client_core::org_ops::SubmitError;
@@ -52,10 +50,12 @@ impl Client {
             .with(|control| control.submit_organization(command))
     }
 
-    /// Kill a whole session by the terminate/remove/delete workflow; see
-    /// [`ControlPlane::kill_session`].
-    #[must_use]
-    pub fn kill_session(&self, session: SessionKey) -> Option<u64> {
+    /// Kill a whole session server-side; see [`ControlPlane::kill_session`].
+    ///
+    /// # Errors
+    ///
+    /// [`SubmitError`].
+    pub fn kill_session(&self, session: SessionKey) -> Result<OperationId, SubmitError> {
         self.inner.with(|control| control.kill_session(session))
     }
 

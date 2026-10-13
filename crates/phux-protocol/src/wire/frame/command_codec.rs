@@ -262,6 +262,7 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
         | Command::SessionRename { .. }
         | Command::SessionSetLifetime { .. }
         | Command::SessionDelete { .. }
+        | Command::SessionKill { .. }
         | Command::ResourceCreate { .. }
         | Command::ResourceMove { .. }
         | Command::ResourceMoveMany { .. }

@@ -151,6 +151,7 @@ fn dispatch(tx: &mut Tx<'_>, op: &Op, fresh: &mut dyn FreshKeys) -> Result<Out, 
             session_set_lifetime(tx, *session, *lifetime)
         }
         Op::SessionDelete { session } => session_delete(tx, *session),
+        Op::SessionKill { session } => session_kill(tx, *session),
         Op::ResourceCreate { session, resource } => resource_create(tx, fresh, *session, resource),
         Op::ResourceMove {
             resource,
@@ -789,6 +790,38 @@ fn session_delete(tx: &mut Tx<'_>, key: SessionKey) -> Result<Out, Refusal> {
         return Err(Refusal::NotEmpty {
             members: u32::try_from(s.members.len()).unwrap_or(u32::MAX),
         });
+    }
+    tx.delete_session(key);
+    Ok(Out::ok(None))
+}
+
+/// Remove every member, terminating what still executes, then delete the
+/// session. Work that joined after the caller looked goes too.
+fn session_kill(tx: &mut Tx<'_>, key: SessionKey) -> Result<Out, Refusal> {
+    let Some(session) = tx.session(key) else {
+        return Ok(Out::ok(None));
+    };
+    if key == tx.org.authority().inbox_session {
+        return Err(Refusal::invalid(
+            "session",
+            "the designated inbox session cannot be deleted",
+        ));
+    }
+    for member in session.members.clone() {
+        let running = tx
+            .resource(member)
+            .and_then(|r| r.activation.as_ref())
+            .filter(|a| a.state.is_current() || a.state == ExecState::Lost)
+            .map(|a| (a.id, a.host_proc));
+        if let Some((activation, proc)) = running {
+            tx.effects.push(Effect::Terminate {
+                resource: member,
+                activation,
+                mode: TerminateMode::Graceful,
+                proc,
+            });
+        }
+        tx.remove_resource(member);
     }
     tx.delete_session(key);
     Ok(Out::ok(None))

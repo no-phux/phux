@@ -1,16 +1,13 @@
 //! Organization outcomes, read once for every encoder.
 //!
-//! An organization command resolves to an [`OrgOutcome`]; a kill-session
-//! workflow resolves to a [`KillReport`] with one result per member. Both
-//! fold here into a status, a refusal code, and a sentence, so the C ABI,
+//! An organization command resolves to an [`OrgOutcome`], which folds here
+//! into a status, a refusal code, and a sentence, so the C ABI,
 //! `UniFFI`, and NAPI lanes report the same thing for the same answer. The
 //! numeric codes are the C ABI's (`include/phux/client.h`,
 //! `PhuxOrgStatus` and `PhuxOrgRefusal`); the words are what the string
 //! encoders carry.
 
-use phux_client_core::org_ops::{
-    KillReport, OrgOutcome, SessionOutcome, TargetOutcome, refusal_sentence,
-};
+use phux_client_core::org_ops::{OrgOutcome, refusal_sentence};
 use phux_protocol::wire::frame::Refusal;
 
 /// Where an organization operation is.
@@ -30,7 +27,7 @@ pub enum Status {
     Unknown,
     /// It never reached a socket.
     NotSent,
-    /// A batch or workflow in which some targets succeeded and some did not.
+    /// A batch in which some targets succeeded and some did not.
     Partial,
 }
 
@@ -184,25 +181,19 @@ pub fn resolution(outcome: &OrgOutcome) -> Resolution {
     }
 }
 
-/// How one target of a workflow or batch ended.
+/// How one target of a batch ended. The C ABI's codes `3`, `6`, `7`, and
+/// `8` (`ALREADY_GONE`, `TIMED_OUT`, `NO_LIVE_TARGET`, `KEPT`) were the
+/// client-side kill workflow's and are no longer produced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetStatus {
     /// Still in flight.
     Pending,
     /// It took effect: moved, removed, deleted.
     Done,
-    /// It was gone before the operation reached it.
-    AlreadyGone,
-    /// The server refused a step.
+    /// The server refused it.
     Refused,
-    /// A step's outcome is unknown.
+    /// Its outcome is unknown.
     Unknown,
-    /// It did not become inactive in time.
-    TimedOut,
-    /// It executes on another server and cannot be terminated from here.
-    NoLiveTarget,
-    /// A member could not be removed, so the session delete was not sent.
-    Kept,
     /// It was never sent.
     NotSent,
 }
@@ -214,12 +205,8 @@ impl TargetStatus {
         match self {
             Self::Pending => 1,
             Self::Done => 2,
-            Self::AlreadyGone => 3,
             Self::Refused => 4,
             Self::Unknown => 5,
-            Self::TimedOut => 6,
-            Self::NoLiveTarget => 7,
-            Self::Kept => 8,
             Self::NotSent => 9,
         }
     }
@@ -230,12 +217,8 @@ impl TargetStatus {
         match self {
             Self::Pending => "pending",
             Self::Done => "done",
-            Self::AlreadyGone => "already_gone",
             Self::Refused => "refused",
             Self::Unknown => "unknown",
-            Self::TimedOut => "timed_out",
-            Self::NoLiveTarget => "no_live_target",
-            Self::Kept => "kept",
             Self::NotSent => "not_sent",
         }
     }
@@ -243,7 +226,7 @@ impl TargetStatus {
     /// Whether the target no longer stands in the way.
     #[must_use]
     pub const fn succeeded(self) -> bool {
-        matches!(self, Self::Done | Self::AlreadyGone)
+        matches!(self, Self::Done)
     }
 }
 
@@ -283,115 +266,10 @@ impl TargetResult {
     }
 }
 
-/// A kill-session workflow's report, binding-neutral.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KillResult {
-    /// The overall status: committed when the session went away, partial
-    /// when some members were removed and the session stayed, refused or
-    /// unknown otherwise.
-    pub status: Status,
-    /// The session's own result, first, then each member in membership
-    /// order.
-    pub targets: Vec<TargetResult>,
-    /// A sentence for a frontend.
-    pub message: String,
-}
-
-fn target_of(outcome: &TargetOutcome) -> (TargetStatus, u32, String) {
-    match outcome {
-        TargetOutcome::Removed => (TargetStatus::Done, 0, String::new()),
-        TargetOutcome::AlreadyGone => (TargetStatus::AlreadyGone, 0, String::new()),
-        TargetOutcome::Refused(refusal) => (
-            TargetStatus::Refused,
-            refusal_code(refusal),
-            refusal_sentence(refusal),
-        ),
-        TargetOutcome::Unknown(reason) => (TargetStatus::Unknown, 0, reason.clone()),
-        TargetOutcome::TimedOut => (
-            TargetStatus::TimedOut,
-            0,
-            "it did not stop in time".to_owned(),
-        ),
-        TargetOutcome::NoLiveTarget => (
-            TargetStatus::NoLiveTarget,
-            0,
-            "it is not executing on this server".to_owned(),
-        ),
-    }
-}
-
-/// Read a kill-session workflow's report.
-#[must_use]
-pub fn kill_result(report: &KillReport) -> KillResult {
-    let (session_status, session_refusal, session_message) = match &report.session_outcome {
-        SessionOutcome::Deleted => (TargetStatus::Done, 0, String::new()),
-        SessionOutcome::AlreadyGone => (TargetStatus::AlreadyGone, 0, String::new()),
-        SessionOutcome::Kept => (
-            TargetStatus::Kept,
-            0,
-            "a member could not be removed, so the session was kept".to_owned(),
-        ),
-        SessionOutcome::Refused(refusal) => (
-            TargetStatus::Refused,
-            refusal_code(refusal),
-            refusal_sentence(refusal),
-        ),
-        SessionOutcome::Unknown(reason) => (TargetStatus::Unknown, 0, reason.clone()),
-    };
-    let mut targets = vec![TargetResult {
-        key: *report.session.as_bytes(),
-        is_session: true,
-        status: session_status,
-        refusal: session_refusal,
-        message: session_message.clone(),
-    }];
-    targets.extend(report.targets.iter().map(|(key, outcome)| {
-        let (status, refusal, message) = target_of(outcome);
-        TargetResult {
-            key: *key.as_bytes(),
-            is_session: false,
-            status,
-            refusal,
-            message,
-        }
-    }));
-    let members_gone = report
-        .targets
-        .iter()
-        .filter(|(_, outcome)| outcome.is_gone())
-        .count();
-    let status = if report.complete() {
-        Status::Committed
-    } else if members_gone > 0 {
-        Status::Partial
-    } else if session_status == TargetStatus::Unknown
-        || report
-            .targets
-            .iter()
-            .any(|(_, outcome)| matches!(outcome, TargetOutcome::Unknown(_)))
-    {
-        Status::Unknown
-    } else {
-        Status::Refused
-    };
-    let message = if report.complete() {
-        String::new()
-    } else if session_message.is_empty() {
-        "the session was not deleted".to_owned()
-    } else {
-        session_message
-    };
-    KillResult {
-        status,
-        targets,
-        message,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phux_protocol::ids::{OperationId, ResourceKey, Revision, SessionKey};
+    use phux_protocol::ids::{OperationId, Revision};
     use phux_protocol::wire::frame::Committed;
 
     #[test]
@@ -412,38 +290,5 @@ mod tests {
         assert_eq!(read.refusal, 3);
         assert_eq!(read.refusal_word, "conflict");
         assert_eq!(read.conflict_revision, Some(9));
-    }
-
-    #[test]
-    fn a_kill_that_kept_the_session_is_partial() {
-        let session = SessionKey::new([2; 16]).unwrap();
-        let report = KillReport {
-            session,
-            targets: vec![
-                (ResourceKey::new([3; 16]).unwrap(), TargetOutcome::Removed),
-                (ResourceKey::new([4; 16]).unwrap(), TargetOutcome::TimedOut),
-            ],
-            session_outcome: SessionOutcome::Kept,
-        };
-        let read = kill_result(&report);
-        assert_eq!(read.status, Status::Partial);
-        assert_eq!(read.targets.len(), 3);
-        assert!(read.targets[0].is_session);
-        assert_eq!(read.targets[0].status, TargetStatus::Kept);
-        assert_eq!(read.targets[1].status, TargetStatus::Done);
-        assert_eq!(read.targets[2].status, TargetStatus::TimedOut);
-    }
-
-    #[test]
-    fn a_complete_kill_commits() {
-        let report = KillReport {
-            session: SessionKey::new([2; 16]).unwrap(),
-            targets: vec![(
-                ResourceKey::new([3; 16]).unwrap(),
-                TargetOutcome::AlreadyGone,
-            )],
-            session_outcome: SessionOutcome::Deleted,
-        };
-        assert_eq!(kill_result(&report).status, Status::Committed);
     }
 }

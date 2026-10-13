@@ -178,6 +178,11 @@ pub struct RemoteClient {
     generations: Mutex<HashMap<ResourceId, u64>>,
     /// Committed organization receipts, newest last, kept for `undo`.
     receipts: Mutex<std::collections::VecDeque<phux_protocol::wire::frame::Committed>>,
+    /// `kill_session` operations awaiting their outcome, by the id the call
+    /// returned.
+    kills: Mutex<HashMap<phux_protocol::ids::OperationId, u64>>,
+    /// The last id `kill_session` returned.
+    last_kill: std::sync::atomic::AtomicU64,
 }
 
 #[uniffi::export]
@@ -830,6 +835,8 @@ impl RemoteClient {
             authoritative_damage: Mutex::new(HashSet::new()),
             generations: Mutex::new(HashMap::new()),
             receipts: Mutex::new(std::collections::VecDeque::new()),
+            kills: Mutex::new(HashMap::new()),
+            last_kill: std::sync::atomic::AtomicU64::new(0),
         })
     }
 }
@@ -1077,8 +1084,9 @@ impl RemoteClient {
             }
             event @ (Event::OrganizationChanged
             | Event::OrganizationUnavailable { .. }
-            | Event::OrganizationOperation { .. }
-            | Event::KillFinished { .. }) => projected.extend(self.organization_event(event)),
+            | Event::OrganizationOperation { .. }) => {
+                projected.extend(self.organization_event(event));
+            }
             Event::AgentPublication {
                 publication,
                 session,

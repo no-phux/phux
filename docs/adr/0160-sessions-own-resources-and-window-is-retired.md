@@ -67,10 +67,10 @@ resources.
    client's presentation choices never change lifetime. Creating a session
    launches nothing unless the same command asks for it.
 6. **Delete only when empty.** Deleting a session with members is refused.
-   "Kill a session" is a client workflow over a fixed target set:
-   terminate each member, remove each once inactive, then delete with the
-   revision seen at the start. Work added meanwhile survives and makes the
-   delete refuse.
+   "Kill a session" is one server command, `SessionKill`, that ends and
+   removes every member, work added meanwhile included, and deletes the
+   session ([ADR-0161](./0161-organization-is-typed-commands-behind-a-feature-bit.md)
+   amendment; it replaced a client workflow over a fixed target set).
 7. **Close is not kill.** Closing a view, a tab, or a client removes
    presentation only. A verb named kill terminates execution, explicitly.
    A verb named close never does.

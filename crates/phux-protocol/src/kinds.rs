@@ -48,11 +48,12 @@ use crate::wire::frame::{
     COMMAND_TAG_RESOURCE_CREATE, COMMAND_TAG_RESOURCE_MOVE, COMMAND_TAG_RESOURCE_MOVE_MANY,
     COMMAND_TAG_RESOURCE_RELAUNCH, COMMAND_TAG_RESOURCE_REMOVE, COMMAND_TAG_RESOURCE_RENAME,
     COMMAND_TAG_RESOURCE_TERMINATE, COMMAND_TAG_REVOKE_DELEGATION, COMMAND_TAG_SESSION_CREATE,
-    COMMAND_TAG_SESSION_DELETE, COMMAND_TAG_SESSION_RENAME, COMMAND_TAG_SESSION_SET_LIFETIME,
-    EVENT_TAG_ACTIVATION_CHANGED, EVENT_TAG_ARRANGEMENT_CHANGED, EVENT_TAG_INTAKE_CHANGED,
-    EVENT_TAG_LEASE_CHANGED, EVENT_TAG_MEMBERSHIP_CHANGED, EVENT_TAG_RESOURCE_CREATED,
-    EVENT_TAG_RESOURCE_REMOVED, EVENT_TAG_RESOURCE_RENAMED, EVENT_TAG_SESSION_CREATED,
-    EVENT_TAG_SESSION_DELETED, EVENT_TAG_SESSION_LIFETIME_CHANGED, EVENT_TAG_SESSION_RENAMED,
+    COMMAND_TAG_SESSION_DELETE, COMMAND_TAG_SESSION_KILL, COMMAND_TAG_SESSION_RENAME,
+    COMMAND_TAG_SESSION_SET_LIFETIME, EVENT_TAG_ACTIVATION_CHANGED, EVENT_TAG_ARRANGEMENT_CHANGED,
+    EVENT_TAG_INTAKE_CHANGED, EVENT_TAG_LEASE_CHANGED, EVENT_TAG_MEMBERSHIP_CHANGED,
+    EVENT_TAG_RESOURCE_CREATED, EVENT_TAG_RESOURCE_REMOVED, EVENT_TAG_RESOURCE_RENAMED,
+    EVENT_TAG_SESSION_CREATED, EVENT_TAG_SESSION_DELETED, EVENT_TAG_SESSION_LIFETIME_CHANGED,
+    EVENT_TAG_SESSION_RENAMED,
 };
 use crate::wire::frame::{EVENT_TAG_SOURCE_GAP, SESSION_NAME_KEY};
 
@@ -759,7 +760,7 @@ static C_SESSION_ORGANIZE: Rule = Rule::verbs(
     Subject::KeyedSession,
 );
 static C_SESSION_DELETE: Rule = Rule::verbs(
-    "`SESSION_DELETE`",
+    "`SESSION_DELETE`, `SESSION_KILL`",
     &[Verb::Terminate],
     Subject::KeyedSession,
 );
@@ -987,7 +988,7 @@ pub fn command_rule(command: &Command) -> &'static Rule {
         Command::SessionRename { .. }
         | Command::SessionSetLifetime { .. }
         | Command::InboxResolve { .. } => &C_SESSION_ORGANIZE,
-        Command::SessionDelete { .. } => &C_SESSION_DELETE,
+        Command::SessionDelete { .. } | Command::SessionKill { .. } => &C_SESSION_DELETE,
         Command::ResourceCreate { .. } => &C_RESOURCE_CREATE,
         Command::ResourceMove { .. } | Command::ResourceMoveMany { .. } => &C_RESOURCE_MOVE,
         Command::ResourceRename { .. } => &C_RESOURCE_RENAME,
@@ -1579,6 +1580,15 @@ pub static SERVER_METHODS: &[MethodSpec] = &[
         Carrier::Command(COMMAND_TAG_REVOKE_DELEGATION),
         [C_DELEGATION]
     ),
+    dangerous(method!(
+        "SESSION_KILL",
+        Carrier::Command(COMMAND_TAG_SESSION_KILL),
+        [C_SESSION_DELETE],
+        Some(FeatureGate::FeaturesExt {
+            mask: ServerFeatureExt::SessionKill.mask(),
+            wire_name: ServerFeatureExt::SessionKill.wire_name(),
+        })
+    )),
 ];
 
 /// The gate of every organization method: `features_ext.ORGANIZATION`.

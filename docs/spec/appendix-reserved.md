@@ -111,6 +111,7 @@ their own one-byte tag inside it. Allocated tags:
 | `0x2f`..=`0x34` | workspace commands (create, rename, delete, link, unlink, transfer) | [L2.md](./L2.md) | reserved |
 | `0x35` | `DELEGATE_AGENT`            | [L1.md §5.7.5](./L1.md) | shipped |
 | `0x36` | `REVOKE_DELEGATION`         | [L1.md §5.7.5](./L1.md) | shipped |
+| `0x37` | `SESSION_KILL`              | [L1.md §5.7](./L1.md) | shipped |
 
 The organization commands are contiguous from `0x1e`, and `0x2f..=0x34` are
 reserved for the six workspace commands of the workspace stage
@@ -118,7 +119,8 @@ reserved for the six workspace commands of the workspace stage
 A decoder refuses a reserved tag as an unknown command until it is
 allocated. The delegated-agent commands of
 [ADR-0163](../adr/0163-actors-and-delegated-agent-grants.md) follow the
-reserved block at `0x35..=0x36`. `0x37` is the next open tag.
+reserved block at `0x35..=0x36`, and `SESSION_KILL` takes `0x37`. `0x38` is
+the next open tag.
 
 `AgentEvent` tags ([L1.md §7.1](./L1.md)) allocate sequentially:
 `0x10..=0x1b` are the organization events of [L1.md §5.7.4](./L1.md).

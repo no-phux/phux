@@ -54,6 +54,9 @@ pub(super) fn handle(
         } => state
             .with_mut(|s| organization_page(s, client_id, filter, page_size, cursor.as_deref())),
         Command::ArrangementGet { arrangement } => state.with(|s| arrangement_get(s, &arrangement)),
+        Command::SessionKill { operation, session } => {
+            session_kill(state, client_id, &operation, &session, root_token)
+        }
         other => {
             let Some((operation, op)) = state.with(|s| translate(s, other)) else {
                 return CommandResult::Error {
@@ -129,6 +132,99 @@ fn mutate(
         run_effect(state, effect, root_token);
     }
     answer
+}
+
+/// `SESSION_KILL`: every member with an engine here closes through the
+/// legacy kill's committed teardown (hangup, the grace, then kill), then the
+/// kill commits under the caller's operation, removing what remains,
+/// terminating any orphan it still records, and deleting the session. One
+/// lock holds both, so nothing joins the session between them. The receipt
+/// counts the members the kill found; a replay answers without the count.
+fn session_kill(
+    state: &SharedState,
+    client_id: ClientId,
+    operation: &phux_protocol::ids::OperationId,
+    session: &phux_protocol::ids::SessionKey,
+    root_token: &CancellationToken,
+) -> CommandResult {
+    let operation = ow::core_operation(operation);
+    let key = ow::core_session_key(session);
+    let (closed, committed) = state.with_mut(|s| {
+        let mut closed = None;
+        let mut members = None;
+        if s.org().receipt(&operation).is_none() {
+            let Some(record) = s.org().session(&key) else {
+                return (None, Err(Refusal::NotFound));
+            };
+            if key == s.org().authority().inbox_session {
+                return (
+                    None,
+                    Err(Refusal::InvalidArgument {
+                        field: "session",
+                        reason: "the designated inbox session cannot be deleted".to_owned(),
+                    }),
+                );
+            }
+            members = Some(u32::try_from(record.members.len()).unwrap_or(u32::MAX));
+            let live: Vec<_> = record
+                .members
+                .iter()
+                .filter_map(|member| s.registry().resource_id(member))
+                .filter(|id| s.resource_handle(*id).is_some())
+                .collect();
+            closed = Some(super::committed_close::commit_close(
+                s,
+                &live,
+                phux_protocol::wire::frame::CloseReason::Killed,
+                crate::state::CloseAttribution {
+                    actor: Some(client_id),
+                    operation_id: None,
+                },
+            ));
+        }
+        let actor = s.actor_for(client_id);
+        let command = phux_core::Command {
+            operation,
+            op: Op::SessionKill { session: key },
+        };
+        let committed = s
+            .commit_command_from(&command, &actor, Some(client_id))
+            .map(|commit| {
+                let answer = match (answer(s, &commit.applied), members) {
+                    (CommandResult::OkWith(CommandValue::Committed(receipt)), Some(_)) => {
+                        CommandResult::OkWith(CommandValue::Committed(Box::new(
+                            receipt.with_members(members),
+                        )))
+                    }
+                    (answer, _) => answer,
+                };
+                (answer, commit.applied.effects)
+            });
+        if let Some(closed) = closed.as_mut() {
+            let detached: Vec<_> = s
+                .take_killed_sessions()
+                .into_iter()
+                .flat_map(|session| s.attached_clients_in_session(session))
+                .collect();
+            closed.extend_killed_clients(detached);
+        }
+        (closed, committed)
+    });
+    if let Some(closed) = closed {
+        super::committed_close::announce(state, closed);
+    }
+    match committed {
+        Ok((answer, effects)) => {
+            for effect in effects {
+                run_effect(state, effect, root_token);
+            }
+            answer
+        }
+        Err(refusal) => {
+            debug!(?client_id, %refusal, "session kill refused");
+            CommandResult::Refused(ow::refusal(&refusal))
+        }
+    }
 }
 
 /// A relaunch of a record whose exited engine is still retained is refused:
@@ -895,6 +991,76 @@ mod tests {
             .build()
             .unwrap();
         tokio::task::LocalSet::new().block_on(&rt, f);
+    }
+
+    /// `SESSION_KILL` ends a running member and removes a dormant one in
+    /// one step, deletes the session, counts what it ended, and replays.
+    #[test]
+    fn session_kill_ends_every_member_and_deletes_the_session() {
+        use phux_protocol::wire::frame::LaunchMode;
+        run(async {
+            let state = SharedState::new();
+            let root = CancellationToken::new();
+            let receipt = committed(handle(
+                &state,
+                CLIENT,
+                Command::SessionCreate {
+                    operation: op(1),
+                    name: "work".to_owned(),
+                    lifetime: SessionLifetime::Persistent,
+                    attrs: Vec::new(),
+                    launch: Some(Box::new(LaunchSpec::new(Vec::new()))),
+                },
+                &root,
+            ));
+            let session = receipt.session.expect("created session");
+            committed(handle(
+                &state,
+                CLIENT,
+                Command::ResourceCreate {
+                    operation: op(2),
+                    session,
+                    kind: phux_protocol::ids::ResourceKind::Terminal,
+                    launch: Some(Box::new(LaunchSpec::new(Vec::new()))),
+                    name: None,
+                    on_exit: phux_protocol::wire::frame::ExitPolicy::Remove,
+                    launch_mode: LaunchMode::Deferred,
+                },
+                &root,
+            ));
+            let kill = Command::SessionKill {
+                operation: op(3),
+                session,
+            };
+            let killed = committed(handle(&state, CLIENT, kill.clone(), &root));
+            assert_eq!(killed.members, Some(2));
+            assert!(
+                page(&state, OrgFilter::Session(session))
+                    .sessions
+                    .is_empty()
+            );
+            assert!(state.with(|s| s.session_by_name("work").is_none()));
+            let replayed = committed(handle(&state, CLIENT, kill, &root));
+            assert_eq!(replayed.members, None, "a replay answers without the count");
+
+            let missing = Command::SessionKill {
+                operation: op(4),
+                session,
+            };
+            assert_eq!(
+                handle(&state, CLIENT, missing, &root),
+                CommandResult::Refused(WireRefusal::NotFound)
+            );
+            let inbox = state.with(|s| s.org().authority().inbox_session);
+            let inbox = Command::SessionKill {
+                operation: op(5),
+                session: ow::session_key(inbox).expect("non-zero key"),
+            };
+            assert!(matches!(
+                handle(&state, CLIENT, inbox, &root),
+                CommandResult::Refused(WireRefusal::InvalidArgument { .. })
+            ));
+        });
     }
 
     #[test]

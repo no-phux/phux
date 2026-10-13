@@ -242,6 +242,42 @@ fn session_delete_refuses_members_and_never_deletes_inbox() {
     ));
 }
 
+#[test]
+fn session_kill_removes_every_member_terminates_the_running_and_deletes() {
+    let mut h = Harness::new();
+    let s = h.create_session("work", SessionLifetime::Persistent);
+    let running = h.shell_in(s);
+    let done = h.create_resource(s, job());
+    h.report(ended(done, exited())).expect("ended");
+    let applied = h.run(Op::SessionKill { session: s }).expect("kill");
+    assert!(matches!(
+        applied.effects.as_slice(),
+        [Effect::Terminate { resource, mode: TerminateMode::Graceful, .. }] if *resource == running
+    ));
+    assert!(h.reg.org().session(&s).is_none());
+    assert!(h.reg.org().resource(&running).is_none());
+    assert!(h.reg.org().resource(&done).is_none());
+
+    // A retry replays; a session already gone is killed.
+    let replay = h
+        .run_cmd(
+            &Actor::owner(),
+            &Command {
+                operation: applied.operation,
+                op: Op::SessionKill { session: s },
+            },
+        )
+        .expect("replay");
+    assert!(replay.replayed);
+    h.run(Op::SessionKill { session: s }).expect("already gone");
+
+    let inbox = h.inbox();
+    assert!(matches!(
+        h.run(Op::SessionKill { session: inbox }),
+        Err(Refusal::InvalidArgument { .. })
+    ));
+}
+
 // ---- resources -------------------------------------------------------------
 
 #[test]

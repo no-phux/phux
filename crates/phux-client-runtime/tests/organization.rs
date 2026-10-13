@@ -5,7 +5,7 @@
 #![allow(clippy::unwrap_used, reason = "test assertions")]
 #![allow(clippy::panic, reason = "test assertions")]
 
-use phux_client_core::org_ops::{OrgOutcome, SessionOutcome, TargetOutcome};
+use phux_client_core::org_ops::{OrgOutcome, SubmitError};
 use phux_client_runtime::control::{ControlOptions, ControlPlane, Event, ReplicaState};
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
@@ -25,7 +25,10 @@ use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
 
 fn hello(organization: bool) -> FrameKind {
     let ext = if organization {
-        ServerFeatureExtSet::with(&[ServerFeatureExt::Organization])
+        ServerFeatureExtSet::with(&[
+            ServerFeatureExt::Organization,
+            ServerFeatureExt::SessionKill,
+        ])
     } else {
         ServerFeatureExtSet::new()
     };
@@ -397,7 +400,7 @@ fn without_organization_nothing_is_read_and_submissions_are_not_sent() {
             .iter()
             .any(|(_, c)| matches!(c, Command::CloseTabResources { .. }))
     );
-    assert!(plane.kill_session(skey(1)).is_none());
+    assert_eq!(plane.kill_session(skey(1)), Err(SubmitError::Unsupported));
 }
 
 #[test]
@@ -433,67 +436,29 @@ fn close_terminals_terminates_each_under_organization() {
 }
 
 #[test]
-fn kill_session_runs_terminate_remove_delete_and_reports_each_target() {
+fn kill_session_is_one_server_command_resolved_like_any_other() {
     let mut plane = seeded();
     let _ = commands(&mut plane);
-    let workflow = plane.kill_session(skey(1)).expect("live replica");
+    let operation = plane
+        .kill_session(skey(1))
+        .expect("SESSION_KILL advertised");
     let sent = commands(&mut plane);
-    let [(id, Command::ResourceTerminate { operation, .. })] = sent.as_slice() else {
-        panic!("expected a terminate, got {sent:?}");
+    let [(id, Command::SessionKill { session, .. })] = sent.as_slice() else {
+        panic!("expected one SESSION_KILL, got {sent:?}");
     };
+    assert_eq!(*session, skey(1));
     answer(
         &mut plane,
         *id,
-        CommandResult::Accepted {
-            operation: *operation,
-        },
+        CommandResult::OkWith(CommandValue::Committed(Box::new(
+            Committed::new(operation, Revision::new(0)).with_members(Some(1)),
+        ))),
     );
-    assert!(commands(&mut plane).is_empty(), "waiting for the exit");
-    event(
-        &mut plane,
-        Some(6),
-        AgentEvent::ActivationChanged {
-            resource: rkey(1),
-            activation: ActivationId::new(1),
-            state: ExecState::Completed,
-            outcome: Some(Outcome::Signaled(15)),
-        },
-    );
-    let sent = commands(&mut plane);
-    let (id, operation) = sent
-        .iter()
-        .find_map(|(id, c)| match c {
-            Command::ResourceRemove { operation, .. } => Some((*id, *operation)),
-            _ => None,
-        })
-        .expect("a remove");
-    answer(&mut plane, id, committed(operation, 4));
-    let sent = commands(&mut plane);
-    let (id, operation) = sent
-        .iter()
-        .find_map(|(id, c)| match c {
-            Command::SessionDelete { operation, .. } => Some((*id, *operation)),
-            _ => None,
-        })
-        .expect("a delete");
-    answer(&mut plane, id, committed(operation, 5));
-    let events = plane.take_events();
-    let report = events
-        .iter()
-        .find_map(|e| match e {
-            Event::KillFinished {
-                workflow: w,
-                report,
-            } if *w == workflow => Some(report.clone()),
-            _ => None,
-        })
-        .expect("the workflow finished");
-    assert_eq!(report.targets, vec![(rkey(1), TargetOutcome::Removed)]);
-    assert_eq!(report.session_outcome, SessionOutcome::Deleted);
-    assert!(
-        org_outcomes(&events).is_empty(),
-        "workflow steps are not reported as standalone operations"
-    );
+    let outcomes = org_outcomes(&plane.take_events());
+    assert!(matches!(
+        outcomes.as_slice(),
+        [(op, OrgOutcome::Committed(receipt))] if *op == operation && receipt.members == Some(1)
+    ));
 }
 
 #[test]

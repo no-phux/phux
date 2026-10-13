@@ -221,8 +221,10 @@ fn negotiated(arrangement: Option<ArrangementKey>) -> Harness {
         unsafe { phux_client_queue_hello(h.ptr(), bytes_out(b"test")) },
         PhuxClientResult::Ok
     );
-    let caps = test_support::caps(&[])
-        .with_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]));
+    let caps = test_support::caps(&[]).with_features_ext(ServerFeatureExtSet::with(&[
+        ServerFeatureExt::Organization,
+        ServerFeatureExt::SessionKill,
+    ]));
     let _ = h.take_outgoing();
     h.feed(&hello_ok(caps, BootstrapProfile::SynthesizedVtRaw));
     let (seed, _) = h.command(|command| matches!(command, Command::GetOrganization { .. }));
@@ -554,32 +556,32 @@ fn a_refused_delete_reports_its_refusal_per_target() {
 }
 
 #[test]
-fn killing_an_empty_session_deletes_it_and_reports_the_session() {
+fn killing_a_session_is_one_session_kill() {
     let mut h = attached(None);
     let _ = h.take_outgoing();
     // SAFETY: the harness owns the live client; the key is 16 readable bytes.
     assert_eq!(
-        unsafe { phux_client_kill_session(h.ptr(), 9, inbox().as_bytes().as_ptr()) },
+        unsafe { phux_client_kill_session(h.ptr(), 9, work().as_bytes().as_ptr()) },
         PhuxClientResult::Ok
     );
     let (result, _) = h.results().remove(0);
     assert_eq!((result.kind, result.status), (10, 1));
-    let (id, command) = h.command(|command| matches!(command, Command::SessionDelete { .. }));
-    let Command::SessionDelete { operation, .. } = command else {
+    let (id, command) = h.command(|command| matches!(command, Command::SessionKill { .. }));
+    let Command::SessionKill { operation, session } = command else {
         unreachable!()
     };
+    assert_eq!(session, work());
     h.answer(
         id,
-        CommandResult::OkWith(CommandValue::Committed(Box::new(Committed::new(
-            operation,
-            Revision::new(2),
-        )))),
+        CommandResult::OkWith(CommandValue::Committed(Box::new(
+            Committed::new(operation, Revision::new(0)).with_members(Some(1)),
+        ))),
     );
     let (result, targets) = h.results().remove(0);
     assert_eq!(result.status, 2, "COMMITTED");
     assert_eq!(targets.len(), 1);
     assert!(targets[0].is_session);
-    assert_eq!(targets[0].key, *inbox().as_bytes());
+    assert_eq!(targets[0].key, *work().as_bytes());
     assert_eq!(targets[0].status, 2, "DONE");
 }
 

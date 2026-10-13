@@ -670,6 +670,8 @@ pub struct Committed {
     pub revisions: Vec<RecordRevision>,
     /// The intake state an `INBOX_RESOLVE` cleared.
     pub prior_awaiting: Option<bool>,
+    /// How many members a `SESSION_KILL` ended; absent on a replayed one.
+    pub members: Option<u32>,
 }
 
 /// The longest delegated credential id a decoder accepts.
@@ -724,6 +726,7 @@ impl Committed {
             target: None,
             revisions: Vec::new(),
             prior_awaiting: None,
+            members: None,
         }
     }
 
@@ -759,6 +762,13 @@ impl Committed {
     #[must_use]
     pub const fn with_prior_awaiting(mut self, prior_awaiting: Option<bool>) -> Self {
         self.prior_awaiting = prior_awaiting;
+        self
+    }
+
+    /// Builder setter for [`Self::members`].
+    #[must_use]
+    pub const fn with_members(mut self, members: Option<u32>) -> Self {
+        self.members = members;
         self
     }
 }
@@ -1518,6 +1528,7 @@ const fn org_command_tag(command: &Command) -> Option<u8> {
         Command::ArrangementReplace { .. } => COMMAND_TAG_ARRANGEMENT_REPLACE,
         Command::DelegateAgent { .. } => super::COMMAND_TAG_DELEGATE_AGENT,
         Command::RevokeDelegation { .. } => super::COMMAND_TAG_REVOKE_DELEGATION,
+        Command::SessionKill { .. } => super::COMMAND_TAG_SESSION_KILL,
         _ => return None,
     })
 }
@@ -1581,7 +1592,8 @@ pub(in crate::wire) fn encode_org_command(command: &Command, enc: &mut Encoder<'
             write_session(enc, field::org::SESSION, session);
             write_u8(enc, field::org::LIFETIME, lifetime.to_u8());
         }
-        Command::SessionDelete { operation, session } => {
+        Command::SessionDelete { operation, session }
+        | Command::SessionKill { operation, session } => {
             write_operation(enc, operation);
             write_session(enc, field::org::SESSION, session);
         }
@@ -1745,12 +1757,13 @@ pub(in crate::wire) fn decode_org_command(
         COMMAND_TAG_SESSION_CREATE, COMMAND_TAG_SESSION_DELETE, COMMAND_TAG_SESSION_RENAME,
         COMMAND_TAG_SESSION_SET_LIFETIME,
     };
-    let delegation = [
+    let after_reserved = [
         super::COMMAND_TAG_DELEGATE_AGENT,
         super::COMMAND_TAG_REVOKE_DELEGATION,
+        super::COMMAND_TAG_SESSION_KILL,
     ];
     if !(COMMAND_TAG_GET_ORGANIZATION..=COMMAND_TAG_ARRANGEMENT_REPLACE).contains(&tag)
-        && !delegation.contains(&tag)
+        && !after_reserved.contains(&tag)
     {
         return Ok(None);
     }
@@ -1851,6 +1864,10 @@ pub(in crate::wire) fn decode_org_command(
         super::COMMAND_TAG_REVOKE_DELEGATION => Command::RevokeDelegation {
             operation: f.operation()?,
             credential_id: req(f.credential)?,
+        },
+        super::COMMAND_TAG_SESSION_KILL => Command::SessionKill {
+            operation: f.operation()?,
+            session: f.session()?,
         },
         _ => return Ok(None),
     };
@@ -2198,6 +2215,9 @@ pub(in crate::wire) fn encode_committed(committed: &Committed, enc: &mut Encoder
         if let Some(prior) = committed.prior_awaiting {
             write_u8(&mut e, field::org::AWAITING, u8::from(prior));
         }
+        if let Some(members) = committed.members {
+            write_u32(&mut e, field::org::MEMBERS, members);
+        }
     }
     enc.write_bytes(&body);
 }
@@ -2213,6 +2233,7 @@ pub(in crate::wire) fn decode_committed(dec: &mut Decoder<'_>) -> Result<Committ
         target: f.target,
         revisions: f.pins,
         prior_awaiting: f.awaiting,
+        members: f.members,
     })
 }
 

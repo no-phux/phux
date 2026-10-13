@@ -1,7 +1,7 @@
 //! The control plane's organization lane: the replica's seed and event
 //! routing, the operation journal (one `OperationId` per action, resent with
 //! the same id after a reconnect inside the horizon, reported unknown past
-//! it), the kill-session workflow, and the typed commands a consumer submits.
+//! it), and the typed commands a consumer submits.
 //!
 //! Everything here is inert against a server that does not advertise
 //! `ORGANIZATION`: no seed is read, submissions resolve
@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use phux_client_core::layout::ArrangementDoc as HandleDoc;
 use phux_client_core::layout::wire::{WireError, to_protocol};
 use phux_client_core::org_ops::{
-    KillWorkflow, ORG_JOURNAL_MAX_OPS, ORG_RETRY_HORIZON_MS, OrgJournal, OrgOutcome, OrgReport,
+    ORG_JOURNAL_MAX_OPS, ORG_RETRY_HORIZON_MS, OrgJournal, OrgOutcome, OrgReport,
     OrganizationCommand, SubmitError, live_target,
 };
 use phux_protocol::ResourceId;
@@ -25,23 +25,8 @@ use phux_protocol::wire::frame::{
     MoveItem, OrgFilter, Refusal, SessionLifetime, TerminateMode,
 };
 
-use super::organization::{RecordChange, ReplicaAction};
+use super::organization::ReplicaAction;
 use super::{ControlPlane, Event, Pending, Topology};
-
-/// How long a kill workflow waits for terminated members to end before it
-/// reports them timed out; a graceful terminate is forced halfway.
-pub const KILL_WAIT: Duration = Duration::from_secs(4);
-
-/// One running kill-session workflow.
-#[derive(Debug)]
-pub(super) struct KillRun {
-    id: u64,
-    workflow: KillWorkflow,
-    operations: HashSet<OperationId>,
-    escalate_at: Instant,
-    deadline: Instant,
-    escalated: bool,
-}
 
 /// One `close_terminals` batch answered by per-terminal terminates.
 #[derive(Debug)]
@@ -79,13 +64,11 @@ pub(super) struct OrgLane {
     /// The first full page of this connection named the authority: resends
     /// may go out.
     pub(super) ready: bool,
-    pub(super) kills: Vec<KillRun>,
     pub(super) closes: Vec<CloseBatch>,
     moves: Vec<BulkMove>,
     deferred: usize,
     seed_has_cursor: bool,
     seed_restarts: u8,
-    pub(super) next_run: u64,
 }
 
 impl ControlPlane {
@@ -198,14 +181,6 @@ impl ControlPlane {
         let reports = self.org.journal.drain(why);
         self.handle_org_reports(reports);
         self.cancel_bulk_moves(why);
-        for mut run in std::mem::take(&mut self.org.kills) {
-            run.workflow.time_out();
-            let id = run.id;
-            self.push_event(Event::KillFinished {
-                workflow: id,
-                report: Box::new(run.workflow.report()),
-            });
-        }
     }
 
     /// A `GET_ORGANIZATION` page or `ARRANGEMENT_GET` reply.
@@ -300,41 +275,13 @@ impl ControlPlane {
             self.handle_org_reports(reports);
             self.flush_org_journal();
         }
-        self.refresh_kill_runs();
         self.organization_changed();
     }
 
-    /// Route one journal event to the replica and the kill workflows.
+    /// Route one journal event to the replica.
     pub(super) fn organization_event(&mut self, seq: Option<u64>, event: &AgentEvent) {
-        let (action, change) = self.organization.apply_event(seq, event);
-        match change {
-            RecordChange::Activation {
-                resource,
-                activation,
-            } => {
-                for run in &mut self.org.kills {
-                    run.workflow.on_activation(&resource, activation.state);
-                }
-            }
-            RecordChange::ResourceRemoved(resource) => {
-                for run in &mut self.org.kills {
-                    run.workflow.on_removed(&resource);
-                }
-            }
-            RecordChange::SessionDeleted(session) => {
-                for run in self
-                    .org
-                    .kills
-                    .iter_mut()
-                    .filter(|run| run.workflow.session() == session)
-                {
-                    run.workflow.on_records(None, &[]);
-                }
-            }
-            RecordChange::Other => {}
-        }
+        let action = self.organization.apply_event(seq, event);
         self.act_on_replica(action);
-        self.advance_kill_runs();
     }
 
     /// Re-project the topology with the replica and tell the consumer.
@@ -433,8 +380,8 @@ impl ControlPlane {
         }
     }
 
-    /// Resolve every attempted operation past the retry horizon, and time
-    /// out kill workflows. Returns whether anything resolved.
+    /// Resolve every attempted operation past the retry horizon. Returns
+    /// whether anything resolved.
     pub(super) fn expire_org(&mut self) -> bool {
         let before = self.events.len();
         let now_ms = self.now_ms();
@@ -442,62 +389,21 @@ impl ControlPlane {
         self.handle_org_reports(reports);
         let now = Instant::now();
         self.expire_bulk_reads(now);
-        let mut escalate = Vec::new();
-        for run in &mut self.org.kills {
-            if now >= run.deadline {
-                run.workflow.time_out();
-            } else if !run.escalated && now >= run.escalate_at {
-                run.escalated = true;
-                escalate.push(run.id);
-            }
-        }
-        let resources = self.organization.resources().to_vec();
-        for run in self
-            .org
-            .kills
-            .iter_mut()
-            .filter(|run| escalate.contains(&run.id))
-        {
-            run.workflow.escalate(&resources);
-        }
-        self.advance_kill_runs();
         self.events.len() != before
     }
 
-    /// The earliest kill-workflow or bulk-inventory deadline.
+    /// The earliest bulk-inventory deadline.
     pub(super) fn next_org_deadline(&self) -> Option<Instant> {
         self.org
-            .kills
+            .moves
             .iter()
-            .map(|run| {
-                if run.escalated {
-                    run.deadline
-                } else {
-                    run.escalate_at
-                }
-            })
-            .chain(
-                self.org
-                    .moves
-                    .iter()
-                    .filter(|run| !matches!(run.phase, BulkPhase::Submitted(_)))
-                    .map(|run| run.deadline),
-            )
+            .filter(|run| !matches!(run.phase, BulkPhase::Submitted(_)))
+            .map(|run| run.deadline)
             .min()
     }
 
     fn handle_org_reports(&mut self, reports: Vec<OrgReport>) {
         for report in reports {
-            if let Some(run) = self
-                .org
-                .kills
-                .iter_mut()
-                .find(|run| run.operations.contains(&report.operation))
-            {
-                run.operations.remove(&report.operation);
-                run.workflow.on_result(&report.operation, &report.outcome);
-                continue;
-            }
             if let Some(position) = self
                 .org
                 .closes
@@ -527,7 +433,6 @@ impl ControlPlane {
                 self.cancel_bulk_tail(run, "a prior bulk move chunk did not commit");
             }
         }
-        self.advance_kill_runs();
         self.advance_bulk_moves();
     }
 
@@ -672,80 +577,6 @@ impl ControlPlane {
         })
     }
 
-    // ----- kill workflows --------------------------------------------------
-
-    /// Kill a whole session by the CONTRACTS §04 workflow: terminate each
-    /// executing member, wait until each is inactive, remove each, then
-    /// delete the session with the revision the workflow last committed
-    /// against. The member set is fixed now. The result is
-    /// [`Event::KillFinished`] with a per-target report. `None` when the
-    /// replica is not live or does not know the session.
-    pub fn kill_session(&mut self, session: SessionKey) -> Option<u64> {
-        if !self.organization.is_live() {
-            return None;
-        }
-        let record = self.organization.session(&session)?.clone();
-        let members: Vec<_> = self.organization.members(&session).cloned().collect();
-        let workflow = KillWorkflow::plan(&record, &members);
-        let now = Instant::now();
-        self.org.next_run += 1;
-        let id = self.org.next_run;
-        self.org.kills.push(KillRun {
-            id,
-            workflow,
-            operations: HashSet::new(),
-            escalate_at: now + KILL_WAIT / 2,
-            deadline: now + KILL_WAIT,
-            escalated: false,
-        });
-        self.advance_kill_runs();
-        Some(id)
-    }
-
-    fn refresh_kill_runs(&mut self) {
-        for run in &mut self.org.kills {
-            let session = run.workflow.session();
-            let resources: Vec<_> = self.organization.members(&session).cloned().collect();
-            run.workflow
-                .on_records(self.organization.session(&session), &resources);
-        }
-    }
-
-    fn advance_kill_runs(&mut self) {
-        let mut submissions = Vec::new();
-        for run in &mut self.org.kills {
-            let mut mint = mint_operation;
-            for (operation, command) in run.workflow.next_commands(&mut mint) {
-                run.operations.insert(operation);
-                submissions.push((run.id, operation, command));
-            }
-        }
-        for (id, operation, command) in submissions {
-            if let Err(error) = self.journal_org_operation(command)
-                && let Some(run) = self.org.kills.iter_mut().find(|run| run.id == id)
-            {
-                run.operations.remove(&operation);
-                run.workflow.on_result(
-                    &operation,
-                    &OrgOutcome::NotSent {
-                        reason: error.to_string(),
-                    },
-                );
-            }
-        }
-        self.flush_org_journal();
-        let (done, running): (Vec<KillRun>, Vec<KillRun>) = std::mem::take(&mut self.org.kills)
-            .into_iter()
-            .partition(|run| run.workflow.is_done());
-        self.org.kills = running;
-        for run in done {
-            self.push_event(Event::KillFinished {
-                workflow: run.id,
-                report: Box::new(run.workflow.report()),
-            });
-        }
-    }
-
     // ----- typed commands --------------------------------------------------
 
     fn session_record(
@@ -798,6 +629,30 @@ impl ControlPlane {
     /// As [`Self::rename_session`].
     pub fn delete_session(&mut self, session: SessionKey) -> Result<OperationId, SubmitError> {
         self.submit_organization(Command::SessionDelete {
+            operation: mint_operation(),
+            session,
+        })
+    }
+
+    /// Kill a whole session (`SESSION_KILL`): the server ends every member,
+    /// work that joined meanwhile included, and deletes the session. The
+    /// outcome is [`Event::OrganizationOperation`]; its receipt counts the
+    /// members ended.
+    ///
+    /// # Errors
+    ///
+    /// [`SubmitError::Unsupported`] unless the connected server advertises
+    /// `SESSION_KILL`; [`Self::submit_organization`]'s errors.
+    pub fn kill_session(&mut self, session: SessionKey) -> Result<OperationId, SubmitError> {
+        let supported = self.handshake_ready
+            && self
+                .server
+                .as_ref()
+                .is_some_and(|server| server.has_ext(ServerFeatureExt::SessionKill));
+        if !supported {
+            return Err(SubmitError::Unsupported);
+        }
+        self.submit_organization(Command::SessionKill {
             operation: mint_operation(),
             session,
         })

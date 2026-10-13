@@ -83,10 +83,11 @@ const fn command_variant(command: &Command) -> usize {
         Command::ArrangementReplace { .. } => 40,
         Command::DelegateAgent { .. } => 41,
         Command::RevokeDelegation { .. } => 42,
+        Command::SessionKill { .. } => 43,
     }
 }
 
-const COMMAND_VARIANTS: usize = 43;
+const COMMAND_VARIANTS: usize = 44;
 
 fn operation() -> IdempotencyKey {
     IdempotencyKey::new([3; 16]).unwrap()
@@ -150,6 +151,13 @@ fn org_command_samples() -> Vec<(Command, &'static Rule)> {
         ),
         (
             Command::SessionDelete {
+                operation: operation(),
+                session: session_key(),
+            },
+            &C_SESSION_DELETE,
+        ),
+        (
+            Command::SessionKill {
                 operation: operation(),
                 session: session_key(),
             },
@@ -1126,6 +1134,7 @@ fn dangerous_methods_are_exactly_the_adr_0128_list() {
         "SESSION_DELETE",
         "RESOURCE_TERMINATE",
         "RESOURCE_REMOVE",
+        "SESSION_KILL",
     ]
     .into_iter()
     .collect();
@@ -1150,11 +1159,16 @@ fn only_organization_commands_need_the_v2_verbs() {
             assert!(rule.subject.requires_owner_uds(), "{command:?}");
         } else if command.is_organization() {
             let method = command_method(encoded_command_tag(&command)).unwrap();
+            let gate = if matches!(command, Command::SessionKill { .. }) {
+                crate::caps::ServerFeatureExt::SessionKill
+            } else {
+                crate::caps::ServerFeatureExt::Organization
+            };
             assert_eq!(
                 method.gate,
                 Some(FeatureGate::FeaturesExt {
-                    mask: crate::caps::ServerFeatureExt::Organization as u32,
-                    wire_name: "ORGANIZATION",
+                    mask: gate.mask(),
+                    wire_name: gate.wire_name(),
                 }),
                 "{}",
                 method.name

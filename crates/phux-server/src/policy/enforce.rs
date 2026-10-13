@@ -599,6 +599,7 @@ fn keyed_session(s: &ServerState, request: Request<'_>) -> Option<Point> {
         Command::SessionRename { session, .. }
         | Command::SessionSetLifetime { session, .. }
         | Command::SessionDelete { session, .. }
+        | Command::SessionKill { session, .. }
         | Command::InboxResolve { session, .. }
         | Command::ResourceCreate { session, .. } => session_key_point(s, session),
         _ => None,

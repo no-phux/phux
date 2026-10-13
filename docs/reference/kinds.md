@@ -61,6 +61,7 @@ Addressed to the server or the connection rather than to one resource.
 | `ARRANGEMENT_REPLACE` | command `0x2e` | ORGANIZE | yes | `organization` (features_ext) | shipped |
 | `DELEGATE_AGENT` | command `0x35` | TERMINATE (owner socket only) | yes | none | shipped |
 | `REVOKE_DELEGATION` | command `0x36` | TERMINATE (owner socket only) | yes | none | shipped |
+| `SESSION_KILL` | command `0x37` | TERMINATE | yes | `session_kill` (features_ext) | shipped |
 
 ## Server events
 
@@ -270,7 +271,7 @@ Every command nested in `COMMAND` lands on exactly one row; the envelope alone g
 | `GET_ORGANIZATION` | INVENTORY | `OrganizationView` |
 | `SESSION_CREATE` | CREATE | `Global { owner_uds_only: false }` |
 | `SESSION_RENAME`, `SESSION_SET_LIFETIME`, `INBOX_RESOLVE` | ORGANIZE | `KeyedSession` |
-| `SESSION_DELETE` | TERMINATE | `KeyedSession` |
+| `SESSION_DELETE`, `SESSION_KILL` | TERMINATE | `KeyedSession` |
 | `RESOURCE_CREATE` | CREATE | `KeyedSession` |
 | `RESOURCE_MOVE`, `RESOURCE_MOVE_MANY` | ORGANIZE | `MoveSessions` |
 | `RESOURCE_RENAME` | ORGANIZE | `KeyedResource` |

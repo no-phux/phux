@@ -301,11 +301,15 @@ fn org_fixture() -> (
     (fixture, done)
 }
 
-/// A scripted server that advertises `ORGANIZATION` over `fixture`.
+/// A scripted server that advertises `ORGANIZATION` and `SESSION_KILL`
+/// over `fixture`.
 fn org_spec(fixture: phux_client::testkit::OrgFixture) -> ScriptSpec {
     use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExtSet};
     ScriptSpec::new()
-        .server_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]))
+        .server_features_ext(ServerFeatureExtSet::with(&[
+            ServerFeatureExt::Organization,
+            ServerFeatureExt::SessionKill,
+        ]))
         .organization(fixture)
 }
 

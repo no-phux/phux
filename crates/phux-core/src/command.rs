@@ -118,6 +118,14 @@ pub enum Op {
         /// Target.
         session: SessionKey,
     },
+    /// Remove every member of a session and delete it, in one transition.
+    /// A member whose activation is current or lost is terminated
+    /// gracefully after the commit. A session already gone is killed:
+    /// nothing changes. Never the designated Inbox session.
+    SessionKill {
+        /// Target.
+        session: SessionKey,
+    },
     /// Create a resource in a session (the Inbox session when `None`).
     ResourceCreate {
         /// Destination; `None` means the designated Inbox session.

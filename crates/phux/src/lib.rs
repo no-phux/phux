@@ -1202,17 +1202,9 @@ fn dispatch(
             server,
             idempotency_key,
             yes,
-            verbose,
             remote,
         }) => match commands::spawn::parse_key_arg(idempotency_key.as_deref(), false) {
-            Ok(key) => commands::kill::run(
-                target,
-                server,
-                key,
-                yes,
-                verbose,
-                remote.with_socket(socket),
-            ),
+            Ok(key) => commands::kill::run(target, server, key, yes, remote.with_socket(socket)),
             Err(code) => code,
         },
         Some(Command::Detach {

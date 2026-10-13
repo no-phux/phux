@@ -515,7 +515,7 @@ point before any handler or satellite branch:
 | `GET_ORGANIZATION` | `INVENTORY` | filtered to the organization records the grant inventories: a session through its Group, a resource through its session; authority totals and the Inbox designation only with Global |
 | `SESSION_CREATE` | `CREATE` | Global; a launch in the same command needs nothing more |
 | `SESSION_RENAME`, `SESSION_SET_LIFETIME`, `INBOX_RESOLVE` | `ORGANIZE` | the session the command's key names, resolved side-effect-free to its Group; an absent key resolves to no subject |
-| `SESSION_DELETE` | `TERMINATE` | the session the command's key names, resolved side-effect-free to its Group |
+| `SESSION_DELETE`, `SESSION_KILL` | `TERMINATE` | the session the command's key names, resolved side-effect-free to its Group |
 | `RESOURCE_CREATE` | `CREATE` | the session the command's key names, resolved side-effect-free to its Group |
 | `RESOURCE_MOVE`, `RESOURCE_MOVE_MANY` | `ORGANIZE` | every session a moved resource leaves and the destination session; all-or-nothing |
 | `RESOURCE_RENAME` | `ORGANIZE` | the resource the command's key names, through its current session's Group |

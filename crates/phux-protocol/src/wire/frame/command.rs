@@ -494,6 +494,15 @@ pub enum Command {
         /// The session.
         session: SessionKey,
     },
+    /// End every member of a session and delete it, in one server-side
+    /// step. Gated on `features_ext.SESSION_KILL`; answered `COMMITTED` with
+    /// the member count it ended.
+    SessionKill {
+        /// Caller-generated operation id.
+        operation: OperationId,
+        /// The session.
+        session: SessionKey,
+    },
     /// Create a resource record in a session, with its membership and launch
     /// intent, in one transaction.
     ResourceCreate {
@@ -693,6 +702,7 @@ impl Command {
             | Self::SessionRename { operation, .. }
             | Self::SessionSetLifetime { operation, .. }
             | Self::SessionDelete { operation, .. }
+            | Self::SessionKill { operation, .. }
             | Self::ResourceCreate { operation, .. }
             | Self::ResourceMove { operation, .. }
             | Self::ResourceMoveMany { operation, .. }
@@ -721,6 +731,7 @@ impl Command {
                 | Self::SessionRename { .. }
                 | Self::SessionSetLifetime { .. }
                 | Self::SessionDelete { .. }
+                | Self::SessionKill { .. }
                 | Self::ResourceCreate { .. }
                 | Self::ResourceMove { .. }
                 | Self::ResourceMoveMany { .. }

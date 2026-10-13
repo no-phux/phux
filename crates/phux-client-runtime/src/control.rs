@@ -80,8 +80,8 @@ pub use extensions::{
     TranscribeOutcome, TranscribeReceipt,
 };
 pub use geometry::TerminalResizeOutcome;
-pub use org_plane::{ArrangementSubmitError, KILL_WAIT, mint_operation};
-pub use organization::{InboxView, OrganizationReplica, RecordChange, ReplicaAction, ReplicaState};
+pub use org_plane::{ArrangementSubmitError, mint_operation};
+pub use organization::{InboxView, OrganizationReplica, ReplicaAction, ReplicaState};
 pub use topology::{AgentSessionDescriptor, PaneDescriptor, SessionDescriptor, Topology};
 
 /// Upper bound on undrained events.
@@ -478,8 +478,7 @@ pub struct ControlPlane {
     project_tag_pending: Option<u32>,
     /// The organization replica (`ORGANIZATION` servers only).
     organization: organization::OrganizationReplica,
-    /// The organization operation journal, kill workflows, and close
-    /// batches.
+    /// The organization operation journal and close batches.
     org: org_plane::OrgLane,
 }
 

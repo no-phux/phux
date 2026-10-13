@@ -40,7 +40,10 @@ fn hello(supported: bool) -> FrameKind {
         protocol_minor: PROTOCOL_VERSION.minor,
         protocol_patch: PROTOCOL_VERSION.patch,
         server_caps: ServerCapabilities::new().with_features_ext(if supported {
-            ServerFeatureExtSet::with(&[ServerFeatureExt::Organization])
+            ServerFeatureExtSet::with(&[
+                ServerFeatureExt::Organization,
+                ServerFeatureExt::SessionKill,
+            ])
         } else {
             ServerFeatureExtSet::new()
         }),
@@ -747,7 +750,7 @@ fn ordinary_and_internal_producers_cannot_steal_an_accepted_bulk_reservation() {
     let close = plane.close_terminals(vec![ResourceId::local(1)]).unwrap();
     let events = plane.take_events();
     assert!(events.iter().any(|event| matches!(event, Event::TerminalsClosed { request_id, error: Some(_) } if *request_id == close)));
-    plane.kill_session(session(1)).unwrap();
+    assert_eq!(plane.kill_session(session(1)), Err(SubmitError::Full));
     assert!(commands(&mut plane).is_empty());
     assert_eq!(
         plane.pending_organization_operations().count(),
@@ -783,7 +786,10 @@ fn live_kill_and_close_can_fill_only_unreserved_slots() {
         let sent = commands(&mut plane);
         assert!(matches!(
             sent.as_slice(),
-            [(_, Command::ResourceTerminate { .. })]
+            [(
+                _,
+                Command::ResourceTerminate { .. } | Command::SessionKill { .. }
+            )]
         ));
         assert_eq!(
             plane.pending_organization_operations().count(),

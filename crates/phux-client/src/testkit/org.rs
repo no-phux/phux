@@ -647,6 +647,30 @@ impl OrgFixture {
                 let revision = self.bump();
                 Ok((ok(Committed::new(*operation, revision)), None))
             }
+            Command::SessionKill { operation, session } => {
+                if Some(*session) == self.inbox {
+                    return Err(Refusal::InvalidArgument {
+                        field: "session".to_owned(),
+                        reason: "the designated inbox session cannot be deleted".to_owned(),
+                    });
+                }
+                let members: Vec<ResourceKey> = self
+                    .resources
+                    .iter()
+                    .filter(|r| r.session == *session)
+                    .map(|r| r.key)
+                    .collect();
+                if self.session_ref(session).is_none() {
+                    return Err(Refusal::NotFound);
+                }
+                for member in &members {
+                    self.drop_resource(member);
+                }
+                self.delete_session(session);
+                let committed = Committed::new(*operation, Revision::default())
+                    .with_members(Some(u32::try_from(members.len()).unwrap_or(u32::MAX)));
+                Ok((ok(committed), None))
+            }
             Command::ResourceCreate {
                 operation,
                 session,
@@ -1012,6 +1036,7 @@ const fn command_name(command: &Command) -> &'static str {
         Command::SessionRename { .. } => "session_rename",
         Command::SessionSetLifetime { .. } => "session_set_lifetime",
         Command::SessionDelete { .. } => "session_delete",
+        Command::SessionKill { .. } => "session_kill",
         Command::ResourceCreate { .. } => "resource_create",
         Command::ResourceMove { .. } => "resource_move",
         Command::ResourceMoveMany { .. } => "resource_move_many",
