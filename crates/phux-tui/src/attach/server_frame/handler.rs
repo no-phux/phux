@@ -1621,7 +1621,19 @@ fn arrangement_empty<W: crate::attach::RenderSink>(
 
 /// The session this client is attached to was deleted (R15): detach, as the
 /// server's `SessionKilled` would.
-fn session_deleted() -> FrameOutcome {
+///
+/// An ephemeral session is deleted because its last member left, and
+/// organization events reach this client as they commit: ahead of that
+/// member's `RESOURCE_CLOSED` and the server's trailing `DETACHED {
+/// SESSION_KILLED }`. Those frames end the attach instead, so the teardown
+/// line names the last pane's exit rather than a kill.
+fn session_deleted(lifetime: SessionLifetime) -> FrameOutcome {
+    if lifetime == SessionLifetime::Ephemeral {
+        tracing::info!(
+            "the attached ephemeral session was deleted; awaiting its last close or detach"
+        );
+        return FrameOutcome::default();
+    }
     tracing::info!("the attached session was deleted; detaching");
     FrameOutcome {
         exit: true,
@@ -1765,7 +1777,9 @@ fn fold_org_event<W: crate::attach::RenderSink>(
         return FrameOutcome::default();
     };
     match event {
-        AgentEvent::SessionDeleted { session, .. } if *session == ours => session_deleted(),
+        AgentEvent::SessionDeleted { session, .. } if *session == ours => {
+            session_deleted(*ctx.lifetime)
+        }
         AgentEvent::SessionLifetimeChanged {
             session, lifetime, ..
         } if *session == ours => {

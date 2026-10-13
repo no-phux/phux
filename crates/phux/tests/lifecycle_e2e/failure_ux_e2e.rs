@@ -149,10 +149,10 @@ impl ServerGuard {
     }
 }
 
-/// Whether this `ls --json` session entry is the scenario session with a
-/// client attached (the server's own count, bumped on `ATTACH`).
-fn is_attached_work_session(session: &serde_json::Value) -> bool {
-    session["name"] == SESSION
+/// Whether this `ls --json` session entry is session `name` with a client
+/// attached (the server's own count, bumped on `ATTACH`).
+fn is_attached_session(session: &serde_json::Value, name: &str) -> bool {
+    session["name"] == name
         && session["attached_clients"]
             .as_u64()
             .is_some_and(|count| count > 0)
@@ -248,6 +248,11 @@ impl AttachedClient {
     /// Block until the server reports this client attached to `SESSION`
     /// (`ls --json` `attached_clients`), a real barrier rather than a sleep.
     fn wait_until_attached(&mut self, server: &ServerGuard, iso: &Isolation) {
+        self.wait_until_attached_to(server, iso, SESSION);
+    }
+
+    /// [`Self::wait_until_attached`] for session `name`.
+    fn wait_until_attached_to(&mut self, server: &ServerGuard, iso: &Isolation, name: &str) {
         let deadline = Instant::now() + CLIENT_DEADLINE;
         while Instant::now() < deadline {
             assert!(
@@ -258,16 +263,18 @@ impl AttachedClient {
             let (code, stdout, _stderr) = run_captured(&mut server.cmd(iso, &["ls", "--json"]));
             if code == 0
                 && let Ok(doc) = serde_json::from_str::<serde_json::Value>(&stdout)
-                && doc["sessions"]
-                    .as_array()
-                    .is_some_and(|sessions| sessions.iter().any(is_attached_work_session))
+                && doc["sessions"].as_array().is_some_and(|sessions| {
+                    sessions
+                        .iter()
+                        .any(|session| is_attached_session(session, name))
+                })
             {
                 return;
             }
             std::thread::sleep(POLL);
         }
         panic!(
-            "attach client never registered as attached to {SESSION} within \
+            "attach client never registered as attached to {name} within \
              {CLIENT_DEADLINE:?}; output:\n{}",
             self.output_text(),
         );
@@ -438,13 +445,16 @@ fn last_pane_death_surfaces_its_exit_status() {
     let iso = Isolation::new();
     let server = ServerGuard::start(&iso);
 
-    let mut client = AttachedClient::start(&server, &iso);
-    client.wait_until_attached(&server, &iso);
+    // An ephemeral session ends with its last pane, and the teardown line
+    // names that pane's death.
+    let (code, _stdout, stderr) =
+        run_captured(&mut server.cmd(&iso, &["new", "--json", "--ephemeral", "-s", "solo"]));
+    assert_eq!(code, 0, "new must succeed; stderr:\n{stderr}");
+    let mut client = AttachedClient::start_named(&server, &iso, "solo");
+    client.wait_until_attached_to(&server, &iso, "solo");
 
-    // Killing the session terminates its last pane, removes it, and deletes
-    // the session; a deleted session detaches its clients (R15), and the
-    // teardown line explains the ending — not discarded as when audited.
-    let (code, _stdout, stderr) = run_captured(&mut server.cmd(&iso, &["kill", "--yes", SESSION]));
+    let (code, _stdout, stderr) =
+        run_captured(&mut server.cmd(&iso, &["kill", "--yes", "solo:0.0"]));
     assert_eq!(code, 0, "kill must succeed; stderr:\n{stderr}");
 
     let status = client.wait_exit();
@@ -454,6 +464,30 @@ fn last_pane_death_surfaces_its_exit_status() {
         client.output_text(),
     );
     client.wait_for_output("the last pane");
+}
+
+#[test]
+#[ignore = "spawns real phux processes; starves in the full parallel pool. Run via `just e2e`."]
+fn session_kill_detaches_with_its_explanation() {
+    let iso = Isolation::new();
+    let server = ServerGuard::start(&iso);
+
+    let mut client = AttachedClient::start(&server, &iso);
+    client.wait_until_attached(&server, &iso);
+
+    // Killing the persistent session terminates its pane, removes it, and
+    // deletes the session; a deleted session detaches its clients (R15), and
+    // the teardown line explains the ending.
+    let (code, _stdout, stderr) = run_captured(&mut server.cmd(&iso, &["kill", "--yes", SESSION]));
+    assert_eq!(code, 0, "kill must succeed; stderr:\n{stderr}");
+
+    let status = client.wait_exit();
+    assert!(
+        status.success(),
+        "a session kill is an explained ending, not a client failure; output:\n{}",
+        client.output_text(),
+    );
+    client.wait_for_output("the session was killed");
 }
 
 #[test]

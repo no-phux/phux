@@ -2429,6 +2429,36 @@ fn deleting_the_attached_session_detaches() {
     );
 }
 
+/// An ephemeral session's deletion arrives ahead of its last member's
+/// `RESOURCE_CLOSED`; that close ends the attach and names the exit.
+#[test]
+fn an_ephemeral_session_deletion_defers_to_its_last_close() {
+    use phux_protocol::ids::{Revision, SessionKey};
+    use phux_protocol::wire::frame::SessionLifetime;
+    let ours = SessionKey::new([1; 16]).expect("key");
+    let mut h = H::on(ArrangementDoc::single(tid(1)), &[&tid(1)]);
+    h.mirror.session_key = Some(ours);
+    h.mirror.lifetime = SessionLifetime::Ephemeral;
+    let outcome = h.send(FrameKind::Event {
+        terminal: None,
+        event: AgentEvent::SessionDeleted {
+            session: ours,
+            revision: Revision::new(2),
+            name: "scratch".to_owned(),
+        },
+        stamp: None,
+    });
+    assert!(!outcome.exit, "the last close explains the ending");
+    let outcome = h.send(closed(&tid(1), Some(7)));
+    assert!(outcome.exit);
+    assert_eq!(
+        outcome.exit_reason,
+        Some(AttachEnd::LastPaneClosed {
+            exit_status: Some(7)
+        })
+    );
+}
+
 /// An arrangement change for this session asks the driver to read the
 /// record again; another session's does not.
 #[test]
