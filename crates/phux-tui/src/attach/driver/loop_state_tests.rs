@@ -2523,3 +2523,89 @@ async fn missing_or_partial_layout_places_every_session_pane_and_saves() {
         drop(server);
     }
 }
+
+/// R15 against #1207's heal: on an `ORGANIZATION` server the layout is the
+/// session's arrangement record, so a member the record leaves out was
+/// closed on purpose. It stays unarranged and nothing is written back.
+#[tokio::test(flavor = "current_thread")]
+async fn an_organization_record_keeps_a_closed_view_unarranged() {
+    let focus = ResourceId::local(1);
+    let hidden = ResourceId::local(4);
+    let stored = ArrangementDoc::single(focus.clone()).encode_cbor().unwrap();
+    let (a, b) = tokio::net::UnixStream::pair().unwrap();
+    let mut client = Connection::from_stream(a);
+    let mut server = Connection::from_stream(b);
+    let negotiated = NegotiatedBootstrap {
+        profile: BootstrapProfile::SynthesizedVtRaw,
+        limits: BootstrapLimits::default(),
+        server_features: ServerFeatureSet::new(),
+        server_features_ext: phux_protocol::ServerFeatureExtSet::with(&[
+            phux_protocol::ServerFeatureExt::Organization,
+        ]),
+    };
+    let mut state = SessionLoop::new(
+        negotiated,
+        PredictiveConfig::disabled(),
+        false,
+        None,
+        EntryPick::default(),
+        None,
+    )
+    .unwrap();
+    let mut out = Vec::new();
+    let attached = FrameKind::Attached {
+        attach_id: 1,
+        initial_client_id: ClientId::new(1),
+        snapshot: SessionSnapshot::new(SessionId::new(1), WindowId::new(1), focus.clone())
+            .with_sessions(vec![SessionInfo::new(SessionId::new(1), "default")])
+            .with_windows(vec![WindowInfo::new(
+                WindowId::new(1),
+                SessionId::new(1),
+                "window-0",
+            )])
+            .with_resources(vec![
+                ResourceInfo::new(focus.clone(), WindowId::new(1), 80, 24),
+                ResourceInfo::new(hidden.clone(), WindowId::new(1), 80, 24),
+            ]),
+    };
+    state
+        .bootstrap(&mut client, &mut out, attached, None)
+        .await
+        .unwrap();
+    state
+        .emit_deferred_bootstrap_outbound(&mut client)
+        .await
+        .unwrap();
+    let request_id = state.layout_get_request_id.unwrap();
+    let _ = frames_sent(&mut client, &mut server).await;
+    state
+        .apply_server_frame(
+            &mut client,
+            &mut out,
+            None,
+            FrameKind::MetadataValue {
+                request_id,
+                value: Some(stored),
+            },
+            false,
+            &mut RepaintAccumulator::default(),
+        )
+        .await
+        .unwrap();
+
+    let leaves: Vec<ResourceId> = state
+        .mirror
+        .workspace
+        .groups
+        .iter()
+        .filter_map(|group| group.state.tree.as_ref())
+        .flat_map(crate::layout::leaves)
+        .collect();
+    assert_eq!(leaves, [focus.clone()]);
+    assert_eq!(state.mirror.unarranged_members(), vec![hidden]);
+    let saved = frames_sent(&mut client, &mut server)
+        .await
+        .into_iter()
+        .any(|frame| matches!(frame, FrameKind::SetMetadata { .. }));
+    assert!(!saved, "a deliberate closed view is not written back");
+}

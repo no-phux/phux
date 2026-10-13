@@ -71,8 +71,13 @@ impl super::SessionLoop {
             self.layout_get_request_id = None;
             // #1207: heal a missing or partial key instead of hiding panes,
             // and save it so every client and `phux insert-pane` agree.
+            // On an `ORGANIZATION` server the layout is the session's
+            // arrangement record, and a member it leaves out was closed on
+            // purpose: it stays unarranged behind the reopen action (R15).
+            // Only an absent record, or a legacy key, is healed.
             let key_absent = !outcome.layout_replaced;
-            if self.place_unplaced_panes() {
+            let heal = key_absent || !self.organization_supported;
+            if heal && self.place_unplaced_panes() {
                 outcome.layout_replaced = true;
                 outcome.emit_set_metadata = true;
             } else if key_absent && !self.mirror.workspace.groups.is_empty() {
