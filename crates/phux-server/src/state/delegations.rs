@@ -2,12 +2,36 @@
 //! (ADR-0163 §5); the ledger and its rules are [`crate::delegation`].
 
 use chrono::{DateTime, Utc};
+use phux_core::PrincipalId;
 use phux_core::ids::SessionId;
-use phux_protocol::kinds::Verb;
+use phux_protocol::kinds::{Verb, Verbs};
 
 use super::{ClientId, ServerState};
-use crate::delegation::{DelegatedCredential, DelegationError, DelegationRequest, MAX_LIFETIME};
+use crate::delegation::{
+    AGENT_VERBS, CarriedDelegation, DelegatedCredential, DelegationError, DelegationRequest,
+    MAX_LIFETIME,
+};
 use crate::policy::ConnectionGrant;
+use crate::upgrade::blob::DelegationBlob;
+
+/// Why a carried delegated credential was not restored after a hot upgrade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum UnrestoredDelegation {
+    /// Its id is not a delegated credential id, or it carries a verb no
+    /// agent may hold.
+    #[error("the carried credential is malformed")]
+    Malformed,
+    /// It lapsed during the upgrade.
+    #[error("the credential expired")]
+    Expired,
+    /// Its session did not survive the upgrade.
+    #[error("its session is gone")]
+    NoSession,
+    /// The human it acts for, or the principal that minted it, no longer
+    /// holds a credential.
+    #[error("its launcher no longer holds a grant")]
+    NoLauncher,
+}
 
 impl ServerState {
     /// Mint a credential `launcher` delegates to an agent on `session`.
@@ -110,15 +134,130 @@ impl ServerState {
             .collect()
     }
 
+    /// Revoke every delegated credential scoped to `session`, which is being
+    /// deleted: each socket closes, and each live connection acting as one
+    /// is told `AUTHORIZATION_REVOKED` and closed (`workload-auth.md` §7).
+    /// The connections' own teardown releases what they held. Returns the
+    /// connections revoked.
+    pub(crate) fn revoke_session_delegations(&mut self, session: SessionId) -> Vec<ClientId> {
+        let mut revoked = Vec::new();
+        for id in self.delegations.for_session(session) {
+            let clients = self.withdraw_delegation(&id);
+            tracing::info!(
+                credential = %id,
+                connections = clients.len(),
+                "delegated agent credential revoked with its session"
+            );
+            for client in clients {
+                if self.connection_revoked(client) {
+                    continue;
+                }
+                self.mark_connection_revoked(client, crate::policy::Revocation::Revoked);
+                if let Some(token) = self.client_connection_cancellation(client) {
+                    token.cancel();
+                }
+                revoked.push(client);
+            }
+        }
+        revoked
+    }
+
     /// Record the cancellation that closes delegated credential `id`'s
     /// socket. `false` when `id` was withdrawn meanwhile.
     pub(crate) fn attach_delegation_listener(
         &mut self,
         id: &str,
         path: std::path::PathBuf,
+        fd: std::os::fd::RawFd,
         close: tokio_util::sync::CancellationToken,
     ) -> bool {
-        self.delegations.attach_listener(id, path, close)
+        self.delegations.attach_listener(id, path, fd, close)
+    }
+
+    /// Every live delegated credential with an open socket, as a hot
+    /// upgrade carries it.
+    #[must_use]
+    pub fn carried_delegations(&self, now: DateTime<Utc>) -> Vec<CarriedDelegation> {
+        self.delegations.carried(now)
+    }
+
+    /// Reinstate a delegated credential a hot upgrade carried, if it still
+    /// stands at `now`: it is well formed and unexpired, its session
+    /// survived under the same wire id, and both the human it acts for and
+    /// the principal that minted it still hold a credential (a delegate's
+    /// own delegator must already be reinstated). Its socket is the
+    /// caller's to adopt.
+    ///
+    /// # Errors
+    ///
+    /// The [`UnrestoredDelegation`]; nothing was reinstated.
+    pub fn restore_delegation(
+        &mut self,
+        carried: &DelegationBlob,
+        now: DateTime<Utc>,
+    ) -> Result<DelegatedCredential, UnrestoredDelegation> {
+        let verbs = Verbs::of(
+            &Verb::ALL
+                .into_iter()
+                .filter(|verb| carried.verbs & verb.bit() != 0)
+                .collect::<Vec<_>>(),
+        );
+        let agent_only = Verb::ALL
+            .into_iter()
+            .all(|verb| !verbs.contains(verb) || AGENT_VERBS.contains(verb));
+        if !crate::delegation::is_delegated_id(&carried.id)
+            || verbs.is_empty()
+            || verbs.bits() != carried.verbs
+            || !agent_only
+        {
+            return Err(UnrestoredDelegation::Malformed);
+        }
+        let expires_at = DateTime::from_timestamp_millis(carried.expires_at_ms)
+            .ok_or(UnrestoredDelegation::Malformed)?;
+        if expires_at <= now {
+            return Err(UnrestoredDelegation::Expired);
+        }
+        let session = self
+            .idspace
+            .resolve_session(phux_protocol::ids::SessionId::new(carried.group))
+            .filter(|session| self.registry().session(*session).is_some())
+            .ok_or(UnrestoredDelegation::NoSession)?;
+        if !self.principal_holds_credential(&carried.on_behalf_of, now)
+            || !self.principal_holds_credential(&carried.delegator, now)
+        {
+            return Err(UnrestoredDelegation::NoLauncher);
+        }
+        let credential = DelegatedCredential {
+            id: carried.id.clone(),
+            session,
+            group: carried.group,
+            verbs,
+            on_behalf_of: carried.on_behalf_of.clone(),
+            delegator: carried.delegator.clone(),
+            expires_at,
+        };
+        self.delegations.insert(credential.clone());
+        for operation in &carried.operations {
+            self.delegations.note_operation(*operation, &credential.id);
+        }
+        Ok(credential)
+    }
+
+    /// Whether `principal` still holds a credential at `now`: the owner
+    /// always does; a delegate while its credential is live; a registry
+    /// credential while the registry admits it.
+    fn principal_holds_credential(&self, principal: &PrincipalId, now: DateTime<Utc>) -> bool {
+        match principal {
+            PrincipalId::Owner => true,
+            PrincipalId::System => false,
+            PrincipalId::Credential(id) if crate::delegation::is_delegated_id(id) => {
+                self.delegations.live(id, now).is_some()
+            }
+            PrincipalId::Credential(id) => self
+                .policy_engine()
+                .workload_registry()
+                .is_some_and(|registry| registry.current().lookup(id).is_some()),
+        }
     }
 
     /// The socket delegated credential `id`'s connections arrive on.

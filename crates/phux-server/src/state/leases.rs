@@ -75,9 +75,19 @@ impl ServerState {
     pub fn lease_protected_from(&self, terminal: ResourceId, client: ClientId) -> bool {
         self.leases.holder(terminal).is_some_and(|holder| {
             holder != client
-                && self.actor_for(holder).principal.is_human()
-                && !self.actor_for(client).principal.is_human()
+                && self.principal_kind(holder).is_human()
+                && !self.principal_kind(client).is_human()
         })
+    }
+
+    /// The kind of principal `client` acts as: its grant's, or a person for
+    /// a connection with none, which [`Self::actor_for`] attributes to the
+    /// owner.
+    fn principal_kind(&self, client: ClientId) -> phux_core::actor::PrincipalKind {
+        self.connection_grant(client).map_or(
+            phux_core::actor::PrincipalKind::Human,
+            crate::policy::ConnectionGrant::kind,
+        )
     }
 
     /// Who held `resource`'s input lease at any time in `[from_ms, to_ms]`
@@ -371,6 +381,8 @@ mod tests {
     const HUMAN: ClientId = ClientId(1);
     const AGENT: ClientId = ClientId(2);
     const OTHER_AGENT: ClientId = ClientId(3);
+    const PHONE: ClientId = ClientId(4);
+    const DELEGATE: ClientId = ClientId(5);
 
     fn agent_id(client: ClientId) -> String {
         format!("sha256:{:064x}", client.0)
@@ -391,6 +403,55 @@ mod tests {
             state.set_connection_grant(agent, grant);
         }
         (state, pane)
+    }
+
+    /// [`world`] plus a paired phone (a registry credential enrolled for a
+    /// person) and an agent's delegated credential.
+    fn world_with_devices() -> (ServerState, ResourceId) {
+        let (mut state, pane) = world();
+        let every_verb = || TerminalScopeSet::parse_all(&["*@global"]).unwrap();
+        let phone = ConnectionGrant::scoped(every_verb(), Some(agent_id(PHONE)))
+            .unwrap()
+            .with_kind(phux_core::actor::PrincipalKind::Human);
+        state.set_connection_grant(PHONE, phone);
+        let delegate = ConnectionGrant::delegated(
+            every_verb(),
+            PrincipalId::Credential("delegated:00000000000000000000000000000005".to_owned()),
+            PrincipalId::Credential(agent_id(PHONE)),
+            chrono::Utc::now() + chrono::Duration::hours(1),
+        )
+        .unwrap();
+        state.set_connection_grant(DELEGATE, delegate);
+        (state, pane)
+    }
+
+    #[test]
+    fn a_paired_devices_lease_is_human_and_beats_every_agent() {
+        let (mut state, pane) = world_with_devices();
+        state.set_input_lease(pane, PHONE);
+        for agent in [AGENT, DELEGATE] {
+            assert!(
+                state.lease_protected_from(pane, agent),
+                "{agent:?} may not take a paired device's lease"
+            );
+        }
+        assert!(
+            !state.lease_protected_from(pane, HUMAN),
+            "one person's takeover from another's device always succeeds"
+        );
+
+        for agent in [AGENT, DELEGATE] {
+            state.set_input_lease(pane, agent);
+            assert!(
+                !state.lease_protected_from(pane, PHONE),
+                "the device's deliberate takeover beats {agent:?}"
+            );
+        }
+        state.set_input_lease(pane, HUMAN);
+        assert!(
+            !state.lease_protected_from(pane, PHONE),
+            "people never block each other"
+        );
     }
 
     /// `(epoch, holder principal)` of every journaled `LeaseChanged`.

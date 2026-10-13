@@ -10,11 +10,16 @@
 //! it lets the agent attach to its session, hold a free input lease (never
 //! one a human holds, ADR-0163 §6), and report its own agent state.
 //!
-//! The ledger is in memory: a credential names a session by its wire id,
-//! which restarts with the server, so it dies with the server too. It is not
-//! a workload-registry record and is never written to disk.
+//! The ledger is in memory and is never written to disk; it is not a
+//! workload-registry record. A credential names its session by wire id, so
+//! it lives exactly as long as that id means that session: a hot upgrade
+//! carries the ledger and each credential's bound socket in the state blob
+//! (session wire ids survive it), and a cold restart, which renumbers
+//! sessions, revokes every credential. Deleting a session revokes the
+//! credentials scoped to it at once (ADR-0163 §5).
 
 use std::collections::HashMap;
+use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -132,12 +137,36 @@ impl DelegatedCredential {
 #[derive(Debug, Default)]
 pub struct DelegationTable {
     live: HashMap<String, DelegatedCredential>,
-    /// Each credential's own socket, once opened: its path and the
-    /// cancellation that closes it.
-    listeners: HashMap<String, (PathBuf, tokio_util::sync::CancellationToken)>,
+    /// Each credential's own socket, once opened.
+    listeners: HashMap<String, Listener>,
     /// The credential each `DELEGATE_AGENT` operation minted, so a retry
     /// answers it instead of minting another.
     operations: HashMap<[u8; 16], String>,
+}
+
+/// A delegated credential's open socket.
+#[derive(Debug)]
+struct Listener {
+    /// Where it is bound.
+    path: PathBuf,
+    /// The listening descriptor, which a hot upgrade hands on.
+    fd: RawFd,
+    /// Closes it.
+    close: tokio_util::sync::CancellationToken,
+}
+
+/// A live credential as a hot upgrade carries it: the credential, its bound
+/// socket, and the `DELEGATE_AGENT` operations that minted it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CarriedDelegation {
+    /// The credential.
+    pub credential: DelegatedCredential,
+    /// Its socket's path.
+    pub socket_path: PathBuf,
+    /// Its listening descriptor in this process.
+    pub fd: RawFd,
+    /// The operations whose retries answer it.
+    pub operations: Vec<[u8; 16]>,
 }
 
 impl DelegationTable {
@@ -161,19 +190,49 @@ impl DelegationTable {
         &mut self,
         id: &str,
         path: PathBuf,
+        fd: RawFd,
         close: tokio_util::sync::CancellationToken,
     ) -> bool {
         if !self.live.contains_key(id) {
             return false;
         }
-        self.listeners.insert(id.to_owned(), (path, close));
+        self.listeners
+            .insert(id.to_owned(), Listener { path, fd, close });
         true
     }
 
     /// The socket `id`'s connections arrive on, once opened.
     #[must_use]
     pub fn socket_path(&self, id: &str) -> Option<&Path> {
-        self.listeners.get(id).map(|(path, _)| path.as_path())
+        self.listeners
+            .get(id)
+            .map(|listener| listener.path.as_path())
+    }
+
+    /// Every credential live at `now` whose socket is open, as a hot
+    /// upgrade carries it.
+    #[must_use]
+    pub fn carried(&self, now: DateTime<Utc>) -> Vec<CarriedDelegation> {
+        let mut carried: Vec<CarriedDelegation> = self
+            .listeners
+            .iter()
+            .filter_map(|(id, listener)| {
+                let credential = self.live(id, now)?;
+                Some(CarriedDelegation {
+                    credential: credential.clone(),
+                    socket_path: listener.path.clone(),
+                    fd: listener.fd,
+                    operations: self
+                        .operations
+                        .iter()
+                        .filter(|(_, minted)| *minted == id)
+                        .map(|(operation, _)| *operation)
+                        .collect(),
+                })
+            })
+            .collect();
+        carried.sort_by(|a, b| a.credential.id.cmp(&b.credential.id));
+        carried
     }
 
     /// Remember that `operation` minted `id`.
@@ -190,8 +249,8 @@ impl DelegationTable {
     /// Withdraw `id`, closing its socket; the credential it named, if it
     /// was live.
     pub(crate) fn remove(&mut self, id: &str) -> Option<DelegatedCredential> {
-        if let Some((_, close)) = self.listeners.remove(id) {
-            close.cancel();
+        if let Some(listener) = self.listeners.remove(id) {
+            listener.close.cancel();
         }
         self.operations.retain(|_, minted| minted != id);
         self.live.remove(id)

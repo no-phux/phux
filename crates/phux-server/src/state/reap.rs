@@ -151,8 +151,10 @@ impl ServerState {
         token
     }
 
-    /// Forget a removed session's wire id and last-touch ordering entry.
+    /// Forget a removed session's wire id and last-touch ordering entry,
+    /// and revoke every delegated credential scoped to it (ADR-0163 §5).
     pub(super) fn forget_session_bookkeeping(&mut self, session: SessionId) {
+        self.revoke_session_delegations(session);
         self.idspace.forget_session(session);
         self.sessions.forget_session(session);
     }

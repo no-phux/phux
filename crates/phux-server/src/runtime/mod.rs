@@ -734,7 +734,16 @@ impl ServerRuntime {
                 open_org_store(&state, &org_store)?;
                 if let Some(blob) = &resume_blob {
                     resume_session_tree(&state, blob, &root_token)?;
+                    delegation::resume_delegations(
+                        &state,
+                        &blob.delegations,
+                        Some(&input_lane_handle),
+                        &root_token,
+                    );
                 }
+                // ADR-0163 §5: a credential the previous process held and
+                // this one did not carry is revoked; drop its socket file.
+                delegation::sweep_stale_sockets(&state);
                 state.with_mut(crate::state::ServerState::persist_first_start)?;
                 let reconciled = state.with_mut(crate::state::ServerState::reconcile);
                 if reconciled != crate::state::Reconciled::default() {
@@ -2154,6 +2163,7 @@ mod tests {
             agent_sessions: Vec::new(),
             metadata: Vec::new(),
             org: None,
+            delegations: Vec::new(),
         }
     }
 

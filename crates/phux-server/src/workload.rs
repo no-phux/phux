@@ -197,6 +197,73 @@ impl WorkloadPaths {
     }
 }
 
+/// The ceiling a paired device enrolls with: every verb on the whole host.
+///
+/// `phux host add` enrolls it over ssh and a `phux pair --enroll` ticket
+/// carries it. Enrollment grants no authority ssh did not already grant. Spelled out
+/// rather than `*`, which a far host's shell would glob.
+pub const PAIRED_DEVICE_SCOPE: &str = "inventory,observe,create,bind,input,signal@global";
+
+/// Who a registry credential was enrolled for (ADR-0163 §6,
+/// `workload-auth.md` §2): a person's paired device, or an automation.
+/// It decides input-lease precedence, never scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnrolledFor {
+    /// A device a person paired (phone, desktop): a human principal.
+    Human,
+    /// An unattended workload: a non-human principal.
+    Automation,
+}
+
+impl EnrolledFor {
+    /// The spelling the registry and `phux workload` use.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Human => "human",
+            Self::Automation => "automation",
+        }
+    }
+
+    /// Who a credential recorded without the field was enrolled for, by its
+    /// enrollment origin. Pairing (`phux host add`, a `phux pair --enroll`
+    /// ticket) is the path that enrolls exactly [`PAIRED_DEVICE_SCOPE`], so
+    /// that ceiling is a person's device; any other is an automation.
+    #[must_use]
+    pub fn by_ceiling(scopes: &[String]) -> Self {
+        let paired = parse_ceiling(&[PAIRED_DEVICE_SCOPE.to_owned()]).ok();
+        if paired.is_some() && parse_ceiling(scopes).ok() == paired {
+            Self::Human
+        } else {
+            Self::Automation
+        }
+    }
+
+    /// The principal kind a connection admitted under it acts as.
+    #[must_use]
+    pub const fn kind(self) -> phux_core::actor::PrincipalKind {
+        match self {
+            Self::Human => phux_core::actor::PrincipalKind::Human,
+            Self::Automation => phux_core::actor::PrincipalKind::Automation,
+        }
+    }
+}
+
+impl std::str::FromStr for EnrolledFor {
+    type Err = WorkloadError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "human" => Ok(Self::Human),
+            "automation" => Ok(Self::Automation),
+            _ => Err(WorkloadError::Malformed(format!(
+                "principal must be human or automation, not {value:?}"
+            ))),
+        }
+    }
+}
+
 /// A workload credential's canonical scope ceiling.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkloadCredential {
@@ -211,9 +278,20 @@ pub struct WorkloadCredential {
     pub expires_at: Option<i64>,
     /// Revocation time, if revoked.
     pub revoked_at: Option<i64>,
+    /// Who it was enrolled for, as recorded; `None` for a record that
+    /// predates the field ([`Self::enrolled_for`] infers it).
+    pub recorded_for: Option<EnrolledFor>,
 }
 
 impl WorkloadCredential {
+    /// Who it was enrolled for: as recorded, else
+    /// [`EnrolledFor::by_ceiling`].
+    #[must_use]
+    pub fn enrolled_for(&self) -> EnrolledFor {
+        self.recorded_for
+            .unwrap_or_else(|| EnrolledFor::by_ceiling(&self.scopes))
+    }
+
     /// Neither revoked nor expired at Unix time `now`.
     #[must_use]
     pub fn is_active_at(&self, now: i64) -> bool {
@@ -274,6 +352,10 @@ struct RegistryRecord {
     scopes: Vec<String>,
     expires_at: Option<i64>,
     revoked_at: Option<i64>,
+    /// Who the credential was enrolled for; absent in records that predate
+    /// it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    principal: Option<EnrolledFor>,
 }
 
 /// A validated snapshot of the workload-key registry.
@@ -451,7 +533,7 @@ impl WorkloadRegistry {
         scopes: Vec<String>,
         expires_at: Option<i64>,
     ) -> Result<RegisteredCredential, WorkloadError> {
-        Self::register_replacing(path, public_key, scopes, expires_at, None)
+        Self::register_replacing(path, public_key, scopes, expires_at, None, None)
     }
 
     /// [`Self::register`], and in the same locked write revoke `replaces`:
@@ -464,12 +546,16 @@ impl WorkloadRegistry {
     ///
     /// As [`Self::register`], and [`WorkloadError::InvalidCredentialId`] for
     /// a `replaces` not in the canonical spelling.
+    ///
+    /// `enrolled_for` is recorded when named; `None` leaves the record to
+    /// [`WorkloadCredential::enrolled_for`]'s inference.
     pub fn register_replacing(
         path: &Path,
         public_key: &[u8],
         scopes: Vec<String>,
         expires_at: Option<i64>,
         replaces: Option<&str>,
+        enrolled_for: Option<EnrolledFor>,
     ) -> Result<RegisteredCredential, WorkloadError> {
         if replaces.is_some_and(|id| !is_canonical_credential_id(id)) {
             return Err(WorkloadError::InvalidCredentialId);
@@ -509,6 +595,7 @@ impl WorkloadRegistry {
                 scopes,
                 expires_at,
                 revoked_at: None,
+                recorded_for: enrolled_for,
             });
             registry.commit(path, held)?;
             Ok(RegisteredCredential {
@@ -572,6 +659,7 @@ impl WorkloadRegistry {
                 scopes: credential.scopes.clone(),
                 expires_at: credential.expires_at,
                 revoked_at: credential.revoked_at,
+                principal: credential.recorded_for,
             })
             .collect();
         let mut bytes = serde_json::to_vec_pretty(&RegistryFile {
@@ -604,6 +692,7 @@ fn credential_from_record(record: &RegistryRecord) -> Result<WorkloadCredential,
         scopes: record.scopes.clone(),
         expires_at: record.expires_at,
         revoked_at: record.revoked_at,
+        recorded_for: record.principal,
     })
 }
 
@@ -897,11 +986,12 @@ impl PreparedEnrollment {
         scopes: Vec<String>,
         expires_at: i64,
     ) -> Result<RegisteredCredential, WorkloadError> {
-        self.commit_replacing(registry, scopes, expires_at, None)
+        self.commit_replacing(registry, scopes, expires_at, None, None)
     }
 
     /// [`Self::commit`], revoking `replaces` in the same registry write
-    /// ([`WorkloadRegistry::register_replacing`]).
+    /// ([`WorkloadRegistry::register_replacing`]) and recording who the
+    /// credential is for when `enrolled_for` names it.
     ///
     /// # Errors
     ///
@@ -912,6 +1002,7 @@ impl PreparedEnrollment {
         scopes: Vec<String>,
         expires_at: i64,
         replaces: Option<&str>,
+        enrolled_for: Option<EnrolledFor>,
     ) -> Result<RegisteredCredential, WorkloadError> {
         WorkloadRegistry::register_replacing(
             registry,
@@ -919,6 +1010,7 @@ impl PreparedEnrollment {
             scopes,
             Some(expires_at),
             replaces,
+            enrolled_for,
         )
     }
 }

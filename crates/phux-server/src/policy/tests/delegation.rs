@@ -71,7 +71,7 @@ fn a_delegated_agent_is_a_credential_acting_for_the_owner() {
         .delegated_grant(&credential.id, Utc::now())
         .unwrap();
     assert_eq!(grant.principal(), &credential.principal());
-    assert!(!grant.principal().is_human());
+    assert_eq!(grant.kind(), phux_core::actor::PrincipalKind::Agent);
     assert_eq!(grant.on_behalf_of(), Some(&PrincipalId::Owner));
     assert!(grant.expires_at.is_some_and(|at| at > Utc::now()));
 }
@@ -342,5 +342,53 @@ fn a_withdrawn_or_expired_credential_admits_nothing() {
             .state
             .delegated_grant(&credential.id, Utc::now())
             .is_none()
+    );
+}
+
+/// A paired device's connection is a human principal, an automation's is
+/// not, and the owner socket is the owner (ADR-0163 §6).
+#[test]
+fn paired_policy_grants_act_as_the_principal_the_record_was_enrolled_for() {
+    use crate::workload::{EnrolledFor, PAIRED_DEVICE_SCOPE};
+    use phux_core::actor::PrincipalKind;
+    use phux_protocol::policy::TransportType;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("workload-keys");
+    let enroll = |key: &[u8], scope: &str, enrolled_for: Option<EnrolledFor>| {
+        crate::workload::WorkloadRegistry::register_replacing(
+            &path,
+            key,
+            vec![scope.to_owned()],
+            None,
+            None,
+            enrolled_for,
+        )
+        .unwrap()
+        .id
+    };
+    let phone = enroll(b"phone", "observe,input@host", Some(EnrolledFor::Human));
+    let laptop = enroll(b"laptop", PAIRED_DEVICE_SCOPE, None);
+    let bot = enroll(b"bot", "*@global", Some(EnrolledFor::Automation));
+    let legacy_bot = enroll(b"legacy-bot", "*@global", None);
+    let policy = super::paired_policy(&path);
+    let kind = |id: &str| {
+        policy
+            .decide(
+                &super::peer(TransportType::Quic),
+                Some(&super::credential(id, &[])),
+            )
+            .unwrap()
+            .kind()
+    };
+    assert_eq!(kind(&phone), PrincipalKind::Human);
+    assert_eq!(kind(&laptop), PrincipalKind::Human, "paired by host add");
+    assert_eq!(kind(&bot), PrincipalKind::Automation);
+    assert_eq!(kind(&legacy_bot), PrincipalKind::Automation);
+    assert_eq!(
+        policy
+            .decide(&super::peer(TransportType::UnixSocket), None)
+            .unwrap()
+            .kind(),
+        PrincipalKind::Human
     );
 }

@@ -374,6 +374,10 @@ impl ServerState {
                 resources: org.resources().cloned().collect(),
                 arrangements: org.arrangements().cloned().collect(),
             }),
+            // Carried by the upgrade itself, with descriptors it owns
+            // (`runtime::delegation::carry_delegations`); not part of the
+            // tree's identity.
+            delegations: Vec::new(),
         }
     }
 
@@ -1716,6 +1720,7 @@ mod tests {
             agent_sessions: Vec::new(),
             metadata: Vec::new(),
             org: None,
+            delegations: Vec::new(),
         }
     }
 

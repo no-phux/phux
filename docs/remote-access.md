@@ -513,7 +513,12 @@ the device enrolls a workload certificate for a key it generates and keeps
 (on a phone, in its keystore): what a server in `paired` mode requires
 ([ADR-0154](adr/0154-devices-enroll-with-a-ticket-over-their-own-alpn.md)).
 The ticket expires in ten minutes and enrolls one key; `phux --remote NAME
---code LINK` enrolls with it too.
+--code LINK` enrolls with it too. A device enrolled this way, or by `phux
+host add`, acts as a person, not an automation. An agent cannot take a
+terminal's input from it, and taking input over from an agent works as it
+does at the server's own keyboard
+([ADR-0163](adr/0163-actors-and-delegated-agent-grants.md)). `phux workload
+add-key --principal human|automation` says which one another credential is.
 
 `--host` still needs a bound WSS listener behind it. A WSS listener bound only
 to loopback, or none at all, gives no link: the default QR is then skipped,

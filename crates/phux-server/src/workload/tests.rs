@@ -656,6 +656,7 @@ fn register_replacing_revokes_the_predecessor_in_the_same_generation() {
             scopes(&["*@global"]),
             in_an_hour(),
             Some(replaces),
+            None,
         );
         (leaf, registered)
     };
@@ -673,6 +674,97 @@ fn register_replacing_revokes_the_predecessor_in_the_same_generation() {
     assert!(!absent.unwrap().replaced);
     let (_, malformed) = commit_replacing("sha256:NOT-CANONICAL");
     assert!(matches!(malformed, Err(WorkloadError::InvalidCredentialId)));
+}
+
+/// Who a credential is for is recorded at enrollment and survives every
+/// rewrite; a record that predates the field is a person's device exactly
+/// when it holds the pairing ceiling (ADR-0163 §6).
+#[test]
+fn a_credential_records_who_it_is_for_and_old_records_infer_it_from_pairing() {
+    let fx = fixture();
+    let commit = |scope: &str, enrolled_for: Option<EnrolledFor>| {
+        prepare_enrollment(&fx.paths, &request(), in_an_hour())
+            .unwrap()
+            .commit_replacing(
+                &fx.paths.registry,
+                scopes(&[scope]),
+                in_an_hour(),
+                None,
+                enrolled_for,
+            )
+            .unwrap()
+            .id
+    };
+    let phone = commit("observe@global", Some(EnrolledFor::Human));
+    let bot = commit(PAIRED_DEVICE_SCOPE, Some(EnrolledFor::Automation));
+    let old_device = commit(PAIRED_DEVICE_SCOPE, None);
+    let old_bot = commit("*@global", None);
+    // Another write rewrites every record; nothing recorded is lost.
+    let other = commit("observe@host", None);
+    WorkloadRegistry::revoke(&fx.paths.registry, &other).unwrap();
+
+    let registry = WorkloadRegistry::load(&fx.paths.registry).unwrap();
+    let enrolled_for = |id: &str| registry.lookup(id).unwrap().enrolled_for();
+    assert_eq!(enrolled_for(&phone), EnrolledFor::Human, "recorded");
+    assert_eq!(
+        enrolled_for(&bot),
+        EnrolledFor::Automation,
+        "recorded beats the ceiling"
+    );
+    assert_eq!(enrolled_for(&old_device), EnrolledFor::Human, "inferred");
+    assert_eq!(enrolled_for(&old_bot), EnrolledFor::Automation, "inferred");
+
+    let text = std::fs::read_to_string(&fx.paths.registry).unwrap();
+    let image: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let principals: Vec<_> = image["credentials"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|record| record.get("principal").cloned())
+        .collect();
+    assert_eq!(
+        principals,
+        vec![
+            Some(serde_json::json!("human")),
+            Some(serde_json::json!("automation")),
+            None,
+            None,
+            None,
+        ],
+        "an unnamed principal stays unwritten, so older readers still load it"
+    );
+}
+
+/// A ticket enrolls a person's device whatever ceiling it carries.
+#[test]
+fn a_ticket_enrolls_a_human_principal() {
+    let fx = fixture();
+    let minted = tickets::mint_ticket(
+        &tickets::tickets_path(&fx.paths.registry),
+        scopes(&["observe,input@host"]),
+        3600,
+        600,
+    )
+    .unwrap();
+    let request = ClientRequest::generate().unwrap();
+    let csr = ClientMaterial::from_pem(request.csr_pem().as_bytes()).unwrap();
+    let ClientMaterial::Request(csr) = csr else {
+        panic!("a CSR");
+    };
+    let enrolled = tickets::enroll_with_ticket(
+        &fx.paths,
+        &hex::decode(&minted.secret_hex).unwrap(),
+        csr.as_ref(),
+    )
+    .unwrap();
+    let registry = WorkloadRegistry::load(&fx.paths.registry).unwrap();
+    assert_eq!(
+        registry
+            .lookup(&enrolled.credential)
+            .unwrap()
+            .enrolled_for(),
+        EnrolledFor::Human
+    );
 }
 
 /// The client half end to end: the key never leaves the request, the CSR

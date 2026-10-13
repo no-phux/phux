@@ -63,6 +63,7 @@ pub use client::{AttachError, AttachSnapshotPane, AttachedClient, ClientId};
 use client_table::ClientTable;
 pub use conditional_kill::KillIfRefusal;
 use config::ServerConfig;
+pub use delegations::UnrestoredDelegation;
 pub use events::{
     EventFilter, EventPump, EventScope, EventSubscription, PumpStep, SatelliteScopeChange,
     journal_gap_frame,

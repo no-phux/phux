@@ -86,6 +86,34 @@ pub struct StateBlob {
     /// predates them writes none, and its tree is imported on resume.
     #[serde(default)]
     pub org: Option<OrgBlob>,
+    /// Every live delegated agent credential and its bound socket
+    /// (ADR-0163 §5), so an agent's `PHUX_SOCKET` keeps answering across
+    /// the upgrade. Additive: an older blob carries none, and an older
+    /// reader ignores the field and leaves the sockets unserved.
+    #[serde(default)]
+    pub delegations: Vec<DelegationBlob>,
+}
+
+/// One carried delegated agent credential.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DelegationBlob {
+    /// The credential id, `delegated:` then 32 hex digits.
+    pub id: String,
+    /// Its session's wire id: the `group:` selector of its grant.
+    pub group: u32,
+    /// The delegated verbs, as grant bits.
+    pub verbs: u8,
+    /// The human whose grant it exercises.
+    pub on_behalf_of: phux_core::PrincipalId,
+    /// The principal that minted it.
+    pub delegator: phux_core::PrincipalId,
+    /// When it stops admitting anything, Unix milliseconds.
+    pub expires_at_ms: i64,
+    /// The inherited listening descriptor of its socket.
+    pub listener_fd: RawFd,
+    /// The `DELEGATE_AGENT` operations whose retries answer it.
+    #[serde(default)]
+    pub operations: Vec<[u8; 16]>,
 }
 
 /// One carried L3 metadata entry.
@@ -464,6 +492,7 @@ mod tests {
                 value: vec![0xa1, 0x01],
             }],
             org: None,
+            delegations: Vec::new(),
         }
     }
 

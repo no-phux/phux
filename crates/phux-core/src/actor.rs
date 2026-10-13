@@ -14,11 +14,25 @@ pub enum PrincipalId {
     System,
 }
 
-impl PrincipalId {
-    /// Whether this principal is a human. Only the owner is.
+/// What kind of party a principal is (ADR-0163 §6). Identity says who;
+/// kind says whether a person is at the keyboard, which is what input-lease
+/// precedence turns on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrincipalKind {
+    /// A person: the owner, or a device a person paired.
+    Human,
+    /// An agent acting through a delegated credential.
+    Agent,
+    /// An automation credential: a workload enrolled for unattended use.
+    Automation,
+}
+
+impl PrincipalKind {
+    /// Whether this kind is a person.
     #[must_use]
-    pub const fn is_human(&self) -> bool {
-        matches!(self, Self::Owner)
+    pub const fn is_human(self) -> bool {
+        matches!(self, Self::Human)
     }
 }
 

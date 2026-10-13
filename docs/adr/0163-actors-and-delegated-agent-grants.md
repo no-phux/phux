@@ -117,3 +117,31 @@ existing `SIGNAL` grant would silently lose kill authority.
 
 **Agents as anonymous clients.** Simpler, and nobody can answer who did
 what.
+
+## Amendment — 2026-10-13: paired devices are human; delegations end with their session
+
+**Principal kind.** Every principal is human, agent, or automation. The
+owner and a person's paired device are human, a delegated credential is an
+agent, and any other registry credential is an automation, so no agent takes
+a paired phone's lease and the phone's deliberate takeover beats an agent's,
+as the owner's does. A registry record states who it was enrolled for
+(`principal`, [workload-auth.md](../spec/workload-auth.md) §2): a `phux pair
+--enroll` ticket records `human`, and `phux workload add-key --principal`
+records either. A record without the field is human exactly when its ceiling
+is the one pairing grants, which keeps installed registries and older far
+hosts working. Kind decides precedence only and grants no verb.
+
+**Session deletion.** Deleting a session revokes every delegated credential
+scoped to it at once: its socket closes, and each live connection acting as
+it gets `AUTHORIZATION_REVOKED` (workload-auth §7).
+
+**Restart.** A credential names its session by wire id. A hot upgrade keeps
+wire ids, so it carries each live credential and its bound socket in the
+state blob, and the agent's `PHUX_SOCKET` keeps answering. The new image
+reinstates a carried credential only while it is unexpired, its session
+survived, and the human it acts for and the principal that minted it still
+hold credentials; otherwise it revokes it and removes the socket. A cold
+restart renumbers sessions, so it revokes every credential: the new server
+removes delegated socket files nothing serves, the agent's connection is
+refused, and `phux agent start` mints a new one. Credentials are never
+written to disk, where a session id from one run could name another.
