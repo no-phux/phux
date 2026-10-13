@@ -411,17 +411,71 @@ fn a_qr_mints_only_when_it_can_carry_a_dialable_link() {
     assert_eq!(credential_count(&state, &tokens), 0, "nothing was minted");
 
     let host = format!("wss://{}", server.wss_addr);
-    let paired = phux(&state, Some(&tokens), &["pair", "--qr", "--host", &host]);
-    let stdout = String::from_utf8_lossy(&paired.stdout);
-    assert!(
-        paired.status.success(),
-        "stderr={}",
-        String::from_utf8_lossy(&paired.stderr)
+    let paired = phux(
+        &state,
+        Some(&tokens),
+        &["pair", "--qr", "--expires", "15m", "--host", &host],
     );
+    let stdout = String::from_utf8_lossy(&paired.stdout);
+    let stderr = String::from_utf8_lossy(&paired.stderr);
+    assert!(paired.status.success(), "stderr={stderr}");
     assert!(
-        stdout.contains(&format!("https://phux.sh/connect?url={host}&"))
-            && stdout.contains("Scan to pair:"),
+        stdout.contains("Scan to pair")
+            && stdout.contains("EXPIRES")
+            && stdout.contains("15m")
+            && (stdout.contains('█') || stdout.contains('▀') || stdout.contains('▄')),
         "stdout={stdout}"
     );
+    assert!(
+        !stdout.contains("token=") && !stdout.contains("Pairing token"),
+        "the bearer must not be printed beside the QR: {stdout}"
+    );
+    assert!(
+        !stderr.contains("token="),
+        "stderr must not carry the bearer: {stderr}"
+    );
     assert_eq!(credential_count(&state, &tokens), 1);
+
+    let secret = dir.path().join("pair-secret");
+    let hidden = phux(
+        &state,
+        Some(&tokens),
+        &[
+            "pair",
+            "--secret-file",
+            secret.to_str().unwrap(),
+            "--expires",
+            "15m",
+            "--host",
+            &host,
+        ],
+    );
+    let hidden_out = String::from_utf8_lossy(&hidden.stdout);
+    let hidden_err = String::from_utf8_lossy(&hidden.stderr);
+    assert!(hidden.status.success(), "stderr={hidden_err}");
+    let body = std::fs::read_to_string(&secret).expect("secret file");
+    let token = body
+        .lines()
+        .find_map(|line| line.strip_prefix("token="))
+        .expect("token line");
+    assert!(!token.is_empty());
+    assert!(
+        !hidden_out.contains(token),
+        "stdout leaked the bearer: {hidden_out}"
+    );
+    assert!(
+        !hidden_err.contains(token),
+        "stderr leaked the bearer: {hidden_err}"
+    );
+    assert!(hidden_out.contains("not shown"));
+    assert!(!hidden_out.contains("token="));
+    let mode = std::fs::metadata(&secret).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+    let store = phux_server::auth::TokenStore::load(&tokens).unwrap();
+    let admitted = store
+        .authenticate(&bearer(token))
+        .expect("secret must admit");
+    let expiry = admitted.expires_at.expect("expires");
+    assert!(expiry > chrono::Utc::now() + chrono::Duration::minutes(14));
+    assert_eq!(credential_count(&state, &tokens), 2);
 }
