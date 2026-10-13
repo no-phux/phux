@@ -1,6 +1,6 @@
 [package]
 name = "phux-core"
-description = "Core domain types for phux: sessions, windows, panes, layout."
+description = "Core domain types for phux: sessions, resources, arrangements, and the pure organization rules."
 publish = false
 version.workspace = true
 edition.workspace = true

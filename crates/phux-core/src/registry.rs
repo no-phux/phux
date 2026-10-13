@@ -1,332 +1,270 @@
-//! The [`Registry`] — single source of truth for sessions, windows, and
-//! resources.
+//! The [`Registry`]: the in-memory index over one authority's [`Org`].
 //!
-//! Removal cascades parent to child: session -> windows -> slot resources
-//! -> bound child resources. Unknown keys look up as `None`; mutations
-//! naming an unknown parent return [`RegistryError`].
+//! It owns the organization records and maps each record key to a live
+//! slotmap handle ([`SessionId`], [`ResourceId`]) that the server and its
+//! wire bridge use. Records change only through [`Registry::commit`] of a
+//! [`Transition`] produced by [`crate::apply::apply`]; live facets (Terminal
+//! geometry, agent activity) are edited in place through
+//! [`Registry::resource_mut`].
+//!
+//! Membership lives on the session record. A resource's session is
+//! [`Registry::session_of`]; there is no window layer and no removal
+//! cascade outside what `apply` puts in a transition.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::SystemTime;
 
 use slotmap::SlotMap;
-use thiserror::Error;
 
-use crate::ids::{ResourceId, SessionId, WindowId};
-use crate::resource::{AgentFacet, ResourceDescriptor, ResourceKind};
+use crate::activation::Stamp;
+use crate::actor::Actor;
+use crate::apply::apply;
+use crate::command::{Applied, Command, Refusal};
+use crate::ids::{ResourceId, SessionId};
+use crate::keys::{FreshKeys, InstanceId, ResourceKey, SessionKey};
+use crate::org::{Delta, Org, Transition};
+use crate::resource::{AgentFacet, LaunchSpec, Resource, ResourceDescriptor, ResourceKind};
 use crate::session::Session;
 use crate::terminal::TerminalFacet;
-use crate::window::{SplitDir, Window};
 
-/// Errors returned by the [`Registry`] when a parent ID does not resolve or
-/// has the wrong kind for the requested binding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-pub enum RegistryError {
-    /// The provided [`SessionId`] does not refer to a live session.
-    #[error("unknown session id: {0:?}")]
-    UnknownSession(SessionId),
-    /// The provided [`WindowId`] does not refer to a live window.
-    #[error("unknown window id: {0:?}")]
-    UnknownWindow(WindowId),
-    /// The provided [`ResourceId`] does not refer to a live resource.
-    #[error("unknown resource id: {0:?}")]
-    UnknownResource(ResourceId),
-    /// The named parent exists but is not of the kind the binding requires.
-    #[error("resource {parent:?} is {actual}, binding requires {required}")]
-    ParentKindMismatch {
-        /// The parent that was offered.
-        parent: ResourceId,
-        /// What the parent actually is.
-        actual: ResourceKind,
-        /// What the binding needs the parent to be.
-        required: ResourceKind,
-    },
+/// Grid size a new Terminal descriptor starts at, `(cols, rows)`.
+pub const DEFAULT_DIMS: (u16, u16) = (80, 24);
+
+/// Handles a [`Registry::commit`] allocated or released.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Committed {
+    /// Sessions that gained a handle.
+    pub sessions_added: Vec<(SessionKey, SessionId)>,
+    /// Sessions whose handle was released.
+    pub sessions_removed: Vec<(SessionKey, SessionId)>,
+    /// Resources that gained a handle.
+    pub resources_added: Vec<(ResourceKey, ResourceId)>,
+    /// Resources whose handle was released.
+    pub resources_removed: Vec<(ResourceKey, ResourceId)>,
 }
 
-/// Owns every session, window, and resource in a running phux server.
+/// Owns one authority's records and their live handles.
 ///
-/// The registry is single-threaded and synchronous; concurrent access is the
-/// caller's responsibility (the server crate wraps it behind its actor /
-/// event-loop boundary).
-#[derive(Debug, Default)]
+/// Single-threaded and synchronous; the server wraps it behind its
+/// event-loop boundary.
+#[derive(Debug)]
 pub struct Registry {
-    sessions: SlotMap<SessionId, Session>,
-    windows: SlotMap<WindowId, Window>,
+    org: Org,
+    sessions: SlotMap<SessionId, SessionKey>,
     resources: SlotMap<ResourceId, ResourceDescriptor>,
+    session_ids: HashMap<SessionKey, SessionId>,
+    resource_ids: HashMap<ResourceKey, ResourceId>,
 }
 
 impl Registry {
-    /// Create an empty registry.
+    /// Index `org`, issuing a handle for every session and resource.
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    // ---- creation ---------------------------------------------------------
-
-    /// Insert a new, empty session with the given name.
-    pub fn new_session(&mut self, name: String) -> SessionId {
-        self.sessions.insert_with_key(|id| Session {
-            id,
-            name,
-            windows: Vec::new(),
-            active: None,
-            created_at: SystemTime::now(),
-            keep_empty: false,
-        })
-    }
-
-    /// Append a new window to `session`, making it active if none was.
-    pub fn new_window(&mut self, session: SessionId) -> Result<WindowId, RegistryError> {
-        if !self.sessions.contains_key(session) {
-            return Err(RegistryError::UnknownSession(session));
+    pub fn new(org: Org) -> Self {
+        let mut reg = Self {
+            org,
+            sessions: SlotMap::with_key(),
+            resources: SlotMap::with_key(),
+            session_ids: HashMap::new(),
+            resource_ids: HashMap::new(),
+        };
+        let sessions: Vec<SessionKey> = reg.org.sessions().map(|s| s.key).collect();
+        for key in sessions {
+            reg.index_session(key);
         }
-        let window_id = self.windows.insert_with_key(|id| Window {
-            id,
-            session,
-            slots: Vec::new(),
-            layout: None,
-            active: None,
-        });
-        // Safe: existence checked above.
-        if let Some(s) = self.sessions.get_mut(session) {
-            s.windows.push(window_id);
-            if s.active.is_none() {
-                s.active = Some(window_id);
+        let resources: Vec<Resource> = reg.org.resources().cloned().collect();
+        for r in &resources {
+            reg.index_resource(r);
+        }
+        for r in &resources {
+            reg.link_parent(r);
+        }
+        reg
+    }
+
+    /// The organization records.
+    #[must_use]
+    pub const fn org(&self) -> &Org {
+        &self.org
+    }
+
+    /// Set the current server run, at startup.
+    pub const fn set_instance(&mut self, instance: InstanceId) {
+        self.org.set_instance(instance);
+    }
+
+    /// Mirror a committed transition and keep handles in step: new records
+    /// gain handles, deleted ones release them.
+    pub fn commit(&mut self, transition: &Transition) -> Committed {
+        self.org.commit(transition);
+        let mut out = Committed::default();
+        for delta in &transition.deltas {
+            match delta {
+                Delta::PutSession(s) if !self.session_ids.contains_key(&s.key) => {
+                    out.sessions_added.push((s.key, self.index_session(s.key)));
+                }
+                Delta::DeleteSession(k) => {
+                    if let Some(id) = self.session_ids.remove(k) {
+                        self.sessions.remove(id);
+                        out.sessions_removed.push((*k, id));
+                    }
+                }
+                Delta::PutResource(r) if !self.resource_ids.contains_key(&r.key) => {
+                    let id = self.index_resource(r);
+                    self.link_parent(r);
+                    out.resources_added.push((r.key, id));
+                }
+                Delta::RemoveResource(k) => {
+                    if let Some(id) = self.resource_ids.remove(k) {
+                        self.resources.remove(id);
+                        for (_, child) in &mut self.resources {
+                            if child.parent == Some(id) {
+                                child.parent = None;
+                            }
+                        }
+                        out.resources_removed.push((*k, id));
+                    }
+                }
+                _ => {}
             }
         }
-        Ok(window_id)
+        out
     }
 
-    /// Insert a new Terminal-kind resource under `window` and return its ID.
-    ///
-    /// It seeds an empty layout (and becomes active) or splits the active
-    /// terminal horizontally at `0.5`. Dims default to `(80, 24)`.
-    pub fn new_terminal(&mut self, window: WindowId) -> Result<ResourceId, RegistryError> {
-        if !self.windows.contains_key(window) {
-            return Err(RegistryError::UnknownWindow(window));
-        }
-        let terminal_id = self.resources.insert_with_key(|id| ResourceDescriptor {
-            id,
-            kind: ResourceKind::Terminal,
-            parent: None,
-            window: Some(window),
-            terminal: Some(TerminalFacet {
-                dims: (80, 24),
-                cwd: PathBuf::new(),
-                title: None,
-            }),
-            agent: None,
-        });
-        if let Some(w) = self.windows.get_mut(window) {
-            Self::place_in_window(w, terminal_id);
-        }
-        Ok(terminal_id)
-    }
-
-    /// Insert a new AgentSession-kind resource bound (permanently) to the
-    /// Terminal `parent`. It occupies no window slot.
+    /// [`apply`] then [`Self::commit`], for callers with no durable store
+    /// between the two (tests, in-memory tools).
     ///
     /// # Errors
     ///
-    /// [`RegistryError::UnknownResource`] when `parent` does not exist;
-    /// [`RegistryError::ParentKindMismatch`] when it is not a Terminal.
-    pub fn new_agent_session(
+    /// The [`Refusal`] from [`apply`]; nothing changes.
+    pub fn execute(
         &mut self,
-        parent: ResourceId,
-        agent: AgentFacet,
-    ) -> Result<ResourceId, RegistryError> {
-        let parent_kind = self
-            .resources
-            .get(parent)
-            .map(|r| r.kind)
-            .ok_or(RegistryError::UnknownResource(parent))?;
-        if parent_kind != ResourceKind::Terminal {
-            return Err(RegistryError::ParentKindMismatch {
-                parent,
-                actual: parent_kind,
-                required: ResourceKind::Terminal,
-            });
-        }
-        Ok(self.resources.insert_with_key(|id| ResourceDescriptor {
+        cmd: &Command,
+        actor: &Actor,
+        now: Stamp,
+        fresh: &mut dyn FreshKeys,
+    ) -> Result<(Applied, Committed), Refusal> {
+        let applied = apply(&self.org, cmd, actor, now, fresh)?;
+        let committed = self.commit(&applied.transition);
+        Ok((applied, committed))
+    }
+
+    fn index_session(&mut self, key: SessionKey) -> SessionId {
+        let id = self.sessions.insert(key);
+        self.session_ids.insert(key, id);
+        id
+    }
+
+    fn index_resource(&mut self, r: &Resource) -> ResourceId {
+        let cwd_default = self
+            .org
+            .session(&r.session)
+            .and_then(|s| s.attrs.directory.clone())
+            .unwrap_or_default();
+        let (terminal, agent) = facets(r, cwd_default);
+        let (key, kind) = (r.key, r.kind);
+        let id = self.resources.insert_with_key(|id| ResourceDescriptor {
             id,
-            kind: ResourceKind::AgentSession,
-            parent: Some(parent),
-            window: None,
-            terminal: None,
-            agent: Some(agent),
-        }))
+            key,
+            kind,
+            parent: None,
+            terminal,
+            agent,
+        });
+        self.resource_ids.insert(key, id);
+        id
     }
 
-    /// Re-parent a live terminal into another window (ADR-0056), keeping its
-    /// id, facet, and children. The source drops the leaf as
-    /// [`Self::remove_resource`] would; the destination gains it as
-    /// [`Self::new_terminal`] would. Moving to the current window is a no-op.
-    ///
-    /// # Errors
-    ///
-    /// `UnknownWindow` / `UnknownResource` when either end is missing or `id`
-    /// holds no window slot; nothing is mutated on error.
-    pub fn move_terminal(&mut self, id: ResourceId, window: WindowId) -> Result<(), RegistryError> {
-        if !self.windows.contains_key(window) {
-            return Err(RegistryError::UnknownWindow(window));
-        }
-        let source = self
-            .resources
-            .get(id)
-            .and_then(|t| t.window)
-            .ok_or(RegistryError::UnknownResource(id))?;
-        if source == window {
-            return Ok(());
-        }
-        if let Some(w) = self.windows.get_mut(source) {
-            Self::vacate_slot(w, id);
-        }
-        if let Some(t) = self.resources.get_mut(id) {
-            t.window = Some(window);
-        }
-        if let Some(w) = self.windows.get_mut(window) {
-            Self::place_in_window(w, id);
-        }
-        Ok(())
-    }
-
-    /// Append `id` to `w.slots` and place it in the layout: seed when the
-    /// window is empty, else split the active slot horizontally at `0.5`.
-    fn place_in_window(w: &mut Window, id: ResourceId) {
-        let target = w.active;
-        w.slots.push(id);
-        match target {
-            None => {
-                let _ = w.seed_layout(id);
-                w.active = Some(id);
-            }
-            Some(t) => {
-                // A layout error is not a registry error: slots stay
-                // authoritative.
-                let _ = w.split(t, id, SplitDir::Horizontal, 0.5);
-            }
+    fn link_parent(&mut self, r: &Resource) {
+        let parent = r
+            .provenance
+            .parent
+            .and_then(|p| self.resource_ids.get(&p).copied());
+        if let Some(d) = self
+            .resource_ids
+            .get(&r.key)
+            .and_then(|id| self.resources.get_mut(*id))
+        {
+            d.parent = parent;
         }
     }
 
-    /// Drop `id` from `w.slots` and the layout, and move focus off it.
-    /// `LastPane` is fine: the layout becomes `None`.
-    fn vacate_slot(w: &mut Window, id: ResourceId) {
-        w.slots.retain(|p| *p != id);
-        let _ = w.kill_pane(id);
-        if w.active == Some(id) {
-            w.active = w.slots.first().copied();
-        }
+    // ---- handles -----------------------------------------------------------
+
+    /// The live handle of a session record.
+    #[must_use]
+    pub fn session_id(&self, key: &SessionKey) -> Option<SessionId> {
+        self.session_ids.get(key).copied()
     }
 
-    // ---- removal ----------------------------------------------------------
-
-    /// Remove a resource, its bound descendants, and (for a Terminal) its
-    /// window slot. An emptied window persists until [`Self::remove_window`].
-    pub fn remove_resource(&mut self, id: ResourceId) -> Option<ResourceDescriptor> {
-        let resource = self.resources.remove(id)?;
-        self.remove_children_of(id);
-        if let Some(w) = resource.window.and_then(|wid| self.windows.get_mut(wid)) {
-            Self::vacate_slot(w, id);
-        }
-        Some(resource)
+    /// The record key behind a session handle.
+    #[must_use]
+    pub fn session_key(&self, id: SessionId) -> Option<SessionKey> {
+        self.sessions.get(id).copied()
     }
 
-    /// Remove every resource bound to `parent`, recursively, so no
-    /// descendant outlives its ancestor.
-    fn remove_children_of(&mut self, parent: ResourceId) {
-        for child in self.children(parent) {
-            self.remove_children_of(child);
-            self.resources.remove(child);
-        }
+    /// The live handle of a resource record.
+    #[must_use]
+    pub fn resource_id(&self, key: &ResourceKey) -> Option<ResourceId> {
+        self.resource_ids.get(key).copied()
     }
 
-    /// Drop every resource in `window`'s slots and their descendants.
-    fn remove_slots_of(&mut self, window: &Window) {
-        for terminal_id in &window.slots {
-            self.resources.remove(*terminal_id);
-            self.remove_children_of(*terminal_id);
-        }
+    /// The record key behind a resource handle.
+    #[must_use]
+    pub fn resource_key(&self, id: ResourceId) -> Option<ResourceKey> {
+        self.resources.get(id).map(|d| d.key)
     }
 
-    /// Remove a window, cascading to its slots' resources and their
-    /// children, and unlink it from its session.
-    pub fn remove_window(&mut self, id: WindowId) -> Option<Window> {
-        let window = self.windows.remove(id)?;
-        self.remove_slots_of(&window);
-        if let Some(s) = self.sessions.get_mut(window.session) {
-            s.windows.retain(|w| *w != id);
-            if s.active == Some(id) {
-                s.active = s.windows.first().copied();
-            }
-        }
-        Some(window)
-    }
+    // ---- lookups -----------------------------------------------------------
 
-    /// Remove a session, cascading to all of its windows and their
-    /// resources.
-    pub fn remove_session(&mut self, id: SessionId) -> Option<Session> {
-        let session = self.sessions.remove(id)?;
-        for window_id in &session.windows {
-            if let Some(window) = self.windows.remove(*window_id) {
-                self.remove_slots_of(&window);
-            }
-        }
-        Some(session)
-    }
-
-    // ---- lookups ----------------------------------------------------------
-
-    /// Borrow a session by ID, or `None` if the ID is unknown.
+    /// A session record by handle.
     #[must_use]
     pub fn session(&self, id: SessionId) -> Option<&Session> {
-        self.sessions.get(id)
+        self.sessions.get(id).and_then(|k| self.org.session(k))
     }
 
-    /// Iterate over every live session in slotmap order, which is not
-    /// insertion order across remove/reinsert; sort on a field if it matters.
+    /// A session handle by name.
+    #[must_use]
+    pub fn session_by_name(&self, name: &str) -> Option<SessionId> {
+        self.org
+            .session_by_name(name)
+            .and_then(|s| self.session_id(&s.key))
+    }
+
+    /// Every session with its handle, in slotmap order (not creation order
+    /// across remove and reinsert; sort on a field if it matters).
     pub fn sessions(&self) -> impl Iterator<Item = (SessionId, &Session)> + '_ {
-        self.sessions.iter()
+        self.sessions
+            .iter()
+            .filter_map(|(id, k)| self.org.session(k).map(|s| (id, s)))
     }
 
-    /// Mutably borrow a session by ID, or `None` if the ID is unknown.
-    #[must_use]
-    pub fn session_mut(&mut self, id: SessionId) -> Option<&mut Session> {
-        self.sessions.get_mut(id)
-    }
-
-    /// Borrow a window by ID, or `None` if the ID is unknown.
-    #[must_use]
-    pub fn window(&self, id: WindowId) -> Option<&Window> {
-        self.windows.get(id)
-    }
-
-    /// Mutably borrow a window by ID, or `None` if the ID is unknown.
-    #[must_use]
-    pub fn window_mut(&mut self, id: WindowId) -> Option<&mut Window> {
-        self.windows.get_mut(id)
-    }
-
-    /// Borrow a resource of any kind by ID, or `None` if the ID is unknown.
+    /// A live resource descriptor by handle.
     #[must_use]
     pub fn resource(&self, id: ResourceId) -> Option<&ResourceDescriptor> {
         self.resources.get(id)
     }
 
-    /// Mutably borrow a resource of any kind by ID, or `None` if the ID is
-    /// unknown.
+    /// Mutably borrow a live descriptor, for facet edits. Records are not
+    /// reachable this way.
     #[must_use]
     pub fn resource_mut(&mut self, id: ResourceId) -> Option<&mut ResourceDescriptor> {
         self.resources.get_mut(id)
     }
 
-    /// Iterate over every live `(ResourceId, &ResourceDescriptor)` pair.
-    /// Same ordering caveat as [`Self::sessions`].
+    /// A resource record by handle.
+    #[must_use]
+    pub fn record(&self, id: ResourceId) -> Option<&Resource> {
+        self.resources
+            .get(id)
+            .and_then(|d| self.org.resource(&d.key))
+    }
+
+    /// Every live descriptor with its handle, in slotmap order.
     pub fn resources(&self) -> impl Iterator<Item = (ResourceId, &ResourceDescriptor)> + '_ {
         self.resources.iter()
     }
 
-    /// Borrow the Terminal facet of resource `id`: `None` if the ID is
-    /// unknown or the resource is not a Terminal.
+    /// The Terminal facet of `id`; `None` if unknown or not a Terminal.
     #[must_use]
     pub fn terminal(&self, id: ResourceId) -> Option<&TerminalFacet> {
         self.resources
@@ -334,8 +272,7 @@ impl Registry {
             .and_then(ResourceDescriptor::terminal)
     }
 
-    /// Mutably borrow the Terminal facet of resource `id`: `None` if the ID
-    /// is unknown or the resource is not a Terminal.
+    /// Mutably borrow the Terminal facet of `id`.
     #[must_use]
     pub fn terminal_mut(&mut self, id: ResourceId) -> Option<&mut TerminalFacet> {
         self.resources
@@ -343,7 +280,27 @@ impl Registry {
             .and_then(ResourceDescriptor::terminal_mut)
     }
 
-    /// The resources bound to `parent`, in slotmap iteration order.
+    /// The session `resource` is a member of.
+    #[must_use]
+    pub fn session_of(&self, resource: ResourceId) -> Option<SessionId> {
+        self.record(resource)
+            .and_then(|r| self.session_id(&r.session))
+    }
+
+    /// A session's members as handles, in membership order.
+    #[must_use]
+    pub fn members(&self, session: SessionId) -> Vec<ResourceId> {
+        self.session(session)
+            .map(|s| {
+                s.members
+                    .iter()
+                    .filter_map(|k| self.resource_id(k))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The resources bound to `parent`, in slotmap order.
     #[must_use]
     pub fn children(&self, parent: ResourceId) -> Vec<ResourceId> {
         self.resources
@@ -353,18 +310,69 @@ impl Registry {
             .collect()
     }
 
-    /// Number of live sessions.
+    /// Set a session's advisory most-recent resource (R14). Unversioned.
+    /// Returns `false` when either handle is unknown or `resource` is not a
+    /// member.
+    pub fn set_recent(&mut self, session: SessionId, resource: Option<ResourceId>) -> bool {
+        let Some(key) = self.session_key(session) else {
+            return false;
+        };
+        let resource = match resource {
+            Some(id) => match self.resource_key(id) {
+                Some(k) => Some(k),
+                None => return false,
+            },
+            None => None,
+        };
+        self.org.set_recent(&key, resource)
+    }
+
+    /// Number of sessions.
     #[must_use]
     pub fn session_count(&self) -> usize {
         self.sessions.len()
     }
 
-    /// Number of live Terminal-kind resources across every session.
+    /// Number of Terminal-kind resources.
     #[must_use]
     pub fn terminal_count(&self) -> usize {
         self.resources
             .values()
             .filter(|r| r.kind == ResourceKind::Terminal)
             .count()
+    }
+}
+
+/// The live facets a new descriptor starts with, from its record.
+fn facets(r: &Resource, cwd_default: PathBuf) -> (Option<TerminalFacet>, Option<AgentFacet>) {
+    match (r.kind, &r.launch) {
+        (ResourceKind::Terminal, launch) => {
+            let cwd = match launch {
+                Some(LaunchSpec::Terminal(t)) => t.cwd.clone().unwrap_or(cwd_default),
+                _ => cwd_default,
+            };
+            (
+                Some(TerminalFacet {
+                    dims: DEFAULT_DIMS,
+                    cwd,
+                    title: None,
+                }),
+                None,
+            )
+        }
+        (ResourceKind::AgentSession, launch) => {
+            let (provider, native_id) = match launch {
+                Some(LaunchSpec::Agent(a)) => (a.provider.clone(), a.native_id.clone()),
+                _ => (String::new(), None),
+            };
+            (
+                None,
+                Some(AgentFacet {
+                    provider,
+                    native_id,
+                    state: None,
+                }),
+            )
+        }
     }
 }

@@ -1,17 +1,17 @@
-//! Opaque, type-distinct [`slotmap`] keys, meaningful only relative to the
-//! registry that issued them.
+//! Opaque, type-distinct [`slotmap`] handles.
+//!
+//! Each is meaningful only relative to the
+//! [`Registry`](crate::Registry) that issued it. Handles name live
+//! records in memory and die with the server instance; persistent records
+//! are named by [`crate::keys`] instead.
 
 use slotmap::new_key_type;
 
 new_key_type! {
-    /// Identifies a session — the top-level container for windows.
+    /// Live handle of a [`Session`](crate::Session) record.
     pub struct SessionId;
 
-    /// Identifies a window — a tab-like container of panes within a session.
-    pub struct WindowId;
-
-    /// Identifies a resource — the leaf entity the server serves. A
-    /// PTY-backed Terminal is one [`ResourceKind`](crate::resource::ResourceKind);
-    /// an agent session is another. All kinds share this key space.
+    /// Live handle of a [`Resource`](crate::Resource) record. Every kind
+    /// shares this handle space.
     pub struct ResourceId;
 }
