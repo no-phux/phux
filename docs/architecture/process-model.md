@@ -73,7 +73,7 @@ pumps before sending `RESOURCE_CLOSED` and cancelling the actor. Resize, child
 replacement, and actor teardown still retire native generations.
 
 Usage collection is not a task on this runtime.
-[ADR-0160](../adr/0160-usage-collection-is-a-supervised-child.md)
+[ADR-0166](../adr/0166-usage-collection-is-a-supervised-child.md)
 specifies an optional child the server supervises. That child is not
 built; see the Status table.
 
@@ -124,4 +124,4 @@ task that owns the metadata write. No new process, no new thread.
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|
 | `server.pid` file and a `journal/` directory of per-pane PTY output for crash recovery | Decided: not built ([ADR-0130](../adr/0130-on-disk-pty-journal-is-not-built.md)). Neither path exists; the `EVENT` stream is a separate, memory-bounded journal ([ADR-0123](../adr/0123-events-are-journaled.md)) that carries no PTY bytes. | [ADR-0003](../adr/0003-server-process-model.md), [ADR-0092](../adr/0092-durable-work-coordinator-authority.md), [ADR-0130](../adr/0130-on-disk-pty-journal-is-not-built.md) | phux-p91i |
-| Optional usage collector child | Not built. The server does not scan agent transcripts. | [ADR-0160](../adr/0160-usage-collection-is-a-supervised-child.md) | phux-0ivk.2, phux-0ivk.3 |
+| Optional usage collector child | Not built. The server does not scan agent transcripts. | [ADR-0166](../adr/0166-usage-collection-is-a-supervised-child.md) | phux-0ivk.2, phux-0ivk.3 |
