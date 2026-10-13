@@ -350,7 +350,8 @@ fn divide(rect: Rect, axis: Axis, ratio: f32) -> (Rect, Rect) {
     }
 }
 
-/// Nearest leaf in `direction`. Ties go to the most overlap.
+/// Nearest leaf in `direction`. Ties go to the most overlap, then to the
+/// earlier leaf in reading order.
 #[must_use]
 pub fn neighbor(node: &LayoutNode, from_id: &str, direction: Direction) -> Option<String> {
     let rects = layout_rects(
@@ -364,7 +365,9 @@ pub fn neighbor(node: &LayoutNode, from_id: &str, direction: Direction) -> Optio
     );
     let from = rects.get(from_id)?;
     let mut best: Option<(String, f32, f32)> = None;
-    for (id, rect) in &rects {
+    for placement in placements(node) {
+        let id = &placement.id;
+        let Some(rect) = rects.get(id) else { continue };
         if id == from_id {
             continue;
         }
