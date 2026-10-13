@@ -19,6 +19,8 @@ export async function start_hosted(endpoint, id, cols, rows, onEvent, signal) {
   const scenario = window.__terminalScenario ?? "live";
   if (scenario === "stalled") return waitForAbort(signal);
   const canvas = document.getElementById(id);
+  canvas.dataset.phuxCellWidth = "9";
+  canvas.dataset.phuxCellHeight = "16";
   let count = 1;
   let focused = 1;
   let closed = false;
@@ -43,7 +45,7 @@ export async function start_hosted(endpoint, id, cols, rows, onEvent, signal) {
   const client = {
     close() { if (!closed) { closed = true; log.closes++; } },
     free() { log.frees++; },
-    resize(c, r) { canvas.width = c * 8; canvas.height = r * 16; paint(); },
+    resize(c, r) { canvas.width = c * 9; canvas.height = r * 16; canvas.style.width = `${c * 9}px`; canvas.style.height = `${r * 16}px`; paint(); },
     split_pane(axis) { count++; focused = count; log.actions.push(`split:${axis}`); paint(); },
     focus_next_pane() { focused = focused % count + 1; log.actions.push("next"); paint(); },
     close_pane() { count--; focused = 1; log.actions.push("close-pane"); paint(); },

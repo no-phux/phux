@@ -392,6 +392,7 @@ impl EdgeSession {
             Command::AttachResource {
                 terminal_id,
                 role_policy: None,
+                ..
             } => {
                 let index = self.terminal_index(&terminal_id)?;
                 frames.extend(

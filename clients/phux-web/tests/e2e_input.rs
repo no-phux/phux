@@ -474,10 +474,11 @@ fn cell_pixel(canvas: &HtmlCanvasElement, col: u16, row: u16) -> [u8; 3] {
         .dyn_into()
         .unwrap();
     let cell = metrics::measured(canvas);
+    let dpr = web_sys::window().unwrap().device_pixel_ratio();
     let data = ctx
         .get_image_data(
-            ((f64::from(col) + 1.0) * cell.cell_w - 2.0) as i32,
-            ((f64::from(row) + 1.0) * cell.cell_h - 1.0) as i32,
+            (((f64::from(col) + 1.0) * cell.cell_w - 2.0) * dpr) as i32,
+            (((f64::from(row) + 1.0) * cell.cell_h - 1.0) * dpr) as i32,
             1,
             1,
         )

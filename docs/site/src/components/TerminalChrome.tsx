@@ -10,15 +10,18 @@ const phaseLabels: Record<TerminalPhase, string> = {
 type PaneView = { count: number; focused: string; pending: boolean };
 type IdentityView = { provider: string; display: string };
 
-export function TerminalHeader({ phase, backend, timeLeft }: {
+export function TerminalHeader({ phase, backend, timeLeft, actions, children }: {
   phase: TerminalPhase; backend?: SessionBackend; timeLeft: string | null;
+  actions?: ReactNode; children?: ReactNode;
 }) {
   return <header className="pterm-head">
     <span className="pterm-mark">{SITE.name}</span>
     <span className="pterm-state" aria-live="polite">{phaseLabels[phase]}</span>
     <span className="pterm-head-spacer" />
-    {backend && <span>{backend === "native" ? "Linux" : "Demo"}</span>}
-    {timeLeft !== null && <span title="Session time remaining">{timeLeft}</span>}
+    {!actions && backend && <span>{backend === "native" ? "Linux" : "Demo"}</span>}
+    {timeLeft !== null && <span className="pterm-timer" title="Session time remaining">{timeLeft}</span>}
+    {children}
+    {actions}
   </header>;
 }
 
@@ -39,14 +42,16 @@ function UnlockPanel({ authMessage, warm, launch, beginAuth }: LaunchProps & {
 }) {
   return <div className="pterm-unlock">
     <h2>A Linux shell, right here.</h2>
-    <p>Sign in for a disposable five-minute session. No outbound network or saved files.</p>
-    {authMessage && <p className="pterm-auth-error" role="alert">{authMessage}</p>}
+    <p>Sign in for five minutes of Linux. Files are temporary; network is blocked.</p>
+    {authMessage && <>
+      <p className="pterm-auth-error" role="alert">{authMessage}</p>
+      <a className="pterm-standalone" href="/embed" target="_blank" rel="noopener noreferrer">Open standalone shell ↗</a>
+    </>}
     <div className="pterm-actions">
       <button onClick={() => beginAuth("github")}>Continue with GitHub</button>
       <button onClick={() => beginAuth("google")}>Continue with Google</button>
       <button className="is-quiet" onPointerEnter={warm} onFocus={warm} onClick={() => launch("demo")}>Use instant edge shell</button>
     </div>
-    <a className="pterm-standalone" href="/embed" target="_blank" rel="noopener noreferrer">Open standalone shell</a>
   </div>;
 }
 
@@ -79,8 +84,8 @@ export function PaneControls({ panes, error, splitVertical, splitHorizontal, nex
 }) {
   return <nav className="pterm-pane-controls" aria-label="Pane controls">
     <span>{panes.count} / 4 panes</span>
-    <button aria-label="Split left/right" title="Split left/right" disabled={panes.pending || panes.count >= 4} onClick={splitVertical}>Split</button>
-    <button aria-label="Split top/bottom" title="Split top/bottom" disabled={panes.pending || panes.count >= 4} onClick={splitHorizontal}>Stack</button>
+    <button className="pterm-split-primary" aria-label="Split pane left/right" title="Split left/right" disabled={panes.pending || panes.count >= 4} onClick={splitVertical}>Split pane</button>
+    <button aria-label="Split top/bottom" title="Split top/bottom" disabled={panes.pending || panes.count >= 4} onClick={splitHorizontal}>Top/bottom</button>
     <button disabled={panes.pending || panes.count < 2} onClick={nextPane}>Next pane</button>
     <button disabled={panes.pending || panes.count < 2} onClick={closePane}>Close pane</button>
     <span className="pterm-pane-status" role="status">{error || (panes.pending ? "Updating panes…" : "")}</span>
@@ -92,20 +97,18 @@ export function SessionControls({ phase, identity, release, logout }: {
 }) {
   const running = phase === "live" || phase === "connecting";
   return <nav className="pterm-controls" aria-label="Shell controls">
-    <span>Disposable session · no network</span>
-    <span className="pterm-control-spacer" />
     {running && <button onClick={release}>{phase === "connecting" ? "Cancel launch" : "Release session"}</button>}
     {identity && <button onClick={logout}>Sign out</button>}
   </nav>;
 }
 
-export function TerminalInfo({ native, backend, identity, startupMs, live, focused }: {
+export function TerminalInfo({ native, backend, identity, startupMs, live, focused, children }: {
   native: boolean; backend?: SessionBackend; identity: IdentityView | null;
-  startupMs: number | null; live: boolean; focused: string;
+  startupMs: number | null; live: boolean; focused: string; children?: ReactNode;
 }) {
   const runtime = backend ?? (native ? "native" : "edge");
   return <details className="pterm-info">
-    <summary>Info &amp; shortcuts</summary>
+    <summary aria-label="Info & shortcuts">Info</summary>
     <div className="pterm-info-body">
       <aside className="pterm-facts" aria-label="Session details">
         <span><b>Runtime</b> {runtime === "native" ? "Linux" : "Edge demo"}</span>
@@ -122,7 +125,8 @@ export function TerminalInfo({ native, backend, identity, startupMs, live, focus
         <span><kbd>Ctrl+a</kbd> <kbd>o</kbd> next pane</span>
         <span><kbd>Ctrl+a</kbd> <kbd>x</kbd> close pane</span>
       </aside>
-      <p className="pterm-info-note">Click a pane to type there. Each pane has its own terminal. Closing this demo releases its session; install phux to keep your own work running.</p>
+      <p className="pterm-info-note">Click a pane to type there. This demo is disposable: switching runtime or closing this window releases its session. Install phux to keep your work running.</p>
+      {children}
     </div>
   </details>;
 }

@@ -5,6 +5,29 @@ import "./HeroDemo.css";
 
 type Mode = "demo" | "native";
 
+function HeroTerminalActions({ mode, changeMode, close }: {
+  mode: Mode; changeMode: (mode: Mode) => void; close: () => void;
+}) {
+  return <>
+    <div className="mux-mode-row" role="group" aria-label="Terminal runtime">
+      <button type="button" aria-pressed={mode === "demo"} onClick={() => changeMode("demo")}>Demo</button>
+      <button type="button" aria-pressed={mode === "native"} onClick={() => changeMode("native")}>Linux shell</button>
+    </div>
+    <button type="button" className="mux-close" onClick={close} aria-label="Close live terminal">
+      <span aria-hidden="true">×</span>
+    </button>
+  </>;
+}
+
+function TerminalDownload({ failed, retry }: { failed: boolean; retry: () => void }) {
+  return <div className="mux-loading" role="status">
+    {failed ? <>
+      <p>The terminal client could not download.</p>
+      <button type="button" onClick={retry}>Retry download</button>
+    </> : "Loading the terminal client…"}
+  </div>;
+}
+
 export default function HeroDemo({ wsUrl = "" }: { wsUrl?: string }) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<Mode>("demo");
@@ -131,24 +154,16 @@ export default function HeroDemo({ wsUrl = "" }: { wsUrl?: string }) {
         }}
         onClose={() => setOpen(false)}
       >
-        <header className="mux-dialog-head">
-          <h2 id={`${id}-title`}>{SITE.name}</h2>
-          <div className="mux-mode-row" role="group" aria-label="Terminal runtime">
-            <button type="button" aria-pressed={mode === "demo"}
-              onClick={() => { setAuthError(""); setMode("demo"); }}>Demo</button>
-            <button type="button" aria-pressed={mode === "native"}
-              onClick={() => setMode("native")}>Linux shell</button>
-          </div>
-          <button type="button" className="mux-close" onClick={() => setOpen(false)} aria-label="Close live terminal">
-            <span aria-hidden="true">×</span>
-          </button>
-        </header>
+        <h2 className="mux-sr-only" id={`${id}-title`}>{SITE.name} terminal</h2>
+        {!Terminal && <header className="mux-dialog-head">
+          <HeroTerminalActions mode={mode} changeMode={(next) => { setAuthError(""); setMode(next); }} close={() => setOpen(false)} />
+        </header>}
         {authError && (
           <p className="mux-dialog-description" role="alert">
             {authError}
           </p>
         )}
-        <p className="mux-dialog-description" id={`${id}-description`}>
+        <p className="mux-sr-only" id={`${id}-description`}>
           {mode === "demo" ? (
             <>A limited demo shell, no sign-in. Try <code>help</code> or <code>demo</code>, then split a pane.</>
           ) : (
@@ -165,30 +180,11 @@ export default function HeroDemo({ wsUrl = "" }: { wsUrl?: string }) {
               rows={24}
               autoStart
               focusOnStart
+              headerActions={<HeroTerminalActions mode={mode} changeMode={(next) => { setAuthError(""); setMode(next); }} close={() => setOpen(false)} />}
             />
           ) : (
-            <div className="mux-loading" role="status">
-              {loadFailed ? (
-                <>
-                  <p>The terminal client could not download.</p>
-                  <button type="button" onClick={loadTerminal}>
-                    Retry download
-                  </button>
-                </>
-              ) : (
-                "Loading the terminal client…"
-              )}
-            </div>
+            <TerminalDownload failed={loadFailed} retry={loadTerminal} />
           ))}
-        <footer className="mux-dialog-foot">
-          <span>
-            Switching runtime or closing this window releases the hosted
-            session.
-          </span>
-          <a href="/embed">
-            Open standalone <span aria-hidden="true">↗</span>
-          </a>
-        </footer>
       </dialog>
     </div>
   );
