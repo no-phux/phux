@@ -37,8 +37,7 @@ use crate::resource::agent_session::{AgentSessionActor, AgentSessionBootstrap, B
 use crate::terminal_actor::{PaneUpgradeHandle, TerminalActor, UpgradeHandleRequest};
 use crate::upgrade::blob::{
     AgentSessionBlob, BLOB_VERSION, Counters, LayoutBlob, MetadataBlob, OrgBlob, PaneBlob,
-    RetainedExitBlob,
-    SessionBlob, SplitDirBlob, StateBlob, WindowBlob,
+    RetainedExitBlob, SessionBlob, SplitDirBlob, StateBlob, WindowBlob,
 };
 
 /// What the reversible half of an upgrade collected from live engines: each
@@ -2000,7 +1999,7 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         Box::pin(local.run_until(async {
             let mut state = ServerState::new();
-            let sid = state.seed_empty_session("work");
+            let sid = state.seed_empty_session("work").expect("seeded");
             let wire = state.idspace.intern_session(sid);
             let layout = format!("phux.tui.layout/v1/{}", wire.get());
             let group = Scope::Group(GroupId::new(1));
