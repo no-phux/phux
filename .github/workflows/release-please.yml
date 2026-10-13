@@ -160,8 +160,8 @@ jobs:
           # The standalone browser lock also records the root path crates'
           # versions; its locked CI must advance those in the same release PR.
           (cd clients/phux-web && cargo update --workspace)
-          # The desktop host lock records them too, but its GPUIX path deps
-          # are bootstrapped, not committed, so cargo cannot resolve it here.
+          # The desktop host lock records them too, but its pinned GPUI snapshot
+          # is parent-managed and not present here, so cargo cannot resolve it.
           python3 scripts/sync-path-lock-versions.py Cargo.lock clients/desktop/native/Cargo.lock docs/site/edge/Cargo.lock
 
       - name: Commit Cargo.lock

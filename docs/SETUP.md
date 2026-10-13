@@ -178,7 +178,7 @@ the shell, Cargo, and npm commands below also work directly.
 | Agent integrations | Node/npm and Bun | `just integration-check pi` (or `runtime`, `opencode-v2`, `omp`, `claude`) |
 | Browser client | Rust WASM target, Node, WASM tools (engine binary is committed) | `just doctor web`; see [Browser client](#browser-client) |
 | Cockpit app | Apple-silicon Mac, SDK, Zig, Node, Rust FFI, Python | `just doctor cockpit`, then `just cockpit-test` |
-| GPUIX desktop development | Apple-silicon Mac, Xcode with Metal, native Rust/Zig, Bun, Node, Python | `just doctor desktop`, then `just desktop-app` |
+| GPUI desktop development | Apple-silicon Mac, Xcode with Metal, native Rust/Zig, Bun, Node, Python | `just doctor desktop`, then `just desktop-app` |
 | Full root validation | Native prerequisites plus gate tools | `just doctor ci`, then `just ci-full` |
 
 `bash scripts/doctor.sh <area>` works before installing `just`. It checks tool
@@ -326,7 +326,7 @@ terminal (without `PHUX_DEMO_PANE`, its pane is a shell for trying the client).
 `bash scripts/build-vt-wasm.sh` (or `--check`). `GHOSTTY_SRC=...` selects local
 source and bypasses archive verification but still runs ABI tests.
 
-## GPUIX desktop
+## GPUI desktop
 
 Apple-silicon Mac. **Prefer Mise plus host Xcode/Metal for the daily desktop
 loop**; keep Nix for separately invoked fully provisioned validation. Both
@@ -335,10 +335,11 @@ or Rust compiler is shadowed by Mise, or whose explicit selection is Mise. This
 check runs before Apple-toolchain normalization, so doctor cannot hide a mixed
 CLI environment. Stale Rust versions also fail before compilation.
 
-The app builds from the pinned GPUIX/Zed source in this
-checkout, not from a published addon. One command clones that source, applies
-the reviewed patches, builds the native host, builds `phux` from this tree,
-starts a local server if needed, and opens the desktop:
+The app is the GPUI executable
+`clients/desktop/native/target/debug/phux-desktop`. `just desktop-source`
+bootstraps the parent-managed GPUI snapshot, then one command builds that
+binary, builds `phux` from this tree, starts a local server if needed, and
+opens the desktop:
 
 ```sh
 just doctor desktop
@@ -350,10 +351,9 @@ that Xcode exists. Install the separate component with
 `xcodebuild -downloadComponent MetalToolchain` if needed. The first run is a
 from-source native build; later runs reuse it.
 
-See [desktop source toolchain](../clients/desktop/toolchain/README.md) for
-source pins, frozen installs, and the inherited Nix SDK caveat. The desktop
-build reuses the repository's Apple-toolchain environment helper, so it can
-select host Xcode/Metal without mixing in Nix's linker wrappers.
+See [desktop architecture](./architecture/desktop.md) for the host seams. The
+desktop build reuses the repository's Apple-toolchain environment helper, so it
+can select host Xcode/Metal without mixing in Nix's linker wrappers.
 
 ## Cockpit
 

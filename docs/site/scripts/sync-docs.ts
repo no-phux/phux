@@ -95,7 +95,7 @@ const GH_BLOB = `https://github.com/no-phux/phux/blob/${SOURCE_REVISION}`;
 const GH_TREE = `https://github.com/no-phux/phux/tree/${SOURCE_REVISION}`;
 
 /**
- * Publish the CLI, Cockpit and GPUIX desktop installers (also with .sh suffix).
+ * Publish the CLI, Cockpit and GPUI desktop installers (also with .sh suffix).
  *
  * Nothing here is committed — every destination is gitignored and rewritten on
  * every build — so the bytes a stranger pipes to `sh` cannot drift from the

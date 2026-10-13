@@ -4,8 +4,6 @@
     "lib": ["ESNext"],
     "module": "Preserve",
     "moduleResolution": "Bundler",
-    "jsx": "preserve",
-    "jsxImportSource": "@gpuix/solid",
     "types": ["bun"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
@@ -19,12 +17,13 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["src", "scripts", "tests", "oxlint.config.ts"],
-  "exclude": [
-    "node_modules",
-    "toolchain",
-    "dist",
-    "tools/oxlint/anti-slop",
-    "tests/tooling/negative"
-  ]
+  "include": [
+    "scripts",
+    "tests/tooling/tooling.test.ts",
+    "tests/tooling/qualification.test.ts",
+    "tests/framework/process.test.ts",
+    "tests/desktop-demo.test.ts",
+    "oxlint.config.ts"
+  ],
+  "exclude": ["node_modules", "toolchain", "native", "src", "dist"]
 }

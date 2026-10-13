@@ -1,24 +1,21 @@
 /**
  * Desktop perf bench: a fixed workload against a private server, summarized
- * per phase from the `PHUX_DESKTOP_PERF` log.
+ * per phase from the native host's evidence log.
  *
- *   bun clients/desktop/scripts/perf-bench.ts [--phux <cli>] [--addon <node>]
- *     [--bundle <desktop-main.js>] [--panes 4] [--seconds 8] [--output <dir>]
- *     [--profile <phase>]
+ *   bun clients/desktop/scripts/perf-bench.ts [--phux <cli>] [--desktop <phux-desktop>]
+ *     [--panes 4] [--seconds 8] [--output <dir>] [--profile <phase>]
  *
  * It owns a temporary HOME, socket and server, opens the app behind the active
  * one (never activating it), lays out `--panes` terminals in one tab plus one
  * terminal in a second, background tab, then runs idle, background-tab flood,
  * one-pane flood, every-pane flood and idle-again phases. Each phase reports
  * the app's CPU, current RSS, draws, wake drains and the host's painter and
- * runtime stages. `--bundle` runs a previously built app bundle (another
- * revision's JS) instead of building this checkout's. `--profile` samples the
- * app's stacks during one phase into `<phase>.sample`. Numbers from a loaded
- * machine are observational: compare runs made back to back on one host.
+ * runtime stages. `--profile` samples the app's stacks during one phase into
+ * `<phase>.sample`. Numbers from a loaded machine are observational: compare
+ * runs made back to back on one host.
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import {
   appendFileSync,
   existsSync,
@@ -30,18 +27,15 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { prepareDesktop } from "./launch-desktop";
+import { desktopArguments } from "./launch-desktop.ts";
+import { assertIsolatedTarget, desktopBinary, isInstalledPhux, layoutFile } from "./host.ts";
 
 const desktop = resolve(import.meta.dir, "..");
 const repo = resolve(desktop, "../..");
 const { values } = parseArgs({
   options: {
     phux: { type: "string", default: resolve(repo, "target/debug/phux") },
-    addon: {
-      type: "string",
-      default: resolve(desktop, ".cache/host/phux-desktop-native.darwin-arm64.node"),
-    },
-    bundle: { type: "string" },
+    desktop: { type: "string", default: desktopBinary("release") },
     panes: { type: "string", default: "4" },
     seconds: { type: "string", default: "8" },
     output: { type: "string" },
@@ -49,10 +43,11 @@ const { values } = parseArgs({
   },
 });
 const phux = resolve(values.phux);
-const addon = resolve(values.addon);
+const host = resolve(values.desktop);
 const panes = Number(values.panes);
 const seconds = Number(values.seconds);
-assert(existsSync(phux) && existsSync(addon), "CLI and addon must exist");
+assert(existsSync(phux) && existsSync(host), "CLI and desktop binary must exist");
+assert(!isInstalledPhux(phux), "perf refuses an installed phux CLI");
 assert(Number.isInteger(panes) && panes >= 1 && panes <= 8, "--panes is 1-8");
 assert(seconds >= 2, "--seconds is at least 2");
 
@@ -64,6 +59,9 @@ for (const dir of ["config", "state", "cache", "data", "run"]) mkdirSync(join(ho
 const socket = join(home, "run/phux.sock");
 const session = "desktop-perf";
 const log = join(evidence, "perf.jsonl");
+const layout = layoutFile(join(home, "state"), socket, session);
+assertIsolatedTarget(phux, socket);
+assertIsolatedTarget(host, socket);
 const env: Record<string, string> = {
   PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
   HOME: home,
@@ -77,9 +75,7 @@ const env: Record<string, string> = {
   PHUX_SOCKET: socket,
   PHUX_SESSION: session,
   PHUX_BIN: phux,
-  PHUX_DESKTOP_ADDON: addon,
   PHUX_DESKTOP_BACKGROUND: "1",
-  PHUX_DESKTOP_PERF: log,
   SHELL: "/bin/sh",
   TERM: "xterm-256color",
   LANG: "en_US.UTF-8",
@@ -137,14 +133,6 @@ async function stop(child: Bun.Subprocess): Promise<void> {
   }
 }
 
-/** Where the app keeps this socket/session's layout (see start-desktop.ts). */
-function layoutPath(): string {
-  const target = createHash("sha256")
-    .update(JSON.stringify([socket, session]))
-    .digest("hex")
-    .slice(0, 24);
-  return join(home, "state/phux-desktop", target, "layout.json");
-}
 
 type SavedNode =
   | { kind: "leaf"; id: string; terminalId: string }
@@ -169,7 +157,7 @@ function tree(terminals: string[], depth = 0): SavedNode {
 function writeLayout(serverId: string, terminals: string[], hidden: string): void {
   const first = terminals[0] ?? "";
   writeFileSync(
-    layoutPath(),
+    layout,
     `${JSON.stringify({
       version: 2,
       serverId,
@@ -188,7 +176,7 @@ function writeLayout(serverId: string, terminals: string[], hidden: string): voi
 }
 
 function readServerId(): string | undefined {
-  const saved: unknown = JSON.parse(readFileSync(layoutPath(), "utf8"));
+  const saved: unknown = JSON.parse(readFileSync(layout, "utf8"));
   const id: unknown =
     saved && typeof saved === "object" ? Reflect.get(saved, "serverId") : undefined;
   return typeof id === "string" ? id : undefined;
@@ -458,10 +446,13 @@ function render(results: Phase[]): string {
 let server: Bun.Subprocess | undefined;
 let app: Bun.Subprocess | undefined;
 try {
-  const main = values.bundle
-    ? resolve(values.bundle)
-    : resolve(desktop, "dist/desktop/desktop-main.js");
-  if (!values.bundle) await prepareDesktop();
+  const appArgs = desktopArguments({
+    socket,
+    session,
+    phux,
+    layout,
+    evidence,
+  });
   server = launch(
     [phux, "--socket", socket, "server", "--session", session, "--exit-after-idle", "120"],
     "server",
@@ -477,12 +468,12 @@ try {
   const hidden = spawn();
   const local = (terminal: string): string => `local:${terminal.replace(/^@/, "")}`;
   // The first launch records the daemon's identity; the bench layout reuses it.
-  app = launch([process.execPath, main], "app-first");
+  app = launch([host, ...appArgs], "app-first");
   await until("first layout", () => readServerId() !== undefined);
   const serverId = readServerId() ?? "";
   await stop(app);
   writeLayout(serverId, terminals.map(local), local(hidden));
-  app = launch([process.execPath, main], "app");
+  app = launch([host, ...appArgs], "app");
   await until("perf samples", () => samples().length >= 3);
   await Bun.sleep(2000);
   const results: Phase[] = [];

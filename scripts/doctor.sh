@@ -128,7 +128,7 @@ node_tools() {
 
 desktop_tools() {
     if ! check_desktop_toolchain; then
-        fail 'desktop toolchain selection' 'Choose one environment; see docs/SETUP.md#gpuix-desktop'
+        fail 'desktop toolchain selection' 'Choose one environment; see docs/SETUP.md#gpui-desktop'
         return
     fi
     # Match the desktop build's existing Apple-toolchain normalization.
