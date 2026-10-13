@@ -221,6 +221,12 @@ impl Topology {
         }
         for pane in &mut self.panes {
             if let Some(record) = replica.resource_by_live(&pane.terminal_id) {
+                if let Some(session) = replica.session(&record.session)
+                    && let Some(live) = session.live
+                {
+                    pane.session_id = live.get();
+                    pane.session_name.clone_from(&session.name);
+                }
                 pane.key = Some(record.key);
                 pane.revision = Some(record.revision);
                 pane.name.clone_from(&record.name);
