@@ -402,12 +402,15 @@ defaults; the third has to be asked for.
 
 1. **Signalled.** Ctrl-C on a foreground `phux server`, or any signal
    that ends the process.
-2. **Last pane reaped**, once at least one client has been served. When a
-   pane's process exits the runtime reaps it, cascading to its window and
-   session; an empty server exits. The "served a client" guard exists so
-   a freshly auto-spawned server whose seed pane dies before anyone
-   connects stays up long enough for the launching `phux` to repopulate
-   it.
+2. **Nothing running and nobody connected**, once at least one client has
+   been served: no activation is live and no client connection is open.
+   Persistent sessions, empty or holding only exited resources, do not
+   hold the server up; their records stay in the organization store and
+   come back on the next start
+   ([ADR-0162](./adr/0162-organization-records-persist-and-activations-reconcile.md)).
+   The "served a client" guard exists so a freshly auto-spawned server
+   whose seed pane dies before anyone connects stays up long enough for
+   the launching `phux` to repopulate it.
 3. **Unattended past `--exit-after-idle SECS`**, if that flag was passed.
 
 `phux server --exit-after-idle SECS` is for **ephemeral** servers: a test
@@ -579,13 +582,17 @@ phux: the running server is 0.13.0, this binary is 0.14.0 — upgrading it in pl
 `phux doctor` reports the same skew if you want to check without
 attaching.
 
-**Keep-empty sessions and downgrades.** The handoff carries each
-session's keep-empty mark, so an upgrade keeps it. Handing off to an
-*older* binary that predates the mark drops it: a populated keep-empty
-session falls back to the default cascade, and an empty one comes back
-with no windows and no mark, which that older server has no way to remove
-except `phux kill --server`. Kill empty sessions (`phux kill NAME`)
-before downgrading.
+**Organization records and downgrades.** The handoff carries each
+session's key and lifetime and each resource's key, activation, and
+process identity, so an upgrade keeps them; a new server still reads a
+handoff from an older one and flattens its windows into members and an
+arrangement. The organization store (`<state_dir>/org/v1.sqlite3`) is
+backed up before any schema migration and never overwritten by an older
+binary. Downgrading is not safe by ignoring the store: an older server
+cannot reconstruct membership or lifetime from it. Export first
+(`phux archive export`), stop the server, then downgrade; a server that
+finds a store version it does not support refuses to start rather than
+guessing.
 
 ### Putting a server that is already running under supervision
 
@@ -653,9 +660,21 @@ its own transient `PATH` (for example from `nix develop`) into the unit.
 
 ## Workspace continuity and update survival
 
-Workspace restore and live update handoff have different guarantees:
+Organization records, archives, and live update handoff have different
+guarantees:
 
-- **Restart restore:** `phux workspace save` writes a typed JSON archive of
+- **Crash and restart:** sessions, resources, arrangements, and each
+  resource's last outcome live in the organization store and survive any
+  server exit, including `SIGKILL` and power loss. Running processes do
+  not. On the next start the server reconciles what was running: a
+  terminal whose process is gone shows as ended, unobserved; a process
+  that outlived the server (for example under `nohup`) shows as lost
+  until you terminate or abandon it. Nothing relaunches on its own;
+  `phux restore` relaunches the terminals the crash ended, in their
+  sessions and working directories
+  ([ADR-0162](./adr/0162-organization-records-persist-and-activations-reconcile.md)).
+- **Restart restore:** `phux workspace save` (renamed `phux archive
+  export`; the old spelling remains a hidden alias) writes a typed JSON archive of
   the running workspace, reading each session's split tree from its L3 layout
   envelope (`phux.tui.layout/v1/<session-id>`, or `save --projection KEY`);
   a session with none falls back to one pane per window. `phux workspace
@@ -671,21 +690,16 @@ Workspace restore and live update handoff have different guarantees:
   can resume; save warns about any agent pane that will come back as a shell
   ([ADR-0151](./adr/0151-live-agent-sessions-bridge-into-native-restore.md)).
   `--output` writes a temp file, fsyncs it, and renames it into place, so an
-  interrupted save never replaces a good archive with a torn one.
-- **Crash-safe autosave:** `phux service install --restore` runs the
-  supervised server with `phux server --autosave
-  <state-dir>/workspace.json`. On a fresh start the server restores that
-  archive once it is listening; afterwards it rewrites it atomically about
-  three seconds after a session, window, pane, name, cwd, layout, or
-  agent-session change (at most ten seconds behind a workspace that never
-  settles), and at least once a minute for drift such as titles. A crash,
-  `SIGKILL`, abort, or power loss therefore restores the latest layout, and
-  the wrapper still saves once more on a clean stop. Shutdown never
-  autosaves a half-torn-down workspace, a hot upgrade keeps saving without
-  restoring again, and an archive that fails to restore is copied to
-  `workspace.json.unrestored` and left alone until the workspace changes. A
-  unit installed before this needs `phux service install --restore` rerun
-  ([ADR-0150](./adr/0150-the-server-keeps-the-restore-archive-current.md)).
+  interrupted save never replaces a good archive with a torn one. An archive
+  is a portable copy for another machine or a backup; importing one creates
+  records with provenance and launches nothing until you relaunch them.
+- **Export schedule:** `phux server --autosave <state-dir>/workspace.json`,
+  which `phux service install --restore` sets up, keeps rewriting that
+  archive atomically after changes, as
+  [ADR-0150](./adr/0150-the-server-keeps-the-restore-archive-current.md)
+  describes, for one release of overlap. It no longer restores the archive
+  on a cold start: the organization store already holds the records, and
+  relaunching is the explicit `phux restore`.
 - **Live update handoff:** `phux upgrade` keeps existing PTYs alive
   across a server binary re-exec, and with them each pane's agent sessions:
   same `@N`, same `phux agent log` history, same record sequence
