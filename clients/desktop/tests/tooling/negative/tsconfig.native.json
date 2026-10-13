@@ -1,5 +1,0 @@
-{
-  "extends": "../../../tsconfig.json",
-  "include": ["native-types.tsx"],
-  "exclude": []
-}

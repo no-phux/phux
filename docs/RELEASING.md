@@ -83,7 +83,7 @@ recovery. `scripts/check-release-orchestration.mjs` pins this ordering.
 | publish | `ci` or release-please completed on `main`, daily, or dispatch | Ships drafts whose tag points at a green `ci` run. Deletes drafts older than an already published version of the same component. |
 | Release artifacts | called by `publish` | Requires all target builds, attaches tarballs + checksums, publishes the complete release, then updates Homebrew. |
 | Cockpit release | called by `publish` | Re-tests the tagged tree, packages, signs and optionally notarizes, verifies downloaded ZIP/DMG assets, proves the Homebrew cask reached the tap, then publishes the draft. |
-| Desktop alpha release | called by `publish` | Builds the tagged native addon, compiled app and qualification CLI on Apple silicon; verifies ad-hoc signing, archived-app runtime and installer behavior, then uploads and verifies the ZIP/checksum before publishing as a prerelease, never latest. |
+| Desktop alpha release | called by `publish` | Builds the tagged GPUI executable, packages `Phux.app` and a qualification CLI on Apple silicon; verifies ad-hoc signing, archived-app runtime and installer behavior, then uploads and verifies the ZIP/checksum before publishing as a prerelease, never latest. |
 | Cockpit SDK head | manual | Builds Cockpit against an explicitly selected SDK ref. Pinned SDK changes still run ordinary Cockpit CI. |
 | Crate publish | manual `publish-crate` workflow | `phux-protocol` package dry-run, then publish when `dry_run=false`. |
 | Agent integration release | called by `publish`, or a manual dry run | Re-runs locked gates, creates one checksummed artifact, clean-installs npm artifacts, publishes npm with provenance where applicable, and publishes the component draft release. |
@@ -250,28 +250,29 @@ desktop-v0.1.0-alpha.1
 The reusable desktop workflow keeps its harness on `main` and checks out the
 immutable tag separately for every product build. The `harness` and `source`
 checkouts must be siblings, not nested Cargo workspaces: an outer workspace can
-capture GPUI's path dependencies and break workspace inheritance. The lane runs
-`just desktop-package` and builds a release-profile CLI from the same source for
-runtime qualification.
+capture the pinned GPUI snapshot's path dependencies and break workspace
+inheritance. The lane runs `just desktop-package` and builds a release-profile
+CLI from the same source for runtime qualification.
 The native build entry point supports the runner's system Bash 3.2; no newer
-Homebrew Bash is required for either production or fixture builds.
+Homebrew Bash is required.
 The runner setup downloads Xcode's separate Metal Toolchain component and executes
 `xcrun metal --version` before compiling; Xcode alone does not provide the shader
 compiler on fresh hosted runners.
 The CLI is **not bundled**: users install it separately from
 <https://phux.sh/install>, and installing the desktop never upgrades a running
 coordinator. The app is explicitly **ad-hoc signed, not Apple-notarized**;
-there are no desktop Developer ID or notarization secrets.
+there are no desktop Developer ID or notarization secrets. `Phux.app` runs the
+Rust executable directly. It does not ship a JavaScript bundle or a NAPI addon.
 
 Before uploading, the lane verifies `codesign`, extracts the ZIP, and runs
 `bun clients/desktop/scripts/smoke-app.ts --app <Phux.app> --phux <same-checkout-binary>`
-against isolated server state. The smoke must prove rendered terminal output
-and retained sessions across client termination/relaunch; installer transaction
-checks run separately. After upload, downloaded checksums and bytes must match
-before `gh release edit` publishes the draft with `--draft=false --prerelease
---latest=false`. Use this draft-aware command: the REST release-by-tag endpoint
-does not resolve unpublished drafts. This train does not alter the CLI `next`
-channel or a Homebrew cask.
+against isolated server state. The smoke must prove a presented PNG, a live
+layout, and retained sessions across client termination/relaunch; installer
+transaction checks run separately. After upload, downloaded checksums and bytes
+must match before `gh release edit` publishes the draft with `--draft=false
+--prerelease --latest=false`. Use this draft-aware command: the REST
+release-by-tag endpoint does not resolve unpublished drafts. This train does
+not alter the CLI `next` channel or a Homebrew cask.
 
 To recover a draft, dispatch **publish** with
 `tag=desktop-v0.1.0-alpha.1` (or its later alpha tag), never the leaf workflow.

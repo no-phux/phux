@@ -1,6 +1,6 @@
 # phux desktop
 
-Install the GPUIX desktop alpha on Apple-silicon macOS 27 or later with the
+Install the GPUI desktop alpha on Apple-silicon macOS 27 or later with the
 [phux CLI](https://phux.sh/install) already installed:
 
 ```sh
@@ -15,13 +15,14 @@ Run it again to update; pin or roll back to a published alpha with
 `--bin-dir` select alternate destinations. Releases are ad-hoc signed, **not
 Apple-notarized**; after verification the installer clears quarantine.
 
-Launched from the Dock or Spotlight, the app uses your installed `phux` CLI
-(`~/.local/bin/phux`, `~/.cargo/bin/phux`, `/opt/homebrew/bin/phux`, or
-`/usr/local/bin/phux`) to start or reuse your server. The installer requires
-one of these persistent locations; a shell-only `PATH` or `PHUX_BIN` is not
-enough for a Dock launch. It attaches `default`, otherwise an existing session.
-`PHUX_PROFILE`, `PHUX_SOCKET` and `PHUX_SESSION` override that choice.
-Startup problems are shown in the window and logged to
+`Phux.app` runs `clients/desktop/native/target/release/phux-desktop` directly.
+There is no JavaScript bundle and no NAPI addon. Launched from the Dock or
+Spotlight, the app resolves the installed `phux` CLI
+(`~/.local/bin/phux`, `/opt/homebrew/bin/phux`, `/usr/local/bin/phux`, or
+`~/.cargo/bin/phux`) and starts or reuses the server. A shell-only `PATH` or
+`PHUX_BIN` is not enough for a Dock launch. It attaches `default`, otherwise an
+existing session. `PHUX_PROFILE`, `PHUX_SOCKET` and `PHUX_SESSION` override that
+choice. Startup problems are shown in the window and logged to
 `~/Library/Logs/phux-desktop.log`.
 
 Closing a pane/window or quitting the app detaches; it does not terminate
@@ -40,12 +41,11 @@ For development, run from this checkout instead:
 just desktop-app
 ```
 
-That clones the pinned GPUIX source, applies the reviewed patches, builds the
-native host, builds `phux` from this tree, starts a server if one is not
-already running, and opens the desktop. Set `PHUX_SOCKET` only when you want a
-server other than the one this checkout just ensured. `PHUX_PROFILE=<name>`
-isolates the whole instance; `PHUX_DESKTOP_BACKGROUND=1` opens the window
-behind the active app.
+That bootstraps the parent-managed GPUI snapshot, builds the debug desktop
+executable and `phux` from this tree, starts a server if one is not already
+running, and opens the desktop. Set `PHUX_SOCKET` only when you want a server
+other than the one this checkout just ensured. `PHUX_PROFILE=<name>` isolates
+the whole instance. `PHUX_DESKTOP_BACKGROUND=1` asks the app not to steal focus.
 
 For a disposable demo that cannot reuse the installed server:
 
@@ -53,9 +53,9 @@ For a disposable demo that cannot reuse the installed server:
 just desktop-demo
 ```
 
-This builds the CLI and native addon from this checkout, then owns a private
-foreground server and app. Each run gets a temporary socket, HOME, and XDG
-directories; inherited Phux listener/auth settings are cleared. Closing the
+This builds the CLI and desktop executable from this checkout, then owns a
+private foreground server and app. Each run gets a temporary socket, HOME, and
+XDG directories; inherited Phux listener/auth settings are cleared. Closing the
 app or interrupting the supervisor reaps both children and removes that state.
 The demo refuses installed or external artifacts and does not restart a lost
 server behind the supervisor.
@@ -152,40 +152,33 @@ and negotiation snapshots are separate reads: if the identity advances during a
 drain, labels from that ambiguous batch are omitted until another metadata
 update or reconnect rather than attributed to a new connection.
 
-## Native framework verification
+## Qualification
 
 From the repository root:
 
 ```sh
 just doctor desktop
 just desktop-install
-just desktop-source-build
 just desktop-check
 just desktop-framework-check
 ```
 
-The framework check builds the checksum-verified patched source addon and a
-production JSX bundle, then drives its real native window through click and
-text-input events. It uses a background-focus window and bounded process
-cleanup; patched declarations are not compared to the unpatched npm package.
-The GPU capture is `dist/framework/window.png` under this package.
-This fixture verifies the framework, not a working phux terminal application.
-The required CI workflow gate runs `desktop-install` and `desktop-check` on
-every change. GPU/window checks remain a separate macOS qualification step.
-
-The release lane also tests the **packaged app**, not just its source:
+`desktop-check` is the CI gate: script typecheck, lint, qualification-guard
+tests, and the desktop host lock comparison. It does not launch GPUI.
+`desktop-framework-check` packages `Phux.app` and runs
 
 ```sh
 bun clients/desktop/scripts/smoke-app.ts --app /absolute/Phux.app --phux /absolute/phux
 ```
 
-It owns a temporary server, HOME and socket; launches behind the active app;
-checks rendered terminal markers with macOS Vision; and proves the same shell
-PID and non-exported variable survive desktop SIGKILL/relaunch and
-SIGTERM/relaunch. PNGs, OCR and logs are retained at the printed evidence path.
-It does not exercise server crashes, reboot, or restoration of secondary windows.
+against an isolated same-checkout server. The app must write `presented.png`,
+`layout.json`, and `interaction.json` from a drawable-presented frame. The
+harness OCRs the PNG and proves the same shell PID survives desktop
+SIGKILL/relaunch and SIGTERM/relaunch. A harness-written ok flag is not
+success. It does not exercise server crashes, reboot, or restoration of
+secondary windows. Missing GPU access is a blocked run.
 
-## TypeScript tooling
+## Script tooling
 
 From `clients/desktop`, with repository-pinned Bun 1.4.2 and Node 24 on `PATH`:
 
@@ -195,40 +188,20 @@ bun install --frozen-lockfile
 bun run check:tooling
 ```
 
-`check:tooling` runs formatting, strict TS7 typecheck, type-aware
-warning-free Oxlint, the vendored rule suites, the workspace model tests
-(`tests/model`) and adversarial CLI/JSX fixtures.
-Fix with `bun run format` and `bun run lint --fix`. Exact tool and framework
-versions are pinned in `package.json` and `bun.lock`; no global JS tool install
-or `bunx` download is involved. A tooling pass is not native/GPU evidence; see
-[native/README.md](native/README.md) for that.
-
-Notes on the pinned toolchain:
-
-- TS7's `tsc` is the native compiler. `skipLibCheck` skips third-party
-  declaration bodies, not application uses of them; the negative native-event
-  fixture must still produce TS2339. TS7 preserves JSX and emits nothing; the
-  tooling test compiles JSX through GPUIX's Solid Bun plugin.
-- Oxlint's `--type-aware` needs `oxlint-tsgolint`. The Solid plugin recognizes
-  `@gpuix/solid` through `moduleSources`. Native JSX components declare an
-  explicit `JSX.Element` return type because the pinned linter otherwise
-  reports the inferred type as an error type.
-- The Solid plugin's ESLint peers do not yet list TS7, so Bun reports a peer
-  mismatch. RuleTester suites run under Node 24 because its raw-transfer parser
-  rejects Bun.
+Bun runs the scripts. It is not the production host. `check:tooling` formats,
+typechecks, and lints those scripts, then runs the vendored rule suites and
+the qualification-guard tests. Fix with `bun run format` and
+`bun run lint --fix`. Exact tool versions are pinned in `package.json` and
+`bun.lock`. A tooling pass is not GPU evidence; see
+[desktop verification](../../docs/architecture/desktop-verification.md).
 
 ### Boundaries enforced by the gate
 
 - Type-aware unsafe operations, floating and misused promises fail.
-- Chained casts, unjustified assertions and Jest/Vitest module mocks fail via
-  the [selected anti-slop rules](tools/oxlint/anti-slop/README.md).
-- Bun mock imports, DOM renderer imports and sibling-client imports fail. UI
-  source cannot import Node builtins; the bridge/service boundary may use only
-  `node:path`, `node:module` and `node:fs/promises`. Transport and reconnect
-  authority belongs to Rust.
-- Lost Solid reactivity, destructured props and unused/invalid suppressions fail.
-- Negative fixtures are excluded from ordinary lint/typecheck and run explicitly
-  with asserted diagnostics, so an unloaded plugin cannot appear green.
-
-Solid owns reactive views. Add Effect (exact-pinned v4) only when a real
-non-Solid async service, scoped resource or schema boundary needs it.
+- Chained casts, unjustified assertions and module mocks fail via the
+  [selected anti-slop rules](tools/oxlint/anti-slop/README.md).
+- Script tooling must not import Cockpit or the web clients.
+- Negative fixtures are excluded from ordinary lint and run explicitly with
+  asserted diagnostics, so an unloaded plugin cannot appear green.
+- Qualification tests reject an installed CLI, a production socket, and smoke
+  evidence that is only an ok flag.

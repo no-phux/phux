@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Features
+
+* **desktop:** run Phux.app as a native GPUI executable, with no Solid host or NAPI addon
+
 ## [0.1.0-alpha.13](https://github.com/no-phux/phux/compare/desktop-v0.1.0-alpha.12...desktop-v0.1.0-alpha.13) (2026-10-11)
 
 

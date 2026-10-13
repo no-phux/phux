@@ -1,48 +1,45 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-10-02
+last-reviewed: 2026-10-13
 ---
 
 # Native terminal painter
 
-**TL;DR.** `terminal::install(registry)` registers `phux-terminal`. The element
-resolves the existing NAPI client registry, acquires an immutable runtime
-`ViewId` publication, and shapes and paints native GPUI glyphs. It is a
-verified initial painter, not closure of phux-d4x9.4.
+**TL;DR.** `Terminal` is a `gpui::Render` entity. `Terminal::new` takes
+`Arc<Client>`, a runtime `ViewId` and `ResourceId`, and paints that
+publication with native GPUI glyphs. It does not look up a string registry.
 
-## Element contract
+## Entity contract
 
-Give the surface an explicit bounded width and height. It clips its canvas and
-never resizes a runtime view or the shared PTY.
+```rust
+Terminal::new(client, view, terminal, settings, window, cx) -> Self
+Terminal::configure(&mut self, settings, window, cx)
+Terminal::request(&mut self, action, cx) // once, on this entity
+Terminal::focus_handle(&self) -> &FocusHandle
+```
 
-| Prop | Value / default |
-| --- | --- |
-| `clientHandle` | Existing `DesktopClient.handle` string |
-| `terminalId` | Canonical binding resource ID, checked against the acquired frame |
-| `viewId` | Decimal **string** encoding a real runtime-created nonzero `ViewId` |
-| `font` | `{family: "Menlo", size: 14, lineHeight: 1.25}`; logical pixels, multiplier |
-| `theme` | Optional `#RRGGBB` foreground/background/cursor/selectionForeground/selectionBackground |
-| `focused` | `true`; false paints a hollow cursor |
-| `cursorVisible` | `true`; application visibility gate |
-| `blinkVisible` | `true`; external blink phase for SGR blink and blinking cursor |
-| `paintRevision` | Opaque invalidation token (the shell's per-terminal `Bridge.paintRevision`); never compared with runtime generation |
+`Settings` is ordinary public fields: font, size, line height, cell scales,
+theme colours, cursor and blink visibility, focus, Option-as-Alt, size
+ownership and non-Command `app_chords`. `configure` and `new` clamp font size
+to 6–96, line height to 1–3 and cell scales to 0.5–2. Identity is not a
+setting. A replaced view or client is a new entity.
 
-Font/theme assignments replace their whole group; null resets it. Font size is
-bounded to 6-96 and line height to 1-3. Invalid identity props invalidate the
-surface. Terminal-set default colors beat theme defaults; explicit palette/RGB
-cells keep their resolved colors; runtime selection flags drive selection paint.
+The shell subscribes to `TerminalEvent::Activated` (primary click) and
+`TerminalEvent::PathsDropped`. Command-click opens an allowlisted link.
+Non-Command `app_chords` bubble to the window; Command chords are platform
+keystrokes and are not sent to the PTY.
 
-The host's sole wake owner drains `takeEvents` and invalidates affected nodes;
-local scroll/selection/settings changes must invalidate too. GPUIX re-renders
-the whole window for any change, so every terminal renders on every draw.
-Every render reacquires and revalidates the slot. A terminal keeps the scene it
-last prepared (cell walk, colours, shaped glyphs) and reuses it only while the
-acquired frame is the same `Arc`, the bounds and scale factor are unchanged,
-and `Settings::paints_like` holds (identity, input, sizing and `paintRevision`
-props do not count). No cached generation can hide removal, replacement or
-setting changes: missing slots and stale clients clear the canvas and drop the
-scene. Projection acknowledgement belongs to [PRESENTATION.md](PRESENTATION.md).
+Give the view an explicit bounded width and height. It clips its canvas.
+Only the size owner proposes a PTY size, after the painted capacity has held
+still.
+
+Every render reacquires and revalidates the slot by borrowing the entity's
+`Arc<Client>`. A terminal keeps the scene it last prepared and reuses it only
+while the acquired frame is the same `Arc`, the bounds and scale factor are
+unchanged, and `Settings::paints_like` holds. Missing slots and a dropped
+client clear the canvas. Projection acknowledgement belongs to
+[PRESENTATION.md](PRESENTATION.md).
 
 ## Geometry and text
 
@@ -61,20 +58,11 @@ carries no image data) are not provided.
 
 ## Fixture
 
-The `terminal-fixtures` feature exposes `terminalFixture*` NAPI observation
-helpers and records every glyph's position while preparing; production builds
-record none. **Never enable it in the production addon**. Build and run with
-`just desktop-native-fixtures-build` and `just desktop-native-painter-test`.
-The runner starts an isolated real server with a Python VT-producing PTY and
-two native elements on distinct views. It asserts painted Unicode positions,
-color, invisible text, hyperlinks, scroll/selection isolation, font/theme
-changes, clipping, alternate screen, removed slots, stale clients and teardown.
-A decoded-pixel oracle then checks decorations, cursor shapes, emoji dimming,
-wide cells and an out-of-bounds clipping sentinel; only a fully passing run
-writes `.cache/terminal-painter/pixel-receipt.json`. Set
-`PHUX_TERMINAL_ALT_WITH_SELECTION=1` to exercise alternate screen with a
-retained selection.
+`terminal-fixtures` records every glyph while preparing. `Terminal::painted`
+reads that record. Production builds record none. **Never enable the feature
+in a shipping binary.** Rust unit tests cover scene reuse, colour provenance,
+hidden cells and cursor shape. A decoded-pixel GPU oracle is not part of this
+crate; parent integration owns an on-screen smoke.
 
-phux-d4x9.4 remains open for Retina/scale-change GPU evidence (the offscreen
-renderer runs at scale 1), resize and bootstrap replacement integration, wider
+phux-d4x9.4 remains open for Retina/scale-change GPU evidence, wider
 script/box-drawing fidelity, and a graphics product decision.

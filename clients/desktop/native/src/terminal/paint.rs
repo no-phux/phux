@@ -1,6 +1,6 @@
 use std::{cell::RefCell, rc::Rc, sync::Arc, time::Instant};
 
-use super::{GridFrame, Settings, geometry::Geometry, gpui};
+use super::{Settings, geometry::Geometry};
 use gpui::prelude::*;
 use gpui::{
     Bounds, ContentMask, FontFeatures, FontId, GlyphId, Hsla, Pixels, ShapedLine, SharedString,
@@ -10,9 +10,11 @@ use phux_client_core::grid::{
     CELL_BLINK, CELL_BOLD, CELL_FAINT, CELL_INVERSE, CELL_INVISIBLE, CELL_ITALIC, CELL_OVERLINE,
     CELL_SELECTED, CELL_STRIKETHROUGH, COLOR_KIND_DEFAULT, COLOR_KIND_PALETTE,
 };
-use phux_client_runtime::publication::{Cell, CellMetadata, CursorStyle, CursorWidth, Rgb};
+use phux_client_runtime::publication::{
+    Cell, CellMetadata, CursorStyle, CursorWidth, GridFrame, Rgb,
+};
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Observation {
     pub view_id: Option<phux_client_runtime::ViewId>,
     pub frame: Option<Arc<GridFrame>>,
@@ -123,10 +125,10 @@ impl Fonts {
 }
 
 /// Everything painting one frame needs that depends only on its inputs: the
-/// frame, the element's bounds and scale, and the paint settings. GPUIX
-/// re-renders the whole window for any change, so most draws repaint a
-/// terminal whose scene is unchanged; [`prepare`] then reuses it instead of
-/// walking and shaping every cell again.
+/// frame, the element's bounds and scale, and the paint settings. A window
+/// refresh, resize or sibling change repaints terminals whose scene did not
+/// change; [`prepare`] then reuses it instead of walking and shaping every
+/// cell again.
 pub(super) struct Scene {
     frame: Arc<GridFrame>,
     bounds: Bounds<Pixels>,
@@ -183,7 +185,7 @@ pub(super) fn prepare(
     let started = Instant::now();
     let mut prepared = Prepared {
         report: Observation {
-            view_id: settings.view_id,
+            view_id: None,
             ..Default::default()
         },
         fallback: settings.background.unwrap_or_else(gpui::black),
@@ -680,7 +682,9 @@ impl Prepared {
                         .next()
                         .ok_or_else(|| "opacity layer missing".to_owned())
                         .and_then(|layer| layer.paint(window, cx)),
-                    Ink::Glyph(glyph) => paint_line(&glyph.line, glyph.bounds, geometry, window, cx),
+                    Ink::Glyph(glyph) => {
+                        paint_line(&glyph.line, glyph.bounds, geometry, window, cx)
+                    }
                     Ink::Run(run) => run.paint(geometry, font_size, window),
                 };
                 if let Err(error) = result {
@@ -991,7 +995,7 @@ mod tests {
 
     fn frame() -> GridFrame {
         GridFrame {
-            terminal_id: phux_client_ffi::projection::id::parse("local:1").expect("fixture id"),
+            terminal_id: phux_protocol::ResourceId::local(1),
             generation: 1,
             stream_id: 1,
             bootstrap_id: 1,
@@ -1077,9 +1081,8 @@ mod tests {
         let same = Arc::clone(&scene.frame);
         let bounds = scene.bounds;
         assert!(scene.reusable(&same, bounds, 1., &settings));
-        // Invalidation tokens and props the painter never reads keep it.
+        // Input policy and sizing do not change a prepared scene.
         let mut unpainted = settings.clone();
-        unpainted.set("paintRevision", &serde_json::json!(7));
         unpainted.size_owner = false;
         unpainted.option_as_alt = true;
         unpainted.app_chords = vec!["ctrl+tab".into()];
@@ -1095,9 +1098,9 @@ mod tests {
             |settings| settings.focused = false,
             |settings| settings.cursor_visible = false,
             |settings| settings.blink_visible = false,
-            |settings| settings.set("theme", &serde_json::json!({"foreground": "#123456"})),
-            |settings| settings.set("font", &serde_json::json!({"family": "Monaco"})),
-            |settings| settings.set("font", &serde_json::json!({"cellWidth": 1.1})),
+            |settings| settings.foreground = Some(gpui::rgb(0x123456).into()),
+            |settings| settings.font = gpui::font("Monaco"),
+            |settings| settings.cell_width_scale = 1.1,
         ];
         for change in changes {
             let mut changed = settings.clone();
@@ -1109,13 +1112,26 @@ mod tests {
     #[test]
     fn styles_index_the_four_faces() {
         let fonts = Fonts::new(&gpui::font("Menlo"));
-        let face = |flags| &fonts.cell[style(&Cell { flags, ..Default::default() })];
+        let face = |flags| {
+            &fonts.cell[style(&Cell {
+                flags,
+                ..Default::default()
+            })]
+        };
         assert_eq!(face(0).weight, gpui::FontWeight::default());
         assert_eq!(face(CELL_BOLD).weight, gpui::FontWeight::BOLD);
         assert_eq!(face(CELL_ITALIC).style, gpui::FontStyle::Italic);
         let both = face(CELL_BOLD | CELL_ITALIC);
-        assert_eq!((both.weight, both.style), (gpui::FontWeight::BOLD, gpui::FontStyle::Italic));
-        assert!(fonts.run.iter().all(|font| font.features != fonts.cell[0].features));
+        assert_eq!(
+            (both.weight, both.style),
+            (gpui::FontWeight::BOLD, gpui::FontStyle::Italic)
+        );
+        assert!(
+            fonts
+                .run
+                .iter()
+                .all(|font| font.features != fonts.cell[0].features)
+        );
     }
 
     #[test]
@@ -1132,11 +1148,23 @@ mod tests {
             foreground_kind: 2,
             ..Default::default()
         };
-        let colors = cell_colors(&cell, metadata, &frame, &settings, defaults(&frame, &settings));
+        let colors = cell_colors(
+            &cell,
+            metadata,
+            &frame,
+            &settings,
+            defaults(&frame, &settings),
+        );
         assert_eq!(colors.foreground, gpui::rgb(0x0000ff).into());
         assert_eq!(colors.background, gpui::rgb(0xff0000).into());
         cell.flags |= CELL_SELECTED | CELL_FAINT;
-        let colors = cell_colors(&cell, metadata, &frame, &settings, defaults(&frame, &settings));
+        let colors = cell_colors(
+            &cell,
+            metadata,
+            &frame,
+            &settings,
+            defaults(&frame, &settings),
+        );
         assert_eq!(colors.background, settings.selection_background);
         assert_eq!(
             colors.foreground.a, 1.,
@@ -1159,16 +1187,35 @@ mod tests {
             underline_color_is_default: true,
             ..Default::default()
         };
-        let colors = cell_colors(&cell, metadata, &frame, &settings, defaults(&frame, &settings));
+        let colors = cell_colors(
+            &cell,
+            metadata,
+            &frame,
+            &settings,
+            defaults(&frame, &settings),
+        );
         assert_eq!(colors.foreground, settings.foreground.expect("foreground"));
         assert_eq!(colors.underline, colors.foreground);
         frame.colors.reversed = true;
-        let colors = cell_colors(&cell, metadata, &frame, &settings, defaults(&frame, &settings));
+        let colors = cell_colors(
+            &cell,
+            metadata,
+            &frame,
+            &settings,
+            defaults(&frame, &settings),
+        );
         assert_eq!(colors.foreground, settings.background.expect("background"));
         frame.colors.has_foreground = true;
         frame.colors.foreground = Rgb { r: 255, g: 0, b: 0 };
         assert_eq!(
-            cell_colors(&cell, metadata, &frame, &settings, defaults(&frame, &settings)).foreground,
+            cell_colors(
+                &cell,
+                metadata,
+                &frame,
+                &settings,
+                defaults(&frame, &settings)
+            )
+            .foreground,
             gpui::rgb(0xff0000).into()
         );
     }

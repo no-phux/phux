@@ -1,50 +1,40 @@
 /**
- * Local server discovery shared by the dev launcher and the packaged app.
- * The `phux` CLI owns the socket: `server --ensure` starts or reuses the
- * server for the active profile, and `status --json` reads its path back.
+ * Local server discovery for the dev launcher.
+ * The shipping app resolves the installed CLI itself; this module never
+ * substitutes an installed binary into a qualification run.
  */
+import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { spawnSync } from "node:child_process";
-import {
-  closeSessionArgs,
-  createSessionArgs,
-  createSessionError,
-  renameSessionArgs,
-  renameSessionError,
-} from "../src/workspace/session-cli";
+import { installedPhuxCandidates } from "./host.ts";
 
-/** What a session command's process returned. `status` null means it did not exit. */
 export interface CommandResult {
   status: number | null;
+  stdout: string;
   stderr: string;
+  error?: string;
 }
-
-export type CommandRunner = (binary: string, args: string[]) => CommandResult;
 
 function spawnCommand(binary: string, args: string[]): CommandResult {
   const run = spawnSync(binary, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-  if (run.error) return { status: 1, stderr: run.error.message };
-  return { status: run.status, stderr: run.stderr };
+  return {
+    status: run.status,
+    stdout: run.stdout,
+    stderr: run.stderr,
+    ...(run.error ? { error: run.error.message } : {}),
+  };
 }
 
 function requireSuccess(result: CommandResult, fallback: string): void {
-  if (result.status === 0) return;
-  const detail = result.stderr.trim();
-  throw new Error(detail || `${fallback}: exit ${result.status ?? "unknown"}`);
+  if (result.error || result.status !== 0) {
+    throw new Error(result.stderr.trim() || result.error || fallback);
+  }
 }
 
 /** A packaged app starts with launchd's minimal PATH, so look where installs land. */
-export function findPhux(explicit?: string): string | undefined {
+export function findPhux(explicit?: string, home = homedir()): string | undefined {
   if (explicit) return explicit;
-  const candidates = [
-    join(homedir(), ".local/bin/phux"),
-    "/opt/homebrew/bin/phux",
-    "/usr/local/bin/phux",
-    join(homedir(), ".cargo/bin/phux"),
-  ];
-  const found = candidates.find((path) => existsSync(path));
+  const found = installedPhuxCandidates(home).find((path) => existsSync(path));
   if (found) return found;
   const which = spawnSync("/usr/bin/which", ["phux"], { encoding: "utf8" });
   const path = which.stdout.trim();
@@ -53,18 +43,14 @@ export function findPhux(explicit?: string): string | undefined {
 
 export function ensureServer(phux: string, socket?: string): void {
   const args = socket ? ["--socket", socket, "server", "--ensure"] : ["server", "--ensure"];
-  const run = spawnSync(phux, args, { encoding: "utf8", stdio: ["ignore", "ignore", "pipe"] });
-  if (run.error) throw new Error(`Could not run ${phux}: ${run.error.message}`);
-  if (run.status !== 0) {
-    throw new Error(
-      `\`phux server --ensure\` failed: ${run.stderr.trim() || `exit ${run.status}`}`,
-    );
-  }
+  requireSuccess(spawnCommand(phux, args), "`phux server --ensure` failed");
 }
 
 interface Status {
   socket?: unknown;
   sessions?: unknown;
+  running?: unknown;
+  pid?: unknown;
 }
 
 export function serverStatus(phux: string, socket?: string): Status | undefined {
@@ -93,54 +79,6 @@ export function sessionNames(phux: string, socket: string): string[] {
   );
 }
 
-/**
- * Create a session on `socket` whose seed pane starts in `directory`.
- * An empty directory is refused before any process starts, so the desktop
- * launcher's own cwd cannot become the session directory.
- */
-export function createNamedSession(
-  phux: string,
-  socket: string,
-  name: string,
-  directory: string,
-  run: CommandRunner = spawnCommand,
-): void {
-  const problem = createSessionError(name, directory);
-  if (problem) throw new Error(problem);
-  requireSuccess(
-    run(phux, createSessionArgs(socket, name.trim(), directory)),
-    "Could not create the session",
-  );
-}
-
-/** End the panes of one session on `socket`. An empty name sends nothing. */
-export function closeNamedSession(
-  phux: string,
-  socket: string,
-  name: string,
-  run: CommandRunner = spawnCommand,
-): void {
-  if (name.trim() === "") throw new Error("Close needs the session name.");
-  requireSuccess(run(phux, closeSessionArgs(socket, name.trim())), "Could not close the session");
-}
-
-/** Rename a session on `socket`. An unchanged name sends nothing. */
-export function renameNamedSession(
-  phux: string,
-  socket: string,
-  current: string,
-  next: string,
-  run: CommandRunner = spawnCommand,
-): void {
-  const problem = renameSessionError(current, next);
-  if (problem) throw new Error(problem);
-  if (current.trim() === next.trim()) return;
-  requireSuccess(
-    run(phux, renameSessionArgs(socket, current.trim(), next.trim())),
-    "Could not rename the session",
-  );
-}
-
 /** The desktop attaches an existing session; create the requested one when absent. */
 export function ensureSession(phux: string, socket: string, name: string): void {
   if (sessionNames(phux, socket).includes(name)) return;
@@ -158,8 +96,8 @@ export function pickSession(phux: string, socket: string, requested?: string): s
 }
 
 function json(phux: string, args: string[]): object | undefined {
-  const run = spawnSync(phux, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-  if (run.error) throw new Error(`Could not run ${phux}: ${run.error.message}`);
+  const run = spawnCommand(phux, args);
+  if (run.error) throw new Error(`Could not run ${phux}: ${run.error}`);
   if (run.status !== 0 || !run.stdout) return undefined;
   try {
     const parsed: unknown = JSON.parse(run.stdout);

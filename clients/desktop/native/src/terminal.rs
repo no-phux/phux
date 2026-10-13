@@ -1,223 +1,247 @@
-//! Native terminal surface. Publications and glyphs never enter the retained JS tree.
+//! Native terminal surface. One GPUI view paints one runtime publication.
+//!
+//! Identity is the `Client`, `ViewId` and `ResourceId` given to [`Terminal::new`].
+//! Settings are ordinary fields, not a JSON prop bag, and [`Terminal::request`]
+//! runs once on this bound entity instead of being replayed from a retained prop.
 
 mod actions;
-#[cfg(feature = "terminal-fixtures")]
-pub mod fixtures;
 pub mod geometry;
 mod input_host;
 mod paint;
-mod settings;
+pub mod settings;
 
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use crate::presentation::{self, Ticket};
-use gpui::prelude::*;
-use gpuix_native::native_extensions::{
-    CustomElement, CustomElementFactory, CustomElementRegistry, CustomRenderContext, GpuixView,
-    custom_surface, gpui,
+use gpui::{
+    Context, EventEmitter, ExternalPaths, FocusHandle, MouseButton, Render, SharedString, Window,
+    canvas, div, prelude::*,
 };
-use phux_client_runtime::{ViewId, publication::GridFrame};
+use phux_client_runtime::{Client, ViewId, publication::GridFrame};
 use phux_protocol::ResourceId;
 
+pub use actions::HostAction;
 pub use paint::{GlyphObservation as PaintedGlyph, Observation as PaintedFrame};
-use settings::Settings;
+pub use settings::Settings;
 
-pub fn install(registry: &mut CustomElementRegistry) {
-    registry.register(Box::new(TerminalFactory));
+/// Shell-facing signals that are not input. Pointer delivery stays native.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TerminalEvent {
+    /// A primary click chose this pane.
+    Activated,
+    /// The OS dropped these paths on the surface.
+    PathsDropped(Vec<PathBuf>),
 }
 
-struct TerminalFactory;
-
-impl CustomElementFactory for TerminalFactory {
-    fn element_type(&self) -> &str {
-        "phux-terminal"
-    }
-
-    fn create(&self, id: u64) -> Box<dyn CustomElement> {
-        let observation = Arc::new(Mutex::new(paint::Observation::default()));
-        #[cfg(feature = "terminal-fixtures")]
-        fixtures::register(id, &observation);
-        Box::new(Terminal {
-            element_id: gpui::ElementId::Name(format!("__phux_terminal_{id}").into()),
-            settings: Settings::default(),
-            observation,
-            scene: paint::SceneCache::default(),
-            surface: presentation::Surface::default(),
-            input: None,
-            rebind: Arc::new(AtomicBool::new(false)),
-            was_focused: false,
-            actions: actions::HostActions::default(),
-        })
-    }
-}
-
-struct Terminal {
-    element_id: gpui::ElementId,
+/// A terminal view bound to one runtime publication.
+pub struct Terminal {
+    client: Arc<Client>,
+    view: ViewId,
+    terminal: ResourceId,
     settings: Settings,
-    // The surface owns the acceptance record. Pending paint closures hold only
-    // Weak references, so removal cannot resurrect a detached view's report.
+    focus: FocusHandle,
+    element_id: SharedString,
+    // Pending paint closures hold only weak references, so removal cannot
+    // resurrect a detached view's report.
     observation: Arc<Mutex<paint::Observation>>,
     /// The last prepared scene, reused while its inputs are unchanged.
     scene: paint::SceneCache,
     surface: presentation::Surface,
-    input: Option<BoundInput>,
+    input: gpui::Entity<crate::input::TerminalInput>,
     rebind: Arc<AtomicBool>,
     was_focused: bool,
-    actions: actions::HostActions,
 }
 
-struct BoundInput {
-    handle: String,
-    view: ViewId,
-    terminal: ResourceId,
-    entity: gpui::Entity<crate::input::TerminalInput>,
-}
+impl EventEmitter<TerminalEvent> for Terminal {}
 
 impl Terminal {
+    /// Bind `view` of `terminal` on `client`. The entity is the only identity;
+    /// a replaced view or client is a new entity, not a prop update.
+    pub fn new(
+        client: Arc<Client>,
+        view: ViewId,
+        terminal: ResourceId,
+        mut settings: Settings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        crate::perf::mark_started();
+        crate::fonts::install(cx);
+        settings.sanitize();
+        crate::fonts::resolve(&mut settings.font, cx);
+        let focus = cx.focus_handle();
+        let input = cx.new(|_cx| {
+            crate::input::TerminalInput::new(
+                Arc::downgrade(&client),
+                view,
+                terminal.clone(),
+                focus.clone(),
+                window,
+            )
+        });
+        cx.observe(&input, |_, _, cx| cx.notify()).detach();
+        input.update(cx, |state, _| {
+            state.set_option_as_alt(settings.option_as_alt)
+        });
+        Self {
+            element_id: SharedString::from(format!("phux-terminal-{}", view.get())),
+            client,
+            view,
+            terminal,
+            settings,
+            focus,
+            observation: Arc::new(Mutex::new(paint::Observation::default())),
+            scene: paint::SceneCache::default(),
+            surface: presentation::Surface::default(),
+            input,
+            rebind: Arc::new(AtomicBool::new(false)),
+            was_focused: false,
+        }
+    }
+
+    /// Replace font, theme, visibility, input policy, size ownership and app
+    /// chords. Out-of-range metrics are clamped. Identity does not change.
+    pub fn configure(
+        &mut self,
+        mut settings: Settings,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        crate::fonts::install(cx);
+        settings.sanitize();
+        crate::fonts::resolve(&mut settings.font, cx);
+        self.input.update(cx, |state, _| {
+            state.set_option_as_alt(settings.option_as_alt);
+        });
+        self.settings = settings;
+        cx.notify();
+    }
+
+    /// Run `action` once, now, on this bound entity. It is not stored, so a
+    /// later render cannot repeat it, and a request is never replayed onto a
+    /// surface that was not yet bound.
+    pub fn request(&mut self, action: HostAction, cx: &mut Context<Self>) {
+        let Some(action) = actions::accept(true, action) else {
+            return;
+        };
+        actions::run(action, &self.input, cx);
+    }
+
+    pub fn focus_handle(&self) -> &FocusHandle {
+        &self.focus
+    }
+
+    /// The last paint. Glyph positions are filled only with `terminal-fixtures`.
+    pub fn painted(&self) -> paint::Observation {
+        self.observation
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
     fn painted_frame(
         &mut self,
-        window: &mut gpui::Window,
-        cx: &mut gpui::App,
+        window: &Window,
     ) -> (Result<Arc<GridFrame>, String>, Option<Ticket>) {
-        let Some(view) = self.settings.view_id else {
-            return (Err("missing viewId".into()), None);
-        };
         let _timed = crate::perf::ACQUIRE.timer();
-        match self.surface.acquire(
-            &self.settings.client_handle,
-            &self.settings.terminal_id,
-            view,
-            window,
-            cx,
-        ) {
+        match self
+            .surface
+            .acquire(&self.client, &self.terminal, self.view, window)
+        {
             Ok(ticket) => (Ok(ticket.frame()), Some(ticket)),
             Err(error) => {
                 crate::perf::ACQUIRE_REJECTED.incr();
+                log::debug!(
+                    "terminal {:?} view {:?}: no paintable frame: {error}",
+                    self.terminal,
+                    self.view
+                );
                 (Err(error.to_string()), None)
             }
         }
     }
-}
 
-impl Terminal {
-    /// The bound input entity, and whether it is new this render: a new
-    /// entity brings a new focus handle that nothing has focused yet.
-    fn ensure_input(
-        &mut self,
-        window: &mut gpui::Window,
-        cx: &mut gpui::Context<GpuixView>,
-    ) -> Option<(gpui::Entity<crate::input::TerminalInput>, bool)> {
-        let view = self.settings.view_id?;
-        let terminal = phux_client_ffi::projection::id::parse(&self.settings.terminal_id)?;
-        let handle = self.settings.client_handle.clone();
-        if handle.is_empty() {
-            return None;
-        }
-        let same = self.input.as_ref().is_some_and(|bound| {
-            bound.handle == handle && bound.view == view && bound.terminal == terminal
+    /// A rejected presentation gets a new input entity so an old IME callback
+    /// cannot re-arm. The focus handle stays on this view.
+    fn rebind_input(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let client = Arc::downgrade(&self.client);
+        let view = self.view;
+        let terminal = self.terminal.clone();
+        let focus = self.focus.clone();
+        self.input =
+            cx.new(|_cx| crate::input::TerminalInput::new(client, view, terminal, focus, window));
+        cx.observe(&self.input, |_, _, cx| cx.notify()).detach();
+        self.input.update(cx, |state, _| {
+            state.set_option_as_alt(self.settings.option_as_alt);
         });
-        if same && !input_host::note_rebind(&self.rebind) {
-            return self
-                .input
-                .as_ref()
-                .map(|bound| (bound.entity.clone(), false));
-        }
-        let entity = cx.new(|cx| {
-            crate::input::TerminalInput::new(
-                handle.clone(),
-                view,
-                terminal.clone(),
-                cx.focus_handle(),
-                window,
-            )
-        });
-        cx.observe(&entity, |_, _, cx| cx.notify()).detach();
-        entity.update(cx, |state, _| {
-            state.set_option_as_alt(self.settings.option_as_alt)
-        });
-        self.input = Some(BoundInput {
-            handle,
-            view,
-            terminal,
-            entity: entity.clone(),
-        });
-        Some((entity, true))
     }
 }
 
-impl CustomElement for Terminal {
-    fn render(
-        &mut self,
-        ctx: CustomRenderContext,
-        window: &mut gpui::Window,
-        cx: &mut gpui::Context<GpuixView>,
-    ) -> gpui::AnyElement {
+impl Render for Terminal {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::fonts::install(cx);
         crate::fonts::resolve(&mut self.settings.font, cx);
         crate::perf::RENDERS.incr();
-        // Always reacquire, including after removal, skipped generations, or a
-        // slot replacement. Dirty rows are not a cache-coherency contract; the
-        // scene cache compares the acquired frame itself.
-        let (frame, recovery) = self.painted_frame(window, cx);
+        let rebound = input_host::note_rebind(&self.rebind);
+        if rebound {
+            self.rebind_input(window, cx);
+        }
+        self.input.update(cx, |state, _| {
+            state.set_option_as_alt(self.settings.option_as_alt);
+        });
+        let has_focus = self.focus.is_focused(window);
+        match focus_step(self.settings.focused, self.was_focused, rebound, has_focus) {
+            FocusStep::Focus => self.focus.focus(window, cx),
+            // The shell withdrew input (a modal or find field took over).
+            // Give the keyboard back to the window so keys cannot reach the
+            // PTY behind an overlay that has no text field of its own.
+            FocusStep::Blur => window.blur(cx),
+            FocusStep::Keep => {}
+        }
+        self.was_focused = self.settings.focused;
+
+        let (frame, recovery) = self.painted_frame(window);
         let epoch = recovery.as_ref().map(Ticket::connection_epoch);
         let scheduled = Rc::new(RefCell::new(recovery));
         let settings = self.settings.clone();
         let scene = Rc::clone(&self.scene);
         let observation = Arc::downgrade(&self.observation);
-        let bound = self.ensure_input(window, cx);
-        let rebound = bound.as_ref().is_some_and(|(_, fresh)| *fresh);
-        let input = bound.map(|(input, _)| input);
-        // Taken either way: a request with no bound input is dropped, not
-        // replayed whenever a view next binds.
-        let action = self.actions.take();
+        let input = self.input.clone();
+        let size_owner = self.settings.size_owner;
         let rebind = Arc::clone(&self.rebind);
-        let mut surface =
-            custom_surface(gpui::div().id(self.element_id.clone()), &ctx).overflow_hidden();
-        if let Some(input) = input.clone() {
-            input.update(cx, |state, _| {
-                state.set_option_as_alt(self.settings.option_as_alt);
-            });
-            let focus = input.read(cx).focus_handle().clone();
-            match focus_step(
-                self.settings.focused,
-                self.was_focused,
-                rebound,
-                focus.is_focused(window),
-            ) {
-                FocusStep::Focus => focus.focus(window, cx),
-                // The shell withdrew input (a modal or find field took over).
-                // Give the keyboard back to the window so keys cannot reach
-                // the PTY behind an overlay that has no text field of its own.
-                FocusStep::Blur => window.blur(),
-                FocusStep::Keep => (),
-            }
-            self.was_focused = self.settings.focused;
-            if let Some(action) = action {
-                actions::run(action, &input, cx);
-            }
-            let down = input.clone();
-            let app_chords = self.settings.app_chords.clone();
-            let up = input.clone();
-            let press = input.clone();
-            let movement = input.clone();
-            let release = input.clone();
-            let wheel = input.clone();
-            surface = surface
-                .track_focus(&focus)
-                .on_key_down(move |event, window, cx| {
-                    // A chord the shell owns bubbles to the window untouched.
-                    if !event.keystroke.modifiers.platform
-                        && app_chords.contains(&input_host::chord(&event.keystroke))
-                    {
-                        return;
-                    }
-                    input_host::on_key_down(&down, event, window, cx)
-                })
-                .on_key_up(move |event, window, cx| input_host::on_key_up(&up, event, window, cx))
-                .on_mouse_down(gpui::MouseButton::Left, move |event, window, cx| {
+        let view = self.view;
+        let this = cx.entity();
+        let down = input.clone();
+        let app_chords = self.settings.app_chords.clone();
+        let up = input.clone();
+        let press = input.clone();
+        let movement = input.clone();
+        let release = input.clone();
+        let wheel = input.clone();
+        let element_id = self.element_id.clone();
+
+        div()
+            .id(element_id)
+            .size_full()
+            .overflow_hidden()
+            .track_focus(&self.focus)
+            .on_key_down(move |event, window, cx| {
+                // A chord the shell owns bubbles to the window untouched.
+                if !event.keystroke.modifiers.platform
+                    && app_chords.contains(&input_host::chord(&event.keystroke))
+                {
+                    return;
+                }
+                input_host::on_key_down(&down, event, window, cx);
+            })
+            .on_key_up(move |event, window, cx| input_host::on_key_up(&up, event, window, cx))
+            .on_mouse_down(MouseButton::Left, {
+                let press = press.clone();
+                cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
                     if event.modifiers.platform
                         && let Some(url) = press.read(cx).link_at(event.position)
                     {
@@ -225,59 +249,78 @@ impl CustomElement for Terminal {
                         cx.stop_propagation();
                         return;
                     }
-                    press.read(cx).focus_handle().clone().focus(window, cx);
+                    this.focus.focus(window, cx);
                     press.update(cx, |state, cx| {
                         let _ = state.mouse_down(event, window, cx);
                     });
                     cx.stop_propagation();
                 })
-                .on_mouse_move(move |event, window, cx| {
-                    movement.update(cx, |state, cx| {
-                        let _ = state.mouse_move(event, window, cx);
-                    });
-                })
-                .on_mouse_up(gpui::MouseButton::Left, move |event, window, cx| {
+            })
+            .on_mouse_move(move |event, window, cx| {
+                movement.update(cx, |state, cx| {
+                    let _ = state.mouse_move(event, window, cx);
+                });
+            })
+            .on_mouse_up(MouseButton::Left, {
+                let release = release.clone();
+                cx.listener(move |_this, event, window, cx| {
                     release.update(cx, |state, cx| {
                         let _ = state.mouse_up(event, window, cx);
                     });
+                    cx.emit(TerminalEvent::Activated);
                 })
-                .on_scroll_wheel(move |event, window, cx| {
-                    let handled = wheel.update(cx, |state, cx| {
-                        state.scroll(event, window, cx).unwrap_or(false)
+            })
+            // A drag-select or reported press released outside the pane still ends.
+            .on_mouse_up_out(MouseButton::Left, {
+                let release = release.clone();
+                move |event, window, cx| {
+                    release.update(cx, |state, cx| {
+                        let _ = state.mouse_up(event, window, cx);
                     });
-                    if handled {
-                        cx.stop_propagation();
-                    }
-                });
-        }
-        let painted = input;
-        let size_owner = self.settings.size_owner;
-        self.actions.arm();
-        surface
+                }
+            })
+            // Right and middle presses reach mouse-reporting programs (vim mouse=a, tmux).
+            .on_mouse_down(MouseButton::Right, other_press(&press))
+            .on_mouse_down(MouseButton::Middle, other_press(&press))
+            .on_mouse_up(MouseButton::Right, other_release(&release))
+            .on_mouse_up(MouseButton::Middle, other_release(&release))
+            .on_mouse_up_out(MouseButton::Right, other_release(&release))
+            .on_mouse_up_out(MouseButton::Middle, other_release(&release))
+            .on_scroll_wheel(move |event, window, cx| {
+                let handled = wheel.update(cx, |state, cx| state.scroll(event, window, cx).unwrap_or(false));
+                if handled {
+                    cx.stop_propagation();
+                }
+            })
+            .on_drop(cx.listener(|_this, paths: &ExternalPaths, _window, cx| {
+                cx.emit(TerminalEvent::PathsDropped(paths.paths().to_vec()));
+            }))
             .child(
-                gpui::canvas(
-                    move |bounds, window, cx| {
-                        paint::prepare(frame, settings, bounds, &scene, window, cx)
-                    },
+                canvas(
+                    move |bounds, window, cx| paint::prepare(frame, settings, bounds, &scene, window, cx),
                     move |bounds, prepared, window, cx| {
                         let mut report = prepared.paint(bounds, window, cx);
+                        report.view_id = Some(view);
                         report.epoch = epoch;
-                        if let Some(input) = &painted {
-                            input_host::present(input, &report, size_owner, &rebind, window, cx);
-                            input_host::paint_preedit(
-                                input,
-                                report.geometry.bounds.origin,
-                                window,
-                                cx,
-                            );
-                        }
+                        let needs_rebind =
+                            input_host::present(&input, &report, size_owner, &rebind, window, cx);
+                        input_host::paint_preedit(
+                            &input,
+                            report.geometry.bounds.origin,
+                            window,
+                            cx,
+                        );
                         let painted_frame = report.frame.clone();
                         let bounds = report.geometry.bounds;
                         let failed = report.error.is_some();
                         if let Some(observation) = observation.upgrade() {
-                            *observation
-                                .lock()
-                                .unwrap_or_else(|error| error.into_inner()) = report;
+                            *observation.lock().unwrap_or_else(|error| error.into_inner()) = report;
+                        }
+                        if needs_rebind {
+                            let this = this.clone();
+                            window.on_next_frame(move |_, cx| {
+                                this.update(cx, |_, cx| cx.notify());
+                            });
                         }
                         if !failed
                             && let Some(frame) = painted_frame.as_ref()
@@ -289,51 +332,32 @@ impl CustomElement for Terminal {
                 )
                 .size_full(),
             )
-            .into_any_element()
     }
+}
 
-    fn set_prop(&mut self, key: &str, value: serde_json::Value) {
-        if key == "hostAction" {
-            self.actions.offer(&value);
-            return;
+/// A right or middle press: reported to a mouse-reporting program, otherwise left to the window.
+fn other_press(
+    input: &gpui::Entity<crate::input::TerminalInput>,
+) -> impl Fn(&gpui::MouseDownEvent, &mut Window, &mut gpui::App) + 'static {
+    let input = input.clone();
+    move |event, window, cx| {
+        let handled = input.update(cx, |state, cx| {
+            state.mouse_down(event, window, cx).unwrap_or(false)
+        });
+        if handled {
+            cx.stop_propagation();
         }
-        if matches!(key, "clientHandle" | "terminalId" | "viewId") {
-            self.surface.invalidate();
-        }
-        self.settings.set(key, &value);
     }
+}
 
-    fn supported_props(&self) -> &'static [&'static str] {
-        &[
-            "clientHandle",
-            "terminalId",
-            "viewId",
-            "font",
-            "theme",
-            "optionAsAlt",
-            "focused",
-            "cursorVisible",
-            "blinkVisible",
-            "paintRevision",
-            "sizeOwner",
-            "appChords",
-            "hostAction",
-        ]
-    }
-
-    fn supported_events(&self) -> &'static [&'static str] {
-        // Wired on primary mouse-up and OS drops by `custom_surface`. Pointer
-        // input itself stays native; these only tell the shell which pane the
-        // user chose and which paths arrived.
-        &["click", "fileDrop"]
-    }
-
-    fn destroy(&mut self) {
-        self.surface.invalidate();
-        self.scene.borrow_mut().take();
-        self.input = None;
-        self.rebind.store(false, Ordering::Release);
-        self.observation = Arc::new(Mutex::new(paint::Observation::default()));
+fn other_release(
+    input: &gpui::Entity<crate::input::TerminalInput>,
+) -> impl Fn(&gpui::MouseUpEvent, &mut Window, &mut gpui::App) + 'static {
+    let input = input.clone();
+    move |event, window, cx| {
+        input.update(cx, |state, cx| {
+            let _ = state.mouse_up(event, window, cx);
+        });
     }
 }
 
@@ -345,11 +369,11 @@ enum FocusStep {
     Keep,
 }
 
-/// `wanted` is the shell's `focused` prop and `was` its value last render.
-/// Focus follows the prop's edges, so a click elsewhere in the window is not
+/// `wanted` is the shell's `focused` flag and `was` its value last render.
+/// Focus follows the flag's edges, so a click elsewhere in the window is not
 /// undone every frame. A `rebound` input (a new presentation identity after a
-/// reconnect or re-bootstrap) has a new focus handle nothing has focused yet:
-/// a terminal the shell still wants focused takes it, or keys would reach no
+/// reconnect or re-bootstrap) has a new handler nothing has focused yet: a
+/// terminal the shell still wants focused takes it, or keys would reach no
 /// terminal until the user clicked it.
 fn focus_step(wanted: bool, was: bool, rebound: bool, has_focus: bool) -> FocusStep {
     if wanted && (!was || rebound) && !has_focus {
@@ -361,16 +385,12 @@ fn focus_step(wanted: bool, was: bool, rebound: bool, has_focus: bool) -> FocusS
     FocusStep::Keep
 }
 
-pub(super) fn parse_view(value: &str) -> Option<ViewId> {
-    value.parse::<u64>().ok().and_then(ViewId::from_raw)
-}
-
 #[cfg(test)]
 mod tests {
     use super::{FocusStep, focus_step};
 
     #[test]
-    fn focus_follows_the_shell_prop_edges() {
+    fn focus_follows_the_shell_flag_edges() {
         assert_eq!(focus_step(true, false, false, false), FocusStep::Focus);
         assert_eq!(focus_step(true, true, false, false), FocusStep::Keep);
         assert_eq!(focus_step(false, true, false, true), FocusStep::Blur);
@@ -379,7 +399,6 @@ mod tests {
 
     #[test]
     fn a_rebound_input_takes_focus_the_shell_still_wants() {
-        // A new presentation identity rebuilt the input and its focus handle.
         assert_eq!(focus_step(true, true, true, false), FocusStep::Focus);
         assert_eq!(focus_step(true, true, true, true), FocusStep::Keep);
         assert_eq!(focus_step(false, false, true, false), FocusStep::Keep);

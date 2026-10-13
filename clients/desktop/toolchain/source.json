@@ -1,20 +1,21 @@
 {
-  "repository": "https://github.com/remorses/gpuix.git",
-  "revision": "6d5e6887ad8dc6e94eb66043394f3d17a462c56a",
-  "zedRevision": "81c99f816b4a5f69d3c014774068034c24d1d7af",
-  "version": "0.10.0",
+  "registry": "https://static.crates.io/crates",
+  "crates": {
+    "gpui-pre": {
+      "version": "0.3.8",
+      "sha256": "d7f0bc3ebba070f8981b3f8e905a12f47d27794a30d029e59cdb9edf7a4b3360"
+    },
+    "gpui-pre-apple": {
+      "version": "0.3.8",
+      "sha256": "bfdd914311cd12894367c8b9908947bb0c27fd42f8b9a5ff7a0730551a83fa4c"
+    },
+    "gpui-pre-macos": {
+      "version": "0.3.8",
+      "sha256": "0d756813ff1cd741a502af60fd18869e0677795936d7349642b41c49f43120c0"
+    }
+  },
   "patches": {
-    "patches/0001-native-extensions.patch": "42d56bb564ea8e87d0c0a872a918c05d597881fd0a1cd69a04287ad9aa69132d",
-    "patches/0002-multi-window.patch": "d346c3923e556dd135158f0998363811f8a8311ae2262d3518dab070062dbaf4",
-    "patches/0003-solid-native-elements.patch": "9dd437ce3533243eb35047cdbd404bcc50003463ecf3fb85a51dda17b98e166d",
-    "patches/0004-close-window-on-reset.patch": "3753c44db19fc3ab62cff00b77e9cae1d9a28f35363c062ef4aab7b837b036f1",
-    "patches/0006-release-standard-keys.patch": "6833c8f80dec254757050c3c04cb58921209b9686ded3a7855f3d9b2f88532e6"
-  },
-  "zedPatches": {
-    "patches/0005-drawable-presented.patch": "b7a52e664675b3e7fbe8b748ed2fd23ad9970794627375cd1892b6421da12754"
-  },
-  "sha256": {
-    "bun.lock": "f5a5e05a042ca67bdf88c074986c9d0e77ef5482dc521b24a344d18359bb1f92",
-    "packages/native/Cargo.lock": "d1417b28f512985fca4e0228b13080a1cd7e67a11b5e2b872e4d127c3f81985a"
+    "patches/0001-drawable-presented.patch": "67e422fda0e372621a2917a32e28ae078b2fd69a53ed07704761631385c332fd",
+    "patches/0002-window-capture.patch": "d5ec45073158c2c8cc4f3bed1a43492c63bfb9af3ee9696aef6c43e664fdc874"
   }
 }

@@ -1,89 +1,71 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-28
+last-reviewed: 2026-10-13
 ---
 
-# Single-addon desktop host
+# phux-desktop (native crate)
 
-**TL;DR.** This release/LTO cdylib links GPUIX, the FFI Client registry and
-the desktop exports into one NAPI addon. JavaScript commands and the native
-painter resolve the same Client. The `phux-terminal` element paints runtime
-views; the fixtures below are the qualification evidence, and full terminal
-acceptance remains open.
+**TL;DR.** One Rust crate, one executable: `phux-desktop`, a GPUI + GPUI Kit
+application over the shared client runtime (ADR-0164). It has its own Cargo
+workspace and lock so the GPUI graph never enters other phux consumers.
+`just desktop-source` once, then `just desktop-test` and `just desktop-app`.
 
-## Boundaries
+## Layout
 
-The pinned GPUIX source must carry the ordered patches in
-[`../toolchain/patches/`](../toolchain/patches/README.md). Patch 1 exposes
-GPUIX's GPUI crate and a startup-only custom-element installer; the installer
-runs after built-in factories on the rendering thread and seals when the first
-view/registry is created. No GPUI objects become `Send`.
-
-The host manifest is a package-local Cargo workspace with its own lockfile, so
-the GPUI/Zed graph stays out of other phux consumers. Its path dependencies are
-root phux crates, so a root dependency bump or a new unconditional root
-dependency can strand that lock: `just desktop-check` runs `scripts/check-desktop-host-lock.py`; repair with
-`just desktop-lock-fix` or `just desktop-lock-refresh`. The FFI dependency keeps
-its C ABI disabled and owns the sole Client registry. Do not add another.
-
-`loadDesktopHost(absoluteAddonPath)` in `loader.mjs` canonicalizes the path,
-sets `NAPI_RS_NATIVE_LIBRARY_PATH`, loads the addon and installs extensions.
-Call it before importing GPUIX or the Solid adapter. A second addon path is
-rejected even after a failed start, and WASI-selection overrides are refused.
-
-`phux-terminal` sizes its terminal from its own bounds when the shell marks it
-`sizeOwner` (see the architecture's Geometry section), gives the keyboard back
-to the window when `focused` drops, and reports `click` and `fileDrop` so the
-shell can track the chosen pane and paste dropped paths. Its `theme.palette`
-maps the 16 ANSI colours: foregrounds by their palette index, backgrounds and
-underlines by matching the frame's own palette. `font.cellWidth`/`cellHeight`
-scale the measured cell. `appChords` lists non-Command chords the shell binds,
-which then bubble to the window instead of reaching the PTY. `hostAction`
-(`{ id, kind, text? }`) runs one platform request per new `id` on the next
-render: `copy` and `paste` through the same clipboard path as Command-C and
-Command-V, `copyText` onto the clipboard, and `open` a path with its default
-app; a request present when the element is created is dropped. A Command-click
-opens the cell's OSC 8 link, or a URL in the row's text, for an allowlisted set
-of schemes. `GlobalHotkeys` registers system-wide chords through
-`global-hotkey` (Carbon hotkeys; no Accessibility permission). `phux-drag-region`
-moves the window and zooms it on double-click, which a transparent titlebar
-otherwise loses.
-
-`nativeClientStatus(handle)` resolves a handle through the painter's accessor
-without draining events. `DesktopClient.close()` returns the final event batch,
-which the owner must process to keep queued and shutdown-generated outcomes.
-
-`generated/index.d.ts` is NAPI's combined output. `build-host.sh` runs
-`check-generated.mjs` after every production build; on an intentional API
-change, review the diff and copy `.cache/host/index.d.ts` over it. Never edit
-signatures by hand.
-
-Build with the repo Rust pin, `scripts/lib/apple-toolchain-env.sh` scoped to
-the build subprocess, and a private `CARGO_TARGET_DIR`. Native rendering is
-qualified on release artifacts only.
-
-## Fixtures
-
-All run offscreen on Metal with isolated HOME/XDG directories and never touch
-the user's daemon. None is a screen-reader, OS IME or packaging test.
-
-| Command | Proves |
+| Module | Owns |
 |---|---|
-| `just desktop-native-build` | Release addon build plus generated-declaration check |
-| `just desktop-native-test` (`tests/native/run-smoke.sh`) | Extension lifecycle: factory creation, paint, bounds, clicks, prop retention, unmount/remount, canonical-path aliasing, late-startup rejection |
-| `just desktop-native-client-test` | JS-created FFI Client and native access share one registry over a real PTY |
-| `just desktop-native-view-test` | Independent runtime views through the combined addon |
-| `just desktop-native-fixtures-build` then `just desktop-native-painter-test` | Painter fidelity and decoded-pixel oracle; see [PAINTER.md](PAINTER.md) |
-| `bash tests/native/multiwindow.sh` | Two Solid roots with overlapping element IDs: isolated input, selection, scroll, search, close/reopen and queued-event fencing (needs patch 2) |
-| `bash tests/native/solid-native-elements.sh` | Solid JSX custom tags mount the native probe, update reactively and reject missing factories (needs patch 3) |
-| `bash tests/feasibility/run.sh` | Integrated two-surface Solid terminal; see [its README](../tests/feasibility/README.md) |
+| `launch` | CLI options, installed-CLI and server resolution, Kit init, first window |
+| `diag` | log file, `perf.jsonl` sampler, `--evidence`/`--smoke` captures, window metrics |
+| `app` | windows, menus, commands, chrome, overlays, the per-window `Desk` |
+| `workspace` | tabs, split trees, focus, size ownership, restore, layout persistence |
+| `settings` | display preferences, Ghostty config, themes, key chords |
+| `connection` | one runtime `Client` per window and its sole event/path-answer drain |
+| `terminal`, `input`, `presentation` | grid painter, input handler, drawable-presented fence receipts |
+| `perf` | always-on painter/key-to-paint metrics (`phux_perf` statics) |
+| `fonts`, `hotkeys`, `chrome` | bundled Paper Mono, global quick-terminal chords, titlebar drag |
 
-Input has a manual fixture; see [INPUT.md](INPUT.md). Presentation acknowledgement
-is covered by unit tests; see [PRESENTATION.md](PRESENTATION.md).
+`workspace`, `settings` and `connection` hold no GPUI types, so their rules
+test without a window. Deeper contracts: [PAINTER.md](PAINTER.md),
+[INPUT.md](INPUT.md), [PRESENTATION.md](PRESENTATION.md).
 
-## Remaining acceptance
+## Command line
 
-`phux-d4x9.2` stays open for per-window scoping of GPUIX's remaining
-scroll/list/automation/text-paint state beyond the multi-window fixture,
-Retina/scale-change evidence, and full terminal product acceptance.
+```text
+phux-desktop [--socket PATH] [--session NAME] [--phux PATH] [--layout PATH]
+             [--fresh] [--terminal ID] [--quick] [--evidence DIR] [--smoke]
+```
+
+Without `--phux`, the CLI is `PHUX_BIN`, else the first of
+`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `~/.cargo/bin`, else
+`which phux`. Without `--socket`, `PHUX_SOCKET`, else `phux server --ensure`
+and its reported socket. Nothing is ever installed, replaced or upgraded. A
+resolution failure still opens the window, with the reason shown.
+
+## Observing it
+
+- **Log:** `~/Library/Logs/phux-desktop.log` and stderr
+  (`PHUX_DESKTOP_LOG`, `PHUX_DESKTOP_LOG_LEVEL=debug`).
+- **Metrics:** `diag::report_json()` is one `PerfReport` with kernel
+  (`kernel.*`), runtime (`runtime.*`), painter (`desktop.acquire`,
+  `desktop.prepare`, `desktop.paint`, `desktop.present`, `desktop.key_to_paint`)
+  and window rows (`desktop.frame`, `desktop.drain*`, `desktop.presented`).
+  Add a metric as a `phux_perf` static in the module that measures it and
+  list it in that module's `TABLE`.
+- **`--evidence DIR`:** appends `perf.jsonl` once a second and writes
+  `presented.png`, `layout.json` and `interaction.json` for the first frame
+  GPUI reports drawable-presented with a painted terminal. Windows never take
+  focus in this mode. `--smoke` exits 0 after writing. The files are the proof;
+  `scripts/smoke-app.ts` checks them.
+
+## Develop
+
+```sh
+just desktop-source   # materialize the pinned, patched GPUI (toolchain/)
+just desktop-test     # cargo test for this crate
+just desktop-lint     # fmt --check + clippy -D warnings for this crate
+just desktop-app      # debug build against a same-checkout CLI
+```
+
+Never point a development build at the production socket or replace the
+installed app; see `docs/operations.md`.

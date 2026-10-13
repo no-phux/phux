@@ -1,14 +1,21 @@
 //! Native-only recovery tickets. A paint submission is not a presentation receipt.
+//!
+//! The terminal holds `Arc<Client>`. A ticket and its drawable-presented
+//! callback hold only `Weak<Client>`. Upgrading that weak reference for the
+//! acknowledgement, then dropping the upgrade off the UI thread, is the only
+//! lease a receipt takes. The paint path borrows the entity's `Arc` and never
+//! drops a `Client`.
 
-use std::rc::{Rc, Weak};
-use std::sync::Arc;
+use std::rc::{Rc, Weak as RcWeak};
+use std::sync::{Arc, Weak};
 
-use gpuix_native::native_extensions::gpui::{self, App, Window};
+use gpui::{self, App, Window};
 use phux_client_runtime::{
     Client, ViewId,
     control::{ControlPlane, ProjectionFence, Status},
     publication::GridFrame,
 };
+use phux_protocol::ResourceId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Rejection {
@@ -31,7 +38,7 @@ impl std::fmt::Display for Rejection {
     }
 }
 
-/// Owned by one native terminal element, never by a pending closure.
+/// Owned by one native terminal view, never by a pending closure.
 #[derive(Default)]
 pub(crate) struct Surface {
     lifetime: Rc<()>,
@@ -39,24 +46,26 @@ pub(crate) struct Surface {
 }
 
 impl Surface {
-    /// Call before changing any target prop, and on destroy/root replacement.
-    /// Replacing the allocation avoids wrapping epochs or reused element IDs.
+    /// Call when the view is destroyed or rebound. Replacing the allocation
+    /// avoids wrapping epochs or reused element ids.
     pub(crate) fn invalidate(&mut self) {
         self.lifetime = Rc::new(());
     }
 
+    /// Borrow `client`. This does not clone it, so the paint path cannot be
+    /// the drop that joins the runtime driver.
     pub(crate) fn acquire(
         &mut self,
-        handle: &str,
-        terminal: &str,
+        client: &Arc<Client>,
+        terminal: &ResourceId,
         view: ViewId,
         window: &Window,
-        cx: &App,
     ) -> Result<Ticket, Rejection> {
         let window_id = window.window_handle().window_id().as_u64();
         self.bind_window(window_id);
-        with_registered(handle, cx, |control| {
-            Ticket::capture(handle, terminal, view, window_id, &self.lifetime, control)
+        let weak = Arc::downgrade(client);
+        client.with_control(|control| {
+            Ticket::capture(weak, terminal, view, window_id, &self.lifetime, control)
         })
     }
 
@@ -68,13 +77,14 @@ impl Surface {
     }
 }
 
-/// Holds the exact immutable frame used by the painter, without a runtime lease
-/// whose last drop might join the driver on the UI thread.
+/// Holds the exact immutable frame used by the painter. The client is weak:
+/// a pending receipt must not keep the runtime alive, and must not drop the
+/// last `Client` on the UI thread.
 pub(crate) struct Ticket {
-    handle: String,
+    client: Weak<Client>,
     view: ViewId,
     window: u64,
-    lifetime: Weak<()>,
+    lifetime: RcWeak<()>,
     connection_epoch: u64,
     fence: Option<ProjectionFence>,
     frame: Arc<GridFrame>,
@@ -82,20 +92,20 @@ pub(crate) struct Ticket {
 
 impl Ticket {
     fn capture(
-        handle: &str,
-        terminal: &str,
+        client: Weak<Client>,
+        terminal: &ResourceId,
         view: ViewId,
         window: u64,
         lifetime: &Rc<()>,
         control: &ControlPlane,
     ) -> Result<Self, Rejection> {
         let frame = current_frame(control, view)?;
-        if phux_client_ffi::projection::id::encode(&frame.terminal_id) != terminal {
+        if frame.terminal_id != *terminal {
             return Err(Rejection::WrongTerminal);
         }
         let frame = recovery_frame(control, view, frame)?;
         Ok(Self {
-            handle: handle.to_owned(),
+            client,
             view,
             window,
             lifetime: Rc::downgrade(lifetime),
@@ -118,16 +128,17 @@ impl Ticket {
     /// and `on_next_frame` cannot mint [`Presented`].
     pub(crate) fn acknowledge(self, presented: Presented, cx: &App) -> Result<(), Rejection> {
         self.check_receipt(&presented)?;
-        with_registered(&self.handle, cx, |control| {
-            self.acknowledge_current(control)
-        })
+        let client = self.client.upgrade().ok_or(Rejection::StaleHandle)?;
+        let result = client.with_control(|control| self.acknowledge_current(control));
+        release_off_thread(client, cx);
+        result
     }
 
     fn check_receipt(&self, presented: &Presented) -> Result<(), Rejection> {
         if self.window != presented.window {
             return Err(Rejection::WrongWindow);
         }
-        if !Weak::ptr_eq(&self.lifetime, &presented.lifetime) {
+        if !RcWeak::ptr_eq(&self.lifetime, &presented.lifetime) {
             return Err(Rejection::StaleSurface);
         }
         if !Arc::ptr_eq(&self.frame, &presented.frame) {
@@ -162,7 +173,7 @@ impl Ticket {
 /// drawable was presented on a still-visible window.
 pub(crate) struct Presented {
     window: u64,
-    lifetime: Weak<()>,
+    lifetime: RcWeak<()>,
     frame: Arc<GridFrame>,
 }
 
@@ -255,38 +266,13 @@ fn current_frame(control: &ControlPlane, view: ViewId) -> Result<Arc<GridFrame>,
     Ok(frame)
 }
 
-fn with_registered<T>(
-    handle: &str,
-    cx: &App,
-    operation: impl FnOnce(&mut ControlPlane) -> Result<T, Rejection>,
-) -> Result<T, Rejection> {
-    let registry = phux_client_ffi::napi::initialize();
-    let client = registry
-        .client(handle)
-        .map_err(|_| Rejection::StaleHandle)?;
-    let mut current = None;
-    let result = client.with_control(|control| {
-        // Registry handles are globally non-reused and connect only once. The
-        // second lookup validates disposal inside the same owner turn as ack.
-        current = Some(
-            registry
-                .client(handle)
-                .map_err(|_| Rejection::StaleHandle)?,
-        );
-        operation(control)
-    });
-    release_off_thread(client, current, cx);
-    result
-}
-
-fn release_off_thread(client: Client, current: Option<Client>, cx: &App) {
-    // Registry close can race this lease. A final Client drop can join its
-    // driver, so even short-lived lookup leases must leave the UI thread.
+fn release_off_thread(client: Arc<Client>, cx: &App) {
+    // The upgraded lease may be the last `Client`. Dropping it here would join
+    // the runtime driver on the UI thread, including from a presentation callback.
     cx.background_executor()
-        .spawn(async move { drop((client, current)) })
+        .spawn(async move { drop(client) })
         .detach();
 }
 
 #[cfg(test)]
-#[path = "../../tests/native/presentation.rs"]
 mod tests;

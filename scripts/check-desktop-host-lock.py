@@ -2,14 +2,14 @@
 """Fail when the desktop host lock can no longer satisfy a `--locked` build.
 
 `clients/desktop/native` is its own Cargo workspace with its own lockfile, kept
-separate so the GPUI/Zed graph does not enter every other phux consumer. Its
+separate so the GPUI and GPUI Kit graph does not enter every other phux consumer. Its
 path dependencies are the root phux crates, so when a root crate changes a
 registry dependency's semver requirement the host lock must be re-resolved.
 Nothing does that automatically, and `just desktop-app` then aborts before it
 compiles: cargo refuses to update the host lock because `--locked` was passed.
 
 This is a STATIC check. It reads the root and host lockfiles and the root
-crates' manifests only, so it runs on a bare checkout with no GPUIX source, no
+crates' manifests only, so it runs on a bare checkout with no GPUI snapshot, no
 network and no Rust (CI runs it that way). For every path crate present in both
 locks it checks two things:
 
@@ -34,7 +34,7 @@ Pass --fix to rewrite repairable drift in HOST_LOCK: a missing edge is added,
 and a stale edge rewritten to the root's selected version, when the host lock
 already carries that package; a path crate version is aligned with the root
 workspace. Anything left is not repairable without resolving against the
-bootstrapped GPUIX source (`just desktop-source`).
+bootstrapped GPUI snapshot (`just desktop-source`).
 
 Usage: check-desktop-host-lock.py [--fix] [ROOT_LOCK [HOST_LOCK]]
 """

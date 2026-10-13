@@ -1,34 +1,26 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-30
+last-reviewed: 2026-10-13
 ---
 
-# Local GPUIX and Zed patches
+# Local GPUI patches
 
-**TL;DR.** Ordered, reviewed local patches over the pinned GPUIX and Zed
-revisions in `../source.json`, which also records each patch's SHA-256. Source
-bootstrap verifies the pinned inputs first, then applies the series. None has
-been published upstream.
+**TL;DR.** Ordered, reviewed patches over the pinned `gpui-pre` 0.3.8
+snapshot crates, applied by `../bootstrap.py`. `../source.json` records each
+patch's SHA-256. Paths are relative to `toolchain/gpui/` (one directory per
+crate). None has been published upstream.
 
 ## Series
 
 | Patch | Applies to | What it does |
 |---|---|---|
-| `0001-native-extensions.patch` | GPUIX | Public facade over GPUIX's private custom-element traits, opaque view, callback alias and exact GPUI crate, plus a startup-only installer that runs after built-ins and seals on first view/registry creation. No GPUI behavior changes. |
-| `0002-multi-window.patch` | GPUIX | One embedded macOS application with a GPUI window per renderer. Scroll, list, automation, painted-text, selection and search state is keyed by window; view release fences queued callbacks; `QuitMode::Explicit` lets `tick()` return false with no windows and reopen later. Non-macOS keeps the single-window path. |
-| `0003-solid-native-elements.patch` | GPUIX | `registerCustomElementType` / `isCustomElementType` in `@gpuix/native/host`, Solid mounting of registered tags, and `GpuixRenderer.hasCustomElementType` so a missing native factory fails instead of rendering `gpui::Empty`. |
-| `0004-close-window-on-reset.patch` | GPUIX | `resetRender()` closes a live macOS window before dropping the Solid root; dropping it during thread-local teardown panicked in the profiler journal. JS only. |
-| `0006-release-standard-keys.patch` | GPUIX | `native_extensions::release_standard_key` leaves one of the standard app keys (`cmd-w`, `cmd-m`, ...) unbound, and so without a menu key equivalent, for a host that handles it itself. The desktop releases `cmd-w`, which closes a pane, not the window. |
-| `0005-drawable-presented.patch` | Zed | `Window::on_drawable_presented` and AppKit visibility, the presentation receipt described in [PRESENTATION.md](../../native/PRESENTATION.md). |
+| `0001-drawable-presented.patch` | `gpui-pre`, `gpui-pre-apple`, `gpui-pre-macos` | `Window::on_drawable_presented` and `Window::native_visibility`. Metal reports the exact drawable a scene was submitted on through its presented handler; the callback runs only when that drawable was presented on a still-visible window, and never for paint, `on_next_frame` or command-buffer completion. The terminal's delivery-fence recovery (`native/PRESENTATION.md`) and desktop evidence depend on it. |
+| `0002-window-capture.patch` | same | `Window::render_to_image` outside `test-support`: renders the current scene into an offscreen texture at the drawable's size, so no drawable is taken from the swap chain. Used only by `--evidence` qualification captures. |
 
 ## Rules
 
-- Change a patch only together with its hash in `source.json`; bootstrap
-  rejects partially applied or independently edited patches and preserves
-  unexpected source edits instead of resetting them.
-- Generate patches against a real Git checkout of the pinned baseline plus the
-  earlier patches. `git apply` inside an untracked directory of another
-  repository can silently skip paths.
-- Unified diffs keep a leading space on empty context lines; `.gitattributes`
-  disables whitespace fixes for `*.patch`.
+- Change patches through `bootstrap.py --edit` / `--export`, never by hand.
+- A patch states its reason here and is the smallest change that works.
+- Upstream candidates: both are general GPUI features; propose them to Zed
+  when their shape has settled.

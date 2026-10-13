@@ -1,0 +1,1061 @@
+//! Palettes, the path picker, dialogs, and the find bar. Lists are the Kit
+//! [`Command`] palette; text entry is Kit [`Input`]. Every modal sits on a
+//! backdrop that closes it on click, and its control takes the keyboard on open.
+
+use std::rc::Rc;
+
+use gpui::prelude::*;
+use gpui::{
+    AnyElement, App, Context, Entity, IntoElement, MouseButton, ParentElement, Styled,
+    Subscription, Window, div, px,
+};
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::{ActiveTheme, Icon, IconName, IndexPath, Sizable};
+use phux_protocol::ResourceId;
+
+use crate::connection::path::{self as paths};
+use crate::settings::theme::Palette;
+
+use super::actions::Run;
+use super::color::from_hex;
+use super::desk::{self, Desk, Modal};
+
+/// Text fields a modal or the find bar owns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputSlot {
+    Find,
+    Rename,
+    SessionName,
+    SessionDir,
+}
+
+/// Build the open modal's controls with fresh or prefilled values and give it the keyboard.
+pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) {
+    match desk.modal.clone() {
+        Modal::None => {}
+        Modal::Commands | Modal::Goto | Modal::WindowSession | Modal::Path => {
+            let state = palette_state(desk, window, cx);
+            state.update(cx, |state, cx| {
+                state.set_query("", window, cx);
+                state.focus(window, cx);
+            });
+        }
+        Modal::Settings => {
+            super::settings_panel::prepare(desk, window, cx);
+            window.focus(&desk.focus, cx);
+        }
+        Modal::Rename { tab_id } => {
+            let current = desk
+                .link
+                .as_ref()
+                .and_then(|link| link.workspace.tabs.iter().find(|tab| tab.id == tab_id))
+                .map(|tab| desk::tab_title(desk, tab))
+                .unwrap_or_default();
+            let input = modal_input(
+                desk,
+                InputSlot::Rename,
+                &current,
+                "Follow the terminal title",
+                window,
+                cx,
+            );
+            input.update(cx, |input, cx| input.focus(window, cx));
+        }
+        Modal::Session { create, current } => {
+            let name = modal_input(
+                desk,
+                InputSlot::SessionName,
+                if create { "" } else { &current },
+                "Session name",
+                window,
+                cx,
+            );
+            if create {
+                let directory = desk.focused_cwd().unwrap_or_default();
+                modal_input(
+                    desk,
+                    InputSlot::SessionDir,
+                    &directory,
+                    "Directory",
+                    window,
+                    cx,
+                );
+            }
+            name.update(cx, |input, cx| input.focus(window, cx));
+        }
+        Modal::CloseSession { .. } | Modal::Terminate { .. } => window.focus(&desk.focus, cx),
+    }
+}
+
+fn palette_state(
+    desk: &mut Desk,
+    window: &mut Window,
+    cx: &mut Context<Desk>,
+) -> Entity<CommandState> {
+    if let Some(state) = desk.palette_state.clone() {
+        return state;
+    }
+    let state = cx.new(|cx| CommandState::new(window, cx));
+    desk.palette_state = Some(state.clone());
+    state
+}
+
+fn modal_input(
+    desk: &mut Desk,
+    slot: InputSlot,
+    initial: &str,
+    placeholder: &str,
+    window: &mut Window,
+    cx: &mut Context<Desk>,
+) -> Entity<InputState> {
+    let (input, subscription) = input_with(slot, initial, placeholder, window, cx);
+    desk.modal_inputs.push((slot, input.clone(), subscription));
+    input
+}
+
+/// The find field, focused, reporting each edit and Enter / Shift-Enter.
+pub(crate) fn find_input(
+    _desk: &mut Desk,
+    initial: &str,
+    window: &mut Window,
+    cx: &mut Context<Desk>,
+) -> (Entity<InputState>, Subscription) {
+    let (input, subscription) =
+        input_with(InputSlot::Find, initial, "Find in terminal", window, cx);
+    input.update(cx, |input, cx| input.focus(window, cx));
+    (input, subscription)
+}
+
+fn input_with(
+    slot: InputSlot,
+    initial: &str,
+    placeholder: &str,
+    window: &mut Window,
+    cx: &mut Context<Desk>,
+) -> (Entity<InputState>, Subscription) {
+    let initial = initial.to_owned();
+    let placeholder = placeholder.to_owned();
+    let input = cx.new(|cx| {
+        InputState::new(window, cx)
+            .placeholder(placeholder)
+            .default_value(initial)
+    });
+    let subscription = cx.subscribe_in(
+        &input,
+        window,
+        move |desk, state, event: &InputEvent, window, cx| {
+            let value = state.read(cx).value().to_string();
+            match event {
+                InputEvent::Change => desk.on_input(slot, value, None, window, cx),
+                InputEvent::PressEnter { shift, .. } => {
+                    desk.on_input(slot, value, Some(*shift), window, cx)
+                }
+                _ => {}
+            }
+        },
+    );
+    (input, subscription)
+}
+
+impl Desk {
+    fn input_value(&self, slot: InputSlot, cx: &App) -> String {
+        self.modal_inputs
+            .iter()
+            .find(|(owned, _, _)| *owned == slot)
+            .map(|(_, input, _)| input.read(cx).value().to_string())
+            .unwrap_or_default()
+    }
+
+    fn input_entity(&self, slot: InputSlot) -> Option<Entity<InputState>> {
+        self.modal_inputs
+            .iter()
+            .find(|(owned, _, _)| *owned == slot)
+            .map(|(_, input, _)| input.clone())
+    }
+
+    /// A field edit (`submit` is `None`) or Enter (`Some(shift)`).
+    fn on_input(
+        &mut self,
+        slot: InputSlot,
+        value: String,
+        submit: Option<bool>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match (slot, submit) {
+            (InputSlot::Find, None) => {
+                let case = self
+                    .find
+                    .as_ref()
+                    .map(|find| find.case_sensitive)
+                    .unwrap_or(false);
+                self.run_search(value, case);
+            }
+            (InputSlot::Find, Some(shift)) => {
+                self.step_find(if shift { -1 } else { 1 }, window, cx)
+            }
+            (InputSlot::Rename, Some(_)) => self.apply_rename(value, window, cx),
+            (InputSlot::SessionName | InputSlot::SessionDir, Some(_)) => {
+                let name = self.input_value(InputSlot::SessionName, cx);
+                let directory = self
+                    .input_entity(InputSlot::SessionDir)
+                    .map(|input| input.read(cx).value().to_string());
+                self.apply_session(name, directory, window, cx);
+            }
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    /// The palette query changed. In Go To, a leading `>` switches to commands
+    /// and keeps the rest of the query; the path picker searches the host.
+    fn palette_query(&mut self, query: &str, window: &mut Window, cx: &mut Context<Self>) {
+        match self.modal {
+            Modal::Goto if query.starts_with('>') => {
+                self.modal = Modal::Commands;
+                self.mark_prepared();
+                let rest = query.trim_start_matches('>').trim_start().to_owned();
+                if let Some(state) = self.palette_state.clone() {
+                    state.update(cx, |state, cx| state.set_query(rest, window, cx));
+                }
+            }
+            Modal::Path => {
+                let Some(picker) = self.picker.as_ref() else {
+                    return;
+                };
+                if picker.query != query {
+                    let root = picker.root.clone();
+                    self.query_paths(root, query.to_owned());
+                }
+            }
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    /// Run a confirmed palette row. Commands already ran through their [`Run`] action.
+    fn pick(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
+        match target {
+            Target::Command => {}
+            Target::Pane(terminal) => {
+                self.close_modal(window, cx);
+                self.reveal_terminal(&terminal);
+                self.after_command(window, cx);
+            }
+            Target::Tab(tab) => {
+                self.close_modal(window, cx);
+                self.select_tab(&tab);
+                self.after_command(window, cx);
+            }
+            Target::Session(name) => self.open_session_window(name, window, cx),
+            Target::Path(item) => match item {
+                PathItem::Parent(directory) => self.browse_path(directory, window, cx),
+                PathItem::Row { path, .. } => self.insert_path(path, window, cx),
+            },
+        }
+    }
+}
+
+/// What a palette row does when confirmed.
+#[derive(Clone)]
+enum Target {
+    Command,
+    Pane(ResourceId),
+    Tab(String),
+    Session(String),
+    Path(PathItem),
+}
+
+/// A row of the path picker: the parent directory, or a host path.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum PathItem {
+    Parent(String),
+    Row { path: String, kind: String },
+}
+
+impl PathItem {
+    /// The directory Tab / Right browses into, if this row is one.
+    pub(crate) fn directory(&self) -> Option<String> {
+        match self {
+            Self::Parent(directory) => Some(directory.clone()),
+            Self::Row { path, kind } => paths::directory_for_terminal(kind, path),
+        }
+    }
+}
+
+/// The picker's rows in display order, which is also the palette's row index.
+pub(crate) fn path_items(desk: &Desk) -> Vec<PathItem> {
+    let Some(picker) = desk.picker.as_ref() else {
+        return Vec::new();
+    };
+    picker
+        .parent
+        .clone()
+        .map(PathItem::Parent)
+        .into_iter()
+        .chain(picker.rows.iter().map(|row| PathItem::Row {
+            path: row.path.clone(),
+            kind: row.kind.clone(),
+        }))
+        .collect()
+}
+
+pub fn layer(
+    desk: &mut Desk,
+    colors: &Palette,
+    window: &mut Window,
+    cx: &mut Context<Desk>,
+) -> AnyElement {
+    let card = match desk.modal.clone() {
+        Modal::None => return div().into_any_element(),
+        Modal::Commands | Modal::Goto | Modal::WindowSession => palette(desk, colors, cx),
+        Modal::Path => path_panel(desk, colors, window, cx),
+        Modal::Settings => super::settings_panel::panel(desk, colors, window, cx),
+        Modal::Rename { .. } => rename_dialog(desk, colors, cx),
+        Modal::Session { create, .. } => session_dialog(desk, create, colors, cx),
+        Modal::CloseSession { name } => confirm(
+            format!("Close {name}?"),
+            "This ends the panes in that session. The window stays on this server.",
+            "Close Session",
+            colors,
+            cx,
+            |desk, window, cx| desk.confirm_close_session(window, cx),
+        ),
+        Modal::Terminate { title, .. } => confirm(
+            format!("Terminate {title}?"),
+            "This ends the process for every view and every client attached to it. Closing a pane only detaches.",
+            "Terminate",
+            colors,
+            cx,
+            |desk, window, cx| desk.confirm_terminate(window, cx),
+        ),
+    };
+    backdrop(colors, cx, card)
+}
+
+/// A dimmed layer over the window that blocks the terminal and closes the modal on click.
+fn backdrop(colors: &Palette, cx: &mut Context<Desk>, card: impl IntoElement) -> AnyElement {
+    div()
+        .id("modal-backdrop")
+        .absolute()
+        .inset_0()
+        .flex()
+        .flex_col()
+        .items_center()
+        .bg(from_hex(&colors.backdrop))
+        .occlude()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|desk, _, window, cx| desk.close_modal(window, cx)),
+        )
+        .child(card)
+        .into_any_element()
+}
+
+fn card(colors: &Palette, width: f32) -> gpui::Div {
+    div()
+        .w(px(width))
+        .rounded(px(12.))
+        .bg(from_hex(&colors.raised))
+        .border_1()
+        .border_color(from_hex(&colors.border))
+        .shadow_lg()
+        .occlude()
+}
+
+pub fn find_bar(
+    desk: &Desk,
+    case_sensitive: bool,
+    colors: &Palette,
+    cx: &mut Context<Desk>,
+) -> AnyElement {
+    let Some((input, _)) = desk.find_input.as_ref() else {
+        return div().into_any_element();
+    };
+    div()
+        .absolute()
+        .top(px(8.))
+        .right(px(8.))
+        .w(px(380.))
+        .p(px(6.))
+        .rounded(px(8.))
+        .bg(from_hex(&colors.raised))
+        .border_1()
+        .border_color(from_hex(&colors.border))
+        .shadow_md()
+        .occlude()
+        .flex()
+        .items_center()
+        .gap(px(4.))
+        .child(
+            div().flex_grow(1.).child(
+                Input::new(input)
+                    .appearance(false)
+                    .prefix(Icon::new(IconName::Search).small()),
+            ),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(from_hex(&colors.muted))
+                .child(desk.find_status()),
+        )
+        .child(
+            Button::new("find-case")
+                .icon(IconName::CaseSensitive)
+                .ghost()
+                .small()
+                .toggled(case_sensitive)
+                .tooltip("Match case")
+                .on_click(cx.listener(|desk, _, window, cx| {
+                    let case = !desk
+                        .find
+                        .as_ref()
+                        .map(|find| find.case_sensitive)
+                        .unwrap_or(false);
+                    let query = desk
+                        .find
+                        .as_ref()
+                        .map(|find| find.query.clone())
+                        .unwrap_or_default();
+                    desk.run_search(query, case);
+                    desk.after_command(window, cx);
+                })),
+        )
+        .child(
+            Button::new("find-prev")
+                .icon(IconName::ChevronUp)
+                .ghost()
+                .small()
+                .tooltip("Previous match")
+                .on_click(cx.listener(|desk, _, window, cx| desk.execute("find-prev", window, cx))),
+        )
+        .child(
+            Button::new("find-next")
+                .icon(IconName::ChevronDown)
+                .ghost()
+                .small()
+                .tooltip("Next match")
+                .on_click(cx.listener(|desk, _, window, cx| desk.execute("find-next", window, cx))),
+        )
+        .child(
+            Button::new("find-close")
+                .icon(IconName::Close)
+                .ghost()
+                .small()
+                .tooltip("Close")
+                .on_click(
+                    cx.listener(|desk, _, window, cx| desk.execute("find-close", window, cx)),
+                ),
+        )
+        .into_any_element()
+}
+
+/// One palette section: an optional heading and its rows.
+struct Section {
+    label: Option<&'static str>,
+    rows: Vec<Row>,
+}
+
+struct Row {
+    title: String,
+    detail: Option<String>,
+    /// Extra searchable text, not shown.
+    keywords: String,
+    target: Target,
+    command: Option<&'static str>,
+}
+
+fn palette(desk: &mut Desk, colors: &Palette, cx: &mut Context<Desk>) -> AnyElement {
+    let Some(state) = desk.palette_state.clone() else {
+        return div().into_any_element();
+    };
+    let query = state.read(cx).query(cx).to_string();
+    let (placeholder, sections) = match desk.modal {
+        Modal::Goto => (
+            "Go to a terminal, agent or tab…  (type > for commands)",
+            goto_sections(desk),
+        ),
+        Modal::WindowSession => ("Open a window on a session…", session_sections(desk)),
+        _ => ("Run a command…", command_sections(desk)),
+    };
+    let sections = rank_sections(sections, &query);
+    let count: usize = sections.iter().map(|section| section.rows.len()).sum();
+    let targets: Rc<Vec<Vec<Target>>> = Rc::new(
+        sections
+            .iter()
+            .map(|section| section.rows.iter().map(|row| row.target.clone()).collect())
+            .collect(),
+    );
+    let desk_handle = cx.weak_entity();
+    let confirm_handle = desk_handle.clone();
+    let muted = from_hex(&colors.muted);
+    let mut command = Command::new(&state)
+        .filterable(false)
+        .bordered(false)
+        .placeholder(placeholder)
+        .max_h(px(420.))
+        .empty(|_, _, cx| {
+            div()
+                .py(px(24.))
+                .w_full()
+                .text_center()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("No matches. Try a shorter search.")
+        })
+        .footer(move |_, _, _| {
+            div()
+                .px(px(12.))
+                .py(px(6.))
+                .flex()
+                .justify_between()
+                .text_xs()
+                .text_color(muted)
+                .child(format!(
+                    "{count} {}",
+                    if count == 1 { "result" } else { "results" }
+                ))
+                .child("↑↓ select · ↩ open · esc close")
+        })
+        .on_query(move |query, window, cx| {
+            let _ = desk_handle.update(cx, |desk, cx| desk.palette_query(query, window, cx));
+        })
+        .on_confirm(move |index: IndexPath, window, cx| {
+            let target = targets
+                .get(index.section)
+                .and_then(|rows| rows.get(index.row))
+                .cloned();
+            if let Some(target) = target {
+                let _ = confirm_handle.update(cx, |desk, cx| desk.pick(target, window, cx));
+            }
+        });
+    for section in sections {
+        let mut group = CommandGroup::new();
+        if let Some(label) = section.label {
+            group = group.label(label);
+        }
+        command = command.group(group.items(section.rows.into_iter().map(row_item)));
+    }
+    card(colors, 600.)
+        .mt(px(72.))
+        .overflow_hidden()
+        .child(command)
+        .into_any_element()
+}
+
+fn row_item(row: Row) -> CommandItem {
+    let mut item = CommandItem::new()
+        .label(row.title.clone())
+        .keywords([row.keywords]);
+    if let Some(id) = row.command {
+        return item.action(Box::new(Run::new(id)));
+    }
+    if let Some(detail) = row.detail {
+        let title = row.title;
+        item = item.child(move |_, cx| {
+            div()
+                .flex()
+                .flex_1()
+                .min_w_0()
+                .items_baseline()
+                .gap(px(8.))
+                .child(div().flex_shrink_0().child(title.clone()))
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(detail.clone()),
+                )
+        });
+    }
+    item
+}
+
+fn command_sections(_desk: &Desk) -> Vec<Section> {
+    let mut sections: Vec<Section> = Vec::new();
+    for command in crate::settings::builtin_commands()
+        .iter()
+        .filter(|command| !command.is_tab_jump())
+    {
+        let row = Row {
+            title: command.title.to_owned(),
+            detail: None,
+            keywords: format!("{} {}", command.group, command.id),
+            target: Target::Command,
+            command: Some(command.id),
+        };
+        match sections.last_mut() {
+            Some(section) if section.label == Some(command.group) => section.rows.push(row),
+            _ => sections.push(Section {
+                label: Some(command.group),
+                rows: vec![row],
+            }),
+        }
+    }
+    sections
+}
+
+fn goto_sections(desk: &Desk) -> Vec<Section> {
+    let Some(link) = desk.link.as_ref() else {
+        return Vec::new();
+    };
+    let mut agents = Vec::new();
+    let mut terminals = Vec::new();
+    for pane in link.connection.panes() {
+        let agent = link.connection.agents.get(&pane.terminal_id);
+        let title = desk.pane_title(Some(&pane.terminal_id));
+        let detail = format!(
+            "{} · {}",
+            pane.session_name,
+            desk::short_path(pane.cwd.clone())
+        );
+        let row = Row {
+            title: agent
+                .map(|info| format!("{} — {title}", info.name))
+                .unwrap_or(title),
+            keywords: agent
+                .map(|info| format!("{detail} {}", info.state))
+                .unwrap_or_else(|| detail.clone()),
+            detail: Some(match agent {
+                Some(info) => format!("{} · {detail}", info.state),
+                None => detail,
+            }),
+            target: Target::Pane(pane.terminal_id.clone()),
+            command: None,
+        };
+        if agent.is_some() {
+            agents.push(row)
+        } else {
+            terminals.push(row)
+        }
+    }
+    let tabs = link
+        .workspace
+        .tabs
+        .iter()
+        .enumerate()
+        .map(|(index, tab)| {
+            let panes = crate::workspace::layout::placements(&tab.root).len();
+            let detail = format!(
+                "Tab {} · {panes} {}",
+                index + 1,
+                if panes == 1 { "pane" } else { "panes" }
+            );
+            Row {
+                title: desk::tab_title(desk, tab),
+                keywords: detail.clone(),
+                detail: Some(detail),
+                target: Target::Tab(tab.id.clone()),
+                command: None,
+            }
+        })
+        .collect::<Vec<_>>();
+    [("Agents", agents), ("Terminals", terminals), ("Tabs", tabs)]
+        .into_iter()
+        .filter(|(_, rows)| !rows.is_empty())
+        .map(|(label, rows)| Section {
+            label: Some(label),
+            rows,
+        })
+        .collect()
+}
+
+fn session_sections(desk: &Desk) -> Vec<Section> {
+    let Some(link) = desk.link.as_ref() else {
+        return Vec::new();
+    };
+    let Some(topology) = link.connection.topology.as_ref() else {
+        return Vec::new();
+    };
+    let rows = topology
+        .sessions
+        .iter()
+        .map(|session| {
+            let panes = link
+                .connection
+                .panes()
+                .iter()
+                .filter(|pane| pane.session_id == session.id)
+                .count();
+            let home = if session.name == desk.session {
+                "home · "
+            } else {
+                ""
+            };
+            let detail = format!(
+                "{home}{panes} {}",
+                if panes == 1 { "terminal" } else { "terminals" }
+            );
+            Row {
+                title: session.name.clone(),
+                keywords: detail.clone(),
+                detail: Some(detail),
+                target: Target::Session(session.name.clone()),
+                command: None,
+            }
+        })
+        .collect();
+    vec![Section {
+        label: Some("Sessions"),
+        rows,
+    }]
+}
+
+/// Rank every row against `query` as one flat list; an empty query keeps the sections.
+fn rank_sections(sections: Vec<Section>, query: &str) -> Vec<Section> {
+    let query = query.trim();
+    if query.is_empty() {
+        return sections;
+    }
+    let rows: Vec<Row> = sections
+        .into_iter()
+        .flat_map(|section| {
+            let group = section.label.unwrap_or("");
+            section.rows.into_iter().map(move |mut row| {
+                row.keywords = format!("{} {group}", row.keywords);
+                row
+            })
+        })
+        .collect();
+    let ranked = rank(rows, query, |row| {
+        format!(
+            "{} {} {}",
+            row.title,
+            row.detail.clone().unwrap_or_default(),
+            row.keywords
+        )
+    });
+    vec![Section {
+        label: None,
+        rows: ranked,
+    }]
+}
+
+/// Palette ranking. Every whitespace-separated token must match the item's
+/// text, as a substring or failing that as an in-order subsequence. Substring
+/// hits at a word start rank highest; scattered subsequences rank lowest.
+/// Equal scores keep their original order.
+pub(crate) fn rank<T>(items: Vec<T>, query: &str, text: impl Fn(&T) -> String) -> Vec<T> {
+    let lowered = query.to_lowercase();
+    let tokens: Vec<&str> = lowered.split_whitespace().collect();
+    if tokens.is_empty() {
+        return items;
+    }
+    let mut ranked: Vec<(i64, T)> = items
+        .into_iter()
+        .filter_map(|item| {
+            match_score(&text(&item).to_lowercase(), &tokens).map(|score| (score, item))
+        })
+        .collect();
+    ranked.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+    ranked.into_iter().map(|(_, item)| item).collect()
+}
+
+fn match_score(haystack: &str, tokens: &[&str]) -> Option<i64> {
+    tokens.iter().try_fold(0, |total, token| {
+        token_score(haystack, token).map(|score| total + score)
+    })
+}
+
+fn token_score(haystack: &str, token: &str) -> Option<i64> {
+    if let Some(index) = haystack.find(token) {
+        let before = haystack[..index].chars().next_back();
+        let word_start = before.is_none_or(|ch| ch.is_whitespace() || "/:._-".contains(ch));
+        let offset = haystack[..index].chars().count().min(60) as i64;
+        return Some(if word_start { 200 } else { 120 } - offset);
+    }
+    let chars: Vec<char> = haystack.chars().collect();
+    let mut cursor = 0;
+    let mut gaps = 0;
+    for wanted in token.chars() {
+        let found = chars[cursor..].iter().position(|ch| *ch == wanted)?;
+        gaps += found as i64;
+        cursor += found + 1;
+    }
+    Some((60 - gaps).max(1))
+}
+
+fn path_panel(
+    desk: &mut Desk,
+    colors: &Palette,
+    window: &mut Window,
+    cx: &mut Context<Desk>,
+) -> AnyElement {
+    let Some(state) = desk.palette_state.clone() else {
+        return div().into_any_element();
+    };
+    let Some(picker) = desk.picker.clone() else {
+        return div().into_any_element();
+    };
+    // The search field's spinner follows the outstanding host query.
+    let pending = picker.pending.is_some();
+    if state.read(cx).is_loading() != pending {
+        state.update(cx, |state, cx| state.set_loading(pending, window, cx));
+    }
+    let items = path_items(desk);
+    let targets: Rc<Vec<Target>> = Rc::new(items.iter().cloned().map(Target::Path).collect());
+    let desk_handle = cx.weak_entity();
+    let confirm_handle = desk_handle.clone();
+    let terminal_handle = desk_handle.clone();
+    let muted = from_hex(&colors.muted);
+    let message = paths::display_path(&picker.message);
+    let rows = items.into_iter().map(move |item| {
+        let terminal_handle = terminal_handle.clone();
+        let (icon, label, directory) = match &item {
+            PathItem::Parent(_) => (IconName::ArrowUp, ".. (parent)".to_owned(), None),
+            PathItem::Row { path, kind } => (
+                if kind == "directory" {
+                    IconName::Folder
+                } else {
+                    IconName::File
+                },
+                paths::display_path(path),
+                item.directory(),
+            ),
+        };
+        let search = label.clone();
+        CommandItem::new().label(search).child(move |_, cx| {
+            let terminal_handle = terminal_handle.clone();
+            div()
+                .flex()
+                .flex_1()
+                .min_w_0()
+                .items_center()
+                .gap(px(8.))
+                .child(
+                    Icon::new(icon.clone())
+                        .small()
+                        .text_color(cx.theme().muted_foreground),
+                )
+                .child(div().flex_1().min_w_0().truncate().child(label.clone()))
+                .children(
+                    directory
+                        .clone()
+                        .filter(|_| !matches!(icon, IconName::ArrowUp))
+                        .map(|directory| {
+                            Button::new(format!("open-{directory}"))
+                                .label("New terminal here")
+                                .ghost()
+                                .xsmall()
+                                .on_click(move |_, window, cx| {
+                                    cx.stop_propagation();
+                                    let directory = directory.clone();
+                                    let _ = terminal_handle.update(cx, |desk, cx| {
+                                        desk.open_path_terminal(directory, window, cx)
+                                    });
+                                })
+                        }),
+                )
+        })
+    });
+    let root = picker.root.clone();
+    let command = Command::new(&state)
+        .filterable(false)
+        .bordered(false)
+        .placeholder(format!("Search in {root}…"))
+        .max_h(px(420.))
+        .items(rows)
+        .empty(move |_, _, cx| {
+            div()
+                .py(px(24.))
+                .w_full()
+                .text_center()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(if pending {
+                    "Searching host paths…"
+                } else {
+                    "No paths."
+                })
+        })
+        .footer(move |_, _, _| {
+            div()
+                .px(px(12.))
+                .py(px(6.))
+                .flex()
+                .justify_between()
+                .gap(px(12.))
+                .text_xs()
+                .text_color(muted)
+                .child(div().min_w_0().truncate().child(message.clone()))
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .child("↩ insert · ⇥ open folder · esc close"),
+                )
+        })
+        .on_query(move |query, window, cx| {
+            let _ = desk_handle.update(cx, |desk, cx| desk.palette_query(query, window, cx));
+        })
+        .on_confirm(move |index: IndexPath, window, cx| {
+            if let Some(target) = targets.get(index.row).cloned() {
+                let _ = confirm_handle.update(cx, |desk, cx| desk.pick(target, window, cx));
+            }
+        });
+    card(colors, 640.)
+        .mt(px(72.))
+        .overflow_hidden()
+        .key_context("PathPicker")
+        .child(
+            div()
+                .px(px(12.))
+                .pt(px(10.))
+                .text_xs()
+                .text_color(muted)
+                .child("Insert Path — host paths only, never this Mac"),
+        )
+        .child(command)
+        .into_any_element()
+}
+
+fn dialog_card(title: &str, colors: &Palette) -> gpui::Div {
+    card(colors, 440.)
+        .mt(px(120.))
+        .p(px(16.))
+        .flex()
+        .flex_col()
+        .gap(px(10.))
+        .child(
+            div()
+                .text_base()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(from_hex(&colors.theme.foreground))
+                .child(title.to_owned()),
+        )
+}
+
+fn dialog_buttons(confirm: Button, cx: &mut Context<Desk>) -> impl IntoElement {
+    div()
+        .flex()
+        .justify_end()
+        .gap(px(8.))
+        .child(
+            Button::new("dialog-cancel")
+                .label("Cancel")
+                .ghost()
+                .on_click(cx.listener(|desk, _, window, cx| desk.close_modal(window, cx))),
+        )
+        .child(confirm)
+}
+
+fn rename_dialog(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> AnyElement {
+    let Some(input) = desk.input_entity(InputSlot::Rename) else {
+        return div().into_any_element();
+    };
+    dialog_card("Rename Tab", colors)
+        .child(
+            div()
+                .text_xs()
+                .text_color(from_hex(&colors.muted))
+                .child("Leave it blank to follow the terminal title."),
+        )
+        .child(Input::new(&input))
+        .child(dialog_buttons(
+            Button::new("rename-ok")
+                .label("Rename")
+                .primary()
+                .on_click(cx.listener(|desk, _, window, cx| {
+                    let title = desk.input_value(InputSlot::Rename, cx);
+                    desk.apply_rename(title, window, cx);
+                })),
+            cx,
+        ))
+        .into_any_element()
+}
+
+fn session_dialog(
+    desk: &Desk,
+    create: bool,
+    colors: &Palette,
+    cx: &mut Context<Desk>,
+) -> AnyElement {
+    let Some(name) = desk.input_entity(InputSlot::SessionName) else {
+        return div().into_any_element();
+    };
+    let directory = desk.input_entity(InputSlot::SessionDir);
+    dialog_card(
+        if create {
+            "New Session"
+        } else {
+            "Rename Session"
+        },
+        colors,
+    )
+    .child(Input::new(&name))
+    .children(directory.map(|directory| Input::new(&directory)))
+    .child(dialog_buttons(
+        Button::new("session-ok")
+            .label(if create { "Create" } else { "Rename" })
+            .primary()
+            .on_click(cx.listener(|desk, _, window, cx| {
+                let name = desk.input_value(InputSlot::SessionName, cx);
+                let directory = desk
+                    .input_entity(InputSlot::SessionDir)
+                    .map(|input| input.read(cx).value().to_string());
+                desk.apply_session(name, directory, window, cx);
+            })),
+        cx,
+    ))
+    .into_any_element()
+}
+
+fn confirm(
+    title: String,
+    body: &str,
+    label: &str,
+    colors: &Palette,
+    cx: &mut Context<Desk>,
+    run: impl Fn(&mut Desk, &mut Window, &mut Context<Desk>) + 'static,
+) -> AnyElement {
+    dialog_card(&title, colors)
+        .border_color(from_hex(&colors.theme.danger))
+        .child(
+            div()
+                .text_sm()
+                .text_color(from_hex(&colors.subtext))
+                .child(body.to_owned()),
+        )
+        .child(dialog_buttons(
+            Button::new("confirm-ok")
+                .label(label.to_owned())
+                .danger()
+                .on_click(cx.listener(move |desk, _, window, cx| run(desk, window, cx))),
+            cx,
+        ))
+        .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rank;
+
+    fn ranked(items: &[&'static str], query: &str) -> Vec<&'static str> {
+        rank(items.to_vec(), query, |item| (*item).to_owned())
+    }
+
+    #[test]
+    fn subsequences_match_when_no_substring_does() {
+        assert_eq!(
+            ranked(&["Close Pane", "Split Right", "Settings"], "spr"),
+            vec!["Split Right"]
+        );
+    }
+
+    #[test]
+    fn word_starts_outrank_inner_hits_and_every_token_must_match() {
+        assert_eq!(
+            ranked(&["Unsplit", "Split Down", "Split Right"], "split"),
+            vec!["Split Down", "Split Right", "Unsplit"]
+        );
+        assert_eq!(
+            ranked(&["Split Down", "Split Right"], "split ri"),
+            vec!["Split Right"]
+        );
+        assert!(ranked(&["Zoom"], "qq").is_empty());
+    }
+}

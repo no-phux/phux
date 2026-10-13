@@ -1,48 +1,77 @@
+/**
+ * Launch the checkout-built GPUI executable against a checkout-built CLI.
+ * Does not fall back to an installed `phux` or a production socket.
+ */
 import { existsSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { buildDesktopBundle, prepareDesktopFramework } from "./desktop-bundle";
-import { ensureServer, ensureSession, serverSocket, serverStatus } from "./server";
+import { desktopBinary, desktopRoot, isInstalledPhux, layoutFile, repoRoot } from "./host.ts";
+import { ensureServer, ensureSession, serverSocket, serverStatus } from "./server.ts";
 
-const root = resolve(import.meta.dir, "..");
-const repo = resolve(root, "../..");
-const output = resolve(root, "dist/desktop");
+const root = desktopRoot;
+const repo = repoRoot;
 
-export async function prepareDesktop(): Promise<void> {
-  prepareDesktopFramework();
-  await mkdir(output, { recursive: true });
-  const built = await buildDesktopBundle(resolve(root, "scripts/desktop-main.ts"), output);
-  if (!built.success) throw new AggregateError(built.logs, "Desktop bundle failed");
+export function desktopArguments(options: {
+  socket: string;
+  session: string;
+  phux: string;
+  layout: string;
+  evidence?: string;
+  smoke?: boolean;
+  fresh?: boolean;
+  quick?: boolean;
+  terminal?: string;
+}): string[] {
+  const args = [
+    "--socket",
+    options.socket,
+    "--session",
+    options.session,
+    "--phux",
+    options.phux,
+    "--layout",
+    options.layout,
+  ];
+  if (options.evidence) args.push("--evidence", options.evidence);
+  if (options.smoke) args.push("--smoke");
+  if (options.fresh) args.push("--fresh");
+  if (options.quick) args.push("--quick");
+  if (options.terminal) args.push("--terminal", options.terminal);
+  return args;
 }
 
-/** Spawn only the app: the demo supervisor owns its server and this direct child. */
-export function launchDesktop(env: NodeJS.ProcessEnv): ChildProcess {
-  return spawn(process.execPath, [resolve(output, "desktop-main.js")], {
-    cwd: root,
-    env,
-    stdio: "inherit",
-  });
+export function launchDesktop(
+  binary: string,
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): ChildProcess {
+  return spawn(binary, args, { cwd: root, env, stdio: "inherit" });
 }
 
-function phuxBinary(): string {
-  if (process.env.PHUX_BIN) return process.env.PHUX_BIN;
-  const built = resolve(repo, "target/debug/phux");
-  if (existsSync(built)) return built;
-  return "phux";
+function requiredBinary(path: string | undefined, fallback: string, label: string): string {
+  const chosen = path ?? fallback;
+  if (!existsSync(chosen)) throw new Error(`Build the ${label} first: ${chosen}`);
+  if (isInstalledPhux(chosen)) throw new Error(`refusing installed phux CLI: ${chosen}`);
+  return chosen;
 }
 
 if (import.meta.main) {
-  const addon =
-    process.env.PHUX_DESKTOP_ADDON ??
-    resolve(root, ".cache/host/phux-desktop-native.darwin-arm64.node");
-  const phux = phuxBinary();
+  const desktop = requiredBinary(
+    process.env.PHUX_DESKTOP_BIN,
+    desktopBinary("debug"),
+    "native desktop (just desktop-app)",
+  );
+  const phux = requiredBinary(
+    process.env.PHUX_BIN,
+    resolve(repo, "target/debug/phux"),
+    "checkout CLI (just desktop-cli)",
+  );
   const demo = process.env.PHUX_DESKTOP_DEMO === "1";
   if (demo) {
-    // Never replace the supervisor's server, including after an early exit.
-    if (!process.env.PHUX_BIN || !process.env.PHUX_SOCKET || !process.env.PHUX_DESKTOP_ADDON)
-      throw new Error("Demo launcher requires an explicit CLI, socket, and addon");
+    if (!process.env.PHUX_BIN || !process.env.PHUX_SOCKET || !process.env.PHUX_DESKTOP_BIN) {
+      throw new Error("Demo launcher requires an explicit CLI, socket, and desktop binary");
+    }
     if (!serverStatus(phux, process.env.PHUX_SOCKET))
       throw new Error("Private demo server is not running");
   } else {
@@ -51,14 +80,20 @@ if (import.meta.main) {
   const socketPath = process.env.PHUX_SOCKET || serverSocket(phux);
   const sessionName = process.env.PHUX_SESSION ?? "desktop";
   if (!demo) ensureSession(phux, socketPath, sessionName);
-  await prepareDesktop();
-  const child = launchDesktop({
-    ...process.env,
-    PHUX_DESKTOP_ADDON: addon,
-    PHUX_BIN: phux,
-    PHUX_SOCKET: socketPath,
-    PHUX_SESSION: sessionName,
-  });
+  const state = process.env.XDG_STATE_HOME ?? resolve(process.env.HOME ?? "", ".local/state");
+  const child = launchDesktop(
+    desktop,
+    desktopArguments({
+      socket: socketPath,
+      session: sessionName,
+      phux,
+      layout: process.env.PHUX_DESKTOP_LAYOUT ?? layoutFile(state, socketPath, sessionName),
+      ...(process.env.PHUX_DESKTOP_EVIDENCE ? { evidence: process.env.PHUX_DESKTOP_EVIDENCE } : {}),
+      ...(process.env.PHUX_DESKTOP_FRESH === "1" ? { fresh: true } : {}),
+      ...(process.env.PHUX_DESKTOP_QUICK === "1" ? { quick: true } : {}),
+    }),
+    { ...process.env, PHUX_BIN: phux, PHUX_SOCKET: socketPath, PHUX_SESSION: sessionName },
+  );
   child.once("error", (error) => {
     console.error(error);
     process.exitCode = 1;

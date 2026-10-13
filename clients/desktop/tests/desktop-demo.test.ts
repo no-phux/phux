@@ -13,13 +13,12 @@ afterEach(async () => {
   await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
-async function fixture(): Promise<{ directory: string; binary: string; addon: string }> {
-  // Real child processes and a real private UDS exercise ownership, not mocked spawn calls.
+async function fixture(): Promise<{ directory: string; binary: string; desktop: string }> {
   const directory = await mkdtemp(resolve(desktop, ".demo-test-"));
   cleanup.push(directory);
   const binary = resolve(directory, "phux");
-  const addon = resolve(directory, "addon.node");
-  await writeFile(addon, "test artifact");
+  const host = resolve(directory, "phux-desktop");
+  await writeFile(host, "test artifact");
   await writeFile(
     binary,
     `#!${process.execPath}
@@ -38,7 +37,7 @@ if (process.argv.includes("status")) {
 `,
   );
   await chmod(binary, 0o700);
-  return { directory, binary, addon };
+  return { directory, binary, desktop: host };
 }
 
 interface Report {
@@ -50,7 +49,7 @@ interface Report {
 async function scenario(
   mode: string,
 ): Promise<{ code: number | null; report: Report; production: string }> {
-  const { directory, binary, addon } = await fixture();
+  const { directory, binary, desktop: host } = await fixture();
   const script = resolve(directory, "supervisor.ts");
   const record = resolve(directory, "report.json");
   const serverRecord = resolve(directory, "server.json");
@@ -65,7 +64,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { runDemo } from ${JSON.stringify(resolve(desktop, "scripts/desktop-demo.ts"))};
 const mode = ${JSON.stringify(mode)};
 try {
-  process.exitCode = await runDemo(${JSON.stringify({ binary, addon })}, (env) => {
+  process.exitCode = await runDemo(${JSON.stringify({ binary, desktop: host })}, (env) => {
     const report = { server: JSON.parse(readFileSync(${JSON.stringify(serverRecord)}, "utf8")), home: env.HOME };
     writeFileSync(${JSON.stringify(record)}, JSON.stringify(report));
     if (mode === "throw") throw new Error("launch refused");
@@ -168,15 +167,15 @@ test("demo isolates server and app state from inherited production configuration
 }, 15_000);
 
 test("demo refuses external artifacts, including checkout symlinks escaping to them", async () => {
-  const { directory, binary, addon } = await fixture();
+  const { directory, binary, desktop: host } = await fixture();
   const outside = await mkdtemp(resolve(tmpdir(), "phux-demo-external-"));
   cleanup.push(outside);
   const external = resolve(outside, "installed-phux");
   await writeFile(external, "must never execute");
   const link = resolve(directory, "external-link");
   await symlink(external, link);
-  expect(await checkoutArtifacts(external, addon).catch(String)).toContain("checkout-built");
-  expect(await checkoutArtifacts(link, addon).catch(String)).toContain("checkout-built");
+  expect(await checkoutArtifacts(external, host).catch(String)).toContain("checkout-built");
+  expect(await checkoutArtifacts(link, host).catch(String)).toContain("checkout-built");
   expect(await checkoutArtifacts(binary, link).catch(String)).toContain("checkout-built");
 });
 

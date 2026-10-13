@@ -1,6 +1,6 @@
 #!/bin/sh
 # Served verbatim at https://phux.sh/install-desktop (POSIX sh).
-# Installs the checksummed GPUIX desktop alpha without replacing the phux CLI
+# Installs the checksummed GPUI desktop alpha without replacing the phux CLI
 # or stopping its server. Existing app installation rolls back on failure.
 set -eu
 
@@ -542,7 +542,7 @@ unzip -q -o "$zip_path" -d "$extract_dir"
 codesign --verify --deep --strict "${extract_dir}/Phux.app" \
   || die "desktop app signature verification failed"
 identity="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${extract_dir}/Phux.app/Contents/Info.plist")"
-[ "$identity" = dev.phux.desktop ] || die "archive is not the GPUIX desktop app"
+[ "$identity" = dev.phux.desktop ] || die "archive is not the Phux desktop app"
 bundle_version="$(/usr/libexec/PlistBuddy -c 'Print :PhuxDesktopVersion' "${extract_dir}/Phux.app/Contents/Info.plist")"
 [ "$bundle_version" = "$semver" ] || die "desktop bundle version does not match ${version}"
 

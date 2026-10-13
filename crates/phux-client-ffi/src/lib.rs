@@ -8,7 +8,9 @@
 //! - `c-abi` (default) is `crate::c`: the stable `extern "C"` surface
 //!   `include/phux/client.h` declares, which Cockpit links as a staticlib.
 //! - `uniffi` is `crate::uniffi`: the Swift and Kotlin mobile surface.
-//! - `napi` is `crate::napi`: the optional desktop encoder.
+//!
+//! The native desktop app is Rust, so it needs no encoder: it builds this crate
+//! with default features off and reads [`projection`] directly.
 
 #![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 
@@ -16,10 +18,6 @@
 compile_error!("phux-client-ffi is a native-only libghostty bridge");
 
 pub mod projection;
-
-/// Optional desktop encoder and same-binary native client registry.
-#[cfg(feature = "napi")]
-pub mod napi;
 
 #[cfg(feature = "c-abi")]
 mod c;

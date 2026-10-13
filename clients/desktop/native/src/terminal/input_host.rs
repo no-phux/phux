@@ -3,7 +3,7 @@
 
 use super::paint::Observation;
 use crate::input::{InputMetrics, KeyDisposition, TerminalInput};
-use gpuix_native::native_extensions::gpui;
+use gpui;
 use phux_client_runtime::publication::CursorWidth;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,12 +15,12 @@ pub(super) fn present(
     rebind: &AtomicBool,
     window: &mut gpui::Window,
     cx: &mut gpui::App,
-) {
+) -> bool {
     let (Some(frame), Some(epoch)) = (report.frame.clone(), report.epoch) else {
-        return;
+        return false;
     };
     if report.error.is_some() {
-        return;
+        return false;
     }
     let _timed = crate::perf::PRESENT.timer();
     let width = match frame.cursor.width {
@@ -41,7 +41,7 @@ pub(super) fn present(
     if !accepted {
         input.update(cx, |state, _| state.cancel());
         rebind.store(true, Ordering::Release);
-        return;
+        return true;
     }
     input.update(cx, |state, cx| state.fit(size_owner, window, cx));
     let focus = input.read(cx).focus_handle().clone();
@@ -53,6 +53,7 @@ pub(super) fn present(
     // Zed's terminal invalidates the IME candidate on every wakeup so the panel
     // tracks the cursor. Paint is this surface's wakeup.
     window.invalidate_character_coordinates();
+    false
 }
 
 pub(super) fn on_key_down(

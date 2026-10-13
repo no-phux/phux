@@ -1,4 +1,4 @@
-use gpuix_native::native_extensions::gpui::{KeyDownEvent, Keystroke, Modifiers};
+use gpui::{KeyDownEvent, Keystroke, Modifiers};
 use phux_client_runtime::control::keys::physical_key_for_char;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 
