@@ -529,8 +529,8 @@ fn collect_route_effects(route: &mut KernelRoute, effects: &KernelEffectBuffer) 
             KernelEffect::Damage(damage) => {
                 route.damaged.insert(damage.terminal_id.clone());
             }
-            KernelEffect::AgentRecords { terminal_id, .. } => {
-                route.agent_touched.insert(terminal_id.clone());
+            KernelEffect::AgentPublication(publication) => {
+                route.agent_touched.insert(publication.resource_id.clone());
             }
             // Per-pane and recoverable; the kernel names the pane.
             KernelEffect::Status(phux_client_core::session::KernelStatus::HistoryUnavailable {

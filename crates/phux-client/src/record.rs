@@ -117,11 +117,7 @@ async fn subscribe(
         .request(
             REQUEST_ATTACH,
             // A viewer records everything and can type nothing (ADR-0127).
-            Command::AttachResource {
-                terminal_id: terminal_id.clone(),
-                role_policy: conn.observer_role_policy(),
-                agent_after_seq: None,
-            },
+            Command::attach_terminal(terminal_id.clone(), conn.observer_role_policy()),
         )
         .await?
         .into_parts();

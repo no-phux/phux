@@ -10,6 +10,7 @@ use crate::c::{ResourceKind, client::Client, error::BridgeError};
 #[derive(Default)]
 pub(crate) struct Subscriptions {
     pending: HashMap<u32, ResourceId>,
+    confirmed: HashSet<ResourceId>,
     withdrawn: HashSet<ResourceId>,
     closed: HashSet<ResourceId>,
 }
@@ -17,6 +18,7 @@ pub(crate) struct Subscriptions {
 impl Subscriptions {
     pub(super) fn clear(&mut self) {
         self.pending.clear();
+        self.confirmed.clear();
         self.withdrawn.clear();
         self.closed.clear();
     }
@@ -30,6 +32,7 @@ impl Subscriptions {
     }
 
     pub(crate) fn cancel(&mut self, id: &ResourceId) {
+        self.confirmed.remove(id);
         self.pending.retain(|_, pending| pending != id);
     }
 
@@ -38,7 +41,7 @@ impl Subscriptions {
     }
 
     fn contains(&self, id: &ResourceId) -> bool {
-        self.pending.values().any(|pending| pending == id)
+        self.confirmed.contains(id) || self.pending.values().any(|pending| pending == id)
     }
 }
 
@@ -55,6 +58,7 @@ pub(super) fn reconcile(
             return Err(BridgeError::invalid("duplicate catalog resource"));
         }
     }
+    client.control().reconcile_agent_delivery_catalog(snapshot);
     let removed: Vec<_> = client
         .agent_streams
         .keys()
@@ -97,12 +101,9 @@ fn subscribable(resource: &ResourceInfo, catalog: &Catalog, selected: u32) -> bo
 }
 
 fn subscribe(client: &mut Client, resource: &ResourceInfo) -> Result<(), BridgeError> {
-    if client.workspace.subscriptions.contains(&resource.id)
-        || client
-            .agent_streams
-            .get(&resource.id)
-            .is_some_and(|stream| stream.generation.is_some())
-    {
+    // A committed publication can be replayed before this connection subscribes.
+    // Its generation is display metadata, never evidence of a live subscription.
+    if client.workspace.subscriptions.contains(&resource.id) {
         return Ok(());
     }
     if client.outgoing.len() >= 128 || client.workspace.subscriptions.pending.len() >= 128 {
@@ -121,10 +122,10 @@ fn subscribe(client: &mut Client, resource: &ResourceInfo) -> Result<(), BridgeE
             },
         )
         .map_err(crate::c::control_error)?;
-    client.agent_streams.insert(
-        resource.id.clone(),
-        crate::c::client::AgentStream { generation: None },
-    );
+    client
+        .agent_streams
+        .entry(resource.id.clone())
+        .or_insert(None);
     client
         .workspace
         .subscriptions
@@ -135,11 +136,7 @@ fn subscribe(client: &mut Client, resource: &ResourceInfo) -> Result<(), BridgeE
     let agent_after_seq = client.control().agent_after_seq(&resource.id);
     client.queue_frame(&FrameKind::Command {
         request_id,
-        command: Command::AttachResource {
-            terminal_id: resource.id.clone(),
-            role_policy,
-            agent_after_seq,
-        },
+        command: Command::attach_agent_session(resource.id.clone(), role_policy, agent_after_seq),
     })?;
     client
         .workspace
@@ -160,6 +157,7 @@ fn receive_reply(
         return Ok(false);
     };
     if matches!(result, CommandResult::Ok) {
+        client.workspace.subscriptions.confirmed.insert(id);
         return Ok(true);
     }
     // Refusal is not authoritative resource closure. Withdraw only admission;
@@ -172,10 +170,13 @@ fn receive_reply(
 }
 
 fn withdraw(client: &mut Client, id: &ResourceId, notify: bool) -> Result<(), BridgeError> {
+    client.workspace.subscriptions.cancel(id);
     if let Some(stream) = client.agent_streams.remove(id)
         && notify
     {
-        let (stream_id, bootstrap_id) = stream.generation.unwrap_or((0, 0));
+        let (stream_id, bootstrap_id) = stream.map_or((0, 0), |info| {
+            (info.stream_id.get(), info.bootstrap_id.get())
+        });
         let mut effect = crate::c::OwnedEffect::simple(
             crate::c::types::EFFECT_AGENT_RECORDS,
             crate::c::types::AGENT_RECORDS_CLOSED,
@@ -183,7 +184,7 @@ fn withdraw(client: &mut Client, id: &ResourceId, notify: bool) -> Result<(), Br
         );
         effect.stream_id = stream_id;
         effect.bootstrap_id = bootstrap_id;
-        client.push_agent_effect(effect);
+        client.owned_effects.push(effect);
         client.publish_effects();
     }
     // One borrow: two `client.control()` temporaries would both live to

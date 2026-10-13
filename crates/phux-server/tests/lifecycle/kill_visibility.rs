@@ -145,11 +145,7 @@ fn a_kill_journals_its_close_before_the_reply_and_closes_subscribers_once() {
         let (pane, _) = doomed_pane(&mut killer, 1).await;
 
         subscribe(&mut watcher, 2, None, None).await;
-        let attach = Command::AttachResource {
-            terminal_id: pane.clone(),
-            role_policy: None,
-            agent_after_seq: None,
-        };
+        let attach = Command::attach_terminal(pane.clone(), None);
         assert!(matches!(
             command(&mut watcher, 3, attach).await,
             CommandResult::Ok | CommandResult::OkWith(_)

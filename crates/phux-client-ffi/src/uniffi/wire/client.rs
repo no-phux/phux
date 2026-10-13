@@ -1066,24 +1066,32 @@ impl RemoteClient {
             Event::TerminalsClosed { request_id, error } => {
                 projected.push(WireEvent::TerminalsClosed { request_id, error });
             }
-            Event::AgentRecords {
-                terminal_id,
-                records,
-                retained,
+            Event::AgentPublication {
+                publication,
                 session,
             } => {
-                let kind = if retained {
-                    AgentRecordsKind::Retained
-                } else {
-                    AgentRecordsKind::Live
-                };
-                let seq = records.last().map_or(0, |record| record.seq);
-                let jsonl = crate::projection::agent_records::jsonl(&records);
-                projected.push(agent_records(&terminal_id, session, kind, seq, jsonl));
+                if let Some(batch) = crate::projection::agent_records::project(&publication) {
+                    let kind = match batch.mode {
+                        phux_client_core::session::agent_stream::AgentRecordMode::Replace => {
+                            AgentRecordsKind::Retained
+                        }
+                        phux_client_core::session::agent_stream::AgentRecordMode::Append => {
+                            AgentRecordsKind::Live
+                        }
+                    };
+                    projected.push(agent_records(
+                        &publication.resource_id,
+                        session,
+                        kind,
+                        batch.seq,
+                        batch.jsonl,
+                    ));
+                }
             }
             Event::AgentSessionClosed {
                 terminal_id,
                 session,
+                ..
             } => projected.push(agent_records(
                 &terminal_id,
                 session,

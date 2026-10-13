@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-10-11
+last-reviewed: 2026-10-12
 ---
 
 # The client runtime
@@ -47,33 +47,55 @@ announces a question. `AgentAskedState { asked: false }` is the level that
 retracts it, so a question cleared while a client was not listening is not
 shown again.
 
-With `ControlOptions::subscribe_agent_sessions` (phux-mobile's lane) the
-plane also streams every `AgentSession` resource (ADR-0103) whose parent
-Terminal the connection streams. Each `ATTACHED`, each `GET_STATE` read, and
-each successful per-terminal attach reconciles the listed sessions: a new one
-is declared to the kernel and subscribed with `ATTACH_RESOURCE` (no resize);
-the `GET_STATE` every announced spawn triggers picks up a new session; a
-refused subscription is retried by the next read. Records arrive as the
-lossless `Event::AgentRecords` (`retained` replaces the whole retained stream;
-otherwise records append, from live output or a resumed suffix), carrying the
-parent and provider identity the catalog listed. A close, a `GET_STATE` that
-no longer lists the session, a detach of its pane (which also sends
-`DETACH_RESOURCE` for it), or a new server incarnation yields
-`Event::AgentSessionClosed` once; a later server close of that id is not a
-`TerminalClosed`. Same-incarnation reconnects preserve the kernel's committed
-log, derived state, and sequence watermark. With `AGENT_STREAM_RESUME`, the
-plane queries `EngineHandle::agent_stream_info` and requests only the suffix
-after that committed sequence; evicted cursors and older servers receive full
-replacement ([ADR-0159](../adr/0159-agent-streams-resume-from-committed-records.md)).
-Unpublished staging never advances the cursor. An empty resume keeps the log;
-an empty full bootstrap clears it. The C ABI leaves the option off: its
-workspace refresh subscribes the same streams itself, using the plane's
-capability/incarnation-gated cursor query.
-Committed C ABI batches not yet drained survive transport loss, but wait until
-the next attach rebinds the host catalog before becoming visible again. A new
-incarnation discards them. Engine reuse compares the effective history policy:
-an explicit binding policy overrides the attach's default scrollback depth and
-must not lose a committed resume anchor when that unused default changes.
+With `ControlOptions::subscribe_agent_sessions` (phux-mobile's lane), the
+plane streams every `AgentSession` resource (ADR-0103) whose parent Terminal
+the connection streams. `ATTACHED`, `GET_STATE`, and successful per-terminal
+attaches reconcile the listed sessions. New sessions are declared to the
+kernel and subscribed with `Command::attach_agent_session` (no resize); a
+refused subscription is retried by the next read. Terminal callers use
+`Command::attach_terminal`, which cannot carry an agent cursor. Both
+constructors preserve the existing `ATTACH_RESOURCE` wire shape.
+
+Core's `session::agent_stream::lifecycle` owns decoding, staging, validation,
+folding, committed continuity, and retirement for each agent stream. A commit
+produces `KernelEffect::AgentPublication`: resource identity, typed stream and
+bootstrap identity, committed sequence watermark, `Replace` or `Append`, and
+validated records. Successful READY emits a publication even with no records.
+An empty replacement clears the log; an empty append advances generation
+metadata without changing the log. Invalid staging emits no agent publication.
+
+The runtime's `control::agent_delivery` owns delivery, not the bindings.
+`Event::AgentPublication` carries one `Arc` allocation for the committed record
+vector and, for runtime-owned subscriptions, the catalog's parent/provider
+identity. Ordinary `take_events` and `take_observation` accept ownership on
+drain. `take_events_leased` retains the
+allocation until `accept_agent_publication` accepts that exact pointer.
+Transport loss or replacement parks unaccepted publications, including those
+already leased. Replay waits for current resource admission and attach
+readiness, follows the catalog snapshot, and precedes later committed records.
+An authoritative catalog omission, close, or release discards that resource's
+pending publications and cursor. A new server incarnation discards all of them.
+`AgentSessionClosed` carries the last committed stream stamp captured before
+the kernel forgets the stream; it is not a `TerminalClosed`.
+
+Same-incarnation reconnects preserve the kernel's committed log, derived state,
+and sequence watermark. With `AGENT_STREAM_RESUME`, the plane requests only
+the suffix after that watermark; evicted cursors and older servers receive a
+full replacement
+([ADR-0159](../adr/0159-agent-streams-resume-from-committed-records.md)).
+Unpublished staging never advances the cursor. Engine reuse compares the
+effective history policy: an explicit binding policy overrides the attach's
+default scrollback depth, so an unused default cannot erase a resume anchor.
+
+The C ABI leaves automatic agent subscription off because its owning-thread
+workspace catalog selects subscriptions and owns their request IDs. Pending
+and confirmed wire requests establish subscription state; replayed stream
+metadata does not. The shared FFI projection lowers publications to existing
+C effects and UniFFI record events without reconstructing commit policy from
+packets. Empty append effects may be suppressed, but their stream stamp is
+still adopted. `phux_client_effect_clear` accepts C publications. Ending a
+borrow on another mutable call is not acceptance. Transport retirement drops
+staged views without accepting their publications.
 
 In `Runtime::embedded`, the consumer owns the socket and feeds frames directly.
 Harnesses use this lane for synthetic frames, as do the C ABI's
@@ -104,8 +126,8 @@ The consumer checks `ControlPlane::accepts_inbound(epoch)` under the same
 control lock used to feed each frame: transport loss can invalidate a batch
 after it was drained, even before a replacement socket opens.
 `phux-client-ffi` takes this lane because its per-frame behavior — retired-close
-suppression, bootstrap-profile validation, agent-generation tracking — reads
-workspace-subscription state only its owning thread may touch (ADR-0133
+suppression, bootstrap-profile validation, and workspace reconciliation — reads
+binding-owned catalog state only its owning thread may touch (ADR-0133
 decision 6). It processes lifecycle events before decoding the batch, retiring
 pending workspace reads, subscriptions and attach bookkeeping while keeping
 the last-good publication available for frozen display, not input authority.

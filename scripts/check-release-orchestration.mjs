@@ -35,6 +35,15 @@ assert.equal(manifest["clients/cockpit"], cockpitVersion, "Cockpit manifest and 
 
 assert.doesNotMatch(releasePlease, /clients--cockpit--/, "slash-normalized release-please outputs do not exist");
 assert.doesNotMatch(releasePlease, /\bgit tag\b/, "release-please is the sole tag owner");
+{
+  const undo = releasePlease.indexOf('gh pr ready "$num" --repo "$GITHUB_REPOSITORY" --undo');
+  const cargo = releasePlease.indexOf("cargo update --workspace");
+  const pin = releasePlease.indexOf("chore: sync native demo source with the release version");
+  const restore = releasePlease.indexOf('gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY"');
+  assert.ok(undo > 0 && cargo > undo, "a ready release PR is drafted before the slow lockfile sync");
+  assert.ok(pin > cargo && restore > pin, "the draft hold is released only after lockfile and source-pin pushes");
+  assert.match(releasePlease, /held_prs:/, "the release-please job records which PRs it held");
+}
 assert.doesNotMatch(releasePlease, /wait_validation\.py/, "release-please must not poll ci");
 assert.doesNotMatch(releasePlease, /uses: \.\/\.github\/workflows\/release\.yml/, "publish.yml owns artifact fan-out");
 

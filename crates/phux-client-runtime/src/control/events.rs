@@ -1,7 +1,10 @@
 //! The owned events a consumer drains from the control plane.
 
+use std::sync::Arc;
+
 use phux_client_core::history::HistoryStatus;
-use phux_client_core::session::agent_stream::AgentEventRecord;
+use phux_client_core::session::AgentStreamInfo;
+pub use phux_client_core::session::agent_stream::{AgentPublication, AgentRecordMode};
 use phux_client_core::session::{HistoryUnavailableReason, KernelSend};
 use phux_protocol::ClientId;
 use phux_protocol::ResourceId;
@@ -295,17 +298,17 @@ pub enum Event {
         /// The tombstone reason.
         reason: TombstoneReason,
     },
-    /// Decoded records appended to an `AgentSession` stream, in order.
-    AgentRecords {
-        /// The `AgentSession` resource.
-        terminal_id: ResourceId,
-        /// The records.
-        records: Vec<AgentEventRecord>,
-        /// `true` when `records` is a generation's whole retained stream,
-        /// delivered once when it publishes (after a subscription, a
-        /// reconnect, or a resync), and replaces every record held for the
-        /// resource. `false` for appends, including a resumed bootstrap suffix.
-        retained: bool,
+    /// One committed `AgentSession` publication, in commit order.
+    ///
+    /// `publication` is an [`Arc`] the runtime retains until an accepting
+    /// drain (`take_events`) or, after [`take_events_leased`](super::ControlPlane::take_events_leased),
+    /// [`ControlPlane::accept_agent_publication`](super::ControlPlane::accept_agent_publication).
+    /// Acceptance is the consumer taking delivery, not the end of a view
+    /// borrow. The record vector is not copied. `stream` on the publication
+    /// is the commit watermark, including an empty publication.
+    AgentPublication {
+        /// The committed batch and its watermark.
+        publication: Arc<AgentPublication>,
         /// The resource's parent and provider identity.
         session: AgentSessionInfo,
     },
@@ -315,11 +318,16 @@ pub enum Event {
     /// was detached, or the server restarted as a new incarnation. Exactly
     /// once per subscription; no records follow, and a later server close
     /// of the same id never surfaces as [`Event::TerminalClosed`].
+    ///
+    /// `stream` is the last committed watermark, captured before detach or
+    /// deletion. `None` when nothing had committed.
     AgentSessionClosed {
         /// The `AgentSession` resource.
         terminal_id: ResourceId,
         /// The resource's parent and provider identity.
         session: AgentSessionInfo,
+        /// Authoritative committed stream, if one had published.
+        stream: Option<AgentStreamInfo>,
     },
     /// One acknowledged input operation resolved. Lossless: never dropped
     /// by the queue cap.
@@ -425,7 +433,7 @@ impl Event {
                 | Self::InputDelivery { .. }
                 | Self::CommandResult { .. }
                 | Self::InputHolderChanged { .. }
-                | Self::AgentRecords { .. }
+                | Self::AgentPublication { .. }
                 | Self::AgentSessionClosed { .. }
                 | Self::ConnectionOpened { .. }
         )

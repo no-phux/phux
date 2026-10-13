@@ -2154,11 +2154,16 @@ pub(crate) enum Command {
     ///
     /// With no subcommand, mint one credential into the server's store and
     /// print its stable ID, one-time bearer secret, and certificate fingerprint.
-    /// `ls` lists ids with mint time, last seen, and revoked status; `prune
-    /// --unused-for DURATION` revokes idle credentials; `rotate` replaces the
-    /// bearer with a bounded overlap; `revoke` denies all generations on
-    /// future connections. These operations update the store directly and take
-    /// effect without restarting the server.
+    /// `--qr` is the camera form: a large terminal QR and a clear expiry line,
+    /// with the bearer and connect link omitted from the text (they exist only
+    /// inside the QR). `--secret-file PATH` is the off-camera pre-pair: the
+    /// bearer is written to a new mode-0600 file and is not printed. `--json`
+    /// still prints the bearer for `phux host add` and cannot combine with
+    /// `--qr` or `--secret-file`. `ls` lists ids with mint time, last seen,
+    /// and revoked status; `prune --unused-for DURATION` revokes idle credentials; `rotate`
+    /// replaces the bearer with a bounded overlap; `revoke` denies all
+    /// generations on future connections. These operations update the store
+    /// directly and take effect without restarting the server.
     ///
     /// Minting first asks the running server (`--socket`) which remote
     /// listeners it has bound, and mints nothing when none would accept the
@@ -2181,14 +2186,31 @@ pub(crate) enum Command {
         #[usage(long, value_name = "PATH")]
         cert: Option<std::path::PathBuf>,
 
-        /// Also render the pairing payload as a scannable QR code. The QR
-        /// encodes the same `https://phux.sh/connect` one-tap link
-        /// printed as text, so a phone can pair by scanning instead of typing. Needs a server
-        /// address: pass `--host`, or let it derive one from the running
-        /// server's bound wss listener. Refused, with nothing minted, when
-        /// neither yields an address a device can dial.
-        #[usage(long)]
+        /// Render the pairing link as a camera-sized terminal QR and do not
+        /// print the bearer or the link. The QR is the largest scale that
+        /// fits the terminal width. The expiry line says when the credential
+        /// stops working, or that it does not expire. Needs a server address:
+        /// pass `--host`, or let it derive one from the running server's
+        /// bound wss listener. Refused, with nothing minted, when neither
+        /// yields an address a device can dial. Cannot combine with `--json`,
+        /// which prints the bearer.
+        #[usage(long, conflicts("--json"))]
         qr: bool,
+
+        /// Write the bearer and connect link to PATH (mode 0600, created
+        /// anew) and do not print them. PATH must not already exist. This is
+        /// the off-camera pre-pair: the filmed terminal never shows the
+        /// token. Cannot combine with `--json`, which prints the bearer.
+        #[usage(long, value_name = "PATH", conflicts("--json"))]
+        secret_file: Option<std::path::PathBuf>,
+
+        /// Absolute expiry for the minted credential (`30d`, `24h`, `15m`,
+        /// `45s`, or a bare number of seconds), from 1 second through 30
+        /// days. Omitted: the credential does not expire. The human output
+        /// always states which of those is true. Admission fails after the
+        /// instant; revocation still works.
+        #[usage(long, value_name = "DURATION")]
+        expires: Option<String>,
 
         /// Server address (`host:port`, or a full `ws://`/`wss://` URL) to
         /// embed in the connect link so it is fully self-contained; the

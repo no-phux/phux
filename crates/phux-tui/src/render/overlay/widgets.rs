@@ -7,7 +7,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph, Widget, Wrap};
 
 use crate::render::{ChromeBreakpoints, Theme};
 
@@ -67,6 +67,9 @@ impl<'a> Modal<'a> {
     fn paragraph(&self) -> Paragraph<'a> {
         let block = Block::default()
             .borders(Borders::ALL)
+            // Rounded corners: a panel floating over terminal content, not a
+            // table cell of the pane grid (whose rules stay square).
+            .border_type(BorderType::Rounded)
             // Fill with the theme surface: the pane cells behind cannot be
             // dimmed (ADR-0020), so the panel's contrast and the drop shadow
             // separate it. `[theme] surface = "reset"` makes it transparent.
@@ -172,6 +175,8 @@ pub fn paint_scrollbar(buf: &mut Buffer, track: Rect, theme: &Theme, total: usiz
     let max_offset = total - height;
     let thumb_top = offset.min(max_offset) * travel / max_offset;
 
+    // The thumb is a heavy stretch of the border it rides, the way an
+    // overlay scrollbar thickens the edge it sits on, not a block slab.
     let thumb = Style::default().fg(theme.dim).bg(theme.surface);
     let rail = Style::default().fg(theme.border).bg(theme.surface);
     for row in 0..track.height {
@@ -180,7 +185,7 @@ pub fn paint_scrollbar(buf: &mut Buffer, track: Rect, theme: &Theme, total: usiz
             row >= thumb_top && row < thumb_top + thumb_len
         };
         if let Some(cell) = buf.cell_mut((track.x, track.y + row)) {
-            cell.set_symbol(if on_thumb { "█" } else { "│" });
+            cell.set_symbol(if on_thumb { "┃" } else { "│" });
             cell.set_style(if on_thumb { thumb } else { rail });
         }
     }
@@ -250,10 +255,10 @@ mod tests {
                 .collect::<String>()
         };
         assert_eq!(paint(8, 0), " ".repeat(8));
-        assert_eq!(paint(32, 0), "██││││││");
-        assert_eq!(paint(32, 24), "││││││██");
-        assert_eq!(paint(32, 12), "│││██│││");
-        assert_eq!(paint(500, 0).matches('█').count(), 1);
+        assert_eq!(paint(32, 0), "┃┃││││││");
+        assert_eq!(paint(32, 24), "││││││┃┃");
+        assert_eq!(paint(32, 12), "│││┃┃│││");
+        assert_eq!(paint(500, 0).matches('┃').count(), 1);
 
         let mut buf = Buffer::empty(Rect::new(0, 0, 4, 4));
         paint_scrollbar(&mut buf, Rect::new(3, 0, 0, 4), &theme, 99, 0);

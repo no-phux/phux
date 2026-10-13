@@ -253,7 +253,7 @@ implementation tokens live in `render/theme.rs` and the sidebar composer.
 
 | Token | Value | Purpose |
 |---|---|---|
-| Sidebar automatic width | 25% of viewport, clamped to 28–40 columns | Give names more room on wide screens without making terminal content chase live labels. Explicit positive widths stay fixed. |
+| Sidebar width | 20 columns; `0` opts into 25% of viewport, clamped to 28–40 | Fit a badge, a name, and a right-hand tag while leaving the terminal its columns. Automatic width depends only on the viewport, so terminal content never chases live labels. |
 | Sidebar gutter | 1 column on either side of the content | Separate labels from the outer edge and divider. |
 | Icon column | 1 glyph + 1 space | Align window, agent, roster, and action labels. Use portable text glyphs, no font-specific icons. |
 | Window block | 2 rows | Primary label and aligned branch context; a branchless row supplies breathing room. |

@@ -353,11 +353,7 @@ fn samples(world: &World) -> Vec<FrameKind> {
             key: "phux.agent/v1".to_owned(),
         },
         FrameKind::Pong { nonce: 1 },
-        command(Command::AttachResource {
-            terminal_id: t.clone(),
-            role_policy: None,
-            agent_after_seq: None,
-        }),
+        command(Command::attach_terminal(t.clone(), None)),
         command(Command::DetachResource {
             terminal_id: t.clone(),
         }),
@@ -895,11 +891,7 @@ fn rows(world: &mut World) -> Vec<Row> {
         denied(FrameKind::Pong { nonce: 1 }),
         // --- Nested commands ---
         on_terminal(
-            command(Command::AttachResource {
-                terminal_id: t.clone(),
-                role_policy: None,
-                agent_after_seq: None,
-            }),
+            command(Command::attach_terminal(t.clone(), None)),
             "bind,observe",
         ),
         exempt(command(Command::DetachResource {

@@ -457,8 +457,8 @@ mod tests {
     }
 
     /// A client that has queued HELLO and not yet heard `HELLO_OK`.
-    fn hello_pending(names: &[&str]) -> *mut PhuxClient {
-        let client = with_sessions(new_client(), names);
+    fn hello_pending() -> *mut PhuxClient {
+        let client = new_client();
         assert_eq!(
             unsafe { crate::c::phux_client_queue_hello(client, span("test")) },
             PhuxClientResult::Ok
@@ -701,7 +701,7 @@ mod tests {
 
     #[test]
     fn a_follower_subscribes_right_after_hello_ok_and_hears_other_clients_renames() {
-        let client = hello_pending(&["build", "deploy"]);
+        let client = hello_pending();
         assert_eq!(
             unsafe { phux_client_follow_session_names(client) },
             PhuxClientResult::Ok
@@ -710,6 +710,9 @@ mod tests {
         assert_eq!(feed(client, &hello_ok()), PhuxClientResult::Ok);
         // One read-only subscription, and never an attach.
         assert_eq!(sent(client), [subscription()]);
+        // Populate the catalog on this negotiated connection, not before its
+        // initial ConnectionOpened boundary retires connection-owned state.
+        with_sessions(client, &["build", "deploy"]);
 
         // Another client's rename moves the list, though this one renamed
         // nothing; no rename of ours is pending or settled by it.
@@ -742,7 +745,7 @@ mod tests {
         unsafe { crate::c::phux_client_free(client) };
 
         // A client that never follows subscribes only at its first rename.
-        let lazy = hello_pending(&["build"]);
+        let lazy = hello_pending();
         assert_eq!(feed(lazy, &hello_ok()), PhuxClientResult::Ok);
         assert!(sent(lazy).is_empty());
         unsafe { crate::c::phux_client_free(lazy) };

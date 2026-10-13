@@ -24,6 +24,17 @@ export const SITE = {
 export const OVERVIEW = {
   title: "Get started",
   summary: "Start locally, automate a terminal, or connect another machine.",
+  pitch: {
+    headline: "terminals as objects on a wire",
+    text:
+      "phux keeps each shell running on a server, so a terminal is an object you can split, leave, and attach to again. People running pi or Claude Code can put the agent in one pane and point it at another: the pi extension and the Claude Code plugin can read that pane and type a command into the live shell, and the shell is still there after you detach. Walk through a pi session in ",
+    linkLabel: "pi + phux in 60 seconds",
+    linkHref: "/consumers/pi-in-60-seconds",
+    iosBefore: "The ",
+    iosLabel: "iOS client page",
+    iosHref: "/consumers/ios",
+    iosAfter: " lists integration requirements and does not establish release availability.",
+  },
   paths: [
     { href: "/quickstart", title: "Quickstart", text: "Start, split, and detach." },
     { href: "/consumers/getting-started", title: "Coding agents", text: "Choose an integration and verify it." },

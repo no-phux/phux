@@ -35,9 +35,9 @@ pub const NEEDS_YOU_HEADER: &str = "Agents";
 /// Sessions header, including the current session.
 pub const SPACES_HEADER: &str = "Sessions";
 /// Quiet placeholders keep both fixed areas recognizable.
-pub const AGENTS_EMPTY: &str = "—";
+pub const AGENTS_EMPTY: &str = "none";
 /// Placeholder when no sessions are available.
-pub const SESSIONS_EMPTY: &str = "—";
+pub const SESSIONS_EMPTY: &str = "none";
 /// The collapse chevron painted in the strip's bottom corner.
 /// Clicking it runs `toggle-sidebar`.
 pub const COLLAPSE_GLYPH: &str = "‹";

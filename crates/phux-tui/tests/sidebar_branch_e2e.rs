@@ -59,8 +59,14 @@ fn sidebar_branch_line_derives_from_attached_snapshot_cwd() {
     }
 
     // Canonicalized so the kernel-reported cwd matches (macOS /private/var).
+    // A short directory name: the window is named after it, and the default
+    // strip drops branch context rather than truncate the window's identity.
     let repo = TempDir::new().unwrap();
-    let repo_path = repo.path().canonicalize().expect("canonicalize repo");
+    let repo_path = repo
+        .path()
+        .canonicalize()
+        .expect("canonicalize repo")
+        .join("app");
     std::fs::create_dir_all(repo_path.join(".git")).unwrap();
     std::fs::write(
         repo_path.join(".git/HEAD"),

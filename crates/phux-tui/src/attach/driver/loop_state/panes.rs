@@ -40,11 +40,10 @@ impl super::SessionLoop {
         }
         let frame = FrameKind::Command {
             request_id,
-            command: Command::AttachResource {
-                terminal_id: terminal_id.clone(),
-                role_policy: crate::attach::attach_role::pane_attach_role(),
-                agent_after_seq: None,
-            },
+            command: Command::attach_terminal(
+                terminal_id.clone(),
+                crate::attach::attach_role::pane_attach_role(),
+            ),
         };
         if let Err(error) = send_unless_peer_gone(conn, &frame).await {
             self.pending_stream_binds.remove(&request_id);

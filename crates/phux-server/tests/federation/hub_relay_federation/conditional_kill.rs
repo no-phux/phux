@@ -117,11 +117,7 @@ fn another_hub_consumer_attaching_or_typing_refuses_the_kill_at_the_hub() {
         let mut other = fed.hub().await;
 
         let (pane, instance) = spawn_bound(&mut hub, 8100, Some("sat")).await;
-        let attach = Command::AttachResource {
-            terminal_id: pane.clone(),
-            role_policy: None,
-            agent_after_seq: None,
-        };
+        let attach = Command::attach_terminal(pane.clone(), None);
         let attached = command(&mut other, 8101, attach).await;
         assert!(
             matches!(attached, CommandResult::Ok | CommandResult::OkWith(_)),

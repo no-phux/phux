@@ -1699,8 +1699,8 @@ mod tests {
         page.handle_key(&press(PhysicalKey::Enter, None));
         assert_eq!(
             page.editor.as_ref().map(|e| e.buffer.as_str()),
-            Some("0"),
-            "the editor opens on the effective value (0 = automatic width)"
+            Some("20"),
+            "the editor opens on the effective value (the shipped 20 columns)"
         );
         page.handle_key(&press(PhysicalKey::Escape, None));
         assert_eq!(edit(&mut page, "32"), OverlayCommand::ReloadConfig);
@@ -1747,8 +1747,8 @@ mod tests {
         assert!(page.origin_at("sidebar.width").is_none());
         assert_eq!(
             page.value_at("sidebar.width"),
-            Some(toml::Value::Integer(0)),
-            "the shipped default (0 = automatic width) shows through"
+            Some(toml::Value::Integer(20)),
+            "the shipped default (20 columns) shows through"
         );
 
         assert_eq!(

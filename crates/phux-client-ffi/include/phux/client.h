@@ -1108,6 +1108,8 @@ PhuxClientResult phux_client_outgoing_get(const PhuxClient *client, size_t index
 PhuxClientResult phux_client_outgoing_clear(PhuxClient *client);
 size_t phux_client_effect_count(const PhuxClient *client);
 PhuxClientResult phux_client_effect_get(const PhuxClient *client, size_t index, PhuxClientEffect *out_effect);
+/* Accepts staged effects, including committed agent publications. Ending a borrow
+ * is not acceptance; transport retirement may drop views without accepting them. */
 PhuxClientResult phux_client_effect_clear(PhuxClient *client);
 PhuxClientResult phux_client_terminal_grid(PhuxClient *client, const PhuxResourceId *terminal_id, PhuxTerminalGridView *out_view);
 
@@ -1614,8 +1616,8 @@ PhuxClientResult phux_client_follow_session_names(PhuxClient *client);
  * no framing of its own.
  *
  * The DECODE POINT DOES NOT MOVE. This ABI's per-frame behavior --
- * retired-close suppression, bootstrap-profile validation, agent-generation
- * tracking -- reads workspace-subscription state that only the owning
+ * retired-close suppression, bootstrap-profile validation, workspace
+ * reconciliation -- reads binding-owned catalog state that only the owning
  * thread may touch. So the driver retains inbound frames and
  * phux_client_poll feeds them from the owning thread, through the same path
  * feed_frame walks. The client keeps its owning-thread contract unchanged;

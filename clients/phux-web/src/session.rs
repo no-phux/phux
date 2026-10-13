@@ -954,11 +954,7 @@ impl Session {
         Outcome {
             send: vec![encode(&FrameKind::Command {
                 request_id,
-                command: Command::AttachResource {
-                    terminal_id,
-                    role_policy: None,
-                    agent_after_seq: None,
-                },
+                command: Command::attach_terminal(terminal_id, None),
             })],
             panes: true,
             ..Outcome::default()
@@ -1712,7 +1708,7 @@ impl Session {
                     }));
                 }
                 KernelEffect::Damage(_) => outcome.render = true,
-                KernelEffect::AgentRecords { .. } => outcome.badges = true,
+                KernelEffect::AgentPublication(_) => outcome.badges = true,
                 KernelEffect::Status(KernelStatus::Engine {
                     key,
                     status: EngineStatus::Bell,

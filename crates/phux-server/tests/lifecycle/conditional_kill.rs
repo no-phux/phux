@@ -67,11 +67,7 @@ fn conditional_kill_takes_only_panes_still_the_callers() {
 
         // Killed: only its spawner ever attached it.
         let (own, instance) = spawn_bound(&mut spawner, 1).await;
-        let attach_own = Command::AttachResource {
-            terminal_id: own.clone(),
-            role_policy: None,
-            agent_after_seq: None,
-        };
+        let attach_own = Command::attach_terminal(own.clone(), None);
         assert!(matches!(
             command(&mut spawner, 2, attach_own).await,
             CommandResult::Ok | CommandResult::OkWith(_)
