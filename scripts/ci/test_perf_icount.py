@@ -98,6 +98,7 @@ class RouteTests(unittest.TestCase):
             "crates/phux-server/src/lib.rs": "true",
             "crates/phux-protocol/src/lib.rs": "true",
             "crates/phux-client-core/src/lib.rs": "true",
+            "crates/phux-core/src/org.rs": "true",
             "benchmarks/icount-baseline.json": "true",
             "just/perf.just": "true",
             ".github/workflows/ci.yml": "true",

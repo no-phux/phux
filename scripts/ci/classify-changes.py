@@ -355,6 +355,7 @@ PERF_ICOUNT_PATHS = (
     "crates/phux-server/*",
     "crates/phux-protocol/*",
     "crates/phux-client-core/*",
+    "crates/phux-core/*",
     "Cargo.toml",
     "Cargo.lock",
     "rust-toolchain.toml",

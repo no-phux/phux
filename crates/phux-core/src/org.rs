@@ -5,7 +5,7 @@
 //! calls [`Org::commit`] (through [`crate::Registry::commit`]) to mirror it
 //! in memory, then publishes the transition's events.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -268,6 +268,9 @@ pub struct Org {
     resources: BTreeMap<ResourceKey, Resource>,
     arrangements: BTreeMap<ArrangementKey, Arrangement>,
     receipts: BTreeMap<OperationId, Receipt>,
+    /// `receipts` ordered oldest first, so pruning touches only what it
+    /// drops.
+    receipts_by_age: BTreeSet<(Stamp, OperationId)>,
 }
 
 impl Org {
@@ -301,6 +304,7 @@ impl Org {
             resources: BTreeMap::new(),
             arrangements: BTreeMap::new(),
             receipts: BTreeMap::new(),
+            receipts_by_age: BTreeSet::new(),
         }
     }
 
@@ -317,13 +321,16 @@ impl Org {
         arrangements: impl IntoIterator<Item = Arrangement>,
         receipts: impl IntoIterator<Item = Receipt>,
     ) -> Result<Self, InvariantViolation> {
+        let receipts: BTreeMap<OperationId, Receipt> =
+            receipts.into_iter().map(|r| (r.operation, r)).collect();
         let org = Self {
             authority,
             instance,
             sessions: sessions.into_iter().map(|s| (s.key, s)).collect(),
             resources: resources.into_iter().map(|r| (r.key, r)).collect(),
             arrangements: arrangements.into_iter().map(|a| (a.key, a)).collect(),
-            receipts: receipts.into_iter().map(|r| (r.operation, r)).collect(),
+            receipts_by_age: receipts.values().map(|r| (r.at, r.operation)).collect(),
+            receipts,
         };
         org.check_invariants()?;
         Ok(org)
@@ -460,7 +467,10 @@ impl Org {
             }
         }
         if let Some(receipt) = &transition.receipt {
-            self.receipts.insert(receipt.operation, receipt.clone());
+            if let Some(old) = self.receipts.insert(receipt.operation, receipt.clone()) {
+                self.receipts_by_age.remove(&(old.at, old.operation));
+            }
+            self.receipts_by_age.insert((receipt.at, receipt.operation));
         }
     }
 
@@ -480,21 +490,14 @@ impl Org {
     /// Drop receipts older than `before`, then the oldest beyond
     /// `keep_at_most`. Returns the dropped operation ids.
     pub fn prune_receipts(&mut self, before: Stamp, keep_at_most: usize) -> Vec<OperationId> {
-        let mut by_age: Vec<(Stamp, OperationId)> = self
-            .receipts
-            .values()
-            .map(|r| (r.at, r.operation))
-            .collect();
-        by_age.sort_unstable();
-        let excess = by_age.len().saturating_sub(keep_at_most);
-        let dropped: Vec<OperationId> = by_age
-            .iter()
-            .enumerate()
-            .filter(|(i, (at, _))| *i < excess || *at < before)
-            .map(|(_, (_, op))| *op)
-            .collect();
-        for op in &dropped {
-            self.receipts.remove(op);
+        let mut dropped = Vec::new();
+        while let Some(&(at, op)) = self.receipts_by_age.first() {
+            if at >= before && self.receipts_by_age.len() <= keep_at_most {
+                break;
+            }
+            self.receipts_by_age.pop_first();
+            self.receipts.remove(&op);
+            dropped.push(op);
         }
         dropped
     }

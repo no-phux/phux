@@ -270,6 +270,9 @@ pub const SCHEMA_VERSION: i64 = 1;
 pub struct SqliteOrgStore {
     conn: Connection,
     path: PathBuf,
+    /// Rows in `receipts`, kept beside the table so the cap check is not a
+    /// scan per commit.
+    receipts: u64,
 }
 
 impl SqliteOrgStore {
@@ -316,10 +319,13 @@ impl SqliteOrgStore {
             }
             tx.commit()?;
         }
-        Ok(Self {
+        let mut store = Self {
             conn,
             path: path.to_path_buf(),
-        })
+            receipts: 0,
+        };
+        store.receipts = store.count("receipts")?;
+        Ok(store)
     }
 
     /// How many rows a table holds, for tests and diagnostics.
@@ -342,12 +348,23 @@ impl SqliteOrgStore {
     }
 }
 
+/// Run one statement through the connection's statement cache, so a
+/// commit does not re-parse its SQL.
+fn exec(
+    tx: &Transaction<'_>,
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> Result<usize, StoreError> {
+    Ok(tx.prepare_cached(sql)?.execute(params)?)
+}
+
 fn to_i64(v: u64) -> i64 {
     i64::try_from(v).unwrap_or(i64::MAX)
 }
 
 fn put_meta(tx: &Transaction<'_>, key: &str, value: &[u8]) -> Result<(), StoreError> {
-    tx.execute(
+    exec(
+        tx,
         "INSERT INTO meta (k, v) VALUES (?1, ?2) ON CONFLICT(k) DO UPDATE SET v = excluded.v",
         params![key, value],
     )?;
@@ -360,7 +377,8 @@ fn put_authority(tx: &Transaction<'_>, authority: &Authority) -> Result<(), Stor
 }
 
 fn put_session(tx: &Transaction<'_>, s: &Session) -> Result<(), StoreError> {
-    tx.execute(
+    exec(
+        tx,
         "INSERT INTO sessions (key, name, lifetime, awaiting, revision, record)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT(key) DO UPDATE SET name = excluded.name, lifetime = excluded.lifetime,
@@ -378,7 +396,8 @@ fn put_session(tx: &Transaction<'_>, s: &Session) -> Result<(), StoreError> {
 }
 
 fn put_resource(tx: &Transaction<'_>, r: &Resource) -> Result<(), StoreError> {
-    tx.execute(
+    exec(
+        tx,
         "INSERT INTO resources (key, session, kind, exec_state, revision, record)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT(key) DO UPDATE SET session = excluded.session, kind = excluded.kind,
@@ -401,7 +420,8 @@ fn put_arrangement(tx: &Transaction<'_>, a: &Arrangement) -> Result<(), StoreErr
         ArrangementOwner::Session(k) => k.to_bytes(),
         ArrangementOwner::Workspace(k) => k.to_bytes(),
     };
-    tx.execute(
+    exec(
+        tx,
         "INSERT INTO arrangements (key, owner, revision, record) VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT(key) DO UPDATE SET owner = excluded.owner, revision = excluded.revision,
              record = excluded.record",
@@ -419,18 +439,21 @@ fn apply_delta(tx: &Transaction<'_>, delta: &Delta, now: Stamp) -> Result<(), St
     match delta {
         Delta::PutSession(s) => put_session(tx, s)?,
         Delta::DeleteSession(k) => {
-            tx.execute(
+            exec(
+                tx,
                 "DELETE FROM sessions WHERE key = ?1",
                 [k.as_bytes().as_slice()],
             )?;
         }
         Delta::PutResource(r) => put_resource(tx, r)?,
         Delta::RemoveResource(k) => {
-            tx.execute(
+            exec(
+                tx,
                 "DELETE FROM resources WHERE key = ?1",
                 [k.as_bytes().as_slice()],
             )?;
-            tx.execute(
+            exec(
+                tx,
                 "INSERT INTO tombstones (key, removed_at) VALUES (?1, ?2)
                  ON CONFLICT(key) DO UPDATE SET removed_at = excluded.removed_at",
                 params![k.as_bytes().as_slice(), to_i64(now.as_millis())],
@@ -438,7 +461,8 @@ fn apply_delta(tx: &Transaction<'_>, delta: &Delta, now: Stamp) -> Result<(), St
         }
         Delta::PutArrangement(a) => put_arrangement(tx, a)?,
         Delta::DeleteArrangement(k) => {
-            tx.execute(
+            exec(
+                tx,
                 "DELETE FROM arrangements WHERE key = ?1",
                 [k.as_bytes().as_slice()],
             )?;
@@ -447,8 +471,16 @@ fn apply_delta(tx: &Transaction<'_>, delta: &Delta, now: Stamp) -> Result<(), St
     Ok(())
 }
 
-fn put_receipt(tx: &Transaction<'_>, receipt: &Receipt) -> Result<(), StoreError> {
-    tx.execute(
+/// Store `receipt`; returns whether it added a row rather than replacing
+/// one.
+fn put_receipt(tx: &Transaction<'_>, receipt: &Receipt) -> Result<bool, StoreError> {
+    let existed = tx
+        .prepare_cached("SELECT 1 FROM receipts WHERE operation = ?1")?
+        .query_row([receipt.operation.as_bytes().as_slice()], |_| Ok(()))
+        .optional()?
+        .is_some();
+    exec(
+        tx,
         "INSERT INTO receipts (operation, at, receipt) VALUES (?1, ?2, ?3)
          ON CONFLICT(operation) DO UPDATE SET at = excluded.at, receipt = excluded.receipt",
         params![
@@ -457,27 +489,41 @@ fn put_receipt(tx: &Transaction<'_>, receipt: &Receipt) -> Result<(), StoreError
             serde_json::to_string(receipt)?,
         ],
     )?;
-    Ok(())
+    Ok(!existed)
 }
 
-/// Drop receipts past the horizon or the cap, and tombstones past theirs.
-fn prune(tx: &Transaction<'_>, now: Stamp) -> Result<(), StoreError> {
+/// Drop receipts past the horizon, then the oldest beyond the cap, and
+/// tombstones past their horizon. `receipts` is the row count before;
+/// returns the count after. Each delete walks only the rows it drops.
+fn prune(tx: &Transaction<'_>, now: Stamp, receipts: u64) -> Result<u64, StoreError> {
     let receipt_floor = now.as_millis().saturating_sub(RECEIPT_HORIZON_MS);
-    tx.execute(
+    let expired = exec(
+        tx,
         "DELETE FROM receipts WHERE at < ?1",
         [to_i64(receipt_floor)],
     )?;
-    tx.execute(
-        "DELETE FROM receipts WHERE operation IN (
-             SELECT operation FROM receipts ORDER BY at DESC, operation DESC LIMIT -1 OFFSET ?1)",
-        [i64::try_from(RECEIPT_CAP).unwrap_or(i64::MAX)],
-    )?;
+    let mut receipts = receipts.saturating_sub(u64::try_from(expired).unwrap_or(u64::MAX));
+    let excess = receipts.saturating_sub(u64::try_from(RECEIPT_CAP).unwrap_or(u64::MAX));
+    if excess > 0 {
+        let dropped = exec(
+            tx,
+            // The bound on `at` keeps the walk on the `receipts_at` index:
+            // only the oldest `excess` rows and their ties are sorted.
+            "DELETE FROM receipts WHERE operation IN (
+                 SELECT operation FROM receipts
+                 WHERE at <= (SELECT at FROM receipts ORDER BY at LIMIT 1 OFFSET ?1 - 1)
+                 ORDER BY at, operation LIMIT ?1)",
+            [to_i64(excess)],
+        )?;
+        receipts = receipts.saturating_sub(u64::try_from(dropped).unwrap_or(u64::MAX));
+    }
     let tombstone_floor = now.as_millis().saturating_sub(TOMBSTONE_HORIZON_MS);
-    tx.execute(
+    exec(
+        tx,
         "DELETE FROM tombstones WHERE removed_at < ?1",
         [to_i64(tombstone_floor)],
     )?;
-    Ok(())
+    Ok(receipts)
 }
 
 fn key16(bytes: &[u8], what: &str) -> Result<[u8; 16], StoreError> {
@@ -539,12 +585,16 @@ impl OrgStore for SqliteOrgStore {
         for delta in &transition.deltas {
             apply_delta(&tx, delta, now)?;
         }
-        if let Some(receipt) = &transition.receipt {
-            put_receipt(&tx, receipt)?;
+        let mut receipts = self.receipts;
+        if let Some(receipt) = &transition.receipt
+            && put_receipt(&tx, receipt)?
+        {
+            receipts += 1;
         }
         put_meta(&tx, "journal_seq", &journal_seq.to_be_bytes())?;
-        prune(&tx, now)?;
+        let receipts = prune(&tx, now, receipts)?;
         tx.commit()?;
+        self.receipts = receipts;
         Ok(())
     }
 
@@ -560,16 +610,21 @@ impl OrgStore for SqliteOrgStore {
         for a in org.arrangements() {
             put_arrangement(&tx, a)?;
         }
+        let mut receipts = self.receipts;
         for receipt in org.receipts() {
-            put_receipt(&tx, receipt)?;
+            if put_receipt(&tx, receipt)? {
+                receipts += 1;
+            }
         }
         if let Some(name) = migration {
-            tx.execute(
+            exec(
+                &tx,
                 "INSERT INTO migrations (name, at) VALUES (?1, ?2) ON CONFLICT(name) DO NOTHING",
                 params![name, to_i64(now.as_millis())],
             )?;
         }
         tx.commit()?;
+        self.receipts = receipts;
         Ok(())
     }
 
@@ -730,6 +785,64 @@ mod tests {
             .commit(&Transition::default(), 4, Stamp(TOMBSTONE_HORIZON_MS + 10))
             .unwrap();
         assert_eq!(store.count("tombstones").unwrap(), 0);
+    }
+
+    #[test]
+    fn the_cap_drops_the_receipts_memory_drops() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut keys = SequentialKeys::new(*b"storetst");
+        let mut registry = Registry::new(org(&mut keys));
+        let create = Command {
+            operation: op_id(1),
+            op: Op::ResourceCreate {
+                session: None,
+                resource: shell(),
+            },
+        };
+        registry
+            .execute(&create, &Actor::owner(), Stamp(5), &mut keys)
+            .unwrap();
+        let template = registry.org().receipts().next().cloned().unwrap();
+        // Every receipt shares one stamp, so only the operation id orders
+        // them; ids descend so insertion order is not the answer.
+        let receipts = (0..RECEIPT_CAP + 2).rev().map(|n| {
+            let mut bytes = [0xee; 16];
+            bytes[8..].copy_from_slice(&u64::try_from(n).unwrap().to_be_bytes());
+            Receipt {
+                operation: OperationId::from_bytes(bytes),
+                ..template.clone()
+            }
+        });
+        let o = registry.org();
+        let mut org = Org::restore(
+            *o.authority(),
+            o.instance(),
+            o.sessions().cloned(),
+            o.resources().cloned(),
+            o.arrangements().cloned(),
+            receipts,
+        )
+        .unwrap();
+        let mut store = SqliteOrgStore::open(&dir.path().join("v1.sqlite3")).unwrap();
+        store.import(&org, None, Stamp(5)).unwrap();
+        store.commit(&Transition::default(), 1, Stamp(5)).unwrap();
+        let dropped = org.prune_receipts(Stamp(0), RECEIPT_CAP);
+        assert_eq!(dropped.len(), 2);
+        let kept: Vec<OperationId> = store
+            .load()
+            .unwrap()
+            .unwrap()
+            .receipts
+            .iter()
+            .map(|r| r.operation)
+            .collect();
+        assert_eq!(kept.len(), RECEIPT_CAP);
+        assert!(dropped.iter().all(|op| !kept.contains(op)));
+        let mut mirrored: Vec<OperationId> = org.receipts().map(|r| r.operation).collect();
+        let mut kept = kept;
+        mirrored.sort_unstable();
+        kept.sort_unstable();
+        assert_eq!(kept, mirrored);
     }
 
     #[test]

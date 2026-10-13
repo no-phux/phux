@@ -744,6 +744,9 @@ fn organization_page(
         .into_iter()
         .filter(|(_, id)| crate::policy::filter::admits_session(s, client, Verb::Inventory, *id))
         .collect();
+    // A page bounds records, not sessions: each session is followed by its
+    // admitted members, and the cursor is an offset into that sequence, so
+    // a session with thousands of members spans pages.
     let start = cursor
         .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
         .map_or(0, |b| u32::from_be_bytes(b) as usize);
@@ -752,35 +755,45 @@ fn organization_page(
         n => n.min(MAX_PAGE_SIZE),
     } as usize;
     let total_sessions = visible.len();
-    let total_intake = visible
-        .iter()
-        .filter(|(key, _)| {
-            s.org()
-                .session(key)
-                .is_some_and(|r| r.awaiting_organization)
-        })
-        .count();
-    let total_resources: usize = visible
-        .iter()
-        .map(|(_, id)| {
+    let mut total_intake = 0;
+    let mut entries = Vec::with_capacity(total_sessions);
+    for (key, id) in &visible {
+        if s.org()
+            .session(key)
+            .is_some_and(|r| r.awaiting_organization)
+        {
+            total_intake += 1;
+        }
+        entries.push(PageEntry::Session(*key, *id));
+        entries.extend(
             s.registry()
                 .members(*id)
                 .into_iter()
                 .filter(|r| crate::policy::filter::admits_resource(s, client, Verb::Inventory, *r))
-                .count()
-        })
-        .sum();
-    let page: Vec<_> = visible.iter().skip(start).take(size).copied().collect();
+                .map(PageEntry::Resource),
+        );
+    }
+    let total_resources = entries.len() - total_sessions;
+    let page: Vec<PageEntry> = entries.iter().skip(start).take(size).copied().collect();
     let next = start + page.len();
-    let next_cursor = (next < total_sessions).then(|| {
+    let next_cursor = (next < entries.len()).then(|| {
         u32::try_from(next)
             .unwrap_or(u32::MAX)
             .to_be_bytes()
             .to_vec()
     });
-    let mut sessions = Vec::with_capacity(page.len());
+    let mut sessions = Vec::new();
     let mut resources = Vec::new();
-    for (key, id) in page {
+    for entry in page {
+        let (key, id) = match entry {
+            PageEntry::Session(key, id) => (key, id),
+            PageEntry::Resource(member) => {
+                if let Some(record) = resource_record(s, member) {
+                    resources.push(record);
+                }
+                continue;
+            }
+        };
         let Some(record) = s.org().session(&key).cloned() else {
             continue;
         };
@@ -796,14 +809,6 @@ fn organization_page(
                 .with_members(u32::try_from(record.members.len()).unwrap_or(u32::MAX))
                 .with_live(live),
         );
-        for member in s.registry().members(id) {
-            if !crate::policy::filter::admits_resource(s, client, Verb::Inventory, member) {
-                continue;
-            }
-            if let Some(record) = resource_record(s, member) {
-                resources.push(record);
-            }
-        }
     }
     let authority = phux_protocol::ids::AuthorityId::new(*s.org().authority().id.as_bytes());
     let Some(authority) = authority else {
@@ -825,6 +830,13 @@ fn organization_page(
         )
         .with_next_cursor(next_cursor);
     CommandResult::OkWith(CommandValue::OrganizationPage(Box::new(page)))
+}
+
+/// One record of a `GET_ORGANIZATION` page, in page order.
+#[derive(Debug, Clone, Copy)]
+enum PageEntry {
+    Session(phux_core::SessionKey, phux_core::ids::SessionId),
+    Resource(phux_core::ids::ResourceId),
 }
 
 /// A resource record on the wire, with its live handle while its engine
