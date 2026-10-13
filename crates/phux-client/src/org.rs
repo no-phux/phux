@@ -475,27 +475,6 @@ async fn session_view(
     fetch(conn, OrgFilter::Session(session), FIRST_REQUEST_ID).await
 }
 
-/// Run `attempt` against fresh records until it does not conflict.
-async fn with_cas<F>(conn: &mut Connection, mut attempt: F) -> Result<Committed, OrgError>
-where
-    F: AsyncFnMut(&mut Connection) -> Result<Committed, OrgError>,
-{
-    let mut last = None;
-    for _ in 0..MAX_CAS_ATTEMPTS {
-        match attempt(conn).await {
-            Err(OrgError::Refused(Refusal::Conflict { current })) => {
-                last = Some(OrgError::Refused(Refusal::Conflict { current }));
-            }
-            other => return other,
-        }
-    }
-    Err(last.unwrap_or_else(|| {
-        OrgError::Refused(Refusal::Conflict {
-            current: Revision::default(),
-        })
-    }))
-}
-
 fn resource_in(view: &OrgInventory, key: &ResourceKey) -> Result<ResourceRecord, OrgError> {
     view.resource(key)
         .cloned()
@@ -520,6 +499,141 @@ async fn resource_view(
     Ok((view, record))
 }
 
+/// One compare-and-swap edit, built afresh from current records on every
+/// attempt.
+#[derive(Debug, Clone, Copy)]
+enum Edit<'a> {
+    RemoveResource(ResourceKey),
+    DeleteSession(SessionKey),
+    Relaunch(ResourceKey),
+    Move {
+        resource: ResourceKey,
+        to: SessionKey,
+    },
+    MoveMany {
+        resources: &'a [ResourceKey],
+        to: SessionKey,
+    },
+    InboxResolve(SessionKey),
+    SetLifetime(SessionKey, SessionLifetime),
+    RenameResource(ResourceKey, Option<&'a str>),
+}
+
+/// The command for `edit` against freshly read records, under a fresh
+/// operation id.
+async fn build(conn: &mut Connection, edit: Edit<'_>) -> Result<Command, OrgError> {
+    let operation = mint_operation();
+    Ok(match edit {
+        Edit::RemoveResource(resource) => {
+            let (_, record) = resource_view(conn, resource).await?;
+            Command::ResourceRemove {
+                operation,
+                resource,
+                expected: record.revision,
+            }
+        }
+        Edit::Relaunch(resource) => {
+            let (_, record) = resource_view(conn, resource).await?;
+            Command::ResourceRelaunch {
+                operation,
+                resource,
+                expected: record.revision,
+            }
+        }
+        Edit::RenameResource(resource, name) => {
+            let (_, record) = resource_view(conn, resource).await?;
+            Command::ResourceRename {
+                operation,
+                resource,
+                expected: record.revision,
+                name: name.map(str::to_owned),
+            }
+        }
+        Edit::DeleteSession(session) => {
+            let record = session_in(&session_view(conn, session).await?, &session)?;
+            Command::SessionDelete {
+                operation,
+                session,
+                expected: record.revision,
+            }
+        }
+        Edit::InboxResolve(session) => {
+            let record = session_in(&session_view(conn, session).await?, &session)?;
+            Command::InboxResolve {
+                operation,
+                session,
+                expected: record.revision,
+            }
+        }
+        Edit::SetLifetime(session, lifetime) => {
+            let record = session_in(&session_view(conn, session).await?, &session)?;
+            Command::SessionSetLifetime {
+                operation,
+                session,
+                expected: record.revision,
+                lifetime,
+            }
+        }
+        Edit::Move { resource, to } => {
+            let (from_view, record) = resource_view(conn, resource).await?;
+            let from = session_in(&from_view, &record.session)?;
+            let to_record = session_in(&session_view(conn, to).await?, &to)?;
+            Command::ResourceMove {
+                operation,
+                resource,
+                from: from.key,
+                from_expected: from.revision,
+                to,
+                to_expected: to_record.revision,
+            }
+        }
+        Edit::MoveMany { resources, to } => {
+            let all = fetch(conn, OrgFilter::All, FIRST_REQUEST_ID).await?;
+            let to_record = session_in(&all, &to)?;
+            let mut items = Vec::with_capacity(resources.len());
+            for key in resources {
+                let record = resource_in(&all, key)?;
+                let from = session_in(&all, &record.session)?;
+                items.push(MoveItem {
+                    resource: *key,
+                    from: from.key,
+                    from_expected: from.revision,
+                });
+            }
+            Command::ResourceMoveMany {
+                operation,
+                items,
+                to,
+                to_expected: to_record.revision,
+            }
+        }
+    })
+}
+
+/// Run `edit` against fresh records until it does not conflict, at most
+/// [`MAX_CAS_ATTEMPTS`] times. An `ACCEPTED` reply (a relaunch whose start
+/// follows as events) reads as a receipt under the command's operation.
+async fn run_cas(conn: &mut Connection, edit: Edit<'_>) -> Result<Committed, OrgError> {
+    let mut current = Revision::default();
+    for _ in 0..MAX_CAS_ATTEMPTS {
+        let command = build(conn, edit).await?;
+        let operation = command.idempotency_key().copied();
+        match request(conn, FIRST_REQUEST_ID, command).await?.0 {
+            OrgOutcome::Committed(committed) => return Ok(*committed),
+            OrgOutcome::Accepted => {
+                return operation
+                    .map(|operation| Committed::new(operation, Revision::default()))
+                    .ok_or_else(|| {
+                        OrgError::Unexpected("accepted without an operation".to_owned())
+                    });
+            }
+            OrgOutcome::Refused(Refusal::Conflict { current: now }) => current = now,
+            other => return Err(outcome_error(other)),
+        }
+    }
+    Err(OrgError::Refused(Refusal::Conflict { current }))
+}
+
 /// `phux rm` for a resource: remove an inactive resource record.
 ///
 /// # Errors
@@ -530,16 +644,7 @@ pub async fn remove_resource(
     conn: &mut Connection,
     resource: ResourceKey,
 ) -> Result<Committed, OrgError> {
-    with_cas(conn, async |conn| {
-        let (_, record) = resource_view(conn, resource).await?;
-        let command = Command::ResourceRemove {
-            operation: mint_operation(),
-            resource,
-            expected: record.revision,
-        };
-        commit(conn, FIRST_REQUEST_ID, command).await
-    })
-    .await
+    run_cas(conn, Edit::RemoveResource(resource)).await
 }
 
 /// `phux rm` for a session: delete an empty session.
@@ -551,17 +656,7 @@ pub async fn delete_session(
     conn: &mut Connection,
     session: SessionKey,
 ) -> Result<Committed, OrgError> {
-    with_cas(conn, async |conn| {
-        let view = session_view(conn, session).await?;
-        let record = session_in(&view, &session)?;
-        let command = Command::SessionDelete {
-            operation: mint_operation(),
-            session,
-            expected: record.revision,
-        };
-        commit(conn, FIRST_REQUEST_ID, command).await
-    })
-    .await
+    run_cas(conn, Edit::DeleteSession(session)).await
 }
 
 /// `phux relaunch`: start a new activation of an inactive resource.
@@ -571,20 +666,7 @@ pub async fn delete_session(
 /// `EXECUTION_UNCERTAIN` for a lost activation; a refusal while it runs;
 /// transport failures.
 pub async fn relaunch(conn: &mut Connection, resource: ResourceKey) -> Result<Committed, OrgError> {
-    with_cas(conn, async |conn| {
-        let (_, record) = resource_view(conn, resource).await?;
-        let command = Command::ResourceRelaunch {
-            operation: mint_operation(),
-            resource,
-            expected: record.revision,
-        };
-        match request(conn, FIRST_REQUEST_ID, command).await?.0 {
-            OrgOutcome::Committed(committed) => Ok(*committed),
-            OrgOutcome::Accepted => Ok(Committed::new(mint_operation(), record.revision)),
-            other => Err(outcome_error(other)),
-        }
-    })
-    .await
+    run_cas(conn, Edit::Relaunch(resource)).await
 }
 
 /// `phux restore [SESSION]`: relaunch every resource a server restart ended,
@@ -624,22 +706,7 @@ pub async fn move_resource(
     resource: ResourceKey,
     to: SessionKey,
 ) -> Result<Committed, OrgError> {
-    with_cas(conn, async |conn| {
-        let (from_view, record) = resource_view(conn, resource).await?;
-        let from = session_in(&from_view, &record.session)?;
-        let to_view = session_view(conn, to).await?;
-        let to_record = session_in(&to_view, &to)?;
-        let command = Command::ResourceMove {
-            operation: mint_operation(),
-            resource,
-            from: from.key,
-            from_expected: from.revision,
-            to,
-            to_expected: to_record.revision,
-        };
-        commit(conn, FIRST_REQUEST_ID, command).await
-    })
-    .await
+    run_cas(conn, Edit::Move { resource, to }).await
 }
 
 /// One chunk of a bulk move and how it ended.
@@ -664,31 +731,16 @@ pub async fn move_many(
 ) -> Result<Vec<BatchResult>, OrgError> {
     let mut results = Vec::new();
     for chunk in resources.chunks(MAX_ORG_BATCH) {
-        let chunk_keys = chunk.to_vec();
-        let result = with_cas(conn, async |conn| {
-            let all = fetch(conn, OrgFilter::All, FIRST_REQUEST_ID).await?;
-            let to_record = session_in(&all, &to)?;
-            let mut items = Vec::with_capacity(chunk_keys.len());
-            for key in &chunk_keys {
-                let record = resource_in(&all, key)?;
-                let from = session_in(&all, &record.session)?;
-                items.push(MoveItem {
-                    resource: *key,
-                    from: from.key,
-                    from_expected: from.revision,
-                });
-            }
-            let command = Command::ResourceMoveMany {
-                operation: mint_operation(),
-                items,
+        let result = run_cas(
+            conn,
+            Edit::MoveMany {
+                resources: chunk,
                 to,
-                to_expected: to_record.revision,
-            };
-            commit(conn, FIRST_REQUEST_ID, command).await
-        })
+            },
+        )
         .await;
         results.push(BatchResult {
-            resources: chunk_keys,
+            resources: chunk.to_vec(),
             result,
         });
     }
@@ -720,17 +772,7 @@ pub async fn inbox_resolve(
     conn: &mut Connection,
     session: SessionKey,
 ) -> Result<Committed, OrgError> {
-    with_cas(conn, async |conn| {
-        let view = session_view(conn, session).await?;
-        let record = session_in(&view, &session)?;
-        let command = Command::InboxResolve {
-            operation: mint_operation(),
-            session,
-            expected: record.revision,
-        };
-        commit(conn, FIRST_REQUEST_ID, command).await
-    })
-    .await
+    run_cas(conn, Edit::InboxResolve(session)).await
 }
 
 /// Make a session persistent or ephemeral. An empty session made ephemeral
@@ -744,18 +786,7 @@ pub async fn set_lifetime(
     session: SessionKey,
     lifetime: SessionLifetime,
 ) -> Result<Committed, OrgError> {
-    with_cas(conn, async |conn| {
-        let view = session_view(conn, session).await?;
-        let record = session_in(&view, &session)?;
-        let command = Command::SessionSetLifetime {
-            operation: mint_operation(),
-            session,
-            expected: record.revision,
-            lifetime,
-        };
-        commit(conn, FIRST_REQUEST_ID, command).await
-    })
-    .await
+    run_cas(conn, Edit::SetLifetime(session, lifetime)).await
 }
 
 /// Rename (or, with `None`, unname) a resource record.
@@ -766,19 +797,9 @@ pub async fn set_lifetime(
 pub async fn rename_resource(
     conn: &mut Connection,
     resource: ResourceKey,
-    name: Option<String>,
+    name: Option<&str>,
 ) -> Result<Committed, OrgError> {
-    with_cas(conn, async |conn| {
-        let (_, record) = resource_view(conn, resource).await?;
-        let command = Command::ResourceRename {
-            operation: mint_operation(),
-            resource,
-            expected: record.revision,
-            name: name.clone(),
-        };
-        commit(conn, FIRST_REQUEST_ID, command).await
-    })
-    .await
+    run_cas(conn, Edit::RenameResource(resource, name)).await
 }
 
 /// Terminate a resource's current activation; the outcome arrives as an
@@ -813,6 +834,39 @@ mod tests {
 
     use super::*;
     use crate::testkit::{OrgFixture, ScriptSpec, serve_one};
+
+    fn assert_send<T: Send>(_: &T) {}
+
+    /// The MCP server runs these on a multi-threaded runtime: every
+    /// organization future must be `Send`. Compiled, never called.
+    #[allow(dead_code, reason = "a compile-time check")]
+    fn organization_futures_are_send(conn: &mut Connection, key: ResourceKey, to: SessionKey) {
+        assert_send(&remove_resource(conn, key));
+        assert_send(&move_many(conn, &[], to));
+        assert_send(&restore(conn, None));
+        assert_send(&crate::kill::kill_session(conn, SessionId::new(1), "work"));
+        assert_send(&crate::pane_move::move_pane(
+            conn,
+            ResourceId::local(1),
+            ResourceId::local(2),
+            crate::layout::SplitDir::Horizontal,
+            0.5,
+            &[],
+        ));
+        assert_send(&crate::session::rename_checked(
+            conn,
+            "a",
+            "b",
+            &mut Vec::new(),
+        ));
+        assert_send(
+            &crate::layout_ops::LayoutOps::new(conn, SessionId::new(1), 1).mutate(
+                crate::layout_ops::LayoutMutation::Close {
+                    target: ResourceId::local(1),
+                },
+            ),
+        );
+    }
 
     fn org_spec(fixture: OrgFixture) -> ScriptSpec {
         ScriptSpec::new()
