@@ -526,3 +526,62 @@ fn the_topology_carries_keys_lifetimes_and_exec_state() {
     assert_eq!(topology.panes[0].exec, Some(ExecState::Running));
     assert_eq!(topology.handles.key(&ResourceId::local(1)), Some(rkey(1)));
 }
+
+#[test]
+fn membership_events_update_live_pane_ownership_without_another_state_snapshot() {
+    let (mut plane, seed) = negotiated(true);
+    let seed_page = page(5).with_sessions(vec![
+        SessionRecord::new(skey(1), "source", Revision::new(2))
+            .with_members(1)
+            .with_live(Some(SessionId::new(1))),
+        SessionRecord::new(skey(2), "destination", Revision::new(2))
+            .with_live(Some(SessionId::new(2))),
+    ]);
+    answer(&mut plane, seed.unwrap(), page_value(seed_page));
+    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+        .with_sessions(vec![
+            SessionInfo::new(SessionId::new(1), "source").with_key(Some(skey(1))),
+            SessionInfo::new(SessionId::new(2), "destination").with_key(Some(skey(2))),
+        ])
+        .with_resources(vec![
+            ResourceInfo::new(ResourceId::local(1), WindowId::new(1), 80, 24)
+                .with_session(Some(SessionId::new(1))),
+        ]);
+    let refresh = plane.refresh_topology().unwrap();
+    let _ = commands(&mut plane);
+    answer(
+        &mut plane,
+        refresh,
+        CommandResult::OkWith(CommandValue::State(snapshot)),
+    );
+    assert_eq!(plane.topology().unwrap().panes[0].session_id, 1);
+    event(
+        &mut plane,
+        Some(6),
+        AgentEvent::MembershipChanged {
+            resource: rkey(1),
+            from: skey(1),
+            to: skey(2),
+            from_revision: Revision::new(3),
+            to_revision: Revision::new(3),
+        },
+    );
+    let topology = plane.topology().unwrap();
+    assert_eq!(topology.panes[0].session_id, 2);
+    assert_eq!(topology.panes[0].session_name, "destination");
+    assert_eq!(topology.panes[0].terminal_id, ResourceId::local(1));
+    assert_eq!(topology.panes[0].activation, Some(ActivationId::new(1)));
+    event(
+        &mut plane,
+        Some(7),
+        AgentEvent::MembershipChanged {
+            resource: rkey(1),
+            from: skey(2),
+            to: skey(1),
+            from_revision: Revision::new(4),
+            to_revision: Revision::new(4),
+        },
+    );
+    assert_eq!(plane.topology().unwrap().panes[0].session_id, 1);
+    assert_eq!(plane.topology().unwrap().panes[0].session_name, "source");
+}
