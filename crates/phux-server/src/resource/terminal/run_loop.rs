@@ -666,6 +666,7 @@ impl TerminalActor {
             self.handle_pty_eof();
             return PtyTurn::Continue;
         };
+        phux_perf::echo_hop::record("main");
         crate::perf::PTY_QUEUE_WAIT.record_elapsed(read_at);
         // Server-side echo latency; slower than the ceiling means the
         // program did not echo.

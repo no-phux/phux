@@ -90,6 +90,9 @@ impl super::SessionLoop {
         let dispatched = self.dispatch_input(conn, out, sidebar, &mut events).await;
         // Uncork on both paths so an error never strands emitted frames.
         let shipped = conn.uncork().await;
+        if shipped.is_ok() {
+            phux_perf::echo_hop::record("send");
+        }
         self.input_events = events;
         let layout_changed = dispatched?;
         shipped?;

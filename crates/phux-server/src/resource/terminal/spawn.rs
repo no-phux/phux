@@ -38,7 +38,7 @@ pub(super) const EIO: i32 = 5;
 
 /// Why the writer gave up on a request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WriteFailure {
+pub(super) enum WriteFailure {
     /// The child is gone (`EIO` / `EPIPE` / a zero-length write). Expected
     /// during teardown; the reader thread reports EOF on its own path.
     PaneGone,
@@ -49,8 +49,8 @@ enum WriteFailure {
 
 /// A failed PTY write and how many bytes the child already received.
 #[derive(Debug)]
-struct WriteError {
-    failure: WriteFailure,
+pub(super) struct WriteError {
+    pub(super) failure: WriteFailure,
     source: std::io::Error,
     /// Bytes written before the failure; non-zero means a truncated prefix.
     written: usize,
@@ -68,7 +68,30 @@ fn classify_write_error(err: &std::io::Error) -> WriteFailure {
 
 /// Write every byte, resuming partial writes and retrying `Interrupted`,
 /// and report how much landed on failure (which [`Write::write_all`] can't).
-fn write_all_resilient(writer: &mut (dyn Write + Send), bytes: &[u8]) -> Result<(), WriteError> {
+#[cfg(test)]
+pub(super) fn write_all_resilient(
+    writer: &mut (dyn Write + Send),
+    bytes: &[u8],
+) -> Result<(), WriteError> {
+    write_all_retry(writer, bytes, None)
+}
+
+/// [`write_all_resilient`] for the live master, which is `O_NONBLOCK` so an
+/// echo steal can read without sharing that flag onto a blocking `write(2)`.
+/// `EAGAIN` waits for output space instead of killing the pane's input.
+pub(super) fn write_all_pty(
+    writer: &mut (dyn Write + Send),
+    master: &Mutex<Box<dyn MasterPty + Send>>,
+    bytes: &[u8],
+) -> Result<(), WriteError> {
+    write_all_retry(writer, bytes, Some(master))
+}
+
+fn write_all_retry(
+    writer: &mut (dyn Write + Send),
+    bytes: &[u8],
+    master: Option<&Mutex<Box<dyn MasterPty + Send>>>,
+) -> Result<(), WriteError> {
     let mut written = 0_usize;
     while written < bytes.len() {
         match writer.write(&bytes[written..]) {
@@ -82,6 +105,16 @@ fn write_all_resilient(writer: &mut (dyn Write + Send), bytes: &[u8]) -> Result<
             }
             Ok(n) => written += n,
             Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                let Some(master) = master else {
+                    return Err(WriteError {
+                        failure: classify_write_error(&err),
+                        source: err,
+                        written,
+                    });
+                };
+                wait_pty_writable(master);
+            }
             Err(err) => {
                 return Err(WriteError {
                     failure: classify_write_error(&err),
@@ -95,11 +128,37 @@ fn write_all_resilient(writer: &mut (dyn Write + Send), bytes: &[u8]) -> Result<
 }
 
 /// Flush, retrying `Interrupted` and classifying the rest like a write.
-fn flush_resilient(writer: &mut (dyn Write + Send)) -> Result<(), WriteError> {
+#[cfg(test)]
+pub(super) fn flush_resilient(writer: &mut (dyn Write + Send)) -> Result<(), WriteError> {
+    flush_retry(writer, None)
+}
+
+/// [`flush_resilient`] that waits out `EAGAIN` on the nonblocking master.
+pub(super) fn flush_pty(
+    writer: &mut (dyn Write + Send),
+    master: &Mutex<Box<dyn MasterPty + Send>>,
+) -> Result<(), WriteError> {
+    flush_retry(writer, Some(master))
+}
+
+fn flush_retry(
+    writer: &mut (dyn Write + Send),
+    master: Option<&Mutex<Box<dyn MasterPty + Send>>>,
+) -> Result<(), WriteError> {
     loop {
         match writer.flush() {
             Ok(()) => return Ok(()),
             Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                let Some(master) = master else {
+                    return Err(WriteError {
+                        failure: classify_write_error(&err),
+                        source: err,
+                        written: 0,
+                    });
+                };
+                wait_pty_writable(master);
+            }
             Err(err) => {
                 return Err(WriteError {
                     failure: classify_write_error(&err),
@@ -111,6 +170,30 @@ fn flush_resilient(writer: &mut (dyn Write + Send)) -> Result<(), WriteError> {
     }
 }
 
+/// Block until the nonblocking master can accept a write, or a short slice
+/// elapses. The slice bounds a master that never becomes writable; the next
+/// `write(2)` then reports the real error.
+fn wait_pty_writable(master: &Mutex<Box<dyn MasterPty + Send>>) {
+    use std::os::fd::{BorrowedFd, RawFd};
+    let raw: Option<RawFd> = master
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_raw_fd();
+    let Some(raw) = raw else {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        return;
+    };
+    // SAFETY: `raw` is the pane's live PTY master. The mutex guard ended
+    // above; the descriptor stays open for the pane's life, and this borrow
+    // lasts only for the `poll` call.
+    let borrowed = unsafe { BorrowedFd::borrow_raw(raw) };
+    let mut fds = [nix::poll::PollFd::new(
+        borrowed,
+        nix::poll::PollFlags::POLLOUT,
+    )];
+    let _ = nix::poll::poll(&mut fds, nix::poll::PollTimeout::from(50u16));
+}
+
 /// `_POSIX_MAX_CANON`: the minimum canonical line length POSIX guarantees;
 /// the fallback when `fpathconf(_PC_MAX_CANON)` is unavailable. Writes up to
 /// this size cannot overflow, so they skip the termios query entirely.
@@ -118,9 +201,9 @@ const POSIX_MAX_CANON_FLOOR: usize = 255;
 
 /// Why [`canonical_refusal`] refused to hand a payload to the PTY writer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct CanonicalOverflow {
+pub(super) struct CanonicalOverflow {
     /// The pane's canonical-line byte limit at refusal time.
-    limit: usize,
+    pub(super) limit: usize,
 }
 
 /// Does `bytes` contain a line longer than `limit` for a canonical-mode
@@ -152,7 +235,7 @@ fn exceeds_canonical_limit(bytes: &[u8], limit: usize, cr_terminates: bool) -> b
 /// Calls `tcgetattr` on the raw fd rather than `MasterPty::get_termios`:
 /// portable-pty's `nix` version differs from ours, and adopted masters
 /// return `None` from `get_termios`.
-fn canonical_refusal(
+pub(super) fn canonical_refusal(
     master: &Mutex<Box<dyn MasterPty + Send>>,
     bytes: &[u8],
 ) -> Option<CanonicalOverflow> {
@@ -199,7 +282,8 @@ fn canonical_limit(fd: std::os::fd::BorrowedFd<'_>) -> usize {
 }
 
 /// What the writer thread does after one request.
-enum WriterLoopControl {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum WriterLoopControl {
     /// Keep looping (success, or a refusal that leaves input alive).
     Continue,
     /// The child is gone or input hit a fatal error.
@@ -209,7 +293,7 @@ enum WriterLoopControl {
 /// Handle one [`EncodedInputRequest`] on the writer thread: refuse it if it
 /// would overflow the canonical line discipline, else write and flush it,
 /// reporting the outcome on `request.completion`.
-fn service_write_request(
+pub(super) fn service_write_request(
     writer: &mut (dyn Write + Send),
     master: &Mutex<Box<dyn MasterPty + Send>>,
     request: EncodedInputRequest,
@@ -240,10 +324,11 @@ fn service_write_request(
     }
     let write_started = std::time::Instant::now();
     let outcome =
-        write_all_resilient(writer, &request.bytes).and_then(|()| flush_resilient(writer));
+        write_all_pty(writer, master, &request.bytes).and_then(|()| flush_pty(writer, master));
     crate::perf::INPUT_PTY_WRITE.record_elapsed(write_started);
     match outcome {
         Ok(()) => {
+            phux_perf::echo_hop::record("pty_write");
             debug!(len, "pty write flushed");
             if let Some(completion) = request.completion {
                 completion.complete(WriteCompletion::Delivered);
@@ -297,6 +382,8 @@ pub(crate) struct PtyOwned {
     pub(super) reader: super::park::PtyReader,
     /// Writer thread; exits when its receiver closes.
     pub(crate) writer_thread: Option<JoinHandle<()>>,
+    /// Inline-write gate shared with the receive task.
+    pub(super) fast: Arc<super::fast_pty::PtyFastPath>,
 }
 
 impl std::fmt::Debug for PtyOwned {
@@ -694,6 +781,17 @@ fn drain_master_with_budget<R: Read>(reader: &mut R, buf: &mut [u8], budget: std
         match reader.read(buf) {
             Ok(0) => return,
             Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                // The master is nonblocking so an echo steal cannot stall a
+                // poller. An orphan drain still has to wait for the child.
+                if std::time::Instant::now() >= deadline {
+                    debug!(
+                        "pty reader thread: orphan drain budget expired; leaving the master unread"
+                    );
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
             Err(err) => {
                 debug!(?err, "pty reader thread: read error while draining orphan");
                 return;
@@ -730,8 +828,8 @@ pub(super) fn send_pty_chunk(
 }
 
 /// Duplicate the master for the reader. `F_DUPFD_CLOEXEC` keeps the dup out of
-/// pane children; the flag is per-descriptor, not a status flag, so it does
-/// not make the writer's dup non-blocking.
+/// pane children. `O_NONBLOCK` is a status flag on the shared open file
+/// description, so [`super::park::set_nonblock`] applies to the writer too.
 fn dup_master_reader(master: &dyn MasterPty) -> Result<std::fs::File, TerminalActorError> {
     use std::os::fd::{BorrowedFd, FromRawFd, OwnedFd};
     let raw = master
@@ -754,6 +852,12 @@ fn start_pty_bridge(
     child: Box<dyn Child + Send + Sync>,
 ) -> Result<SpawnedPty, TerminalActorError> {
     let reader = dup_master_reader(&*master)?;
+    // One open file description backs the master, this reader, the echo
+    // dup, and the writer. `O_NONBLOCK` is a status flag, so it is shared:
+    // the reader can return `EAGAIN` when a direct steal already took the
+    // byte, and the writer waits that out instead of treating it as fatal.
+    super::park::set_nonblock(&reader).map_err(|err| TerminalActorError::PtyIo(err.to_string()))?;
+    let echo = dup_master_reader(&*master)?;
     let writer = master
         .take_writer()
         .map_err(|e| TerminalActorError::PtyIo(e.to_string()))?;
@@ -763,33 +867,22 @@ fn start_pty_bridge(
     let master_for_writer = Arc::clone(&master);
 
     let (pty_tx_to_actor, pty_rx_for_actor) = mpsc::channel::<PtyEvent>(PTY_CHANNEL_DEPTH);
-    let (input_tx_to_writer, mut input_rx_for_writer) =
+    let (input_tx_to_writer, input_rx_for_writer) =
         mpsc::channel::<EncodedInputRequest>(super::PTY_WRITER_QUEUE);
 
-    let reader = super::park::attach(reader, pty_tx_to_actor);
-
+    let reader = super::park::attach(reader, pty_tx_to_actor.clone());
+    let fast = super::fast_pty::PtyFastPath::new(
+        input_tx_to_writer.clone(),
+        master_for_writer,
+        echo,
+        pty_tx_to_actor,
+        writer,
+    );
+    let writer_fast = Arc::clone(&fast);
     let writer_thread = std::thread::Builder::new()
         .name("phux-pty-writer".to_owned())
         .stack_size(super::park::READER_STACK)
-        .spawn(move || {
-            crate::perf::promote_helper_thread("phux-pty-writer");
-            // portable-pty's writer `Drop` writes `\n` + VEOF. After a failed
-            // write that newline would commit a truncated line to the shell,
-            // so only the clean path runs the destructor; the failure paths
-            // leak one fd of an already-dead input path.
-            let mut writer = std::mem::ManuallyDrop::new(writer);
-            loop {
-                let Some(request) = input_rx_for_writer.blocking_recv() else {
-                    // `shutdown_pty` dropped the sender; give the child EOF.
-                    std::mem::ManuallyDrop::into_inner(writer);
-                    return;
-                };
-                match service_write_request(&mut **writer, &master_for_writer, request) {
-                    WriterLoopControl::Continue => {}
-                    WriterLoopControl::Stop => return,
-                }
-            }
-        })
+        .spawn(move || writer_fast.run_writer(input_rx_for_writer))
         .map_err(|e| TerminalActorError::PtyIo(e.to_string()))?;
 
     Ok((
@@ -800,6 +893,7 @@ fn start_pty_bridge(
             child,
             reader,
             writer_thread: Some(writer_thread),
+            fast,
         },
     ))
 }
@@ -1615,6 +1709,29 @@ mod canonical_guard_tests {
         // SAFETY: `fcntl` just created `high` and this test owns it.
         drop(unsafe { std::os::fd::OwnedFd::from_raw_fd(high) });
     }
+
+    /// Enter and Ctrl-U are not legacy printables, so they sit in the input
+    /// lane while `pending` is still zero. The next letter must not write
+    /// ahead of them.
+    #[test]
+    fn an_in_flight_lane_key_blocks_the_inline_pty_write() {
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.arg("-c");
+        cmd.arg("cat");
+        let (_pty_rx, _input_tx, mut pty) = spawn_pty(cmd, 80, 24).expect("spawn");
+        let guard = super::super::fast_pty::LaneAhead::arm(&pty.fast);
+        assert_eq!(
+            pty.fast.try_direct(b"e"),
+            super::super::fast_pty::DirectWrite::Busy,
+            "a printable must not pass a key the lane has not enqueued"
+        );
+        drop(guard);
+        assert_eq!(
+            pty.fast.try_direct(b"e"),
+            super::super::fast_pty::DirectWrite::Wrote
+        );
+        let _ = pty.child.kill();
+    }
 }
 
 #[cfg(test)]
@@ -1688,4 +1805,5 @@ mod drain_tests {
             "EIO means the descriptor is gone; there is nothing left to drain",
         );
     }
+
 }

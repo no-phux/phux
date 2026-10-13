@@ -27,6 +27,8 @@ mkdir -p "$H/state" "$H/config/phux" "$H/run"
 printf "PS1='BENCH> '\n" > "$H/shrc"
 : > "$H/config/phux/config.toml"
 ISO=(env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin TERM=xterm-256color LANG=en_US.UTF-8 HOME="$H" XDG_STATE_HOME="$H/state" XDG_CONFIG_HOME="$H/config" XDG_RUNTIME_DIR="$H/run" SHELL=/bin/sh ENV="$H/shrc" PS1='BENCH> ' PHUX_PROFILE=tuiload PHUX_RENDER_PROF=1)
+if [[ -n ${PHUX_ECHO_HOPS:-} ]]; then ISO+=(PHUX_ECHO_HOPS="$PHUX_ECHO_HOPS"); fi
+if [[ -n ${PHUX_ECHO_FAST:-} ]]; then ISO+=(PHUX_ECHO_FAST="$PHUX_ECHO_FAST"); fi
 SOCK="$H/run/mux.sock"
 "${ISO[@]}" "$PHUX_BIN" server --socket "$SOCK" --session bench --exit-after-idle 300 >"$H/server.out" 2>&1 &
 SRV=$!

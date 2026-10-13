@@ -38,6 +38,7 @@ mod construct;
 mod consumers;
 mod effects;
 mod events;
+pub(crate) mod fast_pty;
 mod fd_shrink;
 mod input_mode_span;
 mod io;
@@ -59,6 +60,7 @@ mod tests_resize;
 mod tests_state_sync;
 pub mod tick;
 
+pub(crate) use fast_pty::{DirectWrite, LaneAhead};
 pub use requests::*;
 pub use spawn::*;
 pub use sync::*;

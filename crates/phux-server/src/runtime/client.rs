@@ -4131,6 +4131,72 @@ async fn teardown_terminal_stream(
     plumbing.drop_stream_binding(terminal_id).await;
 }
 
+/// Count one key that is about to enter the input lane, so [`try_inline_key`]
+/// refuses until that key is in the writer queue or has been dropped.
+fn arm_lane_ahead(
+    state: &SharedState,
+    client_id: ClientId,
+    terminal_id: &WireResourceId,
+    frame_label: &'static str,
+) -> Option<crate::terminal_actor::LaneAhead> {
+    if !phux_perf::echo_hop::fast_path_enabled() {
+        return None;
+    }
+    super::with_attached_input_destination(
+        state,
+        client_id,
+        terminal_id,
+        frame_label,
+        |destination| {
+            destination
+                .handle
+                .fast_pty
+                .as_ref()
+                .map(crate::terminal_actor::LaneAhead::arm)
+        },
+    )
+    .flatten()
+}
+
+/// Write one legacy printable key on the receive task when the PTY writer
+/// is idle. `true` means the event was consumed (written or refused).
+fn try_inline_key(
+    state: &SharedState,
+    client_id: ClientId,
+    terminal_id: &WireResourceId,
+    input: &TerminalInput,
+) -> bool {
+    if !phux_perf::echo_hop::fast_path_enabled() {
+        return false;
+    }
+    let TerminalInput::Key(event) = input else {
+        return false;
+    };
+    let Some(prepared) = super::with_attached_input_destination(
+        state,
+        client_id,
+        terminal_id,
+        "INPUT_KEY",
+        |destination| {
+            let options = destination.handle.input_snapshot.borrow().key;
+            let text = crate::input::key::legacy_printable(event, options)?;
+            let fast = destination.handle.fast_pty?;
+            Some((fast, text.as_bytes().to_vec()))
+        },
+    ) else {
+        return false;
+    };
+    let Some((fast, bytes)) = prepared else {
+        return false;
+    };
+    match fast.try_direct(&bytes) {
+        crate::terminal_actor::DirectWrite::Wrote | crate::terminal_actor::DirectWrite::Handled => {
+            true
+        }
+        crate::terminal_actor::DirectWrite::Busy => false,
+    }
+}
+
 /// Route one decoded `INPUT_*` event: a local pane id goes to the input lane
 /// (ADR-0044) when there is one, spending `credit` (ADR-0144); satellite ids
 /// and the no-lane path use the inline [`handle_terminal_input`] with the
@@ -4143,6 +4209,10 @@ async fn route_client_input(
     input: TerminalInput,
     credit: Option<crate::terminal_actor::InputCredit>,
 ) {
+    phux_perf::echo_hop::record("server_recv");
+    if try_inline_key(state, client_id, &terminal_id, &input) {
+        return;
+    }
     let frame_label = match &input {
         TerminalInput::Key(_) => "INPUT_KEY",
         TerminalInput::Mouse(_) => "INPUT_MOUSE",
@@ -4152,8 +4222,14 @@ async fn route_client_input(
     if let Some(lane) = input_lane
         && terminal_id.is_local()
     {
+        // Arm before the send. `pending` is still zero while this key sits
+        // in the lane thread; the next printable would otherwise write the
+        // PTY ahead of Enter or Ctrl-U.
+        let ahead = arm_lane_ahead(state, client_id, &terminal_id, frame_label);
         lane.route(
-            RoutedInput::attached(client_id, terminal_id, input, frame_label).with_credit(credit),
+            RoutedInput::attached(client_id, terminal_id, input, frame_label)
+                .with_credit(credit)
+                .with_lane_ahead(ahead),
         )
         .await;
         return;
@@ -5914,6 +5990,7 @@ async fn writer_task<W: FrameWriter>(
         if !step_succeeded(&mut writer, flushed, client_id, "flush").await {
             return;
         }
+        phux_perf::echo_hop::record("frame_send");
         crate::perf::WIRE_WRITE.record_elapsed(write_started);
         crate::perf::WIRE_WRITE_BYTES.record_len(batch_len);
         crate::perf::WIRE_BYTES_OUT.add_len(batch_len);

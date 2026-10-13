@@ -438,7 +438,7 @@ struct MasterFile<'a> {
 
 impl PtySource for MasterFile<'_> {
     fn pull(&mut self, dst: &mut [u8]) -> io::Result<usize> {
-        let n = self.file.read(dst)?;
+        let n = read_available(self.file, dst)?;
         if n > 0 {
             note_read(n);
         }
@@ -579,10 +579,30 @@ fn detach_drain(mut file: File) {
     }
 }
 
-fn note_read(n: usize) {
+pub(super) fn note_read(n: usize) {
     crate::perf::PTY_READ_SIZE.record_len(n);
     crate::perf::PTY_READ_BYTES.add_len(n);
+    phux_perf::echo_hop::record("pty_read");
     tracing::debug!(n, "pty read");
+}
+
+/// One read. The master is `O_NONBLOCK`, so a direct echo steal that already
+/// consumed the byte returns [`ErrorKind::WouldBlock`] instead of parking
+/// the poller in `read(2)`.
+fn read_available(file: &mut File, buf: &mut [u8]) -> io::Result<usize> {
+    file.read(buf)
+}
+
+/// Mark `file`'s open file description nonblocking. Dups of that description
+/// (the writer, the echo steal) share the flag.
+pub(super) fn set_nonblock(file: &File) -> io::Result<()> {
+    let flags =
+        nix::fcntl::fcntl(file.as_fd(), nix::fcntl::FcntlArg::F_GETFL).map_err(io::Error::from)?;
+    let mut flags = nix::fcntl::OFlag::from_bits_retain(flags);
+    flags.insert(nix::fcntl::OFlag::O_NONBLOCK);
+    nix::fcntl::fcntl(file.as_fd(), nix::fcntl::FcntlArg::F_SETFL(flags))
+        .map_err(io::Error::from)?;
+    Ok(())
 }
 
 #[allow(
@@ -790,7 +810,14 @@ fn dedicated_loop(file: &mut File, tx: &mpsc::Sender<PtyEvent>) {
     let mut bufs = CoalesceBufs::new();
     loop {
         match gather_wake(&mut MasterFile { file }, &mut bufs.scratch, &mut bufs.batch) {
-            Gathered::Pending => {}
+            // The master is `O_NONBLOCK`. A direct echo steal already took
+            // the byte, so wait for the next wake instead of spinning.
+            Gathered::Pending => {
+                if matches!(poll_readable(file, CANCEL_SLICE), PollRead::Hungup) {
+                    let _ = tx.blocking_send(PtyEvent::Eof);
+                    break;
+                }
+            }
             Gathered::Eof => {
                 let _ = tx.blocking_send(PtyEvent::Eof);
                 break;

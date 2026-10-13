@@ -12,10 +12,17 @@
 
 use std::collections::VecDeque;
 use std::io::{self, Write};
+use std::os::fd::{AsFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Instant;
+
+/// Frames at or under this size are written on the runtime thread when the
+/// stdout writer is idle, so a keystroke echo does not wait out a condvar
+/// wakeup. Larger frames, and any frame the nonblocking dup refuses, stay
+/// on the writer thread.
+const DIRECT_MAX: usize = 4096;
 
 /// Backlog cap: how much ALREADY-QUEUED work may pile up before the sink
 /// drops it and forces a resync. It never governs the frame in hand (see
@@ -41,6 +48,8 @@ struct QueueState {
     /// Set by [`WriterHandle::shutdown_and_join`]; tells the writer to drain
     /// and exit.
     shutdown: bool,
+    /// A direct write or the writer thread is inside `write(2)`.
+    in_syscall: bool,
 }
 
 /// Upper bound on recycled buffers held between the two sides (one in
@@ -58,6 +67,8 @@ const SPARE_MAX_BYTES: usize = 1024 * 1024;
 struct Shared {
     queue: Mutex<QueueState>,
     cv: Condvar,
+    /// Nonblocking dup of stdout. `None` in tests, which always queue.
+    direct: Option<OwnedFd>,
 }
 
 /// The `Write` the driver threads through `main_loop` as `out`. `write*`
@@ -99,6 +110,67 @@ impl StdoutSink {
         buf.clear();
         pool.push(buf);
     }
+
+    /// Write a small frame on this thread when the writer is idle and the
+    /// nonblocking dup accepts every byte. A partial write keeps the tail
+    /// in `pending` so the caller queues it.
+    fn try_direct(&mut self) -> bool {
+        if !phux_perf::echo_hop::fast_path_enabled()
+            || self.pending.len() > DIRECT_MAX
+            || self.shared.direct.is_none()
+        {
+            return false;
+        }
+        {
+            let mut q = self
+                .shared
+                .queue
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if q.shutdown || q.in_syscall || !q.chunks.is_empty() {
+                return false;
+            }
+            q.in_syscall = true;
+        }
+        let wrote =
+            self.shared
+                .direct
+                .as_ref()
+                .and_then(|fd| match rustix::io::write(fd, &self.pending) {
+                    Ok(n) => Some(n),
+                    Err(rustix::io::Errno::INTR) => Some(0),
+                    Err(_) => None,
+                });
+        {
+            let mut q = self
+                .shared
+                .queue
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            q.in_syscall = false;
+            let wake = !q.chunks.is_empty();
+            drop(q);
+            if wake {
+                self.shared.cv.notify_one();
+            }
+        }
+        match wrote {
+            Some(n) if n == self.pending.len() && n > 0 => {
+                phux_client::perf::FLUSHES.add(1);
+                phux_client::perf::BYTES_OUT.add(u64::try_from(n).unwrap_or(u64::MAX));
+                phux_client::perf::STDOUT_WRITTEN.add_len(n);
+                phux_perf::echo_hop::record("stdout");
+                self.pending.clear();
+                true
+            }
+            Some(n) if n > 0 => {
+                phux_client::perf::STDOUT_WRITTEN.add_len(n);
+                self.pending.drain(..n);
+                false
+            }
+            _ => false,
+        }
+    }
 }
 
 impl Write for StdoutSink {
@@ -114,6 +186,9 @@ impl Write for StdoutSink {
 
     fn flush(&mut self) -> io::Result<()> {
         if self.pending.is_empty() {
+            return Ok(());
+        }
+        if self.try_direct() {
             return Ok(());
         }
         phux_client::perf::FLUSHES.add(1);
@@ -196,7 +271,33 @@ impl WriterHandle {
 
 /// Spawn the stdout writer thread and return the sink + its handle.
 pub(super) fn spawn_stdout_writer() -> (StdoutSink, WriterHandle) {
-    spawn_writer_into(io::stdout())
+    spawn_writer_into(io::stdout(), stdout_direct_fd())
+}
+
+/// Nonblocking handle on process stdout for a small echo frame. `None` when
+/// it cannot be opened without changing the writer thread's stdout.
+///
+/// `dup` shares `O_NONBLOCK` with the writer's descriptor. A full outer PTY
+/// then makes that thread's `write(2)` return `EAGAIN`, and the thread
+/// exits, so later frames never land. On Linux, reopening `/proc/self/fd/N`
+/// is a new file description, so only this handle is nonblocking.
+fn stdout_direct_fd() -> Option<OwnedFd> {
+    #[cfg(target_os = "linux")]
+    {
+        let stdout = io::stdout();
+        let raw = std::os::fd::AsRawFd::as_raw_fd(&stdout.as_fd());
+        let path = format!("/proc/self/fd/{raw}");
+        rustix::fs::open(
+            path,
+            rustix::fs::OFlags::WRONLY | rustix::fs::OFlags::CLOEXEC | rustix::fs::OFlags::NONBLOCK,
+            rustix::fs::Mode::empty(),
+        )
+        .ok()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
 }
 
 /// As [`spawn_stdout_writer`] but writing to an arbitrary sink (tests).
@@ -204,7 +305,10 @@ pub(super) fn spawn_stdout_writer() -> (StdoutSink, WriterHandle) {
     clippy::expect_used,
     reason = "thread spawn failure at attach start is fatal and unrecoverable"
 )]
-fn spawn_writer_into<W: Write + Send + 'static>(inner: W) -> (StdoutSink, WriterHandle) {
+fn spawn_writer_into<W: Write + Send + 'static>(
+    inner: W,
+    direct: Option<OwnedFd>,
+) -> (StdoutSink, WriterHandle) {
     let shared = Arc::new(Shared {
         queue: Mutex::new(QueueState {
             chunks: VecDeque::new(),
@@ -212,8 +316,10 @@ fn spawn_writer_into<W: Write + Send + 'static>(inner: W) -> (StdoutSink, Writer
             bytes: 0,
             spare_limit: SPARE_MIN_BYTES,
             shutdown: false,
+            in_syscall: false,
         }),
         cv: Condvar::new(),
+        direct,
     });
     let writer_shared = Arc::clone(&shared);
     let join = std::thread::Builder::new()
@@ -249,20 +355,22 @@ fn writer_loop<W: Write>(shared: &Shared, mut out: W) {
                 .queue
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            while q.chunks.is_empty() && !q.shutdown {
+            while (q.chunks.is_empty() || q.in_syscall) && !q.shutdown {
                 q = shared
                     .cv
                     .wait(q)
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
             }
-            if q.chunks.is_empty() && q.shutdown {
+            if q.chunks.is_empty() {
                 break;
             }
+            q.in_syscall = true;
             q.bytes = 0;
             chunks.extend(q.chunks.drain(..));
         }
         for chunk in &chunks {
             phux_client::perf::STDOUT_QUEUE_WAIT.record_elapsed(chunk.queued_at);
+            phux_perf::echo_hop::record("stdout");
             let result = {
                 let _timed = phux_client::perf::STDOUT_WRITE.timer();
                 out.write_all(&chunk.bytes)
@@ -285,6 +393,7 @@ fn writer_loop<W: Write>(shared: &Shared, mut out: W) {
                 .queue
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            q.in_syscall = false;
             let limit = q.spare_limit;
             #[allow(
                 clippy::iter_with_drain,
@@ -315,8 +424,10 @@ mod tests {
                     bytes: 0,
                     spare_limit: SPARE_MIN_BYTES,
                     shutdown: false,
+                    in_syscall: false,
                 }),
                 cv: Condvar::new(),
+                direct: None,
             }),
             needs_resync: Arc::new(AtomicBool::new(false)),
             pending: Vec::new(),
@@ -380,9 +491,12 @@ mod tests {
     #[test]
     fn flush_does_not_block_on_a_slow_sink() {
         let control = Arc::new((Mutex::new((false, false)), Condvar::new()));
-        let (mut sink, handle) = spawn_writer_into(BlockingSink {
-            control: Arc::clone(&control),
-        });
+        let (mut sink, handle) = spawn_writer_into(
+            BlockingSink {
+                control: Arc::clone(&control),
+            },
+            None,
+        );
         sink.write_all(b"first frame").expect("write");
         sink.flush().expect("flush");
         let (state, changed) = &*control;
@@ -479,7 +593,7 @@ mod tests {
     fn a_large_frames_buffer_is_reused_rather_than_reallocated() {
         const FRAME: usize = 300 * 1024;
         const PIECE: usize = 4 * 1024;
-        let (mut sink, handle) = spawn_writer_into(Discard);
+        let (mut sink, handle) = spawn_writer_into(Discard, None);
         let piece = vec![b'#'; PIECE];
         let mut pooled = false;
         for _ in 0..6 {

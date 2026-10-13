@@ -86,7 +86,7 @@ const LOCK_MODS: ModSet =
 ///
 /// `None` means the caller must use the full encoder. The text is borrowed
 /// from `event` and contains no C0, DEL, or macOS function-key PUA.
-fn legacy_printable(event: &KeyEvent, options: EncoderOptions) -> Option<&str> {
+pub(crate) fn legacy_printable(event: &KeyEvent, options: EncoderOptions) -> Option<&str> {
     if event.composing || !matches!(event.action, KeyAction::Press | KeyAction::Repeat) {
         return None;
     }

@@ -205,10 +205,15 @@ impl TerminalActor {
             .and_then(|p| p.child.process_id())
             .and_then(|pid| i32::try_from(pid).ok())
             .and_then(crate::reconcile::proc_identity);
+        let fast_pty = pty.as_ref().map(|pty| std::sync::Arc::clone(&pty.fast));
         let pending_effects = effects::PendingEffects::default();
         Self::install_effects(&mut terminal, &size_report, &pending_effects)?;
         if let Some(tx) = &pty_tx {
-            Self::install_pty_writer(&mut terminal, tx)?;
+            Self::install_pty_writer(
+                &mut terminal,
+                tx,
+                fast_pty.as_ref().map(std::sync::Arc::downgrade),
+            )?;
         }
 
         let actor = Self {
@@ -310,6 +315,7 @@ impl TerminalActor {
             resize: resize_tx,
             cols,
             rows,
+            fast_pty,
         };
         let handle = ResourceHandle {
             kind: actor.core.kind(),
@@ -368,14 +374,26 @@ impl TerminalActor {
     }
 
     /// Route terminal-generated replies (DA, color and status queries, ...)
-    /// back to the child via the writer bridge. The callback fires inside
-    /// `vt_write`, so it only sends on a channel, and holds the sender
-    /// weakly: a strong clone would keep the writer channel open and
-    /// deadlock `shutdown_pty`'s join.
+    /// back to the child. With a fast path they queue on it, so a keystroke
+    /// written inline cannot jump ahead of a reply; otherwise they go to the
+    /// writer bridge. The callback fires inside `vt_write`, so it only
+    /// enqueues, and holds the sender and the fast path weakly: a strong
+    /// clone would keep the writer channel open and deadlock `shutdown_pty`'s
+    /// join.
     pub(super) fn install_pty_writer(
         terminal: &mut GhosttyTerminal<'static, 'static>,
         tx: &mpsc::Sender<EncodedInputRequest>,
+        fast: Option<std::sync::Weak<super::fast_pty::PtyFastPath>>,
     ) -> Result<(), TerminalActorError> {
+        if let Some(fast) = fast {
+            terminal.on_pty_write(move |_term, bytes| {
+                // Writer gone: nobody to reply to.
+                if let Some(fast) = fast.upgrade() {
+                    let _ = fast.enqueue(EncodedInputRequest::legacy(bytes.to_vec()));
+                }
+            })?;
+            return Ok(());
+        }
         let tx = tx.downgrade();
         terminal.on_pty_write(move |_term, bytes| {
             // Writer gone: nobody to reply to.

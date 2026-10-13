@@ -54,7 +54,7 @@ use crate::input::{
     PerTerminalMouseEncoder, PerTerminalPasteEncoder,
 };
 use crate::state::{ClientId, SharedState, TerminalInput};
-use crate::terminal_actor::{EncodedInputRequest, InputCredit, TerminalHandle};
+use crate::terminal_actor::{EncodedInputRequest, InputCredit, LaneAhead, TerminalHandle};
 
 /// Bound on the lane's inbound queue. Attached input waits for room
 /// ([`InputLaneHandle::route`]); a command refuses with `RESOURCE_EXHAUSTED`.
@@ -113,6 +113,10 @@ pub(crate) struct RoutedInput {
     /// The pane input credit the sender took (ADR-0144); `None` makes the
     /// lane take one itself, without waiting.
     pub(crate) credit: Option<InputCredit>,
+    /// Keeps the receive-task PTY write closed until this key is in the
+    /// writer queue or has been dropped. `None` for input that never raced
+    /// the inline path.
+    pub(crate) lane_ahead: Option<LaneAhead>,
 }
 
 #[derive(Debug)]
@@ -149,6 +153,7 @@ impl RoutedInput {
             terminal_id,
             kind: RoutedInputKind::Attached { input, frame_label },
             credit: None,
+            lane_ahead: None,
         }
     }
 
@@ -156,6 +161,13 @@ impl RoutedInput {
     #[must_use]
     pub(crate) fn with_credit(mut self, credit: Option<InputCredit>) -> Self {
         self.credit = credit;
+        self
+    }
+
+    /// This input blocks an inline PTY write until the lane finishes with it.
+    #[must_use]
+    pub(crate) fn with_lane_ahead(mut self, lane_ahead: Option<LaneAhead>) -> Self {
+        self.lane_ahead = lane_ahead;
         self
     }
 }
@@ -269,6 +281,7 @@ impl InputLaneHandle {
             terminal_id,
             kind: RoutedInputKind::Headless { event, reply },
             credit,
+            lane_ahead: None,
         };
         let failure = match self.tx.try_send(routed) {
             Ok(()) => None,
@@ -346,6 +359,7 @@ impl InputLaneHandle {
                 reply,
             },
             credit: None,
+            lane_ahead: None,
         };
         match self.tx.try_send(routed) {
             Ok(()) => {}
@@ -559,17 +573,22 @@ fn handoff_encoded(
     bytes: Option<Vec<u8>>,
     echo_probe: bool,
     credit: Option<InputCredit>,
+    lane_ahead: Option<LaneAhead>,
 ) -> Result<bool, CommandResult> {
     let Some(bytes) = bytes else {
+        drop(lane_ahead);
         return Ok(true);
     };
     // A sender that waited brings its credit; only input that raced a pane
     // replacement, or came from a sender that did not wait, can find none.
     let Some(credit) = credit::credit_for(handle, credit) else {
+        drop(lane_ahead);
         tracing::warn!(?pane, "pane input credits exhausted; refusing input");
         return Err(input_saturated());
     };
-    let request = EncodedInputRequest::legacy_probe(bytes, echo_probe).with_credit(credit);
+    let request = EncodedInputRequest::legacy_probe(bytes, echo_probe)
+        .with_credit(credit)
+        .with_lane_ahead(lane_ahead);
     match handle.encoded_input.try_send(request) {
         Ok(()) => Ok(true),
         // Unreachable while every sender holds a credit (ADR-0144).
@@ -595,11 +614,13 @@ fn redeliver(
     bytes: Option<Vec<u8>>,
     input: &TerminalInput,
     credit: Option<InputCredit>,
+    lane_ahead: Option<LaneAhead>,
 ) -> Result<bool, CommandResult> {
     if !encoded_for
         .input_snapshot
         .same_channel(&current.handle.input_snapshot)
     {
+        drop(lane_ahead);
         return Ok(false);
     }
     handoff_encoded(
@@ -608,9 +629,14 @@ fn redeliver(
         bytes,
         crate::terminal_actor::echo_probe_for(input),
         credit,
+        lane_ahead,
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the lane guard travels with the key through the existing handoff arguments"
+)]
 fn process_attached(
     state: &SharedState,
     encoders: &mut std::collections::HashMap<phux_core::ids::ResourceId, LaneEncoderSet>,
@@ -619,6 +645,7 @@ fn process_attached(
     input: &TerminalInput,
     frame_label: &'static str,
     credit: Option<InputCredit>,
+    lane_ahead: Option<LaneAhead>,
 ) -> bool {
     let is_focus_gained = matches!(
         input,
@@ -639,7 +666,14 @@ fn process_attached(
     // between gate and delivery while encoding happens off-lock.
     let delivered =
         with_attached_input_destination(state, client_id, terminal_id, frame_label, |current| {
-            redeliver(&destination.handle, &current, bytes, input, credit)
+            redeliver(
+                &destination.handle,
+                &current,
+                bytes,
+                input,
+                credit,
+                lane_ahead,
+            )
         });
     let accepted = match delivered {
         Some(Ok(accepted)) => accepted,
@@ -696,7 +730,7 @@ fn process_headless(
     };
     let bytes = encode_input(encoders, destination.pane, &destination.handle, &input);
     match with_route_input_destination(state, client_id, terminal_id, |current| {
-        redeliver(&destination.handle, &current, bytes, &input, credit)
+        redeliver(&destination.handle, &current, bytes, &input, credit, None)
     }) {
         Ok(Ok(_)) => CommandResult::Ok,
         Ok(Err(result)) | Err(result) => result,
@@ -924,6 +958,7 @@ fn spawn_input_lane_with_completion_timeout(
             // Everything below is synchronous and non-blocking, so no pane
             // can stall another pane's input.
             while let Some(routed) = rx.blocking_recv() {
+                phux_perf::echo_hop::record("lane");
                 prune_closed_encoders(&mut encoders);
                 match routed.kind {
                     RoutedInputKind::Attached { input, frame_label } => {
@@ -935,6 +970,7 @@ fn spawn_input_lane_with_completion_timeout(
                             &input,
                             frame_label,
                             routed.credit,
+                            routed.lane_ahead,
                         ) {
                             note_input_activity(
                                 &mut activity_gate,

@@ -183,14 +183,18 @@ impl TerminalActor {
         }
         let echo_probe = request.echo_probe;
         let len = request.bytes.len();
-        let Some(tx) = self.pty_tx.as_ref() else {
+        let queued = if let Some(fast) = self.pty.as_ref().map(|pty| &pty.fast) {
+            fast.enqueue(request)
+        } else if let Some(tx) = self.pty_tx.as_ref() {
+            super::try_send_to_writer(tx, request)
+        } else {
             debug!("no PTY; encoded input discarded");
             if let Some(completion) = request.completion {
                 completion.complete(WriteCompletion::NotWritten);
             }
             return;
         };
-        match super::try_send_to_writer(tx, request) {
+        match queued {
             Ok(()) => {
                 crate::perf::INPUT_EVENTS.incr();
                 if echo_probe && self.pane_quiet_for_echo() {
