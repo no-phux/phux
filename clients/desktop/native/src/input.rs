@@ -1,5 +1,5 @@
 //! Native terminal input. The painter supplies identity and geometry; every
-//! action resolves the existing FFI client registry again, without a listener.
+//! action upgrades the view's `Weak<Client>` and does not take a listener.
 
 mod composition;
 mod keys;
@@ -7,7 +7,7 @@ mod link;
 mod pointer;
 
 use composition::Composition;
-use gpuix_native::native_extensions::gpui::{
+use gpui::{
     self, App, Bounds, ClipboardItem, Context, EntityInputHandler, FocusHandle, KeyDownEvent,
     KeyUpEvent, Pixels, Point, UTF16Selection, Window, WindowId,
 };
@@ -23,6 +23,7 @@ use phux_protocol::{
 use std::{
     collections::BTreeMap,
     ops::Range,
+    sync::{Arc, Weak},
     time::{Duration, Instant},
 };
 
@@ -58,6 +59,35 @@ impl Identity {
     }
 }
 
+/// Whether a painted frame may arm this bound input.
+#[derive(Debug, PartialEq, Eq)]
+enum Admit {
+    Accept(Identity),
+    WrongTerminal,
+    Replaced,
+}
+
+fn admit_presentation(
+    terminal: &ResourceId,
+    previous: Option<Identity>,
+    epoch: u64,
+    frame: &GridFrame,
+) -> Admit {
+    if &frame.terminal_id != terminal {
+        return Admit::WrongTerminal;
+    }
+    let identity = Identity::of(epoch, frame);
+    if previous.is_some_and(|previous| previous != identity) {
+        Admit::Replaced
+    } else {
+        Admit::Accept(identity)
+    }
+}
+
+fn upgrade_client(client: &Weak<Client>) -> Result<Arc<Client>, InputError> {
+    client.upgrade().ok_or(InputError::StaleHandle)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InputError {
     StaleHandle,
@@ -76,7 +106,7 @@ pub enum KeyDisposition {
 }
 
 pub struct TerminalInput {
-    handle: String,
+    client: Weak<Client>,
     view: ViewId,
     terminal: ResourceId,
     window: WindowId,
@@ -106,14 +136,14 @@ pub struct TerminalInput {
 
 impl TerminalInput {
     pub fn new(
-        handle: String,
+        client: Weak<Client>,
         view: ViewId,
         terminal: ResourceId,
         focus: FocusHandle,
         window: &Window,
     ) -> Self {
         Self {
-            handle,
+            client,
             view,
             terminal,
             window: window.window_handle().window_id(),
@@ -196,23 +226,24 @@ impl TerminalInput {
         frame: &GridFrame,
         metrics: InputMetrics,
     ) -> Result<(), InputError> {
-        if frame.terminal_id != self.terminal {
-            return Err(InputError::StalePresentation);
+        match admit_presentation(&self.terminal, self.identity, epoch, frame) {
+            Admit::WrongTerminal => Err(InputError::StalePresentation),
+            Admit::Replaced => {
+                self.cancel();
+                self.metrics = None;
+                self.fitted = None;
+                self.key_probe.forget();
+                Err(InputError::StalePresentation)
+            }
+            Admit::Accept(identity) => {
+                self.identity = Some(identity);
+                self.painted_seq = frame.last_seq;
+                self.key_probe.painted(frame.last_seq);
+                self.metrics = Some(metrics);
+                self.dimensions = (frame.cols, frame.rows);
+                Ok(())
+            }
         }
-        let identity = Identity::of(epoch, frame);
-        if self.identity.is_some_and(|previous| previous != identity) {
-            self.cancel();
-            self.metrics = None;
-            self.fitted = None;
-            self.key_probe.forget();
-            return Err(InputError::StalePresentation);
-        }
-        self.identity = Some(identity);
-        self.painted_seq = frame.last_seq;
-        self.key_probe.painted(frame.last_seq);
-        self.metrics = Some(metrics);
-        self.dimensions = (frame.cols, frame.rows);
-        Ok(())
     }
 
     pub fn cancel(&mut self) {
@@ -292,10 +323,8 @@ impl TerminalInput {
         self.settling = None;
     }
 
-    fn client(&self) -> Result<Client, InputError> {
-        phux_client_ffi::napi::initialize()
-            .client(&self.handle)
-            .map_err(|_| InputError::StaleHandle)
+    fn client(&self) -> Result<Arc<Client>, InputError> {
+        upgrade_client(&self.client)
     }
 
     fn focused(&self, window: &Window, _: &App) -> bool {
@@ -740,8 +769,8 @@ fn clamp(cells: f32) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use super::{InputMetrics, capacity};
-    use gpuix_native::native_extensions::gpui::{Bounds, point, px, size};
+    use super::{Admit, InputError, InputMetrics, admit_presentation, capacity, upgrade_client};
+    use gpui::{Bounds, point, px, size};
 
     fn metrics(width: f32, height: f32) -> InputMetrics {
         let bounds = Bounds::new(point(px(10.), px(20.)), size(px(width), px(height)));
@@ -764,5 +793,62 @@ mod tests {
         assert_eq!(capacity(metrics(15., 400.)), None);
         assert_eq!(capacity(metrics(400., 16.)), None);
         assert_eq!(capacity(metrics(f32::NAN, 400.)), None);
+    }
+
+    fn grid(terminal: phux_protocol::ResourceId, stream: u64, bootstrap: u64) -> super::GridFrame {
+        use phux_client_runtime::publication::{
+            Cursor, FrameColors, GridBuffer, GridDamage, Scrollbar,
+        };
+        super::GridFrame {
+            terminal_id: terminal,
+            generation: 1,
+            stream_id: stream,
+            bootstrap_id: bootstrap,
+            last_seq: 0,
+            cols: 1,
+            rows: 1,
+            cursor: Cursor::default(),
+            scrollbar: Scrollbar::default(),
+            colors: FrameColors::default(),
+            damage: GridDamage::Full,
+            buffer: GridBuffer::default(),
+        }
+    }
+
+    #[test]
+    fn presentation_identity_rejects_the_wrong_terminal_and_a_replaced_replica() {
+        let bound = phux_protocol::ResourceId::local(7);
+        let frame = grid(bound.clone(), 1, 1);
+        let Admit::Accept(first) = admit_presentation(&bound, None, 3, &frame) else {
+            panic!("a first presentation must arm");
+        };
+        assert_eq!(
+            admit_presentation(&bound, Some(first), 3, &frame),
+            Admit::Accept(first)
+        );
+        assert_eq!(
+            admit_presentation(&phux_protocol::ResourceId::local(8), Some(first), 3, &frame),
+            Admit::WrongTerminal
+        );
+        assert_eq!(
+            admit_presentation(&bound, Some(first), 4, &frame),
+            Admit::Replaced
+        );
+        let swapped = grid(bound.clone(), 1, 2);
+        assert_eq!(
+            admit_presentation(&bound, Some(first), 3, &swapped),
+            Admit::Replaced
+        );
+    }
+
+    #[test]
+    fn a_dropped_client_is_a_stale_handle() {
+        let client = std::sync::Arc::new(phux_client_runtime::Runtime::embedded(
+            phux_client_runtime::control::ControlOptions::default(),
+        ));
+        let weak = std::sync::Arc::downgrade(&client);
+        assert!(upgrade_client(&weak).is_ok());
+        drop(client);
+        assert_eq!(upgrade_client(&weak).unwrap_err(), InputError::StaleHandle);
     }
 }

@@ -1,7 +1,7 @@
 //! Real embedded engine/control tests of the ticket boundary, not GPU receipts.
 
 use super::*;
-use phux_client_runtime::{Runtime, control::ControlOptions, engine::Scroll};
+use std::sync::Arc;
 use phux_protocol::{
     PROTOCOL_VERSION, ResourceId,
     caps::{
@@ -15,17 +15,15 @@ use phux_protocol::{
     },
 };
 
-const HANDLE: &str = "phux-client:fixture";
-
 fn terminal() -> ResourceId {
     ResourceId::local(7)
 }
 
-fn ready() -> (Client, ViewId, Surface) {
-    let client = Runtime::embedded(ControlOptions {
+fn ready() -> (Arc<Client>, ViewId, Surface) {
+    let client = Arc::new(Runtime::embedded(ControlOptions {
         attach: Some(AttachTarget::ByName("presentation".into())),
         ..ControlOptions::default()
-    });
+    }));
     bootstrap(&client, BootstrapLimits::default());
     let view = client.create_view(&terminal()).expect("view");
     let mut surface = Surface::default();
@@ -134,16 +132,10 @@ fn unknown(client: &Client) -> ProjectionFence {
     })
 }
 
-fn capture(client: &Client, view: ViewId, surface: &Surface) -> Result<Ticket, Rejection> {
+fn capture(client: &Arc<Client>, view: ViewId, surface: &Surface) -> Result<Ticket, Rejection> {
+    let weak = Arc::downgrade(client);
     client.with_control(|control| {
-        Ticket::capture(
-            HANDLE,
-            &phux_client_ffi::projection::id::encode(&terminal()),
-            view,
-            17,
-            &surface.lifetime,
-            control,
-        )
+        Ticket::capture(weak, &terminal(), view, 17, &surface.lifetime, control)
     })
 }
 
@@ -296,12 +288,13 @@ fn ordinary_unfenced_ticket_cannot_clear_a_later_unknown() {
 }
 
 #[test]
-fn wrong_terminal_prop_is_rejected() {
+fn wrong_terminal_is_rejected() {
     let (client, view, surface) = ready();
+    let wrong = ResourceId::local(99);
     let result = client.with_control(|control| {
         Ticket::capture(
-            HANDLE,
-            "wrong-terminal",
+            Arc::downgrade(&client),
+            &wrong,
             view,
             17,
             &surface.lifetime,
@@ -443,4 +436,18 @@ fn bootstrap_swap_rejects_ticket_for_previous_authoritative_replica() {
     assert_eq!(fresh.frame.bootstrap_id, 2);
     assert!(fresh.frame.text().contains("replacement"));
     assert!(fenced(&client));
+}
+
+#[test]
+fn a_pending_receipt_does_not_keep_the_runtime_alive() {
+    let (client, view, surface) = ready();
+    unknown(&client);
+    let ticket = capture(&client, view, &surface).unwrap();
+    let probe = Arc::downgrade(&client);
+    drop(client);
+    assert!(
+        probe.upgrade().is_none(),
+        "the ticket must not retain Arc<Client>"
+    );
+    assert!(ticket.client.upgrade().is_none());
 }

@@ -1,5 +1,5 @@
 use super::{
-    InputError, InputMetrics, TerminalInput, engine_error, gpui, input_ready, keys, queued,
+    InputError, InputMetrics, TerminalInput, engine_error, input_ready, keys, queued,
 };
 use gpui::{
     App, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,

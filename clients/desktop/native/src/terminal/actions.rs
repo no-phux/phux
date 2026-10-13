@@ -1,19 +1,18 @@
-//! One-shot requests the shell makes of the focused terminal that need the
-//! platform: Ghostty's clipboard actions on any chord, and handing a written
-//! file to the clipboard or its default app. They use the same GPUI
-//! clipboard and paste path as Command-C and Command-V, minus its keyboard
-//! focus check: the find bar over the terminal may hold the keyboard.
+//! One-shot platform requests addressed to a bound terminal: Ghostty's
+//! clipboard actions, and handing a written file to the clipboard or its
+//! default app. They use the same GPUI clipboard and paste path as Command-C
+//! and Command-V, minus its keyboard focus check: the find bar over the
+//! terminal may hold the keyboard.
 //!
-//! The shell sends `hostAction = { id, kind, text? }`; a new `id` runs once,
-//! on the next render. A request already present when the element is created
-//! predates it (a re-created pane must not repeat an old paste) and is dropped.
+//! [`accept`] is the once-only gate. A request is delivered on the call that
+//! carries it and is not retained, so a later render cannot repeat it and an
+//! unbound surface cannot store one for a future bind.
 
 use crate::input::TerminalInput;
-use gpuix_native::native_extensions::gpui::{self, ClipboardItem};
-use serde_json::Value;
+use gpui::{self, ClipboardItem};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum HostAction {
+pub enum HostAction {
     /// Copy this view's selection, as Command-C.
     Copy,
     /// Paste the clipboard's text, as Command-V.
@@ -24,60 +23,16 @@ pub(super) enum HostAction {
     Open(String),
 }
 
-impl HostAction {
-    fn parse(value: &Value) -> Option<(String, Self)> {
-        let id = value["id"].as_str()?.to_owned();
-        let text = || value["text"].as_str().map(str::to_owned);
-        let action = match value["kind"].as_str()? {
-            "copy" => Self::Copy,
-            "paste" => Self::Paste,
-            "copyText" => Self::CopyText(text()?),
-            "open" => Self::Open(text()?),
-            _ => return None,
-        };
-        Some((id, action))
-    }
-}
-
-#[derive(Default)]
-pub(super) struct HostActions {
-    last: Option<String>,
-    pending: Option<HostAction>,
-    armed: bool,
-}
-
-impl HostActions {
-    pub(super) fn offer(&mut self, value: &Value) {
-        let Some((id, action)) = HostAction::parse(value) else {
-            return;
-        };
-        if self.last.as_deref() == Some(id.as_str()) {
-            return;
-        }
-        self.last = Some(id);
-        if self.armed {
-            self.pending = Some(action);
-        }
-    }
-
-    /// Called once the element has rendered: later requests are its own.
-    pub(super) fn arm(&mut self) {
-        self.armed = true;
-    }
-
-    pub(super) fn take(&mut self) -> Option<HostAction> {
-        self.pending.take()
-    }
+/// `None` when the surface is not the bound entity. The caller must not keep
+/// the action for a later attempt.
+pub(super) fn accept(bound: bool, action: HostAction) -> Option<HostAction> {
+    bound.then_some(action)
 }
 
 /// Failures are as quiet as Command-C with nothing selected: the terminal's
 /// own state already shows why (no selection, not ready). Copy and Paste are
 /// addressed to this terminal, so they do not need its keyboard focus.
-pub(super) fn run(
-    action: HostAction,
-    input: &gpui::Entity<TerminalInput>,
-    cx: &mut gpui::App,
-) {
+pub(super) fn run(action: HostAction, input: &gpui::Entity<TerminalInput>, cx: &mut gpui::App) {
     match action {
         HostAction::Copy => input.update(cx, |state, cx| {
             let _ = state.copy_requested(cx);
@@ -100,42 +55,22 @@ pub(super) fn run(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use serde_json::json;
+    use super::{HostAction, accept};
 
     #[test]
-    fn requests_before_the_first_render_and_repeats_never_run() {
-        let mut actions = HostActions::default();
-        actions.offer(&json!({"id": "1", "kind": "paste"}));
-        actions.arm();
-        assert_eq!(actions.take(), None);
-        actions.offer(&json!({"id": "1", "kind": "paste"}));
-        assert_eq!(actions.take(), None);
-        actions.offer(&json!({"id": "2", "kind": "copy"}));
-        actions.offer(&Value::Null);
-        assert_eq!(actions.take(), Some(HostAction::Copy));
-        assert_eq!(actions.take(), None);
+    fn an_unbound_request_is_dropped_and_not_retained() {
+        assert_eq!(accept(false, HostAction::Paste), None);
+        assert_eq!(accept(false, HostAction::Copy), None);
+        // A later bind does not see the dropped request: accept keeps no slot.
+        assert_eq!(accept(true, HostAction::Copy), Some(HostAction::Copy));
     }
 
     #[test]
-    fn malformed_requests_are_ignored() {
-        let mut actions = HostActions::default();
-        actions.arm();
-        for bad in [
-            json!({"id": 3, "kind": "copy"}),
-            json!({"id": "3", "kind": "cut"}),
-            json!({"id": "3", "kind": "open"}),
-            json!({"id": "3", "kind": "copyText", "text": 7}),
-        ] {
-            actions.offer(&bad);
-            assert_eq!(actions.take(), None);
-        }
-        actions.offer(&json!({"id": "4", "kind": "open", "text": "/tmp/x.txt"}));
-        assert_eq!(actions.take(), Some(HostAction::Open("/tmp/x.txt".into())));
-        actions.offer(&json!({"id": "5", "kind": "copyText", "text": "/tmp/x.txt"}));
-        assert_eq!(
-            actions.take(),
-            Some(HostAction::CopyText("/tmp/x.txt".into()))
-        );
+    fn each_accepted_request_is_a_separate_delivery() {
+        let first = accept(true, HostAction::CopyText("a".into()));
+        let second = accept(true, HostAction::Open("/tmp/x.txt".into()));
+        assert_eq!(first, Some(HostAction::CopyText("a".into())));
+        assert_eq!(second, Some(HostAction::Open("/tmp/x.txt".into())));
+        assert_ne!(first, second);
     }
 }

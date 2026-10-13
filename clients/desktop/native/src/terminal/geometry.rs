@@ -1,5 +1,5 @@
-use super::{Settings, gpui};
-use gpui::{Bounds, Pixels, Point, point, px, size};
+use super::Settings;
+use gpui::{self, Bounds, Pixels, Point, point, px, size};
 
 /// One logical-pixel geometry for painting and future IME/mouse hit testing.
 #[derive(Clone, Copy, Debug, Default)]
