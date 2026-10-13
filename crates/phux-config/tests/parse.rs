@@ -113,7 +113,7 @@ fn empty_input_is_full_defaults() {
     assert!(!cfg.experimental.predictive_echo_for(false));
     assert!(cfg.experimental.predictive_echo_for(true));
     assert!(cfg.sidebar.enabled);
-    assert_eq!(cfg.sidebar.width, 0);
+    assert_eq!(cfg.sidebar.width, 20);
     assert_eq!(cfg.sidebar.position, SidebarPosition::Left);
     assert_eq!(cfg.status.position, StatusPosition::Top);
     assert_eq!(cfg.defaults.cwd_inheritance, CwdInheritance::InheritFocused);

@@ -53,9 +53,12 @@ pub struct ActionSpec {
     /// Canonical action name (matches a `run_action` arm and an
     /// [`phux_config::vocab::ACTION_NAMES`] entry).
     pub name: &'static str,
+    /// Short title the palette lists, in the sentence case of a menu item
+    /// (`Split right`); a trailing ellipsis marks one that asks for more.
+    pub title: &'static str,
     /// The section the palette groups this action under.
     pub category: Category,
-    /// One-line human description shown in the palette.
+    /// One-line human description for the generated actions reference.
     pub description: &'static str,
     /// The parameter surface for the generated reference page (`""` for a
     /// bare action); documentation only.
@@ -104,6 +107,7 @@ impl ActionSpec {
 pub const REGISTRY: &[ActionSpec] = &[
     ActionSpec {
         name: "split-pane",
+        title: "Split right",
         category: Category::Pane,
         description: "Split the focused pane side-by-side (vertical divider)",
         params: "`direction` = `horizontal` | `vertical`; `host?` (satellite); `resource?` (`@N` or `host/@N`)",
@@ -111,6 +115,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "move-pane",
+        title: "Move pane…",
         category: Category::Pane,
         description: "Move the focused pane beside another pane…",
         params: "`target` (local Terminal id; picker-supplied)",
@@ -118,6 +123,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "kill-pane",
+        title: "Close pane",
         category: Category::Pane,
         description: "Close the focused pane",
         params: "",
@@ -125,6 +131,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "focus-direction",
+        title: "Focus pane on the left",
         category: Category::Pane,
         description: "Move focus to the pane on the left",
         params: "`direction` = `left` | `right` | `up` | `down`",
@@ -132,6 +139,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "resize-pane",
+        title: "Grow pane left",
         category: Category::Pane,
         description: "Grow the focused pane to the left",
         params: "`direction` = `left` | `right` | `up` | `down`; `amount` (cells)",
@@ -142,6 +150,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "next-pane",
+        title: "Next pane",
         category: Category::Pane,
         description: "Cycle focus to the next pane",
         params: "",
@@ -149,6 +158,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "next-attention",
+        title: "Next pane waiting on you",
         category: Category::Pane,
         description: "Jump to the next pane waiting for an answer",
         params: "",
@@ -156,6 +166,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "return-from-attention",
+        title: "Back to where you were",
         category: Category::Pane,
         description: "Return to where attention navigation started",
         params: "",
@@ -163,6 +174,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "previous-pane",
+        title: "Previous pane",
         category: Category::Pane,
         description: "Cycle focus to the previous pane",
         params: "",
@@ -170,6 +182,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "last-pane",
+        title: "Last pane",
         category: Category::Pane,
         description: "Jump back to the previously focused pane",
         params: "",
@@ -177,6 +190,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "toggle-zoom",
+        title: "Zoom pane",
         category: Category::Pane,
         description: "Zoom the focused pane to fill the window (toggle)",
         params: "",
@@ -184,6 +198,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "context-menu",
+        title: "Pane menu",
         category: Category::Pane,
         description: "Open the context menu for the focused pane",
         params: "",
@@ -191,6 +206,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "new-window",
+        title: "New window",
         category: Category::Window,
         description: "Open a new window",
         params: "`cwd?` (working directory on the attached server's host)",
@@ -198,6 +214,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "go-to-directory",
+        title: "New window in directory…",
         category: Category::Window,
         description: "Browse directories on the attached server's host and open a new window in one",
         params: "`path?` (absolute, `~`, or `~/...`; bare starts at the focused pane's directory)",
@@ -205,6 +222,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "find-path",
+        title: "Insert path…",
         category: Category::Pane,
         description: "Browse or fuzzy-search host paths and insert a literal path into the focused pane",
         params: "`path?` (directory to browse; defaults to the focused pane's directory)",
@@ -212,6 +230,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "insert-path",
+        title: "Insert selected path",
         category: Category::Pane,
         description: "Insert a selected host path without running the command",
         params: "`path` (selected absolute path)",
@@ -219,6 +238,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "kill-window",
+        title: "Close window",
         category: Category::Window,
         description: "Close the active window and all its panes",
         params: "",
@@ -226,6 +246,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "next-window",
+        title: "Next window",
         category: Category::Window,
         description: "Switch to the next window",
         params: "",
@@ -233,6 +254,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "previous-window",
+        title: "Previous window",
         category: Category::Window,
         description: "Switch to the previous window",
         params: "",
@@ -240,6 +262,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "window-picker",
+        title: "Go to window…",
         category: Category::Window,
         description: "Pick a window from all sessions (grouped)",
         params: "",
@@ -247,6 +270,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "rename-window",
+        title: "Rename window…",
         category: Category::Window,
         description: "Rename the active window (interactive prompt)",
         params: "`name?` (bare opens an interactive prompt)",
@@ -254,6 +278,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "session-picker",
+        title: "Go to session…",
         category: Category::Session,
         description: "Browse sessions and live host availability",
         params: "",
@@ -261,6 +286,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "new-session",
+        title: "New session…",
         category: Category::Session,
         description: "Create a new session and switch to it",
         params: "`name?` (bare opens an interactive prompt); `cwd?`; `host?`",
@@ -268,6 +294,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "last-session",
+        title: "Last session",
         category: Category::Session,
         description: "Switch back to the previous session",
         params: "",
@@ -275,6 +302,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "next-session",
+        title: "Next session",
         category: Category::Session,
         description: "Switch to the next session by name",
         params: "",
@@ -282,6 +310,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "previous-session",
+        title: "Previous session",
         category: Category::Session,
         description: "Switch to the previous session by name",
         params: "",
@@ -289,6 +318,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "rename-session",
+        title: "Rename session…",
         category: Category::Session,
         description: "Rename the current session (interactive prompt)",
         params: "`name?` (bare opens an interactive prompt)",
@@ -296,6 +326,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "toggle-sidebar",
+        title: "Toggle sidebar",
         category: Category::View,
         description: "Show or hide the window sidebar (toggle)",
         params: "",
@@ -303,6 +334,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "agent-fleet",
+        title: "Agent fleet",
         category: Category::View,
         description: "Agent fleet: every pane's agent, state, and attention",
         params: "",
@@ -310,6 +342,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "settings",
+        title: "Settings",
         category: Category::View,
         description: "Settings: browse, search, and edit every option in place",
         params: "",
@@ -317,6 +350,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "report-bug",
+        title: "Report a bug",
         category: Category::View,
         description: "Write a local bug report (session, logs, screen) and copy its path",
         params: "`note?` (optional free-text description)",
@@ -324,6 +358,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "getting-started",
+        title: "Getting started",
         category: Category::View,
         description: "Getting started: detach, return, the Agents list, and command discovery",
         params: "",
@@ -331,6 +366,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "detach",
+        title: "Detach",
         category: Category::View,
         description: "Detach this client from the session",
         params: "",
@@ -338,6 +374,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "reload-config",
+        title: "Reload config",
         category: Category::View,
         description: "Reload the config file (keybindings, theme, status bar)",
         params: "",
@@ -345,6 +382,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "take-input",
+        title: "Take the wheel",
         category: Category::Pane,
         description: "Take the wheel: seize exclusive input over the focused pane",
         params: "",
@@ -352,6 +390,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "give-input",
+        title: "Give back the wheel",
         category: Category::Pane,
         description: "Give back the wheel: release the focused pane's input lease",
         params: "",
@@ -359,6 +398,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "signal-terminal",
+        title: "Freeze pane",
         category: Category::Pane,
         description: "Signal the focused pane's process group (freeze, resume, kill)",
         params: "`signal` = `interrupt` | `freeze` | `resume` | `terminate` | `kill`",
@@ -366,6 +406,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "set-pane",
+        title: "Toggle mouse capture",
         category: Category::Pane,
         description: "Toggle mouse capture for the focused pane",
         params: "`mouse` = `on` | `off` | `toggle`",
@@ -479,8 +520,9 @@ pub const NON_PALETTE_ACTIONS: &[NonPaletteAction] = &[
 /// The palette rows.
 ///
 /// [`REGISTRY`] grouped under [`Category`] headers, each row annotated by its
-/// bound chord (`"unbound"` without one or without a config), then enabled
-/// plugins' actions and panes under a trailing **Plugin** header.
+/// bound chord (nothing without one or without a config: a menu is not a
+/// table), then enabled plugins' actions and panes under a trailing
+/// **Plugin** header.
 #[must_use]
 pub fn palette_items(
     keybindings: Option<&KeybindingsCfg>,
@@ -497,8 +539,8 @@ pub fn palette_items(
             }
             let resolved = spec.resolved_action();
             items.push(
-                SelectItem::new(spec.description, resolved.clone())
-                    .secondary(chord_annotation(keybindings, &resolved))
+                chord_annotated(SelectItem::new(spec.title, resolved), keybindings)
+                    .keywords(spec.name)
                     .indented(),
             );
         }
@@ -517,24 +559,22 @@ pub fn palette_items(
             items.push(SelectItem::header("Plugin"));
             header_pushed = true;
         }
-        items.push(
-            SelectItem::new(label, resolved.clone())
-                .secondary(chord_annotation(keybindings, &resolved))
-                .indented(),
-        );
+        items.push(chord_annotated(SelectItem::new(label, resolved), keybindings).indented());
     }
     items
 }
 
-/// The chord annotation for a palette row: the bound chord's literal
-/// keystrokes, or `"unbound"` (also when the config failed to load).
-fn chord_annotation(keybindings: Option<&KeybindingsCfg>, resolved: &ResolvedAction) -> String {
-    bound_chord_for(keybindings, resolved).unwrap_or_else(|| "unbound".to_owned())
+/// `item` with its bound chord's literal keystrokes as the secondary, when
+/// one is bound.
+fn chord_annotated(item: SelectItem, keybindings: Option<&KeybindingsCfg>) -> SelectItem {
+    match bound_chord_for(keybindings, &item.action) {
+        Some(chord) => item.secondary(chord),
+        None => item,
+    }
 }
 
-/// The chord bound to `resolved`, or `None`. The palette renders `None` as
-/// `"unbound"`; context menus leave it blank. Both use this one resolver so
-/// they never disagree.
+/// The chord bound to `resolved`, or `None`, which the palette and context
+/// menus both leave blank. Both use this one resolver so they never disagree.
 #[must_use]
 pub fn bound_chord_for(
     keybindings: Option<&KeybindingsCfg>,
@@ -659,7 +699,7 @@ mod tests {
              anything — `{last}` was expected below the fold",
         );
         assert!(
-            opened.contains('█'),
+            opened.contains('┃'),
             "an overflowing palette must paint a scrollbar so the user can see \
              there is more list:\n{opened:?}",
         );
@@ -743,14 +783,14 @@ mod tests {
     }
 
     #[test]
-    fn palette_items_show_unbound_when_no_config() {
+    fn palette_items_show_no_chord_when_no_config() {
         let items = palette_items(None, &[], &[]);
         assert!(
             items
                 .iter()
                 .filter(|i| !i.is_header())
-                .all(|i| i.secondary.as_deref() == Some("unbound")),
-            "no config ⇒ every selectable row unbound",
+                .all(|i| i.secondary.is_none()),
+            "no config ⇒ no row claims a chord",
         );
     }
 

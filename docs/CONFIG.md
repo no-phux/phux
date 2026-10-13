@@ -420,8 +420,8 @@ theme's semantic keys map onto the slots are in
 [the TUI guide](consumers/tui.md#theme) and
 [the configuration reference](./reference/config.md).
 
-**Sidebar.** On by default. `enabled`, `width` (`0` adapts to 28–40
-columns; a positive width is fixed), and `position` (`left` or `right`)
+**Sidebar.** On by default. `enabled`, `width` (default 20; `0`
+adapts to 28–40 columns), and `position` (`left` or `right`)
 are read at attach — `phux config reload` does not apply `[sidebar]`.
 Detach and re-attach. `prefix-b` toggles it for the life of that attach.
 
