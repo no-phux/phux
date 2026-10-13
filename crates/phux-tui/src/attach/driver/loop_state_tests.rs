@@ -108,6 +108,14 @@ async fn queued_rename_cannot_write_before_initial_metadata_is_processed() {
             result.unwrap();
             assert!(state.layout_read_complete);
             assert!(state.layout_get_request_id.is_none());
+            // #1207: the absent key is first re-seeded with the bootstrap.
+            let healed = frames_sent(&mut client, &mut server).await;
+            assert!(
+                healed
+                    .iter()
+                    .any(|frame| matches!(frame, FrameKind::SetMetadata { .. })),
+                "an absent key is saved once read: {healed:?}"
+            );
             rename_from_prompt(&mut state, &mut client, &mut out).await;
             let written = tokio::time::timeout(Duration::from_secs(1), async {
                 loop {
@@ -2415,4 +2423,103 @@ async fn resize_pane_resizes_the_panes_whose_tiles_moved() {
     );
     drop(client);
     drop(server);
+}
+
+/// #1207: a session whose layout key is missing, or names fewer panes than
+/// the session owns, must not hide the rest. Every live session pane gets a
+/// place, the attach focus stays, a peer session's pane stays out, and the
+/// healed layout is saved.
+#[tokio::test(flavor = "current_thread")]
+async fn missing_or_partial_layout_places_every_session_pane_and_saves() {
+    let focus = ResourceId::local(1);
+    let hidden = ResourceId::local(4);
+    let foreign = ResourceId::local(7);
+    let stored_partial = Workspace::single(focus.clone()).encode_cbor().unwrap();
+    for stored in [None, Some(stored_partial)] {
+        let (a, b) = tokio::net::UnixStream::pair().unwrap();
+        let mut client = Connection::from_stream(a);
+        let mut server = Connection::from_stream(b);
+        let negotiated = NegotiatedBootstrap {
+            profile: BootstrapProfile::SynthesizedVtRaw,
+            limits: BootstrapLimits::default(),
+            server_features: ServerFeatureSet::new(),
+            server_features_ext: phux_protocol::ServerFeatureExtSet::new(),
+        };
+        let mut state = SessionLoop::new(
+            negotiated,
+            PredictiveConfig::disabled(),
+            false,
+            None,
+            EntryPick::default(),
+            None,
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        let attached = FrameKind::Attached {
+            attach_id: 1,
+            initial_client_id: ClientId::new(1),
+            snapshot: SessionSnapshot::new(SessionId::new(1), WindowId::new(1), focus.clone())
+                .with_sessions(vec![
+                    SessionInfo::new(SessionId::new(1), "default"),
+                    SessionInfo::new(SessionId::new(2), "other"),
+                ])
+                .with_windows(vec![
+                    WindowInfo::new(WindowId::new(1), SessionId::new(1), "window-0"),
+                    WindowInfo::new(WindowId::new(2), SessionId::new(2), "window-0"),
+                ])
+                .with_resources(vec![
+                    ResourceInfo::new(focus.clone(), WindowId::new(1), 80, 24),
+                    ResourceInfo::new(hidden.clone(), WindowId::new(1), 80, 24),
+                    ResourceInfo::new(foreign.clone(), WindowId::new(2), 80, 24),
+                ]),
+        };
+        state
+            .bootstrap(&mut client, &mut out, attached, None)
+            .await
+            .unwrap();
+        state
+            .emit_deferred_bootstrap_outbound(&mut client)
+            .await
+            .unwrap();
+        let request_id = state.layout_get_request_id.unwrap();
+        state
+            .apply_server_frame(
+                &mut client,
+                &mut out,
+                None,
+                FrameKind::MetadataValue {
+                    request_id,
+                    value: stored.clone(),
+                },
+                false,
+                &mut RepaintAccumulator::default(),
+            )
+            .await
+            .unwrap();
+
+        let leaves: Vec<ResourceId> = state
+            .mirror
+            .workspace
+            .windows
+            .iter()
+            .filter_map(|window| window.state.tree.as_ref())
+            .flat_map(crate::layout::leaves)
+            .collect();
+        assert_eq!(leaves, [focus.clone(), hidden.clone()], "stored {stored:?}");
+        assert_eq!(state.mirror.workspace.active, 0);
+        assert_eq!(state.mirror.focused_resource.as_ref(), Some(&focus));
+        let saved = frames_sent(&mut client, &mut server)
+            .await
+            .into_iter()
+            .find_map(|frame| match frame {
+                FrameKind::SetMetadata { value, .. } => {
+                    Some(Workspace::decode_cbor(&value).unwrap())
+                }
+                _ => None,
+            })
+            .expect("the healed layout is saved");
+        assert_eq!(saved.windows.len(), 2, "stored {stored:?}");
+        drop(client);
+        drop(server);
+    }
 }

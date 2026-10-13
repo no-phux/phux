@@ -4,6 +4,7 @@ use super::{
     AttachError, Connection, DEFAULT_GROUP_ID, FrameKind, FrameOutcome, HashMap,
     RepaintAccumulator, ResourceId, Scope, SidebarReservation, emit_view_reflow,
     encode_layout_or_log, layout_key, reanchor_predict_to_pane, send_unless_peer_gone,
+    session_terminals,
 };
 
 impl super::SessionLoop {
@@ -288,6 +289,48 @@ impl super::SessionLoop {
         self.focus_history
             .transition(&mut self.mirror.focused_resource, Some(id.clone()));
         reanchor_predict_to_pane(&mut self.mirror.predict, &self.mirror.panes, id);
+        true
+    }
+
+    /// #1207: a missing or partial layout key must not hide live panes.
+    /// Each focused-session Terminal that no window names gets a window of
+    /// its own; the active window and focus stay put. Whether any was placed.
+    pub(super) fn place_unplaced_panes(&mut self) -> bool {
+        let Some(session) = self.peers.focused_session else {
+            return false;
+        };
+        let placed: Vec<ResourceId> = self
+            .mirror
+            .workspace
+            .windows
+            .iter()
+            .filter_map(|window| window.state.tree.as_ref())
+            .flat_map(crate::layout::leaves)
+            .collect();
+        let live = session_terminals(&self.peers.windows, &self.peers.resources, session);
+        let unplaced: Vec<ResourceId> = live
+            .into_iter()
+            .filter(|id| !placed.contains(id))
+            // A slot means ATTACHED seeded its mirror; a floating overlay
+            // never takes a window (ADR-0147).
+            .filter(|id| {
+                self.mirror
+                    .panes
+                    .get(id)
+                    .is_some_and(|slot| slot.floating.is_none())
+            })
+            .collect();
+        if unplaced.is_empty() {
+            return false;
+        }
+        let workspace = &mut self.mirror.workspace;
+        let active = workspace.active;
+        for id in unplaced {
+            tracing::info!(resource = %id, "placing a live pane the stored layout omits");
+            let name = workspace.default_window_name();
+            workspace.add_window(name, id);
+        }
+        workspace.active = active;
         true
     }
 
