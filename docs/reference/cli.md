@@ -1341,8 +1341,9 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (with `--json` it is refused
-                                  instead, naming the remedies). PORT
+                                  remembered (except `upload` and calls with
+                                  `--json`: these never pair and refuse
+                                  unregistered hosts, naming remedies). PORT
                                   defaults to 8788. Cannot combine with
                                   `--socket`.
   -h, --help                      Print help
@@ -1769,8 +1770,9 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (with `--json` it is refused
-                                  instead, naming the remedies). PORT
+                                  remembered (except `upload` and calls with
+                                  `--json`: these never pair and refuse
+                                  unregistered hosts, naming remedies). PORT
                                   defaults to 8788. Cannot combine with
                                   `--socket`.
   -h, --help                      Print help
@@ -1901,8 +1903,9 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (with `--json` it is refused
-                                  instead, naming the remedies). PORT
+                                  remembered (except `upload` and calls with
+                                  `--json`: these never pair and refuse
+                                  unregistered hosts, naming remedies). PORT
                                   defaults to 8788. Cannot combine with
                                   `--socket`.
   -a, --all                       List this machine and every registered host
@@ -2031,8 +2034,9 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (with `--json` it is refused
-                                  instead, naming the remedies). PORT
+                                  remembered (except `upload` and calls with
+                                  `--json`: these never pair and refuse
+                                  unregistered hosts, naming remedies). PORT
                                   defaults to 8788. Cannot combine with
                                   `--socket`.
       --empty                     Create the session with no process. It is
@@ -3015,8 +3019,9 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (with `--json` it is refused
-                                  instead, naming the remedies). PORT
+                                  remembered (except `upload` and calls with
+                                  `--json`: these never pair and refuse
+                                  unregistered hosts, naming remedies). PORT
                                   defaults to 8788. Cannot combine with
                                   `--socket`.
   -h, --help                      Print help
@@ -4309,8 +4314,9 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (with `--json` it is refused
-                                  instead, naming the remedies). PORT
+                                  remembered (except `upload` and calls with
+                                  `--json`: these never pair and refuse
+                                  unregistered hosts, naming remedies). PORT
                                   defaults to 8788. Cannot combine with
                                   `--socket`.
   -h, --help                      Print help
@@ -4484,8 +4490,9 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (with `--json` it is refused
-                                  instead, naming the remedies). PORT
+                                  remembered (except `upload` and calls with
+                                  `--json`: these never pair and refuse
+                                  unregistered hosts, naming remedies). PORT
                                   defaults to 8788. Cannot combine with
                                   `--socket`.
   -h, --help                      Print help

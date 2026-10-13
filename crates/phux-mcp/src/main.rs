@@ -146,7 +146,17 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    match rt.block_on(serve()) {
+    let result = rt.block_on(serve());
+    finish_serving(rt, result)
+}
+
+/// Cancelled blocking local readers may outlive serving; never wait for them at shutdown.
+fn finish_serving(
+    rt: tokio::runtime::Runtime,
+    result: std::io::Result<()>,
+) -> std::process::ExitCode {
+    rt.shutdown_background();
+    match result {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => std::process::ExitCode::SUCCESS,
         Err(err) => {
@@ -430,8 +440,65 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
-    /// Every option's description starts in one column, as clap lays it
-    /// out for `phux --help`.
+    #[test]
+    fn finish_serving_preserves_exit_status_mapping() {
+        for (result, expected) in [
+            (Ok(()), std::process::ExitCode::SUCCESS),
+            (
+                Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe)),
+                std::process::ExitCode::SUCCESS,
+            ),
+            (
+                Err(std::io::Error::from(std::io::ErrorKind::Other)),
+                std::process::ExitCode::FAILURE,
+            ),
+        ] {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
+            assert_eq!(super::finish_serving(rt, result), expected);
+        }
+    }
+
+    #[test]
+    fn finish_serving_does_not_wait_for_a_running_blocking_reader() {
+        use std::sync::mpsc::sync_channel;
+
+        let (entered_tx, entered_rx) = sync_channel(1);
+        let (release_tx, release_rx) = sync_channel(1);
+        let (finished_tx, finished_rx) = sync_channel(1);
+        let (status_tx, status_rx) = sync_channel(1);
+        let worker = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
+            rt.spawn_blocking(move || {
+                let _ = entered_tx.send(());
+                let _ = release_rx.recv();
+                let _ = finished_tx.send(());
+            });
+            // Ensure the blocking reader is running before the real main shutdown path.
+            let entered = entered_rx.recv_timeout(Duration::from_secs(5));
+            let status = super::finish_serving(rt, Ok(()));
+            let _ = status_tx.send((entered, status));
+        });
+        let status = status_rx.recv_timeout(Duration::from_secs(5));
+        // Always release and join before asserting, even if shutdown regresses to waiting.
+        let released = release_tx.send(());
+        let finished = finished_rx.recv_timeout(Duration::from_secs(5));
+        let joined = worker.join();
+        assert!(released.is_ok(), "blocking reader release failed");
+        assert!(
+            finished.is_ok(),
+            "blocking reader did not finish after release"
+        );
+        assert!(joined.is_ok(), "shutdown worker panicked");
+        let (entered, status) = status.expect("shutdown waited for the held blocking reader");
+        assert!(entered.is_ok(), "blocking reader never entered");
+        assert_eq!(status, std::process::ExitCode::SUCCESS);
+    }
+
+    /// Every option's description starts in one column.
     #[test]
     fn help_options_share_one_description_column() {
         let columns: Vec<usize> = super::HELP
