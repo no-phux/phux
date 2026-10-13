@@ -38,6 +38,7 @@ pub mod delegation;
 // `DETACH_CLIENTS` (`phux detach`).
 pub mod detach;
 pub mod explain;
+pub mod glance;
 // `SHUTDOWN` / `KILL_RESOURCES` / `KILL_RESOURCE` (`phux kill`).
 pub mod kill;
 pub mod layout_ops;

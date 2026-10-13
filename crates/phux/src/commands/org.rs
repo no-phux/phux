@@ -243,7 +243,7 @@ pub(crate) fn run_rm(target: &str, yes: bool, json: bool, socket: Option<PathBuf
             Target::Resource(record) => (
                 org::remove_resource(conn, record.key).await,
                 key_text(&inventory, *record.key.as_bytes()),
-                format!("removed {}", key_text(&inventory, *record.key.as_bytes())),
+                format!("removed {target}"),
             ),
         };
         finish(json, "rm", target, &key, result, &line)
@@ -283,10 +283,10 @@ pub(crate) fn run_relaunch(target: &str, json: bool, socket: Option<PathBuf>) ->
             .ok()
             .and_then(|committed| committed.target.as_ref())
             .map_or_else(
-                || format!("relaunched {key}"),
+                || format!("relaunched {target}"),
                 |live| {
                     format!(
-                        "relaunched {key} as {}",
+                        "relaunched {target} as {}",
                         phux_client::selector::format_terminal_id(&live.resource)
                     )
                 },
@@ -327,10 +327,16 @@ fn restore_targets(inventory: &OrgInventory, session: Option<&SessionKey>) -> Ve
 }
 
 /// `phux restore [SESSION]`: relaunch every resource a server restart ended
-/// and every Terminal never started ([`restore_targets`]), one result per
-/// resource. Exit 0 when every relaunch committed (or there was nothing to
-/// relaunch), 2 when any was refused.
-pub(crate) fn run_restore(session: Option<&str>, json: bool, socket: Option<PathBuf>) -> ExitCode {
+/// and every Terminal never started ([`restore_targets`]): one summary line,
+/// plus one per refusal (`verbose`: one per resource). Exit 0 when every
+/// relaunch committed (or there was nothing to relaunch), 2 when any was
+/// refused.
+pub(crate) fn run_restore(
+    session: Option<&str>,
+    verbose: bool,
+    json: bool,
+    socket: Option<PathBuf>,
+) -> ExitCode {
     run_on(socket, "restore", json, async |_, conn| {
         let inventory = match records(conn, "restore").await {
             Ok(inventory) => inventory,
@@ -356,79 +362,110 @@ pub(crate) fn run_restore(session: Option<&str>, json: bool, socket: Option<Path
             let result = org::relaunch(conn, target).await;
             results.push((target, result));
         }
-        render_restore(json, &KeyNames::of_inventory(&inventory), &results)
+        if json {
+            return restore_document(&KeyNames::of_inventory(&inventory), &results);
+        }
+        render_restore(
+            &KeyNames::of_inventory(&inventory),
+            &results,
+            session,
+            verbose,
+        )
     })
 }
 
-/// The `phux restore` output: one line or document entry per resource.
-fn render_restore(
-    json: bool,
+/// The `phux restore --json` document: one entry per resource.
+fn restore_document(
     names: &KeyNames,
     results: &[(ResourceKey, Result<Committed, OrgError>)],
 ) -> ExitCode {
-    let failed = results.iter().any(|(_, result)| result.is_err());
-    if json {
-        let entries: Vec<serde_json::Value> = results
-            .iter()
-            .map(|(key, result)| match result {
-                Ok(committed) => serde_json::json!({
-                    "key": names.display(*key.as_bytes()),
-                    "result": "relaunched",
-                    "terminal_id": committed
-                        .target
-                        .as_ref()
-                        .map(|live| phux_client::selector::format_terminal_id(&live.resource)),
-                }),
-                Err(err) => serde_json::json!({
-                    "key": names.display(*key.as_bytes()),
-                    "result": "refused",
-                    "code": err.code(),
-                    "message": err.to_string(),
-                }),
-            })
-            .collect();
-        let code = crate::output::json(&serde_json::json!({
-            "schema_version": SCHEMA_VERSION,
-            "restored": entries,
-        }));
-        return if failed { ExitCode::from(2) } else { code };
+    let entries: Vec<serde_json::Value> = results
+        .iter()
+        .map(|(key, result)| match result {
+            Ok(committed) => serde_json::json!({
+                "key": names.display(*key.as_bytes()),
+                "result": "relaunched",
+                "terminal_id": committed
+                    .target
+                    .as_ref()
+                    .map(|live| phux_client::selector::format_terminal_id(&live.resource)),
+            }),
+            Err(err) => serde_json::json!({
+                "key": names.display(*key.as_bytes()),
+                "result": "refused",
+                "code": err.code(),
+                "message": err.to_string(),
+            }),
+        })
+        .collect();
+    let code = crate::output::json(&serde_json::json!({
+        "schema_version": SCHEMA_VERSION,
+        "restored": entries,
+    }));
+    if results.iter().any(|(_, result)| result.is_err()) {
+        ExitCode::from(2)
+    } else {
+        code
     }
+}
+
+/// The human `phux restore` report ([`restore_lines`]).
+fn render_restore(
+    names: &KeyNames,
+    results: &[(ResourceKey, Result<Committed, OrgError>)],
+    session: Option<&str>,
+    verbose: bool,
+) -> ExitCode {
     if results.is_empty() {
         outln!("Nothing to restore: no pane was ended by a server restart.");
         return ExitCode::SUCCESS;
     }
-    for line in restore_lines(names, results) {
+    for line in restore_lines(names, results, session, verbose) {
         outln!("{line}");
     }
-    if failed {
+    if results.iter().any(|(_, result)| result.is_err()) {
         ExitCode::from(2)
     } else {
         ExitCode::SUCCESS
     }
 }
 
+/// `relaunched 12 panes` (`in SESSION`), then `^abc123  refused: ...` for
+/// each refusal; `verbose` adds a line for every relaunch.
 fn restore_lines(
     names: &KeyNames,
     results: &[(ResourceKey, Result<Committed, OrgError>)],
+    session: Option<&str>,
+    verbose: bool,
 ) -> Vec<String> {
-    results
-        .iter()
-        .map(|(key, result)| {
-            let key = names.display(*key.as_bytes());
-            match result {
-                Ok(committed) => committed.target.as_ref().map_or_else(
-                    || format!("{key}  relaunched"),
-                    |live| {
-                        format!(
-                            "{key}  relaunched as {}",
-                            phux_client::selector::format_terminal_id(&live.resource)
-                        )
-                    },
-                ),
-                Err(err) => format!("{key}  refused: {err}"),
-            }
-        })
-        .collect()
+    let total = results.len();
+    let relaunched = results.iter().filter(|(_, result)| result.is_ok()).count();
+    let panes = if total == 1 { "pane" } else { "panes" };
+    let scope = session
+        .map(|name| format!(" in {name}"))
+        .unwrap_or_default();
+    let mut lines = vec![if relaunched == total {
+        format!("relaunched {total} {panes}{scope}")
+    } else {
+        format!("relaunched {relaunched} of {total} {panes}{scope}")
+    }];
+    for (key, result) in results {
+        let key = names.display(*key.as_bytes());
+        match result {
+            Ok(committed) if verbose => lines.push(committed.target.as_ref().map_or_else(
+                || format!("  {key}  relaunched"),
+                |live| {
+                    format!(
+                        "  {key}  relaunched as {}",
+                        phux_client::selector::format_terminal_id(&live.resource)
+                    )
+                },
+            )),
+            Ok(_) => {}
+            Err(err) => lines.push(format!("  {key}  refused: {err}")),
+        }
+    }
+    lines
 }
 
 /// What `phux mv`'s destination names.
@@ -611,7 +648,7 @@ mod tests {
     }
 
     #[test]
-    fn restore_prints_one_line_per_pane() {
+    fn restore_summarizes_and_names_each_refusal() {
         use phux_protocol::ids::OperationId;
         use phux_protocol::wire::frame::Refusal;
         let ok = ResourceKey::new([1; 16]).expect("non-zero");
@@ -627,9 +664,12 @@ mod tests {
             ),
             (refused, Err(OrgError::Refused(Refusal::ExecutionUncertain))),
         ];
-        let lines = restore_lines(&KeyNames::default(), &results);
-        assert_eq!(lines.len(), 2);
-        assert!(lines[0].ends_with("relaunched"), "{lines:?}");
+        let lines = restore_lines(&KeyNames::default(), &results, Some("work"), false);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert_eq!(lines[0], "relaunched 1 of 2 panes in work");
         assert!(lines[1].contains("refused"), "{lines:?}");
+        let lines = restore_lines(&KeyNames::default(), &results, None, true);
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(lines[1].ends_with("relaunched"), "{lines:?}");
     }
 }

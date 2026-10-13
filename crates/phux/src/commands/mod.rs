@@ -734,14 +734,30 @@ pub(crate) enum Command {
 
     /// List sessions
     ///
-    /// Queries the running server and prints one line per session. Does not
-    /// start a server: with no server running it reports as much and exits
-    /// non-zero (like `tmux ls`). Pass `--json` for the stable, versioned
-    /// machine shape instead of the human text. `--all` lists every machine
-    /// at once: this one and each registered host, grouped by machine.
+    /// Queries the running server and prints one line per session: how many
+    /// terminals run, and only what needs you (an agent waiting, a failure,
+    /// work a restart lost). Sessions that need you come first; past twenty
+    /// lines the quiet ones collapse into a count. `SESSION` lists that
+    /// session's terminals, exceptions first. `-l` shows every session with
+    /// its keys, lifetime, and windows, and with `SESSION` each terminal's
+    /// key, revision, and run.
+    ///
+    /// Does not start a server: with no server running it reports as much
+    /// and exits non-zero (like `tmux ls`). Pass `--json` for the stable,
+    /// versioned machine shape, always complete, instead of the human text.
+    /// `--all` lists every machine at once: this one and each registered
+    /// host, grouped by machine.
     #[usage(alias = "list")]
     #[usage(help_heading = "Sessions", display_order = 12)]
     Ls {
+        /// List this session's terminals.
+        #[usage(conflicts("--json", "--all"))]
+        session: Option<String>,
+
+        /// Show keys, lifetimes, windows, and runs; never collapse.
+        #[usage(short = 'l', long, conflicts("--json"))]
+        detail: bool,
+
         #[usage(flatten)]
         json: JsonOpt,
 
@@ -1046,8 +1062,9 @@ pub(crate) enum Command {
     /// Terminals; the server is then asked to kill each.
     ///
     /// Killing a whole session terminates every member, removes each once
-    /// it has stopped, then deletes the session, and prints one result line
-    /// per member. Work added to the session meanwhile survives, and the
+    /// it has stopped, then deletes the session, and prints one summary
+    /// line plus one line per member that was not removed (`-v`: every
+    /// member). Work added to the session meanwhile survives, and the
     /// session is then kept.
     ///
     /// `--server` stops the server process instead, ending every session on
@@ -1081,6 +1098,10 @@ pub(crate) enum Command {
         /// never asks.
         #[usage(long)]
         yes: bool,
+
+        /// Print one line per member of a killed session, not a summary.
+        #[usage(short = 'v', long)]
+        verbose: bool,
 
         #[usage(flatten)]
         remote: RemoteOpt,
@@ -1551,11 +1572,15 @@ pub(crate) enum Command {
     /// Starts each pane whose process ended because the server stopped while
     /// it ran, and each pane imported but never started, in its session, with
     /// its directory and agent resume. With `SESSION`, only that session's
-    /// panes. Prints one result line per pane.
+    /// panes. Prints one summary line plus one line per pane that was
+    /// refused (`-v`: every pane).
     #[usage(help_heading = "Sessions", display_order = 19)]
     Restore {
         /// Only this session's panes.
         session: Option<String>,
+        /// Print one line per pane, not a summary.
+        #[usage(short = 'v', long)]
+        verbose: bool,
         /// Emit a schema-versioned JSON result or error.
         #[usage(long)]
         json: bool,

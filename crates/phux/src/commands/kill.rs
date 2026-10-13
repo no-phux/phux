@@ -28,6 +28,7 @@ pub(crate) fn run(
     stop_server: bool,
     key: Option<IdempotencyKey>,
     yes: bool,
+    verbose: bool,
     server: ServerSpec,
 ) -> ExitCode {
     if stop_server {
@@ -36,7 +37,7 @@ pub(crate) fn run(
     // No target and no `--server` is unreachable: TARGET is
     // `required_unless = "--server"`, so the parser refuses it first.
     target.map_or(ExitCode::FAILURE, |target| {
-        run_kill(&target, key, server, |action| {
+        run_kill(&target, key, verbose, server, |action| {
             confirm::confirmed(yes, action)
         })
     })
@@ -144,7 +145,9 @@ const SHUTDOWN_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 /// whole-session target runs the kill workflow against a server that
 /// advertises `ORGANIZATION` (terminate every member, remove each once
 /// inactive, then delete the session) and prints one result line per member;
-/// against an older server it rides one `KILL_RESOURCES { ids }`. Other
+/// against an older server it rides one `KILL_RESOURCES { ids }`. The
+/// session report is one summary line plus a line per member that was not
+/// removed; `verbose` prints every member ([`report_lines`]). Other
 /// targets send one `KILL_RESOURCE` per Terminal. Exit 0 success, 1 miss / no
 /// server, 2 refusal or an incomplete workflow, 3 an untrustworthy miss on a
 /// partial fleet (see [`partial`]).
@@ -155,6 +158,7 @@ const SHUTDOWN_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 pub(crate) fn run_kill(
     target: &str,
     key: Option<IdempotencyKey>,
+    verbose: bool,
     server: ServerSpec,
     confirm: impl FnOnce(&str) -> Result<(), ExitCode>,
 ) -> ExitCode {
@@ -172,7 +176,7 @@ pub(crate) fn run_kill(
     if let Err(code) = confirm(&format!("kill {target}")) {
         return code;
     }
-    rt.block_on(kill_selected(target, &selector, key, &server))
+    rt.block_on(kill_selected(target, &selector, key, verbose, &server))
 }
 
 /// Resolve `selector` against a fresh snapshot of `server` and kill what it
@@ -181,6 +185,7 @@ async fn kill_selected(
     target: &str,
     selector: &selector::Selector,
     key: Option<IdempotencyKey>,
+    verbose: bool,
     server: &ServerTarget,
 ) -> ExitCode {
     let mut conn = match server.connect().await {
@@ -190,7 +195,16 @@ async fn kill_selected(
     let mut notices = Vec::new();
     let result = phux_client::kill::selected(&mut conn, selector, target, key, &mut notices).await;
     drop(conn);
-    report_selected(result, &notices, server)
+    let report = Report { target, verbose };
+    report_selected(result, &notices, server, report)
+}
+
+/// How a session kill's report reads: which target it names, and whether
+/// every member gets a line.
+#[derive(Clone, Copy)]
+struct Report<'a> {
+    target: &'a str,
+    verbose: bool,
 }
 
 /// Print snapshot and interleaved notices, then map [`KillError`] onto the
@@ -199,6 +213,7 @@ fn report_selected(
     result: Result<phux_client::kill::Selected, KillError>,
     notices: &[String],
     server: &ServerTarget,
+    how: Report<'_>,
 ) -> ExitCode {
     for notice in notices {
         eprintln!(
@@ -212,7 +227,7 @@ fn report_selected(
                 eprintln!("phux: warning: partial results — {message}");
             }
             if let Some(report) = &done.report {
-                out!("{}", report_lines(report));
+                out!("{}", report_lines(report, how));
             }
             ExitCode::SUCCESS
         }
@@ -248,7 +263,7 @@ fn report_selected(
                     ExitCode::from(2)
                 }
                 KillError::Workflow { ref report, .. } => {
-                    out!("{}", report_lines(report));
+                    out!("{}", report_lines(report, how));
                     eprintln!("phux: {err}");
                     ExitCode::from(2)
                 }
@@ -270,27 +285,57 @@ fn report_selected(
     }
 }
 
-/// One line per member of a session kill workflow, then the session's own
-/// outcome: `^abc123  removed`, `session ^def456  deleted`.
-fn report_lines(report: &KillReport) -> String {
+/// A session kill's report: one summary line, `killed 12 terminals in
+/// work`, then `^abc123  refused: ...` for each member that was not removed
+/// and the session's own outcome when it was not deleted. `verbose` prints
+/// every member and the session, keyed by the prefix `phux ls -l` shows.
+fn report_lines(report: &KillReport, how: Report<'_>) -> String {
     use std::fmt::Write as _;
     let names = phux_client::kill::report_key_names(report);
+    let removed = report
+        .targets
+        .iter()
+        .filter(|(_, outcome)| gone(outcome))
+        .count();
+    let total = report.targets.len();
+    let deleted = matches!(
+        report.session_outcome,
+        SessionOutcome::Deleted | SessionOutcome::AlreadyGone
+    );
     let mut out = String::new();
+    let terminals = if total == 1 { "terminal" } else { "terminals" };
+    let target = how.target;
+    let _ = if total == 0 {
+        writeln!(out, "deleted empty session {target}")
+    } else if removed == total {
+        writeln!(out, "killed {total} {terminals} in {target}")
+    } else {
+        writeln!(out, "killed {removed} of {total} {terminals} in {target}")
+    };
     for (key, outcome) in &report.targets {
+        if how.verbose || !gone(outcome) {
+            let _ = writeln!(
+                out,
+                "  {}  {}",
+                names.display(*key.as_bytes()),
+                target_word(outcome)
+            );
+        }
+    }
+    if how.verbose || !deleted {
         let _ = writeln!(
             out,
-            "{}  {}",
-            names.display(*key.as_bytes()),
-            target_word(outcome)
+            "  session {}  {}",
+            names.display(*report.session.as_bytes()),
+            session_word(&report.session_outcome)
         );
     }
-    let _ = writeln!(
-        out,
-        "session {}  {}",
-        names.display(*report.session.as_bytes()),
-        session_word(&report.session_outcome)
-    );
     out
+}
+
+/// Whether a member is out of the session, as asked.
+const fn gone(outcome: &TargetOutcome) -> bool {
+    matches!(outcome, TargetOutcome::Removed | TargetOutcome::AlreadyGone)
 }
 
 fn target_word(outcome: &TargetOutcome) -> String {
@@ -318,7 +363,7 @@ fn session_word(outcome: &SessionOutcome) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{REMOTE_SHUTDOWN_REFUSAL, report_lines, run, run_kill};
+    use super::{REMOTE_SHUTDOWN_REFUSAL, Report, report_lines, run, run_kill};
     use crate::commands::confirm;
     use crate::commands::server_target::ServerSpec;
 
@@ -331,7 +376,7 @@ mod tests {
             remote: Some("mini".to_owned()),
         };
         assert_eq!(
-            run(None, true, None, false, spec),
+            run(None, true, None, false, false, spec),
             std::process::ExitCode::from(2)
         );
         assert!(REMOTE_SHUTDOWN_REFUSAL.contains("local-socket only"));
@@ -351,7 +396,7 @@ mod tests {
             socket: Some(socket),
             remote: None,
         };
-        let code = run_kill("@1", None, spec, |action| {
+        let code = run_kill("@1", None, false, spec, |action| {
             confirm::consent(false, false, action, || None)
         });
         assert_eq!(code, std::process::ExitCode::from(confirm::NOT_CONFIRMED));
@@ -361,34 +406,76 @@ mod tests {
         );
     }
 
-    /// A session kill prints one line per member and one for the session,
-    /// keyed by the six-digit prefix `phux ls` shows.
-    #[test]
-    fn a_kill_report_names_every_member_and_the_session() {
-        use phux_client::org::{KillReport, SessionOutcome, TargetOutcome};
+    fn report(
+        outcomes: Vec<phux_client::org::TargetOutcome>,
+        session_outcome: phux_client::org::SessionOutcome,
+    ) -> phux_client::org::KillReport {
         use phux_protocol::ids::{ResourceKey, SessionKey};
-        use phux_protocol::wire::frame::Refusal;
-        let a = ResourceKey::new([1; 16]).expect("key");
-        let b = ResourceKey::new([2; 16]).expect("key");
-        let session = SessionKey::new([3; 16]).expect("key");
-        let report = KillReport {
-            session,
-            targets: vec![
-                (a, TargetOutcome::Removed),
-                (b, TargetOutcome::Refused(Refusal::ExecutionUncertain)),
-            ],
-            session_outcome: SessionOutcome::Kept,
+        let targets = outcomes
+            .into_iter()
+            .enumerate()
+            .map(|(n, outcome)| {
+                let byte = u8::try_from(n + 1).expect("few members");
+                (ResourceKey::new([byte; 16]).expect("key"), outcome)
+            })
+            .collect();
+        phux_client::org::KillReport {
+            session: SessionKey::new([0xee; 16]).expect("key"),
+            targets,
+            session_outcome,
+        }
+    }
+
+    /// A clean session kill is one line, however many members it ended.
+    #[test]
+    fn a_clean_kill_reports_one_summary_line() {
+        use phux_client::org::{SessionOutcome, TargetOutcome};
+        let report = report(vec![TargetOutcome::Removed; 12], SessionOutcome::Deleted);
+        let how = Report {
+            target: "work",
+            verbose: false,
         };
-        let text = report_lines(&report);
-        let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), 3, "{text}");
-        assert!(
-            lines[0].starts_with(&format!("^{}", &a.to_string()[..6])),
-            "{text}"
+        assert_eq!(report_lines(&report, how), "killed 12 terminals in work\n");
+    }
+
+    /// A partial kill summarizes, then names each member that was not
+    /// removed and why the session was kept, keyed by the six-digit prefix
+    /// `phux ls -l` shows. `-v` names every member.
+    #[test]
+    fn a_partial_kill_names_only_what_went_wrong_unless_verbose() {
+        use phux_client::org::{SessionOutcome, TargetOutcome};
+        use phux_protocol::wire::frame::Refusal;
+        let report = report(
+            vec![
+                TargetOutcome::Removed,
+                TargetOutcome::Refused(Refusal::ExecutionUncertain),
+            ],
+            SessionOutcome::Kept,
         );
-        assert!(lines[0].ends_with("removed"), "{text}");
-        assert!(lines[1].contains("refused"), "{text}");
-        assert!(lines[2].starts_with("session ^"), "{text}");
-        assert!(lines[2].contains("kept"), "{text}");
+        let quiet = report_lines(
+            &report,
+            Report {
+                target: "work",
+                verbose: false,
+            },
+        );
+        let lines: Vec<&str> = quiet.lines().collect();
+        assert_eq!(lines.len(), 3, "{quiet}");
+        assert_eq!(lines[0], "killed 1 of 2 terminals in work");
+        assert!(lines[1].starts_with("  ^"), "{quiet}");
+        assert!(lines[1].contains("refused"), "{quiet}");
+        assert!(lines[2].starts_with("  session ^"), "{quiet}");
+        assert!(lines[2].contains("kept"), "{quiet}");
+
+        let loud = report_lines(
+            &report,
+            Report {
+                target: "work",
+                verbose: true,
+            },
+        );
+        let lines: Vec<&str> = loud.lines().collect();
+        assert_eq!(lines.len(), 4, "{loud}");
+        assert!(lines[1].ends_with("removed"), "{loud}");
     }
 }
