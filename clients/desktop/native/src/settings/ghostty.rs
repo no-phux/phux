@@ -631,14 +631,13 @@ fn is_global_prefix(raw: &str) -> bool {
 }
 
 struct Prefix<'a> {
-    name: &'a str,
     rest: &'a str,
 }
 
 fn strip_one_prefix(value: &str) -> Option<Prefix<'_>> {
     let (name, rest) = value.split_once(':')?;
     if matches!(name, "global" | "all" | "unconsumed" | "performable") {
-        Some(Prefix { name, rest })
+        Some(Prefix { rest })
     } else {
         None
     }

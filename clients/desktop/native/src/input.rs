@@ -130,8 +130,6 @@ pub struct TerminalInput {
     /// Output sequence of the last frame painted, and the key-to-paint probe.
     painted_seq: u64,
     key_probe: crate::perf::KeyProbe,
-    #[cfg(feature = "input-fixture")]
-    test_window_active: bool,
 }
 
 impl TerminalInput {
@@ -164,8 +162,6 @@ impl TerminalInput {
             fit_active: false,
             painted_seq: 0,
             key_probe: crate::perf::KeyProbe::default(),
-            #[cfg(feature = "input-fixture")]
-            test_window_active: false,
         }
     }
 
@@ -182,19 +178,7 @@ impl TerminalInput {
         (&self.composition.text, self.composition.selected.clone())
     }
 
-    #[cfg(feature = "input-fixture")]
-    pub fn simulate_window_activation(&mut self, active: bool) {
-        self.test_window_active = active;
-        if !active {
-            self.cancel();
-        }
-    }
-
     fn window_active(&self, window: &Window) -> bool {
-        #[cfg(feature = "input-fixture")]
-        if self.test_window_active {
-            return true;
-        }
         window.is_window_active()
     }
 

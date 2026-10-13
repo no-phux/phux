@@ -247,7 +247,6 @@ pub fn main() -> ExitCode {
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
             gpui_kit::init(cx);
-            crate::fonts::install(cx);
             diag::install(evidence, cx);
             if let Err(error) = app::open(app_options, cx) {
                 log::error!("could not open the desktop window: {error:#}");

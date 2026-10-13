@@ -10,8 +10,7 @@ use crate::settings::theme::Palette;
 use crate::settings::{self, DisplayPrefs};
 
 use super::color::from_hex;
-use super::commands::{self, CommandSpec};
-use super::desk::{Desk, FindState, Modal, WindowRole};
+use super::desk::{Desk, Modal};
 
 pub fn layer(desk: &mut Desk, colors: &Palette, window: &mut Window, cx: &mut Context<Desk>) -> impl IntoElement {
     match desk.modal.clone() {
@@ -129,9 +128,9 @@ fn palette(
         )
 }
 
-fn settings_panel(desk: &mut Desk, colors: &Palette, window: &mut Window, cx: &mut Context<Desk>) -> gpui::Div {
+fn settings_panel(desk: &mut Desk, colors: &Palette, _window: &mut Window, cx: &mut Context<Desk>) -> gpui::Div {
     let prefs = desk.prefs.clone();
-    let ghostty = settings::parse_ghostty(settings::read_ghostty_config().as_deref().unwrap_or(""));
+    let ghostty = desk.ghostty().clone();
     let themes = {
         let mut themes = crate::settings::theme::themes().to_vec();
         if let Some(extra) = settings::ghostty_theme(&ghostty) {
@@ -293,7 +292,7 @@ fn confirm(
 }
 
 fn command_items(desk: &Desk) -> Vec<PaletteItem> {
-    commands::COMMANDS.iter().filter(|command| !is_numbered_tab(command)).map(|command| PaletteItem {
+    crate::settings::builtin_commands().iter().filter(|command| !command.is_tab_jump()).map(|command| PaletteItem {
         id: command.id.to_owned(),
         title: command.title.to_owned(),
         detail: desk.shown_chord(command.id),
@@ -366,7 +365,7 @@ fn path_rows(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> Vec<gpui:
     }).collect()
 }
 
-fn theme_buttons(desk: &Desk, themes: &[crate::settings::theme::Theme], prefs: &DisplayPrefs, cx: &mut Context<Desk>) -> gpui::Div {
+fn theme_buttons(_desk: &Desk, themes: &[crate::settings::theme::Theme], prefs: &DisplayPrefs, cx: &mut Context<Desk>) -> gpui::Div {
     div().flex().flex_wrap().gap(px(6.)).children(themes.iter().map(|theme| {
         let id = theme.id.clone();
         let selected = prefs.theme_id == theme.id;
@@ -379,7 +378,7 @@ fn theme_buttons(desk: &Desk, themes: &[crate::settings::theme::Theme], prefs: &
     }))
 }
 
-fn layout_toggles(desk: &Desk, prefs: &DisplayPrefs, cx: &mut Context<Desk>) -> gpui::Div {
+fn layout_toggles(_desk: &Desk, prefs: &DisplayPrefs, cx: &mut Context<Desk>) -> gpui::Div {
     div().flex().gap(px(6.))
         .child(Button::new("pref-sidebar").label(if prefs.sidebar_visible { "Hide sidebar" } else { "Show sidebar" }).on_click(cx.listener(|desk, _, window, cx| desk.execute("sidebar", window, cx))))
         .child(Button::new("pref-notify").label(if prefs.notifications { "Notifications on" } else { "Notifications off" }).on_click(cx.listener(|desk, _, window, cx| desk.execute("notify", window, cx))))
@@ -405,7 +404,7 @@ fn terminal_controls(desk: &Desk, prefs: &DisplayPrefs, cx: &mut Context<Desk>) 
 }
 
 fn shortcut_list(desk: &Desk, colors: &Palette) -> gpui::Div {
-    div().flex().flex_col().gap(px(2.)).children(commands::COMMANDS.iter().filter(|command| !is_numbered_tab(command)).filter_map(|command| {
+    div().flex().flex_col().gap(px(2.)).children(crate::settings::builtin_commands().iter().filter(|command| !command.is_tab_jump()).filter_map(|command| {
         desk.shown_chord(command.id).map(|chord| {
             div().flex().justify_between().text_sm().text_color(from_hex(&colors.theme.foreground)).child(command.title).child(chord)
         })
@@ -453,10 +452,6 @@ fn stepper(
         .child(value)
         .child(Button::new(format!("{id}-less")).label("−").ghost().on_click(cx.listener(move |desk, _, window, cx| less(desk, window, cx))))
         .child(Button::new(format!("{id}-more")).label("+").ghost().on_click(cx.listener(move |desk, _, window, cx| more(desk, window, cx))))
-}
-
-fn is_numbered_tab(command: &CommandSpec) -> bool {
-    command.id.starts_with("tab-") && command.id[4..].parse::<u8>().is_ok()
 }
 
 fn pane_title(pane: &phux_client_runtime::control::PaneDescriptor) -> String {

@@ -6,6 +6,7 @@
 
 use super::ghostty::GhosttyConfig;
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 /// One built-in command the palette and keymap share.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +21,17 @@ pub struct CommandSpec {
     pub chord: Option<&'static str>,
     /// Extra chords for the same command.
     pub aliases: &'static [&'static str],
+}
+
+impl CommandSpec {
+    /// `tab-1` through `tab-9`: bound to chords, but not listed in the
+    /// palette or menus.
+    #[must_use]
+    pub fn is_tab_jump(&self) -> bool {
+        self.id
+            .strip_prefix("tab-")
+            .is_some_and(|rest| rest.parse::<u8>().is_ok())
+    }
 }
 
 /// Modifiers as the window reports them.
@@ -66,8 +78,14 @@ const UNSHIFTED: &[(&str, &str)] = &[
 ];
 
 /// Built-in commands, in palette order. Tab jumps are `tab-1` through `tab-9`.
+/// The one catalog: palette, menus, key bindings and Ghostty binds read it.
 #[must_use]
-pub fn builtin_commands() -> Vec<CommandSpec> {
+pub fn builtin_commands() -> &'static [CommandSpec] {
+    static COMMANDS: LazyLock<Vec<CommandSpec>> = LazyLock::new(catalog);
+    &COMMANDS
+}
+
+fn catalog() -> Vec<CommandSpec> {
     let mut commands = vec![
         spec("palette", "Command Palette", "General", Some("cmd+shift+p")),
         spec("goto", "Go to Terminal", "General", Some("cmd+p")),
@@ -165,24 +183,15 @@ pub fn builtin_commands() -> Vec<CommandSpec> {
             Some("cmd+up"),
         ),
         spec("prompt-next", "Jump to Next Prompt", "Terminal", Some("cmd+down")),
-        spec(
-            "write-file:screen:open",
-            "Open Screen as a File",
-            "Terminal",
-            None,
-        ),
-        spec(
-            "write-file:scrollback:open",
-            "Open Scrollback as a File",
-            "Terminal",
-            None,
-        ),
-        spec(
-            "write-file:selection:open",
-            "Open Selection as a File",
-            "Terminal",
-            None,
-        ),
+        spec("write-file:screen:copy", "Copy Screen and Scrollback as a File", "Terminal", None),
+        spec("write-file:screen:paste", "Paste Screen and Scrollback as a File", "Terminal", None),
+        spec("write-file:screen:open", "Open Screen and Scrollback as a File", "Terminal", None),
+        spec("write-file:scrollback:copy", "Copy Scrollback as a File", "Terminal", None),
+        spec("write-file:scrollback:paste", "Paste Scrollback as a File", "Terminal", None),
+        spec("write-file:scrollback:open", "Open Scrollback as a File", "Terminal", None),
+        spec("write-file:selection:copy", "Copy Selection as a File", "Terminal", None),
+        spec("write-file:selection:paste", "Paste Selection as a File", "Terminal", None),
+        spec("write-file:selection:open", "Open Selection as a File", "Terminal", None),
         spec("quick-terminal", "Toggle Quick Terminal", "View", None),
         spec("new-window", "New Window", "View", Some("cmd+n")),
         spec("fullscreen", "Toggle Full Screen", "View", Some("cmd+ctrl+f")),

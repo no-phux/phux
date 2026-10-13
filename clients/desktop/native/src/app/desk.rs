@@ -24,7 +24,7 @@ use crate::workspace::{Workspace, WorkspaceOptions};
 
 use super::actions::Run;
 use super::host;
-use super::keys::{gpui_stroke, shell_chord};
+use super::keys::shell_chord;
 use super::panes::Panes;
 use super::session::Desktop;
 use super::typed::typed_keys;
@@ -100,6 +100,10 @@ pub struct Desk {
     pub focus: FocusHandle,
     pub prefs: DisplayPrefs,
     pub ghostty_found: bool,
+    /// The parsed Ghostty config, read at open and on `reload-config` only.
+    ghostty: settings::GhosttyConfig,
+    /// Built-in chords with Ghostty's binds layered on while `ghostty_keys`.
+    keymap: Vec<(String, String)>,
     pub modal: Modal,
     pub find: Option<FindState>,
     pub picker: Option<paths::PickerState>,
@@ -168,6 +172,7 @@ impl Desk {
             prefs = persist::quick_display(Some(&prefs), saved.as_ref());
         }
         prefs = settings::sanitize_display(&prefs);
+        let keymap = settings::effective_keymap(&ghostty, prefs.ghostty_keys);
         let focus = cx.focus_handle();
         let mut desk = Self {
             desktop,
@@ -178,6 +183,8 @@ impl Desk {
             focus,
             prefs,
             ghostty_found: text.is_some(),
+            keymap,
+            ghostty,
             modal: Modal::None,
             find: None,
             picker: None,
@@ -224,9 +231,7 @@ impl Desk {
     fn attach(&mut self, fresh: bool, initial: Option<ResourceId>, cx: &mut Context<Self>) {
         match Connection::connect(self.socket.clone(), self.session.clone()) {
             Ok(connection) => {
-                let client = connection.client.clone();
                 let mut workspace = Workspace::new(
-                    client,
                     self.session.clone(),
                     WorkspaceOptions { fresh, initial_terminal: initial },
                 );
@@ -262,6 +267,8 @@ impl Desk {
     }
 
     fn on_activity(&mut self, cx: &mut Context<Self>) {
+        let _drain = crate::diag::DRAIN.timer();
+        crate::diag::DRAIN_WAKES.incr();
         let (events, answers, epoch) = {
             let Some(link) = self.link.as_mut() else { return };
             (
@@ -270,6 +277,7 @@ impl Desk {
                 link.connection.connection_epoch(),
             )
         };
+        crate::diag::DRAIN_EVENTS.add(events.len() as u64);
         if self.agent_epoch != Some(epoch) || events.iter().any(crate::connection::starts_connection) {
             self.agent_seen.clear();
             self.toasts.retain(|toast| toast.kind != ToastKind::Agent);
@@ -389,7 +397,7 @@ impl Desk {
                 return;
             }
         }
-        if let Some(classified) = settings::classify_command(&canonical_id(id)) {
+        if let Some(classified) = settings::classify_command(id) {
             self.run_classified(classified, window, cx);
             return;
         }
@@ -539,34 +547,34 @@ impl Desk {
     }
 
     fn binding(&self, chord: &str) -> Option<String> {
-        let ghostty = self.ghostty();
-        settings::effective_keymap(&ghostty, self.prefs.ghostty_keys)
-            .into_iter()
+        self.keymap
+            .iter()
             .find(|(bound, _)| bound == chord)
-            .map(|(_, id)| id)
+            .map(|(_, id)| id.clone())
     }
 
-    pub fn sync_bindings(&self, cx: &mut Context<Self>) {
+    /// Recompute the keymap and reinstall the process key bindings and menus.
+    /// Deferred: a desk is often opened from inside a `Desktop` update.
+    pub fn sync_bindings(&mut self, cx: &mut Context<Self>) {
+        self.keymap = settings::effective_keymap(&self.ghostty, self.prefs.ghostty_keys);
         let desktop = self.desktop.clone();
-        let ghostty = self.ghostty();
+        let ghostty = self.ghostty.clone();
         let keys = self.prefs.ghostty_keys;
-        desktop.update(cx, |desktop, cx| desktop.install_bindings(&ghostty, keys, cx));
+        cx.defer(move |cx| {
+            desktop.update(cx, |desktop, cx| desktop.install_bindings(&ghostty, keys, cx));
+        });
     }
 
-    fn ghostty(&self) -> settings::GhosttyConfig {
-        settings::parse_ghostty(settings::read_ghostty_config().as_deref().unwrap_or(""))
+    pub fn ghostty(&self) -> &settings::GhosttyConfig {
+        &self.ghostty
     }
 
     pub fn app_chords(&self) -> Vec<String> {
-        let ghostty = self.ghostty();
-        let keymap = settings::effective_keymap(&ghostty, self.prefs.ghostty_keys);
-        settings::app_chords(&keymap)
+        settings::app_chords(&self.keymap)
     }
 
     pub fn shown_chord(&self, id: &str) -> Option<String> {
-        let ghostty = self.ghostty();
-        let keymap = settings::effective_keymap(&ghostty, self.prefs.ghostty_keys);
-        settings::shown_chords(&keymap, &settings::default_chords())
+        settings::shown_chords(&self.keymap, &settings::default_chords())
             .into_iter()
             .find(|(command, _)| command == id)
             .map(|(_, chord)| settings::display_chord(&chord))
@@ -693,6 +701,7 @@ impl Desk {
     fn reload_ghostty(&mut self, cx: &mut Context<Self>) {
         let text = settings::read_ghostty_config();
         self.ghostty_found = text.is_some();
+        self.ghostty = settings::parse_ghostty(text.as_deref().unwrap_or(""));
         self.sync_bindings(cx);
         if text.is_none() {
             self.toast(ToastKind::Info, "No Ghostty config found", None);
@@ -703,8 +712,7 @@ impl Desk {
     }
 
     fn import_ghostty(&mut self, cx: &mut Context<Self>) {
-        let ghostty = self.ghostty();
-        let next = settings::ghostty_prefs(&self.prefs, &ghostty);
+        let next = settings::ghostty_prefs(&self.prefs, &self.ghostty);
         self.prefs = settings::sanitize_display(&next);
         self.persist();
         self.sync_bindings(cx);
@@ -1276,7 +1284,7 @@ impl Desk {
     }
 
     pub fn palette(&self) -> crate::settings::theme::Palette {
-        let extra = settings::ghostty_theme(&self.ghostty());
+        let extra = settings::ghostty_theme(&self.ghostty);
         let extras = extra.as_ref().map(std::slice::from_ref).unwrap_or(&[]);
         let theme = crate::settings::theme::theme_by_id(&self.prefs.theme_id, extras);
         crate::settings::theme::palette(&theme)
@@ -1531,21 +1539,6 @@ impl Desk {
     pub(crate) fn remember_terminal_sub(&mut self, id: String, sub: Subscription) {
         self.subscribed.push(id);
         self._subs.push(sub);
-    }
-}
-
-fn canonical_id(id: &str) -> String {
-    match id {
-        "write-screen-copy" => "write-file:screen:copy".into(),
-        "write-screen-paste" => "write-file:screen:paste".into(),
-        "write-screen-open" => "write-file:screen:open".into(),
-        "write-scrollback-copy" => "write-file:scrollback:copy".into(),
-        "write-scrollback-paste" => "write-file:scrollback:paste".into(),
-        "write-scrollback-open" => "write-file:scrollback:open".into(),
-        "write-selection-copy" => "write-file:selection:copy".into(),
-        "write-selection-paste" => "write-file:selection:paste".into(),
-        "write-selection-open" => "write-file:selection:open".into(),
-        other => other.to_owned(),
     }
 }
 

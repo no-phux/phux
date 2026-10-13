@@ -6,7 +6,6 @@
 
 mod actions;
 mod color;
-mod commands;
 mod desk;
 mod host;
 mod keys;
@@ -24,7 +23,6 @@ use gpui_kit::WindowHandle;
 use phux_protocol::ResourceId;
 
 pub use actions::{Quit, Run};
-pub use commands::COMMANDS;
 pub use desk::{Desk, Modal, Toast, ToastKind};
 pub use session::Desktop;
 
@@ -64,5 +62,5 @@ pub fn open(options: AppOptions, cx: &mut App) -> anyhow::Result<WindowHandle<Ro
 
 /// Command ids the palette, menus, and key bindings dispatch through [`Run`].
 pub fn command_ids() -> impl Iterator<Item = &'static str> {
-    COMMANDS.iter().map(|command| command.id)
+    crate::settings::builtin_commands().iter().map(|command| command.id)
 }

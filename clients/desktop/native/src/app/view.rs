@@ -2,14 +2,14 @@
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, ClickEvent, Context, IntoElement, ParentElement, Pixels, Render, Styled, Window, div, point, px, relative, size,
+    AnyElement, App, ClickEvent, Context, IntoElement, ParentElement, Styled, Window, div, point, px, relative, size,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::prelude::*;
 use phux_protocol::ResourceId;
 
 use crate::connection::AgentInfo;
-use crate::settings::theme::{self, Palette};
+use crate::settings::theme::Palette;
 use crate::terminal::TerminalEvent;
 use crate::workspace::layout::{self, Axis, DeskTab, LayoutNode, Placement};
 
@@ -22,6 +22,7 @@ const STATUS: f32 = 28.;
 const DIVIDER: f32 = 5.;
 
 pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> impl IntoElement {
+    let _frame = crate::diag::FRAME.timer();
     let colors = desk.palette();
     let sidebar = desk.prefs.sidebar_visible && desk.role != desk::WindowRole::Quick;
     let sidebar_width = if sidebar { desk.prefs.sidebar_width as f32 } else { 0. };

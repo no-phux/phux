@@ -169,6 +169,19 @@ impl Connection {
     /// Take events and path answers, and refresh snapshots the batch can change.
     pub fn drain(&mut self) -> Vec<Event> {
         let observation = self.client.take_observation();
+        if observation.status != self.status {
+            log::info!(
+                "connection {:?} -> {:?} epoch={} error={:?}",
+                self.status,
+                observation.status,
+                observation.connection_epoch,
+                observation.last_error
+            );
+        }
+        log::debug!("drained {} event(s)", observation.events.len());
+        for event in &observation.events {
+            log::trace!("event {event:?}");
+        }
         self.path_answers
             .extend(self.client.take_path_answers());
         let changed = observation.events.iter().any(structural);

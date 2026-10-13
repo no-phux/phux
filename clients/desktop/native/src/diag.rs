@@ -149,8 +149,6 @@ pub struct FrameReport {
 
 struct Evidence {
     options: EvidenceOptions,
-    /// A presentation callback is armed; do not arm another.
-    armed: bool,
     written: bool,
 }
 
@@ -162,10 +160,26 @@ const EXIT_FAILED: u8 = 2;
 static EXIT: AtomicU8 = AtomicU8::new(EXIT_RUNNING);
 static EVIDENCE_MODE: AtomicBool = AtomicBool::new(false);
 
-/// Whether windows may take focus: never in an evidence run.
+/// `PHUX_DESKTOP_BACKGROUND=1`: open windows without taking focus.
+static BACKGROUND: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("PHUX_DESKTOP_BACKGROUND").is_some());
+
+/// Whether windows may take focus: not in an evidence run or background mode.
 #[must_use]
 pub fn may_activate() -> bool {
-    !EVIDENCE_MODE.load(Ordering::Relaxed)
+    !EVIDENCE_MODE.load(Ordering::Relaxed) && !*BACKGROUND
+}
+
+/// Evidence windows are pop-up level, on every Space including a full-screen
+/// one, and never activate: the window server presents them while someone
+/// keeps working in another app.
+#[must_use]
+pub fn window_kind() -> gpui::WindowKind {
+    if EVIDENCE_MODE.load(Ordering::Relaxed) {
+        gpui::WindowKind::PopUp
+    } else {
+        gpui::WindowKind::Normal
+    }
 }
 
 /// Install evidence and perf sampling. Call once, inside `Application::run`.
@@ -179,15 +193,40 @@ pub fn install(options: Option<EvidenceOptions>, cx: &mut App) {
     if !options.exit_after {
         spawn_perf_sampler(options.dir.join("perf.jsonl"), cx);
     }
-    cx.set_global(Evidence { options, armed: false, written: false });
+    cx.set_global(Evidence { options, written: false });
+    spawn_evidence_pacer(cx);
+}
+
+/// GPUI drops presentation callbacks for a frame drawn while the window is
+/// not visible, and a quiet desk does not redraw. Until evidence is written,
+/// redraw every window a few times a second so a frame is presented once the
+/// window is on screen. Evidence runs only.
+fn spawn_evidence_pacer(cx: &mut App) {
+    cx.spawn(async move |cx| {
+        loop {
+            cx.background_executor().timer(Duration::from_millis(100)).await;
+            let pending = cx.update(|cx| {
+                if !evidence_pending(cx) {
+                    return false;
+                }
+                for window in cx.windows() {
+                    let _ = window.update(cx, |_, window, _| window.refresh());
+                }
+                true
+            });
+            if !pending {
+                break;
+            }
+        }
+    })
+    .detach();
 }
 
 /// Whether a desk should build a [`FrameReport`] this frame: evidence is
 /// requested and not yet written or armed. Cheap; call every frame.
 #[must_use]
 pub fn evidence_pending(cx: &App) -> bool {
-    cx.try_global::<Evidence>()
-        .is_some_and(|evidence| !evidence.written && !evidence.armed)
+    cx.try_global::<Evidence>().is_some_and(|evidence| !evidence.written)
 }
 
 /// Read what a desk has painted, inside the drawable-presented callback:
@@ -196,14 +235,14 @@ pub fn evidence_pending(cx: &App) -> bool {
 pub type CollectFrame = Box<dyn FnOnce(&App) -> Option<FrameReport>>;
 
 /// Called by a desk at the end of every render while [`evidence_pending`].
-/// Arms one drawable-presented callback; a presented frame with no painted
-/// terminal yet refreshes the window and re-arms, so evidence waits for the
-/// first real terminal paint without the desk having to notice it.
+/// Arms a drawable-presented callback for this frame; the first presented
+/// frame with a painted terminal writes the evidence, later ones see it
+/// written and return.
 pub fn arm_evidence(collect: CollectFrame, window: &mut Window, cx: &mut App) {
     if !evidence_pending(cx) {
         return;
     }
-    cx.global_mut::<Evidence>().armed = true;
+    log::trace!("evidence: armed; window visibility {:?}", window.native_visibility());
     window.on_drawable_presented(move |window, cx| {
         PRESENTED.incr();
         let visible = window.native_visibility() == gpui::NativeVisibility::Visible;
@@ -212,10 +251,11 @@ pub fn arm_evidence(collect: CollectFrame, window: &mut Window, cx: &mut App) {
             let pane = report.painted.iter().find(|pane| pane.generation > 0).cloned()?;
             Some((report, pane))
         });
-        cx.global_mut::<Evidence>().armed = false;
+        if !evidence_pending(cx) {
+            return;
+        }
         let Some((report, pane)) = painted else {
-            // Nothing painted yet: draw again so the next frame re-arms.
-            window.refresh();
+            log::debug!("evidence: presented frame has no painted terminal yet");
             return;
         };
         match write_evidence(&dir, &report, &pane, visible, window) {
@@ -227,10 +267,7 @@ pub fn arm_evidence(collect: CollectFrame, window: &mut Window, cx: &mut App) {
                     cx.quit();
                 }
             }
-            Err(error) => {
-                log::warn!("evidence capture failed, retrying: {error:#}");
-                window.refresh();
-            }
+            Err(error) => log::warn!("evidence capture failed, retrying: {error:#}"),
         }
     });
 }

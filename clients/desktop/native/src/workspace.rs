@@ -23,7 +23,7 @@ pub use session::{
     rename_session_error, window_session,
 };
 
-use crate::connection::{Connection, CommandError, parse_terminal, terminal_label};
+use crate::connection::{Connection, parse_terminal, terminal_label};
 use crate::settings::DisplayPrefs;
 use layout::{Axis as SplitAxis, DeskTab as Tab, LayoutNode as Node, Placement as LeafPlacement};
 use persist::SavedNode as StoredNode;
@@ -32,7 +32,6 @@ use phux_client_runtime::{Client, ViewId};
 use phux_protocol::ResourceId;
 use phux_protocol::caps::ServerFeature;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 
 /// How a new workspace should open.
 #[derive(Debug, Clone, Default)]
@@ -72,7 +71,6 @@ pub struct Workspace {
     pub tabs: Vec<Tab>,
     /// Active tab id. Empty when there are no tabs.
     pub active_id: String,
-    client: Arc<Client>,
     session: String,
     options: WorkspaceOptions,
     spawns: HashMap<u32, Destination>,
@@ -89,13 +87,13 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    /// Bind a window to `client`. Pass `connection.client.clone()`.
+    /// A window's workspace over `session`. Every operation that touches the
+    /// runtime takes the window's [`Connection`].
     #[must_use]
-    pub fn new(client: Arc<Client>, session: String, options: WorkspaceOptions) -> Self {
+    pub fn new(session: String, options: WorkspaceOptions) -> Self {
         Self {
             tabs: Vec::new(),
             active_id: String::new(),
-            client,
             session,
             options,
             spawns: HashMap::new(),
@@ -454,7 +452,6 @@ impl Workspace {
             return;
         };
         let Some(root) = remove_leaf(std::mem::replace(&mut tab.root, empty_leaf()), &id) else {
-            drop(tab);
             self.close_tab(connection, &tab_id);
             return;
         };
@@ -1030,41 +1027,19 @@ fn resolve_node(
 }
 
 fn create_view(client: &Client, terminal: &ResourceId) -> Result<ViewId, String> {
-    #[cfg(feature = "engine")]
-    {
-        client
-            .create_view(terminal)
-            .map_err(|error| error.to_string())
-    }
-    #[cfg(not(feature = "engine"))]
-    {
-        let _ = (client, terminal);
-        Err("the terminal engine is unavailable".to_owned())
-    }
+    let view = client.create_view(terminal).map_err(|error| error.to_string());
+    log::debug!("create view for {terminal:?}: {view:?}");
+    view
 }
 
 fn destroy_view(client: &Client, view: ViewId) {
-    #[cfg(feature = "engine")]
-    {
-        let _ = client.destroy_view(view);
-    }
-    #[cfg(not(feature = "engine"))]
-    {
-        let _ = (client, view);
-    }
+    // A view of a closed client died with it; there is nothing to release.
+    let _ = client.destroy_view(view);
 }
 
 fn view_cells(client: &Client, view: ViewId) -> Option<(u16, u16)> {
-    #[cfg(feature = "engine")]
-    {
-        let frame = client.acquire_view(view)?;
-        Some((frame.cols, frame.rows))
-    }
-    #[cfg(not(feature = "engine"))]
-    {
-        let _ = (client, view);
-        None
-    }
+    let frame = client.acquire_view(view)?;
+    Some((frame.cols, frame.rows))
 }
 
 /// Save the current tabs when the incarnation matches. Display-only updates

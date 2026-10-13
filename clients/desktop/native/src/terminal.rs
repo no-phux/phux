@@ -13,12 +13,12 @@ pub mod settings;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 
 use crate::presentation::{self, Ticket};
 use gpui::{
-    App, Context, EventEmitter, ExternalPaths, FocusHandle, MouseButton, Render, SharedString,
+    Context, EventEmitter, ExternalPaths, FocusHandle, MouseButton, Render, SharedString,
     Window, canvas, div, prelude::*,
 };
 use phux_client_runtime::{Client, ViewId, publication::GridFrame};
@@ -145,6 +145,7 @@ impl Terminal {
             Ok(ticket) => (Ok(ticket.frame()), Some(ticket)),
             Err(error) => {
                 crate::perf::ACQUIRE_REJECTED.incr();
+                log::debug!("terminal {:?} view {:?}: no paintable frame: {error}", self.terminal, self.view);
                 (Err(error.to_string()), None)
             }
         }

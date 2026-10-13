@@ -123,10 +123,10 @@ impl Fonts {
 }
 
 /// Everything painting one frame needs that depends only on its inputs: the
-/// frame, the element's bounds and scale, and the paint settings. GPUIX
-/// re-renders the whole window for any change, so most draws repaint a
-/// terminal whose scene is unchanged; [`prepare`] then reuses it instead of
-/// walking and shaping every cell again.
+/// frame, the element's bounds and scale, and the paint settings. A window
+/// refresh, resize or sibling change repaints terminals whose scene did not
+/// change; [`prepare`] then reuses it instead of walking and shaping every
+/// cell again.
 pub(super) struct Scene {
     frame: Arc<GridFrame>,
     bounds: Bounds<Pixels>,

@@ -14,7 +14,6 @@ use crate::settings::{self, GhosttyConfig};
 use phux_protocol::ResourceId;
 
 use super::actions::{Quit, Run};
-use super::commands::COMMANDS;
 use super::desk::{Desk, OpenRequest, WindowRole};
 use super::keys::gpui_stroke;
 use super::AppOptions;
@@ -64,10 +63,12 @@ impl Desktop {
         self.home_session = options.session.clone();
         let socket = self.socket.display().to_string();
         let paths = crate::workspace::layout_paths(&socket, &options.session);
-        self.layout = if options.layout_path.as_os_str().is_empty() { paths.layout } else { options.layout_path };
+        // An explicit layout file is used as given: no legacy import beside it.
+        let explicit = !options.layout_path.as_os_str().is_empty();
+        self.layout = if explicit { options.layout_path } else { paths.layout };
         self.quick_layout = paths.quick;
-        self.legacy_layout = Some(paths.legacy_layout);
-        self.legacy_quick = Some(paths.legacy_quick);
+        self.legacy_layout = (!explicit).then_some(paths.legacy_layout);
+        self.legacy_quick = (!explicit).then_some(paths.legacy_quick);
         if !self.fonts {
             crate::fonts::install(cx);
             self.fonts = true;
@@ -82,7 +83,7 @@ impl Desktop {
             legacy_layout: if options.quick { self.legacy_quick.clone() } else { self.legacy_layout.clone() },
             startup_error: options.startup_error,
         };
-        let focus = std::env::var_os("PHUX_DESKTOP_BACKGROUND").is_none();
+        let focus = crate::diag::may_activate();
         let handle = self.open_window(request, focus, options.quick, cx)?;
         self.arm_hotkeys(cx);
         self.publish_menus(cx);
@@ -173,6 +174,7 @@ impl Desktop {
                     traffic_light_position: Some(Point::new(px(14.), px(14.))),
                 }),
                 focus,
+                kind: crate::diag::window_kind(),
                 show: true,
                 window_min_size: Some(Size::new(px(640.), px(420.))),
                 window_background: WindowBackgroundAppearance::Blurred,
@@ -197,14 +199,14 @@ impl Desktop {
     fn publish_menus(&self, cx: &mut App) {
         let mut items = Vec::new();
         let mut group = "";
-        for command in COMMANDS {
+        for command in crate::settings::builtin_commands() {
             if command.group != group {
                 if !items.is_empty() {
                     items.push(MenuItem::separator());
                 }
                 group = command.group;
             }
-            if is_numbered_tab(command.id) {
+            if command.is_tab_jump() {
                 continue;
             }
             let name = match self.chord(command.id) {
@@ -297,10 +299,6 @@ impl Desktop {
             self.register_hotkeys(&ghostty, cx);
         }
     }
-}
-
-fn is_numbered_tab(id: &str) -> bool {
-    id.starts_with("tab-") && id[4..].parse::<u8>().is_ok()
 }
 
 impl gpui::Render for Desktop {

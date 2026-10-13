@@ -685,10 +685,10 @@ mod tests {
         assert_eq!(parsed.version, 2);
         assert_eq!(parsed.display.font_size, 15.0);
         assert!(parsed.display.option_as_alt);
-        let SavedNode::Split { ratio, second, .. } = parsed.tabs[0].root else {
+        let SavedNode::Split { ratio, second, .. } = &parsed.tabs[0].root else {
             panic!("row");
         };
-        assert!((f64::from(ratio) - 1.0 / 3.0).abs() < 1e-5);
+        assert!((f64::from(*ratio) - 1.0 / 3.0).abs() < 1e-5);
         let SavedNode::Split { ratio, .. } = second.as_ref() else {
             panic!("inner");
         };

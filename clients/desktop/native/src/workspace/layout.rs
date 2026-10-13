@@ -240,9 +240,9 @@ pub fn set_ratio(node: LayoutNode, split_id: &str, ratio: f32) -> LayoutNode {
         LayoutNode::Split {
             id,
             axis,
-            ratio: current,
             first,
             second,
+            ..
         } if id == split_id => LayoutNode::Split {
             id,
             axis,

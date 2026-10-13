@@ -16,6 +16,11 @@ path = "src/main.rs"
 # local instead of adding the platform renderer to every phux workspace consumer.
 [workspace]
 
+[features]
+# Record where each glyph landed in `terminal::PaintedFrame` for pixel
+# fixtures; off in shipping builds.
+terminal-fixtures = []
+
 [dependencies]
 phux-client-core = { path = "../../../crates/phux-client-core" }
 phux-client-runtime = { path = "../../../crates/phux-client-runtime" }
