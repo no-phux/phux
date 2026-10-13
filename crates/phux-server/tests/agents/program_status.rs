@@ -86,14 +86,17 @@ impl Pane {
             .unwrap();
             script.push_str(&printf(bytes));
             script.push_str(&printf(b"\x1b]7501;?\x1b\\\x1b[c"));
-            // Do not assume a particular DA payload or length. The final `c`
-            // terminates DA, and OSC's fixed query response contains no `c`.
+            // Do not assume a particular DA payload or length. DA is the
+            // only reply with a `[`, and the first `c` after it ends DA (the
+            // feature reply's state list contains a `c`).
             write!(
                 script,
-                "while :; do\n\
+                "da=\n\
+                 while :; do\n\
                  byte=$(dd bs=1 count=1 2>/dev/null)\n\
                  printf '%s' \"$byte\" >> '{}'\n\
-                 [ \"$byte\" = c ] && break\n\
+                 [ \"$byte\" = '[' ] && da=1\n\
+                 [ -n \"$da\" ] && [ \"$byte\" = c ] && break\n\
                  done\n\
                  : > '{}'\n",
                 capture.display(),
@@ -305,7 +308,10 @@ fn feature_reply_precedes_device_attributes_and_does_not_create_a_record() {
         let mut pane = Pane::start(&[Vec::new()], false).await;
         let bytes = pane.release(0).await;
         let tail = bytes
-            .strip_prefix(b"\x1b]7501;?")
+            .strip_prefix(
+                b"\x1b]7501;?:states=idle,working,done,blocked,error:kinds=permission,question,auth"
+                    .as_slice(),
+            )
             .expect("OSC feature detection reply must arrive before DA");
         let da = tail
             .strip_prefix(b"\x1b\\")

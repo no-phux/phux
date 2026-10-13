@@ -108,7 +108,8 @@ src/
   resource/       — ResourceCore, ResourceHandle and its facets, event sink
     agent_session/  — record ring, append validation, derived state (ADR-0103)
     terminal/       — TerminalActor: libghostty Terminal, PTY threads,
-                      bootstrap cuts (ADR-0070), OSC-133, process facet
+                      bootstrap cuts (ADR-0070), engine shell-integration
+                      effects (OSC 133/9;4/7501), process facet
   grid/           — synthesized-VT compatibility bootstrap / StateSync
   native_state.rs, downsample.rs
                   — native checkpoint plumbing; compatibility-profile rewrite

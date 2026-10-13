@@ -36,11 +36,11 @@ use crate::resource::{ResourceCore, ResourceFacetHandle, ResourceHandle, Resourc
 
 mod construct;
 mod consumers;
+mod effects;
 mod events;
 mod fd_shrink;
 mod io;
 mod native;
-mod osc133;
 mod park;
 mod process_facet;
 pub(crate) mod program_status;
@@ -85,143 +85,6 @@ const DEFAULT_CELL_PX: (u16, u16) = (8, 16);
 const MAX_NATIVE_HISTORY_CLIENTS: usize = 8;
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 const MAX_NATIVE_REPLAY_BYTES: usize = 4 * 1024 * 1024;
-
-/// Streaming recognizer for `OSC 10/11 ; ? ST` color queries, which the
-/// pinned engine does not answer; the actor answers from canonical state.
-#[derive(Debug, Default)]
-struct ColorQueryScanner {
-    state: ColorQueryState,
-    payload: [u8; 4],
-    len: usize,
-    valid: bool,
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-enum ColorQueryState {
-    #[default]
-    Ground,
-    Escape,
-    Osc,
-    OscEscape,
-}
-
-impl ColorQueryScanner {
-    fn feed(&mut self, bytes: &[u8], mut on_query: impl FnMut(u8)) {
-        // In `Ground` only ESC and 8-bit OSC matter, so skip plain runs with
-        // `memchr` (re-armed on every return to `Ground`). Mid-OSC bytes are
-        // payload and are walked.
-        let mut index = 0;
-        while index < bytes.len() {
-            if matches!(self.state, ColorQueryState::Ground) {
-                let Some(start) = memchr::memchr2(b'\x1b', 0x9d, &bytes[index..]) else {
-                    return;
-                };
-                index += start;
-            }
-            let byte = bytes[index];
-            index += 1;
-            match self.state {
-                ColorQueryState::Ground => match byte {
-                    b'\x1b' => self.state = ColorQueryState::Escape,
-                    0x9d => self.start_osc(),
-                    _ => {}
-                },
-                ColorQueryState::Escape => match byte {
-                    b']' => self.start_osc(),
-                    b'\x1b' => {}
-                    _ => self.state = ColorQueryState::Ground,
-                },
-                ColorQueryState::Osc => match byte {
-                    b'\x07' | 0x9c => self.finish_osc(&mut on_query),
-                    b'\x1b' => self.state = ColorQueryState::OscEscape,
-                    value => self.push_payload(value),
-                },
-                ColorQueryState::OscEscape => {
-                    if byte == b'\\' {
-                        self.finish_osc(&mut on_query);
-                    } else {
-                        // An unrecognized OSC: find its terminator, never
-                        // treat its suffix as a query.
-                        self.valid = false;
-                        self.state = ColorQueryState::Osc;
-                    }
-                }
-            }
-        }
-    }
-
-    const fn start_osc(&mut self) {
-        self.state = ColorQueryState::Osc;
-        self.len = 0;
-        self.valid = true;
-    }
-
-    const fn push_payload(&mut self, byte: u8) {
-        if self.len < self.payload.len() {
-            self.payload[self.len] = byte;
-            self.len += 1;
-        } else {
-            self.valid = false;
-        }
-    }
-
-    fn finish_osc(&mut self, on_query: &mut impl FnMut(u8)) {
-        if self.valid && self.len == self.payload.len() {
-            match &self.payload {
-                b"10;?" => on_query(10),
-                b"11;?" => on_query(11),
-                _ => {}
-            }
-        }
-        self.state = ColorQueryState::Ground;
-        self.len = 0;
-        self.valid = false;
-    }
-}
-
-#[cfg(test)]
-mod color_query_tests {
-    use super::ColorQueryScanner;
-
-    fn queries(chunks: &[&[u8]]) -> Vec<u8> {
-        let mut scanner = ColorQueryScanner::default();
-        let mut seen = Vec::new();
-        for chunk in chunks {
-            scanner.feed(chunk, |selector| seen.push(selector));
-        }
-        seen
-    }
-
-    #[test]
-    fn recognises_both_query_forms_and_split_chunks() {
-        assert_eq!(queries(&[b"\x1b]10;?\x07"]), vec![10]);
-        assert_eq!(queries(&[b"\x9d11;?\x9c"]), vec![11]);
-        assert_eq!(queries(&[b"\x1b]1", b"1;", b"?\x1b\\"]), vec![11]);
-        assert_eq!(
-            queries(&[b"\x1b]10;#ff0000\x07\x1b]12;?\x07"]),
-            Vec::<u8>::new()
-        );
-    }
-
-    /// Queries separated by long plain runs are all answered.
-    #[test]
-    fn the_skip_rearms_after_each_return_to_ground() {
-        let mut chunk = vec![b'x'; 100_000];
-        chunk.extend_from_slice(b"\x1b]10;?\x07");
-        chunk.extend(std::iter::repeat_n(b'y', 100_000));
-        chunk.extend_from_slice(b"\x1b[0m");
-        chunk.extend(std::iter::repeat_n(b'z', 100_000));
-        chunk.extend_from_slice(b"\x1b]11;?\x1b\\");
-        assert_eq!(queries(&[&chunk]), vec![10, 11]);
-    }
-}
-
-fn color_query_reply(selector: u8, color: libghostty_vt::style::RgbColor) -> Vec<u8> {
-    let r = u16::from(color.r) * 0x101;
-    let g = u16::from(color.g) * 0x101;
-    let b = u16::from(color.b) * 0x101;
-    format!("\x1b]{selector};rgb:{r:04x}/{g:04x}/{b:04x}\x1b\\").into_bytes()
-}
 
 /// Title prefix an in-pane agent sets (OSC 0/2) to ask a human a question:
 ///
@@ -673,7 +536,6 @@ pub struct TerminalActor {
     /// Backing-agnostic half: output sequence and broadcast, event fan-out,
     /// lifecycle, control mailbox.
     core: ResourceCore,
-    color_query_scanner: ColorQueryScanner,
     key_enc: RefCell<PerTerminalKeyEncoder>,
     mouse_enc: RefCell<PerTerminalMouseEncoder>,
     focus_enc: RefCell<PerTerminalFocusEncoder>,
@@ -737,7 +599,7 @@ pub struct TerminalActor {
     /// Last OSC 0/2 title, for `title_changed`. Refreshed on every chunk even
     /// if unwatched: the detector reads it (ADR-0046).
     last_title: String,
-    /// Latest OSC 9;4 payload, mirrored from the raw PTY stream for detection.
+    /// Latest OSC 9;4 report as `4;<state>;<percent>`, for detection.
     last_progress: String,
     /// OSC 7501 records belong to the terminal, independently of its screens.
     program_status: program_status::ProgramStatus,
@@ -776,11 +638,11 @@ pub struct TerminalActor {
     /// Whether the cwd has been announced; the first observation always
     /// emits, so late consumers learn the starting directory.
     cwd_announced: Cell<bool>,
-    /// OSC 133 scanner over raw PTY bytes (keeps the `D` exit code the grid
-    /// drops); survives marks split across chunks.
-    osc133: osc133::Osc133Scanner,
+    /// Shell-integration effects the engine's callbacks queued during the
+    /// current write, drained in stream order after it.
+    effects: effects::PendingEffects,
     /// OSC 133 prompt state behind the `process.prompt` facet.
-    prompt: osc133::PromptTracker,
+    prompt: effects::PromptTracker,
     /// PTY child start time (Unix ms), captured at build so `process.child`
     /// still names the right process after reap and pid reuse.
     child_start_ms: Option<u64>,

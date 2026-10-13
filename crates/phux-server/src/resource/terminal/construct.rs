@@ -1,16 +1,16 @@
-//! Constructors and build wiring for [`TerminalActor`], default colors,
-//! OSC 10/11 replies, and libghostty effect handlers.
+//! Constructors and build wiring for [`TerminalActor`], default colors, and
+//! libghostty effect handlers.
 
 use super::process_facet::ChildFacts;
 use super::{
-    CancellationToken, CanonicalTerminal, Cell, ColorQueryScanner, CommandBuilder,
-    ConsumerAckRequest, ConsumerAttachRequest, ConsumerDetachRequest, DEFAULT_CELL_PX,
-    DEFAULT_INPUT_MAILBOX, DEFAULT_SCROLLBACK, EncodedInputRequest, GhosttyTerminal, HashMap,
-    InputEncoderSnapshot, NativeRequestReceivers, PerTerminalFocusEncoder, PerTerminalKeyEncoder,
+    CancellationToken, CanonicalTerminal, Cell, CommandBuilder, ConsumerAckRequest,
+    ConsumerAttachRequest, ConsumerDetachRequest, DEFAULT_CELL_PX, DEFAULT_INPUT_MAILBOX,
+    DEFAULT_SCROLLBACK, EncodedInputRequest, GhosttyTerminal, HashMap, InputEncoderSnapshot,
+    NativeRequestReceivers, PerTerminalFocusEncoder, PerTerminalKeyEncoder,
     PerTerminalMouseEncoder, PerTerminalPasteEncoder, PtyEvent, PtyOwned, PtySource, Rc, RefCell,
     ResourceCore, ResourceFacetHandle, ResourceHandle, ResourceKind, ResourceLifecycle,
     SizeReportSize, SnapshotSynthesizer, TerminalActor, TerminalActorBundle, TerminalActorError,
-    TerminalHandle, VecDeque, adopt_pty, color_query_reply, mpsc, osc133, spawn_pty, watch,
+    TerminalHandle, VecDeque, adopt_pty, effects, mpsc, spawn_pty, watch,
 };
 use phux_config::ScrollbackLimits;
 
@@ -109,7 +109,7 @@ impl TerminalActor {
             None,
         )?;
         bundle.actor.terminal.borrow_mut().vt_write(seed);
-        bundle.actor.restore_program_status(seed);
+        bundle.actor.restore_program_status();
         // The seed replays the old image's OSC title; sync it now so the
         // detector and `title_changed` start from it, not from empty.
         bundle.actor.refresh_title();
@@ -204,7 +204,11 @@ impl TerminalActor {
             .and_then(|p| p.child.process_id())
             .and_then(|pid| i32::try_from(pid).ok())
             .and_then(crate::reconcile::proc_identity);
-        Self::install_effects(&mut terminal, &size_report, pty_tx.as_ref())?;
+        let pending_effects = effects::PendingEffects::default();
+        Self::install_effects(&mut terminal, &size_report, &pending_effects)?;
+        if let Some(tx) = &pty_tx {
+            Self::install_pty_writer(&mut terminal, tx)?;
+        }
 
         let actor = Self {
             terminal: RefCell::new(CanonicalTerminal::Plain(Some(terminal))),
@@ -214,7 +218,6 @@ impl TerminalActor {
             last_input_at: std::cell::Cell::new(None),
             last_output_at: std::cell::Cell::new(None),
             core,
-            color_query_scanner: ColorQueryScanner::default(),
             key_enc: RefCell::new(key_enc),
             mouse_enc: RefCell::new(mouse_enc),
             focus_enc: RefCell::new(PerTerminalFocusEncoder::new()),
@@ -272,8 +275,8 @@ impl TerminalActor {
             // The child's real starting directory, not `$HOME`.
             last_known_cwd: RefCell::new(child_facts.cwd),
             cwd_announced: Cell::new(false),
-            osc133: osc133::Osc133Scanner::new(),
-            prompt: osc133::PromptTracker::default(),
+            effects: pending_effects,
+            prompt: effects::PromptTracker::default(),
             child_start_ms: child_facts.start_ms,
             released_child_pid: None,
             exit: None,
@@ -345,77 +348,39 @@ impl TerminalActor {
         Ok(())
     }
 
-    /// Answer OSC 10/11 queries in a parsed chunk from the canonical colors.
-    /// The scanner persists, so split sequences still work.
-    pub(super) fn answer_color_queries(&mut self, bytes: &[u8]) {
-        let mut queries = 0_u8;
-        self.color_query_scanner.feed(bytes, |selector| {
-            queries |= match selector {
-                10 => 1,
-                11 => 2,
-                _ => 0,
-            };
-        });
-        if queries == 0 {
-            return;
-        }
-        let canonical = self.terminal.borrow();
-        let Some(terminal) = canonical.try_terminal() else {
-            // No palette to answer from; a wrong color is worse than none.
-            tracing::trace!("colour query unanswered: canonical terminal is on loan");
-            return;
-        };
-        let foreground = (queries & 1 != 0)
-            .then(|| terminal.fg_color().ok().flatten())
-            .flatten();
-        let background = (queries & 2 != 0)
-            .then(|| terminal.bg_color().ok().flatten())
-            .flatten();
-        drop(canonical);
-
-        let Some(pty_tx) = &self.pty_tx else {
-            return;
-        };
-        if let Some(color) = foreground {
-            let _ = super::try_send_to_writer(
-                pty_tx,
-                EncodedInputRequest::legacy(color_query_reply(10, color)),
-            );
-        }
-        if let Some(color) = background {
-            let _ = super::try_send_to_writer(
-                pty_tx,
-                EncodedInputRequest::legacy(color_query_reply(11, color)),
-            );
-        }
-    }
-
     /// Install libghostty's effect handlers.
     ///
-    /// `on_size` answers XTWINOPS size queries from the shared geometry.
-    /// `on_pty_write` routes terminal-generated replies back to the child via
-    /// the writer bridge. It fires inside `vt_write`, so it only sends on a
-    /// channel, and holds the sender weakly: a strong clone would keep the
-    /// writer channel open and deadlock `shutdown_pty`'s join.
+    /// `on_size` answers XTWINOPS size queries from the shared geometry; the
+    /// shell-integration callbacks queue [`effects::Effect`]s on `pending`.
     pub(super) fn install_effects(
         terminal: &mut GhosttyTerminal<'static, 'static>,
         size_report: &Rc<Cell<SizeReportSize>>,
-        pty_tx: Option<&mpsc::Sender<EncodedInputRequest>>,
+        pending: &effects::PendingEffects,
     ) -> Result<(), TerminalActorError> {
         terminal.on_size({
             let size_report = Rc::clone(size_report);
             move |_term| Some(size_report.get())
         })?;
-        if let Some(tx) = pty_tx {
-            let tx = tx.downgrade();
-            terminal.on_pty_write(move |_term, bytes| {
-                // Writer gone: nobody to reply to.
-                if let Some(tx) = tx.upgrade() {
-                    let _ =
-                        super::try_send_to_writer(&tx, EncodedInputRequest::legacy(bytes.to_vec()));
-                }
-            })?;
-        }
+        effects::install(terminal, pending)?;
+        Ok(())
+    }
+
+    /// Route terminal-generated replies (DA, color and status queries, ...)
+    /// back to the child via the writer bridge. The callback fires inside
+    /// `vt_write`, so it only sends on a channel, and holds the sender
+    /// weakly: a strong clone would keep the writer channel open and
+    /// deadlock `shutdown_pty`'s join.
+    pub(super) fn install_pty_writer(
+        terminal: &mut GhosttyTerminal<'static, 'static>,
+        tx: &mpsc::Sender<EncodedInputRequest>,
+    ) -> Result<(), TerminalActorError> {
+        let tx = tx.downgrade();
+        terminal.on_pty_write(move |_term, bytes| {
+            // Writer gone: nobody to reply to.
+            if let Some(tx) = tx.upgrade() {
+                let _ = super::try_send_to_writer(&tx, EncodedInputRequest::legacy(bytes.to_vec()));
+            }
+        })?;
         Ok(())
     }
 
@@ -428,7 +393,7 @@ impl TerminalActor {
     ) -> Result<TerminalActorBundle, TerminalActorError> {
         let mut bundle = Self::new(cols, rows)?;
         bundle.actor.terminal.borrow_mut().vt_write(bytes);
-        bundle.actor.restore_program_status(bytes);
+        bundle.actor.restore_program_status();
         bundle.actor.refresh_title();
         bundle.actor.publish_input_snapshot();
         Ok(bundle)

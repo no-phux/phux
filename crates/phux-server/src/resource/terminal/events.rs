@@ -1,11 +1,11 @@
 //! Agent-event sourcing and supervisory control for [`TerminalActor`]:
-//! event sinks and subscribers, the agent-state detector tick, OSC-133
-//! sourced events, dirty/idle coalescing, cwd tracking, and signal
+//! event sinks and subscribers, the agent-state detector tick, events
+//! sourced from engine effects (OSC 133, bell, OSC 7501), dirty/idle coalescing, cwd tracking, and signal
 //! delivery (ADR-0033, ADR-0046).
 
 use super::{
     AgentDetectEvent, AgentEvent, AskMarker, ControlAction, ControlRequest, DetectOutcome,
-    ResourceLifecycle, TerminalActor, TerminalSignal, mpsc, osc133, trace,
+    ResourceLifecycle, TerminalActor, TerminalSignal, effects, mpsc, trace,
 };
 use crate::agent_asked::AskedPayload;
 use crate::agent_detect::DetectedState;
@@ -74,18 +74,12 @@ impl TerminalActor {
         }
     }
 
-    /// Upgrade replay carries reports after the grid's own reset sequence.
-    pub(super) fn restore_program_status(&mut self, bytes: &[u8]) {
-        let mut scanner = osc133::Osc133Scanner::new();
-        for mark in scanner.feed(bytes) {
-            match mark {
-                osc133::OscMark::ProgramStatus(body) => {
-                    self.program_status.apply(&body);
-                }
-                osc133::OscMark::Reset => {
-                    self.program_status.clear();
-                }
-                _ => {}
+    /// Keep only the program status a seed write reported. An upgrade seed
+    /// carries the old image's reports after its grid replay.
+    pub(super) fn restore_program_status(&mut self) {
+        for effect in self.effects.take() {
+            if let effects::Effect::ProgramStatus(update) = effect {
+                self.program_status.apply(update);
             }
         }
     }
@@ -234,44 +228,46 @@ impl TerminalActor {
         Some(next)
     }
 
-    /// Source semantic events and state from a freshly written PTY chunk.
+    /// Test-only: write a PTY chunk and source its events, like the ingest
+    /// path.
     #[cfg(test)]
-    pub(super) fn source_events_from_chunk(&mut self, chunk: &[u8]) {
-        let marks = self.osc133.feed_with_offsets(chunk);
-        self.source_events_from_marks(&marks);
+    pub(super) fn feed_for_test(&mut self, chunk: &[u8]) {
+        self.vt_write_for_test(chunk);
+        self.source_events();
     }
 
-    pub(super) fn source_events_from_marks(&mut self, marks: &[(usize, osc133::OscMark)]) {
+    /// Source semantic events and state from the effects the last write
+    /// queued.
+    pub(super) fn source_events(&mut self) {
+        let effects = self.effects.take();
         // Unconditional, even with no listener: the detector reads the title.
         let title_changed = self.refresh_title();
-        self.observe_marks(marks);
+        self.observe_effects(&effects);
         if self.event_sink.is_none() {
             return;
         }
         self.output_since_idle_tick = true;
         // OSC 133 marks first so a command boundary precedes its burst.
-        for (_, mark) in marks {
-            match mark {
-                osc133::OscMark::CommandStart => self.emit_event(AgentEvent::CommandStarted),
-                osc133::OscMark::CommandEnd { exit_code } => {
+        for effect in &effects {
+            match effect {
+                effects::Effect::CommandStart => self.emit_event(AgentEvent::CommandStarted),
+                effects::Effect::CommandEnd { exit_code } => {
                     self.emit_event(AgentEvent::CommandFinished {
                         exit_code: *exit_code,
                     });
                     // Back at a prompt: any `cd` has landed.
                     self.check_cwd_changed();
                 }
-                osc133::OscMark::PromptStart
-                | osc133::OscMark::InputStart
-                | osc133::OscMark::Progress(_)
-                | osc133::OscMark::ProgramStatus(_)
-                | osc133::OscMark::ProgramStatusQuery
-                | osc133::OscMark::Bell
-                | osc133::OscMark::Reset => {}
+                effects::Effect::PromptStart
+                | effects::Effect::InputStart
+                | effects::Effect::Progress(_)
+                | effects::Effect::ProgramStatus(_)
+                | effects::Effect::Bell => {}
             }
         }
-        if marks
+        if effects
             .iter()
-            .any(|(_, mark)| matches!(mark, osc133::OscMark::Bell))
+            .any(|effect| matches!(effect, effects::Effect::Bell))
         {
             self.emit_event(AgentEvent::Bell);
         }
@@ -294,21 +290,19 @@ impl TerminalActor {
         }
     }
 
-    /// Fold marks in stream order; a prompt only expires active records.
-    fn observe_marks(&mut self, marks: &[(usize, osc133::OscMark)]) {
+    /// Fold effects in stream order; a prompt only expires active records.
+    /// A full reset reaches the records as a root clear.
+    fn observe_effects(&mut self, effects: &[effects::Effect]) {
         let mut changed = false;
-        for (_, mark) in marks {
-            self.prompt.observe(mark);
-            match mark {
-                osc133::OscMark::Progress(progress) => self.last_progress.clone_from(progress),
-                osc133::OscMark::ProgramStatus(body) => {
-                    changed |= self.program_status.apply(body);
+        for effect in effects {
+            self.prompt.observe(effect);
+            match effect {
+                effects::Effect::Progress(progress) => self.last_progress.clone_from(progress),
+                effects::Effect::ProgramStatus(update) => {
+                    changed |= self.program_status.apply(update.clone());
                 }
-                osc133::OscMark::PromptStart => {
+                effects::Effect::PromptStart => {
                     changed |= self.program_status.expire_active();
-                }
-                osc133::OscMark::Reset => {
-                    changed |= self.program_status.clear();
                 }
                 _ => {}
             }
