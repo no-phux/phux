@@ -62,7 +62,7 @@ surface.
    journal ([ADR-0123](./0123-events-are-journaled.md)), stamped with the
    actor and operation id. A gap means refetch `GetOrganization`. Terminal
    bytes stay on their own streams.
-6. **Feature bit.** `ServerFeatureExt::ORGANIZATION = 0x8` in the trailing
+6. **Feature bit.** `ServerFeatureExt::ORGANIZATION = 0x10` in the trailing
    `features_ext` word ([ADR-0137](./0137-server-feature-word-extends.md)).
    A server sets it only when it enforces this whole surface. A client
    that does not see it treats organization as read-only and says so.

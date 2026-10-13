@@ -51,8 +51,8 @@ adds organization commands that each need a grant.
    implying `TERMINATE` and `CREATE` implying `ORGANIZE`, so an old
    registry reaches the typed equivalent of what it could already do and
    nothing more.
-4. **Classification.** `GetOrganization` and `ArrangementGet` need
-   `OBSERVE`; creates and relaunch need `CREATE`; rename, move, bulk move,
+4. **Classification.** `GetOrganization` and `ArrangementGet` read
+   records, not content, and need `INVENTORY`; creates and relaunch need `CREATE`; rename, move, bulk move,
    Inbox resolution, and arrangement replace need `ORGANIZE` on every
    affected session; terminate, remove, abandon, and session delete need
    `TERMINATE`. Undo needs the original operation's grants as they stand
