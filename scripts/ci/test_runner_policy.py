@@ -72,10 +72,12 @@ class RunnerPolicyTests(unittest.TestCase):
             self.assertNotIn("mr-boxington-action", body)
 
     def test_main_prunes_superseded_build_cache_entries(self):
-        """Every main push saves a fresh multi-GB mbx entry per lane.
+        """A new mbx key (day, lockfile, or flake) saves one multi-GB entry per lane.
 
         Restores take only the newest, so ci.yml deletes the older ones after
         a main run instead of letting them evict other workflows' caches.
+        The primary key must not be the commit: an exact hit skips the
+        objects export, and a per-commit key repackaged it on every push.
         """
         ci = (WORKFLOWS / "ci.yml").read_text()
         prune = ci.split("\n  prune-build-cache:\n", 1)[1]
@@ -86,6 +88,23 @@ class RunnerPolicyTests(unittest.TestCase):
         self.assertIn("icount:linux-x64", prune)
         self.assertIn("key=${arch}-mbx-phux-${lane}-", prune)
         self.assertIn("tail -n +2", prune)
+
+    def test_rust_lane_cache_keeps_action_results_and_skips_repeat_exports(self):
+        """The test lane's 8 GiB collection deleted the store it had just restored.
+
+        Run 38442503688 restored ~19 GiB logical, evicted every action result,
+        compiled with 0 hits, then spent ~11 minutes exporting that cold
+        rebuild because the generated key included the commit.
+        """
+        lane = (ROOT / ".github/actions/setup-rust-lane/action.yml").read_text()
+        self.assertNotIn("mbx gc --max-size 8GiB", lane)
+        self.assertIn("mbx gc --max-size 48GiB", lane)
+        self.assertIn("cache-key: ${{ steps.mbx-env.outputs.cache_key }}", lane)
+        self.assertIn("restore-keys: ${{ steps.mbx-env.outputs.restore_key }}", lane)
+        self.assertNotIn("github.sha", lane)
+        self.assertIn("date -u +%Y%m%d", lane)
+        self.assertIn("linux-arm64", lane)
+        self.assertIn("linux-x64", lane)
 
     def test_export_cleanup_preserves_pending_cache_and_cargo_tools(self):
         """Download cleanup must not evict the current build's export closure."""

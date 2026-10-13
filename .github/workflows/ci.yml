@@ -299,11 +299,12 @@ jobs:
           workflow: .github/workflows/ci.yml
           coverage: phux=${{ needs.changes.outputs.phux_needed }},integrations=${{ needs.changes.outputs.integrations_needed }}
 
-  # setup-rust-lane's mbx action saves one immutable entry per lane on every
-  # push to main (about 0.4 GB check + 1.9 GB test compressed). Restores take
-  # only the newest, so the older ones would pile up until LRU eviction pushed
-  # out other workflows' caches from the shared 10 GB. Keep the newest entry
-  # per lane and delete the rest once the rust lanes have finished saving.
+  # setup-rust-lane saves an mbx objects entry when its key changes (UTC day,
+  # Cargo.lock, or flake.lock), not on every commit. An exact hit skips the
+  # export. Restores take only the newest, so a new key's predecessor would
+  # sit until LRU eviction pushed other workflows' caches out of the shared
+  # 10 GB. Keep the newest entry per lane and delete the rest once the rust
+  # lanes have finished saving.
   # check and test are arm64; perf-icount is x86_64, so its key prefix differs.
   prune-build-cache:
     name: prune superseded mbx cache entries
