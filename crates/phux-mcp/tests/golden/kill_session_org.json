@@ -1,13 +1,13 @@
 {
   "killed": true,
   "report": {
-    "session": "^aaaaaa",
+    "session": "^aaaaaak",
     "session_detail": null,
     "session_result": "deleted",
     "targets": [
       {
         "detail": null,
-        "key": "^aaaaaa",
+        "key": "^aaaaaa2",
         "result": "already_gone"
       },
       {
