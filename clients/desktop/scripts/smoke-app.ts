@@ -65,6 +65,9 @@ const env: Record<string, string> = {
   PHUX_SESSION: session,
   PHUX_BIN: phux,
   PHUX_DESKTOP_BACKGROUND: "1",
+  // The app's stderr is retained evidence: keep the presentation, visibility
+  // and acquire decisions in it so a failed qualification explains itself.
+  PHUX_DESKTOP_LOG_LEVEL: "trace",
   SHELL: "/bin/sh",
   TERM: "xterm-256color",
   LANG: "en_US.UTF-8",
