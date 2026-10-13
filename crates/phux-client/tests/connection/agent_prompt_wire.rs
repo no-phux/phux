@@ -79,6 +79,8 @@ struct Script {
     apply: Vec<CommandResult>,
     /// `METADATA_CHANGED` payloads pushed strictly after each result.
     post_result: Vec<Option<Vec<u8>>>,
+    /// Ordered client frames, when a test wants the submit's neighbors.
+    trace: Option<WireTrace>,
 }
 
 impl Script {
@@ -87,6 +89,7 @@ impl Script {
             record,
             apply: vec![CommandResult::Ok],
             post_result: Vec::new(),
+            trace: None,
         }
     }
 
@@ -99,10 +102,41 @@ impl Script {
         self.post_result = pushes;
         self
     }
+
+    fn traced(mut self, trace: WireTrace) -> Self {
+        self.trace = Some(trace);
+        self
+    }
 }
 
 /// Every operation id the server saw, in submit order.
 type SeenIds = Arc<Mutex<Vec<InputOperationId>>>;
+
+/// Ordered client frames one session received.
+type WireTrace = Arc<Mutex<Vec<Observed>>>;
+
+/// A client frame reduced to the fields the staleness bound depends on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Observed {
+    Hello,
+    SubscribeEvents,
+    SubscribeMetadata,
+    GetMetadata {
+        request_id: u32,
+    },
+    ApplyInput {
+        request_id: u32,
+        operation_id: InputOperationId,
+        events: usize,
+    },
+    Other,
+}
+
+fn note(trace: Option<&WireTrace>, observed: Observed) {
+    if let Some(trace) = trace {
+        trace.lock().expect("trace lock").push(observed);
+    }
+}
 
 /// Owns the listener directory and the accept task; aborting it drops the
 /// [`JoinSet`] and with it every session.
@@ -140,6 +174,7 @@ fn serve(script: Script) -> (Server, PathBuf, SeenIds) {
     reason = "one server, one match; splitting it hides the frame ordering"
 )]
 async fn session(stream: UnixStream, script: Script, seen: SeenIds) {
+    let trace = script.trace.clone();
     let mut link = Link {
         stream,
         out: BytesMut::new(),
@@ -148,6 +183,7 @@ async fn session(stream: UnixStream, script: Script, seen: SeenIds) {
     while let Some(frame) = link.recv().await {
         match frame {
             FrameKind::Hello { client_caps, .. } => {
+                note(trace.as_ref(), Observed::Hello);
                 let (selected_profile, bootstrap_limits) =
                     select_bootstrap_profile(&client_caps, &BootstrapCapabilities::new())
                         .expect("shared bootstrap profile");
@@ -166,6 +202,7 @@ async fn session(stream: UnixStream, script: Script, seen: SeenIds) {
             FrameKind::GetMetadata {
                 request_id, key, ..
             } => {
+                note(trace.as_ref(), Observed::GetMetadata { request_id });
                 let value = (key == RESOURCE_AGENT_KEY)
                     .then(|| script.record.clone())
                     .flatten();
@@ -178,9 +215,17 @@ async fn session(stream: UnixStream, script: Script, seen: SeenIds) {
                     Command::ApplyInput {
                         operation_id,
                         terminal_id,
-                        ..
+                        events,
                     },
             } => {
+                note(
+                    trace.as_ref(),
+                    Observed::ApplyInput {
+                        request_id,
+                        operation_id,
+                        events: events.len(),
+                    },
+                );
                 seen.lock().expect("ids lock").push(operation_id);
                 let result = script
                     .apply
@@ -203,13 +248,18 @@ async fn session(stream: UnixStream, script: Script, seen: SeenIds) {
             }
             // Subscriptions get no reply, like the real server.
             FrameKind::Command { request_id, .. } => {
+                note(trace.as_ref(), Observed::Other);
                 link.send(&FrameKind::CommandResult {
                     request_id,
                     result: CommandResult::Ok,
                 })
                 .await;
             }
-            _ => {}
+            FrameKind::SubscribeEvents { .. } => note(trace.as_ref(), Observed::SubscribeEvents),
+            FrameKind::SubscribeMetadata { .. } => {
+                note(trace.as_ref(), Observed::SubscribeMetadata);
+            }
+            _ => note(trace.as_ref(), Observed::Other),
         }
     }
 }
@@ -468,6 +518,97 @@ async fn a_multi_event_key_batch_is_one_operation_and_retries_under_one_id() {
     let ids = seen.lock().expect("ids").clone();
     assert_eq!(ids.len(), 2, "one APPLY_INPUT per attempt, not per event");
     assert!(ids.iter().all(|id| *id == op_id(0x4c)));
+}
+
+/// Idempotency for `phux agent send-keys`, read off the wire the same way as
+/// `a_resource_exhausted_retry_reuses_the_same_operation_id`: every
+/// `RESOURCE_EXHAUSTED` resubmission carries the same operation id, and each
+/// submit carries the whole key batch.
+///
+/// Frame order is the staleness bound in `phux agent send-keys` ("one server
+/// frame-handling turn on this connection"). The ownership `GET_METADATA` is
+/// request id 1 and the first `APPLY_INPUT` is request id 2, with nothing
+/// from this client between them. The server handles one frame per turn of
+/// the connection, so that gap is one turn; retries reuse request id 2.
+#[tokio::test]
+async fn a_send_keys_resource_exhausted_retry_reuses_the_same_operation_id() {
+    let trace: WireTrace = Arc::new(Mutex::new(Vec::new()));
+    let script = Script::new(Some(record("idle")))
+        .apply(vec![
+            refused(ErrorCode::ResourceExhausted),
+            refused(ErrorCode::ResourceExhausted),
+            CommandResult::Ok,
+        ])
+        .traced(Arc::clone(&trace));
+    let (_server, socket, seen) = serve(script);
+    let specs = ["yes please".to_owned(), "Enter".to_owned()];
+    let events = phux_client::send_keys::events_for(&specs);
+    assert_eq!(events.len(), 2, "{events:?}");
+
+    let outcome = deliver_acknowledged(
+        &socket,
+        &ResourceId::local(7),
+        op_id(0x4d),
+        events,
+        &always_ok,
+        None,
+    )
+    .await
+    .expect("the lane freed on the third attempt");
+
+    assert_eq!(outcome.delivery, Delivery::Acked);
+    assert_eq!(outcome.attempts, 3);
+    let ids = seen.lock().expect("ids").clone();
+    assert_eq!(ids.len(), 3, "the retries actually happened");
+    assert!(ids.iter().all(|id| *id == op_id(0x4d)));
+    assert_send_keys_frame_order(&trace.lock().expect("trace"), op_id(0x4d), 2);
+}
+
+/// `GET_METADATA` request id 1, then only `APPLY_INPUT` request id 2 under
+/// `operation_id`, each carrying `events` events.
+fn assert_send_keys_frame_order(
+    frames: &[Observed],
+    operation_id: InputOperationId,
+    events: usize,
+) {
+    let read = frames
+        .iter()
+        .position(|frame| matches!(frame, Observed::GetMetadata { .. }))
+        .expect("the ownership read was sent");
+    assert!(
+        frames[..read].iter().all(|frame| {
+            !matches!(
+                frame,
+                Observed::ApplyInput { .. } | Observed::GetMetadata { .. }
+            )
+        }),
+        "nothing from this client writes before the ownership read: {frames:?}"
+    );
+    assert!(
+        matches!(frames[read], Observed::GetMetadata { request_id: 1 }),
+        "ownership read is request id 1: {frames:?}"
+    );
+    let submits = &frames[read + 1..];
+    assert!(
+        !submits.is_empty(),
+        "the write is the next frame after the ownership read: {frames:?}"
+    );
+    assert!(
+        submits.iter().all(|frame| match frame {
+            Observed::ApplyInput {
+                request_id,
+                operation_id: id,
+                events: n,
+            } => *request_id == 2 && *id == operation_id && *n == events,
+            Observed::Hello
+            | Observed::SubscribeEvents
+            | Observed::SubscribeMetadata
+            | Observed::GetMetadata { .. }
+            | Observed::Other => false,
+        }),
+        "every submit is request id 2 under one operation and the whole batch, \
+         with nothing between the read and the first write: {frames:?}"
+    );
 }
 
 /// A record that goes away after the write is not a completion.
