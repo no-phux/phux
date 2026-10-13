@@ -13,10 +13,15 @@ use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, ServerCapabilities, ServerFeatureExt, ServerFeatureExtSet,
 };
-use phux_protocol::ids::{AuthorityId, OperationId, ResourceKey, Revision, SessionKey};
+use phux_protocol::ids::{
+    ActivationId, AuthorityId, OperationId, ResourceId, ResourceKey, Revision, ServerInstance,
+    SessionKey,
+};
+use phux_protocol::kinds::Verb;
 use phux_protocol::wire::frame::{
-    AgentEvent, Command, CommandResult, CommandValue, Committed, ErrorCode, EventStamp, FrameKind,
-    MAX_ORG_BATCH, OrganizationPage, Refusal, ResourceRecord, SessionLifetime, SessionRecord,
+    ActivationInfo, AgentEvent, Command, CommandResult, CommandValue, Committed, ErrorCode,
+    EventStamp, ExecState, FrameKind, MAX_ORG_BATCH, OrganizationPage, Refusal, ResourceRecord,
+    SessionLifetime, SessionRecord,
 };
 
 const fn session(n: u8) -> SessionKey {
@@ -102,6 +107,12 @@ fn inventory(count: usize, moved: usize, revision: u64, authority: u8) -> Organi
                     if n < moved { session(3) } else { source(n) },
                     Revision::new(1),
                 )
+                .with_live(Some(ResourceId::local(u32::try_from(n + 1).unwrap())))
+                .with_activation(Some(ActivationInfo::new(
+                    ActivationId::new(1),
+                    ServerInstance::new([9; 16]),
+                    ExecState::Running,
+                )))
             })
             .collect(),
     )
@@ -567,4 +578,227 @@ fn acceptance_without_a_commit_receipt_does_not_advance_bulk_work() {
         outcomes(&mut plane).as_slice(),
         [(_, OrgOutcome::Accepted), (_, OrgOutcome::NotSent { .. })]
     ));
+}
+
+#[test]
+fn terminal_inventory_refusals_cancel_tails_without_retrying_the_first_page() {
+    for refusal in [
+        Refusal::Unauthorized {
+            verb: Verb::Inventory,
+        },
+        Refusal::Unsupported {
+            capability: "organization".to_owned(),
+        },
+        Refusal::StoreFailure {
+            reason: "disk unavailable".to_owned(),
+        },
+        Refusal::InvalidArgument {
+            field: "cursor".to_owned(),
+            reason: "expired".to_owned(),
+        },
+    ] {
+        let mut plane = plane(257);
+        let operations = plane.move_resources(&selection(257), session(3)).unwrap();
+        let (request, _) = chunk(&mut plane, operations[0], 0, 256, 2);
+        commit(&mut plane, request, operations[0], 3);
+        let (request, _) = commands(&mut plane).remove(0);
+        answer(&mut plane, request, CommandResult::Refused(refusal));
+        assert!(commands(&mut plane).is_empty());
+        assert!(matches!(
+            outcomes(&mut plane).as_slice(),
+            [
+                (_, OrgOutcome::Committed(_)),
+                (_, OrgOutcome::NotSent { .. })
+            ]
+        ));
+        assert_eq!(plane.pending_organization_operations().count(), 0);
+    }
+}
+
+#[test]
+fn a_rejected_continuation_restarts_once_but_never_loops() {
+    let mut plane = plane(257);
+    let operations = plane.move_resources(&selection(257), session(3)).unwrap();
+    let (request, _) = chunk(&mut plane, operations[0], 0, 256, 2);
+    commit(&mut plane, request, operations[0], 3);
+    for attempt in 0..2 {
+        let (request, _) = commands(&mut plane).remove(0);
+        answer(
+            &mut plane,
+            request,
+            CommandResult::OkWith(CommandValue::OrganizationPage(Box::new(
+                inventory(128, 128, 3, 1).with_next_cursor(Some(vec![1])),
+            ))),
+        );
+        let sent = commands(&mut plane);
+        let [
+            (
+                request,
+                Command::GetOrganization {
+                    cursor: Some(_), ..
+                },
+            ),
+        ] = sent.as_slice()
+        else {
+            panic!("one continuation expected: {sent:?}");
+        };
+        answer(
+            &mut plane,
+            *request,
+            CommandResult::Refused(Refusal::InvalidArgument {
+                field: "cursor".to_owned(),
+                reason: "expired".to_owned(),
+            }),
+        );
+        if attempt == 0 {
+            assert_eq!(plane.pending_organization_operations().count(), 1);
+        }
+    }
+    assert!(commands(&mut plane).is_empty());
+    assert!(matches!(
+        outcomes(&mut plane).as_slice(),
+        [
+            (_, OrgOutcome::Committed(_)),
+            (_, OrgOutcome::NotSent { .. })
+        ]
+    ));
+    assert_eq!(plane.pending_organization_operations().count(), 0);
+}
+
+#[test]
+fn one_cursor_restart_can_recover_and_send_the_reserved_chunk() {
+    let mut plane = plane(257);
+    let operations = plane.move_resources(&selection(257), session(3)).unwrap();
+    let (request, _) = chunk(&mut plane, operations[0], 0, 256, 2);
+    commit(&mut plane, request, operations[0], 3);
+    let (request, _) = commands(&mut plane).remove(0);
+    answer(
+        &mut plane,
+        request,
+        CommandResult::OkWith(CommandValue::OrganizationPage(Box::new(
+            inventory(128, 128, 3, 1).with_next_cursor(Some(vec![1])),
+        ))),
+    );
+    let (request, _) = commands(&mut plane).remove(0);
+    answer(
+        &mut plane,
+        request,
+        CommandResult::Refused(Refusal::InvalidArgument {
+            field: "cursor".to_owned(),
+            reason: "expired".to_owned(),
+        }),
+    );
+    seed(&mut plane, 257, 256, 3, 1);
+    let (request, _) = chunk(&mut plane, operations[1], 256, 257, 3);
+    commit(&mut plane, request, operations[1], 4);
+    assert!(
+        outcomes(&mut plane)
+            .iter()
+            .all(|(_, outcome)| matches!(outcome, OrgOutcome::Committed(_)))
+    );
+    assert_eq!(plane.pending_organization_operations().count(), 0);
+}
+
+#[test]
+fn a_failed_refresh_before_the_receipt_resolves_the_tail_without_manual_recovery() {
+    let mut plane = plane(257);
+    let operations = plane.move_resources(&selection(257), session(3)).unwrap();
+    let (request, _) = chunk(&mut plane, operations[0], 0, 256, 2);
+    let refresh = plane.refresh_organization().unwrap();
+    commands(&mut plane);
+    answer(
+        &mut plane,
+        refresh,
+        CommandResult::Error {
+            code: ErrorCode::InvalidCommand,
+            message: "read failed".to_owned(),
+        },
+    );
+    assert!(
+        matches!(outcomes(&mut plane).as_slice(), [(id, OrgOutcome::NotSent { .. })] if *id == operations[1])
+    );
+    assert_eq!(plane.pending_organization_operations().count(), 1);
+    commit(&mut plane, request, operations[0], 3);
+    assert!(
+        matches!(outcomes(&mut plane).as_slice(), [(id, OrgOutcome::Committed(_))] if *id == operations[0])
+    );
+    assert_eq!(plane.pending_organization_operations().count(), 0);
+    assert!(commands(&mut plane).is_empty());
+}
+
+#[test]
+fn ordinary_and_internal_producers_cannot_steal_an_accepted_bulk_reservation() {
+    let mut plane = plane(257);
+    let operations = plane.move_resources(&selection(257), session(3)).unwrap();
+    let (request, retry) = chunk(&mut plane, operations[0], 0, 256, 2);
+    for _ in 0..ORG_JOURNAL_MAX_OPS - 2 {
+        plane.rename_session(session(1), "new name").unwrap();
+    }
+    commands(&mut plane);
+    assert_eq!(
+        plane.pending_organization_operations().count(),
+        ORG_JOURNAL_MAX_OPS
+    );
+    assert_eq!(plane.submit_organization(retry).unwrap(), operations[0]);
+    assert_eq!(
+        plane.rename_session(session(1), "overflow"),
+        Err(SubmitError::Full)
+    );
+    let close = plane.close_terminals(vec![ResourceId::local(1)]).unwrap();
+    let events = plane.take_events();
+    assert!(events.iter().any(|event| matches!(event, Event::TerminalsClosed { request_id, error: Some(_) } if *request_id == close)));
+    plane.kill_session(session(1)).unwrap();
+    assert!(commands(&mut plane).is_empty());
+    assert_eq!(
+        plane.pending_organization_operations().count(),
+        ORG_JOURNAL_MAX_OPS
+    );
+    commit(&mut plane, request, operations[0], 3);
+    seed(&mut plane, 257, 256, 3, 1);
+    let (request, _) = chunk(&mut plane, operations[1], 256, 257, 3);
+    assert_eq!(
+        plane.pending_organization_operations().count(),
+        ORG_JOURNAL_MAX_OPS - 1
+    );
+    commit(&mut plane, request, operations[1], 4);
+}
+
+#[test]
+fn live_kill_and_close_can_fill_only_unreserved_slots() {
+    for use_kill in [false, true] {
+        let mut plane = plane(257);
+        let operations = plane.move_resources(&selection(257), session(3)).unwrap();
+        let (request, _) = chunk(&mut plane, operations[0], 0, 256, 2);
+        for _ in 0..ORG_JOURNAL_MAX_OPS - 3 {
+            plane.rename_session(session(1), "new name").unwrap();
+        }
+        commands(&mut plane);
+        if use_kill {
+            plane.kill_session(session(1)).unwrap();
+        } else {
+            plane
+                .close_terminals(vec![ResourceId::local(1), ResourceId::local(2)])
+                .unwrap();
+        }
+        let sent = commands(&mut plane);
+        assert!(matches!(
+            sent.as_slice(),
+            [(_, Command::ResourceTerminate { .. })]
+        ));
+        assert_eq!(
+            plane.pending_organization_operations().count(),
+            ORG_JOURNAL_MAX_OPS
+        );
+        assert_eq!(
+            plane.rename_session(session(1), "overflow"),
+            Err(SubmitError::Full)
+        );
+        commit(&mut plane, request, operations[0], 3);
+        seed(&mut plane, 257, 256, 3, 1);
+        chunk(&mut plane, operations[1], 256, 257, 3);
+        assert_eq!(
+            plane.pending_organization_operations().count(),
+            ORG_JOURNAL_MAX_OPS - 1
+        );
+    }
 }
