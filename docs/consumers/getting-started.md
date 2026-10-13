@@ -34,7 +34,7 @@ needs to persist across steps.
 | Grok | [Grok plugin first run](./grok.md#first-shared-terminal-walkthrough) | The same MCP tools and lifecycle hooks for Grok Build and the `grok` bot. |
 | Pi | [pi + phux in 60 seconds](./pi-in-60-seconds.md), then [Pi first run](./pi.md#first-shared-terminal-walkthrough) | A pane chooser, saved targets, terminal tools, and fleet context. |
 | Oh My Pi | [Native OMP setup](./omp.md#install-and-load) | Native terminal tools, branch-local targets, and lifecycle reporting for its hosting pane. |
-| OpenCode V2 | [OpenCode checkout setup](./opencode-v2.md#first-shared-terminal-walkthrough) | A source-loaded plugin that works in sibling terminals. Not a published package. |
+| OpenCode V2 | [OpenCode setup](./opencode-v2.md#first-shared-terminal-walkthrough) | The `@phux/opencode` plugin; works in sibling terminals. |
 | Another MCP-capable host | [MCP registration and first read](./mcp.md#registering-with-a-host) | Stdio tools from the installed, version-matched adapter. |
 | A shell script or custom tool | [First script below](#first-script) | The same terminals through CLI commands and versioned JSON. |
 | Your own harness | [Harness author guide](./harness.md) | Emit lifecycle records; this is integration development, not agent setup. |

@@ -6,8 +6,7 @@ last-reviewed: 2026-10-06
 
 # Native Oh My Pi integration
 
-**TL;DR.** Build `integrations/omp` and load it with
-`omp -e /absolute/path/to/integrations/omp` for CLI-backed terminal and agent
+**TL;DR.** `omp plugin install @phux/omp` for CLI-backed terminal and agent
 tools. The extension preserves branch-local targets without attaching or
 changing focus. Inside phux it reports native AgentSession lifecycle for its
 hosting pane only, without starting model requests. Use the shell tool for
@@ -20,6 +19,15 @@ The extension targets OMP 18.8.6 and requires Bun 1.3.14 or newer. It uses
 the host's plain JSON Schema `TSchema` alternative, not the Pi SDK or a
 compatibility shim. Development SDK dependencies are pinned; the installed
 bundle has no npm runtime dependencies.
+
+```sh
+omp plugin install @phux/omp
+omp plugin upgrade @phux/omp   # move to the newest release
+```
+
+OMP never checks npm plugins for updates on its own; `omp plugin upgrade`
+moves to the latest published version. Releases publish to npm with provenance
+(tags `omp-extension-vX.Y.Z`).
 
 From a phux checkout:
 
@@ -42,9 +50,8 @@ omp plugin link /absolute/path/to/phux/integrations/omp
 
 Alternatively add the absolute package directory to `extensions:` in your OMP
 configuration. Do not load both a source file and its bundle. The integration
-never changes user configuration itself. This package is private and locally
-installable, not published to npm. Packaging is supported with
-`npm pack ./integrations/omp`; `prepack` builds the shipped entry.
+never changes user configuration itself. `npm pack ./integrations/omp` builds
+the shipped entry through `prepack`.
 
 OMP's authoritative host references are
 [extension authoring](https://github.com/can1357/oh-my-pi/blob/main/docs/extensions.md),

@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@phux/opencode-v2",
+      "name": "@phux/opencode",
       "dependencies": {
         "@opencode/plugin": "2.0.26",
       },

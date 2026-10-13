@@ -1,10 +1,22 @@
-# @phux/opencode-v2
+# @phux/opencode
 
-Private OpenCode V2 plugin, pinned to the public `@opencode/plugin@2.0.26`
-contract. OpenCode keeps its own shell, sessions, and permissions; phux supplies
+OpenCode V2 plugin, pinned to the public `@opencode/plugin@2.0.26` contract.
+OpenCode keeps its own shell, sessions, and permissions; phux supplies
 terminals only where a terminal is the point.
 
-## Build and load
+## Install
+
+```sh
+opencode plugin add @phux/opencode
+```
+
+Then list the terminal companion in global `cli.json` (see below) as
+`{ "plugins": ["@phux/opencode"] }`. Leave the version off so updates reach
+it: OpenCode never updates plugins on its own, so run `opencode plugin check`
+and `opencode plugin update` (or the TUI's Plugins dialog) to move to the
+newest release.
+
+## Build and load from a checkout
 
 From a phux checkout:
 
@@ -56,11 +68,8 @@ dedicated server permanently bound to one pane without the CLI companion.
 Tools need an explicit target until this OpenCode session selects a spawned pane
 or the service has a fixed `PHUX_TARGET`.
 
-To move the package without the checkout, build it, run `bun pm pack`, and
-install the resulting tarball in the destination project with
-`bun add /absolute/path/to/phux-opencode-v2-0.1.0.tgz`. Set `plugins[].package`
-to the absolute installed `node_modules/@phux/opencode-v2` directory. The package
-is private; this is local artifact installation, not a public registry release.
+Releases publish to npm as `@phux/opencode` with provenance (tags
+`opencode-plugin-vX.Y.Z`).
 
 ## When the agent uses phux
 
