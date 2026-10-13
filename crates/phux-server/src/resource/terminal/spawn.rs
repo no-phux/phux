@@ -12,10 +12,18 @@ use std::thread::JoinHandle;
 use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
 
-/// PTY read chunk ceiling. macOS returns at most 1024 bytes per read anyway;
-/// this is sized for platforms that can fill it while keeping
-/// `PTY_READ_CHUNK * PTY_CHANNEL_DEPTH` a sane per-pane memory bound.
+/// One `read(2)` into the coalescing buffer. macOS returns at most 1024
+/// bytes per read and a Linux PTY master at most 4095, so this takes a full
+/// kernel chunk in one syscall.
 pub(super) const PTY_READ_CHUNK: usize = 16 * 1024;
+
+/// Bytes one wake may hand the actor.
+///
+/// Later reads in that wake do not block, so a short interactive read is
+/// sent at once and nothing waits on a timer. The cap only bounds a flood
+/// that already has data queued. `PTY_READ_BATCH * PTY_CHANNEL_DEPTH` is the
+/// per-pane queue bound.
+pub(super) const PTY_READ_BATCH: usize = 64 * 1024;
 
 /// Depth of the reader-thread -> actor PTY channel.
 ///
@@ -992,6 +1000,7 @@ mod tests {
 mod canonical_guard_tests {
     use super::*;
     use crate::terminal_actor::WriteCompletionSink;
+    use nix::sys::termios::OutputFlags;
     use portable_pty::CommandBuilder;
     use std::time::Duration;
 
@@ -1348,6 +1357,127 @@ mod canonical_guard_tests {
         }
         assert_eq!(received.len(), payload.len());
         assert_eq!(received, payload);
+        let _ = pty.child.kill();
+    }
+
+    fn set_raw(pty: &PtyOwned) {
+        let raw_fd = pty
+            .master
+            .lock()
+            .expect("master lock")
+            .as_raw_fd()
+            .expect("raw fd");
+        // SAFETY: `raw_fd` names `pty.master`, kept alive by `pty` for the
+        // rest of the test; the borrow does not outlive this call.
+        let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(raw_fd) };
+        let mut termios = nix::sys::termios::tcgetattr(borrowed).expect("tcgetattr");
+        // A binary flood includes XOFF and INTR. Leaving `IXON` or `ISIG`
+        // set would stop output or signal the child, and the writer would
+        // block instead of the bytes coming back.
+        termios.input_flags.remove(
+            InputFlags::IGNBRK
+                | InputFlags::BRKINT
+                | InputFlags::PARMRK
+                | InputFlags::ISTRIP
+                | InputFlags::INLCR
+                | InputFlags::IGNCR
+                | InputFlags::ICRNL
+                | InputFlags::IXON
+                | InputFlags::IXOFF,
+        );
+        termios.output_flags.remove(OutputFlags::OPOST);
+        termios.local_flags.remove(
+            LocalFlags::ECHO
+                | LocalFlags::ECHONL
+                | LocalFlags::ICANON
+                | LocalFlags::ISIG
+                | LocalFlags::IEXTEN,
+        );
+        termios.control_chars[nix::sys::termios::SpecialCharacterIndices::VMIN as usize] = 1;
+        termios.control_chars[nix::sys::termios::SpecialCharacterIndices::VTIME as usize] = 0;
+        nix::sys::termios::tcsetattr(borrowed, nix::sys::termios::SetArg::TCSANOW, &termios)
+            .expect("tcsetattr");
+    }
+
+    /// A flood larger than the batch cap comes back intact, in order, and no
+    /// handoff is bigger than the cap.
+    #[tokio::test(flavor = "current_thread")]
+    async fn coalesced_pty_output_keeps_order_and_respects_the_cap() {
+        let (pty_rx, input_tx, mut pty) =
+            spawn_pty(CommandBuilder::new("cat"), 80, 24).expect("spawn cat under a real pty");
+        set_raw(&pty);
+        let len = PTY_READ_BATCH + 4_096 + 17;
+        let payload: Vec<u8> = (0..len)
+            .map(|index| u8::try_from(index % 251).expect("byte"))
+            .collect();
+        // Drain while the write is in flight. The reader channel is bounded;
+        // waiting to read until the write returns deadlocks once the payload
+        // no longer fits in that channel plus the kernel buffer.
+        let expected = payload.len();
+        let reader = std::thread::spawn(move || {
+            let mut pty_rx = pty_rx;
+            let mut received = Vec::new();
+            let mut chunks = 0_usize;
+            let mut max_chunk = 0_usize;
+            let deadline = std::time::Instant::now() + DELIVERY_DEADLINE;
+            while received.len() < expected && std::time::Instant::now() < deadline {
+                match pty_rx.try_recv() {
+                    Ok(PtyEvent::Bytes { chunk, .. }) => {
+                        assert!(!chunk.is_empty(), "empty handoff");
+                        max_chunk = max_chunk.max(chunk.len());
+                        received.extend_from_slice(&chunk);
+                        chunks += 1;
+                    }
+                    Ok(PtyEvent::Eof) | Err(mpsc::error::TryRecvError::Disconnected) => break,
+                    Err(mpsc::error::TryRecvError::Empty) => {
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                }
+            }
+            (received, chunks, max_chunk)
+        });
+        assert_eq!(
+            write_and_wait(&input_tx, payload.clone()).await,
+            WriteCompletion::Delivered
+        );
+        let (received, chunks, max_chunk) = reader.join().expect("reader thread");
+        assert!(
+            max_chunk <= PTY_READ_BATCH,
+            "handoff of {max_chunk} bytes exceeds the cap"
+        );
+        assert_eq!(received, payload, "pty bytes were lost or reordered");
+        assert!(
+            chunks >= 2,
+            "a payload larger than the cap must not arrive as one unlimited read"
+        );
+        assert!(
+            max_chunk > 4_095,
+            "coalescing should fold more than one kernel read (max chunk {max_chunk})"
+        );
+        let _ = pty.child.kill();
+    }
+
+    /// One echoed byte is its own handoff. Waiting to fill the cap would
+    /// block here, because nothing else is written.
+    #[tokio::test(flavor = "current_thread")]
+    async fn one_pty_byte_is_delivered_without_waiting_for_a_full_batch() {
+        let (mut pty_rx, input_tx, mut pty) =
+            spawn_pty(CommandBuilder::new("cat"), 80, 24).expect("spawn cat under a real pty");
+        set_raw(&pty);
+        assert_eq!(
+            write_and_wait(&input_tx, b"Z".to_vec()).await,
+            WriteCompletion::Delivered
+        );
+        let event = tokio::time::timeout(Duration::from_millis(500), pty_rx.recv())
+            .await
+            .expect("a single byte must be handed off without waiting for more")
+            .expect("pty output channel open");
+        match event {
+            PtyEvent::Bytes { chunk, .. } => assert_eq!(&chunk[..], b"Z"),
+            PtyEvent::Eof => panic!("pane closed before the byte arrived"),
+        }
+        let extra = tokio::time::timeout(Duration::from_millis(50), pty_rx.recv()).await;
+        assert!(extra.is_err(), "no further byte was written");
         let _ = pty.child.kill();
     }
 

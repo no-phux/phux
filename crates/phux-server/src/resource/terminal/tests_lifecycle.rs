@@ -606,9 +606,9 @@ async fn signal_freezes_resumes_and_kills_the_child() {
 const CONTENDED_FLUSH_GRACE: std::time::Duration = std::time::Duration::from_millis(2500);
 
 /// More than the reader channel plus kernel buffer can absorb, derived from
-/// the production constants.
+/// the production constants (`PTY_READ_BATCH` bytes per queued slot).
 const TERMINAL_FLUSH_BYTES: usize =
-    super::spawn::PTY_CHANNEL_DEPTH * super::spawn::PTY_READ_CHUNK + 512 * 1024;
+    super::spawn::PTY_CHANNEL_DEPTH * super::spawn::PTY_READ_BATCH + 512 * 1024;
 
 /// Poll until `path` exists or 30 s pass (shell scheduling, not the flush).
 async fn wait_until_fixture_exists(path: &std::path::Path) -> bool {

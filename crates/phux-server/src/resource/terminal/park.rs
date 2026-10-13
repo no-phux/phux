@@ -5,7 +5,12 @@
 //! that thread registers the master here and exits. Fresh panes start
 //! registered, so a few thousand idle shells cost one thread, not one each.
 //! Linux waits with epoll; macOS waits with kqueue.
+//!
+//! Each wake keeps reading until the next call would block or 64 KiB is
+//! queued, then hands that batch to the actor once. A short read is not held
+//! for a timer.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Read};
@@ -15,9 +20,10 @@ use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use bytes::BytesMut;
 use tokio::sync::mpsc::{self, error::TrySendError};
 
-use super::spawn::{PTY_READ_CHUNK, PtyEvent, drain_master_to_eof, send_pty_chunk};
+use super::spawn::{PTY_READ_BATCH, PTY_READ_CHUNK, PtyEvent, drain_master_to_eof, send_pty_chunk};
 
 /// How long a dedicated reader waits for the next byte before giving its fd
 /// back to the shared poller.
@@ -384,33 +390,171 @@ enum ReadStep {
     Retry,
 }
 
-fn read_once(file: &mut File, tx: &mpsc::Sender<PtyEvent>) -> ReadStep {
-    let mut buf = vec![0_u8; PTY_READ_CHUNK];
+/// Scratch plus the batch reused across wakes. A full handoff moves the
+/// allocation to the actor; a short one leaves the spare capacity here.
+struct CoalesceBufs {
+    scratch: Vec<u8>,
+    batch: BytesMut,
+}
+
+impl CoalesceBufs {
+    fn new() -> Self {
+        Self {
+            scratch: vec![0_u8; PTY_READ_CHUNK],
+            batch: BytesMut::with_capacity(PTY_READ_BATCH),
+        }
+    }
+}
+
+thread_local! {
+    static POLLER_BUFFERS: RefCell<CoalesceBufs> = RefCell::new(CoalesceBufs::new());
+}
+
+/// What one wake collected. Bytes, when present, sit in the caller's batch.
+#[derive(Debug, PartialEq, Eq)]
+enum Gathered {
+    /// The first read would block. Nothing was consumed.
+    Pending,
+    /// The master closed with nothing left to deliver.
+    Eof,
+    /// The batch holds this wake's bytes, in read order.
+    Bytes {
+        /// The master hit EOF after those bytes.
+        eof: bool,
+    },
+}
+
+/// One `read(2)` and a probe that must not wait. Tests supply a script; the
+/// master uses `poll(2)` with a zero timeout.
+trait PtySource {
+    fn pull(&mut self, dst: &mut [u8]) -> io::Result<usize>;
+    /// `true` when the next [`Self::pull`] returns without waiting.
+    fn ready_now(&mut self) -> bool;
+}
+
+struct MasterFile<'a> {
+    file: &'a mut File,
+}
+
+impl PtySource for MasterFile<'_> {
+    fn pull(&mut self, dst: &mut [u8]) -> io::Result<usize> {
+        let n = self.file.read(dst)?;
+        if n > 0 {
+            note_read(n);
+        }
+        Ok(n)
+    }
+
+    fn ready_now(&mut self) -> bool {
+        // Hung up with no `POLLIN` still completes a read (EOF or `EIO`).
+        // Treating it as ready folds that tail into this wake.
+        matches!(
+            poll_readable(self.file, Duration::ZERO),
+            PollRead::Ready | PollRead::Hungup
+        )
+    }
+}
+
+enum Pull {
+    Data,
+    Blocked,
+    Ended,
+}
+
+fn prepare_batch(batch: &mut BytesMut) {
+    batch.clear();
+    // Spare below one kernel read is the tail of an allocation the actor
+    // still holds. Start a fresh batch instead of trickling that tail out.
+    if batch.capacity() < PTY_READ_CHUNK {
+        batch.reserve(PTY_READ_BATCH);
+    }
+}
+
+fn readable_room(batch: &BytesMut) -> usize {
+    let until_cap = PTY_READ_BATCH.saturating_sub(batch.len());
+    let spare = batch.capacity().saturating_sub(batch.len());
+    until_cap.min(spare)
+}
+
+fn pull_some<S: PtySource>(source: &mut S, scratch: &mut [u8], batch: &mut BytesMut) -> Pull {
+    let room = readable_room(batch);
+    if room == 0 {
+        return Pull::Blocked;
+    }
+    let want = room.min(scratch.len());
     loop {
-        match file.read(&mut buf) {
-            Ok(0) => return deliver_terminal(tx, PtyEvent::Eof),
+        match source.pull(&mut scratch[..want]) {
+            Ok(0) => return Pull::Ended,
             Ok(n) => {
-                note_read(n);
-                let chunk = bytes::Bytes::copy_from_slice(&buf[..n]);
-                return match tx.try_send(PtyEvent::Bytes {
-                    chunk,
-                    read_at: Instant::now(),
-                }) {
-                    Ok(()) => ReadStep::Promote(Vec::new()),
-                    Err(TrySendError::Full(event)) => ReadStep::Promote(vec![event]),
-                    Err(TrySendError::Closed(_)) => ReadStep::Closed,
-                };
+                batch.extend_from_slice(&scratch[..n]);
+                return Pull::Data;
             }
             Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
-            Err(err) if err.raw_os_error() == Some(super::spawn::EIO) => {
-                return deliver_terminal(tx, PtyEvent::Eof);
-            }
-            Err(err) if err.kind() == io::ErrorKind::WouldBlock => return ReadStep::Retry,
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock => return Pull::Blocked,
+            Err(err) if err.raw_os_error() == Some(super::spawn::EIO) => return Pull::Ended,
             Err(err) => {
-                tracing::debug!(?err, "pty poller read error");
-                return deliver_terminal(tx, PtyEvent::Eof);
+                tracing::debug!(?err, "pty read failed");
+                return Pull::Ended;
             }
         }
+    }
+}
+
+/// Drain until the next read would block or the batch cap is full.
+///
+/// The first read is the one that woke the caller and may block. Every later
+/// read is taken only when [`PtySource::ready_now`] says it will not wait, so
+/// one short write is handed off with no timer.
+fn gather_wake<S: PtySource>(source: &mut S, scratch: &mut [u8], batch: &mut BytesMut) -> Gathered {
+    prepare_batch(batch);
+    match pull_some(source, scratch, batch) {
+        Pull::Blocked => return Gathered::Pending,
+        Pull::Ended => return Gathered::Eof,
+        Pull::Data => {}
+    }
+    while readable_room(batch) > 0 && source.ready_now() {
+        match pull_some(source, scratch, batch) {
+            Pull::Data => {}
+            Pull::Blocked => break,
+            Pull::Ended => return Gathered::Bytes { eof: true },
+        }
+    }
+    Gathered::Bytes { eof: false }
+}
+
+fn read_once(file: &mut File, tx: &mpsc::Sender<PtyEvent>) -> ReadStep {
+    POLLER_BUFFERS.with(|bufs| {
+        let bufs = &mut *bufs.borrow_mut();
+        let gathered = gather_wake(&mut MasterFile { file }, &mut bufs.scratch, &mut bufs.batch);
+        match gathered {
+            Gathered::Pending => ReadStep::Retry,
+            Gathered::Eof => deliver_terminal(tx, PtyEvent::Eof),
+            Gathered::Bytes { eof } => publish_batch(tx, &mut bufs.batch, eof),
+        }
+    })
+}
+
+fn publish_batch(tx: &mpsc::Sender<PtyEvent>, batch: &mut BytesMut, eof: bool) -> ReadStep {
+    let event = PtyEvent::Bytes {
+        chunk: batch.split().freeze(),
+        read_at: Instant::now(),
+    };
+    match tx.try_send(event) {
+        Ok(()) => {
+            if eof {
+                deliver_terminal(tx, PtyEvent::Eof)
+            } else {
+                ReadStep::Promote(Vec::new())
+            }
+        }
+        Err(TrySendError::Full(event)) => {
+            let mut pending = vec![event];
+            if eof {
+                pending.push(PtyEvent::Eof);
+            }
+            ReadStep::Promote(pending)
+        }
+        Err(TrySendError::Closed(_)) => ReadStep::Closed,
     }
 }
 
@@ -457,7 +601,7 @@ fn hot_loop(
         park.remove(id);
         return;
     }
-    let mut buf = vec![0_u8; PTY_READ_CHUNK];
+    let mut bufs = CoalesceBufs::new();
     let mut last = Instant::now();
     loop {
         if cancel.load(Ordering::Acquire) {
@@ -479,7 +623,7 @@ fn hot_loop(
         match poll_readable(&file, slice) {
             PollRead::Timeout => {}
             PollRead::Ready => {
-                if handle_hot_read(park, id, &mut file, &tx, &mut buf, &mut last).is_exit() {
+                if handle_hot_read(park, id, &mut file, &tx, &mut bufs, &mut last).is_exit() {
                     return;
                 }
             }
@@ -508,30 +652,25 @@ fn handle_hot_read(
     id: u64,
     file: &mut File,
     tx: &mpsc::Sender<PtyEvent>,
-    buf: &mut [u8],
+    bufs: &mut CoalesceBufs,
     last: &mut Instant,
 ) -> AfterRead {
-    match file.read(buf) {
-        Ok(0) => finish_hot(park, id, tx, PtyEvent::Eof),
-        Ok(n) => {
+    match gather_wake(&mut MasterFile { file }, &mut bufs.scratch, &mut bufs.batch) {
+        Gathered::Pending => AfterRead::Stay,
+        Gathered::Eof => finish_hot(park, id, tx, PtyEvent::Eof),
+        Gathered::Bytes { eof } => {
             *last = Instant::now();
-            note_read(n);
-            let chunk = bytes::Bytes::copy_from_slice(&buf[..n]);
+            let chunk = bufs.batch.split().freeze();
             if send_pty_chunk(tx, chunk, *last).is_break() {
-                drain_master_to_eof(file, buf);
+                drain_master_to_eof(file, &mut bufs.scratch);
                 park.remove(id);
-                AfterRead::Exit
+                return AfterRead::Exit;
+            }
+            if eof {
+                finish_hot(park, id, tx, PtyEvent::Eof)
             } else {
                 AfterRead::Stay
             }
-        }
-        Err(err) if err.kind() == io::ErrorKind::Interrupted => AfterRead::Stay,
-        Err(err) if err.raw_os_error() == Some(super::spawn::EIO) => {
-            finish_hot(park, id, tx, PtyEvent::Eof)
-        }
-        Err(err) => {
-            tracing::debug!(?err, "pty reader thread: read error");
-            finish_hot(park, id, tx, PtyEvent::Eof)
         }
     }
 }
@@ -648,30 +787,24 @@ fn spawn_dedicated(file: File, tx: mpsc::Sender<PtyEvent>) -> JoinHandle<()> {
 
 fn dedicated_loop(file: &mut File, tx: &mpsc::Sender<PtyEvent>) {
     crate::perf::promote_helper_thread("phux-pty-reader");
-    let mut buf = vec![0_u8; PTY_READ_CHUNK];
+    let mut bufs = CoalesceBufs::new();
     loop {
-        match file.read(&mut buf) {
-            Ok(0) => {
+        match gather_wake(&mut MasterFile { file }, &mut bufs.scratch, &mut bufs.batch) {
+            Gathered::Pending => {}
+            Gathered::Eof => {
                 let _ = tx.blocking_send(PtyEvent::Eof);
                 break;
             }
-            Ok(n) => {
-                note_read(n);
-                let chunk = bytes::Bytes::copy_from_slice(&buf[..n]);
+            Gathered::Bytes { eof } => {
+                let chunk = bufs.batch.split().freeze();
                 if send_pty_chunk(tx, chunk, Instant::now()).is_break() {
-                    drain_master_to_eof(file, &mut buf);
+                    drain_master_to_eof(file, &mut bufs.scratch);
                     break;
                 }
-            }
-            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
-            Err(err) if err.raw_os_error() == Some(super::spawn::EIO) => {
-                let _ = tx.blocking_send(PtyEvent::Eof);
-                break;
-            }
-            Err(err) => {
-                tracing::debug!(?err, "pty reader thread: read error");
-                let _ = tx.blocking_send(PtyEvent::Eof);
-                break;
+                if eof {
+                    let _ = tx.blocking_send(PtyEvent::Eof);
+                    break;
+                }
             }
         }
     }
@@ -877,4 +1010,313 @@ fn kqueue_change(
 fn boot_poller(park: &'static Park) {
     static STARTED: OnceLock<()> = OnceLock::new();
     STARTED.get_or_init(|| park.boot());
+}
+
+#[cfg(test)]
+mod coalesce_tests {
+    use std::collections::VecDeque;
+    use std::fs::File;
+    use std::io::Write;
+    use std::time::{Duration, Instant};
+
+    use bytes::BytesMut;
+
+    use super::{Gathered, MasterFile, PTY_READ_BATCH, PTY_READ_CHUNK, PtySource, gather_wake};
+
+    fn pattern_byte(index: usize) -> u8 {
+        u8::try_from(index % 251).expect("modulo 251 fits in a byte")
+    }
+
+    /// Run `work` on another thread so a blocked read fails the test instead
+    /// of hanging the suite.
+    fn within<T: Send + 'static>(budget: Duration, work: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(work());
+        });
+        rx.recv_timeout(budget).unwrap_or_else(|_| {
+            panic!("read was not handed off within {budget:?}");
+        })
+    }
+
+    enum Step {
+        Data(Vec<u8>),
+        Eof,
+        Interrupted,
+        Error(std::io::ErrorKind),
+        /// Parking here means the wake waited for another byte.
+        Hang,
+    }
+
+    struct Script {
+        steps: VecDeque<Step>,
+        pulls: usize,
+    }
+
+    impl PtySource for Script {
+        fn pull(&mut self, dst: &mut [u8]) -> std::io::Result<usize> {
+            self.pulls += 1;
+            match self.steps.pop_front() {
+                Some(Step::Data(data)) => {
+                    let n = data.len().min(dst.len());
+                    dst[..n].copy_from_slice(&data[..n]);
+                    if n < data.len() {
+                        self.steps.push_front(Step::Data(data[n..].to_vec()));
+                    }
+                    Ok(n)
+                }
+                Some(Step::Eof) => Ok(0),
+                Some(Step::Interrupted) => {
+                    Err(std::io::Error::from(std::io::ErrorKind::Interrupted))
+                }
+                Some(Step::Error(kind)) => Err(std::io::Error::new(kind, "scripted read")),
+                Some(Step::Hang) => {
+                    std::thread::park();
+                    Err(std::io::Error::from(std::io::ErrorKind::WouldBlock))
+                }
+                None => Err(std::io::Error::from(std::io::ErrorKind::WouldBlock)),
+            }
+        }
+
+        fn ready_now(&mut self) -> bool {
+            match self.steps.front() {
+                Some(Step::Hang) | None => false,
+                Some(_) => true,
+            }
+        }
+    }
+
+    struct Pattern {
+        next: usize,
+        end: usize,
+        chunk: usize,
+    }
+
+    impl PtySource for Pattern {
+        fn pull(&mut self, dst: &mut [u8]) -> std::io::Result<usize> {
+            if self.next >= self.end {
+                return Ok(0);
+            }
+            let n = dst.len().min(self.chunk).min(self.end - self.next);
+            for (offset, byte) in dst[..n].iter_mut().enumerate() {
+                *byte = pattern_byte(self.next + offset);
+            }
+            self.next += n;
+            Ok(n)
+        }
+
+        fn ready_now(&mut self) -> bool {
+            self.next < self.end
+        }
+    }
+
+    fn gather(source: &mut impl PtySource, batch: &mut BytesMut) -> Gathered {
+        let mut scratch = vec![0_u8; PTY_READ_CHUNK];
+        gather_wake(source, &mut scratch, batch)
+    }
+
+    #[test]
+    fn short_chunks_keep_their_order_across_a_would_block() {
+        let mut script = Script {
+            steps: VecDeque::from([
+                Step::Data(b"one".to_vec()),
+                Step::Data(b"-two".to_vec()),
+                Step::Data(b"-three".to_vec()),
+            ]),
+            pulls: 0,
+        };
+        let mut batch = BytesMut::with_capacity(PTY_READ_BATCH);
+        let gathered = gather(&mut script, &mut batch);
+        assert_eq!(gathered, Gathered::Bytes { eof: false });
+        assert_eq!(&batch[..], b"one-two-three");
+        assert_eq!(
+            script.pulls, 3,
+            "the wake must stop when the next read would block"
+        );
+
+        script.steps.push_back(Step::Data(b"-four".to_vec()));
+        let gathered = gather(&mut script, &mut batch);
+        assert_eq!(gathered, Gathered::Bytes { eof: false });
+        assert_eq!(&batch[..], b"-four");
+    }
+
+    #[test]
+    fn a_single_small_read_is_handed_off_without_waiting() {
+        let (gathered, bytes, pulls, elapsed) = within(Duration::from_secs(1), || {
+            let mut script = Script {
+                steps: VecDeque::from([Step::Data(b"Z".to_vec()), Step::Hang]),
+                pulls: 0,
+            };
+            let mut batch = BytesMut::with_capacity(PTY_READ_BATCH);
+            let started = Instant::now();
+            let gathered = gather(&mut script, &mut batch);
+            (
+                gathered,
+                Vec::from(&batch[..]),
+                script.pulls,
+                started.elapsed(),
+            )
+        });
+        assert_eq!(gathered, Gathered::Bytes { eof: false });
+        assert_eq!(bytes, b"Z");
+        assert_eq!(pulls, 1, "a second read would have waited for more input");
+        assert!(
+            elapsed < Duration::from_millis(200),
+            "a single byte must not sit on a coalesce timer, waited {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn the_cap_is_respected_and_the_remainder_stays_in_order() {
+        let total = PTY_READ_BATCH * 2 + 31;
+        let mut pattern = Pattern {
+            next: 0,
+            end: total,
+            chunk: 10_000,
+        };
+        let mut batch = BytesMut::new();
+        let mut got = Vec::with_capacity(total);
+        let mut lengths = Vec::new();
+        loop {
+            match gather(&mut pattern, &mut batch) {
+                Gathered::Bytes { eof: false } => {
+                    assert!(
+                        batch.len() <= PTY_READ_BATCH,
+                        "batch of {} exceeds the cap",
+                        batch.len()
+                    );
+                    assert!(!batch.is_empty());
+                    lengths.push(batch.len());
+                    got.extend_from_slice(&batch);
+                    let _ = batch.split();
+                }
+                Gathered::Eof => break,
+                other => panic!("unexpected {other:?} after {} bytes", got.len()),
+            }
+        }
+        assert_eq!(
+            lengths[0], PTY_READ_BATCH,
+            "queued data fills the cap exactly"
+        );
+        assert_eq!(lengths[1], PTY_READ_BATCH);
+        assert_eq!(lengths[2], 31);
+        assert_eq!(got.len(), total);
+        assert!(
+            got.iter()
+                .enumerate()
+                .all(|(index, byte)| *byte == pattern_byte(index)),
+            "bytes were lost or reordered"
+        );
+    }
+
+    #[test]
+    fn eof_and_errors_keep_the_bytes_already_read() {
+        let mut eof_after = Script {
+            steps: VecDeque::from([Step::Data(b"tail".to_vec()), Step::Eof]),
+            pulls: 0,
+        };
+        let mut batch = BytesMut::new();
+        assert_eq!(
+            gather(&mut eof_after, &mut batch),
+            Gathered::Bytes { eof: true }
+        );
+        assert_eq!(&batch[..], b"tail");
+
+        let mut bare_eof = Script {
+            steps: VecDeque::from([Step::Eof]),
+            pulls: 0,
+        };
+        assert_eq!(gather(&mut bare_eof, &mut batch), Gathered::Eof);
+        assert!(batch.is_empty());
+
+        let mut broken = Script {
+            steps: VecDeque::from([
+                Step::Interrupted,
+                Step::Data(b"xy".to_vec()),
+                Step::Error(std::io::ErrorKind::BrokenPipe),
+            ]),
+            pulls: 0,
+        };
+        assert_eq!(
+            gather(&mut broken, &mut batch),
+            Gathered::Bytes { eof: true }
+        );
+        assert_eq!(&batch[..], b"xy");
+    }
+
+    fn pipe_pair() -> (File, File) {
+        let (read, write) = nix::unistd::pipe().expect("pipe");
+        (File::from(read), File::from(write))
+    }
+
+    #[test]
+    fn a_single_pipe_byte_is_handed_off_without_blocking_for_more() {
+        let (gathered, bytes, elapsed) = within(Duration::from_secs(2), || {
+            let (mut read, mut write) = pipe_pair();
+            write.write_all(b"Z").expect("write one byte");
+            let mut batch = BytesMut::with_capacity(PTY_READ_BATCH);
+            let started = Instant::now();
+            let gathered = gather(&mut MasterFile { file: &mut read }, &mut batch);
+            (gathered, Vec::from(&batch[..]), started.elapsed())
+        });
+        assert_eq!(gathered, Gathered::Bytes { eof: false });
+        assert_eq!(bytes, b"Z");
+        assert!(
+            elapsed < Duration::from_millis(200),
+            "poll-after-read must not wait, waited {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn closing_the_writer_delivers_the_tail_and_then_eof() {
+        let (mut read, mut write) = pipe_pair();
+        write.write_all(b"abcdef").expect("write");
+        drop(write);
+        let mut batch = BytesMut::new();
+        let (gathered, bytes) = within(Duration::from_secs(2), move || {
+            let gathered = gather(&mut MasterFile { file: &mut read }, &mut batch);
+            (gathered, Vec::from(&batch[..]))
+        });
+        assert_eq!(gathered, Gathered::Bytes { eof: true });
+        assert_eq!(bytes, b"abcdef");
+    }
+
+    /// The kernel pipe buffer has to hold more than one batch, which
+    /// `F_SETPIPE_SZ` provides on Linux.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_prefilled_pipe_stops_at_the_cap_and_continues_in_order() {
+        let total = PTY_READ_BATCH * 2 + 31;
+        let payload: Vec<u8> = (0..total).map(pattern_byte).collect();
+        let (first, lengths, got) = within(Duration::from_secs(2), move || {
+            let (read, mut write) = pipe_pair();
+            nix::fcntl::fcntl(&read, nix::fcntl::FcntlArg::F_SETPIPE_SZ(256 * 1024))
+                .expect("enlarge the pipe");
+            write.write_all(&payload).expect("prefill the pipe");
+            let mut read = read;
+            let mut batch = BytesMut::new();
+            let first = gather(&mut MasterFile { file: &mut read }, &mut batch);
+            let mut got = Vec::from(&batch[..]);
+            let mut lengths = vec![got.len()];
+            let _ = batch.split();
+            while got.len() < total {
+                match gather(&mut MasterFile { file: &mut read }, &mut batch) {
+                    Gathered::Bytes { eof: false } => {
+                        lengths.push(batch.len());
+                        got.extend_from_slice(&batch);
+                        let _ = batch.split();
+                    }
+                    other => panic!("unexpected {other:?} after {} bytes", got.len()),
+                }
+            }
+            (first, lengths, got)
+        });
+        assert_eq!(first, Gathered::Bytes { eof: false });
+        assert_eq!(lengths, vec![PTY_READ_BATCH, PTY_READ_BATCH, 31]);
+        assert!(
+            got.iter()
+                .enumerate()
+                .all(|(index, byte)| *byte == pattern_byte(index))
+        );
+    }
 }
