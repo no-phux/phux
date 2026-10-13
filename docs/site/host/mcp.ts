@@ -15,6 +15,7 @@
  * .well-known/mcp/server-card.json for the published card.
  */
 import { htmlToMarkdown } from "./markdown";
+import { isDocsPath, routeRequest } from "./routes";
 
 // MCP spec versions this server implements, oldest first. Clients negotiate in
 // initialize: a requested version from this list is echoed back, anything else
@@ -93,33 +94,18 @@ const TOOLS: ToolDef[] = [
     },
     run: async (params, env) => {
       const raw = String(params.path ?? "").trim();
-      let pathname: string;
-      try {
-        const url = new URL(raw, "https://phux.sh");
-        if (url.hostname !== "phux.sh" && url.hostname !== "docs.phux.sh") {
-          return "Only phux.sh and docs.phux.sh pages can be fetched.";
-        }
-        pathname = url.pathname;
-        // `https://phux.sh//evil.example/x` has hostname phux.sh and pathname
-        // `//evil.example/x`; re-parsing that pathname is scheme-relative.
-        if (!pathname.startsWith("/") || pathname.startsWith("//")) {
-          return "Only phux.sh and docs.phux.sh pages can be fetched.";
-        }
-      } catch {
-        return `Could not parse path: ${raw}`;
-      }
-      const asset = await env.ASSETS.fetch(
-        new Request(new URL(pathname, "https://phux.sh").href),
-      );
-      if (!asset.ok) return `Page not found: ${pathname}`;
+      const url = resolvePageUrl(raw);
+      if (!url) return "Only https://phux.sh and https://docs.phux.sh pages can be fetched.";
+      const asset = await fetchPageAsset(url, env);
+      if (!asset.ok) return `Page not found: ${url.pathname}`;
       const type = asset.headers.get("content-type") ?? "";
       if (type.includes("text/html")) {
         return htmlToMarkdown(await asset.text());
       }
-      if (type.startsWith("text/") || type.includes("json")) {
+      if (type.startsWith("text/") || type.includes("json") || url.pathname.endsWith(".md")) {
         return await asset.text();
       }
-      return `${pathname} is not a textual page (content-type: ${type}).`;
+      return `${url.pathname} is not a textual page (content-type: ${type}).`;
     },
   },
   {
@@ -159,6 +145,33 @@ const TOOLS: ToolDef[] = [
     },
   },
 ];
+
+/** Resolve public host redirects without making arbitrary network requests. */
+function resolvePageUrl(raw: string): URL | null {
+  let url: URL;
+  try {
+    url = new URL(raw, "https://phux.sh");
+  } catch {
+    return null;
+  }
+  if (!["https://phux.sh", "https://docs.phux.sh"].includes(url.origin)) return null;
+  if (url.username || url.password) return null;
+  // Never re-parse a scheme-relative pathname as another host.
+  if (url.pathname.startsWith("//")) return null;
+  const route = routeRequest(url.hostname, url);
+  return route.kind === "redirect" ? new URL(route.location) : url;
+}
+
+async function fetchPageAsset(url: URL, env: McpEnv): Promise<Response> {
+  const pathname = url.pathname.replace(/\/$/, "").replace(/\.html$/, "");
+  if (isDocsPath(pathname) && !/\.[^/]+$/.test(pathname)) {
+    const markdownUrl = new URL(`${pathname}.md`, url.origin);
+    const markdown = await env.ASSETS.fetch(new Request(markdownUrl));
+    if (markdown.ok) return markdown;
+    // Old redirect-only URLs have no collection entry; retain the HTML fallback.
+  }
+  return env.ASSETS.fetch(new Request(url));
+}
 
 let indexCache: { pages: SearchPage[]; release: ReleaseInfo } | null = null;
 

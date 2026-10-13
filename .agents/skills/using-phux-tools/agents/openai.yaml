@@ -1,0 +1,4 @@
+interface:
+  display_name: "Using native phux tools"
+  short_description: "Drive persistent terminals with native phux tools"
+  default_prompt: "Use $using-phux-tools to operate this persistent terminal workflow with exact targets and bounded observation."

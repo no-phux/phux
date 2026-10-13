@@ -1,4 +1,5 @@
 import { OVERVIEW } from "../../lib/site";
+import { AgentStart } from "./AgentStart";
 
 export function OverviewBody() {
   const { pitch } = OVERVIEW;
@@ -25,7 +26,7 @@ export function OverviewBody() {
 
       <div className="overview-actions">
         <a className="overview-primary" href="/quickstart">Quickstart <span aria-hidden="true">→</span></a>
-        <a href="/performance">Performance <span aria-hidden="true">→</span></a>
+        <a href="#overview-agent-title">Set up your agent <span aria-hidden="true">→</span></a>
       </div>
 
       <figure className="overview-model" aria-labelledby="terminal-model-caption">
@@ -43,6 +44,8 @@ export function OverviewBody() {
         <figcaption id="terminal-model-caption">The server owns the terminals. Clients read output and send input through the same protocol.</figcaption>
       </figure>
 
+      <AgentStart />
+
       <section aria-labelledby="overview-paths-title">
         <h2 id="overview-paths-title">Guides</h2>
         <div className="overview-paths">
@@ -59,13 +62,13 @@ export function OverviewBody() {
         <div>
           <h2 id="overview-reference-title">Reference</h2>
         </div>
-        <nav aria-label="Explore the documentation">
+        <div className="overview-reference-links">
           <a href="/concepts">Core concepts</a>
           <a href="/reference">CLI and configuration</a>
           <a href="/wire">Wire protocol</a>
           <a href="/architecture">Architecture</a>
           <a href="/docs">All documentation</a>
-        </nav>
+        </div>
       </section>
     </div>
   );

@@ -16,6 +16,7 @@ import { DOCS_NAV, SITE } from "../../lib/site";
 import SearchDialogComponent from "./search";
 import { CodeControls } from "./CodeControls";
 import { ReaderSidebar, ReaderTheme } from "./ReaderControls";
+import { PageActions } from "./PageActions";
 
 interface Props {
   tree: Root;
@@ -80,6 +81,7 @@ export function Docs({
           <header className="docs-article-header">
             <DocsTitle>{title}</DocsTitle>
             <DocsDescription>{summary || description}</DocsDescription>
+            <PageActions key={pathname} pathname={pathname} />
           </header>
           {isOverview ? children : <DocsBody>{children}</DocsBody>}
           {!isOverview && <CodeControls pathname={pathname} />}

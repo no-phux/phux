@@ -3,3 +3,4 @@
 # beads is maintainer tooling and must not be listed here.
 using-phux
 using-phux-mcp
+using-phux-tools

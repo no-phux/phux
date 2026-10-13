@@ -54,3 +54,4 @@ worker/.dev.vars
 .beads/proxieddb/
 .motion-check/
 .home-check/
+.docs-check/

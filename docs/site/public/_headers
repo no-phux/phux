@@ -34,6 +34,10 @@
   X-Content-Type-Options: nosniff
 
 # Agent discovery documents.
+/*.md
+  Content-Type: text/markdown; charset=utf-8
+  X-Content-Type-Options: nosniff
+
 /.well-known/api-catalog
   Content-Type: application/linkset+json
 
