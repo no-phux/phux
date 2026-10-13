@@ -1,5 +1,5 @@
 //! Browser glue: a transport to the phux server (WebTransport or WebSocket),
-//! a `<canvas>`, and the keyboard, all driving a [`Session`](crate::Session).
+//! a `<canvas>`, and the keyboard, all driving a [`Connection`](crate::Connection).
 //! This is the only part that touches the DOM/network; the protocol logic
 //! lives in [`crate::session`].
 //!
@@ -986,7 +986,7 @@ impl BlinkBinding {
 }
 
 struct App {
-    session: crate::Session,
+    session: crate::Connection,
     tx: WireTx,
     canvas: HtmlCanvasElement,
     ctx: CanvasRenderingContext2d,
@@ -1640,9 +1640,9 @@ fn build_app(
         crate::canvas::device_pixel_ratio(),
     ));
     let mut session = if synthesized_only {
-        crate::Session::new_synthesized_compat(vt, cols, rows)
+        crate::Connection::new_synthesized_compat(vt, cols, rows)
     } else {
-        crate::Session::new(vt, cols, rows)
+        crate::Connection::new(vt, cols, rows)
     };
     // Mouse reports carry positions on the grid the canvas draws; the
     // viewport tells the server that grid's cell size.
@@ -3606,7 +3606,7 @@ mod tests {
 
         for exit in exits {
             let terminal_id = ResourceId::local(1);
-            let mut session = crate::Session::new(&vt, 80, 24);
+            let mut session = crate::Connection::new(&vt, 80, 24);
             let hello = session.on_frame(FrameKind::HelloOk {
                 protocol_major: PROTOCOL_VERSION.major,
                 protocol_minor: PROTOCOL_VERSION.minor,

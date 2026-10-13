@@ -992,7 +992,7 @@ async fn attach_with_cells(cell_px: (u16, u16)) -> web_sys::WebSocket {
     use phux_protocol::wire::frame::FrameKind;
 
     let vt = phux_vt_web::Vt::load().await.expect("load engine");
-    let session = Rc::new(RefCell::new(phux_web::Session::new(&vt, 80, 24)));
+    let session = Rc::new(RefCell::new(phux_web::Connection::new(&vt, 80, 24)));
     session.borrow_mut().set_cell_size(cell_px.0, cell_px.1);
     let socket = web_sys::WebSocket::new(WS_URL).unwrap();
     socket.set_binary_type(web_sys::BinaryType::Arraybuffer);

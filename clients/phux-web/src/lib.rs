@@ -22,7 +22,7 @@ pub mod touch;
 
 pub use panes::PaneRect;
 
-pub use session::{AgentBadge, Outcome, Session};
+pub use session::{AgentBadge, Connection, Outcome};
 
 use std::cell::RefCell;
 use std::ops::Range;

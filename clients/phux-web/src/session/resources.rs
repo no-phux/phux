@@ -14,7 +14,7 @@ pub(super) struct AgentDiscovery {
     closed: bool,
 }
 
-impl Session {
+impl Connection {
     pub(super) fn accept_snapshot(&mut self, attach_id: u32, snapshot: SessionSnapshot) -> Outcome {
         if attach_id != ATTACH_ID {
             return self.protocol_failure("ATTACHED used the wrong attach identifier");

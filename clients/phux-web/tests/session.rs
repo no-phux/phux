@@ -14,7 +14,7 @@ use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{FrameKind, PathKind, PathResults, PathRow, PathStatus};
 use phux_protocol::wire::info::{AgentFacet, ResourceInfo, SessionSnapshot};
 use phux_vt_web::Vt;
-use phux_web::Session;
+use phux_web::Connection;
 use wasm_bindgen_test::wasm_bindgen_test;
 
 fn stream(raw: u64) -> StreamId {
@@ -52,7 +52,7 @@ fn path_reply(request_id: u32, path: &str) -> FrameKind {
     }
 }
 
-async fn path_session(supported: bool, second_pane: bool) -> Session {
+async fn path_session(supported: bool, second_pane: bool) -> Connection {
     let panes = if second_pane {
         vec![ResourceId::local(101), ResourceId::local(102)]
     } else {
@@ -61,9 +61,9 @@ async fn path_session(supported: bool, second_pane: bool) -> Session {
     path_session_with_panes(supported, panes).await
 }
 
-async fn path_session_with_panes(supported: bool, panes: Vec<ResourceId>) -> Session {
+async fn path_session_with_panes(supported: bool, panes: Vec<ResourceId>) -> Connection {
     let vt = Vt::load().await.expect("load engine");
-    let mut session = Session::new(&vt, 20, 3);
+    let mut session = Connection::new(&vt, 20, 3);
     session.on_frame(path_hello(supported));
     let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), panes[0].clone())
         .with_resources(
@@ -249,7 +249,7 @@ fn hello_ok(profile: BootstrapProfile, limits: BootstrapLimits) -> FrameKind {
 #[wasm_bindgen_test]
 async fn hello_ok_without_aggregate_ready_is_not_connection_ready() {
     let vt = Vt::load().await.expect("load engine");
-    let mut session = Session::new(&vt, 80, 24);
+    let mut session = Connection::new(&vt, 80, 24);
     let outcome = session.on_frame(hello_ok(
         BootstrapProfile::SynthesizedVtRaw,
         BootstrapLimits::default(),
@@ -310,7 +310,7 @@ fn native_profile() -> BootstrapProfile {
 #[wasm_bindgen_test]
 async fn raw_transcript_waits_for_dual_and_global_ready_without_ack() {
     let vt = Vt::load().await.expect("load engine");
-    let mut session = Session::new(&vt, 20, 3);
+    let mut session = Connection::new(&vt, 20, 3);
     let terminal_id = ResourceId::local(1);
     let stream_id = stream(1);
     let bootstrap_id = bootstrap(1);
@@ -400,7 +400,7 @@ async fn raw_transcript_waits_for_dual_and_global_ready_without_ack() {
 #[wasm_bindgen_test]
 async fn state_sync_output_acks_the_exact_generation() {
     let vt = Vt::load().await.expect("load engine");
-    let mut session = Session::new(&vt, 10, 2);
+    let mut session = Connection::new(&vt, 10, 2);
     let terminal_id = ResourceId::local(2);
     let stream_id = stream(2);
     let bootstrap_id = bootstrap(2);
@@ -458,7 +458,7 @@ async fn state_sync_output_acks_the_exact_generation() {
 #[wasm_bindgen_test]
 async fn history_cursor_chain_is_echoed_and_bounded_after_ready() {
     let vt = Vt::load().await.expect("load engine");
-    let mut session = Session::new(&vt, 10, 2);
+    let mut session = Connection::new(&vt, 10, 2);
     let terminal_id = ResourceId::local(3);
     let stream_id = stream(3);
     let bootstrap_id = bootstrap(3);
@@ -543,7 +543,7 @@ async fn history_cursor_chain_is_echoed_and_bounded_after_ready() {
 #[wasm_bindgen_test]
 async fn replacement_stages_without_touching_published_grid() {
     let vt = Vt::load().await.expect("load engine");
-    let mut session = Session::new(&vt, 10, 2);
+    let mut session = Connection::new(&vt, 10, 2);
     let terminal_id = ResourceId::local(4);
     let stream_id = stream(4);
     let first_bootstrap = bootstrap(4);
@@ -622,7 +622,7 @@ async fn replacement_stages_without_touching_published_grid() {
 #[wasm_bindgen_test]
 async fn attach_barrier_close_repaints_the_prior_visible_terminal_to_blank() {
     let vt = Vt::load().await.expect("load engine");
-    let mut session = Session::new(&vt, 10, 2);
+    let mut session = Connection::new(&vt, 10, 2);
     let terminal_id = ResourceId::local(6);
     let stream_id = stream(6);
     let bootstrap_id = bootstrap(7);
@@ -696,10 +696,10 @@ async fn hello_ok_rejects_version_drift_and_oversized_limits_before_payload() {
         unreachable!();
     };
     *protocol_patch = protocol_patch.saturating_add(1);
-    let mut session = Session::new(&vt, 80, 24);
+    let mut session = Connection::new(&vt, 80, 24);
     assert!(session.on_frame(wrong_version).fatal.is_some());
 
-    let mut synthesized_only = Session::new_synthesized_compat(&vt, 80, 24);
+    let mut synthesized_only = Connection::new_synthesized_compat(&vt, 80, 24);
     let drift = synthesized_only.on_frame(hello_ok(native_profile(), BootstrapLimits::default()));
     assert!(drift.fatal.is_some());
     assert!(
@@ -710,7 +710,7 @@ async fn hello_ok_rejects_version_drift_and_oversized_limits_before_payload() {
 
     let oversized =
         BootstrapLimits::new(512 * 1024, 2 * 1024 * 1024).expect("within protocol hard limits");
-    let mut session = Session::new(&vt, 80, 24);
+    let mut session = Connection::new(&vt, 80, 24);
     assert!(
         session
             .on_frame(hello_ok(BootstrapProfile::SynthesizedVtRaw, oversized))
@@ -729,7 +729,7 @@ async fn hello_advertises_synthesized_until_wasm_speaks_official_snapshot() {
         "wasm must not publish native checkpoint until rebuilt against official GHOSTSNP"
     );
 
-    let session = Session::new(&vt, 80, 24);
+    let session = Connection::new(&vt, 80, 24);
     let frames = session.handshake();
     let (hello, rest) = FrameKind::decode(&frames[0]).expect("decode hello");
     assert!(rest.is_empty());
@@ -756,7 +756,7 @@ async fn hello_advertises_synthesized_until_wasm_speaks_official_snapshot() {
             .contains(BootstrapProfileKind::SynthesizedVtStateSync)
     );
 
-    let compatibility = Session::new_synthesized_compat(&vt, 80, 24);
+    let compatibility = Connection::new_synthesized_compat(&vt, 80, 24);
     assert!(
         !compatibility
             .advertised_capabilities()
@@ -776,7 +776,7 @@ async fn hello_advertises_synthesized_until_wasm_speaks_official_snapshot() {
 #[wasm_bindgen_test]
 async fn session_rejects_native_hello_ok_until_wasm_speaks_official_snapshot() {
     let vt = Vt::load().await.expect("load engine");
-    let mut session = Session::new(&vt, 80, 24);
+    let mut session = Connection::new(&vt, 80, 24);
     let negotiated = session.on_frame(hello_ok(native_profile(), BootstrapLimits::default()));
     assert!(negotiated.fatal.is_some());
     assert!(
@@ -802,7 +802,7 @@ async fn engine_and_negotiated_memory_limits_are_hard_bounds() {
     let terminal_id = ResourceId::local(71);
     let stream_id = stream(71);
     let bootstrap_id = bootstrap(71);
-    let mut session = Session::new(&vt, 20, 3);
+    let mut session = Connection::new(&vt, 20, 3);
     assert!(
         session
             .on_frame(hello_ok(BootstrapProfile::SynthesizedVtRaw, limits))
@@ -833,7 +833,7 @@ async fn engine_and_negotiated_memory_limits_are_hard_bounds() {
 #[wasm_bindgen_test]
 async fn wire_round_trip_rejects_wrong_generation_without_duplicate_apply() {
     let vt = Vt::load().await.expect("load engine");
-    let mut session = Session::new(&vt, 10, 2);
+    let mut session = Connection::new(&vt, 10, 2);
     let terminal_id = ResourceId::local(5);
     let stream_id = stream(5);
     let bootstrap_id = bootstrap(6);
@@ -917,7 +917,7 @@ fn agent_record(seq: u64, kind: &str, data: &str) -> Bytes {
     ))
 }
 
-fn badge_summary(session: &Session) -> Vec<(String, String)> {
+fn badge_summary(session: &Connection) -> Vec<(String, String)> {
     session
         .agent_badges()
         .into_iter()
@@ -928,7 +928,7 @@ fn badge_summary(session: &Session) -> Vec<(String, String)> {
 #[wasm_bindgen_test]
 async fn agent_sessions_become_badges_and_never_panes() {
     let vt = Vt::load().await.expect("load engine");
-    let mut session = Session::new(&vt, 10, 2);
+    let mut session = Connection::new(&vt, 10, 2);
     let terminal_id = ResourceId::local(8);
     let agent_id = ResourceId::local(9);
     let stream_id = stream(8);
@@ -1112,7 +1112,7 @@ fn agent_requests(outcome: &phux_web::Outcome) -> Vec<ResourceId> {
 #[wasm_bindgen_test]
 async fn pre_snapshot_agent_announcements_survive_parent_admission() {
     let vt = Vt::load().await.expect("engine");
-    let mut session = Session::new(&vt, 20, 3);
+    let mut session = Connection::new(&vt, 20, 3);
     session.on_frame(hello_ok(
         BootstrapProfile::SynthesizedVtRaw,
         BootstrapLimits::default(),
@@ -1232,7 +1232,7 @@ async fn closing_split_parent_discards_its_pending_agent_discovery() {
 #[wasm_bindgen_test]
 async fn agent_discovery_admission_is_bounded_and_duplicate_safe() {
     let vt = Vt::load().await.expect("engine");
-    let mut session = Session::new(&vt, 20, 3);
+    let mut session = Connection::new(&vt, 20, 3);
     session.on_frame(hello_ok(
         BootstrapProfile::SynthesizedVtRaw,
         BootstrapLimits::default(),
@@ -1351,7 +1351,7 @@ fn reported_pixels(frame: &[u8]) -> (Option<u16>, Option<u16>) {
 #[wasm_bindgen_test]
 async fn the_viewport_reports_the_cell_grid_in_pixels() {
     let vt = Vt::load().await.expect("load engine");
-    let mut session = Session::new(&vt, 80, 24);
+    let mut session = Connection::new(&vt, 80, 24);
     session.set_cell_size(9, 18);
     let attach = session.on_frame(hello_ok(
         BootstrapProfile::SynthesizedVtRaw,
@@ -1373,7 +1373,7 @@ async fn the_viewport_reports_the_cell_grid_in_pixels() {
 #[wasm_bindgen_test]
 async fn resize_rides_the_attach_before_hello_ok_and_viewport_resize_after() {
     let vt = Vt::load().await.expect("load engine");
-    let mut session = Session::new(&vt, 80, 24);
+    let mut session = Connection::new(&vt, 80, 24);
     assert!(
         session.resize_frame(100, 30).is_none(),
         "no stateful frame before HELLO_OK"
@@ -1415,7 +1415,7 @@ async fn live_bells_ring_bootstrap_bells_do_not_and_mouse_input_is_structured() 
     use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 
     let vt = Vt::load().await.expect("load engine");
-    let mut session = Session::new(&vt, 20, 3);
+    let mut session = Connection::new(&vt, 20, 3);
     let terminal_id = ResourceId::local(1);
     let (stream_id, bootstrap_id) = (stream(1), bootstrap(1));
     session.on_frame(hello_ok(
@@ -1486,14 +1486,14 @@ async fn live_bells_ring_bootstrap_bells_do_not_and_mouse_input_is_structured() 
     ));
 }
 
-fn requested_spawn(session: &mut Session, axis: &str) -> u32 {
+fn requested_spawn(session: &mut Connection, axis: &str) -> u32 {
     match decode_one(&session.split_pane_frame(axis).expect("split request")) {
         FrameKind::SpawnResource { request_id, .. } => request_id,
         other => panic!("expected spawn, got {other:?}"),
     }
 }
 
-fn announce_split(session: &mut Session, request_id: u32, id: ResourceId) -> u32 {
+fn announce_split(session: &mut Connection, request_id: u32, id: ResourceId) -> u32 {
     let outcome = session.on_frame(FrameKind::ResourceSpawned {
         request_id,
         result: phux_protocol::wire::frame::SpawnResult::Ok(id.clone()),
@@ -1511,7 +1511,7 @@ fn announce_split(session: &mut Session, request_id: u32, id: ResourceId) -> u32
 }
 
 fn bootstrap_split(
-    session: &mut Session,
+    session: &mut Connection,
     id: ResourceId,
     serial: u64,
     text: &'static [u8],

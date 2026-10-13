@@ -1,4 +1,8 @@
-//! Protocol-0.7 web session over the shared synchronous client kernel.
+//! Protocol-0.7 web connection over the shared synchronous client kernel.
+//!
+//! A [`Connection`] is one attach: one wire connection showing one server
+//! session's terminals. The session is the server's record; this type is the
+//! browser's view of it.
 //!
 //! Transport framing stays here; replica lifecycle, generation validation,
 //! ordering, READY fences, and input eligibility stay in `phux-client-core`.
@@ -534,8 +538,8 @@ struct PendingSplit {
     acknowledged: bool,
 }
 
-/// A wire session whose terminal replicas are owned by [`SessionKernel`].
-pub struct Session {
+/// One attach connection whose terminal replicas are owned by [`SessionKernel`].
+pub struct Connection {
     vt: Rc<Vt>,
     blank: Terminal,
     offered_caps: ClientCapabilities,
@@ -575,14 +579,14 @@ pub struct Session {
     spawn_initial_size: bool,
 }
 
-impl Session {
-    /// Open a session with a blank fallback grid of `cols`×`rows`.
+impl Connection {
+    /// Open a connection with a blank fallback grid of `cols`×`rows`.
     #[must_use]
     pub fn new(vt: &Rc<Vt>, cols: u16, rows: u16) -> Self {
         Self::with_caps(vt, cols, rows, client_caps(vt))
     }
 
-    /// Open an explicit synthesized-only compatibility session.
+    /// Open an explicit synthesized-only compatibility connection.
     ///
     /// This is a fail-closed diagnostic path for drift/unavailability tests;
     /// normal browser connections use [`Self::new`] and prefer exact native v2.
@@ -736,7 +740,7 @@ impl Session {
     /// Request a real terminal spawn; commit layout only after bootstrap and ack.
     ///
     /// # Errors
-    /// Refuses invalid axes, unavailable sessions, small panes, or a fifth pane.
+    /// Refuses invalid axes, an unready connection, small panes, or a fifth pane.
     pub fn split_pane_frame(&mut self, axis: &str) -> Result<Vec<u8>, String> {
         let axis = Axis::parse(axis)?;
         self.pane_operation_ready()?;
@@ -1028,13 +1032,13 @@ impl Session {
         self.selected_profile
     }
 
-    /// Capabilities frozen into this session's outbound `HELLO`.
+    /// Capabilities frozen into this connection's outbound `HELLO`.
     #[must_use]
     pub const fn advertised_capabilities(&self) -> ClientCapabilities {
         self.offered_caps
     }
 
-    /// Whether this session has entered its terminal protocol-failure state.
+    /// Whether this connection has entered its terminal protocol-failure state.
     #[must_use]
     pub const fn is_failed(&self) -> bool {
         self.failed
@@ -1142,7 +1146,7 @@ impl Session {
         .then(|| target.clone())
     }
 
-    /// Permanently fail this session after a transport or framing violation.
+    /// Permanently fail this connection after a transport or framing violation.
     pub fn fail_protocol(&mut self, _message: &str) {
         self.failed = true;
         self.cancel_path_query();
@@ -1195,7 +1199,7 @@ impl Session {
     /// Reduce one decoded server frame through the shared kernel.
     ///
     /// A fault on an `AgentSession` stream (the kernel retires that generation
-    /// and asks for a resync) never fails the session: the browser cannot
+    /// and asks for a resync) never fails the connection: the browser cannot
     /// reopen an agent stream, and a badge is not worth the terminal.
     pub fn on_frame(&mut self, frame: FrameKind) -> Outcome {
         if self.failed {
@@ -1792,7 +1796,7 @@ impl Session {
         self.published_terminal()
     }
 
-    /// The engine instance every replica of this session runs on.
+    /// The engine instance every replica of this connection runs on.
     #[must_use]
     pub fn vt(&self) -> &Rc<Vt> {
         &self.vt
