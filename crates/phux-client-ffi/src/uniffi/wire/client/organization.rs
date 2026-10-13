@@ -136,6 +136,10 @@ fn remember(receipts: &mut VecDeque<Committed>, committed: &Committed) {
 /// Lower an organization outcome event; `None` for any other event.
 pub(super) fn lower(event: &Event) -> Option<WireEvent> {
     match event {
+        Event::OrganizationChanged => Some(WireEvent::OrganizationChanged),
+        Event::OrganizationUnavailable { message } => Some(WireEvent::OrganizationUnavailable {
+            message: message.clone(),
+        }),
         Event::OrganizationOperation { operation, outcome } => {
             let read = organization::resolution(outcome);
             Some(WireEvent::OrganizationOperation {

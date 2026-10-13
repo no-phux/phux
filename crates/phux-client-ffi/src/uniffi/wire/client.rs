@@ -1075,15 +1075,10 @@ impl RemoteClient {
             Event::TerminalsClosed { request_id, error } => {
                 projected.push(WireEvent::TerminalsClosed { request_id, error });
             }
-            Event::OrganizationChanged => projected.push(WireEvent::OrganizationChanged),
-            Event::OrganizationUnavailable { message } => {
-                projected.push(WireEvent::OrganizationUnavailable { message });
-            }
-            event @ (Event::OrganizationOperation { .. } | Event::KillFinished { .. }) => {
-                if let Some(lowered) = self.organization_event(event) {
-                    projected.push(lowered);
-                }
-            }
+            event @ (Event::OrganizationChanged
+            | Event::OrganizationUnavailable { .. }
+            | Event::OrganizationOperation { .. }
+            | Event::KillFinished { .. }) => projected.extend(self.organization_event(event)),
             Event::AgentPublication {
                 publication,
                 session,
