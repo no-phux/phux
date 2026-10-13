@@ -46,7 +46,13 @@ scratch: empty, ephemeral
 - **Keys, revisions, window counts, and activation ids** never appear here.
 - **Volume is bounded.** Past 20 lines, exception sessions fill the screen
   first and every other session collapses into one `+N quiet sessions`
-  line. A thousand sessions print about twenty lines.
+  line. A thousand sessions print about twenty lines. On a federation hub
+  each satellite's sessions collapse the same way under its own header;
+  its terminals are left to `phux ls -l`.
+- **Cost stays small too.** The glance reads the server's state and the
+  organization records once, and the agent records pipelined, one round
+  trip per 64 terminals rather than one each. It skips the layout reads
+  that only the window counts of `-l` need.
 
 The TUI session picker uses the same rules: the current session, then the
 sessions that need you with their count, then the rest by name. Lifetime
