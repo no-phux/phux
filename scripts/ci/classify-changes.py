@@ -36,7 +36,7 @@ ROUTES = (
       "scripts/ci/test_web_browser.py", "scripts/ci/web_agent_fixture.py"), {"web"}),
     (("clients/phux-vt-web/vendor/*", "scripts/build-vt-wasm.sh",
       "scripts/test-vt-wasm.mjs"), {"web", "web_engine"}),
-    (("integrations/*", ".claude-plugin/*",
+    (("integrations/*", ".claude-plugin/*", ".grok-plugin/*",
       "scripts/check-agent-integration-versions.mjs",
       "scripts/ci/agent-integrations.sh", ".release-please-manifest.json"), {"integrations"}),
     (("crates/*",), RUST),

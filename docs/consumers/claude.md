@@ -28,6 +28,12 @@ claude plugin install phux@phux
 The plugin requires Claude Code 2.1.232 or a compatible newer release, and phux
 0.16.0 or newer on `PATH`. Start a local phux server before using MCP tools.
 
+Claude Code does not auto-update third-party marketplaces by default. Update
+with `claude plugin marketplace update phux && claude plugin update phux@phux`,
+or turn on auto-update in `/plugin` (Marketplaces), or set `"autoUpdate": true`
+on the `phux` entry of `extraKnownMarketplaces` in `~/.claude/settings.json`.
+A new release is detected by the plugin's `version`, which each release bumps.
+
 ## First shared-terminal walkthrough
 
 1. Complete the plugin installation above. Start `phux` in a real terminal,

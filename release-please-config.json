@@ -35,7 +35,10 @@
         "integrations/opencode-v2",
         "integrations/pi",
         "integrations/claude",
-        ".claude-plugin"
+        ".claude-plugin",
+        "integrations/omp",
+        "integrations/grok",
+        ".grok-plugin"
       ],
       "extra-files": [
         {
@@ -89,6 +92,44 @@
       "include-v-in-tag": true,
       "tag-separator": "-",
       "changelog-path": "CHANGELOG.md"
+    },
+    "integrations/opencode-v2": {
+      "release-type": "node",
+      "component": "opencode-plugin",
+      "include-component-in-tag": true,
+      "include-v-in-tag": true,
+      "tag-separator": "-",
+      "changelog-path": "CHANGELOG.md"
+    },
+    "integrations/omp": {
+      "release-type": "node",
+      "component": "omp-extension",
+      "include-component-in-tag": true,
+      "include-v-in-tag": true,
+      "tag-separator": "-",
+      "changelog-path": "CHANGELOG.md",
+      "initial-version": "0.1.0"
+    },
+    "integrations/grok": {
+      "release-type": "node",
+      "component": "grok-plugin",
+      "include-component-in-tag": true,
+      "include-v-in-tag": true,
+      "tag-separator": "-",
+      "changelog-path": "CHANGELOG.md",
+      "initial-version": "0.1.0",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": ".grok-plugin/plugin.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "/.grok-plugin/marketplace.json",
+          "jsonpath": "$.plugins[?(@.name=='phux')].version"
+        }
+      ]
     },
     "integrations/claude": {
       "release-type": "node",

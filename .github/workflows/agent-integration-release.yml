@@ -101,15 +101,21 @@ jobs:
           set -euo pipefail
           tag="$DISPATCH_TAG"
           dry_run="$DISPATCH_DRY_RUN"
-          if [[ ! "$tag" =~ ^(pi-extension|claude-plugin)-v([0-9]+[.][0-9]+[.][0-9]+)$ ]]; then
-            echo "::error::tag must be pi-extension-vX.Y.Z or claude-plugin-vX.Y.Z"
+          if [[ ! "$tag" =~ ^(pi-extension|claude-plugin|opencode-plugin|omp-extension|grok-plugin)-v([0-9]+[.][0-9]+[.][0-9]+)$ ]]; then
+            echo "::error::tag must be <pi-extension|claude-plugin|opencode-plugin|omp-extension|grok-plugin>-vX.Y.Z"
             exit 1
           fi
           component="${BASH_REMATCH[1]}"
           version="${BASH_REMATCH[2]}"
+          # npm packages publish to the registry; marketplace plugins (Claude,
+          # Grok) are installed from this repository, so their release carries
+          # a source archive only.
           case "$component" in
             pi-extension) directory=integrations/pi; publish_npm=true ;;
             claude-plugin) directory=integrations/claude; publish_npm=false ;;
+            opencode-plugin) directory=integrations/opencode-v2; publish_npm=true ;;
+            omp-extension) directory=integrations/omp; publish_npm=true ;;
+            grok-plugin) directory=integrations/grok; publish_npm=false ;;
           esac
 
           git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"
@@ -149,10 +155,22 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: ${{ needs.prepare.outputs.directory }}/package-lock.json
+          cache-dependency-path: integrations/*/package-lock.json
 
+      # OpenCode and OMP build with Bun; same pin as ci.yml's integrations job.
+      - name: Read Bun pin
+        id: bun
+        run: |
+          version="$(sed -n 's/^bun = "\([^"]*\)"/\1/p' mise.toml)"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ steps.bun.outputs.version }}
+
+      # Pi bundles the built runtime; OpenCode and OMP compile its sources.
       - name: Build and verify shared integration runtime
-        if: needs.prepare.outputs.component != 'claude-plugin'
+        if: needs.prepare.outputs.component == 'pi-extension'
         env:
           npm_config_audit: "false"
           npm_config_fund: "false"
@@ -171,10 +189,17 @@ jobs:
           # .npmrc: the live audit endpoint 503s must not fail a release).
           npm_config_audit: "false"
           npm_config_fund: "false"
+          COMPONENT: ${{ needs.prepare.outputs.component }}
         run: |
           npm install --global npm@11.5.1
-          npm ci
-          npm run gates
+          case "$COMPONENT" in
+            opencode-plugin|omp-extension) bun install --frozen-lockfile; bun run gates ;;
+            grok-plugin) npm test ;;
+            *) npm ci; npm run gates ;;
+          esac
+          # The release ships committed bundles (OpenCode's index.js/tui.js):
+          # they must be what this tree builds.
+          git diff --exit-code -- .
 
       - name: Build immutable release artifact
         id: artifact
@@ -202,8 +227,8 @@ jobs:
             fi
             tarball="$(basename "${packed[0]}")"
           else
-            tarball="phux-claude-plugin-${VERSION}.tar.gz"
-            git archive --format=tar.gz --prefix="phux-claude-plugin-${VERSION}/" -o "release/$tarball" "${TAG}:${DIRECTORY}"
+            tarball="phux-${COMPONENT}-${VERSION}.tar.gz"
+            git archive --format=tar.gz --prefix="phux-${COMPONENT}-${VERSION}/" -o "release/$tarball" "${TAG}:${DIRECTORY}"
           fi
           (cd release && sha256sum "$tarball" > "${tarball}.sha256")
           echo "tarball=$tarball" >> "$GITHUB_OUTPUT"

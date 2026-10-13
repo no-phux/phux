@@ -19,7 +19,7 @@ default_session = "agent-bench-opencode"
 
 [session_identity]
 # OpenCode 2.0 root command: `--session/-s <id>` is "Session ID to continue,
-# or to create if it does not exist". The `@phux/opencode-v2` plugin opens its
+# or to create if it does not exist". The `@phux/opencode` plugin opens its
 # AgentSession with the OpenCode session id (ADR-0151). OpenCode mints its own
 # `ses_` ids, so no caller-supplied fresh id is declared.
 mode = "native-or-phux"

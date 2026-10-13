@@ -1,7 +1,6 @@
 {
-  "name": "@phux/opencode-v2",
-  "version": "0.1.0",
-  "private": true,
+  "name": "@phux/opencode",
+  "version": "0.3.0",
   "description": "OpenCode V2 plugin: phux owns the terminals, OpenCode owns the session",
   "type": "module",
   "license": "Apache-2.0",
@@ -10,6 +9,12 @@
     "url": "https://github.com/no-phux/phux.git",
     "directory": "integrations/opencode-v2"
   },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "phux",
+    "terminal"
+  ],
   "files": [
     "index.d.ts",
     "index.js",
@@ -40,5 +45,9 @@
   },
   "peerDependencies": {
     "solid-js": ">=1.9.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   }
 }
