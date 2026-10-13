@@ -27,6 +27,7 @@ establish release availability.
 - [Claude Code](./claude.md): plugin tools and hooks, plus optional launch shim.
 - [Grok](./grok.md): the same MCP tools and lifecycle hooks for Grok Build.
 - [OMP](./omp.md): native terminal tools and bounded observations; locally installable.
+- [pi + phux in 60 seconds](./pi-in-60-seconds.md): split a session, point pi at the shell, detach, and come back.
 - [Pi](./pi.md): target selection, saved targets, and fleet awareness.
 - [OpenCode V2](./opencode-v2.md): source-loaded plugin; not a published package.
 - [MCP adapter](./mcp.md): registration for other tool hosts.
