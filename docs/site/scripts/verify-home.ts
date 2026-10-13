@@ -1,0 +1,79 @@
+#!/usr/bin/env bun
+/** Homepage acceptance against built assets; never uses a production server. */
+import assert from "node:assert/strict";
+import { mkdir } from "node:fs/promises";
+import { extname, resolve } from "node:path";
+import { chromium } from "playwright-core";
+
+const root = resolve(import.meta.dir, "../dist");
+const artifacts = resolve(import.meta.dir, "../.home-check");
+const types: Record<string, string> = {
+  ".html": "text/html", ".js": "text/javascript", ".css": "text/css",
+  ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png",
+};
+const server = Bun.serve({
+  hostname: "127.0.0.1", port: 0,
+  async fetch(request) {
+    const pathname = new URL(request.url).pathname;
+    let path = resolve(root, `.${pathname}`);
+    if (!path.startsWith(`${root}/`) && path !== root) return new Response(null, { status: 403 });
+    if (pathname === "/") path = resolve(root, "index.html");
+    if (!extname(path)) path += ".html";
+    const file = Bun.file(path);
+    if (!(await file.exists())) return new Response(null, { status: 404 });
+    return new Response(file, { headers: { "content-type": types[extname(path)] ?? file.type } });
+  },
+});
+const base = `http://127.0.0.1:${server.port}`;
+const browser = await chromium.launch({ channel: "chrome", headless: true });
+try {
+  await mkdir(artifacts, { recursive: true });
+  const context = await browser.newContext({ permissions: ["clipboard-read", "clipboard-write"] });
+  const page = await context.newPage();
+  const errors: string[] = [];
+  const requests: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("request", (request) => requests.push(request.url()));
+  await page.goto(base);
+  assert.equal(await page.getByRole("heading", { level: 1 }).innerText(), "phux");
+  assert.equal(await page.locator("main form, #how-it-works").count(), 0, "no homepage signup or explainer");
+  assert.equal(await page.locator(".hero-term").count(), 1, "one product demo");
+  assert.equal(await page.locator("main .features h2").count(), 3);
+  await page.getByRole("button", { name: "Copy install command" }).click();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "curl -fsSL https://phux.sh/install | sh");
+  assert.equal(await page.getByRole("status").innerText(), "Install command copied.");
+  for (const width of [320, 390, 768, 1280]) {
+    await page.setViewportSize({ width, height: 1000 });
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `no overflow at ${width}px`);
+    assert.ok(await page.locator("#install code").evaluate((code) => code.scrollWidth <= code.clientWidth), `full install command readable at ${width}px`);
+    await page.screenshot({ path: `${artifacts}/home-${width}.png`, fullPage: true });
+  }
+  assert.ok(!requests.some((url) => /\.wasm|\/auth\/session|\/healthz|phux-architecture\.mp4/.test(url)), "idle homepage does not allocate sessions or fetch film/WASM");
+  await page.getByRole("link", { name: /Try it in your browser/ }).click();
+  await page.locator("dialog[open]").waitFor();
+  await page.getByRole("button", { name: "Close live terminal" }).click();
+  assert.equal(await page.locator("dialog[open]").count(), 0);
+  assert.ok(await page.getByRole("link", { name: /Try it in your browser/ }).evaluate((link) => link === document.activeElement), "closing restores focus");
+  await page.goto(`${base}/more`);
+  assert.ok(await page.locator("#testflight form").isVisible(), "iPhone signup is preserved");
+  assert.ok(await page.locator("#beta form").isVisible(), "release signup is preserved");
+  assert.equal(await page.locator("[data-copy]").count(), 3, "alternate installers preserved");
+  await page.goto(`${base}/privacy`);
+  assert.equal(await page.getByRole("link", { name: "join the beta" }).getAttribute("href"), "/more#beta");
+  assert.equal(await page.getByRole("link", { name: "request access to phux for iPhone" }).getAttribute("href"), "/more#testflight");
+  await page.goto(`${base}/telemetry`);
+  assert.equal(await page.getByRole("link", { name: "release mailing list" }).getAttribute("href"), "/more#beta");
+  assert.deepEqual(errors, [], "no browser exceptions");
+  await context.close();
+  const staticContext = await browser.newContext({ javaScriptEnabled: false });
+  const staticPage = await staticContext.newPage();
+  await staticPage.goto(base);
+  assert.equal(await staticPage.getByRole("heading", { level: 1 }).innerText(), "phux");
+  assert.ok(await staticPage.locator("#install code").isVisible());
+  assert.equal(await staticPage.getByRole("link", { name: /Try it in your browser/ }).getAttribute("href"), "/embed");
+  await staticContext.close();
+  console.log(`PASS home: copy, demo open/close/focus, 320/390/768/1280px, no-JS, secondary content, idle resource budget. Screenshots: ${artifacts}`);
+} finally {
+  await browser.close();
+  server.stop(true);
+}

@@ -67,7 +67,7 @@ try {
   page.on("pageerror", (error) => errors.push(error.message));
   const requests: string[] = [];
   page.on("request", (request) => requests.push(request.url()));
-  await page.goto(base);
+  await page.goto(`${base}/more`);
   const stage = page.locator("#how-it-works");
   await stage.scrollIntoViewIfNeeded();
   await page.waitForFunction(
@@ -249,7 +249,7 @@ try {
     viewport: { width: 320, height: 1000 },
   });
   const staticPage = await context.newPage();
-  await staticPage.goto(base);
+  await staticPage.goto(`${base}/more`);
   assert.ok(
     await staticPage.locator("#how-it-works h3").isVisible(),
     "server rendered story survives without JS",

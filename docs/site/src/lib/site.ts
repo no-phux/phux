@@ -9,7 +9,7 @@ export const SITE = {
   docsDomain: "docs.phux.sh",
   docsUrl: "https://docs.phux.sh",
   category: "Programmable terminal runtime",
-  tagline: "Terminals you can build on.",
+  tagline: "Persistent terminals for people and agents.",
   description:
     `${name} keeps shells running and puts their input, output, and events behind a public API. Connect from a terminal, desktop, browser, or agent—locally or across machines.`,
   github: "https://github.com/no-phux/phux",
