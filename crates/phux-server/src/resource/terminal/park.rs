@@ -566,13 +566,40 @@ fn deliver_terminal(tx: &mpsc::Sender<PtyEvent>, event: PtyEvent) -> ReadStep {
     }
 }
 
+/// Drain `file` until EOF or the orphan budget. The master is nonblocking,
+/// so an empty read waits in `poll(2)` the way a blocking `read(2)` would
+/// instead of sleeping between reads: a child flushing a large write
+/// through a small PTY buffer keeps its full throughput.
+fn drain_file_to_eof(file: &mut File, buf: &mut [u8]) {
+    drain_master_to_eof(&mut ReadyRead(file), buf);
+}
+
+/// A read on the nonblocking master that waits for data, as a blocking read
+/// would. A hangup with nothing left to read is EOF.
+struct ReadyRead<'a>(&'a mut File);
+
+impl Read for ReadyRead<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        loop {
+            match self.0.read(buf) {
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                    if matches!(poll_readable(self.0, CANCEL_SLICE), PollRead::Hungup) {
+                        return Ok(0);
+                    }
+                }
+                other => return other,
+            }
+        }
+    }
+}
+
 fn detach_drain(mut file: File) {
     let spawned = std::thread::Builder::new()
         .name("phux-pty-drain".to_owned())
         .stack_size(READER_STACK)
         .spawn(move || {
             let mut buf = vec![0_u8; PTY_READ_CHUNK];
-            drain_master_to_eof(&mut file, &mut buf);
+            drain_file_to_eof(&mut file, &mut buf);
         });
     if let Err(err) = spawned {
         tracing::warn!(?err, "pty orphan drain thread failed to start");
@@ -682,7 +709,7 @@ fn handle_hot_read(
             *last = Instant::now();
             let chunk = bufs.batch.split().freeze();
             if send_pty_chunk(tx, chunk, *last).is_break() {
-                drain_master_to_eof(file, &mut bufs.scratch);
+                drain_file_to_eof(file, &mut bufs.scratch);
                 park.remove(id);
                 return AfterRead::Exit;
             }
@@ -708,7 +735,7 @@ fn flush_pending(tx: &mpsc::Sender<PtyEvent>, file: &mut File, pending: Vec<PtyE
             PtyEvent::Bytes { chunk, read_at } => {
                 if send_pty_chunk(tx, chunk, read_at).is_break() {
                     let mut buf = vec![0_u8; PTY_READ_CHUNK];
-                    drain_master_to_eof(file, &mut buf);
+                    drain_file_to_eof(file, &mut buf);
                     return false;
                 }
             }
@@ -825,7 +852,7 @@ fn dedicated_loop(file: &mut File, tx: &mpsc::Sender<PtyEvent>) {
             Gathered::Bytes { eof } => {
                 let chunk = bufs.batch.split().freeze();
                 if send_pty_chunk(tx, chunk, Instant::now()).is_break() {
-                    drain_master_to_eof(file, &mut bufs.scratch);
+                    drain_file_to_eof(file, &mut bufs.scratch);
                     break;
                 }
                 if eof {
