@@ -1399,7 +1399,7 @@ fn spawn_options_are_encoded_exactly_and_validation_is_transactional() {
     for bad in [
         PhuxSpawnOptions {
             request_id: 8,
-            version: 3,
+            version: ABI_VERSION + 1,
             ..options
         },
         PhuxSpawnOptions {

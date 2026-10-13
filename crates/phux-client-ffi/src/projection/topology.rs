@@ -11,10 +11,10 @@
 //! have no live handle (a completed, retained resource; a lost activation).
 
 use phux_client_core::layout::{self, ArrangementDoc};
-use phux_client_runtime::control::{OrganizationReplica, Topology};
+use phux_client_runtime::control::{AgentSessionDescriptor, OrganizationReplica, Topology};
 use phux_protocol::ResourceId;
 use phux_protocol::ResourceKind;
-use phux_protocol::ids::SessionKey;
+use phux_protocol::ids::{Revision, SessionKey};
 use phux_protocol::wire::frame::{
     ActivationInfo, ExecState, ExitPolicy, Outcome, ResourceRecord, SessionLifetime,
 };
@@ -206,6 +206,18 @@ pub struct AgentSession {
     pub state: Option<String>,
 }
 
+impl From<AgentSessionDescriptor> for AgentSession {
+    fn from(agent: AgentSessionDescriptor) -> Self {
+        Self {
+            id: id::encode(&agent.id),
+            parent: agent.parent.as_ref().map(id::encode),
+            provider: agent.provider,
+            native_id: agent.native_id,
+            state: agent.state,
+        }
+    }
+}
+
 /// One resource record from the organization replica, live or not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {
@@ -228,7 +240,9 @@ pub struct Record {
 }
 
 impl Record {
-    fn from_wire(record: &ResourceRecord) -> Self {
+    /// Project one replica record.
+    #[must_use]
+    pub fn from_wire(record: &ResourceRecord) -> Self {
         Self {
             key: record.key.to_string(),
             session_key: record.session.to_string(),
@@ -316,7 +330,7 @@ pub fn session_graph(
             created_at_unix_secs: session.created_at_unix_secs,
             key: session.key.map(|key| key.to_string()),
             lifetime: session.lifetime.map(lifetime_word),
-            revision: session.revision.map(|revision| revision.get()),
+            revision: session.revision.map(Revision::get),
             member_count: session.members,
             arrangement: session.arrangement.map(|key| key.to_string()),
             awaiting_organization: session.awaiting_organization,
@@ -361,7 +375,7 @@ pub fn session_graph(
                 cwd: pane.cwd,
                 is_focused: pane.is_focused,
                 key: pane.key.map(|key| key.to_string()),
-                revision: pane.revision.map(|revision| revision.get()),
+                revision: pane.revision.map(Revision::get),
                 name: pane.name,
                 activation,
                 group_id: placed.as_ref().map(|p| group_id_text(&p.id)),
@@ -373,13 +387,7 @@ pub fn session_graph(
     let agent_sessions = topology
         .agent_sessions
         .into_iter()
-        .map(|agent| AgentSession {
-            id: id::encode(&agent.id),
-            parent: agent.parent.as_ref().map(id::encode),
-            provider: agent.provider,
-            native_id: agent.native_id,
-            state: agent.state,
-        })
+        .map(AgentSession::from)
         .collect();
     SessionGraph {
         sessions,

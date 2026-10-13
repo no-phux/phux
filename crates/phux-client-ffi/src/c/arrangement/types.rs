@@ -5,27 +5,33 @@ use std::mem;
 /// Current snapshot and latest transaction result; spans expire on mutation.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct PhuxWorkspaceInfo {
+pub struct PhuxArrangementInfo {
     pub size: usize,
     pub version: u32,
     pub revision: u64,
     pub session_id: u32,
     pub state: u32,
-    pub window_count: u32,
+    pub group_count: u32,
     pub node_count: u32,
     pub terminal_count: u32,
     pub request_id: u32,
     pub status: u32,
     pub message: PhuxBytes,
+    pub backend: u32,
+    pub server_revision: u64,
+    pub session_key: [u8; 16],
+    pub arrangement_key: [u8; 16],
+    pub unarranged_count: u32,
+    pub unplaced_count: u32,
 }
 
-/// A durable layout window, unrelated to a native host window.
+/// One arrangement group (a tab), unrelated to a native host window.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct PhuxWorkspaceWindow {
+pub struct PhuxArrangementGroup {
     pub size: usize,
     pub version: u32,
-    pub window_id: [u8; 16],
+    pub group_id: [u8; 16],
     pub name: PhuxBytes,
     pub root_node: u32,
 }
@@ -33,7 +39,7 @@ pub struct PhuxWorkspaceWindow {
 /// Flattened node: leaf 1, side-by-side 2, stacked 3.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct PhuxWorkspaceNode {
+pub struct PhuxArrangementNode {
     pub size: usize,
     pub version: u32,
     pub kind: u32,
@@ -58,14 +64,14 @@ pub struct PhuxCatalogTerminal {
 /// Typed edit against the exact locally observed revision. See the C header for tags.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct PhuxWorkspaceMutation {
+pub struct PhuxArrangementMutation {
     pub size: usize,
     pub version: u32,
     pub request_id: u32,
     pub expected_revision: u64,
     pub session_id: u32,
     pub kind: u32,
-    pub window_id: [u8; 16],
+    pub group_id: [u8; 16],
     pub terminal_id: PhuxResourceId,
     pub new_terminal_id: PhuxResourceId,
     pub name: PhuxBytes,
@@ -91,9 +97,9 @@ macro_rules! defaults {
     )*};
 }
 defaults!(
-    PhuxWorkspaceInfo,
-    PhuxWorkspaceWindow,
-    PhuxWorkspaceNode,
+    PhuxArrangementInfo,
+    PhuxArrangementGroup,
+    PhuxArrangementNode,
     PhuxCatalogTerminal,
-    PhuxWorkspaceMutation
+    PhuxArrangementMutation
 );

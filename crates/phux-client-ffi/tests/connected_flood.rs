@@ -33,11 +33,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use phux_client_ffi::{
-    ABI_VERSION, PhuxAttachOptions, PhuxBytes, PhuxCatalogTerminal, PhuxClient, PhuxClientOptions,
-    PhuxClientResult, PhuxClientState, PhuxConnectOptions, PhuxResourceId, PhuxTerminalGridView,
-    PhuxWorkspaceInfo, phux_client_catalog_terminal_get, phux_client_connect, phux_client_free,
-    phux_client_perf_json, phux_client_poll, phux_client_queue_attach, phux_client_send_paste,
-    phux_client_state, phux_client_terminal_grid, phux_client_workspace_info,
+    ABI_VERSION, PhuxArrangementInfo, PhuxAttachOptions, PhuxBytes, PhuxCatalogTerminal,
+    PhuxClient, PhuxClientOptions, PhuxClientResult, PhuxClientState, PhuxConnectOptions,
+    PhuxResourceId, PhuxTerminalGridView, phux_client_arrangement_info,
+    phux_client_catalog_terminal_get, phux_client_connect, phux_client_free, phux_client_perf_json,
+    phux_client_poll, phux_client_queue_attach, phux_client_send_paste, phux_client_state,
+    phux_client_terminal_grid,
 };
 use phux_server_testkit::{run_local, spawn_server_with_seed_cmd};
 use tempfile::TempDir;
@@ -263,10 +264,10 @@ fn output_flood_publications_per_frame() {
             PhuxClientResult::Ok
         );
         poller
-            .until("the workspace catalog", fast, |client| {
-                let mut info = PhuxWorkspaceInfo::default();
+            .until("the arrangement catalog", fast, |client| {
+                let mut info = PhuxArrangementInfo::default();
                 // SAFETY: a live client and a writable output.
-                unsafe { phux_client_workspace_info(client, &raw mut info) };
+                unsafe { phux_client_arrangement_info(client, &raw mut info) };
                 info.terminal_count > 0
             })
             .await;

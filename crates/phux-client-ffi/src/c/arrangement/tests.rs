@@ -36,7 +36,7 @@ fn registry(selected: u32, extra: bool) -> SessionSnapshot {
 }
 
 #[test]
-fn workspace_catalog_discovers_terminals_without_admitting_agent_session_resources() {
+fn arrangement_catalog_discovers_terminals_without_admitting_agent_session_resources() {
     let mut snapshot = registry(1, false);
     for id in 100..400 {
         snapshot.resources.push(
@@ -46,21 +46,38 @@ fn workspace_catalog_discovers_terminals_without_admitting_agent_session_resourc
     }
     let mut client = harness();
     refresh(&mut client, 1, snapshot, None);
-    assert_eq!(client.inner.workspace.status, 2);
-    assert_eq!(client.inner.workspace.catalog.terminals.len(), 3);
+    assert_eq!(client.inner.arrangement.status, 2);
+    assert_eq!(client.inner.arrangement.catalog.terminals.len(), 3);
     assert!(
         !client
             .inner
-            .workspace
+            .arrangement
             .catalog
             .allows(&ResourceId::local(100), 1)
     );
 }
 
+/// One single-leaf group per terminal, in id order: what a session whose
+/// panes were each opened as a tab stores.
+fn tabs(ids: &[u32]) -> ArrangementDoc {
+    ArrangementDoc {
+        groups: ids
+            .iter()
+            .map(|id| Group::new(id.to_string(), LayoutState::single(ResourceId::local(*id))))
+            .collect(),
+        active: 0,
+    }
+}
+
+fn tabs_bytes(ids: &[u32]) -> Vec<u8> {
+    tabs(ids).encode_cbor().unwrap()
+}
+
+/// An attached client whose session 1 stores one tab per terminal.
 fn harness() -> Box<PhuxClient> {
     let mut client = attached_harness();
     release_attach(&mut client);
-    finish(&mut client, registry(1, false), None);
+    finish(&mut client, registry(1, false), Some(tabs_bytes(&[1, 2])));
     client.inner.outgoing.clear();
     client
 }
@@ -78,7 +95,7 @@ fn attached_harness() -> Box<PhuxClient> {
 }
 
 /// Bootstraps the focused session's panes and releases the barrier, which
-/// issues the initial workspace read.
+/// issues the initial arrangement read.
 fn release_attach(client: &mut PhuxClient) {
     let generation = client.inner.control().connection_epoch();
     for id in [1, 2] {
@@ -115,7 +132,7 @@ fn refresh(
 ) {
     // SAFETY: live exclusive client.
     assert_eq!(
-        unsafe { phux_client_workspace_refresh(client, request) },
+        unsafe { phux_client_arrangement_refresh(client, request) },
         PhuxClientResult::Ok
     );
     finish(client, registry, metadata);
@@ -124,7 +141,7 @@ fn refresh(
 fn finish(client: &mut PhuxClient, registry: SessionSnapshot, metadata: Option<Vec<u8>>) {
     let state_id = client
         .inner
-        .workspace
+        .arrangement
         .pending
         .as_ref()
         .unwrap()
@@ -137,7 +154,13 @@ fn finish(client: &mut PhuxClient, registry: SessionSnapshot, metadata: Option<V
             result: CommandResult::OkWith(CommandValue::State(registry)),
         },
     );
-    let id = client.inner.workspace.pending.as_ref().unwrap().metadata_id;
+    let id = client
+        .inner
+        .arrangement
+        .pending
+        .as_ref()
+        .unwrap()
+        .metadata_id;
     feed(
         client,
         FrameKind::MetadataValue {
@@ -147,7 +170,7 @@ fn finish(client: &mut PhuxClient, registry: SessionSnapshot, metadata: Option<V
     );
 }
 
-fn split_workspace() -> ArrangementDoc {
+fn split_arrangement() -> ArrangementDoc {
     let a = ResourceId::local(1);
     let tree = layout::split_at(
         &LayoutNode::Leaf(a.clone()),
@@ -171,15 +194,15 @@ fn split_workspace() -> ArrangementDoc {
 
 #[test]
 fn initial_attachment_waits_for_confirmed_metadata_before_publishing_topology() {
-    for metadata in [None, Some(split_workspace().encode_cbor().unwrap())] {
+    for metadata in [None, Some(split_arrangement().encode_cbor().unwrap())] {
         let mut client = attached_harness();
-        assert_eq!(client.inner.workspace.selected, 1);
-        assert_eq!(client.inner.workspace.catalog.terminals.len(), 3);
+        assert_eq!(client.inner.arrangement.selected, 1);
+        assert_eq!(client.inner.arrangement.catalog.terminals.len(), 3);
         assert_eq!(client.inner.sessions.len(), 2);
-        assert_eq!(client.inner.workspace.state, 0);
-        assert!(client.inner.workspace.topology.groups.is_empty());
+        assert_eq!(client.inner.arrangement.state, 0);
+        assert!(client.inner.arrangement.topology.groups.is_empty());
         release_attach(&mut client);
-        let pending = client.inner.workspace.pending.as_ref().unwrap();
+        let pending = client.inner.arrangement.pending.as_ref().unwrap();
         let state_id = pending.state_id.unwrap();
         let metadata_id = pending.metadata_id;
         feed(
@@ -189,10 +212,10 @@ fn initial_attachment_waits_for_confirmed_metadata_before_publishing_topology() 
                 value: metadata.clone(),
             },
         );
-        assert_eq!(client.inner.workspace.state, 0);
-        assert_eq!(client.inner.workspace.status, 1);
-        assert!(client.inner.workspace.nodes.is_empty());
-        assert!(client.inner.workspace.topology.groups.is_empty());
+        assert_eq!(client.inner.arrangement.state, 0);
+        assert_eq!(client.inner.arrangement.status, 1);
+        assert!(client.inner.arrangement.nodes.is_empty());
+        assert!(client.inner.arrangement.topology.groups.is_empty());
         feed(
             &mut client,
             FrameKind::CommandResult {
@@ -201,25 +224,32 @@ fn initial_attachment_waits_for_confirmed_metadata_before_publishing_topology() 
             },
         );
         assert_eq!(
-            client.inner.workspace.state,
+            client.inner.arrangement.state,
             if metadata.is_some() { 2 } else { 1 }
         );
         assert_eq!(
-            client.inner.workspace.topology.groups.len(),
-            if metadata.is_some() { 1 } else { 2 }
+            client.inner.arrangement.topology.groups.len(),
+            usize::from(metadata.is_some()),
+            "an absent arrangement is unarranged, never synthesized"
         );
     }
 }
 
 #[test]
-fn reconnect_retires_interrupted_workspace_read_before_coalesced_frames() {
+fn reconnect_retires_interrupted_arrangement_read_before_coalesced_frames() {
     let mut client = attached_harness();
     release_attach(&mut client);
-    let interrupted = client.inner.workspace.pending.as_ref().unwrap().metadata_id;
+    let interrupted = client
+        .inner
+        .arrangement
+        .pending
+        .as_ref()
+        .unwrap()
+        .metadata_id;
     // Numeric IDs and closure tombstones are scoped to the old connection.
     client
         .inner
-        .workspace
+        .arrangement
         .subscriptions
         .mark_closed(&ResourceId::local(1));
     let hello = test_support::hello_ok(
@@ -235,14 +265,14 @@ fn reconnect_retires_interrupted_workspace_read_before_coalesced_frames() {
         control.queue_inbound(encoded.to_vec()).unwrap();
     }
     // This is the connected owning-thread pump: loss and replacement greeting
-    // arrive in one turn, with the old workspace read still outstanding.
+    // arrive in one turn, with the old arrangement read still outstanding.
     assert!(!poll_connected(&mut client.inner).unwrap());
     assert_eq!(client.inner.state(), PhuxClientState::Negotiated);
-    assert_eq!(client.inner.workspace.status, 4);
+    assert_eq!(client.inner.arrangement.status, 4);
     assert!(
         !client
             .inner
-            .workspace
+            .arrangement
             .subscriptions
             .was_closed(&ResourceId::local(1))
     );
@@ -262,18 +292,24 @@ fn reconnect_retires_interrupted_workspace_read_before_coalesced_frames() {
     );
     release_attach(&mut client);
     assert_ne!(
-        client.inner.workspace.pending.as_ref().unwrap().metadata_id,
+        client
+            .inner
+            .arrangement
+            .pending
+            .as_ref()
+            .unwrap()
+            .metadata_id,
         interrupted
     );
     finish(
         &mut client,
         registry(1, true),
-        Some(split_workspace().encode_cbor().unwrap()),
+        Some(split_arrangement().encode_cbor().unwrap()),
     );
-    let mut info = PhuxWorkspaceInfo::default();
+    let mut info = PhuxArrangementInfo::default();
     // SAFETY: owned client and disjoint initialized output.
     assert_eq!(
-        unsafe { phux_client_workspace_info(&raw const *client, &raw mut info) },
+        unsafe { phux_client_arrangement_info(&raw const *client, &raw mut info) },
         PhuxClientResult::Ok
     );
     assert_eq!((info.state, info.status, info.terminal_count), (2, 2, 4));
@@ -288,7 +324,7 @@ fn reconnect_retires_interrupted_workspace_read_before_coalesced_frames() {
 }
 
 #[test]
-fn queued_attach_refusal_is_terminal_and_cannot_authorize_workspace() {
+fn queued_attach_refusal_is_terminal_and_cannot_authorize_arrangement() {
     let raw = test_support::attaching(&[], 1);
     // SAFETY: the fixture transfers unique ownership of its heap client.
     let mut client = unsafe { Box::from_raw(raw) };
@@ -308,7 +344,7 @@ fn queued_attach_refusal_is_terminal_and_cannot_authorize_workspace() {
     assert_eq!(client.inner.state(), PhuxClientState::Failed);
     // SAFETY: live exclusively owned client.
     assert_eq!(
-        unsafe { phux_client_workspace_refresh(&raw mut *client, 1) },
+        unsafe { phux_client_arrangement_refresh(&raw mut *client, 1) },
         PhuxClientResult::InvalidState
     );
 }
@@ -336,7 +372,7 @@ fn drained_old_connection_batch_cannot_mutate_loss_or_replacement() {
     client.inner.control().connection_lost(None);
     client.inner.process_runtime_events().unwrap();
     assert!(!apply_server_frame(&mut client.inner, decoded.clone(), Some(old_epoch)).unwrap());
-    assert!(!client.inner.workspace.subscriptions.was_closed(&terminal));
+    assert!(!client.inner.arrangement.subscriptions.was_closed(&terminal));
 
     client.inner.control().connection_opened();
     feed(
@@ -383,27 +419,27 @@ fn drained_old_connection_batch_cannot_mutate_loss_or_replacement() {
 #[test]
 fn persisted_old_schema_is_refused_without_fallback_or_overwrite() {
     let mut client = harness();
-    let before = client.inner.workspace.topology.clone();
-    let revision = client.inner.workspace.revision;
+    let before = client.inner.arrangement.topology.clone();
+    let revision = client.inner.arrangement.revision;
     refresh(
         &mut client,
         1,
         registry(1, false),
         Some(b"\xa1\x67version\x02".to_vec()),
     );
-    assert_eq!(client.inner.workspace.state, 3);
-    assert_eq!(client.inner.workspace.status, 3);
-    assert_eq!(client.inner.workspace.revision, revision);
-    assert_eq!(client.inner.workspace.topology, before);
+    assert_eq!(client.inner.arrangement.state, 3);
+    assert_eq!(client.inner.arrangement.status, 3);
+    assert_eq!(client.inner.arrangement.revision, revision);
+    assert_eq!(client.inner.arrangement.topology, before);
     assert!(
-        String::from_utf8_lossy(&client.inner.workspace.message)
+        String::from_utf8_lossy(&client.inner.arrangement.message)
             .contains("unsupported layout envelope version: 2")
     );
     let input = edit(&client, 2, 6);
     let queued = client.inner.outgoing.len();
     // SAFETY: valid, disjoint client and input; stored schema must fence writes.
     assert_eq!(
-        unsafe { phux_client_workspace_mutate(&raw mut *client, &raw const input) },
+        unsafe { phux_client_arrangement_mutate(&raw mut *client, &raw const input) },
         PhuxClientResult::InvalidState
     );
     assert_eq!(client.inner.outgoing.len(), queued);
@@ -412,23 +448,29 @@ fn persisted_old_schema_is_refused_without_fallback_or_overwrite() {
 #[test]
 fn authority_transition_advances_revision_even_when_topology_is_identical() {
     let mut client = harness();
-    let bytes = client.inner.workspace.topology.encode_cbor().unwrap();
-    let fallback_revision = client.inner.workspace.revision;
-    refresh(&mut client, 1, registry(1, false), Some(bytes.clone()));
-    let authoritative_revision = client.inner.workspace.revision;
-    assert!(authoritative_revision > fallback_revision);
-    assert_eq!(client.inner.workspace.state, 2);
+    let bytes = client.inner.arrangement.topology.encode_cbor().unwrap();
+    refresh(&mut client, 1, registry(1, false), None);
+    assert_eq!(
+        client.inner.arrangement.state, 1,
+        "no stored arrangement: unarranged"
+    );
+    assert!(client.inner.arrangement.topology.groups.is_empty());
+    let unarranged_revision = client.inner.arrangement.revision;
+    refresh(&mut client, 2, registry(1, false), Some(bytes.clone()));
+    let authoritative_revision = client.inner.arrangement.revision;
+    assert!(authoritative_revision > unarranged_revision);
+    assert_eq!(client.inner.arrangement.state, 2);
     refresh(
         &mut client,
-        2,
+        3,
         registry(1, false),
         Some(b"invalid".to_vec()),
     );
-    refresh(&mut client, 3, registry(1, false), Some(bytes));
-    assert_eq!(client.inner.workspace.revision, authoritative_revision);
-    refresh(&mut client, 4, registry(1, false), None);
-    assert!(client.inner.workspace.revision > authoritative_revision);
-    assert_eq!(client.inner.workspace.state, 1);
+    refresh(&mut client, 4, registry(1, false), Some(bytes));
+    assert_eq!(client.inner.arrangement.revision, authoritative_revision);
+    refresh(&mut client, 5, registry(1, false), None);
+    assert!(client.inner.arrangement.revision > authoritative_revision);
+    assert_eq!(client.inner.arrangement.state, 1);
 }
 
 #[test]
@@ -438,9 +480,9 @@ fn removed_seed_can_be_placed_in_a_new_window() {
         &mut client,
         1,
         registry(1, false),
-        Some(split_workspace().encode_cbor().unwrap()),
+        Some(split_arrangement().encode_cbor().unwrap()),
     );
-    let retained = client.inner.workspace.topology.groups[0].id;
+    let retained = client.inner.arrangement.topology.groups[0].id;
     let mut remove = edit(&client, 2, 3);
     remove.terminal_id = terminal_id_out(&ResourceId::local(1));
     mutate(&mut client, &remove);
@@ -448,21 +490,21 @@ fn removed_seed_can_be_placed_in_a_new_window() {
     add.terminal_id = terminal_id_out(&ResourceId::local(1));
     add.name = bytes_out(b"reused seed");
     mutate(&mut client, &add);
-    assert_eq!(client.inner.workspace.topology.groups.len(), 2);
-    assert_eq!(client.inner.workspace.topology.groups[0].id, retained);
-    assert_ne!(client.inner.workspace.topology.groups[1].id, retained);
+    assert_eq!(client.inner.arrangement.topology.groups.len(), 2);
+    assert_eq!(client.inner.arrangement.topology.groups[0].id, retained);
+    assert_ne!(client.inner.arrangement.topology.groups[1].id, retained);
 }
 
 #[test]
 fn external_registry_changes_preserve_attached_session_without_replicas() {
     let mut client = harness();
-    assert_eq!(client.inner.workspace.topology.groups.len(), 2);
-    let before = client.inner.workspace.revision;
+    assert_eq!(client.inner.arrangement.topology.groups.len(), 2);
+    let before = client.inner.arrangement.revision;
     let mut snapshot = registry(2, true);
     snapshot.sessions[0].name = "renamed externally".into();
     snapshot.resources.retain(|p| p.id != ResourceId::local(2));
-    refresh(&mut client, 1, snapshot, None);
-    let ws = &client.inner.workspace;
+    refresh(&mut client, 1, snapshot, Some(tabs_bytes(&[1, 2, 3])));
+    let ws = &client.inner.arrangement;
     assert_eq!(ws.selected, 1);
     assert!(ws.catalog.sessions[0].focused);
     assert!(!ws.catalog.sessions[1].focused);
@@ -480,29 +522,29 @@ fn external_registry_changes_preserve_attached_session_without_replicas() {
 #[test]
 fn topology_ignores_remote_focus_and_client_count_noise() {
     let mut client = harness();
-    let bytes = split_workspace().encode_cbor().unwrap();
+    let bytes = split_arrangement().encode_cbor().unwrap();
     refresh(&mut client, 1, registry(2, false), Some(bytes.clone()));
     assert_eq!(
-        client.inner.workspace.topology.groups[0].state.focus,
+        client.inner.arrangement.topology.groups[0].state.focus,
         Some(ResourceId::local(1))
     );
-    let revision = client.inner.workspace.revision;
+    let revision = client.inner.arrangement.revision;
     let mut noisy = registry(2, false);
     noisy.sessions[0].attached_client_count = 10;
     refresh(&mut client, 2, noisy, Some(bytes));
-    assert_eq!(client.inner.workspace.revision, revision);
-    assert_eq!(client.inner.workspace.nodes.len(), 3);
-    assert_eq!(client.inner.workspace.catalog.terminals.len(), 3);
+    assert_eq!(client.inner.arrangement.revision, revision);
+    assert_eq!(client.inner.arrangement.nodes.len(), 3);
+    assert_eq!(client.inner.arrangement.catalog.terminals.len(), 3);
 }
 
 #[test]
 fn malformed_capacity_and_wrong_reply_keep_last_good_and_allow_terminal_operations() {
     let mut client = harness();
-    let before = client.inner.workspace.topology.clone();
+    let before = client.inner.arrangement.topology.clone();
     refresh(&mut client, 1, registry(2, true), Some(b"broken".to_vec()));
-    assert_eq!(client.inner.workspace.state, 3);
-    assert_eq!(client.inner.workspace.status, 3);
-    assert_eq!(client.inner.workspace.topology, before);
+    assert_eq!(client.inner.arrangement.state, 3);
+    assert_eq!(client.inner.arrangement.status, 3);
+    assert_eq!(client.inner.arrangement.topology, before);
     assert!(client.inner.attached);
     let mut huge = registry(2, true);
     huge.sessions = (1..258)
@@ -510,12 +552,12 @@ fn malformed_capacity_and_wrong_reply_keep_last_good_and_allow_terminal_operatio
         .collect();
     // SAFETY: exclusive client.
     assert_eq!(
-        unsafe { phux_client_workspace_refresh(&raw mut *client, 2) },
+        unsafe { phux_client_arrangement_refresh(&raw mut *client, 2) },
         PhuxClientResult::Ok
     );
     let id = client
         .inner
-        .workspace
+        .arrangement
         .pending
         .as_ref()
         .unwrap()
@@ -528,17 +570,17 @@ fn malformed_capacity_and_wrong_reply_keep_last_good_and_allow_terminal_operatio
             result: CommandResult::OkWith(CommandValue::State(huge)),
         },
     );
-    assert_eq!(client.inner.workspace.status, 3);
-    assert!(client.inner.workspace.pending.is_none());
-    assert_eq!(client.inner.workspace.topology, before);
+    assert_eq!(client.inner.arrangement.status, 3);
+    assert!(client.inner.arrangement.pending.is_none());
+    assert_eq!(client.inner.arrangement.topology, before);
     // SAFETY: exclusive client.
     assert_eq!(
-        unsafe { phux_client_workspace_refresh(&raw mut *client, 3) },
+        unsafe { phux_client_arrangement_refresh(&raw mut *client, 3) },
         PhuxClientResult::Ok
     );
     let id = client
         .inner
-        .workspace
+        .arrangement
         .pending
         .as_ref()
         .unwrap()
@@ -551,7 +593,13 @@ fn malformed_capacity_and_wrong_reply_keep_last_good_and_allow_terminal_operatio
             result: CommandResult::OkWith(CommandValue::State(registry(1, false))),
         },
     );
-    let id = client.inner.workspace.pending.as_ref().unwrap().metadata_id;
+    let id = client
+        .inner
+        .arrangement
+        .pending
+        .as_ref()
+        .unwrap()
+        .metadata_id;
     feed(
         &mut client,
         FrameKind::MetadataValue {
@@ -559,30 +607,30 @@ fn malformed_capacity_and_wrong_reply_keep_last_good_and_allow_terminal_operatio
             value: Some(b"malformed".to_vec()),
         },
     );
-    assert_eq!(client.inner.workspace.topology, before);
-    assert_eq!(client.inner.workspace.state, 3);
+    assert_eq!(client.inner.arrangement.topology, before);
+    assert_eq!(client.inner.arrangement.state, 3);
 }
 
 #[test]
 fn wrong_reply_kinds_refuse_owned_ids_and_allow_the_next_refresh() {
     for role in 0..4 {
         let mut client = harness();
-        let before = client.inner.workspace.topology.clone();
+        let before = client.inner.arrangement.topology.clone();
         if role < 2 {
             // SAFETY: live exclusive client.
             assert_eq!(
-                unsafe { phux_client_workspace_refresh(&raw mut *client, 1) },
+                unsafe { phux_client_arrangement_refresh(&raw mut *client, 1) },
                 PhuxClientResult::Ok
             );
         } else {
             let input = edit(&client, 1, 6);
             // SAFETY: live disjoint client and input.
             assert_eq!(
-                unsafe { phux_client_workspace_mutate(&raw mut *client, &raw const input) },
+                unsafe { phux_client_arrangement_mutate(&raw mut *client, &raw const input) },
                 PhuxClientResult::Ok
             );
         }
-        let pending = client.inner.workspace.pending.as_ref().unwrap();
+        let pending = client.inner.arrangement.pending.as_ref().unwrap();
         let id = match role {
             0 => pending.state_id.unwrap(),
             1 => pending.metadata_id,
@@ -600,21 +648,21 @@ fn wrong_reply_kinds_refuse_owned_ids_and_allow_the_next_refresh() {
             }
         };
         feed(&mut client, wrong.clone());
-        assert_eq!(client.inner.workspace.status, 3);
-        assert!(client.inner.workspace.pending.is_none());
-        assert_eq!(client.inner.workspace.topology, before);
+        assert_eq!(client.inner.arrangement.status, 3);
+        assert!(client.inner.arrangement.pending.is_none());
+        assert_eq!(client.inner.arrangement.topology, before);
         // SAFETY: live exclusive client; prior refusal must not wedge the slot.
         assert_eq!(
-            unsafe { phux_client_workspace_refresh(&raw mut *client, 2) },
+            unsafe { phux_client_arrangement_refresh(&raw mut *client, 2) },
             PhuxClientResult::Ok
         );
         feed(&mut client, wrong);
         assert_eq!(
-            client.inner.workspace.status, 1,
+            client.inner.arrangement.status, 1,
             "stale IDs are no longer owned"
         );
         finish(&mut client, registry(1, false), None);
-        assert_eq!(client.inner.workspace.status, 2);
+        assert_eq!(client.inner.arrangement.status, 2);
     }
 }
 
@@ -624,7 +672,7 @@ fn operation_interleaving_and_internal_duplicates_are_fenced() {
     // SAFETY: client and stack options are live and disjoint.
     unsafe {
         assert_eq!(
-            phux_client_workspace_refresh(&raw mut *client, 10),
+            phux_client_arrangement_refresh(&raw mut *client, 10),
             PhuxClientResult::Ok
         );
         let options = PhuxSpawnOptions {
@@ -654,7 +702,7 @@ fn operation_interleaving_and_internal_duplicates_are_fenced() {
     }
     let state_id = client
         .inner
-        .workspace
+        .arrangement
         .pending
         .as_ref()
         .unwrap()
@@ -668,7 +716,7 @@ fn operation_interleaving_and_internal_duplicates_are_fenced() {
         },
     );
     finish(&mut client, registry(2, false), None);
-    let revision = client.inner.workspace.revision;
+    let revision = client.inner.arrangement.revision;
     feed(
         &mut client,
         FrameKind::CommandResult {
@@ -683,8 +731,8 @@ fn operation_interleaving_and_internal_duplicates_are_fenced() {
             value: Some(vec![0]),
         },
     );
-    assert_eq!(client.inner.workspace.revision, revision);
-    assert_eq!(client.inner.workspace.status, 2);
+    assert_eq!(client.inner.arrangement.revision, revision);
+    assert_eq!(client.inner.arrangement.status, 2);
     // SAFETY: read-only client.
     assert_eq!(
         unsafe { phux_client_operation_count(&raw const *client) },
@@ -692,26 +740,26 @@ fn operation_interleaving_and_internal_duplicates_are_fenced() {
     );
 }
 
-fn edit(client: &PhuxClient, request: u32, kind: u32) -> PhuxWorkspaceMutation {
-    PhuxWorkspaceMutation {
+fn edit(client: &PhuxClient, request: u32, kind: u32) -> PhuxArrangementMutation {
+    PhuxArrangementMutation {
         request_id: request,
-        expected_revision: client.inner.workspace.revision,
+        expected_revision: client.inner.arrangement.revision,
         session_id: 1,
         kind,
-        window_id: client.inner.workspace.topology.groups[0].id,
-        ..PhuxWorkspaceMutation::default()
+        group_id: client.inner.arrangement.topology.groups[0].id,
+        ..PhuxArrangementMutation::default()
     }
 }
 
-fn mutate(client: &mut PhuxClient, mutation: &PhuxWorkspaceMutation) {
+fn mutate(client: &mut PhuxClient, mutation: &PhuxArrangementMutation) {
     // SAFETY: client and mutation/spans are valid and disjoint.
     assert_eq!(
-        unsafe { phux_client_workspace_mutate(client, mutation) },
+        unsafe { phux_client_arrangement_mutate(client, mutation) },
         PhuxClientResult::Ok
     );
     let proposed = client
         .inner
-        .workspace
+        .arrangement
         .pending
         .as_ref()
         .unwrap()
@@ -724,7 +772,7 @@ fn mutate(client: &mut PhuxClient, mutation: &PhuxWorkspaceMutation) {
         registry(1, true),
         Some(proposed.encode_topology_cbor().unwrap()),
     );
-    assert_eq!(client.inner.workspace.status, 2);
+    assert_eq!(client.inner.arrangement.status, 2);
 }
 
 #[test]
@@ -734,9 +782,9 @@ fn mutations_round_trip_stable_identity_and_preserve_local_focus() {
         &mut client,
         1,
         registry(1, true),
-        Some(split_workspace().encode_cbor().unwrap()),
+        Some(split_arrangement().encode_cbor().unwrap()),
     );
-    let original = client.inner.workspace.topology.groups[0].id;
+    let original = client.inner.arrangement.topology.groups[0].id;
     let mut split = edit(&client, 2, 2);
     split.terminal_id = terminal_id_out(&ResourceId::local(2));
     split.new_terminal_id = terminal_id_out(&ResourceId::local(3));
@@ -754,17 +802,17 @@ fn mutations_round_trip_stable_identity_and_preserve_local_focus() {
     let mut remove = edit(&client, 5, 3);
     remove.terminal_id = terminal_id_out(&ResourceId::local(1));
     mutate(&mut client, &remove);
-    assert_eq!(client.inner.workspace.topology.groups[0].id, original);
-    assert_eq!(client.inner.workspace.topology.groups[0].name, "renamed");
+    assert_eq!(client.inner.arrangement.topology.groups[0].id, original);
+    assert_eq!(client.inner.arrangement.topology.groups[0].name, "renamed");
     assert_eq!(
-        client.inner.workspace.topology.groups[0].state.focus,
+        client.inner.arrangement.topology.groups[0].state.focus,
         Some(ResourceId::local(2))
     );
-    assert_eq!(client.inner.workspace.catalog.terminals.len(), 4);
+    assert_eq!(client.inner.arrangement.catalog.terminals.len(), 4);
     assert!(
         client
             .inner
-            .workspace
+            .arrangement
             .catalog
             .terminals
             .iter()
@@ -779,27 +827,27 @@ fn stale_and_competing_writes_never_optimistically_publish() {
     input.expected_revision += 1;
     // SAFETY: client/input are valid and disjoint.
     assert_eq!(
-        unsafe { phux_client_workspace_mutate(&raw mut *client, &raw const input) },
+        unsafe { phux_client_arrangement_mutate(&raw mut *client, &raw const input) },
         PhuxClientResult::InvalidState
     );
     assert!(client.inner.outgoing.is_empty());
     input.expected_revision -= 1;
     input.name = bytes_out(b"my rename");
-    let before = client.inner.workspace.topology.clone();
+    let before = client.inner.arrangement.topology.clone();
     // SAFETY: client/input are valid and disjoint.
     assert_eq!(
-        unsafe { phux_client_workspace_mutate(&raw mut *client, &raw const input) },
+        unsafe { phux_client_arrangement_mutate(&raw mut *client, &raw const input) },
         PhuxClientResult::Ok
     );
-    assert_eq!(client.inner.workspace.topology, before);
-    let winning = split_workspace();
+    assert_eq!(client.inner.arrangement.topology, before);
+    let winning = split_arrangement();
     finish(
         &mut client,
         registry(1, true),
         Some(winning.encode_cbor().unwrap()),
     );
-    assert_eq!(client.inner.workspace.status, 3);
-    assert!(topology_equal(&client.inner.workspace.topology, &winning));
+    assert_eq!(client.inner.arrangement.status, 3);
+    assert!(topology_equal(&client.inner.arrangement.topology, &winning));
 }
 
 #[test]
@@ -814,7 +862,7 @@ fn retired_is_registry_absence_not_missing_replica_and_satellites_never_alias() 
     let catalog = Catalog::from_snapshot(snapshot, 1).unwrap();
     assert_eq!(catalog.terminals.last().unwrap().session, 0);
     let adopted = model::adopt(
-        Some(&split_workspace().encode_cbor().unwrap()),
+        model::decode_legacy(Some(&split_arrangement().encode_cbor().unwrap())).unwrap(),
         &ArrangementDoc::new(),
         &catalog,
         1,
@@ -827,8 +875,13 @@ fn retired_is_registry_absence_not_missing_replica_and_satellites_never_alias() 
     let mut snapshot = registry(1, false);
     snapshot.resources.retain(|t| t.id != ResourceId::local(1));
     let catalog = Catalog::from_snapshot(snapshot, 1).unwrap();
-    let pruned =
-        model::adopt(Some(&adopted.encode_cbor().unwrap()), &adopted, &catalog, 1).unwrap();
+    let pruned = model::adopt(
+        model::decode_legacy(Some(&adopted.encode_cbor().unwrap())).unwrap(),
+        &adopted,
+        &catalog,
+        1,
+    )
+    .unwrap();
     assert_eq!(pruned.groups[0].id, adopted.groups[0].id);
     assert_eq!(
         pruned.groups[0].state.tree,
@@ -836,51 +889,76 @@ fn retired_is_registry_absence_not_missing_replica_and_satellites_never_alias() 
     );
 }
 
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "one walk over every layout pin"
+)]
 #[test]
 fn abi_null_version_size_and_disconnect() {
-    assert_eq!(std::mem::size_of::<PhuxWorkspaceInfo>(), 72);
-    assert_eq!(std::mem::offset_of!(PhuxWorkspaceInfo, revision), 16);
-    assert_eq!(std::mem::offset_of!(PhuxWorkspaceInfo, message), 56);
-    assert_eq!(std::mem::size_of::<PhuxWorkspaceWindow>(), 56);
-    assert_eq!(std::mem::size_of::<PhuxWorkspaceNode>(), 56);
+    assert_eq!(std::mem::size_of::<PhuxArrangementInfo>(), 128);
+    assert_eq!(std::mem::offset_of!(PhuxArrangementInfo, revision), 16);
+    assert_eq!(std::mem::offset_of!(PhuxArrangementInfo, message), 56);
+    assert_eq!(std::mem::offset_of!(PhuxArrangementInfo, backend), 72);
+    assert_eq!(
+        std::mem::offset_of!(PhuxArrangementInfo, server_revision),
+        80
+    );
+    assert_eq!(std::mem::offset_of!(PhuxArrangementInfo, session_key), 88);
+    assert_eq!(
+        std::mem::offset_of!(PhuxArrangementInfo, arrangement_key),
+        104
+    );
+    assert_eq!(
+        std::mem::offset_of!(PhuxArrangementInfo, unarranged_count),
+        120
+    );
+    assert_eq!(
+        std::mem::offset_of!(PhuxArrangementInfo, unplaced_count),
+        124
+    );
+    assert_eq!(std::mem::size_of::<PhuxArrangementGroup>(), 56);
+    assert_eq!(std::mem::size_of::<PhuxArrangementNode>(), 56);
     assert_eq!(std::mem::size_of::<PhuxCatalogTerminal>(), 80);
-    assert_eq!(std::mem::size_of::<PhuxWorkspaceMutation>(), 136);
-    assert_eq!(std::mem::offset_of!(PhuxWorkspaceMutation, path_bits), 128);
+    assert_eq!(std::mem::size_of::<PhuxArrangementMutation>(), 136);
+    assert_eq!(
+        std::mem::offset_of!(PhuxArrangementMutation, path_bits),
+        128
+    );
     let mut client = harness();
-    let mut info = PhuxWorkspaceInfo::default();
+    let mut info = PhuxArrangementInfo::default();
     // SAFETY: deliberate null/invalid headers, otherwise owned disjoint values.
     unsafe {
         assert_eq!(
-            phux_client_workspace_info(std::ptr::null(), &raw mut info),
+            phux_client_arrangement_info(std::ptr::null(), &raw mut info),
             PhuxClientResult::InvalidArgument
         );
         assert_eq!(
-            phux_client_workspace_info(&raw const *client, std::ptr::null_mut()),
+            phux_client_arrangement_info(&raw const *client, std::ptr::null_mut()),
             PhuxClientResult::InvalidArgument
         );
         info.size -= 1;
         assert_eq!(
-            phux_client_workspace_info(&raw const *client, &raw mut info),
+            phux_client_arrangement_info(&raw const *client, &raw mut info),
             PhuxClientResult::InvalidArgument
         );
-        info = PhuxWorkspaceInfo::default();
+        info = PhuxArrangementInfo::default();
         info.version += 1;
         assert_eq!(
-            phux_client_workspace_info(&raw const *client, &raw mut info),
+            phux_client_arrangement_info(&raw const *client, &raw mut info),
             PhuxClientResult::InvalidArgument
         );
-        info = PhuxWorkspaceInfo::default();
+        info = PhuxArrangementInfo::default();
         assert_eq!(
-            phux_client_workspace_info(&raw const *client, &raw mut info),
+            phux_client_arrangement_info(&raw const *client, &raw mut info),
             PhuxClientResult::Ok
         );
         assert_eq!(info.terminal_count, 3);
         assert_eq!(
-            phux_client_workspace_mutate(&raw mut *client, std::ptr::null()),
+            phux_client_arrangement_mutate(&raw mut *client, std::ptr::null()),
             PhuxClientResult::InvalidArgument
         );
         assert_eq!(
-            phux_client_workspace_refresh(&raw mut *client, 1),
+            phux_client_arrangement_refresh(&raw mut *client, 1),
             PhuxClientResult::Ok
         );
         assert_eq!(
@@ -888,55 +966,59 @@ fn abi_null_version_size_and_disconnect() {
             PhuxClientResult::Ok
         );
     }
-    assert_eq!(client.inner.workspace.status, 4);
-    assert!(client.inner.workspace.pending.is_none());
+    assert_eq!(client.inner.arrangement.status, 4);
+    assert!(client.inner.arrangement.pending.is_none());
 }
 
 #[test]
 fn add_reorder_remove_and_last_pane_is_refused() {
     let mut client = harness();
-    let mut split = edit(&client, 1, 2);
+    // Terminal 2 runs in the session but is not arranged.
+    refresh(&mut client, 1, registry(1, false), Some(tabs_bytes(&[1])));
+    assert_eq!(client.inner.arrangement.unarranged(), 1);
+    let mut split = edit(&client, 2, 2);
     split.terminal_id = terminal_id_out(&ResourceId::local(1));
     split.new_terminal_id = terminal_id_out(&ResourceId::local(2));
     split.direction = 2;
     split.ratio = 0.5;
     mutate(&mut client, &split);
-    assert_eq!(client.inner.workspace.topology.groups.len(), 1);
-    let original = client.inner.workspace.topology.groups[0].id;
-    let mut add = edit(&client, 2, 1);
+    assert_eq!(client.inner.arrangement.topology.groups.len(), 1);
+    let original = client.inner.arrangement.topology.groups[0].id;
+    let mut add = edit(&client, 3, 1);
     add.terminal_id = terminal_id_out(&ResourceId::local(3));
     add.name = bytes_out(b"new window");
     mutate(&mut client, &add);
-    let mut reorder = edit(&client, 3, 4);
+    let mut reorder = edit(&client, 4, 4);
     reorder.index = 1;
     mutate(&mut client, &reorder);
-    assert_eq!(client.inner.workspace.topology.groups[1].id, original);
-    assert_eq!(client.inner.workspace.topology.active, 1);
-    for (request, id) in [(4, 3), (5, 1)] {
+    assert_eq!(client.inner.arrangement.topology.groups[1].id, original);
+    assert_eq!(client.inner.arrangement.topology.active, 1);
+    for (request, id) in [(5, 3), (6, 1)] {
         let mut remove = edit(&client, request, 3);
         remove.terminal_id = terminal_id_out(&ResourceId::local(id));
         mutate(&mut client, &remove);
     }
-    assert_eq!(client.inner.workspace.topology.groups.len(), 1);
+    assert_eq!(client.inner.arrangement.topology.groups.len(), 1);
     let queued = client.inner.outgoing.len();
-    let before = client.inner.workspace.topology.clone();
-    let mut last = edit(&client, 6, 3);
+    let before = client.inner.arrangement.topology.clone();
+    let mut last = edit(&client, 7, 3);
     last.terminal_id = terminal_id_out(&ResourceId::local(2));
     // SAFETY: live disjoint client and input; last pane must refuse.
     assert_eq!(
-        unsafe { phux_client_workspace_mutate(&raw mut *client, &raw const last) },
+        unsafe { phux_client_arrangement_mutate(&raw mut *client, &raw const last) },
         PhuxClientResult::InvalidArgument
     );
     assert_eq!(client.inner.outgoing.len(), queued);
-    assert_eq!(client.inner.workspace.topology, before);
+    assert_eq!(client.inner.arrangement.topology, before);
     refresh(
         &mut client,
-        7,
+        8,
         registry(1, true),
         Some(ArrangementDoc::new().encode_topology_cbor().unwrap()),
     );
-    assert!(client.inner.workspace.topology.groups.is_empty());
-    assert_eq!(client.inner.workspace.catalog.terminals.len(), 4);
+    assert!(client.inner.arrangement.topology.groups.is_empty());
+    assert_eq!(client.inner.arrangement.unarranged(), 3);
+    assert_eq!(client.inner.arrangement.catalog.terminals.len(), 4);
 }
 
 #[test]
@@ -952,17 +1034,17 @@ fn last_pane_close_is_refused_without_queueing() {
                 .unwrap(),
         ),
     );
-    let before = client.inner.workspace.topology.clone();
+    let before = client.inner.arrangement.topology.clone();
     let queued = client.inner.outgoing.len();
     let mut remove = edit(&client, 2, 3);
     remove.terminal_id = terminal_id_out(&ResourceId::local(1));
     // SAFETY: live disjoint client and input; last pane must refuse.
     assert_eq!(
-        unsafe { phux_client_workspace_mutate(&raw mut *client, &raw const remove) },
+        unsafe { phux_client_arrangement_mutate(&raw mut *client, &raw const remove) },
         PhuxClientResult::InvalidArgument
     );
     assert_eq!(client.inner.outgoing.len(), queued);
-    assert_eq!(client.inner.workspace.topology, before);
+    assert_eq!(client.inner.arrangement.topology, before);
 }
 
 #[test]
@@ -972,19 +1054,19 @@ fn close_repairs_focus_onto_surviving_leaf() {
         &mut client,
         1,
         registry(1, true),
-        Some(split_workspace().encode_cbor().unwrap()),
+        Some(split_arrangement().encode_cbor().unwrap()),
     );
     let mut remove = edit(&client, 2, 3);
     remove.terminal_id = terminal_id_out(&ResourceId::local(2));
     mutate(&mut client, &remove);
-    assert_eq!(client.inner.workspace.topology.groups.len(), 1);
+    assert_eq!(client.inner.arrangement.topology.groups.len(), 1);
     assert_eq!(
-        client.inner.workspace.topology.groups[0].state.focus,
+        client.inner.arrangement.topology.groups[0].state.focus,
         Some(ResourceId::local(1))
     );
     assert_eq!(
         layout::leaves(
-            client.inner.workspace.topology.groups[0]
+            client.inner.arrangement.topology.groups[0]
                 .state
                 .tree
                 .as_ref()
@@ -997,18 +1079,18 @@ fn close_repairs_focus_onto_surviving_leaf() {
 #[test]
 fn close_prunes_empty_window_and_keeps_survivor_focus() {
     let mut client = harness();
-    assert_eq!(client.inner.workspace.topology.groups.len(), 2);
-    let survivor = client.inner.workspace.topology.groups[1].id;
+    assert_eq!(client.inner.arrangement.topology.groups.len(), 2);
+    let survivor = client.inner.arrangement.topology.groups[1].id;
     let mut remove = edit(&client, 1, 3);
     remove.terminal_id = terminal_id_out(&ResourceId::local(1));
     mutate(&mut client, &remove);
-    assert_eq!(client.inner.workspace.topology.groups.len(), 1);
-    assert_eq!(client.inner.workspace.topology.groups[0].id, survivor);
+    assert_eq!(client.inner.arrangement.topology.groups.len(), 1);
+    assert_eq!(client.inner.arrangement.topology.groups[0].id, survivor);
     assert_eq!(
-        client.inner.workspace.topology.groups[0].state.focus,
+        client.inner.arrangement.topology.groups[0].state.focus,
         Some(ResourceId::local(2))
     );
-    assert_eq!(client.inner.workspace.topology.active, 0);
+    assert_eq!(client.inner.arrangement.topology.active, 0);
 }
 
 #[test]
@@ -1016,7 +1098,7 @@ fn registry_is_read_after_metadata_and_both_replies_stage_atomically() {
     let mut client = harness();
     // SAFETY: live exclusive client.
     assert_eq!(
-        unsafe { phux_client_workspace_refresh(&raw mut *client, 1) },
+        unsafe { phux_client_arrangement_refresh(&raw mut *client, 1) },
         PhuxClientResult::Ok
     );
     let first = FrameKind::decode(&client.inner.outgoing[0]).unwrap().0;
@@ -1029,10 +1111,10 @@ fn registry_is_read_after_metadata_and_both_replies_stage_atomically() {
             ..
         }
     ));
-    let mut topology = split_workspace();
+    let mut topology = split_arrangement();
     topology.add_group("new external".into(), ResourceId::local(3));
-    let revision = client.inner.workspace.revision;
-    let pending = client.inner.workspace.pending.as_ref().unwrap();
+    let revision = client.inner.arrangement.revision;
+    let pending = client.inner.arrangement.pending.as_ref().unwrap();
     let (metadata_id, state_id) = (pending.metadata_id, pending.state_id.unwrap());
     feed(
         &mut client,
@@ -1041,7 +1123,7 @@ fn registry_is_read_after_metadata_and_both_replies_stage_atomically() {
             value: Some(topology.encode_cbor().unwrap()),
         },
     );
-    assert_eq!(client.inner.workspace.revision, revision);
+    assert_eq!(client.inner.arrangement.revision, revision);
     // A duplicate metadata answer cannot replace the staged snapshot.
     feed(
         &mut client,
@@ -1057,24 +1139,24 @@ fn registry_is_read_after_metadata_and_both_replies_stage_atomically() {
             result: CommandResult::OkWith(CommandValue::State(registry(2, true))),
         },
     );
-    assert_eq!(client.inner.workspace.status, 2);
-    assert_eq!(client.inner.workspace.topology.groups.len(), 2);
+    assert_eq!(client.inner.arrangement.status, 2);
+    assert_eq!(client.inner.arrangement.topology.groups.len(), 2);
     assert_eq!(
-        client.inner.workspace.topology.groups[1].name,
+        client.inner.arrangement.topology.groups[1].name,
         "new external"
     );
 }
 
 #[test]
-fn workspace_limits_refuse_instead_of_truncating() {
+fn arrangement_limits_refuse_instead_of_truncating() {
     for ratio in [0.0, 1.0, f32::NAN, f32::INFINITY] {
-        let mut workspace = split_workspace();
-        let Some(LayoutNode::Split { ratio: value, .. }) = &mut workspace.groups[0].state.tree
+        let mut arrangement = split_arrangement();
+        let Some(LayoutNode::Split { ratio: value, .. }) = &mut arrangement.groups[0].state.tree
         else {
             panic!("split")
         };
         *value = ratio;
-        assert!(model::flatten(&workspace).is_err());
+        assert!(model::flatten(&arrangement).is_err());
     }
     let mut many = ArrangementDoc::new();
     for i in 1..=33 {
@@ -1104,7 +1186,7 @@ fn workspace_limits_refuse_instead_of_truncating() {
         active: 0,
     };
     assert!(model::flatten(&deep).is_err());
-    let mut duplicate = split_workspace();
+    let mut duplicate = split_arrangement();
     duplicate.add_group("duplicate".into(), ResourceId::local(1));
     assert!(model::flatten(&duplicate).is_err());
     let over_nodes = ArrangementDoc {
@@ -1143,20 +1225,20 @@ fn atomic_window_removal_is_presentation_only_and_wrong_kind_isolated() {
         &mut client,
         1,
         registry(1, false),
-        Some(split_workspace().encode_cbor().unwrap()),
+        Some(split_arrangement().encode_cbor().unwrap()),
     );
     let remove = edit(&client, 2, 7);
     mutate(&mut client, &remove);
-    assert!(client.inner.workspace.topology.groups.is_empty());
-    assert_eq!(client.inner.workspace.catalog.terminals.len(), 4);
+    assert!(client.inner.arrangement.topology.groups.is_empty());
+    assert_eq!(client.inner.arrangement.catalog.terminals.len(), 4);
     // SAFETY: live client, fresh request.
     assert_eq!(
-        unsafe { phux_client_workspace_refresh(&raw mut *client, 3) },
+        unsafe { phux_client_arrangement_refresh(&raw mut *client, 3) },
         PhuxClientResult::Ok
     );
     let id = client
         .inner
-        .workspace
+        .arrangement
         .pending
         .as_ref()
         .unwrap()
@@ -1169,7 +1251,7 @@ fn atomic_window_removal_is_presentation_only_and_wrong_kind_isolated() {
             result: phux_protocol::wire::frame::SpawnResult::Ok(ResourceId::local(99)),
         },
     );
-    assert_eq!(client.inner.workspace.status, 3);
+    assert_eq!(client.inner.arrangement.status, 3);
     assert!(client.inner.attached);
     assert!(!client.inner.operations.admitted(&ResourceId::local(99)));
 }
@@ -1181,7 +1263,7 @@ fn mutation_bounds_and_session_fence_refuse_before_queue_or_span_read() {
     input.session_id = 2;
     // SAFETY: valid record; session mismatch is intentional.
     assert_eq!(
-        unsafe { phux_client_workspace_mutate(&raw mut *client, &raw const input) },
+        unsafe { phux_client_arrangement_mutate(&raw mut *client, &raw const input) },
         PhuxClientResult::InvalidState
     );
     input.session_id = 1;
@@ -1191,7 +1273,7 @@ fn mutation_bounds_and_session_fence_refuse_before_queue_or_span_read() {
     };
     // SAFETY: invalid oversized/null span is rejected by its length before dereference.
     assert_eq!(
-        unsafe { phux_client_workspace_mutate(&raw mut *client, &raw const input) },
+        unsafe { phux_client_arrangement_mutate(&raw mut *client, &raw const input) },
         PhuxClientResult::InvalidArgument
     );
     assert!(client.inner.outgoing.is_empty());

@@ -1,17 +1,15 @@
-use super::{PhuxWorkspaceMutation, SharedWorkspace, model};
+use super::{PhuxArrangementMutation, SharedArrangement, model};
 use crate::c::error::{BridgeError, bytes_in, check_struct, terminal_id_in};
 use phux_client_core::layout::{self, ArrangementDoc, Group, LayoutNode};
 use phux_protocol::ResourceId;
 use std::{mem, ptr};
 
 pub(super) unsafe fn prepare(
-    ws: &SharedWorkspace,
-    input: &PhuxWorkspaceMutation,
+    ws: &SharedArrangement,
+    input: &PhuxArrangementMutation,
 ) -> Result<ArrangementDoc, BridgeError> {
     validate_revision(ws, input)?;
     let mut next = ws.topology.clone();
-    // SAFETY: caller supplies the new identity span.
-    unsafe { unplace_fallback_seed(ws, &mut next, input) }?;
     // SAFETY: caller supplies a validated sized record with readable spans.
     unsafe { edit(ws, &mut next, input) }?;
     if input.kind != 3 {
@@ -23,17 +21,17 @@ pub(super) unsafe fn prepare(
 }
 
 fn validate_revision(
-    ws: &SharedWorkspace,
-    input: &PhuxWorkspaceMutation,
+    ws: &SharedArrangement,
+    input: &PhuxArrangementMutation,
 ) -> Result<(), BridgeError> {
     check_struct(
         input.size,
-        mem::size_of::<PhuxWorkspaceMutation>(),
+        mem::size_of::<PhuxArrangementMutation>(),
         input.version,
     )?;
     ws.busy()?;
     if input.session_id != ws.selected || input.expected_revision != ws.revision {
-        return Err(BridgeError::state("stale workspace session or revision"));
+        return Err(BridgeError::state("stale arrangement session or revision"));
     }
     if ws.state == 3 {
         return Err(BridgeError::state(
@@ -44,7 +42,7 @@ fn validate_revision(
     Ok(())
 }
 
-fn validate_span_bounds(input: &PhuxWorkspaceMutation) -> Result<(), BridgeError> {
+fn validate_span_bounds(input: &PhuxArrangementMutation) -> Result<(), BridgeError> {
     if [
         input.name.len,
         input.terminal_id.host.len,
@@ -54,39 +52,20 @@ fn validate_span_bounds(input: &PhuxWorkspaceMutation) -> Result<(), BridgeError
     .any(|len| len > model::MAX_TEXT)
     {
         return Err(BridgeError::invalid(
-            "workspace input text exceeds 4096 bytes",
+            "arrangement input text exceeds 4096 bytes",
         ));
     }
     Ok(())
 }
 
-unsafe fn unplace_fallback_seed(
-    ws: &SharedWorkspace,
-    next: &mut ArrangementDoc,
-    input: &PhuxWorkspaceMutation,
-) -> Result<(), BridgeError> {
-    if ws.state == 1 && matches!(input.kind, 1 | 2) {
-        // SAFETY: caller supplies the new identity span.
-        let seed = if input.kind == 1 {
-            &input.terminal_id
-        } else {
-            &input.new_terminal_id
-        };
-        let id = unsafe { new_terminal(ws, seed) }?;
-        next.groups
-            .retain(|w| w.state.tree != Some(LayoutNode::Leaf(id.clone())));
-    }
-    Ok(())
-}
-
 unsafe fn edit(
-    ws: &SharedWorkspace,
+    ws: &SharedArrangement,
     next: &mut ArrangementDoc,
-    input: &PhuxWorkspaceMutation,
+    input: &PhuxArrangementMutation,
 ) -> Result<(), BridgeError> {
     if input.kind == 1 {
         // SAFETY: forwards the input record's readable spans.
-        return unsafe { add_window(ws, next, input) };
+        return unsafe { add_group(ws, next, input) };
     }
     if input.kind == 3 {
         // SAFETY: input identity span is readable.
@@ -95,8 +74,8 @@ unsafe fn edit(
     let index = next
         .groups
         .iter()
-        .position(|w| w.id == input.window_id)
-        .ok_or_else(|| BridgeError::state("layout window no longer exists"))?;
+        .position(|w| w.id == input.group_id)
+        .ok_or_else(|| BridgeError::state("arrangement group no longer exists"))?;
     match input.kind {
         2 => {
             // SAFETY: forwards input identity spans.
@@ -111,15 +90,15 @@ unsafe fn edit(
         7 => {
             next.groups.remove(index);
         }
-        _ => return Err(BridgeError::invalid("unknown workspace mutation kind")),
+        _ => return Err(BridgeError::invalid("unknown arrangement mutation kind")),
     }
     Ok(())
 }
 
-unsafe fn add_window(
-    ws: &SharedWorkspace,
+unsafe fn add_group(
+    ws: &SharedArrangement,
     next: &mut ArrangementDoc,
-    input: &PhuxWorkspaceMutation,
+    input: &PhuxArrangementMutation,
 ) -> Result<(), BridgeError> {
     // SAFETY: forwards the input record's readable identity/span contract.
     let id = unsafe { new_terminal(ws, &input.terminal_id) }?;
@@ -131,27 +110,27 @@ unsafe fn add_window(
 
 unsafe fn remove_terminal(
     next: &mut ArrangementDoc,
-    input: &PhuxWorkspaceMutation,
+    input: &PhuxArrangementMutation,
 ) -> Result<(), BridgeError> {
     // SAFETY: input identity span is readable.
     let id = unsafe { terminal_id_in(ptr::from_ref(&input.terminal_id)) }?;
     next.close_pane(&id).map_err(close_error)
 }
 
-unsafe fn name(input: &PhuxWorkspaceMutation) -> Result<String, BridgeError> {
+unsafe fn name(input: &PhuxArrangementMutation) -> Result<String, BridgeError> {
     if input.name.len > model::MAX_TEXT {
-        return Err(BridgeError::invalid("window name too long"));
+        return Err(BridgeError::invalid("group name too long"));
     }
     // SAFETY: caller provides the bounded name span.
     let bytes = unsafe { bytes_in(input.name.data, input.name.len) }?;
     let name =
-        std::str::from_utf8(bytes).map_err(|_| BridgeError::invalid("window name is not UTF-8"))?;
+        std::str::from_utf8(bytes).map_err(|_| BridgeError::invalid("group name is not UTF-8"))?;
     model::text(name)?;
     Ok(name.to_owned())
 }
 
 unsafe fn new_terminal(
-    ws: &SharedWorkspace,
+    ws: &SharedArrangement,
     input: &crate::c::PhuxResourceId,
 ) -> Result<ResourceId, BridgeError> {
     if input.host.len > model::MAX_TEXT {
@@ -164,7 +143,7 @@ unsafe fn new_terminal(
             "new terminal is absent from selected catalog; refresh after spawn",
         ));
     }
-    if ws.state != 1 && ws.nodes.iter().any(|n| n.terminal.as_ref() == Some(&id)) {
+    if ws.nodes.iter().any(|n| n.terminal.as_ref() == Some(&id)) {
         return Err(BridgeError::state(
             "terminal is already placed in shared topology",
         ));
@@ -173,9 +152,9 @@ unsafe fn new_terminal(
 }
 
 unsafe fn split(
-    ws: &SharedWorkspace,
-    window: &mut Group,
-    input: &PhuxWorkspaceMutation,
+    ws: &SharedArrangement,
+    group: &mut Group,
+    input: &PhuxArrangementMutation,
 ) -> Result<(), BridgeError> {
     // SAFETY: caller supplies both terminal identities.
     let id = unsafe { new_terminal(ws, &input.new_terminal_id) }?;
@@ -186,9 +165,8 @@ unsafe fn split(
         3 => layout::SplitDir::Vertical,
         _ => return Err(BridgeError::invalid("invalid split direction")),
     };
-    window.state.tree = Some(
-        layout::split_at(tree(window)?, &target, &id, dir, input.ratio).map_err(layout_error)?,
-    );
+    group.state.tree =
+        Some(layout::split_at(tree(group)?, &target, &id, dir, input.ratio).map_err(layout_error)?);
     Ok(())
 }
 
@@ -209,32 +187,32 @@ fn layout_error(error: layout::LayoutError) -> BridgeError {
     BridgeError::invalid(error.to_string())
 }
 
-fn tree(window: &Group) -> Result<&LayoutNode, BridgeError> {
-    window
+fn tree(group: &Group) -> Result<&LayoutNode, BridgeError> {
+    group
         .state
         .tree
         .as_ref()
-        .ok_or_else(|| BridgeError::state("window has no tree"))
+        .ok_or_else(|| BridgeError::state("group has no tree"))
 }
 
 fn reorder(next: &mut ArrangementDoc, from: usize, to: usize) -> Result<(), BridgeError> {
     if to >= next.groups.len() {
         return Err(BridgeError::invalid("reorder index out of bounds"));
     }
-    let window = next.groups.remove(from);
-    next.groups.insert(to, window);
+    let group = next.groups.remove(from);
+    next.groups.insert(to, group);
     Ok(())
 }
 
-fn resize(window: &mut Group, input: &PhuxWorkspaceMutation) -> Result<(), BridgeError> {
+fn resize(group: &mut Group, input: &PhuxArrangementMutation) -> Result<(), BridgeError> {
     if input.path_len > 64 || !input.ratio.is_finite() || input.ratio <= 0.0 || input.ratio >= 1.0 {
         return Err(BridgeError::invalid("invalid resize path or ratio"));
     }
-    let mut node = window
+    let mut node = group
         .state
         .tree
         .as_mut()
-        .ok_or_else(|| BridgeError::state("empty window"))?;
+        .ok_or_else(|| BridgeError::state("empty group"))?;
     for depth in 0..input.path_len {
         let LayoutNode::Split { left, right, .. } = node else {
             return Err(BridgeError::state("stale split path"));

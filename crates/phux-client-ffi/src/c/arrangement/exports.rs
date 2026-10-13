@@ -1,8 +1,8 @@
 use super::{
     mutation, start_read,
     types::{
-        PhuxCatalogTerminal, PhuxWorkspaceInfo, PhuxWorkspaceMutation, PhuxWorkspaceNode,
-        PhuxWorkspaceWindow,
+        PhuxArrangementGroup, PhuxArrangementInfo, PhuxArrangementMutation, PhuxArrangementNode,
+        PhuxCatalogTerminal,
     },
 };
 use crate::c::error::{BridgeError, check_struct};
@@ -16,7 +16,7 @@ use std::mem;
 /// # Safety
 /// Client is live and exclusively accessed on its owning thread.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn phux_client_workspace_refresh(
+pub unsafe extern "C" fn phux_client_arrangement_refresh(
     client: *mut PhuxClient,
     request_id: u32,
 ) -> PhuxClientResult {
@@ -29,14 +29,18 @@ pub unsafe extern "C" fn phux_client_workspace_refresh(
     })
 }
 
-/// Publish a typed topology edit by whole-value LWW SET and confirming GET.
+/// Publish a typed edit, then read it back.
+///
+/// The edit is a compare-and-swap `ARRANGEMENT_REPLACE` of the stored
+/// arrangement at its revision when the publication came from one, else a
+/// last-write-wins legacy `SET`.
 /// # Safety
 /// Client is exclusively accessed. Input is readable with all nonempty spans
 /// valid for this call. No pointer may alias client storage.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn phux_client_workspace_mutate(
+pub unsafe extern "C" fn phux_client_arrangement_mutate(
     client: *mut PhuxClient,
-    input: *const PhuxWorkspaceMutation,
+    input: *const PhuxArrangementMutation,
 ) -> PhuxClientResult {
     with_client_mut(client, |client| {
         client.ensure_attached()?;
@@ -45,14 +49,9 @@ pub unsafe extern "C" fn phux_client_workspace_mutate(
             unsafe { input.as_ref() }.ok_or_else(|| BridgeError::invalid("mutation is null"))?;
         client.operations.check_request_id(input.request_id)?;
         // SAFETY: forwards the sized input and readable span contract.
-        let next = unsafe { mutation::prepare(&client.workspace, input) }?;
-        let bytes = next
-            .encode_topology_cbor()
-            .map_err(|e| BridgeError::invalid(e.to_string()))?;
-        if bytes.len() > phux_client_core::layout::MAX_LAYOUT_METADATA_BYTES {
-            return Err(BridgeError::state("layout metadata exceeds 256 KiB"));
-        }
-        start_read(client, input.request_id, Some((next, bytes)))?;
+        let next = unsafe { mutation::prepare(&client.arrangement, input) }?;
+        let proposal = super::propose(client, next)?;
+        start_read(client, input.request_id, Some(proposal))?;
         client.operations.consume_request_id(input.request_id);
         Ok(())
     })
@@ -62,52 +61,62 @@ pub unsafe extern "C" fn phux_client_workspace_mutate(
 /// # Safety
 /// Client is live and unmodified; output is initialized, writable and disjoint.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn phux_client_workspace_info(
+pub unsafe extern "C" fn phux_client_arrangement_info(
     client: *const PhuxClient,
-    out: *mut PhuxWorkspaceInfo,
+    out: *mut PhuxArrangementInfo,
 ) -> PhuxClientResult {
     with_client_ref(client, |client| {
         // SAFETY: caller supplies the writable output when non-null.
         let out = unsafe { out.as_mut() }.ok_or_else(|| BridgeError::invalid("output is null"))?;
-        check_struct(out.size, mem::size_of::<PhuxWorkspaceInfo>(), out.version)?;
-        let ws = &client.workspace;
-        *out = PhuxWorkspaceInfo {
+        check_struct(out.size, mem::size_of::<PhuxArrangementInfo>(), out.version)?;
+        let ws = &client.arrangement;
+        *out = PhuxArrangementInfo {
             revision: ws.revision,
             session_id: ws.selected,
             state: ws.state,
-            window_count: count(ws.topology.groups.len())?,
+            group_count: count(ws.topology.groups.len())?,
             node_count: count(ws.nodes.len())?,
             terminal_count: count(ws.catalog.terminals.len())?,
             request_id: ws.request,
             status: ws.status,
             message: bytes_out(&ws.message),
-            ..PhuxWorkspaceInfo::default()
+            backend: ws.backend_code(),
+            server_revision: ws.server_revision(),
+            session_key: super::selected_key(client).map_or([0; 16], |key| *key.as_bytes()),
+            arrangement_key: ws.stored_key_bytes(),
+            unarranged_count: count(ws.unarranged())?,
+            unplaced_count: count(ws.unplaced())?,
+            ..PhuxArrangementInfo::default()
         };
         Ok(())
     })
 }
 
-/// Read one stable shared window; its name is borrowed until mutation.
+/// Read one stable shared group; its name is borrowed until mutation.
 /// # Safety
 /// Client is live and unmodified; output is initialized, writable and disjoint.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn phux_client_workspace_window_get(
+pub unsafe extern "C" fn phux_client_arrangement_group_get(
     client: *const PhuxClient,
     index: usize,
-    out: *mut PhuxWorkspaceWindow,
+    out: *mut PhuxArrangementGroup,
 ) -> PhuxClientResult {
     with_client_ref(client, |client| {
         // SAFETY: caller supplies the writable output when non-null.
         let out = unsafe { out.as_mut() }.ok_or_else(|| BridgeError::invalid("output is null"))?;
-        check_struct(out.size, mem::size_of::<PhuxWorkspaceWindow>(), out.version)?;
-        *out = PhuxWorkspaceWindow::default();
-        let ws = &client.workspace;
-        let window = ws.topology.groups.get(index).ok_or_else(no_value)?;
-        *out = PhuxWorkspaceWindow {
-            window_id: window.id,
-            name: bytes_out(window.name.as_bytes()),
+        check_struct(
+            out.size,
+            mem::size_of::<PhuxArrangementGroup>(),
+            out.version,
+        )?;
+        *out = PhuxArrangementGroup::default();
+        let ws = &client.arrangement;
+        let group = ws.topology.groups.get(index).ok_or_else(no_value)?;
+        *out = PhuxArrangementGroup {
+            group_id: group.id,
+            name: bytes_out(group.name.as_bytes()),
             root_node: ws.roots[index],
-            ..PhuxWorkspaceWindow::default()
+            ..PhuxArrangementGroup::default()
         };
         Ok(())
     })
@@ -117,18 +126,18 @@ pub unsafe extern "C" fn phux_client_workspace_window_get(
 /// # Safety
 /// Client is live and unmodified; output is initialized, writable and disjoint.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn phux_client_workspace_node_get(
+pub unsafe extern "C" fn phux_client_arrangement_node_get(
     client: *const PhuxClient,
     index: usize,
-    out: *mut PhuxWorkspaceNode,
+    out: *mut PhuxArrangementNode,
 ) -> PhuxClientResult {
     with_client_ref(client, |client| {
         // SAFETY: caller supplies the writable output when non-null.
         let out = unsafe { out.as_mut() }.ok_or_else(|| BridgeError::invalid("output is null"))?;
-        check_struct(out.size, mem::size_of::<PhuxWorkspaceNode>(), out.version)?;
-        *out = PhuxWorkspaceNode::default();
-        let node = client.workspace.nodes.get(index).ok_or_else(no_value)?;
-        *out = PhuxWorkspaceNode {
+        check_struct(out.size, mem::size_of::<PhuxArrangementNode>(), out.version)?;
+        *out = PhuxArrangementNode::default();
+        let node = client.arrangement.nodes.get(index).ok_or_else(no_value)?;
+        *out = PhuxArrangementNode {
             kind: node.kind,
             terminal_id: node
                 .terminal
@@ -137,7 +146,7 @@ pub unsafe extern "C" fn phux_client_workspace_node_get(
             first: node.first,
             second: node.second,
             ratio: node.ratio,
-            ..PhuxWorkspaceNode::default()
+            ..PhuxArrangementNode::default()
         };
         Ok(())
     })
@@ -158,7 +167,7 @@ pub unsafe extern "C" fn phux_client_catalog_terminal_get(
         check_struct(out.size, mem::size_of::<PhuxCatalogTerminal>(), out.version)?;
         *out = PhuxCatalogTerminal::default();
         let terminal = client
-            .workspace
+            .arrangement
             .catalog
             .terminals
             .get(index)
@@ -175,7 +184,7 @@ pub unsafe extern "C" fn phux_client_catalog_terminal_get(
 }
 
 fn count(count: usize) -> Result<u32, BridgeError> {
-    u32::try_from(count).map_err(|_| BridgeError::state("workspace count overflow"))
+    u32::try_from(count).map_err(|_| BridgeError::state("arrangement count overflow"))
 }
 
 const fn no_value() -> BridgeError {

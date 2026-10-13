@@ -88,7 +88,7 @@ impl Listener for WakeBridge {
 /// runtime.
 ///
 /// The returned client is otherwise the `phux_client_new` client: the same
-/// effects, grid, operations and workspace calls apply, and it keeps the
+/// effects, grid, operations and arrangement calls apply, and it keeps the
 /// same owning-thread contract. `phux_client_feed_frame` and the
 /// `phux_client_outgoing_*` calls are the embedded lane's and refuse here.
 ///

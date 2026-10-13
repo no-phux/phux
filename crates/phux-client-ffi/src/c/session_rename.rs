@@ -17,10 +17,11 @@ use crate::c::client::Client;
 use crate::c::error::{BridgeError, bytes_in, check_struct};
 use crate::c::types::{PhuxBytes, bytes_out};
 use crate::c::{PhuxClient, PhuxClientResult, with_client_mut, with_client_ref};
+use phux_client_core::org_ops::OrgOutcome;
 use phux_client_core::rename::{
     BarrierVerdict, NamedSession, RenamePlan, barrier_verdict, plan_rename, rename_frames,
 };
-use phux_protocol::ids::SessionId;
+use phux_protocol::ids::{OperationId, SessionId};
 use phux_protocol::wire::frame::{CommandResult, CommandValue, FrameKind, SESSION_NAME_KEY, Scope};
 
 /// No rename has been asked on this client.
@@ -34,7 +35,7 @@ const STATUS_REFUSED: u32 = 3;
 /// The connection ended before the confirmation read was answered.
 const STATUS_UNKNOWN_OUTCOME: u32 = 4;
 
-/// A session name, as the workspace catalog bounds one.
+/// A session name, as the arrangement catalog bounds one.
 const MAX_NAME_BYTES: usize = 4096;
 
 /// The one rename this client may have outstanding, and what it has heard.
@@ -55,6 +56,9 @@ pub(crate) struct SessionRename {
     follow: bool,
     /// Bumped whenever a rename changed the session list in place.
     sessions_revision: u64,
+    /// The typed `SESSION_RENAME` this rename submitted, against a server
+    /// that advertises `ORGANIZATION`.
+    operation: Option<OperationId>,
 }
 
 impl Default for SessionRename {
@@ -70,6 +74,7 @@ impl Default for SessionRename {
             subscribed: false,
             follow: false,
             sessions_revision: 0,
+            operation: None,
         }
     }
 }
@@ -87,6 +92,7 @@ impl SessionRename {
     /// A pending rename can no longer be confirmed on this connection.
     pub(crate) fn disconnect(&mut self) {
         self.barrier = None;
+        self.operation = None;
         if self.pending() {
             self.settle(
                 STATUS_UNKNOWN_OUTCOME,
@@ -98,7 +104,7 @@ impl SessionRename {
 
 /// Consume a rename's frames: every `METADATA_CHANGED` of the rename key, a
 /// correlated refusal of the write, and the confirmation read's reply. Runs
-/// ahead of the workspace and operations dispatchers, which would read the
+/// ahead of the arrangement and operations dispatchers, which would read the
 /// first as a stray frame and the others as uncorrelated.
 pub(crate) fn dispatch(
     client: &mut Client,
@@ -156,7 +162,7 @@ fn applied(client: &mut Client, value: &[u8]) {
         return;
     }
     let current_owned = current.to_vec();
-    if crate::c::workspace::rename_sessions(client, |s| s.name == current_owned, new_name) {
+    if crate::c::arrangement::rename_sessions(client, |s| s.name == current_owned, new_name) {
         client.session_rename.sessions_revision += 1;
     }
     let rename = &mut client.session_rename;
@@ -207,7 +213,7 @@ fn confirmed(client: &mut Client, result: CommandResult) -> Result<(), BridgeErr
     let name = session.name.as_bytes().to_vec();
     // The server's name for it wins, whether or not a METADATA_CHANGED said so.
     if valid_name(&name).is_ok()
-        && crate::c::workspace::rename_sessions(client, |s| s.session_id == id, &name)
+        && crate::c::arrangement::rename_sessions(client, |s| s.session_id == id, &name)
     {
         client.session_rename.sessions_revision += 1;
     }
@@ -222,7 +228,7 @@ fn confirmed(client: &mut Client, result: CommandResult) -> Result<(), BridgeErr
     Ok(())
 }
 
-fn valid_name(name: &[u8]) -> Result<(), BridgeError> {
+pub(crate) fn valid_name(name: &[u8]) -> Result<(), BridgeError> {
     if name.is_empty() {
         return Err(BridgeError::invalid("a session name must not be empty"));
     }
@@ -284,12 +290,74 @@ fn queue_rename(
     new_name: &str,
 ) -> Result<(), BridgeError> {
     subscribe(client)?;
-    let barrier = client.workspace.reserve_internal()?;
+    let barrier = client.arrangement.reserve_internal()?;
     let (write, barrier_frame) = rename_frames(request_id, barrier, current, new_name);
     client.queue_frame(&write)?;
     client.queue_frame(&barrier_frame)?;
     client.session_rename.barrier = Some(barrier);
     Ok(())
+}
+
+/// Against a server that advertises `ORGANIZATION`, with the session's
+/// record in the replica, rename by the typed `SESSION_RENAME` at the
+/// record's revision. False when the legacy metadata path must carry it.
+fn submit_typed(client: &mut Client, session_id: u32, new_name: &str) -> Result<bool, BridgeError> {
+    if !crate::c::organization::live(client) {
+        return Ok(false);
+    }
+    let Some(key) = client
+        .sessions
+        .iter()
+        .find(|session| session.session_id == session_id)
+        .and_then(|session| session.key)
+    else {
+        return Ok(false);
+    };
+    let submitted = client.control().rename_session(key, new_name);
+    let Ok(operation) = submitted else {
+        return Ok(false);
+    };
+    client.session_rename.operation = Some(operation);
+    client.process_runtime_events()?;
+    Ok(true)
+}
+
+/// A typed rename resolved. True when `operation` was this client's rename.
+pub(crate) fn organization_resolved(
+    client: &mut Client,
+    operation: OperationId,
+    outcome: &OrgOutcome,
+) -> bool {
+    if client.session_rename.operation != Some(operation) {
+        return false;
+    }
+    client.session_rename.operation = None;
+    let resolution = crate::projection::organization::resolution(outcome);
+    match resolution.status {
+        crate::projection::organization::Status::Committed
+        | crate::projection::organization::Status::Accepted => {
+            let id = client.session_rename.session_id;
+            let name = client.session_rename.new_name.clone();
+            if crate::c::arrangement::rename_sessions(client, |s| s.session_id == id, &name) {
+                bump_sessions_revision(client);
+            }
+            client.session_rename.settle(STATUS_RENAMED, "");
+        }
+        crate::projection::organization::Status::Unknown => {
+            client
+                .session_rename
+                .settle(STATUS_UNKNOWN_OUTCOME, &resolution.message);
+        }
+        _ => client
+            .session_rename
+            .settle(STATUS_REFUSED, &resolution.message),
+    }
+    true
+}
+
+/// A rename, from this client or another, changed the session list in place.
+pub(crate) const fn bump_sessions_revision(client: &mut Client) {
+    client.session_rename.sessions_revision += 1;
 }
 
 /// Rename the session named `current` to `new_name` on the connected server.
@@ -345,6 +413,9 @@ pub unsafe extern "C" fn phux_client_rename_session(
             RenamePlan::Send { session_id } => {
                 rename.session_id = session_id.get();
                 rename.settle(STATUS_PENDING, "");
+                if submit_typed(client, session_id.get(), new_name_str)? {
+                    return Ok(());
+                }
                 if let Err(error) = queue_rename(client, request_id, current_name, new_name_str) {
                     client.session_rename.settle(STATUS_REFUSED, &error.message);
                     return Err(error);
@@ -445,7 +516,7 @@ mod tests {
                 window_count: 1,
                 attached_client_count: 0,
                 focused: id == 1,
-                keep_empty: false,
+                ..SessionSummary::default()
             })
             .collect();
         unsafe { (*client).inner.sessions = sessions };
@@ -577,7 +648,7 @@ mod tests {
             }
         );
         let barrier = barrier_of(&frames);
-        assert!(barrier >= crate::c::workspace::INTERNAL_START);
+        assert!(barrier >= crate::c::arrangement::INTERNAL_START);
         assert!(!frames.iter().any(|f| matches!(f, FrameKind::Attach { .. })));
 
         // The broadcast renames the list in place and settles the rename.

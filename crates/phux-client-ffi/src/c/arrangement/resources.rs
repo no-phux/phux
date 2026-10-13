@@ -69,7 +69,7 @@ pub(super) fn reconcile(
         withdraw(client, &id, true)?;
     }
     client
-        .workspace
+        .arrangement
         .subscriptions
         .pending
         .retain(|_, id| ids.contains(id));
@@ -78,14 +78,19 @@ pub(super) fn reconcile(
         .iter()
         // A federated GET_STATE may have captured its local contribution before
         // an explicit close that we already received. Durable closure wins.
-        .filter(|resource| !client.workspace.subscriptions.closed.contains(&resource.id))
-        .map(crate::c::client::resource_summary)
+        .filter(|resource| !client.arrangement.subscriptions.closed.contains(&resource.id))
+        .map(|resource| crate::c::client::resource_summary(snapshot, resource))
         .collect();
     for resource in &snapshot.resources {
-        if client.workspace.subscriptions.closed.contains(&resource.id) {
+        if client
+            .arrangement
+            .subscriptions
+            .closed
+            .contains(&resource.id)
+        {
             continue;
         }
-        if subscribable(resource, catalog, client.workspace.selected) {
+        if subscribable(resource, catalog, client.arrangement.selected) {
             subscribe(client, resource)?;
         }
     }
@@ -103,10 +108,10 @@ fn subscribable(resource: &ResourceInfo, catalog: &Catalog, selected: u32) -> bo
 fn subscribe(client: &mut Client, resource: &ResourceInfo) -> Result<(), BridgeError> {
     // A committed publication can be replayed before this connection subscribes.
     // Its generation is display metadata, never evidence of a live subscription.
-    if client.workspace.subscriptions.contains(&resource.id) {
+    if client.arrangement.subscriptions.contains(&resource.id) {
         return Ok(());
     }
-    if client.outgoing.len() >= 128 || client.workspace.subscriptions.pending.len() >= 128 {
+    if client.outgoing.len() >= 128 || client.arrangement.subscriptions.pending.len() >= 128 {
         return Ok(());
     }
     let facet = resource.agent.as_ref();
@@ -127,11 +132,11 @@ fn subscribe(client: &mut Client, resource: &ResourceInfo) -> Result<(), BridgeE
         .entry(resource.id.clone())
         .or_insert(None);
     client
-        .workspace
+        .arrangement
         .subscriptions
         .withdrawn
         .remove(&resource.id);
-    let request_id = client.workspace.reserve_internal()?;
+    let request_id = client.arrangement.reserve_internal()?;
     let role_policy = client.next_attach_role();
     let agent_after_seq = client.control().agent_after_seq(&resource.id);
     client.queue_frame(&FrameKind::Command {
@@ -139,7 +144,7 @@ fn subscribe(client: &mut Client, resource: &ResourceInfo) -> Result<(), BridgeE
         command: Command::attach_agent_session(resource.id.clone(), role_policy, agent_after_seq),
     })?;
     client
-        .workspace
+        .arrangement
         .subscriptions
         .pending
         .insert(request_id, resource.id.clone());
@@ -153,11 +158,11 @@ fn receive_reply(
     request_id: u32,
     result: &CommandResult,
 ) -> Result<bool, BridgeError> {
-    let Some(id) = client.workspace.subscriptions.pending.remove(&request_id) else {
+    let Some(id) = client.arrangement.subscriptions.pending.remove(&request_id) else {
         return Ok(false);
     };
     if matches!(result, CommandResult::Ok) {
-        client.workspace.subscriptions.confirmed.insert(id);
+        client.arrangement.subscriptions.confirmed.insert(id);
         return Ok(true);
     }
     // Refusal is not authoritative resource closure. Withdraw only admission;
@@ -170,7 +175,7 @@ fn receive_reply(
 }
 
 fn withdraw(client: &mut Client, id: &ResourceId, notify: bool) -> Result<(), BridgeError> {
-    client.workspace.subscriptions.cancel(id);
+    client.arrangement.subscriptions.cancel(id);
     if let Some(stream) = client.agent_streams.remove(id)
         && notify
     {
@@ -196,11 +201,15 @@ fn withdraw(client: &mut Client, id: &ResourceId, notify: bool) -> Result<(), Br
     if !released {
         return Err(BridgeError::state("cannot release agent subscription"));
     }
-    client.workspace.subscriptions.withdrawn.insert(id.clone());
+    client
+        .arrangement
+        .subscriptions
+        .withdrawn
+        .insert(id.clone());
     Ok(())
 }
 
-/// Route independently of the workspace transaction's failure handler, including
+/// Route independently of the arrangement transaction's failure handler, including
 /// malformed subscription replies while a newer host mutation is in flight.
 pub(crate) fn dispatch(client: &mut Client, frame: &FrameKind) -> Result<bool, BridgeError> {
     match frame {

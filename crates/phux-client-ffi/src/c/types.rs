@@ -3,7 +3,7 @@ use std::ptr;
 
 use phux_protocol::ResourceId;
 
-pub const ABI_VERSION: u32 = 2;
+pub const ABI_VERSION: u32 = 3;
 /// The cell flag word's bits are core's (`phux_client_core::grid`, ADR-0133
 /// decision 3); the C names in `include/phux/client.h` match them, pinned by
 /// core's layout tests.
@@ -118,6 +118,14 @@ pub struct PhuxResourceInfo {
     pub provider: PhuxBytes,
     pub native_id: PhuxBytes,
     pub state: PhuxBytes,
+    /// The live session it belongs to; 0 when the snapshot names none.
+    pub session_id: u32,
+    /// Its grid size; 0 for kinds without a grid.
+    pub cols: u16,
+    pub rows: u16,
+    /// Its persistent key from the organization replica; all zero when
+    /// unknown.
+    pub key: [u8; 16],
 }
 
 impl Default for PhuxResourceInfo {
@@ -131,6 +139,10 @@ impl Default for PhuxResourceInfo {
             provider: PhuxBytes::default(),
             native_id: PhuxBytes::default(),
             state: PhuxBytes::default(),
+            session_id: 0,
+            cols: 0,
+            rows: 0,
+            key: [0; 16],
         }
     }
 }

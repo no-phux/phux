@@ -1,7 +1,8 @@
 //! Allocation-bounded catalog/topology projection, independent of replicas.
 use std::collections::{HashMap, HashSet};
 
-use phux_client_core::layout::{self, ArrangementDoc, Group, LayoutNode, LayoutState};
+use phux_client_core::layout::{self, ArrangementDoc, Group, LayoutNode};
+use phux_protocol::wire::frame::SessionLifetime;
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
 use phux_protocol::{ResourceId, ResourceKind, SessionId, WindowId};
 
@@ -9,7 +10,7 @@ use crate::c::client::SessionSummary;
 use crate::c::error::BridgeError;
 
 pub(super) const MAX_TEXT: usize = 4096;
-pub(super) const MAX_WINDOWS: usize = 32;
+pub(super) const MAX_GROUPS: usize = 32;
 pub(super) const MAX_NODES: usize = 512;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -33,6 +34,20 @@ pub(super) struct Node {
 pub(super) struct Catalog {
     pub sessions: Vec<SessionSummary>,
     pub terminals: Vec<CatalogTerminal>,
+}
+
+/// The session a snapshot resource belongs to: its `session` facet, or from
+/// a server that predates it, the session of its legacy window. A satellite
+/// resource without the facet has no session here: satellite window IDs are
+/// not keys in this server's registry.
+fn session_of(owners: &HashMap<WindowId, u32>, resource: &ResourceInfo) -> u32 {
+    if let Some(session) = resource.session {
+        return session.get();
+    }
+    match resource.id {
+        ResourceId::Local { .. } => owners.get(&resource.window_id).copied().unwrap_or(0),
+        ResourceId::Satellite { .. } => 0,
+    }
 }
 
 impl Catalog {
@@ -60,10 +75,20 @@ impl Catalog {
             .iter()
             .map(|w| (w.id, w.session_id.get()))
             .collect();
+        let mut members: HashMap<u32, u32> = HashMap::new();
+        for resource in &snapshot.resources {
+            let session = session_of(&owners, resource);
+            if session != 0 {
+                *members.entry(session).or_default() += 1;
+            }
+        }
         let mut sessions = snapshot
             .sessions
             .into_iter()
-            .map(|s| session_summary(s, selected))
+            .map(|s| {
+                let count = members.get(&s.id.get()).copied().unwrap_or(0);
+                session_summary(s, selected, count)
+            })
             .collect::<Result<Vec<_>, BridgeError>>()?;
         let mut terminals = snapshot
             .resources
@@ -93,30 +118,30 @@ impl Catalog {
         })
     }
 
-    pub(super) fn fallback(&self, selected: u32) -> ArrangementDoc {
-        let mut terminals: Vec<_> = self
-            .terminals
+    /// Terminals of `selected` that no group of `doc` shows.
+    pub(super) fn unarranged(&self, doc: &ArrangementDoc, selected: u32) -> usize {
+        let placed: HashSet<ResourceId> = doc
+            .groups
             .iter()
-            .filter(|t| t.session == selected)
+            .filter_map(|group| group.state.tree.as_ref())
+            .flat_map(layout::leaves)
             .collect();
-        terminals.sort_by_key(|t| t.id.local_id());
-        ArrangementDoc {
-            groups: terminals
-                .into_iter()
-                .map(|t| {
-                    Group::new(
-                        t.id.local_id().unwrap_or_default().to_string(),
-                        LayoutState::single(t.id.clone()),
-                    )
-                })
-                .collect(),
-            active: 0,
-        }
+        self.terminals
+            .iter()
+            .filter(|t| t.session == selected && !placed.contains(&t.id))
+            .count()
     }
 }
 
-fn session_summary(session: SessionInfo, selected: u32) -> Result<SessionSummary, BridgeError> {
+fn session_summary(
+    session: SessionInfo,
+    selected: u32,
+    snapshot_members: u32,
+) -> Result<SessionSummary, BridgeError> {
     text(&session.name)?;
+    let keep_empty = session.lifetime.map_or(session.keep_empty, |lifetime| {
+        lifetime == SessionLifetime::Persistent
+    });
     Ok(SessionSummary {
         session_id: session.id.get(),
         name: session.name.into_bytes(),
@@ -124,7 +149,15 @@ fn session_summary(session: SessionInfo, selected: u32) -> Result<SessionSummary
         window_count: session.window_count,
         attached_client_count: session.attached_client_count,
         focused: session.id.get() == selected,
-        keep_empty: session.keep_empty,
+        keep_empty,
+        key: session.key,
+        key_text: session
+            .key
+            .map(|key| key.to_string().into_bytes())
+            .unwrap_or_default(),
+        lifetime: session.lifetime,
+        snapshot_members,
+        org: crate::c::organization::SessionOrg::default(),
     })
 }
 
@@ -133,15 +166,11 @@ fn catalog_terminal(
     owners: &HashMap<WindowId, u32>,
 ) -> Result<CatalogTerminal, BridgeError> {
     terminal(&pane.id)?;
+    let session = session_of(owners, &pane);
     let title = pane.title.unwrap_or_default();
     let cwd = pane.cwd.unwrap_or_default();
     text(&title)?;
     text(&cwd)?;
-    // Satellite numeric window IDs are not keys in this server's registry.
-    let session = match pane.id {
-        ResourceId::Local { .. } => owners.get(&pane.window_id).copied().unwrap_or(0),
-        ResourceId::Satellite { .. } => 0,
-    };
     Ok(CatalogTerminal {
         id: pane.id,
         session,
@@ -153,7 +182,7 @@ fn catalog_terminal(
 pub(super) fn text(value: &str) -> Result<(), BridgeError> {
     if value.len() > MAX_TEXT || value.contains('\0') {
         return Err(BridgeError::invalid(
-            "workspace text exceeds 4096 bytes or contains NUL",
+            "arrangement text exceeds 4096 bytes or contains NUL",
         ));
     }
     Ok(())
@@ -165,7 +194,9 @@ fn terminal(id: &ResourceId) -> Result<(), BridgeError> {
         ResourceId::Satellite { host, id } if *id != 0 && !host.as_str().is_empty() => {
             text(host.as_str())
         }
-        _ => Err(BridgeError::invalid("invalid workspace terminal identity")),
+        _ => Err(BridgeError::invalid(
+            "invalid arrangement terminal identity",
+        )),
     }
 }
 
@@ -180,26 +211,26 @@ fn unique<T: Eq + std::hash::Hash>(
     Ok(())
 }
 
-pub(super) fn flatten(workspace: &ArrangementDoc) -> Result<(Vec<Node>, Vec<u32>), BridgeError> {
-    if workspace.groups.len() > MAX_WINDOWS {
-        return Err(BridgeError::state("workspace exceeds 32 windows"));
+pub(super) fn flatten(arrangement: &ArrangementDoc) -> Result<(Vec<Node>, Vec<u32>), BridgeError> {
+    if arrangement.groups.len() > MAX_GROUPS {
+        return Err(BridgeError::state("arrangement exceeds 32 groups"));
     }
     unique(
-        workspace.groups.iter().map(|w| w.id),
-        "duplicate layout window identity",
+        arrangement.groups.iter().map(|w| w.id),
+        "duplicate arrangement group identity",
     )?;
     let mut nodes = Vec::new();
     let mut roots = Vec::new();
-    for window in &workspace.groups {
-        if window.id == [0; 16] {
-            return Err(BridgeError::invalid("unseeded layout window identity"));
+    for group in &arrangement.groups {
+        if group.id == [0; 16] {
+            return Err(BridgeError::invalid("unseeded arrangement group identity"));
         }
-        text(&window.name)?;
-        let tree = window
+        text(&group.name)?;
+        let tree = group
             .state
             .tree
             .as_ref()
-            .ok_or_else(|| BridgeError::invalid("empty window"))?;
+            .ok_or_else(|| BridgeError::invalid("empty group"))?;
         roots.push(flatten_node(tree, &mut nodes, 0)?);
     }
     unique(
@@ -215,7 +246,9 @@ fn flatten_node(
     depth: usize,
 ) -> Result<u32, BridgeError> {
     if nodes.len() >= MAX_NODES || depth > 64 {
-        return Err(BridgeError::state("workspace node/depth capacity exceeded"));
+        return Err(BridgeError::state(
+            "arrangement node/depth capacity exceeded",
+        ));
     }
     let index =
         u32::try_from(nodes.len()).map_err(|_| BridgeError::state("node index overflow"))?;
@@ -273,33 +306,38 @@ const fn direction(dir: layout::SplitDir) -> u32 {
     }
 }
 
+/// Decode the legacy layout metadata value; an absent value is an empty
+/// arrangement (the session is not arranged yet), never a synthesized one.
+pub(super) fn decode_legacy(bytes: Option<&[u8]>) -> Result<ArrangementDoc, BridgeError> {
+    let Some(bytes) = bytes else {
+        return Ok(ArrangementDoc::new());
+    };
+    if bytes.len() > layout::MAX_LAYOUT_METADATA_BYTES {
+        return Err(BridgeError::state("layout metadata exceeds 256 KiB"));
+    }
+    ArrangementDoc::decode_cbor(bytes).map_err(|e| BridgeError::invalid(e.to_string()))
+}
+
+/// Validate a read arrangement, drop leaves the catalog does not hold, and
+/// keep this client's focus and active group where they still exist.
 pub(super) fn adopt(
-    bytes: Option<&[u8]>,
+    mut arrangement: ArrangementDoc,
     previous: &ArrangementDoc,
     catalog: &Catalog,
     selected: u32,
 ) -> Result<ArrangementDoc, BridgeError> {
-    let mut workspace = match bytes {
-        Some(bytes) => {
-            if bytes.len() > layout::MAX_LAYOUT_METADATA_BYTES {
-                return Err(BridgeError::state("layout metadata exceeds 256 KiB"));
-            }
-            ArrangementDoc::decode_cbor(bytes).map_err(|e| BridgeError::invalid(e.to_string()))?
-        }
-        None => catalog.fallback(selected),
-    };
     // Validate the entire input before pruning; capacity must never silently truncate.
-    flatten(&workspace)?;
-    for window in &mut workspace.groups {
-        prune_window(window, catalog, selected);
+    flatten(&arrangement)?;
+    for group in &mut arrangement.groups {
+        prune_group(group, catalog, selected);
     }
-    workspace.prune_empty_groups();
-    preserve_focus(&mut workspace, previous);
-    Ok(workspace)
+    arrangement.prune_empty_groups();
+    preserve_focus(&mut arrangement, previous);
+    Ok(arrangement)
 }
 
-fn prune_window(window: &mut Group, catalog: &Catalog, selected: u32) {
-    let Some(tree) = &window.state.tree else {
+fn prune_group(group: &mut Group, catalog: &Catalog, selected: u32) {
+    let Some(tree) = &group.state.tree else {
         return;
     };
     let retired: Vec<_> = layout::leaves(tree)
@@ -307,21 +345,21 @@ fn prune_window(window: &mut Group, catalog: &Catalog, selected: u32) {
         .filter(|id| !catalog.allows(id, selected))
         .collect();
     for id in retired {
-        if let Some(tree) = &window.state.tree {
-            window.state.tree = layout::kill_pane(tree, &id).ok().flatten();
+        if let Some(tree) = &group.state.tree {
+            group.state.tree = layout::kill_pane(tree, &id).ok().flatten();
         }
     }
 }
 
-pub(super) fn preserve_focus(workspace: &mut ArrangementDoc, previous: &ArrangementDoc) {
-    let active = previous.groups.get(previous.active).map(|w| w.id);
-    workspace.active = workspace
+pub(super) fn preserve_focus(arrangement: &mut ArrangementDoc, previous: &ArrangementDoc) {
+    let active = previous.groups.get(previous.active).map(|g| g.id);
+    arrangement.active = arrangement
         .groups
         .iter()
-        .position(|w| Some(w.id) == active)
+        .position(|g| Some(g.id) == active)
         .unwrap_or(0);
-    for window in &mut workspace.groups {
-        let leaves = window
+    for group in &mut arrangement.groups {
+        let leaves = group
             .state
             .tree
             .as_ref()
@@ -330,9 +368,9 @@ pub(super) fn preserve_focus(workspace: &mut ArrangementDoc, previous: &Arrangem
         let old_focus = previous
             .groups
             .iter()
-            .find(|w| w.id == window.id)
-            .and_then(|w| w.state.focus.as_ref());
-        window.state.focus = old_focus
+            .find(|g| g.id == group.id)
+            .and_then(|g| g.state.focus.as_ref());
+        group.state.focus = old_focus
             .filter(|id| leaves.contains(id))
             .cloned()
             .or_else(|| leaves.first().cloned());

@@ -11,6 +11,7 @@
     reason = "this private module is the crate root of the C lane; its `pub(crate)` helpers are shared with its own submodules"
 )]
 
+mod arrangement;
 mod client;
 mod connect;
 mod directory;
@@ -19,6 +20,7 @@ mod grid_metadata;
 mod inbound;
 mod log;
 mod operations;
+mod organization;
 mod path;
 mod pointer;
 mod projection;
@@ -29,7 +31,6 @@ mod session_rename;
 #[cfg(test)]
 mod test_support;
 mod types;
-mod workspace;
 
 use std::mem;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -50,11 +51,13 @@ use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, ViewportInfo};
 
+pub use arrangement::*;
 pub use connect::*;
 pub use directory::*;
 pub use grid_metadata::*;
 pub use log::*;
 pub use operations::*;
+pub use organization::*;
 pub use path::*;
 pub use pointer::{
     PhuxSelectionGestureEvent, PhuxSelectionGestureResult, phux_client_selection_gesture,
@@ -67,7 +70,6 @@ pub use session_create::*;
 pub use session_query::*;
 pub use session_rename::*;
 pub use types::*;
-pub use workspace::*;
 
 #[repr(C)]
 pub struct PhuxClient {
@@ -649,13 +651,13 @@ fn consume_retired_close(client: &mut Client, frame: &FrameKind) -> bool {
     let FrameKind::ResourceClosed { terminal_id, .. } = frame else {
         return false;
     };
-    if !client.workspace.subscriptions.was_withdrawn(terminal_id)
-        && !client.workspace.subscriptions.was_closed(terminal_id)
+    if !client.arrangement.subscriptions.was_withdrawn(terminal_id)
+        && !client.arrangement.subscriptions.was_closed(terminal_id)
     {
         return false;
     }
-    client.workspace.subscriptions.cancel(terminal_id);
-    client.workspace.subscriptions.mark_closed(terminal_id);
+    client.arrangement.subscriptions.cancel(terminal_id);
+    client.arrangement.subscriptions.mark_closed(terminal_id);
     client
         .resources
         .retain(|resource| &resource.id != terminal_id);
@@ -696,8 +698,8 @@ fn validate_runtime_frame(client: &Client, frame: &FrameKind) -> Result<(), Brid
     };
     if let Some(terminal) = terminal {
         let retired_close = matches!(frame, FrameKind::ResourceClosed { .. })
-            && (client.workspace.subscriptions.was_withdrawn(terminal)
-                || client.workspace.subscriptions.was_closed(terminal));
+            && (client.arrangement.subscriptions.was_withdrawn(terminal)
+                || client.arrangement.subscriptions.was_closed(terminal));
         if !retired_close {
             client.ensure_participant(terminal)?;
         }
@@ -722,10 +724,13 @@ fn dispatch_extension_frame(client: &mut Client, frame: FrameKind) -> Result<(),
     let Some(frame) = projection::dispatch(client, frame) else {
         return Ok(());
     };
-    if workspace::resources::dispatch(client, &frame)? {
+    let Some(frame) = operations::dispatch_parts(client, frame)? else {
+        return Ok(());
+    };
+    if arrangement::resources::dispatch(client, &frame)? {
         return Ok(());
     }
-    let Some(frame) = workspace::dispatch(client, frame) else {
+    let Some(frame) = arrangement::dispatch(client, frame) else {
         return Ok(());
     };
     let _ = operations::dispatch(client, frame)?;
@@ -793,7 +798,7 @@ pub unsafe extern "C" fn phux_client_session_get(
 
 /// Returns the number of resources in the latest accepted inventory.
 ///
-/// An ATTACHED or workspace `GET_STATE` snapshot replaces membership; a resource
+/// An ATTACHED or arrangement `GET_STATE` snapshot replaces membership; a resource
 /// closure removes an entry. Zero means either no
 /// snapshot has arrived or the client pointer is invalid.
 ///
@@ -832,6 +837,10 @@ pub unsafe extern "C" fn phux_client_resource_get(
             provider: bytes_out(&resource.provider),
             native_id: bytes_out(&resource.native_id),
             state: bytes_out(&resource.state),
+            session_id: resource.session_id,
+            cols: resource.cols,
+            rows: resource.rows,
+            key: resource.key,
             ..PhuxResourceInfo::default()
         })
     })
@@ -2590,10 +2599,10 @@ mod tests {
     }
 
     #[test]
-    fn native_workspace_negotiates_metadata_before_issuing_layout_reads() {
+    fn native_arrangement_negotiates_metadata_before_issuing_layout_reads() {
         let client = new_client();
         assert_eq!(
-            unsafe { phux_client_queue_hello(client, bytes_out(b"workspace")) },
+            unsafe { phux_client_queue_hello(client, bytes_out(b"arrangement")) },
             PhuxClientResult::Ok
         );
         let state = unsafe { &*client };

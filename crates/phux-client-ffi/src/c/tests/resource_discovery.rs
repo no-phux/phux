@@ -33,9 +33,23 @@ fn outgoing(client: *mut PhuxClient) -> Vec<FrameKind> {
     }
 }
 
+/// Answer an arrangement read: the registry, and a stored arrangement that
+/// shows the mixed snapshot's terminal as one tab.
 fn answer_read(client: *mut PhuxClient, snapshot: SessionSnapshot) {
     let requests = outgoing(client);
-    answer_requests(client, &requests, snapshot, None);
+    let tab = phux_client_core::layout::ArrangementDoc {
+        groups: vec![phux_client_core::layout::Group::new(
+            "main".to_owned(),
+            phux_client_core::layout::LayoutState::single(ResourceId::local(MIXED_TERMINAL)),
+        )],
+        active: 0,
+    };
+    answer_requests(
+        client,
+        &requests,
+        snapshot,
+        Some(tab.encode_cbor().unwrap()),
+    );
 }
 
 fn answer_requests(
@@ -81,7 +95,7 @@ fn answer_requests(
 fn refresh(client: *mut PhuxClient, request: u32, snapshot: SessionSnapshot) {
     // SAFETY: fixture owns a live exclusive client.
     assert_eq!(
-        unsafe { phux_client_workspace_refresh(client, request) },
+        unsafe { phux_client_arrangement_refresh(client, request) },
         PhuxClientResult::Ok
     );
     answer_read(client, snapshot);
@@ -423,11 +437,11 @@ fn agent_discovery_does_not_spend_dynamic_terminal_admission() {
     }
 }
 
-fn workspace_info(client: *mut PhuxClient) -> PhuxWorkspaceInfo {
-    let mut info = PhuxWorkspaceInfo::default();
+fn arrangement_info(client: *mut PhuxClient) -> PhuxArrangementInfo {
+    let mut info = PhuxArrangementInfo::default();
     // SAFETY: fixture owns the client and the disjoint output record.
     assert_eq!(
-        unsafe { phux_client_workspace_info(client, &raw mut info) },
+        unsafe { phux_client_arrangement_info(client, &raw mut info) },
         PhuxClientResult::Ok
     );
     info
@@ -451,12 +465,12 @@ fn subscription_refusal(request_id: u32, standalone_error: bool) -> FrameKind {
 }
 
 #[test]
-fn older_subscription_refusal_does_not_cancel_a_newer_workspace_mutation() {
+fn older_subscription_refusal_does_not_cancel_a_newer_arrangement_mutation() {
     assert_subscription_refusal_preserves_mutation(false);
 }
 
 #[test]
-fn older_subscription_error_frame_does_not_cancel_a_newer_workspace_mutation() {
+fn older_subscription_error_frame_does_not_cancel_a_newer_arrangement_mutation() {
     assert_subscription_refusal_preserves_mutation(true);
 }
 
@@ -465,25 +479,25 @@ fn assert_subscription_refusal_preserves_mutation(standalone_error: bool) {
     answer_read(client, snapshot(false));
     refresh(client, 1, snapshot(true));
     let subscription_id = subscription(client);
-    let before = workspace_info(client);
+    let before = arrangement_info(client);
     // SAFETY: fixture owns this live client and all borrowed options/output spans.
     unsafe {
-        let mut window = PhuxWorkspaceWindow::default();
+        let mut window = PhuxArrangementGroup::default();
         assert_eq!(
-            phux_client_workspace_window_get(client, 0, &raw mut window),
+            phux_client_arrangement_group_get(client, 0, &raw mut window),
             PhuxClientResult::Ok
         );
-        let mutation = PhuxWorkspaceMutation {
+        let mutation = PhuxArrangementMutation {
             request_id: 2,
             expected_revision: before.revision,
             session_id: before.session_id,
             kind: 6,
-            window_id: window.window_id,
+            group_id: window.group_id,
             name: bytes_out(b"confirmed rename"),
-            ..PhuxWorkspaceMutation::default()
+            ..PhuxArrangementMutation::default()
         };
         assert_eq!(
-            phux_client_workspace_mutate(client, &raw const mutation),
+            phux_client_arrangement_mutate(client, &raw const mutation),
             PhuxClientResult::Ok
         );
         let requests = outgoing(client);
@@ -500,17 +514,17 @@ fn assert_subscription_refusal_preserves_mutation(standalone_error: bool) {
             ),
             PhuxClientResult::Ok
         );
-        let pending = workspace_info(client);
+        let pending = arrangement_info(client);
         assert_eq!(
             (pending.request_id, pending.status),
             (2, 1),
-            "an older subscription failure must not fail workspace request 2"
+            "an older subscription failure must not fail arrangement request 2"
         );
         assert_eq!(pending.revision, before.revision);
         // Independent server-confirmation fixture, not a replay of the outgoing SET bytes.
         let confirmed = phux_client_core::layout::ArrangementDoc {
             groups: vec![phux_client_core::layout::Group {
-                id: window.window_id,
+                id: window.group_id,
                 name: "confirmed rename".into(),
                 state: phux_client_core::layout::LayoutState::single(ResourceId::local(
                     MIXED_TERMINAL,
@@ -524,11 +538,11 @@ fn assert_subscription_refusal_preserves_mutation(standalone_error: bool) {
             snapshot(true),
             Some(confirmed.encode_topology_cbor().unwrap()),
         );
-        let completed = workspace_info(client);
+        let completed = arrangement_info(client);
         assert_eq!((completed.request_id, completed.status), (2, 2));
         assert!(completed.revision > before.revision);
         assert_eq!(
-            phux_client_workspace_window_get(client, 0, &raw mut window),
+            phux_client_arrangement_group_get(client, 0, &raw mut window),
             PhuxClientResult::Ok
         );
         assert_eq!(span_bytes(window.name), b"confirmed rename");
@@ -697,7 +711,7 @@ fn assert_closed_agent_precedes_stale_inventory(withdraw_first: bool) {
     // SAFETY: fixture owns this client and output records through final free.
     unsafe {
         assert_eq!(
-            phux_client_workspace_refresh(client, 2),
+            phux_client_arrangement_refresh(client, 2),
             PhuxClientResult::Ok
         );
         let requests = outgoing(client);
@@ -716,7 +730,7 @@ fn assert_closed_agent_precedes_stale_inventory(withdraw_first: bool) {
             PhuxClientResult::Ok
         );
         answer_requests(client, &requests, stale, None);
-        let info = workspace_info(client);
+        let info = arrangement_info(client);
         assert_eq!(
             (info.request_id, info.status),
             (2, 2),
@@ -959,7 +973,7 @@ fn c_failed_resume_does_not_publish_suffix_or_replace_committed_generation() {
 }
 
 #[test]
-fn c_workspace_reconnect_cursor_comes_from_the_same_incarnations_committed_runtime_log() {
+fn c_arrangement_reconnect_cursor_comes_from_the_same_incarnations_committed_runtime_log() {
     use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExtSet};
     for (same_incarnation, supports_resume, expected) in [
         (true, true, Some(3)),

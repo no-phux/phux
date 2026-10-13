@@ -1,6 +1,6 @@
 //! Intentional pane termination, distinct from abandoned-spawn cleanup.
 
-use phux_protocol::wire::frame::KillConditions;
+use phux_protocol::wire::frame::{KillConditions, TerminateMode};
 
 use super::{
     BridgeError, Client, Command, FrameKind, KillPrecondition, MAX_DYNAMIC_TERMINALS, Operations,
@@ -38,9 +38,13 @@ pub unsafe extern "C" fn phux_client_queue_close_resource(
         valid_terminal(&id)?;
         ensure_queue_capacity(client, request_id)?;
         ensure_close_owner(client, &id)?;
+        let command = match terminate_command(client, &id) {
+            Some(command) => command,
+            None => close_command(client, &id)?,
+        };
         client.queue_frame(&FrameKind::Command {
             request_id,
-            command: close_command(client, &id)?,
+            command,
         })?;
         client
             .operations
@@ -97,11 +101,7 @@ pub unsafe extern "C" fn phux_client_queue_close_tab_resources(
     count: usize,
 ) -> PhuxClientResult {
     // SAFETY: same readable-array contract as documented on this symbol.
-    unsafe {
-        queue_close_batch(client, request_id, terminal_ids, count, |ids| {
-            Command::CloseTabResources { ids }
-        })
-    }
+    unsafe { queue_close_batch_terminating(client, request_id, terminal_ids, count) }
 }
 
 /// Whether `HELLO_OK` advertised `CLOSE_TAB_RESOURCES`.
@@ -228,4 +228,86 @@ fn close_command(client: &Client, id: &ResourceId) -> Result<Command, BridgeErro
             "satellite close requires an instance-bound resource; no safe incarnation fence",
         )),
     }
+}
+
+/// `RESOURCE_TERMINATE` of `id`'s current activation, against a server that
+/// advertises `ORGANIZATION` whose replica holds `id`'s record. `None` means
+/// the legacy kill: no `ORGANIZATION`, no record yet, or a satellite, whose
+/// teardown keeps the instance-fenced `KILL_RESOURCE_IF`.
+fn terminate_command(client: &Client, id: &ResourceId) -> Option<Command> {
+    if matches!(id, ResourceId::Satellite { .. }) || !crate::c::organization::live(client) {
+        return None;
+    }
+    let target = {
+        let control = client.control();
+        control
+            .organization()
+            .resource_by_live(id)
+            .and_then(phux_client_core::org_ops::live_target)?
+    };
+    Some(Command::ResourceTerminate {
+        operation: phux_client_runtime::control::mint_operation(),
+        target,
+        mode: TerminateMode::Graceful,
+    })
+}
+
+/// `phux_client_queue_close_tab_resources`: against a server that
+/// advertises `ORGANIZATION`, terminate each terminal on its own
+/// (`RESOURCE_TERMINATE`, the first on `request_id` and the rest on
+/// bridge-internal ids); the server leaves membership and arrangement to the
+/// resources' exit policies. Otherwise one atomic `CLOSE_TAB_RESOURCES`.
+unsafe fn queue_close_batch_terminating(
+    client: *mut PhuxClient,
+    request_id: u32,
+    terminal_ids: *const PhuxResourceId,
+    count: usize,
+) -> PhuxClientResult {
+    with_client_mut(client, |client| {
+        client.ensure_attached()?;
+        ensure_queue_capacity(client, request_id)?;
+        // SAFETY: forwards the readable array and spans contract.
+        let ids = unsafe { close_ids_in(client, terminal_ids, count) }?;
+        let commands: Option<Vec<Command>> =
+            ids.iter().map(|id| terminate_command(client, id)).collect();
+        let Some(commands) = commands else {
+            client.queue_frame(&FrameKind::Command {
+                request_id,
+                command: Command::CloseTabResources { ids: ids.clone() },
+            })?;
+            client
+                .operations
+                .insert(request_id, Pending::CloseMany(PendingClose::new(ids)));
+            return Ok(());
+        };
+        if client.outgoing.len() + commands.len() > MAX_DYNAMIC_TERMINALS {
+            return Err(BridgeError::state(
+                "outgoing queue is full; drain outgoing frames before closing",
+            ));
+        }
+        let mut frame_ids = Vec::with_capacity(commands.len());
+        frame_ids.push(request_id);
+        for _ in 1..commands.len() {
+            frame_ids.push(client.arrangement.reserve_internal()?);
+        }
+        let before = client.outgoing.len();
+        for (frame_id, command) in frame_ids.iter().zip(commands) {
+            if let Err(error) = client.queue_frame(&FrameKind::Command {
+                request_id: *frame_id,
+                command,
+            }) {
+                client.outgoing.truncate(before);
+                return Err(error);
+            }
+        }
+        let acks = frame_ids.len();
+        for part in &frame_ids[1..] {
+            client.operations.parts.insert(*part, request_id);
+        }
+        client.operations.insert(
+            request_id,
+            Pending::CloseMany(PendingClose::with_acks(ids, acks)),
+        );
+        Ok(())
+    })
 }
