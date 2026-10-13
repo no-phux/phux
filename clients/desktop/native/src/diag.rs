@@ -1,0 +1,373 @@
+//! Diagnostics: one place every layer reports into.
+//!
+//! - **Log.** `log` records go to stderr and to `~/Library/Logs/phux-desktop.log`
+//!   (`PHUX_DESKTOP_LOG` overrides the path; `RUST_LOG`-style level in
+//!   `PHUX_DESKTOP_LOG_LEVEL`, default `info`).
+//! - **Metrics.** [`crate::perf`] owns the always-on counters and histograms;
+//!   this module adds the window-level rows (`desktop.frame`, `desktop.drain*`)
+//!   and samples everything into `perf.jsonl` once a second when `--evidence`
+//!   is set.
+//! - **Evidence.** With `--evidence DIR`, the first frame GPUI reports as
+//!   drawable-presented on a visible window, with at least one painted
+//!   terminal, is written as `presented.png` (an offscreen render of that
+//!   exact scene), `layout.json` and `interaction.json`. `--smoke` then exits
+//!   0. Nothing here writes a success flag: the files are the proof, and a
+//!   qualification harness checks them.
+//!
+//! Windows never activate under `--evidence`, so qualification runs do not
+//! steal focus from the person at the machine.
+
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use gpui::{App, Global, Window};
+use phux_perf::{Counter, Histogram, Metric, Unit};
+use serde_json::json;
+
+/// Microseconds the window spent building one frame of the desk.
+pub static FRAME: Histogram = Histogram::new();
+/// Runtime wakes the desks drained.
+pub static DRAIN_WAKES: Counter = Counter::new();
+/// Events those wakes carried.
+pub static DRAIN_EVENTS: Counter = Counter::new();
+/// Microseconds spent draining and applying one wake.
+pub static DRAIN: Histogram = Histogram::new();
+/// Drawable-presented receipts observed for evidence.
+pub static PRESENTED: Counter = Counter::new();
+
+/// Window-level rows, appended to [`crate::perf::TABLE`] in reports.
+pub static TABLE: &[Metric] = &[
+    Metric::histogram("desktop.frame", Unit::Micros, &FRAME),
+    Metric::counter("desktop.drain_wakes", Unit::Count, &DRAIN_WAKES),
+    Metric::counter("desktop.drain_events", Unit::Count, &DRAIN_EVENTS),
+    Metric::histogram("desktop.drain", Unit::Micros, &DRAIN),
+    Metric::counter("desktop.presented", Unit::Count, &PRESENTED),
+];
+
+// ── Log ────────────────────────────────────────────────────────────────
+
+struct Logger {
+    file: Mutex<Option<std::fs::File>>,
+    level: log::LevelFilter,
+}
+
+impl log::Log for Logger {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        metadata.level() <= self.level
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+        let at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let line = format!("{at} {} {} {}\n", record.level(), record.target(), record.args());
+        let _ = std::io::stderr().write_all(line.as_bytes());
+        if let Some(file) = self.file.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_mut() {
+            let _ = file.write_all(line.as_bytes());
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+fn log_path() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("PHUX_DESKTOP_LOG") {
+        return Some(PathBuf::from(path));
+    }
+    let home = std::env::var_os("HOME")?;
+    Some(Path::new(&home).join("Library/Logs/phux-desktop.log"))
+}
+
+/// Install the process logger once. A log file that cannot be opened leaves
+/// stderr logging in place; it never stops the app.
+pub fn init_logging() {
+    let level = std::env::var("PHUX_DESKTOP_LOG_LEVEL")
+        .ok()
+        .and_then(|level| level.parse().ok())
+        .unwrap_or(log::LevelFilter::Info);
+    let file = log_path().and_then(|path| {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::OpenOptions::new().create(true).append(true).open(path).ok()
+    });
+    static LOGGER: OnceLock<Logger> = OnceLock::new();
+    let logger = LOGGER.get_or_init(|| Logger { file: Mutex::new(file), level });
+    if log::set_logger(logger).is_ok() {
+        log::set_max_level(level);
+    }
+}
+
+// ── Reports ────────────────────────────────────────────────────────────
+
+/// Kernel, runtime, painter and window rows as one `PerfReport` JSON.
+#[must_use]
+pub fn report_json() -> String {
+    let mut report = phux_client_core::perf::report(crate::perf::uptime());
+    report.metrics.extend(phux_client_runtime::perf::snapshot());
+    report.metrics.extend(crate::perf::TABLE.iter().map(Metric::snapshot));
+    report.metrics.extend(TABLE.iter().map(Metric::snapshot));
+    report.to_json()
+}
+
+// ── Evidence ───────────────────────────────────────────────────────────
+
+/// `--evidence DIR [--smoke]`.
+#[derive(Debug, Clone)]
+pub struct EvidenceOptions {
+    pub dir: PathBuf,
+    /// Quit with status 0 once evidence is written (`--smoke`).
+    pub exit_after: bool,
+}
+
+/// One painted terminal in a frame the desk is about to present.
+#[derive(Debug, Clone)]
+pub struct PaintedPane {
+    pub placement_id: String,
+    pub terminal_id: String,
+    /// The publication generation painted.
+    pub generation: u64,
+    pub bounds: gpui::Bounds<gpui::Pixels>,
+    /// Fully inside the window's content mask.
+    pub unclipped: bool,
+}
+
+/// What a desk painted this frame.
+#[derive(Debug, Clone)]
+pub struct FrameReport {
+    pub session: String,
+    pub placements: Vec<(String, String)>,
+    pub painted: Vec<PaintedPane>,
+}
+
+struct Evidence {
+    options: EvidenceOptions,
+    /// A presentation callback is armed; do not arm another.
+    armed: bool,
+    written: bool,
+}
+
+impl Global for Evidence {}
+
+const EXIT_RUNNING: u8 = 0;
+const EXIT_OK: u8 = 1;
+const EXIT_FAILED: u8 = 2;
+static EXIT: AtomicU8 = AtomicU8::new(EXIT_RUNNING);
+static EVIDENCE_MODE: AtomicBool = AtomicBool::new(false);
+
+/// Whether windows may take focus: never in an evidence run.
+#[must_use]
+pub fn may_activate() -> bool {
+    !EVIDENCE_MODE.load(Ordering::Relaxed)
+}
+
+/// Install evidence and perf sampling. Call once, inside `Application::run`.
+pub fn install(options: Option<EvidenceOptions>, cx: &mut App) {
+    crate::perf::mark_started();
+    let Some(options) = options else { return };
+    EVIDENCE_MODE.store(true, Ordering::Relaxed);
+    if let Err(error) = std::fs::create_dir_all(&options.dir) {
+        log::error!("evidence directory {}: {error}", options.dir.display());
+    }
+    if !options.exit_after {
+        spawn_perf_sampler(options.dir.join("perf.jsonl"), cx);
+    }
+    cx.set_global(Evidence { options, armed: false, written: false });
+}
+
+/// Whether a desk should build a [`FrameReport`] this frame: evidence is
+/// requested and not yet written or armed. Cheap; call every frame.
+#[must_use]
+pub fn evidence_pending(cx: &App) -> bool {
+    cx.try_global::<Evidence>()
+        .is_some_and(|evidence| !evidence.written && !evidence.armed)
+}
+
+/// Read what a desk has painted, inside the drawable-presented callback:
+/// after this frame's terminals painted, so the evidence names the
+/// generation actually on screen.
+pub type CollectFrame = Box<dyn FnOnce(&App) -> Option<FrameReport>>;
+
+/// Called by a desk at the end of every render while [`evidence_pending`].
+/// Arms one drawable-presented callback; a presented frame with no painted
+/// terminal yet refreshes the window and re-arms, so evidence waits for the
+/// first real terminal paint without the desk having to notice it.
+pub fn arm_evidence(collect: CollectFrame, window: &mut Window, cx: &mut App) {
+    if !evidence_pending(cx) {
+        return;
+    }
+    cx.global_mut::<Evidence>().armed = true;
+    window.on_drawable_presented(move |window, cx| {
+        PRESENTED.incr();
+        let visible = window.native_visibility() == gpui::NativeVisibility::Visible;
+        let dir = cx.global::<Evidence>().options.dir.clone();
+        let painted = collect(cx).and_then(|report| {
+            let pane = report.painted.iter().find(|pane| pane.generation > 0).cloned()?;
+            Some((report, pane))
+        });
+        cx.global_mut::<Evidence>().armed = false;
+        let Some((report, pane)) = painted else {
+            // Nothing painted yet: draw again so the next frame re-arms.
+            window.refresh();
+            return;
+        };
+        match write_evidence(&dir, &report, &pane, visible, window) {
+            Ok(()) => {
+                cx.global_mut::<Evidence>().written = true;
+                log::info!("evidence written to {}", dir.display());
+                if cx.global::<Evidence>().options.exit_after {
+                    EXIT.store(EXIT_OK, Ordering::Relaxed);
+                    cx.quit();
+                }
+            }
+            Err(error) => {
+                log::warn!("evidence capture failed, retrying: {error:#}");
+                window.refresh();
+            }
+        }
+    });
+}
+
+fn write_evidence(
+    dir: &Path,
+    report: &FrameReport,
+    pane: &PaintedPane,
+    visible: bool,
+    window: &Window,
+) -> anyhow::Result<()> {
+    let image = window.render_to_image()?;
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(image)
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)?;
+    write_atomic(&dir.join("presented.png"), &png)?;
+    let placements: Vec<_> = report
+        .placements
+        .iter()
+        .map(|(id, terminal)| json!({ "id": id, "terminalId": terminal }))
+        .collect();
+    let layout = json!({
+        "session": report.session,
+        "presented": true,
+        "generation": pane.generation,
+        "placements": placements,
+    });
+    write_atomic(&dir.join("layout.json"), layout.to_string().as_bytes())?;
+    let interaction = json!({
+        "kind": "present",
+        "placementId": pane.placement_id,
+        "terminalId": pane.terminal_id,
+        "presentedGeneration": pane.generation,
+        "visible": visible,
+        "clipped": !pane.unclipped,
+        "bounds": {
+            "width": f32::from(pane.bounds.size.width),
+            "height": f32::from(pane.bounds.size.height),
+        },
+    });
+    write_atomic(&dir.join("interaction.json"), interaction.to_string().as_bytes())
+}
+
+fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    let staged = path.with_extension("partial");
+    std::fs::write(&staged, bytes)?;
+    std::fs::rename(&staged, path)?;
+    Ok(())
+}
+
+// ── perf.jsonl ─────────────────────────────────────────────────────────
+
+fn spawn_perf_sampler(path: PathBuf, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        let started = Instant::now();
+        let mut previous = Sample::capture();
+        loop {
+            cx.background_executor().timer(Duration::from_secs(1)).await;
+            let now = Sample::capture();
+            let line = perf_line(started.elapsed(), &now.delta(&previous));
+            previous = now;
+            let appended = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .and_then(|mut file| file.write_all(line.as_bytes()));
+            if let Err(error) = appended {
+                log::warn!("perf.jsonl: {error}");
+            }
+        }
+    })
+    .detach();
+}
+
+/// The window-level rows at one instant; deltas give one second of activity.
+struct Sample {
+    frame: phux_perf::HistogramSnapshot,
+    drain: phux_perf::HistogramSnapshot,
+    wakes: u64,
+    events: u64,
+}
+
+impl Sample {
+    fn capture() -> Self {
+        Self {
+            frame: FRAME.snapshot(),
+            drain: DRAIN.snapshot(),
+            wakes: DRAIN_WAKES.get(),
+            events: DRAIN_EVENTS.get(),
+        }
+    }
+
+    fn delta(&self, previous: &Self) -> Self {
+        Self {
+            frame: self.frame.delta(&previous.frame),
+            drain: self.drain.delta(&previous.drain),
+            wakes: self.wakes.saturating_sub(previous.wakes),
+            events: self.events.saturating_sub(previous.events),
+        }
+    }
+}
+
+#[allow(clippy::cast_precision_loss, reason = "millisecond display of microsecond samples")]
+fn ms(micros: u64) -> f64 {
+    micros as f64 / 1000.0
+}
+
+fn perf_line(uptime: Duration, second: &Sample) -> String {
+    let host: serde_json::Value = serde_json::from_str(&report_json()).unwrap_or_default();
+    let at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis();
+    let line = json!({
+        "at": at,
+        "uptimeMs": uptime.as_millis(),
+        "frames": {
+            "frames": second.frame.count,
+            "p99Ms": ms(second.frame.percentile(99)),
+            "maxMs": ms(second.frame.max),
+        },
+        "drains": {
+            "wakes": second.wakes,
+            "events": second.events,
+            "ms": ms(second.drain.sum),
+            "maxMs": ms(second.drain.max),
+        },
+        "memory": { "rss": host["process"]["max_rss_bytes"] },
+        "host": host,
+    });
+    format!("{line}\n")
+}
+
+/// The process status once the event loop returns.
+#[must_use]
+pub fn exit_code() -> std::process::ExitCode {
+    match EXIT.load(Ordering::Relaxed) {
+        EXIT_FAILED => std::process::ExitCode::FAILURE,
+        // A smoke run that quit before writing evidence did not pass.
+        EXIT_RUNNING if EVIDENCE_MODE.load(Ordering::Relaxed) => std::process::ExitCode::FAILURE,
+        _ => std::process::ExitCode::SUCCESS,
+    }
+}

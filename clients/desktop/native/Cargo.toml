@@ -1,42 +1,51 @@
 [package]
-name = "phux-desktop-native"
+name = "phux-desktop"
 version = "0.1.0"
 edition = "2024"
 publish = false
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+name = "phux_desktop"
+path = "src/lib.rs"
 
-# GPUIX has its own locked source graph. Keep this host's resolved union local
-# instead of adding the platform renderer to every phux workspace consumer.
+[[bin]]
+name = "phux-desktop"
+path = "src/main.rs"
+
+# The GPUI graph is large and macOS-specific. Keep this host's resolved union
+# local instead of adding the platform renderer to every phux workspace consumer.
 [workspace]
 
-[features]
-terminal-fixtures = []
-input-fixture = []
-
 [dependencies]
-gpuix-native = { path = "../toolchain/gpuix/packages/native" }
 phux-client-core = { path = "../../../crates/phux-client-core" }
 phux-client-runtime = { path = "../../../crates/phux-client-runtime" }
-phux-client-ffi = { path = "../../../crates/phux-client-ffi", default-features = false, features = ["napi"] }
+phux-client-ffi = { path = "../../../crates/phux-client-ffi", default-features = false }
 phux-perf = { path = "../../../crates/phux-perf" }
 phux-protocol = { path = "../../../crates/phux-protocol" }
-unicode-segmentation = "1"
-napi = { version = "=3.12.7", features = ["napi8", "serde-json"] }
-napi-derive = "=3.6.8"
+# GPUI snapshot, platform and Kit move together: Kit 0.7.1 is built against
+# exactly gpui-pre 0.3.8. `toolchain/bootstrap.py` materializes the patched
+# copies `[patch.crates-io]` points at (drawable-presented receipts).
+gpui = { package = "gpui-pre", version = "=0.3.8" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = ["font-kit", "runtime_shaders"] }
+gpui-kit = { version = "=0.7.1" }
+anyhow = "1"
+image = { version = "0.25", default-features = false, features = ["png"] }
+async-channel = "2"
+log = "0.4"
 serde_json = "1"
+smol = "2"
+unicode-segmentation = "1"
 # Quick terminal: system-wide hotkeys without Accessibility permission or
 # handwritten Carbon FFI (the host denies unsafe code).
 global-hotkey = "=0.8.0"
 
-[build-dependencies]
-napi-build = "=2.4.4"
+[patch.crates-io]
+gpui-pre = { path = "../toolchain/gpui/gpui-pre" }
+gpui-pre-apple = { path = "../toolchain/gpui/gpui-pre-apple" }
+gpui-pre-macos = { path = "../toolchain/gpui/gpui-pre-macos" }
 
 [profile.release]
 lto = true
 
 [lints.rust]
-# napi-derive's generated registration constructor must allow its own unsafe
-# FFI. Handwritten host code remains checked by deny.
 unsafe_code = "deny"

@@ -4,14 +4,14 @@
 //! seeds preferences only when nothing has been saved, and its keybinds layer
 //! over the built-in chords only while `ghostty_keys` is on.
 
-mod display;
-mod ghostty;
-mod keymap;
-mod theme;
+pub mod display;
+pub mod ghostty;
+pub mod keymap;
+pub mod theme;
 
 pub use display::{
-    FONT_FAMILIES, SIDEBAR_MAX, SIDEBAR_MIN, DisplayPrefs, default_display, parse_display,
-    sanitize_display,
+    FONT_FAMILIES, SIDEBAR_MAX, SIDEBAR_MIN, DisplayPrefs, default_display, display_value,
+    parse_display, sanitize_display,
 };
 pub use ghostty::{
     GhosttyConfig, ghostty_action, ghostty_chord, ghostty_prefs, ghostty_theme, parse_ghostty,

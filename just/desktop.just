@@ -26,6 +26,17 @@ desktop-check:
     python3 scripts/test-check-desktop-host-lock.py
 
 [group('desktop')]
+[doc('Run the native desktop crate tests (model, painter, input, presentation, launch)')]
+desktop-test: desktop-source
+    cargo test --locked --manifest-path clients/desktop/native/Cargo.toml
+
+[group('desktop')]
+[doc('Format check and clippy -D warnings for the native desktop crate')]
+desktop-lint: desktop-source
+    cargo fmt --manifest-path clients/desktop/native/Cargo.toml -- --check
+    cargo clippy --locked --manifest-path clients/desktop/native/Cargo.toml --all-targets -- -D warnings
+
+[group('desktop')]
 [doc('Repair repairable desktop host lock drift without resolving GPUI')]
 desktop-lock-fix:
     python3 scripts/check-desktop-host-lock.py --fix

@@ -1,50 +1,30 @@
-//! The single desktop addon: GPUIX and application exports share NAPI's registry.
+//! The phux desktop: a native GPUI + GPUI Kit application over the shared
+//! client runtime (ADR-0164).
 //!
-//! The optional phux-client-ffi encoder owns the only Client registry. Native
-//! consumers resolve the same handle without taking its listener or event queue.
+//! Layers, outermost first:
+//!
+//! - [`launch`]: process entry. CLI options, installed-CLI resolution, log
+//!   file, platform and Kit initialization, evidence and perf sinks.
+//! - [`app`]: windows, commands, chrome and overlays.
+//! - [`workspace`] / [`settings`]: tabs, splits, persistence and preferences,
+//!   with no GPUI types so they test without a window.
+//! - [`connection`]: one runtime [`phux_client_runtime::Client`] per window and
+//!   its sole event drain.
+//! - [`terminal`] / [`input`] / [`presentation`]: the native grid painter, its
+//!   input handler, and drawable-presented fence receipts.
+//! - [`perf`] / [`diag`]: always-on host metrics, the log, `perf.jsonl`, and
+//!   drawable-presented evidence for qualification runs.
 
-mod chrome;
-mod fonts;
-mod hotkeys;
+pub mod app;
+pub mod chrome;
+pub mod connection;
+pub mod diag;
+pub mod fonts;
+pub mod hotkeys;
 pub mod input;
-mod perf;
+pub mod launch;
+pub mod perf;
 mod presentation;
-#[cfg_attr(
-    test,
-    allow(
-        dead_code,
-        reason = "NAPI omits export registration in Rust unit tests"
-    )
-)]
-mod probe;
+pub mod settings;
 pub mod terminal;
-
-use gpuix_native::native_extensions;
-use napi_derive::napi;
-
-/// Explicit startup boundary; call before creating any GPUIX view/registry.
-/// The probe verifies extension infrastructure, not terminal rendering.
-#[napi]
-pub fn initialize_desktop_host() -> napi::Result<()> {
-    let _ = phux_client_ffi::napi::initialize();
-    perf::mark_started();
-    // Command-W closes a pane (the shell's chord), never the whole window:
-    // GPUIX's standard binding would close it before the shell saw the key.
-    native_extensions::release_standard_key("cmd-w");
-    native_extensions::install(|registry| {
-        probe::install(registry);
-        terminal::install(registry);
-        chrome::install(registry);
-    })
-    .map_err(napi::Error::from_reason)
-}
-
-/// Resolve through the linked encoder, exactly as the terminal painter does.
-/// This diagnostic never consumes events or replaces the client's listener.
-#[napi]
-pub fn native_client_status(handle: String) -> napi::Result<phux_client_ffi::napi::DesktopStatus> {
-    let client = phux_client_ffi::napi::initialize()
-        .client(&handle)
-        .map_err(|error| napi::Error::from_reason(error.to_string()))?;
-    Ok(phux_client_ffi::projection::status::connection(Some(client.status())).into())
-}
+pub mod workspace;

@@ -4,47 +4,68 @@ stability: evolving
 last-reviewed: 2026-10-13
 ---
 
-# Native desktop terminal surface
+# phux-desktop (native crate)
 
-**TL;DR.** This crate's terminal, input, presentation, fonts, hotkeys and
-titlebar drag are GPUI entities and plain Rust types. They take
-`Arc<phux_client_runtime::Client>`. They do not export NAPI and do not look
-up a string client registry. The process entry, manifest and `lib.rs` graph
-belong to the integrating binary.
+**TL;DR.** One Rust crate, one executable: `phux-desktop`, a GPUI + GPUI Kit
+application over the shared client runtime (ADR-0164). It has its own Cargo
+workspace and lock so the GPUI graph never enters other phux consumers.
+`just desktop-source` once, then `just desktop-test` and `just desktop-app`.
 
-## Surface
+## Layout
 
-`terminal::Terminal` implements `gpui::Render`. Construct it with the
-connection's client, a runtime `ViewId`, the pane's `ResourceId` and
-`terminal::Settings`. `configure` replaces font, theme, visibility, input
-policy, size ownership and app chords. `request` runs one `HostAction`
-(`Copy`, `Paste`, `CopyText`, `Open`) immediately on that entity and does not
-retain it. `focus_handle` is stable across an input rebind.
-`TerminalEvent::{Activated, PathsDropped}` tells the shell which pane was
-clicked and which paths were dropped.
+| Module | Owns |
+|---|---|
+| `launch` | CLI options, installed-CLI and server resolution, Kit init, first window |
+| `diag` | log file, `perf.jsonl` sampler, `--evidence`/`--smoke` captures, window metrics |
+| `app` | windows, menus, commands, chrome, overlays, the per-window `Desk` |
+| `workspace` | tabs, split trees, focus, size ownership, restore, layout persistence |
+| `settings` | display preferences, Ghostty config, themes, key chords |
+| `connection` | one runtime `Client` per window and its sole event/path-answer drain |
+| `terminal`, `input`, `presentation` | grid painter, input handler, drawable-presented fence receipts |
+| `perf` | always-on painter/key-to-paint metrics (`phux_perf` statics) |
+| `fonts`, `hotkeys`, `chrome` | bundled Paper Mono, global quick-terminal chords, titlebar drag |
 
-`chrome::DragRegion` moves the window and zooms it on double-click, which a
-transparent titlebar otherwise loses. `fonts::install` registers Paper Mono
-once before the first measure. `hotkeys::GlobalHotkeys` registers system-wide
-chords through `global-hotkey` (Carbon hotkeys; no Accessibility permission)
-and `take_pressed` drains presses. `perf::desktop_perf_json` appends the
-desktop rows to the kernel and runtime report.
+`workspace`, `settings` and `connection` hold no GPUI types, so their rules
+test without a window. Deeper contracts: [PAINTER.md](PAINTER.md),
+[INPUT.md](INPUT.md), [PRESENTATION.md](PRESENTATION.md).
 
-The paint path borrows the entity's `Arc<Client>`. Pending presentation
-receipts hold `Weak<Client>` and drop any upgraded lease off the UI thread.
-See [PAINTER.md](PAINTER.md), [INPUT.md](INPUT.md) and
-[PRESENTATION.md](PRESENTATION.md).
+## Command line
 
-## What this crate does not own
+```text
+phux-desktop [--socket PATH] [--session NAME] [--phux PATH] [--layout PATH]
+             [--fresh] [--terminal ID] [--quick] [--evidence DIR] [--smoke]
+```
 
-The integrating `lib.rs` must stop installing GPUIX custom elements and NAPI
-exports, publish `terminal`, `chrome`, `fonts`, `hotkeys` and `perf`, and drop
-the deleted probe module. Packaging, the shipping binary and on-screen smoke
-are outside this slice.
+Without `--phux`, the CLI is `PHUX_BIN`, else the first of
+`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `~/.cargo/bin`, else
+`which phux`. Without `--socket`, `PHUX_SOCKET`, else `phux server --ensure`
+and its reported socket. Nothing is ever installed, replaced or upgraded. A
+resolution failure still opens the window, with the reason shown.
 
-## Remaining acceptance
+## Observing it
 
-Retina/scale-change GPU evidence and a visible-window presentation harness
-(hidden, minimized, offscreen, failed draw) are still open. Rust tests cover
-admission, identity replacement, scene reuse and the ticket boundary. They are
-not a screen-reader, OS IME or packaging test.
+- **Log:** `~/Library/Logs/phux-desktop.log` and stderr
+  (`PHUX_DESKTOP_LOG`, `PHUX_DESKTOP_LOG_LEVEL=debug`).
+- **Metrics:** `diag::report_json()` is one `PerfReport` with kernel
+  (`kernel.*`), runtime (`runtime.*`), painter (`desktop.acquire`,
+  `desktop.prepare`, `desktop.paint`, `desktop.present`, `desktop.key_to_paint`)
+  and window rows (`desktop.frame`, `desktop.drain*`, `desktop.presented`).
+  Add a metric as a `phux_perf` static in the module that measures it and
+  list it in that module's `TABLE`.
+- **`--evidence DIR`:** appends `perf.jsonl` once a second and writes
+  `presented.png`, `layout.json` and `interaction.json` for the first frame
+  GPUI reports drawable-presented with a painted terminal. Windows never take
+  focus in this mode. `--smoke` exits 0 after writing. The files are the proof;
+  `scripts/smoke-app.ts` checks them.
+
+## Develop
+
+```sh
+just desktop-source   # materialize the pinned, patched GPUI (toolchain/)
+just desktop-test     # cargo test for this crate
+just desktop-lint     # fmt --check + clippy -D warnings for this crate
+just desktop-app      # debug build against a same-checkout CLI
+```
+
+Never point a development build at the production socket or replace the
+installed app; see `docs/operations.md`.

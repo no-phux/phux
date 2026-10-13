@@ -1,77 +1,62 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-26
+last-reviewed: 2026-10-13
 ---
 
-# Desktop source toolchain
+# Desktop framework toolchain
 
-**TL;DR.** The desktop builds GPUIX's native host and Solid adapter from one
-verified source revision. `source.json` pins that revision, its Zed dependency,
-the matching package version, and both dependency lockfiles. The generated
-checkout is local build state; the source manifest is the reproducible input.
+**TL;DR.** The desktop builds against GPUI Kit 0.7.1 and the exact GPUI
+snapshot it was released with, `gpui-pre` 0.3.8. Three of those crates carry
+reviewed local patches. `source.json` pins each crates.io archive and each
+patch by SHA-256; `bootstrap.py` materializes the patched copies under
+`gpui/` (ignored build state), and `native/Cargo.toml` points
+`[patch.crates-io]` at them.
 
 ## Bootstrap
 
-From the repository root, `just desktop-app` is the from-source run. It calls
-`just desktop-source`, which clones the source and initializes its pinned Zed
-submodule, then verifies the revisions, versions and lockfile checksums before
-a frozen Bun install. Existing mismatched checkouts are rejected and preserved
-for inspection, never reset or overwritten.
+`just desktop-source` runs `python3 clients/desktop/toolchain/bootstrap.py`.
+It downloads `gpui-pre`, `gpui-pre-apple` and `gpui-pre-macos` from
+crates.io (cached under `clients/desktop/.cache/crates`), verifies them,
+applies `patches/` in order, and moves the result to `gpui/`. The output is a
+pure function of the pins. An existing `gpui/` is verified against a fresh
+materialization and never overwritten: any difference fails, so unrecorded
+edits stay in place for inspection. `--check` verifies without writing.
 
-The ordered `patches` hashes in `source.json` identify the reviewed host
-extension patches. A pristine checkout receives them after source verification.
-Repeated bootstrap compares the complete patched tree using a temporary Git
-index, including new files, while preserving the real index. Unrecorded edits,
-staged changes, and unrelated untracked source fail rather than being overwritten.
-An exact earlier prefix of the pinned patch series can advance to the full
-series. Each patch is checked in the temporary index before source is changed;
-partially applied or independently edited patches remain rejected.
+Every other crate in the graph, including Kit itself, resolves from
+crates.io through `native/Cargo.lock`, built `--locked`.
 
-`just desktop-source-build` builds the release native addon, both native JS
-loaders, native JS declarations, and the Solid adapter. Cargo uses `--locked`.
-The source's existing JavaScript compiler builds the third-party packages; the
-desktop application's separate checks use native TypeScript 7.
+## Changing the framework
 
-The build explicitly uses phux's `rust-toolchain.toml` pin rather than the
-upstream checkout's older compiler. This does not change phux's compiler or
-Ghostty dependency. Linking the desktop's native host to phux still needs the
-shared-host compatibility gate in `phux-d4x9.2` and `phux-d4x9.3`.
+```sh
+python3 clients/desktop/toolchain/bootstrap.py --edit    # gpui/ becomes a git repo
+# edit under gpui/, then amend the matching patch commit, or add a commit
+git -C clients/desktop/toolchain/gpui commit --amend      # or: commit -m 0003-name
+python3 clients/desktop/toolchain/bootstrap.py --export  # rewrite patches/ + pins
+```
+
+`--edit` lays the series out as one commit per patch over a `base` commit of
+the pristine archives. `--export` writes each commit back as
+`patches/<subject>.patch`, removes patch files no commit names, and rewrites
+`source.json`. The round trip is byte-identical when nothing changed.
+
+## Upgrading GPUI Kit
+
+Kit pins its GPUI snapshot exactly. Bump `gpui-kit`, `gpui-pre` and
+`gpui-pre-platform` together in `native/Cargo.toml`, update the three
+archive pins in `source.json` to the snapshot Kit names, re-run `--edit`, and
+resolve whatever the patches no longer apply to. Then `cargo update` the
+host lock and run the desktop gates.
 
 ## macOS prerequisites
 
-GPUI additionally needs Apple's Metal compiler, which is separate from the
-native phux prerequisite check. With Xcode selected, install it using
-`xcodebuild -downloadComponent MetalToolchain`, then verify
-`xcrun metal --version` actually succeeds. A successful download alone does
-not prove the compiler is usable in the current environment.
-
-An inherited Nix `DEVELOPER_DIR` can make Apple's download command appear to
-succeed while its cache refresh invokes Nix's `xcrun`. For that case, run:
-
-```sh
-env -u SDKROOT DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-  PATH=/usr/bin:/bin:/usr/sbin:/sbin \
-  /usr/bin/xcodebuild -downloadComponent MetalToolchain
-```
-
-The build and desktop doctor reuse `scripts/lib/apple-toolchain-env.sh` to
-select Apple's tools inside their subprocesses, including when launched from
-Nix. This keeps Nix's linker wrappers away from the Xcode 27 SDK. A fully
-Nix-provided Metal build is not claimed: Apple's Xcode and Metal component are
-host prerequisites.
+GPUI is built with `runtime_shaders`: Metal shaders compile when the app
+starts, so a build does not need Apple's offline Metal compiler. Xcode's SDK
+and command line tools are still required.
 
 ## Provenance and redistribution
 
-Source: <https://github.com/remorses/gpuix>. The pinned GPUIX packages declare
-Apache-2.0. Preserve the checkout's `LICENSE` and `THIRD_PARTY_NOTICES.md`,
-including the MIT-attributed Comet components. The Zed checkout and every
-resolved dependency retain their own notices. The packaging task must collect
-the licenses for the actual linked dependency graph; the GPUIX package license
-alone is not a complete distribution inventory.
-
-Any local framework patch must be committed under this directory with its
-upstream revision, rationale and verification. Never rely on an unrecorded
-edit inside the ignored checkout. Source acquisition and build success do not
-prove multi-window isolation, terminal integration, or release readiness;
-those remain explicit desktop task acceptance gates.
+Sources: <https://crates.io/crates/gpui-pre> (a snapshot of Zed's
+`crates/gpui`, Apache-2.0) and <https://github.com/longbridge/gpui-kit>
+(Apache-2.0). Every resolved dependency keeps its own license; packaging must
+collect the notices of the actual linked graph.

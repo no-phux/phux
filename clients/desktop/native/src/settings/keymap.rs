@@ -496,7 +496,8 @@ fn normalize_key(raw: &str) -> (String, String, bool) {
         .find(|(shifted, _)| *shifted == lowered)
         .map(|(_, plain)| (*plain).to_owned())
         .unwrap_or_else(|| lowered.clone());
-    (key, lowered, lowered != raw)
+    let shifted = lowered != raw;
+    (key, lowered, shifted)
 }
 
 fn join_chord(cmd: bool, ctrl: bool, alt: bool, shift: bool, key: &str) -> String {

@@ -117,20 +117,14 @@ expect_pass "$repo/scripts/doctor.sh" core
 
 # Check environment identity before Apple normalization can hide a mixed shell.
 mkdir -p "$repo/clients/desktop/scripts" "$scratch/custom-tools/command-wrappers/bin"
-cp "$root"/clients/desktop/scripts/build-{cli,host,source}.sh "$repo/clients/desktop/scripts/"
+cp "$root"/clients/desktop/scripts/build-{cli,host}.sh "$repo/clients/desktop/scripts/"
 cat >"$repo/scripts/check-desktop.sh" <<'SH'
 source "$(dirname "${BASH_SOURCE[0]}")/lib/dev-toolchain.sh"
 check_desktop_toolchain
 SH
 PHUX_ENV=mise IN_NIX_SHELL=1 expect_fail 'mixed Nix/Mise desktop toolchain' "$repo/scripts/doctor.sh" desktop
-for entry in cli host source; do
+for entry in cli host; do
     PHUX_ENV=mise IN_NIX_SHELL=1 expect_fail 'mixed Nix/Mise desktop toolchain' "$repo/clients/desktop/scripts/build-$entry.sh"
-done
-mkdir -p "$repo/clients/desktop/tests/native" "$repo/clients/desktop/tests/feasibility"
-cp "$root/clients/desktop/tests/native/terminal-run.sh" "$repo/clients/desktop/tests/native/"
-cp "$root/clients/desktop/tests/feasibility/run.sh" "$repo/clients/desktop/tests/feasibility/"
-for entry in native/terminal-run feasibility/run; do
-    PHUX_ENV=mise IN_NIX_SHELL=1 expect_fail 'mixed Nix/Mise desktop toolchain' "$repo/clients/desktop/tests/$entry.sh"
 done
 PHUX_ENV=mise expect_pass "$repo/scripts/check-desktop.sh"
 PHUX_ENV=nix IN_NIX_SHELL=1 expect_pass "$repo/scripts/check-desktop.sh"

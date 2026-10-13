@@ -2,10 +2,10 @@
 //! terminals. Closing a pane or tab releases views. Only [`Workspace::terminate`]
 //! ends a process.
 
-mod layout;
-mod persist;
-mod place;
-mod session;
+pub mod layout;
+pub mod persist;
+pub mod place;
+pub mod session;
 
 pub use layout::{
     Axis, DeskTab, Direction, LayoutNode, Placement, Rect, clamp_ratio, cycle, equalize,
@@ -289,8 +289,9 @@ impl Workspace {
         let Some(placement) = find_placement(&tab.root, placement_id).cloned() else {
             return;
         };
+        let unchanged = tab.focused_id == placement_id && self.active_id == tab_id;
         self.claim(&placement);
-        if tab.focused_id == placement_id && self.active_id == tab_id {
+        if unchanged {
             return;
         }
         if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {

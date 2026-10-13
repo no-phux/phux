@@ -3,8 +3,8 @@
 //!
 //! The kernel table counts output frames and echo round trips, and the
 //! runtime table counts publications; neither sees the window. These rows sit
-//! one layer out, on the GPUI thread. GPUIX re-renders the whole window for
-//! any change, so every terminal element renders once per window draw
+//! one layer out, on the GPUI thread. A terminal entity renders only when it is notified or
+//! its window is refreshed
 //! (`desktop.render`): it acquires and validates its frame (`desktop.acquire`,
 //! one owner round trip), prepares it (`desktop.prepare`: reusing the last
 //! scene when nothing it depends on changed, `desktop.prepare_reused`, else a
@@ -13,9 +13,9 @@
 //! `desktop.key_to_paint` runs from a key reaching a focused terminal to the
 //! first paint of that terminal's next output. Everything is a `static` from
 //! [`phux_perf`], always on, one relaxed atomic add per sample.
-//! `desktopPerfJson` appends them to the kernel and runtime rows.
+//! [`crate::diag::report_json`] appends them to the kernel and runtime rows.
 
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use phux_perf::{Counter, Histogram, Metric, Unit};
@@ -59,24 +59,17 @@ pub static TABLE: &[Metric] = &[
     Metric::histogram("desktop.present", Unit::Micros, &PRESENT),
 ];
 
-fn started() -> Instant {
-    static STARTED: OnceLock<Instant> = OnceLock::new();
-    *STARTED.get_or_init(Instant::now)
-}
+static STARTED: LazyLock<Instant> = LazyLock::new(Instant::now);
 
-/// Kernel, runtime and desktop rows as one `PerfReport` JSON, counted since
-/// the host loaded. Process-wide: every window and connection shares them.
+/// Time since the host started; [`crate::diag::report_json`] counts from here.
 #[must_use]
-pub fn desktop_perf_json() -> String {
-    let mut report = phux_client_core::perf::report(started().elapsed());
-    report.metrics.extend(phux_client_runtime::perf::snapshot());
-    report.metrics.extend(TABLE.iter().map(Metric::snapshot));
-    report.to_json()
+pub fn uptime() -> Duration {
+    STARTED.elapsed()
 }
 
 /// Mark the host's start, so uptime counts from initialization.
 pub(crate) fn mark_started() {
-    let _ = started();
+    LazyLock::force(&STARTED);
 }
 
 /// One terminal's key-to-paint arming: a key arms it with the output
@@ -139,7 +132,7 @@ mod tests {
 
     #[test]
     fn report_carries_every_layer() {
-        let json = desktop_perf_json();
+        let json = crate::diag::report_json();
         for name in [
             "kernel.frames",
             "runtime.publish",

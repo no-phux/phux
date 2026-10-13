@@ -273,5 +273,4 @@ fn release_off_thread(client: Arc<Client>, cx: &App) {
 }
 
 #[cfg(test)]
-#[path = "../../tests/native/presentation.rs"]
 mod tests;

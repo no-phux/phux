@@ -7,11 +7,7 @@ export default defineConfig({
     "node_modules/**",
     "toolchain/**",
     "native/**",
-    "src/**",
     "dist/**",
-    "tests/model/**",
-    "tests/feasibility/**",
-    "tests/native/**",
     "tools/oxlint/anti-slop/**",
   ],
   rules: {

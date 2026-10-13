@@ -28,9 +28,12 @@ already Rust.
 
 Replace that host with `clients/desktop/native`. The executable is
 `phux-desktop`. It imports `gpui` as `gpui-pre` 0.3.8, `gpui_platform` as
-`gpui-pre-platform` 0.3.8, and `gpui_kit` 0.7.1. A parent-managed pinned GPUI
-snapshot patch supplies the drawable-presented callback. Paint and
-`on_next_frame` do not clear a presentation fence.
+`gpui-pre-platform` 0.3.8, and `gpui_kit` 0.7.1, the snapshot Kit is released
+against. `clients/desktop/toolchain` pins the crates.io archives of three of
+those crates and two reviewed patches: the drawable-presented callback the
+terminal's fence recovery needs, and an offscreen capture used only by
+qualification evidence. Paint and `on_next_frame` do not clear a
+presentation fence.
 
 The process owns connection, workspace, terminal entities, settings, and
 platform menus. It does not keep a second reconnect or input-delivery state
@@ -77,3 +80,7 @@ hot path.
 **Embed the NAPI encoder in the Rust binary.** Rejected: the process can call
 the runtime directly. [ADR-0135](./0135-one-binding-crate.md) still owns C and
 UniFFI encoders; this app is not a binding.
+
+**Build on GPUI Fast now.** Deferred: its retained-mode frames fit many quiet
+panes, but it is a fork with its own invalidation rules. Qualify it against
+`--evidence` perf captures of this app before adopting it.
