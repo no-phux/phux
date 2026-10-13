@@ -96,6 +96,9 @@ pub struct ScriptSpec {
     /// When set, every `SPAWN_RESOURCE` is refused with a *correlated*
     /// `ERROR` instead of a `RESOURCE_SPAWNED`.
     spawn_error: Option<(ErrorCode, String)>,
+    /// When set, every `UPGRADE` is refused with this message. See
+    /// [`ScriptSpec::refuse_upgrade`].
+    upgrade_error: Option<String>,
     /// The `RESOURCE_MOVED` payload a `MOVE_RESOURCE` is answered with.
     move_result: Option<MoveResult>,
     /// The client count a `DetachClients` command acks with (default `0`).
@@ -428,6 +431,14 @@ impl ScriptSpec {
     #[must_use]
     pub fn refuse_spawn(mut self, code: ErrorCode, message: &str) -> Self {
         self.spawn_error = Some((code, message.to_owned()));
+        self
+    }
+
+    /// Refuse every `UPGRADE` the way `handle_upgrade` reports a failed
+    /// preparation: a `COMMAND_RESULT` error carrying `message`.
+    #[must_use]
+    pub fn refuse_upgrade(mut self, message: &str) -> Self {
+        self.upgrade_error = Some(message.to_owned());
         self
     }
 
@@ -858,6 +869,17 @@ fn command_reply(request_id: u32, command: &Command, spec: &mut ScriptSpec) -> V
         Command::AppendResourceOutput { .. } => {
             let result = spec.append_result.clone().unwrap_or(CommandResult::Ok);
             out.push(FrameKind::CommandResult { request_id, result });
+        }
+        // `handle_upgrade` answers a failed preparation with an
+        // `INTERNAL_ERROR` result; success is the default `Ok` ack.
+        Command::Upgrade if spec.upgrade_error.is_some() => {
+            out.push(FrameKind::CommandResult {
+                request_id,
+                result: CommandResult::Error {
+                    code: ErrorCode::InternalError,
+                    message: spec.upgrade_error.clone().unwrap_or_default(),
+                },
+            });
         }
         // A wedged server, on purpose: see `ScriptSpec::wedge_screen_reads`.
         Command::GetScreen { .. } if spec.wedge_screen_reads => {}

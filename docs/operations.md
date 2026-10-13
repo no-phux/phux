@@ -579,6 +579,24 @@ phux: the running server is 0.13.0, this binary is 0.14.0 — upgrading it in pl
 `phux doctor` reports the same skew if you want to check without
 attaching.
 
+**When the server refuses the handoff.** The old image keeps serving and
+`phux upgrade` exits 2. A refusal the server marks as a passing race (its
+tree changed, a pane is still being reaped, the handoff deadline elapsed) is
+retried automatically, four attempts over about five seconds, by both
+`phux upgrade` and `phux update`. A server built before agent-session-safe
+handoff (early October 2026) refuses with `did not provide an upgrade
+handoff: actor mailbox closed` whenever any agent session exists, so it can
+never replace itself. On a terminal, `phux upgrade` offers to close those
+sessions and retry; without one it prints the commands.
+`phux upgrade --close-agent-sessions` (also accepted by `phux update`) does
+it without asking. Closing a session leaves every pane and agent process
+running; only its event log ends. The integrations do not reopen it at once:
+pi and OpenCode open a new one with their next agent session, and omp when
+it restarts. If the refusal persists with no agent session listed, that old
+server holds a resource no client can reach, and only a restart replaces it
+(`phux kill --server`, which ends every pane). Any other refusal names its
+cause; fix it, then run `phux upgrade` again.
+
 **Keep-empty sessions and downgrades.** The handoff carries each
 session's keep-empty mark, so an upgrade keeps it. Handing off to an
 *older* binary that predates the mark drops it: a populated keep-empty

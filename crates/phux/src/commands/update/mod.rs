@@ -193,6 +193,12 @@ pub(crate) struct UpdateOpts {
     #[usage(long)]
     pub(crate) no_restart: bool,
 
+    /// When the running server is too old to hand off while agent sessions
+    /// exist, close them and retry without asking (see `phux upgrade
+    /// --close-agent-sessions`). Panes and agent processes keep running.
+    #[usage(long, conflicts("--check", "--dry-run", "--no-restart"))]
+    pub(crate) close_agent_sessions: bool,
+
     /// Emit the stable, versioned JSON document on stdout instead of the
     /// human view. On failure, stdout stays empty and stderr carries one
     /// JSON error object.
@@ -578,10 +584,19 @@ fn handoff_line(handoff: &Handoff) -> String {
         Handoff::Skipped => {
             "server left alone (--no-restart); run `phux upgrade` when ready".to_owned()
         }
-        Handoff::Refused(message) => format!(
-            "the running server refused the handoff: {message}\n  \
-             it keeps serving the old image; run `phux upgrade` to retry"
-        ),
+        Handoff::Refused(message) => {
+            let next = match super::upgrade::classify(message) {
+                super::upgrade::RefusalClass::Transient => "run `phux upgrade` to retry",
+                super::upgrade::RefusalClass::LegacyAgentSessions => {
+                    "`phux upgrade --close-agent-sessions` closes its agent sessions and retries"
+                }
+                super::upgrade::RefusalClass::Fatal => "fix the cause, then run `phux upgrade`",
+            };
+            format!(
+                "the running server refused the handoff: {message}\n  \
+                 it keeps serving the old image; {next}"
+            )
+        }
         Handoff::Failed(message) => format!(
             "the handoff could not be delivered: {message}\n  \
              the new binary is installed; run `phux upgrade` to retry"
@@ -875,7 +890,7 @@ pub(crate) fn run_update(opts: &UpdateOpts, socket: Option<PathBuf>) -> ExitCode
         }
     };
     let install = source::detect(&probe);
-    let socket_path = socket.unwrap_or_else(phux_server::runtime::default_socket_path);
+    let (socket_path, explicit_socket) = super::upgrade::resolve_socket(socket);
 
     // Refuse a mutation of an install phux does not own before any network
     // traffic; `--check` may always report.
@@ -890,7 +905,14 @@ pub(crate) fn run_update(opts: &UpdateOpts, socket: Option<PathBuf>) -> ExitCode
         return json_err::emit(opts.json, &err, EXIT_USAGE);
     }
 
-    let handoff = || live_handoff(&socket_path);
+    // Machine output never prompts and keeps stderr quiet; the flag still
+    // grants the agent-session recovery.
+    let consent = if opts.json && !opts.close_agent_sessions {
+        super::upgrade::Consent::Advise
+    } else {
+        super::upgrade::Consent::detect(opts.close_agent_sessions)
+    };
+    let handoff = || live_handoff(&socket_path, explicit_socket.as_deref(), consent, opts.json);
     let env = UpdateEnv {
         releases: &release::NetworkReleaseSource,
         handoff: &handoff,
@@ -999,11 +1021,22 @@ fn reconcile_installed(action: Action, json: bool, reconcile: impl FnOnce(bool))
     }
 }
 
-/// Ask the running server to re-exec, through `phux upgrade`'s own primitive.
-fn live_handoff(socket_path: &std::path::Path) -> Handoff {
+/// Ask the running server to re-exec, through `phux upgrade`'s own driver:
+/// transient refusals are retried, and an older server blocked by agent
+/// sessions gets them closed under `consent`. `socket` is the explicit
+/// `--socket`, echoed into any printed command; `quiet` keeps stderr clean
+/// for `--json`.
+fn live_handoff(
+    socket_path: &std::path::Path,
+    socket: Option<&std::path::Path>,
+    consent: super::upgrade::Consent,
+    quiet: bool,
+) -> Handoff {
     use phux_client::attach::AttachError;
 
-    match super::upgrade::request_upgrade(socket_path) {
+    let outcome = super::upgrade::LiveUpgrade::new(socket_path, quiet)
+        .and_then(|mut env| super::upgrade::drive(&mut env, consent, socket));
+    match outcome {
         Ok(super::upgrade::UpgradeAck::Upgrading) => Handoff::Upgrading,
         Ok(
             super::upgrade::UpgradeAck::Refused(message)
@@ -1112,6 +1145,7 @@ mod tests {
             channel: None,
             rollback: false,
             no_restart: true,
+            close_agent_sessions: false,
             json: false,
         }
     }

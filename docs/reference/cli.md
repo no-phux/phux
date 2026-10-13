@@ -3969,32 +3969,38 @@ phux update --rollback
 Usage: phux update [FLAGS]
 
 Flags:
-      --check              Report the current and latest release and the install
-                           source, then stop. Changes nothing and never
-                           downloads an archive.
-      --dry-run            Do everything except the replacement: resolve,
-                           download, and verify the checksum, then report what
-                           would have been installed.
-      --version <TAG>      Install this release tag instead of the latest one.
-                           Accepts any tag from the releases page, including an
-                           older one (a downgrade). Stable-only: omit this when
-                           following `--channel next`.
-      --channel <CHANNEL>  Release channel to follow. `stable` (also `latest`)
-                           is the default (`vX.Y.Z`). `next` tracks green `main`
-                           via the moving prerelease.
-                           [possible values: stable, next]
-      --rollback           Restore the binaries saved by the previous `phux
-                           update`.
-      --no-restart         Replace the binaries but do not ask a running server
-                           to re-exec. Live panes keep the old image until the
-                           server is upgraded or restarted.
-      --json               Emit the stable, versioned JSON document on stdout
-                           instead of the human view. On failure, stdout stays
-                           empty and stderr carries one JSON error object.
-  -h, --help               Print help
+      --check                 Report the current and latest release and the
+                              install source, then stop. Changes nothing and
+                              never downloads an archive.
+      --dry-run               Do everything except the replacement: resolve,
+                              download, and verify the checksum, then report
+                              what would have been installed.
+      --version <TAG>         Install this release tag instead of the latest
+                              one. Accepts any tag from the releases page,
+                              including an older one (a downgrade). Stable-only:
+                              omit this when following `--channel next`.
+      --channel <CHANNEL>     Release channel to follow. `stable` (also
+                              `latest`) is the default (`vX.Y.Z`). `next` tracks
+                              green `main` via the moving prerelease.
+                              [possible values: stable, next]
+      --rollback              Restore the binaries saved by the previous `phux
+                              update`.
+      --no-restart            Replace the binaries but do not ask a running
+                              server to re-exec. Live panes keep the old image
+                              until the server is upgraded or restarted.
+      --close-agent-sessions  When the running server is too old to hand off
+                              while agent sessions exist, close them and retry
+                              without asking (see `phux upgrade
+                              --close-agent-sessions`). Panes and agent
+                              processes keep running.
+      --json                  Emit the stable, versioned JSON document on stdout
+                              instead of the human view. On failure, stdout
+                              stays empty and stderr carries one JSON error
+                              object.
+  -h, --help                  Print help
 
 Global flags:
-      --socket <PATH>      Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>         Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux upgrade`
@@ -4009,13 +4015,24 @@ disconnect and reconnect. This is the low-level primitive: it re-execs whatever
 is already on disk and downloads nothing. `phux update` is the command that puts
 a new binary there first.
 
-Usage: phux upgrade
+A refusal the server marks as a passing race (its tree changed, a pane is still
+being reaped, the handoff deadline elapsed) is retried a few times over about
+five seconds. A server older than agent-session-safe handoff refuses while any
+agent session exists; on a terminal this offers to close them and retry,
+otherwise it prints the commands.
+
+Usage: phux upgrade [--close-agent-sessions]
 
 Flags:
-  -h, --help           Print help
+      --close-agent-sessions  When an older server refuses because agent
+                              sessions exist, close them (`phux agent session
+                              close`) and retry without asking. Panes and agent
+                              processes keep running; only the closed sessions'
+                              event logs end.
+  -h, --help                  Print help
 
 Global flags:
-      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>         Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux wait`
