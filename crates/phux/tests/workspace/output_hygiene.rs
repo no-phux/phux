@@ -701,8 +701,8 @@ fn json_error_contract_holds_across_registry_verbs() {
             1,
         ),
         (
-            "workspace",
-            vec!["workspace", "inspect", not_repo, "--json"],
+            "project inspect",
+            vec!["project", "inspect", not_repo, "--json"],
             None,
             "workspace",
             1,

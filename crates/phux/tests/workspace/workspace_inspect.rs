@@ -67,14 +67,14 @@ fn path_text(path: &Path) -> String {
 }
 
 #[test]
-fn workspace_inspect_reports_existing_worktrees_as_json() {
+fn project_inspect_reports_existing_worktrees_as_json() {
     let (_tmp, repo, feature, detached) = fixture_repo();
     let repo_text = path_text(&repo);
     let feature_text = path_text(&feature);
     let detached_text = path_text(&detached);
     let repo_arg = repo.to_string_lossy();
-    let (code, stdout, stderr) = run(&["workspace", "inspect", "--json", &repo_arg]);
-    assert_eq!(code, 0, "workspace inspect should succeed; stderr={stderr}");
+    let (code, stdout, stderr) = run(&["project", "inspect", "--json", &repo_arg]);
+    assert_eq!(code, 0, "project inspect should succeed; stderr={stderr}");
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("stdout is JSON");
     assert_eq!(value["schema_version"], 1);
     assert_eq!(value["repo"]["path"], repo_text);
@@ -100,14 +100,14 @@ fn workspace_inspect_reports_existing_worktrees_as_json() {
 }
 
 #[test]
-fn workspace_inspect_marks_detached_worktree_current() {
+fn project_inspect_marks_detached_worktree_current() {
     let (_tmp, _repo, _feature, detached) = fixture_repo();
     let detached_text = path_text(&detached);
     let detached_arg = detached.to_string_lossy();
-    let (code, stdout, stderr) = run(&["workspace", "inspect", "--json", &detached_arg]);
+    let (code, stdout, stderr) = run(&["project", "inspect", "--json", &detached_arg]);
     assert_eq!(
         code, 0,
-        "detached workspace inspect should succeed; stderr={stderr}"
+        "detached project inspect should succeed; stderr={stderr}"
     );
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("stdout is JSON");
     assert_eq!(value["repo"]["path"], detached_text);
@@ -125,10 +125,10 @@ fn workspace_inspect_marks_detached_worktree_current() {
 }
 
 #[test]
-fn workspace_inspect_rejects_missing_repo_without_stdout() {
+fn project_inspect_rejects_missing_repo_without_stdout() {
     let tmp = TempDir::new().expect("tempdir");
     let missing_arg = tmp.path().to_string_lossy();
-    let (code, stdout, stderr) = run(&["workspace", "inspect", "--json", &missing_arg]);
+    let (code, stdout, stderr) = run(&["project", "inspect", "--json", &missing_arg]);
     assert_ne!(code, 0, "missing repo should fail");
     assert!(stdout.is_empty());
     assert!(stderr.contains("not a git repository"));
