@@ -438,7 +438,11 @@ pub(crate) async fn import_archive(
     let mut sessions = Vec::with_capacity(plan.creates.len());
     let mut failed = Vec::new();
     for create in plan.creates {
-        match create_imported_session(socket_path, &create).await {
+        let imported = match check_agent_ownership(&create) {
+            Ok(()) => create_imported_session(socket_path, &create).await,
+            Err(reason) => Err(reason),
+        };
+        match imported {
             Ok(()) => sessions.push(create),
             Err(reason) => failed.push(model::FailedRestore {
                 name: create.name,
@@ -513,6 +517,30 @@ async fn organization_supported(
 ) -> Result<bool, phux_client::attach::AttachError> {
     let conn = Connection::connect(socket_path).await?;
     Ok(phux_client::org::supported(&conn))
+}
+
+/// Refuse a session whose archived agent session would now resume through a
+/// plugin other than the one that owned it: a security boundary, checked
+/// before anything is created. Any other resolution gap is the relaunch's
+/// concern (it falls back to a plain shell with a warning).
+fn check_agent_ownership(create: &model::CreateRequest) -> Result<(), String> {
+    let seed = create
+        .agent_session
+        .as_ref()
+        .map(|agent| (agent, create.cwd.as_deref()));
+    let panes = create.windows.iter().flat_map(|window| {
+        window.panes.iter().filter_map(|pane| {
+            pane.agent_session
+                .as_ref()
+                .map(|agent| (agent, pane.cwd.as_deref()))
+        })
+    });
+    for (agent, cwd) in seed.into_iter().chain(panes) {
+        if let Err(PrepareAgentError::OwnershipMismatch(err)) = prepare_archived_agent(agent, cwd) {
+            return Err(err);
+        }
+    }
+    Ok(())
 }
 
 /// Import one archived session as records: the session, persistent, tagged
@@ -605,6 +633,7 @@ async fn launch_into_session(
     )
     .await
     .map_err(|err| format!("could not start the seed pane: {err}"))?;
+    drop(conn);
     committed
         .target
         .map(|target| target.resource)

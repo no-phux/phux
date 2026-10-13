@@ -1549,8 +1549,9 @@ pub(crate) enum Command {
     /// Relaunch every pane a server restart ended
     ///
     /// Starts each pane whose process ended because the server stopped while
-    /// it ran, in its session, with its directory and agent resume. With
-    /// `SESSION`, only that session's panes. Prints one result line per pane.
+    /// it ran, and each pane imported but never started, in its session, with
+    /// its directory and agent resume. With `SESSION`, only that session's
+    /// panes. Prints one result line per pane.
     #[usage(help_heading = "Sessions", display_order = 19)]
     Restore {
         /// Only this session's panes.

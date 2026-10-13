@@ -281,8 +281,11 @@ pub(crate) fn run_relaunch(target: &str, json: bool, socket: Option<PathBuf>) ->
         };
         let key = key_text(&record.key);
         let result = org::relaunch(conn, record.key).await;
-        let line = match &result {
-            Ok(committed) => committed.target.as_ref().map_or_else(
+        let line = result
+            .as_ref()
+            .ok()
+            .and_then(|committed| committed.target.as_ref())
+            .map_or_else(
                 || format!("relaunched {key}"),
                 |live| {
                     format!(
@@ -290,9 +293,7 @@ pub(crate) fn run_relaunch(target: &str, json: bool, socket: Option<PathBuf>) ->
                         phux_client::selector::format_terminal_id(&live.resource)
                     )
                 },
-            ),
-            Err(_) => String::new(),
-        };
+            );
         finish(json, "relaunch", target, &key, result, &line)
     })
 }
@@ -319,9 +320,33 @@ fn finish(
     }
 }
 
-/// `phux restore [SESSION]`: relaunch every resource a server restart ended,
-/// one result per resource. Exit 0 when every relaunch committed (or there
-/// was nothing to relaunch), 2 when any was refused.
+/// What `phux restore` relaunches, in record order: every resource a server
+/// restart ended ([`OrgInventory::ended_by_restart`]) and every Terminal
+/// that was never started (an imported archive's panes), optionally only in
+/// `session`.
+fn restore_targets(inventory: &OrgInventory, session: Option<&SessionKey>) -> Vec<ResourceKey> {
+    let ended: Vec<ResourceKey> = inventory
+        .ended_by_restart(session)
+        .into_iter()
+        .map(|record| record.key)
+        .collect();
+    inventory
+        .resources
+        .iter()
+        .filter(|record| {
+            ended.contains(&record.key)
+                || (record.activation.is_none()
+                    && record.kind == phux_protocol::ids::ResourceKind::Terminal
+                    && session.is_none_or(|key| record.session == *key))
+        })
+        .map(|record| record.key)
+        .collect()
+}
+
+/// `phux restore [SESSION]`: relaunch every resource a server restart ended
+/// and every Terminal never started ([`restore_targets`]), one result per
+/// resource. Exit 0 when every relaunch committed (or there was nothing to
+/// relaunch), 2 when any was refused.
 pub(crate) fn run_restore(session: Option<&str>, json: bool, socket: Option<PathBuf>) -> ExitCode {
     run_on(socket, "restore", json, async |_, conn| {
         let inventory = match records(conn, "restore").await {
@@ -343,10 +368,11 @@ pub(crate) fn run_restore(session: Option<&str>, json: bool, socket: Option<Path
                 }
             },
         };
-        let results = match org::restore(conn, key).await {
-            Ok(results) => results,
-            Err(err) => return Failure::org("restore", &err).emit(json),
-        };
+        let mut results = Vec::new();
+        for target in restore_targets(&inventory, key.as_ref()) {
+            let result = org::relaunch(conn, target).await;
+            results.push((target, result));
+        }
         render_restore(json, &results)
     })
 }
@@ -398,14 +424,16 @@ fn restore_lines(results: &[(ResourceKey, Result<Committed, OrgError>)]) -> Vec<
     results
         .iter()
         .map(|(key, result)| match result {
-            Ok(committed) => match &committed.target {
-                Some(live) => format!(
-                    "{}  relaunched as {}",
-                    key_text(key),
-                    phux_client::selector::format_terminal_id(&live.resource)
-                ),
-                None => format!("{}  relaunched", key_text(key)),
-            },
+            Ok(committed) => committed.target.as_ref().map_or_else(
+                || format!("{}  relaunched", key_text(key)),
+                |live| {
+                    format!(
+                        "{}  relaunched as {}",
+                        key_text(key),
+                        phux_client::selector::format_terminal_id(&live.resource)
+                    )
+                },
+            ),
             Err(err) => format!("{}  refused: {err}", key_text(key)),
         })
         .collect()
@@ -538,6 +566,7 @@ pub(crate) fn run_rename_resource(target: &str, new_name: &str, server: ServerSp
         };
         let key = key_text(&record.key);
         let result = org::rename_resource(&mut conn, record.key, Some(new_name)).await;
+        drop(conn);
         finish(
             false,
             "rename",

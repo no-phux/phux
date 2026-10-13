@@ -3190,9 +3190,10 @@ Global flags:
 ```text
 Relaunch every pane a server restart ended
 
-Starts each pane whose process ended because the server stopped while it ran, in
-its session, with its directory and agent resume. With `SESSION`, only that
-session's panes. Prints one result line per pane.
+Starts each pane whose process ended because the server stopped while it ran,
+and each pane imported but never started, in its session, with its directory and
+agent resume. With `SESSION`, only that session's panes. Prints one result line
+per pane.
 
 Usage: phux restore [--json] [SESSION]
 

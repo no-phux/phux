@@ -405,9 +405,9 @@ enabled = true
     assert_eq!(value["plugins"][0]["actions"][0]["id"], "summarize");
     assert_eq!(value["plugins"][0]["agents"][0]["id"], "codex");
     assert_eq!(value["plugins"][0]["agents"][0]["state"], "blocked");
-    assert_eq!(value["plugins"][0]["workspaces"][0]["id"], "agent-bench");
+    assert_eq!(value["plugins"][0]["profiles"][0]["id"], "agent-bench");
     assert_eq!(
-        value["plugins"][0]["workspaces"][0]["panes"][0]["role"],
+        value["plugins"][0]["profiles"][0]["panes"][0]["role"],
         "monitor"
     );
     assert_eq!(value["plugins"][0]["enabled"], true);

@@ -550,6 +550,18 @@ fn json_output_requested() -> bool {
     std::env::args_os().any(|arg| arg == "--json")
 }
 
+/// Print `old`'s deprecation note (its [`deprecations::DEPRECATED`] row) on
+/// stderr, once, unless the caller asked for `--json`: stdout then carries
+/// only the document, and stderr only the one-line error contract.
+fn warn_deprecated(old: &str, json: bool) {
+    if json {
+        return;
+    }
+    if let Some(row) = deprecations::DEPRECATED.iter().find(|row| row.old == old) {
+        eprintln!("{}", row.note);
+    }
+}
+
 /// Endpoints answered straight from argv, before clap parses anything.
 ///
 /// Returns `Some(code)` when this invocation is one of them and no further
@@ -1232,7 +1244,7 @@ fn dispatch(
             projection,
             json,
         }) => {
-            deprecations::warn("phux move-pane", json);
+            warn_deprecated("phux move-pane", json);
             commands::spatial::run_mv(
                 &source,
                 &target,
@@ -1451,7 +1463,7 @@ fn dispatch(
                 action,
                 commands::WorkspaceAction::Inspect { json: true, .. }
             );
-            deprecations::warn("phux workspace", json);
+            warn_deprecated("phux workspace", json);
             commands::archive::run_workspace_alias(&action, socket)
         }
         Some(Command::Tag { action }) => commands::tag::run_tag(&action, socket),

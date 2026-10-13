@@ -256,6 +256,13 @@ pub(crate) async fn dispatch(name: &str, args: &Value) -> Result<Value, ToolErro
         | "phux_project_inspect" => crate::cli_tools::call(name, args).await,
         "phux_plugin_action" => crate::plugin_tools::action(args).await,
         "phux_plugin_profile" => crate::plugin_tools::profile(args),
+        family => dispatch_family(family, args).await,
+    }
+}
+
+/// The tools each family module owns by name.
+async fn dispatch_family(name: &str, args: &Value) -> Result<Value, ToolError> {
+    match name {
         org if crate::org_tools::owns(org) => crate::org_tools::call(org, args).await,
         agent if crate::agent_tools::owns(agent) => crate::agent_tools::call(agent, args).await,
         diagnostic if crate::diagnostic_tools::owns(diagnostic) => {
@@ -577,11 +584,11 @@ async fn phux_kill(args: &Value) -> Result<Value, ToolError> {
 /// outcome, then the session's own.
 pub(crate) fn kill_report_document(report: &phux_client::org::KillReport) -> Value {
     use phux_client::org::{SessionOutcome, TargetOutcome};
-    fn key(text: String) -> String {
+    fn key(text: &str) -> String {
         format!(
             "^{}",
             text.get(..phux_protocol::ids::KEY_MIN_PREFIX)
-                .unwrap_or(&text)
+                .unwrap_or(text)
         )
     }
     let targets: Vec<Value> = report
@@ -598,7 +605,7 @@ pub(crate) fn kill_report_document(report: &phux_client::org::KillReport) -> Val
                 TargetOutcome::TimedOut => ("timed_out", None),
                 TargetOutcome::NoLiveTarget => ("no_live_target", None),
             };
-            json!({ "key": key(member.to_string()), "result": result, "detail": detail })
+            json!({ "key": key(&member.to_string()), "result": result, "detail": detail })
         })
         .collect();
     let (session, detail) = match &report.session_outcome {
@@ -611,7 +618,7 @@ pub(crate) fn kill_report_document(report: &phux_client::org::KillReport) -> Val
         SessionOutcome::Unknown(reason) => ("unknown", Some(reason.clone())),
     };
     json!({
-        "session": key(report.session.to_string()),
+        "session": key(&report.session.to_string()),
         "session_result": session,
         "session_detail": detail,
         "targets": targets,

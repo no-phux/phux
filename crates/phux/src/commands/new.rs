@@ -490,6 +490,12 @@ fn report_create_refused(
             1,
         );
     }
+    if matches!(
+        refusal,
+        phux_protocol::wire::frame::Refusal::DuplicateOperation
+    ) {
+        return report_keyed_session_not_registered(json, name);
+    }
     report_create_failed(
         json,
         format!(

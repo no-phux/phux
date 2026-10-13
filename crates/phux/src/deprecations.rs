@@ -114,19 +114,3 @@ pub(crate) const DEPRECATED: &[Deprecation] = &[
         removed_in: "v0.59.0",
     },
 ];
-
-/// Print `old`'s deprecation note on stderr, once, unless the caller asked
-/// for `--json` (stdout then carries only the document, and stderr only the
-/// one-line error contract).
-#[allow(
-    dead_code,
-    reason = "the audit test that shares this file never calls it"
-)]
-pub(crate) fn warn(old: &str, json: bool) {
-    if json {
-        return;
-    }
-    if let Some(row) = DEPRECATED.iter().find(|row| row.old == old) {
-        eprintln!("{}", row.note);
-    }
-}

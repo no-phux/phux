@@ -483,7 +483,7 @@ fn spatial_cli_persists_topology_and_preserves_attached_focus() {
 
     let seed_before_move = server.pane_size(&seed);
     server.success(&[
-        "move-pane",
+        "mv",
         &format!("@{}", seed.local_id().expect("seed id")),
         &format!("@{}", third.local_id().expect("third id")),
         "--split",
@@ -566,7 +566,7 @@ fn json_created_sessions_are_immediately_layout_ready_for_cross_session_move() {
         .to_owned();
 
     let moved = server.json(&[
-        "move-pane",
+        "mv",
         &format!("@{}", source.local_id().expect("source id")),
         &format!("@{}", destination.local_id().expect("destination id")),
         "--split",
@@ -639,7 +639,7 @@ fn malformed_destination_layout_keeps_the_json_error_contract() {
     server.write_layout_bytes("bad-layout-destination", b"not-cbor".to_vec());
 
     let output = server.command(&[
-        "move-pane",
+        "mv",
         &format!("@{}", source.local_id().expect("source id")),
         &format!("@{}", destination.local_id().expect("destination id")),
         "--json",

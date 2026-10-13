@@ -399,7 +399,7 @@ fn sweep_args(tool: &str) -> Value {
         }
         "phux_send_keys" => json!({ "target": "@1", "keys": ["x"] }),
         "phux_paste" => json!({ "target": "@1", "text": "x" }),
-        "phux_kill" => json!({ "target": "@1", "confirm": true }),
+        "phux_kill" | "phux_rm" => json!({ "target": "@1", "confirm": true }),
         "phux_detach" => json!({ "confirm": true }),
         "phux_ask" => json!({ "target": "@1", "id": "q", "question": "ok?" }),
         "phux_signal" => json!({ "target": "@1", "signal": "freeze" }),
@@ -410,7 +410,6 @@ fn sweep_args(tool: &str) -> Value {
         "phux_swap_pane" => json!({ "first": "@1", "second": "@2" }),
         "phux_agent_set" => json!({ "name": "bot" }),
         "phux_approve" => json!({ "id": "0123456789abcdef0123456789abcdef", "decision": "deny" }),
-        "phux_rm" => json!({ "target": "@1", "confirm": true }),
         "phux_relaunch" => json!({ "target": "@1" }),
         "phux_plugin_action" | "phux_plugin_profile" => {
             return json!({

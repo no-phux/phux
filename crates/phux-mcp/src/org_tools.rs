@@ -161,6 +161,7 @@ async fn rm(args: &Value) -> Result<Value, ToolError> {
             key_text(&record.key),
         ),
     };
+    drop(conn);
     let committed = result.map_err(|err| org_error("rm", &err))?;
     Ok(document("rm", &target, &key, &committed))
 }
@@ -182,9 +183,9 @@ async fn relaunch(args: &Value) -> Result<Value, ToolError> {
         }
     };
     let key = key_text(&record.key);
-    let committed = org::relaunch(&mut conn, record.key)
-        .await
-        .map_err(|err| org_error("relaunch", &err))?;
+    let result = org::relaunch(&mut conn, record.key).await;
+    drop(conn);
+    let committed = result.map_err(|err| org_error("relaunch", &err))?;
     Ok(document("relaunch", &target, &key, &committed))
 }
 

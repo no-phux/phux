@@ -212,7 +212,7 @@ fn report_selected(
                 eprintln!("phux: warning: partial results — {message}");
             }
             if let Some(report) = &done.report {
-                print!("{}", report_lines(report));
+                out!("{}", report_lines(report));
             }
             ExitCode::SUCCESS
         }
@@ -248,7 +248,7 @@ fn report_selected(
                     ExitCode::from(2)
                 }
                 KillError::Workflow { ref report, .. } => {
-                    print!("{}", report_lines(report));
+                    out!("{}", report_lines(report));
                     eprintln!("phux: {err}");
                     ExitCode::from(2)
                 }
