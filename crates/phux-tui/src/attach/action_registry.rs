@@ -123,7 +123,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "kill-pane",
-        title: "Close pane",
+        title: "Kill pane",
         category: Category::Pane,
         description: "Kill the focused pane's terminal",
         params: "",
@@ -131,6 +131,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "close-view",
+        title: "Close view",
         category: Category::Pane,
         description: "Close the focused view; its terminal keeps running",
         params: "",
@@ -138,6 +139,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "reopen-views",
+        title: "Reopen hidden terminals",
         category: Category::Window,
         description: "Show terminals that run with no view, one window each",
         params: "",
@@ -252,7 +254,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "kill-window",
-        title: "Close window",
+        title: "Kill window…",
         category: Category::Window,
         description: "Kill the active window's terminals…",
         params: "`terminals?` (selectors the confirm committed; omitted opens the confirm)",
