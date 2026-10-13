@@ -30,6 +30,7 @@ Gate: `just docs-check`; the ADRs reviewed. Specs in `docs/spec/` change with th
 2. Replace `Session{windows, active, keep_empty}` with `Session{key, name, lifetime, members, arrangement, attrs, revision}`.
 3. Delete `Window`. Move `LayoutNode` to `arrangement.rs`, generic over its leaf. Add `Arrangement` and its validation (session arrangements reference members only; entry IDs unique; ratios valid).
 4. `Resource` gains `key`, `session`, `on_exit`, `activation`; loses `window`.
+   The authority designates a persistent Inbox session; imported-session intake facts, bounded bulk moves, and revision-checked organization undo follow the same core rules.
 5. Add `apply(&mut Org, Command, &Actor, now) -> Result<Applied, Refusal>` where `Applied` lists the transition events and the effects (launch, terminate) for the server to run. Every command in CONTRACTS §04 that touches sessions, resources, or arrangements is implemented here.
 6. Server: the registry wrapper keeps its current behavior through the new types. Today's single window becomes the session's arrangement with one group. The wire is unchanged: `GetState` still reports one window per session, synthesized from the arrangement.
 
@@ -39,8 +40,8 @@ Proof: property tests over random command sequences. Invariants: every resource 
 
 ## Stage 2: store, activations, recovery
 
-1. `OrgStore` trait plus the JSON implementation (CONTRACTS §08), with crash-safety tests that cut the write at each step.
-2. Mint `AuthorityId` on first start; import the live registry and any `phux.tui.layout/v1` documents (MIGRATION §07).
+1. `OrgStore` with transactional SQLite persistence (CONTRACTS §08), versioned migrations, indexed membership/intake queries, durable receipts, and crash/commit-failure tests. Reuse an existing suitable binding where possible; dependency additions need scoped review.
+2. Mint `AuthorityId` on first start; import the live registry and any `phux.tui.layout/v1` documents while preserving groups. Designate the persistent Inbox session and mark imported groups awaiting organization (MIGRATION §07).
 3. Terminal executor records `ProcIdentity` (pid, pgid, start time) and reports activation transitions.
 4. Startup reconciliation: rebind by handover, `Lost` by matching start time, `Unobserved` otherwise. Never relaunch.
 5. Exit policy replaces respawn-in-place and ADR-0124's retention flag. Server lifetime becomes "no live activations and no clients".
@@ -49,6 +50,8 @@ Proof: property tests over random command sequences. Invariants: every resource 
 Deletes: respawn-in-place, the zero-session exit, the keep-empty reap step.
 
 Proof: kill the server with SIGKILL mid-session and restart it: records come back; dead shells show `Unobserved`; a `nohup` child shows `Lost`; nothing relaunches. Restart again: same result, no double-counting. Store-write failure leaves memory unchanged.
+
+Scale proof: seed thousands of resource records across sessions, then measure paged Inbox/inventory, same-owner bulk moves and undo, indexed counts, and receipt churn under sustained mutation plus observers. Assert bounded page/batch sizes, no full-store rewrite per mutation, and no dropped records. Pin measured latency/resource budgets in the implementation gate; do not invent a universal unbounded-fleet promise.
 
 ## Stage 3: wire
 
@@ -64,15 +67,19 @@ Proof: protocol round-trip tests for every new variant; dispatch tests per comma
 Order matters: runtime and FFI first, because every client reads through them.
 
 1. `phux-client-runtime`: snapshot plus journal reconciliation, operation correlation, retry with the same `OperationId`.
+   Add bounded paging/intake queries and organization receipts/undo before the UI adapters.
 2. `phux-client-ffi`: lossless projection; Swift and C bindings regenerated.
 3. `phux` CLI and `phux-mcp`: MIGRATION §04 and §05, including `rm`, `relaunch`, `restore`, and the kill workflow.
 4. `phux-tui`: arrangement groups instead of windows; the verb table in MIGRATION §03.
 5. Desktop, Cockpit, web: MIGRATION §06.
+   Each exposes coherent Inbox grouping, keyboard organization, bulk selection, and undo; graphical clients also expose drag/drop. All use shared operations, not a private migration model.
 6. The "workspace" renames (MIGRATION §02), so stage 6 lands on a free name.
 
 Deletes: client-side session lifecycle via metadata, the TUI layout metadata key (still translated server-side for old clients), the web client's `default` auto-create.
 
 Proof: the close-versus-kill matrix runs against each client: close a view and the process survives; kill and it ends; exit a shell and the view goes; exit the last shell of a named session and the session stays. Cross-client: create in CLI, see it in TUI and desktop, rename on one, see it on the others.
+
+Intake proof: migration lands in Inbox, preserved groups remain recognizable, and drag/keyboard/bulk routes produce the same membership result. Undo restores grouping without changing activations; concurrent edits or revoked grants refuse safely. Large bot sessions show counts/outcomes/exceptions and drill-down without mounting every resource. Stage 4 provides owner-local intake; combined cross-owner Inbox lands with the multi-authority runtime in stage 6.
 
 ## Stage 5: actors
 
@@ -88,6 +95,8 @@ Proof: an agent credential is refused `Terminate` outside its session; a human t
 `Workspace` records, link and unlink, the workspace arrangement, multi-authority observation in the client runtime, transfer, deleted-link and offline states. Gated on the runtime holding sessions from two authorities at once.
 
 Proof: the workspace scenarios in the [domain model](FULL-DESIGN.md#07-workspaces) against two real servers, one killed mid-test.
+
+Also prove combined Inbox preserves imported groups from both owners, links sessions without moving execution, and reports link/intake-resolution and undo outcomes per owner. Different human/bot views operate on the same IDs, permissions, records, and events.
 
 ## Stage 7: browser kind
 

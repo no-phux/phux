@@ -10,13 +10,14 @@
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,sans-serif}main{max-width:1120px;margin:auto;padding:24px 28px 40px}header{display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:12px;letter-spacing:.08em;color:var(--muted)}header a,a{color:var(--mint)}h1{font-size:clamp(26px,4vw,42px);line-height:1.15;letter-spacing:-.035em;margin:22px 0 10px}.lede{margin:0 0 18px;color:var(--muted);font-size:17px}.diagram{width:100%;display:block}svg text{font-family:system-ui,-apple-system,sans-serif}.diagram-label{font-size:13px;letter-spacing:1.5px;font-weight:700}.diagram-title{font-size:22px;font-weight:650}.diagram-small{font-size:14px}.resource-name{font-size:17px;font-weight:600}.caption{color:var(--muted);font-size:13px;margin:5px 0 20px;text-align:center}.rules{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:0 0 18px}.rule{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}.rule strong{font-size:15px;display:block}.rule p{font-size:13px;margin:5px 0 0;color:var(--muted)}details{border-top:1px solid var(--line);padding:13px 0}summary{cursor:pointer;font-weight:600;font-size:14px}details p,details li{font-size:14px;color:var(--muted)}details ul{padding-left:22px}details a{display:inline-block;margin-top:10px}.notes{padding:12px 0}label{display:block;font-size:14px;font-weight:600;margin-bottom:8px}textarea{width:100%;min-height:100px;padding:12px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:8px;font:inherit;resize:vertical}.actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:8px}button{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:8px 12px;font:inherit;font-size:13px;cursor:pointer}.status{font-size:12px;color:var(--muted)}a:focus-visible,button:focus-visible,summary:focus-visible,textarea:focus-visible{outline:3px solid var(--mint);outline-offset:3px}.narrow{display:none}
 @media(max-width:900px){.rules{grid-template-columns:repeat(2,1fr)}}@media(max-width:650px){main{padding:18px 16px}.wide{display:none}.narrow{display:block}.rules{grid-template-columns:1fr;gap:8px}.rule{padding:10px 12px}.lede{font-size:15px}h1{font-size:28px}.caption{text-align:left}}
 @media print{body{background:white;color:black}main{padding:0}.notes,.actions,header a{display:none}.rule{background:white;color:black;border-color:#aaa}.rule p,.caption,.lede{color:#444}svg{print-color-adjust:exact;-webkit-print-color-adjust:exact}details{display:none}}
+.inbox{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:12px 16px;margin:0 0 16px;border:1px solid var(--mint);border-radius:10px;background:var(--panel);font-size:14px}.inbox strong{color:var(--mint)}.inbox span{color:var(--muted)}
 </style>
 </head>
 <body>
 <main>
 <header><span>PHUX / PROPOSED DOMAIN MODEL</span><a href="DESIGN.md">Markdown</a></header>
 <h1>Resource → Session → Workspace</h1>
-<p class="lede">Resources are things. Sessions group them. Workspaces link sessions across machines.</p>
+<p class="lede">One world of work for people and bots. Resources → groups → linked groups across machines.</p>
 
 <svg class="diagram wide" viewBox="0 0 1060 370" role="img" aria-labelledby="wide-title wide-desc">
 <title id="wide-title">One workspace links sessions on a laptop and a Mac mini; each session groups resources.</title>
@@ -87,11 +88,12 @@
 </svg>
 
 <p class="caption">Square = a view of a resource. Same work, different layouts on desktop and phone.</p>
+<section class="inbox" aria-label="Inbox intake"><strong>INBOX →</strong><span>Existing groups + unorganized work. Nothing flattened.</span><span>Drag · keyboard · bulk · undo</span></section>
 <section class="rules" aria-label="Four essential rules">
 <div class="rule"><strong>Close square → work keeps running</strong><p>Kill is a separate, explicit action.</p></div>
 <div class="rule"><strong>Empty named session → it stays</strong><p>Quick sessions are ephemeral, by choice, not by accident.</p></div>
 <div class="rule"><strong>Delete workspace → sessions stay</strong><p>It owns links, not their execution.</p></div>
-<div class="rule"><strong>Agent acts → it is attributed</strong><p>Agents act through grants. A human can always take the keyboard back.</p></div>
+<div class="rule"><strong>People + bots → same work</strong><p>Bots operate at scale. People see groups and exceptions. Actions are attributed.</p></div>
 </section>
 
 <details><summary>Who owns what?</summary>
@@ -99,6 +101,10 @@
 </details>
 <details><summary>The constraints that keep this honest</summary>
 <ul><li>One resource → one session → one owner.</li><li>A session can be linked into several workspaces.</li><li>Names and IP addresses are not identity.</li><li>Offline does not mean dead.</li><li>Saved organization does not mean processes survive reboot.</li><li>Browsers and other kinds have their own capabilities—not fake terminal fields.</li></ul>
+</details>
+<details><summary>Inbox is a starting place, not another hierarchy</summary>
+<p>Imported sessions stay intact. Truly ungrouped work goes into its owning machine's Inbox session. One Inbox view brings authorized work together across machines.</p>
+<p>Move resources between sessions on the same machine; link sessions across machines. Organizing never restarts work. Undo checks current permissions and changes—never overwriting somebody else's edits.</p>
 </details>
 <details><summary>The full design — only when you need it</summary>
 <p>The model, then the implementable contracts, the staged build plan, the migration from today's tree, and the browser kind.</p>

@@ -37,7 +37,7 @@ Six things are called workspace today. The domain Workspace arrives in stage 6; 
 | `phux-client-core::layout::Workspace` | `ArrangementDoc` |
 | FFI `SharedWorkspace`, `PhuxWorkspace*` C types | `SharedArrangement`, `PhuxArrangement*` |
 | Plugin manifest `workspace` profiles and `phux_plugin_workspace` | `profile` and `phux_plugin_profile` |
-| Desktop `src/workspace/`, Cockpit per-OS-window `Workspace` | Client-internal; renamed when touched, not blocking |
+| Desktop `src/workspace/`, Cockpit per-OS-window `Workspace` | Client arrangement/presentation; rename during stage 4 so Workspace has one meaning before stage 6 |
 
 Old CLI spellings stay as hidden aliases for one release and print the new name.
 
@@ -94,15 +94,19 @@ Agents call these with their own delegated credential (CONTRACTS §03), so their
 | FFI | Project everything: keys, revisions, lifetime, members, arrangement, exec state, agent conversations, dims. Today it drops `keep_empty`, windows, agent sessions, and dims (`crates/phux-client-ffi/src/projection/topology.rs:14-89`). |
 | Desktop | Already right: close is release (`clients/desktop/src/workspace/controller.ts:145-186`). Replace the "Close Session" CLI shell-out (`session-cli.ts:11-13`) with the runtime command and show the workflow's per-target results. |
 | Cockpit | Close Pane and Close Tab "end work" (ADR-0114). Keep that as explicit terminate, relabel the menu items "Kill", and add "Close view". Peer-coordinator tabs already close layout-only. |
-| Web | Rename its `Session` to `Connection`. Stop auto-creating `default`; open the most recent session or offer create. Close pane becomes close view; keep kill as an explicit action. |
+| Web | Rename its `Session` to `Connection`. Stop auto-creating `default`; migration and untargeted intake land in Inbox with existing groups intact. Explicit saved-session/resource navigation still opens that target. Close pane becomes close view; keep kill as an explicit action. |
 | Mobile | Host groups become a host filter; saved terminal collections become saved filters. Neither is called a workspace. Separate repos, migrated after FFI lands. |
 
 ## 07. Saved state
 
-- First start of a stage-2 server: build the org store from the live registry. Each session gets a key and `lifetime = keep_empty ? Persistent : Ephemeral`. Each live Terminal becomes a resource bound to its current process as activation 1, with `ProcIdentity` recorded. The session's `phux.tui.layout/v1` document becomes its arrangement.
+- First start of a stage-2 server: transactionally build the SQLite org store from the live registry with a migration receipt. Each session gets a key and `lifetime = keep_empty ? Persistent : Ephemeral`; existing grouping and arrangements are preserved. Each live Terminal becomes a resource bound to its current process as activation 1, with `ProcIdentity` recorded. The session's `phux.tui.layout/v1` document becomes its arrangement.
+- Designate a persistent Inbox session on each owner. Do not merge all existing sessions into it. Imported sessions are marked `awaiting_organization` and displayed as intact groups in the Inbox view; only genuinely ungrouped resources are assigned to their owner's Inbox session. Names, source host, membership, arrangement, outcomes, and provenance remain inspectable.
+- Migration opens into Inbox with authorized imported work accounted for, including last-known/offline groups. Users organize resources by drag, keyboard command, or bulk move on their owner; imported sessions link into workspaces across owners. Intake resolution removes the imported marker, not work. Undo is revision/permission checked and does not restart processes. There is no forced setup wizard before accessing existing work.
 - Existing JSON archives (schema 2, `crates/phux/src/commands/workspace/archive/model.rs:5-30`) import as new records with provenance; nothing is launched until `phux restore`.
-- The old store is not deleted. Downgrade: stop the server, run the old binary; it ignores `org/`.
+- Old stores/archives are backed up and not overwritten. Merely ignoring `org/` is not a safe downgrade: older binaries cannot reconstruct new membership or persistence semantics. Downgrade requires an explicit compatible export/conversion and a stopped owner; otherwise refuse and retain the backup.
 - Conversion is idempotent and keyed by a migration receipt in the store.
+
+Acceptance: import populated, empty, and ungrouped fixtures from several owners; open Inbox and account for every authorized resource without flattening groups. Move and undo selected work without changing activation IDs. Retry migration without duplicates. Revoked access stays filtered; an offline owner remains last-known. Link-then-resolve across owners reports partial success honestly.
 
 ## 08. Compatibility rules
 

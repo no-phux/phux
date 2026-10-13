@@ -21,7 +21,7 @@ main{max-width:1120px;padding:2rem 3rem 6rem;min-width:0}h1{font-size:clamp(2rem
 </style>
 </head>
 <body>
-<header class="top"><div><span class="brand">PHUX / MIGRATION</span><span class="badge">PROPOSAL · DRAFT 2 · 12 OCTOBER 2026</span></div><div class="actions"><a href="DESIGN.html">Overview</a><button id="export" type="button">Export notes as Markdown</button><button id="print" type="button">Print / PDF</button><a href="MIGRATION.md">Markdown source</a></div></header>
+<header class="top"><div><span class="brand">PHUX / MIGRATION</span><span class="badge">PROPOSAL · DRAFT 3 · 12 OCTOBER 2026</span></div><div class="actions"><a href="DESIGN.html">Overview</a><button id="export" type="button">Export notes as Markdown</button><button id="print" type="button">Print / PDF</button><a href="MIGRATION.md">Markdown source</a></div></header>
 <div class="shell"><nav aria-label="Sections"><p><a href="FULL-DESIGN.html">Domain Model</a> · <a href="CONTRACTS.html">Contracts</a> · <a href="PLAN.html">Build Plan</a> · <strong>Migration</strong> · <a href="BROWSER-KIND.html">Browser Kind</a></p><div class="toc">
 <div class="toc">
 <ul>
@@ -152,7 +152,7 @@ main{max-width:1120px;padding:2rem 3rem 6rem;min-width:0}h1{font-size:clamp(2rem
 </tr>
 <tr>
 <td>Desktop <code>src/workspace/</code>, Cockpit per-OS-window <code>Workspace</code></td>
-<td>Client-internal; renamed when touched, not blocking</td>
+<td>Client arrangement/presentation; rename during stage 4 so Workspace has one meaning before stage 6</td>
 </tr>
 </tbody>
 </table>
@@ -316,7 +316,7 @@ main{max-width:1120px;padding:2rem 3rem 6rem;min-width:0}h1{font-size:clamp(2rem
 </tr>
 <tr>
 <td>Web</td>
-<td>Rename its <code>Session</code> to <code>Connection</code>. Stop auto-creating <code>default</code>; open the most recent session or offer create. Close pane becomes close view; keep kill as an explicit action.</td>
+<td>Rename its <code>Session</code> to <code>Connection</code>. Stop auto-creating <code>default</code>; migration and untargeted intake land in Inbox with existing groups intact. Explicit saved-session/resource navigation still opens that target. Close pane becomes close view; keep kill as an explicit action.</td>
 </tr>
 <tr>
 <td>Mobile</td>
@@ -326,11 +326,14 @@ main{max-width:1120px;padding:2rem 3rem 6rem;min-width:0}h1{font-size:clamp(2rem
 </table>
 <h2 id="07-saved-state">07. Saved state</h2>
 <ul>
-<li>First start of a stage-2 server: build the org store from the live registry. Each session gets a key and <code>lifetime = keep_empty ? Persistent : Ephemeral</code>. Each live Terminal becomes a resource bound to its current process as activation 1, with <code>ProcIdentity</code> recorded. The session's <code>phux.tui.layout/v1</code> document becomes its arrangement.</li>
+<li>First start of a stage-2 server: transactionally build the SQLite org store from the live registry with a migration receipt. Each session gets a key and <code>lifetime = keep_empty ? Persistent : Ephemeral</code>; existing grouping and arrangements are preserved. Each live Terminal becomes a resource bound to its current process as activation 1, with <code>ProcIdentity</code> recorded. The session's <code>phux.tui.layout/v1</code> document becomes its arrangement.</li>
+<li>Designate a persistent Inbox session on each owner. Do not merge all existing sessions into it. Imported sessions are marked <code>awaiting_organization</code> and displayed as intact groups in the Inbox view; only genuinely ungrouped resources are assigned to their owner's Inbox session. Names, source host, membership, arrangement, outcomes, and provenance remain inspectable.</li>
+<li>Migration opens into Inbox with authorized imported work accounted for, including last-known/offline groups. Users organize resources by drag, keyboard command, or bulk move on their owner; imported sessions link into workspaces across owners. Intake resolution removes the imported marker, not work. Undo is revision/permission checked and does not restart processes. There is no forced setup wizard before accessing existing work.</li>
 <li>Existing JSON archives (schema 2, <code>crates/phux/src/commands/workspace/archive/model.rs:5-30</code>) import as new records with provenance; nothing is launched until <code>phux restore</code>.</li>
-<li>The old store is not deleted. Downgrade: stop the server, run the old binary; it ignores <code>org/</code>.</li>
+<li>Old stores/archives are backed up and not overwritten. Merely ignoring <code>org/</code> is not a safe downgrade: older binaries cannot reconstruct new membership or persistence semantics. Downgrade requires an explicit compatible export/conversion and a stopped owner; otherwise refuse and retain the backup.</li>
 <li>Conversion is idempotent and keyed by a migration receipt in the store.</li>
 </ul>
+<p>Acceptance: import populated, empty, and ungrouped fixtures from several owners; open Inbox and account for every authorized resource without flattening groups. Move and undo selected work without changing activation IDs. Retry migration without duplicates. Revoked access stays filtered; an offline owner remains last-known. Link-then-resolve across owners reports partial success honestly.</p>
 <h2 id="08-compatibility-rules">08. Compatibility rules</h2>
 <ul>
 <li>No wire tag changes meaning. Old clients keep L1 terminal I/O, attach, input, and their metadata-based session operations through the server's translation layer (CONTRACTS §09).</li>
@@ -348,12 +351,12 @@ main{max-width:1120px;padding:2rem 3rem 6rem;min-width:0}h1{font-size:clamp(2rem
 <li>The <code>--autosave</code> archive writer, after its release of overlap.</li>
 <li>Name-based joins anywhere a key exists.</li>
 </ul>
-<p class="footer">Generated from MIGRATION.md by build.py. No external scripts, fonts, analytics, or network requests. Source SHA-256: <code>6a2a2d17b146010b0e7e8d18c4336561869882457d18cf861ace4da61dcaf4e0</code>.</p>
+<p class="footer">Generated from MIGRATION.md by build.py. No external scripts, fonts, analytics, or network requests. Source SHA-256: <code>9475a25145ea3acd78b1e052199843a897e6343a45f4148d816ad8c9dd5600ee</code>.</p>
 </main></div>
 <script>
 
 const storageKey = "phux-domain-review-migration";
-const sourceLabel = "MIGRATION.md, Draft 2 \u00b7 12 October 2026, sha256 6a2a2d17b146010b0e7e8d18c4336561869882457d18cf861ace4da61dcaf4e0";
+const sourceLabel = "MIGRATION.md, Draft 3 \u00b7 12 October 2026, sha256 9475a25145ea3acd78b1e052199843a897e6343a45f4148d816ad8c9dd5600ee";
 let notes = {};
 let storageAvailable = true;
 try { notes = JSON.parse(localStorage.getItem(storageKey) || '{}'); }

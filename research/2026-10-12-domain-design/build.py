@@ -18,7 +18,7 @@ import re
 import markdown
 
 HERE = pathlib.Path(__file__).resolve().parent
-DRAFT = "Draft 2 · 12 October 2026"
+DRAFT = "Draft 3 · 12 October 2026"
 
 # Pages, in reading order. FULL-DESIGN keeps draft 1's storage key so notes
 # taken on draft 1 resurface as "Notes from an earlier draft".

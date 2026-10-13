@@ -8,7 +8,7 @@ last-reviewed: 2026-10-12
 
 **TL;DR.** Resources are things to work with. Sessions group them on one owning server. Workspaces link sessions across machines. Actors, human or agent, act on all of it through one permission and input-control model. Execution, presentation, and access are separate axes. Proposed design, not shipped behavior.
 
-**Review draft 2 · 12 October 2026.** Draft 1 was one 600-line document; it is now split by altitude. This file is the model. The rest is detail that conforms to it:
+**Review draft 3 · 12 October 2026.** Draft 1 was one 600-line document; it is now split by altitude. This file is the model. The rest is detail that conforms to it:
 
 | File | Holds |
 |---|---|
@@ -21,9 +21,11 @@ last-reviewed: 2026-10-12
 
 Draft 2 changes: actors are a core noun (§04); session lifetime is explicit and archive is cut (§06); a workspace owns its own arrangement and its ownership can transfer (§07); browser detail moved to its own kind contract; failure-handling detail moved to the contracts, which are now written against today's code.
 
+Draft 3 adds coherent Inbox intake with preserved imported groups, effortless organization and undo, equal first-class human/bot use, and transactional storage with bounded paged inventory rather than a small-fleet JSON assumption.
+
 ## 01. The product in one paragraph
 
-Phux is where a person and their agents organize, reach, and operate work that keeps existing when nobody is looking at it. A terminal is one kind of work, not the definition of the product. The same work means the same thing on desktop, TUI, phone, web, CLI, and agent tools; presentation differs, identity and lifecycle do not.
+Phux is a shared work environment for people and bots. Both organize, reach, and operate the same resources through the same model; neither is an accessory to the other's interface. A terminal is one kind of work, not the definition of the product. The same work means the same thing on desktop, TUI, phone, web, CLI, and agent tools; presentation differs, identity and lifecycle do not.
 
 ```text
 Workspace: Ship the product                         owned by Laptop
@@ -55,6 +57,8 @@ The primary surface is a board of views. A session can be shown alone; a workspa
 
 Out of scope: moving running processes between hosts, consensus between servers, offline edit merging, the Objective/Run work coordinator, identical layouts on every screen.
 
+A bot may operate thousands of resources while a person attends to a session's progress, outcomes, and exceptions. That is a difference in attention and presentation, not a second resource model. Aggregation never hides underlying identity, provenance, or failure from an authorized inspection. Bots use bounded typed operations; people use the board, keyboard, and summaries over the same records.
+
 ## 02. Nouns
 
 | Term | Is | Is not |
@@ -62,6 +66,7 @@ Out of scope: moving running processes between hosts, consensus between servers,
 | Resource | An identified thing with a kind, lifecycle, and capabilities. | A rectangle, tab index, PID, or connection. |
 | Session | A named group of resources on one owning server. | A connection, a cookie, or an agent conversation. |
 | Workspace | A named set of links to sessions, possibly on several machines, plus its arrangement. | An owner of those sessions or an OS window. |
+| Inbox | The default intake view over unorganized work and preserved imported groups. | A fourth domain entity, a cross-owner session, or permission to flatten existing organization. |
 | Actor | Who issued an action: a human on a device, an agent, or an automation. | A connection or a client app. |
 | View | One client's presentation of one resource. | The resource. |
 | Arrangement | A saved layout of views: grid, split tree, stack, tabs. | Membership or ownership. |
@@ -84,6 +89,20 @@ Actor     * ── acts on ── *  (through grants; §04)
 - Project, directory, repository, and host label are attributes, not organization levels.
 
 **D01.** A resource belongs to exactly one session. Overlapping collections, if ever needed, are saved filters, never shared ownership.
+
+**Workspace is the canonical term.** Host folders, local layout objects, and saved archives are renamed according to their actual roles; there is no competing domain meaning of Workspace. A repository or project is context, not a required hierarchy above Session.
+
+### Inbox and effortless organization
+
+Inbox is a pinned entry point, usable before a workspace exists. Each authority has one persistent ordinary Session designated as its Inbox. Resources created without an explicit session go there, subject to the caller's grants. Explicit quick/ephemeral workflows keep their chosen lifetime; they are not silently converted into Inbox work.
+
+Migration preserves existing session IDs/membership/arrangements wherever verified conversion permits. Imported sessions are marked awaiting organization and shown as intact groups in Inbox. Truly ungrouped resources go into their owner's Inbox session. The combined Inbox view aggregates reachable authorized owners; it does not create one execution-owning session across machines or transfer execution. Once deliberately organized, imported groups can be cleared from intake without deleting or flattening them.
+
+Resources move between sessions on the same owner; sessions link into workspaces across owners. The UI offers drag/drop, one keyboard move command, and bulk selection, with an immediately visible destination and undo. No wizard, reconnect, stop/restart, or hidden credential change is required to organize already-accessible work. Cross-owner resource movement is refused with the explicit distinction between organizing and launching work elsewhere.
+
+Undo is a new authorized, revision-checked organization operation. It reverses recorded membership/link/intake changes only while the receipt is available and the affected state still matches. A conflict is visible; undo does not overwrite another actor's edits, widen a grant, or undo execution. Cross-owner organization and its undo report per-owner outcomes rather than claiming fleet-wide atomicity.
+
+Inbox is coherent rather than scattered: stable grouping, host labels, selection, aggregate counts, and a clear destination. Offline groups stay visibly last-known. Filtered/paged presentation is allowed; resources are not dropped from inventory merely because a human cannot read them all.
 
 ## 03. Identity
 
@@ -113,7 +132,7 @@ LiveTarget   = (ResourceRef, activation_id, server_instance_id)
 
 ## 04. Actors
 
-Phux exists so a human and agents can work in the same terminals. The model treats that as a first-class relationship, not a resource kind.
+Phux exists so humans and agents can work in the same environment of resources, sessions, and workspaces. Terminal sharing is one case. The model treats actors as a first-class relationship, not another organization tier or resource kind.
 
 ### Three things called "agent"
 
@@ -160,6 +179,8 @@ Each lease change opens a **lease epoch** with its holder recorded. Evidence for
 
 **D09.** Actors are a core noun. Every mutation is attributed; agents act only through grants; a human can always take the keyboard back.
 
+Equal first-class support does not mean equal grants or identical screens. Bot swarms use bulk operations, pagination, and incremental state; people use grouping, summaries, and exception-driven attention. Either actor can inspect the exact records behind a summary when authorized. Resource count cannot become a reason to attach/render every resource or rewrite the entire organization store on every mutation.
+
 ## 05. Resource kinds
 
 Every resource has stable identity, owner, session, name, kind, revision, provenance, lifecycle state, a capability descriptor, and kind-specific operations with typed results. A resource is not required to have a PTY, grid, process ID, working directory, or a visible surface.
@@ -193,12 +214,14 @@ Empty and populated are derived facts, not modes.
 | Create and launch | Session, membership, and launch intent commit together; execution starts asynchronously and can fail visibly. |
 | Rename | Label changes; identity, links, grants, and views do not. |
 | Add resource | Creates the resource and its membership in one transaction. |
+| Intake | Unassigned work enters the owner's persistent Inbox session; imported groups remain intact and are marked awaiting organization. |
 | Move resource | Changes membership on the same owner; execution continues. |
+| Organize in bulk / undo | Fixed selected resources move in one owner transaction; undo checks the recorded result and current grants/revisions. |
 | Close the last view | Nothing changes. |
 | Last execution ends | Records and outcomes remain; the session remains. |
 | Delete | Only when the session has no resources. Otherwise refused, with choices. |
 
-The UI offers **Move resources, then delete** and **Terminate, remove, then delete** as separate confirmed actions. Neither hides behind a generic Delete. The second is a multi-step workflow with a fixed target set; work added during it survives, and the final delete then refuses.
+The UI offers **Move resources, then delete** and **Terminate, remove, then delete** as separate confirmed actions. Neither hides behind a generic Delete. The second is a multi-step workflow with a fixed target set; work added during it survives, and the final delete then refuses. The designated Inbox session is persistent and cannot be deleted or made ephemeral while it serves that role; its display name is not its identity.
 
 Session labels are unique per authority among live sessions. Short names that match on more than one authority are refused, never guessed.
 
@@ -234,6 +257,8 @@ Workspace "Ship the product"          owner: Laptop
 | Transfer ownership | Explicit, with both authorities reachable. New WorkspaceRef on the new owner; the old one becomes a forwarding tombstone. |
 
 Linking a session grants nothing. Each viewer needs their own grant on each linked session; inaccessible links show a generic placeholder.
+
+Organizing an imported session means linking it without moving its resources, then resolving its intake marker on its owner under Organize permission. Across owners those are correlated operations, not a distributed transaction. If the link succeeds but intake resolution fails, the session remains safely visible in Inbox and the partial result is reported. Undo restores the prior link/intake state only with current authorization and revision checks.
 
 Actions across several owners return one result per owner. There is no cross-host atomic action and no fleet-wide event order. A timeout is reported as unknown, not as failure.
 
@@ -276,6 +301,8 @@ There is no execution-owning Window or Tab entity. Clients offer tabs and splits
 A client-local PTY that ends with its window is allowed, but it is labeled **local only** and is not a shared resource until explicitly published to an owner.
 
 **D06.** Shared arrangements with local adaptation are the default for sessions and workspaces. Personal arrangements are opt-in. Focus is never shared.
+
+Acceptance: migration opens directly into a coherent Inbox with every authorized imported group accounted for; drag, keyboard, and bulk organization all use the same operations; undo restores grouping without changing activations. A large bot session exposes accurate counts/outcomes and drill-down without mounting thousands of views. Inbox aggregation and workspace observation are paged and incremental, not all-record fan-out at startup.
 
 ## 09. Execution and recovery
 
