@@ -8,7 +8,7 @@ last-reviewed: 2026-10-13
 
 **TL;DR.** Session, resource, arrangement, and Inbox edits are typed
 commands on the existing `COMMAND` envelope, advertised by the
-`ORGANIZATION` bit in `features_ext`. Each carries an operation id and an
+`ORGANIZATION` bit in `features_ext`. Each edit carries an operation id and an
 expected revision, answers `Ok`, `Accepted`, or a typed refusal, and is
 journaled with its actor. The intercepted session keys and the TUI layout
 key become a translation layer for old clients.
@@ -42,7 +42,9 @@ surface.
    `ArrangementGet`, and `ArrangementReplace`. Workspace commands are
    reserved for the workspace stage. No frame tag is reused or
    reinterpreted. Byte layouts live in `docs/spec/L1.md` §5.7.
-2. **Every command carries an `OperationId`.** It is a caller-drawn
+2. **Every mutating command carries an `OperationId`.** Reads
+   (`GetOrganization`, `ArrangementGet`) carry none: repeating one has no
+   effect to deduplicate. The id is a caller-drawn
    16-byte id with the same shape as the `APPLY_INPUT` and create keys
    ([ADR-0126](./0126-idempotent-create.md)). A retry with the same id and
    payload returns the original result without repeating effects; the
