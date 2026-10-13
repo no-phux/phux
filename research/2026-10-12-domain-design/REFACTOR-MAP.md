@@ -6,7 +6,7 @@ last-reviewed: 2026-10-12
 
 # Refactor map: the one-sweep implementation
 
-**TL;DR.** The whole domain change lands as one integration branch built by twelve lanes with non-overlapping file scopes. A single-writer spine freezes the shared types first: core records, protocol variants, the arrangement document, and the FFI header. Server, client libraries, docs, and web then run in parallel; FFI, CLI/MCP, and TUI follow the client libraries; Cockpit and Desktop follow the frozen header. Twenty decisions below settle every question the code survey raised, so no lane has to stop and ask. Every claim cites the tree as of `7235d52d`.
+**TL;DR.** The whole domain change lands as one integration branch built by twelve lanes with non-overlapping file scopes. A single-writer spine freezes the shared types first: core records, protocol variants, the arrangement document, and the FFI header. Server, client libraries, docs, and web then run in parallel; FFI, CLI/MCP, and TUI follow the client libraries; Cockpit and Desktop follow the frozen header. Twenty-two decisions below settle every question the code survey raised, so no lane has to stop and ask. Every claim cites the tree as of `7235d52d`.
 
 Conforms to [CONTRACTS.md](CONTRACTS.md) and [MIGRATION.md](MIGRATION.md), including draft 3's Inbox, bulk move, undo, and SQLite store. Where this map and the contracts disagree, the contracts win and this map is fixed.
 
@@ -49,6 +49,8 @@ These are binding for every lane. Each one closes a question a lane would otherw
 | R17 | Only `phux.tui.layout/v1/<session-id>` is translated to and from the arrangement. Named projections (`<prefix>.layout/v1/N`, ADR-0129) and third-party layout keys stay opaque L3 metadata, untouched. | The spec left their fate open; leaving them alone is the conservative call. |
 | R18 | C ABI: bump `PHUX_CLIENT_ABI_VERSION` to 3 (`crates/phux-client-ffi/include/phux/client.h:12`). `PhuxSessionInfo` is frozen; a new sized `PhuxSessionRecord` carries key, revision, lifetime, and counts. Rename every `PhuxWorkspace*` to `PhuxArrangement*`. Wire the `tests/*_abi.c` static-assert files into `just cockpit-test`. | The `*_abi.c` checks run nowhere today. |
 | R19 | Desktop and web stop auto-creating `default`. Both open the owner's Inbox session (draft 3), which always exists. | `clients/desktop/scripts/server.ts:144-158`, `clients/phux-web/src/session.rs:1313-1320`. |
+| R21 | An arrangement entry targets `EntryTarget::Member(ResourceKey)` or `EntryTarget::Satellite { host, id }`. Only member entries are checked against session membership. Satellite entries are presentation only: placeholders when unresolved, never an attach grant. | The TUI mixes local and satellite panes in one window; translated layouts must not be refused. |
+| R22 | `GetOrganization` and `ArrangementGet` require `INVENTORY`. The default delegated agent grant is `INVENTORY`, `OBSERVE`, `INPUT` on its own session, without `SIGNAL`, because `SIGNAL` still authorizes legacy kills (R07). | ADR-0161 and ADR-0163. |
 | R20 | The root help line cap (`crates/phux/src/help_inventory.rs:158`, exactly at 93 today) rises to 97 in the same commit that adds `rm`, `relaunch`, `restore`, and `mv`, with the reason in the test. `move-pane` and `workspace` become hidden aliases. | Four new user-facing verbs are worth four lines; hiding them would hurt discovery. |
 
 ## 03. Phases
@@ -62,6 +64,8 @@ Phase C  parallel, after L4 ─────────────────�
            L5 FFI         L6 CLI + MCP        L7 TUI
 Phase D  parallel, after L5 header and DTOs frozen ────────►
            L8 Cockpit     L9 Desktop
+Phase D' after L3 ─────────────────────────────────────────►
+           L12 actors: principal registry, delegated agent credentials, human lease precedence, lease epochs
 Phase E  integration (one writer) ─────────────────────────► just ci-full + client gates, then merge
 ```
 
@@ -84,7 +88,7 @@ One writer, in this order. The output is the frozen interface every lane builds 
    - `apply.rs` lands in phase B (lane L1b, below); the spine freezes its signature only.
 3. **L2 protocol types** (`crates/phux-protocol`), encodings included:
    - `ids.rs`: key types through a `key16!` macro; `OperationId` aliases the existing `IdempotencyKey` (`ids.rs:159`).
-   - `caps.rs:1058-1078`: `ServerFeatureExt::ORGANIZATION = 0x8`, plus `wire_name()` and `ALL`.
+   - `caps.rs:1058-1078`: `ServerFeatureExt::ORGANIZATION = 0x10` (0x8 is `AGENT_STREAM_RESUME`, ADR-0159), plus `wire_name()` and `ALL`.
    - `wire/frame/command.rs`, `mod.rs`, `command_codec.rs`, `field.rs`: command tags `0x1e`-`0x2b` (§05 L2); event tags `0x0f` onward; result tag `0x03`; value tags `0x06` onward; names capped at 256 bytes, arrangements at 64 KiB.
    - `payload.rs`, `codec.rs`: R09.
    - `info.rs`: `ResourceInfo.session` (R05) and `SessionInfo` lifetime in extension fields 3 and 4.
