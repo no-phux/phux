@@ -729,6 +729,84 @@ fn moving_out_prunes_the_source_arrangement() {
 }
 
 #[test]
+fn undoing_a_move_restores_the_source_placement() {
+    let mut h = Harness::new();
+    let a = h.create_session("a", SessionLifetime::Persistent);
+    let b = h.create_session("b", SessionLifetime::Persistent);
+    let r1 = h.shell_in(a);
+    let r2 = h.shell_in(a);
+    let groups = vec![Group {
+        id: [5; 16],
+        name: None,
+        tree: LayoutNode::Split {
+            dir: SplitDir::Horizontal,
+            ratio: 0.3,
+            left: Box::new(LayoutNode::Leaf(EntryRef::member([1; 16], r1))),
+            right: Box::new(LayoutNode::Leaf(EntryRef::member([2; 16], r2))),
+        },
+    }];
+    h.run(Op::ArrangementReplace {
+        owner: ArrangementOwner::Session(a),
+        expected: Revision::FIRST,
+        groups: groups.clone(),
+    })
+    .expect("arrangement");
+    let ak = h.session(a).arrangement.expect("linked");
+    let (ra, rb) = (h.session(a).revision, h.session(b).revision);
+    let moved = h
+        .run(Op::ResourceMove {
+            resource: r1,
+            from: a,
+            from_expected: ra,
+            to: b,
+            to_expected: rb,
+        })
+        .expect("move");
+    h.run(Op::OrganizationUndo {
+        original: moved.operation,
+        expected: vec![],
+    })
+    .expect("undo");
+    assert_eq!(h.resource(r1).session, a);
+    let arrangement = h.reg.org().arrangement(&ak).expect("kept");
+    assert_eq!(arrangement.groups, groups, "the pane is back where it was");
+}
+
+#[test]
+fn undoing_a_move_out_of_a_deleted_session_refuses() {
+    let mut h = Harness::new();
+    let quick = h.create_session("quick", SessionLifetime::Ephemeral);
+    let dest = h.create_session("dest", SessionLifetime::Persistent);
+    let r = h.session(quick).members[0];
+    let (rq, rd) = (h.session(quick).revision, h.session(dest).revision);
+    let moved = h
+        .run(Op::ResourceMove {
+            resource: r,
+            from: quick,
+            from_expected: rq,
+            to: dest,
+            to_expected: rd,
+        })
+        .expect("move");
+    assert!(
+        h.reg.org().session(&quick).is_none(),
+        "the empty ephemeral went"
+    );
+    assert_eq!(
+        h.run(Op::OrganizationUndo {
+            original: moved.operation,
+            expected: vec![],
+        })
+        .err(),
+        Some(Refusal::InvalidArgument {
+            field: "undo",
+            reason: "the original session no longer exists".to_owned(),
+        })
+    );
+    assert_eq!(h.resource(r).session, dest, "nothing is resurrected");
+}
+
+#[test]
 fn move_many_is_atomic_and_bounded() {
     let mut h = Harness::new();
     let a = h.create_session("a", SessionLifetime::Persistent);

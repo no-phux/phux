@@ -12,7 +12,7 @@ use thiserror::Error;
 
 use crate::activation::{ExecState, Outcome, SessionLifetime, Stamp};
 use crate::actor::Actor;
-use crate::arrangement::{Arrangement, ArrangementOwner};
+use crate::arrangement::{Arrangement, ArrangementOwner, Group};
 use crate::command::{Op, Reply};
 use crate::keys::{
     ActivationId, ArrangementKey, AuthorityId, FreshKeys, InstanceId, OperationId, ResourceKey,
@@ -56,7 +56,7 @@ pub struct RevisionPin {
 }
 
 /// One reversible organization edit, as stored in a receipt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InverseEdit {
     /// Put `resource` back into session `to`.
@@ -73,10 +73,19 @@ pub enum InverseEdit {
         /// The marker's value to restore.
         awaiting_organization: bool,
     },
+    /// Put an arrangement's document back as it was before a move pruned
+    /// it. Applied after the memberships, so the restored entries name
+    /// members again.
+    Arrangement {
+        /// The arrangement.
+        key: ArrangementKey,
+        /// Its groups before the move.
+        groups: Vec<Group>,
+    },
 }
 
 /// What undoing an operation does, and the state it requires.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Undo {
     /// Edits that reverse the operation, applied in order.
     pub inverse: Vec<InverseEdit>,
