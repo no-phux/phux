@@ -30,7 +30,7 @@ contexts = ["pane"]
 patterns = ["https://linear.app/*"]
 command = ["true"]
 
-[[workspaces]]
+[[profiles]]
 id = "ops-bench"
 title = "Ops Bench"
 description = "Composes the showcase providers into one workspace profile."
@@ -38,7 +38,7 @@ contexts = ["workspace"]
 actions = ["summarize"]
 events = ["idle"]
 
-[[workspaces.panes]]
+[[profiles.panes]]
 id = "board"
 pane = "board"
 role = "board"

@@ -1,27 +1,8 @@
+//! Git helpers shared by `phux project` and `phux worktree`: run `git` in a
+//! directory and parse `git worktree list --porcelain -z`.
+
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
-
-use crate::commands::WorkspaceAction;
-
-pub(crate) mod archive;
-
-pub(crate) use archive::AutosaveArchiver;
-
-const SCHEMA_VERSION: u8 = 1;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct WorkspaceReport {
-    repo: RepoInfo,
-    worktrees: Vec<WorktreeInfo>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct RepoInfo {
-    path: PathBuf,
-    head: Option<String>,
-    branch: Option<String>,
-    detached: bool,
-}
+use std::process::Command;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(
@@ -46,59 +27,6 @@ struct WorktreeBuilder {
     branch: Option<String>,
     detached: bool,
     locked: bool,
-}
-
-pub(crate) fn run_workspace(action: &WorkspaceAction, socket: Option<PathBuf>) -> ExitCode {
-    match action {
-        WorkspaceAction::Inspect { path, json } => run_inspect(path, *json),
-        WorkspaceAction::Save { output, projection } => {
-            archive::run_save(socket, output.as_ref(), projection.as_deref())
-        }
-        WorkspaceAction::Restore { archive, plan } if *plan => archive::print_plan(archive),
-        WorkspaceAction::Restore { archive, plan: _ } => archive::run_restore(archive, socket),
-    }
-}
-
-fn run_inspect(path: &Path, json: bool) -> ExitCode {
-    match inspect_workspace(path) {
-        Ok(report) if json => print_json(&report),
-        Ok(report) => print_human(&report),
-        // The shared error contract (phux-i0e8.8.3): one JSON document under
-        // `--json`, the message and its remedy as prose otherwise.
-        Err(err) => crate::commands::json_err::emit(
-            json,
-            &crate::commands::json_err::CliError::new(
-                crate::commands::json_err::codes::WORKSPACE,
-                err,
-                "run this inside a git repository, or pass a path to one",
-            ),
-            1,
-        ),
-    }
-}
-
-fn inspect_workspace(path: &Path) -> Result<WorkspaceReport, String> {
-    let root = git_text(path, &["rev-parse", "--show-toplevel"])?;
-    let root = PathBuf::from(root.trim())
-        .canonicalize()
-        .map_err(|err| format!("could not canonicalize git worktree {}: {err}", root.trim()))?;
-    let worktree_output = git_bytes(&root, &["worktree", "list", "--porcelain", "-z"])?;
-    let worktrees = parse_worktrees(&worktree_output, &root)?;
-    let Some(repo) = worktrees.iter().find(|entry| entry.current).cloned() else {
-        return Err(format!(
-            "git worktree list did not include current worktree {}",
-            root.display()
-        ));
-    };
-    Ok(WorkspaceReport {
-        repo: RepoInfo {
-            path: repo.path,
-            head: repo.head,
-            branch: repo.branch,
-            detached: repo.detached,
-        },
-        worktrees,
-    })
 }
 
 pub(crate) fn parse_worktrees(
@@ -188,43 +116,6 @@ pub(crate) fn git_bytes(path: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     } else {
         Err(detail.to_owned())
     }
-}
-
-fn print_json(report: &WorkspaceReport) -> ExitCode {
-    let worktrees: Vec<_> = report.worktrees.iter().map(worktree_json).collect();
-    let doc = serde_json::json!({
-        "schema_version": SCHEMA_VERSION,
-        "repo": {
-            "path": report.repo.path,
-            "head": report.repo.head,
-            "branch": report.repo.branch,
-            "detached": report.repo.detached,
-        },
-        "worktrees": worktrees,
-    });
-    crate::output::json(&doc)
-}
-
-fn worktree_json(entry: &WorktreeInfo) -> serde_json::Value {
-    serde_json::json!({
-        "path": entry.path,
-        "head": entry.head,
-        "branch": entry.branch,
-        "detached": entry.detached,
-        "current": entry.current,
-    })
-}
-
-fn print_human(report: &WorkspaceReport) -> ExitCode {
-    let branch = report.repo.branch.as_deref().unwrap_or("(detached)");
-    outln!("workspace {} {branch}", report.repo.path.display());
-    for worktree in &report.worktrees {
-        let marker = if worktree.current { "*" } else { " " };
-        let state = worktree.branch.as_deref().unwrap_or("(detached)");
-        let head = worktree.head.as_deref().unwrap_or("-");
-        outln!("{marker} {} {state} {head}", worktree.path.display());
-    }
-    ExitCode::SUCCESS
 }
 
 #[cfg(test)]

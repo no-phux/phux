@@ -31,7 +31,7 @@ title = "Autosave on session changes"
 on = "session.changed"
 command = ["sh", "scripts/autosave.sh"]
 
-[[workspaces]]
+[[profiles]]
 id = "continuum"
 title = "Continuum"
 description = "Surfaces autosave and restore actions for a durable phux workspace profile."

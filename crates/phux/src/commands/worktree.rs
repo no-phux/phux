@@ -14,7 +14,7 @@ use phux_server::runtime::default_socket_path;
 
 use crate::commands::{WorktreeAction, cli_runtime};
 
-use super::workspace::{WorktreeInfo, git_bytes, git_text, parse_worktrees};
+use super::git::{WorktreeInfo, git_bytes, git_text, parse_worktrees};
 
 /// Fallback session name when a worktree basename sanitizes to nothing;
 /// `-s NAME` overrides.

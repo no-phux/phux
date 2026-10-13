@@ -61,7 +61,7 @@ pub(super) fn bridge_live_agent_sessions(
                 recorded.insert(pane.id.clone(), record);
             }
             Err(reason) if existing.is_none() => warnings.push(format!(
-                "workspace save: pane {}'s {} agent session ({}) will restore as a plain \
+                "archive export: pane {}'s {} agent session ({}) will restore as a plain \
                  shell: {reason}",
                 phux_client::selector::format_terminal_id(&pane.id),
                 live.provider,

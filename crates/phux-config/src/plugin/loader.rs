@@ -3,10 +3,10 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use super::profile::{ProfileSourceSlices, RawPluginManifestProfile, normalize_profiles};
 use super::validate::{
     non_empty, normalize_command, normalize_id, reject_duplicate_ids, trim_optional,
 };
-use super::workspace::{RawPluginManifestWorkspace, WorkspaceSourceSlices, normalize_workspaces};
 use super::{
     PluginAgentAttention, PluginAgentState, PluginManifest, PluginManifestAction,
     PluginManifestAgent, PluginManifestBuild, PluginManifestError, PluginManifestEvent,
@@ -38,8 +38,10 @@ struct RawPluginManifest {
     panes: Vec<RawPluginManifestPane>,
     #[serde(default)]
     links: Vec<RawPluginManifestLinkHandler>,
-    #[serde(default)]
-    workspaces: Vec<RawPluginManifestWorkspace>,
+    /// `[[profiles]]`; `[[workspaces]]` is its spelling before the word
+    /// "workspace" meant linked sessions, read for one release.
+    #[serde(default, alias = "workspaces")]
+    profiles: Vec<RawPluginManifestProfile>,
     #[serde(default)]
     widgets: Vec<RawPluginManifestWidget>,
     #[serde(default)]
@@ -192,9 +194,9 @@ pub fn load_plugin_manifest(path: &Path) -> Result<PluginManifest, PluginManifes
         id_of_link,
         "plugin link handler",
     )?;
-    let workspaces = normalize_workspaces(
-        raw.workspaces,
-        WorkspaceSourceSlices {
+    let profiles = normalize_profiles(
+        raw.profiles,
+        ProfileSourceSlices {
             agents: &agents,
             actions: &actions,
             events: &events,
@@ -234,7 +236,7 @@ pub fn load_plugin_manifest(path: &Path) -> Result<PluginManifest, PluginManifes
         events,
         panes,
         links,
-        workspaces,
+        profiles,
         widgets,
         sidebar,
         themes,

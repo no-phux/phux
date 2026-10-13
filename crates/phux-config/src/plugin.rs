@@ -1,9 +1,9 @@
 //! Declarative plugin manifest parsing for phux config consumers.
 
 mod loader;
+mod profile;
 mod validate;
 mod version;
-mod workspace;
 
 use std::path::{Path, PathBuf};
 
@@ -53,8 +53,9 @@ pub struct PluginManifest {
     pub panes: Vec<PluginManifestPane>,
     /// Link/route handlers declared by the plugin.
     pub links: Vec<PluginManifestLinkHandler>,
-    /// Workspace profiles declared by the plugin.
-    pub workspaces: Vec<PluginManifestWorkspace>,
+    /// Profiles declared by the plugin (`[[profiles]]`; the older
+    /// `[[workspaces]]` key is read as an alias for one release).
+    pub profiles: Vec<PluginManifestProfile>,
     /// Status-bar widgets contributed by the plugin (phux-r82.6).
     pub widgets: Vec<PluginManifestWidget>,
     /// Sidebar sections contributed by the plugin (`[[sidebar]]`).
@@ -217,31 +218,31 @@ pub struct PluginManifestLinkHandler {
     pub command: Vec<String>,
 }
 
-/// Workspace composition profile declared in a plugin manifest.
+/// Composition profile declared in a plugin manifest.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PluginManifestWorkspace {
-    /// Plugin-local workspace id.
+pub struct PluginManifestProfile {
+    /// Plugin-local profile id.
     pub id: String,
-    /// Human-readable workspace title.
+    /// Human-readable profile title.
     pub title: String,
     /// Optional human-readable description.
     pub description: Option<String>,
-    /// Context names where this workspace is relevant.
+    /// Context names where this profile is relevant.
     pub contexts: Vec<String>,
-    /// Agent ids this workspace composes.
+    /// Agent ids this profile composes.
     pub agents: Vec<String>,
-    /// Action ids this workspace surfaces.
+    /// Action ids this profile surfaces.
     pub actions: Vec<String>,
-    /// Event ids this workspace subscribes to.
+    /// Event ids this profile subscribes to.
     pub events: Vec<String>,
-    /// Pane roles this workspace wants phux to create or restore.
-    pub panes: Vec<PluginWorkspacePane>,
+    /// Pane roles this profile wants phux to create or restore.
+    pub panes: Vec<PluginProfilePane>,
 }
 
-/// Pane role inside a plugin workspace profile.
+/// Pane role inside a plugin profile profile.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PluginWorkspacePane {
-    /// Plugin-local workspace pane role id.
+pub struct PluginProfilePane {
+    /// Plugin-local profile pane role id.
     pub id: String,
     /// Referenced [`PluginManifestPane::id`].
     pub pane: String,

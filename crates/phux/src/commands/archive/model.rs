@@ -54,7 +54,7 @@ pub(crate) struct WorkspacePane {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) agent_session: Option<WorkspaceAgentSession>,
     /// Extra environment for this pane's process. Written by a project
-    /// recipe (ADR-0152); `workspace save` never captures a live pane's env.
+    /// recipe (ADR-0152); `archive export` never captures a live pane's env.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) env: BTreeMap<String, String>,
     #[serde(default)]
@@ -209,7 +209,7 @@ pub(crate) fn restore_plan(
     })
 }
 
-/// Rows for `workspace restore --plan`. The directory is the session
+/// Rows for `archive import --plan`. The directory is the session
 /// directory when the archive has one, otherwise the focused pane's cwd:
 /// the active window's active pane, the same pane [`restore_plan`] would seed.
 pub(crate) fn organization_rows(

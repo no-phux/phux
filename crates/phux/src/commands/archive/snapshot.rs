@@ -144,7 +144,7 @@ fn archive_windows_for_session(
         .collect();
     if !unplaced.is_empty() {
         warnings.push(format!(
-            "workspace save: session {:?} has {} live pane(s) absent from its stored layout \
+            "archive export: session {:?} has {} live pane(s) absent from its stored layout \
              (placed in a synthesized \"unplaced\" window): {}",
             session.name,
             unplaced.len(),

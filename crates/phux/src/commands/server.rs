@@ -416,7 +416,7 @@ pub(crate) fn run_server(
     let autosave = match autosave.map(|path| {
         phux_server::autosave::Autosave::new(
             path,
-            Box::new(super::workspace::AutosaveArchiver::default()),
+            Box::new(super::archive::AutosaveArchiver::default()),
         )
     }) {
         None => None,

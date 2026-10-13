@@ -1,7 +1,7 @@
 //! The deprecation contract, pinned at the binary level.
 //!
 //! Every row of `crate::deprecations::DEPRECATED` (the binary's own hidden
-//! deprecation table — currently empty; see that module) must, for as long
+//! deprecation table; see that module) must, for as long
 //! as it exists:
 //!
 //!   * still parse (full arg surface) and run the replacement's
@@ -13,13 +13,11 @@
 //!   * be absent from `phux --help` and the generated shell completions,
 //!     while its replacement is present.
 //!
-//! ADR-0066's `phux remote`/`phux satellite`/top-level `phux enroll` aliases
-//! were the rows this file was written to audit; they were removed in
-//! v0.12.1 once their deprecation window closed (phux-dpjf). The table-driven
-//! tests below stay wired up — vacuously true over zero rows — for the next
-//! spelling that needs one release cycle of warning before it goes.
+//! The rows today are `phux workspace` (now `phux archive` and `phux
+//! project inspect`) and `phux move-pane` (now `phux mv`).
 //!
-//! None of these verbs contact a server, so the tests are cheap and run in
+//! No row reaches a live server (one that needs one dials a dead socket),
+//! so the tests are cheap and run in
 //! the default pool (the `output_hygiene.rs` pattern).
 
 #![allow(clippy::expect_used, reason = "tests")]
@@ -93,8 +91,9 @@ fn assert_exact_note(stderr: &str, expected: &str) {
 // ---------------------------------------------------------------------------
 
 /// Row by row: the old spelling still parses and prints its `note` exactly
-/// once on stderr. Verb rows never contact a server and must succeed
-/// outright; flag rows are pointed at a dead socket, so the row proves the
+/// once on stderr. Verb rows that need no server must succeed outright;
+/// flag rows, and verb rows that need a server, are pointed at a dead
+/// socket, so the row proves the
 /// warning fires before (and regardless of) the connection failing — and
 /// the non-2 exit code proves clap accepted the argv.
 #[test]
@@ -107,12 +106,12 @@ fn every_table_row_parses_and_warns_once() {
             assert_eq!(code, 0, "setup for {}: stderr={stderr}", row.old);
         }
         match row.surface {
-            DeprecatedSurface::Verb => {
+            DeprecatedSurface::Verb if !row.needs_server => {
                 let (code, _, stderr) = run_with_xdg(row.example_argv, &xdg);
                 assert_eq!(code, 0, "`{}` example: stderr={stderr}", row.old);
                 assert_exact_note(&stderr, row.note);
             }
-            DeprecatedSurface::Flag => {
+            DeprecatedSurface::Verb | DeprecatedSurface::Flag => {
                 let dead = tmp.path().join("dead.sock");
                 let dead = dead.to_str().expect("utf-8 temp path");
                 let mut argv = row.example_argv.to_vec();

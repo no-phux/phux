@@ -226,12 +226,14 @@ mod tests {
             "phux_resource_show",
             "phux_resource_wait",
             "phux_resource_methods",
-            "phux_plugin_workspace",
+            "phux_plugin_profile",
+            "phux_project_inspect",
         ] {
             assert!(annotation(tool).read_only, "{tool} reads only");
         }
         for tool in [
             "phux_kill",
+            "phux_rm",
             "phux_detach",
             "phux_signal",
             "phux_send_keys",
@@ -247,7 +249,13 @@ mod tests {
                 "{tool} is destructive"
             );
         }
-        for tool in ["phux_new", "phux_tag", "phux_rename", "phux_insert_pane"] {
+        for tool in [
+            "phux_new",
+            "phux_tag",
+            "phux_rename",
+            "phux_insert_pane",
+            "phux_relaunch",
+        ] {
             let hints = annotation(tool);
             assert!(
                 !hints.read_only && !hints.destructive,
@@ -257,10 +265,14 @@ mod tests {
     }
 
     /// The dangerous methods, pinned by name (ADR-0128).
-    const DANGEROUS: [&str; 11] = [
+    const DANGEROUS: [&str; 15] = [
         "KILL_RESOURCE",
         "KILL_RESOURCE_IF",
         "KILL_RESOURCES",
+        "RESOURCE_TERMINATE",
+        "RESOURCE_REMOVE",
+        "RESOURCE_ABANDON",
+        "SESSION_DELETE",
         "CLOSE_TAB_RESOURCES",
         "SIGNAL_TERMINAL",
         "DETACH_CLIENTS",
@@ -272,17 +284,25 @@ mod tests {
     ];
 
     /// Each dangerous method and the CLI verb that asks before sending it.
-    const CLI_GATES: [(&str, &str); 6] = [
+    const CLI_GATES: [(&str, &str); 9] = [
         ("KILL_RESOURCE", "kill"),
         ("KILL_RESOURCE_IF", "kill"),
         ("KILL_RESOURCES", "kill"),
+        ("RESOURCE_TERMINATE", "kill"),
+        ("RESOURCE_REMOVE", "rm"),
+        ("SESSION_DELETE", "rm"),
         ("SIGNAL_TERMINAL", "signal"),
         ("DETACH_CLIENTS", "detach"),
         (APPROVAL_DECIDE_KEY_PREFIX, "approve"),
     ];
 
     /// The dangerous methods no CLI verb asks before, and why.
-    const CLI_UNGATED: [(&str, &str); 5] = [
+    const CLI_UNGATED: [(&str, &str); 6] = [
+        (
+            "RESOURCE_ABANDON",
+            "no CLI verb or MCP tool sends it yet; abandoning a lost execution is an owner's \
+             recovery step",
+        ),
         (
             "CLOSE_TAB_RESOURCES",
             "no CLI verb or MCP tool sends it; a native client's explicit Close Tab is the act",
@@ -338,7 +358,13 @@ mod tests {
             .collect();
         assert_eq!(
             confirming,
-            ["phux_kill", "phux_detach", "phux_signal", "phux_approve"],
+            [
+                "phux_kill",
+                "phux_rm",
+                "phux_detach",
+                "phux_signal",
+                "phux_approve"
+            ],
             "the tools that confirm are derived from their rows"
         );
         for tool in &confirming {

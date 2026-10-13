@@ -131,7 +131,7 @@ description = "A terminal-native agent role session managed by the bench launche
 placement = "split"
 command = ["sh"]
 
-[[workspaces]]
+[[profiles]]
 id = "agent-bench"
 title = "Agent Bench"
 description = "Composes local agent integration helpers into a herdr-like workspace profile."
@@ -139,27 +139,27 @@ contexts = ["workspace"]
 agents = ["codex", "claude-code", "gemini-cli", "grok"]
 actions = ["inspect", "list-integrations", "validate-integrations", "status-integrations", "link-integration", "unlink-integration", "detect-agents", "launch-bench", "list-bench", "drive-bench", "smoke-integrations"]
 
-[[workspaces.panes]]
+[[profiles.panes]]
 id = "board"
 pane = "agent-board"
 role = "board"
 
-[[workspaces.panes]]
+[[profiles.panes]]
 id = "codex"
 pane = "agent-role"
 role = "codex"
 
-[[workspaces.panes]]
+[[profiles.panes]]
 id = "claude-code"
 pane = "agent-role"
 role = "claude-code"
 
-[[workspaces.panes]]
+[[profiles.panes]]
 id = "gemini-cli"
 pane = "agent-role"
 role = "gemini-cli"
 
-[[workspaces.panes]]
+[[profiles.panes]]
 id = "grok"
 pane = "agent-role"
 role = "grok"

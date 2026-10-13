@@ -142,11 +142,12 @@ pub(crate) fn catalog() -> Value {
         },
         {
             "name": "phux_new",
-            "description": "Create a named session without attaching, returning its name and seed pane id through the canonical phux new --json surface.",
+            "description": "Create a named session without attaching, returning its name and seed pane id through the canonical phux new --json surface. A named session is persistent: it stays, empty, after its last process exits, until phux_rm or phux_kill deletes it. Pass lifetime=ephemeral for one that ends with its last process.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "name": { "type": "string", "description": "Name for the new session. Required; a name already in use is rejected." },
+                    "lifetime": { "type": "string", "enum": ["persistent", "ephemeral"], "description": "Whether the session survives its last process (persistent, the default) or ends with it (ephemeral)." },
                     "command": { "type": "array", "items": { "type": "string" }, "description": "Initial command (argv) for the seed pane. Omit or pass an empty array to use the server's default shell." },
                     "cwd": { "type": "string", "description": "Working directory for the seed pane." },
                     "idempotency_key": { "type": "string", "minLength": 32, "maxLength": 32, "pattern": "^[0-9a-fA-F]{32}$", "description": "Make the create safe to retry: a repeat with the same 32-hex-digit key returns the first create's result instead of failing on the name. The server must advertise spawn_idempotency (phux_status features); otherwise the call is refused with unsupported_server." },
@@ -157,7 +158,7 @@ pub(crate) fn catalog() -> Value {
         },
         {
             "name": "phux_kill",
-            "description": "Kill the Terminal(s) a selector resolves to (a whole session, a window, a pane, or `#tag`). Requires confirm=true before executing the canonical CLI.",
+            "description": "Kill the Terminal(s) a selector resolves to (a whole session, a window, a pane, or `#tag`). A whole session is killed member by member: each is terminated, removed once stopped, and the session is deleted; the result lists each member's outcome under `report`. Work added meanwhile survives and keeps the session. Requires confirm=true.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,
@@ -206,11 +207,13 @@ pub(crate) fn catalog() -> Value {
         crate::cli_tools::insert_schema(),
         crate::cli_tools::move_schema(),
         crate::cli_tools::swap_schema(),
-        crate::cli_tools::workspace_schema(),
+        crate::cli_tools::archive_schema(),
+        crate::cli_tools::project_inspect_schema(),
         crate::plugin_tools::action_schema(),
-        crate::plugin_tools::workspace_schema(),
+        crate::plugin_tools::profile_schema(),
     ]);
     if let Value::Array(entries) = &mut tools {
+        entries.extend(crate::org_tools::schemas());
         entries.extend(crate::agent_tools::schemas());
         entries.extend(crate::diagnostic_tools::schemas());
         entries.extend(crate::resource_tools::schemas());
@@ -241,12 +244,19 @@ pub(crate) async fn dispatch(name: &str, args: &Value) -> Result<Value, ToolErro
         "phux_detach" => phux_detach(args).await,
         "phux_watch" => phux_watch(args).await,
         "phux_ask" => crate::ask_tool::call(args).await,
-        "phux_launch" | "phux_spawn" | "phux_signal" | "phux_tag" | "phux_rename"
-        | "phux_insert_pane" | "phux_move_pane" | "phux_swap_pane" | "phux_workspace" => {
-            crate::cli_tools::call(name, args).await
-        }
+        "phux_launch"
+        | "phux_spawn"
+        | "phux_signal"
+        | "phux_tag"
+        | "phux_rename"
+        | "phux_insert_pane"
+        | "phux_move_pane"
+        | "phux_swap_pane"
+        | "phux_archive"
+        | "phux_project_inspect" => crate::cli_tools::call(name, args).await,
         "phux_plugin_action" => crate::plugin_tools::action(args).await,
-        "phux_plugin_workspace" => crate::plugin_tools::workspace(args),
+        "phux_plugin_profile" => crate::plugin_tools::profile(args),
+        org if crate::org_tools::owns(org) => crate::org_tools::call(org, args).await,
         agent if crate::agent_tools::owns(agent) => crate::agent_tools::call(agent, args).await,
         diagnostic if crate::diagnostic_tools::owns(diagnostic) => {
             crate::diagnostic_tools::call(diagnostic, args).await
@@ -492,11 +502,27 @@ async fn phux_wait(args: &Value) -> Result<Value, ToolError> {
 async fn phux_new(args: &Value) -> Result<Value, ToolError> {
     strict_object(
         args,
-        &["name", "command", "cwd", "idempotency_key", "socket"],
+        &[
+            "name",
+            "lifetime",
+            "command",
+            "cwd",
+            "idempotency_key",
+            "socket",
+        ],
         &["name"],
     )?;
     let name = crate::cli_adapter::bounded_string(args, "name", true)?.unwrap_or_default();
+    let lifetime = crate::cli_adapter::enum_string(
+        args,
+        "lifetime",
+        &["persistent", "ephemeral"],
+        Some("persistent"),
+    )?;
     let mut argv = vec!["new".to_owned(), "-s".to_owned(), name, "--json".to_owned()];
+    if lifetime == "ephemeral" {
+        argv.push("--ephemeral".to_owned());
+    }
     if let Some(cwd) = crate::cli_adapter::bounded_string(args, "cwd", false)? {
         argv.extend(["-c".to_owned(), cwd]);
     }
@@ -536,9 +562,60 @@ async fn phux_kill(args: &Value) -> Result<Value, ToolError> {
     drop(conn);
     warn_partial_view("kill", &notices);
     match result {
-        Ok(_) => Ok(json!({ "schema_version": 1, "killed": true, "target": target })),
+        Ok(done) => {
+            let mut document = json!({ "schema_version": 1, "killed": true, "target": target });
+            if let Some(report) = &done.report {
+                document["report"] = kill_report_document(report);
+            }
+            Ok(document)
+        }
         Err(err) => Err(kill_error(err)),
     }
+}
+
+/// A session kill workflow's per-target result: each member's key and
+/// outcome, then the session's own.
+pub(crate) fn kill_report_document(report: &phux_client::org::KillReport) -> Value {
+    use phux_client::org::{SessionOutcome, TargetOutcome};
+    fn key(text: String) -> String {
+        format!(
+            "^{}",
+            text.get(..phux_protocol::ids::KEY_MIN_PREFIX)
+                .unwrap_or(&text)
+        )
+    }
+    let targets: Vec<Value> = report
+        .targets
+        .iter()
+        .map(|(member, outcome)| {
+            let (result, detail) = match outcome {
+                TargetOutcome::Removed => ("removed", None),
+                TargetOutcome::AlreadyGone => ("already_gone", None),
+                TargetOutcome::Refused(refusal) => {
+                    ("refused", Some(phux_client::org::refusal_sentence(refusal)))
+                }
+                TargetOutcome::Unknown(reason) => ("unknown", Some(reason.clone())),
+                TargetOutcome::TimedOut => ("timed_out", None),
+                TargetOutcome::NoLiveTarget => ("no_live_target", None),
+            };
+            json!({ "key": key(member.to_string()), "result": result, "detail": detail })
+        })
+        .collect();
+    let (session, detail) = match &report.session_outcome {
+        SessionOutcome::Deleted => ("deleted", None),
+        SessionOutcome::AlreadyGone => ("already_gone", None),
+        SessionOutcome::Kept => ("kept", None),
+        SessionOutcome::Refused(refusal) => {
+            ("refused", Some(phux_client::org::refusal_sentence(refusal)))
+        }
+        SessionOutcome::Unknown(reason) => ("unknown", Some(reason.clone())),
+    };
+    json!({
+        "session": key(report.session.to_string()),
+        "session_result": session,
+        "session_detail": detail,
+        "targets": targets,
+    })
 }
 
 /// Print the CLI's partial-fleet-view warning on stderr, the adapter's
@@ -558,6 +635,12 @@ fn kill_error(err: phux_client::kill::KillError) -> ToolError {
             degradation,
         } => incomplete_view_miss(&format!("'{target}'"), degradation.notices()),
         KillError::Agent(err) => agent_resolve_error(&err),
+        KillError::Workflow { report, .. } => {
+            let document = kill_report_document(&report);
+            ToolError::new(format!(
+                "the kill did not complete; per-target results: {document}"
+            ))
+        }
         other => ToolError::new(other.to_string()),
     }
 }

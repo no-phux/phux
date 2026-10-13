@@ -24,8 +24,8 @@ use std::path::{Path, PathBuf};
 const ALLOWLIST: &[(&str, usize, &str)] = &[
     (
         "mod.rs",
-        30,
-        "the shared `command_on`/`request_command` helpers, plus matches on the CLI's own `Command` enum (`phux theme`'s socketless-verb arm is the 30th)",
+        31,
+        "the shared `command_on`/`request_command` helpers, plus matches on the CLI's own `Command` enum (`phux archive`'s socketless-verb arm is the 31st)",
     ),
     (
         "server_target.rs",
@@ -46,9 +46,15 @@ const ALLOWLIST: &[(&str, usize, &str)] = &[
     ("enroll.rs", 1, "pairing/enrollment dials"),
     ("whoami.rs", 1, "`GET_METADATA` of `phux.whoami/v1`"),
     (
-        "workspace/archive.rs",
-        3,
-        "`workspace restore`'s session create",
+        "archive.rs",
+        6,
+        "`archive import`'s organization probe and the relaunch's seed \
+         `RESOURCE_CREATE`, which phux-client has no helper for yet",
+    ),
+    (
+        "org.rs",
+        1,
+        "`phux mv` probes whether its destination is a session",
     ),
     ("agent/answer.rs", 1, "`phux agent answer`"),
     ("agent/report_state.rs", 2, "`REPORT_AGENT_STATE`"),

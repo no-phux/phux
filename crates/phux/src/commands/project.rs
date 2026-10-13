@@ -2,8 +2,8 @@
 //!
 //! A composition layer like `phux worktree` (ADR-0054): it resolves a
 //! checkout, names its session with the same pure function, compiles the
-//! checkout's `.phux/project.toml` into a workspace archive, and replays it
-//! through `workspace restore`'s engine. The server learns nothing about
+//! checkout's `.phux/project.toml` into a session archive, and builds it
+//! with `phux archive`'s engine: an import, then a relaunch of its panes. The server learns nothing about
 //! projects. A repository recipe runs only after its exact bytes are
 //! approved on this machine; reopening a live session never reruns it.
 
@@ -13,11 +13,12 @@ use std::process::ExitCode;
 
 use phux_server::runtime::default_socket_path;
 
+use crate::commands::archive::{Legacy, RestoreError, import_archive, relaunch_imported};
 use crate::commands::json_err::{self, CliError, codes};
-use crate::commands::workspace::archive::{RestoreError, restore_archive};
 use crate::commands::worktree::{live_session_names, seed_terminal_of, session_name_for};
 use crate::commands::{ProjectAction, cli_runtime};
 
+pub(crate) mod inspect;
 mod recipe;
 mod trust;
 
@@ -36,6 +37,7 @@ pub(crate) fn run_project(action: &ProjectAction, socket: Option<PathBuf>) -> Ex
         ProjectAction::Trust { target } => run_trust(target.as_deref()),
         ProjectAction::Untrust { target } => run_untrust(target.as_deref()),
         ProjectAction::Status { target, json } => run_status(target.as_deref(), *json),
+        ProjectAction::Inspect { path, json } => inspect::run_inspect(path, *json),
     }
 }
 
@@ -112,7 +114,7 @@ fn resolve_path(path: &Path) -> Result<Project, String> {
 /// `(work tree root, canonical common dir)` for a directory inside git; the
 /// common dir is what every worktree of one repository shares.
 fn git_root(dir: &Path) -> Option<(PathBuf, PathBuf)> {
-    use crate::commands::workspace::git_text;
+    use crate::commands::git::git_text;
     let root = PathBuf::from(
         git_text(dir, &["rev-parse", "--show-toplevel"])
             .ok()?
@@ -302,7 +304,13 @@ fn create(
         tracing::debug!(error = %err, "auto-spawn failed on the project open path");
     }
     let rt = cli_runtime()?;
-    let summary = match rt.block_on(restore_archive(socket_path, &archive, "project open")) {
+    // R16: import the recipe's session without starting anything, then start
+    // its panes, as two explicit steps.
+    let built = rt.block_on(async {
+        let imported = import_archive(socket_path, &archive, "project open", Legacy::Defer).await?;
+        relaunch_imported(socket_path, imported).await
+    });
+    let summary = match built {
         Ok(summary) => summary,
         Err(RestoreError::Reported(code)) => return Err(code),
         Err(RestoreError::Failed(err)) => {

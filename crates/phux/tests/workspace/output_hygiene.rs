@@ -359,14 +359,14 @@ id = "board"
 title = "Board"
 command = ["true"]
 
-[[workspaces]]
+[[profiles]]
 id = "agent-bench"
 title = "Agent Bench"
 contexts = ["workspace"]
 agents = ["codex"]
 actions = ["summarize"]
 
-[[workspaces.panes]]
+[[profiles.panes]]
 id = "board"
 pane = "board"
 role = "monitor"
