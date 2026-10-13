@@ -60,6 +60,25 @@ gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = 
     "runtime_shaders",
     "test-support",
 ] }
+# `tests/pixels.rs` is its own crate. It drives the same protocol and runtime
+# the painter fixture uses, and reads the captured buffer through `image`.
+# These crates are already normal dependencies; repeating them here is what
+# makes them visible to that test binary.
+phux-client-core = { path = "../../../crates/phux-client-core" }
+phux-client-runtime = { path = "../../../crates/phux-client-runtime" }
+phux-protocol = { path = "../../../crates/phux-protocol" }
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# Pixel fixtures open GPUI's real platform. On macOS `MacPlatform::new`
+# requires the process main thread (`MainThreadMarker`); the default harness
+# runs `#[test]` functions on worker threads and panics with "Mac platform
+# not created on main thread". `harness = false` keeps `main` on that thread
+# and runs the five fixtures there. Linux uses the same binary (wgpu /
+# lavapipe).
+[[test]]
+name = "pixels"
+path = "tests/pixels.rs"
+harness = false
 
 [profile.release]
 lto = true

@@ -1,20 +1,28 @@
 //! Offscreen pixel fixtures for the native terminal painter.
 //!
-//! Each test publishes VT through the real runtime, paints that publication
-//! with [`super::Terminal`], and reads the frame back from GPUI's headless
-//! renderer. Regions are checked for a color, not against a stored image.
-//! On Linux the renderer is wgpu; it needs a Vulkan adapter (a hardware
-//! device or lavapipe).
+//! `harness = false` (see `Cargo.toml`). Cargo's built-in harness runs each
+//! `#[test]` on a worker thread. GPUI's macOS platform constructs
+//! `MacPlatform` with `MainThreadMarker` and panics with "Mac platform not
+//! created on main thread" from any other thread. This binary's `main` is
+//! that thread, so the fixtures below run there on every OS.
+//!
+//! Each fixture publishes VT through the real runtime, paints that
+//! publication with [`phux_desktop::terminal::Terminal`], and reads the frame
+//! back from GPUI's headless renderer. Regions are checked for a color, not
+//! against a stored image. On Linux the renderer is wgpu and needs a Vulkan
+//! adapter (a hardware device or lavapipe). On macOS it is Metal.
 
+use std::panic::catch_unwind;
+use std::process::ExitCode;
 use std::sync::Arc;
 
-use super::{PaintedFrame, Settings, Terminal};
 use gpui::{AppContext, HeadlessAppContext, Pixels, px, size};
 use image::RgbaImage;
 use phux_client_core::grid::{CELL_SELECTED, COLOR_KIND_RGB};
 use phux_client_runtime::control::{ControlOptions, ControlPlane};
 use phux_client_runtime::publication::{CursorStyle, GridFrame};
 use phux_client_runtime::{Client, Runtime, ViewId};
+use phux_desktop::terminal::{PaintedFrame, Settings, Terminal};
 use phux_protocol::{
     PROTOCOL_VERSION, ResourceId,
     caps::{
@@ -151,6 +159,8 @@ fn publish(payload: &[u8]) -> (Arc<Client>, ViewId) {
 }
 
 fn gpu() -> HeadlessAppContext {
+    // `current_platform` builds `MacPlatform` on macOS. Call it only from
+    // `main` (see the crate-level docs); a worker thread panics there.
     let platform = gpui_platform::current_platform(true);
     HeadlessAppContext::with_platform(platform.text_system(), Arc::new(()), || {
         gpui_platform::current_headless_renderer()
@@ -303,7 +313,6 @@ fn assert_blank(pixels: &[[u8; 4]], what: &str) {
     assert_mostly(pixels, BACKGROUND, what);
 }
 
-#[test]
 fn glyphs_land_in_their_columns() {
     let (client, view) = publish(b"\x1b[?25l\x1b[HAB C");
     let frame = frame_of(&client, view);
@@ -315,7 +324,6 @@ fn glyphs_land_in_their_columns() {
     assert_ink(&cell_pixels(&shot, 0, 3), "column 3 (C)");
 }
 
-#[test]
 fn wide_character_occupies_two_columns() {
     let (client, view) = publish("\u{1b}[?25l\u{1b}[HX中Y".as_bytes());
     let frame = frame_of(&client, view);
@@ -334,7 +342,6 @@ fn wide_character_occupies_two_columns() {
     assert_blank(&cell_pixels(&shot, 0, 4), "column 4 stays empty");
 }
 
-#[test]
 fn block_cursor_fills_its_cell() {
     // Steady block, then CUP to row 2 column 6 (1-based).
     let (client, view) = publish(b"\x1b[2 q\x1b[2;6H");
@@ -356,7 +363,6 @@ fn block_cursor_fills_its_cell() {
     );
 }
 
-#[test]
 fn selection_paints_the_selection_background() {
     let (client, view) = publish(b"\x1b[?25l\x1b[HSELECT");
     let found = client
@@ -392,7 +398,6 @@ fn selection_paints_the_selection_background() {
     assert_blank(&cell_pixels(&shot, 0, 8), "unselected gap");
 }
 
-#[test]
 fn palette_recolors_ansi_and_keeps_true_color() {
     // ANSI red background (palette index 1), then a true-color glyph.
     let (client, view) = publish(b"\x1b[?25l\x1b[H\x1b[41m \x1b[0m\x1b[38;2;0;220;30mT");
@@ -446,4 +451,144 @@ fn palette_recolors_ansi_and_keeps_true_color() {
         0.7,
         "true color does not repaint the background",
     );
+}
+
+/// Qualified the way the old `#[cfg(test)]` module reported them, so
+/// `cargo test terminal::pixels` and `--skip terminal::pixels` still select
+/// this binary's fixtures.
+const FIXTURES: &[(&str, fn())] = &[
+    (
+        "terminal::pixels::glyphs_land_in_their_columns",
+        glyphs_land_in_their_columns,
+    ),
+    (
+        "terminal::pixels::wide_character_occupies_two_columns",
+        wide_character_occupies_two_columns,
+    ),
+    (
+        "terminal::pixels::block_cursor_fills_its_cell",
+        block_cursor_fills_its_cell,
+    ),
+    (
+        "terminal::pixels::selection_paints_the_selection_background",
+        selection_paints_the_selection_background,
+    ),
+    (
+        "terminal::pixels::palette_recolors_ansi_and_keeps_true_color",
+        palette_recolors_ansi_and_keeps_true_color,
+    ),
+];
+
+struct Args {
+    list: bool,
+    exact: bool,
+    /// `--ignored` selects only ignored tests. This binary has none.
+    ignored_only: bool,
+    filters: Vec<String>,
+    skips: Vec<String>,
+}
+
+impl Args {
+    fn from_env() -> Self {
+        let mut args = Self {
+            list: false,
+            exact: false,
+            ignored_only: false,
+            filters: Vec::new(),
+            skips: Vec::new(),
+        };
+        let mut raw = std::env::args().skip(1).peekable();
+        while let Some(arg) = raw.next() {
+            let (flag, inline) = split_flag(&arg);
+            match flag {
+                "--list" => args.list = true,
+                "--exact" => args.exact = true,
+                "--ignored" => args.ignored_only = true,
+                "--skip" => {
+                    if let Some(name) = inline.or_else(|| take_value(&mut raw)) {
+                        args.skips.push(name);
+                    }
+                }
+                "--test-threads" | "--format" | "--logfile" | "--color" | "--shuffle-seed" => {
+                    if inline.is_none() {
+                        let _ = take_value(&mut raw);
+                    }
+                }
+                other if other.starts_with('-') => {}
+                other => args.filters.push(other.to_owned()),
+            }
+        }
+        args
+    }
+
+    fn selected(&self, name: &str) -> bool {
+        if self.ignored_only || self.skips.iter().any(|skip| name.contains(skip)) {
+            return false;
+        }
+        if self.filters.is_empty() {
+            return true;
+        }
+        if self.exact {
+            self.filters.iter().any(|filter| filter == name)
+        } else {
+            self.filters.iter().any(|filter| name.contains(filter))
+        }
+    }
+}
+
+fn split_flag(arg: &str) -> (&str, Option<String>) {
+    match arg.split_once('=') {
+        Some((flag, value)) => (flag, Some(value.to_owned())),
+        None => (arg, None),
+    }
+}
+
+/// The next argv token when it is a flag value rather than another flag.
+fn take_value<I>(args: &mut std::iter::Peekable<I>) -> Option<String>
+where
+    I: Iterator<Item = String>,
+{
+    if args.peek().is_some_and(|next| !next.starts_with('-')) {
+        args.next()
+    } else {
+        None
+    }
+}
+
+fn main() -> ExitCode {
+    let args = Args::from_env();
+    let selected: Vec<_> = FIXTURES
+        .iter()
+        .copied()
+        .filter(|(name, _)| args.selected(name))
+        .collect();
+
+    if args.list {
+        for (name, _) in &selected {
+            println!("{name}: test");
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    println!("running {} tests", selected.len());
+    let mut failed = 0usize;
+    for (name, fixture) in selected {
+        // Direct call. Spawning here would put `current_platform` off the
+        // main thread again, which is the macOS panic this binary exists
+        // to avoid.
+        match catch_unwind(fixture) {
+            Ok(()) => println!("test {name} ... ok"),
+            Err(_) => {
+                failed += 1;
+                eprintln!("test {name} ... FAILED");
+            }
+        }
+    }
+    if failed == 0 {
+        println!("test result: ok");
+        ExitCode::SUCCESS
+    } else {
+        eprintln!("test result: FAILED. {failed} failed");
+        ExitCode::from(1)
+    }
 }
