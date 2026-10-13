@@ -119,3 +119,37 @@ fn map_translates_leaves_and_validate_ratios_checks_hand_built_trees() {
     };
     assert_eq!(bad.validate_ratios(), Err(LayoutError::InvalidRatio(1.0)));
 }
+
+#[test]
+fn satellite_entries_skip_membership_but_member_entries_are_checked() {
+    use phux_core::{ArrangementError, EntryRef, EntryTarget, Group, ResourceKey, arrangement};
+
+    let member = ResourceKey::from_bytes([7; 16]);
+    let stranger = ResourceKey::from_bytes([8; 16]);
+    let satellite = EntryRef {
+        entry: [2; 16],
+        target: EntryTarget::Satellite {
+            host: "mini".to_owned(),
+            id: 4,
+        },
+    };
+    let group = |right: EntryRef| Group {
+        id: [9; 16],
+        name: None,
+        tree: LayoutNode::Split {
+            dir: SplitDir::Horizontal,
+            ratio: 0.5,
+            left: Box::new(LayoutNode::Leaf(EntryRef::member([1; 16], member))),
+            right: Box::new(LayoutNode::Leaf(right)),
+        },
+    };
+
+    assert_eq!(
+        arrangement::validate_groups(&[group(satellite)], [&member]),
+        Ok(())
+    );
+    assert_eq!(
+        arrangement::validate_groups(&[group(EntryRef::member([2; 16], stranger))], [&member]),
+        Err(ArrangementError::NotAMember(stranger))
+    );
+}

@@ -631,14 +631,8 @@ fn moving_out_prunes_the_source_arrangement() {
     let tree = LayoutNode::Split {
         dir: SplitDir::Horizontal,
         ratio: 0.5,
-        left: Box::new(LayoutNode::Leaf(EntryRef {
-            entry: [1; 16],
-            resource: r1,
-        })),
-        right: Box::new(LayoutNode::Leaf(EntryRef {
-            entry: [2; 16],
-            resource: r2,
-        })),
+        left: Box::new(LayoutNode::Leaf(EntryRef::member([1; 16], r1))),
+        right: Box::new(LayoutNode::Leaf(EntryRef::member([2; 16], r2))),
     };
     h.run(Op::ArrangementReplace {
         owner: ArrangementOwner::Session(a),
@@ -886,10 +880,7 @@ fn arrangement_replace_validates_members_and_revisions() {
     let group = |resource, entry| Group {
         id: [entry; 16],
         name: Some("main".to_owned()),
-        tree: LayoutNode::Leaf(EntryRef {
-            entry: [entry; 16],
-            resource,
-        }),
+        tree: LayoutNode::Leaf(EntryRef::member([entry; 16], resource)),
     };
     let owner = ArrangementOwner::Session(a);
 

@@ -263,15 +263,54 @@ pub fn collapse<L>(node: LayoutNode<L>, drop: &impl Fn(&L) -> bool) -> Option<La
     }
 }
 
-/// A leaf of a persisted arrangement: a stable entry id pointing at a
-/// resource. Entry ids are random 16 bytes minted by whoever creates the
+/// A leaf of a persisted arrangement: a stable entry id pointing at what the
+/// entry shows. Entry ids are random 16 bytes minted by whoever creates the
 /// entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct EntryRef {
     /// Stable id of this entry within its arrangement.
     pub entry: [u8; 16],
-    /// The resource the entry shows.
-    pub resource: ResourceKey,
+    /// What the entry shows.
+    pub target: EntryTarget,
+}
+
+impl EntryRef {
+    /// An entry showing a member resource.
+    #[must_use]
+    pub const fn member(entry: [u8; 16], resource: ResourceKey) -> Self {
+        Self {
+            entry,
+            target: EntryTarget::Member(resource),
+        }
+    }
+
+    /// The member resource this entry shows, if it shows one.
+    #[must_use]
+    pub const fn resource(&self) -> Option<ResourceKey> {
+        match self.target {
+            EntryTarget::Member(key) => Some(key),
+            EntryTarget::Satellite { .. } => None,
+        }
+    }
+}
+
+/// What an arrangement entry shows.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EntryTarget {
+    /// A resource on this authority. Session arrangements may name only
+    /// members of their session.
+    Member(ResourceKey),
+    /// A satellite terminal reached through this hub, addressed by its host
+    /// and the satellite's live handle. Presentation only: it is not checked
+    /// against membership, renders as a placeholder when it cannot be
+    /// resolved, and never authorizes attachment.
+    Satellite {
+        /// Satellite host name.
+        host: String,
+        /// The satellite's live terminal handle.
+        id: u32,
+    },
 }
 
 /// One group of an arrangement (a tab, in today's clients) holding one
@@ -329,7 +368,8 @@ pub enum ArrangementError {
 
 impl Arrangement {
     /// Check the document: unique group and entry ids, valid ratios, and
-    /// every entry naming a resource in `members`.
+    /// every member entry naming a resource in `members`. Satellite entries
+    /// are not membership-checked.
     ///
     /// # Errors
     ///
@@ -341,12 +381,13 @@ impl Arrangement {
         validate_groups(&self.groups, members)
     }
 
-    /// Every resource any entry names, in group then depth-first order.
+    /// Every member resource any entry names, in group then depth-first
+    /// order. Satellite entries are skipped.
     #[must_use]
     pub fn resources(&self) -> Vec<ResourceKey> {
         self.groups
             .iter()
-            .flat_map(|g| g.tree.leaves().into_iter().map(|e| e.resource))
+            .flat_map(|g| g.tree.leaves().into_iter().filter_map(EntryRef::resource))
             .collect()
     }
 
@@ -355,21 +396,24 @@ impl Arrangement {
     pub fn prune(&mut self, resource: ResourceKey) -> bool {
         let before = self.groups.len();
         let mut changed = false;
-        self.groups = std::mem::take(&mut self.groups)
-            .into_iter()
-            .filter_map(|g| {
-                if !g.tree.leaves().iter().any(|e| e.resource == resource) {
-                    return Some(g);
-                }
-                changed = true;
-                let Group { id, name, tree } = g;
-                collapse(tree, &|e: &EntryRef| e.resource == resource).map(|tree| Group {
-                    id,
-                    name,
-                    tree,
+        self.groups =
+            std::mem::take(&mut self.groups)
+                .into_iter()
+                .filter_map(|g| {
+                    if !g
+                        .tree
+                        .leaves()
+                        .iter()
+                        .any(|e| e.resource() == Some(resource))
+                    {
+                        return Some(g);
+                    }
+                    changed = true;
+                    let Group { id, name, tree } = g;
+                    collapse(tree, &|e: &EntryRef| e.resource() == Some(resource))
+                        .map(|tree| Group { id, name, tree })
                 })
-            })
-            .collect();
+                .collect();
         changed || before != self.groups.len()
     }
 }
@@ -398,8 +442,10 @@ pub fn validate_groups<'a>(
             if !entry_ids.insert(leaf.entry) {
                 return Err(ArrangementError::DuplicateEntry(leaf.entry));
             }
-            if !members.contains(&leaf.resource) {
-                return Err(ArrangementError::NotAMember(leaf.resource));
+            if let Some(resource) = leaf.resource()
+                && !members.contains(&resource)
+            {
+                return Err(ArrangementError::NotAMember(resource));
             }
         }
     }
