@@ -60,9 +60,7 @@ fn seeded_default_colors_are_installed_before_actor_run() {
     let first = b"\x1b]10;?\x1b";
     let second = b"\\\x1b]11;?\x1b\\";
     actor.terminal.borrow_mut().vt_write(first);
-    actor.answer_color_queries(first);
     actor.terminal.borrow_mut().vt_write(second);
-    actor.answer_color_queries(second);
     assert_eq!(
         pty_input.try_recv().expect("OSC 10 reply").bytes.as_ref(),
         b"\x1b]10;rgb:d0d0/d0d0/d0d0\x1b\\"
@@ -71,6 +69,7 @@ fn seeded_default_colors_are_installed_before_actor_run() {
         pty_input.try_recv().expect("OSC 11 reply").bytes.as_ref(),
         b"\x1b]11;rgb:1212/1818/1b1b\x1b\\"
     );
+    assert!(pty_input.try_recv().is_err(), "each query is answered once");
 }
 
 #[test]

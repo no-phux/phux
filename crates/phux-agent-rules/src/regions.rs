@@ -11,7 +11,8 @@
 pub struct Screen<'a> {
     /// The pane's current OSC 0/2 title, as libghostty tracks it.
     pub title: &'a str,
-    /// Last ConEmu-style OSC 9;4 payload, with the leading `9;` removed.
+    /// Last ConEmu-style OSC 9;4 report as `4;<state>;<percent>`, the
+    /// percent empty when the program sent none.
     pub progress: &'a str,
     /// Right-trimmed live viewport rows, top to bottom (no scrollback).
     pub lines: &'a [String],
@@ -24,7 +25,7 @@ pub struct Screen<'a> {
 pub(crate) enum Region {
     /// The OSC 0/2 window title: the cheapest, most direct signal.
     Title,
-    /// The latest OSC 9;4 progress payload, independent of title rendering.
+    /// The latest OSC 9;4 progress report, independent of title rendering.
     OscProgress,
     /// The last N non-empty rows (`bottom-lines[(N)]`).
     BottomLines(u16),

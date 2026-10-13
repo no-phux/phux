@@ -640,8 +640,7 @@ fn an_open_output_burst_arms_the_state_tick() {
     actor.set_event_sink(event_tx);
     assert!(!actor.state_tick_armed(), "quiet pane, disarmed");
 
-    actor.vt_write_for_test(b"hello");
-    actor.source_events_from_chunk(b"hello");
+    actor.feed_for_test(b"hello");
     assert!(
         matches!(
             event_rx.try_recv().map(|emitted| emitted.event),
@@ -686,8 +685,7 @@ fn raw_only_consumer_gets_repeatable_dirty_idle_cycles() {
     actor.set_event_sink(event_tx);
 
     for chunk in [b"first".as_slice(), b"\r\nsecond".as_slice()] {
-        actor.vt_write_for_test(chunk);
-        actor.source_events_from_chunk(chunk);
+        actor.feed_for_test(chunk);
         assert!(
             matches!(
                 event_rx.try_recv().map(|emitted| emitted.event),
@@ -730,14 +728,14 @@ fn osc_progress_is_mirrored_without_event_listeners() {
     let mut actor = bundle.actor;
     assert!(actor.event_sink.is_none());
 
-    actor.source_events_from_chunk(b"\x1b]9;4;");
+    actor.feed_for_test(b"\x1b]9;4;");
     assert!(
         actor.last_progress.is_empty(),
         "split mark is not complete yet"
     );
-    actor.source_events_from_chunk(b"3;\x07");
+    actor.feed_for_test(b"3;\x07");
     assert_eq!(actor.last_progress, "4;3;");
-    actor.source_events_from_chunk(b"\x1b]9;4;0;\x07");
+    actor.feed_for_test(b"\x1b]9;4;0;\x07");
     assert_eq!(actor.last_progress, "4;0;");
 }
 
@@ -1839,15 +1837,15 @@ fn program_status_bel_terminators_are_not_bells_but_ground_bel_is() {
     let mut actor = TerminalActor::new(20, 5).expect("new").actor;
     let (sink, mut events) = mpsc::channel(8);
     actor.set_event_sink(sink);
-    actor.source_events_from_chunk(b"\x1b]7501;state=working");
-    actor.source_events_from_chunk(b"\x07\x1b]7501;?\x07\x1b]99;ignored\x07");
+    actor.feed_for_test(b"\x1b]7501;state=working");
+    actor.feed_for_test(b"\x07\x1b]7501;?\x07\x1b]99;ignored\x07");
     while let Ok(event) = events.try_recv() {
         assert!(
             !matches!(event.event, AgentEvent::Bell),
             "OSC terminators must not ring"
         );
     }
-    actor.source_events_from_chunk(b"\x07\x07");
+    actor.feed_for_test(b"\x07\x07");
     assert!(matches!(
         events.try_recv().map(|event| event.event),
         Ok(AgentEvent::Bell)

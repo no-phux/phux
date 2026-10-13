@@ -198,16 +198,12 @@ serde = { version = "1", features = ["derive"] }
 # `crates/phux-server/src/upgrade/blob.rs` for why the default 128-level cap is
 # wrong for that one parse.
 serde_json = { version = "1", features = ["unbounded_depth"] }
-# SIMD byte search for the PTY ingest hot path. The pane actor scans every
-# PTY byte twice (the OSC-133 prompt-mark scanner and the OSC 10/11 colour
-# query scanner), and both spend nearly all of that time in their ground
-# state looking for a single introducer byte. Measured on a 4 KiB plain-text
-# chunk, the hand-written `iter().position()` skip costs ~0.5 ms/MB per
-# scanner — comparable to libghostty's entire VT parse of the same bytes —
-# because an early-exiting search does not vectorize. `memchr` is the
-# standard, thoroughly tested SIMD implementation of exactly this primitive.
-# It adds nothing to the build: 2.8.1 is already compiled into every phux
-# binary through `serde_json` (and `regex`, `nom`, `axum`), so this only
+# SIMD byte search on the PTY output hot path: the compatibility-profile
+# rewrite (`downsample`) and the attach fan-out skip plain-text runs looking
+# for ESC. An early-exiting `iter().position()` does not vectorize; `memchr`
+# is the standard, thoroughly tested SIMD implementation of exactly this
+# primitive. It adds nothing to the build: it is already compiled into every
+# phux binary through `serde_json` (and `regex`, `nom`, `axum`), so this only
 # names a dependency the graph already carries.
 memchr = "2"
 toml = "1"
@@ -228,7 +224,7 @@ serde_path_to_error = "0.1"
 # libghostty is our canonical terminal backend (ADR-0008). Both phux-protocol
 # and phux-server depend on it — phux-protocol re-exports types, phux-server
 # drives the emulator.
-libghostty-vt = { version = "0.2", git = "https://github.com/phall1/libghostty-rs.git", rev = "898ecc234fd4787d2eeebfa0d91cf7d3226f5bfd", default-features = false }
+libghostty-vt = { version = "0.2", git = "https://github.com/phall1/libghostty-rs.git", rev = "863c06f79bbe6341f971067cbeeee786dcc57a8f", default-features = false }
 # PNG decoder used by the Kitty graphics replay bridge (ADR-0034). This
 # matches libghostty-vt's optional PNG dependency and is enabled only for
 # in-workspace/server-feature consumers that need to ingest `f=100` APC images.
