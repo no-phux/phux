@@ -60,9 +60,12 @@ adds organization commands that each need a grant.
    re-evaluated in the same transaction as a move, so moving a resource
    out of a session drops authority that came from it.
 5. **Delegated agents.** `phux agent start` and a launch inside a session
-   mint a delegated credential holding `INVENTORY`, `OBSERVE`, and `INPUT`
-   on its own session, `on_behalf_of` the launching human. It holds no
-   `SIGNAL`, because legacy kill commands still require that verb. Delegation can narrow a
+   mint a delegated credential holding `INVENTORY`, `OBSERVE`, `INPUT`, and
+   `BIND` on its own session, `on_behalf_of` the launching human. `BIND`
+   lets the agent attach, hold the input lease when it is free (§6 keeps a
+   human's lease out of its reach), and report its own agent state. It
+   holds no `SIGNAL`, because legacy kill commands still require that verb,
+   and no `TERMINATE`, `ORGANIZE`, or `CREATE`. Delegation can narrow a
    grant and never widen it. Agent metadata never grants anything.
 6. **Lease precedence.** A lease held by a human principal cannot be taken
    by a non-human principal. A human's `DELIBERATE` takeover always

@@ -6,7 +6,9 @@
 //! bounded lifetime. Delegation only narrows: every verb must be one the
 //! launcher holds on that whole session, and none may lie outside
 //! [`AGENT_VERBS`], so `SIGNAL` (which still authorizes legacy kills, R07),
-//! `TERMINATE`, `ORGANIZE`, `CREATE`, and `BIND` are never delegated.
+//! `TERMINATE`, `ORGANIZE`, and `CREATE` are never delegated. `BIND` is:
+//! it lets the agent attach to its session, hold a free input lease (never
+//! one a human holds, ADR-0163 §6), and report its own agent state.
 //!
 //! The ledger is in memory: a credential names a session by its wire id,
 //! which restarts with the server, so it dies with the server too. It is not
@@ -23,8 +25,10 @@ use phux_protocol::kinds::{Verb, Verbs};
 use phux_protocol::scope::{ScopeGrant, Selector, TerminalScopeSet};
 
 /// The verbs an agent credential may carry: read the session's records and
-/// content, and type into it. Also the default request.
-pub const AGENT_VERBS: Verbs = Verbs::of(&[Verb::Inventory, Verb::Observe, Verb::Input]);
+/// content, type into it, and bind to it (attach, hold a free input lease,
+/// report agent state). Also the default request.
+pub const AGENT_VERBS: Verbs =
+    Verbs::of(&[Verb::Inventory, Verb::Observe, Verb::Input, Verb::Bind]);
 
 /// The lifetime a request gets when it names none.
 pub const DEFAULT_LIFETIME: Duration = Duration::from_hours(12);

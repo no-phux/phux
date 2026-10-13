@@ -2,7 +2,7 @@
 //! (`docs/spec/L1.md` §5.7.5, ADR-0163).
 //!
 //! [`delegate_agent`] asks the server to mint a credential an agent acts
-//! through: `INVENTORY`, `OBSERVE`, and `INPUT` on one session, on behalf of
+//! through: `INVENTORY`, `OBSERVE`, `INPUT`, and `BIND` on one session, on behalf of
 //! the caller, bound to an owner-only socket of its own. The agent then runs
 //! with `PHUX_SOCKET` set to [`Delegation::socket_path`], so every phux
 //! command it issues is attributed to the credential and confined to its

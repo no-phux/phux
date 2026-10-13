@@ -1,7 +1,7 @@
 //! Delegated agent credentials through the closed scope matrix (ADR-0163
-//! §5, R22): an agent holds `INVENTORY`, `OBSERVE`, and `INPUT` on its own
-//! session and nothing else, and a delegation never widens what its
-//! launcher holds.
+//! §5, R22, R24): an agent holds `INVENTORY`, `OBSERVE`, `INPUT`, and `BIND`
+//! on its own session and nothing else, and a delegation never widens what
+//! its launcher holds.
 
 use std::time::Duration;
 
@@ -10,9 +10,11 @@ use phux_core::PrincipalId;
 use phux_protocol::kinds::{Requirement, Verb, Verbs, frame_rule};
 use phux_protocol::wire::frame::{Command, FrameKind, TerminalSignal};
 
+use phux_protocol::wire::frame::{AttachTarget, InputMode, ReportedAgentState};
+
 use super::{
-    ConnectionGrant, World, admits, admits_command, command, get_screen, organization_samples,
-    samples, scoped, world,
+    ConnectionGrant, World, admits, admits_command, attach, command, get_screen,
+    organization_samples, samples, scoped, world,
 };
 use crate::delegation::{AGENT_VERBS, DelegatedCredential, DelegationError, DelegationRequest};
 use crate::state::ClientId;
@@ -75,7 +77,7 @@ fn a_delegated_agent_is_a_credential_acting_for_the_owner() {
 }
 
 /// Every row the agent's grant admits needs only agent verbs; in
-/// particular no `SIGNAL`, `TERMINATE`, `ORGANIZE`, `CREATE`, or `BIND`.
+/// particular no `SIGNAL`, `TERMINATE`, `ORGANIZE`, or `CREATE`.
 #[test]
 fn a_delegated_agent_is_admitted_only_rows_needing_agent_verbs() {
     let mut world = world();
@@ -133,6 +135,65 @@ fn a_delegated_agent_is_refused_terminate_signal_and_organize_even_in_its_sessio
     }
 }
 
+/// `BIND` on its own session (R24): the agent attaches, asks for the input
+/// lease, and reports its agent state there, and nowhere else.
+#[test]
+fn a_delegated_agent_binds_attaches_and_reports_only_in_its_session() {
+    let mut world = world();
+    let grant = agent(&mut world);
+    let (alpha, beta) = (world.alpha.clone(), world.beta.clone());
+    assert!(admits(
+        &world,
+        &grant,
+        &attach(AttachTarget::ByName("alpha".to_owned()))
+    ));
+    assert!(!admits(
+        &world,
+        &grant,
+        &attach(AttachTarget::ByName("beta".to_owned()))
+    ));
+    let lease = |terminal_id| Command::AcquireInput {
+        terminal_id,
+        mode: InputMode::Cooperative,
+        ttl_ms: 0,
+    };
+    let report = |terminal_id| Command::ReportAgentState {
+        terminal_id,
+        state: ReportedAgentState::Working,
+    };
+    assert!(admits_command(&world, &grant, lease(alpha.clone())));
+    assert!(admits_command(&world, &grant, report(alpha)));
+    assert!(!admits_command(&world, &grant, lease(beta.clone())));
+    assert!(!admits_command(&world, &grant, report(beta)));
+}
+
+/// `BIND` admits the lease request, and human precedence still decides it:
+/// the agent takes a free lease but never one the owner holds.
+#[test]
+fn a_delegated_agent_takes_a_free_lease_and_never_a_humans() {
+    const AGENT: ClientId = ClientId(51);
+    const HUMAN: ClientId = ClientId(52);
+    let mut world = world();
+    let grant = agent(&mut world);
+    world.state.set_connection_grant(AGENT, grant);
+    world
+        .state
+        .set_connection_grant(HUMAN, ConnectionGrant::owner());
+    let pane = world.alpha_core;
+    assert!(!world.state.lease_protected_from(pane, AGENT), "free");
+    world.state.set_input_lease(pane, HUMAN);
+    assert!(
+        world.state.lease_protected_from(pane, AGENT),
+        "a human-held lease is not the agent's to take"
+    );
+    assert!(world.state.release_input_lease(pane, HUMAN));
+    world.state.set_input_lease(pane, AGENT);
+    assert!(
+        !world.state.lease_protected_from(pane, HUMAN),
+        "a human's takeover always wins"
+    );
+}
+
 #[test]
 fn a_delegated_agent_is_confined_to_its_own_session() {
     let mut world = world();
@@ -163,7 +224,6 @@ fn a_delegated_agent_is_confined_to_its_own_session() {
 fn delegation_refuses_every_verb_outside_the_agent_set() {
     for verb in [
         Verb::Create,
-        Verb::Bind,
         Verb::Signal,
         Verb::Organize,
         Verb::Terminate,
@@ -185,11 +245,11 @@ fn delegation_refuses_every_verb_outside_the_agent_set() {
 fn delegation_never_widens_the_launchers_grant() {
     let mut world = world();
     let g = world.alpha_group;
-    // The launcher may observe its session but not type into it.
+    // The launcher may observe its session but not bind to or type into it.
     let observer = scoped(&[&format!("inventory,observe@group:{g}")]);
     assert_eq!(
         delegate(&mut world, observer.clone(), DelegationRequest::default()),
-        Err(DelegationError::LauncherLacks(Verb::Input))
+        Err(DelegationError::LauncherLacks(Verb::Bind))
     );
     // Narrowing to what it holds succeeds.
     let narrowed = delegate(&mut world, observer, request(&[Verb::Observe])).unwrap();

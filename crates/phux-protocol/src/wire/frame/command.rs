@@ -638,7 +638,7 @@ pub enum Command {
         document: ArrangementDoc,
     },
     /// Mint a delegated agent credential on `session` (ADR-0163 §5):
-    /// `INVENTORY`, `OBSERVE`, and `INPUT` on that session only, on behalf
+    /// `INVENTORY`, `OBSERVE`, `INPUT`, and `BIND` on that session only, on behalf
     /// of the sender, through an owner-only socket of its own. Owner socket
     /// only; answered `OkWith(Delegation)`. A repeat of `operation` answers
     /// the credential it minted.
