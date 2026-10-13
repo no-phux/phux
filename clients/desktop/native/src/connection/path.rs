@@ -64,9 +64,10 @@ pub fn can_offer_path_picker(features: Option<&[String]>, attached: bool, target
     attached && target.is_some() && features.is_some_and(|features| features.iter().any(|feature| feature == "path-query"))
 }
 
-/// A new search replaces the listing until its own reply arrives.
+/// A new search replaces the listing until its own reply arrives. It searches beneath `root`.
 #[must_use]
-pub fn start_query(mut state: PickerState, request_id: u32, query: impl Into<String>) -> PickerState {
+pub fn start_query(mut state: PickerState, request_id: u32, root: impl Into<String>, query: impl Into<String>) -> PickerState {
+    state.root = root.into();
     state.query = query.into();
     state.pending = Some(request_id);
     state.rows.clear();
@@ -239,7 +240,8 @@ mod tests {
 
     #[test]
     fn stale_replies_and_replaced_targets_do_not_insert() {
-        let searching = start_query(begin_picker(target(), "~"), 10, "main");
+        let searching = start_query(begin_picker(target(), "~"), 10, "/repo", "main");
+        assert_eq!(searching.root, "/repo");
         let stale = PathAnswer {
             request_id: 9,
             root: "/host".into(),

@@ -1,6 +1,7 @@
 //! Shell chords (`cmd+shift+p`) as GPUI keystrokes (`cmd-shift-p`).
 
 /// Convert a settings chord into a GPUI binding stroke, or `None` when GPUI cannot name the key.
+/// GPUI names punctuation by the character itself (`cmd-,`, `cmd-]`).
 pub fn gpui_stroke(chord: &str) -> Option<String> {
     let mut parts = Vec::new();
     for raw in chord.split('+') {
@@ -8,28 +9,18 @@ pub fn gpui_stroke(chord: &str) -> Option<String> {
         if part.is_empty() {
             return None;
         }
-        let mapped = match part {
-            "cmd" | "ctrl" | "alt" | "shift" => part,
-            "," => "comma",
-            "=" => "equal",
-            "-" => "minus",
-            "[" => "bracketleft",
-            "]" => "bracketright",
-            "\\" => "backslash",
-            ";" => "semicolon",
-            "'" => "quote",
-            "." => "period",
-            "/" => "slash",
-            "`" => "backtick",
+        let known = match part {
+            "cmd" | "ctrl" | "alt" | "shift" => true,
+            "," | "=" | "-" | "[" | "]" | "\\" | ";" | "'" | "." | "/" | "`" => true,
             "pageup" | "pagedown" | "home" | "end" | "left" | "right" | "up" | "down"
-            | "enter" | "escape" | "tab" | "space" | "backspace" | "delete" => part,
-            other if other.len() == 1 && other.chars().all(|ch| ch.is_ascii_alphanumeric()) => other,
-            other if other.starts_with('f') && other[1..].parse::<u8>().ok().is_some_and(|n| (1..=24).contains(&n)) => {
-                other
-            }
-            _ => return None,
+            | "enter" | "escape" | "tab" | "space" | "backspace" | "delete" => true,
+            other if other.len() == 1 && other.chars().all(|ch| ch.is_ascii_alphanumeric()) => true,
+            other => other.starts_with('f') && other[1..].parse::<u8>().ok().is_some_and(|n| (1..=24).contains(&n)),
         };
-        parts.push(mapped);
+        if !known {
+            return None;
+        }
+        parts.push(part);
     }
     if parts.is_empty() {
         return None;

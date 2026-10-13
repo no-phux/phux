@@ -137,6 +137,12 @@ impl Workspace {
         self.server_id.as_deref()
     }
 
+    /// Whether the saved layout has been applied (or found absent) for the attached server.
+    #[must_use]
+    pub fn restored(&self) -> bool {
+        self.restored
+    }
+
     /// Take queued toasts.
     pub fn take_notices(&mut self) -> Vec<Notice> {
         std::mem::take(&mut self.notices)
@@ -799,7 +805,6 @@ impl Workspace {
             .iter()
             .map(|pane| terminal_label(&pane.terminal_id))
             .collect();
-        let mut changed = false;
         for tab in &mut self.tabs {
             let next = resolve_node(
                 &mut self.unresolved,
@@ -812,10 +817,8 @@ impl Workspace {
             );
             if let Some(root) = next {
                 tab.root = root;
-                changed = true;
             }
         }
-        let _ = changed;
     }
 
     fn land(&mut self, connection: &Connection, label: &str, destination: Destination) {

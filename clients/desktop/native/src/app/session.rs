@@ -4,16 +4,18 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui::{
-    App, AppContext, Context, Entity, KeyBinding, Menu, MenuItem, Point, SharedString, Size, Task, TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowOptions, px, size,
+    App, AppContext, Context, Entity, KeyBinding, Menu, MenuItem, NoAction, Point, SharedString, Size, Subscription, Task, TitlebarOptions,
+    WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowId, WindowOptions, px, size,
 };
 use gpui_kit::component::Root;
 use gpui_kit::{self, AnyWindowHandle};
 
 use crate::hotkeys::GlobalHotkeys;
-use crate::settings::{self, GhosttyConfig};
+use crate::settings::{self, DisplayPrefs, GhosttyConfig};
+use crate::workspace::persist::{self, FileLayoutStore};
 use phux_protocol::ResourceId;
 
-use super::actions::{Quit, Run};
+use super::actions::{OpenPathDirectory, Quit, Run};
 use super::desk::{Desk, OpenRequest, WindowRole};
 use super::keys::gpui_stroke;
 use super::AppOptions;
@@ -21,7 +23,6 @@ use super::AppOptions;
 struct Opened {
     handle: AnyWindowHandle,
     desk: Entity<Desk>,
-    role: WindowRole,
 }
 
 pub struct Desktop {
@@ -34,14 +35,27 @@ pub struct Desktop {
     legacy_quick: Option<PathBuf>,
     windows: Vec<Opened>,
     quick: Option<Opened>,
+    /// The keymap last installed as GPUI bindings, so an unchanged keymap is not rebound.
+    keymap: Option<Vec<(String, String)>>,
+    /// GPUI strokes bound to [`Run`]; a stroke a later keymap drops is masked with `NoAction`.
+    bound: Vec<String>,
+    hotkey_chords: Vec<String>,
     hotkeys: Option<GlobalHotkeys>,
     _hotkey: Option<Task<()>>,
+    _closed: Option<Subscription>,
     fonts: bool,
 }
 
 impl Desktop {
+    /// Create the process singleton. Quit is global so it works with no focused window,
+    /// and every window close goes through [`Self::window_closed`].
     pub fn install(cx: &mut App) -> Entity<Self> {
-        cx.new(|_| Self {
+        cx.on_action(|_: &Quit, cx| cx.quit());
+        cx.bind_keys([
+            KeyBinding::new("cmd-q", Quit, None),
+            KeyBinding::new("tab", OpenPathDirectory, Some("PathPicker > Input")),
+        ]);
+        let desktop = cx.new(|_| Self {
             phux: PathBuf::new(),
             socket: PathBuf::new(),
             home_session: String::new(),
@@ -51,10 +65,24 @@ impl Desktop {
             legacy_quick: None,
             windows: Vec::new(),
             quick: None,
+            keymap: None,
+            bound: Vec::new(),
+            hotkey_chords: Vec::new(),
             hotkeys: None,
             _hotkey: None,
+            _closed: None,
             fonts: false,
-        })
+        });
+        let weak = desktop.downgrade();
+        // Deferred: a window can be removed from inside a `Desktop` update (quick toggle).
+        let closed = cx.on_window_closed(move |cx, id| {
+            let weak = weak.clone();
+            cx.defer(move |cx| {
+                let _ = weak.update(cx, |desktop, cx| desktop.window_closed(id, cx));
+            });
+        });
+        desktop.update(cx, |desktop, _| desktop._closed = Some(closed));
+        desktop
     }
 
     pub fn launch(&mut self, options: AppOptions, cx: &mut Context<Self>) -> anyhow::Result<WindowHandle<Root>> {
@@ -73,19 +101,25 @@ impl Desktop {
             crate::fonts::install(cx);
             self.fonts = true;
         }
-        let role = if options.quick { WindowRole::Quick } else if options.fresh { WindowRole::Fresh } else { WindowRole::Main };
-        let request = OpenRequest {
-            role,
-            session: options.session,
-            fresh: options.fresh || options.quick,
-            initial_terminal: options.initial_terminal,
-            layout_path: if options.quick { self.quick_layout.clone() } else { self.layout.clone() },
-            legacy_layout: if options.quick { self.legacy_quick.clone() } else { self.legacy_layout.clone() },
-            startup_error: options.startup_error,
-        };
         let focus = crate::diag::may_activate();
-        let handle = self.open_window(request, focus, options.quick, cx)?;
-        self.arm_hotkeys(cx);
+        let handle = if options.quick {
+            let mut request = self.quick_request(cx);
+            request.initial_terminal = options.initial_terminal;
+            request.startup_error = options.startup_error;
+            self.open_window(request, focus, true, cx)?
+        } else {
+            let request = OpenRequest {
+                role: if options.fresh { WindowRole::Fresh } else { WindowRole::Main },
+                session: options.session,
+                fresh: options.fresh,
+                initial_terminal: options.initial_terminal,
+                layout_path: self.layout.clone(),
+                legacy_layout: self.legacy_layout.clone(),
+                startup_error: options.startup_error,
+                main_display: None,
+            };
+            self.open_window(request, focus, false, cx)?
+        };
         self.publish_menus(cx);
         Ok(handle)
     }
@@ -99,6 +133,7 @@ impl Desktop {
             layout_path: self.layout.clone(),
             legacy_layout: None,
             startup_error: None,
+            main_display: None,
         };
         let _ = self.open_window(request, true, false, cx);
     }
@@ -112,51 +147,102 @@ impl Desktop {
             layout_path: self.layout.clone(),
             legacy_layout: None,
             startup_error: None,
+            main_display: None,
         };
         let _ = self.open_window(request, true, false, cx);
     }
 
+    /// Close the quick window if it is open, or open it. A handle whose window
+    /// the user already closed counts as closed.
     pub fn toggle_quick(&mut self, cx: &mut Context<Self>) {
         if let Some(opened) = self.quick.take() {
-            opened.desk.update(cx, |desk, cx| desk.prepare_close(cx));
-            let _ = opened.handle.update(cx, |_, window, _| window.remove_window());
-            return;
+            if opened.handle.update(cx, |_, _, _| ()).is_ok() {
+                opened.desk.update(cx, |desk, cx| desk.prepare_close(cx));
+                let _ = opened.handle.update(cx, |_, window, _| window.remove_window());
+                return;
+            }
         }
-        let request = OpenRequest {
+        let request = self.quick_request(cx);
+        let _ = self.open_window(request, true, true, cx);
+    }
+
+    /// The quick window restores its own layout and spawns a fresh terminal only
+    /// when nothing is saved. Its display is the main window's.
+    fn quick_request(&self, cx: &App) -> OpenRequest {
+        OpenRequest {
             role: WindowRole::Quick,
             session: self.home_session.clone(),
-            fresh: false,
+            fresh: true,
             initial_terminal: None,
             layout_path: self.quick_layout.clone(),
             legacy_layout: self.legacy_quick.clone(),
             startup_error: None,
+            main_display: self.main_display(cx),
+        }
+    }
+
+    fn main_display(&self, cx: &App) -> Option<DisplayPrefs> {
+        if let Some(opened) = self.windows.first() {
+            return Some(opened.desk.read(cx).prefs.clone());
+        }
+        let store = FileLayoutStore::new(self.layout.clone(), self.legacy_layout.clone());
+        persist::load_layout(&store.read()).initial.map(|layout| layout.display)
+    }
+
+    fn window_closed(&mut self, id: WindowId, cx: &mut Context<Self>) {
+        let closed = if let Some(index) = self.windows.iter().position(|opened| opened.handle.window_id() == id) {
+            Some(self.windows.remove(index))
+        } else if self.quick.as_ref().is_some_and(|opened| opened.handle.window_id() == id) {
+            self.quick.take()
+        } else {
+            None
         };
-        let _ = self.open_window(request, true, true, cx);
-    }
-
-    pub fn quit(&mut self, cx: &mut Context<Self>) {
-        let windows = std::mem::take(&mut self.windows);
-        let quick = self.quick.take();
-        for opened in windows.into_iter().chain(quick) {
-            opened.desk.update(cx, |desk, cx| desk.prepare_close(cx));
+        let Some(opened) = closed else { return };
+        opened.desk.update(cx, |desk, cx| desk.prepare_close(cx));
+        if self.windows.is_empty() && self.quick.is_none() {
+            cx.quit();
         }
-        cx.quit();
     }
 
-    pub fn install_bindings(&mut self, ghostty: &GhosttyConfig, ghostty_keys: bool, cx: &mut Context<Self>) {
-        cx.clear_key_bindings();
-        gpui_kit::init(cx);
+    /// Bind `keymap` as GPUI key bindings in the `Desk` context, publish the menus
+    /// (which show those bindings), and arm Ghostty's global quick-terminal chords.
+    /// An unchanged keymap and chord set does nothing.
+    pub fn install_bindings(
+        &mut self,
+        keymap: Vec<(String, String)>,
+        ghostty: &GhosttyConfig,
+        ghostty_keys: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let chords = if settings::register_global_hotkeys(Some(ghostty_keys)) {
+            settings::quick_terminal_chords(ghostty)
+        } else {
+            Vec::new()
+        };
+        if chords != self.hotkey_chords {
+            self.hotkey_chords = chords.clone();
+            self.register_hotkeys(chords, cx);
+        }
+        if self.keymap.as_ref() == Some(&keymap) {
+            return;
+        }
+        let strokes: Vec<(String, String)> = keymap
+            .iter()
+            .filter_map(|(chord, id)| gpui_stroke(chord).map(|stroke| (stroke, id.clone())))
+            .collect();
         let mut bindings = Vec::new();
-        for (chord, id) in settings::effective_keymap(ghostty, ghostty_keys) {
-            let Some(stroke) = gpui_stroke(&chord) else { continue };
-            bindings.push(KeyBinding::new(&stroke, Run::new(id), Some("Desk")));
+        for old in &self.bound {
+            if !strokes.iter().any(|(stroke, _)| stroke == old) {
+                bindings.push(KeyBinding::new(old, NoAction, Some("Desk")));
+            }
         }
-        bindings.push(KeyBinding::new("cmd-q", Quit, Some("Desk")));
+        for (stroke, id) in &strokes {
+            bindings.push(KeyBinding::new(stroke, Run::new(id.clone()), Some("Desk")));
+        }
         cx.bind_keys(bindings);
+        self.bound = strokes.into_iter().map(|(stroke, _)| stroke).collect();
+        self.keymap = Some(keymap);
         self.publish_menus(cx);
-        if ghostty_keys {
-            self.register_hotkeys(ghostty, cx);
-        }
     }
 
     fn open_window(&mut self, request: OpenRequest, focus: bool, quick: bool, cx: &mut Context<Self>) -> anyhow::Result<WindowHandle<Root>> {
@@ -187,7 +273,7 @@ impl Desktop {
             },
         )?;
         let handle = any.downcast::<Root>().ok_or_else(|| anyhow::anyhow!("window root was not gpui_kit::component::Root"))?;
-        let opened = Opened { handle: any, desk, role: if quick { WindowRole::Quick } else { WindowRole::Main } };
+        let opened = Opened { handle: any, desk };
         if quick {
             self.quick = Some(opened);
         } else {
@@ -196,6 +282,7 @@ impl Desktop {
         Ok(handle)
     }
 
+    /// Menu items name [`Run`] actions; the platform menu shows each one's bound chord.
     fn publish_menus(&self, cx: &mut App) {
         let mut items = Vec::new();
         let mut group = "";
@@ -209,16 +296,10 @@ impl Desktop {
             if command.is_tab_jump() {
                 continue;
             }
-            let name = match self.chord(command.id) {
-                Some(chord) => format!("{}    {chord}", command.title),
-                None => command.title.to_owned(),
-            };
-            items.push(MenuItem::action(name, Run::new(command.id)));
+            items.push(MenuItem::action(command.title.to_owned(), Run::new(command.id)));
         }
         cx.set_menus(vec![
             Menu::new("Phux").items([
-                MenuItem::action("About Phux", Run::new("settings")),
-                MenuItem::separator(),
                 MenuItem::action("Settings…", Run::new("settings")),
                 MenuItem::separator(),
                 MenuItem::action("Quit Phux", Quit),
@@ -245,14 +326,10 @@ impl Desktop {
         ]);
     }
 
-    fn chord(&self, _id: &str) -> Option<String> {
-        None
-    }
-
-    fn register_hotkeys(&mut self, ghostty: &GhosttyConfig, cx: &mut Context<Self>) {
-        let chords = settings::quick_terminal_chords(ghostty);
+    /// Replace the global quick-terminal chords. No chords drops the registration.
+    fn register_hotkeys(&mut self, chords: Vec<String>, cx: &mut Context<Self>) {
+        self.hotkeys = None;
         if chords.is_empty() {
-            self.hotkeys = None;
             return;
         }
         let mut hotkeys = match GlobalHotkeys::new() {
@@ -287,17 +364,6 @@ impl Desktop {
                 }
             }
         }));
-    }
-
-    fn arm_hotkeys(&mut self, cx: &mut Context<Self>) {
-        let ghostty = settings::parse_ghostty(settings::read_ghostty_config().as_deref().unwrap_or(""));
-        let enabled = self
-            .windows
-            .first()
-            .is_some_and(|opened| opened.desk.read(cx).prefs.ghostty_keys);
-        if enabled {
-            self.register_hotkeys(&ghostty, cx);
-        }
     }
 }
 

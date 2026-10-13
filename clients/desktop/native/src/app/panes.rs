@@ -4,11 +4,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui::prelude::*;
-use gpui::{Context, Entity, Window};
+use gpui::{Context, Entity, Subscription, Window};
 use phux_client_runtime::{Client, ViewId};
 use phux_protocol::ResourceId;
 
-use crate::terminal::{HostAction, Settings, Terminal};
+use crate::terminal::{HostAction, Settings, Terminal, TerminalEvent};
 
 use super::desk::Desk;
 
@@ -22,6 +22,9 @@ struct Slot {
     view: ViewId,
     terminal: ResourceId,
     entity: Entity<Terminal>,
+    /// Click-to-focus and file drops for this entity. Dropped with the slot, so
+    /// a rebound view or reconnect subscribes its new entity.
+    _events: Subscription,
 }
 
 impl Panes {
@@ -48,9 +51,13 @@ impl Panes {
         let entity = cx.new(|cx| {
             Terminal::new(client.clone(), view, terminal.clone(), settings, window, cx)
         });
+        let placement = placement_id.to_owned();
+        let events = cx.subscribe_in(&entity, window, move |desk: &mut Desk, _, event: &TerminalEvent, window, cx| {
+            desk.on_terminal_event(&placement, event, window, cx);
+        });
         self.by_placement.insert(
             placement_id.to_owned(),
-            Slot { view, terminal: terminal.clone(), entity: entity.clone() },
+            Slot { view, terminal: terminal.clone(), entity: entity.clone(), _events: events },
         );
         entity
     }

@@ -12,6 +12,7 @@ mod keys;
 mod overlays;
 mod panes;
 mod session;
+mod settings_panel;
 mod typed;
 mod view;
 

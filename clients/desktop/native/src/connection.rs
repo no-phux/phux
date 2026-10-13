@@ -185,6 +185,7 @@ impl Connection {
         self.path_answers
             .extend(self.client.take_path_answers());
         let changed = observation.events.iter().any(structural);
+        let was = self.status;
         if changed {
             self.apply_snapshot(
                 observation.status,
@@ -197,6 +198,10 @@ impl Connection {
             if observation.last_error.is_some() {
                 self.error = observation.last_error;
             }
+        }
+        // A successful (re)attach leaves no failure to show.
+        if self.status == Status::Attached && was != Status::Attached {
+            self.error = None;
         }
         self.accept(&observation.events, observation.connection_epoch);
         self.invalidate_paint(&observation.events);
