@@ -9,6 +9,48 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.57.0](https://github.com/no-phux/phux/compare/v0.56.2...v0.57.0) (2026-10-13)
+
+
+### Features
+
+* **agent:** resume committed streams across reconnects ([#1178](https://github.com/no-phux/phux/issues/1178)) ([78e6041](https://github.com/no-phux/phux/commit/78e6041ef94472f73b3e8576d19e5655b2c60239))
+* **demo:** add a one-command Pi shot-1 setup ([5bde46e](https://github.com/no-phux/phux/commit/5bde46ec54f8eb9ad53607bf7ed76faf36ee01e8))
+* **desktop:** native GPUI desktop replaces the Solid host ([#1211](https://github.com/no-phux/phux/issues/1211)) ([360c651](https://github.com/no-phux/phux/commit/360c651acb8810ac06127ede782b63fd29b87be3))
+* **docs:** make agent onboarding a first-class surface ([#1209](https://github.com/no-phux/phux/issues/1209)) ([b462eb5](https://github.com/no-phux/phux/commit/b462eb5a9518019c43e026e27026f153e9fd76f0))
+* **pair:** keep pairing tokens off camera ([f9e0237](https://github.com/no-phux/phux/commit/f9e0237cb53be97a707e5e351819605da843d147))
+* **pair:** name the MagicDNS host in pair links and default the QR on ([#1200](https://github.com/no-phux/phux/issues/1200)) ([5a1310f](https://github.com/no-phux/phux/commit/5a1310f9962c2bb6b1e5e5698e57c009acaeeabb))
+* **protocol:** add an unjournaled input_activity origin badge ([#1189](https://github.com/no-phux/phux/issues/1189)) ([390c658](https://github.com/no-phux/phux/commit/390c6585bad7094ad8278e1fca5943e229dd05a7))
+* **site:** put phux front and center on a minimal homepage ([6c3a534](https://github.com/no-phux/phux/commit/6c3a534ba6de335298614dfc5bc438918870345c))
+* **site:** unify browser terminal surfaces and responsive controls ([d3553c2](https://github.com/no-phux/phux/commit/d3553c21f72f952befdf4ea0bcc3f9927db580b7))
+* **tui:** grouped which-key, titled palette, rounded panels, 20-col sidebar ([0a8a589](https://github.com/no-phux/phux/commit/0a8a589f52b575a477db6cd5552876e305709a4a))
+
+
+### Bug Fixes
+
+* **agent:** centralize committed publication and reconnect delivery ([#1193](https://github.com/no-phux/phux/issues/1193)) ([2a65b55](https://github.com/no-phux/phux/commit/2a65b55af5850a2996e186fbe0a1e395957765ff))
+* **agent:** harden record bounds and reconnect subscriptions ([#1176](https://github.com/no-phux/phux/issues/1176)) ([32a23ae](https://github.com/no-phux/phux/commit/32a23ae12a96654731fafaadd96c8e2cba33ace4))
+* **agent:** reject truncated logs and release failed reads ([a2cc07e](https://github.com/no-phux/phux/commit/a2cc07e57a5a1fd7fc701041d8055994bbae9e20))
+* **ci:** hold a release PR draft until its lockfile sync lands ([#1196](https://github.com/no-phux/phux/issues/1196)) ([2b2ce3d](https://github.com/no-phux/phux/commit/2b2ce3d1449bf273b8fb2c3f2784cd9b086fa669))
+* **ci:** never cancel an in-flight site-deploy ([f3a609b](https://github.com/no-phux/phux/commit/f3a609bcf39ab234b4a3c36324de529394bd3b0a))
+* **server:** carry Group and Global metadata across a hot upgrade ([7d403b2](https://github.com/no-phux/phux/commit/7d403b2dfe5b05c1310ba9edf460fac6ee4797dc)), closes [#1207](https://github.com/no-phux/phux/issues/1207)
+* **server:** preserve native publications through terminal EOF ([#1213](https://github.com/no-phux/phux/issues/1213)) ([514ea88](https://github.com/no-phux/phux/commit/514ea8886ba682de2b42be6a4295038b50a561d0))
+* **site:** make the demo terminal sharp, fitted, and focused ([7e0a4b5](https://github.com/no-phux/phux/commit/7e0a4b5448926ea77a30b863c40cd28d6d1e0a86))
+* **tui:** place and save live panes a missing layout key omits ([b24e087](https://github.com/no-phux/phux/commit/b24e087785d258effc833d1ac5b88c71f984d72b)), closes [#1207](https://github.com/no-phux/phux/issues/1207)
+
+
+### Performance
+
+* **client:** stop waiting on the colour probe once DA1 answers ([6a2d886](https://github.com/no-phux/phux/commit/6a2d886ddd4b1d4e150bc37ae31407925fe7eb93))
+* **server:** coalesce PTY reads up to 64 KiB per wake ([#1205](https://github.com/no-phux/phux/issues/1205)) ([7346634](https://github.com/no-phux/phux/commit/734663446a7cbd07b23d75003aab8bc67e7e544c))
+
+
+### Documentation
+
+* add coding-agent pitch to readme and docs ([fe7fd42](https://github.com/no-phux/phux/commit/fe7fd4296272f830a92589c3d74388aa3068442c))
+* add pi + phux in 60 seconds page ([655124a](https://github.com/no-phux/phux/commit/655124ad9ea404281b61223ebe2723aa1a64f035))
+* **adr:** renumber the GPUI desktop decision to 0165 ([#1214](https://github.com/no-phux/phux/issues/1214)) ([5475aad](https://github.com/no-phux/phux/commit/5475aad4711b4e2a214c47f86bb2a5776b7bca91))
+
 ## [0.56.2](https://github.com/no-phux/phux/compare/v0.56.1...v0.56.2) (2026-10-12)
 
 

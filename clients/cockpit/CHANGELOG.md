@@ -25,6 +25,18 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   or server restart without restarting the app; recover the selected session
   by its confirmed name when a replacement server reuses numeric IDs.
 
+## [0.36.0](https://github.com/no-phux/phux/compare/cockpit-v0.35.3...cockpit-v0.36.0) (2026-10-13)
+
+
+### Features
+
+* **agent:** resume committed streams across reconnects ([#1178](https://github.com/no-phux/phux/issues/1178)) ([78e6041](https://github.com/no-phux/phux/commit/78e6041ef94472f73b3e8576d19e5655b2c60239))
+
+
+### Bug Fixes
+
+* **agent:** centralize committed publication and reconnect delivery ([#1193](https://github.com/no-phux/phux/issues/1193)) ([2a65b55](https://github.com/no-phux/phux/commit/2a65b55af5850a2996e186fbe0a1e395957765ff))
+
 ## [0.35.3](https://github.com/no-phux/phux/compare/cockpit-v0.35.2...cockpit-v0.35.3) (2026-10-11)
 
 
