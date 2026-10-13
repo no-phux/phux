@@ -1,5 +1,5 @@
 /* Native ABI smoke: the additive resource catalog and agent-records effect
- * stay usable from C at PHUX_CLIENT_ABI_VERSION 1. */
+ * stay usable from C at PHUX_CLIENT_ABI_VERSION 3. */
 #include "phux/client.h"
 #include <assert.h>
 #include <stddef.h>

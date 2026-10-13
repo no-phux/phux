@@ -13,7 +13,7 @@ cockpit-build: cockpit-artifacts
 [group('cockpit')]
 [doc('Cockpit TypeScript graph, native engine regressions, and contract checks.')]
 [working-directory('clients/cockpit')]
-cockpit-test: cockpit-ffi cockpit-build-contracts cockpit-node-test
+cockpit-test: cockpit-ffi cockpit-ffi-abi cockpit-build-contracts cockpit-node-test
     ./scripts/check-release-version.sh
     ./scripts/check-sdk-pin.sh
     ./scripts/check-sdk-pin_test.sh
@@ -55,6 +55,15 @@ cockpit-build-contracts:
 [group('cockpit')]
 cockpit-ffi:
     cargo rustc --locked --profile ffi-dev -p phux-client-ffi --lib --crate-type staticlib
+
+
+# Compile, link, and run the C ABI checks (crates/phux-client-ffi/tests/*_abi.c)
+# against the header and the static archive cockpit-ffi built: the layouts
+# Cockpit compiles against, pinned by static asserts.
+[group('cockpit')]
+[doc('Compile, link, and run the C ABI checks against the cockpit-ffi archive.')]
+cockpit-ffi-abi: cockpit-ffi
+    bash crates/phux-client-ffi/tests/run_abi_checks.sh ffi-dev
 
 
 # Production static FFI archive; release codegen with the required panic boundary.

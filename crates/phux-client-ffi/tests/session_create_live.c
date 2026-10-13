@@ -105,15 +105,15 @@ static void verify_empty_sessions(void) {
 int main(int argc, char **argv) {
     assert(argc == 3); /* runner also passes its seed session name */
     open_client(argv[1]);
-    checked(phux_client_create_session(client, 1, text("ffi-empty-one"), true));
-    checked(phux_client_create_session(client, 2, text("ffi-empty-two"), true));
+    checked(phux_client_create_session(client, 1, text("ffi-empty-one"), PHUX_SESSION_LIFETIME_PERSISTENT));
+    checked(phux_client_create_session(client, 2, text("ffi-empty-two"), PHUX_SESSION_LIFETIME_PERSISTENT));
     PhuxSessionCreateInfo second = result(2);
     PhuxSessionCreateInfo first = result(1);
     assert(first.status == 2 && second.status == 2);
     assert(first.session_id && second.session_id && first.session_id != second.session_id);
     checked(phux_client_session_create_release(client, 1));
     checked(phux_client_session_create_release(client, 2));
-    checked(phux_client_create_session(client, 3, text("ffi-empty-one"), true));
+    checked(phux_client_create_session(client, 3, text("ffi-empty-one"), PHUX_SESSION_LIFETIME_PERSISTENT));
     assert(result(3).status == 3);
     verify_empty_sessions();
     close_client();

@@ -3,7 +3,7 @@
 #include <assert.h>
 #include <stddef.h>
 
-_Static_assert(PHUX_CLIENT_ABI_VERSION == 2u, "named projection is additive on ABI 2");
+_Static_assert(PHUX_CLIENT_ABI_VERSION == 3u, "named projection is unchanged at ABI 3");
 _Static_assert(offsetof(PhuxProjectionInfo, request_id) == sizeof(size_t) + sizeof(uint32_t),
     "request_id follows size/version");
 _Static_assert(offsetof(PhuxSpawnOptions, cols) < offsetof(PhuxSpawnOptions, has_retain_secs),
