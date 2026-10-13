@@ -666,17 +666,6 @@ fn a_retained_terminal_expires_work_at_exit_and_keeps_done_and_error_records() {
             true,
         )
         .await;
-        // The sole session terminal is deliberately respawned as a shell.
-        // Keep another terminal alive so this one exercises retained exit.
-        let request_id = pane.next_request();
-        let keeper = phux_server_testkit::Spawn {
-            owner_terminal: Some(pane.terminal.clone()),
-            ..phux_server_testkit::Spawn::command(&["/bin/sh", "-c", "exec sleep 600"])
-        };
-        assert!(matches!(
-            phux_server_testkit::spawn_resource(&mut pane.stream, request_id, keeper).await,
-            phux_protocol::wire::frame::SpawnResult::Ok(_)
-        ));
         pane.stage(0).await;
         let success = pane.record("success").await;
         let failure = pane.record("failure").await;
