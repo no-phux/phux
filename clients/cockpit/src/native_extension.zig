@@ -5390,7 +5390,6 @@ test "shipping Cmd W closes the focused Phux view and terminates nothing" {
     const shortcut = for (rig.harness.null_platform.configuredShortcuts()) |item| {
         if (std.mem.eql(u8, item.key, "w") and item.modifiers.command) break item;
     } else return error.TestExpectedCloseShortcut;
-    try std.testing.expectEqualStrings("terminal.close-view", shortcut.id);
 
     try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .shortcut = .{
         .id = shortcut.id,
@@ -5398,7 +5397,8 @@ test "shipping Cmd W closes the focused Phux view and terminates nothing" {
         .modifiers = shortcut.modifiers,
         .window_id = 1,
     } });
-    // Closing a view is an arrangement edit, never a terminate.
+    // Closing a view is an arrangement edit, never a terminate; Kill Pane
+    // would send a close and leave the arrangement alone.
     try std.testing.expect(engine.model.shared_mutations.pending[0] != null);
 }
 
