@@ -494,8 +494,10 @@ imported archive's dormant pane); it exits 2 when any was refused.
 
 ### `kill`
 
-A whole-session kill prints one line per member (`^ab23cd  removed`) and one
-for the session (`session ^ef45gh  deleted`). Over MCP, `phux_kill` returns
+A whole-session kill prints one summary line (`killed 12 terminals in work`)
+and one line for each member that was not removed (`^ab23cd  refused: ...`);
+`-v` prints every member and the session (`session ^ef45gh  deleted`). The
+text is for people; over MCP, `phux_kill` returns
 the same as `report`: `{ session, session_result, session_detail, targets:
 [{ key, result, detail }] }`, where `result` is `removed`, `already_gone`,
 `refused`, `unknown`, `timed_out`, or `no_live_target`, and `session_result`

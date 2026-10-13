@@ -1092,9 +1092,17 @@ fn dispatch(
         Some(Command::Ls {
             json, all: true, ..
         }) => commands::ls::run_ls_all(json.json, socket),
-        Some(Command::Ls { json, remote, .. }) => {
-            commands::ls::run_ls(json.json, remote.with_socket(socket))
-        }
+        Some(Command::Ls {
+            json,
+            remote,
+            session,
+            detail,
+            ..
+        }) => commands::ls::run_ls(
+            json.json,
+            &commands::ls::Depth::of(session, detail),
+            remote.with_socket(socket),
+        ),
         Some(Command::Whoami { json, remote }) => {
             commands::whoami::run_whoami(json.json, remote.with_socket(socket))
         }
@@ -1194,9 +1202,17 @@ fn dispatch(
             server,
             idempotency_key,
             yes,
+            verbose,
             remote,
         }) => match commands::spawn::parse_key_arg(idempotency_key.as_deref(), false) {
-            Ok(key) => commands::kill::run(target, server, key, yes, remote.with_socket(socket)),
+            Ok(key) => commands::kill::run(
+                target,
+                server,
+                key,
+                yes,
+                verbose,
+                remote.with_socket(socket),
+            ),
             Err(code) => code,
         },
         Some(Command::Detach {
@@ -1261,9 +1277,11 @@ fn dispatch(
         Some(Command::Relaunch { target, json }) => {
             commands::org::run_relaunch(&target, json, socket)
         }
-        Some(Command::Restore { session, json }) => {
-            commands::org::run_restore(session.as_deref(), json, socket)
-        }
+        Some(Command::Restore {
+            session,
+            verbose,
+            json,
+        }) => commands::org::run_restore(session.as_deref(), verbose, json, socket),
         Some(Command::SwapPane {
             first,
             second,

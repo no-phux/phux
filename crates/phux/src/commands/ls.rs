@@ -1,11 +1,15 @@
+use std::collections::HashMap;
 use std::process::ExitCode;
 
-use phux_client::org::OrgInventory;
+use phux_client::agent_meta::AgentRecord;
+use phux_client::glance::{self, MemberGlance, SessionGlance, Sources};
+use phux_client::org::{KeyNames, OrgInventory};
 use phux_client::resource;
 use phux_client::state::{Degradation, StateView};
 use phux_core::activation::SessionLifetime;
 use phux_core::session_list::{ExecCounts, SessionJson, SessionListJson};
 
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::info::{HostInventory, HostSessionInfo, SessionInfo, SessionSnapshot};
 
 use crate::commands::json_err::{self, CliError, codes};
@@ -13,23 +17,87 @@ use crate::commands::partial;
 use crate::commands::server_target::{ServerSpec, ServerTarget};
 use phux_core::host_list::{HostJson, HostKind, HostListJson};
 
+/// How deep `phux ls` reads (`docs/consumers/attention.md`): the glance by
+/// default, one session's terminals with `SESSION`, and keys, revisions, and
+/// runs with `-l`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Depth {
+    /// List this session's terminals instead of every session.
+    pub session: Option<String>,
+    /// Add keys, lifetimes, windows, and runs; never collapse.
+    pub detail: bool,
+}
+
+impl Depth {
+    /// The depth `phux ls [SESSION] [-l]` asks for.
+    pub(crate) const fn of(session: Option<String>, detail: bool) -> Self {
+        Self { session, detail }
+    }
+
+    /// Whether the text needs each terminal's agent record. The detail
+    /// listing of every session prints none, so it skips the reads.
+    const fn reads_agents(&self) -> bool {
+        self.session.is_some() || !self.detail
+    }
+}
+
+/// First request id for the agent-record reads, clear of the listing's
+/// `GET_STATE`, layout, and organization reads.
+const AGENT_READ_FIRST_REQUEST_ID: u32 = 0x8000_0000;
+
 /// `phux ls` — list sessions via `GET_STATE`; never auto-starts a server.
-/// `--json` emits the stable [`SessionListJson`] (ADR-0022). A partial listing
-/// from a degraded hub still exits 0, reporting the gap on stderr or in the
-/// `unreachable` list (see [`partial`]).
-pub(crate) fn run_ls(json: bool, server: ServerSpec) -> ExitCode {
+/// `--json` emits the stable [`SessionListJson`] (ADR-0022), complete at
+/// every depth. A partial listing from a degraded hub still exits 0,
+/// reporting the gap on stderr or in the `unreachable` list (see
+/// [`partial`]).
+pub(crate) fn run_ls(json: bool, depth: &Depth, server: ServerSpec) -> ExitCode {
     let (rt, target) = match server.prepare("ls", json) {
         Ok(prepared) => prepared,
         Err(code) => return code,
     };
     let listing = rt.block_on(async {
         let mut conn = target.connect().await?;
-        phux_client::session_list::listing_view(&mut conn).await
+        let view = phux_client::session_list::listing_view(&mut conn).await?;
+        let agents = if json || !depth.reads_agents() {
+            HashMap::new()
+        } else {
+            let panes = agent_panes(view.snapshot(), depth.session.as_deref());
+            // The listing already warns about a partial view; a record a
+            // degraded hub could not read only leaves its agent unnamed.
+            phux_client::agent_record::fetch_index_on(
+                &mut conn,
+                &panes,
+                AGENT_READ_FIRST_REQUEST_ID,
+                &mut Vec::new(),
+            )
+            .await
+        };
+        drop(conn);
+        Ok::<_, phux_client::attach::AttachError>((view, agents))
     });
     match listing {
-        Ok(view) => render_listing(json, view),
+        Ok((view, agents)) => render_listing(json, depth, view, &agents),
         Err(err) => target.report_unreachable(json, &err, "ls"),
     }
+}
+
+/// The terminals whose agent records the text needs: one session's, or
+/// every local one.
+fn agent_panes(snapshot: &SessionSnapshot, session: Option<&str>) -> Vec<ResourceId> {
+    let session = session.and_then(|name| snapshot.sessions.iter().find(|s| s.name == name));
+    session.map_or_else(
+        || {
+            resource::terminals(snapshot)
+                .filter(|pane| pane.id.is_local())
+                .map(|pane| pane.id.clone())
+                .collect()
+        },
+        |session| {
+            resource::terminals_in(snapshot, session.id)
+                .map(|pane| pane.id.clone())
+                .collect()
+        },
+    )
 }
 
 /// How long `phux ls --all` waits on any one host. A tailnet peer answers
@@ -202,8 +270,9 @@ fn local_hostname() -> String {
     }
 }
 
-/// The human `--all` listing: one header per machine, its sessions indented
-/// beneath, and an unreachable machine's reason in place of its sessions.
+/// The human `--all` listing: one header per machine, its sessions' glance
+/// lines indented beneath, and an unreachable machine's reason in place of
+/// its sessions.
 fn host_list_lines(doc: &HostListJson) -> Vec<String> {
     let mut lines = Vec::new();
     for host in &doc.hosts {
@@ -220,15 +289,19 @@ fn host_list_lines(doc: &HostListJson) -> Vec<String> {
         if host.sessions.is_empty() {
             lines.push("  (no sessions)".to_owned());
         }
-        for session in &host.sessions {
-            lines.push(format!("  {}", format_row(session)));
-        }
+        let rows: Vec<SessionGlance> = host.sessions.iter().map(glance_of_row).collect();
+        lines.extend(collapse(rows).into_iter().map(|line| format!("  {line}")));
     }
     lines
 }
 
 /// Print one fetched listing in the requested shape.
-fn render_listing(json: bool, view: StateView) -> ExitCode {
+fn render_listing(
+    json: bool,
+    depth: &Depth,
+    view: StateView,
+    agents: &HashMap<ResourceId, AgentRecord>,
+) -> ExitCode {
     let hosts_complete = view.host_sessions_complete();
     let organization = view.organization().cloned();
     let (snapshot, degradation) = view.into_parts();
@@ -241,7 +314,21 @@ fn render_listing(json: bool, view: StateView) -> ExitCode {
             hosts_complete,
         );
     }
-    print_sessions(&snapshot, organization.as_ref());
+    let sources = Sources {
+        snapshot: &snapshot,
+        organization: organization.as_ref(),
+        agents,
+    };
+    if let Some(name) = depth.session.as_deref() {
+        let code = print_one_session(sources, name, depth.detail);
+        partial::warn_partial_view("ls", &degradation);
+        return code;
+    }
+    if depth.detail {
+        print_sessions(&snapshot, organization.as_ref());
+    } else {
+        print_lines(glance_lines(sources));
+    }
     if !hosts_complete && has_satellite_terminals(&snapshot) {
         eprintln!("{HOST_SESSIONS_UNAVAILABLE}");
     }
@@ -272,7 +359,11 @@ const EMPTY_STATE: [&str; 2] = [
 /// by satellite Terminals that cannot be joined to hub-local sessions. An
 /// empty server prints [`EMPTY_STATE`] instead of nothing.
 pub(crate) fn print_sessions(snapshot: &SessionSnapshot, organization: Option<&OrgInventory>) {
-    let lines = session_lines(snapshot, organization);
+    print_lines(session_lines(snapshot, organization));
+}
+
+/// Print `lines`, or [`EMPTY_STATE`] when there are none.
+fn print_lines(lines: Vec<String>) {
     if lines.is_empty() {
         for line in EMPTY_STATE {
             outln!("{line}");
@@ -284,16 +375,256 @@ pub(crate) fn print_sessions(snapshot: &SessionSnapshot, organization: Option<&O
     }
 }
 
-/// The human `phux ls` body: name-sorted session lines, each followed by its
-/// panes' agent sessions, then satellite Terminals. Empty exactly when there is
-/// nothing to list ([`EMPTY_STATE`]). A hub reporting a host inventory renders
-/// grouped by host ([`host_grouped_lines`]). `organization` supplies each
-/// session's lifetime and execution counts when the server reports them.
+/// The `phux ls -l` body: name-sorted session lines with windows, lifetime,
+/// and key, each followed by its panes' agent sessions, then satellite
+/// Terminals. Empty exactly when there is nothing to list ([`EMPTY_STATE`]).
+/// A hub reporting a host inventory renders grouped by host
+/// ([`host_grouped_lines`]). `organization` supplies each session's
+/// lifetime and execution counts when the server reports them.
 fn session_lines(snapshot: &SessionSnapshot, organization: Option<&OrgInventory>) -> Vec<String> {
+    with_hosts(snapshot, local_session_lines(snapshot, organization))
+}
+
+/// The default `phux ls` body: one glance line per session, sessions that
+/// need you first, collapsed past [`GLANCE_ROWS`] ([`collapse`]), grouped
+/// by host like [`session_lines`]. The Inbox is left out while it holds
+/// nothing.
+fn glance_lines(sources: Sources<'_>) -> Vec<String> {
+    let rows = glance::sessions(sources)
+        .into_iter()
+        .map(|(row, _)| row)
+        .filter(|row| row.to_organize != Some(0))
+        .collect();
+    with_hosts(sources.snapshot, collapse(rows))
+}
+
+/// `local` (this host's lines) placed in the listing's host shape: flat,
+/// or under [`LOCAL_HOST_LABEL`] beside each satellite's group.
+fn with_hosts(snapshot: &SessionSnapshot, local: Vec<String>) -> Vec<String> {
     if snapshot.hosts().is_empty() {
-        return flat_session_lines(snapshot, organization);
+        return flat_session_lines(snapshot, local);
     }
-    host_grouped_lines(snapshot, organization)
+    host_grouped_lines(snapshot, local)
+}
+
+/// How many session lines the glance prints before it collapses the rest
+/// into counts.
+const GLANCE_ROWS: usize = 20;
+
+/// `rows` as glance lines: sessions that need you first, then the rest,
+/// each group name-sorted. Past [`GLANCE_ROWS`], one line counts what was
+/// left out; a quiet session never displaces one that needs you.
+fn collapse(mut rows: Vec<SessionGlance>) -> Vec<String> {
+    rows.sort_by(|a, b| {
+        (a.needs_you() == 0)
+            .cmp(&(b.needs_you() == 0))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    if rows.len() <= GLANCE_ROWS {
+        return rows.iter().map(glance_text).collect();
+    }
+    let (shown, hidden) = rows.split_at(GLANCE_ROWS);
+    let mut lines: Vec<String> = shown.iter().map(glance_text).collect();
+    let loud = hidden.iter().filter(|row| row.needs_you() > 0).count();
+    let quiet = hidden.len() - loud;
+    let sessions = |n: usize| if n == 1 { "session" } else { "sessions" };
+    let mut counts = Vec::new();
+    if loud > 0 {
+        counts.push(format!("+{loud} more {} that need you", sessions(loud)));
+    }
+    if quiet > 0 {
+        counts.push(format!("+{quiet} quiet {}", sessions(quiet)));
+    }
+    lines.push(format!(
+        "{}; `phux ls -l` lists every session",
+        counts.join(", ")
+    ));
+    lines
+}
+
+/// One session's glance line: what needs you, what runs, and `ephemeral`
+/// when the session vanishes with its last terminal.
+///
+/// `api: needs you (1 agent waiting, 1 failed), 5 running`
+fn glance_text(row: &SessionGlance) -> String {
+    let mut needs = Vec::new();
+    if row.waiting > 0 {
+        let agents = plural32(row.waiting, "agent", "agents");
+        needs.push(format!("{agents} waiting"));
+    }
+    if row.failed > 0 {
+        needs.push(format!("{} failed", row.failed));
+    }
+    if row.lost > 0 {
+        needs.push(format!("{} lost", row.lost));
+    }
+    if let Some(n) = row.to_organize.filter(|n| *n > 0) {
+        needs.push(format!("{n} to organize"));
+    }
+    let mut parts = Vec::new();
+    if !needs.is_empty() {
+        parts.push(format!("needs you ({})", needs.join(", ")));
+    }
+    if row.running > 0 {
+        parts.push(format!("{} running", row.running));
+    }
+    if row.not_started > 0 {
+        parts.push(format!("{} not started", row.not_started));
+    }
+    if parts.is_empty() && row.done > 0 {
+        parts.push(format!("{} done", row.done));
+    }
+    if row.is_empty() {
+        parts.push("empty".to_owned());
+    }
+    if row.ephemeral {
+        parts.push("ephemeral".to_owned());
+    }
+    format!(
+        "{}: {}{}",
+        row.name,
+        parts.join(", "),
+        attached_note(row.attached_clients)
+    )
+}
+
+/// A [`SessionJson`] row as a glance: what its execution counts tell
+/// (`--all` reads other machines' JSON, which carries no agent records).
+fn glance_of_row(row: &SessionJson) -> SessionGlance {
+    let exec = &row.exec;
+    SessionGlance {
+        name: row.name.clone(),
+        failed: exec.failed,
+        lost: exec.lost,
+        running: exec.starting + exec.running + exec.stopping,
+        not_started: exec.dormant,
+        done: exec.completed + exec.abandoned,
+        ephemeral: row.lifetime == Some(SessionLifetime::Ephemeral),
+        attached_clients: row.attached_clients,
+        ..SessionGlance::default()
+    }
+}
+
+/// `phux ls SESSION`: the session's glance line (its `-l` line with
+/// `detail`), then one line per terminal, exceptions first.
+fn print_one_session(sources: Sources<'_>, name: &str, detail: bool) -> ExitCode {
+    let Some(session) = sources.snapshot.sessions.iter().find(|s| s.name == name) else {
+        return json_err::emit(
+            false,
+            &CliError::new(
+                codes::NO_SUCH_TARGET,
+                format!("no such session: {name}"),
+                "run `phux ls` to see sessions",
+            ),
+            crate::exit_codes::EXIT_FAILURE,
+        );
+    };
+    for line in one_session_lines(sources, session, detail) {
+        outln!("{line}");
+    }
+    ExitCode::SUCCESS
+}
+
+fn one_session_lines(sources: Sources<'_>, session: &SessionInfo, detail: bool) -> Vec<String> {
+    let names = sources.organization.map(KeyNames::of_inventory);
+    let header = if detail {
+        let row = phux_client::session_list::session_json(
+            sources.snapshot,
+            sources.organization,
+            session,
+        );
+        let key = sources
+            .organization
+            .and_then(|inventory| inventory.session_by_live(session.id))
+            .zip(names.as_ref())
+            .map(|(record, names)| names.display(*record.key.as_bytes()));
+        with_key(format_row(&row), key.as_deref())
+    } else {
+        glance_text(&glance::session_glance(sources, session))
+    };
+    let members = glance::members(sources, session);
+    if members.is_empty() {
+        return vec![header, "  (no terminals)".to_owned()];
+    }
+    let rows: Vec<Vec<String>> = members
+        .iter()
+        .map(|member| member_cells(member, detail, names.as_ref()))
+        .collect();
+    let mut lines = vec![header];
+    lines.extend(columns(&rows).into_iter().map(|line| format!("  {line}")));
+    lines
+}
+
+/// One terminal's cells: selector, state, agent, title, directory; with
+/// `detail` also its key and its revision and run.
+fn member_cells(member: &MemberGlance, detail: bool, names: Option<&KeyNames>) -> Vec<String> {
+    let mut cells = vec![member.selector()];
+    if detail {
+        let key = member.key.zip(names);
+        cells.push(key.map_or_else(String::new, |(key, names)| names.display(*key.as_bytes())));
+    }
+    cells.push(member.status.clone());
+    cells.push(member.agent.as_deref().map(printable).unwrap_or_default());
+    cells.push(member.title.as_deref().map(printable).unwrap_or_default());
+    cells.push(member.cwd.as_deref().map(home_relative).unwrap_or_default());
+    if detail {
+        cells.push(member.record.clone().unwrap_or_default());
+    }
+    cells
+}
+
+/// `rows` as left-aligned columns two spaces apart, dropping columns empty
+/// in every row and trailing blanks.
+fn columns(rows: &[Vec<String>]) -> Vec<String> {
+    let count = rows.iter().map(Vec::len).max().unwrap_or(0);
+    let widths: Vec<usize> = (0..count)
+        .map(|col| {
+            rows.iter()
+                .map(|row| row.get(col).map_or(0, |cell| cell.chars().count()))
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+    rows.iter()
+        .map(|row| {
+            let mut line = String::new();
+            for (cell, width) in row.iter().zip(&widths) {
+                if *width == 0 {
+                    continue;
+                }
+                if !line.is_empty() {
+                    line.push_str("  ");
+                }
+                line.push_str(cell);
+                line.extend(std::iter::repeat_n(' ', width - cell.chars().count()));
+            }
+            line.trim_end().to_owned()
+        })
+        .collect()
+}
+
+/// Program-set text without control or bidi characters, so it cannot
+/// rewrite the listing around it.
+fn printable(text: &str) -> String {
+    text.chars()
+        .filter(|ch| !ch.is_control() && !phux_tui::render::is_bidi_control(*ch))
+        .collect()
+}
+
+/// `dir` with the home directory spelled `~`.
+fn home_relative(dir: &str) -> String {
+    let dir = printable(dir);
+    let home = std::env::var("HOME").unwrap_or_default();
+    if home.is_empty() {
+        return dir;
+    }
+    if dir == home {
+        return "~".to_owned();
+    }
+    match dir.strip_prefix(&home) {
+        Some(rest) if rest.starts_with('/') => format!("~{rest}"),
+        _ => dir,
+    }
 }
 
 /// Header for this host's group in the host-grouped listing.
@@ -335,12 +666,8 @@ fn with_key(line: String, key: Option<&str>) -> String {
 /// The host-grouped listing: a [`LOCAL_HOST_LABEL`] header over this host's
 /// sessions, then one header per satellite with its sessions beneath. An
 /// unreachable satellite keeps its header, marked, instead of vanishing.
-fn host_grouped_lines(
-    snapshot: &SessionSnapshot,
-    organization: Option<&OrgInventory>,
-) -> Vec<String> {
+fn host_grouped_lines(snapshot: &SessionSnapshot, local: Vec<String>) -> Vec<String> {
     let mut lines = vec![LOCAL_HOST_LABEL.to_owned()];
-    let local = local_session_lines(snapshot, organization);
     if local.is_empty() {
         lines.push("  (no sessions)".to_owned());
     }
@@ -415,11 +742,8 @@ fn plural(n: u16, one: &str, many: &str) -> String {
 
 /// The pre-host-inventory listing: this host's sessions, then satellite
 /// Terminals that cannot be joined to hub-local sessions.
-fn flat_session_lines(
-    snapshot: &SessionSnapshot,
-    organization: Option<&OrgInventory>,
-) -> Vec<String> {
-    let mut lines = local_session_lines(snapshot, organization);
+fn flat_session_lines(snapshot: &SessionSnapshot, local: Vec<String>) -> Vec<String> {
+    let mut lines = local;
     for pane in resource::terminals(snapshot) {
         if pane.id.host().is_some() {
             lines.push(format!(
@@ -640,7 +964,7 @@ mod tests {
             super::host_list_lines(&doc),
             [
                 "laptop (this machine)",
-                "  work: 2 members (2 running), 2 windows, persistent (1 client attached)",
+                "  work: 2 running (1 client attached)",
                 "mini",
                 "  (no sessions)",
                 "xps  unreachable: did not answer within 3s",
@@ -941,5 +1265,157 @@ mod tests {
             lines,
             vec!["alpha: 0 members, 1 window", "beta: 0 members, 1 window"]
         );
+    }
+
+    /// The glance: what needs you leads, then what runs; a persistent
+    /// lifetime, window counts, and keys are left to `-l`.
+    #[test]
+    fn a_glance_line_names_only_counts_and_exceptions() {
+        use phux_client::glance::SessionGlance;
+        let row = |name: &str| SessionGlance {
+            name: name.to_owned(),
+            ..SessionGlance::default()
+        };
+        assert_eq!(
+            super::glance_text(&SessionGlance {
+                waiting: 1,
+                failed: 1,
+                running: 5,
+                ..row("api")
+            }),
+            "api: needs you (1 agent waiting, 1 failed), 5 running"
+        );
+        assert_eq!(
+            super::glance_text(&SessionGlance {
+                running: 12,
+                attached_clients: 1,
+                ..row("build")
+            }),
+            "build: 12 running (1 client attached)"
+        );
+        assert_eq!(
+            super::glance_text(&SessionGlance {
+                ephemeral: true,
+                ..row("scratch")
+            }),
+            "scratch: empty, ephemeral"
+        );
+        assert_eq!(
+            super::glance_text(&SessionGlance {
+                done: 3,
+                ..row("ci")
+            }),
+            "ci: 3 done"
+        );
+        assert_eq!(
+            super::glance_text(&SessionGlance {
+                not_started: 2,
+                to_organize: Some(2),
+                ..row("inbox")
+            }),
+            "inbox: needs you (2 to organize), 2 not started"
+        );
+    }
+
+    /// A swarm: sessions that need you sort first and are never collapsed
+    /// for a quiet one; the rest fold into one count line, so a thousand
+    /// sessions print about twenty lines.
+    #[test]
+    fn a_swarm_collapses_its_quiet_sessions() {
+        use phux_client::glance::SessionGlance;
+        let mut rows: Vec<SessionGlance> = (0..1000)
+            .map(|n| SessionGlance {
+                name: format!("s{n:04}"),
+                running: 1,
+                ..SessionGlance::default()
+            })
+            .collect();
+        rows[700].failed = 1;
+        rows[900].waiting = 1;
+        let lines = super::collapse(rows);
+        assert_eq!(lines.len(), super::GLANCE_ROWS + 1, "{lines:?}");
+        assert!(lines[0].starts_with("s0700: needs you"), "{lines:?}");
+        assert!(lines[1].starts_with("s0900: needs you"), "{lines:?}");
+        assert_eq!(lines[2], "s0000: 1 running");
+        assert_eq!(
+            lines[super::GLANCE_ROWS],
+            "+980 quiet sessions; `phux ls -l` lists every session"
+        );
+
+        let few: Vec<SessionGlance> = (0..3)
+            .map(|n| SessionGlance {
+                name: format!("s{n}"),
+                ..SessionGlance::default()
+            })
+            .collect();
+        assert_eq!(super::collapse(few).len(), 3, "no count line when it fits");
+    }
+
+    /// The session view lists each terminal, exceptions first: an agent
+    /// blocked on a person, then the failure, then quiet work.
+    #[test]
+    fn a_session_view_lists_terminals_exceptions_first() {
+        use std::collections::HashMap;
+
+        use phux_client::agent_meta::{AgentMetaState, AgentRecord};
+        use phux_client::glance::Sources;
+        use phux_protocol::wire::frame::ResourceLifecycle;
+        use phux_protocol::wire::info::{ExitFacet, ResourceInfo, WindowInfo};
+
+        let work = SessionId::new(1);
+        let window = WindowId::new(10);
+        let failed = ResourceInfo::new(ResourceId::local(9), window, 80, 24)
+            .with_lifecycle(ResourceLifecycle::Exited)
+            .with_exit(Some(ExitFacet::new(0, 0).with_exit_status(Some(1))));
+        let snapshot = SessionSnapshot::new(work, window, ResourceId::local(3))
+            .with_sessions(vec![SessionInfo::new(work, "api").with_window_count(1)])
+            .with_windows(vec![WindowInfo::new(window, work, "shell").with_index(0)])
+            .with_resources(vec![
+                ResourceInfo::new(ResourceId::local(3), window, 80, 24)
+                    .with_title(Some("zsh".to_owned())),
+                ResourceInfo::new(ResourceId::local(7), window, 80, 24),
+                failed,
+            ]);
+        let agents = HashMap::from([(
+            ResourceId::local(7),
+            AgentRecord {
+                name: "claude".to_owned(),
+                state: AgentMetaState::Blocked,
+                ..AgentRecord::default()
+            },
+        )]);
+        let sources = Sources {
+            snapshot: &snapshot,
+            organization: None,
+            agents: &agents,
+        };
+        assert_eq!(
+            super::glance_lines(sources),
+            ["api: needs you (1 agent waiting, 1 failed), 1 running"]
+        );
+        assert_eq!(
+            super::one_session_lines(sources, &snapshot.sessions[0], false),
+            [
+                "api: needs you (1 agent waiting, 1 failed), 1 running",
+                "  @7  waiting          claude blocked",
+                "  @9  failed (exit 1)",
+                "  @3  running                          zsh",
+            ]
+        );
+    }
+
+    /// Program-set text cannot smuggle control or bidi characters into the
+    /// listing, and the home directory reads `~`.
+    #[test]
+    fn titles_and_directories_print_safely() {
+        assert_eq!(super::printable("a\u{1b}[2Jb\u{202e}c"), "a[2Jbc");
+        let home = std::env::var("HOME").unwrap_or_default();
+        if !home.is_empty() {
+            assert_eq!(super::home_relative(&format!("{home}/src")), "~/src");
+            assert_eq!(
+                super::home_relative(&format!("{home}x")),
+                format!("{home}x")
+            );
+        }
     }
 }

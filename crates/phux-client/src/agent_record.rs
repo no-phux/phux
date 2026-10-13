@@ -94,21 +94,39 @@ pub async fn fetch_index(
     snapshot: &SessionSnapshot,
     notices: &mut Vec<String>,
 ) -> HashMap<ResourceId, AgentRecord> {
-    let mut index = HashMap::new();
     if snapshot.resources.is_empty() {
-        return index;
+        return HashMap::new();
     }
     let Ok(mut conn) = Connection::connect(socket_path).await else {
-        return index;
+        return HashMap::new();
     };
-    for (offset, pane) in snapshot.resources.iter().enumerate() {
-        let request_id = u32::try_from(offset).unwrap_or(u32::MAX).saturating_add(1);
-        let Ok((answer, degradation)) = get_record(&mut conn, &pane.id, request_id).await else {
+    fetch_index_on(
+        &mut conn,
+        snapshot.resources.iter().map(|pane| &pane.id),
+        1,
+        notices,
+    )
+    .await
+}
+
+/// [`fetch_index`] for `panes` on an open connection, numbering its
+/// requests from `first_request_id` so they stay clear of the caller's.
+pub async fn fetch_index_on<'a>(
+    conn: &mut Connection,
+    panes: impl IntoIterator<Item = &'a ResourceId>,
+    first_request_id: u32,
+    notices: &mut Vec<String>,
+) -> HashMap<ResourceId, AgentRecord> {
+    let mut index = HashMap::new();
+    let mut request_id = first_request_id;
+    for pane in panes {
+        let Ok((answer, degradation)) = get_record(conn, pane, request_id).await else {
             return index;
         };
+        request_id = request_id.wrapping_add(1);
         notices.extend(degradation.notices().iter().cloned());
         if let Ok(Some(record)) = answer {
-            index.insert(pane.id.clone(), record);
+            index.insert(pane.clone(), record);
         }
     }
     index
