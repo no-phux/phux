@@ -551,7 +551,6 @@ fn organization_samples(world: &World, t: &WireResourceId) -> Vec<FrameKind> {
         command(Command::SessionRename {
             operation: op,
             session: k.session,
-            expected: rev,
             name: "renamed".to_owned(),
         }),
         command(Command::SessionDelete {
@@ -588,7 +587,6 @@ fn organization_samples(world: &World, t: &WireResourceId) -> Vec<FrameKind> {
         command(Command::ResourceRename {
             operation: op,
             resource: k.resource,
-            expected: rev,
             name: None,
         }),
         command(Command::ResourceTerminate {

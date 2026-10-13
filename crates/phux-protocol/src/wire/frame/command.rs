@@ -474,8 +474,6 @@ pub enum Command {
         operation: OperationId,
         /// The session.
         session: SessionKey,
-        /// Its expected revision.
-        expected: Revision,
         /// The new name; at most 256 bytes.
         name: String,
     },
@@ -486,8 +484,6 @@ pub enum Command {
         operation: OperationId,
         /// The session.
         session: SessionKey,
-        /// Its expected revision.
-        expected: Revision,
         /// The new lifetime.
         lifetime: SessionLifetime,
     },
@@ -551,8 +547,6 @@ pub enum Command {
         operation: OperationId,
         /// The resource.
         resource: ResourceKey,
-        /// Its expected revision.
-        expected: Revision,
         /// The new name; at most 256 bytes.
         name: Option<String>,
     },

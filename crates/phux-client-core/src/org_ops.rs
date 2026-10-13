@@ -974,7 +974,6 @@ mod tests {
         Command::SessionRename {
             operation: op(n),
             session: skey(1),
-            expected: Revision::new(3),
             name: name.to_owned(),
         }
     }

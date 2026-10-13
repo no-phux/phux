@@ -136,7 +136,6 @@ fn org_command_samples() -> Vec<(Command, &'static Rule)> {
             Command::SessionRename {
                 operation: operation(),
                 session: session_key(),
-                expected: rev,
                 name: "play".to_owned(),
             },
             &C_SESSION_ORGANIZE,
@@ -145,7 +144,6 @@ fn org_command_samples() -> Vec<(Command, &'static Rule)> {
             Command::SessionSetLifetime {
                 operation: operation(),
                 session: session_key(),
-                expected: rev,
                 lifetime: SessionLifetime::Ephemeral,
             },
             &C_SESSION_ORGANIZE,
@@ -197,7 +195,6 @@ fn org_command_samples() -> Vec<(Command, &'static Rule)> {
             Command::ResourceRename {
                 operation: operation(),
                 resource: resource_key(),
-                expected: rev,
                 name: Some("logs".to_owned()),
             },
             &C_RESOURCE_RENAME,

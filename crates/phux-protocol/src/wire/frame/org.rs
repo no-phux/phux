@@ -1566,23 +1566,19 @@ pub(in crate::wire) fn encode_org_command(command: &Command, enc: &mut Encoder<'
         Command::SessionRename {
             operation,
             session,
-            expected,
             name,
         } => {
             write_operation(enc, operation);
             write_session(enc, field::org::SESSION, session);
-            write_u64(enc, field::org::EXPECTED, expected.get());
             write_name(enc, name);
         }
         Command::SessionSetLifetime {
             operation,
             session,
-            expected,
             lifetime,
         } => {
             write_operation(enc, operation);
             write_session(enc, field::org::SESSION, session);
-            write_u64(enc, field::org::EXPECTED, expected.get());
             write_u8(enc, field::org::LIFETIME, lifetime.to_u8());
         }
         Command::SessionDelete { operation, session } => {
@@ -1652,12 +1648,10 @@ pub(in crate::wire) fn encode_org_command(command: &Command, enc: &mut Encoder<'
         Command::ResourceRename {
             operation,
             resource,
-            expected,
             name,
         } => {
             write_operation(enc, operation);
             write_resource(enc, resource);
-            write_u64(enc, field::org::EXPECTED, expected.get());
             if let Some(name) = name {
                 write_name(enc, name);
             }
@@ -1777,13 +1771,11 @@ pub(in crate::wire) fn decode_org_command(
         COMMAND_TAG_SESSION_RENAME => Command::SessionRename {
             operation: f.operation()?,
             session: f.session()?,
-            expected: f.expected()?,
             name: req(f.name)?,
         },
         COMMAND_TAG_SESSION_SET_LIFETIME => Command::SessionSetLifetime {
             operation: f.operation()?,
             session: f.session()?,
-            expected: f.expected()?,
             lifetime: req(f.lifetime()?)?,
         },
         COMMAND_TAG_SESSION_DELETE => Command::SessionDelete {
@@ -1816,7 +1808,6 @@ pub(in crate::wire) fn decode_org_command(
         COMMAND_TAG_RESOURCE_RENAME => Command::ResourceRename {
             operation: f.operation()?,
             resource: f.resource()?,
-            expected: f.expected()?,
             name: f.name,
         },
         COMMAND_TAG_RESOURCE_TERMINATE => Command::ResourceTerminate {

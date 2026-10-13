@@ -298,10 +298,8 @@ fn the_org_store_holds_the_scale_contract() {
     for n in 0..1_500 {
         state.with_mut(|s| {
             let session = sessions[n % sessions.len()];
-            let expected = s.org().session(&session).unwrap().revision;
             let op = Op::SessionRename {
                 session,
-                expected,
                 name: format!("churn-{n:05}"),
             };
             probe.commit(s, fresh(), op);

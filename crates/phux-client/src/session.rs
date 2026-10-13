@@ -137,66 +137,51 @@ pub async fn rename_checked(
     }
 }
 
-/// [`rename_checked`] against a server that advertises `ORGANIZATION`.
+/// [`rename_checked`] against a server that advertises `ORGANIZATION`: one
+/// `SESSION_RENAME`, last writer wins.
 async fn rename_by_record(
     conn: &mut Connection,
     session: &str,
     new_name: &str,
     notices: &mut Vec<String>,
 ) -> Result<(), RenameError> {
-    for _ in 0..crate::org::MAX_CAS_ATTEMPTS {
-        let inventory = crate::org::fetch(conn, OrgFilter::All, 1)
-            .await
-            .map_err(RenameError::Org)?;
-        notices.extend(inventory.degradation.notices().iter().cloned());
-        let roster: Vec<NamedSession<'_>> = inventory
-            .sessions
-            .iter()
-            .enumerate()
-            .map(|(index, record)| NamedSession {
-                id: record.live.unwrap_or_else(|| {
-                    SessionId::new(u32::MAX - u32::try_from(index).unwrap_or(0))
-                }),
-                name: record.name.as_str(),
-            })
-            .collect();
-        let target = match crate::rename::plan_rename(&roster, session, new_name) {
-            RenamePlan::Unchanged { .. } => return Ok(()),
-            RenamePlan::Refused(refusal) => return Err(refusal.into()),
-            RenamePlan::Send { .. } => inventory
-                .session_named(session)
-                .ok_or(RenameError::NoSuchSession)?,
-        };
-        let command = crate::rename::org_rename_command(
-            crate::org::mint_operation(),
-            target.key,
-            target.revision,
-            new_name,
-        );
-        let (outcome, degradation) = crate::org::request(conn, 2, command)
-            .await
-            .map_err(RenameError::Org)?;
-        notices.extend(degradation.notices().iter().cloned());
-        match outcome {
-            crate::org::OrgOutcome::Committed(_) | crate::org::OrgOutcome::Accepted => {
-                return Ok(());
-            }
-            crate::org::OrgOutcome::Refused(Refusal::Conflict { .. }) => {}
-            crate::org::OrgOutcome::Refused(Refusal::NotFound) => {
-                return Err(RenameError::SessionGone);
-            }
-            crate::org::OrgOutcome::Refused(Refusal::NameTaken) => {
-                return Err(RenameError::AlreadyExists {
-                    new_name: new_name.to_owned(),
-                });
-            }
-            crate::org::OrgOutcome::Refused(refusal) => return Err(RenameError::Refused(refusal)),
-            _ => return Err(RenameError::NotApplied),
-        }
+    let inventory = crate::org::fetch(conn, OrgFilter::All, 1)
+        .await
+        .map_err(RenameError::Org)?;
+    notices.extend(inventory.degradation.notices().iter().cloned());
+    let roster: Vec<NamedSession<'_>> = inventory
+        .sessions
+        .iter()
+        .enumerate()
+        .map(|(index, record)| NamedSession {
+            id: record
+                .live
+                .unwrap_or_else(|| SessionId::new(u32::MAX - u32::try_from(index).unwrap_or(0))),
+            name: record.name.as_str(),
+        })
+        .collect();
+    let target = match crate::rename::plan_rename(&roster, session, new_name) {
+        RenamePlan::Unchanged { .. } => return Ok(()),
+        RenamePlan::Refused(refusal) => return Err(refusal.into()),
+        RenamePlan::Send { .. } => inventory
+            .session_named(session)
+            .ok_or(RenameError::NoSuchSession)?,
+    };
+    let command =
+        crate::rename::org_rename_command(crate::org::mint_operation(), target.key, new_name);
+    let (outcome, degradation) = crate::org::request(conn, 2, command)
+        .await
+        .map_err(RenameError::Org)?;
+    notices.extend(degradation.notices().iter().cloned());
+    match outcome {
+        crate::org::OrgOutcome::Committed(_) | crate::org::OrgOutcome::Accepted => Ok(()),
+        crate::org::OrgOutcome::Refused(Refusal::NotFound) => Err(RenameError::SessionGone),
+        crate::org::OrgOutcome::Refused(Refusal::NameTaken) => Err(RenameError::AlreadyExists {
+            new_name: new_name.to_owned(),
+        }),
+        crate::org::OrgOutcome::Refused(refusal) => Err(RenameError::Refused(refusal)),
+        _ => Err(RenameError::NotApplied),
     }
-    Err(RenameError::Refused(Refusal::Conflict {
-        current: phux_protocol::ids::Revision::default(),
-    }))
 }
 
 /// Why a session create failed.
@@ -1138,14 +1123,13 @@ mod tests {
             .organization(fixture)
     }
 
-    /// Under `ORGANIZATION` a rename is one `SESSION_RENAME` with the
-    /// record's revision; a conflict re-reads and retries; no metadata write.
+    /// Under `ORGANIZATION` a rename is one `SESSION_RENAME` naming the
+    /// session's key, last writer wins; no metadata write.
     #[tokio::test]
-    async fn rename_rides_session_rename_with_the_record_revision() {
+    async fn rename_rides_one_session_rename() {
         let mut fixture = crate::testkit::OrgFixture::new();
         let work = fixture.session("work", SessionLifetime::Persistent);
         fixture.session("play", SessionLifetime::Persistent);
-        let fixture = fixture.inject_conflicts(1);
         let (socket, _dir, server) = scripted(org_spec(fixture));
         let mut conn = Connection::connect(&socket).await.expect("connect");
         let mut notices = Vec::new();
@@ -1168,11 +1152,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(
-            renames,
-            vec![(work, "notes".to_owned()), (work, "notes".to_owned())],
-            "one conflict, one commit"
-        );
+        assert_eq!(renames, vec![(work, "notes".to_owned())]);
         assert!(
             !seen
                 .iter()

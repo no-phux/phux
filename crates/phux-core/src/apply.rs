@@ -146,16 +146,10 @@ fn dispatch(tx: &mut Tx<'_>, op: &Op, fresh: &mut dyn FreshKeys) -> Result<Out, 
             attrs,
             resource,
         } => session_create(tx, fresh, name, *lifetime, attrs, resource.as_ref()),
-        Op::SessionRename {
-            session,
-            expected,
-            name,
-        } => session_rename(tx, *session, *expected, name),
-        Op::SessionSetLifetime {
-            session,
-            expected,
-            lifetime,
-        } => session_set_lifetime(tx, *session, *expected, *lifetime),
+        Op::SessionRename { session, name } => session_rename(tx, *session, name),
+        Op::SessionSetLifetime { session, lifetime } => {
+            session_set_lifetime(tx, *session, *lifetime)
+        }
         Op::SessionDelete { session } => session_delete(tx, *session),
         Op::ResourceCreate { session, resource } => resource_create(tx, fresh, *session, resource),
         Op::ResourceMove {
@@ -173,11 +167,7 @@ fn dispatch(tx: &mut Tx<'_>, op: &Op, fresh: &mut dyn FreshKeys) -> Result<Out, 
         } => resource_move_many(tx, resources, sources, *to, *to_expected),
         Op::InboxResolve { session, expected } => inbox_resolve(tx, *session, *expected),
         Op::OrganizationUndo { original, expected } => organization_undo(tx, *original, expected),
-        Op::ResourceRename {
-            resource,
-            expected,
-            name,
-        } => resource_rename(tx, *resource, *expected, name.as_deref()),
+        Op::ResourceRename { resource, name } => resource_rename(tx, *resource, name.as_deref()),
         Op::ResourceTerminate {
             resource,
             activation,
@@ -733,13 +723,9 @@ fn session_create(
     ))
 }
 
-fn session_rename(
-    tx: &mut Tx<'_>,
-    key: SessionKey,
-    expected: Revision,
-    name: &str,
-) -> Result<Out, Refusal> {
-    let current = tx.checked_session(key, expected)?;
+/// Last writer wins: a label carries no revision check.
+fn session_rename(tx: &mut Tx<'_>, key: SessionKey, name: &str) -> Result<Out, Refusal> {
+    let current = tx.session(key).ok_or(Refusal::NotFound)?;
     check_name("name", name)?;
     if current.name == name {
         return Ok(Out::ok(Some(current.revision)));
@@ -758,13 +744,13 @@ fn session_rename(
     Ok(Out::ok(Some(revision)))
 }
 
+/// Last writer wins, as for a rename.
 fn session_set_lifetime(
     tx: &mut Tx<'_>,
     key: SessionKey,
-    expected: Revision,
     lifetime: SessionLifetime,
 ) -> Result<Out, Refusal> {
-    let current = tx.checked_session(key, expected)?;
+    let current = tx.session(key).ok_or(Refusal::NotFound)?;
     if current.lifetime == lifetime {
         return Ok(Out::ok(Some(current.revision)));
     }
@@ -1041,13 +1027,9 @@ fn organization_undo(
 
 // ---- resources -------------------------------------------------------------
 
-fn resource_rename(
-    tx: &mut Tx<'_>,
-    key: ResourceKey,
-    expected: Revision,
-    name: Option<&str>,
-) -> Result<Out, Refusal> {
-    let current = tx.checked_resource(key, expected)?;
+/// Last writer wins, as for a session rename.
+fn resource_rename(tx: &mut Tx<'_>, key: ResourceKey, name: Option<&str>) -> Result<Out, Refusal> {
+    let current = tx.resource(key).ok_or(Refusal::NotFound)?;
     if let Some(n) = name {
         check_name("name", n)?;
     }

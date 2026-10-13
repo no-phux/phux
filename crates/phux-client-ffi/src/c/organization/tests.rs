@@ -675,16 +675,12 @@ fn typed_rename_settles_on_the_commit() {
     let Command::SessionRename {
         operation,
         session,
-        expected,
         name,
     } = command
     else {
         unreachable!()
     };
-    assert_eq!(
-        (session, expected.get(), name.as_str()),
-        (work(), 5, "desk")
-    );
+    assert_eq!((session, name.as_str()), (work(), "desk"));
     h.answer(
         id,
         CommandResult::OkWith(CommandValue::Committed(Box::new(Committed::new(
