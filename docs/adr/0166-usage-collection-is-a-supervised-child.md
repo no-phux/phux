@@ -4,7 +4,7 @@ stability: stable
 last-reviewed: 2026-10-13
 ---
 
-# 0160 — Usage collection is a supervised child
+# 0166 — Usage collection is a supervised child
 
 **TL;DR.** Optional usage is one collector process the server starts and
 stops. Hooks and the terminal runtime do not host it. The first reading

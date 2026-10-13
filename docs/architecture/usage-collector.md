@@ -11,7 +11,7 @@ child tails one user's Claude Code transcripts and publishes a compact
 reading; the server only starts, stops, and serves that reading. This
 page is the target. No collector is built.
 
-[ADR-0160](../adr/0160-usage-collection-is-a-supervised-child.md) is the
+[ADR-0166](../adr/0166-usage-collection-is-a-supervised-child.md) is the
 decision, and it is still Proposed. This page is the contract an
 implementer can build without reopening it. Nothing in the tree spawns
 a collector, reads a usage snapshot, or defines `[usage]`. Three
@@ -156,7 +156,7 @@ Remote means a client attached on the transports in
 phone does not tail files, and it sees a reading only by asking a
 server. Whether remote and mobile clients should see cost is open
 for Patrick
-([ADR-0160](../adr/0160-usage-collection-is-a-supervised-child.md)).
+([ADR-0166](../adr/0166-usage-collection-is-a-supervised-child.md)).
 
 A federation hub does not collect and does not mirror the snapshot.
 This slice does not relay the usage command to a satellite, so a
@@ -175,7 +175,7 @@ The collector counts Claude sessions phux did not launch. A Claude
 Code process the user started outside phux still lands in these files,
 and this draft adds those tokens to the same totals. That default is
 open for Patrick
-([ADR-0160](../adr/0160-usage-collection-is-a-supervised-child.md)).
+([ADR-0166](../adr/0166-usage-collection-is-a-supervised-child.md)).
 
 This tail is a different record from
 [ADR-0156](../adr/0156-agent-transcript-records.md). The Pi and Claude
@@ -372,6 +372,6 @@ code.
 
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|
-| Collector process, Claude tail, ledger, snapshot | Designed, not built | [ADR-0160](../adr/0160-usage-collection-is-a-supervised-child.md) | phux-0ivk.2 |
-| Server supervision and the usage command | Designed, not built | [ADR-0160](../adr/0160-usage-collection-is-a-supervised-child.md) | phux-0ivk.3 |
-| Idle, catch-up, and terminal-latency numbers | Targets above; not measured on phux | [ADR-0160](../adr/0160-usage-collection-is-a-supervised-child.md) | phux-0ivk.6 |
+| Collector process, Claude tail, ledger, snapshot | Designed, not built | [ADR-0166](../adr/0166-usage-collection-is-a-supervised-child.md) | phux-0ivk.2 |
+| Server supervision and the usage command | Designed, not built | [ADR-0166](../adr/0166-usage-collection-is-a-supervised-child.md) | phux-0ivk.3 |
+| Idle, catch-up, and terminal-latency numbers | Targets above; not measured on phux | [ADR-0166](../adr/0166-usage-collection-is-a-supervised-child.md) | phux-0ivk.6 |
