@@ -249,6 +249,7 @@ impl super::SessionLoop {
             pending_path: &mut self.path.pending,
             own_client_id: self.own_client_id,
             expected_closes: &mut self.mirror.expected_closes,
+            session_members: &self.mirror.members,
             pending_kills: &mut self.mirror.pending_resource_ops,
             overlays: &mut self.overlays,
             keybindings: self.settings.keybindings.as_ref(),

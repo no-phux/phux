@@ -252,7 +252,8 @@ fn new_window_parks_pending_and_emits_a_sized_unbound_spawn() {
     );
     assert_eq!(workspace.groups.len(), 1, "the window opens on reply");
 
-    // ADR-0105: new-window also works from a keep-empty session's empty state.
+    // new-window also works from the empty state of a session with nothing
+    // arranged.
     let effects = run(&bare_action("new-window"), &mut ArrangementDoc::default());
     let (_, _, frame) = effects.spawn_window.expect("spawns from the empty state");
     assert!(matches!(
@@ -317,10 +318,8 @@ fn spawn_omits_initial_size_when_the_server_did_not_advertise_it() {
     }
 }
 
-/// kill-window kills every leaf (each correlated, each an expected close);
-/// kill-pane its focused one. Nothing is removed until the closes land.
-#[test]
-fn kill_window_and_kill_pane_emit_correlated_expected_kills() {
+/// A window of panes 1 | (2 / 3), focused on 1.
+fn three_pane_window() -> ArrangementDoc {
     let tree = split_at(
         &LayoutNode::Leaf(tid(1)),
         &tid(1),
@@ -330,7 +329,7 @@ fn kill_window_and_kill_pane_emit_correlated_expected_kills() {
     )
     .unwrap();
     let tree = split_at(&tree, &tid(2), &tid(3), SplitDir::Vertical, 0.5).unwrap();
-    let mut workspace = ArrangementDoc {
+    ArrangementDoc {
         groups: vec![Group::new(
             "1".to_owned(),
             LayoutState {
@@ -339,24 +338,152 @@ fn kill_window_and_kill_pane_emit_correlated_expected_kills() {
             },
         )],
         active: 0,
-    };
-    for (action, killed) in [
-        ("kill-window", vec![tid(1), tid(2), tid(3)]),
-        ("kill-pane", vec![tid(1)]),
-    ] {
-        let effects = run(&bare_action(action), &mut workspace);
-        assert_eq!(effects.kill_frames.len(), killed.len(), "{action}");
-        let targets: Vec<_> = effects
-            .kill_requests
-            .iter()
-            .map(|(_, leaf)| leaf.clone())
-            .collect();
-        assert_eq!(targets, killed, "{action}");
-        assert_eq!(effects.expected_closes, killed, "{action}");
-        assert_eq!(workspace.groups.len(), 1);
     }
+}
+
+fn press_key(key: phux_protocol::input::key::PhysicalKey) -> phux_protocol::input::key::KeyEvent {
+    phux_protocol::input::key::KeyEvent {
+        action: phux_protocol::input::key::KeyAction::Press,
+        key,
+        mods: phux_protocol::input::key::ModSet::empty(),
+        consumed_mods: phux_protocol::input::key::ModSet::empty(),
+        composing: false,
+        text: None,
+        unshifted_codepoint: None,
+    }
+}
+
+/// kill-pane kills its focused leaf, correlated and expected. Nothing is
+/// removed until the close lands.
+#[test]
+fn kill_pane_emits_a_correlated_expected_kill() {
+    let mut workspace = three_pane_window();
+    let effects = run(&bare_action("kill-pane"), &mut workspace);
+    let targets: Vec<_> = effects
+        .kill_requests
+        .iter()
+        .map(|(_, leaf)| leaf.clone())
+        .collect();
+    assert_eq!(targets, vec![tid(1)]);
+    assert_eq!(effects.kill_frames.len(), 1);
+    assert_eq!(effects.expected_closes, vec![tid(1)]);
+    assert_eq!(workspace.groups.len(), 1);
+}
+
+/// kill-window kills nothing on its own: it opens a confirm naming the
+/// count. Committing it kills exactly the leaves it named (each correlated,
+/// each an expected close); nothing is removed until the closes land.
+#[test]
+fn kill_window_confirms_then_kills_exactly_the_named_terminals() {
+    let mut f = fx(three_pane_window());
+    let effects = f.run(&bare_action("kill-window"));
+    assert!(effects.kill_frames.is_empty() && !effects.bell);
+    assert!(f.overlays.is_active(), "the confirm is up");
+    let crate::render::overlay::OverlayOutcome::RunAction(commit) = f
+        .overlays
+        .handle_key(&press_key(phux_protocol::input::key::PhysicalKey::Enter))
+    else {
+        panic!("Enter commits");
+    };
+    assert!(!f.overlays.is_active());
+    // A pane added after the confirm opened is not in the committed set.
+    f.workspace.add_group("4".to_owned(), tid(4));
+    let effects = f.run(&commit);
+    let targets: Vec<_> = effects
+        .kill_requests
+        .iter()
+        .map(|(_, leaf)| leaf.clone())
+        .collect();
+    assert_eq!(targets, vec![tid(1), tid(2), tid(3)]);
+    assert_eq!(effects.kill_frames.len(), 3);
+    assert_eq!(effects.expected_closes, vec![tid(1), tid(2), tid(3)]);
+    assert_eq!(f.workspace.groups.len(), 2);
+
     let effects = run(&bare_action("kill-window"), &mut ArrangementDoc::default());
     assert!(effects.bell && effects.kill_frames.is_empty());
+}
+
+/// Cancelling the confirm kills nothing and leaves the window.
+#[test]
+fn kill_window_cancel_kills_nothing() {
+    for key in [
+        phux_protocol::input::key::PhysicalKey::Escape,
+        phux_protocol::input::key::PhysicalKey::N,
+    ] {
+        let mut f = fx(three_pane_window());
+        f.run(&bare_action("kill-window"));
+        assert_eq!(
+            f.overlays.handle_key(&press_key(key)),
+            crate::render::overlay::OverlayOutcome::None
+        );
+        assert!(!f.overlays.is_active());
+        assert_eq!(f.workspace.groups.len(), 1);
+        assert!(f.expected_closes.is_empty());
+    }
+}
+
+/// The confirm names a terminal also arranged in another window of this
+/// session or in another session's arrangement.
+#[test]
+fn kill_window_confirm_names_terminals_shown_elsewhere() {
+    let mut workspace = three_pane_window();
+    workspace.add_group("logs".to_owned(), tid(2));
+    workspace.select(0);
+    let mut f = fx(workspace);
+    f.sessions = vec![sinfo(1, "work"), sinfo(2, "notes")];
+    f.focused_session = Some(SessionId::new(1));
+    f.foreign_layouts
+        .insert(SessionId::new(2), ArrangementDoc::single(tid(3)));
+    let confirm = super::run_action::kill_window_confirm(&f.ctx()).expect("a window is active");
+    assert_eq!(
+        confirm.lines(),
+        [
+            "End 3 terminals in window 1.",
+            "pane 2 is also shown in window logs",
+            "pane 3 is also shown in session notes",
+            "Enter kill  ·  Esc cancel",
+        ]
+    );
+}
+
+/// close-view folds the focused leaf out of the arrangement and broadcasts;
+/// it never kills and never detaches, even when nothing is left arranged.
+#[test]
+fn close_view_removes_the_view_and_ends_nothing() {
+    let mut workspace = three_pane_window();
+    let effects = run(&bare_action("close-view"), &mut workspace);
+    assert!(effects.kill_frames.is_empty() && effects.expected_closes.is_empty());
+    assert!(!effects.detach && !effects.bell);
+    assert!(effects.layout_mutated && effects.set_metadata);
+    let leaves = crate::layout::leaves(workspace.groups[0].state.tree.as_ref().unwrap());
+    assert_eq!(leaves, vec![tid(2), tid(3)]);
+    assert_eq!(effects.set_focus, workspace.groups[0].state.focus.clone());
+
+    let mut single = ArrangementDoc::single(tid(1));
+    let effects = run(&bare_action("close-view"), &mut single);
+    assert!(single.groups.is_empty(), "the emptied window goes");
+    assert!(effects.kill_frames.is_empty() && !effects.detach);
+    assert!(effects.set_metadata && effects.set_focus.is_none());
+
+    let effects = run(&bare_action("close-view"), &mut ArrangementDoc::default());
+    assert!(effects.bell);
+}
+
+/// reopen-views shows each member with no view as its own window, the first
+/// active; with none hidden it bells.
+#[test]
+fn reopen_views_shows_unarranged_members() {
+    let mut f = fx(ArrangementDoc::default());
+    f.session_members.extend([tid(4), tid(5)]);
+    let effects = f.run(&bare_action("reopen-views"));
+    assert!(effects.layout_mutated && effects.set_metadata);
+    assert_eq!(f.workspace.groups.len(), 2);
+    assert_eq!(f.workspace.active, 0);
+    assert_eq!(effects.set_focus, Some(tid(4)));
+    assert!(
+        f.run(&bare_action("reopen-views")).bell,
+        "nothing left hidden"
+    );
 }
 
 #[test]

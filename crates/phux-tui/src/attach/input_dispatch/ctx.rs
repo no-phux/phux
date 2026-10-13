@@ -77,6 +77,8 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     pub own_client_id: Option<phux_protocol::ids::ClientId>,
     /// Terminals whose close this client requested (no exit notice).
     pub expected_closes: &'a mut HashSet<ResourceId>,
+    /// Terminal-kind members of the attached session, arranged or not.
+    pub session_members: &'a HashSet<ResourceId>,
     /// `request_id` -> Terminal for sent kills; a `TerminalNotFound` refusal
     /// folds the dead leaf out.
     pub pending_kills: &'a mut HashMap<u32, ResourceId>,

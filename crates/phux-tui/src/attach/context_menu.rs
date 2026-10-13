@@ -46,7 +46,8 @@ pub(super) fn pane_menu(keybindings: Option<&KeybindingsCfg>, zoomed: bool) -> M
         MenuRow::Separator,
         row(keybindings, "commands", "command-palette", &[]),
         MenuRow::Separator,
-        row(keybindings, "close", "kill-pane", &[]),
+        row(keybindings, "close view", "close-view", &[]),
+        row(keybindings, "kill", "kill-pane", &[]),
     ];
     MenuSpec {
         title: "pane".to_owned(),
@@ -67,7 +68,7 @@ pub(super) fn window_menu(keybindings: Option<&KeybindingsCfg>, name: &str) -> M
         MenuRow::Separator,
         row(keybindings, "commands", "command-palette", &[]),
         MenuRow::Separator,
-        row(keybindings, "close", "kill-window", &[]),
+        row(keybindings, "kill…", "kill-window", &[]),
     ];
     MenuSpec {
         title: if name.is_empty() {

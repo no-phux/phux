@@ -65,6 +65,8 @@ pub(super) fn run_action(
         "split-pane" => split_pane(resolved, ctx, focused, panes, e),
         "move-pane" => move_pane(resolved, ctx, focused, e),
         "kill-pane" => kill_focused_pane(ctx, focused, e),
+        "close-view" => close_view(ctx, focused, e),
+        "reopen-views" => reopen_views(ctx, panes, e),
         "take-input" => take_input(ctx, focused, e),
         "give-input" => give_input(ctx, focused, e),
         "signal-terminal" => signal_terminal(resolved, ctx, focused, e),
@@ -73,7 +75,7 @@ pub(super) fn run_action(
         "go-to-directory" => go_to_directory(resolved, ctx, focused, panes, e),
         "find-path" => find_path(resolved, ctx, focused, panes, e),
         "insert-path" => insert_path(resolved, ctx, focused, panes, e),
-        "kill-window" => kill_active_window(ctx, e),
+        "kill-window" => kill_window(resolved, ctx, e),
         "next-window" => switch_window(ctx, e, ArrangementDoc::next),
         "previous-window" => switch_window(ctx, e, ArrangementDoc::prev),
         "select-window" => select_window(resolved, ctx, e),
@@ -656,16 +658,198 @@ fn placeholder_label(host: &ListingHost, path: &str) -> String {
         .map_or_else(|| shown.to_owned(), |host| format!("{shown} on {host}"))
 }
 
-/// Close every pane in the active window, one correlated `KILL_RESOURCE`
-/// each; the closes fold the window away.
-fn kill_active_window(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
+/// Remove the focused view from the arrangement (MIGRATION §03): the leaf
+/// folds out of its window, an emptied window goes, and the terminal keeps
+/// running and stays a member of the session. Never a kill, never a detach;
+/// with nothing left arranged the empty state offers `reopen-views`.
+fn close_view(
+    ctx: &mut DispatchCtx<'_>,
+    focused: Option<&ResourceId>,
+    effects: &mut ActionEffects,
+) {
+    let Some(target) = focused.cloned() else {
+        tracing::warn!("close-view: no focused view to close; dropping action");
+        effects.bell = true;
+        return;
+    };
+    let Some(index) = window_holding(ctx.workspace, &target) else {
+        effects.bell = true;
+        return;
+    };
+    match actions::apply_terminal_closed(&ctx.workspace.groups[index].state, &target) {
+        Ok(state) => ctx.workspace.groups[index].state = state,
+        Err(err) => {
+            tracing::warn!(error = %err, "close-view: the layout could not fold the view");
+            effects.bell = true;
+            return;
+        }
+    }
+    ctx.workspace.prune_empty_groups();
+    if ctx.zoomed.as_ref() == Some(&target) {
+        *ctx.zoomed = None;
+    }
+    effects.set_focus = ctx.workspace.active_group().and_then(|ls| ls.focus.clone());
+    effects.clear_predict = true;
+    effects.layout_mutated = true;
+    effects.set_metadata = true;
+}
+
+/// Show every member of the session that has no view: one window each, the
+/// first of them active.
+fn reopen_views(
+    ctx: &mut DispatchCtx<'_>,
+    panes: &HashMap<ResourceId, PaneSlot>,
+    effects: &mut ActionEffects,
+) {
+    let hidden = crate::attach::session_mirror::unarranged_members(
+        ctx.session_members,
+        ctx.workspace,
+        panes,
+    );
+    if hidden.is_empty() {
+        effects.bell = true;
+        return;
+    }
+    let first = ctx.workspace.groups.len();
+    for id in hidden {
+        let name = ctx.workspace.default_group_name();
+        ctx.workspace.add_group(name, id);
+    }
+    let _ = ctx.workspace.select(first);
+    effects.set_focus = ctx.workspace.active_group().and_then(|ls| ls.focus.clone());
+    effects.clear_predict = true;
+    effects.layout_mutated = true;
+    effects.set_metadata = true;
+}
+
+/// `kill-window`: without a target set, open the confirm naming how many
+/// terminals the active window's kill ends and which are also shown
+/// elsewhere; with the `terminals` set the confirm committed, kill exactly
+/// those, one correlated `KILL_RESOURCE` each, and let the closes fold the
+/// window away.
+fn kill_window(
+    resolved: &phux_config::keybind::ResolvedAction,
+    ctx: &mut DispatchCtx<'_>,
+    effects: &mut ActionEffects,
+) {
+    match confirmed_targets(resolved) {
+        Some(targets) => kill_targets(ctx, effects, targets),
+        None => confirm_kill_window(ctx, effects),
+    }
+}
+
+/// The confirmed target set, when the action carries one.
+fn confirmed_targets(resolved: &phux_config::keybind::ResolvedAction) -> Option<Vec<ResourceId>> {
+    let toml::Value::Array(items) = resolved
+        .args
+        .get(crate::render::overlay::kill_confirm::KILL_TARGETS_ARG)?
+    else {
+        return None;
+    };
+    Some(
+        items
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .filter_map(|raw| phux_client::selector::parse(raw).ok()?.explicit_id())
+            .collect(),
+    )
+}
+
+fn confirm_kill_window(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
+    let Some(confirm) = kill_window_confirm(ctx) else {
+        tracing::warn!("kill-window: no active window to kill; dropping action");
+        effects.bell = true;
+        return;
+    };
+    ctx.overlays.push(Box::new(confirm));
+}
+
+/// The confirm for killing the active window's terminals; `None` when no
+/// window is active.
+pub(super) fn kill_window_confirm(
+    ctx: &DispatchCtx<'_>,
+) -> Option<crate::render::overlay::KillConfirmOverlay> {
     let leaves = ctx
         .workspace
         .active_group()
         .and_then(|ls| ls.tree.as_ref().map(crate::layout::leaves))
         .unwrap_or_default();
     if leaves.is_empty() {
-        tracing::warn!("kill-window: no active window to kill; dropping action");
+        return None;
+    }
+    let active = ctx.workspace.active;
+    let window = ctx
+        .workspace
+        .groups
+        .get(active)
+        .map(|group| group.name.clone())
+        .unwrap_or_default();
+    let shared: Vec<crate::render::overlay::SharedTarget> = leaves
+        .iter()
+        .filter_map(|leaf| {
+            let elsewhere = shown_elsewhere(ctx, active, leaf);
+            (!elsewhere.is_empty()).then(|| crate::render::overlay::SharedTarget {
+                label: crate::attach::server_frame::pane_label(leaf),
+                elsewhere,
+            })
+        })
+        .collect();
+    Some(crate::render::overlay::KillConfirmOverlay::new(
+        &window, leaves, &shared, ctx.theme,
+    ))
+}
+
+/// Where else `leaf` is arranged: another window of this session, or a
+/// peer session's cached arrangement.
+fn shown_elsewhere(ctx: &DispatchCtx<'_>, active: usize, leaf: &ResourceId) -> Vec<String> {
+    let holds = |doc: &ArrangementDoc| {
+        doc.groups.iter().any(|group| {
+            group
+                .state
+                .tree
+                .as_ref()
+                .is_some_and(|tree| crate::layout::leaves(tree).contains(leaf))
+        })
+    };
+    let mut out: Vec<String> = ctx
+        .workspace
+        .groups
+        .iter()
+        .enumerate()
+        .filter(|(index, group)| {
+            *index != active
+                && group
+                    .state
+                    .tree
+                    .as_ref()
+                    .is_some_and(|tree| crate::layout::leaves(tree).contains(leaf))
+        })
+        .map(|(_, group)| format!("window {}", group.name))
+        .collect();
+    let mut sessions: Vec<String> = ctx
+        .peers
+        .foreign_layouts
+        .iter()
+        .filter(|(session, doc)| Some(**session) != ctx.peers.focused_session && holds(doc))
+        .map(|(session, _)| {
+            ctx.peers
+                .sessions
+                .iter()
+                .find(|info| info.id == *session)
+                .map_or_else(
+                    || format!("session {}", session.get()),
+                    |info| format!("session {}", info.name),
+                )
+        })
+        .collect();
+    sessions.sort();
+    out.extend(sessions);
+    out
+}
+
+/// Kill exactly `leaves`, one correlated `KILL_RESOURCE` each.
+fn kill_targets(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects, leaves: Vec<ResourceId>) {
+    if leaves.is_empty() {
         effects.bell = true;
         return;
     }
