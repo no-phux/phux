@@ -157,7 +157,7 @@ mod tests {
             .input_credits
             .clone();
         let wire = state.with_mut(|s| {
-            let pane = s.seed_session("s").2;
+            let pane = s.seed_session("s").1;
             s.register_resource_handle(pane, bundle.handle.clone(), bundle.token.clone())
         });
         (wire, pool)

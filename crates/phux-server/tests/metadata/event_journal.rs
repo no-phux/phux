@@ -844,7 +844,8 @@ fn metadata_writes_name_their_actor() {
             (
                 Scope::Global,
                 SESSION_KEEP_EMPTY_KEY,
-                phux_protocol::wire::frame::encode_session_keep_empty("renamed", true),
+                // The named seed is persistent: making it ephemeral is the change.
+                phux_protocol::wire::frame::encode_session_keep_empty("renamed", false),
             ),
         ];
         for (n, (scope, key, value)) in writes.into_iter().enumerate() {

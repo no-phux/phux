@@ -327,6 +327,17 @@ impl Registry {
         self.org.set_recent(&key, resource)
     }
 
+    /// Drop receipts older than `before`, then the oldest beyond
+    /// `keep_at_most` (see [`Org::prune_receipts`]). Returns the dropped
+    /// operation ids.
+    pub fn prune_receipts(
+        &mut self,
+        before: Stamp,
+        keep_at_most: usize,
+    ) -> Vec<crate::keys::OperationId> {
+        self.org.prune_receipts(before, keep_at_most)
+    }
+
     /// Number of sessions.
     #[must_use]
     pub fn session_count(&self) -> usize {

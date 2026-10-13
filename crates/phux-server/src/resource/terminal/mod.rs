@@ -540,30 +540,6 @@ impl CanonicalTerminal {
         }
     }
 
-    fn reset_for_new_child(&mut self) {
-        match self {
-            Self::Plain(Some(terminal)) => terminal.reset(),
-            Self::Plain(None) => {}
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-            Self::Native(manager) => manager.reset(),
-        }
-    }
-
-    fn reinstall_pty_write(
-        &mut self,
-        size_report: &Rc<Cell<SizeReportSize>>,
-        pty_tx: Option<&mpsc::Sender<EncodedInputRequest>>,
-    ) -> Result<(), TerminalActorError> {
-        match self {
-            Self::Plain(Some(terminal)) => {
-                TerminalActor::install_effects(terminal, size_report, pty_tx)
-            }
-            Self::Plain(None) => Ok(()),
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-            Self::Native(_) => Ok(()),
-        }
-    }
-
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     fn native_manager(
         &mut self,
@@ -835,6 +811,10 @@ pub enum TerminalActorError {
     /// Could not take the master halves or start the bridge threads.
     #[error("pty io setup failed: {0}")]
     PtyIo(String),
+    /// The organization refused the Terminal's record (a taken session
+    /// name, a store failure), so nothing was spawned.
+    #[error("{0}")]
+    Refused(String),
 }
 
 /// The actor plus its [`CancellationToken`]. Cancellation is explicit:
@@ -851,6 +831,10 @@ pub struct TerminalActorBundle {
     /// at PTY EOF; the runtime's EOF watcher drives client detach from it.
     /// `Option` so it can be taken once.
     pub exit_notify: Option<oneshot::Receiver<phux_core::process::ExitOutcome>>,
+    /// The child process's identity (R12), recorded on its activation so a
+    /// later start can tell a surviving orphan from a reused pid. `None`
+    /// without a PTY child or when its start time cannot be read.
+    pub proc: Option<phux_core::ProcIdentity>,
 }
 
 impl std::fmt::Debug for TerminalActor {

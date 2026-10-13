@@ -20,8 +20,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn};
 
 use super::{
-    SpawnOwnership, prepare_attach, seed_session_with_actor, seed_session_with_pty_and_colors,
-    send_error, spawn_pane_with_pty_and_colors,
+    SpawnOwnership, prepare_attach, seed_session_with_pty_and_colors, send_error,
+    spawn_pane_with_pty_and_colors,
 };
 use crate::hub::relay::SatelliteSpawn;
 use crate::resource::ResourceHandle;
@@ -1606,8 +1606,9 @@ async fn create_attach_session(
 }
 
 /// Handle [`AttachTarget::CreateIfMissing`] (SPEC §13): return `name` when
-/// the session exists, otherwise seed it (PTY-backed when the server runs
-/// with PTYs) and return `name` for the normal attach path.
+/// the session exists, otherwise seed it as an ephemeral session (PTY-backed
+/// when the server runs with PTYs) and return `name` for the normal attach
+/// path.
 ///
 /// With PTYs, a server-wide seed command wins over the wire `command`, and
 /// the wire `cwd` applies only when it names an existing directory (a stale
@@ -1647,10 +1648,17 @@ pub(crate) async fn resolve_create_if_missing(
             scrollback,
             root_token,
             default_colors,
+            phux_core::SessionLifetime::Ephemeral,
         )
     } else {
         // No child to exec a wire `command` on.
-        seed_session_with_actor(state, &name, scrollback, root_token)
+        crate::runtime::commands::seed_session_with_actor_as(
+            state,
+            &name,
+            scrollback,
+            root_token,
+            phux_core::SessionLifetime::Ephemeral,
+        )
     };
 
     if let Err(err) = seed_result {
@@ -1725,16 +1733,15 @@ async fn session_root_cwd(state: &SharedState, client_id: ClientId) -> Option<St
     }
 }
 
-/// The spawning client's active-window CWD: live from its active pane, else
-/// the last value recorded for the window.
+/// The spawning client's session CWD: live from its default pane, else the
+/// last value recorded for the session.
 async fn last_window_cwd(state: &SharedState, client_id: ClientId) -> Option<String> {
-    let (window, handle) = state.with(|s| {
+    let (session, handle) = state.with(|s| {
         let session = s.attached().get(&client_id)?.session;
-        let window = s.active_window_of_session(session)?;
         let handle = s
             .active_pane_of_session(session)
             .and_then(|p| s.resource_handle(p).cloned());
-        Some((window, handle))
+        Some((session, handle))
     })?;
     let resolved = match handle {
         Some(handle) => query_pane_cwd(handle).await,
@@ -1742,11 +1749,11 @@ async fn last_window_cwd(state: &SharedState, client_id: ClientId) -> Option<Str
     };
     if let Some(cwd) = resolved {
         state.with_mut(|s| {
-            s.record_window_last_cwd(window, std::path::PathBuf::from(&cwd));
+            s.record_session_last_cwd(session, std::path::PathBuf::from(&cwd));
         });
         return Some(cwd);
     }
-    state.with(|s| s.window_last_cwd(window).and_then(|p| path_to_string(p)))
+    state.with(|s| s.session_last_cwd(session).and_then(|p| path_to_string(p)))
 }
 
 /// A frozen session root, or the handle to query for one off-lock.
@@ -1909,10 +1916,11 @@ pub(crate) async fn dispatch_satellite_spawn(
         .await;
 }
 
-/// Handle `MOVE_RESOURCE` (ADR-0056): atomically re-parent `terminal` into
-/// the window owning `owner_terminal`, reaping a source window the move
-/// emptied. The `ResourceId` is stable, so subscriptions survive; layout is
-/// the caller's concern. Local-only.
+/// Handle `MOVE_RESOURCE` (ADR-0056): translate into a `ResourceMove`
+/// commit that moves `terminal` into the session holding `owner_terminal`,
+/// attributed to the caller; an ephemeral source it empties is deleted in
+/// the same commit. The `ResourceId` is stable, so subscriptions survive;
+/// layout is the caller's concern. Local-only.
 pub(crate) async fn handle_move_terminal(
     state: &SharedState,
     client_id: ClientId,
@@ -1929,11 +1937,13 @@ pub(crate) async fn handle_move_terminal(
         "MOVE_RESOURCE",
     );
 
-    let (result, clients_to_detach) =
-        match state.with_mut(|s| move_local_terminal(s, &terminal, &owner_terminal)) {
-            Ok(clients) => (MoveResult::Ok(terminal), clients),
-            Err(error) => (MoveResult::Err(error), Vec::new()),
-        };
+    let (result, clients_to_detach) = match state.with_mut(|s| {
+        let actor = s.actor_for(client_id);
+        move_local_terminal(s, &terminal, &owner_terminal, &actor)
+    }) {
+        Ok(clients) => (MoveResult::Ok(terminal), clients),
+        Err(error) => (MoveResult::Err(error), Vec::new()),
+    };
 
     let _ = out_tx
         .send(Outbound::Frame(FrameKind::ResourceMoved {
@@ -1959,13 +1969,13 @@ pub(crate) async fn handle_move_terminal(
     }
 }
 
-/// Re-parent `terminal` into `owner_terminal`'s window under one lock, reaping
-/// an emptied source window. Returns the clients attached to a session the
-/// move reaped.
+/// Move `terminal` into `owner_terminal`'s session under one lock. Returns
+/// the clients attached to a session the move deleted.
 fn move_local_terminal(
     s: &mut crate::state::ServerState,
     terminal: &phux_protocol::ids::ResourceId,
     owner_terminal: &phux_protocol::ids::ResourceId,
+    actor: &phux_core::Actor,
 ) -> Result<Vec<(ClientId, tokio::sync::mpsc::Sender<Outbound>)>, MoveError> {
     let failed = |message: &str| MoveError::MoveFailed(message.to_owned());
     if !terminal.is_local() || !owner_terminal.is_local() {
@@ -1977,24 +1987,17 @@ fn move_local_terminal(
     let owner = s
         .terminal_from_wire(owner_terminal)
         .ok_or_else(|| failed("owner terminal was not found on this server"))?;
-    let dest_window = s
+    let to = s
         .registry()
-        .resource(owner)
-        .and_then(|t| t.window)
-        .ok_or_else(|| failed("owner terminal has no window on this server"))?;
-    let source_window = s.registry().resource(moved).and_then(|t| t.window);
-    let source_session = source_window
-        .and_then(|window| s.registry().window(window))
-        .map(|window| window.session);
-    s.registry_mut()
-        .move_terminal(moved, dest_window)
-        .map_err(|err| MoveError::MoveFailed(err.to_string()))?;
-    if let Some(source_window) = source_window {
-        s.reap_window_if_empty(source_window);
-    }
-    Ok(source_session
-        .filter(|session| s.registry().session(*session).is_none())
-        .map_or_else(Vec::new, |session| s.attached_clients_in_session(session)))
+        .session_of(owner)
+        .ok_or_else(|| failed("owner terminal has no session on this server"))?;
+    s.move_resource_to(moved, to, actor)
+        .map_err(|refusal| MoveError::MoveFailed(refusal.to_string()))?;
+    // A move that emptied an ephemeral source deleted it in the same commit.
+    Ok(s.take_killed_sessions()
+        .into_iter()
+        .flat_map(|session| s.attached_clients_in_session(session))
+        .collect())
 }
 
 /// Handle `SPAWN_RESOURCE` (SPEC §10.1): spawn a PTY-backed Terminal into
@@ -2438,7 +2441,7 @@ fn resolve_spawn_ownership(
             .get(&client_id)
             .map(|c| c.session)
             .or_else(|| s.most_recently_touched_session())
-            .or_else(|| s.registry().sessions().next().map(|(id, _)| id))
+            .or_else(|| s.fallback_session())
     });
     let Some(session) = session else {
         return Err(SpawnError::SpawnFailed(
@@ -4309,18 +4312,15 @@ mod tests {
     #[test]
     fn prepare_attach_reports_snapshot_seed_without_an_actor_as_closed() {
         let state = SharedState::new();
-        let (_catalog_session, _catalog_window, _catalog_pane) =
+        let (_catalog_session, _catalog_pane) =
             state.with_mut(|server| server.seed_session("catalog"));
-        let (_working_session, working_window, _seed) =
-            state.with_mut(|server| server.seed_session("working"));
+        let (working_window, _seed) = state.with_mut(|server| server.seed_session("working"));
         let (horizontal, vertical) = state.with_mut(|server| {
             let horizontal = server
-                .registry_mut()
-                .new_terminal(working_window)
+                .add_pane_to_session(working_window)
                 .expect("horizontal pane");
             let vertical = server
-                .registry_mut()
-                .new_terminal(working_window)
+                .add_pane_to_session(working_window)
                 .expect("vertical pane");
             (horizontal, vertical)
         });
@@ -4383,12 +4383,11 @@ mod tests {
     #[test]
     fn prepare_attach_rejects_pane_source_count_before_registration() {
         let state = SharedState::new();
-        let (_session, window, _pane) = state.with_mut(|server| server.seed_session("bounded"));
+        let (window, _pane) = state.with_mut(|server| server.seed_session("bounded"));
         state.with_mut(|server| {
             for _ in 0..MAX_AGGREGATE_BOOTSTRAP_PANES {
                 server
-                    .registry_mut()
-                    .new_terminal(window)
+                    .add_pane_to_session(window)
                     .expect("bounded test pane");
             }
         });
@@ -5042,7 +5041,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn a_terminal_stream_reset_keeps_the_viewer_tombstone() {
         let state = crate::state::SharedState::new();
-        let (_session, _window, pane) = state.with_mut(|s| s.seed_session("roles"));
+        let (_session, pane) = state.with_mut(|s| s.seed_session("roles"));
         let wire = state.with_mut(|s| s.intern_terminal_wire(pane));
         let client_id = state.with_mut(crate::state::ServerState::new_client_id);
         state.with_mut(|s| {
@@ -5069,7 +5068,7 @@ mod tests {
         local
             .run_until(async {
                 let state = crate::state::SharedState::new();
-                let (_session, _window, pane) = state.with_mut(|s| s.seed_session("roles"));
+                let (_session, pane) = state.with_mut(|s| s.seed_session("roles"));
                 let handle = detached_handle(
                     crate::terminal_actor::TerminalHandle::detached_for_test(80, 24),
                 );
@@ -5113,7 +5112,7 @@ mod tests {
         local
             .run_until(async {
                 let state = crate::state::SharedState::new();
-                let (_session, window, live) = state.with_mut(|s| s.seed_session("closing"));
+                let (window, live) = state.with_mut(|s| s.seed_session("closing"));
                 let token = CancellationToken::new();
                 let bundle = crate::terminal_actor::TerminalActor::build_with_token(
                     80,
@@ -5126,8 +5125,7 @@ mod tests {
                 let (live_wire, closed_wire) = state.with_mut(|s| {
                     let _ = s.register_resource_handle(live, bundle.handle.clone(), token.clone());
                     let closed = s
-                        .registry_mut()
-                        .new_terminal(window)
+                        .add_pane_to_session(window)
                         .expect("second pane");
                     let ended = detached_handle(
                         crate::terminal_actor::TerminalHandle::detached_for_test(80, 24),
@@ -5502,8 +5500,7 @@ mod tests {
         local
             .run_until(async {
                 let state = SharedState::new();
-                let (_session, _window, terminal) =
-                    state.with_mut(|s| s.seed_session("fresh-failure"));
+                let (_session, terminal) = state.with_mut(|s| s.seed_session("fresh-failure"));
                 let (
                     handle,
                     mut consumer_attach_rx,
@@ -5565,7 +5562,7 @@ mod tests {
         local
             .run_until(async {
                 let state = SharedState::new();
-                let (_session, _window, terminal) =
+                let (_session, terminal) =
                     state.with_mut(|s| s.seed_session("replacement-failure"));
                 let (
                     handle,

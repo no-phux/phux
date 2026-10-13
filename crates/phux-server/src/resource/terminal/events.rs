@@ -437,9 +437,6 @@ impl TerminalActor {
             }
             ControlRequest::BindAgentSession { append } => self.bind_agent_session(append),
             ControlRequest::Retire => self.retire_after_exit(),
-            ControlRequest::ReplaceChild { command, reply } => {
-                let _ = reply.send(self.replace_child(command.0));
-            }
             ControlRequest::SynthesizeAgentStateRecord { state, reply } => {
                 let _ = reply.send(self.synthesize_state_record(hook_state(state)));
             }

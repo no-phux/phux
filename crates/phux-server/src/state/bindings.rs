@@ -186,13 +186,16 @@ impl ServerState {
         self.exit_watches.remove(&resource);
     }
 
-    /// Whether last-session self-exit may run now: no session is left and
-    /// no killed resource's process is still in its hangup grace.
+    /// Whether self-exit may run now (R13): the server has served a client,
+    /// no activation is live, no killed resource's process is still in its
+    /// hangup grace, and no connection is open. Records, including empty
+    /// persistent sessions, survive in the store and do not hold it up.
     #[must_use]
     pub(crate) fn self_exit_due(&self) -> bool {
-        self.sessions.registry.session_count() == 0
+        self.has_served_client()
             && self.exit_watches.is_empty()
-            && self.has_served_client()
+            && self.idle_since().is_some()
+            && !self.has_live_activation()
     }
 }
 
@@ -216,14 +219,12 @@ mod tests {
     /// Terminal → child → grandchild (re-parented after insert, since spawn
     /// refuses a second level).
     fn three_level_tree(state: &mut ServerState) -> (ResourceId, ResourceId, ResourceId) {
-        let (_session, _window, grandparent) = state.seed_session("main");
+        let (_session, grandparent) = state.seed_session("main");
         let child = state
-            .registry_mut()
-            .new_agent_session(grandparent, agent("child"))
+            .new_agent_session(grandparent, &agent("child"))
             .expect("child");
         let grandchild = state
-            .registry_mut()
-            .new_agent_session(grandparent, agent("grandchild"))
+            .new_agent_session(grandparent, &agent("grandchild"))
             .expect("grandchild seed");
         state
             .registry_mut()
@@ -270,10 +271,9 @@ mod tests {
     }
 
     /// phux-twft: reaping a parent directly (no close cascade first, as a
-    /// failed publication does) removes its descendants from the registry.
-    /// Their handles and engines must go with them; before, each one's watcher
-    /// found it already gone, reaped nothing, and its handle stayed in the
-    /// resource table for every later upgrade to trip on.
+    /// failed publication does) removes its descendants from the registry,
+    /// and their handles and engines go with them, so no handle outlives its
+    /// record in the resource table.
     #[test]
     fn a_direct_reap_forgets_descendant_handles_and_cancels_their_engines() {
         let mut state = ServerState::new();
@@ -296,6 +296,7 @@ mod tests {
                 state.resource_handle(resource).is_none(),
                 "{resource:?} must leave the resource table with its registry entry"
             );
+            assert!(state.registry().record(resource).is_none());
         }
         assert!(state.resource_ids().is_empty());
         assert!(

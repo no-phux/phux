@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use chrono::Utc;
-use phux_core::ids::{ResourceId as CoreResourceId, WindowId};
+use phux_core::ids::{ResourceId as CoreResourceId, SessionId as CoreSessionId};
 use phux_protocol::caps::ClientCapabilities;
 use phux_protocol::ids::{
     BootstrapId, FileUploadId, GroupId, InputOperationId, ResourceId as WireResourceId,
@@ -47,27 +47,85 @@ use crate::workload::{ReloadingWorkloadRegistry, WorkloadRegistry};
 
 const CLIENT: ClientId = ClientId(7);
 
+/// Keys of `alpha`'s records, its arrangement, and the operation that
+/// created the arrangement.
+struct OrgKeys {
+    session: phux_protocol::ids::SessionKey,
+    other_session: phux_protocol::ids::SessionKey,
+    resource: phux_protocol::ids::ResourceKey,
+    arrangement: phux_protocol::ids::ArrangementKey,
+    operation: phux_protocol::ids::OperationId,
+}
+
+/// Commit an arrangement for `session` showing `pane`, returning the
+/// arrangement's key and the operation that created it.
+fn arrange(
+    state: &mut ServerState,
+    session: CoreSessionId,
+    pane: CoreResourceId,
+) -> (phux_core::ArrangementKey, phux_core::OperationId) {
+    let session_key = state.registry().session_key(session).unwrap();
+    let resource = state.registry().resource_key(pane).unwrap();
+    let commit = state
+        .commit(
+            phux_core::Op::ArrangementReplace {
+                owner: phux_core::ArrangementOwner::Session(session_key),
+                expected: phux_core::Revision::ZERO,
+                groups: vec![phux_core::Group {
+                    id: [9; 16],
+                    name: None,
+                    tree: phux_core::LayoutNode::Leaf(phux_core::EntryRef::member(
+                        [8; 16], resource,
+                    )),
+                }],
+            },
+            &phux_core::Actor::owner(),
+        )
+        .unwrap();
+    let key = state
+        .org()
+        .session(&session_key)
+        .and_then(|s| s.arrangement)
+        .unwrap();
+    (key, commit.applied.operation)
+}
+
 /// Two sessions, one Terminal each, with the client attached to `alpha`.
 struct World {
     state: ServerState,
     alpha: WireResourceId,
     beta: WireResourceId,
     alpha_core: CoreResourceId,
-    alpha_window: WindowId,
-    beta_window: WindowId,
+    alpha_session: CoreSessionId,
+    beta_session: CoreSessionId,
     alpha_group: u32,
+    /// The organization keys the organization command samples name.
+    org: OrgKeys,
     /// A held kill of `alpha`, pending, so a decision on it resolves.
     approval: phux_protocol::ids::ApprovalId,
 }
 
 fn world() -> World {
     let mut state = ServerState::new();
-    let (alpha_session, alpha_window, alpha_core) = state.seed_session("alpha");
-    let (beta_session, beta_window, beta_core) = state.seed_session("beta");
+    let (alpha_session, alpha_core) = state.seed_session("alpha");
+    let (beta_session, beta_core) = state.seed_session("beta");
     let alpha = state.intern_terminal_wire(alpha_core);
     let beta = state.intern_terminal_wire(beta_core);
     let alpha_group = state.idspace.intern_session(alpha_session).get();
     state.idspace.intern_session(beta_session);
+    let (arrangement, operation) = arrange(&mut state, alpha_session, alpha_core);
+    let org = OrgKeys {
+        session: crate::org_wire::session_key(state.registry().session_key(alpha_session).unwrap())
+            .unwrap(),
+        other_session: crate::org_wire::session_key(
+            state.registry().session_key(beta_session).unwrap(),
+        )
+        .unwrap(),
+        resource: crate::org_wire::resource_key(state.registry().resource_key(alpha_core).unwrap())
+            .unwrap(),
+        arrangement: crate::org_wire::arrangement_key(arrangement).unwrap(),
+        operation: crate::org_wire::operation(operation).unwrap(),
+    };
     let (tx, _rx) = tokio::sync::mpsc::channel(8);
     state.attach_default_caps(CLIENT, "alpha", tx).unwrap();
     let approval = state
@@ -85,9 +143,10 @@ fn world() -> World {
         alpha,
         beta,
         alpha_core,
-        alpha_window,
-        beta_window,
+        alpha_session,
+        beta_session,
         alpha_group,
+        org,
         approval,
     }
 }
@@ -436,8 +495,122 @@ fn samples(world: &World) -> Vec<FrameKind> {
         command(Command::GetPerf { reset: false }),
         command(Command::GetPerf { reset: true }),
         command(Command::AppendResourceOutput {
-            terminal_id: t,
+            terminal_id: t.clone(),
             bytes: b"{}\n".to_vec(),
+        }),
+    ]
+    .into_iter()
+    .chain(organization_samples(world, &t))
+    .collect()
+}
+
+/// One sample per organization command, naming `alpha`'s records.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one literal per command, kept as one flat table"
+)]
+fn organization_samples(world: &World, t: &WireResourceId) -> Vec<FrameKind> {
+    use phux_protocol::ids::{ActivationId, OperationId, Revision, ServerInstance};
+    use phux_protocol::wire::frame::{
+        ArrangementDoc, ExitPolicy, LiveTarget, MoveItem, OrgFilter, SessionLifetime, TerminateMode,
+    };
+    let k = &world.org;
+    let op = OperationId::new([5; 16]).unwrap();
+    let rev = Revision::new(1);
+    vec![
+        command(Command::GetOrganization {
+            filter: OrgFilter::All,
+            page_size: 0,
+            cursor: None,
+        }),
+        command(Command::SessionCreate {
+            operation: op,
+            name: "new".to_owned(),
+            lifetime: SessionLifetime::Persistent,
+            attrs: Vec::new(),
+            launch: None,
+        }),
+        command(Command::SessionRename {
+            operation: op,
+            session: k.session,
+            expected: rev,
+            name: "renamed".to_owned(),
+        }),
+        command(Command::SessionDelete {
+            operation: op,
+            session: k.session,
+            expected: rev,
+        }),
+        command(Command::ResourceCreate {
+            operation: op,
+            session: k.session,
+            kind: phux_protocol::ids::ResourceKind::Terminal,
+            launch: None,
+            name: None,
+            on_exit: ExitPolicy::Remove,
+        }),
+        command(Command::ResourceMove {
+            operation: op,
+            resource: k.resource,
+            from: k.session,
+            from_expected: rev,
+            to: k.other_session,
+            to_expected: rev,
+        }),
+        command(Command::ResourceMoveMany {
+            operation: op,
+            items: vec![MoveItem {
+                resource: k.resource,
+                from: k.session,
+                from_expected: rev,
+            }],
+            to: k.other_session,
+            to_expected: rev,
+        }),
+        command(Command::ResourceRename {
+            operation: op,
+            resource: k.resource,
+            expected: rev,
+            name: None,
+        }),
+        command(Command::ResourceTerminate {
+            operation: op,
+            target: LiveTarget {
+                resource: t.clone(),
+                instance: ServerInstance::new([0; 16]),
+                activation: ActivationId::new(1),
+            },
+            mode: TerminateMode::Graceful,
+        }),
+        command(Command::ResourceRemove {
+            operation: op,
+            resource: k.resource,
+            expected: rev,
+        }),
+        command(Command::ResourceRelaunch {
+            operation: op,
+            resource: k.resource,
+            expected: rev,
+        }),
+        command(Command::ResourceAbandon {
+            operation: op,
+            resource: k.resource,
+            expected: rev,
+            activation: ActivationId::new(1),
+        }),
+        command(Command::OrganizationUndo {
+            operation: op,
+            undo: k.operation,
+            expected: Vec::new(),
+        }),
+        command(Command::ArrangementGet {
+            arrangement: k.arrangement,
+        }),
+        command(Command::ArrangementReplace {
+            operation: op,
+            arrangement: k.arrangement,
+            expected: rev,
+            document: ArrangementDoc::default(),
         }),
     ]
 }
@@ -595,10 +768,9 @@ fn admits_set(world: &World, set: &[String], frame: &FrameKind) -> bool {
 fn rows(world: &mut World) -> Vec<Row> {
     let child = world
         .state
-        .registry_mut()
         .new_agent_session(
             world.alpha_core,
-            phux_core::resource::AgentFacet {
+            &phux_core::resource::AgentFacet {
                 provider: "claude".to_owned(),
                 native_id: None,
                 state: None,
@@ -1053,6 +1225,48 @@ fn rows(world: &mut World) -> Vec<Row> {
     ] {
         rows.push(on_terminal(frame, "input"));
     }
+    // Organization rows, in `organization_samples` order.
+    let org = organization_samples(world, &t);
+    let on_alpha = |frame: &FrameKind, verbs: &str| {
+        row(frame.clone(), &[&[&s(verbs, &ga)]], &[&[&s(verbs, &gb)]])
+    };
+    let on_alpha_resource = |frame: &FrameKind, verbs: &str| {
+        row(
+            frame.clone(),
+            &[&[&s(verbs, &ta)], &[&s(verbs, &ga)]],
+            &[&[&s(verbs, &tb)], &[&s(verbs, &gb)]],
+        )
+    };
+    let moving = |frame: &FrameKind| {
+        row(
+            frame.clone(),
+            &[&[&s("organize", &ga), &s("organize", &gb)]],
+            &[&[&s("organize", &ga)], &[&s("organize", &gb)]],
+        )
+    };
+    rows.extend([
+        // Filtered at the source: INVENTORY anywhere admits.
+        row(
+            org[0].clone(),
+            &[&[&s("inventory", &tb)], &[&s("inventory", "host:h")]],
+            &[&["observe,create,bind,input,signal,organize,terminate@global"]],
+        ),
+        on_global(org[1].clone(), "create"),
+        on_alpha(&org[2], "organize"),
+        on_alpha(&org[3], "terminate"),
+        on_alpha(&org[4], "create"),
+        moving(&org[5]),
+        moving(&org[6]),
+        on_alpha_resource(&org[7], "organize"),
+        on_terminal(org[8].clone(), "terminate"),
+        on_alpha_resource(&org[9], "terminate"),
+        on_alpha_resource(&org[10], "create"),
+        denied(org[11].clone()),
+        // An undo whose receipt records no inverse needs Global.
+        on_global(org[12].clone(), "organize"),
+        on_alpha(&org[13], "inventory"),
+        on_alpha(&org[14], "organize"),
+    ]);
     rows.push(on_terminal(
         command(Command::ReleaseInput { terminal_id: t }),
         "bind",
@@ -1190,8 +1404,11 @@ fn group_ceiling_stops_matching_when_the_terminal_moves_out_and_resumes_when_it_
 
     world
         .state
-        .registry_mut()
-        .move_terminal(world.alpha_core, world.beta_window)
+        .move_resource_to(
+            world.alpha_core,
+            world.beta_session,
+            &phux_core::Actor::owner(),
+        )
         .unwrap();
     assert!(
         !admits_command(&world, &grant, screen()),
@@ -1200,8 +1417,11 @@ fn group_ceiling_stops_matching_when_the_terminal_moves_out_and_resumes_when_it_
 
     world
         .state
-        .registry_mut()
-        .move_terminal(world.alpha_core, world.alpha_window)
+        .move_resource_to(
+            world.alpha_core,
+            world.alpha_session,
+            &phux_core::Actor::owner(),
+        )
         .unwrap();
     assert!(admits_command(&world, &grant, screen()));
 }
@@ -1640,10 +1860,9 @@ fn append_resource_output_is_admitted_through_the_parent_alone() {
     let mut world = world();
     let child = world
         .state
-        .registry_mut()
         .new_agent_session(
             world.alpha_core,
-            phux_core::resource::AgentFacet {
+            &phux_core::resource::AgentFacet {
                 provider: "claude".to_owned(),
                 native_id: None,
                 state: None,
@@ -1716,7 +1935,7 @@ fn viewport_resize_checks_every_subscribed_session_pane_including_unnamed_ones()
     // A second pane no client has a wire id for yet.
     let pane = world
         .state
-        .add_pane_to_terminal_owner(&world.alpha)
+        .add_pane_to_session(world.alpha_session)
         .expect("a pane beside alpha");
     assert!(
         admits(&world, &one_pane, &resize),
@@ -1990,10 +2209,9 @@ fn a_snapshot_keeps_only_what_the_grant_covers() {
     // Other connections and an uncovered parent are not disclosed.
     let child = world
         .state
-        .registry_mut()
         .new_agent_session(
             world.alpha_core,
-            phux_core::resource::AgentFacet {
+            &phux_core::resource::AgentFacet {
                 provider: "claude".to_owned(),
                 native_id: None,
                 state: None,
@@ -2041,10 +2259,9 @@ fn server_wide_bells(scopes: &[&str]) -> Vec<Option<WireResourceId>> {
     let mut world = world();
     let child = world
         .state
-        .registry_mut()
         .new_agent_session(
             world.alpha_core,
-            phux_core::resource::AgentFacet {
+            &phux_core::resource::AgentFacet {
                 provider: "claude".to_owned(),
                 native_id: None,
                 state: None,

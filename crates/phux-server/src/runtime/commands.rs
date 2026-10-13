@@ -80,6 +80,8 @@ pub(crate) struct SeedOrigin {
     pub(crate) agent_session: Option<Vec<u8>>,
     /// The seed pane's `pane_spawned` attribution.
     pub(crate) attribution: SpawnAttribution,
+    /// The new session's lifetime; a named create is persistent.
+    pub(crate) lifetime: phux_core::SessionLifetime,
 }
 
 /// Journal a pane's `pane_spawned` (L1 §7.1) in the lock that registers its
@@ -168,12 +170,15 @@ fn launch_pane_actor(
         mut actor,
         handle,
         exit_notify,
+        proc,
         ..
     } = bundle;
     // Sinks go in before `actor.run()` consumes the actor.
     let wiring = wire_pane_actor(state, terminal, &mut actor);
     let wire_terminal_id = state.with_mut(|s| {
         let _ = s.spawn_resource_actor(terminal, handle, terminal_token, actor.run());
+        // The executor report: the activation now holds a live process.
+        s.activation_started(terminal, proc);
         if has_pty {
             // ADR-0124: a spawn that did not ask gets the operator's default.
             let retain = attribution
@@ -255,8 +260,53 @@ impl PaneWiring {
     }
 }
 
-/// Seed `(session, window, pane)` named `name`; the pane runs `cmd` in a PTY,
-/// or is a no-PTY actor when `cmd` is `None`.
+/// The launch spec a relaunch of a pane spawned from `cmd` would use: its
+/// argv and cwd. The server-applied environment (`TERM`, the pane and
+/// socket variables) is reapplied at every launch, so it is not recorded.
+pub(crate) fn launch_of(cmd: Option<&portable_pty::CommandBuilder>) -> phux_core::TerminalLaunch {
+    let Some(cmd) = cmd else {
+        return phux_core::TerminalLaunch::default();
+    };
+    phux_core::TerminalLaunch {
+        argv: cmd
+            .get_argv()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect(),
+        cwd: cmd.get_cwd().map(std::path::PathBuf::from),
+        env: Vec::new(),
+    }
+}
+
+/// The exit policy of a pane spawned with `attribution`: `Retain` when it
+/// is retained after exit (ADR-0124), `Remove` otherwise.
+fn exit_policy_for(
+    s: &crate::state::ServerState,
+    has_pty: bool,
+    attribution: SpawnAttribution,
+) -> phux_core::ExitPolicy {
+    let retained = has_pty
+        && attribution
+            .retain_secs
+            .or_else(|| s.retain_policy().resolve(None))
+            .is_some();
+    if retained {
+        phux_core::ExitPolicy::Retain
+    } else {
+        phux_core::ExitPolicy::Remove
+    }
+}
+
+/// The actor a spawn is attributed to: the asking connection, or the
+/// server for a seed.
+fn spawn_actor(s: &crate::state::ServerState, attribution: SpawnAttribution) -> phux_core::Actor {
+    attribution
+        .actor
+        .map_or_else(phux_core::Actor::system, |client| s.actor_for(client))
+}
+
+/// Seed a session named `name` with one pane in the same commit; the pane
+/// runs `cmd` in a PTY, or is a no-PTY actor when `cmd` is `None`.
 fn seed_session(
     state: &SharedState,
     name: &str,
@@ -267,14 +317,28 @@ fn seed_session(
     origin: SeedOrigin,
 ) -> Result<phux_core::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
     let terminal = state.with_mut(|s| {
-        let terminal = s.seed_session(name).2;
+        let on_exit = exit_policy_for(s, cmd.is_some(), origin.attribution);
+        let actor = spawn_actor(s, origin.attribution);
+        let (_, terminal) = s
+            .create_terminal(
+                crate::state::TerminalTarget::NewSession {
+                    name,
+                    lifetime: origin.lifetime,
+                },
+                launch_of(cmd.as_ref()),
+                on_exit,
+                &actor,
+            )
+            .map_err(|refusal| {
+                crate::terminal_actor::TerminalActorError::Refused(refusal.to_string())
+            })?;
         let wire = match cmd.as_mut() {
             Some(cmd) => register_pty_command(s, terminal, cmd),
             None => s.intern_terminal_wire(terminal),
         };
         set_agent_session(s, wire, origin.agent_session);
-        terminal
-    });
+        Ok::<_, crate::terminal_actor::TerminalActorError>(terminal)
+    })?;
     let wire_terminal_id = launch_pane_actor(
         state,
         terminal,
@@ -292,12 +356,30 @@ fn seed_session(
     Ok(terminal)
 }
 
-/// Seed a session whose pane is a no-PTY actor (no child process).
+/// Seed a persistent session whose pane is a no-PTY actor (no child
+/// process).
 pub(crate) fn seed_session_with_actor(
     state: &SharedState,
     name: &str,
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
+) -> Result<phux_core::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
+    seed_session_with_actor_as(
+        state,
+        name,
+        scrollback,
+        root_token,
+        phux_core::SessionLifetime::Persistent,
+    )
+}
+
+/// Seed a session of `lifetime` whose pane is a no-PTY actor.
+pub(crate) fn seed_session_with_actor_as(
+    state: &SharedState,
+    name: &str,
+    scrollback: phux_config::ScrollbackLimits,
+    root_token: &CancellationToken,
+    lifetime: phux_core::SessionLifetime,
 ) -> Result<phux_core::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
     seed_session(
         state,
@@ -306,11 +388,14 @@ pub(crate) fn seed_session_with_actor(
         scrollback,
         root_token,
         None,
-        SeedOrigin::default(),
+        SeedOrigin {
+            lifetime,
+            ..SeedOrigin::default()
+        },
     )
 }
 
-/// Seed `(session, window, pane)` with a PTY-backed pane running `cmd`.
+/// Seed a persistent session with a PTY-backed pane running `cmd`.
 pub fn seed_session_with_pty(
     state: &SharedState,
     name: &str,
@@ -318,10 +403,19 @@ pub fn seed_session_with_pty(
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
 ) -> Result<phux_core::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
-    seed_session_with_pty_and_colors(state, name, cmd, scrollback, root_token, None)
+    seed_session_with_pty_and_colors(
+        state,
+        name,
+        cmd,
+        scrollback,
+        root_token,
+        None,
+        phux_core::SessionLifetime::Persistent,
+    )
 }
 
-/// Palette-seeded variant used when a client's HELLO creates the session.
+/// Palette-seeded variant used when a client's attach creates the session,
+/// with the session's `lifetime`.
 pub fn seed_session_with_pty_and_colors(
     state: &SharedState,
     name: &str,
@@ -329,6 +423,7 @@ pub fn seed_session_with_pty_and_colors(
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
     default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
+    lifetime: phux_core::SessionLifetime,
 ) -> Result<phux_core::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
     seed_session(
         state,
@@ -337,7 +432,10 @@ pub fn seed_session_with_pty_and_colors(
         scrollback,
         root_token,
         default_colors,
-        SeedOrigin::default(),
+        SeedOrigin {
+            lifetime,
+            ..SeedOrigin::default()
+        },
     )
 }
 
@@ -374,10 +472,20 @@ pub(crate) fn spawn_pane_with_pty_and_colors(
         (cols.max(1), rows.max(1))
     });
     let Some(terminal) = state.with_mut(|s| {
-        let terminal = match ownership {
-            SpawnOwnership::Session(session) => s.add_pane_to_session(*session)?,
-            SpawnOwnership::Terminal(owner) => s.add_pane_to_terminal_owner(owner)?,
+        let session = match ownership {
+            SpawnOwnership::Session(session) => *session,
+            SpawnOwnership::Terminal(owner) => s.session_of_terminal_owner(owner)?,
         };
+        let on_exit = exit_policy_for(s, true, attribution);
+        let actor = spawn_actor(s, attribution);
+        let (_, terminal) = s
+            .create_terminal(
+                crate::state::TerminalTarget::Session(session),
+                launch_of(Some(&cmd)),
+                on_exit,
+                &actor,
+            )
+            .ok()?;
         if let Some(pane) = s.registry_mut().terminal_mut(terminal) {
             pane.dims = dims;
         }
@@ -398,8 +506,7 @@ pub(crate) fn spawn_pane_with_pty_and_colors(
         attribution,
     )?;
     let session_name = state.with(|s| {
-        let window = s.registry().resource(terminal)?.window?;
-        let session = s.registry().window(window)?.session;
+        let session = s.registry().session_of(terminal)?;
         s.registry().session(session).map(|sess| sess.name.clone())
     });
     crate::hooks::fire_hook(
@@ -581,16 +688,7 @@ pub(crate) fn prepare_attach(
             .map(|found| found.name.clone())
             .ok_or_else(|| crate::state::AttachError::UnknownSession(format!("{session:?}")))?;
         let session_name = session_name.as_str();
-        let pane_count = s
-            .session_by_name(session_name)
-            .ok_or_else(|| crate::state::AttachError::UnknownSession(session_name.to_owned()))?
-            .windows
-            .iter()
-            .filter_map(|window_id| s.registry().window(*window_id))
-            .try_fold(0_usize, |count, window| {
-                count.checked_add(window.slots.len())
-            })
-            .ok_or(crate::state::AttachError::ResourceLimit)?;
+        let pane_count = s.legacy_panes_of(session).len();
         if pane_count > crate::runtime::attach::MAX_AGGREGATE_BOOTSTRAP_PANES {
             return Err(crate::state::AttachError::ResourceLimit);
         }
@@ -2038,6 +2136,7 @@ async fn handle_shutdown(
     info!(?client_id, "SHUTDOWN requested; stopping the server");
     // ADR-0104 §4: record the close reason before the exit watchers run.
     state.with_mut(|s| {
+        s.begin_shutdown();
         for resource in s.resource_ids() {
             s.mark_resource_closing(
                 resource,
@@ -2938,25 +3037,38 @@ fn kill_local_batch(
                 not_found.push(wire_id.clone());
             }
         }
-        // ADR-0105: a batch naming every pane of a keep-empty session releases
-        // its mark; CLOSE_TAB_RESOURCES keeps it (ADR-0114).
-        if !preserve_keep_empty {
-            for name in s.release_keep_empty_covered_by(&targets) {
-                let _ = s.metadata_broadcast(
-                    &phux_protocol::wire::frame::Scope::Global,
-                    ServerInterceptedKey::SessionKeepEmpty,
-                    &phux_protocol::wire::frame::encode_session_keep_empty(&name, false),
-                );
-            }
-        }
+        // A batch naming every pane of a persistent session keeps its
+        // destructive legacy meaning: the emptied session is deleted too.
+        // CLOSE_TAB_RESOURCES keeps it (ADR-0114).
+        let covered = if preserve_keep_empty {
+            Vec::new()
+        } else {
+            s.sessions_covered_by(&targets)
+        };
         // ADR-0104 §2: targets and their children close once, in this borrow,
         // and the commit is the teardown (L1 §5.2).
-        let committed = super::committed_close::commit_close(
+        let mut committed = super::committed_close::commit_close(
             s,
             &targets,
             phux_protocol::wire::frame::CloseReason::Killed,
             attribution,
         );
+        let actor = attribution
+            .actor
+            .map_or_else(phux_core::Actor::owner, |client| s.actor_for(client));
+        for name in s.delete_emptied_sessions(&covered, &actor) {
+            let _ = s.metadata_broadcast(
+                &phux_protocol::wire::frame::Scope::Global,
+                ServerInterceptedKey::SessionKeepEmpty,
+                &phux_protocol::wire::frame::encode_session_keep_empty(&name, false),
+            );
+        }
+        let detached: Vec<_> = s
+            .take_killed_sessions()
+            .into_iter()
+            .flat_map(|session| s.attached_clients_in_session(session))
+            .collect();
+        committed.extend_killed_clients(detached);
         debug!(
             requested = ids.len(),
             closed = committed.len(),
@@ -3138,16 +3250,22 @@ pub(crate) fn create_named_session(
     }
 }
 
-/// Create a keep-empty session with zero windows (ADR-0105), the
-/// `empty: true` form of the `SESSION_CREATE_KEY` write.
-pub(crate) fn create_empty_session(state: &SharedState, name: &str) -> Result<(), String> {
+/// Commit an empty persistent session, the `empty: true` form of the
+/// `SESSION_CREATE_KEY` write, attributed to `actor`. It does not arm
+/// self-exit: an empty session runs nothing, so the writer's disconnect
+/// must not end the server it just created a session on.
+pub(crate) fn create_empty_session(
+    state: &SharedState,
+    name: &str,
+    actor: &phux_core::Actor,
+) -> Result<(), String> {
     state.with_mut(|s| {
         if s.session_by_name(name).is_some() {
             return Err(format!("session {name:?} already exists"));
         }
-        s.seed_empty_session(name);
-        s.arm_self_exit();
-        Ok(())
+        s.create_empty_session(name, phux_core::SessionLifetime::Persistent, actor)
+            .map(|_| ())
+            .map_err(|refusal| format!("failed to create session {name:?}: {refusal}"))
     })
 }
 
@@ -3188,7 +3306,7 @@ pub(crate) fn handle_get_state(
             let snapshot = state.with_mut(|s| {
                 let focus = s
                     .most_recently_touched_session()
-                    .or_else(|| s.registry().sessions().next().map(|(id, _)| id));
+                    .or_else(|| s.fallback_session());
                 let mut snapshot = focus
                     .and_then(|sid| s.build_session_snapshot(sid))
                     .unwrap_or_else(empty_session_snapshot);
@@ -4022,7 +4140,7 @@ mod lease_expiry_task_tests {
         local
             .run_until(async {
                 let state = SharedState::new();
-                let core = state.with_mut(|s| s.seed_session("default")).2;
+                let core = state.with_mut(|s| s.seed_session("default")).1;
                 let counter =
                     state.with(crate::state::ServerState::input_lease_expiry_task_counter);
 

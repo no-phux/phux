@@ -96,13 +96,16 @@ pub(crate) async fn spawn_agent_session(
             native_id: resource.native_id.clone(),
             state: None,
         };
-        let core = match s.registry_mut().new_agent_session(core_parent, facet) {
-            Ok(core) => core,
-            Err(phux_core::registry::RegistryError::ParentKindMismatch { .. }) => {
-                return Err(SpawnError::ParentKindMismatch);
-            }
-            Err(_) => return Err(SpawnError::ParentNotFound),
-        };
+        let parent_kind = s.registry().resource(core_parent).map(|r| r.kind);
+        match parent_kind {
+            Some(phux_core::ResourceKind::Terminal) => {}
+            Some(_) => return Err(SpawnError::ParentKindMismatch),
+            None => return Err(SpawnError::ParentNotFound),
+        }
+        let actor = s.actor_for(client_id);
+        let core = s
+            .create_agent_session(core_parent, &facet, &actor)
+            .map_err(|_| SpawnError::ParentNotFound)?;
         let _ = s.spawn_resource_actor(core, bundle.handle.clone(), token, bundle.actor.run());
         let wire = s.intern_terminal_wire(core);
         // Journaled before the exit watcher exists (ADR-0123), and fanned out

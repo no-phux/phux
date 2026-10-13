@@ -164,21 +164,7 @@ impl ServerState {
 
         // Subscribe every pane, not just the active one: the input gate
         // drops keys to unsubscribed panes, and every pane renders live.
-        let session_panes: Vec<ResourceId> = self
-            .sessions
-            .registry
-            .session(session_id)
-            .map(|s| s.windows.clone())
-            .unwrap_or_default()
-            .into_iter()
-            .flat_map(|wid| {
-                self.sessions
-                    .registry
-                    .window(wid)
-                    .map(|w| w.slots.clone())
-                    .unwrap_or_default()
-            })
-            .collect();
+        let session_panes: Vec<ResourceId> = self.sessions.terminal_members(session_id);
         for pane in session_panes {
             self.resources.subscribe(client_id, pane);
         }

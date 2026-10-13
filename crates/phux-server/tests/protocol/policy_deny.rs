@@ -160,9 +160,11 @@ async fn owner_whoami(socket_path: std::path::PathBuf) -> serde_json::Value {
     .await
 }
 
-fn all_six_at_global() -> serde_json::Value {
+fn all_verbs_at_global() -> serde_json::Value {
     serde_json::json!([{
-        "verbs": ["inventory", "observe", "create", "bind", "input", "signal"],
+        "verbs": [
+            "inventory", "observe", "create", "bind", "input", "signal", "organize", "terminate"
+        ],
         "selector": "global",
     }])
 }
@@ -179,7 +181,7 @@ fn the_owner_socket_keeps_all_verbs_at_global() {
             with_server(cfg, |socket_path| async move {
                 let record = owner_whoami(socket_path).await;
                 assert_eq!(record["auth_route"], "uds", "{name}");
-                assert_eq!(record["grant"], all_six_at_global(), "{name}");
+                assert_eq!(record["grant"], all_verbs_at_global(), "{name}");
             })
             .await;
         }

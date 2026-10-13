@@ -44,6 +44,14 @@ impl CommittedClose {
     pub(super) const fn len(&self) -> usize {
         self.closes.len()
     }
+
+    /// Detach these clients too, after the closes.
+    pub(super) fn extend_killed_clients(
+        &mut self,
+        clients: impl IntoIterator<Item = (ClientId, mpsc::Sender<Outbound>)>,
+    ) {
+        self.killed_clients.extend(clients);
+    }
 }
 
 /// Close `targets` and every descendant under the caller's lock: mark why,

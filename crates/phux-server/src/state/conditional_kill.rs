@@ -121,9 +121,7 @@ mod tests {
         phux_protocol::ids::ResourceId,
     ) {
         let mut state = ServerState::new();
-        let sid = state.registry_mut().new_session("main".to_owned());
-        let wid = state.registry_mut().new_window(sid).expect("window");
-        let core = state.registry_mut().new_terminal(wid).expect("terminal");
+        let (_, core) = state.seed_session("main");
         let wire = state.intern_terminal_wire(core);
         (state, core, wire)
     }
@@ -266,10 +264,7 @@ mod tests {
             native_id: None,
             state: None,
         };
-        state
-            .registry_mut()
-            .new_agent_session(core, facet)
-            .expect("child");
+        state.new_agent_session(core, &facet).expect("child");
         assert!(matches!(
             state.admit_conditional_kill(&wire, &untouched(&state)),
             Err(KillIfRefusal::Precondition(_))

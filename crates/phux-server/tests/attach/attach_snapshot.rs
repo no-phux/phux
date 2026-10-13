@@ -1,12 +1,10 @@
 //! What an `ATTACH` delivers about the pane (SPEC §13): a bootstrap that
 //! round-trips the canonical grid, a PTY resized to the client's viewport,
-//! and a pane that survives its last shell exiting.
-
-use std::time::Duration;
+//! and a session that survives its last shell exiting.
 
 use libghostty_vt::Terminal as GhosttyTerminal;
 use phux_protocol::wire::frame::{
-    AttachTarget, Command, CommandResult, CommandValue, FrameKind, ResourceLifecycle, StateScope,
+    AttachTarget, Command, CommandResult, CommandValue, FrameKind, StateScope,
 };
 use phux_server::grid::SnapshotSynthesizer;
 use tempfile::TempDir;
@@ -113,20 +111,19 @@ fn attach_resizes_seed_pty_to_client_viewport() {
     });
 }
 
-/// phux-bnbd: the last shell exiting replaces the child in place; the
-/// attached client sees neither `RESOURCE_CLOSED` nor `DETACHED`.
+/// ADR-0162: the last shell exiting is a shell exiting. Nothing respawns:
+/// the attached client sees `RESOURCE_CLOSED` with the exit status, and the
+/// persistent seeded session stays, empty.
 #[test]
-fn last_shell_eof_keeps_the_terminal_live() {
+fn last_shell_eof_closes_the_terminal_and_keeps_the_session() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket = tmp.path().join("phux.sock");
         let release = tmp.path().join("release");
-        let exited = tmp.path().join("exited");
         // Exit only once released, after the attach handshake has landed.
         let seed = sh(&format!(
-            "until [ -f '{}' ]; do sleep 0.01; done; echo done > '{}'; exit 0",
+            "until [ -f '{}' ]; do sleep 0.01; done; exit 0",
             release.display(),
-            exited.display()
         ));
         let (_shutdown, _server) = spawn_server_with_seed_cmd(socket.clone(), "demo", seed);
         let mut stream = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
@@ -134,23 +131,22 @@ fn last_shell_eof_keeps_the_terminal_live() {
         attached(&mut stream).await;
 
         std::fs::write(&release, b"go").unwrap();
-        let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
-        while !exited.exists() {
-            assert!(tokio::time::Instant::now() < deadline, "seed never exited");
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        let end = tokio::time::Instant::now() + Duration::from_millis(250);
-        recv_until_deadline(&mut stream, end, |_, frame| {
-            assert!(
-                !matches!(
-                    frame,
-                    FrameKind::Detached { .. } | FrameKind::ResourceClosed { .. }
-                ),
-                "last-shell exit must not close: {frame:?}"
-            );
-            None::<()>
+        let end = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
+        let closed = recv_until_deadline(&mut stream, end, |_, frame| match frame {
+            FrameKind::ResourceClosed {
+                exit_status,
+                reason,
+                ..
+            } => Some((exit_status, reason)),
+            FrameKind::Detached { .. } => panic!("a persistent session keeps its client"),
+            _ => None,
         })
         .await;
+        assert_eq!(
+            closed,
+            Some((Some(0), phux_protocol::wire::frame::CloseReason::Exited)),
+            "the exited shell closes with its status"
+        );
 
         let get_state = Command::GetState {
             scope: StateScope::Server,
@@ -161,12 +157,16 @@ fn last_shell_eof_keeps_the_terminal_live() {
             panic!("GET_STATE failed");
         };
         assert!(
-            snapshot
-                .resources
-                .iter()
-                .any(|r| r.lifecycle == ResourceLifecycle::Running && r.exit.is_none()),
-            "a live Terminal must remain: {snapshot:?}"
+            snapshot.resources.is_empty(),
+            "nothing was respawned: {snapshot:?}"
         );
+        let demo = snapshot
+            .sessions
+            .iter()
+            .find(|session| session.name == "demo")
+            .expect("the persistent session stays");
+        assert_eq!(demo.window_count, 0);
+        assert!(demo.keep_empty);
     });
 }
 

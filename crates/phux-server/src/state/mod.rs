@@ -34,9 +34,11 @@ mod id_space;
 mod journal;
 mod lease_table;
 mod leases;
+mod legacy_snapshot;
 mod lifecycle;
 mod lifecycle_state;
 mod metadata;
+mod org;
 mod policy;
 mod reap;
 mod remote_listeners;
@@ -78,6 +80,7 @@ use lifecycle_state::Lifecycle;
 pub use metadata::{
     KeepEmptyOutcome, MetadataSetOutcome, MetadataStore, RenameOutcome, ServerInterceptedKey,
 };
+pub use org::{OrgCommit, OsKeys, Reconciled, TerminalTarget, fresh_org, now_stamp};
 pub(crate) use resolve::{RelayRoute, Resolved, ResolvedOwned};
 use resource_table::ResourceTable;
 use session_table::SessionTable;
@@ -134,9 +137,11 @@ pub struct CloseAttribution {
 /// Single owner of all server-side state; share it as [`SharedState`].
 #[derive(Debug)]
 pub struct ServerState {
-    /// The session/window/pane registry plus per-session ledgers (last
-    /// touch, frozen roots, per-window cwd); see [`session_table`].
+    /// The organization registry plus per-session ledgers (last touch,
+    /// frozen roots, last cwd); see [`session_table`].
     sessions: SessionTable,
+    /// The organization store behind [`ServerState::commit`]; see [`org`].
+    org: org::OrgSide,
     /// Everything keyed on a connected client; see [`client_table`].
     clients: ClientTable,
     /// The event journal (ADR-0123): one `seq` for every event and the
@@ -404,7 +409,7 @@ mod tests {
     #[test]
     fn attach_records_client_and_subscribes_to_active_pane() {
         let mut s = ServerState::new();
-        let (sid, _wid, pid) = s.seed_session("default");
+        let (sid, pid) = s.seed_session("default");
         let cid = s.new_client_id();
         let returned_sid = s.attach_default_caps(cid, "default", mk_tx()).unwrap();
         assert_eq!(returned_sid, sid);
@@ -417,7 +422,7 @@ mod tests {
         // A multi-pane client is subscribed to all its panes, not just the
         // active one (else input to other panes is dropped).
         let mut s = ServerState::new();
-        let (sid, _wid, pid1) = s.seed_session("default");
+        let (sid, pid1) = s.seed_session("default");
         let pid2 = s
             .add_pane_to_session(sid)
             .expect("add a second pane to the session");
@@ -439,7 +444,7 @@ mod tests {
         // ATTACH_RESOURCE-only consumers resolve to their mailbox too
         // (L1 §3.1, §5.1), each exactly once.
         let mut s = ServerState::new();
-        let (_sid, _wid, pid) = s.seed_session("default");
+        let (_sid, pid) = s.seed_session("default");
 
         let attached = s.new_client_id();
         let (attached_tx, _attached_rx) = mpsc::channel::<Outbound>(DEFAULT_CLIENT_MAILBOX);
@@ -481,7 +486,7 @@ mod tests {
     #[test]
     fn input_open_by_default_blocks_nobody() {
         let mut s = ServerState::new();
-        let (_sid, _wid, pid) = s.seed_session("default");
+        let (_sid, pid) = s.seed_session("default");
         let a = s.new_client_id();
         assert_eq!(s.input_lease_holder(pid), None);
         assert!(!s.input_blocked(pid, a), "an Open pane blocks no one");
@@ -490,7 +495,7 @@ mod tests {
     #[test]
     fn acquired_lease_blocks_others_not_holder() {
         let mut s = ServerState::new();
-        let (_sid, _wid, pid) = s.seed_session("default");
+        let (_sid, pid) = s.seed_session("default");
         let a = s.new_client_id();
         let b = s.new_client_id();
         assert_eq!(
@@ -506,7 +511,7 @@ mod tests {
     #[test]
     fn seize_returns_prior_holder() {
         let mut s = ServerState::new();
-        let (_sid, _wid, pid) = s.seed_session("default");
+        let (_sid, pid) = s.seed_session("default");
         let a = s.new_client_id();
         let b = s.new_client_id();
         s.set_input_lease(pid, a);
@@ -525,7 +530,7 @@ mod tests {
     #[test]
     fn release_is_holder_scoped_and_idempotent() {
         let mut s = ServerState::new();
-        let (_sid, _wid, pid) = s.seed_session("default");
+        let (_sid, pid) = s.seed_session("default");
         let a = s.new_client_id();
         let b = s.new_client_id();
         s.set_input_lease(pid, a);
@@ -542,7 +547,7 @@ mod tests {
     #[test]
     fn detach_releases_the_wheel() {
         let mut s = ServerState::new();
-        let (_sid, _wid, pid) = s.seed_session("default");
+        let (_sid, pid) = s.seed_session("default");
         let a = s.new_client_id();
         s.set_input_lease(pid, a);
         assert_eq!(s.leases_held_by(a), vec![pid]);
@@ -560,13 +565,12 @@ mod tests {
         // Re-ATTACHing the same session is a re-bootstrap; only switching
         // sessions on one connection is refused.
         let mut s = ServerState::new();
-        let (default, window, original) = s.seed_session("default");
+        let (default, original) = s.seed_session("default");
         let _ = s.seed_session("other");
         let cid = s.new_client_id();
         s.attach_default_caps(cid, "default", mk_tx()).unwrap();
         let added = s
-            .registry_mut()
-            .new_terminal(window)
+            .add_pane_to_session(default)
             .expect("pane added after initial attach");
         assert_eq!(
             s.attach_default_caps(cid, "default", mk_tx()).unwrap(),
@@ -611,7 +615,7 @@ mod tests {
     #[test]
     fn two_clients_attach_same_session_see_same_active_pane() {
         let mut s = ServerState::new();
-        let (_sid, _wid, pid) = s.seed_session("default");
+        let (_sid, pid) = s.seed_session("default");
         let a = s.new_client_id();
         let b = s.new_client_id();
         s.attach_default_caps(a, "default", mk_tx()).unwrap();
@@ -627,7 +631,7 @@ mod tests {
         use phux_protocol::wire::frame::ViewportInfo;
 
         let mut s = ServerState::new();
-        let (_sid, _wid, pid) = s.seed_session("default");
+        let (_sid, pid) = s.seed_session("default");
         let big = s.new_client_id();
         let small = s.new_client_id();
         s.attach_default_caps(big, "default", mk_tx()).unwrap();
@@ -668,7 +672,7 @@ mod tests {
         use phux_protocol::wire::frame::ViewportInfo;
 
         let mut s = ServerState::new();
-        let (_sid, _wid, pid) = s.seed_session("default");
+        let (_sid, pid) = s.seed_session("default");
         let bundle = crate::terminal_actor::TerminalActor::new(80, 24).unwrap();
         s.register_resource_handle(pid, bundle.handle.clone(), bundle.token.clone());
         let big = s.new_client_id();
@@ -691,7 +695,7 @@ mod tests {
     #[test]
     fn a_client_without_a_geometry_vote_leaves_explicit_geometry_on_detach() {
         let mut s = ServerState::new();
-        let (_sid, _wid, pid) = s.seed_session("default");
+        let (_sid, pid) = s.seed_session("default");
         let gui = s.new_client_id();
         s.attach_default_caps(gui, "default", mk_tx()).unwrap();
         // A zero ATTACH viewport records nothing; the GUI sized the pane itself.
@@ -707,7 +711,7 @@ mod tests {
         use phux_protocol::wire::frame::ViewportInfo;
 
         let mut s = ServerState::new();
-        let (_sid, _wid, pid) = s.seed_session("default");
+        let (_sid, pid) = s.seed_session("default");
         let client = s.new_client_id();
         s.attach_default_caps(client, "default", mk_tx()).unwrap();
         s.set_client_viewport(client, ViewportInfo::new(1, 1));
@@ -724,7 +728,7 @@ mod tests {
         use phux_protocol::wire::frame::ViewportInfo;
 
         let mut s = ServerState::new();
-        let (_sid, _wid, pid) = s.seed_session("default");
+        let (_sid, pid) = s.seed_session("default");
         let bundle = crate::terminal_actor::TerminalActor::new(80, 24).unwrap();
         s.register_resource_handle(pid, bundle.handle.clone(), bundle.token.clone());
         let recent = s.new_client_id();
@@ -745,7 +749,7 @@ mod tests {
         use phux_protocol::wire::frame::ViewportInfo;
 
         let mut s = ServerState::new();
-        let (_sid, _wid, pid) = s.seed_session("default");
+        let (_sid, pid) = s.seed_session("default");
         let retina = s.new_client_id();
         let lodpi = s.new_client_id();
         s.attach_default_caps(retina, "default", mk_tx()).unwrap();
@@ -789,7 +793,7 @@ mod tests {
     #[test]
     fn detach_removes_client_and_drops_empty_subscriber_lists() {
         let mut s = ServerState::new();
-        let (_sid, _wid, pid) = s.seed_session("default");
+        let (_sid, pid) = s.seed_session("default");
         let cid = s.new_client_id();
         s.attach_default_caps(cid, "default", mk_tx()).unwrap();
         assert!(!s.subscribers_for_terminal(pid).is_empty());
@@ -811,24 +815,54 @@ mod tests {
         s.detach(cid);
     }
 
+    /// Move `pane` into `to` through a committed `ResourceMove`.
+    fn move_pane(s: &mut ServerState, pane: ResourceId, to: phux_core::ids::SessionId) {
+        let record = s.registry().record(pane).expect("pane").clone();
+        let from = s.org().session(&record.session).expect("from").revision;
+        let to_key = s.registry().session_key(to).expect("to");
+        let to_revision = s.org().session(&to_key).expect("to").revision;
+        s.commit(
+            phux_core::Op::ResourceMove {
+                resource: record.key,
+                from: record.session,
+                from_expected: from,
+                to: to_key,
+                to_expected: to_revision,
+            },
+            &phux_core::Actor::owner(),
+        )
+        .expect("move commits");
+    }
+
     #[test]
-    fn move_that_empties_source_window_reaps_it_and_its_session() {
-        // ADR-0056: moving a solo pane across sessions reaps the emptied
-        // window and session; the pane survives.
+    fn a_move_that_empties_an_ephemeral_source_deletes_it() {
+        // ADR-0160: membership moves; the process and its handle survive.
         let mut s = ServerState::new();
-        let (sid_a, wid_a, pid_a) = s.seed_session("a");
-        let (sid_b, wid_b, _pid_b) = s.seed_session("b");
+        let (sid_a, pid_a) = s
+            .create_terminal(
+                TerminalTarget::NewSession {
+                    name: "a",
+                    lifetime: phux_core::SessionLifetime::Ephemeral,
+                },
+                phux_core::TerminalLaunch::default(),
+                phux_core::ExitPolicy::Remove,
+                &phux_core::Actor::owner(),
+            )
+            .expect("a");
+        let (sid_b, _pid_b) = s.seed_session("b");
         let attached = s.new_client_id();
         s.attach_default_caps(attached, "a", mk_tx()).unwrap();
 
-        s.registry_mut()
-            .move_terminal(pid_a, wid_b)
-            .expect("cross-session move succeeds");
-        s.reap_window_if_empty(wid_a);
+        move_pane(&mut s, pid_a, sid_b);
 
         assert!(
             s.registry().session(sid_a).is_none(),
-            "emptied session reaped"
+            "emptied ephemeral session deleted"
+        );
+        assert_eq!(
+            s.take_killed_sessions(),
+            vec![sid_a],
+            "its clients are detached"
         );
         assert_eq!(
             s.attached_clients_in_session(sid_a)
@@ -836,94 +870,103 @@ mod tests {
                 .map(|(client, _)| *client)
                 .collect::<Vec<_>>(),
             vec![attached],
-            "session-attached clients remain discoverable by stable id after reap"
+            "session-attached clients remain discoverable by stable id after delete"
         );
-        assert!(s.registry().session(sid_b).is_some());
-        assert_eq!(
-            s.registry().resource(pid_a).expect("pane survives").window,
-            Some(wid_b)
-        );
+        assert_eq!(s.registry().session_of(pid_a), Some(sid_b));
 
-        // A move that leaves the source window populated reaps nothing.
-        let (sid_c, wid_c, pid_c) = s.seed_session("c");
-        let pid_c2 = s.registry_mut().new_terminal(wid_c).unwrap();
-        s.registry_mut()
-            .move_terminal(pid_c2, wid_b)
-            .expect("move succeeds");
-        s.reap_window_if_empty(wid_c);
+        // A persistent source survives empty.
+        let (sid_c, pid_c) = s.seed_session("c");
+        move_pane(&mut s, pid_c, sid_b);
         assert!(
             s.registry().session(sid_c).is_some(),
-            "populated source kept"
+            "persistent source kept"
         );
         assert!(s.registry().terminal(pid_c).is_some());
     }
 
     #[test]
-    fn reap_last_pane_empties_server() {
+    fn reaping_the_last_pane_of_an_ephemeral_session_deletes_it() {
         let mut s = ServerState::new();
-        let (sid, _wid, pid) = s.seed_session("default");
-        assert_eq!(s.registry().session_count(), 1);
+        let (sid, pid) = s
+            .create_terminal(
+                TerminalTarget::NewSession {
+                    name: "quick",
+                    lifetime: phux_core::SessionLifetime::Ephemeral,
+                },
+                phux_core::TerminalLaunch::default(),
+                phux_core::ExitPolicy::Remove,
+                &phux_core::Actor::owner(),
+            )
+            .expect("quick");
 
-        let server_empty = s.reap_terminal(pid);
+        let idle = s.reap_terminal(pid);
 
-        assert!(server_empty, "reaping the only pane must empty the server");
-        assert_eq!(s.registry().session_count(), 0);
-        assert!(s.registry().session(sid).is_none(), "session cascaded away");
+        assert!(idle, "nothing runs once the only pane is reaped");
+        assert!(
+            s.registry().session(sid).is_none(),
+            "session deleted with it"
+        );
+        assert!(s.registry().terminal(pid).is_none());
+    }
+
+    #[test]
+    fn reaping_the_last_pane_of_a_persistent_session_keeps_it_empty() {
+        let mut s = ServerState::new();
+        let (sid, pid) = s.seed_session("work");
+
+        let idle = s.reap_terminal(pid);
+
+        assert!(idle);
+        let session = s.registry().session(sid).expect("persistent session stays");
+        assert!(session.is_empty());
         assert!(s.registry().terminal(pid).is_none());
     }
 
     #[test]
     fn reap_one_of_two_sessions_keeps_server_alive() {
         let mut s = ServerState::new();
-        let (sid_a, _wa, pid_a) = s.seed_session("a");
-        let (sid_b, _wb, _pb) = s.seed_session("b");
+        let (_sid_a, pid_a) = s.seed_session("a");
+        let (sid_b, _pb) = s.seed_session("b");
 
-        let server_empty = s.reap_terminal(pid_a);
+        let idle = s.reap_terminal(pid_a);
 
-        assert!(!server_empty, "a second session is still live");
-        assert_eq!(s.registry().session_count(), 1);
-        assert!(s.registry().session(sid_a).is_none(), "session a reaped");
+        assert!(!idle, "a second session's pane is still live");
         assert!(s.registry().session(sid_b).is_some(), "session b untouched");
     }
 
     #[test]
-    fn reap_pane_in_multipane_window_keeps_session() {
+    fn reap_pane_beside_a_sibling_keeps_the_session() {
         let mut s = ServerState::new();
-        let (sid, wid, pid1) = s.seed_session("default");
-        let pid2 = s.registry_mut().new_terminal(wid).unwrap();
+        let (sid, pid1) = s.seed_session("default");
+        let pid2 = s.add_pane_to_session(sid).unwrap();
 
-        let server_empty = s.reap_terminal(pid1);
+        let idle = s.reap_terminal(pid1);
 
-        assert!(!server_empty);
-        assert_eq!(s.registry().session_count(), 1);
+        assert!(!idle);
         assert!(s.registry().session(sid).is_some());
         assert!(s.registry().terminal(pid1).is_none(), "reaped pane gone");
         assert!(
             s.registry().terminal(pid2).is_some(),
             "sibling pane survives"
         );
-        assert_eq!(
-            s.registry().window(wid).map(|w| w.slots.len()),
-            Some(1),
-            "window keeps the surviving pane",
-        );
+        assert_eq!(s.registry().members(sid), vec![pid2]);
     }
 
     #[test]
     fn reap_is_idempotent_on_unknown_pane() {
         let mut s = ServerState::new();
-        let (_sid, _wid, pid) = s.seed_session("default");
+        let (_sid, pid) = s.seed_session("default");
 
-        assert!(s.reap_terminal(pid), "first reap empties the server");
+        assert!(s.reap_terminal(pid), "first reap leaves nothing live");
         // A repeat reap is harmless.
         assert!(s.reap_terminal(pid));
-        assert_eq!(s.registry().session_count(), 0);
+        assert!(s.registry().record(pid).is_none());
     }
 
     #[test]
     fn reap_clears_pane_bookkeeping() {
         let mut s = ServerState::new();
-        let (_sid, _wid, pid) = s.seed_session("default");
+        let (_sid, pid) = s.seed_session("default");
         let cid = s.new_client_id();
         s.attach_default_caps(cid, "default", mk_tx()).unwrap();
         let wire = s.intern_terminal_wire(pid);
@@ -942,7 +985,7 @@ mod tests {
     #[test]
     fn reap_clears_agent_asked_state() {
         let mut s = ServerState::new();
-        let (_sid, _wid, pid) = s.seed_session("default");
+        let (_sid, pid) = s.seed_session("default");
         s.report_agent_asked(
             pid,
             crate::agent_asked::AskedSource::Hook,
@@ -993,16 +1036,9 @@ mod tests {
     #[test]
     fn attach_snapshot_panes_collects_live_handles_for_session_tree() {
         let mut s = ServerState::new();
-        let (sid, wid, pid_a) = s.seed_session("default");
-        let pid_b = s
-            .registry_mut()
-            .new_terminal(wid)
-            .expect("same window second pane");
-        let wid_2 = s.registry_mut().new_window(sid).expect("second window");
-        let pid_c = s
-            .registry_mut()
-            .new_terminal(wid_2)
-            .expect("pane in second window");
+        let (sid, pid_a) = s.seed_session("default");
+        let pid_b = s.add_pane_to_session(sid).expect("second pane");
+        let pid_c = s.add_pane_to_session(sid).expect("third pane");
 
         let _ = s.register_resource_handle(pid_a, mk_handle(), CancellationToken::new());
         let _ = s.register_resource_handle(pid_c, mk_handle(), CancellationToken::new());
@@ -1034,13 +1070,13 @@ mod tests {
             !s.has_session_touch_history(),
             "fresh state has no stale activity memory either",
         );
-        let (sid, _wid, _pid) = s.seed_session("default");
+        let (sid, _pid) = s.seed_session("default");
         s.touch_session(sid);
         assert_eq!(s.most_recently_touched_session(), Some(sid));
         assert!(s.has_session_touch_history());
 
         // Later touches win, regardless of attach order.
-        let (sid2, _w, _p) = s.seed_session("other");
+        let (sid2, _p) = s.seed_session("other");
         s.touch_session(sid2);
         assert_eq!(s.most_recently_touched_session(), Some(sid2));
         s.touch_session(sid);
@@ -1050,7 +1086,7 @@ mod tests {
     #[test]
     fn shared_state_with_and_with_mut_round_trip() {
         let shared = SharedState::new();
-        let (_sid, _wid, pid) = shared.with_mut(|s| s.seed_session("default"));
+        let (_sid, pid) = shared.with_mut(|s| s.seed_session("default"));
         let count = shared.with(|s| s.subscribers_for_terminal(pid).len());
         assert_eq!(count, 0);
     }
