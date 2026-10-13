@@ -187,6 +187,7 @@ impl CtxFixture {
             focus_history: self.focus_history.clone(),
             workspace: &mut self.workspace,
             layout_read_complete: self.layout_read_complete,
+            arrangement_write_owed: None,
             viewport: self.viewport,
             cell_px: self.cell_px,
             next_request_id: &mut self.next_request_id,

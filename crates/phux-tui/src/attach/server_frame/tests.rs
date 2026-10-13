@@ -2429,6 +2429,29 @@ fn deleting_the_attached_session_detaches() {
     );
 }
 
+/// An arrangement change for this session asks the driver to read the
+/// record again; another session's does not.
+#[test]
+fn arrangement_changes_for_this_session_ask_for_a_reread() {
+    use phux_protocol::ids::{ArrangementKey, Revision, SessionKey};
+    use phux_protocol::wire::frame::ArrangementOwner;
+    let ours = SessionKey::new([1; 16]).expect("key");
+    let theirs = SessionKey::new([2; 16]).expect("key");
+    let changed = |session| FrameKind::Event {
+        terminal: None,
+        event: AgentEvent::ArrangementChanged {
+            arrangement: ArrangementKey::new([5; 16]).expect("key"),
+            owner: ArrangementOwner::Session(session),
+            revision: Some(Revision::new(4)),
+        },
+        stamp: None,
+    };
+    let mut h = H::on(ArrangementDoc::single(tid(1)), &[&tid(1)]);
+    h.mirror.session_key = Some(ours);
+    assert!(h.send(changed(ours)).arrangement_changed);
+    assert!(!h.send(changed(theirs)).arrangement_changed);
+}
+
 /// A membership change for this session asks the driver for a fresh
 /// inventory; one between two other sessions does not.
 #[test]

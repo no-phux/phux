@@ -281,7 +281,8 @@ fn apply_focus_effect(
 }
 
 /// Broadcast the workspace on this session's layout key (`SET_METADATA`),
-/// once the initial shared read has landed.
+/// once the initial shared read has landed; with an arrangement record,
+/// leave the write to the driver after the batch.
 #[allow(
     clippy::future_not_send,
     reason = "DispatchCtx holds current-thread state"
@@ -291,6 +292,10 @@ pub(super) async fn broadcast_layout(
     ctx: &mut DispatchCtx<'_>,
 ) -> Result<(), AttachError> {
     if !ctx.layout_read_complete {
+        return Ok(());
+    }
+    if let Some(owed) = ctx.arrangement_write_owed.as_deref_mut() {
+        *owed = true;
         return Ok(());
     }
     let Some(session) = ctx.peers.focused_session else {

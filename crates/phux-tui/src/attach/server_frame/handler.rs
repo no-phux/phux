@@ -6,9 +6,9 @@ use std::collections::{HashMap, HashSet};
 use phux_protocol::ResourceKind;
 use phux_protocol::ids::{ClientId, ResourceId, SessionId, SessionKey};
 use phux_protocol::wire::frame::{
-    AgentEvent, CONFIG_RELOAD_KEY, DetachReason, ErrorCode, FrameKind, ResourceLifecycle,
-    SESSION_KEEP_EMPTY_KEY, SESSION_NAME_KEY, Scope, SessionLifetime, SpawnError, SpawnResult,
-    decode_session_keep_empty, decode_session_rename,
+    AgentEvent, ArrangementOwner, CONFIG_RELOAD_KEY, DetachReason, ErrorCode, FrameKind,
+    ResourceLifecycle, SESSION_KEEP_EMPTY_KEY, SESSION_NAME_KEY, Scope, SessionLifetime,
+    SpawnError, SpawnResult, decode_session_keep_empty, decode_session_rename,
 };
 
 use crate::attach::actions::{
@@ -1755,8 +1755,8 @@ fn handle_agent_event<W: crate::attach::RenderSink>(
 
 /// An organization event (`docs/spec/L1.md` §5.7) about the attached session,
 /// matched by its record key: deletion detaches (R15), a lifetime change
-/// updates what an emptied arrangement does, and a membership change asks
-/// for a fresh inventory.
+/// updates what an emptied arrangement does, an arrangement change asks for
+/// a re-read, and a membership change asks for a fresh inventory.
 fn fold_org_event<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     event: &AgentEvent,
@@ -1775,6 +1775,13 @@ fn fold_org_event<W: crate::attach::RenderSink>(
                 ..FrameOutcome::default()
             }
         }
+        AgentEvent::ArrangementChanged {
+            owner: ArrangementOwner::Session(session),
+            ..
+        } if *session == ours => FrameOutcome {
+            arrangement_changed: true,
+            ..FrameOutcome::default()
+        },
         AgentEvent::MembershipChanged { from, to, .. } if *from == ours || *to == ours => {
             FrameOutcome {
                 members_dirty: true,

@@ -37,6 +37,10 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     pub workspace: &'a mut ArrangementDoc,
     /// A correlated initial layout GET confirmed valid metadata or absence.
     pub layout_read_complete: bool,
+    /// Set when the session's arrangement is a record the driver writes over
+    /// its control connection: a layout broadcast raises it instead of
+    /// sending `SET_METADATA`, and the driver writes after the batch.
+    pub arrangement_write_owed: Option<&'a mut bool>,
     /// Outer-viewport `(cols, rows)`. Used by `apply_resize` to convert
     /// `amount` (cells) to a ratio delta.
     pub viewport: (u16, u16),

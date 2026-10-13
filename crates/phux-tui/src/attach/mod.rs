@@ -10,6 +10,7 @@
 pub mod action_registry;
 pub mod actions;
 mod agent_rows;
+mod arrangement_link;
 mod attach_role;
 mod chrome_ctx;
 // What is on each right-click menu (ADR-0058). The overlay that

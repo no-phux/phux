@@ -101,6 +101,9 @@ pub(in crate::attach) struct FrameOutcome {
     /// A persistent session's last arranged terminal closed with no member
     /// left running; delete the stored layout.
     pub(in crate::attach) clear_layout: bool,
+    /// The attached session's arrangement record changed on the server:
+    /// read it again (`ORGANIZATION` servers only).
+    pub(in crate::attach) arrangement_changed: bool,
     /// The attached session's membership changed on the server: recompute
     /// its members from a fresh inventory.
     pub(in crate::attach) members_dirty: bool,

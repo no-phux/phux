@@ -191,7 +191,7 @@ impl super::SessionLoop {
     }
 
     /// Apply one frame and surface an exit, if this frame ended the attach.
-    async fn apply_frame_step<W: crate::attach::RenderSink>(
+    pub(super) async fn apply_frame_step<W: crate::attach::RenderSink>(
         &mut self,
         conn: &mut Connection,
         out: &mut W,
@@ -239,6 +239,12 @@ impl super::SessionLoop {
     ) -> Result<Step, AttachError> {
         // Only a burst that did not end the attach may spend.
         self.emit_deferred_bootstrap_outbound(conn).await?;
+        if let Some(exit) = self
+            .settle_arrangement_read(conn, out, sidebar, repaint)
+            .await?
+        {
+            return Ok(exit);
+        }
         self.drain_repaint(out, sidebar, repaint);
         // Settle the pacer's debt here when the timer cannot be trusted (see
         // [`burst_settles_debt`]). After `drain_repaint`, so a full repaint
@@ -632,6 +638,11 @@ impl super::SessionLoop {
         self.emit_stream_cursor_requests(conn, outcome).await?;
         self.emit_layout_followups(conn, outcome, sidebar, prev_rects)
             .await?;
+        // Another writer changed this session's arrangement record: read it
+        // once the burst settles.
+        if outcome.arrangement_changed && self.arrangement.is_some() {
+            self.arrangement_read_owed = true;
+        }
         // The server moved a resource into or out of this session: a fresh
         // graph recomputes the members.
         if outcome.members_dirty {

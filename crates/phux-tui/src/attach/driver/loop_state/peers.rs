@@ -144,6 +144,10 @@ impl super::SessionLoop {
         let Some(session) = self.peers.focused_session else {
             return Ok(());
         };
+        let workspace = self.mirror.workspace.clone();
+        if self.write_arrangement(&workspace).await {
+            return Ok(());
+        }
         let Some(bytes) = encode_layout_or_log(&self.mirror.workspace) else {
             return Ok(());
         };
@@ -160,8 +164,8 @@ impl super::SessionLoop {
         .await
     }
 
-    /// ADR-0105: tombstone the stored layout once a keep-empty session's last
-    /// pane closed.
+    /// Drop the stored layout once a persistent session's last terminal
+    /// closed: an empty arrangement record, or a tombstone on the legacy key.
     pub(super) async fn clear_stored_layout(
         &mut self,
         conn: &mut Connection,
@@ -169,6 +173,12 @@ impl super::SessionLoop {
         let Some(session) = self.peers.focused_session else {
             return Ok(());
         };
+        if self
+            .write_arrangement(&crate::layout::ArrangementDoc::default())
+            .await
+        {
+            return Ok(());
+        }
         let request_id = self.take_request_id();
         send_unless_peer_gone(
             conn,

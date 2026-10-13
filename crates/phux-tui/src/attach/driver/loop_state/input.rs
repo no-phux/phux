@@ -236,6 +236,10 @@ impl super::SessionLoop {
             focus_history: self.focus_history.clone(),
             workspace: &mut self.mirror.workspace,
             layout_read_complete: self.layout_read_complete,
+            arrangement_write_owed: self
+                .arrangement
+                .is_some()
+                .then_some(&mut self.arrangement_write_owed),
             viewport: self.viewport_dims,
             cell_px: self.cell_px_dims,
             next_request_id: &mut self.next_request_id,
@@ -296,6 +300,9 @@ impl super::SessionLoop {
         )
         .await?;
         self.focus_history = ctx.focus_history;
+        if std::mem::take(&mut self.arrangement_write_owed) {
+            self.broadcast_layout(conn).await?;
+        }
         let reports = self
             .input_replay
             .as_ref()
