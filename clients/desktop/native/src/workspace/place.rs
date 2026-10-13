@@ -64,7 +64,9 @@ pub fn group_by_project(sessions: &[SessionLine]) -> Vec<ProjectGroup> {
         .filter_map(|(project, host)| {
             let members: Vec<SessionLine> = sessions
                 .iter()
-                .filter(|session| blank(&session.project) == project && blank(&session.host) == host)
+                .filter(|session| {
+                    blank(&session.project) == project && blank(&session.host) == host
+                })
                 .cloned()
                 .collect();
             if members.is_empty() {

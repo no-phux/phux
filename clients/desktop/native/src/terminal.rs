@@ -18,8 +18,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::presentation::{self, Ticket};
 use gpui::{
-    Context, EventEmitter, ExternalPaths, FocusHandle, MouseButton, Render, SharedString,
-    Window, canvas, div, prelude::*,
+    Context, EventEmitter, ExternalPaths, FocusHandle, MouseButton, Render, SharedString, Window,
+    canvas, div, prelude::*,
 };
 use phux_client_runtime::{Client, ViewId, publication::GridFrame};
 use phux_protocol::ResourceId;
@@ -84,7 +84,9 @@ impl Terminal {
             )
         });
         cx.observe(&input, |_, _, cx| cx.notify()).detach();
-        input.update(cx, |state, _| state.set_option_as_alt(settings.option_as_alt));
+        input.update(cx, |state, _| {
+            state.set_option_as_alt(settings.option_as_alt)
+        });
         Self {
             element_id: SharedString::from(format!("phux-terminal-{}", view.get())),
             client,
@@ -103,7 +105,12 @@ impl Terminal {
 
     /// Replace font, theme, visibility, input policy, size ownership and app
     /// chords. Out-of-range metrics are clamped. Identity does not change.
-    pub fn configure(&mut self, mut settings: Settings, _window: &mut Window, cx: &mut Context<Self>) {
+    pub fn configure(
+        &mut self,
+        mut settings: Settings,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         crate::fonts::install(cx);
         settings.sanitize();
         crate::fonts::resolve(&mut settings.font, cx);
@@ -136,7 +143,10 @@ impl Terminal {
             .clone()
     }
 
-    fn painted_frame(&mut self, window: &Window) -> (Result<Arc<GridFrame>, String>, Option<Ticket>) {
+    fn painted_frame(
+        &mut self,
+        window: &Window,
+    ) -> (Result<Arc<GridFrame>, String>, Option<Ticket>) {
         let _timed = crate::perf::ACQUIRE.timer();
         match self
             .surface
@@ -145,7 +155,11 @@ impl Terminal {
             Ok(ticket) => (Ok(ticket.frame()), Some(ticket)),
             Err(error) => {
                 crate::perf::ACQUIRE_REJECTED.incr();
-                log::debug!("terminal {:?} view {:?}: no paintable frame: {error}", self.terminal, self.view);
+                log::debug!(
+                    "terminal {:?} view {:?}: no paintable frame: {error}",
+                    self.terminal,
+                    self.view
+                );
                 (Err(error.to_string()), None)
             }
         }
@@ -158,9 +172,8 @@ impl Terminal {
         let view = self.view;
         let terminal = self.terminal.clone();
         let focus = self.focus.clone();
-        self.input = cx.new(|_cx| {
-            crate::input::TerminalInput::new(client, view, terminal, focus, window)
-        });
+        self.input =
+            cx.new(|_cx| crate::input::TerminalInput::new(client, view, terminal, focus, window));
         cx.observe(&self.input, |_, _, cx| cx.notify()).detach();
         self.input.update(cx, |state, _| {
             state.set_option_as_alt(self.settings.option_as_alt);
@@ -306,7 +319,7 @@ impl Render for Terminal {
                         if needs_rebind {
                             let this = this.clone();
                             window.on_next_frame(move |_, cx| {
-                                let _ = this.update(cx, |_, cx| cx.notify());
+                                this.update(cx, |_, cx| cx.notify());
                             });
                         }
                         if !failed
@@ -323,17 +336,23 @@ impl Render for Terminal {
 }
 
 /// A right or middle press: reported to a mouse-reporting program, otherwise left to the window.
-fn other_press(input: &gpui::Entity<crate::input::TerminalInput>) -> impl Fn(&gpui::MouseDownEvent, &mut Window, &mut gpui::App) + 'static {
+fn other_press(
+    input: &gpui::Entity<crate::input::TerminalInput>,
+) -> impl Fn(&gpui::MouseDownEvent, &mut Window, &mut gpui::App) + 'static {
     let input = input.clone();
     move |event, window, cx| {
-        let handled = input.update(cx, |state, cx| state.mouse_down(event, window, cx).unwrap_or(false));
+        let handled = input.update(cx, |state, cx| {
+            state.mouse_down(event, window, cx).unwrap_or(false)
+        });
         if handled {
             cx.stop_propagation();
         }
     }
 }
 
-fn other_release(input: &gpui::Entity<crate::input::TerminalInput>) -> impl Fn(&gpui::MouseUpEvent, &mut Window, &mut gpui::App) + 'static {
+fn other_release(
+    input: &gpui::Entity<crate::input::TerminalInput>,
+) -> impl Fn(&gpui::MouseUpEvent, &mut Window, &mut gpui::App) + 'static {
     let input = input.clone();
     move |event, window, cx| {
         input.update(cx, |state, cx| {

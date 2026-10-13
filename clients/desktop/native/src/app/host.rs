@@ -22,14 +22,13 @@ pub fn ensure_server(phux: &Path, socket: &Path, session: &str) -> Option<String
                 .into(),
         );
     }
-    match restart(phux, socket, session) {
-        Ok(()) => None,
-        Err(error) => Some(error),
-    }
+    restart(phux, socket, session).err()
 }
 
 fn restart(phux: &Path, socket: &Path, session: &str) -> Result<(), String> {
-    let explicit = std::env::var("PHUX_SOCKET").ok().filter(|value| !value.is_empty());
+    let explicit = std::env::var("PHUX_SOCKET")
+        .ok()
+        .filter(|value| !value.is_empty());
     let ensure_socket = explicit.as_deref().map(Path::new).unwrap_or(socket);
     run(phux, socket_args(ensure_socket, &["server", "--ensure"]))?;
     let listening = if explicit.is_some() {
@@ -44,7 +43,10 @@ fn restart(phux: &Path, socket: &Path, session: &str) -> Result<(), String> {
             socket.display()
         ));
     }
-    if !session_names(phux, socket)?.iter().any(|name| name == session) {
+    if !session_names(phux, socket)?
+        .iter()
+        .any(|name| name == session)
+    {
         run(phux, socket_args(socket, &["new", "--json", "-s", session]))?;
     }
     Ok(())
@@ -62,7 +64,17 @@ pub fn create_session(phux: &Path, socket: &Path, name: &str, directory: &str) -
     }
     run(
         phux,
-        socket_args(socket, &["new", "--json", "-s", name.trim(), "--cwd", directory.trim()]),
+        socket_args(
+            socket,
+            &[
+                "new",
+                "--json",
+                "-s",
+                name.trim(),
+                "--cwd",
+                directory.trim(),
+            ],
+        ),
     )
     .err()
 }
@@ -77,7 +89,11 @@ pub fn rename_session(phux: &Path, socket: &Path, current: &str, next: &str) -> 
     if phux.as_os_str().is_empty() {
         return Some(MISSING_CLI.into());
     }
-    run(phux, socket_args(socket, &["rename", current.trim(), next.trim()])).err()
+    run(
+        phux,
+        socket_args(socket, &["rename", current.trim(), next.trim()]),
+    )
+    .err()
 }
 
 pub fn close_session(phux: &Path, socket: &Path, name: &str) -> Option<String> {
@@ -105,14 +121,21 @@ pub fn write_temp_file(name: &str, text: &str) -> Result<PathBuf, String> {
         .mode(0o600)
         .open(&path)
         .map_err(|error| error.to_string())?;
-    file.write_all(text.as_bytes()).map_err(|error| error.to_string())?;
+    file.write_all(text.as_bytes())
+        .map_err(|error| error.to_string())?;
     file.sync_all().map_err(|error| error.to_string())?;
     Ok(path)
 }
 
 fn unique_dir(base: &Path) -> Result<PathBuf, String> {
     for n in 0..64 {
-        let path = base.join(format!("{n}-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)));
+        let path = base.join(format!(
+            "{n}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
         match fs::create_dir(&path) {
             Ok(()) => return Ok(path),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -172,7 +195,8 @@ fn session_names(phux: &Path, socket: &Path) -> Result<Vec<String>, String> {
         .output()
         .map_err(|error| error.to_string())?;
     let text = String::from_utf8_lossy(&output.stdout);
-    let value: serde_json::Value = serde_json::from_str(text.trim()).unwrap_or(serde_json::Value::Null);
+    let value: serde_json::Value =
+        serde_json::from_str(text.trim()).unwrap_or(serde_json::Value::Null);
     let Some(sessions) = value.get("sessions").and_then(|item| item.as_array()) else {
         return Ok(Vec::new());
     };
@@ -194,7 +218,11 @@ pub fn quote_dropped_paths(paths: &[PathBuf]) -> String {
         .map(|path| {
             let text = path.display().to_string();
             if text.chars().all(|ch| {
-                ch.is_ascii_alphanumeric() || matches!(ch, '_' | '@' | '%' | '+' | '=' | ':' | ',' | '.' | '/' | '-')
+                ch.is_ascii_alphanumeric()
+                    || matches!(
+                        ch,
+                        '_' | '@' | '%' | '+' | '=' | ':' | ',' | '.' | '/' | '-'
+                    )
             }) {
                 text
             } else {

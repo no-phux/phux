@@ -1,6 +1,4 @@
-use super::{
-    InputError, InputMetrics, TerminalInput, engine_error, input_ready, keys, queued,
-};
+use super::{InputError, InputMetrics, TerminalInput, engine_error, input_ready, keys, queued};
 use gpui::{
     App, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
     ScrollWheelEvent, Window,

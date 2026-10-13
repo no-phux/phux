@@ -14,8 +14,8 @@ pub use layout::{
 };
 pub use persist::{
     FileLayoutStore, LayoutPaths, LoadedLayout, SavedLayout, SavedNode, SavedTab, StoreValue,
-    layout_paths, layout_value, load_layout, parse_layout, quick_display, save_layout,
-    target_hash, write_if_allowed,
+    layout_paths, layout_value, load_layout, parse_layout, quick_display, save_layout, target_hash,
+    write_if_allowed,
 };
 pub use place::{ProjectGroup, SessionLine, group_by_project, place_for, terminal_host};
 pub use session::{
@@ -196,9 +196,7 @@ impl Workspace {
         let ready: Vec<(String, Destination)> = self
             .awaiting
             .iter()
-            .filter(|(label, _)| {
-                parse_terminal(label).is_some_and(|id| connection.ready(&id))
-            })
+            .filter(|(label, _)| parse_terminal(label).is_some_and(|id| connection.ready(&id)))
             .map(|(label, destination)| (label.clone(), destination.clone()))
             .collect();
         for (label, destination) in ready {
@@ -226,7 +224,11 @@ impl Workspace {
         let Some(current) = self.active_tab().map(|tab| tab.id.clone()) else {
             return;
         };
-        let index = self.tabs.iter().position(|tab| tab.id == current).unwrap_or(0) as i32;
+        let index = self
+            .tabs
+            .iter()
+            .position(|tab| tab.id == current)
+            .unwrap_or(0) as i32;
         let len = self.tabs.len() as i32;
         if len == 0 {
             return;
@@ -275,7 +277,13 @@ impl Workspace {
             return;
         };
         let tab = self.tabs.remove(index);
-        self.release(connection, &placements(&tab.root).into_iter().cloned().collect::<Vec<_>>());
+        self.release(
+            connection,
+            &placements(&tab.root)
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
         if self.active_id == id {
             self.active_id = self
                 .tabs
@@ -353,7 +361,12 @@ impl Workspace {
         };
         if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
             let focused = tab.focused_id.clone();
-            tab.root = nudge(std::mem::replace(&mut tab.root, empty_leaf()), &focused, direction, 0.04);
+            tab.root = nudge(
+                std::mem::replace(&mut tab.root, empty_leaf()),
+                &focused,
+                direction,
+                0.04,
+            );
             *tab = refocus(tab.clone());
         }
     }
@@ -374,7 +387,11 @@ impl Workspace {
             return;
         };
         if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
-            tab.root = set_ratio(std::mem::replace(&mut tab.root, empty_leaf()), split_id, ratio);
+            tab.root = set_ratio(
+                std::mem::replace(&mut tab.root, empty_leaf()),
+                split_id,
+                ratio,
+            );
         }
     }
 
@@ -506,7 +523,11 @@ impl Workspace {
     /// The only path that asks the server to end a process. No retry.
     pub fn terminate(&mut self, connection: &Connection, terminal: &ResourceId) {
         let Some(identity) = connection.identity() else {
-            self.notice("error", "Terminate refused", Some("Not connected.".to_owned()));
+            self.notice(
+                "error",
+                "Terminate refused",
+                Some("Not connected.".to_owned()),
+            );
             return;
         };
         if let Err(error) = connection.terminate(&identity, terminal) {
@@ -542,12 +563,15 @@ impl Workspace {
     #[must_use]
     pub fn views_of(&self, terminal: &ResourceId) -> usize {
         let label = terminal_label(terminal);
-        self.tabs.iter().map(|tab| {
-            placements(&tab.root)
-                .into_iter()
-                .filter(|placement| placement.terminal_label == label)
-                .count()
-        }).sum()
+        self.tabs
+            .iter()
+            .map(|tab| {
+                placements(&tab.root)
+                    .into_iter()
+                    .filter(|placement| placement.terminal_label == label)
+                    .count()
+            })
+            .sum()
     }
 
     /// Whether this visible placement proposes the terminal's PTY size.
@@ -572,7 +596,9 @@ impl Workspace {
             .owners
             .get(&placement.terminal_label)
             .and_then(|id| siblings.iter().find(|item| &item.id == id));
-        claimed.or_else(|| siblings.first()).is_some_and(|item| item.id == placement.id)
+        claimed
+            .or_else(|| siblings.first())
+            .is_some_and(|item| item.id == placement.id)
     }
 
     fn request(
@@ -585,11 +611,13 @@ impl Workspace {
         let mut request = SpawnRequest::default();
         let focused = self.focused_cwd(connection);
         let place = place_for(
-            focused.as_deref().map(|directory| phux_client_core::organization::Place {
-                host: None,
-                directory: Some(directory.to_owned()),
-            })
-            .as_ref(),
+            focused
+                .as_deref()
+                .map(|directory| phux_client_core::organization::Place {
+                    host: None,
+                    directory: Some(directory.to_owned()),
+                })
+                .as_ref(),
             cwd.map(|directory| phux_client_core::organization::Place {
                 host: None,
                 directory: Some(directory.to_owned()),
@@ -601,10 +629,11 @@ impl Workspace {
         }
         let inherited = session_id.or_else(|| self.focused_session(connection));
         request.session_id = inherited.or_else(|| connection.home_session());
-        if let Some(size) = self.predicted_size(connection, &destination) {
-            if size.0 >= 2 && size.1 >= 1 {
-                request.initial_size = Some(size);
-            }
+        if let Some(size) = self.predicted_size(connection, &destination)
+            && size.0 >= 2
+            && size.1 >= 1
+        {
+            request.initial_size = Some(size);
         }
         match connection.spawn(request) {
             Ok(id) => {
@@ -614,7 +643,11 @@ impl Workspace {
         }
     }
 
-    fn predicted_size(&self, connection: &Connection, destination: &Destination) -> Option<(u16, u16)> {
+    fn predicted_size(
+        &self,
+        connection: &Connection,
+        destination: &Destination,
+    ) -> Option<(u16, u16)> {
         if !connection
             .server
             .as_ref()
@@ -630,11 +663,14 @@ impl Workspace {
         if matches!(destination, Destination::Tab) {
             return Some((cols, rows));
         }
-        let header = self
+        let header = if self
             .active_tab()
             .is_some_and(|tab| placements(&tab.root).len() == 1)
-            .then_some(2)
-            .unwrap_or(0);
+        {
+            2
+        } else {
+            0
+        };
         let axis = match destination {
             Destination::Split { axis, .. } => *axis,
             Destination::Tab => return Some((cols, rows)),
@@ -689,7 +725,11 @@ impl Workspace {
         self.release_placements(&doomed);
         self.tabs = without_terminal(std::mem::take(&mut self.tabs), label);
         if !self.tabs.iter().any(|tab| tab.id == self.active_id) {
-            self.active_id = self.tabs.first().map(|tab| tab.id.clone()).unwrap_or_default();
+            self.active_id = self
+                .tabs
+                .first()
+                .map(|tab| tab.id.clone())
+                .unwrap_or_default();
         }
     }
 
@@ -703,7 +743,11 @@ impl Workspace {
             .take()
             .filter(|layout| layout.server_id == server);
         if let Some(layout) = layout {
-            let tabs = layout.tabs.iter().flat_map(|tab| self.restore_tab(connection, tab)).collect::<Vec<_>>();
+            let tabs = layout
+                .tabs
+                .iter()
+                .flat_map(|tab| self.restore_tab(connection, tab))
+                .collect::<Vec<_>>();
             let active = tabs
                 .iter()
                 .find(|tab| Some(tab.id.as_str()) == layout.active_tab.as_deref())
@@ -736,24 +780,30 @@ impl Workspace {
         Some(Tab {
             id: saved.id.clone(),
             title: saved.title.clone(),
-            focused_id: focus.map(|placement| placement.id.clone()).unwrap_or_default(),
+            focused_id: focus
+                .map(|placement| placement.id.clone())
+                .unwrap_or_default(),
             zoomed_id: None,
             root,
         })
     }
 
     fn open_initial(&mut self, connection: &Connection) {
-        if let Some(initial) = self.options.initial_terminal.clone() {
-            if let Some(pane) = connection.pane(&initial).cloned() {
-                self.open(connection, &pane);
-                return;
-            }
+        if let Some(initial) = self.options.initial_terminal.clone()
+            && let Some(pane) = connection.pane(&initial).cloned()
+        {
+            self.open(connection, &pane);
+            return;
         }
         if self.options.fresh {
             self.request(connection, Destination::Tab, None, None);
             return;
         }
-        let home = connection.panes().iter().find(|pane| pane.session_name == self.session).cloned();
+        let home = connection
+            .panes()
+            .iter()
+            .find(|pane| pane.session_name == self.session)
+            .cloned();
         if let Some(home) = home {
             let label = terminal_label(&home.terminal_id);
             if connection.ready(&home.terminal_id) {
@@ -830,23 +880,22 @@ impl Workspace {
             axis,
             before,
         } = &destination
+            && self.destination_alive(tab_id, target_id)
         {
-            if self.destination_alive(tab_id, target_id) {
-                let id = placement.id.clone();
-                if let Some(tab) = self.tabs.iter_mut().find(|tab| &tab.id == tab_id) {
-                    tab.zoomed_id = None;
-                    tab.root = split_at(
-                        std::mem::replace(&mut tab.root, empty_leaf()),
-                        target_id,
-                        placement,
-                        *axis,
-                        *before,
-                    );
-                    tab.focused_id = id;
-                }
-                self.active_id.clone_from(tab_id);
-                return;
+            let id = placement.id.clone();
+            if let Some(tab) = self.tabs.iter_mut().find(|tab| &tab.id == tab_id) {
+                tab.zoomed_id = None;
+                tab.root = split_at(
+                    std::mem::replace(&mut tab.root, empty_leaf()),
+                    target_id,
+                    placement,
+                    *axis,
+                    *before,
+                );
+                tab.focused_id = id;
             }
+            self.active_id.clone_from(tab_id);
+            return;
         }
         let id = new_id("tab");
         let focused = placement.id.clone();
@@ -861,13 +910,15 @@ impl Workspace {
     }
 
     fn destination_alive(&self, tab_id: &str, target_id: &str) -> bool {
-        self.tabs.iter().any(|tab| {
-            tab.id == tab_id && find_placement(&tab.root, target_id).is_some()
-        })
+        self.tabs
+            .iter()
+            .any(|tab| tab.id == tab_id && find_placement(&tab.root, target_id).is_some())
     }
 
     fn place(&mut self, connection: &Connection, label: &str, id: Option<String>) -> LeafPlacement {
-        let id = id.filter(|id| !id.is_empty()).unwrap_or_else(|| new_id("place"));
+        let id = id
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| new_id("place"));
         let terminal_id = parse_terminal(label);
         let view_id = terminal_id.as_ref().and_then(|terminal| {
             if !connection.ready(terminal) {
@@ -978,12 +1029,14 @@ fn resolve_node(
             if !unresolved.contains(&placement.id) {
                 return None;
             }
-            let Some(terminal) = placement.terminal_id.clone() else {
-                return None;
-            };
+            let terminal = placement.terminal_id.clone()?;
             if !connection.ready(&terminal) {
-                if live.contains(&placement.terminal_label) && attaching.insert(placement.terminal_label.clone()) {
-                    let _ = connection.client.attach_terminal_preserving_geometry(&terminal);
+                if live.contains(&placement.terminal_label)
+                    && attaching.insert(placement.terminal_label.clone())
+                {
+                    let _ = connection
+                        .client
+                        .attach_terminal_preserving_geometry(&terminal);
                 }
                 return None;
             }
@@ -1013,8 +1066,12 @@ fn resolve_node(
             first,
             second,
         } => {
-            let next_first = resolve_node(unresolved, attaching, noticed, notices, connection, live, first);
-            let next_second = resolve_node(unresolved, attaching, noticed, notices, connection, live, second);
+            let next_first = resolve_node(
+                unresolved, attaching, noticed, notices, connection, live, first,
+            );
+            let next_second = resolve_node(
+                unresolved, attaching, noticed, notices, connection, live, second,
+            );
             if next_first.is_none() && next_second.is_none() {
                 return None;
             }
@@ -1030,7 +1087,9 @@ fn resolve_node(
 }
 
 fn create_view(client: &Client, terminal: &ResourceId) -> Result<ViewId, String> {
-    let view = client.create_view(terminal).map_err(|error| error.to_string());
+    let view = client
+        .create_view(terminal)
+        .map_err(|error| error.to_string());
     log::debug!("create view for {terminal:?}: {view:?}");
     view
 }

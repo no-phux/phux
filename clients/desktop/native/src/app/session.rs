@@ -4,8 +4,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui::{
-    App, AppContext, Context, Entity, KeyBinding, Menu, MenuItem, NoAction, Point, SharedString, Size, Subscription, Task, TitlebarOptions,
-    WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowId, WindowOptions, px, size,
+    App, AppContext, Context, Entity, KeyBinding, Menu, MenuItem, NoAction, Point, SharedString,
+    Size, Subscription, Task, TitlebarOptions, WindowBackgroundAppearance, WindowBounds,
+    WindowHandle, WindowId, WindowOptions, px, size,
 };
 use gpui_kit::component::Root;
 use gpui_kit::{self, AnyWindowHandle};
@@ -15,10 +16,10 @@ use crate::settings::{self, DisplayPrefs, GhosttyConfig};
 use crate::workspace::persist::{self, FileLayoutStore};
 use phux_protocol::ResourceId;
 
+use super::AppOptions;
 use super::actions::{OpenPathDirectory, Quit, Run};
 use super::desk::{Desk, OpenRequest, WindowRole};
 use super::keys::gpui_stroke;
-use super::AppOptions;
 
 struct Opened {
     handle: AnyWindowHandle,
@@ -85,7 +86,11 @@ impl Desktop {
         desktop
     }
 
-    pub fn launch(&mut self, options: AppOptions, cx: &mut Context<Self>) -> anyhow::Result<WindowHandle<Root>> {
+    pub fn launch(
+        &mut self,
+        options: AppOptions,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<WindowHandle<Root>> {
         self.phux = options.phux;
         self.socket = options.socket;
         self.home_session = options.session.clone();
@@ -93,7 +98,11 @@ impl Desktop {
         let paths = crate::workspace::layout_paths(&socket, &options.session);
         // An explicit layout file is used as given: no legacy import beside it.
         let explicit = !options.layout_path.as_os_str().is_empty();
-        self.layout = if explicit { options.layout_path } else { paths.layout };
+        self.layout = if explicit {
+            options.layout_path
+        } else {
+            paths.layout
+        };
         self.quick_layout = paths.quick;
         self.legacy_layout = (!explicit).then_some(paths.legacy_layout);
         self.legacy_quick = (!explicit).then_some(paths.legacy_quick);
@@ -109,7 +118,11 @@ impl Desktop {
             self.open_window(request, focus, true, cx)?
         } else {
             let request = OpenRequest {
-                role: if options.fresh { WindowRole::Fresh } else { WindowRole::Main },
+                role: if options.fresh {
+                    WindowRole::Fresh
+                } else {
+                    WindowRole::Main
+                },
                 session: options.session,
                 fresh: options.fresh,
                 initial_terminal: options.initial_terminal,
@@ -155,12 +168,14 @@ impl Desktop {
     /// Close the quick window if it is open, or open it. A handle whose window
     /// the user already closed counts as closed.
     pub fn toggle_quick(&mut self, cx: &mut Context<Self>) {
-        if let Some(opened) = self.quick.take() {
-            if opened.handle.update(cx, |_, _, _| ()).is_ok() {
-                opened.desk.update(cx, |desk, cx| desk.prepare_close(cx));
-                let _ = opened.handle.update(cx, |_, window, _| window.remove_window());
-                return;
-            }
+        if let Some(opened) = self.quick.take()
+            && opened.handle.update(cx, |_, _, _| ()).is_ok()
+        {
+            opened.desk.update(cx, |desk, cx| desk.prepare_close(cx));
+            let _ = opened
+                .handle
+                .update(cx, |_, window, _| window.remove_window());
+            return;
         }
         let request = self.quick_request(cx);
         let _ = self.open_window(request, true, true, cx);
@@ -186,13 +201,23 @@ impl Desktop {
             return Some(opened.desk.read(cx).prefs.clone());
         }
         let store = FileLayoutStore::new(self.layout.clone(), self.legacy_layout.clone());
-        persist::load_layout(&store.read()).initial.map(|layout| layout.display)
+        persist::load_layout(&store.read())
+            .initial
+            .map(|layout| layout.display)
     }
 
     fn window_closed(&mut self, id: WindowId, cx: &mut Context<Self>) {
-        let closed = if let Some(index) = self.windows.iter().position(|opened| opened.handle.window_id() == id) {
+        let closed = if let Some(index) = self
+            .windows
+            .iter()
+            .position(|opened| opened.handle.window_id() == id)
+        {
             Some(self.windows.remove(index))
-        } else if self.quick.as_ref().is_some_and(|opened| opened.handle.window_id() == id) {
+        } else if self
+            .quick
+            .as_ref()
+            .is_some_and(|opened| opened.handle.window_id() == id)
+        {
             self.quick.take()
         } else {
             None
@@ -245,12 +270,26 @@ impl Desktop {
         self.publish_menus(cx);
     }
 
-    fn open_window(&mut self, request: OpenRequest, focus: bool, quick: bool, cx: &mut Context<Self>) -> anyhow::Result<WindowHandle<Root>> {
+    fn open_window(
+        &mut self,
+        request: OpenRequest,
+        focus: bool,
+        quick: bool,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<WindowHandle<Root>> {
         let desktop = cx.entity();
         let phux = self.phux.clone();
         let socket = self.socket.clone();
-        let bounds = if quick { size(px(1100.), px(460.)) } else { size(px(1320.), px(840.)) };
-        let title: SharedString = if quick { "phux quick terminal".into() } else { "phux".into() };
+        let bounds = if quick {
+            size(px(1100.), px(460.))
+        } else {
+            size(px(1320.), px(840.))
+        };
+        let title: SharedString = if quick {
+            "phux quick terminal".into()
+        } else {
+            "phux".into()
+        };
         let (any, desk) = gpui_kit::open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::centered(bounds, cx)),
@@ -268,11 +307,11 @@ impl Desktop {
                 ..WindowOptions::default()
             },
             cx,
-            move |window, cx| {
-                cx.new(|cx| Desk::open(desktop, phux, socket, request, window, cx))
-            },
+            move |window, cx| cx.new(|cx| Desk::open(desktop, phux, socket, request, window, cx)),
         )?;
-        let handle = any.downcast::<Root>().ok_or_else(|| anyhow::anyhow!("window root was not gpui_kit::component::Root"))?;
+        let handle = any
+            .downcast::<Root>()
+            .ok_or_else(|| anyhow::anyhow!("window root was not gpui_kit::component::Root"))?;
         let opened = Opened { handle: any, desk };
         if quick {
             self.quick = Some(opened);
@@ -296,7 +335,10 @@ impl Desktop {
             if command.is_tab_jump() {
                 continue;
             }
-            items.push(MenuItem::action(command.title.to_owned(), Run::new(command.id)));
+            items.push(MenuItem::action(
+                command.title.to_owned(),
+                Run::new(command.id),
+            ));
         }
         cx.set_menus(vec![
             Menu::new("Phux").items([
@@ -356,9 +398,14 @@ impl Desktop {
         self._hotkey = Some(cx.spawn(async move |this, cx| {
             loop {
                 smol::Timer::after(Duration::from_millis(50)).await;
-                let pressed = this.update(cx, |desktop, _| {
-                    desktop.hotkeys.as_ref().is_some_and(|hotkeys| !hotkeys.take_pressed().is_empty())
-                }).unwrap_or(false);
+                let pressed = this
+                    .update(cx, |desktop, _| {
+                        desktop
+                            .hotkeys
+                            .as_ref()
+                            .is_some_and(|hotkeys| !hotkeys.take_pressed().is_empty())
+                    })
+                    .unwrap_or(false);
                 if pressed {
                     let _ = this.update(cx, |desktop, cx| desktop.toggle_quick(cx));
                 }
@@ -368,7 +415,11 @@ impl Desktop {
 }
 
 impl gpui::Render for Desktop {
-    fn render(&mut self, _window: &mut gpui::Window, _cx: &mut Context<Self>) -> impl gpui::IntoElement {
+    fn render(
+        &mut self,
+        _window: &mut gpui::Window,
+        _cx: &mut Context<Self>,
+    ) -> impl gpui::IntoElement {
         gpui::div()
     }
 }

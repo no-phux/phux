@@ -155,7 +155,9 @@ fn walk<'a>(node: &'a LayoutNode, found: &mut Vec<&'a Placement>) {
 /// The placement with `id`.
 #[must_use]
 pub fn find_placement<'a>(node: &'a LayoutNode, id: &str) -> Option<&'a Placement> {
-    placements(node).into_iter().find(|placement| placement.id == id)
+    placements(node)
+        .into_iter()
+        .find(|placement| placement.id == id)
 }
 
 /// The focused placement, or the first leaf.
@@ -207,7 +209,9 @@ pub fn split_at(
 #[must_use]
 pub fn remove_leaf(node: LayoutNode, id: &str) -> Option<LayoutNode> {
     match node {
-        LayoutNode::Leaf { placement } => (placement.id != id).then_some(LayoutNode::Leaf { placement }),
+        LayoutNode::Leaf { placement } => {
+            (placement.id != id).then_some(LayoutNode::Leaf { placement })
+        }
         LayoutNode::Split {
             id: split_id,
             axis,
@@ -376,10 +380,12 @@ pub fn neighbor(node: &LayoutNode, from_id: &str, direction: Direction) -> Optio
         if distance < -1e-6 || overlap <= 1e-6 {
             continue;
         }
-        let replace = best.as_ref().is_none_or(|(_, best_distance, best_overlap)| {
-            distance < best_distance - 1e-6
-                || ((distance - best_distance).abs() < 1e-6 && overlap > *best_overlap)
-        });
+        let replace = best
+            .as_ref()
+            .is_none_or(|(_, best_distance, best_overlap)| {
+                distance < best_distance - 1e-6
+                    || ((distance - best_distance).abs() < 1e-6 && overlap > *best_overlap)
+            });
         if replace {
             best = Some((id.clone(), distance, overlap));
         }
@@ -425,7 +431,11 @@ pub fn cycle(node: &LayoutNode, from_id: &str, step: i8) -> Option<String> {
 
 /// The leaf to focus once `removed` leaves go.
 #[must_use]
-pub fn focus_after_removal(order: &[String], focused_id: &str, removed: &HashSet<String>) -> String {
+pub fn focus_after_removal(
+    order: &[String],
+    focused_id: &str,
+    removed: &HashSet<String>,
+) -> String {
     if !removed.contains(focused_id) {
         return focused_id.to_owned();
     }
@@ -434,7 +444,11 @@ pub fn focus_after_removal(order: &[String], focused_id: &str, removed: &HashSet
         .iter()
         .rev()
         .find(|id| !removed.contains(id.as_str()))
-        .or_else(|| order[index + 1..].iter().find(|id| !removed.contains(id.as_str())))
+        .or_else(|| {
+            order[index + 1..]
+                .iter()
+                .find(|id| !removed.contains(id.as_str()))
+        })
         .cloned()
         .unwrap_or_default()
 }
@@ -562,17 +576,32 @@ mod tests {
     }
 
     fn ids(node: &LayoutNode) -> Vec<String> {
-        placements(node).into_iter().map(|placement| placement.id.clone()).collect()
+        placements(node)
+            .into_iter()
+            .map(|placement| placement.id.clone())
+            .collect()
     }
 
     fn grid() -> LayoutNode {
-        let root = split_at(leaf(place("a", "t-a")), "a", place("b", "t-b"), Axis::Row, false);
+        let root = split_at(
+            leaf(place("a", "t-a")),
+            "a",
+            place("b", "t-b"),
+            Axis::Row,
+            false,
+        );
         split_at(root, "b", place("c", "t-c"), Axis::Column, false)
     }
 
     #[test]
     fn splitting_keeps_reading_order() {
-        let root = split_at(leaf(place("a", "t-a")), "a", place("b", "t-b"), Axis::Row, false);
+        let root = split_at(
+            leaf(place("a", "t-a")),
+            "a",
+            place("b", "t-b"),
+            Axis::Row,
+            false,
+        );
         assert_eq!(ids(&root), ["a", "b"]);
     }
 
@@ -580,7 +609,15 @@ mod tests {
     fn split_before_puts_the_new_leaf_above() {
         let root = split_at(grid(), "c", place("d", "t-d"), Axis::Column, true);
         assert_eq!(ids(&root), ["a", "b", "d", "c"]);
-        let rects = layout_rects(&root, Rect { x: 0.0, y: 0.0, width: 1.0, height: 1.0 });
+        let rects = layout_rects(
+            &root,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 1.0,
+                height: 1.0,
+            },
+        );
         assert!(rects["d"].y < rects["c"].y);
     }
 
@@ -588,7 +625,9 @@ mod tests {
     fn removing_a_leaf_promotes_its_sibling() {
         let without = remove_leaf(grid(), "b").expect("sibling");
         assert_eq!(ids(&without), ["a", "c"]);
-        assert!(matches!(without, LayoutNode::Split { second, .. } if matches!(second.as_ref(), LayoutNode::Leaf { .. })));
+        assert!(
+            matches!(without, LayoutNode::Split { second, .. } if matches!(second.as_ref(), LayoutNode::Leaf { .. }))
+        );
         assert!(remove_leaf(leaf(place("x", "t")), "x").is_none());
     }
 
@@ -608,10 +647,42 @@ mod tests {
 
     #[test]
     fn rects_tile_the_bounds() {
-        let rects = layout_rects(&grid(), Rect { x: 0.0, y: 0.0, width: 100.0, height: 60.0 });
-        assert_eq!(rects["a"], Rect { x: 0.0, y: 0.0, width: 50.0, height: 60.0 });
-        assert_eq!(rects["b"], Rect { x: 50.0, y: 0.0, width: 50.0, height: 30.0 });
-        assert_eq!(rects["c"], Rect { x: 50.0, y: 30.0, width: 50.0, height: 30.0 });
+        let rects = layout_rects(
+            &grid(),
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 60.0,
+            },
+        );
+        assert_eq!(
+            rects["a"],
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 50.0,
+                height: 60.0
+            }
+        );
+        assert_eq!(
+            rects["b"],
+            Rect {
+                x: 50.0,
+                y: 0.0,
+                width: 50.0,
+                height: 30.0
+            }
+        );
+        assert_eq!(
+            rects["c"],
+            Rect {
+                x: 50.0,
+                y: 30.0,
+                width: 50.0,
+                height: 30.0
+            }
+        );
     }
 
     #[test]
@@ -634,25 +705,65 @@ mod tests {
 
     #[test]
     fn closed_terminal_drops_empty_tabs_and_hands_focus_to_the_neighbour() {
-        let shared = split_at(leaf(place("a", "t1")), "a", place("b", "t1"), Axis::Row, false);
-        let other = split_at(leaf(place("c", "t2")), "c", place("d", "t1"), Axis::Column, false);
+        let shared = split_at(
+            leaf(place("a", "t1")),
+            "a",
+            place("b", "t1"),
+            Axis::Row,
+            false,
+        );
+        let other = split_at(
+            leaf(place("c", "t2")),
+            "c",
+            place("d", "t1"),
+            Axis::Column,
+            false,
+        );
         let tabs = vec![
-            DeskTab { id: "tab".into(), title: None, root: shared, focused_id: "a".into(), zoomed_id: None },
-            DeskTab { id: "other".into(), title: None, root: other, focused_id: "d".into(), zoomed_id: None },
+            DeskTab {
+                id: "tab".into(),
+                title: None,
+                root: shared,
+                focused_id: "a".into(),
+                zoomed_id: None,
+            },
+            DeskTab {
+                id: "other".into(),
+                title: None,
+                root: other,
+                focused_id: "d".into(),
+                zoomed_id: None,
+            },
         ];
         let next = without_terminal(tabs, "t1");
-        assert_eq!(next.iter().map(|tab| tab.id.as_str()).collect::<Vec<_>>(), ["other"]);
+        assert_eq!(
+            next.iter().map(|tab| tab.id.as_str()).collect::<Vec<_>>(),
+            ["other"]
+        );
         assert_eq!(ids(&next[0].root), ["c"]);
         assert_eq!(next[0].focused_id, "c");
         let mut exited = without_terminal(
-            vec![DeskTab { id: "tab".into(), title: None, root: grid(), focused_id: "c".into(), zoomed_id: None }],
+            vec![DeskTab {
+                id: "tab".into(),
+                title: None,
+                root: grid(),
+                focused_id: "c".into(),
+                zoomed_id: None,
+            }],
             "t-c",
         );
         let only = exited.pop().expect("one tab");
         assert!(exited.is_empty());
         assert_eq!(ids(&only.root), ["a", "b"]);
         assert_eq!(only.focused_id, "b");
-        assert_eq!(focus_after_removal(&["a".into(), "b".into(), "c".into()], "a", &HashSet::from(["a".into()])), "b");
+        assert_eq!(
+            focus_after_removal(
+                &["a".into(), "b".into(), "c".into()],
+                "a",
+                &HashSet::from(["a".into()])
+            ),
+            "b"
+        );
     }
 
     #[test]
@@ -676,8 +787,12 @@ mod tests {
         let right = nudge(root.clone(), "c", Direction::Right, 0.1);
         assert!(matches!(right, LayoutNode::Split { ratio, .. } if (ratio - 0.6).abs() < 1e-5));
         let up = nudge(root.clone(), "c", Direction::Up, 0.1);
-        let LayoutNode::Split { second, .. } = up else { panic!("split") };
-        let LayoutNode::Split { ratio, .. } = second.as_ref() else { panic!("column") };
+        let LayoutNode::Split { second, .. } = up else {
+            panic!("split")
+        };
+        let LayoutNode::Split { ratio, .. } = second.as_ref() else {
+            panic!("column")
+        };
         assert!((ratio - 0.4).abs() < 1e-5);
         assert_eq!(nudge(root.clone(), "a", Direction::Up, 0.1), root);
     }

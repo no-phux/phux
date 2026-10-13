@@ -96,7 +96,11 @@ pub fn sanitize_display(display: &DisplayPrefs) -> DisplayPrefs {
         } else {
             family
         },
-        font_size: clamp(finite(display.font_size, fallback.font_size).round(), 9.0, 28.0),
+        font_size: clamp(
+            finite(display.font_size, fallback.font_size).round(),
+            9.0,
+            28.0,
+        ),
         line_height: clamp(
             (finite(display.line_height, fallback.line_height) * 20.0).round() / 20.0,
             1.0,
@@ -119,10 +123,26 @@ pub fn sanitize_display(display: &DisplayPrefs) -> DisplayPrefs {
         notifications: display.notifications,
         cell_width: clamp(round_to(finite(display.cell_width, 1.0), 100.0), 0.5, 2.0),
         cell_height: clamp(round_to(finite(display.cell_height, 1.0), 100.0), 0.5, 2.0),
-        padding_x: clamp(finite(display.padding_x, fallback.padding_x).round(), 0.0, 64.0),
-        padding_y: clamp(finite(display.padding_y, fallback.padding_y).round(), 0.0, 64.0),
-        unfocused_opacity: clamp(round_to(finite(display.unfocused_opacity, 1.0), 100.0), 0.15, 1.0),
-        terminal_opacity: clamp(round_to(finite(display.terminal_opacity, 1.0), 100.0), 0.55, 1.0),
+        padding_x: clamp(
+            finite(display.padding_x, fallback.padding_x).round(),
+            0.0,
+            64.0,
+        ),
+        padding_y: clamp(
+            finite(display.padding_y, fallback.padding_y).round(),
+            0.0,
+            64.0,
+        ),
+        unfocused_opacity: clamp(
+            round_to(finite(display.unfocused_opacity, 1.0), 100.0),
+            0.15,
+            1.0,
+        ),
+        terminal_opacity: clamp(
+            round_to(finite(display.terminal_opacity, 1.0), 100.0),
+            0.55,
+            1.0,
+        ),
         ghostty_keys: display.ghostty_keys,
     }
 }
@@ -168,12 +188,18 @@ pub fn display_value(display: &DisplayPrefs) -> Value {
         Value::Bool(display.sidebar_visible),
     );
     object.insert("sidebarWidth".to_owned(), num(display.sidebar_width));
-    object.insert("notifications".to_owned(), Value::Bool(display.notifications));
+    object.insert(
+        "notifications".to_owned(),
+        Value::Bool(display.notifications),
+    );
     object.insert("cellWidth".to_owned(), num(display.cell_width));
     object.insert("cellHeight".to_owned(), num(display.cell_height));
     object.insert("paddingX".to_owned(), num(display.padding_x));
     object.insert("paddingY".to_owned(), num(display.padding_y));
-    object.insert("unfocusedOpacity".to_owned(), num(display.unfocused_opacity));
+    object.insert(
+        "unfocusedOpacity".to_owned(),
+        num(display.unfocused_opacity),
+    );
     object.insert("terminalOpacity".to_owned(), num(display.terminal_opacity));
     object.insert("ghosttyKeys".to_owned(), Value::Bool(display.ghostty_keys));
     Value::Object(object)

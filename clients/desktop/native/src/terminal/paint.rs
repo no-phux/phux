@@ -10,7 +10,9 @@ use phux_client_core::grid::{
     CELL_BLINK, CELL_BOLD, CELL_FAINT, CELL_INVERSE, CELL_INVISIBLE, CELL_ITALIC, CELL_OVERLINE,
     CELL_SELECTED, CELL_STRIKETHROUGH, COLOR_KIND_DEFAULT, COLOR_KIND_PALETTE,
 };
-use phux_client_runtime::publication::{Cell, CellMetadata, CursorStyle, CursorWidth, GridFrame, Rgb};
+use phux_client_runtime::publication::{
+    Cell, CellMetadata, CursorStyle, CursorWidth, GridFrame, Rgb,
+};
 
 #[derive(Clone, Default)]
 pub struct Observation {
@@ -680,7 +682,9 @@ impl Prepared {
                         .next()
                         .ok_or_else(|| "opacity layer missing".to_owned())
                         .and_then(|layer| layer.paint(window, cx)),
-                    Ink::Glyph(glyph) => paint_line(&glyph.line, glyph.bounds, geometry, window, cx),
+                    Ink::Glyph(glyph) => {
+                        paint_line(&glyph.line, glyph.bounds, geometry, window, cx)
+                    }
                     Ink::Run(run) => run.paint(geometry, font_size, window),
                 };
                 if let Err(error) = result {
@@ -1108,13 +1112,26 @@ mod tests {
     #[test]
     fn styles_index_the_four_faces() {
         let fonts = Fonts::new(&gpui::font("Menlo"));
-        let face = |flags| &fonts.cell[style(&Cell { flags, ..Default::default() })];
+        let face = |flags| {
+            &fonts.cell[style(&Cell {
+                flags,
+                ..Default::default()
+            })]
+        };
         assert_eq!(face(0).weight, gpui::FontWeight::default());
         assert_eq!(face(CELL_BOLD).weight, gpui::FontWeight::BOLD);
         assert_eq!(face(CELL_ITALIC).style, gpui::FontStyle::Italic);
         let both = face(CELL_BOLD | CELL_ITALIC);
-        assert_eq!((both.weight, both.style), (gpui::FontWeight::BOLD, gpui::FontStyle::Italic));
-        assert!(fonts.run.iter().all(|font| font.features != fonts.cell[0].features));
+        assert_eq!(
+            (both.weight, both.style),
+            (gpui::FontWeight::BOLD, gpui::FontStyle::Italic)
+        );
+        assert!(
+            fonts
+                .run
+                .iter()
+                .all(|font| font.features != fonts.cell[0].features)
+        );
     }
 
     #[test]
@@ -1131,11 +1148,23 @@ mod tests {
             foreground_kind: 2,
             ..Default::default()
         };
-        let colors = cell_colors(&cell, metadata, &frame, &settings, defaults(&frame, &settings));
+        let colors = cell_colors(
+            &cell,
+            metadata,
+            &frame,
+            &settings,
+            defaults(&frame, &settings),
+        );
         assert_eq!(colors.foreground, gpui::rgb(0x0000ff).into());
         assert_eq!(colors.background, gpui::rgb(0xff0000).into());
         cell.flags |= CELL_SELECTED | CELL_FAINT;
-        let colors = cell_colors(&cell, metadata, &frame, &settings, defaults(&frame, &settings));
+        let colors = cell_colors(
+            &cell,
+            metadata,
+            &frame,
+            &settings,
+            defaults(&frame, &settings),
+        );
         assert_eq!(colors.background, settings.selection_background);
         assert_eq!(
             colors.foreground.a, 1.,
@@ -1158,16 +1187,35 @@ mod tests {
             underline_color_is_default: true,
             ..Default::default()
         };
-        let colors = cell_colors(&cell, metadata, &frame, &settings, defaults(&frame, &settings));
+        let colors = cell_colors(
+            &cell,
+            metadata,
+            &frame,
+            &settings,
+            defaults(&frame, &settings),
+        );
         assert_eq!(colors.foreground, settings.foreground.expect("foreground"));
         assert_eq!(colors.underline, colors.foreground);
         frame.colors.reversed = true;
-        let colors = cell_colors(&cell, metadata, &frame, &settings, defaults(&frame, &settings));
+        let colors = cell_colors(
+            &cell,
+            metadata,
+            &frame,
+            &settings,
+            defaults(&frame, &settings),
+        );
         assert_eq!(colors.foreground, settings.background.expect("background"));
         frame.colors.has_foreground = true;
         frame.colors.foreground = Rgb { r: 255, g: 0, b: 0 };
         assert_eq!(
-            cell_colors(&cell, metadata, &frame, &settings, defaults(&frame, &settings)).foreground,
+            cell_colors(
+                &cell,
+                metadata,
+                &frame,
+                &settings,
+                defaults(&frame, &settings)
+            )
+            .foreground,
             gpui::rgb(0xff0000).into()
         );
     }

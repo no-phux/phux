@@ -82,8 +82,13 @@ fn find_phux(explicit: Option<PathBuf>) -> Option<PathBuf> {
     if let Some(path) = explicit.or_else(|| std::env::var_os("PHUX_BIN").map(PathBuf::from)) {
         return Some(path);
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    if let Some(found) = installed_phux_candidates(&home).into_iter().find(|path| path.is_file()) {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    if let Some(found) = installed_phux_candidates(&home)
+        .into_iter()
+        .find(|path| path.is_file())
+    {
         return Some(found);
     }
     let which = Command::new("/usr/bin/which").arg("phux").output().ok()?;
@@ -114,7 +119,10 @@ fn ensure_server(phux: &Path, socket: Option<&Path>) -> anyhow::Result<PathBuf> 
         .output()
         .with_context(|| format!("could not run {}", phux.display()))?;
     if !output.status.success() {
-        bail!("`phux server --ensure` failed: {}", String::from_utf8_lossy(&output.stderr).trim());
+        bail!(
+            "`phux server --ensure` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
     if let Some(socket) = socket {
         return Ok(socket.to_owned());
@@ -140,7 +148,12 @@ fn session_names(phux: &Path, socket: &Path) -> Vec<String> {
 /// An explicit choice, else `default`, else the first session, else `default`.
 fn pick_session(requested: Option<String>, names: &[String]) -> String {
     requested
-        .or_else(|| names.iter().any(|name| name == "default").then(|| "default".to_owned()))
+        .or_else(|| {
+            names
+                .iter()
+                .any(|name| name == "default")
+                .then(|| "default".to_owned())
+        })
         .or_else(|| names.first().cloned())
         .unwrap_or_else(|| "default".to_owned())
 }
@@ -169,10 +182,11 @@ fn resolve(options: &Options) -> Resolved {
         .socket
         .clone()
         .or_else(|| std::env::var_os("PHUX_SOCKET").map(PathBuf::from));
-    let requested = options
-        .session
-        .clone()
-        .or_else(|| std::env::var("PHUX_SESSION").ok().filter(|name| !name.is_empty()));
+    let requested = options.session.clone().or_else(|| {
+        std::env::var("PHUX_SESSION")
+            .ok()
+            .filter(|name| !name.is_empty())
+    });
     let Some(phux) = find_phux(options.phux.clone()) else {
         return Resolved {
             socket: explicit_socket.unwrap_or_default(),
@@ -200,7 +214,12 @@ fn resolve(options: &Options) -> Resolved {
     let error = ensure_session(&phux, &socket, &session, &names)
         .err()
         .map(|error| format!("{error:#}"));
-    Resolved { socket, session, phux, error }
+    Resolved {
+        socket,
+        session,
+        phux,
+        error,
+    }
 }
 
 /// Run the desktop until its last window closes.
@@ -258,8 +277,9 @@ pub fn main() -> ExitCode {
 }
 
 fn parse_terminal(text: &str) -> anyhow::Result<ResourceId> {
-    phux_client_ffi::projection::id::parse(text)
-        .with_context(|| format!("--terminal {text:?} is not a terminal id (local:N or satellite:HOST:N)"))
+    phux_client_ffi::projection::id::parse(text).with_context(|| {
+        format!("--terminal {text:?} is not a terminal id (local:N or satellite:HOST:N)")
+    })
 }
 
 #[cfg(test)]
@@ -273,8 +293,21 @@ mod tests {
     #[test]
     fn every_documented_flag_parses() {
         let options = parse(&[
-            "--socket", "/tmp/s", "--session", "w", "--phux", "/bin/phux", "--layout", "/tmp/l.json",
-            "--fresh", "--terminal", "local:3", "--quick", "--evidence", "/tmp/e", "--smoke",
+            "--socket",
+            "/tmp/s",
+            "--session",
+            "w",
+            "--phux",
+            "/bin/phux",
+            "--layout",
+            "/tmp/l.json",
+            "--fresh",
+            "--terminal",
+            "local:3",
+            "--quick",
+            "--evidence",
+            "/tmp/e",
+            "--smoke",
         ])
         .expect("valid");
         assert_eq!(options.socket.as_deref(), Some(Path::new("/tmp/s")));
@@ -289,7 +322,10 @@ mod tests {
         assert!(parse(&["--sockets", "/tmp/s"]).is_err());
         assert!(parse(&["--socket"]).is_err());
         assert!(parse(&["--socket", ""]).is_err());
-        assert_eq!(parse(&["-psn_0_12345"]).expect("finder arg"), Options::default());
+        assert_eq!(
+            parse(&["-psn_0_12345"]).expect("finder arg"),
+            Options::default()
+        );
     }
 
     #[test]

@@ -250,7 +250,9 @@ fn current_frame(control: &ControlPlane, view: ViewId) -> Result<Arc<GridFrame>,
     // One owner turn answers membership, readiness, the replica position and
     // the frame published for it (caught up first if it was deferred): this
     // runs per terminal per window draw, on the UI thread.
-    let presented = engine.present_view(view).map_err(|_| Rejection::StaleView)?;
+    let presented = engine
+        .present_view(view)
+        .map_err(|_| Rejection::StaleView)?;
     let replica = presented.replica;
     let frame = presented.frame.ok_or(Rejection::Unavailable)?;
     if !replica.input_ready {

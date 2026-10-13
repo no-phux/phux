@@ -91,7 +91,12 @@ fn catalog() -> Vec<CommandSpec> {
         spec("goto", "Go to Terminal", "General", Some("cmd+p")),
         spec("settings", "Settings", "General", Some("cmd+,")),
         spec("new", "New Terminal Tab", "Terminal", Some("cmd+t")),
-        spec("new-session", "New Session…", "Terminal", Some("cmd+shift+n")),
+        spec(
+            "new-session",
+            "New Session…",
+            "Terminal",
+            Some("cmd+shift+n"),
+        ),
         spec("rename-session", "Rename Session…", "Terminal", None),
         spec(
             "new-home",
@@ -100,7 +105,12 @@ fn catalog() -> Vec<CommandSpec> {
             Some("cmd+shift+t"),
         ),
         spec("folder", "Open Folder…", "Terminal", Some("cmd+o")),
-        spec("insert-path", "Insert Path…", "Terminal", Some("cmd+shift+i")),
+        spec(
+            "insert-path",
+            "Insert Path…",
+            "Terminal",
+            Some("cmd+shift+i"),
+        ),
         spec("split-right", "Split Right", "Panes", Some("cmd+d")),
         spec("split-down", "Split Down", "Panes", Some("cmd+shift+d")),
         spec("split-left", "Split Left", "Panes", None),
@@ -115,10 +125,25 @@ fn catalog() -> Vec<CommandSpec> {
         spec("close-tab", "Close Tab", "Tabs", Some("cmd+shift+w")),
         spec("zoom", "Zoom Pane", "Panes", Some("cmd+shift+enter")),
         spec("equalize", "Equalize Splits", "Panes", Some("cmd+ctrl+=")),
-        spec("pane-left", "Focus Pane Left", "Panes", Some("cmd+alt+left")),
-        spec("pane-right", "Focus Pane Right", "Panes", Some("cmd+alt+right")),
+        spec(
+            "pane-left",
+            "Focus Pane Left",
+            "Panes",
+            Some("cmd+alt+left"),
+        ),
+        spec(
+            "pane-right",
+            "Focus Pane Right",
+            "Panes",
+            Some("cmd+alt+right"),
+        ),
         spec("pane-up", "Focus Pane Up", "Panes", Some("cmd+alt+up")),
-        spec("pane-down", "Focus Pane Down", "Panes", Some("cmd+alt+down")),
+        spec(
+            "pane-down",
+            "Focus Pane Down",
+            "Panes",
+            Some("cmd+alt+down"),
+        ),
         spec("pane-next", "Next Pane", "Panes", Some("cmd+]")),
         spec("pane-prev", "Previous Pane", "Panes", Some("cmd+[")),
         spec("tab-next", "Next Tab", "Tabs", Some("cmd+shift+]")),
@@ -126,10 +151,20 @@ fn catalog() -> Vec<CommandSpec> {
         spec("tab-move-left", "Move Tab Left", "Tabs", None),
         spec("tab-move-right", "Move Tab Right", "Tabs", None),
         spec("rename", "Rename Tab…", "Tabs", None),
-        spec("window", "Move Pane to New Window", "Panes", Some("cmd+alt+n")),
+        spec(
+            "window",
+            "Move Pane to New Window",
+            "Panes",
+            Some("cmd+alt+n"),
+        ),
         spec("find", "Find in Terminal", "Terminal", Some("cmd+f")),
         spec("find-next", "Find Next", "Terminal", Some("cmd+g")),
-        spec("find-prev", "Find Previous", "Terminal", Some("cmd+shift+g")),
+        spec(
+            "find-prev",
+            "Find Previous",
+            "Terminal",
+            Some("cmd+shift+g"),
+        ),
         spec(
             "find-selection",
             "Use Selection for Find",
@@ -162,7 +197,12 @@ fn catalog() -> Vec<CommandSpec> {
         spec("resize-right", "Move Divider Right", "Panes", None),
         spec("resize-up", "Move Divider Up", "Panes", None),
         spec("resize-down", "Move Divider Down", "Panes", None),
-        spec("scroll-page-up", "Scroll Page Up", "Terminal", Some("cmd+pageup")),
+        spec(
+            "scroll-page-up",
+            "Scroll Page Up",
+            "Terminal",
+            Some("cmd+pageup"),
+        ),
         spec(
             "scroll-page-down",
             "Scroll Page Down",
@@ -170,7 +210,12 @@ fn catalog() -> Vec<CommandSpec> {
             Some("cmd+pagedown"),
         ),
         spec("scroll-top", "Scroll to Top", "Terminal", Some("cmd+home")),
-        spec("scroll-bottom", "Scroll to Bottom", "Terminal", Some("cmd+end")),
+        spec(
+            "scroll-bottom",
+            "Scroll to Bottom",
+            "Terminal",
+            Some("cmd+end"),
+        ),
         spec("clear", "Clear Screen", "Terminal", Some("cmd+k")),
         spec("select-all", "Select All", "Terminal", Some("cmd+a")),
         spec("copy", "Copy", "Terminal", None),
@@ -182,19 +227,74 @@ fn catalog() -> Vec<CommandSpec> {
             "Terminal",
             Some("cmd+up"),
         ),
-        spec("prompt-next", "Jump to Next Prompt", "Terminal", Some("cmd+down")),
-        spec("write-file:screen:copy", "Copy Screen and Scrollback as a File", "Terminal", None),
-        spec("write-file:screen:paste", "Paste Screen and Scrollback as a File", "Terminal", None),
-        spec("write-file:screen:open", "Open Screen and Scrollback as a File", "Terminal", None),
-        spec("write-file:scrollback:copy", "Copy Scrollback as a File", "Terminal", None),
-        spec("write-file:scrollback:paste", "Paste Scrollback as a File", "Terminal", None),
-        spec("write-file:scrollback:open", "Open Scrollback as a File", "Terminal", None),
-        spec("write-file:selection:copy", "Copy Selection as a File", "Terminal", None),
-        spec("write-file:selection:paste", "Paste Selection as a File", "Terminal", None),
-        spec("write-file:selection:open", "Open Selection as a File", "Terminal", None),
+        spec(
+            "prompt-next",
+            "Jump to Next Prompt",
+            "Terminal",
+            Some("cmd+down"),
+        ),
+        spec(
+            "write-file:screen:copy",
+            "Copy Screen and Scrollback as a File",
+            "Terminal",
+            None,
+        ),
+        spec(
+            "write-file:screen:paste",
+            "Paste Screen and Scrollback as a File",
+            "Terminal",
+            None,
+        ),
+        spec(
+            "write-file:screen:open",
+            "Open Screen and Scrollback as a File",
+            "Terminal",
+            None,
+        ),
+        spec(
+            "write-file:scrollback:copy",
+            "Copy Scrollback as a File",
+            "Terminal",
+            None,
+        ),
+        spec(
+            "write-file:scrollback:paste",
+            "Paste Scrollback as a File",
+            "Terminal",
+            None,
+        ),
+        spec(
+            "write-file:scrollback:open",
+            "Open Scrollback as a File",
+            "Terminal",
+            None,
+        ),
+        spec(
+            "write-file:selection:copy",
+            "Copy Selection as a File",
+            "Terminal",
+            None,
+        ),
+        spec(
+            "write-file:selection:paste",
+            "Paste Selection as a File",
+            "Terminal",
+            None,
+        ),
+        spec(
+            "write-file:selection:open",
+            "Open Selection as a File",
+            "Terminal",
+            None,
+        ),
         spec("quick-terminal", "Toggle Quick Terminal", "View", None),
         spec("new-window", "New Window", "View", Some("cmd+n")),
-        spec("fullscreen", "Toggle Full Screen", "View", Some("cmd+ctrl+f")),
+        spec(
+            "fullscreen",
+            "Toggle Full Screen",
+            "View",
+            Some("cmd+ctrl+f"),
+        ),
         spec("maximize", "Zoom Window", "View", None),
         spec(
             "reload-config",
@@ -395,7 +495,12 @@ pub fn quick_terminal_chords(config: &GhosttyConfig) -> Vec<String> {
     config
         .globals
         .iter()
-        .filter(|chord| config.keybinds.get(*chord).is_some_and(|id| id == "quick-terminal"))
+        .filter(|chord| {
+            config
+                .keybinds
+                .get(*chord)
+                .is_some_and(|id| id == "quick-terminal")
+        })
         .cloned()
         .collect()
 }

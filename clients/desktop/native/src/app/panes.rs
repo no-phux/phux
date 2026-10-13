@@ -29,6 +29,10 @@ struct Slot {
 
 impl Panes {
     /// The entity for this placement. The same view id is kept; a rebound view replaces it.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "identity, settings and the GPUI contexts it binds"
+    )]
     pub fn entity_for(
         &mut self,
         placement_id: &str,
@@ -39,32 +43,42 @@ impl Panes {
         window: &mut Window,
         cx: &mut Context<Desk>,
     ) -> Entity<Terminal> {
-        if let Some(slot) = self.by_placement.get(placement_id) {
-            if slot.view == view && &slot.terminal == terminal {
-                let entity = slot.entity.clone();
-                entity.update(cx, |terminal, cx| {
-                    terminal.configure(settings, window, cx);
-                });
-                return entity;
-            }
+        if let Some(slot) = self.by_placement.get(placement_id)
+            && slot.view == view
+            && &slot.terminal == terminal
+        {
+            let entity = slot.entity.clone();
+            entity.update(cx, |terminal, cx| {
+                terminal.configure(settings, window, cx);
+            });
+            return entity;
         }
-        let entity = cx.new(|cx| {
-            Terminal::new(client.clone(), view, terminal.clone(), settings, window, cx)
-        });
+        let entity = cx
+            .new(|cx| Terminal::new(client.clone(), view, terminal.clone(), settings, window, cx));
         let placement = placement_id.to_owned();
-        let events = cx.subscribe_in(&entity, window, move |desk: &mut Desk, _, event: &TerminalEvent, window, cx| {
-            desk.on_terminal_event(&placement, event, window, cx);
-        });
+        let events = cx.subscribe_in(
+            &entity,
+            window,
+            move |desk: &mut Desk, _, event: &TerminalEvent, window, cx| {
+                desk.on_terminal_event(&placement, event, window, cx);
+            },
+        );
         self.by_placement.insert(
             placement_id.to_owned(),
-            Slot { view, terminal: terminal.clone(), entity: entity.clone(), _events: events },
+            Slot {
+                view,
+                terminal: terminal.clone(),
+                entity: entity.clone(),
+                _events: events,
+            },
         );
         entity
     }
 
     pub fn request(&self, placement_id: &str, action: HostAction, cx: &mut Context<Desk>) {
         if let Some(slot) = self.by_placement.get(placement_id) {
-            slot.entity.update(cx, |terminal, cx| terminal.request(action, cx));
+            slot.entity
+                .update(cx, |terminal, cx| terminal.request(action, cx));
         }
     }
 
@@ -77,11 +91,14 @@ impl Panes {
     }
 
     pub fn get(&self, placement_id: &str) -> Option<Entity<Terminal>> {
-        self.by_placement.get(placement_id).map(|slot| slot.entity.clone())
+        self.by_placement
+            .get(placement_id)
+            .map(|slot| slot.entity.clone())
     }
 
     pub fn retain(&mut self, live: &[String]) {
-        self.by_placement.retain(|id, _| live.iter().any(|keep| keep == id));
+        self.by_placement
+            .retain(|id, _| live.iter().any(|keep| keep == id));
     }
 
     pub fn clear(&mut self) {

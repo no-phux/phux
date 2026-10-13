@@ -67,9 +67,19 @@ impl log::Log for Logger {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis();
-        let line = format!("{at} {} {} {}\n", record.level(), record.target(), record.args());
+        let line = format!(
+            "{at} {} {} {}\n",
+            record.level(),
+            record.target(),
+            record.args()
+        );
         let _ = std::io::stderr().write_all(line.as_bytes());
-        if let Some(file) = self.file.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_mut() {
+        if let Some(file) = self
+            .file
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_mut()
+        {
             let _ = file.write_all(line.as_bytes());
         }
     }
@@ -96,10 +106,17 @@ pub fn init_logging() {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        std::fs::OpenOptions::new().create(true).append(true).open(path).ok()
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .ok()
     });
     static LOGGER: OnceLock<Logger> = OnceLock::new();
-    let logger = LOGGER.get_or_init(|| Logger { file: Mutex::new(file), level });
+    let logger = LOGGER.get_or_init(|| Logger {
+        file: Mutex::new(file),
+        level,
+    });
     if log::set_logger(logger).is_ok() {
         log::set_max_level(level);
     }
@@ -112,7 +129,9 @@ pub fn init_logging() {
 pub fn report_json() -> String {
     let mut report = phux_client_core::perf::report(crate::perf::uptime());
     report.metrics.extend(phux_client_runtime::perf::snapshot());
-    report.metrics.extend(crate::perf::TABLE.iter().map(Metric::snapshot));
+    report
+        .metrics
+        .extend(crate::perf::TABLE.iter().map(Metric::snapshot));
     report.metrics.extend(TABLE.iter().map(Metric::snapshot));
     report.to_json()
 }
@@ -193,7 +212,10 @@ pub fn install(options: Option<EvidenceOptions>, cx: &mut App) {
     if !options.exit_after {
         spawn_perf_sampler(options.dir.join("perf.jsonl"), cx);
     }
-    cx.set_global(Evidence { options, written: false });
+    cx.set_global(Evidence {
+        options,
+        written: false,
+    });
     spawn_evidence_pacer(cx);
 }
 
@@ -204,7 +226,9 @@ pub fn install(options: Option<EvidenceOptions>, cx: &mut App) {
 fn spawn_evidence_pacer(cx: &mut App) {
     cx.spawn(async move |cx| {
         loop {
-            cx.background_executor().timer(Duration::from_millis(100)).await;
+            cx.background_executor()
+                .timer(Duration::from_millis(100))
+                .await;
             let pending = cx.update(|cx| {
                 if !evidence_pending(cx) {
                     return false;
@@ -226,7 +250,8 @@ fn spawn_evidence_pacer(cx: &mut App) {
 /// requested and not yet written or armed. Cheap; call every frame.
 #[must_use]
 pub fn evidence_pending(cx: &App) -> bool {
-    cx.try_global::<Evidence>().is_some_and(|evidence| !evidence.written)
+    cx.try_global::<Evidence>()
+        .is_some_and(|evidence| !evidence.written)
 }
 
 /// Read what a desk has painted, inside the drawable-presented callback:
@@ -242,13 +267,20 @@ pub fn arm_evidence(collect: CollectFrame, window: &mut Window, cx: &mut App) {
     if !evidence_pending(cx) {
         return;
     }
-    log::trace!("evidence: armed; window visibility {:?}", window.native_visibility());
+    log::trace!(
+        "evidence: armed; window visibility {:?}",
+        window.native_visibility()
+    );
     window.on_drawable_presented(move |window, cx| {
         PRESENTED.incr();
         let visible = window.native_visibility() == gpui::NativeVisibility::Visible;
         let dir = cx.global::<Evidence>().options.dir.clone();
         let painted = collect(cx).and_then(|report| {
-            let pane = report.painted.iter().find(|pane| pane.generation > 0).cloned()?;
+            let pane = report
+                .painted
+                .iter()
+                .find(|pane| pane.generation > 0)
+                .cloned()?;
             Some((report, pane))
         });
         if !evidence_pending(cx) {
@@ -308,7 +340,10 @@ fn write_evidence(
             "height": f32::from(pane.bounds.size.height),
         },
     });
-    write_atomic(&dir.join("interaction.json"), interaction.to_string().as_bytes())
+    write_atomic(
+        &dir.join("interaction.json"),
+        interaction.to_string().as_bytes(),
+    )
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
@@ -370,14 +405,20 @@ impl Sample {
     }
 }
 
-#[allow(clippy::cast_precision_loss, reason = "millisecond display of microsecond samples")]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "millisecond display of microsecond samples"
+)]
 fn ms(micros: u64) -> f64 {
     micros as f64 / 1000.0
 }
 
 fn perf_line(uptime: Duration, second: &Sample) -> String {
     let host: serde_json::Value = serde_json::from_str(&report_json()).unwrap_or_default();
-    let at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis();
+    let at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
     let line = json!({
         "at": at,
         "uptimeMs": uptime.as_millis(),

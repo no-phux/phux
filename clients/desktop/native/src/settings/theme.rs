@@ -167,6 +167,10 @@ pub fn themes() -> Vec<Theme> {
     ]
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one positional row per built-in theme table entry"
+)]
 fn theme(
     id: &str,
     name: &str,
@@ -232,10 +236,7 @@ pub fn palette(theme: &Theme) -> Palette {
         faint: mix(base, ink, 0.3),
         accent_wash: mix(&theme.surface, &theme.accent, 0.2),
         accent_text: readable_on(&theme.accent, base, ink),
-        divider: theme
-            .divider
-            .clone()
-            .unwrap_or_else(|| mix(base, ink, 0.1)),
+        divider: theme.divider.clone().unwrap_or_else(|| mix(base, ink, 0.1)),
         backdrop: format!("{}b8", &base[..7.min(base.len())]),
         theme: theme.clone(),
     }

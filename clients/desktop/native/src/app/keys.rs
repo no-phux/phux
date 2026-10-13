@@ -12,10 +12,16 @@ pub fn gpui_stroke(chord: &str) -> Option<String> {
         let known = match part {
             "cmd" | "ctrl" | "alt" | "shift" => true,
             "," | "=" | "-" | "[" | "]" | "\\" | ";" | "'" | "." | "/" | "`" => true,
-            "pageup" | "pagedown" | "home" | "end" | "left" | "right" | "up" | "down"
-            | "enter" | "escape" | "tab" | "space" | "backspace" | "delete" => true,
+            "pageup" | "pagedown" | "home" | "end" | "left" | "right" | "up" | "down" | "enter"
+            | "escape" | "tab" | "space" | "backspace" | "delete" => true,
             other if other.len() == 1 && other.chars().all(|ch| ch.is_ascii_alphanumeric()) => true,
-            other => other.starts_with('f') && other[1..].parse::<u8>().ok().is_some_and(|n| (1..=24).contains(&n)),
+            other => {
+                other.starts_with('f')
+                    && other[1..]
+                        .parse::<u8>()
+                        .ok()
+                        .is_some_and(|n| (1..=24).contains(&n))
+            }
         };
         if !known {
             return None;
@@ -29,7 +35,14 @@ pub fn gpui_stroke(chord: &str) -> Option<String> {
 }
 
 /// GPUI keystroke as the shell's `cmd+shift+p` chord, for lookup in the effective keymap.
-pub fn shell_chord(platform: bool, ctrl: bool, alt: bool, shift: bool, key: &str, held: bool) -> String {
+pub fn shell_chord(
+    platform: bool,
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    key: &str,
+    held: bool,
+) -> String {
     if held {
         return String::new();
     }

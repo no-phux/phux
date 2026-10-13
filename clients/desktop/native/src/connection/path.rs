@@ -60,13 +60,24 @@ pub fn begin_picker(target: PathTarget, root: impl Into<String>) -> PickerState 
 
 /// The server advertised path query, the client is attached, and a target exists.
 #[must_use]
-pub fn can_offer_path_picker(features: Option<&[String]>, attached: bool, target: Option<&PathTarget>) -> bool {
-    attached && target.is_some() && features.is_some_and(|features| features.iter().any(|feature| feature == "path-query"))
+pub fn can_offer_path_picker(
+    features: Option<&[String]>,
+    attached: bool,
+    target: Option<&PathTarget>,
+) -> bool {
+    attached
+        && target.is_some()
+        && features.is_some_and(|features| features.iter().any(|feature| feature == "path-query"))
 }
 
 /// A new search replaces the listing until its own reply arrives. It searches beneath `root`.
 #[must_use]
-pub fn start_query(mut state: PickerState, request_id: u32, root: impl Into<String>, query: impl Into<String>) -> PickerState {
+pub fn start_query(
+    mut state: PickerState,
+    request_id: u32,
+    root: impl Into<String>,
+    query: impl Into<String>,
+) -> PickerState {
     state.root = root.into();
     state.query = query.into();
     state.pending = Some(request_id);
@@ -108,7 +119,9 @@ pub fn accept_path_answer(state: Option<PickerState>, reply: &PathAnswer) -> Opt
             .collect(),
         message: match reply.status {
             Some(PathSearchStatus::Truncated) => "Results truncated; narrow the search.".to_owned(),
-            Some(PathSearchStatus::Warming) => "Host index is warming; search again shortly.".to_owned(),
+            Some(PathSearchStatus::Warming) => {
+                "Host index is warming; search again shortly.".to_owned()
+            }
             _ => String::new(),
         },
         ..state
@@ -233,9 +246,21 @@ mod tests {
         let target = target();
         assert!(!can_offer_path_picker(None, true, Some(&target)));
         assert!(!can_offer_path_picker(Some(&[]), true, Some(&target)));
-        assert!(!can_offer_path_picker(Some(&["path-query".into()]), false, Some(&target)));
-        assert!(!can_offer_path_picker(Some(&["path-query".into()]), true, None));
-        assert!(can_offer_path_picker(Some(&["path-query".into()]), true, Some(&target)));
+        assert!(!can_offer_path_picker(
+            Some(&["path-query".into()]),
+            false,
+            Some(&target)
+        ));
+        assert!(!can_offer_path_picker(
+            Some(&["path-query".into()]),
+            true,
+            None
+        ));
+        assert!(can_offer_path_picker(
+            Some(&["path-query".into()]),
+            true,
+            Some(&target)
+        ));
     }
 
     #[test]
@@ -246,21 +271,35 @@ mod tests {
             request_id: 9,
             root: "/host".into(),
             parent: None,
-            rows: vec![PathMatch { path: "/host/old".into(), kind: PathMatchKind::File }],
+            rows: vec![PathMatch {
+                path: "/host/old".into(),
+                kind: PathMatchKind::File,
+            }],
             status: Some(PathSearchStatus::Complete),
             failure: None,
             message: String::new(),
         };
-        assert_eq!(accept_path_answer(Some(searching.clone()), &stale).unwrap().query, "main");
-        let found = accept_path_answer(Some(searching), &PathAnswer {
-            request_id: 10,
-            root: "/host".into(),
-            parent: None,
-            rows: vec![PathMatch { path: "/host/it's here".into(), kind: PathMatchKind::File }],
-            status: Some(PathSearchStatus::Complete),
-            failure: None,
-            message: String::new(),
-        });
+        assert_eq!(
+            accept_path_answer(Some(searching.clone()), &stale)
+                .unwrap()
+                .query,
+            "main"
+        );
+        let found = accept_path_answer(
+            Some(searching),
+            &PathAnswer {
+                request_id: 10,
+                root: "/host".into(),
+                parent: None,
+                rows: vec![PathMatch {
+                    path: "/host/it's here".into(),
+                    kind: PathMatchKind::File,
+                }],
+                status: Some(PathSearchStatus::Complete),
+                failure: None,
+                message: String::new(),
+            },
+        );
         assert_eq!(
             prepared_insertion(found.as_ref(), "/host/it's here", Some(&target()), true).as_deref(),
             Some("'/host/it'\"'\"'s here'")
@@ -268,13 +307,24 @@ mod tests {
         assert!(prepared_insertion(found.as_ref(), "/host/other", Some(&target()), true).is_none());
         let mut replaced = target();
         replaced.epoch = "4".into();
-        assert!(prepared_insertion(found.as_ref(), "/host/it's here", Some(&replaced), true).is_none());
+        assert!(
+            prepared_insertion(found.as_ref(), "/host/it's here", Some(&replaced), true).is_none()
+        );
         assert!(shell_quote_path("/host/evil\ncommand").is_none());
         assert!(shell_quote_path("relative").is_none());
-        assert_eq!(display_path("/host/x\u{1b}]0;pwn\u{7}\ny"), "/host/x\\u{1b}]0;pwn\\u{7}\\u{a}y");
-        assert_eq!(host_for_terminal("satellite:box:2222:3").as_deref(), Some("box:2222"));
+        assert_eq!(
+            display_path("/host/x\u{1b}]0;pwn\u{7}\ny"),
+            "/host/x\\u{1b}]0;pwn\\u{7}\\u{a}y"
+        );
+        assert_eq!(
+            host_for_terminal("satellite:box:2222:3").as_deref(),
+            Some("box:2222")
+        );
         assert_eq!(host_for_terminal("local:1"), None);
         assert_eq!(directory_for_terminal("file", "/host/a"), None);
-        assert_eq!(directory_for_terminal("directory", "/host/a").as_deref(), Some("/host/a"));
+        assert_eq!(
+            directory_for_terminal("directory", "/host/a").as_deref(),
+            Some("/host/a")
+        );
     }
 }

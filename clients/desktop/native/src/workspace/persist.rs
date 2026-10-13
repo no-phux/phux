@@ -5,7 +5,9 @@
 //! (`serverId`). A damaged or future value is not rewritten.
 
 use super::layout::{Axis, DeskTab, LayoutNode, placements};
-use crate::settings::{DisplayPrefs, default_display, display_value, parse_display, sanitize_display};
+use crate::settings::{
+    DisplayPrefs, default_display, display_value, parse_display, sanitize_display,
+};
 use serde_json::{Map, Value};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write as _};
@@ -135,9 +137,7 @@ pub fn save_layout(
     SavedLayout {
         version: 2,
         server_id: server_id.into(),
-        active_tab: active_tab
-            .filter(|id| !id.is_empty())
-            .map(str::to_owned),
+        active_tab: active_tab.filter(|id| !id.is_empty()).map(str::to_owned),
         display: sanitize_display(display),
         tabs: tabs
             .iter()
@@ -245,7 +245,10 @@ fn saved_ids<'a>(node: &'a SavedNode, ids: &mut Vec<&'a str>) {
 fn parse_tab(value: &Value) -> Option<SavedTab> {
     let object = value.as_object()?;
     let id = identity(object.get("id")?)?;
-    if object.get("focusedId").is_some_and(|value| !value.is_string()) {
+    if object
+        .get("focusedId")
+        .is_some_and(|value| !value.is_string())
+    {
         return None;
     }
     let root = parse_node(object.get("root")?, 0)?;
@@ -302,7 +305,10 @@ fn parse_split(object: &Map<String, Value>, depth: u32) -> Option<SavedNode> {
 
 fn parse_leaf(object: &Map<String, Value>) -> Option<SavedNode> {
     let terminal_id = identity(object.get("terminalId")?)?;
-    if object.get("id").is_some_and(|value| identity(value).is_none()) {
+    if object
+        .get("id")
+        .is_some_and(|value| identity(value).is_none())
+    {
         return None;
     }
     Some(SavedNode::Leaf {
@@ -319,21 +325,25 @@ fn migrate_tab(value: &Value) -> Option<SavedTab> {
     if ids.len() != terminals.len() {
         return None;
     }
-    let root = ids.iter().enumerate().rev().fold(None, |rest, (index, terminal_id)| {
-        let node = SavedNode::Leaf {
-            id: None,
-            terminal_id: terminal_id.clone(),
-        };
-        Some(match rest {
-            None => node,
-            Some(rest) => SavedNode::Split {
-                axis: Axis::Row,
-                ratio: 1.0 / (ids.len() - index) as f32,
-                first: Box::new(node),
-                second: Box::new(rest),
-            },
-        })
-    })?;
+    let root = ids
+        .iter()
+        .enumerate()
+        .rev()
+        .fold(None, |rest, (index, terminal_id)| {
+            let node = SavedNode::Leaf {
+                id: None,
+                terminal_id: terminal_id.clone(),
+            };
+            Some(match rest {
+                None => node,
+                Some(rest) => SavedNode::Split {
+                    axis: Axis::Row,
+                    ratio: 1.0 / (ids.len() - index) as f32,
+                    first: Box::new(node),
+                    second: Box::new(rest),
+                },
+            })
+        })?;
     Some(SavedTab {
         id,
         title: None,
@@ -359,7 +369,10 @@ fn identity(value: &Value) -> Option<String> {
 pub fn layout_value(layout: &SavedLayout) -> Value {
     let mut object = Map::new();
     object.insert("version".to_owned(), Value::from(2));
-    object.insert("serverId".to_owned(), Value::String(layout.server_id.clone()));
+    object.insert(
+        "serverId".to_owned(),
+        Value::String(layout.server_id.clone()),
+    );
     if let Some(active) = &layout.active_tab {
         object.insert("activeTab".to_owned(), Value::String(active.clone()));
     }
@@ -443,7 +456,9 @@ pub fn layout_paths(socket: &str, session: &str) -> LayoutPaths {
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join(".local/state")
         });
-    let directory = state.join("phux-desktop").join(target_hash(socket, session));
+    let directory = state
+        .join("phux-desktop")
+        .join(target_hash(socket, session));
     LayoutPaths {
         layout: directory.join("layout.json"),
         quick: directory.join("quick.json"),
@@ -457,7 +472,11 @@ pub fn layout_paths(socket: &str, session: &str) -> LayoutPaths {
 pub fn target_hash(socket: &str, session: &str) -> String {
     let payload = format!("[{},{}]", json_string(socket), json_string(session));
     let digest = sha256(payload.as_bytes());
-    digest.iter().take(12).map(|byte| format!("{byte:02x}")).collect()
+    digest
+        .iter()
+        .take(12)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn json_string(value: &str) -> String {
@@ -521,7 +540,10 @@ impl FileLayoutStore {
             .unwrap_or(0);
         let next = self.path.with_file_name(format!(
             "{}.{}.{stamp}.next",
-            self.path.file_name().and_then(|name| name.to_str()).unwrap_or("layout.json"),
+            self.path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("layout.json"),
             std::process::id()
         ));
         let mut options = OpenOptions::new();
@@ -631,7 +653,8 @@ fn sha256(message: &[u8]) -> [u8; 32] {
             let big0 = working[0].rotate_right(2)
                 ^ working[0].rotate_right(13)
                 ^ working[0].rotate_right(22);
-            let majority = (working[0] & working[1]) ^ (working[0] & working[2]) ^ (working[1] & working[2]);
+            let majority =
+                (working[0] & working[1]) ^ (working[0] & working[2]) ^ (working[1] & working[2]);
             let temp2 = big0.wrapping_add(majority);
             working[7] = working[6];
             working[6] = working[5];
@@ -693,8 +716,12 @@ mod tests {
             panic!("inner");
         };
         assert!((ratio - 0.5).abs() < 1e-5);
-        assert!(parse_layout(&serde_json::json!({ "version": 9, "serverId": "s", "tabs": [] })).is_none());
-        let damaged = StoreValue::Present(serde_json::json!({ "version": 99, "serverId": "s", "tabs": [] }));
+        assert!(
+            parse_layout(&serde_json::json!({ "version": 9, "serverId": "s", "tabs": [] }))
+                .is_none()
+        );
+        let damaged =
+            StoreValue::Present(serde_json::json!({ "version": 99, "serverId": "s", "tabs": [] }));
         assert!(load_layout(&damaged).blocked);
         assert!(!load_layout(&StoreValue::Missing).blocked);
     }

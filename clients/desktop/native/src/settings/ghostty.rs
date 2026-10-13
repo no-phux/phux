@@ -110,14 +110,22 @@ fn apply(config: &mut GhosttyConfig, key: &str, value: &str) {
         "font-size" => set_number(value, 4.0, 72.0, |size| config.font_size = Some(size)),
         "adjust-cell-width" => set_percent(value, |scale| config.cell_width = Some(scale)),
         "adjust-cell-height" => set_percent(value, |scale| config.cell_height = Some(scale)),
-        "background" | "foreground" | "cursor-color" | "selection-background"
-        | "selection-foreground" | "split-divider-color" => set_color(config, key, value),
+        "background"
+        | "foreground"
+        | "cursor-color"
+        | "selection-background"
+        | "selection-foreground"
+        | "split-divider-color" => set_color(config, key, value),
         "palette" => set_palette(config, value),
         "window-padding-x" => {
-            set_number(first_number(value), 0.0, 64.0, |pad| config.padding_x = Some(pad));
+            set_number(first_number(value), 0.0, 64.0, |pad| {
+                config.padding_x = Some(pad)
+            });
         }
         "window-padding-y" => {
-            set_number(first_number(value), 0.0, 64.0, |pad| config.padding_y = Some(pad));
+            set_number(first_number(value), 0.0, 64.0, |pad| {
+                config.padding_y = Some(pad)
+            });
         }
         "unfocused-split-opacity" => set_number(value, 0.15, 1.0, |opacity| {
             config.unfocused_split_opacity = Some(opacity);
@@ -241,8 +249,21 @@ const KEY_NAMES: &[(&str, &str)] = &[
 ];
 
 const NAMED_KEYS: &[&str] = &[
-    "backspace", "escape", "tab", "enter", "space", "up", "down", "left", "right", "pageup",
-    "pagedown", "home", "end", "delete", "insert",
+    "backspace",
+    "escape",
+    "tab",
+    "enter",
+    "space",
+    "up",
+    "down",
+    "left",
+    "right",
+    "pageup",
+    "pagedown",
+    "home",
+    "end",
+    "delete",
+    "insert",
 ];
 
 const MODIFIERS: &[(&str, &str)] = &[
@@ -363,9 +384,9 @@ fn function_key(key: &str) -> bool {
     let Some(number) = key.strip_prefix('f') else {
         return false;
     };
-    number
-        .parse::<u8>()
-        .is_ok_and(|value| (1..=35).contains(&value) && !number.starts_with('0') && !number.is_empty())
+    number.parse::<u8>().is_ok_and(|value| {
+        (1..=35).contains(&value) && !number.starts_with('0') && !number.is_empty()
+    })
 }
 
 /// `super+shift+arrow_left` becomes `cmd+shift+left`.
@@ -413,17 +434,16 @@ pub fn ghostty_chord(trigger: &str) -> Option<String> {
 #[must_use]
 pub fn ghostty_action(action: &str) -> Option<String> {
     let trimmed = action.trim();
-    if let Some(tab) = trimmed.strip_prefix("goto_tab:") {
-        if tab.len() == 1 && tab.bytes().all(|byte| byte.is_ascii_digit()) {
-            return Some(format!("tab-{tab}"));
-        }
+    if let Some(tab) = trimmed.strip_prefix("goto_tab:")
+        && tab.len() == 1
+        && tab.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Some(format!("tab-{tab}"));
     }
-    let (name, argument) = trimmed
-        .split_once(':')
-        .map(|(name, argument)| (name, argument))
-        .unwrap_or((trimmed, ""));
+    let (name, argument) = trimmed.split_once(':').unwrap_or((trimmed, ""));
     let direction = argument.split(',').next().unwrap_or("");
-    if let Some(command) = own(ACTIONS, &format!("{name}:{direction}")).or_else(|| own(ACTIONS, name))
+    if let Some(command) =
+        own(ACTIONS, &format!("{name}:{direction}")).or_else(|| own(ACTIONS, name))
     {
         return Some(command.to_owned());
     }
@@ -500,16 +520,16 @@ pub fn zig_string(value: &str) -> String {
             continue;
         }
         let rest = &value[index + 1..];
-        if let Some(body) = rest.strip_prefix("u{") {
-            if let Some(end) = body.find('}') {
-                let point = u32::from_str_radix(&body[..end], 16).ok();
-                if point.is_some_and(|point| point <= 0x10_ffff) {
-                    if let Some(ch) = char::from_u32(point.expect("checked")) {
-                        out.push(ch);
-                        index += 3 + end + 1;
-                        continue;
-                    }
-                }
+        if let Some(body) = rest.strip_prefix("u{")
+            && let Some(end) = body.find('}')
+        {
+            let point = u32::from_str_radix(&body[..end], 16).ok();
+            if point.is_some_and(|point| point <= 0x10_ffff)
+                && let Some(ch) = char::from_u32(point.expect("checked"))
+            {
+                out.push(ch);
+                index += 3 + end + 1;
+                continue;
             }
         }
         let simple = rest.chars().next().and_then(|ch| match ch {
@@ -587,7 +607,10 @@ fn set_keybind(config: &mut GhosttyConfig, value: &str) {
     let trigger = strip_prefixes(raw);
     let action = value[equals + 1..].trim();
     let chord = ghostty_chord(trigger);
-    if chord.as_deref().is_some_and(|chord| own(BUILT_IN, chord) == Some(action)) {
+    if chord
+        .as_deref()
+        .is_some_and(|chord| own(BUILT_IN, chord) == Some(action))
+    {
         let chord = chord.expect("checked");
         config.keybinds.remove(&chord);
         config.globals.retain(|item| item != &chord);
@@ -656,11 +679,7 @@ fn strip_prefixes(value: &str) -> &str {
 pub fn ghostty_theme(config: &GhosttyConfig) -> Option<Theme> {
     let background = config.background.clone()?;
     let foreground = config.foreground.clone()?;
-    let palette = config
-        .palette
-        .iter()
-        .cloned()
-        .collect::<Option<Vec<_>>>();
+    let palette = config.palette.iter().cloned().collect::<Option<Vec<_>>>();
     Some(Theme {
         id: "ghostty".to_owned(),
         name: "Ghostty".to_owned(),
@@ -680,16 +699,13 @@ pub fn ghostty_theme(config: &GhosttyConfig) -> Option<Theme> {
             .selection_background
             .clone()
             .unwrap_or_else(|| mix(&background, &foreground, 0.2)),
-        danger: config
-            .palette[1]
+        danger: config.palette[1]
             .clone()
             .unwrap_or_else(|| "#e45f57".to_owned()),
-        warning: config
-            .palette[3]
+        warning: config.palette[3]
             .clone()
             .unwrap_or_else(|| "#d6a84f".to_owned()),
-        success: config
-            .palette[2]
+        success: config.palette[2]
             .clone()
             .unwrap_or_else(|| "#7fae8b".to_owned()),
         palette,
@@ -840,9 +856,11 @@ fn read_text(path: &Path) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ghostty_action, ghostty_chord, ghostty_prefs, ghostty_theme, parse_ghostty, zig_string};
     use super::super::display::default_display;
     use super::super::keymap::{KeyChord, key_chord};
+    use super::{
+        ghostty_action, ghostty_chord, ghostty_prefs, ghostty_theme, parse_ghostty, zig_string,
+    };
 
     const CONFIG: &str = r#"
 font-family = "JetBrainsMono Nerd Font"
@@ -894,7 +912,10 @@ keybind = f12=set_font_size:15
     #[test]
     fn parses_font_colours_and_keybinds() {
         let config = parse_ghostty(CONFIG);
-        assert_eq!(config.font_family.as_deref(), Some("JetBrainsMono Nerd Font"));
+        assert_eq!(
+            config.font_family.as_deref(),
+            Some("JetBrainsMono Nerd Font")
+        );
         assert_eq!(config.font_size, Some(14.0));
         assert!((config.cell_width.unwrap() - 0.92).abs() < 1e-9);
         assert!(config.cell_height.is_none());
@@ -903,14 +924,31 @@ keybind = f12=set_font_size:15
         assert_eq!(config.palette[0].as_deref(), Some("#081114"));
         assert!(config.palette[2].is_none());
         assert_eq!(config.padding_y, Some(4.0));
-        assert_eq!(config.keybinds.get("cmd+d").map(String::as_str), Some("split-right"));
-        assert_eq!(config.keybinds.get("ctrl+`").map(String::as_str), Some("quick-terminal"));
+        assert_eq!(
+            config.keybinds.get("cmd+d").map(String::as_str),
+            Some("split-right")
+        );
+        assert_eq!(
+            config.keybinds.get("ctrl+`").map(String::as_str),
+            Some("quick-terminal")
+        );
         assert_eq!(config.keybinds.get("cmd+t").map(String::as_str), Some(""));
         assert!(config.globals.iter().any(|chord| chord == "ctrl+`"));
         assert!(!config.keybinds.contains_key("cmd+c"));
-        assert_eq!(config.keybinds.get("shift+enter").map(String::as_str), Some("send:\u{1b}\r"));
-        assert_eq!(config.keybinds.get("f12").map(String::as_str), Some("font-size:15"));
-        assert!(config.unmapped.iter().any(|line| line.contains("super+k = reset")));
+        assert_eq!(
+            config.keybinds.get("shift+enter").map(String::as_str),
+            Some("send:\u{1b}\r")
+        );
+        assert_eq!(
+            config.keybinds.get("f12").map(String::as_str),
+            Some("font-size:15")
+        );
+        assert!(
+            config
+                .unmapped
+                .iter()
+                .any(|line| line.contains("super+k = reset"))
+        );
         let theme = ghostty_theme(&config).expect("theme");
         assert_eq!(theme.accent, "#45d0bd");
         assert!(theme.palette.is_none());
@@ -918,9 +956,15 @@ keybind = f12=set_font_size:15
         assert_eq!(prefs.line_height, 1.0);
         assert_eq!(prefs.padding_x, 6.0);
         assert_eq!(prefs.theme_id, "ghostty");
-        assert_eq!(ghostty_chord("shift+super+bracket_right").as_deref(), Some("cmd+shift+]"));
+        assert_eq!(
+            ghostty_chord("shift+super+bracket_right").as_deref(),
+            Some("cmd+shift+]")
+        );
         assert_eq!(ghostty_chord("ctrl+a>c"), None);
-        assert_eq!(ghostty_action("jump_to_prompt:1").as_deref(), Some("prompt-next"));
+        assert_eq!(
+            ghostty_action("jump_to_prompt:1").as_deref(),
+            Some("prompt-next")
+        );
         assert_eq!(ghostty_action("csi:A"), None);
         assert_eq!(zig_string(r"\xe2\x82\xac"), "€");
         let mut event = KeyChord::new("tab");

@@ -13,10 +13,10 @@ pub use path::{
 };
 
 use phux_client_ffi::projection::{agent::badge, id, status};
+use phux_client_runtime::control::ControlOptions;
 use phux_client_runtime::control::{
     Event, PaneDescriptor, PathAnswer, ServerInfo, SpawnRequest, Status, Topology,
 };
-use phux_client_runtime::control::ControlOptions;
 use phux_client_runtime::{Client, ClientOptions, Listener, Runtime, Target};
 use phux_protocol::ResourceId;
 use phux_protocol::caps::ServerFeature;
@@ -182,8 +182,7 @@ impl Connection {
         for event in &observation.events {
             log::trace!("event {event:?}");
         }
-        self.path_answers
-            .extend(self.client.take_path_answers());
+        self.path_answers.extend(self.client.take_path_answers());
         let changed = observation.events.iter().any(structural);
         let was = self.status;
         if changed {
@@ -281,7 +280,8 @@ impl Connection {
 
     /// Queue a spawn. The session must already be in the topology; there is no fallback.
     pub fn spawn(&self, request: SpawnRequest) -> Result<u32, CommandError> {
-        self.client.with_control(|control| queue_spawn(control, request))
+        self.client
+            .with_control(|control| queue_spawn(control, request))
     }
 
     /// Explicitly terminate a local terminal. Satellite ids are refused, not retried.
@@ -326,7 +326,9 @@ impl Connection {
     /// Hex server incarnation.
     #[must_use]
     pub fn server_id(&self) -> Option<String> {
-        self.identity.as_ref().map(|identity| identity.server_id.clone())
+        self.identity
+            .as_ref()
+            .map(|identity| identity.server_id.clone())
     }
 
     /// Current connection epoch.
@@ -492,11 +494,17 @@ fn note_agent(
     let state = format!("{:?}", folded.state).to_lowercase();
     let attention = format!("{:?}", folded.attention).to_lowercase();
     let previous = agents.get(terminal).map(|info| {
-        (info.state.clone(), info.attention.clone(), info.changed_at_ms)
+        (
+            info.state.clone(),
+            info.attention.clone(),
+            info.changed_at_ms,
+        )
     });
-    let changed = previous.as_ref().is_none_or(|(previous_state, previous_attention, _)| {
-        previous_state != &state || previous_attention != &attention
-    });
+    let changed = previous
+        .as_ref()
+        .is_none_or(|(previous_state, previous_attention, _)| {
+            previous_state != &state || previous_attention != &attention
+        });
     let changed_at_ms = if changed {
         now
     } else {
@@ -594,13 +602,16 @@ fn queue_spawn(
         ));
     }
     validate_spawn(&request)?;
-    let target = request.session_id.or(control.attached_session()).ok_or_else(|| {
-        command(
-            "InvalidSessionId",
-            "Not connected",
-            "Wait for the server, or reconnect with ⌘R.",
-        )
-    })?;
+    let target = request
+        .session_id
+        .or(control.attached_session())
+        .ok_or_else(|| {
+            command(
+                "InvalidSessionId",
+                "Not connected",
+                "Wait for the server, or reconnect with ⌘R.",
+            )
+        })?;
     if control.topology().is_none() {
         return Err(command(
             "TopologyUnavailable",
@@ -639,11 +650,19 @@ fn queue_termination(
     id: &ResourceId,
 ) -> Result<u32, CommandError> {
     if !control.handshake_ready() {
-        return Err(command("NotNegotiated", "Terminate refused", "Not connected."));
+        return Err(command(
+            "NotNegotiated",
+            "Terminate refused",
+            "Not connected.",
+        ));
     }
-    let server_id = control.server().map(|server| status::server_id(server));
+    let server_id = control.server().map(status::server_id);
     let Some(server_id) = server_id else {
-        return Err(command("NotNegotiated", "Terminate refused", "Not connected."));
+        return Err(command(
+            "NotNegotiated",
+            "Terminate refused",
+            "Not connected.",
+        ));
     };
     if identity.connection_epoch != control.connection_epoch() || identity.server_id != server_id {
         return Err(command(
@@ -653,7 +672,11 @@ fn queue_termination(
         ));
     }
     if control.status() != Status::Attached {
-        return Err(command("NotAttached", "Terminate refused", "Not connected."));
+        return Err(command(
+            "NotAttached",
+            "Terminate refused",
+            "Not connected.",
+        ));
     }
     if matches!(id, ResourceId::Satellite { .. }) {
         return Err(command(
@@ -666,7 +689,11 @@ fn queue_termination(
         .topology()
         .is_some_and(|topology| topology.panes.iter().any(|pane| &pane.terminal_id == id));
     if !known {
-        return Err(command("TerminalNotFound", "Terminate refused", "That terminal is gone."));
+        return Err(command(
+            "TerminalNotFound",
+            "Terminate refused",
+            "That terminal is gone.",
+        ));
     }
     Ok(control.kill_terminal(id))
 }
@@ -675,7 +702,11 @@ fn validate_spawn(request: &SpawnRequest) -> Result<(), CommandError> {
     let mut total = 0_usize;
     if let Some(argv) = &request.command {
         if argv.is_empty() || argv.len() > MAX_ARGS || argv[0].is_empty() {
-            return Err(command("InvalidSpawnCommand", "Could not start a terminal", "Invalid command."));
+            return Err(command(
+                "InvalidSpawnCommand",
+                "Could not start a terminal",
+                "Invalid command.",
+            ));
         }
         for arg in argv {
             count_text(&mut total, arg)?;
@@ -717,7 +748,11 @@ fn validate_spawn(request: &SpawnRequest) -> Result<(), CommandError> {
 
 fn count_text(total: &mut usize, text: &str) -> Result<(), CommandError> {
     if text.contains('\0') || text.len() > MAX_TEXT.saturating_sub(*total) {
-        return Err(command("InvalidSpawnText", "Could not start a terminal", "The request is too large."));
+        return Err(command(
+            "InvalidSpawnText",
+            "Could not start a terminal",
+            "The request is too large.",
+        ));
     }
     *total += text.len();
     Ok(())

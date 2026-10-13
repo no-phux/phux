@@ -10,7 +10,7 @@ pub mod keymap;
 pub mod theme;
 
 pub use display::{
-    FONT_FAMILIES, SIDEBAR_MAX, SIDEBAR_MIN, DisplayPrefs, default_display, display_value,
+    DisplayPrefs, FONT_FAMILIES, SIDEBAR_MAX, SIDEBAR_MIN, default_display, display_value,
     parse_display, sanitize_display,
 };
 pub use ghostty::{
@@ -23,6 +23,6 @@ pub use keymap::{
     register_global_hotkeys, shown_chords, text_field_has_keys, yields_to_text_field,
 };
 pub use theme::{
-    Palette, Theme, agent_colors, default_theme_id, mix, palette, readable_on, theme_by_id,
-    themes, with_alpha,
+    Palette, Theme, agent_colors, default_theme_id, mix, palette, readable_on, theme_by_id, themes,
+    with_alpha,
 };

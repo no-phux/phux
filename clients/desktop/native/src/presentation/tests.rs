@@ -1,10 +1,9 @@
 //! Real embedded engine/control tests of the ticket boundary, not GPU receipts.
 
 use super::*;
+use phux_client_runtime::Runtime;
 use phux_client_runtime::control::ControlOptions;
 use phux_client_runtime::engine::Scroll;
-use phux_client_runtime::Runtime;
-use std::sync::Arc;
 use phux_protocol::{
     PROTOCOL_VERSION, ResourceId,
     caps::{
@@ -17,6 +16,7 @@ use phux_protocol::{
         info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo},
     },
 };
+use std::sync::Arc;
 
 fn terminal() -> ResourceId {
     ResourceId::local(7)

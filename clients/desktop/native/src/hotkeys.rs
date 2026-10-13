@@ -24,9 +24,7 @@ impl GlobalHotkeys {
     /// Register a chord in `cmd+ctrl+alt+shift+key` form. Fails when another
     /// app (Ghostty, for one) already holds it.
     pub fn register(&mut self, chord: String) -> Result<(), String> {
-        let hotkey: HotKey = chord
-            .parse()
-            .map_err(|error| format!("{chord}: {error}"))?;
+        let hotkey: HotKey = chord.parse().map_err(|error| format!("{chord}: {error}"))?;
         self.manager
             .register(hotkey)
             .map_err(|error| format!("{chord}: {error}"))?;

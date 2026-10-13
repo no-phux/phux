@@ -26,7 +26,11 @@ pub fn from_hex(color: &str) -> Hsla {
 /// with the phux palette, in the theme's own light or dark mode.
 pub fn apply_kit_theme(colors: &Palette, cx: &mut App) {
     let theme = &colors.theme;
-    let mode = if theme.appearance == "light" { ThemeMode::Light } else { ThemeMode::Dark };
+    let mode = if theme.appearance == "light" {
+        ThemeMode::Light
+    } else {
+        ThemeMode::Dark
+    };
     if Theme::global(cx).mode != mode {
         Theme::change(mode, None, cx);
     }
