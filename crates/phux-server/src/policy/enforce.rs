@@ -651,7 +651,8 @@ fn move_sessions(s: &ServerState, verbs: Verbs, request: Request<'_>) -> Option<
 }
 
 /// Every session and resource the undone operation's recorded inverse
-/// touches, under current membership.
+/// touches, under current membership: for a move, the resource's current
+/// session and the session it returns to.
 fn undone_operation(s: &ServerState, verbs: Verbs, request: Request<'_>) -> Option<Vec<Need>> {
     let Request::Command(Command::OrganizationUndo { undo, .. }) = request else {
         return None;
@@ -668,9 +669,12 @@ fn undone_operation(s: &ServerState, verbs: Verbs, request: Request<'_>) -> Opti
     let mut points = Vec::new();
     for edit in &inverse.inverse {
         match edit {
+            // The same rule as a forward move: the resource, the session it
+            // leaves now, and the session it returns to.
             phux_core::InverseEdit::Membership { resource, to } => {
                 let id = s.registry().resource_id(resource)?;
                 points.push(Point::Terminal(local_point(s, id)));
+                points.push(session_point(s, Some(s.registry().session_of(id)?)));
                 points.push(session(to)?);
             }
             phux_core::InverseEdit::Intake { session: key, .. } => points.push(session(key)?),

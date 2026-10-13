@@ -1442,6 +1442,61 @@ fn group_ceiling_stops_matching_when_the_terminal_moves_out_and_resumes_when_it_
 }
 
 #[test]
+fn undoing_a_move_needs_organize_on_the_session_the_resource_leaves() {
+    let mut world = world();
+    let key = |state: &ServerState, session| state.registry().session_key(session).unwrap();
+    let (alpha, beta) = (
+        key(&world.state, world.alpha_session),
+        key(&world.state, world.beta_session),
+    );
+    let revision =
+        |state: &ServerState, k: &phux_core::SessionKey| state.org().session(k).unwrap().revision;
+    let moved = world
+        .state
+        .commit(
+            phux_core::Op::ResourceMove {
+                resource: world
+                    .state
+                    .registry()
+                    .resource_key(world.alpha_core)
+                    .unwrap(),
+                from: alpha,
+                from_expected: revision(&world.state, &alpha),
+                to: beta,
+                to_expected: revision(&world.state, &beta),
+            },
+            &phux_core::Actor::owner(),
+        )
+        .unwrap();
+    let undo = || Command::OrganizationUndo {
+        operation: phux_protocol::ids::OperationId::new([0x42; 16]).unwrap(),
+        undo: crate::org_wire::operation(moved.applied.operation).unwrap(),
+        expected: Vec::new(),
+    };
+    let beta_group = world
+        .state
+        .idspace
+        .session_wire(world.beta_session)
+        .unwrap()
+        .get();
+    let terminal = local_id(&world.alpha);
+    let alpha_group = world.alpha_group;
+    // The resource and the session it returns to are not enough: the undo
+    // also takes it out of the session it sits in now.
+    let partial = scoped(&[
+        &format!("organize@terminal:{terminal}"),
+        &format!("organize@group:{alpha_group}"),
+    ]);
+    assert!(!admits_command(&world, &partial, undo()));
+    let full = scoped(&[
+        &format!("organize@terminal:{terminal}"),
+        &format!("organize@group:{alpha_group}"),
+        &format!("organize@group:{beta_group}"),
+    ]);
+    assert!(admits_command(&world, &full, undo()));
+}
+
+#[test]
 fn absent_and_unauthorized_targets_get_the_same_denial() {
     let world = world();
     let grant = scoped(&[&format!("*@group:{}", world.alpha_group)]);
