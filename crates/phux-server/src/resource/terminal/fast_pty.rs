@@ -108,13 +108,15 @@ pub(crate) struct PtyFastPath {
     /// Keys accepted by the input lane and not yet counted in `pending`.
     lane_ahead: AtomicUsize,
     closed: AtomicBool,
-    admit: Mutex<()>,
+    /// Admission lock, holding this path's sender into the writer queue.
+    /// [`Self::close`] takes it so the writer thread sees its channel close
+    /// once the actor drops its own sender.
+    admit: Mutex<Option<mpsc::Sender<EncodedInputRequest>>>,
     cv: Condvar,
     master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     io: Mutex<WriterSlot>,
     echo_read: Mutex<File>,
     pty_tx: mpsc::Sender<PtyEvent>,
-    input_tx: mpsc::Sender<EncodedInputRequest>,
 }
 
 impl PtyFastPath {
@@ -130,7 +132,7 @@ impl PtyFastPath {
             pending: AtomicUsize::new(0),
             lane_ahead: AtomicUsize::new(0),
             closed: AtomicBool::new(false),
-            admit: Mutex::new(()),
+            admit: Mutex::new(Some(input_tx)),
             cv: Condvar::new(),
             master,
             io: Mutex::new(WriterSlot {
@@ -138,7 +140,6 @@ impl PtyFastPath {
             }),
             echo_read: Mutex::new(echo_read),
             pty_tx,
-            input_tx,
         })
     }
 
@@ -149,8 +150,11 @@ impl PtyFastPath {
         &self,
         mut request: EncodedInputRequest,
     ) -> Result<(), mpsc::error::TrySendError<EncodedInputRequest>> {
-        let _admit = lock(&self.admit);
-        if request.credit.is_none() && self.input_tx.capacity() <= INPUT_CREDITS {
+        let admit = lock(&self.admit);
+        let Some(input_tx) = admit.as_ref() else {
+            return Err(mpsc::error::TrySendError::Closed(request));
+        };
+        if request.credit.is_none() && input_tx.capacity() <= INPUT_CREDITS {
             crate::perf::INPUT_WRITER_FULL.incr();
             return Err(mpsc::error::TrySendError::Full(request));
         }
@@ -160,11 +164,12 @@ impl PtyFastPath {
         self.pending.fetch_add(1, Ordering::AcqRel);
         request.counts_pending = true;
         request.writer_queued_at = Some(Instant::now());
-        let sent = self.input_tx.try_send(request);
+        let sent = input_tx.try_send(request);
         if sent.is_err() {
             self.pending.fetch_sub(1, Ordering::Release);
         }
         drop(ahead);
+        drop(admit);
         match sent {
             Ok(()) => Ok(()),
             Err(err) => {
@@ -177,13 +182,18 @@ impl PtyFastPath {
     }
 
     /// Write `bytes` on this thread when the writer is idle in `recv`.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the admit lock covers both the idle checks and the phase claim"
+    )]
     pub(crate) fn try_direct(&self, bytes: &[u8]) -> DirectWrite {
         if !phux_perf::echo_hop::fast_path_enabled() || self.closed.load(Ordering::Acquire) {
             return DirectWrite::Busy;
         }
         {
-            let _admit = lock(&self.admit);
-            if self.pending.load(Ordering::Acquire) != 0
+            let admit = lock(&self.admit);
+            if admit.is_none()
+                || self.pending.load(Ordering::Acquire) != 0
                 || self.lane_ahead.load(Ordering::Acquire) != 0
                 || self.phase.load(Ordering::Acquire) == BUSY
             {
@@ -318,6 +328,16 @@ impl PtyFastPath {
             }
             _ => {}
         }
+    }
+
+    /// Refuse further direct writes and enqueues, and give up this path's
+    /// sender so the writer thread drains what is queued and ends once the
+    /// actor drops its own. Without this the writer would wait on a channel
+    /// this struct keeps open, and keep the master and the echo descriptor
+    /// alive with it.
+    pub(super) fn close(&self) {
+        let sender = lock(&self.admit).take();
+        drop(sender);
     }
 
     fn finish_clean(&self) {

@@ -446,6 +446,7 @@ impl TerminalActor {
         let Some(mut pty) = self.pty.take() else {
             return;
         };
+        pty.fast.close();
         let pid = pty.child.process_id();
         self.released_child_pid = pid.and_then(|pid| i32::try_from(pid).ok());
         let reaped = self
@@ -493,6 +494,7 @@ impl TerminalActor {
         }
         // Close the writer channel so the writer thread exits.
         drop(self.pty_tx.take());
+        pty.fast.close();
         // Reap without blocking this task; see `reap_bounded`.
         let child_pid = pty.child.process_id();
         if matches!(

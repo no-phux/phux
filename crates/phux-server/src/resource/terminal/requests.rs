@@ -766,8 +766,9 @@ pub struct TerminalHandle {
     /// Pane viewport height in cells at construction time.
     pub rows: u16,
     /// Present when this pane has a live PTY writer. The receive task writes
-    /// a legacy printable key here instead of waking the input lane.
-    pub(crate) fast_pty: Option<std::sync::Arc<super::fast_pty::PtyFastPath>>,
+    /// a legacy printable key here instead of waking the input lane. Weak, so
+    /// a retained pane whose PTY was released holds no master descriptor.
+    pub(crate) fast_pty: Option<std::sync::Weak<super::fast_pty::PtyFastPath>>,
 }
 
 impl TerminalHandle {

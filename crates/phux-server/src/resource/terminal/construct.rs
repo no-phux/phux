@@ -315,7 +315,7 @@ impl TerminalActor {
             resize: resize_tx,
             cols,
             rows,
-            fast_pty,
+            fast_pty: fast_pty.as_ref().map(std::sync::Arc::downgrade),
         };
         let handle = ResourceHandle {
             kind: actor.core.kind(),

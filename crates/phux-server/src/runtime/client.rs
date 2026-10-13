@@ -4161,7 +4161,7 @@ fn try_inline_key(
         |destination| {
             let options = destination.handle.input_snapshot.borrow().key;
             let text = crate::input::key::legacy_printable(event, options)?;
-            let fast = destination.handle.fast_pty?;
+            let fast = destination.handle.fast_pty.as_ref()?.upgrade()?;
             Some((fast, text.as_bytes().to_vec()))
         },
     ) else {

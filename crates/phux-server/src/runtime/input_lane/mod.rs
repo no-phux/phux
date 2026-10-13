@@ -265,8 +265,9 @@ pub(crate) fn arm_pane_lane(
             .terminal()
             .ok()?
             .fast_pty
-            .as_ref()
-            .map(LaneAhead::arm)
+            .as_ref()?
+            .upgrade()
+            .map(|fast| LaneAhead::arm(&fast))
     })
 }
 
