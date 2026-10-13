@@ -14,14 +14,15 @@ use std::time::{Duration, Instant};
 use phux_client_core::layout::ArrangementDoc as HandleDoc;
 use phux_client_core::layout::wire::{WireError, to_protocol};
 use phux_client_core::org_ops::{
-    KillWorkflow, ORG_JOURNAL_MAX_OPS, OrgJournal, OrgOutcome, OrgReport, SubmitError, live_target,
+    KillWorkflow, ORG_JOURNAL_MAX_OPS, ORG_RETRY_HORIZON_MS, OrgJournal, OrgOutcome, OrgReport,
+    OrganizationCommand, SubmitError, live_target,
 };
 use phux_protocol::ResourceId;
 use phux_protocol::caps::ServerFeatureExt;
 use phux_protocol::ids::{ArrangementKey, AuthorityId, OperationId, ResourceKey, SessionKey};
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, Committed, FrameKind, MAX_ORG_BATCH,
-    MoveItem, OrgFilter, SessionLifetime, TerminateMode,
+    MoveItem, OrgFilter, Refusal, SessionLifetime, TerminateMode,
 };
 
 use super::organization::{RecordChange, ReplicaAction};
@@ -58,6 +59,9 @@ struct BulkMove {
     to: SessionKey,
     remaining: VecDeque<(OperationId, Vec<ResourceKey>)>,
     phase: BulkPhase,
+    /// Bounds inventory waits; an attempted command keeps the journal's
+    /// independent receipt/retry semantics rather than being called not sent.
+    deadline: Instant,
 }
 
 #[derive(Debug)]
@@ -78,6 +82,9 @@ pub(super) struct OrgLane {
     pub(super) kills: Vec<KillRun>,
     pub(super) closes: Vec<CloseBatch>,
     moves: Vec<BulkMove>,
+    deferred: usize,
+    seed_has_cursor: bool,
+    seed_restarts: u8,
     pub(super) next_run: u64,
 }
 
@@ -130,10 +137,14 @@ impl ControlPlane {
             return *request_id;
         }
         let command = self.organization.begin_seed(filter);
+        self.org.seed_restarts = 0;
         self.queue_org_read(command, Pending::OrgPage(filter))
     }
 
     fn queue_org_read(&mut self, command: Command, pending: Pending) -> u32 {
+        if let Command::GetOrganization { cursor, .. } = &command {
+            self.org.seed_has_cursor = cursor.is_some();
+        }
         let request_id = self.next_request_id();
         self.pending.insert(request_id, pending);
         self.queue_frame(&FrameKind::Command {
@@ -211,14 +222,12 @@ impl ControlPlane {
                 self.organization.apply_arrangement(*value);
                 self.organization_changed();
             }
-            (Pending::OrgPage(OrgFilter::All), CommandResult::Refused(_)) => {
-                // An expired cursor: start over from the first page.
-                self.organization.abandon_seed();
-                self.queue_org_seed(OrgFilter::All);
+            (Pending::OrgPage(filter), CommandResult::Refused(refusal)) => {
+                self.resolve_org_read_refusal(*filter, &refusal);
             }
             (Pending::OrgPage(_), other) => {
                 self.organization.abandon_seed();
-                self.cancel_waiting_bulk_moves("the post-commit organization read failed");
+                self.cancel_bulk_moves("the organization read failed");
                 self.push_event(Event::OrganizationUnavailable {
                     message: format!("GET_ORGANIZATION answered {other:?}"),
                 });
@@ -230,6 +239,24 @@ impl ControlPlane {
             }
             _ => {}
         }
+    }
+
+    fn resolve_org_read_refusal(&mut self, filter: OrgFilter, refusal: &Refusal) {
+        // A rejected opaque continuation can be replaced once. Authorization,
+        // support and store failures are not evidence of cursor invalidation.
+        let restart = self.org.seed_has_cursor
+            && self.org.seed_restarts == 0
+            && matches!(refusal, Refusal::InvalidArgument { field, .. } if field == "cursor");
+        self.organization.abandon_seed();
+        if restart {
+            self.queue_org_seed(filter);
+            self.org.seed_restarts = 1;
+            return;
+        }
+        self.cancel_bulk_moves("the organization read was refused");
+        self.push_event(Event::OrganizationUnavailable {
+            message: format!("GET_ORGANIZATION answered {refusal:?}"),
+        });
     }
 
     fn act_on_replica(&mut self, action: ReplicaAction) {
@@ -345,7 +372,7 @@ impl ControlPlane {
     /// journal.
     pub fn submit_organization(&mut self, command: Command) -> Result<OperationId, SubmitError> {
         let now_ms = self.now_ms();
-        let operation = self.org.journal.submit(command, now_ms)?;
+        let operation = self.journal_org_operation(command)?;
         if self.handshake_ready && !self.organization_supported() {
             // This server cannot take it; a later connection to one that can
             // must not run it unasked.
@@ -355,6 +382,28 @@ impl ControlPlane {
         }
         self.flush_org_journal();
         Ok(operation)
+    }
+
+    /// All producers use this gate: deferred chunks reserve real journal
+    /// slots, and an exact retry of an already journaled operation needs none.
+    fn journal_org_operation(&mut self, command: Command) -> Result<OperationId, SubmitError> {
+        let operation = command
+            .organization_operation()
+            .ok_or(SubmitError::NotAnOperation)?;
+        if self.org.journal.command(operation).is_none()
+            && self.org.journal.len() + self.org.deferred >= ORG_JOURNAL_MAX_OPS
+        {
+            return Err(SubmitError::Full);
+        }
+        if self
+            .org
+            .moves
+            .iter()
+            .any(|run| run.remaining.iter().any(|(id, _)| id == operation))
+        {
+            return Err(SubmitError::DuplicateOperation);
+        }
+        self.org.journal.submit(command, self.now_ms())
     }
 
     fn flush_org_journal(&mut self) {
@@ -392,6 +441,7 @@ impl ControlPlane {
         let reports = self.org.journal.expire(now_ms);
         self.handle_org_reports(reports);
         let now = Instant::now();
+        self.expire_bulk_reads(now);
         let mut escalate = Vec::new();
         for run in &mut self.org.kills {
             if now >= run.deadline {
@@ -414,7 +464,7 @@ impl ControlPlane {
         self.events.len() != before
     }
 
-    /// The earliest kill-workflow deadline.
+    /// The earliest kill-workflow or bulk-inventory deadline.
     pub(super) fn next_org_deadline(&self) -> Option<Instant> {
         self.org
             .kills
@@ -426,6 +476,13 @@ impl ControlPlane {
                     run.escalate_at
                 }
             })
+            .chain(
+                self.org
+                    .moves
+                    .iter()
+                    .filter(|run| !matches!(run.phase, BulkPhase::Submitted(_)))
+                    .map(|run| run.deadline),
+            )
             .min()
     }
 
@@ -497,6 +554,7 @@ impl ControlPlane {
     }
 
     fn cancel_bulk_tail(&mut self, run: BulkMove, why: &str) {
+        self.org.deferred -= run.remaining.len();
         for (operation, _) in run.remaining {
             self.push_event(Event::OrganizationOperation {
                 operation,
@@ -513,17 +571,18 @@ impl ControlPlane {
         }
     }
 
-    fn cancel_waiting_bulk_moves(&mut self, why: &str) {
-        let (submitted, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.org.moves)
+    fn expire_bulk_reads(&mut self, now: Instant) {
+        let (running, expired): (Vec<_>, Vec<_>) = std::mem::take(&mut self.org.moves)
             .into_iter()
-            .partition(|run| matches!(run.phase, BulkPhase::Submitted(_)));
-        self.org.moves = submitted;
-        for run in waiting {
-            self.cancel_bulk_tail(run, why);
+            .partition(|run| matches!(run.phase, BulkPhase::Submitted(_)) || now < run.deadline);
+        self.org.moves = running;
+        for run in expired {
+            self.cancel_bulk_tail(run, "the bulk move inventory deadline passed");
         }
     }
 
     fn advance_bulk_moves(&mut self) {
+        self.expire_bulk_reads(Instant::now());
         if !self.handshake_ready || !self.org.ready || !self.organization.is_live() {
             return;
         }
@@ -560,10 +619,14 @@ impl ControlPlane {
             return false;
         };
         let operation = *operation;
+        // Transfer this reserved slot to the journal even while the run is
+        // temporarily removed from the lane during advancement.
+        self.org.deferred -= 1;
         let result = self
             .bulk_move_command(operation, resources, run.to)
-            .and_then(|command| self.org.journal.submit(command, self.now_ms()));
+            .and_then(|command| self.journal_org_operation(command));
         if let Err(error) = result {
+            self.org.deferred -= run.remaining.len() - 1;
             for (operation, _) in run.remaining.drain(..) {
                 self.push_event(Event::OrganizationOperation {
                     operation,
@@ -658,8 +721,7 @@ impl ControlPlane {
             }
         }
         for (id, operation, command) in submissions {
-            let now_ms = self.now_ms();
-            if let Err(error) = self.org.journal.submit(command, now_ms)
+            if let Err(error) = self.journal_org_operation(command)
                 && let Some(run) = self.org.kills.iter_mut().find(|run| run.id == id)
             {
                 run.operations.remove(&operation);
@@ -814,13 +876,15 @@ impl ControlPlane {
             .organization
             .authority()
             .ok_or(SubmitError::NotAnOperation)?;
-        self.org.journal.submit(command, self.now_ms())?;
+        self.journal_org_operation(command)?;
         if !chunks.is_empty() {
+            self.org.deferred += chunks.len();
             self.org.moves.push(BulkMove {
                 authority,
                 to,
                 remaining: chunks,
                 phase: BulkPhase::Submitted(operation),
+                deadline: Instant::now() + Duration::from_millis(ORG_RETRY_HORIZON_MS),
             });
         }
         if self.handshake_ready && !self.organization_supported() {
@@ -848,7 +912,7 @@ impl ControlPlane {
                 Ok((operation, chunk.to_vec()))
             })
             .collect::<Result<VecDeque<_>, SubmitError>>()?;
-        if self.pending_organization_operations().count() + chunks.len() > ORG_JOURNAL_MAX_OPS {
+        if self.org.journal.len() + self.org.deferred + chunks.len() > ORG_JOURNAL_MAX_OPS {
             return Err(SubmitError::Full);
         }
         Ok(chunks)
@@ -973,15 +1037,11 @@ impl ControlPlane {
                 batch.errors.push(format!("{id:?} has no live record here"));
                 continue;
             };
-            let now_ms = self.now_ms();
-            match self.org.journal.submit(
-                Command::ResourceTerminate {
-                    operation: mint_operation(),
-                    target,
-                    mode: TerminateMode::Graceful,
-                },
-                now_ms,
-            ) {
+            match self.journal_org_operation(Command::ResourceTerminate {
+                operation: mint_operation(),
+                target,
+                mode: TerminateMode::Graceful,
+            }) {
                 Ok(operation) => {
                     batch.operations.insert(operation);
                 }
@@ -1032,5 +1092,42 @@ fn outcome_sentence(outcome: &OrgOutcome) -> String {
         OrgOutcome::Unknown { reason } => format!("outcome unknown: {reason}"),
         OrgOutcome::NotSent { reason } => format!("not sent: {reason}"),
         other => format!("{other:?}"),
+    }
+}
+
+#[cfg(test)]
+mod bulk_deadline_tests {
+    #![allow(clippy::unwrap_used, reason = "test assertions")]
+
+    use super::*;
+    use crate::control::ControlOptions;
+
+    #[test]
+    fn inventory_deadline_is_scheduled_and_cancels_only_the_never_sent_tail() {
+        let mut plane = ControlPlane::new(ControlOptions::default());
+        let first = mint_operation();
+        let tail = mint_operation();
+        let deadline = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+        plane.org.moves.push(BulkMove {
+            authority: AuthorityId::new([1; 16]).unwrap(),
+            to: SessionKey::new([2; 16]).unwrap(),
+            remaining: VecDeque::from([(tail, vec![ResourceKey::new([3; 16]).unwrap()])]),
+            phase: BulkPhase::Submitted(first),
+            deadline,
+        });
+        plane.org.deferred = 1;
+        // An attempted command retains independent journal semantics. The
+        // inventory timer is armed only once its receipt has committed.
+        assert!(plane.next_operation_deadline().is_none());
+        plane.org.moves[0].phase = BulkPhase::Seeding;
+        assert_eq!(plane.next_operation_deadline(), Some(deadline));
+        assert!(plane.expire_operations());
+        assert!(matches!(plane.take_events().as_slice(),
+            [Event::OrganizationOperation { operation, outcome: OrgOutcome::NotSent { .. } }] if *operation == tail));
+        assert_eq!(plane.org.deferred, 0);
+        assert!(plane.next_operation_deadline().is_none());
+        assert!(!plane.expire_operations());
+        plane.bulk_moves_seeded(); // A late page cannot resurrect timed-out work.
+        assert!(plane.org.moves.is_empty());
     }
 }
