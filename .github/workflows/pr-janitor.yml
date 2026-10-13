@@ -119,8 +119,8 @@ jobs:
         run: |
           set -euo pipefail
           ref="refs/pull/${PR_NUMBER}/merge"
-          # One page is enough for a PR under the read-only sccache policy;
-          # --paginate keeps a pre-policy backlog from being left behind.
+          # PRs do not write the shared Actions cache. --paginate still clears
+          # a backlog from an older policy that did.
           mapfile -t entries < <(gh api --paginate \
             "repos/${GITHUB_REPOSITORY}/actions/caches?per_page=100" \
             --jq ".actions_caches[] | select(.ref == \"${ref}\") | \"\(.id)\t\(.size_in_bytes)\"")

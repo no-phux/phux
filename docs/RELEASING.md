@@ -104,26 +104,28 @@ Workflows use only `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-24.04-arm`, and
 `xcode-27` (macOS 27 with Xcode 27); no larger or self-hosted runners.
 
 The Actions cache is capped at 10 GB per repository with LRU eviction, and a
-cache saved on `refs/pull/N/merge` is only restorable from that PR. The check
-and icount mbx caches (`.github/actions/setup-rust-lane`, one `objects` entry
-per lane) save on `main` pushes only, as do the other lanes' `rust-cache`
-entries, and Cockpit's sccache runs `SCCACHE_GHA_RW_MODE=READ_ONLY` off
-`main`; any new PR-lane cache needs the same treatment. The mbx primary key
-is the lane, `flake.lock`, `Cargo.lock`, and the UTC day. It does not include
-the commit: an exact hit skips the objects export. A new day or lockfile
-still restores the previous entry by prefix, then saves once.
-`prune-build-cache` keeps the newest check and icount entry and deletes every
-test-lane entry. The account allows 20 concurrent standard jobs, only 5 of
-them macOS. `pr-janitor` cancels a closed PR's live runs and deletes its
-merge-ref caches. Concurrency groups use the `mini-v1-` namespace.
+cache saved on `refs/pull/N/merge` is only restorable from that PR. The check,
+test, and icount mbx caches (`.github/actions/setup-rust-lane`, one `objects`
+entry per lane) save on `main` pushes only, as do the other lanes'
+`rust-cache` entries; any new PR-lane cache needs the same treatment. The mbx
+primary key is the lane, `flake.lock`, `Cargo.lock`, and the UTC day. It does
+not include the commit: an exact hit skips the objects export. A new day or
+lockfile still restores the previous entry by prefix, then saves once.
+`prune-build-cache` keeps the newest entry for each of those lanes, for the
+Cockpit zig cache, and for each `rust-cache` prefix, and it deletes every
+`sccache/` object. Cockpit does not write sccache into the Actions cache:
+those per-compilation shards stay newer than the large archives and evict
+them. The account allows 20 concurrent standard jobs, only 5 of them macOS.
+`pr-janitor` cancels a closed PR's live runs and deletes its merge-ref
+caches. Concurrency groups use the `mini-v1-` namespace.
 
-The test lane does not use that objects cache. Run 38442503688 saved
-5940645663 bytes. Cockpit's zig cache is about 4.8 GB, and with the other
-entries the repository was already near the cap, so that archive (and the
-smaller mbx entries) had been evicted within the hour. Downloading and
-importing it takes about five minutes, against about seven minutes of cold
-compile, and packaging the export takes about eleven. `PHUX_CI_MBX=1` still
-wraps Cargo so the job's unit tests and e2e share one disk store.
+A cold test build learns mbx keys while it compiles (`not looked up`), then
+the save is what the next job hits. Run 38451988937 spent 10m 24s compiling
+the test profile with 0 hits and left a 2.3 GB archive (2339429694 bytes).
+The earlier 5.5 GB archive was a store whose action results had already been
+deleted; that export took about eleven minutes and did not fit beside the
+other caches. With one copy of each large archive and no sccache shards, the
+2.3 GB test entry and the zig cache both fit in the 10 GB cap.
 
 The check and icount lanes collect the restored mbx store before compiling,
 never between a build and its objects export. Pending export groups reference

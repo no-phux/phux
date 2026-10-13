@@ -72,24 +72,26 @@ class RunnerPolicyTests(unittest.TestCase):
             self.assertNotIn("mr-boxington-action", body)
 
     def test_main_prunes_superseded_build_cache_entries(self):
-        """check and icount keep their newest mbx entry. The test lane keeps none.
+        """Keep the newest large archive. Delete sccache's per-object shards.
 
-        Restores take only the newest, so ci.yml deletes older check and
-        icount entries after a main run. The test lane's archive is about
-        5.5 GB and does not fit in the shared 10 GB, so every leftover test
-        entry is deleted rather than kept.
+        Restores take only the newest entry for a prefix. sccache's GitHub
+        backend writes one small object per compilation; those stay LRU-hot
+        and evict the test-lane mbx archive and the Cockpit zig cache.
         """
         ci = (WORKFLOWS / "ci.yml").read_text()
         prune = ci.split("\n  prune-build-cache:\n", 1)[1]
         self.assertIn("github.event_name == 'push' && github.ref == 'refs/heads/main'", prune)
         self.assertIn("needs: [check, test, perf-icount]", prune)
         self.assertIn("actions: write", prune)
-        self.assertIn("check:linux-arm64", prune)
-        self.assertIn("icount:linux-x64", prune)
-        self.assertNotIn("test:linux-arm64", prune)
-        self.assertIn("key=linux-arm64-mbx-phux-test-", prune)
-        self.assertIn("key=${arch}-mbx-phux-${lane}-", prune)
+        self.assertIn("keep_newest check linux-arm64-mbx-phux-check-", prune)
+        self.assertIn("keep_newest test linux-arm64-mbx-phux-test-", prune)
+        self.assertIn("keep_newest icount linux-x64-mbx-phux-icount-", prune)
+        self.assertIn("keep_newest zig mini-v3-cockpit-zig-0.16.0-macOS-ARM64-", prune)
+        self.assertIn("drop_all sccache sccache", prune)
         self.assertIn("tail -n +2", prune)
+        cockpit = (WORKFLOWS / "cockpit-ci.yml").read_text()
+        self.assertNotIn("SCCACHE_GHA_ENABLED", cockpit)
+        self.assertNotIn("mozilla-actions/sccache-action", cockpit)
 
     def test_rust_lane_cache_keeps_action_results_and_skips_repeat_exports(self):
         """The test lane's 8 GiB collection deleted the store it had just restored.
@@ -108,18 +110,19 @@ class RunnerPolicyTests(unittest.TestCase):
         self.assertIn("linux-arm64", lane)
         self.assertIn("linux-x64", lane)
 
-    def test_test_lane_does_not_upload_an_objects_archive(self):
-        """The test-profile objects archive cannot share the 10 GB budget.
+    def test_test_lane_restores_the_objects_archive(self):
+        """The test profile's cold compile is the required check's long pole.
 
-        Run 38442503688 saved 5940645663 bytes at 18:23. Cockpit's zig cache
-        is about 4.8 GB, and by 19:03 the repository had no mbx key left.
-        Importing that archive takes about five minutes, against about seven
-        of cold compile, and the export takes about eleven. check and icount
-        stay on the GitHub cache; their exports are ~1.5 GiB logical.
+        Run 38451988937 finished `test` in 10m 24s with 0 hits and 515
+        compilations not looked up, then saved a 2.3 GB archive. A first fill
+        cannot hit; the next job hits only if this lane restores that entry.
+        The x64 toolchain wipe is skipped when the disk already has room.
         """
         lane = (ROOT / ".github/actions/setup-rust-lane/action.yml").read_text()
-        self.assertEqual(lane.count("inputs.cache-lane != 'test'"), 2)
+        self.assertNotIn("inputs.cache-lane != 'test'", lane)
         self.assertIn("uses: jdx/mr-boxington-action@", lane)
+        self.assertIn("cache-key: ${{ steps.mbx-env.outputs.cache_key }}", lane)
+        self.assertIn("40 * 1024 * 1024", lane)
         self.assertIn("PHUX_CI_MBX=1", lane)
 
     def test_export_cleanup_preserves_pending_cache_and_cargo_tools(self):
