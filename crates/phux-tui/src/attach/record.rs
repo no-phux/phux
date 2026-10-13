@@ -128,6 +128,11 @@ pub struct SessionRecorder<W: Write + Seek = BufWriter<File>> {
     header_line: String,
     version: CastVersion,
     probe: SizeProbe,
+    /// Inbox `phux rec mark` and the `rec-mark` hotkey append to. `None`
+    /// in tests that build a recorder over an in-memory sink.
+    inbox: Option<phux_record::MarkInbox>,
+    /// Output, resize, and marker events accepted since open.
+    events_written: u64,
 }
 
 impl<W: Write + Seek> std::fmt::Debug for SessionRecorder<W> {
@@ -137,6 +142,8 @@ impl<W: Write + Seek> std::fmt::Debug for SessionRecorder<W> {
             .field("dims", &self.dims)
             .field("failed", &self.failed)
             .field("version", &self.version)
+            .field("inbox", &self.inbox.is_some())
+            .field("events_written", &self.events_written)
             .finish_non_exhaustive()
     }
 }
@@ -151,7 +158,47 @@ impl SessionRecorder<BufWriter<File>> {
         version: CastVersion,
     ) -> Result<Self, AttachError> {
         let dims = tty_winsize().unwrap_or((80, 24));
-        Self::open(BufWriter::new(File::create(path)?), dims, title, version)
+        let mut recorder = Self::open(
+            BufWriter::new(File::create(path)?),
+            dims,
+            title,
+            version,
+            true,
+        )?;
+        recorder.attach_inbox();
+        Ok(recorder)
+    }
+
+    /// Open `path` at a fixed cell grid and never consult the real terminal.
+    ///
+    /// The size probe always reports `cols` x `rows`, so the cast gains no
+    /// resize events from the host TTY. This is the headless composited
+    /// capture: the grid is a virtual viewport, and nothing here talks to
+    /// a pane, so it cannot resize one.
+    pub fn create_virtual(
+        path: &Path,
+        cols: u16,
+        rows: u16,
+        title: Option<&str>,
+        version: CastVersion,
+    ) -> Result<Self, AttachError> {
+        if cols == 0 || rows == 0 {
+            return Err(AttachError::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "virtual viewport must be non-zero",
+            )));
+        }
+        let mut recorder = Self::open(
+            BufWriter::new(File::create(path)?),
+            (cols, rows),
+            title,
+            version,
+            false,
+        )?;
+        let fixed = (cols, rows);
+        recorder.probe = Box::new(move || Some(fixed));
+        recorder.attach_inbox();
+        Ok(recorder)
     }
 }
 
@@ -162,6 +209,7 @@ impl<W: Write + Seek> SessionRecorder<W> {
         dims: (u16, u16),
         title: Option<&str>,
         version: CastVersion,
+        capture_env: bool,
     ) -> Result<Self, AttachError> {
         let header = CastHeader {
             cols: dims.0,
@@ -171,7 +219,14 @@ impl<W: Write + Seek> SessionRecorder<W> {
             idle_time_limit: None,
             command: None,
             title: title.map(ToOwned::to_owned),
-            env: recorded_env(),
+            // A virtual capture is not running inside the recorded session,
+            // so its own TERM would be a lie. The interactive tee records
+            // the outer terminal's TERM and SHELL, which are the client's.
+            env: if capture_env {
+                recorded_env()
+            } else {
+                BTreeMap::new()
+            },
             // The outer palette is unknowable here; the exporter themes.
             theme: None,
         };
@@ -203,7 +258,14 @@ impl<W: Write + Seek> SessionRecorder<W> {
             header_line,
             version,
             probe: Box::new(tty_winsize),
+            inbox: None,
+            events_written: 0,
         })
+    }
+
+    /// Best-effort: a recording that cannot create its inbox still captures.
+    fn attach_inbox(&mut self) {
+        self.inbox = phux_record::MarkInbox::register().ok();
     }
 
     /// Test seam: build a recorder over an arbitrary sink with fixed initial
@@ -216,7 +278,13 @@ impl<W: Write + Seek> SessionRecorder<W> {
         title: Option<&str>,
         version: CastVersion,
     ) -> Result<Self, AttachError> {
-        Self::open(sink, (cols, rows), title, version)
+        Self::open(sink, (cols, rows), title, version, true)
+    }
+
+    /// Test seam: watch `dir` for marker lines instead of the process inbox.
+    #[cfg(test)]
+    fn bind_inbox(&mut self, dir: &std::path::Path) {
+        self.inbox = phux_record::MarkInbox::register_in(dir).ok();
     }
 
     /// Test seam: replace the winsize probe with a scripted one.
@@ -235,9 +303,47 @@ impl<W: Write + Seek> SessionRecorder<W> {
         }
         let at = self.start.elapsed();
         let outcome = self.writer.as_mut().map(|w| w.output(at, bytes));
-        if let Some(Err(err)) = outcome {
-            self.abandon(&err);
+        match outcome {
+            Some(Ok(())) => self.events_written = self.events_written.saturating_add(1),
+            Some(Err(err)) => self.abandon(&err),
+            None => {}
         }
+    }
+
+    /// Record an asciicast `m` marker at the current paint time.
+    pub fn marker(&mut self, label: &str) {
+        let at = self.start.elapsed();
+        let outcome = self.writer.as_mut().map(|writer| writer.marker(at, label));
+        match outcome {
+            Some(Ok(())) => self.events_written = self.events_written.saturating_add(1),
+            Some(Err(err)) => self.abandon(&err),
+            None => {}
+        }
+    }
+
+    /// Fold any labels posted to the inbox into `m` events.
+    pub fn poll_marks(&mut self) {
+        let polled = self.inbox.as_mut().map(phux_record::MarkInbox::poll);
+        let Some(polled) = polled else {
+            return;
+        };
+        let labels = match polled {
+            Ok(labels) => labels,
+            Err(err) => {
+                tracing::warn!(error = %err, "recording marker inbox could not be read");
+                self.inbox.take();
+                return;
+            }
+        };
+        for label in labels {
+            self.marker(&label);
+        }
+    }
+
+    /// Events accepted since open, for the capture progress line.
+    #[must_use]
+    pub const fn events_written(&self) -> u64 {
+        self.events_written
     }
 
     /// Emit a resize event only when the outer terminal's size changed
@@ -252,8 +358,10 @@ impl<W: Write + Seek> SessionRecorder<W> {
         self.dims = dims;
         let at = self.start.elapsed();
         let outcome = self.writer.as_mut().map(|w| w.resize(at, dims.0, dims.1));
-        if let Some(Err(err)) = outcome {
-            self.abandon(&err);
+        match outcome {
+            Some(Ok(())) => self.events_written = self.events_written.saturating_add(1),
+            Some(Err(err)) => self.abandon(&err),
+            None => {}
         }
     }
 
@@ -316,6 +424,14 @@ impl<W: Write + Seek> SessionRecorder<W> {
     }
 }
 
+impl<W: Write + Seek> Drop for SessionRecorder<W> {
+    fn drop(&mut self) {
+        // The inbox file is this process's pid. Leaving it would make a
+        // later `phux rec mark` append to a dead recording.
+        drop(self.inbox.take());
+    }
+}
+
 /// The `RenderSink` wrapper that feeds a [`SessionRecorder`] on the way past.
 pub(crate) struct TeeSink<'a, W: Write, R: Write + Seek = BufWriter<File>> {
     pub(crate) inner: &'a mut W,
@@ -343,7 +459,11 @@ impl<W: Write, R: Write + Seek> Write for TeeSink<'_, W, R> {
     /// Flush is the frame boundary, so it is also where the recorder checks
     /// for a resize — no SIGWINCH plumbing into the driver required.
     fn flush(&mut self) -> io::Result<()> {
-        self.rec.borrow_mut().poll_resize();
+        {
+            let mut rec = self.rec.borrow_mut();
+            rec.poll_resize();
+            rec.poll_marks();
+        }
         self.inner.flush()
     }
 }
@@ -715,5 +835,58 @@ mod tests {
         assert!(header.cols > 0 && header.rows > 0);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].data, "ok");
+    }
+
+    #[test]
+    fn a_virtual_viewport_is_fixed_and_never_emits_a_resize() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("virtual.cast");
+        let mut rec =
+            SessionRecorder::create_virtual(&path, 240, 67, Some("work"), CastVersion::V2)
+                .expect("virtual recorder");
+        rec.record(b"frame");
+        for _ in 0..4 {
+            rec.poll_resize();
+        }
+        rec.finish().expect("finish");
+
+        let bytes = std::fs::read(&path).expect("read back");
+        let (header, events) = read_cast(bytes.as_slice()).expect("cast parses");
+        assert_eq!((header.cols, header.rows), (240, 67));
+        assert!(header.env.is_empty(), "a virtual capture claims no TERM");
+        assert!(
+            events.iter().all(|event| event.code != EventCode::Resize),
+            "the virtual probe must not record a resize: {events:?}"
+        );
+        assert!(
+            SessionRecorder::create_virtual(
+                &dir.path().join("unused.cast"),
+                0,
+                24,
+                None,
+                CastVersion::V2,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_posted_label_becomes_a_marker_event() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sink = MemSink::default();
+        let mut rec = recorder(sink.clone());
+        rec.bind_inbox(dir.path());
+        phux_record::post_mark_in(dir.path(), "intro").expect("post");
+        rec.poll_marks();
+        rec.marker("direct");
+        rec.finish().expect("finish");
+
+        let (_, events) = read_cast(sink.contents().as_slice()).expect("cast parses");
+        let markers: Vec<_> = events
+            .iter()
+            .filter(|event| event.code == EventCode::Marker)
+            .map(|event| event.data.as_str())
+            .collect();
+        assert_eq!(markers, ["intro", "direct"]);
     }
 }

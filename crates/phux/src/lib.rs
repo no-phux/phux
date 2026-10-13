@@ -1392,6 +1392,7 @@ fn dispatch(
         }),
         Some(Command::Resource { action }) => commands::resource::run_resource(&action, socket),
         Some(Command::Rec {
+            action,
             target,
             out,
             format,
@@ -1401,20 +1402,40 @@ fn dispatch(
             idle_limit,
             max_bytes,
             cast_version,
+            composited,
+            size,
+            speed_marked,
+            marker_labels,
             json,
-        }) => commands::rec::run_rec(commands::rec::RecArgs {
-            target: target.as_deref(),
-            out: &out,
-            format,
-            from: from.as_deref(),
-            duration,
-            fps,
-            idle_limit,
-            max_bytes,
-            cast_version,
-            json: json.json,
-            socket,
-        }),
+        }) => {
+            if let Some(commands::rec::RecAction::Mark {
+                label,
+                json: mark_json,
+            }) = action
+            {
+                return commands::rec::run_mark(&label, json.json || mark_json.json);
+            }
+            let Some(out) = out else {
+                return commands::rec::missing_out(json.json);
+            };
+            commands::rec::run_rec(commands::rec::RecArgs {
+                target: target.as_deref(),
+                out: &out,
+                format,
+                from: from.as_deref(),
+                duration,
+                fps,
+                idle_limit,
+                max_bytes,
+                cast_version,
+                json: json.json,
+                socket,
+                composited,
+                size: size.as_deref(),
+                speed_marked,
+                marker_labels,
+            })
+        }
         Some(Command::Play {
             file,
             target,
@@ -2079,6 +2100,79 @@ mod tests {
         };
         assert_eq!(session.as_deref(), Some("work"));
         assert_eq!(rec.rec.as_deref(), Some(std::path::Path::new("demo.cast")));
+
+        let cli = crate::parse_cli([
+            "phux",
+            "rec",
+            "--composited",
+            "work",
+            "--size",
+            "1920x1080",
+            "-o",
+            "demo.cast",
+            "--speed-marked",
+            "2",
+            "--marker-labels",
+        ])
+        .expect("composited rec parses");
+        let Some(Command::Rec {
+            action,
+            target,
+            out,
+            composited,
+            size,
+            speed_marked,
+            marker_labels,
+            ..
+        }) = cli.command
+        else {
+            panic!("expected Rec");
+        };
+        assert!(action.is_none());
+        assert_eq!(target.as_deref(), Some("work"));
+        assert_eq!(out.as_deref(), Some(std::path::Path::new("demo.cast")));
+        assert!(composited);
+        assert_eq!(size.as_deref(), Some("1920x1080"));
+        assert_eq!(speed_marked, Some(2.0));
+        assert!(marker_labels);
+
+        let cli = crate::parse_cli(["phux", "rec", "mark", "intro", "--json"])
+            .expect("`phux rec mark` parses without --out");
+        let Some(Command::Rec {
+            action, out, json, ..
+        }) = cli.command
+        else {
+            panic!("expected Rec");
+        };
+        assert!(out.is_none());
+        let Some(crate::commands::rec::RecAction::Mark {
+            label,
+            json: mark_json,
+        }) = action
+        else {
+            panic!("expected mark");
+        };
+        assert_eq!(label, "intro");
+        assert!(mark_json.json);
+        assert!(!json.json);
+
+        assert!(
+            crate::parse_cli(["phux", "rec", "--size", "1920x1080", "-o", "demo.cast"]).is_err(),
+            "--size requires --composited"
+        );
+        assert!(
+            crate::parse_cli([
+                "phux",
+                "rec",
+                "--composited",
+                "--from",
+                "demo.cast",
+                "-o",
+                "out.gif",
+            ])
+            .is_err(),
+            "--composited conflicts with --from"
+        );
 
         for argv in [
             ["phux", "ls", "--rec", "demo.gif"].as_slice(),

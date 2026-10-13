@@ -380,6 +380,12 @@ which-key-delay-ms = 400
 # sidebar.
 "B" = "report-bug"
 
+# Recording marker: while `phux --rec` (or `phux rec --composited`) is
+# capturing, drop an asciicast `m` event. M for Mark. A bare chord writes
+# an empty label; `{ action = "rec-mark", label = "intro" }` names it.
+# `phux rec mark` posts the same event from another process.
+"M" = "rec-mark"
+
 # Attention navigation (phux-oih5.16, ADR-0049). q jumps to the next pane
 # with a pending AgentEvent::Asked, cycling by window order then DFS leaf
 # order; Q returns to the pane where that excursion began. These unoccupied

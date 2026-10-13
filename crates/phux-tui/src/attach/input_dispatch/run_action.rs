@@ -89,6 +89,7 @@ pub(super) fn run_action(
         "getting-started" => push_getting_started(ctx),
         "settings" => push_settings(ctx),
         "report-bug" => report_bug(resolved, ctx, focused, e),
+        "rec-mark" => rec_mark(resolved, e),
         "copy-mode" => push_copy_mode(ctx, focused),
         "context-menu" => push_context_menu(ctx, focused),
         "window-picker" => push_window_picker(ctx, e),
@@ -1034,6 +1035,18 @@ fn push_settings(ctx: &mut DispatchCtx<'_>) {
             phux_config::loader::config_path(),
             ctx.theme,
         )));
+}
+
+/// Post an asciicast `m` marker to every recording this machine has open.
+///
+/// The bare chord writes an empty label. Nothing is recording when the
+/// inbox directory has no live file, and that bells.
+fn rec_mark(resolved: &phux_config::keybind::ResolvedAction, effects: &mut ActionEffects) {
+    let label = str_arg(resolved, "label").unwrap_or_default();
+    match phux_record::post_mark(&label) {
+        Ok(0) | Err(_) => effects.bell = true,
+        Ok(_) => {}
+    }
 }
 
 /// Capture a local bug-report bundle, copy its path (OSC 52), and toast it.

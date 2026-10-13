@@ -58,6 +58,7 @@ pub const ACTION_NAMES: &[&str] = &[
     "reload-config",
     "settings",
     "report-bug",
+    "rec-mark",
 ];
 
 /// Hook point: pane creation (`docs/consumers/tui.md` §9).

@@ -18,9 +18,9 @@ use std::time::Duration;
 use crate::cast::{CastEvent, CastHeader, CastVersion, CastWriter, EventCode};
 use crate::encode::{AnimEncoder, CountingWriter, Palette, Rect};
 use crate::error::RecordError;
-use crate::raster::{Rasterizer, Surface};
+use crate::raster::{MARKER_LABEL_BG, MARKER_LABEL_FG, Rasterizer, Surface};
 use crate::replay::{Replayer, Sampled};
-use crate::timeline::clamp_idle;
+use crate::timeline::{clamp_idle, compress_marked};
 
 /// Longest single accumulated delay, in milliseconds (GIF caps at 500 cs).
 const MAX_DELAY_MS: u32 = 5_000;
@@ -65,6 +65,13 @@ pub struct RenderOptions {
     pub max_bytes: u64,
     /// Hold the final frame this long before the loop wraps.
     pub tail_hold_ms: u32,
+    /// Divide the duration of each marker-pair span by this factor.
+    /// `None`, or a factor of 1 or less, leaves the timeline alone.
+    /// Applied after the idle clamp, and only by the renderer: the archival
+    /// cast keeps the original `m` times.
+    pub speed_marked: Option<f64>,
+    /// Draw the opening marker's label on frames inside a marked span.
+    pub marker_labels: bool,
 }
 
 impl Default for RenderOptions {
@@ -74,6 +81,8 @@ impl Default for RenderOptions {
             idle_limit: Some(2.0),
             max_bytes: 8 * 1024 * 1024,
             tail_hold_ms: 2000,
+            speed_marked: None,
+            marker_labels: false,
         }
     }
 }
@@ -106,6 +115,9 @@ pub fn render_cast<W: Write>(
 ) -> Result<RenderStats, RecordError> {
     let mut events = events.to_vec();
     clamp_idle(&mut events, opts.idle_limit);
+    if let Some(speed) = opts.speed_marked {
+        events = compress_marked(&events, speed);
+    }
     let duration_ms = events.last().map_or(0, |event| event.time_ms);
 
     if format == OutputFormat::Cast {
@@ -180,13 +192,17 @@ fn survey(
     let mut frames = 0_u32;
     let mut rasterizer: Option<Rasterizer> = None;
 
-    while let Some((sampled, _delay)) = walk.next_frame()? {
+    while let Some((sampled, _delay, label)) = walk.next_frame()? {
         // The theme is read right after the first sample, once it has settled.
         let raster = match rasterizer {
             Some(ref existing) => existing,
             None => rasterizer.insert(Rasterizer::new(walk.replayer.theme()?)),
         };
         raster.colors_of(&sampled.frame, &mut colors);
+        if label.is_some() {
+            colors.insert(MARKER_LABEL_FG);
+            colors.insert(MARKER_LABEL_BG);
+        }
         frames = frames.saturating_add(1);
     }
 
@@ -226,10 +242,23 @@ fn encode<W: Write>(
     let mut walk = SampleWalk::new(header, events, opts)?;
     let mut frames = 0_u32;
     let mut truncated = false;
+    let mut label_was = false;
 
-    while let Some((sampled, delay_ms)) = walk.next_frame()? {
+    while let Some((sampled, delay_ms, label)) = walk.next_frame()? {
         rasterizer.draw(&sampled.frame, &mut surface);
-        let rect = frame_rect(&sampled, &surface, cell_h, frames);
+        if let Some(text) = label.as_deref() {
+            rasterizer.overlay_label(&mut surface, text);
+        }
+        // A label sits on the bottom row, outside whatever band the terminal
+        // dirtied. The frame that gains or loses it has to be whole, or the
+        // previous bar stays in the animation.
+        let labeled = label.is_some();
+        let rect = if labeled || label_was {
+            Rect::whole(&surface)
+        } else {
+            frame_rect(&sampled, &surface, cell_h, frames)
+        };
+        label_was = labeled;
         let bytes = encoder.add_frame(&surface, rect, delay_ms)?;
         frames = frames.saturating_add(1);
         if bytes >= opts.max_bytes {
@@ -275,8 +304,15 @@ struct SampleWalk<'a> {
     next_ms: u64,
     period_ms: u32,
     tail_hold_ms: u32,
-    /// The frame whose delay is still accumulating.
-    pending: Option<Sampled>,
+    /// Draw marker labels. The walk still sees `m` events either way.
+    show_labels: bool,
+    /// Inside a marker-pair span.
+    in_span: bool,
+    /// The opening marker's label, when [`Self::show_labels`] and non-empty.
+    active_label: Option<String>,
+    /// The frame whose delay is still accumulating, with the label that
+    /// was active when it was sampled.
+    pending: Option<(Sampled, Option<String>)>,
     pending_delay_ms: u32,
     /// Set once the event list is exhausted; the next call flushes `pending`.
     done: bool,
@@ -302,6 +338,9 @@ impl<'a> SampleWalk<'a> {
             next_ms: 0,
             period_ms: normalize_period_ms(opts.fps),
             tail_hold_ms: opts.tail_hold_ms,
+            show_labels: opts.marker_labels,
+            in_span: false,
+            active_label: None,
             pending: None,
             pending_delay_ms: 0,
             done: false,
@@ -311,24 +350,30 @@ impl<'a> SampleWalk<'a> {
     }
 
     /// The next frame whose delay is now known, or `None` at the end.
-    fn next_frame(&mut self) -> Result<Option<(Sampled, u32)>, RecordError> {
+    ///
+    /// The third element is the marker label to draw, when one is active.
+    fn next_frame(&mut self) -> Result<Option<(Sampled, u32, Option<String>)>, RecordError> {
         loop {
             if self.done {
                 let hold = self
                     .pending_delay_ms
                     .min(MAX_DELAY_MS)
                     .saturating_add(self.tail_hold_ms);
-                return Ok(self.pending.take().map(|sampled| (sampled, hold)));
+                return Ok(self
+                    .pending
+                    .take()
+                    .map(|(sampled, label)| (sampled, hold, label)));
             }
 
             self.feed_due_events()?;
             let ready = if let Some(sampled) = self.replayer.sample()? {
                 self.max_cols = self.max_cols.max(sampled.frame.cols);
                 self.max_rows = self.max_rows.max(sampled.frame.rows);
-                let previous = self.pending.replace(sampled);
+                let label = self.active_label.clone();
+                let previous = self.pending.replace((sampled, label));
                 let delay = self.pending_delay_ms.min(MAX_DELAY_MS);
                 self.pending_delay_ms = self.period_ms;
-                previous.map(|frame| (frame, delay))
+                previous.map(|(frame, label)| (frame, delay, label))
             } else {
                 self.pending_delay_ms = self.pending_delay_ms.saturating_add(self.period_ms);
                 None
@@ -364,11 +409,23 @@ impl<'a> SampleWalk<'a> {
                         self.max_rows = self.max_rows.max(rows);
                     }
                 }
-                EventCode::Marker | EventCode::Exit | EventCode::Input => {}
+                EventCode::Marker => self.note_marker(&event.data),
+                EventCode::Exit | EventCode::Input => {}
             }
             self.idx = self.idx.saturating_add(1);
         }
         Ok(())
+    }
+
+    /// Toggle the marked span. An empty label draws no bar.
+    fn note_marker(&mut self, label: &str) {
+        if self.in_span {
+            self.in_span = false;
+            self.active_label = None;
+            return;
+        }
+        self.in_span = true;
+        self.active_label = (self.show_labels && !label.is_empty()).then(|| label.to_owned());
     }
 }
 
@@ -424,8 +481,8 @@ mod tests {
         };
         let mut walk = SampleWalk::new(header, events, &opts).expect("walk builds");
         let mut out = Vec::new();
-        while let Some(frame) = walk.next_frame().expect("walk advances") {
-            out.push(frame);
+        while let Some((sampled, delay, _label)) = walk.next_frame().expect("walk advances") {
+            out.push((sampled, delay));
         }
         out
     }
@@ -597,5 +654,30 @@ mod tests {
         let mut want = events;
         want.remove(1);
         assert_eq!(parsed, want);
+    }
+
+    /// `--speed-marked 2` shortens the rendered timeline to the compressed
+    /// clock. The span from 1s to 5s (4s) becomes 2s, so the event at 8s
+    /// lands at 6s.
+    #[test]
+    fn speed_marked_two_shortens_the_rendered_duration() {
+        let events = vec![
+            output(0, "a"),
+            event(1_000, EventCode::Marker, "cut"),
+            output(3_000, "b"),
+            event(5_000, EventCode::Marker, "cut"),
+            output(8_000, "c"),
+        ];
+        let opts = RenderOptions {
+            speed_marked: Some(2.0),
+            marker_labels: true,
+            idle_limit: None,
+            tail_hold_ms: 0,
+            ..RenderOptions::default()
+        };
+        let (_bytes, stats) = render_to_vec(&header(20, 4), &events, OutputFormat::Gif, &opts);
+        assert_eq!(stats.duration_ms, 6_000);
+        assert!(stats.frames >= 2);
+        assert!(!stats.truncated);
     }
 }
