@@ -10,11 +10,11 @@ use phux_client_core::session::{
     HistoryRejectionReason as KernelHistoryRejectionReason, HistoryUnavailableReason, KernelEffect,
     KernelInput, KernelSend,
 };
-use phux_protocol::ids::ResourceId;
+use phux_protocol::ids::{ResourceId, SessionId};
 use phux_protocol::wire::frame::{
     AgentEvent, FrameKind, HistoryRejectionReason, HistoryTombstoneReason,
 };
-use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
+use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot, WindowInfo};
 use phux_protocol::{BootstrapId, ResourceKind, StreamId};
 
 use crate::render::chrome::status_bar::Notice;
@@ -108,17 +108,28 @@ pub(super) fn attach_agent_sessions<'a>(
 /// second session existed. A pane whose window is not listed is excluded, so
 /// the failure mode is a late paint rather than an attach that never completes.
 pub(in crate::attach) fn attach_participants(snapshot: &SessionSnapshot) -> Vec<ResourceId> {
-    let focused_windows: Vec<_> = snapshot
-        .windows
+    session_terminals(
+        &snapshot.windows,
+        &snapshot.resources,
+        snapshot.focused_session,
+    )
+}
+
+/// Every Terminal the server places in one of `session`'s windows.
+pub(in crate::attach) fn session_terminals(
+    windows: &[WindowInfo],
+    resources: &[ResourceInfo],
+    session: SessionId,
+) -> Vec<ResourceId> {
+    let session_windows: Vec<_> = windows
         .iter()
-        .filter(|window| window.session_id == snapshot.focused_session)
+        .filter(|window| window.session_id == session)
         .map(|window| window.id)
         .collect();
-    snapshot
-        .resources
+    resources
         .iter()
         .filter(|pane| is_terminal(pane))
-        .filter(|pane| focused_windows.contains(&pane.window_id))
+        .filter(|pane| session_windows.contains(&pane.window_id))
         .map(|pane| pane.id.clone())
         .collect()
 }

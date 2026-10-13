@@ -69,6 +69,15 @@ impl super::SessionLoop {
         if outcome.layout_get_answered {
             self.layout_read_complete = true;
             self.layout_get_request_id = None;
+            // #1207: heal a missing or partial key instead of hiding panes,
+            // and save it so every client and `phux insert-pane` agree.
+            let key_absent = !outcome.layout_replaced;
+            if self.place_unplaced_panes() {
+                outcome.layout_replaced = true;
+                outcome.emit_set_metadata = true;
+            } else if key_absent && !self.mirror.workspace.windows.is_empty() {
+                outcome.emit_set_metadata = true;
+            }
         }
         Ok(outcome)
     }
