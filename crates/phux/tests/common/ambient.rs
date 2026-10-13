@@ -10,8 +10,10 @@
 #![allow(clippy::expect_used, reason = "test harness")]
 
 use std::ffi::{OsStr, OsString};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Keys a live pane of the production server exports, kept as the named
 /// floor of [`ambient_phux_keys`]: a child spawned from `CARGO_BIN_EXE_phux`
@@ -65,11 +67,65 @@ pub fn scrub_ambient_phux(cmd: &mut Command) {
     }
 }
 
-/// `Command::new(bin)` with [`scrub_ambient_phux`] already applied.
+/// `Command::new(bin)` with [`scrub_ambient_phux`] already applied and
+/// `XDG_STATE_HOME` / `XDG_CONFIG_HOME` pointed at this test process's
+/// [`isolated_xdg`] directories. A caller that sets either key afterwards
+/// wins; `env_clear` drops both.
 pub fn phux_cmd(bin: impl AsRef<OsStr>) -> Command {
     let mut cmd = Command::new(bin);
     scrub_ambient_phux(&mut cmd);
+    let xdg = isolated_xdg();
+    cmd.env("XDG_STATE_HOME", &xdg.state)
+        .env("XDG_CONFIG_HOME", &xdg.config);
     cmd
+}
+
+/// A private `XDG_STATE_HOME` and `XDG_CONFIG_HOME` pair under the cargo
+/// target's temp directory, so a test's server never opens the developer's
+/// organization store or config.
+#[derive(Debug, Clone)]
+pub struct XdgDirs {
+    /// `XDG_STATE_HOME`.
+    pub state: PathBuf,
+    /// `XDG_CONFIG_HOME`.
+    pub config: PathBuf,
+}
+
+impl XdgDirs {
+    /// A fresh, empty pair under the target temp directory, named by `tag`,
+    /// the process id, and a counter.
+    pub fn fresh(tag: &str) -> Self {
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = xdg_root().join(format!("{tag}-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dirs = Self {
+            state: root.join("state"),
+            config: root.join("config"),
+        };
+        std::fs::create_dir_all(&dirs.state).expect("create isolated XDG_STATE_HOME");
+        std::fs::create_dir_all(&dirs.config).expect("create isolated XDG_CONFIG_HOME");
+        dirs
+    }
+
+    /// Point `cmd` at this pair.
+    pub fn apply(&self, cmd: &mut Command) {
+        cmd.env("XDG_STATE_HOME", &self.state)
+            .env("XDG_CONFIG_HOME", &self.config);
+    }
+}
+
+/// The pair [`phux_cmd`] uses: one per test process, which under nextest is
+/// one per test.
+pub fn isolated_xdg() -> &'static XdgDirs {
+    static DIRS: OnceLock<XdgDirs> = OnceLock::new();
+    DIRS.get_or_init(|| XdgDirs::fresh("proc"))
+}
+
+fn xdg_root() -> PathBuf {
+    option_env!("CARGO_TARGET_TMPDIR")
+        .map_or_else(std::env::temp_dir, PathBuf::from)
+        .join("phux-test-xdg")
 }
 
 /// Run the crate's `phux` binary with `args` under `XDG_CONFIG_HOME` and

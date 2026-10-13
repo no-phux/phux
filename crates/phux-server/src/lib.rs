@@ -25,6 +25,7 @@ pub mod hub;
 pub mod id_bridge;
 pub mod input;
 pub mod mailbox;
+pub mod org_store;
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub mod native_state;
 pub mod perf;
@@ -45,6 +46,7 @@ pub mod workload;
 pub use hub::link::{HubLinkStatuses, LinkStatus};
 pub use hub::{HubEntry, HubTable, HubTableError, SatelliteSource, SatelliteTarget, TableDiff};
 pub use id_bridge::IdBridge;
+pub use org_store::OrgStoreLocation;
 pub use resource::{
     ResourceCore, ResourceFacetHandle, ResourceHandle, ResourceId, ResourceKind, WrongResourceKind,
 };

@@ -156,6 +156,10 @@ pub struct ServerConfig {
     /// default sets nothing, so an in-process server never inherits the
     /// launching shell's (a production pane exports several).
     pub env: ServerEnv,
+    /// Where the organization store lives (ADR-0162). `phux server` uses
+    /// [`crate::OrgStoreLocation::default_path`]; in-process servers default
+    /// to memory so no test opens a shared store.
+    pub org_store: crate::OrgStoreLocation,
 }
 
 /// The opt-in flags the running server applied.
@@ -217,6 +221,7 @@ impl ServerConfig {
             hook_catalog: crate::hooks::HookCatalog::default(),
             exit_after_idle: None,
             env: ServerEnv::default(),
+            org_store: crate::OrgStoreLocation::Memory,
         }
     }
 }
