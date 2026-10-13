@@ -1,0 +1,8 @@
+---
+source: crates/phux-protocol/tests/org_wire_snapshots.rs
+expression: dump_frame(&frame)
+---
+00000000 | 00 00 00 2e b3 02 04 2a  12 00 00 00 25 02 04 10 |.......*....%...
+00000010 | 5e 5e 5e 5e 5e 5e 5e 5e  5e 5e 5e 5e 5e 5e 5e 5e |^^^^^^^^^^^^^^^^
+00000020 | 05 04 04 70 6c 61 79 1a  04 08 00 00 00 00 00 00 |...play.........
+00000030 | 00 03                                            |..

@@ -1,0 +1,6 @@
+---
+source: crates/phux-protocol/tests/org_wire_snapshots.rs
+expression: dump_frame(&frame)
+---
+00000000 | 00 00 00 11 c2 01 04 04  00 00 00 21 02 04 06 03 |...........!....
+00000010 | 01 00 00 00 00                                   |.....

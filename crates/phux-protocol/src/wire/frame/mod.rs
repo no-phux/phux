@@ -682,6 +682,30 @@ pub(crate) const EVENT_TAG_APPROVAL_DECIDED: u8 = 0x0e;
 /// positional length-prefixed origin label. No stamp, so no credential id
 /// crosses, and an older decoder skips the tag by its length prefix.
 pub(crate) const EVENT_TAG_INPUT_ACTIVITY: u8 = 0x0f;
+/// Wire tag for [`AgentEvent::SessionCreated`] (`docs/spec/L1.md` §5.7).
+pub(crate) const EVENT_TAG_SESSION_CREATED: u8 = 0x10;
+/// Wire tag for [`AgentEvent::SessionRenamed`] (`docs/spec/L1.md` §5.7).
+pub(crate) const EVENT_TAG_SESSION_RENAMED: u8 = 0x11;
+/// Wire tag for [`AgentEvent::SessionDeleted`] (`docs/spec/L1.md` §5.7).
+pub(crate) const EVENT_TAG_SESSION_DELETED: u8 = 0x12;
+/// Wire tag for [`AgentEvent::SessionLifetimeChanged`] (`docs/spec/L1.md` §5.7).
+pub(crate) const EVENT_TAG_SESSION_LIFETIME_CHANGED: u8 = 0x13;
+/// Wire tag for [`AgentEvent::MembershipChanged`] (`docs/spec/L1.md` §5.7).
+pub(crate) const EVENT_TAG_MEMBERSHIP_CHANGED: u8 = 0x14;
+/// Wire tag for [`AgentEvent::ResourceCreated`] (`docs/spec/L1.md` §5.7).
+pub(crate) const EVENT_TAG_RESOURCE_CREATED: u8 = 0x15;
+/// Wire tag for [`AgentEvent::ResourceRemoved`] (`docs/spec/L1.md` §5.7).
+pub(crate) const EVENT_TAG_RESOURCE_REMOVED: u8 = 0x16;
+/// Wire tag for [`AgentEvent::ActivationChanged`] (`docs/spec/L1.md` §5.7).
+pub(crate) const EVENT_TAG_ACTIVATION_CHANGED: u8 = 0x17;
+/// Wire tag for [`AgentEvent::ArrangementChanged`] (`docs/spec/L1.md` §5.7).
+pub(crate) const EVENT_TAG_ARRANGEMENT_CHANGED: u8 = 0x18;
+/// Wire tag for [`AgentEvent::LeaseChanged`] (`docs/spec/L1.md` §5.7).
+pub(crate) const EVENT_TAG_LEASE_CHANGED: u8 = 0x19;
+/// Wire tag for [`AgentEvent::IntakeChanged`] (`docs/spec/L1.md` §5.7).
+pub(crate) const EVENT_TAG_INTAKE_CHANGED: u8 = 0x1a;
+/// Wire tag for [`AgentEvent::ResourceRenamed`] (`docs/spec/L1.md` §5.7).
+pub(crate) const EVENT_TAG_RESOURCE_RENAMED: u8 = 0x1b;
 }
 
 /// Wire tag for one [`Command`] variant inside the `COMMAND` envelope (SPEC
@@ -715,6 +739,23 @@ enum CommandTag {
     KillResourceIf = 0x1b,
     OpenListener = 0x1c,
     CloseTabResources = 0x1d,
+    GetOrganization = 0x1e,
+    SessionCreate = 0x1f,
+    SessionRename = 0x20,
+    SessionSetLifetime = 0x21,
+    SessionDelete = 0x22,
+    ResourceCreate = 0x23,
+    ResourceMove = 0x24,
+    ResourceMoveMany = 0x25,
+    ResourceRename = 0x26,
+    ResourceTerminate = 0x27,
+    ResourceRemove = 0x28,
+    ResourceRelaunch = 0x29,
+    ResourceAbandon = 0x2a,
+    InboxResolve = 0x2b,
+    OrganizationUndo = 0x2c,
+    ArrangementGet = 0x2d,
+    ArrangementReplace = 0x2e,
 }
 
 // `Command` tags (SPEC §5.1). `0x00`, `0x04`, and `0x06` are reserved catalog
@@ -782,6 +823,46 @@ pub(crate) const COMMAND_TAG_OPEN_LISTENER: u8 = CommandTag::OpenListener as u8;
 pub(crate) const COMMAND_TAG_CLOSE_TAB_RESOURCES: u8 = CommandTag::CloseTabResources as u8;
 }
 
+// Organization commands (`docs/spec/L1.md` §5.7), contiguous from `0x1e`;
+// `0x2f`..=`0x34` are reserved for the workspace commands
+// (`docs/spec/appendix-reserved.md` §2).
+wire_tags! { Command;
+/// Wire tag for [`Command::GetOrganization`].
+pub(crate) const COMMAND_TAG_GET_ORGANIZATION: u8 = CommandTag::GetOrganization as u8;
+/// Wire tag for [`Command::SessionCreate`].
+pub(crate) const COMMAND_TAG_SESSION_CREATE: u8 = CommandTag::SessionCreate as u8;
+/// Wire tag for [`Command::SessionRename`].
+pub(crate) const COMMAND_TAG_SESSION_RENAME: u8 = CommandTag::SessionRename as u8;
+/// Wire tag for [`Command::SessionSetLifetime`].
+pub(crate) const COMMAND_TAG_SESSION_SET_LIFETIME: u8 = CommandTag::SessionSetLifetime as u8;
+/// Wire tag for [`Command::SessionDelete`].
+pub(crate) const COMMAND_TAG_SESSION_DELETE: u8 = CommandTag::SessionDelete as u8;
+/// Wire tag for [`Command::ResourceCreate`].
+pub(crate) const COMMAND_TAG_RESOURCE_CREATE: u8 = CommandTag::ResourceCreate as u8;
+/// Wire tag for [`Command::ResourceMove`].
+pub(crate) const COMMAND_TAG_RESOURCE_MOVE: u8 = CommandTag::ResourceMove as u8;
+/// Wire tag for [`Command::ResourceMoveMany`].
+pub(crate) const COMMAND_TAG_RESOURCE_MOVE_MANY: u8 = CommandTag::ResourceMoveMany as u8;
+/// Wire tag for [`Command::ResourceRename`].
+pub(crate) const COMMAND_TAG_RESOURCE_RENAME: u8 = CommandTag::ResourceRename as u8;
+/// Wire tag for [`Command::ResourceTerminate`].
+pub(crate) const COMMAND_TAG_RESOURCE_TERMINATE: u8 = CommandTag::ResourceTerminate as u8;
+/// Wire tag for [`Command::ResourceRemove`].
+pub(crate) const COMMAND_TAG_RESOURCE_REMOVE: u8 = CommandTag::ResourceRemove as u8;
+/// Wire tag for [`Command::ResourceRelaunch`].
+pub(crate) const COMMAND_TAG_RESOURCE_RELAUNCH: u8 = CommandTag::ResourceRelaunch as u8;
+/// Wire tag for [`Command::ResourceAbandon`].
+pub(crate) const COMMAND_TAG_RESOURCE_ABANDON: u8 = CommandTag::ResourceAbandon as u8;
+/// Wire tag for [`Command::InboxResolve`].
+pub(crate) const COMMAND_TAG_INBOX_RESOLVE: u8 = CommandTag::InboxResolve as u8;
+/// Wire tag for [`Command::OrganizationUndo`].
+pub(crate) const COMMAND_TAG_ORGANIZATION_UNDO: u8 = CommandTag::OrganizationUndo as u8;
+/// Wire tag for [`Command::ArrangementGet`].
+pub(crate) const COMMAND_TAG_ARRANGEMENT_GET: u8 = CommandTag::ArrangementGet as u8;
+/// Wire tag for [`Command::ArrangementReplace`].
+pub(crate) const COMMAND_TAG_ARRANGEMENT_REPLACE: u8 = CommandTag::ArrangementReplace as u8;
+}
+
 // `InputEvent` tags (`ROUTE_INPUT`), mirroring the `INPUT_*` frame atoms.
 wire_tags! { InputEvent;
 /// Wire tag for [`InputEvent::Key`].
@@ -809,6 +890,12 @@ pub(crate) const COMMAND_RESULT_TAG_OK: u8 = 0x00;
 pub(crate) const COMMAND_RESULT_TAG_OK_WITH: u8 = 0x01;
 /// Wire tag for [`CommandResult::Error`].
 pub(crate) const COMMAND_RESULT_TAG_ERROR: u8 = 0x02;
+/// Wire tag for [`CommandResult::Refused`]; sent only in reply to an
+/// organization command.
+pub(crate) const COMMAND_RESULT_TAG_REFUSED: u8 = 0x03;
+/// Wire tag for [`CommandResult::Accepted`]; sent only in reply to an
+/// organization command.
+pub(crate) const COMMAND_RESULT_TAG_ACCEPTED: u8 = 0x04;
 }
 
 // Wire tags for the `CommandValue` tagged union (SPEC §5).
@@ -825,6 +912,12 @@ pub(crate) const COMMAND_VALUE_TAG_JSON: u8 = 0x03;
 pub(crate) const COMMAND_VALUE_TAG_BYTES: u8 = 0x04;
 /// Wire tag for [`CommandValue::FileUpload`].
 pub(crate) const COMMAND_VALUE_TAG_FILE_UPLOAD: u8 = 0x05;
+/// Wire tag for [`CommandValue::OrganizationPage`].
+pub(crate) const COMMAND_VALUE_TAG_ORGANIZATION_PAGE: u8 = 0x06;
+/// Wire tag for [`CommandValue::Arrangement`].
+pub(crate) const COMMAND_VALUE_TAG_ARRANGEMENT: u8 = 0x07;
+/// Wire tag for [`CommandValue::Committed`].
+pub(crate) const COMMAND_VALUE_TAG_COMMITTED: u8 = 0x08;
 }
 
 // Wire tags for the `AttachTarget` tagged union (SPEC §13).
@@ -844,6 +937,7 @@ mod command;
 mod command_codec;
 mod directory;
 mod kind;
+mod org;
 mod path;
 mod payload;
 mod role;
@@ -861,6 +955,14 @@ pub use directory::{
     DirectoryListingResult, MAX_DIRECTORY_ENTRIES,
 };
 pub use kind::FrameKind;
+pub use org::{
+    ActivationInfo, ArrangementDoc, ArrangementGroup, ArrangementNode, ArrangementOwner,
+    ArrangementValue, Committed, EntryRef, EntryTarget, ExecState, ExitPolicy, LaunchSpec,
+    LiveTarget, MAX_ARRANGEMENT_BYTES, MAX_ARRANGEMENT_DEPTH, MAX_LAUNCH_LIST,
+    MAX_LAUNCH_RESTORE_BYTES, MAX_ORG_ATTRS, MAX_ORG_BATCH, MAX_ORG_CURSOR_BYTES,
+    MAX_ORG_NAME_BYTES, MoveItem, OrgFilter, OrganizationPage, Outcome, RecordRevision, Refusal,
+    ResourceRecord, SessionLifetime, SessionRecord, SplitDirection, TerminateMode,
+};
 pub use path::{
     MAX_PATH_RESULTS, PathErrorCode, PathKind, PathQueryError, PathQueryResult, PathResults,
     PathRow, PathStatus,

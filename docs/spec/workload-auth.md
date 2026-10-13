@@ -237,10 +237,26 @@ CREATE    = 0x04   // create a Terminal or other endpoint resource
 BIND      = 0x08   // attach, resize, move, lease, or mutate metadata/projection bindings
 INPUT     = 0x10   // deliver user/terminal input or upload workload bytes
 SIGNAL    = 0x20   // process/server lifecycle, hooks, forced detach, or signals
+ORGANIZE  = 0x40   // rename, move membership, edit arrangements, resolve intake, undo (schema v2)
+TERMINATE = 0x80   // terminate, remove, delete, or abandon an organization record (schema v2)
 ```
 
-Bits `0xC0` are unknown in v1 and SHALL cause rejection. A later verb requires a
-new scope-schema version; it is not ignored.
+The scope schema is versioned. Schema v1 has the first six verbs; bits `0xC0`
+are unknown in v1 and SHALL cause rejection of a v1 grant. Schema v2, the
+current version, adds `ORGANIZE` and `TERMINATE` and knows all eight bits. A
+later verb requires a new scope-schema version; it is not ignored. The
+canonical image below carries no version: the store that persists an image or
+its registry strings records the schema it was written under, and a reader
+that does not know that schema refuses the record rather than guessing.
+
+A reader of a schema-v1 grant (canonical bytes or registry strings) SHALL read
+it as v2 with two implications: `SIGNAL` implies `TERMINATE`, and `CREATE`
+implies `ORGANIZE`. A held `?signal` (§6.1) implies nothing, so a hold never
+becomes an un-held terminating authority. The new verbs gate only the
+organization commands ([L1.md](./L1.md) §5.7); every other row of §6 keeps
+exactly the verbs it required under v1, so the implication reaches only the
+organization equivalents of what a v1 grant could already do, and no stored
+grant loses an operation.
 
 Selectors and their canonical bytes are:
 
@@ -323,8 +339,10 @@ credential.
 
 The registry file and `phux workload add-key --scope` spell one grant as
 `<verb>[,<verb>...]@<selector>`. A verb is `inventory`, `observe`,
-`create`, `bind`, `input`, or `signal`, each at most once, or the single
-wildcard `*` (all six, never combined with a name). `signal` may instead be
+`create`, `bind`, `input`, `signal`, `organize`, or `terminate`, each at most
+once, or the single wildcard `*` (every verb of the schema, never combined
+with a name). A schema-v1 record may name only the first six, its `*` is
+those six, and it is read with the §5 implications. `signal` may instead be
 spelled `?signal`: the grant carries `SIGNAL`, but it is *held*, and every
 `SIGNAL` command it admits waits for a decision (§6.1, ADR-0128). `?` on any
 other verb is refused, and `signal,?signal` repeats a verb. A selector is `global`,
@@ -487,6 +505,20 @@ point before any handler or satellite branch:
 | `GET_PERF { reset: false }` | `OBSERVE` | Global |
 | `GET_PERF { reset: true }` | `OBSERVE` and `BIND` | Global |
 | `APPEND_RESOURCE_OUTPUT` | `BIND` and `INPUT` | the named resource's parent Terminal; a grant naming only the child does not suffice, and a Terminal-kind target is refused after admission with `WRONG_RESOURCE_KIND` |
+| `GET_ORGANIZATION` | `INVENTORY` | filtered to the organization records the grant inventories: a session through its Group, a resource through its session; authority totals and the Inbox designation only with Global |
+| `SESSION_CREATE` | `CREATE` | Global; a launch in the same command needs nothing more |
+| `SESSION_RENAME`, `SESSION_SET_LIFETIME`, `INBOX_RESOLVE` | `ORGANIZE` | the session the command's key names, resolved side-effect-free to its Group; an absent key resolves to no subject |
+| `SESSION_DELETE` | `TERMINATE` | the session the command's key names, resolved side-effect-free to its Group |
+| `RESOURCE_CREATE` | `CREATE` | the session the command's key names, resolved side-effect-free to its Group |
+| `RESOURCE_MOVE`, `RESOURCE_MOVE_MANY` | `ORGANIZE` | every session a moved resource leaves and the destination session; all-or-nothing |
+| `RESOURCE_RENAME` | `ORGANIZE` | the resource the command's key names, through its current session's Group |
+| `RESOURCE_TERMINATE` | `TERMINATE` | named Terminal: the live target's `resource` |
+| `RESOURCE_REMOVE` | `TERMINATE` | the resource the command's key names, through its current session's Group |
+| `RESOURCE_RELAUNCH` | `CREATE` | the resource the command's key names, through its current session's Group |
+| `RESOURCE_ABANDON` | `TERMINATE` plus transport predicate | Global, and the authenticated transport MUST be the owner UDS; only the owner releases a lost activation |
+| `ORGANIZATION_UNDO` | `ORGANIZE` | every session and resource the undone operation's recorded inverse touches, under current membership |
+| `ARRANGEMENT_GET` | `INVENTORY` | the session that owns the arrangement |
+| `ARRANGEMENT_REPLACE` | `ORGANIZE` | the session that owns the arrangement |
 | Unknown, retired, or otherwise unclassified command tag | default-deny | none |
 
 <!-- impl-status: shipped; probe: ResourceKind,COMMAND_TAG_APPEND_RESOURCE_OUTPUT -->

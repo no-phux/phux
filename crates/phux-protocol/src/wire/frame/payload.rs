@@ -2,14 +2,17 @@
 //! info, L3 metadata scope (SPEC §7.4), and spawn/move results (SPEC §10.1).
 
 use crate::ids::{
-    ClientId, GroupId, IdempotencyKey, ResourceId, ResourceKind, ServerInstance, SessionId,
+    ClientId, GroupId, IdempotencyKey, PrincipalId, ResourceId, ResourceKind, ServerInstance,
+    SessionId,
 };
 
 /// The connection that caused an event or a metadata change (ADR-0123).
 ///
 /// Positional on the wire: `client: u32 || credential_id: optional<str> ||
-/// client_name: optional<str>`. Through a federation hub the actor is the
-/// hub's link.
+/// client_name: optional<str>`, then the trailing pair `principal:
+/// optional<bytes16> || on_behalf_of: optional<bytes16>`, written only when
+/// either is present, so an actor without them keeps its earlier bytes.
+/// Through a federation hub the actor is the hub's link.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ActorRef {
@@ -19,6 +22,10 @@ pub struct ActorRef {
     pub credential_id: Option<String>,
     /// The `HELLO.client_name` the connection announced, if any.
     pub client_name: Option<String>,
+    /// The principal pair, boxed so the common actor without one stays small
+    /// (it rides `FrameKind::MetadataChanged` inline); `None` when neither is
+    /// known. Read through [`Self::principal`] and [`Self::on_behalf_of`].
+    principals: Option<Box<[Option<PrincipalId>; 2]>>,
 }
 
 impl ActorRef {
@@ -29,7 +36,45 @@ impl ActorRef {
             client,
             credential_id: None,
             client_name: None,
+            principals: None,
         }
+    }
+
+    /// The authenticated principal: the owner, or an owner-registered
+    /// credential.
+    #[must_use]
+    pub fn principal(&self) -> Option<PrincipalId> {
+        self.principals.as_ref().and_then(|pair| pair[0])
+    }
+
+    /// The human a delegated principal acts for.
+    #[must_use]
+    pub fn on_behalf_of(&self) -> Option<PrincipalId> {
+        self.principals.as_ref().and_then(|pair| pair[1])
+    }
+
+    /// Builder setter for [`Self::principal`].
+    #[must_use]
+    pub fn with_principal(self, principal: Option<PrincipalId>) -> Self {
+        let on_behalf_of = self.on_behalf_of();
+        self.with_principals(principal, on_behalf_of)
+    }
+
+    /// Builder setter for [`Self::on_behalf_of`].
+    #[must_use]
+    pub fn with_on_behalf_of(self, on_behalf_of: Option<PrincipalId>) -> Self {
+        let principal = self.principal();
+        self.with_principals(principal, on_behalf_of)
+    }
+
+    fn with_principals(
+        mut self,
+        principal: Option<PrincipalId>,
+        on_behalf_of: Option<PrincipalId>,
+    ) -> Self {
+        self.principals = (principal.is_some() || on_behalf_of.is_some())
+            .then(|| Box::new([principal, on_behalf_of]));
+        self
     }
 
     /// Builder setter for [`Self::credential_id`].

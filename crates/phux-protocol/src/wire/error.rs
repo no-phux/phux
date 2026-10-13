@@ -122,6 +122,21 @@ pub enum DecodeError {
     /// otherwise overflow the stack.
     #[error("layout tree nested deeper than the decoder bound")]
     LayoutTooDeep,
+
+    /// An organization body exceeded a protocol bound: a name over 256
+    /// bytes, an arrangement over 64 KiB, or a list, cursor, or restore
+    /// record over its cap (`docs/spec/L1.md` §5.7).
+    #[error("organization body exceeds protocol limits")]
+    OrganizationLimitExceeded,
+
+    /// An organization key was not 16 bytes, or was all zero.
+    #[error("organization key must be 16 non-zero bytes")]
+    InvalidOrganizationKey,
+
+    /// An arrangement document had a split ratio outside `(0, 1)` or bytes
+    /// after its last group.
+    #[error("arrangement document is malformed")]
+    InvalidArrangement,
 }
 
 impl DecodeError {

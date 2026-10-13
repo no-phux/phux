@@ -1075,6 +1075,41 @@ pub enum ServerFeatureExt {
     /// `ATTACH_RESOURCE` accepts an agent cursor and explicitly distinguishes
     /// a resumed suffix from a full retained-ring replacement.
     AgentStreamResume = 0x0000_0008,
+    /// The server accepts the organization commands (`docs/spec/L1.md`
+    /// §5.7) and enforces every rule they carry: keyed sessions and
+    /// resources, revisions, receipts, refusals, and the organization
+    /// events. A client that does not see it treats organization as
+    /// read-only.
+    Organization = 0x0000_0010,
+}
+
+impl ServerFeatureExt {
+    /// Every known extended feature, in bit order.
+    pub const ALL: &'static [Self] = &[
+        Self::PathQuery,
+        Self::ResizeCellPx,
+        Self::CommittedTeardown,
+        Self::AgentStreamResume,
+        Self::Organization,
+    ];
+
+    /// The `docs/spec/proto.md` §6.2 constant, e.g. `"PATH_QUERY"`.
+    #[must_use]
+    pub const fn wire_name(self) -> &'static str {
+        match self {
+            Self::PathQuery => "PATH_QUERY",
+            Self::ResizeCellPx => "RESIZE_CELL_PX",
+            Self::CommittedTeardown => "COMMITTED_TEARDOWN",
+            Self::AgentStreamResume => "AGENT_STREAM_RESUME",
+            Self::Organization => "ORGANIZATION",
+        }
+    }
+
+    /// The bit's value in `features_ext` (a mask, not an index).
+    #[must_use]
+    pub const fn mask(self) -> u32 {
+        self as u32
+    }
 }
 
 /// Known bits in `HELLO_OK.server_caps.features_ext`.
@@ -1085,7 +1120,16 @@ impl ServerFeatureExtSet {
     const KNOWN: u32 = ServerFeatureExt::PathQuery as u32
         | ServerFeatureExt::ResizeCellPx as u32
         | ServerFeatureExt::CommittedTeardown as u32
-        | ServerFeatureExt::AgentStreamResume as u32;
+        | ServerFeatureExt::AgentStreamResume as u32
+        | ServerFeatureExt::Organization as u32;
+
+    /// Known extended features in this set, in bit order.
+    pub fn iter(self) -> impl Iterator<Item = ServerFeatureExt> {
+        ServerFeatureExt::ALL
+            .iter()
+            .copied()
+            .filter(move |feature| self.contains(*feature))
+    }
 
     /// No extended features.
     #[must_use]

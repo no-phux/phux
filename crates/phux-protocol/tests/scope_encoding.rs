@@ -52,7 +52,7 @@ fn scope_set_canonical_bytes_match_spec_section_5_goldens() {
     let scopes = set(&["observe@terminal:9", "*@global"]);
     let golden = [
         0x00, 0x02, // grant_count
-        0x00, 0x01, 0x00, 0x3F, // GLOBAL, all six verbs
+        0x00, 0x01, 0x00, 0xFF, // GLOBAL, all eight verbs
         0x00, 0x06, 0x03, 0x00, 0x00, 0x00, 0x00, 0x09, 0x02, // TERMINAL_LOCAL(9), OBSERVE
     ];
     assert_eq!(scopes.encode(), golden);
@@ -86,7 +86,7 @@ fn scope_set_canonical_bytes_match_spec_section_5_goldens() {
 
 #[test]
 fn scope_set_rejects_unsorted_duplicate_unknown_bit_nonminimal_and_trailing() {
-    let cases: [(&str, Vec<u8>, ScopeError); 12] = [
+    let cases: [(&str, Vec<u8>, ScopeError); 11] = [
         (
             "unsorted",
             vec![
@@ -99,11 +99,6 @@ fn scope_set_rejects_unsorted_duplicate_unknown_bit_nonminimal_and_trailing() {
             "duplicate",
             vec![0x00, 0x02, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00, 0x04],
             ScopeError::Duplicate,
-        ),
-        (
-            "unknown verb bit",
-            vec![0x00, 0x01, 0x00, 0x01, 0x00, 0x42],
-            ScopeError::UnknownVerbBits,
         ),
         (
             "zero verbs",
@@ -213,9 +208,14 @@ fn scope_grammar_parses_every_selector_form_and_rejects_partial_grants() {
         assert_eq!(respelled, parsed, "Display round-trips {text}");
     }
     assert_eq!(
-        grant("inventory,observe,create,bind,input,signal@global").to_string(),
+        grant("inventory,observe,create,bind,input,signal,organize,terminate@global").to_string(),
         "*@global",
-        "all six verbs print as the wildcard"
+        "all eight verbs print as the wildcard"
+    );
+    assert_eq!(
+        grant("inventory,observe,create,bind,input,signal@global").to_string(),
+        "inventory,observe,create,bind,input,signal@global",
+        "the six v1 verbs are no longer every verb"
     );
     assert_eq!(
         grant("input,observe@terminal:3").to_string(),
@@ -423,4 +423,71 @@ fn held_signal_grammar_parses_merges_and_never_reaches_the_image() {
     let clauses = EffectiveScopeSet::intersect(&requested, &ceiling).unwrap();
     assert!(!clauses.without_holds().admits(Verb::Signal, |_| true));
     assert!(clauses.admits(Verb::Signal, |_| true));
+}
+
+/// Schema v2 adds `ORGANIZE = 0x40` and `TERMINATE = 0x80`; a v1 image still
+/// refuses those bits, and a v1 grant reads with `SIGNAL` implying
+/// `TERMINATE` and `CREATE` implying `ORGANIZE` (workload-auth §5, R07).
+#[test]
+fn schema_v2_verbs_and_the_v1_implication() {
+    use phux_protocol::scope::{SCOPE_SCHEMA_VERSION, ScopeSchema};
+
+    assert_eq!(SCOPE_SCHEMA_VERSION, 2);
+    assert_eq!(ScopeSchema::from_version(1), Some(ScopeSchema::V1));
+    assert_eq!(ScopeSchema::from_version(3), None);
+    assert_eq!(Verb::Organize.bit(), 0x40);
+    assert_eq!(Verb::Terminate.bit(), 0x80);
+    assert_eq!(Verbs::KNOWN_BITS, 0xFF);
+
+    // The new bits decode under v2 and are refused under v1.
+    let organize_global = [0x00, 0x01, 0x00, 0x01, 0x00, 0x42];
+    let v2 = TerminalScopeSet::decode(&organize_global).unwrap();
+    assert_eq!(
+        v2.grants()[0].verbs,
+        Verbs::of(&[Verb::Observe, Verb::Organize])
+    );
+    assert_eq!(
+        TerminalScopeSet::decode_versioned(&organize_global, ScopeSchema::V1),
+        Err(ScopeError::UnknownVerbBits)
+    );
+    assert_eq!(
+        grant("organize,terminate@global").verbs,
+        Verbs::of(&[Verb::Organize, Verb::Terminate])
+    );
+
+    // A v1 image gains the implied verbs, and only those.
+    let signal_create = [0x00, 0x01, 0x00, 0x01, 0x00, 0x24];
+    let upgraded = TerminalScopeSet::decode_versioned(&signal_create, ScopeSchema::V1).unwrap();
+    assert_eq!(
+        upgraded.grants()[0].verbs,
+        Verbs::of(&[Verb::Create, Verb::Signal, Verb::Organize, Verb::Terminate])
+    );
+    let observe = [0x00, 0x01, 0x00, 0x01, 0x00, 0x02];
+    assert_eq!(
+        TerminalScopeSet::decode_versioned(&observe, ScopeSchema::V1).unwrap(),
+        TerminalScopeSet::decode(&observe).unwrap()
+    );
+
+    // v1 registry strings: the six names, `*` as those six, then the
+    // implication; a held `?signal` implies nothing.
+    let v1 = |text: &str| ScopeGrant::parse_versioned(text, ScopeSchema::V1);
+    assert_eq!(v1("organize@global"), Err(ScopeGrammarError::UnknownVerb));
+    assert_eq!(v1("*@global").unwrap().verbs, Verbs::of(&Verb::ALL));
+    assert_eq!(
+        v1("signal@host").unwrap().verbs,
+        Verbs::of(&[Verb::Signal, Verb::Terminate])
+    );
+    let held = v1("?signal,create@host").unwrap();
+    assert_eq!(
+        held.verbs,
+        Verbs::of(&[Verb::Create, Verb::Signal, Verb::Organize])
+    );
+    assert_eq!(held.held, Verbs::of(&[Verb::Signal]));
+    assert_eq!(
+        TerminalScopeSet::parse_all_versioned(&["signal@global"], ScopeSchema::V1)
+            .unwrap()
+            .grants()[0]
+            .verbs,
+        Verbs::of(&[Verb::Signal, Verb::Terminate])
+    );
 }

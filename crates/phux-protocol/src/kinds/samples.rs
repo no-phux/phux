@@ -65,10 +65,206 @@ const fn command_variant(command: &Command) -> usize {
         Command::AppendResourceOutput { .. } => 21,
         Command::KillResourceIf { .. } => 22,
         Command::OpenListener { .. } => 23,
+        Command::GetOrganization { .. } => 25,
+        Command::SessionCreate { .. } => 26,
+        Command::SessionRename { .. } => 27,
+        Command::SessionSetLifetime { .. } => 28,
+        Command::SessionDelete { .. } => 29,
+        Command::ResourceCreate { .. } => 30,
+        Command::ResourceMove { .. } => 31,
+        Command::ResourceMoveMany { .. } => 32,
+        Command::ResourceRename { .. } => 33,
+        Command::ResourceTerminate { .. } => 34,
+        Command::ResourceRemove { .. } => 35,
+        Command::ResourceRelaunch { .. } => 36,
+        Command::ResourceAbandon { .. } => 37,
+        Command::InboxResolve { .. } => 38,
+        Command::OrganizationUndo { .. } => 39,
+        Command::ArrangementGet { .. } => 40,
+        Command::ArrangementReplace { .. } => 41,
     }
 }
 
-const COMMAND_VARIANTS: usize = 25;
+const COMMAND_VARIANTS: usize = 42;
+
+fn operation() -> IdempotencyKey {
+    IdempotencyKey::new([3; 16]).unwrap()
+}
+
+fn session_key() -> crate::ids::SessionKey {
+    crate::ids::SessionKey::new([4; 16]).unwrap()
+}
+
+fn resource_key() -> crate::ids::ResourceKey {
+    crate::ids::ResourceKey::new([5; 16]).unwrap()
+}
+
+/// One sample per organization command, each on its row.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one sample per organization command, kept as one flat table"
+)]
+fn org_command_samples() -> Vec<(Command, &'static Rule)> {
+    use crate::ids::{ActivationId, ArrangementKey, Revision, ServerInstance};
+    use crate::wire::frame::{
+        ArrangementDoc, ExitPolicy, LiveTarget, MoveItem, OrgFilter, SessionLifetime, TerminateMode,
+    };
+    let rev = Revision::new(1);
+    let arrangement = ArrangementKey::new([6; 16]).unwrap();
+    vec![
+        (
+            Command::GetOrganization {
+                filter: OrgFilter::All,
+                page_size: 0,
+                cursor: None,
+            },
+            &C_GET_ORGANIZATION,
+        ),
+        (
+            Command::SessionCreate {
+                operation: operation(),
+                name: "work".to_owned(),
+                lifetime: SessionLifetime::Persistent,
+                attrs: Vec::new(),
+                launch: None,
+            },
+            &C_SESSION_CREATE,
+        ),
+        (
+            Command::SessionRename {
+                operation: operation(),
+                session: session_key(),
+                expected: rev,
+                name: "play".to_owned(),
+            },
+            &C_SESSION_ORGANIZE,
+        ),
+        (
+            Command::SessionSetLifetime {
+                operation: operation(),
+                session: session_key(),
+                expected: rev,
+                lifetime: SessionLifetime::Ephemeral,
+            },
+            &C_SESSION_ORGANIZE,
+        ),
+        (
+            Command::SessionDelete {
+                operation: operation(),
+                session: session_key(),
+                expected: rev,
+            },
+            &C_SESSION_DELETE,
+        ),
+        (
+            Command::ResourceCreate {
+                operation: operation(),
+                session: session_key(),
+                kind: ResourceKind::Terminal,
+                launch: None,
+                name: None,
+                on_exit: ExitPolicy::Remove,
+            },
+            &C_RESOURCE_CREATE,
+        ),
+        (
+            Command::ResourceMove {
+                operation: operation(),
+                resource: resource_key(),
+                from: session_key(),
+                from_expected: rev,
+                to: crate::ids::SessionKey::new([9; 16]).unwrap(),
+                to_expected: rev,
+            },
+            &C_RESOURCE_MOVE,
+        ),
+        (
+            Command::ResourceMoveMany {
+                operation: operation(),
+                items: vec![MoveItem {
+                    resource: resource_key(),
+                    from: session_key(),
+                    from_expected: rev,
+                }],
+                to: crate::ids::SessionKey::new([9; 16]).unwrap(),
+                to_expected: rev,
+            },
+            &C_RESOURCE_MOVE,
+        ),
+        (
+            Command::ResourceRename {
+                operation: operation(),
+                resource: resource_key(),
+                expected: rev,
+                name: Some("logs".to_owned()),
+            },
+            &C_RESOURCE_RENAME,
+        ),
+        (
+            Command::ResourceTerminate {
+                operation: operation(),
+                target: LiveTarget {
+                    resource: terminal(),
+                    instance: ServerInstance::new([7; 16]),
+                    activation: ActivationId::new(1),
+                },
+                mode: TerminateMode::Graceful,
+            },
+            &C_RESOURCE_TERMINATE,
+        ),
+        (
+            Command::ResourceRemove {
+                operation: operation(),
+                resource: resource_key(),
+                expected: rev,
+            },
+            &C_RESOURCE_REMOVE,
+        ),
+        (
+            Command::ResourceRelaunch {
+                operation: operation(),
+                resource: resource_key(),
+                expected: rev,
+            },
+            &C_RESOURCE_RELAUNCH,
+        ),
+        (
+            Command::ResourceAbandon {
+                operation: operation(),
+                resource: resource_key(),
+                expected: rev,
+                activation: ActivationId::new(1),
+            },
+            &C_RESOURCE_ABANDON,
+        ),
+        (
+            Command::InboxResolve {
+                operation: operation(),
+                session: session_key(),
+                expected: rev,
+            },
+            &C_SESSION_ORGANIZE,
+        ),
+        (
+            Command::OrganizationUndo {
+                operation: operation(),
+                undo: IdempotencyKey::new([8; 16]).unwrap(),
+                expected: Vec::new(),
+            },
+            &C_ORGANIZATION_UNDO,
+        ),
+        (Command::ArrangementGet { arrangement }, &C_ARRANGEMENT_GET),
+        (
+            Command::ArrangementReplace {
+                operation: operation(),
+                arrangement,
+                expected: rev,
+                document: ArrangementDoc::default(),
+            },
+            &C_ARRANGEMENT_REPLACE,
+        ),
+    ]
+}
 
 #[allow(
     clippy::too_many_lines,
@@ -248,6 +444,9 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
             &C_CLOSE_TAB_RESOURCES,
         ),
     ]
+    .into_iter()
+    .chain(org_command_samples())
+    .collect()
 }
 
 /// A stable index per client-originated `FrameKind` variant; `None` for a
@@ -920,10 +1119,43 @@ fn dangerous_methods_are_exactly_the_adr_0128_list() {
         "UPGRADE",
         CONFIG_RELOAD_KEY,
         APPROVAL_DECIDE_KEY_PREFIX,
+        "SESSION_DELETE",
+        "RESOURCE_TERMINATE",
+        "RESOURCE_REMOVE",
+        "RESOURCE_ABANDON",
     ]
     .into_iter()
     .collect();
     assert_eq!(dangerous, golden);
+}
+
+/// R07: the v2 verbs gate only the organization commands. Every legacy
+/// command and frame keeps exactly the verbs it needed before, so no stored
+/// grant loses an operation, and every organization method is gated on
+/// `features_ext.ORGANIZATION`.
+#[test]
+fn only_organization_commands_need_the_v2_verbs() {
+    let v2 = Verbs::of(&[Verb::Organize, Verb::Terminate]);
+    for (command, rule) in command_samples() {
+        let needs_v2 = rule.verb_set().bits() & v2.bits() != 0;
+        if command.is_organization() {
+            let method = command_method(encoded_command_tag(&command)).unwrap();
+            assert_eq!(
+                method.gate,
+                Some(FeatureGate::FeaturesExt {
+                    mask: crate::caps::ServerFeatureExt::Organization as u32,
+                    wire_name: "ORGANIZATION",
+                }),
+                "{}",
+                method.name
+            );
+        } else {
+            assert!(!needs_v2, "{command:?} must keep its legacy verbs");
+        }
+    }
+    for (frame, rule) in frame_samples() {
+        assert_eq!(rule.verb_set().bits() & v2.bits(), 0, "{frame:?}");
+    }
 }
 
 #[test]
