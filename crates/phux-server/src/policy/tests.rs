@@ -2323,3 +2323,5 @@ fn a_server_wide_subscription_delivers_only_observable_events() {
     let blind = server_wide_bells(&["inventory,bind@global"]);
     assert!(blind.is_empty(), "{blind:?}");
 }
+
+mod delegation;

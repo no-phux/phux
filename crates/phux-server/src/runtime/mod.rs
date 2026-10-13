@@ -29,11 +29,14 @@ use phux_protocol::wire::{
     ListenerDisabledReason, RemoteListenerSlot, RemoteListenerTransport, RemoteListenersReport,
 };
 
+#[cfg(test)]
+mod actor_conformance;
 pub mod attach;
 pub mod client;
 mod command_tasks;
 pub mod commands;
 mod committed_close;
+pub mod delegation;
 mod directory;
 mod ephemeral_listener;
 pub mod idempotent_create;

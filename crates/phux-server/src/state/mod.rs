@@ -26,6 +26,7 @@ mod config;
 mod construct;
 mod cwd;
 mod defaults;
+mod delegations;
 mod events;
 mod hook_dispatch;
 mod hub;
@@ -69,6 +70,7 @@ pub use events::{
 use hub_state::HubState;
 pub use id_space::IdSpace;
 pub use journal::EventRecord;
+pub use leases::{LeaseEvidence, LeaseInterval};
 pub(crate) use retained::Retention;
 pub use retained::{RetainPolicy, close_reason_name, process_exit};
 pub use roles::RoleEffects;
@@ -156,6 +158,9 @@ pub struct ServerState {
     /// Local and satellite input-lease ledgers (ADR-0033, L1 §9.1),
     /// released together on detach; see [`lease_table`].
     leases: LeaseTable,
+    /// Live delegated agent credentials (ADR-0163 §5); see
+    /// [`crate::delegation`].
+    delegations: crate::delegation::DelegationTable,
     /// On a hub, who spawned each satellite resource and whether another
     /// consumer attached it since (ADR-0109).
     satellite_spawns: satellite_spawns::SatelliteSpawnLedger,

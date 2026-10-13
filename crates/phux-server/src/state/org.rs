@@ -238,14 +238,20 @@ impl ServerState {
         OperationId::from_bytes(self.org.keys.fresh())
     }
 
-    /// The actor a connection's writes are attributed to: the owner,
-    /// through the client name it gave at `HELLO`.
+    /// The actor a connection's writes are attributed to: the principal its
+    /// `HELLO` grant authenticated (ADR-0163), through the client name it
+    /// gave. A connection with no grant is the owner's in-process caller.
     #[must_use]
     pub fn actor_for(&self, client: ClientId) -> Actor {
+        let (principal, on_behalf_of) = self
+            .connection_grant(client)
+            .map_or((PrincipalId::Owner, None), |grant| {
+                (grant.principal().clone(), grant.on_behalf_of().cloned())
+            });
         Actor {
-            principal: PrincipalId::Owner,
+            principal,
             client: self.clients.client_names.get(&client).cloned(),
-            on_behalf_of: None,
+            on_behalf_of,
         }
     }
 
@@ -820,6 +826,82 @@ mod tests {
             activation.outcome,
             Some(Outcome::Exit(ExitOutcome::exited(3)))
         );
+    }
+
+    /// ADR-0163 §8: every journaled organization event names a principal:
+    /// the one the committing connection authenticated as, or the server.
+    #[test]
+    fn every_journaled_organization_event_names_its_principal() {
+        use phux_protocol::wire::frame::AgentEvent;
+
+        let mut state = ServerState::new();
+        let (session, terminal) = state.seed_session("work");
+        let owner = ClientId(1);
+        state.set_connection_grant(owner, crate::policy::ConnectionGrant::owner());
+        let workload = ClientId(2);
+        let workload_id = format!("sha256:{}", "a".repeat(64));
+        state.set_connection_grant(
+            workload,
+            crate::policy::ConnectionGrant::scoped(
+                phux_protocol::scope::TerminalScopeSet::parse_all(&["*@global"]).unwrap(),
+                Some(workload_id.clone()),
+            )
+            .unwrap(),
+        );
+        let first = state.journal.head() + 1;
+
+        let key = state.registry().session_key(session).unwrap();
+        let expected = state.org().session(&key).unwrap().revision;
+        let rename = Command {
+            operation: state.mint_operation(),
+            op: Op::SessionRename {
+                session: key,
+                expected,
+                name: "renamed".to_owned(),
+            },
+        };
+        let as_owner = state.actor_for(owner);
+        state
+            .commit_command_from(&rename, &as_owner, Some(owner))
+            .unwrap();
+        let create = Command {
+            operation: state.mint_operation(),
+            op: Op::SessionCreate {
+                name: "made-by-automation".to_owned(),
+                lifetime: SessionLifetime::Persistent,
+                attrs: phux_core::Attrs::default(),
+                resource: None,
+            },
+        };
+        let as_workload = state.actor_for(workload);
+        assert_eq!(
+            as_workload.principal,
+            PrincipalId::Credential(workload_id.clone())
+        );
+        state
+            .commit_command_from(&create, &as_workload, Some(workload))
+            .unwrap();
+        state.retire_record(terminal, ExitOutcome::exited(0));
+
+        let principals: Vec<_> = state
+            .journal
+            .retained()
+            .filter(|entry| entry.seq() >= first)
+            .filter(|entry| !matches!(entry.event, AgentEvent::TerminalControl { .. }))
+            .map(|entry| {
+                entry
+                    .stamp
+                    .actor
+                    .as_ref()
+                    .and_then(phux_protocol::wire::frame::ActorRef::principal)
+                    .unwrap_or_else(|| panic!("no principal on {:?}", entry.event))
+            })
+            .collect();
+        let id = |principal: PrincipalId| crate::org_wire::principal_id(&principal).unwrap();
+        assert!(principals.len() >= 3, "{principals:?}");
+        assert!(principals.contains(&id(PrincipalId::Owner)));
+        assert!(principals.contains(&id(PrincipalId::Credential(workload_id))));
+        assert!(principals.contains(&id(PrincipalId::System)));
     }
 
     #[test]

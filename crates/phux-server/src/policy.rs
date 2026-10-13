@@ -25,8 +25,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
+use phux_core::PrincipalId;
+use phux_protocol::kinds::Verb;
 use phux_protocol::policy::{PeerIdentity, TransportType};
-use phux_protocol::scope::{EffectiveScopeSet, ScopeError, ScopeGrant, TerminalScopeSet};
+use phux_protocol::scope::{EffectiveScopeSet, ScopeError, ScopeGrant, Selector, TerminalScopeSet};
 use phux_protocol::wire::frame::DetachReason;
 use tracing::debug;
 
@@ -179,6 +181,11 @@ pub struct ConnectionGrant {
     /// Set once the connection's authority was withdrawn while it was live;
     /// every guard then denies everything (`workload-auth.md` §7 step 1).
     revoked: Option<Revocation>,
+    /// The authenticated principal every action on this connection is
+    /// attributed to (ADR-0163).
+    principal: PrincipalId,
+    /// The human whose grant a delegated principal exercises.
+    on_behalf_of: Option<PrincipalId>,
 }
 
 impl ConnectionGrant {
@@ -193,11 +200,15 @@ impl ConnectionGrant {
             expires_at: None,
             last_denial_error: None,
             revoked: None,
+            principal: PrincipalId::Owner,
+            on_behalf_of: None,
         }
     }
 
     /// A scoped grant of `granted` with no requested attenuation: one
     /// clause per grant (`workload-auth.md` §5.1), bound to `credential_id`.
+    /// Its principal is that credential ([`WORKLOAD_PRINCIPAL`] when none is
+    /// named).
     ///
     /// # Errors
     ///
@@ -208,6 +219,11 @@ impl ConnectionGrant {
         credential_id: Option<String>,
     ) -> Result<Self, ScopeError> {
         let effective = EffectiveScopeSet::unattenuated(&granted)?;
+        let principal = PrincipalId::Credential(
+            credential_id
+                .clone()
+                .unwrap_or_else(|| WORKLOAD_PRINCIPAL.to_owned()),
+        );
         Ok(Self {
             authority: Authority::Scoped { granted, effective },
             credential_id,
@@ -216,7 +232,73 @@ impl ConnectionGrant {
             expires_at: None,
             last_denial_error: None,
             revoked: None,
+            principal,
+            on_behalf_of: None,
         })
+    }
+
+    /// A delegated credential's grant (ADR-0163): `granted` exercised by
+    /// `principal` on behalf of `on_behalf_of`, lapsing at `expires_at`.
+    /// It names no registry credential, so the revocation watcher judges
+    /// only its expiry; withdrawing the delegation revokes it directly.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::scoped`].
+    pub fn delegated(
+        granted: TerminalScopeSet,
+        principal: PrincipalId,
+        on_behalf_of: PrincipalId,
+        expires_at: DateTime<Utc>,
+    ) -> Result<Self, ScopeError> {
+        let mut grant = Self::scoped(granted, None)?;
+        grant.principal = principal;
+        grant.on_behalf_of = Some(on_behalf_of);
+        grant.expires_at = Some(expires_at);
+        Ok(grant)
+    }
+
+    /// The authenticated principal this connection acts as.
+    #[must_use]
+    pub const fn principal(&self) -> &PrincipalId {
+        &self.principal
+    }
+
+    /// The human a delegated principal acts for.
+    #[must_use]
+    pub const fn on_behalf_of(&self) -> Option<&PrincipalId> {
+        self.on_behalf_of.as_ref()
+    }
+
+    /// The human this connection ultimately answers to: the delegator for a
+    /// delegated principal, else the principal itself.
+    #[must_use]
+    pub const fn answering_principal(&self) -> &PrincipalId {
+        match &self.on_behalf_of {
+            Some(human) => human,
+            None => &self.principal,
+        }
+    }
+
+    /// Whether this grant admits `verb` on every resource of the local
+    /// session whose wire id is `group`: the owner always does; a scoped
+    /// grant needs an un-held clause carrying `verb` on a selector that
+    /// contains the whole session (Global, the local host, or that Group).
+    #[must_use]
+    pub fn admits_session(&self, verb: Verb, group: u32) -> bool {
+        if self.revoked.is_some() {
+            return false;
+        }
+        match &self.authority {
+            Authority::Owner => true,
+            Authority::Scoped { effective, .. } => effective.clauses().iter().any(|clause| {
+                clause.verbs.contains(verb)
+                    && !clause.held.contains(verb)
+                    && [&clause.ceiling, &clause.requested]
+                        .into_iter()
+                        .all(|selector| contains_session(selector, group))
+            }),
+        }
     }
 
     /// Whether this is the owner's grant.
@@ -272,6 +354,18 @@ impl ConnectionGrant {
         self.registry_instance = stamp.instance;
         self.registry_generation = stamp.generation;
         self.expires_at = stamp.expires_at;
+    }
+}
+
+/// The principal name of a scoped grant minted with no credential id.
+pub const WORKLOAD_PRINCIPAL: &str = "workload";
+
+/// Whether `selector` covers every resource of the session `group`.
+const fn contains_session(selector: &Selector, group: u32) -> bool {
+    match selector {
+        Selector::Global | Selector::HostLocal => true,
+        Selector::Group(id) => *id == group,
+        _ => false,
     }
 }
 

@@ -163,7 +163,7 @@ impl RoutedInput {
 /// Cloneable handle a client task uses to hand input to the lane. Cloning is
 /// cheap (`mpsc::Sender` clone); every clone keeps the lane thread alive.
 #[derive(Clone, Debug)]
-pub(crate) struct InputLaneHandle {
+pub struct InputLaneHandle {
     tx: mpsc::Sender<RoutedInput>,
     admission: Arc<AcknowledgedAdmission>,
     cache: SharedOperationCache,

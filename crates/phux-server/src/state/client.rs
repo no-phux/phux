@@ -203,8 +203,8 @@ impl ServerState {
         let geometry_targets = self.viewport_terminals(client_id);
         self.clients.attached.remove(&client_id);
         // Drop local and satellite leases; the runtime already broadcast and
-        // relayed the releases.
-        self.leases.release_all_for(client_id);
+        // relayed the releases. Each local release opens a new epoch.
+        self.release_all_input_leases(client_id);
         // Cancel owned pumps, then drop the client from subscriber lists.
         self.resources.cancel_pumps_for_client(client_id);
         self.resources.drop_client_subscriptions(client_id);

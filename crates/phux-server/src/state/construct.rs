@@ -22,6 +22,7 @@ impl ServerState {
             ),
             resources: ResourceTable::new(),
             leases: LeaseTable::new(),
+            delegations: crate::delegation::DelegationTable::default(),
             satellite_spawns: super::satellite_spawns::SatelliteSpawnLedger::default(),
             idspace,
             metadata: MetadataStore::default(),

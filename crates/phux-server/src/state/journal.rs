@@ -239,6 +239,11 @@ impl Journal {
             .map_or(0, JournalEntry::seq)
     }
 
+    /// Every retained entry, oldest first.
+    pub(crate) fn retained(&self) -> impl Iterator<Item = &JournalEntry> {
+        self.entries.iter()
+    }
+
     /// The newest `seq` evicted from the ring; `0` while nothing has been.
     #[must_use]
     pub(crate) const fn evicted_through(&self) -> u64 {

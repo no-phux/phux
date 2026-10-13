@@ -138,6 +138,8 @@ impl ServerState {
         self.retained.forget(pane);
         // Asked state is keyed by core id; the arbiter by wire id (below).
         self.agent.clear_asked(pane);
+        // No lease change can follow a removed pane.
+        self.leases.forget_terminal(pane);
         // The retired wire id keys the metadata scope and the arbiter.
         if let Some(wire) = self.idspace.retire_terminal(pane) {
             self.metadata.forget_terminal(&wire);

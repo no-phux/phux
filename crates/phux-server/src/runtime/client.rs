@@ -2876,6 +2876,26 @@ async fn authorize_hello(state: &SharedState, client_id: ClientId) -> Result<(),
             message: "policy denied: unauthorized: not authorized".to_owned(),
         });
     }
+    // ADR-0163: a connection that arrived on a delegated credential's own
+    // socket acts as that credential, never as the owner the socket's uid
+    // would otherwise make it.
+    if let Some(id) = super::delegation::delegated_credential(&peer, credential.as_ref()) {
+        let grant = state.with(|s| s.delegated_grant(id, chrono::Utc::now()));
+        let Some(grant) = grant else {
+            warn!(
+                ?client_id,
+                "HELLO denied: the delegated credential is withdrawn or expired"
+            );
+            return Err(ConnectionClose {
+                attached_reason: None,
+                detach_reason: DetachReason::AuthenticationFailed,
+                code: ErrorCode::PermissionDenied,
+                message: "policy denied: unauthorized: not authorized".to_owned(),
+            });
+        };
+        state.with_mut(|s| s.set_connection_grant(client_id, grant));
+        return Ok(());
+    }
     let engine = state.with(|s| s.policy_engine().clone());
     // workload-auth §5: the grant comes from the verified identity alone.
     match engine.authorize_hello(&peer, credential.as_ref()).await {

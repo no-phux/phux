@@ -4032,6 +4032,14 @@ pub(crate) async fn handle_acquire_input(
                 message: format!("input lease held by client {}", holder.0),
             });
         }
+        // ADR-0163 §6: a non-human principal never takes a human's lease,
+        // however deliberately it asks.
+        if s.lease_protected_from(core, client_id) {
+            return Err(CommandResult::Error {
+                code: ErrorCode::InputLeaseHeld,
+                message: "input lease held by a human; an agent cannot take it".to_owned(),
+            });
+        }
         s.set_input_lease(core, client_id);
         let action = match prior {
             Some(holder) if holder != client_id => ControlAction::Seized,
@@ -4091,8 +4099,7 @@ fn spawn_input_lease_expiry(
             }
             // Not `refresh_input_lease_expiry`, which would abort this task.
             s.clear_input_lease_expiry(terminal);
-            let holder = s.input_lease_holder(terminal)?;
-            s.release_input_lease(terminal, holder);
+            s.expire_input_lease(terminal)?;
             s.resource_handle(terminal).cloned()
         });
         let Some(handle) = expired else {
