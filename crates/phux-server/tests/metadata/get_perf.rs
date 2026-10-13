@@ -1,6 +1,11 @@
 //! `GET_PERF` over the wire: a JSON `PerfReport` whose hot-path metrics move
 //! when a pane produces output, and `reset` restarts the counters.
 
+#![allow(
+    clippy::redundant_pub_crate,
+    reason = "`unreachable_pub` demands pub(crate) in a test-binary module"
+)]
+
 use phux_perf::{MetricValue, PerfReport};
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue};
 use tempfile::TempDir;
@@ -12,7 +17,7 @@ use crate::common::{attach_pane, connect_as, full_caps};
 
 const SESSION: &str = "perf";
 
-async fn get_perf(stream: &mut UnixStream, request_id: u32, reset: bool) -> PerfReport {
+pub(crate) async fn get_perf(stream: &mut UnixStream, request_id: u32, reset: bool) -> PerfReport {
     let result = command(stream, request_id, Command::GetPerf { reset }).await;
     let CommandResult::OkWith(CommandValue::Json(json)) = result else {
         panic!("GET_PERF must answer OkWith(Json): {result:?}");
@@ -33,7 +38,7 @@ async fn get_perf(stream: &mut UnixStream, request_id: u32, reset: bool) -> Perf
     report
 }
 
-fn counter(report: &PerfReport, name: &str) -> u64 {
+pub(crate) fn counter(report: &PerfReport, name: &str) -> u64 {
     match &report
         .metric(name)
         .unwrap_or_else(|| panic!("{name} missing"))
@@ -44,7 +49,7 @@ fn counter(report: &PerfReport, name: &str) -> u64 {
     }
 }
 
-fn histogram_count(report: &PerfReport, name: &str) -> u64 {
+pub(crate) fn histogram_count(report: &PerfReport, name: &str) -> u64 {
     match &report
         .metric(name)
         .unwrap_or_else(|| panic!("{name} missing"))

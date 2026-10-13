@@ -42,6 +42,7 @@ jobs:
       unit_mode: ${{ steps.detect.outputs.unit_mode }}
       unit_targets: ${{ steps.detect.outputs.unit_targets }}
       e2e_needed: ${{ steps.detect.outputs.e2e_needed }}
+      perf_icount_needed: ${{ steps.detect.outputs.perf_icount_needed }}
       validated: ${{ steps.receipt.outputs.validated }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -209,12 +210,61 @@ jobs:
         if: always()
         run: bash scripts/ci/mbx-export-headroom.sh
 
+  # x86_64 callgrind counts. ubuntu-24.04 (not the arm check/test lanes):
+  # the checked-in baseline is an x86_64 icount-profile number. Skipped when
+  # the classifier says the diff cannot move those counts.
+  perf-icount:
+    name: perf-icount
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    needs: changes
+    if: needs.changes.outputs.perf_icount_needed == 'true' && needs.changes.outputs.validated != 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-rust-lane
+        id: setup
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          cache-lane: icount
+      - name: instruction counts
+        env:
+          # The label is visible on the next pull_request event. A re-run
+          # keeps the original payload, so add the label and push.
+          PHUX_PERF_BASELINE_UPDATE: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'perf-baseline') && '1' || '0' }}
+          PHUX_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}
+        run: |
+          nix develop -c bash -euo pipefail <<'EOF'
+          source scripts/ci/timed.sh
+          timed icount just perf-icount
+          EOF
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: perf-icount
+          path: target/perf-icount/iai.jsonl
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: mbx stats
+        if: always()
+        run: mbx stats || true
+      - name: lane signal
+        if: always()
+        env:
+          PHUX_CACHE_HIT: ${{ steps.setup.outputs.cache-hit }}
+          PHUX_DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+        run: bash scripts/ci/summarize-job.sh
+      - name: leave disk for the mbx objects export
+        if: always()
+        run: bash scripts/ci/mbx-export-headroom.sh
+
   # Live main rules require ci + commitlint (verified 2026-09-09). Retain raw
   # check/test names for visibility. A crashed classifier or cheap guard cannot
   # become skipped-green; only product lanes may be intentionally skipped.
   ci:
     name: ci
-    needs: [changes, check, test, workflow-gate, integrations]
+    needs: [changes, check, test, workflow-gate, integrations, perf-icount]
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -253,10 +303,11 @@ jobs:
   # push to main (about 0.4 GB check + 1.9 GB test compressed). Restores take
   # only the newest, so the older ones would pile up until LRU eviction pushed
   # out other workflows' caches from the shared 10 GB. Keep the newest entry
-  # per lane and delete the rest once both lanes have finished saving.
+  # per lane and delete the rest once the rust lanes have finished saving.
+  # check and test are arm64; perf-icount is x86_64, so its key prefix differs.
   prune-build-cache:
     name: prune superseded mbx cache entries
-    needs: [check, test]
+    needs: [check, test, perf-icount]
     if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -268,9 +319,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          for lane in check test; do
+          for spec in check:linux-arm64 test:linux-arm64 icount:linux-x64; do
+            lane="${spec%%:*}"
+            arch="${spec#*:}"
             mapfile -t stale < <(gh api --paginate \
-              "repos/${GITHUB_REPOSITORY}/actions/caches?ref=refs/heads/main&key=linux-arm64-mbx-phux-${lane}-&sort=created_at&direction=desc&per_page=100" \
+              "repos/${GITHUB_REPOSITORY}/actions/caches?ref=refs/heads/main&key=${arch}-mbx-phux-${lane}-&sort=created_at&direction=desc&per_page=100" \
               --jq '.actions_caches[].id' | tail -n +2)
             for id in "${stale[@]:-}"; do
               [ -n "${id}" ] || continue

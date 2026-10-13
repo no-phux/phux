@@ -193,5 +193,6 @@ def skip_outputs():
         "unit_mode=skip",
         "unit_targets=",
         "e2e_needed=false",
+        "perf_icount_needed=false",
     ])
     return lines

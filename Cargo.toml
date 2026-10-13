@@ -150,6 +150,12 @@ unicode-segmentation = "1"
 # longer what makes a remote attach slow.
 flate2 = "1.1"
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+# Instruction-count CI guard (`just perf-icount`, the `perf-icount` job).
+# Callgrind client requests bracket one function, so the count is the hot
+# path rather than process startup and does not move with runner load.
+# Dev-only: the bench harness is the only caller. Valgrind itself is a CI
+# package, not a crate.
+iai-callgrind = "0.16"
 dhat = "0.3"
 tokio = { version = "1", features = ["macros", "rt", "net", "io-util", "sync", "signal", "time", "process"] }
 portable-pty = "0.9"
@@ -286,6 +292,16 @@ debug = "line-tables-only"
 inherits = "release"
 debug = "line-tables-only"
 strip = "none"
+
+# Instruction-count guard. Release optimizations without fat LTO, so the
+# required job stays inside its budget. Counts are comparable only for
+# binaries built with this profile on x86_64.
+[profile.icount]
+inherits = "release"
+lto = false
+codegen-units = 16
+strip = "none"
+debug = "line-tables-only"
 
 # Profile for sampling profilers (samply, perf). Inherits release codegen
 # so the hot path matches production, but keeps line-table debug info and

@@ -1,7 +1,7 @@
 ---
 audience: humans, agents, consumers, contributors
 stability: stable
-last-reviewed: 2026-09-30
+last-reviewed: 2026-10-13
 ---
 
 # phux documentation
@@ -53,6 +53,8 @@ route, firewall, and credential failures.
 
 - [When to use phux](./when-to-use.md): compare workflows with tmux, Herdr, and cmux.
 - [Performance](./performance.md): measured results, methodology, and limits.
+- [Performance CI](./performance-ci.md): instruction-count gate, counter
+  ceilings, and the advisory nightly harness.
 - [Performance diagnostics](./operations.md#performance-observability): measure
   your running system.
 
