@@ -98,6 +98,24 @@ fn catalog() -> Vec<CommandSpec> {
             Some("cmd+shift+n"),
         ),
         spec("rename-session", "Rename Session…", "Terminal", None),
+        spec(
+            "select-session-work",
+            "Select Work in Current Session",
+            "Organization",
+            None,
+        ),
+        spec(
+            "move-resources",
+            "Move Selected Work to Session…",
+            "Organization",
+            Some("cmd+shift+m"),
+        ),
+        spec(
+            "undo-organization",
+            "Undo Organization",
+            "Organization",
+            Some("cmd+alt+z"),
+        ),
         spec("kill-session", "Kill Session…", "Terminal", None),
         spec(
             "new-home",
