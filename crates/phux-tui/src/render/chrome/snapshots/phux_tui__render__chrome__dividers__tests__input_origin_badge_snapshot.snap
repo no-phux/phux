@@ -1,0 +1,6 @@
+---
+source: crates/phux-tui/src/render/chrome/dividers.rs
+expression: "format!(\"bright {bright_row}\\ndim    {dim_row}\\n\")"
+---
+bright ─ [ada] shell ──────────────────────────────────
+dim    ─ [ada] shell ──────────────────────────────────

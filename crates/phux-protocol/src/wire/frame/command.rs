@@ -715,6 +715,14 @@ pub enum AgentEvent {
         /// How the approval ended.
         outcome: ApprovalOutcome,
     },
+    /// Someone just sent input to the envelope's Terminal. Unjournaled:
+    /// the `EVENT` stamp is absent, so the body is only the origin label
+    /// and never a credential id (`docs/spec/L1.md` §7.1).
+    InputActivity {
+        /// Who sent the input: the client's HELLO name, or `client:<id>`
+        /// when it has none.
+        origin: String,
+    },
     /// An event tag this build does not know, body kept verbatim. Produced
     /// only by the decoder.
     Unknown {

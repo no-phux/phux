@@ -198,8 +198,8 @@ fn agent_event_journal_gap_and_source_gap_roundtrip_and_unknown_tag_still_skips(
     )));
     assert_eq!(fs[0].1[0], 0x0c, "source_gap is tag 0x0c");
 
-    // 0x0f is the next unallocated tag: still skipped by its length.
-    let agent_event = [0x0f, 0, 0, 0, 2, 0xaa, 0xbb];
+    // 0x10 is the next unallocated tag: still skipped by its length.
+    let agent_event = [0x10, 0, 0, 0, 2, 0xaa, 0xbb];
     let mut body = Vec::new();
     tlv_field(&mut body, 2, &agent_event);
     assert_eq!(
@@ -207,12 +207,62 @@ fn agent_event_journal_gap_and_source_gap_roundtrip_and_unknown_tag_still_skips(
         event(
             None,
             AgentEvent::Unknown {
-                tag: 0x0f,
+                tag: 0x10,
                 body: vec![0xaa, 0xbb],
             },
             None,
         )
     );
+}
+
+/// `input_activity` (tag `0x0f`) round-trips as an unstamped `EVENT`. A
+/// decoder whose match stops at `0x0e` keeps the body and surfaces `Unknown`.
+#[test]
+fn input_activity_round_trips_unstamped_and_an_older_decoder_reads_unknown() {
+    let frame = event(
+        Some(ResourceId::local(3)),
+        AgentEvent::InputActivity {
+            origin: "ada".to_owned(),
+        },
+        None,
+    );
+    assert_round_trip(&frame);
+    let bytes = encode(&frame);
+    let (_, fs) = fields(&bytes);
+    assert!(fs.iter().all(|(id, _)| *id <= 2), "no stamp fields: {fs:?}");
+    let event_bytes = &fs.iter().find(|(id, _)| *id == 2).expect("event").1;
+    let mut dec = Decoder::new(event_bytes);
+    let tag = dec.read_u8().unwrap();
+    let body = dec.read_bytes().unwrap().to_vec();
+    assert_eq!(tag, 0x0f);
+    // Tags a draft.25 decoder knows stop at approval_decided (0x0e).
+    let older = if tag <= 0x0e {
+        panic!("tag {tag:#x} was already allocated before input_activity");
+    } else {
+        AgentEvent::Unknown {
+            tag,
+            body: body.clone(),
+        }
+    };
+    assert_eq!(
+        older,
+        AgentEvent::Unknown {
+            tag: 0x0f,
+            body: body.clone(),
+        }
+    );
+    assert_eq!(Decoder::new(&body).read_str().unwrap(), "ada");
+    match decode(&bytes).unwrap() {
+        FrameKind::Event {
+            terminal,
+            event: AgentEvent::InputActivity { origin },
+            stamp: None,
+        } => {
+            assert_eq!(terminal, Some(ResourceId::local(3)));
+            assert_eq!(origin, "ada");
+        }
+        other => panic!("current decoder: {other:?}"),
+    }
 }
 
 #[test]

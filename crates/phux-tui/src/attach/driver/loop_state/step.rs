@@ -150,6 +150,7 @@ impl super::SessionLoop {
         // Down satellite panes probe the host inventory on a fixed cadence.
         self.arm_satellite_probe(tokio::time::Instant::now());
         let satellite_probe = sleep_until_or_pending(self.satellite_probe_at);
+        let origin_fade = sleep_until_or_pending(self.next_input_origin_wake());
 
         tokio::select! {
             biased;
@@ -202,6 +203,12 @@ impl super::SessionLoop {
 
             // Ask which grey satellite panes can be reattached.
             () = satellite_probe => self.probe_satellites(conn).await,
+
+            // Dim, then clear, a transient input-origin badge.
+            () = origin_fade => {
+                self.on_input_origin_phase(out, sidebar);
+                Ok(Step::Continue)
+            }
 
             // A spawned plugin action finished; failures toast.
             Some(result) = self.plugin_rx.recv() => {
