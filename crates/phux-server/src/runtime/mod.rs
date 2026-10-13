@@ -40,6 +40,7 @@ pub mod idempotent_create;
 pub mod input_lane;
 pub mod keyed_ops;
 pub mod operation_dedupe;
+mod organization;
 mod path_search;
 mod process_env;
 mod program_status;
@@ -1227,7 +1228,7 @@ fn open_org_store(
     state.with_mut(|s| -> Result<(), ServerError> {
         let instance = s.instance_id();
         if let Some(stored) = stored {
-            let org = phux_core::Org::restore(
+            let mut org = phux_core::Org::restore(
                 stored.authority,
                 instance,
                 stored.sessions,
@@ -1235,6 +1236,12 @@ fn open_org_store(
                 stored.arrangements,
                 stored.receipts,
             )?;
+            // Every session has an arrangement; a store written before that
+            // rule gets the missing ones now.
+            if org.sessions().any(|session| session.arrangement.is_none()) {
+                crate::state::ensure_arrangements(&mut org);
+                store.import(&org, None, crate::state::now_stamp())?;
+            }
             s.install_org(store, org, true);
         } else {
             let org = crate::state::fresh_org(instance, crate::state::now_stamp());

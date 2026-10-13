@@ -121,7 +121,7 @@ fn set_agent_session(
 
 /// Registry-side setup every PTY pane shares: stamp its spawn cwd and tell
 /// the child which pane and server it belongs to. Returns the wire id.
-fn register_pty_command(
+pub(super) fn register_pty_command(
     s: &mut crate::state::ServerState,
     terminal: phux_core::ids::ResourceId,
     cmd: &mut portable_pty::CommandBuilder,
@@ -140,7 +140,7 @@ fn register_pty_command(
     clippy::too_many_arguments,
     reason = "every input must be true of the pane before its actor becomes visible to another client"
 )]
-fn launch_pane_actor(
+pub(super) fn launch_pane_actor(
     state: &SharedState,
     terminal: phux_core::ids::ResourceId,
     cmd: Option<portable_pty::CommandBuilder>,
@@ -819,6 +819,14 @@ pub(crate) async fn handle_command(
     }
     if matches!(command, Command::Shutdown) {
         handle_shutdown(state, client_id, request_id, out_tx, root_token).await;
+        return;
+    }
+    // ADR-0161: organization commands commit through the org store and
+    // answer with their own result shapes; they never route to a satellite
+    // or take the keyed-command record (core keeps their receipts).
+    if command.is_organization() {
+        let result = super::organization::handle(state, client_id, command, root_token);
+        send_result(out_tx, request_id, result).await;
         return;
     }
 
@@ -4651,6 +4659,10 @@ pub(crate) fn with_attached_input_destination<R>(
         let touched_session = s.attached().get(&client_id).map(|c| c.session);
         if let Some(session) = touched_session {
             s.touch_session(session);
+        }
+        // R14: the member that last took human input.
+        if let Some(session) = s.registry().session_of(pane) {
+            let _ = s.registry_mut().set_recent(session, Some(pane));
         }
         let handle = match local.handle.terminal() {
             Ok(terminal) => terminal.clone(),

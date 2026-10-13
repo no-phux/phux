@@ -33,6 +33,18 @@ impl ServerState {
             .collect()
     }
 
+    /// The synthesized window's active pane: the session's `recent`
+    /// member (R14), else its first listed one.
+    fn legacy_active_pane(&self, session: SessionId, members: &[ResourceId]) -> Option<ResourceId> {
+        self.sessions
+            .registry
+            .session(session)
+            .and_then(|s| s.recent)
+            .and_then(|key| self.sessions.registry.resource_id(&key))
+            .filter(|p| members.contains(p))
+            .or_else(|| members.first().copied())
+    }
+
     /// Whether a legacy client sees `resource`: its engine is live, or its
     /// activation is current.
     fn legacy_visible(&self, resource: ResourceId) -> bool {
@@ -98,10 +110,7 @@ impl ServerState {
                 continue;
             };
             let active = self
-                .sessions
-                .default_pane_of(sid)
-                .filter(|p| members.contains(p))
-                .or_else(|| members.first().copied())
+                .legacy_active_pane(sid, &members)
                 .map(|p| self.intern_terminal_wire(p));
             windows.push(
                 WindowInfo::new(window_wire, session_wire, "window-0".to_owned())
@@ -187,11 +196,7 @@ impl ServerState {
         self.sessions.registry.session(focus_session)?;
         let focused_session_wire = self.idspace.intern_session(focus_session);
         let members = self.legacy_panes_of(focus_session);
-        let focus_pane = self
-            .sessions
-            .default_pane_of(focus_session)
-            .filter(|p| members.contains(p))
-            .or_else(|| members.first().copied());
+        let focus_pane = self.legacy_active_pane(focus_session, &members);
         // An empty session carries the `0` sentinels.
         let (focused_window_wire, focused_pane_wire) = match focus_pane {
             Some(pane) => (

@@ -258,6 +258,7 @@ impl ServerState {
     /// under the lock. Agent sessions come only from their cuts, so a blob
     /// assembled with no handoffs is the tree's identity alone: a busy
     /// agent's appends never make it look changed.
+    #[allow(clippy::too_many_lines, reason = "one pass per carried entity kind")]
     pub(crate) fn assemble_upgrade_blob(
         &self,
         listener_fd: RawFd,
@@ -362,7 +363,15 @@ impl ServerState {
             metadata: Vec::new(),
             org: Some(OrgBlob {
                 authority: *org.authority(),
-                sessions: org.sessions().cloned().collect(),
+                // `recent` is advisory and moves with every keystroke; it does
+                // not cross, so typing cannot make the tree look changed.
+                sessions: org
+                    .sessions()
+                    .map(|session| phux_core::Session {
+                        recent: None,
+                        ..session.clone()
+                    })
+                    .collect(),
                 resources: org.resources().cloned().collect(),
                 arrangements: org.arrangements().cloned().collect(),
             }),
@@ -1117,7 +1126,7 @@ fn import_tree(
             record.arrangement = Some(key);
         }
     }
-    let org = Org::restore(
+    let mut org = Org::restore(
         *current.authority(),
         instance,
         sessions,
@@ -1125,6 +1134,7 @@ fn import_tree(
         arrangements,
         current.receipts().cloned(),
     )?;
+    super::org::ensure_arrangements(&mut org);
     Ok((org, keyed, true))
 }
 

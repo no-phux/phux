@@ -31,6 +31,10 @@ pub struct EventRecord {
     pub actor: Option<ClientId>,
     /// The idempotency key of the operation that caused the event.
     pub operation_id: Option<IdempotencyKey>,
+    /// The stamp's actor, when the emitter builds it (an organization
+    /// commit names its principal); otherwise it is derived from
+    /// [`Self::actor`].
+    pub actor_ref: Option<ActorRef>,
     /// Where the event sits in the topology, stamped by the journal's owner
     /// so a filtered subscription can be judged later (workload-auth §6).
     pub(crate) subject: EventSubject,
@@ -46,8 +50,17 @@ impl EventRecord {
             event,
             actor: None,
             operation_id: None,
+            actor_ref: None,
             subject: EventSubject::UNPLACED,
         }
+    }
+
+    /// Stamp the event with `actor_ref` instead of one derived from
+    /// [`Self::actor`].
+    #[must_use]
+    pub fn with_actor_ref(mut self, actor_ref: Option<ActorRef>) -> Self {
+        self.actor_ref = actor_ref;
+        self
     }
 
     /// Widen the audience to `parent`'s watchers (ADR-0104 §2).

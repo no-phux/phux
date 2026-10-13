@@ -375,19 +375,24 @@ pub fn core_groups(doc: &frame::ArrangementDoc) -> Option<Vec<phux_core::Group>>
 /// A core actor as the event stamp's `ActorRef`, with its principal.
 #[must_use]
 pub fn actor_ref(actor: &phux_core::Actor, client: Option<wire::ClientId>) -> frame::ActorRef {
-    let principal = |p: &phux_core::PrincipalId| match p {
-        phux_core::PrincipalId::Owner => principal_id(b"owner"),
-        phux_core::PrincipalId::System => principal_id(b"system"),
-        phux_core::PrincipalId::Credential(name) => principal_id(name.as_bytes()),
-    };
     frame::ActorRef::new(client.unwrap_or(wire::ClientId::new(0)))
         .with_client_name(actor.client.clone())
-        .with_principal(principal(&actor.principal))
-        .with_on_behalf_of(actor.on_behalf_of.as_ref().and_then(principal))
+        .with_principal(principal_id(&actor.principal))
+        .with_on_behalf_of(actor.on_behalf_of.as_ref().and_then(principal_id))
 }
 
-/// A stable principal id: the first 16 bytes of the SHA-256 of `label`.
-fn principal_id(label: &[u8]) -> Option<wire::PrincipalId> {
+/// A principal's stable wire id: the first 16 bytes of the SHA-256 of its
+/// label (`owner`, `system`, or the credential name).
+#[must_use]
+pub fn principal_id(principal: &phux_core::PrincipalId) -> Option<wire::PrincipalId> {
+    match principal {
+        phux_core::PrincipalId::Owner => digest_id(b"owner"),
+        phux_core::PrincipalId::System => digest_id(b"system"),
+        phux_core::PrincipalId::Credential(name) => digest_id(name.as_bytes()),
+    }
+}
+
+fn digest_id(label: &[u8]) -> Option<wire::PrincipalId> {
     use sha2::Digest as _;
     let digest = sha2::Sha256::digest(label);
     let mut bytes = [0_u8; 16];

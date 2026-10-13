@@ -681,12 +681,14 @@ mod pane_event_drain_tests {
         let mut s = crate::state::ServerState::new();
         let (_session, pane) = s.seed_session("drain");
         let wire = s.intern_terminal_wire(pane);
+        // The seed's organization events are journaled too.
+        let seeded = s.journal_head();
         journal_drained_event(&mut s, &wire, AgentEvent::Bell.into(), 0);
         let live = s.journal_head();
-        assert_eq!(live, 1, "a live pane's event is journaled");
+        assert_eq!(live, seeded + 1, "a live pane's event is journaled");
         let _ = reap_pane_journaling_close(&mut s, pane);
         let closed = s.journal_head();
-        assert_eq!(closed, live + 1, "the close");
+        assert!(closed > live, "the close, and the record's removal");
         journal_drained_event(&mut s, &wire, AgentEvent::Bell.into(), 2);
         assert_eq!(s.journal_head(), closed, "nothing follows pane_closed");
     }
@@ -2823,6 +2825,8 @@ async fn negotiate_hello(
                 ServerFeatureExt::ResizeCellPx,
                 ServerFeatureExt::CommittedTeardown,
                 ServerFeatureExt::AgentStreamResume,
+                // ADR-0161: every organization command commits and is enforced.
+                ServerFeatureExt::Organization,
             ]))
             .with_compression(compression),
         server_id: state.with(|server| server.server_incarnation().as_bytes().to_vec()),

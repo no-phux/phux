@@ -80,6 +80,7 @@ use lifecycle_state::Lifecycle;
 pub use metadata::{
     KeepEmptyOutcome, MetadataSetOutcome, MetadataStore, RenameOutcome, ServerInterceptedKey,
 };
+pub(crate) use org::ensure_arrangements;
 pub use org::{OrgCommit, OsKeys, Reconciled, TerminalTarget, fresh_org, now_stamp};
 pub(crate) use resolve::{RelayRoute, Resolved, ResolvedOwned};
 use resource_table::ResourceTable;

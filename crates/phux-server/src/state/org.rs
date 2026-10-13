@@ -61,6 +61,10 @@ pub(super) struct OrgSide {
     /// Whether the records came from a store that already held them; a
     /// resume then trusts the store over the blob's copies.
     pub(super) loaded: bool,
+    /// Resources a `RESOURCE_TERMINATE` is ending: their reap records the
+    /// outcome and leaves the record to its exit policy instead of removing
+    /// it, as a legacy kill does.
+    terminating: std::collections::HashSet<ResourceId>,
 }
 
 impl OrgSide {
@@ -70,6 +74,7 @@ impl OrgSide {
             keys: OsKeys,
             shutting_down: false,
             loaded: false,
+            terminating: std::collections::HashSet::new(),
         }
     }
 }
@@ -92,16 +97,81 @@ fn store_refusal(error: &StoreError) -> Refusal {
 }
 
 /// A fresh organization for a server that has no store yet: a new
-/// authority and its empty Inbox.
+/// authority and its empty Inbox, with its empty arrangement.
 #[must_use]
 pub fn fresh_org(instance: InstanceId, now: Stamp) -> Org {
     let mut keys = OsKeys;
-    Org::new(
+    let mut org = Org::new(
         phux_core::AuthorityId::from_bytes(keys.fresh()),
         phux_core::SessionKey::from_bytes(keys.fresh()),
         instance,
         now,
-    )
+    );
+    ensure_arrangements(&mut org);
+    org
+}
+
+/// The session `session` with an empty arrangement of its own (revision 1,
+/// no groups), so `ARRANGEMENT_REPLACE` always has a key to name.
+fn arranged(
+    mut session: phux_core::Session,
+    keys: &mut OsKeys,
+) -> (phux_core::Session, phux_core::Arrangement) {
+    let key = phux_core::ArrangementKey::from_bytes(keys.fresh());
+    session.arrangement = Some(key);
+    let arrangement = phux_core::Arrangement {
+        key,
+        owner: phux_core::ArrangementOwner::Session(session.key),
+        groups: Vec::new(),
+        revision: phux_core::Revision::FIRST,
+    };
+    (session, arrangement)
+}
+
+/// Give every session of `org` that has none an empty arrangement: a first
+/// start and an import, before the records reach the store.
+pub(crate) fn ensure_arrangements(org: &mut Org) {
+    let mut keys = OsKeys;
+    let mut deltas = Vec::new();
+    for session in org.sessions().filter(|s| s.arrangement.is_none()) {
+        let (session, arrangement) = arranged(session.clone(), &mut keys);
+        deltas.push(phux_core::Delta::PutArrangement(arrangement));
+        deltas.push(phux_core::Delta::PutSession(session));
+    }
+    org.commit(&phux_core::Transition {
+        deltas,
+        events: Vec::new(),
+        receipt: None,
+    });
+}
+
+/// Give every session `transition` creates an empty arrangement in the same
+/// transaction, with its `ArrangementChanged` event. Core creates sessions
+/// without one; the server adds it before the store sees the transition.
+fn arrange_new_sessions(org: &Org, transition: &mut phux_core::Transition, keys: &mut OsKeys) {
+    let mut added = Vec::new();
+    for delta in &mut transition.deltas {
+        if let phux_core::Delta::PutSession(session) = delta
+            && session.arrangement.is_none()
+            && org.session(&session.key).is_none()
+        {
+            let (with, arrangement) = arranged(session.clone(), keys);
+            *session = with;
+            added.push(arrangement);
+        }
+    }
+    for arrangement in added {
+        transition
+            .events
+            .push(phux_core::Event::ArrangementChanged {
+                key: arrangement.key,
+                owner: arrangement.owner,
+                revision: Some(arrangement.revision),
+            });
+        transition
+            .deltas
+            .insert(0, phux_core::Delta::PutArrangement(arrangement));
+    }
 }
 
 impl ServerState {
@@ -206,21 +276,51 @@ impl ServerState {
     ///
     /// As [`Self::commit`].
     pub fn commit_command(&mut self, cmd: &Command, actor: &Actor) -> Result<OrgCommit, Refusal> {
+        self.commit_command_from(cmd, actor, None)
+    }
+
+    /// [`Self::commit_command`] for a command `client` sent: its journaled
+    /// events name that connection beside the actor's principal.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::commit`].
+    pub fn commit_command_from(
+        &mut self,
+        cmd: &Command,
+        actor: &Actor,
+        client: Option<ClientId>,
+    ) -> Result<OrgCommit, Refusal> {
         let now = now_stamp();
-        let applied = phux_core::apply(
+        let mut applied = phux_core::apply(
             self.sessions.registry.org(),
             cmd,
             actor,
             now,
             &mut self.org.keys,
         )?;
+        arrange_new_sessions(
+            self.sessions.registry.org(),
+            &mut applied.transition,
+            &mut self.org.keys,
+        );
         if applied.replayed {
             return Ok(OrgCommit {
                 applied,
                 handles: Committed::default(),
             });
         }
-        let journal_seq = self.journal.head();
+        // The journal position after this commit's events are recorded.
+        let journaled = applied
+            .transition
+            .events
+            .iter()
+            .filter(|e| crate::org_wire::event(e, self.sessions.registry.org()).is_some())
+            .count();
+        let journal_seq = self
+            .journal
+            .head()
+            .saturating_add(u64::try_from(journaled).unwrap_or(u64::MAX));
         if let Err(error) = self.org.store.commit(&applied.transition, journal_seq, now) {
             tracing::error!(%error, operation = %cmd.operation, "org store commit failed; refused");
             return Err(store_refusal(&error));
@@ -231,7 +331,43 @@ impl ServerState {
             let _ = self.sessions.registry.prune_receipts(floor, RECEIPT_CAP);
         }
         self.after_commit(&applied.transition, &handles);
+        self.journal_org_events(&applied, actor, client);
         Ok(OrgCommit { applied, handles })
+    }
+
+    /// Journal a committed transition's events (ADR-0123), stamped with the
+    /// operation and the actor: its principal, and the connection when one
+    /// sent the command.
+    fn journal_org_events(&mut self, applied: &Applied, actor: &Actor, client: Option<ClientId>) {
+        let operation = crate::org_wire::operation(applied.operation);
+        let mut stamp = client.map_or_else(
+            || crate::org_wire::actor_ref(actor, None),
+            |client| self.clients.actor_ref(client),
+        );
+        stamp = stamp
+            .with_principal(crate::org_wire::principal_id(&actor.principal))
+            .with_on_behalf_of(
+                actor
+                    .on_behalf_of
+                    .as_ref()
+                    .and_then(crate::org_wire::principal_id),
+            );
+        for event in &applied.transition.events {
+            let Some(wire) = crate::org_wire::event(event, self.sessions.registry.org()) else {
+                continue;
+            };
+            let record = super::EventRecord::new(None, wire)
+                .with_actor(client)
+                .with_actor_ref(Some(stamp.clone()))
+                .with_operation_id(operation);
+            let _ = self.record_and_fanout(record);
+        }
+    }
+
+    /// Mark `resource` as ended by `RESOURCE_TERMINATE`: its reap keeps the
+    /// record to its exit policy.
+    pub(crate) fn mark_terminating(&mut self, resource: ResourceId) {
+        self.org.terminating.insert(resource);
     }
 
     /// Bookkeeping that follows released handles: a removed resource loses
@@ -469,6 +605,9 @@ impl ServerState {
             return;
         }
         self.activation_ended(resource, outcome, false);
+        if self.org.terminating.remove(&resource) {
+            return;
+        }
         let Some(record) = self.sessions.registry.record(resource) else {
             return;
         };

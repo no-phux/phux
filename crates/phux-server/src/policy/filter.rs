@@ -20,7 +20,7 @@ use phux_protocol::kinds::Verb;
 use phux_protocol::scope::EffectiveScopeSet;
 use phux_protocol::wire::info::SessionSnapshot;
 
-use super::enforce::{Located, Point, TerminalPoint, contains, group_of};
+use super::enforce::{Located, Point, TerminalPoint, contains, group_of, local_point};
 use super::{Authority, ConnectionGrant};
 use crate::state::{ClientId, ServerState};
 
@@ -139,6 +139,40 @@ fn located(wire: &WireResourceId) -> Located {
         WireResourceId::Local { id } => Located::Local(*id),
         WireResourceId::Satellite { host, id } => Located::Satellite(host.as_str().to_owned(), *id),
     }
+}
+
+/// Whether `client` may act on `session` with `verb`: through its Group,
+/// or the local host for a session no wire id names yet.
+#[must_use]
+pub fn admits_session(
+    s: &ServerState,
+    client: ClientId,
+    verb: Verb,
+    session: phux_core::ids::SessionId,
+) -> bool {
+    let point = s
+        .idspace
+        .session_wire(session)
+        .map_or(Point::LocalHost, |wire| Point::Group(wire.get()));
+    View::of(s.connection_grant(client)).admits(verb, &point)
+}
+
+/// Whether `client` may act on the local resource `resource` with `verb`:
+/// as itself, through its current session's Group, or its parent.
+#[must_use]
+pub fn admits_resource(
+    s: &ServerState,
+    client: ClientId,
+    verb: Verb,
+    resource: phux_core::ids::ResourceId,
+) -> bool {
+    View::of(s.connection_grant(client)).admits(verb, &Point::Terminal(local_point(s, resource)))
+}
+
+/// Whether `client` holds `verb` at Global (server-wide data).
+#[must_use]
+pub fn admits_global(s: &ServerState, client: ClientId, verb: Verb) -> bool {
+    View::of(s.connection_grant(client)).admits(verb, &Point::Global)
 }
 
 /// Whether `client` may read satellite `host` with `verb`: a hub asks only

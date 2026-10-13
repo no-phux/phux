@@ -435,7 +435,7 @@ fn local_terminal(s: &ServerState, id: u32, core: Option<CoreResourceId>) -> Ter
 
 /// A local resource by core id, matched only as itself. One with no wire id
 /// yet is [`Located::Unnamed`], never skipped.
-fn local_point(s: &ServerState, core: CoreResourceId) -> TerminalPoint {
+pub(super) fn local_point(s: &ServerState, core: CoreResourceId) -> TerminalPoint {
     let at = match s.terminal_wire_of(core) {
         Some(WireResourceId::Local { id }) => Located::Local(id),
         _ => Located::Unnamed,

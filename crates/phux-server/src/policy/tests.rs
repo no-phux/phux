@@ -70,7 +70,8 @@ fn arrange(
         .commit(
             phux_core::Op::ArrangementReplace {
                 owner: phux_core::ArrangementOwner::Session(session_key),
-                expected: phux_core::Revision::ZERO,
+                // Every session starts with an empty arrangement at revision 1.
+                expected: phux_core::Revision::FIRST,
                 groups: vec![phux_core::Group {
                     id: [9; 16],
                     name: None,
