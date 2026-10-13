@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.1.0-alpha.16](https://github.com/no-phux/phux/compare/desktop-v0.1.0-alpha.15...desktop-v0.1.0-alpha.16) (2026-10-13)
+
+
+### Features
+
+* resources, sessions, Inbox, and actors domain model ([#1191](https://github.com/no-phux/phux/issues/1191)) ([fa80d73](https://github.com/no-phux/phux/commit/fa80d7328d315b8d57fd5c45968f9936d8cbaa10))
+
+
+### Bug Fixes
+
+* **desktop:** qualify on displays that cannot confirm presentation ([#1221](https://github.com/no-phux/phux/issues/1221)) ([2f65bc2](https://github.com/no-phux/phux/commit/2f65bc2cff91e9315f165faa62513544a43befe7))
+
+
+### Build System
+
+* **deps:** pin libghostty-rs synced with upstream on ghostty 2026-10-13 ([#1220](https://github.com/no-phux/phux/issues/1220)) ([b09248f](https://github.com/no-phux/phux/commit/b09248fdac73fb31eb062da35d2adac1e6555177))
+
 ## [0.1.0-alpha.15](https://github.com/no-phux/phux/compare/desktop-v0.1.0-alpha.14...desktop-v0.1.0-alpha.15) (2026-10-13)
 
 
