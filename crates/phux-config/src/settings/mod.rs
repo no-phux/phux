@@ -538,9 +538,9 @@ pub const CATALOG: &[SettingSpec] = &[
             max: U16_MAX,
         },
         summary: "Sidebar width in columns; 0 sizes it automatically",
-        detail: "0, the default, sizes the strip to one quarter of the viewport bounded to \
-                 28..40 columns, so names get room on a wide terminal while the classic \
-                 80-column layout stays compact. A positive value fixes the width. The panes \
+        detail: "20, the default, fits a badge, a name, and a right-hand tag while leaving \
+                 the terminal its columns. 0 sizes the strip to one quarter of the viewport \
+                 bounded to 28..40 columns, for longer names on a wide terminal. The panes \
                  tile into the remaining columns.",
         applies: Applies::NextAttach,
     },
@@ -944,7 +944,7 @@ mod tests {
             Some(&LayerSource::User(user_path))
         );
         assert_eq!(snapshot.value_at("sidebar.width"), Some(&32.into()));
-        assert_eq!(snapshot.default_at("sidebar.width"), Some(&0.into()));
+        assert_eq!(snapshot.default_at("sidebar.width"), Some(&20.into()));
         assert!(snapshot.origin_at("sidebar.enabled").is_none());
         assert_eq!(snapshot.value_at("theme.accent"), Some(&"#f00".into()));
         assert!(snapshot.default_at("theme.accent").is_none());

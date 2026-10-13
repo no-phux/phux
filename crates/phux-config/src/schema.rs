@@ -431,8 +431,8 @@ pub enum StatusPosition {
 pub struct SidebarCfg {
     /// Show the sidebar (default `true`).
     pub enabled: bool,
-    /// Width in columns. `0` (default) sizes automatically to a quarter of
-    /// the viewport, bounded to 28-40 columns.
+    /// Width in columns (default `20`). `0` sizes automatically to a quarter
+    /// of the viewport, bounded to 28-40 columns.
     pub width: u16,
     /// Which edge the sidebar docks to.
     pub position: SidebarPosition,
@@ -458,7 +458,7 @@ impl Default for SidebarCfg {
     fn default() -> Self {
         Self {
             enabled: true,
-            width: 0,
+            width: 20,
             position: SidebarPosition::default(),
             hosts: true,
             hosts_provider: Vec::new(),

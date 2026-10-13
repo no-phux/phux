@@ -6,7 +6,7 @@ expression: "render_text(&page, 100, 30)"
 
 
 
-               ┌ Settings ──────────────────────────────────────────────────────────┐
+               ╭ Settings ──────────────────────────────────────────────────────────╮
                │ >                                       ~/.config/phux/config.toml │
                │                                                                    │
                │  Defaults         │   enabled                        true  default │
@@ -22,8 +22,8 @@ expression: "render_text(&page, 100, 30)"
                │ ────────────────────────────────────────────────────────────────── │
                │ sidebar.width  integer 0..65535                                    │
                │ Sidebar width in columns; 0 sizes it automatically                 │
-               │ 0, the default, sizes the strip to one quarter of the viewport     │
-               │ bounded to 28..40 columns, so names get room on a wide terminal    │
-               │ default 0  ·  set in your config  ·  applies next attach           │
+               │ 20, the default, fits a badge, a name, and a right-hand tag while  │
+               │ leaving the terminal its columns. 0 sizes the strip to one quarter │
+               │ default 20  ·  set in your config  ·  applies next attach          │
                │                                                                    │
-               └────────────────────────────────────────────────────────────────────┘
+               ╰────────────────────────────────────────────────────────────────────╯

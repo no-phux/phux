@@ -23,7 +23,7 @@ The configuration surface of `~/.config/phux/config.toml`. The loader layers you
 | `[defaults]` | Server-wide defaults: shell, `TERM`, scrollback depth, mouse tracking, spawn-time cwd policy, session naming, multi-view window sizing. |
 | `[keybindings]` | Prefix chord, the prefix-table and global binding maps, and the which-key popup knobs. |
 | `[status]` | Status-bar composition: widget lists for the left, center, and right slots, plus which outer-terminal row the bar reserves. |
-| `[sidebar]` | The window sidebar: enabled by default; width 0 adapts to 28–40 columns, positive widths stay fixed; position chooses the docking edge. |
+| `[sidebar]` | The window sidebar: enabled by default; width defaults to 20 columns, 0 adapts to 28–40; position chooses the docking edge. |
 | `[chrome]` | Responsive-chrome breakpoints: the column and row counts at which overlays go full-bleed and the sidebar yields its columns back to the panes. |
 | `[[hooks.<event>]]` | Event hooks: per event name, an array of `when` predicates each paired with an action to run on match. |
 | `[[plugins]]` | Declarative plugin manifests composed into this config; each entry names a `phux-plugin.toml` path and an enabled flag. |
@@ -74,7 +74,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `sidebar.hosts` | `true` |
 | `sidebar.hosts-refresh-secs` | `10` |
 | `sidebar.position` | `"left"` |
-| `sidebar.width` | `0` |
+| `sidebar.width` | `20` |
 | `status.position` | `"top"` |
 | `voice.timeout-secs` | unset — 30. Seconds before the transcriber is killed and the request refused |
 | `voice.transcriber` | unset — `TRANSCRIBE` is refused with a remedy. An argv; `{path}` is replaced by the uploaded clip's path and stdout is the transcript |
@@ -674,9 +674,10 @@ right = [
 # The footer keeps a single New window row; Commands and Settings live on
 # the palette and the context menu.
 #
-# Width 0 (the default) adapts to one quarter of the viewport, bounded to
-# 28–40 columns. A positive width reserves exactly that many columns.
-# It docks on the `position` edge ("left" or "right")
+# Width 20 (the default) fits a badge, a name, and a right-hand tag and
+# leaves the terminal its columns. A positive width reserves exactly that
+# many columns; 0 adapts to one quarter of the viewport, bounded to 28–40
+# columns, for longer names on a wide terminal. It docks on the `position` edge ("left" or "right")
 # and the panes tile into the remaining area. `prefix-b` turns it off, and
 # that choice now sticks across session switches for the life of the
 # attach.
@@ -691,7 +692,7 @@ right = [
 #
 # [sidebar]
 # enabled = true
-# width = 0
+# width = 20
 # position = "left"
 
 # Responsive-chrome breakpoints. The chrome adapts to small terminals
