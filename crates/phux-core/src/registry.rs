@@ -130,12 +130,12 @@ impl Registry {
         out
     }
 
-    /// [`apply`] then [`Self::commit`], for callers with no durable store
+    /// [`apply()`] then [`Self::commit`], for callers with no durable store
     /// between the two (tests, in-memory tools).
     ///
     /// # Errors
     ///
-    /// The [`Refusal`] from [`apply`]; nothing changes.
+    /// The [`Refusal`] from [`apply()`]; nothing changes.
     pub fn execute(
         &mut self,
         cmd: &Command,

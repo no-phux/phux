@@ -408,7 +408,7 @@ impl Org {
 
     /// Give every session that has none an empty arrangement at revision 1,
     /// with keys from `fresh`: a first start's Inbox and an imported tree,
-    /// before the records reach a store. A session [`crate::apply`] creates
+    /// before the records reach a store. A session [`crate::apply()`] creates
     /// already has one.
     pub fn ensure_arrangements(&mut self, fresh: &mut dyn FreshKeys) {
         let unarranged: Vec<SessionKey> = self

@@ -1,4 +1,4 @@
-//! [`apply`]: the one pure function that turns a [`Command`] against an
+//! [`apply()`]: the one pure function that turns a [`Command`] against an
 //! [`Org`] into a [`Transition`] plus [`Effect`]s, or a [`Refusal`].
 //!
 //! Invariants every successful transition preserves:
