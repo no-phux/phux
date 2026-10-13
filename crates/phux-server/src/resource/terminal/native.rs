@@ -575,6 +575,18 @@ impl TerminalActor {
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(super) fn fail_native_bootstrap(
         &mut self,
+        pending: PendingNativeBootstrap,
+        error: crate::native_state::NativeStateError,
+    ) {
+        self.abort_native_bootstrap(pending, error);
+        self.start_next_native_bootstrap();
+    }
+
+    /// Return the loaned terminal and answer this capture without starting
+    /// another loan. EOF snapshots need canonical access before work resumes.
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    pub(super) fn abort_native_bootstrap(
+        &mut self,
         mut pending: PendingNativeBootstrap,
         error: crate::native_state::NativeStateError,
     ) {
@@ -594,7 +606,6 @@ impl TerminalActor {
             };
             let _ = waiter.reply.send(Err(error));
         }
-        self.start_next_native_bootstrap();
     }
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]

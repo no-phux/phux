@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-19
+last-reviewed: 2026-10-13
 ---
 
 # Process model
@@ -60,6 +60,16 @@ shell so Cockpit, the TUI, and headless clients keep a live pane.
 `KILL_RESOURCES` and Close Tab still close the pane; a last-session
 kill still self-exits the server after it has served a client
 ([ADR-0131](../adr/0131-last-shell-exit-keeps-a-terminal.md)).
+
+### EOF and native publication
+
+PTY EOF ends the producer, not a completed native bootstrap. The actor returns
+any in-flight terminal loan and applies its buffered output before synthesizing
+the final grid. Completed publication fences remain valid while slow consumers
+finish queuing their bootstrap; queued captures resume only after the final
+snapshots have read the canonical terminal. Natural close waits for the output
+pumps before sending `RESOURCE_CLOSED` and cancelling the actor. Resize, child
+replacement, and actor teardown still retire native generations.
 
 ## Noninteractive coordinator startup
 

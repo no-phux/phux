@@ -446,10 +446,18 @@ impl TerminalActor {
         self.terminal.borrow_mut().reset_for_new_child();
     }
 
-    /// Fail any in-flight native bootstrap and tombstone every cursor,
-    /// returning the terminal to the manager. The teardown paths run outside
-    /// the `!bootstrap_pending` guards, so they land the cut instead of
-    /// touching a loaned terminal. No-op without the native engine.
+    /// Return only an in-flight loan for EOF snapshots. Completed publication
+    /// fences and history cuts still belong to this incarnation until close.
+    pub(super) fn land_native_capture(&mut self) {
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        if let Some(pending) = self.pending_native_bootstrap.take() {
+            self.abort_native_bootstrap(pending, crate::native_state::NativeStateError::Resize);
+        }
+    }
+
+    /// Retire native cuts before replacing the child, returning the loaned
+    /// terminal and tombstoning every cursor. EOF does not retire an
+    /// incarnation and uses `land_native_capture` instead.
     pub(super) fn land_native_cuts(&mut self) {
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         {

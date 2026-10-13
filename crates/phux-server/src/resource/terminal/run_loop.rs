@@ -390,6 +390,7 @@ impl TerminalActor {
     )]
     async fn shutdown_from_cancel(&mut self, resync: &mut ResyncDebounce) {
         let _ = self.flush_final_gap_resync(resync);
+        self.land_native_cuts();
         debug!("TerminalActor cancellation token fired");
         self.shutdown_pty().await;
     }
@@ -400,7 +401,7 @@ impl TerminalActor {
         // Callers run outside the bootstrap guards, and both the drain and
         // the fire touch the canonical terminal, so land any in-flight
         // capture first.
-        self.land_native_cuts();
+        self.land_native_capture();
         while let Ok(req) = self.resize_rx.try_recv() {
             for owed in self.apply_resize_request(req) {
                 resync.include(owed);
@@ -429,6 +430,10 @@ impl TerminalActor {
         // also captures a fresh final generation and awaits each pump;
         // a scheduling yield alone cannot order a backpressured publisher.
         self.broadcast_resync(ResyncReason::Exit, ResyncAudience::Everyone);
+        // Resume queued captures only after both final snapshots have read
+        // the canonical terminal; starting one earlier would loan it again.
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        self.start_next_native_bootstrap();
         tokio::task::yield_now().await;
         if let Some(exit) = self.exit.as_ref() {
             self.core.notify_exit(phux_core::process::ExitOutcome {
