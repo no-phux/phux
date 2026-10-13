@@ -77,6 +77,7 @@ class RunnerPolicyTests(unittest.TestCase):
         Restores take only the newest entry for a prefix. sccache's GitHub
         backend writes one small object per compilation; those stay LRU-hot
         and evict the test-lane mbx archive and the Cockpit zig cache.
+        The xcframework dep archive did the same at ~1 GB a copy.
         """
         ci = (WORKFLOWS / "ci.yml").read_text()
         prune = ci.split("\n  prune-build-cache:\n", 1)[1]
@@ -88,10 +89,16 @@ class RunnerPolicyTests(unittest.TestCase):
         self.assertIn("keep_newest icount linux-x64-mbx-phux-icount-", prune)
         self.assertIn("keep_newest zig mini-v3-cockpit-zig-0.16.0-macOS-ARM64-", prune)
         self.assertIn("drop_all sccache sccache", prune)
+        self.assertIn("drop_all xcframework-deps v0-rust-mini-v1-ffi-xcframework-", prune)
+        self.assertIn("keep_newest desktop-release v0-rust-mini-v1-desktop-release-", prune)
+        self.assertIn("keep_newest xcframework-zig mini-v1-ffi-xcframework-zig-", prune)
         self.assertIn("tail -n +2", prune)
         cockpit = (WORKFLOWS / "cockpit-ci.yml").read_text()
         self.assertNotIn("SCCACHE_GHA_ENABLED", cockpit)
         self.assertNotIn("mozilla-actions/sccache-action", cockpit)
+        ffi = (WORKFLOWS / "ffi-xcframework.yml").read_text()
+        self.assertNotIn("shared-key: mini-v1-ffi-xcframework", ffi)
+        self.assertIn("mini-v1-ffi-xcframework-zig-", ffi)
 
     def test_rust_lane_cache_keeps_action_results_and_skips_repeat_exports(self):
         """The test lane's 8 GiB collection deleted the store it had just restored.

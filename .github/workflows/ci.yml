@@ -302,8 +302,9 @@ jobs:
   # mbx saves when its key changes (UTC day, Cargo.lock, or flake.lock), not
   # on every commit. An exact hit skips the export. Restores take only the
   # newest, so keep one entry per lane. Also keep one current copy of the
-  # other large archives and delete sccache's per-object shards: those small
-  # entries stay LRU-hot and evict the 2.3 GB test archive and the zig cache.
+  # other large archives. Delete sccache's per-object shards and every
+  # xcframework dep archive: a pair of ~1 GB entries evicted the 2.3 GB
+  # test archive out from under the 4.9 GB zig cache (2026-10-13).
   prune-build-cache:
     name: prune superseded build cache entries
     needs: [check, test, perf-icount]
@@ -354,4 +355,7 @@ jobs:
           keep_newest release-deps-x64 v0-rust-release-deps-Linux-x64-
           keep_newest release-deps-arm v0-rust-release-deps-Linux-arm64-
           keep_newest release-deps-mac v0-rust-release-deps-Darwin-arm64-
+          keep_newest desktop-release v0-rust-mini-v1-desktop-release-
+          keep_newest xcframework-zig mini-v1-ffi-xcframework-zig-
+          drop_all xcframework-deps v0-rust-mini-v1-ffi-xcframework-
           drop_all sccache sccache
