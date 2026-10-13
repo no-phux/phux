@@ -222,12 +222,7 @@ fn a_delegated_agent_is_confined_to_its_own_session() {
 
 #[test]
 fn delegation_refuses_every_verb_outside_the_agent_set() {
-    for verb in [
-        Verb::Create,
-        Verb::Signal,
-        Verb::Organize,
-        Verb::Terminate,
-    ] {
+    for verb in [Verb::Create, Verb::Signal, Verb::Organize, Verb::Terminate] {
         let mut world = world();
         assert_eq!(
             delegate(
