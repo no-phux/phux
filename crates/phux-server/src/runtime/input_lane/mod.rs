@@ -54,7 +54,7 @@ use crate::input::{
     PerTerminalMouseEncoder, PerTerminalPasteEncoder,
 };
 use crate::state::{ClientId, SharedState, TerminalInput};
-use crate::terminal_actor::{EncodedInputRequest, InputCredit, TerminalHandle};
+use crate::terminal_actor::{EncodedInputRequest, InputCredit, LaneAhead, TerminalHandle};
 
 /// Bound on the lane's inbound queue. Attached input waits for room
 /// ([`InputLaneHandle::route`]); a command refuses with `RESOURCE_EXHAUSTED`.
@@ -113,6 +113,10 @@ pub(crate) struct RoutedInput {
     /// The pane input credit the sender took (ADR-0144); `None` makes the
     /// lane take one itself, without waiting.
     pub(crate) credit: Option<InputCredit>,
+    /// Keeps the receive-task PTY write closed until this key is in the
+    /// writer queue or has been dropped. `None` for input that never raced
+    /// the inline path.
+    pub(crate) lane_ahead: Option<LaneAhead>,
 }
 
 #[derive(Debug)]
@@ -149,6 +153,7 @@ impl RoutedInput {
             terminal_id,
             kind: RoutedInputKind::Attached { input, frame_label },
             credit: None,
+            lane_ahead: None,
         }
     }
 
@@ -156,6 +161,13 @@ impl RoutedInput {
     #[must_use]
     pub(crate) fn with_credit(mut self, credit: Option<InputCredit>) -> Self {
         self.credit = credit;
+        self
+    }
+
+    /// This input blocks an inline PTY write until the lane finishes with it.
+    #[must_use]
+    pub(crate) fn with_lane_ahead(mut self, lane_ahead: Option<LaneAhead>) -> Self {
+        self.lane_ahead = lane_ahead;
         self
     }
 }
@@ -234,6 +246,31 @@ impl ReceiptFailure {
     }
 }
 
+/// Count one pane key that is about to enter the lane, whatever admitted
+/// it (`INPUT_*`, `ROUTE_INPUT`, or `APPLY_INPUT`). `None` when the fast
+/// path is off or this id has no inline writer: nothing can jump the queue.
+pub(crate) fn arm_pane_lane(
+    state: &SharedState,
+    terminal_id: &phux_protocol::ids::ResourceId,
+) -> Option<LaneAhead> {
+    if !phux_perf::echo_hop::fast_path_enabled() {
+        return None;
+    }
+    state.with(|server| {
+        let crate::state::Resolved::Local(local) = server.resolve_resource(terminal_id) else {
+            return None;
+        };
+        local
+            .handle
+            .terminal()
+            .ok()?
+            .fast_pty
+            .as_ref()?
+            .upgrade()
+            .map(|fast| LaneAhead::arm(&fast))
+    })
+}
+
 impl InputLaneHandle {
     /// Enqueue an input event for off-thread routing, waiting while the
     /// lane's queue is full (ADR-0144). The lane never blocks, so the wait
@@ -258,17 +295,22 @@ impl InputLaneHandle {
     /// the pane input credit the caller waited for, if any.
     pub(crate) fn begin_route(
         &self,
+        state: &SharedState,
         client_id: ClientId,
         terminal_id: phux_protocol::ids::ResourceId,
         event: InputEvent,
         credit: Option<InputCredit>,
     ) -> InputReceipt {
         let (reply, result) = oneshot::channel();
+        // Arm before the send. A later `INPUT_KEY` on this pane must see the
+        // count before this call returns, or it can write ahead of `event`.
+        let lane_ahead = arm_pane_lane(state, &terminal_id);
         let routed = RoutedInput {
             client_id,
             terminal_id,
             kind: RoutedInputKind::Headless { event, reply },
             credit,
+            lane_ahead,
         };
         let failure = match self.tx.try_send(routed) {
             Ok(()) => None,
@@ -294,6 +336,7 @@ impl InputLaneHandle {
     /// batch, returning an owned PTY write/flush completion.
     pub(crate) fn begin_apply(
         &self,
+        state: &SharedState,
         client_id: ClientId,
         operation_id: InputOperationId,
         terminal_id: phux_protocol::ids::ResourceId,
@@ -336,6 +379,7 @@ impl InputLaneHandle {
             return ready_receipt(result);
         };
         let (reply, result) = oneshot::channel();
+        let lane_ahead = arm_pane_lane(state, &terminal_id);
         let routed = RoutedInput {
             client_id,
             terminal_id,
@@ -346,6 +390,7 @@ impl InputLaneHandle {
                 reply,
             },
             credit: None,
+            lane_ahead,
         };
         match self.tx.try_send(routed) {
             Ok(()) => {}
@@ -559,17 +604,22 @@ fn handoff_encoded(
     bytes: Option<Vec<u8>>,
     echo_probe: bool,
     credit: Option<InputCredit>,
+    lane_ahead: Option<LaneAhead>,
 ) -> Result<bool, CommandResult> {
     let Some(bytes) = bytes else {
+        drop(lane_ahead);
         return Ok(true);
     };
     // A sender that waited brings its credit; only input that raced a pane
     // replacement, or came from a sender that did not wait, can find none.
     let Some(credit) = credit::credit_for(handle, credit) else {
+        drop(lane_ahead);
         tracing::warn!(?pane, "pane input credits exhausted; refusing input");
         return Err(input_saturated());
     };
-    let request = EncodedInputRequest::legacy_probe(bytes, echo_probe).with_credit(credit);
+    let request = EncodedInputRequest::legacy_probe(bytes, echo_probe)
+        .with_credit(credit)
+        .with_lane_ahead(lane_ahead);
     match handle.encoded_input.try_send(request) {
         Ok(()) => Ok(true),
         // Unreachable while every sender holds a credit (ADR-0144).
@@ -595,11 +645,13 @@ fn redeliver(
     bytes: Option<Vec<u8>>,
     input: &TerminalInput,
     credit: Option<InputCredit>,
+    lane_ahead: Option<LaneAhead>,
 ) -> Result<bool, CommandResult> {
     if !encoded_for
         .input_snapshot
         .same_channel(&current.handle.input_snapshot)
     {
+        drop(lane_ahead);
         return Ok(false);
     }
     handoff_encoded(
@@ -608,9 +660,14 @@ fn redeliver(
         bytes,
         crate::terminal_actor::echo_probe_for(input),
         credit,
+        lane_ahead,
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the lane guard travels with the key through the existing handoff arguments"
+)]
 fn process_attached(
     state: &SharedState,
     encoders: &mut std::collections::HashMap<phux_core::ids::ResourceId, LaneEncoderSet>,
@@ -619,6 +676,7 @@ fn process_attached(
     input: &TerminalInput,
     frame_label: &'static str,
     credit: Option<InputCredit>,
+    lane_ahead: Option<LaneAhead>,
 ) -> bool {
     let is_focus_gained = matches!(
         input,
@@ -639,7 +697,14 @@ fn process_attached(
     // between gate and delivery while encoding happens off-lock.
     let delivered =
         with_attached_input_destination(state, client_id, terminal_id, frame_label, |current| {
-            redeliver(&destination.handle, &current, bytes, input, credit)
+            redeliver(
+                &destination.handle,
+                &current,
+                bytes,
+                input,
+                credit,
+                lane_ahead,
+            )
         });
     let accepted = match delivered {
         Some(Ok(accepted)) => accepted,
@@ -684,6 +749,7 @@ fn process_headless(
     terminal_id: &phux_protocol::ids::ResourceId,
     event: InputEvent,
     credit: Option<InputCredit>,
+    lane_ahead: Option<LaneAhead>,
 ) -> CommandResult {
     let destination =
         match with_route_input_destination(state, client_id, terminal_id, std::convert::identity) {
@@ -696,7 +762,14 @@ fn process_headless(
     };
     let bytes = encode_input(encoders, destination.pane, &destination.handle, &input);
     match with_route_input_destination(state, client_id, terminal_id, |current| {
-        redeliver(&destination.handle, &current, bytes, &input, credit)
+        redeliver(
+            &destination.handle,
+            &current,
+            bytes,
+            &input,
+            credit,
+            lane_ahead,
+        )
     }) {
         Ok(Ok(_)) => CommandResult::Ok,
         Ok(Err(result)) | Err(result) => result,
@@ -817,6 +890,7 @@ fn process_apply_input(
     events: Vec<InputEvent>,
     reservation: AcknowledgedReservation,
     reply: oneshot::Sender<CommandResult>,
+    lane_ahead: Option<LaneAhead>,
 ) -> bool {
     let prepared = match prepare_acknowledged_batch(state, encoders, client_id, terminal_id, events)
     {
@@ -867,7 +941,8 @@ fn process_apply_input(
             ));
         };
         let request = EncodedInputRequest::acknowledged(prepared.bytes, waiter.sink(ticket))
-            .with_credit(credit);
+            .with_credit(credit)
+            .with_lane_ahead(lane_ahead);
         match current.handle.encoded_input.try_send(request) {
             Ok(()) => Ok(()),
             Err(mpsc::error::TrySendError::Full(request)) => {
@@ -907,7 +982,7 @@ fn spawn_input_lane_with_completion_timeout(
     state: SharedState,
     completion_timeout: std::time::Duration,
 ) -> std::io::Result<InputLane> {
-    let (tx, mut rx) = mpsc::channel::<RoutedInput>(INPUT_LANE_CAPACITY);
+    let (tx, rx) = mpsc::channel::<RoutedInput>(INPUT_LANE_CAPACITY);
     let admission = Arc::new(AcknowledgedAdmission::default());
     // The server's one dedupe record (ADR-0126).
     let cache = SharedOperationCache::new(state.with(|s| s.operation_dedupe().clone()));
@@ -917,86 +992,7 @@ fn spawn_input_lane_with_completion_timeout(
     let join = std::thread::Builder::new()
         .name("phux-input-lane".to_owned())
         .spawn(move || {
-            crate::perf::promote_helper_thread("phux-input-lane");
-            let mut encoders = std::collections::HashMap::new();
-            let mut tickets = TicketSource::default();
-            let mut activity_gate = ActivityGate::default();
-            // Everything below is synchronous and non-blocking, so no pane
-            // can stall another pane's input.
-            while let Some(routed) = rx.blocking_recv() {
-                prune_closed_encoders(&mut encoders);
-                match routed.kind {
-                    RoutedInputKind::Attached { input, frame_label } => {
-                        if process_attached(
-                            &state,
-                            &mut encoders,
-                            routed.client_id,
-                            &routed.terminal_id,
-                            &input,
-                            frame_label,
-                            routed.credit,
-                        ) {
-                            note_input_activity(
-                                &mut activity_gate,
-                                &state,
-                                routed.client_id,
-                                &routed.terminal_id,
-                            );
-                        }
-                    }
-                    RoutedInputKind::Headless { event, reply } => {
-                        let live = is_live_input(&event);
-                        let result = process_headless(
-                            &state,
-                            &mut encoders,
-                            routed.client_id,
-                            &routed.terminal_id,
-                            event,
-                            routed.credit,
-                        );
-                        if live && matches!(result, CommandResult::Ok) {
-                            note_input_activity(
-                                &mut activity_gate,
-                                &state,
-                                routed.client_id,
-                                &routed.terminal_id,
-                            );
-                        }
-                        let _ = reply.send(result);
-                    }
-                    RoutedInputKind::Acknowledged {
-                        operation_id,
-                        events,
-                        reservation,
-                        reply,
-                    } => {
-                        let live = events.iter().any(is_live_input);
-                        if process_apply_input(
-                            &state,
-                            &mut encoders,
-                            &lane_cache,
-                            &waiter_handle,
-                            tickets.next_ticket(),
-                            completion_timeout,
-                            routed.client_id,
-                            operation_id,
-                            &routed.terminal_id,
-                            events,
-                            reservation,
-                            reply,
-                        ) && live
-                        {
-                            note_input_activity(
-                                &mut activity_gate,
-                                &state,
-                                routed.client_id,
-                                &routed.terminal_id,
-                            );
-                        }
-                    }
-                }
-            }
-            tracing::debug!("input lane thread exiting (channel closed)");
+            run_input_lane(&state, rx, &lane_cache, &waiter_handle, completion_timeout);
         })?;
     Ok(InputLane {
         handle: InputLaneHandle {
@@ -1007,6 +1003,99 @@ fn spawn_input_lane_with_completion_timeout(
         join: Some(join),
         waiter,
     })
+}
+
+/// Encode and hand off one lane queue. Synchronous and non-blocking, so no
+/// pane can stall another pane's input.
+fn run_input_lane(
+    state: &SharedState,
+    mut rx: mpsc::Receiver<RoutedInput>,
+    lane_cache: &SharedOperationCache,
+    waiter_handle: &CompletionWaiterHandle,
+    completion_timeout: std::time::Duration,
+) {
+    crate::perf::promote_helper_thread("phux-input-lane");
+    let mut encoders = std::collections::HashMap::new();
+    let mut tickets = TicketSource::default();
+    let mut activity_gate = ActivityGate::default();
+    while let Some(routed) = rx.blocking_recv() {
+        phux_perf::echo_hop::record("lane");
+        prune_closed_encoders(&mut encoders);
+        match routed.kind {
+            RoutedInputKind::Attached { input, frame_label } => {
+                if process_attached(
+                    state,
+                    &mut encoders,
+                    routed.client_id,
+                    &routed.terminal_id,
+                    &input,
+                    frame_label,
+                    routed.credit,
+                    routed.lane_ahead,
+                ) {
+                    note_input_activity(
+                        &mut activity_gate,
+                        state,
+                        routed.client_id,
+                        &routed.terminal_id,
+                    );
+                }
+            }
+            RoutedInputKind::Headless { event, reply } => {
+                let live = is_live_input(&event);
+                let result = process_headless(
+                    state,
+                    &mut encoders,
+                    routed.client_id,
+                    &routed.terminal_id,
+                    event,
+                    routed.credit,
+                    routed.lane_ahead,
+                );
+                if live && matches!(result, CommandResult::Ok) {
+                    note_input_activity(
+                        &mut activity_gate,
+                        state,
+                        routed.client_id,
+                        &routed.terminal_id,
+                    );
+                }
+                let _ = reply.send(result);
+            }
+            RoutedInputKind::Acknowledged {
+                operation_id,
+                events,
+                reservation,
+                reply,
+            } => {
+                let live = events.iter().any(is_live_input);
+                if process_apply_input(
+                    state,
+                    &mut encoders,
+                    lane_cache,
+                    waiter_handle,
+                    tickets.next_ticket(),
+                    completion_timeout,
+                    routed.client_id,
+                    operation_id,
+                    &routed.terminal_id,
+                    events,
+                    reservation,
+                    reply,
+                    routed.lane_ahead,
+                ) && live
+                {
+                    note_input_activity(
+                        &mut activity_gate,
+                        state,
+                        routed.client_id,
+                        &routed.terminal_id,
+                    );
+                }
+            }
+        }
+    }
+    tracing::debug!("input lane thread exiting (channel closed)");
 }
 
 #[cfg(test)]
@@ -1170,6 +1259,7 @@ mod tests {
         fn apply(&self, id: u8, payloads: &[&[u8]]) -> InputReceipt {
             let events = payloads.iter().map(|bytes| ev(bytes)).collect();
             self.handle().begin_apply(
+                &self.state,
                 self.client_a,
                 operation_id(id),
                 self.pane.wire.clone(),
@@ -1179,7 +1269,7 @@ mod tests {
 
         fn route(&self, client: ClientId, bytes: &[u8]) -> InputReceipt {
             self.handle()
-                .begin_route(client, self.pane.wire.clone(), ev(bytes), None)
+                .begin_route(&self.state, client, self.pane.wire.clone(), ev(bytes), None)
         }
     }
 
@@ -1437,7 +1527,7 @@ mod tests {
                 ];
                 for (id, target, events, want) in cases {
                     let result = handle
-                        .begin_apply(fx.client_a, operation_id(id), target, events)
+                        .begin_apply(&fx.state, fx.client_a, operation_id(id), target, events)
                         .await;
                     assert_eq!(code(&result), Some(want), "operation {id}");
                 }
@@ -1474,10 +1564,10 @@ mod tests {
                 s.register_resource_handle(pane, bundle.handle.clone(), bundle.token.clone());
             (wire, s.new_client_id())
         });
-        let lane = spawn_input_lane(state).expect("spawn lane");
+        let lane = spawn_input_lane(state.clone()).expect("spawn lane");
         let result = lane
             .handle()
-            .begin_apply(client, operation_id(6), wire, vec![ev(b"x")])
+            .begin_apply(&state, client, operation_id(6), wire, vec![ev(b"x")])
             .await;
         assert_eq!(code(&result), Some(ErrorCode::ResourceExhausted));
     }
@@ -1511,11 +1601,16 @@ mod tests {
                         (token, wire)
                     };
                     let client = state.with_mut(crate::state::ServerState::new_client_id);
-                    let lane = spawn_input_lane(state).expect("spawn lane");
+                    let lane = spawn_input_lane(state.clone()).expect("spawn lane");
                     let result = tokio::time::timeout(
                         LANE_DELIVERY_DEADLINE,
-                        lane.handle()
-                            .begin_apply(client, operation_id(8), wire, vec![ev(b"x")]),
+                        lane.handle().begin_apply(
+                            &state,
+                            client,
+                            operation_id(8),
+                            wire,
+                            vec![ev(b"x")],
+                        ),
                     )
                     .await
                     .expect("must not hang");
@@ -1787,6 +1882,7 @@ mod tests {
                 let first = next_write(&mut fx.pane.writer_rx).await;
 
                 let second_receipt = handle.begin_apply(
+                    &fx.state,
                     fx.client_a,
                     operation_id(25),
                     other.wire.clone(),
@@ -1800,7 +1896,13 @@ mod tests {
 
                 let routed = tokio::time::timeout(
                     ACKNOWLEDGED_COMPLETION_TIMEOUT / 2,
-                    handle.begin_route(fx.client_a, other.wire.clone(), ev(b"control"), None),
+                    handle.begin_route(
+                        &fx.state,
+                        fx.client_a,
+                        other.wire.clone(),
+                        ev(b"control"),
+                        None,
+                    ),
                 )
                 .await
                 .expect("ROUTE_INPUT must not wait on another pane's completion");
@@ -1880,8 +1982,10 @@ mod tests {
                 "INPUT_PASTE",
             ))
             .await;
+        let state = SharedState::new();
         let result = handle
             .begin_apply(
+                &state,
                 ClientId(1),
                 operation_id(17),
                 terminal.clone(),

@@ -156,6 +156,9 @@ impl super::SessionLoop {
             biased;
 
             n = self.stdin.read(&mut self.stdin_buf) => {
+                if n.as_ref().is_ok_and(|read| *read > 0) {
+                    phux_perf::echo_hop::record("stdin");
+                }
                 let started = std::time::Instant::now();
                 let result = self.on_stdin(conn, out, sidebar, n).await;
                 phux_client::perf::INPUT_WALL.record_elapsed(started);
@@ -164,6 +167,7 @@ impl super::SessionLoop {
 
             // Inbound frames, drained in a bounded batch so a burst paints once.
             frame = conn.recv() => {
+                phux_perf::echo_hop::record("client_recv");
                 let started = std::time::Instant::now();
                 let result = self.on_server_frame(conn, out, sidebar, frame).await;
                 phux_client::perf::FRAMES_WALL.record_elapsed(started);

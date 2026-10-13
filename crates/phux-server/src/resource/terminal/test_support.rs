@@ -56,6 +56,7 @@ impl TerminalActor {
     #[cfg(test)]
     pub fn vt_write_for_test(&mut self, bytes: &[u8]) {
         self.terminal.borrow_mut().vt_write(bytes);
+        let _ = self.input_mode_span.observe(bytes);
         self.publish_input_snapshot();
         self.terminal_dirty_since_tick = true;
         self.agent_dirty_since_detect = true;
@@ -77,7 +78,7 @@ impl TerminalActor {
         let (evt_tx, evt_rx) = mpsc::channel::<PtyEvent>(TEST_PTY_CHANNEL_DEPTH);
         let (writer_tx, writer_rx) = mpsc::channel::<EncodedInputRequest>(super::PTY_WRITER_QUEUE);
         if let CanonicalTerminal::Plain(Some(terminal)) = &mut *self.terminal.borrow_mut() {
-            Self::install_pty_writer(terminal, &writer_tx).expect("pty writer");
+            Self::install_pty_writer(terminal, &writer_tx, None).expect("pty writer");
         }
         self.pty_rx = Some(evt_rx);
         self.pty_tx = Some(writer_tx);

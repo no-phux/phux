@@ -4,9 +4,9 @@
 
 use libghostty_vt::{
     Error, Terminal as GhosttyTerminal,
-    key::{Encoder as LgKeyEncoder, Event as LgKeyEvent},
+    key::{Encoder as LgKeyEncoder, EncoderOptions, Event as LgKeyEvent, KittyKeyFlags},
 };
-use phux_protocol::input::key::KeyEvent;
+use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 
 /// Build a libghostty `key::Event` from a wire `KeyEvent`; fallible only
 /// through libghostty's allocator.
@@ -55,17 +55,66 @@ impl PerTerminalKeyEncoder {
     }
 
     /// Encode from an exact terminal-derived `Send` option snapshot.
+    ///
+    /// A legacy printable press or repeat is copied straight from `text`.
+    /// That subset is byte-identical to libghostty and skips allocating a
+    /// key event. Releases, modifiers, keypad keys, and any protocol that
+    /// rewrites the byte (kitty, modifyOtherKeys) stay on libghostty.
     pub fn encode_with_options(
         &mut self,
         event: &KeyEvent,
-        options: libghostty_vt::key::EncoderOptions,
+        options: EncoderOptions,
     ) -> Result<&[u8], Error> {
+        if let Some(text) = legacy_printable(event, options) {
+            self.buf.clear();
+            self.buf.extend_from_slice(text.as_bytes());
+            return Ok(&self.buf);
+        }
         let lg_event = key_event_to_libghostty(event)?;
         self.encoder.set_options(options);
         self.buf.clear();
         self.encoder.encode_to_vec(&lg_event, &mut self.buf)?;
         Ok(&self.buf)
     }
+}
+
+/// Lock bits that do not change the bytes of a legacy printable key.
+const LOCK_MODS: ModSet =
+    ModSet::from_bits_truncate(ModSet::CAPS_LOCK.bits() | ModSet::NUM_LOCK.bits());
+
+/// UTF-8 libghostty would emit unchanged for a legacy press or repeat.
+///
+/// `None` means the caller must use the full encoder. The text is borrowed
+/// from `event` and contains no C0, DEL, or macOS function-key PUA.
+pub(crate) fn legacy_printable(event: &KeyEvent, options: EncoderOptions) -> Option<&str> {
+    if event.composing || !matches!(event.action, KeyAction::Press | KeyAction::Repeat) {
+        return None;
+    }
+    if options.kitty_flags != KittyKeyFlags::DISABLED
+        || options.modify_other_keys_state_2
+        || options.keypad_key_application
+    {
+        return None;
+    }
+    if !event.mods.difference(LOCK_MODS).is_empty()
+        || !event.consumed_mods.difference(LOCK_MODS).is_empty()
+    {
+        return None;
+    }
+    let key = event.key as u32;
+    if (PhysicalKey::Numpad0 as u32..=PhysicalKey::NumpadPageDown as u32).contains(&key) {
+        return None;
+    }
+    let text = event.text.as_deref()?;
+    if text.is_empty()
+        || text.bytes().any(|byte| byte < 0x20 || byte == 0x7f)
+        || text
+            .chars()
+            .any(|ch| ('\u{F700}'..='\u{F8FF}').contains(&ch))
+    {
+        return None;
+    }
+    Some(text)
 }
 
 #[cfg(test)]
@@ -112,6 +161,130 @@ mod tests {
         assert_eq!(
             Mods::from(ModSet::CTRL | ModSet::SHIFT),
             Mods::CTRL | Mods::SHIFT
+        );
+    }
+
+    fn plain(action: KeyAction, text: Option<&str>, mods: ModSet) -> KeyEvent {
+        KeyEvent {
+            action,
+            key: PhysicalKey::A,
+            mods,
+            consumed_mods: ModSet::empty(),
+            composing: false,
+            text: text.map(str::to_owned),
+            unshifted_codepoint: text.and_then(|value| value.chars().next()).map(u32::from),
+        }
+    }
+
+    fn default_options() -> EncoderOptions {
+        EncoderOptions {
+            cursor_key_application: false,
+            keypad_key_application: false,
+            ignore_keypad_with_numlock: false,
+            alt_esc_prefix: false,
+            modify_other_keys_state_2: false,
+            kitty_flags: KittyKeyFlags::DISABLED,
+            backarrow_key_mode: false,
+        }
+    }
+
+    fn libghostty_bytes(event: &KeyEvent, options: EncoderOptions) -> Vec<u8> {
+        let mut encoder = LgKeyEncoder::new().expect("encoder");
+        encoder.set_options(options);
+        let lg = key_event_to_libghostty(event).expect("event");
+        let mut buf = Vec::new();
+        encoder.encode_to_vec(&lg, &mut buf).expect("encode");
+        buf
+    }
+
+    #[test]
+    fn legacy_printable_press_and_repeat_copy_the_text() {
+        let options = default_options();
+        for action in [KeyAction::Press, KeyAction::Repeat] {
+            let event = plain(action, Some("a"), ModSet::empty());
+            assert_eq!(legacy_printable(&event, options), Some("a"));
+            let mut enc = PerTerminalKeyEncoder::new().expect("encoder");
+            assert_eq!(
+                enc.encode_with_options(&event, options).expect("encode"),
+                b"a"
+            );
+        }
+        let locked = plain(
+            KeyAction::Press,
+            Some("é"),
+            ModSet::CAPS_LOCK | ModSet::NUM_LOCK,
+        );
+        assert_eq!(legacy_printable(&locked, options), Some("é"));
+        let mut enc = PerTerminalKeyEncoder::new().expect("encoder");
+        let encoded = enc.encode_with_options(&locked, options).expect("encode");
+        assert_eq!(encoded, "é".as_bytes());
+        assert_eq!(encoded, libghostty_bytes(&locked, options));
+    }
+
+    #[test]
+    fn a_release_with_text_does_not_take_the_fast_path() {
+        let options = default_options();
+        let event = plain(KeyAction::Release, Some("a"), ModSet::empty());
+        assert!(legacy_printable(&event, options).is_none());
+        let mut enc = PerTerminalKeyEncoder::new().expect("encoder");
+        assert_eq!(
+            enc.encode_with_options(&event, options).expect("encode"),
+            b""
+        );
+    }
+
+    #[test]
+    fn protocol_and_modifier_modes_stay_on_libghostty() {
+        let event = plain(KeyAction::Press, Some("a"), ModSet::empty());
+        let mut kitty = default_options();
+        kitty.kitty_flags = KittyKeyFlags::DISAMBIGUATE;
+        let mut modify = default_options();
+        modify.modify_other_keys_state_2 = true;
+        let mut keypad = default_options();
+        keypad.keypad_key_application = true;
+        let shifted = plain(KeyAction::Press, Some("A"), ModSet::SHIFT);
+        let composing = KeyEvent {
+            composing: true,
+            ..plain(KeyAction::Press, Some("'"), ModSet::empty())
+        };
+        let numpad = KeyEvent {
+            key: PhysicalKey::Numpad1,
+            ..plain(KeyAction::Press, Some("1"), ModSet::NUM_LOCK)
+        };
+        for (name, options, event) in [
+            ("kitty", kitty, event.clone()),
+            ("modifyOtherKeys", modify, event.clone()),
+            ("keypad", keypad, event),
+            ("shift", default_options(), shifted),
+            ("composing", default_options(), composing),
+            ("numpad", default_options(), numpad),
+        ] {
+            assert!(
+                legacy_printable(&event, options).is_none(),
+                "{name} must stay on libghostty"
+            );
+            let mut enc = PerTerminalKeyEncoder::new().expect("encoder");
+            assert_eq!(
+                enc.encode_with_options(&event, options)
+                    .expect("encode")
+                    .to_vec(),
+                libghostty_bytes(&event, options),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn kitty_push_does_not_take_the_printable_fast_path() {
+        let mut terminal = GhosttyTerminal::new(80, 24).expect("terminal");
+        terminal.vt_write(b"\x1b[>1u");
+        let options = EncoderOptions::from_terminal(&terminal).expect("options");
+        let event = plain(KeyAction::Press, Some("a"), ModSet::empty());
+        assert!(legacy_printable(&event, options).is_none());
+        let mut enc = PerTerminalKeyEncoder::new().expect("encoder");
+        assert_eq!(
+            enc.encode(&event, &terminal).expect("encode").to_vec(),
+            libghostty_bytes(&event, options)
         );
     }
 

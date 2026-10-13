@@ -269,7 +269,13 @@ impl CommandDispatch<'_> {
                 operation_id,
                 terminal_id,
                 events,
-            } => lane.begin_apply(self.client_id, operation_id, terminal_id, events),
+            } => lane.begin_apply(
+                self.state,
+                self.client_id,
+                operation_id,
+                terminal_id,
+                events,
+            ),
             Command::RouteInput { terminal_id, event } => {
                 // Same FIFO and the same wait as `INPUT_*` (ADR-0144).
                 let Ok(credit) = self.input_credits.acquire(self.state, &terminal_id).await else {
@@ -282,7 +288,7 @@ impl CommandDispatch<'_> {
                         .await;
                     return;
                 };
-                lane.begin_route(self.client_id, terminal_id, event, credit)
+                lane.begin_route(self.state, self.client_id, terminal_id, event, credit)
             }
             _ => unreachable!("guarded input command"),
         };
@@ -400,6 +406,7 @@ mod input_receipt_capacity_tests {
                 // validation, rather than conflict with a prematurely claimed id.
                 let result = lane
                     .begin_apply(
+                        &state,
                         ClientId(1),
                         operation_id,
                         WireResourceId::local(2),
@@ -428,8 +435,8 @@ mod input_receipt_capacity_tests {
     async fn aborted_blocked_receipt_releases_completion_capacity() {
         tokio::task::LocalSet::new()
             .run_until(async {
-                let lane_owner =
-                    super::super::input_lane::spawn_input_lane(SharedState::new()).unwrap();
+                let state = SharedState::new();
+                let lane_owner = super::super::input_lane::spawn_input_lane(state.clone()).unwrap();
                 let lane = lane_owner.handle();
                 let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(1);
                 out_tx
@@ -437,6 +444,7 @@ mod input_receipt_capacity_tests {
                     .unwrap();
                 let slots = Arc::new(tokio::sync::Semaphore::new(1));
                 let receipt = lane.begin_apply(
+                    &state,
                     ClientId(1),
                     InputOperationId::new([0x45; 16]).unwrap(),
                     WireResourceId::local(1),
@@ -4131,6 +4139,45 @@ async fn teardown_terminal_stream(
     plumbing.drop_stream_binding(terminal_id).await;
 }
 
+/// Write one legacy printable key on the receive task when the PTY writer
+/// is idle. `true` means the event was consumed (written or refused).
+fn try_inline_key(
+    state: &SharedState,
+    client_id: ClientId,
+    terminal_id: &WireResourceId,
+    input: &TerminalInput,
+) -> bool {
+    if !phux_perf::echo_hop::fast_path_enabled() {
+        return false;
+    }
+    let TerminalInput::Key(event) = input else {
+        return false;
+    };
+    let Some(prepared) = super::with_attached_input_destination(
+        state,
+        client_id,
+        terminal_id,
+        "INPUT_KEY",
+        |destination| {
+            let options = destination.handle.input_snapshot.borrow().key;
+            let text = crate::input::key::legacy_printable(event, options)?;
+            let fast = destination.handle.fast_pty.as_ref()?.upgrade()?;
+            Some((fast, text.as_bytes().to_vec()))
+        },
+    ) else {
+        return false;
+    };
+    let Some((fast, bytes)) = prepared else {
+        return false;
+    };
+    match fast.try_direct(&bytes) {
+        crate::terminal_actor::DirectWrite::Wrote | crate::terminal_actor::DirectWrite::Handled => {
+            true
+        }
+        crate::terminal_actor::DirectWrite::Busy => false,
+    }
+}
+
 /// Route one decoded `INPUT_*` event: a local pane id goes to the input lane
 /// (ADR-0044) when there is one, spending `credit` (ADR-0144); satellite ids
 /// and the no-lane path use the inline [`handle_terminal_input`] with the
@@ -4143,6 +4190,10 @@ async fn route_client_input(
     input: TerminalInput,
     credit: Option<crate::terminal_actor::InputCredit>,
 ) {
+    phux_perf::echo_hop::record("server_recv");
+    if try_inline_key(state, client_id, &terminal_id, &input) {
+        return;
+    }
     let frame_label = match &input {
         TerminalInput::Key(_) => "INPUT_KEY",
         TerminalInput::Mouse(_) => "INPUT_MOUSE",
@@ -4152,8 +4203,15 @@ async fn route_client_input(
     if let Some(lane) = input_lane
         && terminal_id.is_local()
     {
+        // Arm before the send. `pending` is still zero while this key sits
+        // in the lane thread; the next printable would otherwise write the
+        // PTY ahead of it. `ROUTE_INPUT` and `APPLY_INPUT` arm in the lane
+        // admission, so every source for the pane shares this count.
+        let ahead = super::input_lane::arm_pane_lane(state, &terminal_id);
         lane.route(
-            RoutedInput::attached(client_id, terminal_id, input, frame_label).with_credit(credit),
+            RoutedInput::attached(client_id, terminal_id, input, frame_label)
+                .with_credit(credit)
+                .with_lane_ahead(ahead),
         )
         .await;
         return;
@@ -5914,6 +5972,7 @@ async fn writer_task<W: FrameWriter>(
         if !step_succeeded(&mut writer, flushed, client_id, "flush").await {
             return;
         }
+        phux_perf::echo_hop::record("frame_send");
         crate::perf::WIRE_WRITE.record_elapsed(write_started);
         crate::perf::WIRE_WRITE_BYTES.record_len(batch_len);
         crate::perf::WIRE_BYTES_OUT.add_len(batch_len);

@@ -666,6 +666,7 @@ impl TerminalActor {
             self.handle_pty_eof();
             return PtyTurn::Continue;
         };
+        phux_perf::echo_hop::record("main");
         crate::perf::PTY_QUEUE_WAIT.record_elapsed(read_at);
         // Server-side echo latency; slower than the ceiling means the
         // program did not echo.
@@ -755,14 +756,19 @@ impl TerminalActor {
     /// Write one coalesced payload into the canonical `Terminal` and fan out
     /// everything derived from it (encoder snapshot, dirty bits, semantic
     /// events, native bootstrap advance). The engine answers queries itself,
-    /// in byte order, through `on_pty_write`.
+    /// in byte order, through `on_pty_write`. The encoder snapshot is
+    /// recaptured only when this chunk touches an ECMA-48 sequence: a
+    /// ground-to-ground run cannot change the modes the input lane already
+    /// has.
     fn ingest_pty_payload(&mut self, payload: &Bytes) {
         let _apply_timer = crate::perf::PTY_VT_APPLY.timer();
         let parse_started = std::time::Instant::now();
         self.terminal.borrow_mut().vt_write(payload);
         crate::perf::PTY_VT_PARSE.record_elapsed(parse_started);
         let _post_timer = crate::perf::PTY_POST_APPLY.timer();
-        self.publish_input_snapshot();
+        if self.input_mode_span.observe(payload) {
+            self.publish_input_snapshot();
+        }
         self.terminal_dirty_since_tick = true;
         self.agent_dirty_since_detect = true;
         self.source_events();
@@ -1301,6 +1307,71 @@ mod tick_rearm_tests {
             "re-arming a long-disarmed tick must yield one catch-up tick, not one per \
              missed period",
         );
+    }
+}
+
+#[cfg(test)]
+mod input_snapshot_fast_path_tests {
+    use std::time::Instant;
+
+    use super::{Bytes, PtyEvent, TerminalActor};
+
+    #[allow(
+        clippy::future_not_send,
+        reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
+    )]
+    async fn feed(actor: &mut TerminalActor, bytes: &'static [u8]) {
+        actor
+            .service_pty_event(Some(PtyEvent::Bytes {
+                chunk: Bytes::from_static(bytes),
+                read_at: Instant::now(),
+            }))
+            .await;
+    }
+
+    /// Plain echo bytes must not republish the snapshot. A CSI split across
+    /// chunks still publishes on the chunk that completes it, and the next
+    /// letter goes quiet again.
+    #[allow(
+        clippy::future_not_send,
+        reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
+    )]
+    #[tokio::test]
+    async fn plain_echo_skips_the_snapshot_and_a_split_mode_still_publishes() {
+        let bundle = TerminalActor::new(80, 24).expect("actor");
+        let mut actor = bundle.actor;
+        let mut snapshots = bundle
+            .handle
+            .terminal()
+            .expect("terminal facet")
+            .input_snapshot
+            .clone();
+        snapshots.borrow_and_update();
+
+        feed(&mut actor, b"hello").await;
+        assert!(
+            !snapshots.has_changed().expect("publisher alive"),
+            "plain text does not change encoder modes"
+        );
+
+        feed(&mut actor, b"\x1b[?2004h").await;
+        assert!(snapshots.has_changed().expect("publisher alive"));
+        assert!(snapshots.borrow_and_update().bracketed_paste);
+
+        feed(&mut actor, b"a").await;
+        assert!(!snapshots.has_changed().expect("publisher alive"));
+
+        feed(&mut actor, b"\x1b").await;
+        assert!(snapshots.has_changed().expect("publisher alive"));
+        snapshots.borrow_and_update();
+        assert!(snapshots.borrow().bracketed_paste);
+
+        feed(&mut actor, b"[?2004l").await;
+        assert!(snapshots.has_changed().expect("publisher alive"));
+        assert!(!snapshots.borrow_and_update().bracketed_paste);
+
+        feed(&mut actor, b"z").await;
+        assert!(!snapshots.has_changed().expect("publisher alive"));
     }
 }
 

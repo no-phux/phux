@@ -623,6 +623,7 @@ impl TerminalActor {
             return;
         }
         for (_, bytes) in replay {
+            let _ = self.input_mode_span.observe(bytes);
             self.terminal.borrow_mut().vt_write(bytes);
             self.source_events();
         }

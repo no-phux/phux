@@ -297,6 +297,14 @@ pub(crate) struct EncodedInputRequest {
     pub(crate) credit: Option<InputCredit>,
     /// Stamped only at the final writer handoff, not the lane/actor queue.
     pub(crate) writer_queued_at: Option<std::time::Instant>,
+    /// Set by [`super::fast_pty::PtyFastPath::enqueue`]. The writer decrements
+    /// the pane's pending count only for these, so a test `try_send` does not
+    /// underflow it.
+    pub(crate) counts_pending: bool,
+    /// In-flight input-lane key. [`super::fast_pty::PtyFastPath::enqueue`]
+    /// drops it after `pending` is published; every earlier discard drops it
+    /// with the request.
+    pub(crate) lane_ahead: Option<super::fast_pty::LaneAhead>,
 }
 
 impl EncodedInputRequest {
@@ -312,6 +320,8 @@ impl EncodedInputRequest {
             completion: None,
             credit: None,
             writer_queued_at: None,
+            counts_pending: false,
+            lane_ahead: None,
         }
     }
 
@@ -322,6 +332,17 @@ impl EncodedInputRequest {
         self
     }
 
+    /// This request keeps the inline path closed until the writer queue
+    /// counts it.
+    #[must_use]
+    pub(crate) fn with_lane_ahead(
+        mut self,
+        lane_ahead: Option<super::fast_pty::LaneAhead>,
+    ) -> Self {
+        self.lane_ahead = lane_ahead;
+        self
+    }
+
     pub(crate) fn acknowledged(bytes: Vec<u8>, completion: WriteCompletionSink) -> Self {
         Self {
             bytes: Bytes::from(bytes),
@@ -329,6 +350,8 @@ impl EncodedInputRequest {
             completion: Some(completion),
             credit: None,
             writer_queued_at: None,
+            counts_pending: false,
+            lane_ahead: None,
         }
     }
 }
@@ -742,6 +765,10 @@ pub struct TerminalHandle {
     pub cols: u16,
     /// Pane viewport height in cells at construction time.
     pub rows: u16,
+    /// Present when this pane has a live PTY writer. The receive task writes
+    /// a legacy printable key here instead of waking the input lane. Weak, so
+    /// a retained pane whose PTY was released holds no master descriptor.
+    pub(crate) fast_pty: Option<std::sync::Weak<super::fast_pty::PtyFastPath>>,
 }
 
 impl TerminalHandle {
@@ -770,6 +797,7 @@ impl TerminalHandle {
             resize: ResizeSender::channel(1).0,
             cols,
             rows,
+            fast_pty: None,
         }
     }
 }

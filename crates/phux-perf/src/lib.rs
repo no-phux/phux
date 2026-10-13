@@ -13,6 +13,7 @@
 #![deny(unsafe_code)]
 
 mod counter;
+pub mod echo_hop;
 mod histogram;
 mod process;
 mod render;

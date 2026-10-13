@@ -438,7 +438,7 @@ struct MasterFile<'a> {
 
 impl PtySource for MasterFile<'_> {
     fn pull(&mut self, dst: &mut [u8]) -> io::Result<usize> {
-        let n = self.file.read(dst)?;
+        let n = read_available(self.file, dst)?;
         if n > 0 {
             note_read(n);
         }
@@ -566,23 +566,70 @@ fn deliver_terminal(tx: &mpsc::Sender<PtyEvent>, event: PtyEvent) -> ReadStep {
     }
 }
 
+/// Drain `file` until EOF or the orphan budget. The master is nonblocking,
+/// so an empty read waits in `poll(2)` the way a blocking `read(2)` would
+/// instead of sleeping between reads: a child flushing a large write
+/// through a small PTY buffer keeps its full throughput.
+fn drain_file_to_eof(file: &mut File, buf: &mut [u8]) {
+    drain_master_to_eof(&mut ReadyRead(file), buf);
+}
+
+/// A read on the nonblocking master that waits for data, as a blocking read
+/// would. A hangup with nothing left to read is EOF.
+struct ReadyRead<'a>(&'a mut File);
+
+impl Read for ReadyRead<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        loop {
+            match self.0.read(buf) {
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                    if matches!(poll_readable(self.0, CANCEL_SLICE), PollRead::Hungup) {
+                        return Ok(0);
+                    }
+                }
+                other => return other,
+            }
+        }
+    }
+}
+
 fn detach_drain(mut file: File) {
     let spawned = std::thread::Builder::new()
         .name("phux-pty-drain".to_owned())
         .stack_size(READER_STACK)
         .spawn(move || {
             let mut buf = vec![0_u8; PTY_READ_CHUNK];
-            drain_master_to_eof(&mut file, &mut buf);
+            drain_file_to_eof(&mut file, &mut buf);
         });
     if let Err(err) = spawned {
         tracing::warn!(?err, "pty orphan drain thread failed to start");
     }
 }
 
-fn note_read(n: usize) {
+pub(super) fn note_read(n: usize) {
     crate::perf::PTY_READ_SIZE.record_len(n);
     crate::perf::PTY_READ_BYTES.add_len(n);
+    phux_perf::echo_hop::record("pty_read");
     tracing::debug!(n, "pty read");
+}
+
+/// One read. The master is `O_NONBLOCK`, so a direct echo steal that already
+/// consumed the byte returns [`ErrorKind::WouldBlock`] instead of parking
+/// the poller in `read(2)`.
+fn read_available(file: &mut File, buf: &mut [u8]) -> io::Result<usize> {
+    file.read(buf)
+}
+
+/// Mark `file`'s open file description nonblocking. Dups of that description
+/// (the writer, the echo steal) share the flag.
+pub(super) fn set_nonblock(file: &File) -> io::Result<()> {
+    let flags =
+        nix::fcntl::fcntl(file.as_fd(), nix::fcntl::FcntlArg::F_GETFL).map_err(io::Error::from)?;
+    let mut flags = nix::fcntl::OFlag::from_bits_retain(flags);
+    flags.insert(nix::fcntl::OFlag::O_NONBLOCK);
+    nix::fcntl::fcntl(file.as_fd(), nix::fcntl::FcntlArg::F_SETFL(flags))
+        .map_err(io::Error::from)?;
+    Ok(())
 }
 
 #[allow(
@@ -662,7 +709,7 @@ fn handle_hot_read(
             *last = Instant::now();
             let chunk = bufs.batch.split().freeze();
             if send_pty_chunk(tx, chunk, *last).is_break() {
-                drain_master_to_eof(file, &mut bufs.scratch);
+                drain_file_to_eof(file, &mut bufs.scratch);
                 park.remove(id);
                 return AfterRead::Exit;
             }
@@ -688,7 +735,7 @@ fn flush_pending(tx: &mpsc::Sender<PtyEvent>, file: &mut File, pending: Vec<PtyE
             PtyEvent::Bytes { chunk, read_at } => {
                 if send_pty_chunk(tx, chunk, read_at).is_break() {
                     let mut buf = vec![0_u8; PTY_READ_CHUNK];
-                    drain_master_to_eof(file, &mut buf);
+                    drain_file_to_eof(file, &mut buf);
                     return false;
                 }
             }
@@ -790,7 +837,14 @@ fn dedicated_loop(file: &mut File, tx: &mpsc::Sender<PtyEvent>) {
     let mut bufs = CoalesceBufs::new();
     loop {
         match gather_wake(&mut MasterFile { file }, &mut bufs.scratch, &mut bufs.batch) {
-            Gathered::Pending => {}
+            // The master is `O_NONBLOCK`. A direct echo steal already took
+            // the byte, so wait for the next wake instead of spinning.
+            Gathered::Pending => {
+                if matches!(poll_readable(file, CANCEL_SLICE), PollRead::Hungup) {
+                    let _ = tx.blocking_send(PtyEvent::Eof);
+                    break;
+                }
+            }
             Gathered::Eof => {
                 let _ = tx.blocking_send(PtyEvent::Eof);
                 break;
@@ -798,7 +852,7 @@ fn dedicated_loop(file: &mut File, tx: &mpsc::Sender<PtyEvent>) {
             Gathered::Bytes { eof } => {
                 let chunk = bufs.batch.split().freeze();
                 if send_pty_chunk(tx, chunk, Instant::now()).is_break() {
-                    drain_master_to_eof(file, &mut bufs.scratch);
+                    drain_file_to_eof(file, &mut bufs.scratch);
                     break;
                 }
                 if eof {

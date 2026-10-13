@@ -109,6 +109,7 @@ impl TerminalActor {
             None,
         )?;
         bundle.actor.terminal.borrow_mut().vt_write(seed);
+        let _ = bundle.actor.input_mode_span.observe(seed);
         bundle.actor.restore_program_status();
         // The seed replays the old image's OSC title; sync it now so the
         // detector and `title_changed` start from it, not from empty.
@@ -204,10 +205,15 @@ impl TerminalActor {
             .and_then(|p| p.child.process_id())
             .and_then(|pid| i32::try_from(pid).ok())
             .and_then(crate::reconcile::proc_identity);
+        let fast_pty = pty.as_ref().map(|pty| std::sync::Arc::clone(&pty.fast));
         let pending_effects = effects::PendingEffects::default();
         Self::install_effects(&mut terminal, &size_report, &pending_effects)?;
         if let Some(tx) = &pty_tx {
-            Self::install_pty_writer(&mut terminal, tx)?;
+            Self::install_pty_writer(
+                &mut terminal,
+                tx,
+                fast_pty.as_ref().map(std::sync::Arc::downgrade),
+            )?;
         }
 
         let actor = Self {
@@ -218,6 +224,7 @@ impl TerminalActor {
             last_input_at: std::cell::Cell::new(None),
             last_output_at: std::cell::Cell::new(None),
             core,
+            input_mode_span: super::input_mode_span::InputModeSpan::default(),
             key_enc: RefCell::new(key_enc),
             mouse_enc: RefCell::new(mouse_enc),
             focus_enc: RefCell::new(PerTerminalFocusEncoder::new()),
@@ -308,6 +315,7 @@ impl TerminalActor {
             resize: resize_tx,
             cols,
             rows,
+            fast_pty: fast_pty.as_ref().map(std::sync::Arc::downgrade),
         };
         let handle = ResourceHandle {
             kind: actor.core.kind(),
@@ -366,14 +374,26 @@ impl TerminalActor {
     }
 
     /// Route terminal-generated replies (DA, color and status queries, ...)
-    /// back to the child via the writer bridge. The callback fires inside
-    /// `vt_write`, so it only sends on a channel, and holds the sender
-    /// weakly: a strong clone would keep the writer channel open and
-    /// deadlock `shutdown_pty`'s join.
+    /// back to the child. With a fast path they queue on it, so a keystroke
+    /// written inline cannot jump ahead of a reply; otherwise they go to the
+    /// writer bridge. The callback fires inside `vt_write`, so it only
+    /// enqueues, and holds the sender and the fast path weakly: a strong
+    /// clone would keep the writer channel open and deadlock `shutdown_pty`'s
+    /// join.
     pub(super) fn install_pty_writer(
         terminal: &mut GhosttyTerminal<'static, 'static>,
         tx: &mpsc::Sender<EncodedInputRequest>,
+        fast: Option<std::sync::Weak<super::fast_pty::PtyFastPath>>,
     ) -> Result<(), TerminalActorError> {
+        if let Some(fast) = fast {
+            terminal.on_pty_write(move |_term, bytes| {
+                // Writer gone: nobody to reply to.
+                if let Some(fast) = fast.upgrade() {
+                    let _ = fast.enqueue(EncodedInputRequest::legacy(bytes.to_vec()));
+                }
+            })?;
+            return Ok(());
+        }
         let tx = tx.downgrade();
         terminal.on_pty_write(move |_term, bytes| {
             // Writer gone: nobody to reply to.
@@ -393,6 +413,7 @@ impl TerminalActor {
     ) -> Result<TerminalActorBundle, TerminalActorError> {
         let mut bundle = Self::new(cols, rows)?;
         bundle.actor.terminal.borrow_mut().vt_write(bytes);
+        let _ = bundle.actor.input_mode_span.observe(bytes);
         bundle.actor.restore_program_status();
         bundle.actor.refresh_title();
         bundle.actor.publish_input_snapshot();
