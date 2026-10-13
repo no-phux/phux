@@ -16,6 +16,7 @@ last-reviewed: 2026-10-12
 | This file | Nouns, identity, actors, lifecycles, the decisions. |
 | [CONTRACTS.md](CONTRACTS.md) | Identifiers, records, grants, commands, results, events, the store, the wire, module seams. |
 | [PLAN.md](PLAN.md) | Seven staged PR series with gates and proofs. |
+| [REFACTOR-MAP.md](REFACTOR-MAP.md) | The one-sweep implementation: binding decisions, phases, twelve lanes, file-level changes, gates. |
 | [BROWSER-KIND.md](BROWSER-KIND.md) | The Browser resource kind contract. |
 | [MIGRATION.md](MIGRATION.md) | From today's tree to this model, including TUI and tmux verbs. |
 

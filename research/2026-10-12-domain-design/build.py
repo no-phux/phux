@@ -26,6 +26,7 @@ PAGES = [
     ("FULL-DESIGN", "DOMAIN MODEL", "phux-domain-review-2026-10-12-v1"),
     ("CONTRACTS", "CONTRACTS", "phux-domain-review-contracts"),
     ("PLAN", "BUILD PLAN", "phux-domain-review-plan"),
+    ("REFACTOR-MAP", "REFACTOR MAP", "phux-domain-review-refactor-map"),
     ("MIGRATION", "MIGRATION", "phux-domain-review-migration"),
     ("BROWSER-KIND", "BROWSER KIND", "phux-domain-review-browser"),
 ]
