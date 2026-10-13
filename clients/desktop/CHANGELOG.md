@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.0-alpha.15](https://github.com/no-phux/phux/compare/desktop-v0.1.0-alpha.14...desktop-v0.1.0-alpha.15) (2026-10-13)
+
+
+### Bug Fixes
+
+* **desktop:** keep presentation decisions in qualification evidence ([#1218](https://github.com/no-phux/phux/issues/1218)) ([4f286e8](https://github.com/no-phux/phux/commit/4f286e862ec3f4609d35063ccf3ba2210103339b))
+
 ## [0.1.0-alpha.14](https://github.com/no-phux/phux/compare/desktop-v0.1.0-alpha.13...desktop-v0.1.0-alpha.14) (2026-10-13)
 
 
