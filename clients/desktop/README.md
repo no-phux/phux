@@ -20,16 +20,19 @@ There is no JavaScript bundle and no NAPI addon. Launched from the Dock or
 Spotlight, the app resolves the installed `phux` CLI
 (`~/.local/bin/phux`, `/opt/homebrew/bin/phux`, `/usr/local/bin/phux`, or
 `~/.cargo/bin/phux`) and starts or reuses the server. A shell-only `PATH` or
-`PHUX_BIN` is not enough for a Dock launch. It attaches `default`, otherwise an
-existing session. `PHUX_PROFILE`, `PHUX_SOCKET` and `PHUX_SESSION` override that
-choice. Startup problems are shown in the window and logged to
+`PHUX_BIN` is not enough for a Dock launch. It opens your Inbox, the session
+untargeted work lands in; a server without one opens its most recent session.
+The app never creates a session on its own. `PHUX_SESSION` names a session
+instead and creates it, persistent, when it does not exist; `PHUX_PROFILE` and
+`PHUX_SOCKET` pick the server. Startup problems are shown in the window and logged to
 `~/Library/Logs/phux-desktop.log`.
 
 Closing a pane/window or quitting the app detaches; it does not terminate
 server-owned shells. A desktop crash is separate from a server crash:
 relaunching can reattach while the server remains alive, but this alpha
 does **not** promise process survival after a server crash or machine reboot.
-Only **Terminate Terminal Process** intentionally ends a terminal.
+Only **Terminate Terminal Process** and **Kill Session** intentionally end
+terminals.
 
 `just desktop-package` builds the app without installing it.
 `just desktop-install-app` builds and installs `/Applications/Phux.app`.
@@ -135,8 +138,12 @@ lists paths on the host that runs
 the focused terminal (a satellite's own disk for a satellite pane), never this
 Mac's; it needs a server that advertises `PATH_QUERY`. Enter types the chosen
 path as one shell-quoted word and presses nothing else, and only into the pane
-it opened on. **Terminate Terminal Process** (palette only) is the
-one action that ends a process. Layout and display preferences persist under
+it opened on. **Terminate Terminal Process** (palette only) ends one process.
+**Kill Session** (the palette, or a session's menu in the sidebar) asks first,
+then ends every terminal in the session and deletes it; a toast reports any
+terminal that did not end, and why. Closing a pane, tab or window never ends
+work. New sessions are persistent: they stay, empty, after their last
+terminal exits. Layout and display preferences persist under
 `$XDG_STATE_HOME/phux-desktop/<socket-and-session-hash>/`. Existing
 unscoped layouts are imported without overwriting their originals; terminal
 identity is still checked against the server incarnation.
