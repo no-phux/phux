@@ -633,8 +633,11 @@ closes it. Closing kills its process; the overlay also closes by itself
 when its process exits
 ([ADR-0147](../adr/0147-plugin-overlay-panes-float-outside-the-layout.md)).
 
-The **Sessions & hosts** view (`C-a s`) lists other sessions; choosing one
-re-attaches this client in-process. A trailing "+ New session" row
+The **Sessions & hosts** view (`C-a s`) lists other sessions at a glance:
+the current one first, then sessions with panes that need you, with their
+count, then the rest by name; a lifetime shows only as `ephemeral`
+([glance, session, detail](./attention.md)). Choosing one re-attaches this
+client in-process. A trailing "+ New session" row
 creates one. Against a federation hub the view is grouped by host and refreshes
 in place as inventory changes. A reachable host shows its session count, an
 empty reachable host says `connected, no sessions`, and an unreachable host
@@ -807,6 +810,7 @@ hook on `agent-state-changed` is the notifier edge. Hooks are
 | Every action the dispatcher handles | [Action catalog](../reference/actions.md) |
 | Every status-bar widget | [Widgets](../reference/widgets.md) |
 | Headless verbs, JSON, `%name` | [Agents](./agents.md) |
+| What `phux ls` and the pickers show first | [Glance, session, detail](./attention.md) |
 | Record a pane or attached session | [Recording](./recording.md) |
 | The native macOS client | [Cockpit](./cockpit.md) |
 | What is shipped versus a gap | [Concepts](../CONCEPTS.md) |
