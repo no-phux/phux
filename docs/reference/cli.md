@@ -44,6 +44,7 @@ Panes:
   send-keys     Send keys to a pane
   paste         Paste text into a pane
   run           Run a command in a pane and capture its exit code
+  upload        Upload a local file without attaching or submitting input
   wait          Block until a pane meets a condition
   watch         Stream a pane's events as they happen
   resize        Set a pane's grid size
@@ -4271,6 +4272,52 @@ Flags:
 
 Global flags:
       --socket <PATH>         Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux upload`
+
+```text
+Upload a file from this client's filesystem, not the pane cwd.
+
+Returns the authoritative path on the terminal-owning host (including
+satellites). Does not attach, resize, paste, or submit input. A wire path does
+not imply that an agent provider understands video or other media.
+
+Upload dials configured remote transports headlessly; it never pairs over SSH.
+The timeout covers resolution, reading, and upload. Completed prints the path;
+--json prints the receipt for completed, refused, or unknown outcomes. Refused
+and unknown exit nonzero: do not blindly retry.
+
+Usage: phux upload [FLAGS] <TARGET> <FILE>
+
+Arguments:
+  <TARGET>  Target selector: session, session:window.pane, @id, or `.`.
+  <FILE>    File on this client's filesystem.
+
+Flags:
+      --extension <EXTENSION>     Override the inferred extension (1–16 ASCII
+                                  alphanumeric characters).
+      --timeout <SECS>            Overall deadline in seconds, bounded to
+                                  1..=3600.
+                                  (default: 60)
+      --json                      Print the structured receipt on stdout,
+                                  including non-success outcomes.
+      --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
+                                  machine instead of the local socket,
+                                  ssh-style: `--remote me@mini`. Same target
+                                  and resolution as `phux attach --remote`: a
+                                  registered host is dialed directly over
+                                  QUIC or WSS, and an unregistered one is
+                                  paired over your ssh trust first and
+                                  remembered (with `--json` it is refused
+                                  instead, naming the remedies). PORT
+                                  defaults to 8788. Cannot combine with
+                                  `--socket`.
+  -h, --help                      Print help
+
+Global flags:
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
 ```
 
 ## `phux wait`

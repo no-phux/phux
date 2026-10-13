@@ -238,6 +238,7 @@ mod tests {
             "phux_signal",
             "phux_send_keys",
             "phux_paste",
+            "phux_upload",
             "phux_run",
             "phux_agent_prompt",
             "phux_agent_send_keys",

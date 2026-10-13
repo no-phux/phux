@@ -19,6 +19,7 @@ Every tool the MCP adapter (`phux mcp`) serves, the `phux` verb it mirrors, and 
 | Tool | CLI verb | Runs | Read-only | Destructive |
 |---|---|---|---|---|
 | `phux_ls` | `phux ls` | in-process | yes | no |
+| `phux_upload` | `phux upload` | in-process | no | yes |
 | `phux_snapshot` | `phux snapshot` | in-process | yes | no |
 | `phux_send_keys` | `phux send-keys` | in-process | no | yes |
 | `phux_paste` | `phux paste` | in-process | no | yes |

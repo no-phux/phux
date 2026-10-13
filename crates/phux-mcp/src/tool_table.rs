@@ -106,6 +106,11 @@ const fn residue(
 pub(crate) const TOOLS: &[Row] = &[
     cli("phux_ls", "ls", Touches::Wire(&[RESOLVE])),
     cli(
+        "phux_upload",
+        "upload",
+        Touches::Wire(&[RESOLVE, "PUT_FILE"]),
+    ),
+    cli(
         "phux_snapshot",
         "snapshot",
         Touches::Wire(&[RESOLVE, "GET_METADATA", "GET_SCREEN"]),
