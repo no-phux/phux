@@ -16,6 +16,7 @@ mod agent_asked;
 mod agent_events;
 mod common;
 mod event_journal;
+mod flood_counters;
 mod get_perf;
 mod list_directory;
 mod metadata_reply;

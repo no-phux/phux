@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-30
+last-reviewed: 2026-10-13
 ---
 
 # Performance
@@ -427,4 +427,5 @@ retains the release digest, local safety boundary, and native experiment links.
 - A slow or failed path belongs in the report. Do not erase it because a faster
   lane exists, or turn an unmeasured product into a last-place score.
 - These comparisons are not CI budgets. Deterministic checks and regression
-  coverage are described in [Quality bar](./architecture/verification.md#performance).
+  coverage are described in [Quality bar](./architecture/verification.md#performance)
+  and [Performance CI](./performance-ci.md).

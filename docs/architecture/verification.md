@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-22
+last-reviewed: 2026-10-13
 ---
 
 # Quality bar: testing and performance
@@ -89,10 +89,11 @@ measurements use:
   and `benchmark_budget.rs`.
 
 The release profile uses fat LTO and a single codegen unit for shipped-binary
-speed.
+speed. The required instruction-count lane and the flood counter ceilings
+are specified in [Performance CI](../performance-ci.md).
 
 ## Status
 
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|
-| End-to-end performance as a required regression gate with pinned budgets | The benchmark and a dated public result exist; they are not a required CI check because host load and installed comparison versions are not hermetic. | — | not scheduled |
+| End-to-end wall-clock performance as a required regression gate with pinned budgets | The benchmark and a dated public result exist. Wall-clock stays advisory: host load is not hermetic. Instruction counts are a required `ci.yml` lane; the contract is [Performance CI](../performance-ci.md). | — | wall-clock not scheduled |

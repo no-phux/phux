@@ -414,6 +414,38 @@ impl AgentSessionActor {
     }
 }
 
+/// A detached actor the instruction-count guard appends into.
+///
+/// Construction stays outside the measured region. Not a product API.
+#[doc(hidden)]
+#[allow(unreachable_pub, reason = "the icount bench crate is the caller")]
+#[must_use]
+pub fn icount_actor() -> AgentSessionActor {
+    AgentSessionActor::build(
+        ResourceId::default(),
+        "icount",
+        None,
+        CancellationToken::new(),
+        4 * 1024 * 1024,
+    )
+    .actor
+}
+
+/// Append `bytes` and replay the retained ring, returning the replayed byte count.
+///
+/// The instruction-count guard measures this. Production appends go through
+/// the actor mailbox; `None` means the append was refused.
+#[doc(hidden)]
+#[allow(unreachable_pub, reason = "the icount bench crate is the caller")]
+#[must_use]
+pub fn icount_append_and_replay(actor: &mut AgentSessionActor, bytes: Bytes) -> Option<usize> {
+    let (reply, rx) = oneshot::channel();
+    actor.handle_append(AppendRequest { bytes, reply });
+    rx.blocking_recv().ok()?.ok()?;
+    let cut = actor.bootstrap(None);
+    Some(cut.records.iter().map(Bytes::len).sum())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,6 +464,18 @@ mod tests {
             ResourceFacetHandle::Terminal(_) => panic!("built the wrong facet"),
         };
         (bundle.actor, facet, bundle.handle)
+    }
+
+    #[test]
+    fn icount_helper_appends_and_replays_the_ring() {
+        let (mut actor, _facet, _handle) = engine();
+        let replayed = icount_append_and_replay(
+            &mut actor,
+            Bytes::from_static(b"{\"type\":\"prompt\"}\n{\"type\":\"stop\"}\n"),
+        )
+        .expect("accepted");
+        assert!(replayed > 0, "replay copies the stamped records");
+        assert_eq!(actor.ring.len(), 2);
     }
 
     fn append(

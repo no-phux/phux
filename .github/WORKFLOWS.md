@@ -14,7 +14,7 @@ the known problems, and the daily health digest live in the private
 | Opt-in checks | `stress` (label or dispatch), `mutation` (dispatch) | never automatically |
 | Release train | `release-please` and the workflows it calls: `release`, `cockpit-release`, `ffi-xcframework`, `ffi-android`, `linear-release`; plus `agent-integration-release` on component tags, `next-release` off green `main`, `publish-crate` by hand | a push to `main`, then a tag. `ffi-android` also runs on `main` when the mobile shim changes, so the pin's SHA already has an artifact. |
 | Site and worker | `site-deploy`, `site-deploy-worker`, `site-rollback-worker`, `site-native-control` | `main` pushes under `docs/`, or an operator |
-| Scheduled ops | `release-drift` (daily), `site-native-monitor` (6-hourly), `native-setup` (weekly) | cron |
+| Scheduled ops | `release-drift` (daily), `site-native-monitor` (6-hourly), `native-setup` (weekly), `perf-nightly` (nightly; artifacts only, not a required check) | cron |
 
 ## What gates `main`
 
@@ -25,7 +25,9 @@ applies the skip policy: the classify and workflow-gate jobs must succeed,
 while the product lanes may succeed *or* skip. That is why `cockpit-ci`,
 `web-check` and `native-setup` can self-skip without blocking a merge, and
 why adding a new lane means adding it to that aggregate rather than to the
-ruleset.
+ruleset. `perf-icount` is one of those lanes: the aggregate fails when it
+fails, and a path-filtered skip is still green. `perf-nightly` is not in
+the aggregate.
 
 Browser wasm coverage lives in `web-check.yml`. On browser changes that
 workflow runs `wasm-pack test --node` for `clients/phux-web` and

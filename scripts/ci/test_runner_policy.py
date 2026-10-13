@@ -80,9 +80,11 @@ class RunnerPolicyTests(unittest.TestCase):
         ci = (WORKFLOWS / "ci.yml").read_text()
         prune = ci.split("\n  prune-build-cache:\n", 1)[1]
         self.assertIn("github.event_name == 'push' && github.ref == 'refs/heads/main'", prune)
-        self.assertIn("needs: [check, test]", prune)
+        self.assertIn("needs: [check, test, perf-icount]", prune)
         self.assertIn("actions: write", prune)
-        self.assertIn("key=linux-arm64-mbx-phux-${lane}-", prune)
+        self.assertIn("check:linux-arm64", prune)
+        self.assertIn("icount:linux-x64", prune)
+        self.assertIn("key=${arch}-mbx-phux-${lane}-", prune)
         self.assertIn("tail -n +2", prune)
 
     def test_export_cleanup_preserves_pending_cache_and_cargo_tools(self):

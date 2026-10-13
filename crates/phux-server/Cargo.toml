@@ -130,6 +130,8 @@ libghostty-vt.workspace = true
 
 
 [dev-dependencies]
+# Instruction-count guard. Not a default feature: `cargo test` does not build benches.
+iai-callgrind.workspace = true
 # `test-util`: paused time for tick and deadline tests.
 tokio = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true
@@ -162,3 +164,9 @@ required-features = ["native-engine", "capture-bench"]
 name = "live_path"
 harness = false
 required-features = ["capture-bench"]
+
+# Callgrind instruction counts for the hot paths. No Criterion feature:
+# `cargo bench -p phux-server --bench icount` builds this alone.
+[[bench]]
+name = "icount"
+harness = false

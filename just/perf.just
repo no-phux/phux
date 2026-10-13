@@ -100,6 +100,16 @@ bloat *ARGS:
     cargo bloat --release --bin phux {{ if ARGS == "" { "--crates" } else { ARGS } }}
 
 
+# Callgrind instruction counts for the hot paths, compared with
+# benchmarks/icount-baseline.json. Run inside `nix develop` on x86_64.
+# `--update` rewrites the baseline; see docs/performance-ci.md before
+# committing that file.
+[group('perf')]
+[doc('Callgrind instruction counts against benchmarks/icount-baseline.json.')]
+perf-icount *ARGS:
+    bash scripts/ci/perf-icount.sh {{ARGS}}
+
+
 # Dependency-graph stats without compiling: locked-package count, duplicate
 # versions (each compiles separately in cold CI), proc-macro and
 # build-script crate counts. Prints markdown to stdout.

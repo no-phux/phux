@@ -291,6 +291,17 @@ const MAX_PTY_COALESCE: usize = 64;
 /// parser is streaming, so splitting here loses nothing.
 pub(crate) const MAX_PTY_COALESCE_BYTES: usize = 48 * 1024;
 
+/// Join PTY chunks into one payload, the copy a full actor burst performs.
+///
+/// The instruction-count guard measures this. Production ingest goes through
+/// the actor, which stops before a chunk would cross [`MAX_PTY_COALESCE_BYTES`].
+#[doc(hidden)]
+#[allow(unreachable_pub, reason = "the icount bench crate is the caller")]
+#[must_use]
+pub fn icount_join_pty_burst(chunks: Vec<Bytes>) -> Bytes {
+    run_loop::icount_join_pty_burst(chunks)
+}
+
 /// Max inline input events drained per wakeup, bounding one pathological
 /// batch (an expanded paste).
 const MAX_INPUT_COALESCE: usize = 16;

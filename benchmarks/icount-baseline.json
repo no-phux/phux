@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "profile": "icount",
+  "tool": "callgrind",
+  "increase_limit_percent": 5,
+  "scenarios": {
+    "agent_append_replay/append": 529317,
+    "frame_decode/decode": 3056,
+    "frame_encode/encode": 1989,
+    "history_resync/resync": 7008,
+    "history_slice/slice": 438078,
+    "pty_batch_handoff/join": 20217,
+    "vt_apply/apply": 357549
+  }
+}
