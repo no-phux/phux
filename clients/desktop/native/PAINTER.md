@@ -61,8 +61,15 @@ carries no image data) are not provided.
 `terminal-fixtures` records every glyph while preparing. `Terminal::painted`
 reads that record. Production builds record none. **Never enable the feature
 in a shipping binary.** Rust unit tests cover scene reuse, colour provenance,
-hidden cells and cursor shape. A decoded-pixel GPU oracle is not part of this
-crate; parent integration owns an on-screen smoke.
+hidden cells and cursor shape.
+
+`src/terminal/pixels.rs` is the pixel oracle. It publishes a real runtime grid
+into `Terminal` and reads an offscreen frame from GPUI's headless renderer
+(`HeadlessAppContext` and `current_headless_renderer`, behind GPUI
+`test-support`). Five fixtures check glyph columns, a wide character, the
+block cursor, selection, and theme-palette remap against true color. Linux
+needs a Vulkan adapter, hardware or lavapipe. The on-screen smoke is still
+the packaged qualification run.
 
 phux-d4x9.4 remains open for Retina/scale-change GPU evidence, wider
 script/box-drawing fidelity, and a graphics product decision.

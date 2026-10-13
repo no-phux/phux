@@ -1,0 +1,449 @@
+//! Offscreen pixel fixtures for the native terminal painter.
+//!
+//! Each test publishes VT through the real runtime, paints that publication
+//! with [`super::Terminal`], and reads the frame back from GPUI's headless
+//! renderer. Regions are checked for a color, not against a stored image.
+//! On Linux the renderer is wgpu; it needs a Vulkan adapter (a hardware
+//! device or lavapipe).
+
+use std::sync::Arc;
+
+use super::{PaintedFrame, Settings, Terminal};
+use gpui::{AppContext, HeadlessAppContext, Pixels, px, size};
+use image::RgbaImage;
+use phux_client_core::grid::{CELL_SELECTED, COLOR_KIND_RGB};
+use phux_client_runtime::control::{ControlOptions, ControlPlane};
+use phux_client_runtime::publication::{CursorStyle, GridFrame};
+use phux_client_runtime::{Client, Runtime, ViewId};
+use phux_protocol::{
+    PROTOCOL_VERSION, ResourceId,
+    caps::{
+        BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ServerCapabilities,
+        ServerFeature, ServerFeatureSet,
+    },
+    ids::{BootstrapId, ClientId, SessionId, StreamId, WindowId},
+    wire::{
+        frame::{AttachTarget, FrameKind},
+        info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo},
+    },
+};
+
+const BACKGROUND: [u8; 3] = [0x10, 0x14, 0x18];
+const FOREGROUND: [u8; 3] = [0xf4, 0xf4, 0xf4];
+const CURSOR: [u8; 3] = [0xff, 0x00, 0xaa];
+const SELECTION: [u8; 3] = [0x22, 0x66, 0xff];
+const AMBER: [u8; 3] = [0xff, 0xcc, 0x00];
+const TRUE_GREEN: [u8; 3] = [0x00, 0xdc, 0x1e];
+
+struct Shot {
+    image: RgbaImage,
+    painted: PaintedFrame,
+}
+
+fn color(channels: [u8; 3]) -> gpui::Hsla {
+    gpui::rgb(u32::from(channels[0]) << 16 | u32::from(channels[1]) << 8 | u32::from(channels[2]))
+        .into()
+}
+
+fn settings(cursor_visible: bool) -> Settings {
+    let mut palette = [color([0x20, 0x20, 0x20]); 16];
+    palette[1] = color(AMBER);
+    Settings {
+        font_size: 16.,
+        background: Some(color(BACKGROUND)),
+        foreground: Some(color(FOREGROUND)),
+        cursor: Some(color(CURSOR)),
+        selection_background: color(SELECTION),
+        selection_foreground: color(FOREGROUND),
+        palette: Some(palette),
+        cursor_visible,
+        focused: true,
+        ..Settings::default()
+    }
+}
+
+fn terminal() -> ResourceId {
+    ResourceId::local(7)
+}
+
+/// An attached embedded runtime whose viewport is exactly `payload`.
+fn publish(payload: &[u8]) -> (Arc<Client>, ViewId) {
+    let client = Runtime::embedded(ControlOptions {
+        attach: Some(AttachTarget::ByName("pixels".into())),
+        viewport: (20, 4),
+        ..ControlOptions::default()
+    });
+    client.with_control(ControlPlane::connection_opened);
+    let _ = client.take_outbound();
+    client
+        .feed(FrameKind::HelloOk {
+            protocol_major: PROTOCOL_VERSION.major,
+            protocol_minor: PROTOCOL_VERSION.minor,
+            protocol_patch: PROTOCOL_VERSION.patch,
+            server_caps: ServerCapabilities::new()
+                .with_features(ServerFeatureSet::with(&[ServerFeature::AcknowledgedInput])),
+            server_id: vec![1; 16],
+            selected_profile: BootstrapProfile::SynthesizedVtRaw,
+            bootstrap_limits: BootstrapLimits::default(),
+        })
+        .expect("hello");
+    let attach_id = client
+        .take_outbound()
+        .iter()
+        .find_map(|bytes| match FrameKind::decode(bytes).expect("decode").0 {
+            FrameKind::Attach { attach_id, .. } => Some(attach_id),
+            _ => None,
+        })
+        .expect("attach request");
+    let stream_id = StreamId::new(1).unwrap();
+    let bootstrap_id = BootstrapId::new(1).unwrap();
+    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), terminal())
+        .with_sessions(vec![SessionInfo::new(SessionId::new(1), "pixels")])
+        .with_windows(vec![WindowInfo::new(
+            WindowId::new(1),
+            SessionId::new(1),
+            "shell",
+        )])
+        .with_resources(vec![ResourceInfo::new(terminal(), WindowId::new(1), 20, 4)]);
+    for frame in [
+        FrameKind::Attached {
+            attach_id,
+            snapshot,
+            initial_client_id: ClientId::new(1),
+        },
+        FrameKind::BootstrapBegin {
+            terminal_id: terminal(),
+            stream_id,
+            bootstrap_id,
+            profile: BootstrapStreamProfile::SynthesizedVtRaw,
+            cols: 20,
+            rows: 4,
+            base_seq: 0,
+        },
+        FrameKind::BootstrapChunk {
+            terminal_id: terminal(),
+            stream_id,
+            bootstrap_id,
+            chunk_seq: 0,
+            payload: payload.to_vec().into(),
+        },
+        FrameKind::BootstrapReady {
+            terminal_id: terminal(),
+            stream_id,
+            bootstrap_id,
+            history_cursor: None,
+        },
+        FrameKind::AttachReady { attach_id },
+    ] {
+        client.feed(frame).expect("bootstrap");
+    }
+    let _ = client.take_outbound();
+    let _ = client.take_events();
+    let view = client.create_view(&terminal()).expect("view");
+    let frame = client.acquire_view(view).expect("publication");
+    assert_eq!(
+        (frame.cols, frame.rows),
+        (20, 4),
+        "viewport {}",
+        frame.text()
+    );
+    (Arc::new(client), view)
+}
+
+fn gpu() -> HeadlessAppContext {
+    let platform = gpui_platform::current_platform(true);
+    HeadlessAppContext::with_platform(platform.text_system(), Arc::new(()), || {
+        gpui_platform::current_headless_renderer()
+    })
+}
+
+fn paint(client: Arc<Client>, view: ViewId, settings: Settings) -> Shot {
+    // Keep one `Arc` until after the GPUI context drops. The terminal's own
+    // clone must not be the last: dropping a `Client` on the UI thread joins
+    // the runtime driver.
+    let retained = Arc::clone(&client);
+    let mut cx = gpu();
+    let terminal_id = terminal();
+    let window = cx
+        .open_window(size(px(480.), px(200.)), move |window, cx| {
+            cx.new(|cx| Terminal::new(client, view, terminal_id, settings, window, cx))
+        })
+        .expect("offscreen window");
+    // Draw outside the root-view lease. `Window::draw` paints the terminal,
+    // and painting it while `WindowHandle::update` already holds the entity
+    // panics.
+    cx.update_window(window.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+    })
+    .expect("draw");
+    let painted = window
+        .update(&mut cx, |terminal, _, _| terminal.painted())
+        .expect("painted");
+    assert!(
+        painted.error.is_none(),
+        "paint failed: {}",
+        painted.error.clone().unwrap_or_default()
+    );
+    let image = cx
+        .capture_screenshot(window.into())
+        .expect("headless pixels; on Linux this needs a Vulkan adapter such as lavapipe");
+    assert!(image.width() > 0 && image.height() > 0);
+    drop(cx);
+    drop(retained);
+    Shot { image, painted }
+}
+
+fn frame_of(client: &Client, view: ViewId) -> Arc<GridFrame> {
+    client.acquire_view(view).expect("publication")
+}
+
+/// Device-pixel bounds of one cell, inset so a neighbor's antialiased edge
+/// is not this cell's ink.
+fn cell_pixels(shot: &Shot, row: u16, col: u16) -> Vec<[u8; 4]> {
+    let geometry = shot.painted.geometry;
+    let scale = geometry.scale;
+    assert!(scale > 0.);
+    let left = device(
+        geometry.bounds.origin.x + geometry.cell_width * f32::from(col),
+        scale,
+    );
+    let top = device(
+        geometry.bounds.origin.y + geometry.cell_height * f32::from(row),
+        scale,
+    );
+    let right = device(
+        geometry.bounds.origin.x + geometry.cell_width * f32::from(col + 1),
+        scale,
+    );
+    let bottom = device(
+        geometry.bounds.origin.y + geometry.cell_height * f32::from(row + 1),
+        scale,
+    );
+    let (left, top, right, bottom) = inset(left, top, right, bottom);
+    assert!(right <= shot.image.width() && bottom <= shot.image.height());
+    let mut pixels = Vec::new();
+    for y in top..bottom {
+        for x in left..right {
+            pixels.push(shot.image.get_pixel(x, y).0);
+        }
+    }
+    assert!(
+        !pixels.is_empty(),
+        "cell {row},{col} has no interior pixels"
+    );
+    pixels
+}
+
+fn device(logical: Pixels, scale: f32) -> u32 {
+    (f32::from(logical) * scale).round() as u32
+}
+
+fn inset(left: u32, top: u32, right: u32, bottom: u32) -> (u32, u32, u32, u32) {
+    assert!(
+        right > left + 2 && bottom > top + 2,
+        "cell is too small to sample"
+    );
+    (left + 1, top + 1, right - 1, bottom - 1)
+}
+
+fn distance(pixel: [u8; 4], color: [u8; 3]) -> u32 {
+    pixel
+        .iter()
+        .zip(color)
+        .map(|(channel, expected)| u32::from(channel.abs_diff(expected)))
+        .sum()
+}
+
+fn near(pixel: [u8; 4], color: [u8; 3]) -> bool {
+    pixel
+        .iter()
+        .zip(color)
+        .all(|(channel, expected)| channel.abs_diff(expected) <= 8)
+}
+
+fn assert_share(pixels: &[[u8; 4]], color: [u8; 3], minimum: f32, what: &str) {
+    let hits = pixels.iter().filter(|pixel| near(**pixel, color)).count();
+    let fraction = hits as f32 / pixels.len() as f32;
+    assert!(
+        fraction > minimum,
+        "{what}: {fraction:.2} of {} pixels near {color:?}, center {:?}",
+        pixels.len(),
+        pixels[pixels.len() / 2]
+    );
+}
+
+/// A solid cell (cursor, empty gap, palette swatch) is this color almost everywhere.
+fn assert_mostly(pixels: &[[u8; 4]], color: [u8; 3], what: &str) {
+    assert_share(pixels, color, 0.85, what);
+}
+
+fn assert_ink(pixels: &[[u8; 4]], what: &str) {
+    let ink = pixels
+        .iter()
+        .filter(|pixel| distance(**pixel, BACKGROUND) > 80)
+        .count();
+    assert!(
+        ink >= 8,
+        "{what}: only {ink} ink pixels, center {:?}",
+        pixels[pixels.len() / 2]
+    );
+}
+
+fn assert_blank(pixels: &[[u8; 4]], what: &str) {
+    let ink = pixels
+        .iter()
+        .filter(|pixel| distance(**pixel, BACKGROUND) > 80)
+        .count();
+    assert_eq!(
+        ink,
+        0,
+        "{what}: unexpected ink, center {:?}",
+        pixels[pixels.len() / 2]
+    );
+    assert_mostly(pixels, BACKGROUND, what);
+}
+
+#[test]
+fn glyphs_land_in_their_columns() {
+    let (client, view) = publish(b"\x1b[?25l\x1b[HAB C");
+    let frame = frame_of(&client, view);
+    assert_eq!(frame.row_text(0), "AB C");
+    let shot = paint(client, view, settings(false));
+    assert_ink(&cell_pixels(&shot, 0, 0), "column 0 (A)");
+    assert_ink(&cell_pixels(&shot, 0, 1), "column 1 (B)");
+    assert_blank(&cell_pixels(&shot, 0, 2), "column 2 (the gap)");
+    assert_ink(&cell_pixels(&shot, 0, 3), "column 3 (C)");
+}
+
+#[test]
+fn wide_character_occupies_two_columns() {
+    let (client, view) = publish("\u{1b}[?25l\u{1b}[HX中Y".as_bytes());
+    let frame = frame_of(&client, view);
+    assert_eq!(frame.row_text(0), "X中Y");
+    assert_eq!(frame.cell(0, 1).expect("wide head").wide, 1);
+    let spacer = frame.cell(0, 2).expect("spacer").wide;
+    assert!(matches!(spacer, 2 | 3), "spacer wide={spacer}");
+    assert_eq!(frame.cell_text(0, 3), b"Y");
+    let shot = paint(client, view, settings(false));
+    assert_ink(&cell_pixels(&shot, 0, 0), "column 0 (X)");
+    assert_ink(&cell_pixels(&shot, 0, 1), "wide head");
+    assert_ink(
+        &cell_pixels(&shot, 0, 3),
+        "column 3 (Y follows the wide cell)",
+    );
+    assert_blank(&cell_pixels(&shot, 0, 4), "column 4 stays empty");
+}
+
+#[test]
+fn block_cursor_fills_its_cell() {
+    // Steady block, then CUP to row 2 column 6 (1-based).
+    let (client, view) = publish(b"\x1b[2 q\x1b[2;6H");
+    let frame = frame_of(&client, view);
+    assert!(frame.cursor.visible);
+    assert_eq!(frame.cursor.style, CursorStyle::Block);
+    assert_eq!((frame.cursor.row, frame.cursor.col), (1, 5));
+    let shot = paint(client, view, settings(true));
+    assert_mostly(&cell_pixels(&shot, 1, 5), CURSOR, "cursor cell");
+    assert_mostly(
+        &cell_pixels(&shot, 1, 6),
+        BACKGROUND,
+        "cell after the cursor",
+    );
+    assert_mostly(
+        &cell_pixels(&shot, 0, 0),
+        BACKGROUND,
+        "origin is not the cursor",
+    );
+}
+
+#[test]
+fn selection_paints_the_selection_background() {
+    let (client, view) = publish(b"\x1b[?25l\x1b[HSELECT");
+    let found = client
+        .engine()
+        .expect("engine")
+        .search_view(view, "SELECT".into(), true)
+        .expect("search");
+    let matched = found.first().expect("SELECT is on screen");
+    client
+        .engine()
+        .expect("engine")
+        .set_view_selection(view, matched.start, matched.end, false)
+        .expect("select");
+    let frame = frame_of(&client, view);
+    assert_ne!(frame.cell(0, 0).expect("S").flags & CELL_SELECTED, 0);
+    assert_eq!(frame.cell(0, 8).expect("gap").flags & CELL_SELECTED, 0);
+    let shot = paint(client, view, settings(false));
+    let selected = cell_pixels(&shot, 0, 0);
+    // The glyph covers the rest of the cell, so this is lower than a solid swatch.
+    assert_share(&selected, SELECTION, 0.6, "selected cell background");
+    assert!(
+        selected
+            .iter()
+            .any(|pixel| distance(*pixel, SELECTION) > 80),
+        "the selected glyph must still be ink on top of the selection"
+    );
+    assert_share(
+        &cell_pixels(&shot, 0, 5),
+        SELECTION,
+        0.6,
+        "last selected column",
+    );
+    assert_blank(&cell_pixels(&shot, 0, 8), "unselected gap");
+}
+
+#[test]
+fn palette_recolors_ansi_and_keeps_true_color() {
+    // ANSI red background (palette index 1), then a true-color glyph.
+    let (client, view) = publish(b"\x1b[?25l\x1b[H\x1b[41m \x1b[0m\x1b[38;2;0;220;30mT");
+    let frame = frame_of(&client, view);
+    let ansi = frame.cell(0, 0).expect("ansi cell");
+    let ansi_meta = frame.buffer.metadata[0];
+    assert!(!ansi_meta.background_color_is_default);
+    let published = [ansi.background_r, ansi.background_g, ansi.background_b];
+    assert_eq!(
+        published,
+        [
+            frame.colors.palette[1].r,
+            frame.colors.palette[1].g,
+            frame.colors.palette[1].b
+        ]
+    );
+    assert_ne!(
+        published, AMBER,
+        "the theme color must differ from the terminal palette or the remap is invisible"
+    );
+    let colored = frame.cell(0, 1).expect("true-color cell");
+    assert_eq!(frame.buffer.metadata[1].foreground_kind, COLOR_KIND_RGB);
+    assert_eq!(
+        [
+            colored.foreground_r,
+            colored.foreground_g,
+            colored.foreground_b
+        ],
+        TRUE_GREEN
+    );
+    let shot = paint(client, view, settings(false));
+    assert_mostly(
+        &cell_pixels(&shot, 0, 0),
+        AMBER,
+        "ANSI red takes the theme palette",
+    );
+    let glyph = cell_pixels(&shot, 0, 1);
+    let green = glyph
+        .iter()
+        .filter(|pixel| near(**pixel, TRUE_GREEN))
+        .count();
+    assert!(
+        green >= 4,
+        "true color stayed green ({green} pixels), center {:?}",
+        glyph[glyph.len() / 2]
+    );
+    // The glyph covers the rest. A true-color background fill would miss this.
+    assert_share(
+        &glyph,
+        BACKGROUND,
+        0.7,
+        "true color does not repaint the background",
+    );
+}

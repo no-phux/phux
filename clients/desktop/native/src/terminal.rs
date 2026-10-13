@@ -8,6 +8,8 @@ mod actions;
 pub mod geometry;
 mod input_host;
 mod paint;
+#[cfg(test)]
+mod pixels;
 pub mod settings;
 
 use std::cell::RefCell;
