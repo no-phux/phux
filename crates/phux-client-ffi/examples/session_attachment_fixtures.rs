@@ -17,6 +17,11 @@ fn second_session(snapshot: &mut SessionSnapshot) {
     for window in &mut snapshot.windows {
         window.session_id = SessionId::new(2);
     }
+    for resource in &mut snapshot.resources {
+        if resource.session.is_some() {
+            resource.session = Some(SessionId::new(2));
+        }
+    }
 }
 
 fn rewrite(

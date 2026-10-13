@@ -1,7 +1,10 @@
 //! Generate protocol-0.8 workspace replies for Cockpit's existing terminal-7 attach fixture.
 //! Usage: `cargo run -p phux-client-ffi --example workspace_fixtures -- OUTPUT_DIRECTORY`.
 //! Requests follow initial read, refresh, rename, split, resize, and the
-//! independent-session add/close cases. Pass output bytes through the ordinary
+//! independent-session add/close cases, on the legacy layout-metadata
+//! backend a server without `ORGANIZATION` serves. An absent value
+//! (`workspace_initial`) now reads as an unarranged session with no groups;
+//! nothing is synthesized from the catalog. Pass output bytes through the ordinary
 //! FFI frame feeder; no emulator allocation is needed for listings.
 
 use phux_client_core::layout::{self, ArrangementDoc};

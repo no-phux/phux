@@ -23,11 +23,12 @@ use phux_client_ffi::{
     phux_client_terminal_resize,
 };
 use phux_protocol::caps::ServerCapabilities;
+use phux_protocol::ids::SessionKey;
 use phux_protocol::input::{
     focus::FocusEvent,
     key::{KeyAction, PhysicalKey},
 };
-use phux_protocol::wire::frame::{AttachTarget, FrameKind};
+use phux_protocol::wire::frame::{AttachTarget, FrameKind, SessionLifetime};
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 use phux_protocol::{
     BootstrapId, BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ClientId,
@@ -51,6 +52,11 @@ fn hello() -> FrameKind {
     }
 }
 
+/// The fixture session's persistent key.
+const fn fixture_session_key() -> SessionKey {
+    SessionKey::new([0x5e; 16]).expect("nonzero key")
+}
+
 fn attached(generation: u64) -> [FrameKind; 5] {
     let terminal_id = ResourceId::local(7);
     let session_id = SessionId::new(1);
@@ -58,14 +64,16 @@ fn attached(generation: u64) -> [FrameKind; 5] {
     let stream_id = StreamId::new(7).expect("nonzero stream");
     let bootstrap_id = BootstrapId::new(generation).expect("nonzero bootstrap");
     let snapshot = SessionSnapshot::new(session_id, window_id, terminal_id.clone())
-        .with_sessions(vec![SessionInfo::new(session_id, "fixture")])
+        .with_sessions(vec![
+            SessionInfo::new(session_id, "fixture")
+                .with_key(Some(fixture_session_key()))
+                .with_lifetime(Some(SessionLifetime::Persistent)),
+        ])
         .with_windows(vec![WindowInfo::new(window_id, session_id, "fixture")])
-        .with_resources(vec![ResourceInfo::new(
-            terminal_id.clone(),
-            window_id,
-            80,
-            24,
-        )]);
+        .with_resources(vec![
+            ResourceInfo::new(terminal_id.clone(), window_id, 80, 24)
+                .with_session(Some(session_id)),
+        ]);
     [
         FrameKind::Attached {
             attach_id: 1,
@@ -846,6 +854,202 @@ fn verify_session_renamed(hello: &[u8], attached: &[u8], renamed: &[u8]) {
     }
 }
 
+/// A server that advertises `ORGANIZATION`, otherwise `hello()`.
+fn hello_organization() -> FrameKind {
+    use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExtSet};
+    FrameKind::HelloOk {
+        protocol_major: PROTOCOL_VERSION.major,
+        protocol_minor: PROTOCOL_VERSION.minor,
+        protocol_patch: PROTOCOL_VERSION.patch,
+        server_caps: ServerCapabilities::new()
+            .with_features(ServerFeatureSet::with(&[ServerFeature::TerminalReply]))
+            .with_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization])),
+        server_id: b"cockpit-fixture".to_vec(),
+        selected_profile: BootstrapProfile::SynthesizedVtRaw,
+        bootstrap_limits: BootstrapLimits::new(1024, 1024).expect("valid limits"),
+    }
+}
+
+/// The resource key of terminal 7, and of a completed, retained shell.
+const fn fixture_resource_keys() -> (
+    phux_protocol::ids::ResourceKey,
+    phux_protocol::ids::ResourceKey,
+) {
+    use phux_protocol::ids::ResourceKey;
+    (
+        ResourceKey::new([0x77; 16]).expect("nonzero key"),
+        ResourceKey::new([0x78; 16]).expect("nonzero key"),
+    )
+}
+
+/// The Inbox session's key.
+const fn fixture_inbox_key() -> SessionKey {
+    SessionKey::new([0x1b; 16]).expect("nonzero key")
+}
+
+/// The one-page answer to the seed a client sends right after `HELLO_OK`
+/// from an `ORGANIZATION` server: `fixture` (1, persistent) holds terminal
+/// 7 running and a completed shell that exited 3 and is retained; `inbox`
+/// (2) is the designated, empty Inbox. `request_id` is the seed's.
+fn organization_page(request_id: u32) -> FrameKind {
+    use phux_protocol::ids::{ActivationId, AuthorityId, Revision, ServerInstance};
+    use phux_protocol::wire::frame::{
+        ActivationInfo, CommandResult, CommandValue, ExecState, ExitPolicy, OrganizationPage,
+        Outcome, ResourceRecord, SessionRecord,
+    };
+    let (running, retained) = fixture_resource_keys();
+    let instance = ServerInstance::new([0xa5; 16]);
+    let page = OrganizationPage::new(
+        AuthorityId::new([0xa0; 16]).expect("nonzero key"),
+        Revision::new(10),
+        1,
+    )
+    .with_inbox(Some(fixture_inbox_key()))
+    .with_sessions(vec![
+        SessionRecord::new(fixture_session_key(), "fixture", Revision::new(5))
+            .with_members(2)
+            .with_live(Some(SessionId::new(1))),
+        SessionRecord::new(fixture_inbox_key(), "inbox", Revision::new(1))
+            .with_live(Some(SessionId::new(2))),
+    ])
+    .with_resources(vec![
+        ResourceRecord::new(running, fixture_session_key(), Revision::new(3))
+            .with_activation(Some(ActivationInfo::new(
+                ActivationId::new(1),
+                instance,
+                ExecState::Running,
+            )))
+            .with_live(Some(ResourceId::local(7))),
+        ResourceRecord::new(retained, fixture_session_key(), Revision::new(4))
+            .with_name(Some("build".to_owned()))
+            .with_on_exit(ExitPolicy::Retain)
+            .with_activation(Some(
+                ActivationInfo::new(ActivationId::new(2), instance, ExecState::Completed)
+                    .with_outcome(Some(Outcome::Exited(3))),
+            )),
+    ]);
+    FrameKind::CommandResult {
+        request_id,
+        result: CommandResult::OkWith(CommandValue::OrganizationPage(Box::new(page))),
+    }
+}
+
+/// The request id of the seed a fresh client sends after `HELLO_OK` from an
+/// `ORGANIZATION` server, read back from the C ABI.
+fn organization_seed_id(hello: &[u8]) -> u32 {
+    use phux_protocol::wire::frame::Command;
+    let client = Client::new();
+    // SAFETY: live same-thread handle with a valid span.
+    unsafe {
+        assert_eq!(
+            phux_client_queue_hello(client.0, span(b"cockpit-fixture")),
+            PhuxClientResult::Ok
+        );
+    }
+    assert!(matches!(client.take_outgoing(), FrameKind::Hello { .. }));
+    client.feed(hello);
+    match client.take_outgoing() {
+        FrameKind::Command {
+            request_id,
+            command: Command::GetOrganization { .. },
+        } => Some(request_id),
+        _ => None,
+    }
+    .expect("the client seeds its organization records right after HELLO_OK")
+}
+
+/// A client of an `ORGANIZATION` server reads the page into the records,
+/// enriches its session list, and keys its live terminal after attaching.
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "one walk from HELLO_OK through the records to an attached session"
+)]
+fn verify_organization(hello: &[u8], page: &[u8], attached: &[u8]) {
+    use phux_client_ffi::{
+        PHUX_SESSION_RECORD_INBOX, PHUX_SESSION_RECORD_ORGANIZED, PhuxOrganizationInfo,
+        PhuxResourceInfo, PhuxResourceRecord, PhuxSessionRecord, phux_client_organization_info,
+        phux_client_record_get, phux_client_resource_get, phux_client_session_record_get,
+    };
+    let client = Client::new();
+    // SAFETY: live same-thread handle with valid spans and outputs throughout.
+    unsafe {
+        assert_eq!(
+            phux_client_queue_hello(client.0, span(b"cockpit-fixture")),
+            PhuxClientResult::Ok
+        );
+        assert!(matches!(client.take_outgoing(), FrameKind::Hello { .. }));
+        client.feed(hello);
+        assert!(matches!(client.take_outgoing(), FrameKind::Command { .. }));
+        client.feed(page);
+        let mut info = PhuxOrganizationInfo::default();
+        assert_eq!(
+            phux_client_organization_info(client.0, &raw mut info),
+            PhuxClientResult::Ok
+        );
+        assert!(info.supported);
+        assert_eq!(info.state, 2, "LIVE");
+        assert_eq!(info.inbox, *fixture_inbox_key().as_bytes());
+        assert_eq!(info.record_count, 2);
+        let mut record = PhuxResourceRecord::default();
+        assert_eq!(
+            phux_client_record_get(client.0, 1, &raw mut record),
+            PhuxClientResult::Ok
+        );
+        assert!(!record.live);
+        assert_eq!(
+            (record.exec_state, record.outcome_kind, record.outcome_code),
+            (4, 1, 3)
+        );
+        // Attach the way the other fixtures do; the session list now carries
+        // the records.
+        let options = PhuxAttachOptions {
+            size: size_of::<PhuxAttachOptions>(),
+            version: ABI_VERSION,
+            attach_id: 1,
+            target_kind: 2,
+            session_id: 1,
+            name: PhuxBytes::default(),
+            cols: 80,
+            rows: 24,
+            has_pixel_size: false,
+            pixel_width: 0,
+            pixel_height: 0,
+            request_scrollback: false,
+            scrollback_limit_lines: 0,
+        };
+        assert_eq!(
+            phux_client_queue_attach(client.0, &raw const options),
+            PhuxClientResult::Ok
+        );
+        assert!(matches!(client.take_outgoing(), FrameKind::Attach { .. }));
+        client.feed(attached);
+        assert_eq!(phux_client_state(client.0), PhuxClientState::Attached);
+        let mut session = PhuxSessionRecord::default();
+        assert_eq!(
+            phux_client_session_record_get(client.0, 0, &raw mut session),
+            PhuxClientResult::Ok
+        );
+        assert_eq!(session.key, *fixture_session_key().as_bytes());
+        assert_ne!(session.flags & PHUX_SESSION_RECORD_ORGANIZED, 0);
+        assert_eq!(session.flags & PHUX_SESSION_RECORD_INBOX, 0);
+        assert_eq!(
+            (
+                session.member_count,
+                session.running_count,
+                session.completed_count
+            ),
+            (2, 1, 1)
+        );
+        let mut resource = PhuxResourceInfo::default();
+        assert_eq!(
+            phux_client_resource_get(client.0, 0, &raw mut resource),
+            PhuxClientResult::Ok
+        );
+        assert_eq!(resource.key, *fixture_resource_keys().0.as_bytes());
+        assert_eq!((resource.session_id, resource.cols), (1, 80));
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let output = std::env::args_os().nth(1).map_or_else(
         || {
@@ -890,12 +1094,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     let hello_conditional_kill = encode(&[hello_conditional_kill()]);
     let spawn_bound = encode(&[spawn_bound()]);
     verify_spawn_bound(&hello_conditional_kill, &attached, &spawn_bound);
+    let hello_organization = encode(&[hello_organization()]);
+    let organization_page = encode(&[organization_page(organization_seed_id(&hello_organization))]);
+    verify_organization(&hello_organization, &organization_page, &attached);
     std::fs::create_dir_all(&output)?;
     std::fs::write(
         output.join("hello_conditional_kill.bin"),
         &hello_conditional_kill,
     )?;
     std::fs::write(output.join("spawn-bound.bin"), &spawn_bound)?;
+    std::fs::write(output.join("hello_organization.bin"), &hello_organization)?;
+    std::fs::write(output.join("organization_page.bin"), &organization_page)?;
     std::fs::write(output.join("session_renamed.bin"), &renamed)?;
     std::fs::write(output.join("standby_session_renamed.bin"), &standby_renamed)?;
     std::fs::write(output.join("hello_keep_empty.bin"), &hello_keep_empty)?;
@@ -917,7 +1126,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     std::fs::write(output.join("directory_listing.bin"), &listing)?;
     std::fs::write(output.join("standby_state.bin"), &standby)?;
     println!(
-        "Validated C ABI lifecycle, grid, key/paste/focus/resize, directory listing (serving host and satellite), standby session query, session rename (followed by a listing client too), keep-empty sessions and bound spawns; wrote hello_conditional_kill.bin, spawn-bound.bin, hello.bin ({} bytes), attached.bin ({} bytes), hello_directory.bin ({} bytes), hello_directory_host.bin ({} bytes), directory_listing.bin ({} bytes), standby_state.bin ({} bytes), session_renamed.bin ({} bytes), standby_session_renamed.bin, hello_keep_empty.bin, standby_keep_empty_state.bin, attached_empty.bin and workspace_empty.bin to {}",
+        "Validated C ABI lifecycle, grid, key/paste/focus/resize, directory listing (serving host and satellite), standby session query, session rename (followed by a listing client too), keep-empty sessions, bound spawns and organization records; wrote hello_conditional_kill.bin, spawn-bound.bin, hello_organization.bin, organization_page.bin, hello.bin ({} bytes), attached.bin ({} bytes), hello_directory.bin ({} bytes), hello_directory_host.bin ({} bytes), directory_listing.bin ({} bytes), standby_state.bin ({} bytes), session_renamed.bin ({} bytes), standby_session_renamed.bin, hello_keep_empty.bin, standby_keep_empty_state.bin, attached_empty.bin and workspace_empty.bin to {}",
         hello.len(),
         attached.len(),
         hello_directory.len(),
