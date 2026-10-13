@@ -98,6 +98,22 @@ pub(crate) fn catalog() -> Value {
             }
         },
         {
+            "name": "phux_upload",
+            "description": "Upload a file from the MCP server filesystem (not the pane cwd), without attaching, resizing, or submitting input. Returns the authoritative terminal-owning host path. A path does not imply provider media understanding. Refused/unknown outcomes are errors carrying the receipt; do not blindly retry.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": { "type": "string", "description": TARGET_DESC },
+                    "path": { "type": "string", "minLength": 1, "description": "Local path on the calling MCP server filesystem." },
+                    "extension": { "type": "string", "pattern": "^[A-Za-z0-9]{1,16}$" },
+                    "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 3600, "description": "Overall resolution/read/upload deadline. Default 60 seconds." },
+                    "socket": { "type": "string" }
+                },
+                "required": ["target", "path"],
+                "additionalProperties": false
+            }
+        },
+        {
             "name": "phux_paste",
             "description": "Paste text into a pane as one paste event. The server adds bracketed-paste markers when the pane has DEC mode 2004 on, so multiline text lands intact (no per-character auto-indent). A paste inserts without submitting; follow with phux_send_keys Enter to run it.",
             "inputSchema": {
@@ -237,6 +253,7 @@ pub(crate) async fn dispatch(name: &str, args: &Value) -> Result<Value, ToolErro
         "phux_snapshot" => phux_snapshot(args).await,
         "phux_send_keys" => phux_send_keys(args).await,
         "phux_paste" => phux_paste(args).await,
+        "phux_upload" => phux_upload(args).await,
         "phux_run" => phux_run(args).await,
         "phux_wait" => phux_wait(args).await,
         "phux_new" => phux_new(args).await,
@@ -438,6 +455,69 @@ async fn phux_paste(args: &Value) -> Result<Value, ToolError> {
     let pane = resolve_one_for_input(&socket, &selector, &view).await?;
     phux_client::send_keys::paste_to(&socket, pane.clone(), text.into_bytes(), trust).await?;
     Ok(json!({ "sent": true, "pane": pane_value(&pane), "untrusted": untrusted }))
+}
+
+/// `phux_upload` — a managed in-process transfer, never a CLI subprocess.
+async fn phux_upload(args: &Value) -> Result<Value, ToolError> {
+    strict_object(
+        args,
+        &["target", "path", "extension", "timeout_secs", "socket"],
+        &["target", "path"],
+    )?;
+    let selector = required_target(args)?;
+    let path = crate::cli_adapter::bounded_string(args, "path", true)?
+        .ok_or_else(|| ToolError::new("missing `path`"))?;
+    if path.contains('\0') {
+        return Err(ToolError::new("`path` must not contain NUL"));
+    }
+    let extension = crate::cli_adapter::bounded_string(args, "extension", false)?;
+    if extension.as_deref().is_some_and(|ext| {
+        ext.is_empty() || ext.len() > 16 || !ext.bytes().all(|byte| byte.is_ascii_alphanumeric())
+    }) {
+        return Err(ToolError::new(
+            "`extension` must be 1–16 ASCII alphanumeric characters",
+        ));
+    }
+    let secs = args.get("timeout_secs").map_or(Ok(60), |value| {
+        value
+            .as_u64()
+            .filter(|secs| (1..=3600).contains(secs))
+            .ok_or_else(|| ToolError::new("`timeout_secs` must be an integer in 1..=3600"))
+    })?;
+    let socket = socket_arg(args)?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
+    let pane = tokio::time::timeout_at(deadline, async {
+        let view = state::get_state(&socket).await?;
+        resolve_one(&socket, &selector, &view).await
+    })
+    .await
+    .map_err(|_| {
+        ToolError::new("upload deadline elapsed during target resolution; no transfer started")
+    })??;
+    let receipt = phux_client::upload::upload_file(
+        phux_client_runtime::runtime::Target::uds(socket),
+        pane,
+        path.into(),
+        extension,
+        deadline.saturating_duration_since(tokio::time::Instant::now()),
+    )
+    .await
+    .map_err(|err| ToolError::new(err.to_string()))?;
+    upload_document(&receipt)
+}
+
+fn upload_document(receipt: &phux_client::upload::UploadReceipt) -> Result<Value, ToolError> {
+    let completed = receipt.outcome == phux_client::upload::UploadOutcome::Completed;
+    let document = json!({ "schema_version": 1, "receipt": receipt });
+    if completed {
+        Ok(document)
+    } else {
+        Err(ToolError::new(
+            json!({ "schema_version": 1, "receipt": receipt,
+            "warning": "do not blindly retry: some, all, or none of the bytes may have landed" })
+            .to_string(),
+        ))
+    }
 }
 
 /// `phux_run` — run a command in the pane named by the selector.
@@ -1444,5 +1524,76 @@ mod tests {
             .with_sessions(sessions)
             .with_windows(windows)
             .with_resources(panes)
+    }
+}
+
+#[cfg(test)]
+mod upload_tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
+    use super::*;
+
+    #[tokio::test]
+    async fn upload_rejects_invalid_options_before_wire_or_files() {
+        for bad in [
+            json!({"timeout_secs": 0}),
+            json!({"timeout_secs": 3601}),
+            json!({"timeout_secs": 1.5}),
+            json!({"timeout_secs": "1"}),
+            json!({"extension": "../x"}),
+            json!({"extension": ""}),
+            json!({"extension": "abcdefghijklmnopq"}),
+            json!({"path": ""}),
+            json!({"path": 12}),
+            json!({"path": "bad\u{0}path"}),
+            json!({"socket": 12}),
+            json!({"bogus": true}),
+        ] {
+            let mut args = json!({"target": "@1", "path": "/nonexistent/file", "socket": "/nonexistent/socket"});
+            args.as_object_mut()
+                .unwrap()
+                .extend(bad.as_object().unwrap().clone());
+            let error = dispatch("phux_upload", &args).await.unwrap_err();
+            assert!(
+                !error.0.contains("could not read upload file"),
+                "{}",
+                error.0
+            );
+            assert!(!error.0.contains("No such file"), "{}", error.0);
+        }
+    }
+
+    #[test]
+    fn upload_documents_preserve_exact_receipts_for_all_outcomes() {
+        use phux_client::upload::{UploadOutcome, UploadReceipt};
+        for outcome in [
+            UploadOutcome::Completed,
+            UploadOutcome::Refused,
+            UploadOutcome::Unknown,
+        ] {
+            let receipt = UploadReceipt {
+                terminal_id: phux_protocol::ResourceId::satellite("build", 7),
+                transfer_id: 42,
+                outcome,
+                path: (outcome == UploadOutcome::Completed).then(|| "/owner/file.bin".into()),
+                code: Some(3),
+                message: "detail".into(),
+            };
+            let expected = serde_json::to_value(&receipt).unwrap();
+            let result = upload_document(&receipt);
+            let doc = if outcome == UploadOutcome::Completed {
+                result.unwrap()
+            } else {
+                serde_json::from_str::<Value>(&result.unwrap_err().0).unwrap()
+            };
+            assert_eq!(doc["receipt"], expected);
+            if outcome != UploadOutcome::Completed {
+                assert!(
+                    doc["warning"]
+                        .as_str()
+                        .unwrap()
+                        .contains("do not blindly retry")
+                );
+            }
+        }
     }
 }

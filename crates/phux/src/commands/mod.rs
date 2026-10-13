@@ -211,7 +211,8 @@ pub(crate) fn verb_remote(command: &Command) -> Option<&str> {
         | Command::New { remote, .. }
         | Command::Kill { remote, .. }
         | Command::Rename { remote, .. }
-        | Command::Detach { remote, .. } => remote.remote.as_deref(),
+        | Command::Detach { remote, .. }
+        | Command::Upload { remote, .. } => remote.remote.as_deref(),
         _ => None,
     }
 }
@@ -303,6 +304,7 @@ pub(crate) mod theme;
 pub(crate) mod toml_registry;
 pub(crate) mod update;
 pub(crate) mod upgrade;
+pub(crate) mod upload;
 pub(crate) mod wait;
 // Stalled peers for the run/wait deadline tests.
 #[cfg(test)]
@@ -1696,6 +1698,34 @@ pub(crate) enum Command {
         /// Keys to send: named keys and/or literal strings, in order.
         #[usage(trailing_var_arg, required)]
         keys: Vec<String>,
+    },
+
+    /// Upload a local file without attaching or submitting input
+    #[usage(
+        help_heading = "Panes",
+        display_order = 24,
+        long_help = "Upload a file from this client's filesystem, not the pane cwd.
+
+Returns the authoritative path on the terminal-owning host (including satellites). Does not attach, resize, paste, or submit input. A wire path does not imply that an agent provider understands video or other media.
+
+Upload dials configured remote transports headlessly; it never pairs over SSH. The timeout covers resolution, reading, and upload. Completed prints the path; --json prints the receipt for completed, refused, or unknown outcomes. Refused and unknown exit nonzero: do not blindly retry."
+    )]
+    Upload {
+        /// Target selector: session, session:window.pane, @id, or `.`.
+        target: String,
+        /// File on this client's filesystem.
+        file: std::path::PathBuf,
+        /// Override the inferred extension (1–16 ASCII alphanumeric characters).
+        #[usage(long)]
+        extension: Option<String>,
+        /// Overall deadline in seconds, bounded to 1..=3600.
+        #[usage(long, default = "60", value_name = "SECS")]
+        timeout: u64,
+        /// Print the structured receipt on stdout, including non-success outcomes.
+        #[usage(long)]
+        json: bool,
+        #[usage(flatten)]
+        remote: RemoteOpt,
     },
 
     /// Paste text into a pane.

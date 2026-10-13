@@ -27,6 +27,7 @@ path = "src/main.rs"
 # that no `ratatui` reaches this graph. Protocol server conversions still use
 # libghostty.
 phux-client.workspace = true
+phux-client-runtime.workspace = true
 phux-config.workspace = true
 phux-plugin.workspace = true
 phux-protocol = { workspace = true, features = ["server"] }

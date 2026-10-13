@@ -1343,6 +1343,24 @@ fn dispatch(
         Some(Command::SendKeys { target, keys }) => {
             commands::send_keys::run_send_keys(&target, &keys, socket)
         }
+        Some(Command::Upload {
+            target,
+            file,
+            extension,
+            timeout,
+            json,
+            remote,
+        }) => commands::upload::run(
+            &target,
+            file,
+            extension,
+            timeout,
+            json,
+            commands::server_target::ServerSpec {
+                socket,
+                remote: remote.remote,
+            },
+        ),
         Some(Command::Paste {
             target,
             text,
