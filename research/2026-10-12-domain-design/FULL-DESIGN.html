@@ -22,7 +22,7 @@ main{max-width:1120px;padding:2rem 3rem 6rem;min-width:0}h1{font-size:clamp(2rem
 </head>
 <body>
 <header class="top"><div><span class="brand">PHUX / DOMAIN MODEL</span><span class="badge">PROPOSAL · DRAFT 3 · 12 OCTOBER 2026</span></div><div class="actions"><a href="DESIGN.html">Overview</a><button id="export" type="button">Export notes as Markdown</button><button id="print" type="button">Print / PDF</button><a href="FULL-DESIGN.md">Markdown source</a></div></header>
-<div class="shell"><nav aria-label="Sections"><p><strong>Domain Model</strong> · <a href="CONTRACTS.html">Contracts</a> · <a href="PLAN.html">Build Plan</a> · <a href="MIGRATION.html">Migration</a> · <a href="BROWSER-KIND.html">Browser Kind</a></p><div class="toc">
+<div class="shell"><nav aria-label="Sections"><p><strong>Domain Model</strong> · <a href="CONTRACTS.html">Contracts</a> · <a href="PLAN.html">Build Plan</a> · <a href="REFACTOR-MAP.html">Refactor Map</a> · <a href="MIGRATION.html">Migration</a> · <a href="BROWSER-KIND.html">Browser Kind</a></p><div class="toc">
 <div class="toc">
 <ul>
 <li><a href="#phux-domain-model-resources-sessions-workspaces-actors">Phux domain model: resources, sessions, workspaces, actors</a><ul>
@@ -84,6 +84,10 @@ main{max-width:1120px;padding:2rem 3rem 6rem;min-width:0}h1{font-size:clamp(2rem
 <tr>
 <td><a href="PLAN.html">PLAN.md</a></td>
 <td>Seven staged PR series with gates and proofs.</td>
+</tr>
+<tr>
+<td><a href="REFACTOR-MAP.html">REFACTOR-MAP.md</a></td>
+<td>The one-sweep implementation: binding decisions, phases, twelve lanes, file-level changes, gates.</td>
 </tr>
 <tr>
 <td><a href="BROWSER-KIND.html">BROWSER-KIND.md</a></td>
@@ -744,12 +748,12 @@ Completed | Failed | (Lost, once proven inactive) ── relaunch ──► new 
 <li>Does the TUI keep tmux's "kill window kills its panes"? <a href="MIGRATION.html#03-tui-and-tmux-verbs">MIGRATION.md</a> proposes a confirmed terminate of the group, never an implied one.</li>
 </ul>
 <p><strong>Review format:</strong> cite a section or decision, then state the change. "D09: agents get own-terminal-only by default." "§06: delete should offer move first."</p>
-<p class="footer">Generated from FULL-DESIGN.md by build.py. No external scripts, fonts, analytics, or network requests. Source SHA-256: <code>36718c7a8d95f576e37965fb2772c4f385afc3a3fe00be4f1950e9c398677767</code>.</p>
+<p class="footer">Generated from FULL-DESIGN.md by build.py. No external scripts, fonts, analytics, or network requests. Source SHA-256: <code>a5f26e491156464309e1989d6e38a6ac8a4e6b69a3cb60964f5c41356705b881</code>.</p>
 </main></div>
 <script>
 
 const storageKey = "phux-domain-review-2026-10-12-v1";
-const sourceLabel = "FULL-DESIGN.md, Draft 3 \u00b7 12 October 2026, sha256 36718c7a8d95f576e37965fb2772c4f385afc3a3fe00be4f1950e9c398677767";
+const sourceLabel = "FULL-DESIGN.md, Draft 3 \u00b7 12 October 2026, sha256 a5f26e491156464309e1989d6e38a6ac8a4e6b69a3cb60964f5c41356705b881";
 let notes = {};
 let storageAvailable = true;
 try { notes = JSON.parse(localStorage.getItem(storageKey) || '{}'); }

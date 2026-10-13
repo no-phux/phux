@@ -47,4 +47,4 @@ One resource has one session and one owner. Sessions may appear in several works
 
 **Proposed design, not shipped behavior.**
 
-[Open the visual and leave notes](DESIGN.html) · [Domain model](FULL-DESIGN.md) · [Contracts](CONTRACTS.md) · [Build plan](PLAN.md) · [Migration](MIGRATION.md) · [Browser kind](BROWSER-KIND.md)
+[Open the visual and leave notes](DESIGN.html) · [Domain model](FULL-DESIGN.md) · [Contracts](CONTRACTS.md) · [Build plan](PLAN.md) · [Refactor map](REFACTOR-MAP.md) · [Migration](MIGRATION.md) · [Browser kind](BROWSER-KIND.md)
