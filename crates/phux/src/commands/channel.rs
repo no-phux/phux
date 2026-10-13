@@ -20,6 +20,7 @@ pub(crate) fn run(channel: Option<Channel>, json: bool, socket: Option<PathBuf>)
             channel,
             rollback: false,
             no_restart: false,
+            close_agent_sessions: false,
             json,
         },
         socket,

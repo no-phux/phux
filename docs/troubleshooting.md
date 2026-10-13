@@ -38,7 +38,8 @@ it cannot revive the old ones.
 3. Update through the install's owner. `phux update` does not overwrite
    Homebrew or Nix installs; see the [update procedure](./INSTALL.md#updating).
 4. If the binary is correct but the running server is older, run `phux doctor`
-   and follow the [version-skew procedure](./operations.md#upgrades-and-version-skew).
+   and follow the [version-skew procedure](./operations.md#upgrades-and-version-skew),
+   which also covers an `upgrade refused` handoff.
 
 **Success:** the intended binary runs and diagnostics no longer report
 unexpected server skew. Protocol and package versions are different numbers.

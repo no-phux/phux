@@ -1419,8 +1419,21 @@ pub(crate) enum Command {
     /// low-level primitive: it re-execs whatever is already on disk and
     /// downloads nothing. `phux update` is the command that puts a new binary
     /// there first.
+    ///
+    /// A refusal the server marks as a passing race (its tree changed, a pane
+    /// is still being reaped, the handoff deadline elapsed) is retried a few
+    /// times over about five seconds. A server older than agent-session-safe
+    /// handoff refuses while any agent session exists; on a terminal this
+    /// offers to close them and retry, otherwise it prints the commands.
     #[usage(help_heading = "Maintain", display_order = 57)]
-    Upgrade {},
+    Upgrade {
+        /// When an older server refuses because agent sessions exist, close
+        /// them (`phux agent session close`) and retry without asking.
+        /// Panes and agent processes keep running; only the closed sessions'
+        /// event logs end.
+        #[usage(long)]
+        close_agent_sessions: bool,
+    },
 
     /// Rename a session
     ///

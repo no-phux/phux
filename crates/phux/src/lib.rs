@@ -1252,7 +1252,9 @@ fn dispatch(
             commands::channel::run(channel, json.json, socket)
         }
         Some(Command::Cockpit { json }) => commands::cockpit::run(json.json),
-        Some(Command::Upgrade {}) => commands::upgrade::run_upgrade(socket),
+        Some(Command::Upgrade {
+            close_agent_sessions,
+        }) => commands::upgrade::run_upgrade(socket, close_agent_sessions),
         Some(Command::Rename {
             session,
             new_name,
