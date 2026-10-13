@@ -563,8 +563,8 @@ fn retained_handle_recovers_arrangement_catalog_and_seed_terminal_after_restart(
             );
             assert_eq!(
                 (info.group_count, info.unarranged_count, info.terminal_count),
-                (0, 1, 1),
-                "the seed terminal runs unarranged; no arrangement is synthesized"
+                (1, 0, 1),
+                "the server arranges the launched seed terminal in one group"
             );
             let mut catalog = PhuxCatalogTerminal::default();
             let mut listed_session = PhuxSessionInfo::default();
@@ -584,8 +584,9 @@ fn retained_handle_recovers_arrangement_catalog_and_seed_terminal_after_restart(
             assert_eq!(terminal.kind, 0);
             if let Some(previous) = previous_terminal {
                 assert_eq!(terminal.id, previous, "restart reuses the seed resource ID");
-                assert_eq!(
-                    info.group_count, 0,
+                assert_ne!(
+                    copy_span(arrangement_window(client.0).name),
+                    "retired-layout",
                     "the old server's arrangement retired with it"
                 );
             }
@@ -607,8 +608,8 @@ fn retained_handle_recovers_arrangement_catalog_and_seed_terminal_after_restart(
                     request_id: 1,
                     expected_revision: info.revision,
                     session_id: info.session_id,
-                    kind: 1,
-                    terminal_id: terminal,
+                    kind: 6,
+                    group_id: arrangement_window(client.0).group_id,
                     name: span("retired-layout"),
                     ..PhuxArrangementMutation::default()
                 };
