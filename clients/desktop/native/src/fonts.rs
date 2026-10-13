@@ -1,5 +1,5 @@
 //! Embedded terminal fonts, registered before native views measure or paint.
-use gpuix_native::native_extensions::gpui;
+use gpui::{self, App, Font};
 use std::borrow::Cow;
 use std::collections::HashSet;
 
@@ -10,7 +10,7 @@ pub const BUNDLED: &str = "Paper Mono";
 struct Registered(HashSet<String>);
 impl gpui::Global for Registered {}
 
-pub fn install(cx: &mut gpui::App) {
+pub fn install(cx: &mut App) {
     if cx.has_global::<Registered>() {
         return;
     }
@@ -29,11 +29,11 @@ pub fn install(cx: &mut gpui::App) {
 /// A family the system lacks would resolve to gpui's proportional fallback
 /// (Helvetica): wide cells, narrow glyphs. Ghostty configs often name
 /// "JetBrains Mono", which Ghostty embeds but macOS does not install.
-pub fn resolve(font: &mut gpui::Font, cx: &gpui::App) {
+pub fn resolve(font: &mut Font, cx: &App) {
     substitute(font, &cx.global::<Registered>().0);
 }
 
-fn substitute(font: &mut gpui::Font, families: &HashSet<String>) {
+fn substitute(font: &mut Font, families: &HashSet<String>) {
     if font.family != BUNDLED && !families.contains(font.family.as_ref()) {
         font.family = BUNDLED.into();
     }

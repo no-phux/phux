@@ -1,6 +1,6 @@
 use std::{cell::RefCell, rc::Rc, sync::Arc, time::Instant};
 
-use super::{GridFrame, Settings, geometry::Geometry, gpui};
+use super::{Settings, geometry::Geometry};
 use gpui::prelude::*;
 use gpui::{
     Bounds, ContentMask, FontFeatures, FontId, GlyphId, Hsla, Pixels, ShapedLine, SharedString,
@@ -10,9 +10,9 @@ use phux_client_core::grid::{
     CELL_BLINK, CELL_BOLD, CELL_FAINT, CELL_INVERSE, CELL_INVISIBLE, CELL_ITALIC, CELL_OVERLINE,
     CELL_SELECTED, CELL_STRIKETHROUGH, COLOR_KIND_DEFAULT, COLOR_KIND_PALETTE,
 };
-use phux_client_runtime::publication::{Cell, CellMetadata, CursorStyle, CursorWidth, Rgb};
+use phux_client_runtime::publication::{Cell, CellMetadata, CursorStyle, CursorWidth, GridFrame, Rgb};
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Observation {
     pub view_id: Option<phux_client_runtime::ViewId>,
     pub frame: Option<Arc<GridFrame>>,
@@ -183,7 +183,7 @@ pub(super) fn prepare(
     let started = Instant::now();
     let mut prepared = Prepared {
         report: Observation {
-            view_id: settings.view_id,
+            view_id: None,
             ..Default::default()
         },
         fallback: settings.background.unwrap_or_else(gpui::black),
@@ -991,7 +991,7 @@ mod tests {
 
     fn frame() -> GridFrame {
         GridFrame {
-            terminal_id: phux_client_ffi::projection::id::parse("local:1").expect("fixture id"),
+            terminal_id: phux_protocol::ResourceId::local(1),
             generation: 1,
             stream_id: 1,
             bootstrap_id: 1,
@@ -1077,9 +1077,8 @@ mod tests {
         let same = Arc::clone(&scene.frame);
         let bounds = scene.bounds;
         assert!(scene.reusable(&same, bounds, 1., &settings));
-        // Invalidation tokens and props the painter never reads keep it.
+        // Input policy and sizing do not change a prepared scene.
         let mut unpainted = settings.clone();
-        unpainted.set("paintRevision", &serde_json::json!(7));
         unpainted.size_owner = false;
         unpainted.option_as_alt = true;
         unpainted.app_chords = vec!["ctrl+tab".into()];
@@ -1095,9 +1094,9 @@ mod tests {
             |settings| settings.focused = false,
             |settings| settings.cursor_visible = false,
             |settings| settings.blink_visible = false,
-            |settings| settings.set("theme", &serde_json::json!({"foreground": "#123456"})),
-            |settings| settings.set("font", &serde_json::json!({"family": "Monaco"})),
-            |settings| settings.set("font", &serde_json::json!({"cellWidth": 1.1})),
+            |settings| settings.foreground = Some(gpui::rgb(0x123456).into()),
+            |settings| settings.font = gpui::font("Monaco"),
+            |settings| settings.cell_width_scale = 1.1,
         ];
         for change in changes {
             let mut changed = settings.clone();

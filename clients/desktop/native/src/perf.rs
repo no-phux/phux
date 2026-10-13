@@ -18,7 +18,6 @@
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use napi_derive::napi;
 use phux_perf::{Counter, Histogram, Metric, Unit};
 
 /// Terminal element renders: one per element per window draw.
@@ -67,7 +66,6 @@ fn started() -> Instant {
 
 /// Kernel, runtime and desktop rows as one `PerfReport` JSON, counted since
 /// the host loaded. Process-wide: every window and connection shares them.
-#[napi]
 #[must_use]
 pub fn desktop_perf_json() -> String {
     let mut report = phux_client_core::perf::report(started().elapsed());

@@ -1,50 +1,52 @@
 ---
 audience: agents, contributors
 stability: evolving
-last-reviewed: 2026-10-10
+last-reviewed: 2026-10-13
 ---
 
 # Native terminal input
 
-**TL;DR.** `input::TerminalInput` is a GPUI `EntityInputHandler` backed by the
-existing FFI client registry and an actual runtime `ViewId`;
-`terminal/input_host.rs` wires it into the painter. Its manual fixture is
-test-only: shipping builds must not enable `input-fixture`.
+**TL;DR.** `input::TerminalInput` is a GPUI `EntityInputHandler` holding
+`Weak<Client>` and an actual runtime `ViewId`. The terminal view wires it.
+There is no string registry and no second listener.
 
 ## Wiring contract
 
-- One `Entity<TerminalInput>` and one `FocusHandle` per mounted element, never
-  shared across views or windows; recreate on binding change, drop on destroy.
-  Native focus, not the JS `focused` prop, authorizes input. Blur cancels the
-  platform composition as well as local state.
-- After a successful paint, `presented` receives the painted frame and the
-  painter's geometry and cursor bounds. Never re-measure fonts or use JS cell
-  sizes. A different connection epoch or replica identity is permanently
-  rejected on a bound entity, so an old IME callback cannot re-arm; viewport
-  changes reject actions until matching geometry is painted.
+- One `Entity<TerminalInput>` per mounted view, never shared across views or
+  windows. The view owns the `FocusHandle` and passes it in. A rejected
+  presentation (connection epoch or replica identity change) replaces the
+  input entity so an old IME callback cannot re-arm; the focus handle stays.
+  Native focus, not a JSON prop, authorizes input. Blur cancels the platform
+  composition as well as local state.
+- After a successful paint, `presented_at` receives the painted frame, the
+  epoch the painter already proved, and the painter's geometry and cursor
+  bounds. Never re-measure fonts. A different connection epoch or replica
+  identity is permanently rejected on that entity. Viewport changes reject
+  actions until matching geometry is painted.
 - Key events: `Consumed` and admission errors stop propagation; `Platform`
-  reaches native text/menu handling. Text-producing and dead keys defer
+  reaches native text and menu handling. Command/platform chords are
+  `Platform` and are not sent to the PTY. Non-Command `app_chords` return
+  before input so the window can run them. Text-producing and dead keys defer
   key-down until the platform commits text. Control characters, including
-  Enter's newline and Tab's tab character on macOS, send key atoms on key-down
-  instead of waiting for a text callback. Control/Option-as-Alt keys also send
-  on key-down. JS never sends a second text event.
+  Enter's newline and Tab's tab character on macOS, send key atoms on key-down.
+  Control/Option-as-Alt keys also send on key-down.
 - Pointer and scroll use the painter's hitbox and GPUI capture so releases and
   drags reach the originating view. Initial hits in grid padding are rejected.
-- Copy/Paste bind to `copy_selection` and `paste_text`. A clipboard paste is
-  the user's own action, so it is trusted (as a DEC 2004 paste reaching the
-  TUI is): the server brackets it and never refuses multi-line text. One that
-  fits a single `APPLY_INPUT` is acknowledged; a larger one, or one for a
-  satellite pane, goes as one atomic `INPUT_PASTE` event and is never split
-  (input.md §5.1). A paste correlation is not delivery confirmation; outcomes
-  stay with the sole FFI event owner, and the shell shows a refusal.
+- Copy/Paste bind to `copy_selection` and `paste_text`. `Terminal::request`
+  runs Copy, Paste, CopyText and Open once on this entity, without a keyboard
+  focus check, and does not retain the action for a later render. A clipboard
+  paste is the user's own action, so it is trusted. One that fits a single
+  `APPLY_INPUT` is acknowledged; a larger one, or one for a satellite pane,
+  goes as one atomic `INPUT_PASTE` and is never split. Outcomes stay with the
+  connection's event drain.
 
 ## Admission and semantics
 
-Every action resolves `phux_client_ffi::napi::initialize().client(handle)`;
-there is no second registry, listener, socket or event drain. Under one
-`Client::with_control` closure admission checks view membership, publication
-and replica identity, connection epoch, painted dimensions, viewer role and
-runtime readiness/delivery fencing, then queues the operation.
+Every action upgrades `Weak<Client>`. A dropped client is `StaleHandle` and
+does not join the runtime on the UI thread. Under one `Client::with_control`
+closure admission checks view membership, publication and replica identity,
+connection epoch, painted dimensions, viewer role and runtime readiness, then
+queues the operation.
 
 Local selection, copy and scroll need current identity and focus but not input
 ownership. Shift at press selects locally instead of reporting the mouse; a
@@ -54,35 +56,15 @@ reports are capped at 100 ticks per event.
 
 Clipboard copy uses the runtime's bounded selection API (1 MiB cap) and never
 copies a truncated string. The editable text model holds only pending IME text
-(4096 UTF-8 bytes); terminal output is never advertised as a document. UTF-16
-ranges snap to complete graphemes. Candidate bounds are the painted cursor
-rectangle.
+(4096 UTF-8 bytes). UTF-16 ranges snap to complete graphemes. Candidate bounds
+are the painted cursor rectangle.
 
 ## Limits
 
 GPUI `Keystroke` exposes layout-resolved names, not scan codes, modifier sides
 or Num Lock, so layout-independent physical keys and keypad fidelity are **not
-qualified**. Option-as-Alt defaults off (`set_option_as_alt`). Manual acceptance
-remains for real OS IMEs (CJK, dead keys), candidate placement under scale
-changes, focus loss mid-composition, menus, cross-app clipboard, VoiceOver and
-hardware layouts. Selection autoscroll, search UI and link activation are not
-implemented here.
-
-## Reproduce the fixture
-
-The fixture drives GPUIX's offscreen Metal renderer, the shared `DesktopClient`,
-a real PTY-backed server and a raw-input recorder. Mark/commit callbacks are
-injected into the real `EntityInputHandler`; they are not OS IME sessions, and
-`input-fixture` simulates window activation because offscreen windows are
-inactive.
-
-1. In `src/lib.rs`, temporarily add
-   `#[cfg(feature = "input-fixture")] #[path = "../../tests/native/input_fixture.rs"] mod input_fixture;`
-   and call `input_fixture::install(registry)` in the extension installer.
-2. Temporarily add `phux-server-testkit`, `tempfile`, `tokio` (`process`,
-   `time`) and `portable-pty` dev-dependencies plus an `[[example]]` named
-   `input_server` at `../tests/native/input_server.rs`.
-3. With the Apple environment helper, the repo Rust pin and a private target,
-   build the host and `input_server` with `--features input-fixture`, copy the
-   host dylib to a `.node` file, and run `input_server /absolute/input.node`.
-4. Restore the temporary wiring.
+qualified**. Option-as-Alt defaults off. Manual acceptance remains for real OS
+IMEs (CJK, dead keys), candidate placement under scale changes, focus loss
+mid-composition, menus, cross-app clipboard, VoiceOver and hardware layouts.
+Selection autoscroll and search UI are not implemented here. Link activation
+is the view's Command-click.
