@@ -9,9 +9,8 @@ use phux_protocol::wire::frame::{
 };
 use phux_protocol::wire::info::SessionSnapshot;
 
-use crate::agent_meta::{RESOURCE_AGENT_KEY, parse_agent_record};
 use crate::attach::AttachError;
-use crate::attach::connection::{Answer, Connection};
+use crate::attach::connection::Connection;
 use crate::selector::{
     self, AgentIndex, AgentResolveError, AgentTarget, Arrangements, ResolveContext, Selector,
     TagIndex,
@@ -402,33 +401,35 @@ pub async fn fetch_tag_index(conn: &mut Connection, snapshot: &SessionSnapshot) 
 /// Unlike [`fetch_tag_index`], a transport failure or refused read returns
 /// [`AgentIndex::partial`]; a missing or invalid record is a definite absence.
 pub async fn fetch_agent_index(conn: &mut Connection, snapshot: &SessionSnapshot) -> AgentIndex {
+    let panes: Vec<&ResourceId> = crate::resource::terminals(snapshot)
+        .map(|pane| &pane.id)
+        .collect();
+    let Ok((answers, degradation)) = crate::agent_record::get_records(conn, &panes, 1).await else {
+        return AgentIndex::partial(std::collections::HashMap::new());
+    };
+    for message in degradation.notices() {
+        tracing::warn!(
+            %message,
+            "server reported partial state: a federated satellite contributed nothing",
+        );
+    }
     let mut records = std::collections::HashMap::new();
-    for (offset, pane) in crate::resource::terminals(snapshot).enumerate() {
-        let request_id = u32::try_from(offset).unwrap_or(u32::MAX).saturating_add(1);
-        let Ok(reply) = conn
-            .request_metadata(
-                request_id,
-                Scope::Resource(pane.id.clone()),
-                RESOURCE_AGENT_KEY.to_owned(),
-            )
-            .await
-        else {
-            return AgentIndex::partial(records);
-        };
-        let (answer, interleaved) = reply.into_parts();
-        report_degradation(&interleaved);
+    let mut complete = true;
+    for (pane, answer) in panes.into_iter().zip(answers) {
         match answer {
-            Answer::Ok(Some(bytes)) => {
-                if let Some(record) = parse_agent_record(&bytes) {
-                    records.insert(pane.id.clone(), record);
-                }
+            Ok(Some(record)) => {
+                records.insert(pane.clone(), record);
             }
-            Answer::Ok(None) => {}
+            Ok(None) => {}
             // A refusal is not "no record": the pane was not looked at.
-            Answer::Err(_) => return AgentIndex::partial(records),
+            Err(_) => complete = false,
         }
     }
-    AgentIndex::complete(records)
+    if complete {
+        AgentIndex::complete(records)
+    } else {
+        AgentIndex::partial(records)
+    }
 }
 
 /// Resolve `%name` on an open connection: build the index on `conn`, then
