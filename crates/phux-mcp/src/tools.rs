@@ -584,13 +584,7 @@ async fn phux_kill(args: &Value) -> Result<Value, ToolError> {
 /// outcome, then the session's own.
 pub(crate) fn kill_report_document(report: &phux_client::org::KillReport) -> Value {
     use phux_client::org::{SessionOutcome, TargetOutcome};
-    fn key(text: &str) -> String {
-        format!(
-            "^{}",
-            text.get(..phux_protocol::ids::KEY_MIN_PREFIX)
-                .unwrap_or(text)
-        )
-    }
+    let names = phux_client::kill::report_key_names(report);
     let targets: Vec<Value> = report
         .targets
         .iter()
@@ -605,7 +599,7 @@ pub(crate) fn kill_report_document(report: &phux_client::org::KillReport) -> Val
                 TargetOutcome::TimedOut => ("timed_out", None),
                 TargetOutcome::NoLiveTarget => ("no_live_target", None),
             };
-            json!({ "key": key(&member.to_string()), "result": result, "detail": detail })
+            json!({ "key": names.display(*member.as_bytes()), "result": result, "detail": detail })
         })
         .collect();
     let (session, detail) = match &report.session_outcome {
@@ -618,7 +612,7 @@ pub(crate) fn kill_report_document(report: &phux_client::org::KillReport) -> Val
         SessionOutcome::Unknown(reason) => ("unknown", Some(reason.clone())),
     };
     json!({
-        "session": key(&report.session.to_string()),
+        "session": names.display(*report.session.as_bytes()),
         "session_result": session,
         "session_detail": detail,
         "targets": targets,

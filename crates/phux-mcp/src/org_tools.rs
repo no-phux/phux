@@ -7,9 +7,8 @@
 //! one Terminal and then to the record executing as it.
 
 use phux_client::attach::connection::Connection;
-use phux_client::org::{self, KeyMatch, OrgError, OrgInventory};
+use phux_client::org::{self, KeyMatch, KeyNames, OrgError, OrgInventory};
 use phux_client::selector::Selector;
-use phux_protocol::ids::KEY_MIN_PREFIX;
 use phux_protocol::wire::frame::{Committed, OrgFilter, ResourceRecord, SessionRecord};
 use serde_json::{Value, json};
 
@@ -121,9 +120,10 @@ async fn resolve(
         .ok_or_else(|| ToolError::new(format!("{text} has no record on this server")))
 }
 
-fn key_text(key: &impl std::fmt::Display) -> String {
-    let text = key.to_string();
-    format!("^{}", text.get(..KEY_MIN_PREFIX).unwrap_or(&text))
+/// `^` and the shortest prefix of `key` no other record of `inventory`
+/// shares, the display `phux rm` and `phux relaunch` print ([`KeyNames`]).
+fn key_text(inventory: &OrgInventory, key: [u8; 16]) -> String {
+    KeyNames::of_inventory(inventory).display(key)
 }
 
 fn document(verb: &str, target: &str, key: &str, committed: &Committed) -> Value {
@@ -154,11 +154,11 @@ async fn rm(args: &Value) -> Result<Value, ToolError> {
     let (result, key) = match resolve(&mut conn, &inventory, &target, "rm").await? {
         Target::Session(record) => (
             org::delete_session(&mut conn, record.key).await,
-            key_text(&record.key),
+            key_text(&inventory, *record.key.as_bytes()),
         ),
         Target::Resource(record) => (
             org::remove_resource(&mut conn, record.key).await,
-            key_text(&record.key),
+            key_text(&inventory, *record.key.as_bytes()),
         ),
     };
     drop(conn);
@@ -182,7 +182,7 @@ async fn relaunch(args: &Value) -> Result<Value, ToolError> {
             )));
         }
     };
-    let key = key_text(&record.key);
+    let key = key_text(&inventory, *record.key.as_bytes());
     let result = org::relaunch(&mut conn, record.key).await;
     drop(conn);
     let committed = result.map_err(|err| org_error("relaunch", &err))?;
@@ -209,10 +209,29 @@ mod tests {
     }
 
     #[test]
-    fn keys_render_as_the_six_digit_prefix() {
-        let key = phux_protocol::ids::ResourceKey::new([9; 16]).expect("non-zero");
-        let text = key_text(&key);
-        assert_eq!(text.len(), 1 + KEY_MIN_PREFIX);
-        assert!(text.starts_with('^'));
+    fn report_keys_render_as_their_shortest_unique_prefix() {
+        use phux_client::org::{KillReport, SessionOutcome, TargetOutcome};
+        use phux_protocol::ids::{ResourceKey, SessionKey};
+        let mut near = [7; 16];
+        near[15] = 8;
+        let a = ResourceKey::new([7; 16]).expect("non-zero");
+        let b = ResourceKey::new(near).expect("non-zero");
+        let session = SessionKey::new([200; 16]).expect("non-zero");
+        let report = KillReport {
+            session,
+            targets: vec![(a, TargetOutcome::Removed), (b, TargetOutcome::Removed)],
+            session_outcome: SessionOutcome::Deleted,
+        };
+        let document = crate::tools::kill_report_document(&report);
+        let shown = |value: &Value| value.as_str().expect("key text").to_owned();
+        let (ka, kb) = (
+            shown(&document["targets"][0]["key"]),
+            shown(&document["targets"][1]["key"]),
+        );
+        assert_ne!(ka, kb, "two keys that share six digits must still differ");
+        assert!(ka.len() > 1 + 6 && kb.len() > 1 + 6, "{ka} {kb}");
+        assert!(a.to_string().starts_with(&ka[1..]), "{ka}");
+        assert!(b.to_string().starts_with(&kb[1..]), "{kb}");
+        assert_eq!(shown(&document["session"]).len(), 1 + 6);
     }
 }
