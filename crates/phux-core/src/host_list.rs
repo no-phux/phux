@@ -96,6 +96,9 @@ mod tests {
                     attached_clients: 0,
                     keep_empty: false,
                     empty: false,
+                    lifetime: None,
+                    members: 0,
+                    exec: crate::session_list::ExecCounts::default(),
                 }],
             },
             HostJson {
