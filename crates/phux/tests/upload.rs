@@ -6,6 +6,8 @@
     reason = "tests"
 )]
 mod common;
+#[path = "common/listeners.rs"]
+mod listeners;
 #[path = "common/runner.rs"]
 mod runner;
 
@@ -258,4 +260,181 @@ fn mcp_upload_calls_keep_completed_refused_and_unknown_receipts() {
             );
         }
     }
+}
+
+#[test]
+#[ignore = "two private servers and real MCP; build phux-mcp and set PHUX_TEST_MCP_BIN"]
+fn cli_and_mcp_upload_to_satellite_retain_only_on_owner_without_terminal_mutations() {
+    let dir = tempfile::tempdir().unwrap();
+    let leaf_root = dir.path().join("leaf-uploads");
+    let hub_root = dir.path().join("hub-uploads");
+    let input_log = dir.path().join("terminal-input");
+    let leaf = ServerGuard::builder("upload-leaf")
+        .env_clear()
+        .env("PHUX_UPLOAD_DIR", &leaf_root)
+        .env("PHUX_WS_ADDR", listeners::LOOPBACK_ANY_PORT)
+        .seed_command(format!("/bin/sh -c 'cat > {}'", input_log.display()))
+        .start();
+    let addr =
+        listeners::bound_listener_addr(&leaf.socket, listeners::RemoteListenerTransport::Wss);
+    let config = dir.path().join("hub-config");
+    std::fs::create_dir_all(config.join("phux")).unwrap();
+    std::fs::write(
+        config.join("phux/config.toml"),
+        format!("[[satellites]]\nname = \"leaf\"\nendpoint = \"ws://{addr}\"\n"),
+    )
+    .unwrap();
+    let hub = ServerGuard::builder("upload-hub")
+        .env_clear()
+        .env("XDG_CONFIG_HOME", &config)
+        .env("PHUX_UPLOAD_DIR", &hub_root)
+        .seed_command("/bin/cat")
+        .start_with(|cmd| {
+            cmd.arg("--hub");
+        });
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let leaf_before = rt
+        .block_on(phux_client::state::get_state(&leaf.socket))
+        .unwrap();
+    let owner = phux_protocol::ResourceId::satellite(
+        "leaf",
+        leaf_before.snapshot().focused_resource.local_id().unwrap(),
+    );
+    // Wait for inventory, never retry an upload: a missing link is a fixture
+    // readiness condition, while a transfer with uncertain completion is not.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let hub_before = loop {
+        let view = rt
+            .block_on(phux_client::state::get_state(&hub.socket))
+            .unwrap();
+        if view.snapshot().resources.iter().any(|row| row.id == owner) {
+            break view;
+        }
+        assert!(std::time::Instant::now() < deadline, "leaf never linked");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let source = dir.path().join("source.bin");
+    let data = vec![0x71; phux_protocol::wire::frame::MAX_FILE_UPLOAD_CHUNK + 31];
+    std::fs::write(&source, &data).unwrap();
+    let target = owner.to_string();
+    let cli: Value = serde_json::from_str(&hub.success(&[
+        "upload",
+        &target,
+        source.to_str().unwrap(),
+        "--json",
+    ]))
+    .unwrap();
+    assert_owner_upload(&cli, &owner, &leaf_root, &data);
+    let mcp = satellite_mcp_upload(&hub, &target, &source);
+    assert_owner_upload(&mcp, &owner, &leaf_root, &data);
+    assert_two_retained_artifacts(&leaf_root, &data);
+    assert!(
+        !hub_root.exists() || std::fs::read_dir(&hub_root).unwrap().next().is_none(),
+        "gateway must not retain a duplicate artifact"
+    );
+    for (server, before) in [(&leaf, leaf_before), (&hub, hub_before)] {
+        let after = rt
+            .block_on(phux_client::state::get_state(&server.socket))
+            .unwrap();
+        assert_eq!(
+            before.snapshot(),
+            after.snapshot(),
+            "upload changed attached clients, grid, input lease or resources"
+        );
+    }
+    assert_eq!(
+        std::fs::metadata(&input_log).unwrap().len(),
+        0,
+        "upload injected terminal input"
+    );
+    let pids = [hub.pid(), leaf.pid()];
+    let sockets = [hub.socket.clone(), leaf.socket.clone()];
+    drop(hub);
+    drop(leaf);
+    for pid in pids {
+        assert!(!common::process_exists(pid), "test server {pid} leaked");
+    }
+    for socket in sockets {
+        assert!(!socket.exists(), "test socket leaked: {}", socket.display());
+    }
+}
+
+fn assert_two_retained_artifacts(root: &std::path::Path, data: &[u8]) {
+    let artifacts: Vec<_> = std::fs::read_dir(root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            if path
+                .file_name()
+                .unwrap()
+                .as_encoded_bytes()
+                .starts_with(b".")
+            {
+                assert_eq!(
+                    path.extension().unwrap(),
+                    "meta",
+                    "no partial upload remains"
+                );
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+    assert_eq!(artifacts.len(), 2, "one retained artifact per invocation");
+    for path in artifacts {
+        assert_eq!(std::fs::read(path).unwrap(), data);
+    }
+}
+
+fn assert_owner_upload(
+    document: &Value,
+    owner: &phux_protocol::ResourceId,
+    root: &std::path::Path,
+    data: &[u8],
+) {
+    assert_eq!(document["receipt"]["outcome"], "completed");
+    assert_eq!(
+        document["receipt"]["terminal_id"],
+        serde_json::to_value(owner).unwrap()
+    );
+    let path = std::path::Path::new(document["receipt"]["path"].as_str().unwrap());
+    assert!(path.starts_with(root), "receipt must name the owner's path");
+    assert_eq!(std::fs::read(path).unwrap(), data);
+}
+
+fn satellite_mcp_upload(server: &ServerGuard, target: &str, source: &std::path::Path) -> Value {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::Stdio;
+    let mcp = std::env::var("PHUX_TEST_MCP_BIN").expect("explicit checkout MCP binary");
+    let mut cmd = common::phux_cmd(mcp);
+    server.xdg.apply(&mut cmd);
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    writeln!(input, "{}", serde_json::json!({"jsonrpc":"2.0", "id":1, "method":"tools/call", "params":{"name":"phux_upload", "arguments":{"target":target, "path":source, "socket":server.socket, "timeout_secs":30}}})).unwrap();
+    let mut reader = BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    assert!(
+        reader.read_line(&mut line).unwrap() > 0,
+        "MCP ended before reply"
+    );
+    drop(input);
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let reply: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(reply["id"], 1);
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
 }
