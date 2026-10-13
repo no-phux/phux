@@ -257,7 +257,7 @@ Phase E  integration (one writer) ───────────────�
 <li><strong>L2 protocol types</strong> (<code>crates/phux-protocol</code>), encodings included:
    - <code>ids.rs</code>: key types through a <code>key16!</code> macro; <code>OperationId</code> aliases the existing <code>IdempotencyKey</code> (<code>ids.rs:159</code>).
    - <code>caps.rs:1058-1078</code>: <code>ServerFeatureExt::ORGANIZATION = 0x10</code> (0x8 is <code>AGENT_STREAM_RESUME</code>, ADR-0159), plus <code>wire_name()</code> and <code>ALL</code>.
-   - <code>wire/frame/command.rs</code>, <code>mod.rs</code>, <code>command_codec.rs</code>, <code>field.rs</code>: command tags <code>0x1e</code>-<code>0x2b</code> (§05 L2); event tags <code>0x0f</code> onward; result tag <code>0x03</code>; value tags <code>0x06</code> onward; names capped at 256 bytes, arrangements at 64 KiB.
+   - <code>wire/frame/command.rs</code>, <code>mod.rs</code>, <code>command_codec.rs</code>, <code>field.rs</code>: command tags <code>0x1e</code>-<code>0x2b</code> (§05 L2); event tags <code>0x10</code> onward (<code>0x0f</code> is main's <code>input_activity</code>); result tag <code>0x03</code>; value tags <code>0x06</code> onward; names capped at 256 bytes, arrangements at 64 KiB.
    - <code>payload.rs</code>, <code>codec.rs</code>: R09.
    - <code>info.rs</code>: <code>ResourceInfo.session</code> (R05) and <code>SessionInfo</code> lifetime in extension fields 3 and 4.
    - <code>kinds.rs</code>, <code>scope.rs</code>, <code>kinds/samples.rs</code>: R07, new <code>Subject</code> variants, rules, <code>MethodSpec</code> with the first <code>FeaturesExt</code> gate.

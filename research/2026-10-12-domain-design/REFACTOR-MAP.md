@@ -89,7 +89,7 @@ One writer, in this order. The output is the frozen interface every lane builds 
 3. **L2 protocol types** (`crates/phux-protocol`), encodings included:
    - `ids.rs`: key types through a `key16!` macro; `OperationId` aliases the existing `IdempotencyKey` (`ids.rs:159`).
    - `caps.rs:1058-1078`: `ServerFeatureExt::ORGANIZATION = 0x10` (0x8 is `AGENT_STREAM_RESUME`, ADR-0159), plus `wire_name()` and `ALL`.
-   - `wire/frame/command.rs`, `mod.rs`, `command_codec.rs`, `field.rs`: command tags `0x1e`-`0x2b` (§05 L2); event tags `0x0f` onward; result tag `0x03`; value tags `0x06` onward; names capped at 256 bytes, arrangements at 64 KiB.
+   - `wire/frame/command.rs`, `mod.rs`, `command_codec.rs`, `field.rs`: command tags `0x1e`-`0x2b` (§05 L2); event tags `0x10` onward (`0x0f` is main's `input_activity`); result tag `0x03`; value tags `0x06` onward; names capped at 256 bytes, arrangements at 64 KiB.
    - `payload.rs`, `codec.rs`: R09.
    - `info.rs`: `ResourceInfo.session` (R05) and `SessionInfo` lifetime in extension fields 3 and 4.
    - `kinds.rs`, `scope.rs`, `kinds/samples.rs`: R07, new `Subject` variants, rules, `MethodSpec` with the first `FeaturesExt` gate.
