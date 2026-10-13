@@ -91,10 +91,24 @@ fn mutate(
     if let Some(refusal) = relaunch_held {
         return CommandResult::Refused(ow::refusal(&refusal));
     }
+    // R17: a replaced session arrangement is published under the TUI layout
+    // key for older readers.
+    let republish = match &op {
+        Op::ArrangementReplace {
+            owner: phux_core::ArrangementOwner::Session(key),
+            ..
+        } => Some(*key),
+        _ => None,
+    };
     let committed = state.with_mut(|s| {
         let actor = s.actor_for(client_id);
         let command = phux_core::Command { operation, op };
         let commit = s.commit_command_from(&command, &actor, Some(client_id))?;
+        if let Some(session) = republish.and_then(|key| s.registry().session_id(&key))
+            && !commit.applied.replayed
+        {
+            s.publish_arrangement_as_layout(session);
+        }
         let detached: Vec<_> = s
             .take_killed_sessions()
             .into_iter()

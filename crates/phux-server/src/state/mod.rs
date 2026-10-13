@@ -32,6 +32,7 @@ mod hub;
 mod hub_state;
 mod id_space;
 mod journal;
+mod layout_translation;
 mod lease_table;
 mod leases;
 mod legacy_snapshot;

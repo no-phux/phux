@@ -122,6 +122,10 @@ portable-pty-adopt.workspace = true
 # Upgrade handoff: clear FD_CLOEXEC and carry the blob in a temp file.
 rustix = { version = "1.1", default-features = false, features = ["std", "fs", "process"] }
 tempfile.workspace = true
+# The legacy TUI layout envelope (`phux.tui.layout/v1`, L3 §3.2): R17
+# translates that key to and from the session arrangement with the one codec
+# clients use. No default features: no terminal engine, no runtime.
+phux-client-core.workspace = true
 # The organization store (ADR-0162): sessions, resources, arrangements, and
 # receipts commit in one SQLite transaction before memory changes.
 rusqlite.workspace = true
@@ -138,7 +142,8 @@ tokio = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true
 # Drive the production server through the native session kernel.
 phux-client-ffi.workspace = true
-phux-client-core.workspace = true
+# Tests drive the native engine the client kernel uses.
+phux-client-core = { workspace = true, features = ["native-engine"] }
 # The relay e2e test runs the production relay. Dev-only: phux-relay must
 # never depend on phux-server (ADR-0051).
 phux-relay.workspace = true

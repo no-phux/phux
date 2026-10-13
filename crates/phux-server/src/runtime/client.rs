@@ -4832,6 +4832,17 @@ pub(crate) fn handle_set_metadata(
         apply_session_keep_empty(state, client_id, request_id, scope, &value, root_token);
         return;
     }
+    // R17: the TUI layout key is translated into the session's arrangement,
+    // attributed to the writer, then stored and broadcast as before.
+    if let Some(session) = state.with(|s| s.tui_layout_session(scope, key)) {
+        let translated = state.with_mut(|s| {
+            let actor = s.actor_for(client_id);
+            s.translate_layout_write(session, &value, &actor)
+        });
+        if let Err(reason) = translated {
+            debug!(?client_id, request_id, %key, %reason, "layout write not translated");
+        }
+    }
     // ADR-0155: a push grant is stored like any key, but the server also
     // remembers who wrote it, so a later ask is pushed only once that
     // connection is gone.

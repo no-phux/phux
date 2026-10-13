@@ -2577,7 +2577,6 @@ dependencies = [
  "nix 0.31.3",
  "phux-agent-rules",
  "phux-client-core",
- "phux-client-ffi",
  "phux-config",
  "phux-core",
  "phux-dial",
