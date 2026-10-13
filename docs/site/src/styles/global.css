@@ -1013,7 +1013,7 @@ html:has(.docs-navigation-dialog[open]) {
   padding-top: 24px;
   border-top: 1px solid var(--color-rule);
 }
-.overview-reference nav {
+.overview-reference-links {
   display: flex;
   flex-direction: column;
 }
@@ -1025,6 +1025,74 @@ html:has(.docs-navigation-dialog[open]) {
 .overview-reference a:hover {
   text-decoration: underline;
 }
+.docs-page-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  margin: 1.25rem 0 2rem;
+  font-size: 0.8125rem;
+}
+.docs-page-actions a,
+.agent-discovery a,
+.agent-routes a {
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.docs-page-actions button,
+.agent-prompt button {
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-fg);
+  cursor: pointer;
+}
+.docs-page-actions button:disabled { cursor: wait; }
+.docs-page-actions [role="status"],
+.agent-prompt [role="status"] {
+  color: var(--color-muted);
+}
+.overview-agent { min-width: 0; }
+.overview-agent p { line-height: 1.65; margin: 0 0 1rem; }
+.agent-prompt {
+  padding: 20px;
+  border: 1px solid var(--color-accent-soft);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+.agent-prompt pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0 0 16px;
+  font-size: 0.875rem;
+  line-height: 1.7;
+}
+.agent-prompt [role="status"] { display: block; margin-top: 8px; font-size: 0.8125rem; }
+.agent-routes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+  margin: 24px 0;
+}
+.agent-routes > div { min-width: 0; }
+.agent-routes h3 { font-size: 1rem; font-weight: 600; margin-bottom: 12px; }
+.agent-routes p { color: var(--color-muted); font-size: 0.9375rem; }
+.agent-routes pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 12px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-sm);
+  margin-bottom: 12px;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+.agent-routes a,
+.agent-discovery { font-size: 0.875rem; }
 .docs-search-error {
   padding: 20px;
   color: var(--color-fg);
@@ -1043,12 +1111,14 @@ html:has(.docs-navigation-dialog[open]) {
     --fd-sidebar-width: 232px;
   }
   .overview-paths,
+  .agent-routes,
   .overview-reference {
     grid-template-columns: 1fr;
   }
 }
 @media (max-width: 560px) {
   .overview-paths,
+  .agent-routes,
   .overview-reference {
     grid-template-columns: 1fr;
   }

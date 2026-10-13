@@ -23,7 +23,7 @@ export const SITE = {
 // Shared by the visible docs landing and its searchable Markdown representation.
 export const OVERVIEW = {
   title: "Get started",
-  summary: "Start locally, automate a terminal, or connect another machine.",
+  summary: "phux keeps terminals running. People and agents can read and control the same terminals from different clients, locally or across machines.",
   pitch: {
     headline: "terminals as objects on a wire",
     text:
@@ -45,6 +45,13 @@ export const OVERVIEW = {
   ],
 } as const;
 
+// The visible handoff and the overview's Markdown/search representation agree.
+export const AGENT_START = {
+  prompt: "Read https://docs.phux.sh/llms.txt and help me get started with phux. Choose the setup for my agent host, check my installed version, and verify a read before sending input. Use exact pane targets and bounded waits. Ask before interrupting or destroying existing work.",
+  skills: "npx skills add no-phux/skills",
+  mcp: "claude mcp add --transport http phux-docs https://phux.sh/mcp",
+} as const;
+
 /**
  * Absolute docs origin in production builds so marketing chrome lands on
  * docs.phux.sh instead of bouncing through a same-host 301. `astro dev`
@@ -64,11 +71,12 @@ export const MARKETING_NAV = [
   { href: docsHref("/overview"), label: "Docs" },
   { href: "/demos", label: "Demos" },
   { href: docsHref("/consumers"), label: "Apps" },
-  { href: docsHref("/consumers/agents"), label: "Agents" },
+  { href: docsHref("/consumers/getting-started"), label: "Agents" },
   { href: SITE.github, label: "GitHub", external: true },
 ] as const;
 
 export const DOCS_NAV = [
+  { href: "/llms.txt", label: "Agent guide" },
   { href: SITE.url, label: "Site" },
   { href: SITE.github, label: "GitHub", external: true },
 ] as const;

@@ -39,6 +39,16 @@
       ]
     },
     {
+      "identifier": "urn:air:phux.sh:skills:using-phux-tools",
+      "displayName": "using-phux-tools skill",
+      "type": "text/markdown",
+      "url": "https://phux.sh/.well-known/agent-skills/using-phux-tools/SKILL.md",
+      "representativeQueries": [
+        "use native phux tools in a coding agent",
+        "choose exact pane targets and bounded observation deadlines"
+      ]
+    },
+    {
       "identifier": "urn:air:phux.sh:catalog:api",
       "displayName": "phux API catalog",
       "type": "application/linkset+json",

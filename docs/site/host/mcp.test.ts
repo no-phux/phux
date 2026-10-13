@@ -37,6 +37,16 @@ function envOf() {
             headers: { "content-type": "text/html" },
           });
         }
+        if (url.pathname === "/overview.md") {
+          return new Response("# Get started\n\n[Agent guide](/llms.txt)\n", {
+            headers: { "content-type": "text/markdown" },
+          });
+        }
+        if (url.pathname === "/") {
+          return new Response("<main><h1>phux marketing</h1></main>", {
+            headers: { "content-type": "text/html" },
+          });
+        }
         return new Response("not found", { status: 404 });
       },
     },
@@ -182,7 +192,30 @@ describe("MCP JSON-RPC", () => {
       name: "get_page",
       arguments: { path: "https://evil.example/x" },
     });
-    expect(body.result.content[0].text).toContain("Only phux.sh");
+    expect(body.result.content[0].text).toContain("Only https://phux.sh");
+  });
+
+  test("get_page resolves the docs root without returning the marketing home", async () => {
+    const docs = await rpc("tools/call", { name: "get_page", arguments: { path: "https://docs.phux.sh/" } });
+    expect(docs.body.result.content[0].text).toContain("# Get started");
+    expect(docs.body.result.content[0].text).toContain("[Agent guide](/llms.txt)");
+    expect(docs.body.result.content[0].text).not.toContain("marketing");
+    const site = await rpc("tools/call", { name: "get_page", arguments: { path: "https://phux.sh/" } });
+    expect(site.body.result.content[0].text).toContain("# phux marketing");
+  });
+
+  test("get_page accepts direct Markdown and prefers it for a docs HTML URL", async () => {
+    for (const path of ["/overview", "https://docs.phux.sh/overview.html", "https://docs.phux.sh/overview.md"]) {
+      const { body } = await rpc("tools/call", { name: "get_page", arguments: { path } });
+      expect(body.result.content[0].text).toContain("# Get started");
+    }
+  });
+
+  test("get_page refuses unsupported schemes and embedded credentials", async () => {
+    for (const path of ["http://phux.sh/", "ftp://phux.sh/", "https://user:secret@phux.sh/", "https://phux.sh:8443/"]) {
+      const { body } = await rpc("tools/call", { name: "get_page", arguments: { path } });
+      expect(body.result.content[0].text).toContain("Only https://phux.sh");
+    }
   });
 
   test("get_page refuses scheme-relative pathnames on an allowlisted host", async () => {
@@ -212,7 +245,7 @@ describe("MCP JSON-RPC", () => {
       env,
     ))!;
     const body = await response.json();
-    expect(body.result.content[0].text).toContain("Only phux.sh");
+    expect(body.result.content[0].text).toContain("Only https://phux.sh");
     expect(seen).toEqual([]);
   });
 

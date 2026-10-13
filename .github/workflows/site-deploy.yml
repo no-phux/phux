@@ -13,6 +13,9 @@ on:
     branches: [main]
     paths:
       - "docs/**"
+      # Product skill discovery is regenerated into the site's static assets.
+      - ".agents/skills/using-phux*/**"
+      - "scripts/product-skills"
       # The site serves scripts/install.sh verbatim at /install and
       # scripts/install-cockpit.sh at /install-cockpit, so an installer
       # change has to redeploy the site or phux.sh keeps handing out the old

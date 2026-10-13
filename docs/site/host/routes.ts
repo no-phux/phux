@@ -47,12 +47,12 @@ export function isSiteHost(host: string): boolean {
 }
 
 export function isDocsPath(pathname: string): boolean {
-  const path = stripHtmlSuffix(pathname);
+  const path = stripPageSuffix(pathname);
   return DOCS_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
 }
 
 export function isMarketingOnlyPath(pathname: string): boolean {
-  const path = stripHtmlSuffix(pathname);
+  const path = stripPageSuffix(pathname);
   return path === "/embed" || path.startsWith("/embed/") ||
     path === "/install" || path.startsWith("/install") ||
     path === "/demos" || path.startsWith("/demos/");
@@ -86,11 +86,12 @@ function redirectOn(host: string, path: string, search: string): HostRoute {
   return { kind: "redirect", location: location.href, status: 301 };
 }
 
-function stripHtmlSuffix(pathname: string): string {
+function stripPageSuffix(pathname: string): string {
   if (pathname.endsWith("/index.html")) {
     const trimmed = pathname.slice(0, -"/index.html".length);
     return trimmed === "" ? "/" : trimmed;
   }
   if (pathname.endsWith(".html")) return pathname.slice(0, -".html".length);
+  if (pathname.endsWith(".md")) return pathname.slice(0, -".md".length);
   return pathname;
 }

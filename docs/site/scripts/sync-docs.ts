@@ -52,7 +52,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
-import { OVERVIEW, SITE } from "../src/lib/site";
+import { AGENT_START, OVERVIEW, SITE } from "../src/lib/site";
 
 const ROOT = resolve(import.meta.dir, "..");
 const DOCS_DIR = resolve(ROOT, process.env.PHUX_DOCS_DIR ?? "..");
@@ -588,6 +588,32 @@ URL or a coming-soon claim until that choice is made.
 
 ${pitch.iosBefore}[${pitch.iosLabel}](${pitch.iosHref})${pitch.iosAfter}
 
+## Hand this to your agent
+
+Paste this into your coding agent:
+
+\`\`\`text
+${AGENT_START.prompt}
+\`\`\`
+
+### Control your terminals
+
+Install the operating skills, then [choose your agent integration](/consumers/getting-started) to connect to your running phux server:
+
+\`\`\`sh
+${AGENT_START.skills}
+\`\`\`
+
+### Search the documentation
+
+The hosted docs MCP is read-only. It searches guides and releases; it cannot see or control your terminals.
+
+\`\`\`sh
+${AGENT_START.mcp}
+\`\`\`
+
+[Other MCP clients](/consumers/getting-started#let-your-agent-read-the-docs) · [Agent guide](/llms.txt) · [Skill index](https://phux.sh/.well-known/agent-skills/index.json) · [Docs MCP details](https://phux.sh/.well-known/mcp/server-card.json)
+
 ## Guides
 
 ${OVERVIEW.paths.map(({ href, title, text }) => `- [${title}](${href}) — ${text}`).join("\n")}
@@ -656,7 +682,7 @@ const TASK_GROUPS = [
   },
   {
     folder: "(agents)", title: "Run coding agents",
-    pages: ["../consumers/getting-started", "../consumers/pi-in-60-seconds", "../consumers/claude", "../consumers/pi", "../consumers/omp", "../consumers/opencode-v2", "../consumers/mcp"],
+    pages: ["../consumers/getting-started", "../consumers/pi-in-60-seconds", "../consumers/claude", "../consumers/grok", "../consumers/pi", "../consumers/omp", "../consumers/opencode-v2", "../consumers/mcp"],
   },
   {
     folder: "(connect)", title: "Connect machines",
