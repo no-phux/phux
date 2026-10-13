@@ -344,14 +344,6 @@ fn org_command() -> impl Strategy<Value = Command> {
                 expected,
             }
         }),
-        (op(), resource_key(), rev(), any::<u64>()).prop_map(
-            |(operation, resource, expected, a)| Command::ResourceAbandon {
-                operation,
-                resource,
-                expected,
-                activation: ActivationId::new(a),
-            }
-        ),
         (op(), session_key(), rev()).prop_map(|(operation, session, expected)| {
             Command::InboxResolve {
                 operation,

@@ -6,9 +6,9 @@
 
 use phux_core::{
     ActivationId, Actor, ArrangementOwner, Attrs, Command, Effect, EntryRef, Event, ExecState,
-    ExitOutcome, Group, LaunchMode, LayoutNode, NewResource, Op, Outcome, PrincipalId,
-    ProcIdentity, Refusal, Reply, ResourceKey, ResourceKind, Revision, SessionKey, SessionLifetime,
-    SourcePin, SplitDir, TerminateMode, Verb,
+    ExitOutcome, Group, LaunchMode, LayoutNode, NewResource, Op, Outcome, ProcIdentity, Refusal,
+    Reply, ResourceKey, ResourceKind, Revision, SessionKey, SessionLifetime, SourcePin, SplitDir,
+    TerminateMode, Verb,
 };
 
 use crate::support::{Harness, created, job, shell};
@@ -34,14 +34,6 @@ fn create(name: &str, lifetime: SessionLifetime, resource: Option<NewResource>) 
         lifetime,
         attrs: Attrs::default(),
         resource,
-    }
-}
-
-fn agent() -> Actor {
-    Actor {
-        principal: PrincipalId::Credential("bot".to_owned()),
-        client: Some("cli".to_owned()),
-        on_behalf_of: Some(PrincipalId::Owner),
     }
 }
 
@@ -614,31 +606,9 @@ fn remove_and_relaunch_refuse_current_and_lost_execution() {
         Some(ExecState::Lost)
     );
 
-    // Abandon: owner only, then remove and relaunch are allowed.
-    assert_eq!(
-        h.run_as(
-            &agent(),
-            Op::ResourceAbandon {
-                resource: r,
-                expected: rev,
-                activation: A1,
-            }
-        )
-        .err(),
-        Some(Refusal::Unauthorized {
-            verb: Verb::Terminate
-        })
-    );
-    h.run(Op::ResourceAbandon {
-        resource: r,
-        expected: rev,
-        activation: A1,
-    })
-    .expect("abandon");
-    assert_eq!(
-        h.resource(r).activation.map(|a| a.state),
-        Some(ExecState::Abandoned)
-    );
+    // The orphan's end, once observed, settles it: relaunch is allowed.
+    h.report(ended(r, Outcome::Exit(ExitOutcome::signaled(9))))
+        .expect("orphan ended");
     let rev = h.resource(r).revision;
     let applied = h
         .run(Op::ResourceRelaunch {
@@ -651,22 +621,6 @@ fn remove_and_relaunch_refuse_current_and_lost_execution() {
         [Effect::Launch { activation, .. }] if *activation == A1.next()
     ));
     assert_eq!(h.resource(r).activation.map(|a| a.id), Some(A1.next()));
-}
-
-#[test]
-fn abandon_refuses_an_activation_that_is_not_lost() {
-    let mut h = Harness::new();
-    let r = h.create_resource(h.inbox(), job());
-    let rev = h.resource(r).revision;
-    assert_eq!(
-        h.run(Op::ResourceAbandon {
-            resource: r,
-            expected: rev,
-            activation: A1,
-        })
-        .err(),
-        Some(Refusal::Stale { current: Some(A1) })
-    );
 }
 
 // ---- membership ------------------------------------------------------------

@@ -38,8 +38,9 @@ surface.
    `SessionRename`, `SessionSetLifetime`, `SessionDelete`,
    `ResourceCreate`, `ResourceMove`, `ResourceMoveMany`, `InboxResolve`,
    `OrganizationUndo`, `ResourceRename`, `ResourceTerminate`,
-   `ResourceRemove`, `ResourceRelaunch`, `ResourceAbandon`,
-   `ArrangementGet`, and `ArrangementReplace`. Workspace commands are
+   `ResourceRemove`, `ResourceRelaunch`, `ArrangementGet`, and
+   `ArrangementReplace`. (`ResourceAbandon`, tag `0x2a`, was retired
+   unshipped and its tag stays reserved.) Workspace commands are
    reserved for the workspace stage. No frame tag is reused or
    reinterpreted. Byte layouts live in `docs/spec/L1.md` §5.7.
 2. **Every mutating command carries an `OperationId`.** Reads

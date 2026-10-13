@@ -103,7 +103,7 @@ their own one-byte tag inside it. Allocated tags:
 | `0x27` | `RESOURCE_TERMINATE`        | [L1.md §5.7](./L1.md) | partial |
 | `0x28` | `RESOURCE_REMOVE`           | [L1.md §5.7](./L1.md) | partial |
 | `0x29` | `RESOURCE_RELAUNCH`         | [L1.md §5.7](./L1.md) | partial |
-| `0x2a` | `RESOURCE_ABANDON`          | [L1.md §5.7](./L1.md) | partial |
+| `0x2a` | reserved (formerly `RESOURCE_ABANDON`) | -- | reserved |
 | `0x2b` | `INBOX_RESOLVE`             | [L1.md §5.7](./L1.md) | partial |
 | `0x2c` | `ORGANIZATION_UNDO`         | [L1.md §5.7](./L1.md) | partial |
 | `0x2d` | `ARRANGEMENT_GET`           | [L1.md §5.7](./L1.md) | partial |
@@ -141,6 +141,9 @@ their tags are freed:
   ([L3.md §3](./L3.md)).
 - `0x0b` — formerly `KILL_COLLECTION`; freed, reserved, not reallocated.
   Group teardown is `KILL_RESOURCES`.
+- `0x2a` — formerly `RESOURCE_ABANDON`; freed, reserved, not reallocated.
+  A lost activation ends through `RESOURCE_TERMINATE` or the next startup
+  reconciliation.
 
 A freed tag SHALL NOT be reallocated to an unrelated command without a
 `PROTOCOL_VERSION` bump, so that an old client speaking a withdrawn verb

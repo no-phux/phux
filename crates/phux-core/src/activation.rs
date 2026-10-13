@@ -32,7 +32,7 @@ impl Stamp {
 /// ```text
 /// Starting -> Running -> Completed
 ///     |          |-> Stopping -> Completed
-///     |          '-> Lost -> Completed | Abandoned
+///     |          '-> Lost -> Completed
 ///     '-> Failed
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -51,7 +51,8 @@ pub enum ExecState {
     /// The owner lost its handle while the process may still be running.
     /// Not stopped: removal and relaunch are refused until proven inactive.
     Lost,
-    /// The owner released a lost activation without proof it ended.
+    /// A lost activation released without proof it ended. No command
+    /// produces it; it stays so stored and listed states keep decoding.
     Abandoned,
 }
 

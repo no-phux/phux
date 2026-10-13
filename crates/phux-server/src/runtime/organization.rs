@@ -339,19 +339,6 @@ fn translate(
                 expected: rev(expected),
             }),
         ),
-        Command::ResourceAbandon {
-            operation,
-            resource,
-            expected,
-            activation,
-        } => (
-            ow::core_operation(&operation),
-            Ok(Op::ResourceAbandon {
-                resource: ow::core_resource_key(&resource),
-                expected: rev(expected),
-                activation: ow::core_activation_id(activation),
-            }),
-        ),
         Command::InboxResolve {
             operation,
             session,

@@ -63,9 +63,6 @@ enum Step {
     Relaunch {
         r: usize,
     },
-    Abandon {
-        r: usize,
-    },
     Arrange {
         s: usize,
         take: usize,
@@ -104,7 +101,6 @@ fn step() -> impl Strategy<Value = Step> {
         i().prop_map(|r| Step::Terminate { r }),
         i().prop_map(|r| Step::Remove { r }),
         i().prop_map(|r| Step::Relaunch { r }),
-        i().prop_map(|r| Step::Abandon { r }),
         (i(), 0..4_usize).prop_map(|(s, take)| Step::Arrange { s, take }),
         i().prop_map(|r| Step::Started { r }),
         (i(), any::<bool>(), any::<bool>()).prop_map(|(r, observed, failed)| Step::Ended {
@@ -321,17 +317,6 @@ impl World {
                     Op::ResourceRelaunch {
                         resource: r,
                         expected: self.rrev(r),
-                    },
-                )
-            }
-            Step::Abandon { r } => {
-                let r = pick(&resources, *r)?;
-                (
-                    owner,
-                    Op::ResourceAbandon {
-                        resource: r,
-                        expected: self.rrev(r),
-                        activation: self.activation(r),
                     },
                 )
             }

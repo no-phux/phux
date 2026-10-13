@@ -185,11 +185,6 @@ fn dispatch(tx: &mut Tx<'_>, op: &Op, fresh: &mut dyn FreshKeys) -> Result<Out, 
         } => resource_terminate(tx, *resource, *activation, *mode),
         Op::ResourceRemove { resource, expected } => resource_remove(tx, *resource, *expected),
         Op::ResourceRelaunch { resource, expected } => resource_relaunch(tx, *resource, *expected),
-        Op::ResourceAbandon {
-            resource,
-            expected,
-            activation,
-        } => resource_abandon(tx, *resource, *expected, *activation),
         Op::ArrangementReplace {
             owner,
             expected,
@@ -1121,32 +1116,6 @@ fn resource_relaunch(
         spec,
     });
     Ok(Out::accepted())
-}
-
-fn resource_abandon(
-    tx: &mut Tx<'_>,
-    key: ResourceKey,
-    expected: Revision,
-    activation: ActivationId,
-) -> Result<Out, Refusal> {
-    if tx.actor.principal != PrincipalId::Owner {
-        return Err(Refusal::Unauthorized {
-            verb: Verb::Terminate,
-        });
-    }
-    tx.checked_resource(key, expected)?;
-    let a = matching_activation(tx, key, activation)?;
-    if a.state != ExecState::Lost {
-        return Err(Refusal::Stale {
-            current: Some(a.id),
-        });
-    }
-    let now = tx.now;
-    let revision = tx.set_activation(key, |a| {
-        a.state = ExecState::Abandoned;
-        a.ended = Some(now);
-    });
-    Ok(Out::ok(revision))
 }
 
 fn arrangement_replace(

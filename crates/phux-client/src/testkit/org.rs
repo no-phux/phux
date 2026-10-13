@@ -803,21 +803,6 @@ impl OrgFixture {
                     }));
                 Ok((ok(committed), None))
             }
-            Command::ResourceAbandon {
-                operation,
-                resource,
-                expected,
-                ..
-            } => {
-                self.check_resource(*resource, *expected)?;
-                let revision = self.bump();
-                let record = self.resource_mut(resource).ok_or(Refusal::NotFound)?;
-                if let Some(activation) = record.activation.as_mut() {
-                    activation.state = ExecState::Abandoned;
-                }
-                record.revision = revision;
-                Ok((ok(Committed::new(*operation, revision)), None))
-            }
             Command::InboxResolve {
                 operation,
                 session,
@@ -1044,7 +1029,6 @@ const fn command_name(command: &Command) -> &'static str {
         Command::ResourceTerminate { .. } => "resource_terminate",
         Command::ResourceRemove { .. } => "resource_remove",
         Command::ResourceRelaunch { .. } => "resource_relaunch",
-        Command::ResourceAbandon { .. } => "resource_abandon",
         Command::InboxResolve { .. } => "inbox_resolve",
         Command::OrganizationUndo { .. } => "organization_undo",
         Command::ArrangementReplace { .. } => "arrangement_replace",

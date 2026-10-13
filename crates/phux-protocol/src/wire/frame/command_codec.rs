@@ -269,7 +269,6 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
         | Command::ResourceTerminate { .. }
         | Command::ResourceRemove { .. }
         | Command::ResourceRelaunch { .. }
-        | Command::ResourceAbandon { .. }
         | Command::InboxResolve { .. }
         | Command::OrganizationUndo { .. }
         | Command::ArrangementGet { .. }

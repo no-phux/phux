@@ -238,7 +238,7 @@ BIND      = 0x08   // attach, resize, move, lease, or mutate metadata/projection
 INPUT     = 0x10   // deliver user/terminal input or upload workload bytes
 SIGNAL    = 0x20   // process/server lifecycle, hooks, forced detach, or signals
 ORGANIZE  = 0x40   // rename, move membership, edit arrangements, resolve intake, undo (schema v2)
-TERMINATE = 0x80   // terminate, remove, delete, or abandon an organization record (schema v2)
+TERMINATE = 0x80   // terminate, remove, or delete an organization record (schema v2)
 ```
 
 The scope schema is versioned. Schema v1 has the first six verbs; bits `0xC0`
@@ -515,7 +515,6 @@ point before any handler or satellite branch:
 | `RESOURCE_TERMINATE` | `TERMINATE` | named Terminal: the live target's `resource` |
 | `RESOURCE_REMOVE` | `TERMINATE` | the resource the command's key names, through its current session's Group |
 | `RESOURCE_RELAUNCH` | `CREATE` | the resource the command's key names, through its current session's Group |
-| `RESOURCE_ABANDON` | `TERMINATE` plus transport predicate | Global, and the authenticated transport MUST be the owner UDS; only the owner releases a lost activation |
 | `ORGANIZATION_UNDO` | `ORGANIZE` | every session and resource the undone operation's recorded inverse touches, under current membership |
 | `ARRANGEMENT_GET` | `INVENTORY` | the session that owns the arrangement |
 | `ARRANGEMENT_REPLACE` | `ORGANIZE` | the session that owns the arrangement |
@@ -910,5 +909,5 @@ v2 one; a v1 `SIGNAL` grant reaching `RESOURCE_TERMINATE` and
 refused in a v1 record; and every legacy row admitting exactly the grants it
 admitted under v1. Organization cases: a resource moving out of a ceiling
 Group by `RESOURCE_MOVE` losing the access it had through that Group in the
-same transaction; a `RESOURCE_MOVE_MANY` with one unauthorized source session
-refused whole; and `RESOURCE_ABANDON` refused off the owner Unix socket.
+same transaction; and a `RESOURCE_MOVE_MANY` with one unauthorized source
+session refused whole.
