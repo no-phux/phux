@@ -644,7 +644,7 @@ const TASK_GROUPS = [
   },
   {
     folder: "(agents)", title: "Run coding agents",
-    pages: ["../consumers/getting-started", "../consumers/claude", "../consumers/pi", "../consumers/omp", "../consumers/opencode-v2", "../consumers/mcp"],
+    pages: ["../consumers/getting-started", "../consumers/pi-in-60-seconds", "../consumers/claude", "../consumers/pi", "../consumers/omp", "../consumers/opencode-v2", "../consumers/mcp"],
   },
   {
     folder: "(connect)", title: "Connect machines",
@@ -703,6 +703,7 @@ const GUIDE_PAGES = [
   "cockpit",
   "agents",
   "opencode",
+  "pi-in-60-seconds",
   "pi",
   "claude",
   "mcp",

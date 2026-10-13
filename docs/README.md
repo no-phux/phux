@@ -34,6 +34,8 @@ Start with [coding-agent getting started](./consumers/getting-started.md), then
 choose [Claude Code](./consumers/claude.md), [Grok](./consumers/grok.md),
 [Pi](./consumers/pi.md), [OpenCode V2](./consumers/opencode-v2.md), or
 [MCP](./consumers/mcp.md).
+For a one-minute Pi session, follow
+[pi + phux in 60 seconds](./consumers/pi-in-60-seconds.md).
 For scripts and advanced automation, use the [agent CLI guide](./consumers/agents.md).
 
 ## Connect machines

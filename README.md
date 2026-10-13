@@ -84,6 +84,7 @@ phux snapshot default      # read the current grid without attaching a UI
 ```
 
 [Quickstart](./docs/QUICKSTART.md) ·
+[pi + phux in 60 seconds](./docs/consumers/pi-in-60-seconds.md) ·
 [keys and configuration](./docs/CONFIG.md) ·
 [remote access](./docs/remote-access.md) ·
 [agent control](./docs/consumers/agents.md) ·
