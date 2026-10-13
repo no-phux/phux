@@ -63,6 +63,8 @@ mod geometry;
 mod input;
 mod kernel;
 pub mod keys;
+mod org_plane;
+pub mod organization;
 mod responses;
 mod roster;
 mod state;
@@ -78,9 +80,9 @@ pub use extensions::{
     TranscribeOutcome, TranscribeReceipt,
 };
 pub use geometry::TerminalResizeOutcome;
-pub use topology::{
-    AgentSessionDescriptor, PaneDescriptor, SessionDescriptor, Topology, WindowDescriptor,
-};
+pub use org_plane::{ArrangementSubmitError, KILL_WAIT, mint_operation};
+pub use organization::{InboxView, OrganizationReplica, RecordChange, ReplicaAction, ReplicaState};
+pub use topology::{AgentSessionDescriptor, PaneDescriptor, SessionDescriptor, Topology};
 
 /// Upper bound on undrained events.
 ///
@@ -376,6 +378,10 @@ enum Pending {
     /// The runtime's release of an `AgentSession` stream whose pane it
     /// stopped streaming; the answer changes nothing.
     AgentRelease,
+    /// One `GET_ORGANIZATION` page of a seed or a session refetch.
+    OrgPage(phux_protocol::wire::frame::OrgFilter),
+    /// One `ARRANGEMENT_GET` into the replica.
+    OrgArrangement(phux_protocol::ids::ArrangementKey),
 }
 
 /// The sans-IO control plane. See the module docs.
@@ -470,6 +476,11 @@ pub struct ControlPlane {
     roster: roster::RosterRecovery,
     /// In-flight `GET` of `phux.session.project/v1`.
     project_tag_pending: Option<u32>,
+    /// The organization replica (`ORGANIZATION` servers only).
+    organization: organization::OrganizationReplica,
+    /// The organization operation journal, kill workflows, and close
+    /// batches.
+    org: org_plane::OrgLane,
 }
 
 impl ControlPlane {
@@ -535,6 +546,8 @@ impl ControlPlane {
             extensions: extensions::Extensions::default(),
             roster: roster::RosterRecovery::default(),
             project_tag_pending: None,
+            organization: organization::OrganizationReplica::new(),
+            org: org_plane::OrgLane::default(),
         }
     }
 
@@ -840,6 +853,7 @@ impl ControlPlane {
         self.attached_session = None;
         self.selected_session = None;
         self.input_replay.connection_lost();
+        self.org_connection_lost();
         self.reset_extension_correlations("the connection ended before the server answered");
         self.fail_pending("connection replaced before the server answered", true);
         self.push_event(Event::ConnectionOpened {
@@ -862,6 +876,7 @@ impl ControlPlane {
         let _ = self.take_inbound();
         self.handshake_ready = false;
         self.input_replay.connection_lost();
+        self.org_connection_lost();
         self.reset_extension_correlations("the connection ended before the server answered");
         if let Some(message) = &message {
             self.error = Some(message.clone());
@@ -879,6 +894,7 @@ impl ControlPlane {
         self.handshake_ready = false;
         self.error = Some(message.into());
         self.strand_durable("the connection failed before the operation completed");
+        self.org_strand("the connection failed before the operation completed");
         self.strand_extensions("the connection failed before the operation completed");
         self.fail_pending("the connection failed before the server answered", false);
         self.set_status(Status::Failed);
@@ -891,6 +907,7 @@ impl ControlPlane {
         self.handshake_ready = false;
         let _ = self.take_inbound();
         self.strand_durable("the client closed before the operation completed");
+        self.org_strand("the client closed before the operation completed");
         self.strand_extensions("the client closed before the operation completed");
         self.fail_pending("the client closed before the server answered", false);
         if let Some(engine) = &self.engine {

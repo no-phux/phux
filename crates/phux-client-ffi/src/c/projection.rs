@@ -135,8 +135,8 @@ impl Projection {
 }
 
 /// Consume this module's frames; pass every other frame on.
-/// Runs ahead of the workspace dispatcher so a confirming GET on an
-/// internal id is not swallowed as a workspace metadata reply.
+/// Runs ahead of the arrangement dispatcher so a confirming GET on an
+/// internal id is not swallowed as a arrangement metadata reply.
 pub(crate) fn dispatch(client: &mut Client, frame: FrameKind) -> Option<FrameKind> {
     match frame {
         FrameKind::MetadataValue { request_id, value } if client.projection.awaits(request_id) => {
@@ -264,7 +264,7 @@ fn queue(
             let bytes = value
                 .clone()
                 .ok_or_else(|| BridgeError::invalid("named projection set needs a value"))?;
-            let confirm = client.workspace.reserve_internal()?;
+            let confirm = client.arrangement.reserve_internal()?;
             client.queue_frame(&FrameKind::SetMetadata {
                 request_id,
                 scope: Scope::Group(LAYOUT_METADATA_GROUP),
@@ -279,7 +279,7 @@ fn queue(
             Some(confirm)
         }
         Op::Delete => {
-            let confirm = client.workspace.reserve_internal()?;
+            let confirm = client.arrangement.reserve_internal()?;
             client.queue_frame(&FrameKind::DeleteMetadata {
                 request_id,
                 scope: Scope::Group(LAYOUT_METADATA_GROUP),
@@ -665,7 +665,7 @@ mod tests {
         else {
             panic!("expected confirming GET, got {:?}", sent[1]);
         };
-        assert!(confirm >= crate::c::workspace::INTERNAL_START);
+        assert!(confirm >= crate::c::arrangement::INTERNAL_START);
         assert_eq!(
             feed(
                 client,

@@ -1,4 +1,8 @@
-//! Protocol-0.7 web session over the shared synchronous client kernel.
+//! Protocol-0.7 web connection over the shared synchronous client kernel.
+//!
+//! A [`Connection`] is one attach: one wire connection showing one server
+//! session's terminals. The session is the server's record; this type is the
+//! browser's view of it.
 //!
 //! Transport framing stays here; replica lifecycle, generation validation,
 //! ordering, READY fences, and input eligibility stay in `phux-client-core`.
@@ -23,18 +27,23 @@ use phux_protocol::caps::{
     BootstrapProfileSet, BootstrapStreamProfile, ClientCapabilities, EngineCodec, EngineFeatureSet,
     ImageProtocolSet, ServerFeature, ServerFeatureExt,
 };
-use phux_protocol::ids::{GroupId, ResourceId};
+use phux_protocol::ids::{GroupId, OperationId, ResourceId, SessionKey};
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::key::KeyEvent;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
-    AgentEvent, AttachTarget, Command, CommandResult, FrameKind, HistoryRejectionReason,
-    HistoryTombstoneReason, PathQueryResult, PathResults, SpawnResult, ViewportInfo,
+    AgentEvent, AttachTarget, Command, CommandResult, CommandValue, FrameKind,
+    HistoryRejectionReason, HistoryTombstoneReason, LiveTarget, OrgFilter, OrganizationPage,
+    PathQueryResult, PathResults, SpawnResult, TerminateMode, ViewportInfo,
 };
 use phux_protocol::{PROTOCOL_VERSION, ResourceKind};
 use phux_vt_web::{Grid, NativeCodecError, NativeDecodeKind, NativeDecoder, Terminal, Vt};
 
+mod attach;
 mod resources;
+
+pub use attach::AttachPreference;
+use attach::Discovery;
 
 const ATTACH_ID: u32 = 1;
 const HISTORY_LINES: u32 = 5_000;
@@ -526,6 +535,16 @@ impl EngineAdapter for WebEngine {
     }
 }
 
+/// An explicit kill in flight. Against an `ORGANIZATION` server it first
+/// reads the session's page to learn the target's current activation.
+struct PendingKill {
+    request_id: u32,
+    target: ResourceId,
+    /// The session being read for the activation; `None` once the
+    /// terminate (or legacy kill) is on the wire.
+    resolving: Option<SessionKey>,
+}
+
 struct PendingSplit {
     request_id: u32,
     target: ResourceId,
@@ -534,8 +553,8 @@ struct PendingSplit {
     acknowledged: bool,
 }
 
-/// A wire session whose terminal replicas are owned by [`SessionKernel`].
-pub struct Session {
+/// One attach connection whose terminal replicas are owned by [`SessionKernel`].
+pub struct Connection {
     vt: Rc<Vt>,
     blank: Terminal,
     offered_caps: ClientCapabilities,
@@ -564,7 +583,7 @@ pub struct Session {
     /// Failed new resources remain isolated until their queued close arrives.
     retiring_panes: Vec<ResourceId>,
     pending_split: Option<PendingSplit>,
-    pending_close: Option<(u32, ResourceId)>,
+    pending_kill: Option<PendingKill>,
     /// Correlate optional child-stream attach refusals without failing its terminal.
     pending_agents: HashMap<u32, ResourceId>,
     /// Bounded announcements observed before an initial or split parent is admitted.
@@ -573,16 +592,23 @@ pub struct Session {
     pane_request_id: u32,
     pane_error: Option<String>,
     spawn_initial_size: bool,
+    /// The server advertised `ORGANIZATION` in `HELLO_OK`.
+    organization: bool,
+    attach_preference: AttachPreference,
+    discovery: Discovery,
+    /// The attached session's persistent key, when the server reports one.
+    session_key: Option<SessionKey>,
+    operation_counter: u64,
 }
 
-impl Session {
-    /// Open a session with a blank fallback grid of `cols`×`rows`.
+impl Connection {
+    /// Open a connection with a blank fallback grid of `cols`×`rows`.
     #[must_use]
     pub fn new(vt: &Rc<Vt>, cols: u16, rows: u16) -> Self {
         Self::with_caps(vt, cols, rows, client_caps(vt))
     }
 
-    /// Open an explicit synthesized-only compatibility session.
+    /// Open an explicit synthesized-only compatibility connection.
     ///
     /// This is a fail-closed diagnostic path for drift/unavailability tests;
     /// normal browser connections use [`Self::new`] and prefer exact native v2.
@@ -618,13 +644,18 @@ impl Session {
             pane_sizes: HashMap::new(),
             retiring_panes: Vec::new(),
             pending_split: None,
-            pending_close: None,
+            pending_kill: None,
             pending_agents: HashMap::new(),
             agent_discoveries: HashMap::new(),
             awaiting_agent_inventory: true,
             pane_request_id: 0x1000,
             pane_error: None,
             spawn_initial_size: false,
+            organization: false,
+            attach_preference: AttachPreference::default(),
+            discovery: Discovery::Idle,
+            session_key: None,
+            operation_counter: 0,
         }
     }
 
@@ -658,10 +689,10 @@ impl Session {
         self.first_published_terminal()
     }
 
-    /// Whether a server-authoritative split or close is outstanding.
+    /// Whether a server-authoritative split or kill is outstanding.
     #[must_use]
     pub fn pane_pending(&self) -> bool {
-        self.pending_split.is_some() || self.pending_close.is_some()
+        self.pending_split.is_some() || self.pending_kill.is_some()
     }
 
     /// Last actionable pane refusal; does not fail the connection.
@@ -736,7 +767,7 @@ impl Session {
     /// Request a real terminal spawn; commit layout only after bootstrap and ack.
     ///
     /// # Errors
-    /// Refuses invalid axes, unavailable sessions, small panes, or a fifth pane.
+    /// Refuses invalid axes, an unready connection, small panes, or a fifth pane.
     pub fn split_pane_frame(&mut self, axis: &str) -> Result<Vec<u8>, String> {
         let axis = Axis::parse(axis)?;
         self.pane_operation_ready()?;
@@ -781,30 +812,158 @@ impl Session {
         }))
     }
 
-    /// Request closure; keep the pane visible until ResourceClosed.
+    /// Close the focused pane's view. Presentation only: the terminal keeps
+    /// running in its session and its stream stays attached; nothing is sent
+    /// but the resizes of the panes that take over its space.
     ///
     /// # Errors
-    /// Refuses the last pane or another pending operation.
-    pub fn close_pane_frame(&mut self) -> Result<Vec<u8>, String> {
+    /// Refuses the last view or a pending pane operation.
+    pub fn close_view(&mut self) -> Result<Vec<Vec<u8>>, String> {
         self.pane_operation_ready()?;
         if self.pane_rects().len() <= 1 {
             return Err(
-                "Cannot close the last pane. Use Release Session to end the session.".to_owned(),
+                "Cannot close the last view. Use Release Session to leave the session.".to_owned(),
             );
         }
         let terminal_id = self
             .focused_pane()
             .ok_or("No terminal is ready to close.")?;
-        let request_id = self.next_pane_request();
-        self.pending_close = Some((request_id, terminal_id.clone()));
+        self.terminal_order.retain(|id| id != &terminal_id);
+        self.layout = self
+            .layout
+            .take()
+            .and_then(|layout| layout.remove(&terminal_id));
+        self.pane_sizes.remove(&terminal_id);
+        self.cancel_path_query();
+        self.focused_terminal = None;
+        self.focused_terminal = self.first_published_terminal();
         self.pane_error = None;
-        Ok(encode(&FrameKind::Command {
+        Ok(self.pane_resize_frames())
+    }
+
+    /// Kill the focused terminal, ending its process; the pane stays visible
+    /// until `RESOURCE_CLOSED`. A server advertising `ORGANIZATION` receives
+    /// `RESOURCE_TERMINATE` for the terminal's current activation, read from
+    /// the session's organization page first; any other server receives
+    /// `KILL_RESOURCE`.
+    ///
+    /// # Errors
+    /// Refuses the last pane or another pending operation.
+    pub fn kill_pane_frame(&mut self) -> Result<Vec<u8>, String> {
+        self.pane_operation_ready()?;
+        if self.pane_rects().len() <= 1 {
+            return Err(
+                "Cannot kill the last pane. Use Release Session to end the session.".to_owned(),
+            );
+        }
+        let terminal_id = self.focused_pane().ok_or("No terminal is ready to kill.")?;
+        let request_id = self.next_pane_request();
+        self.pane_error = None;
+        if self.organization
+            && let Some(session) = self.session_key
+        {
+            self.pending_kill = Some(PendingKill {
+                request_id,
+                target: terminal_id,
+                resolving: Some(session),
+            });
+            return Ok(Self::organization_page_frame(request_id, session, None));
+        }
+        self.pending_kill = Some(PendingKill {
+            request_id,
+            target: terminal_id.clone(),
+            resolving: None,
+        });
+        Ok(Self::legacy_kill_frame(request_id, terminal_id))
+    }
+
+    fn organization_page_frame(
+        request_id: u32,
+        session: SessionKey,
+        cursor: Option<Vec<u8>>,
+    ) -> Vec<u8> {
+        encode(&FrameKind::Command {
+            request_id,
+            command: Command::GetOrganization {
+                filter: OrgFilter::Session(session),
+                page_size: 0,
+                cursor,
+            },
+        })
+    }
+
+    fn legacy_kill_frame(request_id: u32, terminal_id: ResourceId) -> Vec<u8> {
+        encode(&FrameKind::Command {
             request_id,
             command: Command::KillResource {
                 terminal_id,
                 operation_id: None,
             },
-        }))
+        })
+    }
+
+    /// A fresh, non-zero operation id for one organization command.
+    fn next_operation(&mut self) -> OperationId {
+        self.operation_counter = self.operation_counter.wrapping_add(1).max(1);
+        let mut bytes = [0_u8; 16];
+        bytes[..8].copy_from_slice(&self.operation_counter.to_le_bytes());
+        // The counter keeps ids distinct on this connection; the random half
+        // keeps them distinct from other connections of the same owner.
+        let random = (js_sys::Math::random() * f64::from(u32::MAX)) as u32;
+        let stamp = browser_monotonic_ms() as u32;
+        bytes[8..12].copy_from_slice(&random.to_le_bytes());
+        bytes[12..].copy_from_slice(&stamp.to_le_bytes());
+        OperationId::new(bytes).unwrap_or_else(|| unreachable!("the counter half is non-zero"))
+    }
+
+    /// Advance a kill whose organization page arrived: terminate the
+    /// target's current activation, read the next page, or, when no page
+    /// names the target, fall back to `KILL_RESOURCE`, which a translating
+    /// server still honors as a kill.
+    fn resolve_kill(&mut self, page: &OrganizationPage) -> Outcome {
+        let Some(pending) = self.pending_kill.as_ref() else {
+            return Outcome::default();
+        };
+        let target = pending.target.clone();
+        let session = pending.resolving;
+        let request_id = self.next_pane_request();
+        let activation = page
+            .resources
+            .iter()
+            .find(|record| record.live.as_ref() == Some(&target))
+            .and_then(|record| record.activation);
+        let (frame, resolving) = match (activation, &page.next_cursor, session) {
+            (Some(activation), _, _) => {
+                let operation = self.next_operation();
+                let frame = encode(&FrameKind::Command {
+                    request_id,
+                    command: Command::ResourceTerminate {
+                        operation,
+                        target: LiveTarget {
+                            resource: target,
+                            instance: activation.instance,
+                            activation: activation.id,
+                        },
+                        mode: TerminateMode::Graceful,
+                    },
+                });
+                (frame, None)
+            }
+            (None, Some(cursor), Some(session)) => (
+                Self::organization_page_frame(request_id, session, Some(cursor.clone())),
+                Some(session),
+            ),
+            (None, _, _) => (Self::legacy_kill_frame(request_id, target), None),
+        };
+        if let Some(pending) = self.pending_kill.as_mut() {
+            pending.request_id = request_id;
+            pending.resolving = resolving;
+        }
+        Outcome {
+            send: vec![frame],
+            panes: true,
+            ..Outcome::default()
+        }
     }
 
     fn restore_layout(&mut self) {
@@ -876,20 +1035,16 @@ impl Session {
             .pending_split
             .take()
             .and_then(|pending| pending.resource);
-        self.pending_close = None;
+        self.pending_kill = None;
         self.pane_error = Some(message);
+        // A spawn this connection made and never presented is cleaned up with
+        // KILL_RESOURCE, which every server honors without an activation read.
         let send = resource
             .into_iter()
             .map(|terminal_id| {
                 self.retiring_panes.push(terminal_id.clone());
                 let request_id = self.next_pane_request();
-                encode(&FrameKind::Command {
-                    request_id,
-                    command: Command::KillResource {
-                        terminal_id,
-                        operation_id: None,
-                    },
-                })
+                Self::legacy_kill_frame(request_id, terminal_id)
             })
             .collect();
         Outcome {
@@ -922,9 +1077,9 @@ impl Session {
                         .as_ref()
                         .is_some_and(|pending| pending.request_id == id)
                         || self
-                            .pending_close
+                            .pending_kill
                             .as_ref()
-                            .is_some_and(|(pending, _)| *pending == id)
+                            .is_some_and(|pending| pending.request_id == id)
                 });
                 if correlated {
                     Some(self.pane_refusal(message.clone()))
@@ -966,15 +1121,32 @@ impl Session {
             .pending_split
             .as_ref()
             .is_some_and(|pending| pending.request_id == request_id);
-        let close = self
-            .pending_close
+        let kill = self
+            .pending_kill
             .as_ref()
-            .is_some_and(|(id, _)| *id == request_id);
-        if !split && !close {
+            .filter(|pending| pending.request_id == request_id);
+        if !split && kill.is_none() {
             return None;
         }
-        if let CommandResult::Error { message, .. } = result {
-            return Some(self.pane_refusal(format!("Pane operation refused: {message}")));
+        let resolving = kill.is_some_and(|pending| pending.resolving.is_some());
+        match result {
+            CommandResult::Error { message, .. } => {
+                return Some(self.pane_refusal(format!("Pane operation refused: {message}")));
+            }
+            CommandResult::Refused(refusal) => {
+                return Some(
+                    self.pane_refusal(format!("Pane operation refused: {}", refusal.as_str())),
+                );
+            }
+            CommandResult::OkWith(CommandValue::OrganizationPage(page)) if resolving => {
+                return Some(self.resolve_kill(page));
+            }
+            _ if resolving => {
+                return Some(self.pane_refusal(
+                    "Pane operation refused: the server did not list the session.".to_owned(),
+                ));
+            }
+            _ => {}
         }
         if split && let Some(pending) = self.pending_split.as_mut() {
             pending.acknowledged = true;
@@ -1028,13 +1200,13 @@ impl Session {
         self.selected_profile
     }
 
-    /// Capabilities frozen into this session's outbound `HELLO`.
+    /// Capabilities frozen into this connection's outbound `HELLO`.
     #[must_use]
     pub const fn advertised_capabilities(&self) -> ClientCapabilities {
         self.offered_caps
     }
 
-    /// Whether this session has entered its terminal protocol-failure state.
+    /// Whether this connection has entered its terminal protocol-failure state.
     #[must_use]
     pub const fn is_failed(&self) -> bool {
         self.failed
@@ -1142,7 +1314,7 @@ impl Session {
         .then(|| target.clone())
     }
 
-    /// Permanently fail this session after a transport or framing violation.
+    /// Permanently fail this connection after a transport or framing violation.
     pub fn fail_protocol(&mut self, _message: &str) {
         self.failed = true;
         self.cancel_path_query();
@@ -1195,7 +1367,7 @@ impl Session {
     /// Reduce one decoded server frame through the shared kernel.
     ///
     /// A fault on an `AgentSession` stream (the kernel retires that generation
-    /// and asks for a resync) never fails the session: the browser cannot
+    /// and asks for a resync) never fails the connection: the browser cannot
     /// reopen an agent stream, and a badge is not worth the terminal.
     pub fn on_frame(&mut self, frame: FrameKind) -> Outcome {
         if self.failed {
@@ -1213,6 +1385,9 @@ impl Session {
             self.spawn_initial_size = server_caps
                 .features
                 .contains(ServerFeature::SpawnInitialSize);
+            self.organization = server_caps
+                .features_ext
+                .contains(ServerFeatureExt::Organization);
         }
         if let FrameKind::PathResults { request_id, result } = frame {
             self.accept_path_results(request_id, result);
@@ -1256,6 +1431,9 @@ impl Session {
     }
 
     fn reduce_frame(&mut self, frame: FrameKind) -> Outcome {
+        if let Some(outcome) = self.reduce_discovery_reply(&frame) {
+            return outcome;
+        }
         if let Some(outcome) = self.reduce_agent_reply(&frame) {
             return outcome;
         }
@@ -1298,28 +1476,16 @@ impl Session {
                     selected_profile,
                     history_config,
                 ));
+                let subscribe = encode(&FrameKind::SubscribeEvents {
+                    terminal: None,
+                    after_seq: None,
+                });
                 Outcome {
                     // Subscribe before taking the attach snapshot: a child
                     // created during bootstrap must not fall into a discovery gap.
-                    // The kernel's post-ready subscription is idempotent.
-                    send: vec![
-                        encode(&FrameKind::SubscribeEvents {
-                            terminal: None,
-                            after_seq: None,
-                        }),
-                        encode(&FrameKind::Attach {
-                            attach_id: ATTACH_ID,
-                            target: AttachTarget::CreateIfMissing {
-                                name: "default".to_owned(),
-                                command: None,
-                                cwd: None,
-                            },
-                            viewport: self.viewport(),
-                            request_scrollback: true,
-                            scrollback_limit_lines: HISTORY_LINES,
-                            role_policy: None,
-                        }),
-                    ],
+                    // The kernel's post-ready subscription is idempotent. The
+                    // discovery reply chooses the session and sends the ATTACH.
+                    send: vec![subscribe, self.discovery_request()],
                     ..Outcome::default()
                 }
             }
@@ -1792,7 +1958,7 @@ impl Session {
         self.published_terminal()
     }
 
-    /// The engine instance every replica of this session runs on.
+    /// The engine instance every replica of this connection runs on.
     #[must_use]
     pub fn vt(&self) -> &Rc<Vt> {
         &self.vt

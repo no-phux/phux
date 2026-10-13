@@ -65,13 +65,17 @@ const FIELD_RS: &str = include_str!("../field.rs");
 
 /// `field.rs` modules that number a field-tagged record nested inside a
 /// positional value, not a frame body. The schema covers frame bodies only.
-const NESTED_RECORD_MODULES: [&str; 6] = [
+const NESTED_RECORD_MODULES: [&str; 10] = [
     "event_journal_gap",
     "event_source_gap",
     "snapshot_extension",
     "resource_state",
+    "session_state",
     "event_asked",
     "event_pane_spawned",
+    "org",
+    "org_launch",
+    "org_page",
 ];
 
 /// Placeholder `type` the regenerator writes for a field it has not seen.

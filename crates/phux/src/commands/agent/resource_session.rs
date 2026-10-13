@@ -471,7 +471,7 @@ impl Scope {
                         &self.degradation,
                     ),
                 })?;
-            resource::session_of(&self.snapshot, &picked)
+            resource::agent_session_of(&self.snapshot, &picked)
         };
         partial::warn_partial_view(verb, &self.degradation);
         session.map_err(|err| report_session_error(json, &err, socket_path, verb))

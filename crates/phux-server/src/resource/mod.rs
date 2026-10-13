@@ -241,23 +241,6 @@ pub enum ControlRequest {
     /// The child exited and the pane is retained (ADR-0124): report
     /// `Exited`, stop the detector, refuse input. No reply.
     Retire,
-    /// Replace the exited child with a fresh default shell in place. Reply
-    /// is the next-exit receiver.
-    ReplaceChild {
-        /// Default-shell command for the replacement child.
-        command: ReplacementCommand,
-        /// The next PTY-EOF receiver, or why the replacement could not start.
-        reply: oneshot::Sender<Result<oneshot::Receiver<phux_core::process::ExitOutcome>, String>>,
-    },
-}
-
-/// `CommandBuilder` wrapper so [`ControlRequest`] can stay `Debug`.
-pub struct ReplacementCommand(pub portable_pty::CommandBuilder);
-
-impl std::fmt::Debug for ReplacementCommand {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("ReplacementCommand")
-    }
 }
 
 // ---- handle -----------------------------------------------------------------
@@ -448,13 +431,6 @@ impl ResourceCore {
         if let Some(tx) = self.exit_notify.take() {
             let _ = tx.send(outcome);
         }
-    }
-
-    /// Arm a new exit oneshot after a child replacement.
-    pub fn arm_exit_notify(&mut self) -> oneshot::Receiver<phux_core::process::ExitOutcome> {
-        let (tx, rx) = oneshot::channel();
-        self.exit_notify = Some(tx);
-        rx
     }
 }
 

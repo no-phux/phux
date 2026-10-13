@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Build plan</title>
+<style>
+
+:root{--bg:#101317;--panel:#191e24;--text:#e9edf2;--muted:#a9b3c0;--line:#333e4c;--accent:#88dac4;--code:#11171e}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.7 system-ui,-apple-system,sans-serif}
+a{color:var(--accent)}button{font:inherit;color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:.5rem .8rem;cursor:pointer}button:hover{border-color:var(--accent)}a:focus-visible,button:focus-visible,textarea:focus-visible{outline:3px solid var(--accent);outline-offset:3px}
+.top{padding:1.2rem 2rem;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:1rem}.brand{font-weight:750;letter-spacing:.06em}.badge{color:var(--accent);font-size:.85rem;margin-left:.7rem}.actions{display:flex;flex-wrap:wrap;gap:.6rem}
+.shell{display:grid;grid-template-columns:260px minmax(0,1fr);max-width:1510px;margin:auto}nav{position:sticky;top:0;align-self:start;max-height:100vh;overflow:auto;padding:2rem 1.5rem;font-size:.85rem}nav ul{list-style:none;padding:0}nav li{margin:.6rem 0}nav a{text-decoration:none;color:var(--muted)}nav a:hover{color:var(--accent)}nav .toc>ul>li>a{display:none}nav .toc ul ul{padding:0}nav .toc ul ul ul{display:none}
+main{max-width:1120px;padding:2rem 3rem 6rem;min-width:0}h1{font-size:clamp(2rem,4vw,3.4rem);line-height:1.12;letter-spacing:-.04em;margin:1rem 0 2rem;max-width:900px}h2{font-size:1.65rem;line-height:1.3;margin:4rem 0 1.3rem;padding-top:1.2rem;border-top:1px solid var(--line);scroll-margin-top:1rem}h3{font-size:1.15rem;margin:2rem 0 .7rem;color:var(--accent)}p{margin:1rem 0}li{margin:.4rem 0}strong{font-weight:700}code{font-size:.87em;background:var(--code);padding:.15rem .35rem;border-radius:4px}pre{background:var(--code);border:1px solid var(--line);border-radius:9px;overflow:auto;padding:1.3rem;font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;tab-size:4}pre code{padding:0;background:none;font:inherit}
+.table-wrap{overflow:auto;margin:1.5rem 0}table{border-collapse:collapse;width:100%;font-size:.91rem}th,td{border:1px solid var(--line);padding:.65rem .8rem;text-align:left;vertical-align:top}th{background:var(--panel);font-weight:650}tbody tr:nth-child(even){background:var(--panel)}blockquote{border-left:3px solid var(--accent);margin:1.5rem 0;padding:.2rem 1.2rem;color:var(--muted)}
+.intro{color:var(--muted);font-size:.9rem}.review-note{margin:2rem 0;padding:1rem 1.2rem;background:var(--panel);border:1px solid var(--line);border-radius:9px}.review-note label{display:block;color:var(--accent);font-size:.85rem;font-weight:600;margin-bottom:.6rem}textarea{width:100%;min-height:110px;resize:vertical;padding:.8rem;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:5px;font:inherit;line-height:1.5}.note-status{font-size:.8rem;color:var(--muted);margin-top:.5rem}.footer{color:var(--muted);font-size:.8rem;border-top:1px solid var(--line);padding-top:1rem}.footer code{overflow-wrap:anywhere}
+@media(max-width:900px){.shell{grid-template-columns:1fr}nav{position:static;max-height:320px;border-bottom:1px solid var(--line)}main{padding:1.5rem 1rem 4rem}.top{padding:1rem;align-items:flex-start;flex-direction:column}}
+@media print{body{background:white;color:black;font-size:10pt}nav,.top,.intro{display:none}.shell{display:block}main{max-width:none;padding:0}h2{break-before:page}pre{background:#f5f5f5;border-color:#bbb;font-size:8pt;white-space:pre-wrap}table{font-size:9pt}th,td{border-color:#bbb}th,tbody tr:nth-child(even){background:#f5f5f5}.review-note{background:#fafafa;border-color:#bbb}textarea{background:white;color:black;border:0;min-height:0}.review-note.empty{display:none}.note-status{display:none}a{color:inherit}.footer{color:#444}}
+.orphans{margin:1.5rem 0;padding:1rem 1.2rem;border:1px dashed var(--accent);border-radius:9px}.orphans h2{border:0;margin:0 0 .6rem;padding:0;font-size:1.05rem}.orphans pre{white-space:pre-wrap}
+
+</style>
+</head>
+<body>
+<header class="top"><div><span class="brand">PHUX / BUILD PLAN</span><span class="badge">PROPOSAL · DRAFT 3 · 12 OCTOBER 2026</span></div><div class="actions"><a href="DESIGN.html">Overview</a><button id="export" type="button">Export notes as Markdown</button><button id="print" type="button">Print / PDF</button><a href="PLAN.md">Markdown source</a></div></header>
+<div class="shell"><nav aria-label="Sections"><p><a href="FULL-DESIGN.html">Domain Model</a> · <a href="CONTRACTS.html">Contracts</a> · <strong>Build Plan</strong> · <a href="REFACTOR-MAP.html">Refactor Map</a> · <a href="MIGRATION.html">Migration</a> · <a href="BROWSER-KIND.html">Browser Kind</a></p><div class="toc">
+<div class="toc">
+<ul>
+<li><a href="#build-plan">Build plan</a><ul>
+<li><a href="#stage-0-decisions-on-paper">Stage 0: decisions on paper</a></li>
+<li><a href="#stage-1-core-model">Stage 1: core model</a></li>
+<li><a href="#stage-2-store-activations-recovery">Stage 2: store, activations, recovery</a></li>
+<li><a href="#stage-3-wire">Stage 3: wire</a></li>
+<li><a href="#stage-4-clients">Stage 4: clients</a></li>
+<li><a href="#stage-5-actors">Stage 5: actors</a></li>
+<li><a href="#stage-6-workspaces">Stage 6: workspaces</a></li>
+<li><a href="#stage-7-browser-kind">Stage 7: browser kind</a></li>
+<li><a href="#working-rules">Working rules</a></li>
+</ul>
+</li>
+</ul>
+</div>
+
+</div></nav>
+<main>
+<h1 id="build-plan">Build plan</h1>
+<p><strong>TL;DR.</strong> Seven stages, each a mergeable PR series with its own gate, ordered so every stage ships working software and nothing waits on workspaces or browsers. Stage 0 writes the ADRs and spec text. Stage 1 rebuilds <code>phux-core</code> around sessions and resources with no Window. Stage 2 adds the org store and activations. Stage 3 puts typed organization on the wire. Stage 4 moves every client. Stage 5 makes actors real. Stage 6 adds workspaces; stage 7 the browser kind.</p>
+<p>Each stage lists what lands, what it deletes, and the test that proves it. <code>just ci-full</code> is the bar for every PR. No stage leaves two authoritative models running: compatibility layers translate into the new model, never alongside it.</p>
+<h2 id="stage-0-decisions-on-paper">Stage 0: decisions on paper</h2>
+<table>
+<thead>
+<tr>
+<th>Deliverable</th>
+<th>Content</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ADR: resources, sessions, workspaces</td>
+<td>Nouns, D01, D03, D04, D06; retires Window; supersedes ADR-0105's keep-empty and the L2 claim that grouping is client convention.</td>
+</tr>
+<tr>
+<td>ADR: typed organization surface</td>
+<td>D08; the <code>Organization</code> capability; translation of intercepted keys; partially supersedes the session-key sections of L3.</td>
+</tr>
+<tr>
+<td>ADR: persistent records and activations</td>
+<td>D02, D07; org store format and write discipline; startup reconciliation by process identity; exit policy; removes respawn-in-place.</td>
+</tr>
+<tr>
+<td>ADR: actors and delegated agent grants</td>
+<td>D09; <code>Organize</code> and <code>Terminate</code> scope verbs; human lease precedence; lease epochs.</td>
+</tr>
+<tr>
+<td><code>docs/CONCEPTS.md</code></td>
+<td>Rewritten around the model, marked as landing in stages.</td>
+</tr>
+</tbody>
+</table>
+<p>Gate: <code>just docs-check</code>; the ADRs reviewed. Specs in <code>docs/spec/</code> change with the code that implements them, in stage 3.</p>
+<h2 id="stage-1-core-model">Stage 1: core model</h2>
+<p><code>phux-core</code> only, plus the minimal server edits to compile.</p>
+<ol>
+<li>Add <code>SessionKey</code>, <code>ResourceKey</code>, <code>ArrangementKey</code>, <code>Revision</code>, <code>ActivationId</code> (CONTRACTS §01). Keys are 16 random bytes; core takes them from the caller, it does not generate randomness.</li>
+<li>Replace <code>Session{windows, active, keep_empty}</code> with <code>Session{key, name, lifetime, members, arrangement, attrs, revision}</code>.</li>
+<li>Delete <code>Window</code>. Move <code>LayoutNode</code> to <code>arrangement.rs</code>, generic over its leaf. Add <code>Arrangement</code> and its validation (session arrangements reference members only; entry IDs unique; ratios valid).</li>
+<li><code>Resource</code> gains <code>key</code>, <code>session</code>, <code>on_exit</code>, <code>activation</code>; loses <code>window</code>.
+   The authority designates a persistent Inbox session; imported-session intake facts, bounded bulk moves, and revision-checked organization undo follow the same core rules.</li>
+<li>Add <code>apply(&amp;mut Org, Command, &amp;Actor, now) -&gt; Result&lt;Applied, Refusal&gt;</code> where <code>Applied</code> lists the transition events and the effects (launch, terminate) for the server to run. Every command in CONTRACTS §04 that touches sessions, resources, or arrangements is implemented here.</li>
+<li>Server: the registry wrapper keeps its current behavior through the new types. Today's single window becomes the session's arrangement with one group. The wire is unchanged: <code>GetState</code> still reports one window per session, synthesized from the arrangement.</li>
+</ol>
+<p>Deletes: <code>window.rs</code>, the window steps of the reap cascade.</p>
+<p>Proof: property tests over random command sequences. Invariants: every resource is in exactly one session's members; arrangements reference only members; revisions strictly increase; ephemeral sessions are never empty after a commit; no transition ever both removes a resource and leaves its activation running. Existing server and e2e tests pass unchanged.</p>
+<h2 id="stage-2-store-activations-recovery">Stage 2: store, activations, recovery</h2>
+<ol>
+<li><code>OrgStore</code> with transactional SQLite persistence (CONTRACTS §08), versioned migrations, indexed membership/intake queries, durable receipts, and crash/commit-failure tests. Reuse an existing suitable binding where possible; dependency additions need scoped review.</li>
+<li>Mint <code>AuthorityId</code> on first start; import the live registry and any <code>phux.tui.layout/v1</code> documents while preserving groups. Designate the persistent Inbox session and mark imported groups awaiting organization (MIGRATION §07).</li>
+<li>Terminal executor records <code>ProcIdentity</code> (pid, pgid, start time) and reports activation transitions.</li>
+<li>Startup reconciliation: rebind by handover, <code>Lost</code> by matching start time, <code>Unobserved</code> otherwise. Never relaunch.</li>
+<li>Exit policy replaces respawn-in-place and ADR-0124's retention flag. Server lifetime becomes "no live activations and no clients".</li>
+<li>Receipts for <code>OperationId</code>.</li>
+</ol>
+<p>Deletes: respawn-in-place, the zero-session exit, the keep-empty reap step.</p>
+<p>Proof: kill the server with SIGKILL mid-session and restart it: records come back; dead shells show <code>Unobserved</code>; a <code>nohup</code> child shows <code>Lost</code>; nothing relaunches. Restart again: same result, no double-counting. Store-write failure leaves memory unchanged.</p>
+<p>Scale proof: seed thousands of resource records across sessions, then measure paged Inbox/inventory, same-owner bulk moves and undo, indexed counts, and receipt churn under sustained mutation plus observers. Assert bounded page/batch sizes, no full-store rewrite per mutation, and no dropped records. Pin measured latency/resource budgets in the implementation gate; do not invent a universal unbounded-fleet promise.</p>
+<h2 id="stage-3-wire">Stage 3: wire</h2>
+<ol>
+<li><code>ServerFeatureExt::Organization</code>; the new <code>Command</code> variants, <code>Refusal</code>, and events (CONTRACTS §04, §05, §07); <code>ActorRef</code> gains principal fields.</li>
+<li>Scope verbs <code>Organize</code> and <code>Terminate</code>; classify every command; <code>Group</code> selectors resolve by current membership.</li>
+<li>The translation layer for the intercepted keys and the TUI layout key, attributed to the calling client.</li>
+<li><code>docs/spec/</code> updated (L2, L3, appendices) with a <code>docs/spec/CHANGELOG.md</code> entry; versioning per CONTRIBUTING.</li>
+</ol>
+<p>Proof: protocol round-trip tests for every new variant; dispatch tests per command for grant, conflict, stale, and duplicate-operation refusals; an old client (pinned binary from the last release) creates, renames, and kills sessions against the new server in e2e.</p>
+<h2 id="stage-4-clients">Stage 4: clients</h2>
+<p>Order matters: runtime and FFI first, because every client reads through them.</p>
+<ol>
+<li><code>phux-client-runtime</code>: snapshot plus journal reconciliation, operation correlation, retry with the same <code>OperationId</code>.
+   Add bounded paging/intake queries and organization receipts/undo before the UI adapters.</li>
+<li><code>phux-client-ffi</code>: lossless projection; Swift and C bindings regenerated.</li>
+<li><code>phux</code> CLI and <code>phux-mcp</code>: MIGRATION §04 and §05, including <code>rm</code>, <code>relaunch</code>, <code>restore</code>, and the kill workflow.</li>
+<li><code>phux-tui</code>: arrangement groups instead of windows; the verb table in MIGRATION §03.</li>
+<li>Desktop, Cockpit, web: MIGRATION §06.
+   Each exposes coherent Inbox grouping, keyboard organization, bulk selection, and undo; graphical clients also expose drag/drop. All use shared operations, not a private migration model.</li>
+<li>The "workspace" renames (MIGRATION §02), so stage 6 lands on a free name.</li>
+</ol>
+<p>Deletes: client-side session lifecycle via metadata, the TUI layout metadata key (still translated server-side for old clients), the web client's <code>default</code> auto-create.</p>
+<p>Proof: the close-versus-kill matrix runs against each client: close a view and the process survives; kill and it ends; exit a shell and the view goes; exit the last shell of a named session and the session stays. Cross-client: create in CLI, see it in TUI and desktop, rename on one, see it on the others.</p>
+<p>Intake proof: migration lands in Inbox, preserved groups remain recognizable, and drag/keyboard/bulk routes produce the same membership result. Undo restores grouping without changing activations; concurrent edits or revoked grants refuse safely. Large bot sessions show counts/outcomes/exceptions and drill-down without mounting every resource. Stage 4 provides owner-local intake; combined cross-owner Inbox lands with the multi-authority runtime in stage 6.</p>
+<h2 id="stage-5-actors">Stage 5: actors</h2>
+<ol>
+<li>Principal registry: the owner, plus owner-registered agent and automation credentials (building on ADR-0098's workload credentials).</li>
+<li><code>phux agent start</code> and in-session launches mint a delegated credential, own session, Observe and Interact, <code>on_behalf_of</code> the launcher.</li>
+<li>Lease precedence for humans; <code>LeaseChanged</code> with epochs; evidence can answer who was driving when.</li>
+<li>Every client shows who did it: "killed by claude (on behalf of you)".</li>
+</ol>
+<p>Proof: an agent credential is refused <code>Terminate</code> outside its session; a human takeover from an agent always succeeds and the agent receives the lease-lost event; every journaled organization event has a principal.</p>
+<h2 id="stage-6-workspaces">Stage 6: workspaces</h2>
+<p><code>Workspace</code> records, link and unlink, the workspace arrangement, multi-authority observation in the client runtime, transfer, deleted-link and offline states. Gated on the runtime holding sessions from two authorities at once.</p>
+<p>Proof: the workspace scenarios in the <a href="FULL-DESIGN.html#07-workspaces">domain model</a> against two real servers, one killed mid-test.</p>
+<p>Also prove combined Inbox preserves imported groups from both owners, links sessions without moving execution, and reports link/intake-resolution and undo outcomes per owner. Different human/bot views operate on the same IDs, permissions, records, and events.</p>
+<h2 id="stage-7-browser-kind">Stage 7: browser kind</h2>
+<p><a href="BROWSER-KIND.html">BROWSER-KIND.md</a>, with a real owner-side browser driver. Not started before stage 4 is done.</p>
+<h2 id="working-rules">Working rules</h2>
+<ul>
+<li>One writer per stage area; fan-out only along the crate seams in CONTRACTS §10.</li>
+<li>Every PR that changes behavior updates the doc that owns the behavior in the same PR.</li>
+<li>These research files freeze when the stage 0 ADRs merge; after that the ADRs and <code>docs/</code> are the source of truth.</li>
+</ul>
+<p class="footer">Generated from PLAN.md by build.py. No external scripts, fonts, analytics, or network requests. Source SHA-256: <code>3c7676c9af4f0922bb21c8023aff068c9c14ca020d480e7dabb6784822f04694</code>.</p>
+</main></div>
+<script>
+
+const storageKey = "phux-domain-review-plan";
+const sourceLabel = "PLAN.md, Draft 3 \u00b7 12 October 2026, sha256 3c7676c9af4f0922bb21c8023aff068c9c14ca020d480e7dabb6784822f04694";
+let notes = {};
+let storageAvailable = true;
+try { notes = JSON.parse(localStorage.getItem(storageKey) || '{}'); }
+catch { storageAvailable = false; }
+if (!notes || typeof notes !== 'object' || Array.isArray(notes)) notes = {};
+
+function saveNotes(status) {
+  try { localStorage.setItem(storageKey, JSON.stringify(notes)); status.textContent = 'Saved locally in this browser. Export for a portable copy.'; }
+  catch { status.textContent = 'Local saving unavailable. Export your notes before closing this page.'; }
+}
+function notePanel(heading) {
+  const panel = document.createElement('section');
+  panel.className = 'review-note empty';
+  const label = document.createElement('label');
+  label.textContent = 'Your notes · ' + heading.textContent;
+  const field = document.createElement('textarea');
+  field.id = 'note-' + heading.id;
+  label.htmlFor = field.id;
+  field.placeholder = 'What should change? Reference a decision or paragraph here…';
+  field.value = typeof notes[heading.id] === 'string' ? notes[heading.id] : '';
+  panel.classList.toggle('empty', !field.value.trim());
+  const status = document.createElement('div');
+  status.className = 'note-status';
+  status.setAttribute('role', 'status');
+  status.textContent = storageAvailable ? 'Notes save locally. Export to share them.' : 'Local saving unavailable. Export before closing.';
+  field.addEventListener('input', () => {
+    notes[heading.id] = field.value;
+    panel.classList.toggle('empty', !field.value.trim());
+    saveNotes(status);
+  });
+  panel.append(label, field, status);
+  return panel;
+}
+const headings = [...document.querySelectorAll('main h2')];
+const headingIds = new Set(headings.map(h => h.id));
+for (let index = 0; index < headings.length; index += 1) {
+  const panel = notePanel(headings[index]);
+  const next = headings[index + 1];
+  const before = next || document.querySelector('.footer');
+  before.before(panel);
+}
+// Notes written against an earlier draft whose section no longer exists.
+const orphans = Object.entries(notes).filter(([id, text]) => !headingIds.has(id) && typeof text === 'string' && text.trim());
+if (orphans.length) {
+  const box = document.createElement('section');
+  box.className = 'orphans';
+  const title = document.createElement('h2');
+  title.textContent = 'Notes from an earlier draft';
+  box.append(title);
+  for (const [id, text] of orphans) {
+    const label = document.createElement('p');
+    label.textContent = '§ ' + id;
+    const body = document.createElement('pre');
+    body.textContent = text;
+    box.append(label, body);
+  }
+  document.querySelector('main h1').after(box);
+}
+for (const table of document.querySelectorAll('main table')) {
+  const wrap = document.createElement('div');
+  wrap.className = 'table-wrap';
+  table.before(wrap);
+  wrap.append(table);
+}
+function exportNotes() {
+  const parts = ['# ' + document.title + ' — review notes', '', 'Source: ' + sourceLabel, ''];
+  for (const heading of headings) {
+    const field = document.getElementById('note-' + heading.id);
+    if (field.value.trim()) parts.push('## ' + heading.textContent, '', field.value.trim(), '');
+  }
+  for (const [id, text] of orphans) parts.push('## (earlier draft) ' + id, '', text.trim(), '');
+  const blob = new Blob([parts.join('\n')], {type:'text/markdown;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'phux-domain-review-notes.md';
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+document.getElementById('export').addEventListener('click', exportNotes);
+document.getElementById('print').addEventListener('click', () => window.print());
+
+</script>
+</body></html>

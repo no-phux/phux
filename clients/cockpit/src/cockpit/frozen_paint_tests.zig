@@ -69,8 +69,8 @@ fn reconnect(engine: *engine_module.Engine, wrong: bool) !void {
     // its initial workspace read is outstanding. The original server completes
     // that read before its restored live grid may replace the frozen paint.
     if (!wrong) {
-        try fixture.stageWorkspaceFixture(remote.bridge, "workspace_initial_metadata.bin");
-        try fixture.stageWorkspaceFixture(remote.bridge, "workspace_initial_state.bin");
+        try fixture.stageWorkspaceFixture(remote.bridge, "workspace_arranged_metadata.bin");
+        try fixture.stageWorkspaceFixture(remote.bridge, "workspace_arranged_state.bin");
         _ = engine.onPhuxChannel(&ChannelFx{}, .{ .key = support.phux_channel_key, .kind = .data }, null);
     }
     remote.bridge.outgoing.reset();

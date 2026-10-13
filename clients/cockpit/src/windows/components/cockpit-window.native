@@ -30,7 +30,8 @@
                   <menu-item disabled="{tab.moveNextDisabled}" on-press="move_tab_next_target:{tab.target}">Move Right</menu-item>
                   <menu-item disabled="{tab.closeOthersDisabled}" on-press="close_other_tabs:{tab.target}">Close Others</menu-item>
                   <separator />
-                  <menu-item on-press="close_tab_target:{tab.target}">Close Tab</menu-item>
+                  <menu-item on-press="close_tab_target:{tab.target}">Close View</menu-item>
+                  <menu-item on-press="kill_tab_target:{tab.target}">Kill Tab</menu-item>
                 </context-menu>
               </segmented-control>
               <!-- Wrapping only the close control keeps it out of tab traversal. -->
@@ -116,7 +117,8 @@
                           <menu-item disabled="{row.moveNextDisabled}" on-press="move_tab_next_target:{row.target}">Move Down</menu-item>
                           <menu-item disabled="{row.closeOthersDisabled}" on-press="close_other_tabs:{row.target}">Close Others</menu-item>
                           <separator />
-                          <menu-item on-press="close_tab_target:{row.target}">Close Tab</menu-item>
+                          <menu-item on-press="close_tab_target:{row.target}">Close View</menu-item>
+                          <menu-item on-press="kill_tab_target:{row.target}">Kill Tab</menu-item>
                       </context-menu>
                     </list-item>
                   </else>

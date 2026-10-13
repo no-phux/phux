@@ -1,23 +1,11 @@
-//! Layout-tree operations on [`Window`], using real ids from a [`Registry`].
+//! Split-tree operations on [`LayoutNode<u32>`].
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use phux_core::{LayoutError, LayoutNode, Registry, ResourceId, SplitDir, WindowId};
+use phux_core::arrangement::{collapse, remove};
+use phux_core::{LayoutError, LayoutNode, SplitDir};
 
-/// A registry with one window whose layout is reset to `Leaf(first)`, plus
-/// `extra` further terminal ids to split with.
-fn window_with(extra: usize) -> (Registry, WindowId, Vec<ResourceId>) {
-    let mut reg = Registry::new();
-    let s = reg.new_session("test".to_owned());
-    let w = reg.new_window(s).expect("session exists");
-    let ids: Vec<ResourceId> = (0..=extra)
-        .map(|_| reg.new_terminal(w).expect("window exists"))
-        .collect();
-    reg.window_mut(w).expect("window exists").layout = Some(LayoutNode::Leaf(ids[0]));
-    (reg, w, ids)
-}
-
-fn split(left: LayoutNode, right: LayoutNode, dir: SplitDir) -> LayoutNode {
+fn split(left: LayoutNode<u32>, right: LayoutNode<u32>, dir: SplitDir) -> LayoutNode<u32> {
     LayoutNode::Split {
         dir,
         ratio: 0.5,
@@ -28,33 +16,25 @@ fn split(left: LayoutNode, right: LayoutNode, dir: SplitDir) -> LayoutNode {
 
 #[test]
 fn nested_split_rewrites_only_the_target_leaf() {
-    let (mut reg, w, ids) = window_with(2);
-    let (p1, p2, p3) = (ids[0], ids[1], ids[2]);
-    let win = reg.window_mut(w).expect("window exists");
-    win.split(p1, p2, SplitDir::Horizontal, 0.5)
-        .expect("split p1");
-    win.split(p2, p3, SplitDir::Vertical, 0.5)
-        .expect("split p2");
+    let mut tree = LayoutNode::Leaf(1);
+    tree.split(&1, 2, SplitDir::Horizontal, 0.5)
+        .expect("split 1");
+    tree.split(&2, 3, SplitDir::Vertical, 0.5).expect("split 2");
     assert_eq!(
-        win.layout,
-        Some(split(
-            LayoutNode::Leaf(p1),
-            split(
-                LayoutNode::Leaf(p2),
-                LayoutNode::Leaf(p3),
-                SplitDir::Vertical
-            ),
+        tree,
+        split(
+            LayoutNode::Leaf(1),
+            split(LayoutNode::Leaf(2), LayoutNode::Leaf(3), SplitDir::Vertical),
             SplitDir::Horizontal,
-        ))
+        )
     );
+    assert_eq!(tree.leaves(), vec![&1, &2, &3]);
 }
 
 #[test]
 fn split_rejects_bad_input_without_changing_layout() {
-    let (mut reg, w, ids) = window_with(2);
-    let (p1, missing, new_pane) = (ids[0], ids[1], ids[2]);
-    let win = reg.window_mut(w).expect("window exists");
-    let original = win.layout.clone();
+    let mut tree = LayoutNode::Leaf(1);
+    let original = tree.clone();
 
     for ratio in [
         f32::NEG_INFINITY,
@@ -68,40 +48,108 @@ fn split_rejects_bad_input_without_changing_layout() {
     ] {
         assert!(
             matches!(
-                win.split(p1, new_pane, SplitDir::Horizontal, ratio),
+                tree.split(&1, 3, SplitDir::Horizontal, ratio),
                 Err(LayoutError::InvalidRatio(_))
             ),
             "split must reject ratio {ratio}"
         );
-        assert_eq!(
-            win.layout, original,
-            "rejected ratio {ratio} changed the layout"
-        );
+        assert_eq!(tree, original, "rejected ratio {ratio} changed the layout");
     }
     assert_eq!(
-        win.split(missing, new_pane, SplitDir::Horizontal, 0.5),
-        Err(LayoutError::PaneNotInLayout(missing))
+        tree.split(&2, 3, SplitDir::Horizontal, 0.5),
+        Err(LayoutError::PaneNotInLayout(2))
     );
-    assert_eq!(win.layout, original);
+    assert_eq!(tree, original);
 }
 
 #[test]
-fn kill_pane_collapses_the_parent_split_and_reports_edge_cases() {
-    let (mut reg, w, ids) = window_with(1);
-    let (p1, p2) = (ids[0], ids[1]);
-    let win = reg.window_mut(w).expect("window exists");
-    win.split(p1, p2, SplitDir::Horizontal, 0.5)
-        .expect("split p1");
+fn remove_collapses_the_parent_split_and_empties_on_the_last_leaf() {
+    let mut tree = Some(split(
+        LayoutNode::Leaf(1),
+        LayoutNode::Leaf(2),
+        SplitDir::Horizontal,
+    ));
+    assert_eq!(remove(&mut tree, &9), Err(LayoutError::PaneNotInLayout(9)));
 
-    let bogus = ResourceId::default();
-    assert_eq!(
-        win.kill_pane(bogus),
-        Err(LayoutError::PaneNotInLayout(bogus))
+    remove(&mut tree, &1).expect("remove 1");
+    assert_eq!(tree, Some(LayoutNode::Leaf(2)));
+
+    remove(&mut tree, &2).expect("remove the last leaf");
+    assert_eq!(tree, None);
+    assert_eq!(remove(&mut tree, &2), Err(LayoutError::PaneNotInLayout(2)));
+}
+
+#[test]
+fn collapse_drops_every_matching_leaf_and_keeps_shape() {
+    let tree = split(
+        split(LayoutNode::Leaf(1), LayoutNode::Leaf(2), SplitDir::Vertical),
+        split(LayoutNode::Leaf(3), LayoutNode::Leaf(4), SplitDir::Vertical),
+        SplitDir::Horizontal,
     );
+    let kept = collapse(tree.clone(), &|l| l % 2 == 0).expect("odd leaves survive");
+    assert_eq!(
+        kept,
+        split(
+            LayoutNode::Leaf(1),
+            LayoutNode::Leaf(3),
+            SplitDir::Horizontal
+        )
+    );
+    assert_eq!(collapse(tree, &|_| true), None);
+}
 
-    win.kill_pane(p1).expect("kill p1");
-    assert_eq!(win.layout, Some(LayoutNode::Leaf(p2)));
+#[test]
+fn map_translates_leaves_and_validate_ratios_checks_hand_built_trees() {
+    let tree = split(LayoutNode::Leaf(1), LayoutNode::Leaf(2), SplitDir::Vertical);
+    let mapped = tree.map(&mut |l| format!("pane-{l}"));
+    assert_eq!(mapped.leaves(), vec!["pane-1", "pane-2"]);
+    let back: Result<LayoutNode<u32>, ()> = mapped.try_map(&mut |s| {
+        s.strip_prefix("pane-")
+            .and_then(|n| n.parse().ok())
+            .ok_or(())
+    });
+    assert_eq!(back, Ok(tree.clone()));
+    assert_eq!(tree.validate_ratios(), Ok(()));
 
-    assert_eq!(win.kill_pane(p2), Err(LayoutError::LastPane));
-    assert_eq!(win.layout, None);
+    let bad = LayoutNode::Split {
+        dir: SplitDir::Horizontal,
+        ratio: 1.0,
+        left: Box::new(LayoutNode::Leaf(1)),
+        right: Box::new(LayoutNode::Leaf(2)),
+    };
+    assert_eq!(bad.validate_ratios(), Err(LayoutError::InvalidRatio(1.0)));
+}
+
+#[test]
+fn satellite_entries_skip_membership_but_member_entries_are_checked() {
+    use phux_core::{ArrangementError, EntryRef, EntryTarget, Group, ResourceKey, arrangement};
+
+    let member = ResourceKey::from_bytes([7; 16]);
+    let stranger = ResourceKey::from_bytes([8; 16]);
+    let satellite = EntryRef {
+        entry: [2; 16],
+        target: EntryTarget::Satellite {
+            host: "mini".to_owned(),
+            id: 4,
+        },
+    };
+    let group = |right: EntryRef| Group {
+        id: [9; 16],
+        name: None,
+        tree: LayoutNode::Split {
+            dir: SplitDir::Horizontal,
+            ratio: 0.5,
+            left: Box::new(LayoutNode::Leaf(EntryRef::member([1; 16], member))),
+            right: Box::new(LayoutNode::Leaf(right)),
+        },
+    };
+
+    assert_eq!(
+        arrangement::validate_groups(&[group(satellite)], [&member]),
+        Ok(())
+    );
+    assert_eq!(
+        arrangement::validate_groups(&[group(EntryRef::member([2; 16], stranger))], [&member]),
+        Err(ArrangementError::NotAMember(stranger))
+    );
 }

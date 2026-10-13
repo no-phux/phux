@@ -31,6 +31,7 @@ mod diagnostic_tools;
 #[cfg(test)]
 mod goldens;
 mod jsonrpc;
+mod org_tools;
 mod pane_tools;
 mod plugin_tools;
 mod resource_tools;

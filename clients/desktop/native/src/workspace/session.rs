@@ -29,17 +29,6 @@ pub fn rename_session_args(socket: &str, current: &str, next: &str) -> Vec<Strin
     ]
 }
 
-/// Arguments for `phux kill` of one session on one socket.
-#[must_use]
-pub fn close_session_args(socket: &str, name: &str) -> Vec<String> {
-    vec![
-        "--socket".to_owned(),
-        socket.to_owned(),
-        "kill".to_owned(),
-        name.to_owned(),
-    ]
-}
-
 /// The session a new window attaches. An empty pick keeps the current window.
 #[must_use]
 pub fn window_session(explicit: Option<&str>, current: &str) -> String {

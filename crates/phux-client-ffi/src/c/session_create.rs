@@ -1,6 +1,9 @@
-//! Empty, keep-empty session creation over the CLI's owning-connection metadata
-//! operation. A nonce result binds the server-owned ID; an ordered state read
-//! verifies that exact session. No attach, shell, or second coordinator is involved.
+//! Session creation on the owning connection. Against a server that
+//! advertises `ORGANIZATION` it is one typed `SESSION_CREATE` whose committed
+//! key an ordered state read binds to its live id; otherwise the CLI's
+//! keep-empty metadata operation, whose nonce result binds the server-owned
+//! ID before the same ordered read. No attach or second coordinator is
+//! involved.
 #![allow(clippy::redundant_pub_crate, reason = "private bridge module")]
 
 use std::collections::BTreeMap;
@@ -10,9 +13,11 @@ use crate::c::client::Client;
 use crate::c::error::{BridgeError, bytes_in, check_struct};
 use crate::c::types::{PhuxBytes, bytes_out};
 use crate::c::{PhuxClient, PhuxClientResult, with_client_mut, with_client_ref};
+use phux_client_core::org_ops::OrgOutcome;
+use phux_protocol::ids::{OperationId, SessionKey};
 use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, FrameKind, SESSION_CREATE_KEY,
-    SESSION_CREATE_RESULT_KEY_PREFIX, Scope, StateScope,
+    Command, CommandResult, CommandValue, FrameKind, LaunchSpec, SESSION_CREATE_KEY,
+    SESSION_CREATE_RESULT_KEY_PREFIX, Scope, SessionLifetime, StateScope,
 };
 
 const PENDING: u32 = 1;
@@ -37,6 +42,11 @@ struct Creation {
     status: u32,
     session_id: u32,
     message: Vec<u8>,
+    /// The typed `SESSION_CREATE` this creation submitted, against a server
+    /// that advertises `ORGANIZATION`.
+    operation: Option<OperationId>,
+    /// The committed session's key, which the confirming read matches.
+    key: Option<SessionKey>,
 }
 
 impl Creation {
@@ -111,7 +121,7 @@ fn matches_result(value: &[u8], name: &str, token: &str) -> bool {
         && doc.get("terminal_id") == Some(&serde_json::Value::Null)
 }
 
-/// Consume only the exact operation's replies, before workspace dispatch.
+/// Consume only the exact operation's replies, before arrangement dispatch.
 pub(crate) fn dispatch(
     client: &mut Client,
     frame: FrameKind,
@@ -191,19 +201,21 @@ fn receive_state(
         entry.refuse("session identity arrived without a confirmed creation receipt");
         return Ok(());
     }
-    let sessions = crate::c::workspace::session_summaries(snapshot).inspect_err(|_| {
+    let sessions = crate::c::arrangement::session_summaries(snapshot).inspect_err(|_| {
         entry.refuse("could not decode the created session's state");
     })?;
-    let created = sessions
-        .iter()
-        .find(|session| Some(session.session_id) == entry.receipt_id && session.keep_empty);
+    let created = sessions.iter().find(|session| match entry.key {
+        Some(key) => session.key == Some(key),
+        None => Some(session.session_id) == entry.receipt_id && session.keep_empty,
+    });
     let Some(created) = created else {
-        entry.refuse("created session is no longer available as a keep-empty session");
+        entry.refuse("the created session is no longer available");
         return Ok(());
     };
     entry.session_id = created.session_id;
     entry.status = CREATED;
     client.sessions = sessions;
+    client.org.sessions_dirty = true;
     Ok(())
 }
 
@@ -242,8 +254,8 @@ fn queue(
     directory: Option<&str>,
 ) -> Result<Creation, BridgeError> {
     let token = uuid::Uuid::new_v4().to_string();
-    let result_read = client.workspace.reserve_internal()?;
-    let state_read = client.workspace.reserve_internal()?;
+    let result_read = client.arrangement.reserve_internal()?;
+    let state_read = client.arrangement.reserve_internal()?;
     let value = create_value(name, directory, &token)?;
     let frames = [
         FrameKind::SetMetadata {
@@ -283,11 +295,128 @@ fn queue(
         status: PENDING,
         session_id: 0,
         message: Vec::new(),
+        operation: None,
+        key: None,
     })
 }
 
-/// Create an empty durable session on this exact negotiated connection.
-/// `keep_empty` must be true; older servers are refused before any write.
+/// Against a server that advertises `ORGANIZATION`: one typed
+/// `SESSION_CREATE` through the runtime's operation journal. A non-empty
+/// directory, or an ephemeral lifetime, launches the first shell with it
+/// (an ephemeral session is never empty).
+fn submit_typed(
+    client: &Client,
+    name: &str,
+    directory: Option<&str>,
+    lifetime: SessionLifetime,
+) -> Result<Creation, BridgeError> {
+    let directory = directory.filter(|directory| !directory.is_empty());
+    let launch = (directory.is_some() || lifetime == SessionLifetime::Ephemeral)
+        .then(|| Box::new(LaunchSpec::new(Vec::new()).with_cwd(directory.map(str::to_owned))));
+    let attrs = directory
+        .map(|directory| vec![("directory".to_owned(), directory.to_owned())])
+        .unwrap_or_default();
+    let operation = client
+        .control()
+        .submit_organization(Command::SessionCreate {
+            operation: phux_client_runtime::control::mint_operation(),
+            name: name.to_owned(),
+            lifetime,
+            attrs,
+            launch,
+        })
+        .map_err(|error| BridgeError::state(error.to_string()))?;
+    Ok(Creation {
+        name: name.to_owned(),
+        token: String::new(),
+        result_read: 0,
+        state_read: 0,
+        confirmed: false,
+        receipt_id: None,
+        state_finished: true,
+        released: false,
+        status: PENDING,
+        session_id: 0,
+        message: Vec::new(),
+        operation: Some(operation),
+        key: None,
+    })
+}
+
+/// A typed creation resolved. On commit, an ordered `GET_STATE` binds the
+/// created key to its live session id. True when `operation` was one of
+/// this client's creations.
+pub(crate) fn organization_resolved(
+    client: &mut Client,
+    operation: OperationId,
+    outcome: &OrgOutcome,
+) -> bool {
+    let Some(request) = client
+        .session_creates
+        .entries
+        .iter()
+        .find_map(|(request, entry)| (entry.operation == Some(operation)).then_some(*request))
+    else {
+        return false;
+    };
+    let resolution = crate::projection::organization::resolution(outcome);
+    let committed = match outcome {
+        OrgOutcome::Committed(committed) => committed.session,
+        _ => None,
+    };
+    let read = match committed {
+        Some(_) => client.arrangement.reserve_internal().ok(),
+        None => None,
+    };
+    let queued = read.is_some_and(|read| {
+        client
+            .queue_frame(&FrameKind::Command {
+                request_id: read,
+                command: Command::GetState {
+                    scope: StateScope::Server,
+                },
+            })
+            .is_ok()
+    });
+    let Some(entry) = client.session_creates.entries.get_mut(&request) else {
+        return true;
+    };
+    entry.operation = None;
+    match (committed, read) {
+        (Some(key), Some(read)) if queued => {
+            entry.confirmed = true;
+            entry.key = Some(key);
+            entry.state_read = read;
+            entry.state_finished = false;
+        }
+        (Some(_), _) => entry.unknown(
+            "The session was created but its identity could not be read. Refresh Sessions to find it.",
+        ),
+        (None, _) if resolution.status == crate::projection::organization::Status::Unknown => {
+            entry.unknown(&resolution.message);
+        }
+        (None, _) => {
+            let message = if resolution.message.is_empty() {
+                "the server did not create the session".to_owned()
+            } else {
+                resolution.message
+            };
+            entry.refuse(&message);
+        }
+    }
+    if entry.released && entry.state_finished {
+        client.session_creates.entries.remove(&request);
+    }
+    true
+}
+
+/// Create a session on this exact negotiated connection.
+///
+/// `lifetime` is a `PhuxSessionLifetime`. Against a server that advertises `ORGANIZATION`
+/// it is one typed `SESSION_CREATE`; an ephemeral session launches its
+/// first shell, a persistent one is created empty. Otherwise the legacy
+/// keep-empty metadata operation creates a persistent, empty session, and an
+/// ephemeral one is refused.
 ///
 /// # Safety
 /// Client is live and exclusively accessed on its owning thread. Name is a
@@ -297,32 +426,18 @@ pub unsafe extern "C" fn phux_client_create_session(
     client: *mut PhuxClient,
     request_id: u32,
     name: PhuxBytes,
-    keep_empty: bool,
+    lifetime: u32,
 ) -> PhuxClientResult {
     with_client_mut(client, |client| {
-        if !client.protocol_ready || client.detached {
-            return Err(BridgeError::state(
-                "session creation needs a negotiated connection",
-            ));
-        }
-        if !keep_empty || !client.keep_empty_sessions {
-            return Err(BridgeError::state(
-                "server must support keep-empty sessions",
-            ));
-        }
         // SAFETY: caller supplies a readable name span.
-        let name = valid_name(unsafe { bytes_in(name.data, name.len) }?)?;
-        client.operations.check_request_id(request_id)?;
-        ensure_capacity(client)?;
-        let entry = queue(client, request_id, name, None)?;
-        client.operations.consume_request_id(request_id);
-        client.session_creates.entries.insert(request_id, entry);
-        Ok(())
+        let name = unsafe { bytes_in(name.data, name.len) }?;
+        create(client, request_id, name, None, lifetime)
     })
 }
 
-/// Create a session whose seed uses `directory` when that span is non-empty.
-/// An empty directory is the same empty session as [`phux_client_create_session`].
+/// As [`phux_client_create_session`], with `directory` as the session's
+/// directory: a non-empty one launches the first shell there. An empty
+/// directory is the same session as [`phux_client_create_session`].
 ///
 /// # Safety
 /// Client is live and exclusively accessed on its owning thread. Name and
@@ -334,31 +449,50 @@ pub unsafe extern "C" fn phux_client_create_session_in(
     request_id: u32,
     name: PhuxBytes,
     directory: PhuxBytes,
-    keep_empty: bool,
+    lifetime: u32,
 ) -> PhuxClientResult {
     with_client_mut(client, |client| {
-        if !client.protocol_ready || client.detached {
-            return Err(BridgeError::state(
-                "session creation needs a negotiated connection",
-            ));
-        }
-        if !keep_empty || !client.keep_empty_sessions {
-            return Err(BridgeError::state(
-                "server must support keep-empty sessions",
-            ));
-        }
         // SAFETY: caller supplies readable name and directory spans.
-        let name = valid_name(unsafe { bytes_in(name.data, name.len) }?)?;
+        let name = unsafe { bytes_in(name.data, name.len) }?;
+        // SAFETY: as above.
         let directory = unsafe { bytes_in(directory.data, directory.len) }?;
         let directory = std::str::from_utf8(directory)
             .map_err(|_| BridgeError::invalid("session directory must be UTF-8"))?;
-        client.operations.check_request_id(request_id)?;
-        ensure_capacity(client)?;
-        let entry = queue(client, request_id, name, Some(directory))?;
-        client.operations.consume_request_id(request_id);
-        client.session_creates.entries.insert(request_id, entry);
-        Ok(())
+        create(client, request_id, name, Some(directory), lifetime)
     })
+}
+
+fn create(
+    client: &mut Client,
+    request_id: u32,
+    name: &[u8],
+    directory: Option<&str>,
+    lifetime: u32,
+) -> Result<(), BridgeError> {
+    if !client.protocol_ready || client.detached {
+        return Err(BridgeError::state(
+            "session creation needs a negotiated connection",
+        ));
+    }
+    let lifetime = crate::c::organization::lifetime_in(lifetime)?;
+    let name = valid_name(name)?;
+    let typed = crate::c::organization::live(client);
+    if !typed && (lifetime != SessionLifetime::Persistent || !client.keep_empty_sessions) {
+        return Err(BridgeError::state(
+            "without ORGANIZATION the server must support keep-empty sessions, and only persistent sessions can be created",
+        ));
+    }
+    client.operations.check_request_id(request_id)?;
+    ensure_capacity(client)?;
+    let entry = if typed {
+        submit_typed(client, name, directory, lifetime)?
+    } else {
+        queue(client, request_id, name, directory)?
+    };
+    client.operations.consume_request_id(request_id);
+    client.session_creates.entries.insert(request_id, entry);
+    client.process_runtime_events()?;
+    Ok(())
 }
 
 fn ensure_capacity(client: &Client) -> Result<(), BridgeError> {
@@ -469,14 +603,21 @@ mod tests {
                 id,
                 bytes_out(name.as_bytes()),
                 bytes_out(directory.as_bytes()),
-                true,
+                crate::c::organization::LIFETIME_PERSISTENT,
             )
         }
     }
 
     fn create(client: &mut PhuxClient, id: u32, name: &str) -> PhuxClientResult {
         // SAFETY: owned client and name live throughout the call.
-        unsafe { phux_client_create_session(client, id, bytes_out(name.as_bytes()), true) }
+        unsafe {
+            phux_client_create_session(
+                client,
+                id,
+                bytes_out(name.as_bytes()),
+                crate::c::organization::LIFETIME_PERSISTENT,
+            )
+        }
     }
 
     fn feed(client: &mut PhuxClient, frame: &FrameKind) {
@@ -644,7 +785,14 @@ mod tests {
         );
         // SAFETY: spans and client live throughout the call.
         assert_eq!(
-            unsafe { phux_client_create_session(&raw mut *client, 1, bytes_out(b"work"), false) },
+            unsafe {
+                phux_client_create_session(
+                    &raw mut *client,
+                    1,
+                    bytes_out(b"work"),
+                    crate::c::organization::LIFETIME_EPHEMERAL,
+                )
+            },
             PhuxClientResult::InvalidState
         );
         assert!(client.inner.outgoing.is_empty());

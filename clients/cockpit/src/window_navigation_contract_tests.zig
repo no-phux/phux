@@ -93,7 +93,7 @@ test "window navigator searches full named empty session and host independently 
         .window_count = 0,
         .attached_client_count = 0,
         .focused = false,
-        .keep_empty = true,
+        .lifetime = .persistent,
         .empty = true,
     });
     engine.model.empty_pick = .{ .coordinator = remote.providerId(), .session = 42, .window = 1 };

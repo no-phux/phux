@@ -1,6 +1,6 @@
 //! The `.phux/project.toml` recipe (ADR-0152): parse, validate, and compile
-//! into the workspace archive `workspace restore` already knows how to
-//! replay, so a recipe adds no second session-building engine.
+//! into the session archive `phux archive` already knows how to import and
+//! relaunch, so a recipe adds no second session-building engine.
 //!
 //! Everything is checked before any process starts: unknown keys, ids,
 //! split targets, the focus reference, working directories, and the
@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::commands::workspace::archive::model::{
+use crate::commands::archive::model::{
     ARCHIVE_SCHEMA_VERSION, WorkspaceArchive, WorkspaceLayoutNode, WorkspacePane, WorkspaceSession,
     WorkspaceSplitDir, WorkspaceWindow,
 };

@@ -477,7 +477,7 @@ fn sidebar_env(
     sidebar_targets: crate::render::chrome::sidebar::SidebarTargets,
 ) -> Env<'static> {
     let mut fx = CtxFixture::default();
-    fx.workspace.add_window("two".to_owned(), tid(2));
+    fx.workspace.add_group("two".to_owned(), tid(2));
     fx.workspace.select(0);
     fx.viewport = (80, height);
     fx.sidebar = Some(SidebarReservation {
@@ -493,7 +493,7 @@ fn sidebar_env(
 fn window_names(env: &Env<'_>) -> Vec<String> {
     env.fx
         .workspace
-        .windows
+        .groups
         .iter()
         .map(|w| w.name.clone())
         .collect()
@@ -741,7 +741,7 @@ fn paint(painter: &mut StatusBarPainter, cols: u16) {
 /// row with no painter).
 fn bar_env(position: Position, with_painter: bool) -> Env<'static> {
     let mut fx = CtxFixture::default();
-    fx.workspace.add_window("two".to_owned(), tid(2));
+    fx.workspace.add_group("two".to_owned(), tid(2));
     fx.workspace.select(0);
     fx.bar = Some(position);
     fx.status_bar = with_painter.then(|| painted_windows_bar(position));
@@ -933,7 +933,7 @@ fn two_pane_env(seed_vt: &[(ResourceId, &[u8])], cell_px: (u16, u16)) -> Env<'st
 fn divider_x() -> u16 {
     use crate::multi_pane::{RouteDecision, route_mouse_event};
     let workspace = two_pane_workspace();
-    let ls = workspace.active_window().expect("window");
+    let ls = workspace.active_group().expect("window");
     let content = content_rect((80, 24), None, None);
     (0..80u16)
         .find(|&x| {
@@ -1299,7 +1299,7 @@ async fn replay_send_failure_rolls_back_frames_not_handed_to_the_connection() {
 /// value, or no focused pane, bells.
 #[test]
 fn set_pane_mouse_updates_the_opt_out() {
-    let mut f = fx(crate::layout::Workspace::single(tid(1)));
+    let mut f = fx(crate::layout::ArrangementDoc::single(tid(1)));
     let set = |value: toml::Value| act("set-pane", &[("mouse", value)]);
     for (value, opted_out) in [
         ("off".into(), true),
@@ -1317,7 +1317,7 @@ fn set_pane_mouse_updates_the_opt_out() {
     assert!(f.run(&set("sideways".into())).bell);
     assert!(f.mouse_optout.is_empty());
 
-    let mut f = fx(crate::layout::Workspace::default());
+    let mut f = fx(crate::layout::ArrangementDoc::default());
     assert!(f.run(&set("off".into())).bell);
     assert!(f.mouse_optout.is_empty());
 }
@@ -1424,7 +1424,10 @@ async fn kill_pane_dismisses_only_the_floating_overlay() {
     assert!(sent.repainted);
     assert!(!env.panes.contains_key(&tid(9)));
     assert!(env.fx.expected_closes.contains(&tid(9)));
-    assert_eq!(env.fx.workspace, crate::layout::Workspace::single(tid(1)));
+    assert_eq!(
+        crate::attach::arrangement_shape(&env.fx.workspace),
+        crate::attach::arrangement_shape(&crate::layout::ArrangementDoc::single(tid(1)))
+    );
     // Input is back on the layout pane.
     let sent = env.dispatch(vec![press(PhysicalKey::Q, Some("q"))]).await;
     assert!(
@@ -1462,7 +1465,10 @@ async fn a_non_layout_action_repaints_when_it_dismisses_the_floating_overlay() {
     assert_eq!(kills(&sent.frames), vec![tid(9)]);
     assert!(!env.panes.contains_key(&tid(9)));
     assert!(env.fx.expected_closes.contains(&tid(9)));
-    assert_eq!(env.fx.workspace, crate::layout::Workspace::single(tid(1)));
+    assert_eq!(
+        crate::attach::arrangement_shape(&env.fx.workspace),
+        crate::attach::arrangement_shape(&crate::layout::ArrangementDoc::single(tid(1)))
+    );
     assert!(
         env.fx.overlays.copy_selection().is_some(),
         "copy mode still opens"
@@ -1485,7 +1491,10 @@ async fn a_blocked_layout_action_repaints_when_it_dismisses_the_floating_overlay
     assert_eq!(kills(&sent.frames), vec![tid(9)]);
     assert_eq!(sent.frames.len(), 1, "new-window must stay blocked");
     assert!(!env.panes.contains_key(&tid(9)));
-    assert_eq!(env.fx.workspace, crate::layout::Workspace::single(tid(1)));
+    assert_eq!(
+        crate::attach::arrangement_shape(&env.fx.workspace),
+        crate::attach::arrangement_shape(&crate::layout::ArrangementDoc::single(tid(1)))
+    );
     assert!(
         sent.repainted,
         "even a blocked action dismissed the floating box"

@@ -70,6 +70,7 @@ mod tests {
             panes: Vec::new(),
             agent_sessions: Vec::new(),
             metadata: Vec::new(),
+            org: None,
         }
     }
 

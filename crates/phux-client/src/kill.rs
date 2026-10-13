@@ -1,24 +1,29 @@
 //! `phux kill` — wire primitives and the shared verb orchestration.
 //!
-//! Covers `SHUTDOWN`, `KILL_RESOURCES` (a whole session in one round trip),
-//! `KILL_RESOURCE` (one Terminal), and the keep-empty-session clear that
-//! lets the server remove an emptied session (ADR-0105).
+//! Covers `SHUTDOWN`, `KILL_RESOURCE` (one Terminal), and killing a whole
+//! session. Against a server that advertises `ORGANIZATION`, killing a
+//! session is the workflow of CONTRACTS §04 ([`kill_session`]): read the
+//! session's members and revision, `RESOURCE_TERMINATE` each executing
+//! member, wait until each is inactive, `RESOURCE_REMOVE` each, then
+//! `SESSION_DELETE` naming the revision the workflow last committed against,
+//! with a result per target. Work added meanwhile survives and the delete
+//! refuses `NOT_EMPTY`. Against an older server it is one atomic
+//! `KILL_RESOURCES`.
 //!
-//! [`selected`] is the selector resolution and whole-session / empty-session
-//! / per-pane choice both `phux kill` and MCP `phux_kill` call, so those
-//! surfaces cannot drift.
+//! [`selected`] is the selector resolution and whole-session / per-pane
+//! choice both `phux kill` and MCP `phux_kill` call, so those surfaces
+//! cannot drift.
 
 use phux_protocol::ResourceId;
 use phux_protocol::caps::{ServerFeature, ServerFeatureExt};
-use phux_protocol::ids::IdempotencyKey;
-use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, ErrorCode, FrameKind, SESSION_KEEP_EMPTY_KEY, Scope,
-    encode_session_keep_empty,
-};
+use phux_protocol::ids::{IdempotencyKey, SessionId};
+use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode, OrgFilter};
 use phux_protocol::wire::info::SessionSnapshot;
 
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
+use crate::org::{self, KillReport, OrgError, SessionOutcome, TargetOutcome};
+use crate::org_ops::KillWorkflow;
 use crate::selector::{self, Selector};
 use crate::state::Degradation;
 
@@ -274,34 +279,15 @@ pub async fn kill_resource_keyed(
     Ok(request_kill(conn, request_id, command).await?)
 }
 
-/// Clear a session's keep-empty mark (ADR-0105), so the server removes an
-/// empty session.
-///
-/// No reply: confirm with a `GET_STATE` on the same connection.
-///
-/// # Errors
-///
-/// Transport failures from [`Connection::send`].
-pub async fn clear_session_keep_empty(
-    conn: &mut Connection,
-    request_id: u32,
-    session_name: &str,
-) -> Result<(), AttachError> {
-    conn.send(&FrameKind::SetMetadata {
-        request_id,
-        scope: Scope::Global,
-        key: SESSION_KEEP_EMPTY_KEY.to_owned(),
-        value: encode_session_keep_empty(session_name, false),
-    })
-    .await
-}
-
 /// A successful [`selected`] kill.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Selected {
     /// Interleaved notices from the kill command(s) themselves (a hub's
     /// per-satellite unreachability on the kill round trip).
     pub interleaved: Vec<String>,
+    /// The per-target result of a whole-session kill workflow, when the
+    /// server advertises `ORGANIZATION`.
+    pub report: Option<KillReport>,
 }
 
 /// Why [`selected`] did not kill the target.
@@ -361,12 +347,30 @@ pub enum KillError {
         /// Interleaved notices collected across the loop.
         interleaved: Vec<String>,
     },
-    /// An empty-session clear ran but the server still listed the session.
-    #[error("kill refused for session {session:?}: the server kept it")]
-    SessionKept {
-        /// The session that should have gone.
+    /// A whole-session kill workflow ended without deleting the session;
+    /// the report says what happened to each target.
+    #[error("{}", workflow_sentence(label, report))]
+    Workflow {
+        /// The target label (`session "work"`).
+        label: String,
+        /// The per-target result.
+        report: Box<KillReport>,
+        /// Interleaved notices from the workflow's round trips.
+        interleaved: Vec<String>,
+    },
+    /// The session has no members and the server predates `ORGANIZATION`,
+    /// which is what deletes an empty session.
+    #[error(
+        "session {session:?} is empty and this server predates ORGANIZATION, so it cannot \
+         delete it"
+    )]
+    EmptySessionUnsupported {
+        /// The session.
         session: String,
     },
+    /// An organization request failed outright.
+    #[error(transparent)]
+    Org(OrgError),
     /// `%name` did not resolve to one agent (ADR-0075 point 3); nothing
     /// was killed.
     #[error(transparent)]
@@ -383,16 +387,68 @@ impl KillError {
         match self {
             Self::Refused { interleaved, .. }
             | Self::Unexpected { interleaved, .. }
-            | Self::PaneRefusals { interleaved, .. } => interleaved,
+            | Self::PaneRefusals { interleaved, .. }
+            | Self::Workflow { interleaved, .. } => interleaved,
             _ => &[],
         }
     }
 }
 
+/// The sentence for a workflow that did not delete its session: every
+/// target that is not gone, and the session's own outcome.
+fn workflow_sentence(label: &str, report: &KillReport) -> String {
+    let names = report_key_names(report);
+    let mut parts: Vec<String> = report
+        .targets
+        .iter()
+        .filter(|(_, outcome)| !outcome.is_gone())
+        .map(|(key, outcome)| {
+            format!(
+                "{}: {}",
+                names.display(*key.as_bytes()),
+                target_sentence(outcome)
+            )
+        })
+        .collect();
+    match &report.session_outcome {
+        SessionOutcome::Deleted | SessionOutcome::AlreadyGone => {}
+        SessionOutcome::Kept => parts.push("the session was kept".to_owned()),
+        SessionOutcome::Refused(refusal) => {
+            parts.push(format!(
+                "delete refused: {}",
+                org::refusal_sentence(refusal)
+            ));
+        }
+        SessionOutcome::Unknown(reason) => parts.push(format!("delete outcome unknown: {reason}")),
+    }
+    format!("kill incomplete for {label}: {}", parts.join("; "))
+}
+
+/// Display names unique among the keys a kill report lists: the session
+/// and every member it targeted.
+#[must_use]
+pub fn report_key_names(report: &KillReport) -> org::KeyNames {
+    org::KeyNames::new(
+        std::iter::once(*report.session.as_bytes())
+            .chain(report.targets.iter().map(|(key, _)| *key.as_bytes())),
+    )
+}
+
+fn target_sentence(outcome: &TargetOutcome) -> String {
+    match outcome {
+        TargetOutcome::Removed | TargetOutcome::AlreadyGone => "removed".to_owned(),
+        TargetOutcome::Refused(refusal) => org::refusal_sentence(refusal),
+        TargetOutcome::Unknown(reason) => format!("outcome unknown ({reason})"),
+        TargetOutcome::TimedOut => "did not stop in time".to_owned(),
+        TargetOutcome::NoLiveTarget => "runs on another server instance".to_owned(),
+    }
+}
+
 /// Resolve `selector` against a fresh snapshot on `conn` and kill what it names.
 ///
-/// A whole-session target rides one atomic `KILL_RESOURCES`; an empty
-/// session (ADR-0105) clears its keep-empty mark; a window, pane, `@id`, or
+/// A whole-session target runs [`kill_session`] against a server that
+/// advertises `ORGANIZATION` (an empty session is simply deleted), and one
+/// atomic `KILL_RESOURCES` against an older one; a group, pane, `@id`, or
 /// `#tag` target kills each resolved Terminal with `KILL_RESOURCE`. A clean
 /// disconnect after a kill is the server self-exiting once its last session
 /// was reaped: success.
@@ -425,9 +481,18 @@ pub async fn selected(
     }
     let (snapshot, degradation) = crate::state::get_state_on(conn).await?.into_parts();
     if let Some(session) = selector::whole_session_name(selector, &snapshot) {
+        if org::supported(conn) {
+            let Some(id) = session_id_named(&snapshot, &session) else {
+                return Err(KillError::NoSuchTarget {
+                    target: target.to_owned(),
+                });
+            };
+            notices.extend(degradation.notices().iter().cloned());
+            return kill_session(conn, id, &session).await;
+        }
         let ids = selector::resolve(selector, &snapshot);
         if ids.is_empty() && session_is_empty(&snapshot, &session) {
-            return kill_empty_session(conn, &session).await;
+            return Err(KillError::EmptySessionUnsupported { session });
         }
         if ids.is_empty() {
             return Err(KillError::NoSuchTarget {
@@ -534,20 +599,115 @@ fn session_is_empty(snapshot: &SessionSnapshot, name: &str) -> bool {
         .any(|session| session.name == name && session.is_empty())
 }
 
-/// Kill an empty session (ADR-0105): clear its keep-empty mark, then confirm
-/// with a `GET_STATE` on the same ordered connection that it is gone. A
-/// disconnect in its place is the server self-exiting after its last
-/// session went, which is success.
-async fn kill_empty_session(conn: &mut Connection, session: &str) -> Result<Selected, KillError> {
-    clear_session_keep_empty(conn, 1, session).await?;
-    match crate::state::get_state_on(conn).await {
-        Ok(view) if view.snapshot().sessions.iter().any(|s| s.name == session) => {
-            Err(KillError::SessionKept {
-                session: session.to_owned(),
-            })
+fn session_id_named(snapshot: &SessionSnapshot, name: &str) -> Option<SessionId> {
+    snapshot
+        .sessions
+        .iter()
+        .find(|session| session.name == name)
+        .map(|session| session.id)
+}
+
+/// The longest the workflow waits for terminated members to end before it
+/// reports them [`TargetOutcome::TimedOut`]; a graceful terminate escalates
+/// to a forced one halfway.
+const KILL_WAIT: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// Poll cadence while members are ending.
+const KILL_POLL: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// Kill the whole session `session` (live handle) by the organization
+/// workflow (CONTRACTS §04). The target set is the session's members when
+/// the workflow starts; the result names each.
+///
+/// # Errors
+///
+/// [`KillError::NoSuchTarget`] when the session has no record,
+/// [`KillError::Workflow`] when it was not deleted (with the per-target
+/// report), [`KillError::Org`] when its records cannot be read.
+pub async fn kill_session(
+    conn: &mut Connection,
+    session: SessionId,
+    label: &str,
+) -> Result<Selected, KillError> {
+    let label = format!("session {label:?}");
+    let inventory = org::fetch(conn, OrgFilter::All, 1)
+        .await
+        .map_err(KillError::Org)?;
+    let mut interleaved = inventory.degradation.notices().to_vec();
+    let record =
+        inventory
+            .session_by_live(session)
+            .cloned()
+            .ok_or_else(|| KillError::NoSuchTarget {
+                target: label.clone(),
+            })?;
+    let mut members: Vec<_> = inventory.members(&record.key).cloned().collect();
+    let mut workflow = KillWorkflow::plan(&record, &members);
+    let start = tokio::time::Instant::now();
+    let mut escalated = false;
+    let mut mint = org::mint_operation;
+    loop {
+        for (operation, command) in workflow.next_commands(&mut mint) {
+            match org::request(conn, 2, command).await {
+                Ok((outcome, degradation)) => {
+                    interleaved.extend(degradation.notices().iter().cloned());
+                    workflow.on_result(&operation, &outcome);
+                }
+                Err(err) => workflow.on_unknown(&operation, &err.to_string()),
+            }
         }
-        Ok(_) | Err(AttachError::Disconnected) => Ok(Selected::default()),
-        Err(err) => Err(err.into()),
+        if workflow.is_done() {
+            break;
+        }
+        if workflow.awaiting().next().is_none() && !workflow.has_in_flight() {
+            // Nothing to wait for and nothing to send: refresh once more so
+            // the planner can move, else stop.
+            let before = workflow.report();
+            refresh(conn, &mut workflow, &record.key, &mut members).await;
+            if workflow.report() == before && workflow.awaiting().next().is_none() {
+                workflow.time_out();
+            }
+            continue;
+        }
+        let elapsed = start.elapsed();
+        if elapsed >= KILL_WAIT {
+            workflow.time_out();
+            continue;
+        }
+        if !escalated && elapsed >= KILL_WAIT / 2 {
+            escalated = true;
+            workflow.escalate(&members);
+            continue;
+        }
+        tokio::time::sleep(KILL_POLL).await;
+        refresh(conn, &mut workflow, &record.key, &mut members).await;
+    }
+    let report = workflow.report();
+    if report.complete() {
+        Ok(Selected {
+            interleaved,
+            report: Some(report),
+        })
+    } else {
+        Err(KillError::Workflow {
+            label,
+            report: Box::new(report),
+            interleaved,
+        })
+    }
+}
+
+/// Re-read the session's records and feed them to the planner. A failed
+/// read changes nothing; the wait deadline still bounds the workflow.
+async fn refresh(
+    conn: &mut Connection,
+    workflow: &mut KillWorkflow,
+    session: &phux_protocol::ids::SessionKey,
+    members: &mut Vec<phux_protocol::wire::frame::ResourceRecord>,
+) {
+    if let Ok(view) = org::fetch(conn, OrgFilter::Session(*session), 3).await {
+        *members = view.members(session).cloned().collect();
+        workflow.on_records(view.session(session), &view.resources);
     }
 }
 
@@ -592,6 +752,7 @@ fn batch_outcome(
     match reply {
         Ok((KillOutcome::Killed, degradation)) => Ok(Selected {
             interleaved: degradation.notices().to_vec(),
+            report: None,
         }),
         Err(KeyedError::Attach(AttachError::Disconnected)) => Ok(Selected::default()),
         Err(KeyedError::Unsupported) => Err(KillError::UnsupportedKeyedSignal),
@@ -630,7 +791,10 @@ async fn kill_each_terminal(
         }
     }
     if refusals.is_empty() {
-        Ok(Selected { interleaved })
+        Ok(Selected {
+            interleaved,
+            report: None,
+        })
     } else {
         Err(KillError::PaneRefusals {
             messages: refusals,
@@ -674,12 +838,13 @@ async fn kill_one(conn: &mut Connection, request_id: u32, terminal: ResourceId) 
 
 #[cfg(test)]
 mod tests {
-    use phux_protocol::caps::ServerFeatureSet;
-    use phux_protocol::ids::{SessionId, WindowId};
+    use phux_protocol::caps::{ServerFeatureExtSet, ServerFeatureSet};
+    use phux_protocol::ids::WindowId;
+    use phux_protocol::wire::frame::{ExecState, FrameKind, Refusal, Scope, SessionLifetime};
     use phux_protocol::wire::info::{ResourceInfo, SessionInfo, WindowInfo};
 
     use super::*;
-    use crate::testkit::{self, ScriptSpec};
+    use crate::testkit::{self, OrgFixture, ScriptSpec};
 
     const NOTICE: &str = "satellite build-box is unreachable: link is down";
 
@@ -720,9 +885,6 @@ mod tests {
             .await
             .expect("scripted server");
         assert_eq!(outcome, KillOutcome::Killed);
-        clear_session_keep_empty(&mut conn, 3, "work")
-            .await
-            .expect("fire-and-forget send");
         drop(conn);
         let seen = server.await.expect("scripted server task");
 
@@ -732,11 +894,6 @@ mod tests {
                 if *seen_ids == ids
         )));
         assert!(killed_one(&seen, 3), "sent {seen:?}");
-        assert!(seen.iter().any(|frame| matches!(
-            frame,
-            FrameKind::SetMetadata { scope: Scope::Global, key, .. }
-                if key == SESSION_KEEP_EMPTY_KEY
-        )));
     }
 
     /// A keyed kill is refused, with nothing sent, by a server that does not
@@ -1004,5 +1161,154 @@ mod tests {
             assert!(result.is_ok(), "{target}: {result:?}");
             assert_eq!(state_reads(&seen), 1, "{target}: resolve only: {seen:?}");
         }
+    }
+
+    fn org_spec(fixture: OrgFixture) -> ScriptSpec {
+        ScriptSpec::new()
+            .server_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]))
+            .organization(fixture)
+    }
+
+    fn commands(seen: &[FrameKind], pick: fn(&Command) -> bool) -> usize {
+        seen.iter()
+            .filter(|frame| matches!(frame, FrameKind::Command { command, .. } if pick(command)))
+            .count()
+    }
+
+    /// `phux kill work` under `ORGANIZATION`: terminate each executing
+    /// member, remove each, delete the session; no `KILL_RESOURCES`.
+    #[tokio::test]
+    async fn a_session_kill_runs_the_terminate_remove_delete_workflow() {
+        let mut fixture = OrgFixture::new();
+        let work = fixture.session("work", SessionLifetime::Persistent);
+        let shell = fixture.shell(work);
+        let job = fixture.resource(work, Some(ExecState::Running));
+        let done = fixture.resource(work, Some(ExecState::Completed));
+        let (result, _, seen) = run_selected_through(org_spec(fixture), "work").await;
+        let selected = result.expect("killed");
+        let report = selected.report.expect("workflow report");
+        assert!(report.complete(), "{report:?}");
+        assert_eq!(
+            report
+                .targets
+                .iter()
+                .map(|(key, _)| *key)
+                .collect::<Vec<_>>(),
+            vec![shell, job, done]
+        );
+        assert_eq!(
+            report.targets[0].1,
+            TargetOutcome::AlreadyGone,
+            "its exit policy removed it"
+        );
+        assert_eq!(report.targets[1].1, TargetOutcome::Removed);
+        assert_eq!(report.targets[2].1, TargetOutcome::Removed);
+        assert_eq!(
+            commands(&seen, |c| matches!(c, Command::ResourceTerminate { .. })),
+            2
+        );
+        assert_eq!(
+            commands(&seen, |c| matches!(c, Command::ResourceRemove { .. })),
+            2
+        );
+        assert_eq!(
+            commands(&seen, |c| matches!(c, Command::SessionDelete { .. })),
+            1
+        );
+        assert_eq!(
+            commands(&seen, |c| matches!(c, Command::KillResources { .. })),
+            0
+        );
+    }
+
+    /// An empty session is deleted outright: no keep-empty write exists any
+    /// more.
+    #[tokio::test]
+    async fn an_empty_session_is_deleted_by_the_workflow() {
+        let mut fixture = OrgFixture::new();
+        fixture.session("parked", SessionLifetime::Persistent);
+        let (result, _, seen) = run_selected_through(org_spec(fixture), "parked").await;
+        assert!(result.expect("deleted").report.expect("report").complete());
+        assert_eq!(
+            commands(&seen, |c| matches!(c, Command::SessionDelete { .. })),
+            1
+        );
+        assert!(
+            !seen
+                .iter()
+                .any(|frame| matches!(frame, FrameKind::SetMetadata { .. })),
+            "{seen:?}"
+        );
+    }
+
+    /// Work added while the kill runs survives: the final delete refuses
+    /// `NOT_EMPTY` and the error carries the per-target report.
+    #[tokio::test]
+    async fn work_added_during_the_kill_survives_and_is_reported() {
+        let mut fixture = OrgFixture::new();
+        let work = fixture.session("work", SessionLifetime::Persistent);
+        fixture.resource(work, Some(ExecState::Completed));
+        let fixture = fixture.refuse_next("session_delete", Refusal::NotEmpty { members: 1 });
+        let (result, _, _) = run_selected_through(org_spec(fixture), "work").await;
+        let Err(KillError::Workflow { report, .. }) = result else {
+            panic!("expected a workflow refusal, got {result:?}");
+        };
+        assert_eq!(report.targets[0].1, TargetOutcome::Removed);
+        assert_eq!(
+            report.session_outcome,
+            SessionOutcome::Refused(Refusal::NotEmpty { members: 1 })
+        );
+    }
+
+    /// A member that ignores the graceful terminate is forced, then timed
+    /// out; the session is kept and the report says why.
+    #[tokio::test(start_paused = true)]
+    async fn a_member_that_never_stops_times_out_and_keeps_the_session() {
+        let mut fixture = OrgFixture::new().terminate_holds();
+        let work = fixture.session("work", SessionLifetime::Persistent);
+        fixture.resource(work, Some(ExecState::Running));
+        let (result, _, seen) = run_selected_through(org_spec(fixture), "work").await;
+        let Err(KillError::Workflow { report, .. }) = result else {
+            panic!("expected a workflow refusal, got {result:?}");
+        };
+        assert_eq!(report.targets[0].1, TargetOutcome::TimedOut);
+        assert_eq!(report.session_outcome, SessionOutcome::Kept);
+        assert!(seen.iter().any(|frame| matches!(
+            frame,
+            FrameKind::Command {
+                command: Command::ResourceTerminate {
+                    mode: phux_protocol::wire::frame::TerminateMode::Force,
+                    ..
+                },
+                ..
+            }
+        )));
+        assert_eq!(
+            commands(&seen, |c| matches!(c, Command::SessionDelete { .. })),
+            0
+        );
+    }
+
+    /// Without `ORGANIZATION`, an empty session cannot be deleted and
+    /// nothing is written.
+    #[tokio::test]
+    async fn an_empty_session_on_an_older_server_is_refused_without_writing() {
+        let session = SessionId::new(1);
+        let state = SessionSnapshot::new(session, WindowId::new(10), ResourceId::local(1))
+            .with_sessions(vec![
+                SessionInfo::new(session, "parked").with_window_count(0),
+            ]);
+        let (result, _, seen) =
+            run_selected_through(ScriptSpec::new().state(state), "parked").await;
+        assert!(
+            matches!(result, Err(KillError::EmptySessionUnsupported { .. })),
+            "{result:?}"
+        );
+        assert!(
+            !seen
+                .iter()
+                .any(|frame| matches!(frame, FrameKind::SetMetadata { .. })),
+            "{seen:?}"
+        );
     }
 }

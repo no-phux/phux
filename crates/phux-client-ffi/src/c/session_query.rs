@@ -85,7 +85,8 @@ pub(crate) fn dispatch(
 fn receive(client: &mut Client, result: CommandResult) -> Result<(), BridgeError> {
     match result {
         CommandResult::OkWith(CommandValue::State(snapshot)) => {
-            client.sessions = crate::c::workspace::session_summaries(snapshot)?;
+            client.sessions = crate::c::arrangement::session_summaries(snapshot)?;
+            client.org.sessions_dirty = true;
             client.session_query.status = STATUS_OK;
         }
         CommandResult::Error { .. } => client.session_query.status = STATUS_REFUSED,
@@ -160,19 +161,30 @@ pub unsafe extern "C" fn phux_client_session_query_status(
     })
 }
 
-/// `phux_client_session_flags` bit: the session survives its last window.
+/// `phux_client_session_flags` bit: the session survives its last member
+/// (`lifetime == persistent`).
 pub const PHUX_SESSION_FLAG_KEEP_EMPTY: u32 = 1;
-/// `phux_client_session_flags` bit: the session is keep-empty and holds no
-/// windows.
+/// `phux_client_session_flags` bit: the session is persistent and has no
+/// members.
 pub const PHUX_SESSION_FLAG_EMPTY: u32 = 2;
 
-/// The keep-empty facets of one session: none from a server without the
-/// feature, whatever its snapshot said.
-const fn session_flags(client: &Client, session: &crate::c::client::SessionSummary) -> u32 {
-    if !client.keep_empty_sessions || !session.keep_empty {
+/// The persistence facets of one session: none from a server that reports
+/// neither lifetimes nor keep-empty marks, whatever its snapshot said. A
+/// server that reports lifetimes counts members; an older one counts
+/// windows.
+fn session_flags(client: &Client, session: &crate::c::client::SessionSummary) -> u32 {
+    let reports = client.keep_empty_sessions || session.lifetime.is_some();
+    if !reports || !session.keep_empty {
         return 0;
     }
-    if session.window_count == 0 {
+    let members = if session.org.known {
+        session.org.members
+    } else if session.lifetime.is_some() {
+        session.snapshot_members
+    } else {
+        u32::from(session.window_count)
+    };
+    if members == 0 {
         PHUX_SESSION_FLAG_KEEP_EMPTY | PHUX_SESSION_FLAG_EMPTY
     } else {
         PHUX_SESSION_FLAG_KEEP_EMPTY
@@ -204,7 +216,8 @@ pub unsafe extern "C" fn phux_client_session_flags(
     })
 }
 
-/// Whether `HELLO_OK` advertised `KEEP_EMPTY_SESSIONS`.
+/// Whether `HELLO_OK` advertised `KEEP_EMPTY_SESSIONS` or `ORGANIZATION`
+/// (whose sessions report their lifetime).
 ///
 /// # Safety
 /// Client is live and unmodified for the call; `out_supported` is writable.
@@ -217,7 +230,7 @@ pub unsafe extern "C" fn phux_client_keep_empty_supported(
         // SAFETY: caller supplies a writable output when non-null.
         let out = unsafe { out_supported.as_mut() }
             .ok_or_else(|| BridgeError::invalid("supported output is null"))?;
-        *out = client.keep_empty_sessions;
+        *out = client.keep_empty_sessions || crate::c::organization::supported(client);
         Ok(())
     })
 }

@@ -56,8 +56,10 @@ This document is the protocol-meta tier: transport, framing, version
 and capability negotiation, lifecycle frames, flow control, errors, and
 transport security. The product model — what a Terminal is, why the
 wire is asymmetric, why both ends run libghostty — lives in
-[CONCEPTS.md](../CONCEPTS.md). L1 is required, L3 is optional, and L2
-is a reserved hole with no messages ([L2.md](./L2.md)). Durable work
+[CONCEPTS.md](../CONCEPTS.md). L1 is required and L3 is optional. L2 is
+the organization model ([L2.md](./L2.md)): it has no frame family and no
+layer bit, and its commands ride the L1 `COMMAND` envelope behind the
+`ORGANIZATION` feature (§6.2, [L1.md](./L1.md) §5.7). Durable work
 is a different endpoint ([coordinator.md](./coordinator.md)), not a
 second step of terminal onboarding; coordinator frames are never legal
 on this connection.
@@ -67,10 +69,10 @@ on this connection.
 | **Server** | A long-lived process owning all multiplexer state for one operating-system user. |
 | **Client** | A process that attaches to a server, presenting Terminals to a user. |
 | **Terminal** | One PTY, one `libghostty_vt::Terminal`, one stable `ResourceId`. The first L1 kind. |
-| **Group** | A named set of Terminals. Not a wire tier: membership and names are L3 metadata plus client logic; atomic teardown is `KILL_RESOURCES`. `GroupId` is an opaque grouping key. |
+| **Session** | A named, server-owned record that owns its resources ([L2.md](./L2.md)), edited by the organization commands ([L1.md](./L1.md) §5.7); a client without `ORGANIZATION` reaches it through the L3 translation keys. `GroupId` is an opaque grouping key, not a session. |
 | **Metadata** | The L3 optional service: a typed key-value store the server hosts but does not interpret. |
 | **Frame** | A length-prefixed message, or (in flow-control prose) a `RESOURCE_OUTPUT` carrying a contiguous batch of VT bytes for one Terminal. |
-| **Tier** | A conformance layer: L1 or L3. The L2 range is reserved but unused. |
+| **Tier** | A conformance layer: L1 or L3. L2, organization, is negotiated by a feature bit, not a layer; its message range stays reserved. |
 
 ---
 
@@ -356,9 +358,10 @@ authorizes an endpoint connection; it does not merge the terminal
 protocol with the separate durable coordinator endpoint
 ([ADR-0092](../adr/0092-durable-work-coordinator-authority.md)).
 
-The `layers` intersection retains ADR-0015 semantics: L1 is mandatory, L2 is
-reserved/unmounted, and L3 is optional. Neither peer sends out-of-intersection
-tier frames.
+The `layers` intersection retains ADR-0015 semantics: L1 is mandatory, the L2
+layer bit is reserved and unmounted, and L3 is optional. Neither peer sends
+out-of-intersection tier frames. Organization (L2) is negotiated by
+`features_ext.ORGANIZATION` (§6.2), not by the layer bit.
 
 ### 6.2 Capability and synchronization profile negotiation
 
@@ -534,6 +537,14 @@ answers with either a contiguous resumed suffix or an explicit whole-ring
 replacement. A client requires the bit before sending the cursor. A hub
 checks its satellite's bit before forwarding one; a satellite without it
 keeps the full-bootstrap behavior.
+`features_ext.ORGANIZATION = 0x00000010` ([L1.md](./L1.md) §5.7,
+[ADR-0161](../adr/0161-organization-is-typed-commands-behind-a-feature-bit.md))
+says the server accepts the organization commands and enforces every rule
+[L2.md](./L2.md) states for them: keyed records, expected revisions,
+idempotent operations, typed refusals, and the organization events. A
+client MUST see it before sending an organization command, because an older
+server answers an unknown command tag with an error, and a client that does
+not see it treats organization as read-only.
 `ACKNOWLEDGED_INPUT = 0x10`, `FILE_UPLOAD = 0x20`,
 `MOVE_RESOURCE = 0x40`, `TERMINAL_REPLY = 0x80`, `SHUTDOWN = 0x100`,
 `SPAWN_INITIAL_SIZE = 0x200`, `REPORT_AGENT_STATE = 0x400`,
@@ -838,7 +849,9 @@ The catalog is organized by **tier**:
   specific. Defined here.
 - **L1** — Terminal substrate. Every conforming consumer speaks L1
   (§11). Carries `ResourceId`. See [L1.md](./L1.md).
-- **L2** — reserved, no messages. There is no collection tier. See
+- **L2** — organization: sessions, membership, lifetimes, the Inbox, and
+  arrangements. No frame family of its own; its commands are `cmd`
+  variants ([L1.md](./L1.md) §5.7) behind `ORGANIZATION`. See
   [L2.md](./L2.md).
 - **L3** — Metadata storage. Optional service. See [L3.md](./L3.md).
 - **cmd** — typed command messages. Carry an L1 or L3 payload
@@ -1340,7 +1353,10 @@ A consumer that attaches to `phux-server` 0.9 implements:
 
 A pure L1 consumer sets `HELLO.layers = { L1 }`. The server MUST omit
 all L3 messages to that consumer. The consumer MUST NOT send L3
-messages. No consumer declares L2.
+messages. No consumer declares L2 in `layers`: a consumer that edits
+organization checks `features_ext.ORGANIZATION` (§6.2) and sends the
+[L1.md](./L1.md) §5.7 commands, and a consumer that does not still reads
+sessions from `GET_STATE` and `ATTACHED`.
 
 See [L1.md](./L1.md) and [input.md](./input.md) for the frame
 definitions.

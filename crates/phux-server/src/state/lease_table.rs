@@ -33,6 +33,10 @@ pub(super) struct LeaseTable {
     /// Per-pane lease: only the holder's input reaches the PTY (others are
     /// dropped but still acked). Absent means `Open`.
     input: HashMap<ResourceId, ClientId>,
+    /// Per-pane lease epoch (ADR-0163 §7): the number of holder changes,
+    /// so `0` until the first grant. Kept after the lease is released so
+    /// epochs never repeat while the pane lives.
+    epochs: HashMap<ResourceId, u64>,
     /// Hub-side lease per satellite terminal (L1 §9.1). All hub consumers
     /// share one identity on the satellite, so the hub gates relayed input
     /// and lease commands here before forwarding. Carries the holder's
@@ -83,6 +87,7 @@ impl LeaseTable {
     pub(super) fn new() -> Self {
         Self {
             input: HashMap::new(),
+            epochs: HashMap::new(),
             satellite: BTreeMap::new(),
             satellite_proxy_attaches: HashSet::new(),
             expiry: HashMap::new(),
@@ -144,19 +149,44 @@ impl LeaseTable {
             .is_some_and(|holder| *holder != client)
     }
 
-    /// Grant the lease to `client`, returning a preempted prior holder.
+    /// Grant the lease to `client`, returning the prior holder. A change of
+    /// holder opens a new epoch.
     pub(super) fn acquire(&mut self, terminal: ResourceId, client: ClientId) -> Option<ClientId> {
-        self.input.insert(terminal, client)
+        let prior = self.input.insert(terminal, client);
+        if prior != Some(client) {
+            self.bump_epoch(terminal);
+        }
+        prior
     }
 
-    /// Release the lease if `client` holds it; `true` if released.
+    /// Release the lease if `client` holds it; `true` if released, which
+    /// opens a new epoch.
     pub(super) fn release(&mut self, terminal: ResourceId, client: ClientId) -> bool {
         if self.input.get(&terminal) == Some(&client) {
             self.input.remove(&terminal);
+            self.bump_epoch(terminal);
             true
         } else {
             false
         }
+    }
+
+    /// The pane's current lease epoch; `0` before its first grant.
+    #[must_use]
+    pub(super) fn epoch(&self, terminal: ResourceId) -> u64 {
+        self.epochs.get(&terminal).copied().unwrap_or(0)
+    }
+
+    /// Forget a pane that closed: no lease change can follow.
+    pub(super) fn forget_terminal(&mut self, terminal: ResourceId) {
+        Self::abort(self.expiry.remove(&terminal));
+        self.input.remove(&terminal);
+        self.epochs.remove(&terminal);
+    }
+
+    fn bump_epoch(&mut self, terminal: ResourceId) {
+        let epoch = self.epochs.entry(terminal).or_insert(0);
+        *epoch = epoch.saturating_add(1);
     }
 
     /// Every pane whose input lease `client` currently holds.
@@ -303,12 +333,16 @@ impl LeaseTable {
 
     /// Drop every lease `client` holds, local and hub-side (called from
     /// `detach` after the runtime has broadcast and relayed the releases).
-    pub(super) fn release_all_for(&mut self, client: ClientId) {
-        for pane in self.held_by(client) {
-            Self::abort(self.expiry.remove(&pane));
+    /// Returns the local panes released, each now in a new epoch.
+    pub(super) fn release_all_for(&mut self, client: ClientId) -> Vec<ResourceId> {
+        let held = self.held_by(client);
+        for pane in &held {
+            Self::abort(self.expiry.remove(pane));
+            self.input.remove(pane);
+            self.bump_epoch(*pane);
         }
-        self.input.retain(|_, holder| *holder != client);
         self.satellite.retain(|_, lease| lease.holder != client);
+        held
     }
 
     /// Clear the satellite lease whoever holds it, mirroring a satellite's

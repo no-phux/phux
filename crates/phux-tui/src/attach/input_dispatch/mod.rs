@@ -2,7 +2,7 @@
 //! or layout-action effects.
 //!
 //! Owns the resolver-intercept path (prefix chord → `ResolvedAction` →
-//! mutate the active window of the `Workspace`), the predict overlay's
+//! mutate the active window of the `ArrangementDoc`), the predict overlay's
 //! keystroke feed, and the parked-spawn bookkeeping (`PendingSplit` /
 //! `PendingWindow`) that bridges a local `split-pane` / `new-window`
 //! chord to its remote `SPAWN_RESOURCE` reply.

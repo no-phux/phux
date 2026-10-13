@@ -17,6 +17,7 @@ use crate::render::{ChromeBreakpoints, Theme};
 
 pub mod clipboard_confirm;
 pub mod copy_mode;
+pub mod kill_confirm;
 pub mod line_edit;
 pub mod menu;
 pub mod paste_confirm;
@@ -33,6 +34,7 @@ pub mod widgets;
 
 pub use clipboard_confirm::ClipboardConfirmOverlay;
 pub use copy_mode::{CopyModeOverlay, CopySearchRequest, CopySearchResult, CopySearchView};
+pub use kill_confirm::{KillConfirmOverlay, SharedTarget};
 pub use menu::{ContextMenu, MenuRow};
 pub use paste_confirm::PasteConfirmOverlay;
 pub use path_picker::PathPicker;

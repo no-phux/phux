@@ -22,12 +22,14 @@ The **Palette** column is the command-palette section the action is offered unde
 |---|---|---|---|
 | `split-pane` | Pane | `direction` = `horizontal` \| `vertical`; `host?` (satellite); `resource?` (`@N` or `host/@N`) | Split the focused pane side-by-side (vertical divider) |
 | `move-pane` | Pane | `target` (local Terminal id; picker-supplied) | Move the focused pane beside another pane… |
-| `kill-pane` | Pane |  | Close the focused pane |
+| `kill-pane` | Pane |  | Kill the focused pane's terminal |
+| `close-view` | Pane |  | Close the focused view; its terminal keeps running |
+| `reopen-views` | Window |  | Show terminals that run with no view, one window each |
 | `new-window` | Window | `cwd?` (working directory on the attached server's host) | Open a new window |
 | `go-to-directory` | Window | `path?` (absolute, `~`, or `~/...`; bare starts at the focused pane's directory) | Browse directories on the attached server's host and open a new window in one |
 | `find-path` | Pane | `path?` (directory to browse; defaults to the focused pane's directory) | Browse or fuzzy-search host paths and insert a literal path into the focused pane |
 | `insert-path` | Pane | `path` (selected absolute path) | Insert a selected host path without running the command |
-| `kill-window` | Window |  | Close the active window and all its panes |
+| `kill-window` | Window | `terminals?` (selectors the confirm committed; omitted opens the confirm) | Kill the active window's terminals… |
 | `next-window` | Window |  | Switch to the next window |
 | `previous-window` | Window |  | Switch to the previous window |
 | `select-window` | — | `index` (0-based window position) | Focus the window at a given index |

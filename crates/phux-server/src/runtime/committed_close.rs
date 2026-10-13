@@ -5,7 +5,7 @@
 //! `CLOSE_TAB_RESOURCES` follows the commit, so the commit is the whole
 //! teardown an observer can see: every closed resource leaves the registry
 //! (and so `GET_STATE`, `ATTACHED`, and every lookup), its `pane_closed` is
-//! journaled, and an emptied window and session go with it, all in one
+//! journaled, and an emptied ephemeral session goes with it, all in one
 //! acquisition. Only the process outlives the commit: its actor was
 //! cancelled and runs the hangup grace, and its exit watcher later finds the
 //! resource already reaped and only fires `pane-exit` (see
@@ -35,7 +35,7 @@ struct ClosedResource {
 pub(super) struct CommittedClose {
     /// Children before their parents, the order the tree came apart in.
     closes: Vec<ClosedResource>,
-    /// ADR-0105: clients of a session a group kill released.
+    /// Clients of a session the commit deleted.
     killed_clients: Vec<(ClientId, mpsc::Sender<Outbound>)>,
 }
 
@@ -44,11 +44,19 @@ impl CommittedClose {
     pub(super) const fn len(&self) -> usize {
         self.closes.len()
     }
+
+    /// Detach these clients too, after the closes.
+    pub(super) fn extend_killed_clients(
+        &mut self,
+        clients: impl IntoIterator<Item = (ClientId, mpsc::Sender<Outbound>)>,
+    ) {
+        self.killed_clients.extend(clients);
+    }
 }
 
 /// Close `targets` and every descendant under the caller's lock: mark why,
 /// cancel each actor into its hangup grace, journal each `pane_closed`, and
-/// reap each from the registry, cascading the emptied windows and sessions.
+/// reap each record, deleting an ephemeral session it empties.
 pub(super) fn commit_close(
     s: &mut ServerState,
     targets: &[CoreResourceId],
@@ -109,7 +117,7 @@ fn close_one(s: &mut ServerState, resource: CoreResourceId) -> Option<ClosedReso
 /// Deliver what `committed` owes, off the lock and off the caller's reply
 /// path, so a subscriber with a full mailbox cannot delay the kill's reply:
 /// each `RESOURCE_CLOSED`, children first, then `DETACHED { SESSION_KILLED }`
-/// to the clients of a released session (ADR-0105), after the closes so a
+/// to the clients of a deleted session, after the closes so a
 /// client sees its last pane go before the session that held it.
 pub(super) fn announce(state: &SharedState, committed: CommittedClose) {
     let CommittedClose {

@@ -15,7 +15,7 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use phux_client::attach::connection::Connection;
-use phux_client::layout::{LayoutNode, SplitDir, Workspace};
+use phux_client::layout::{ArrangementDoc, LayoutNode, SplitDir};
 use phux_client::layout_ops::{LayoutOps, LayoutOpsError, layout_key};
 use phux_protocol::ids::{GroupId, ResourceId, SessionId};
 use phux_protocol::wire::frame::{FrameKind, Scope};
@@ -118,7 +118,7 @@ impl ServerGuard {
             let mut conn = Connection::connect(&self.socket)
                 .await
                 .expect("connect metadata client");
-            let workspace = Workspace::single(pane.clone());
+            let workspace = ArrangementDoc::single(pane.clone());
             conn.send(&FrameKind::SetMetadata {
                 request_id: 1,
                 scope: Scope::Group(GroupId::new(1)),
@@ -148,11 +148,11 @@ impl ServerGuard {
         });
     }
 
-    fn read_layout(&self) -> Result<Workspace, LayoutOpsError> {
+    fn read_layout(&self) -> Result<ArrangementDoc, LayoutOpsError> {
         self.read_layout_for(SESSION)
     }
 
-    fn read_layout_for(&self, session_name: &str) -> Result<Workspace, LayoutOpsError> {
+    fn read_layout_for(&self, session_name: &str) -> Result<ArrangementDoc, LayoutOpsError> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -222,7 +222,7 @@ impl ServerGuard {
         });
     }
 
-    fn wait_for_layout(&self) -> Workspace {
+    fn wait_for_layout(&self) -> ArrangementDoc {
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
             match self.read_layout() {
@@ -408,8 +408,8 @@ fn split(dir: SplitDir, left: LayoutNode, right: LayoutNode) -> LayoutNode {
 
 fn assert_tree(server: &ServerGuard, expected: LayoutNode) {
     let layout = server.read_layout().expect("persisted layout");
-    assert_eq!(layout.windows.len(), 1);
-    assert_eq!(layout.windows[0].state.tree, Some(expected));
+    assert_eq!(layout.groups.len(), 1);
+    assert_eq!(layout.groups[0].state.tree, Some(expected));
 }
 
 #[test]
@@ -420,7 +420,7 @@ fn spatial_cli_persists_topology_and_preserves_attached_focus() {
     server.seed_layout(&seed);
     let mut attached = AttachedClient::start(&server);
     let initial = server.wait_for_layout();
-    assert_eq!(initial.windows[0].state.tree, Some(leaf(&seed)));
+    assert_eq!(initial.groups[0].state.tree, Some(leaf(&seed)));
     // Metadata was seeded before attach, so `wait_for_layout` can return
     // before this client has subscribed. Chrome resize plus a painted
     // prompt is the attach barrier (client ready *and* the seed shell).
@@ -483,7 +483,7 @@ fn spatial_cli_persists_topology_and_preserves_attached_focus() {
 
     let seed_before_move = server.pane_size(&seed);
     server.success(&[
-        "move-pane",
+        "mv",
         &format!("@{}", seed.local_id().expect("seed id")),
         &format!("@{}", third.local_id().expect("third id")),
         "--split",
@@ -537,6 +537,16 @@ fn run_in_pane(server: &ServerGuard, pane: &ResourceId, command: &str) -> serde_
     ])
 }
 
+/// `layout` is one group showing only `pane`. The group's identity is
+/// minted by whoever created it, so it is taken from `layout` itself.
+fn assert_single_pane_layout(layout: &ArrangementDoc, pane: &ResourceId) {
+    let mut expected = ArrangementDoc::single(pane.clone());
+    if let (Some(seeded), Some(group)) = (layout.groups.first(), expected.groups.first_mut()) {
+        group.id = seeded.id;
+    }
+    assert_eq!(layout, &expected);
+}
+
 #[test]
 #[ignore = "spawns a real server and PTY-backed shells; run in the e2e lane"]
 fn json_created_sessions_are_immediately_layout_ready_for_cross_session_move() {
@@ -544,17 +554,17 @@ fn json_created_sessions_are_immediately_layout_ready_for_cross_session_move() {
     let source = json_created_pane(&server, "headless-source");
     let destination = json_created_pane(&server, "headless-destination");
 
-    assert_eq!(
-        server
+    assert_single_pane_layout(
+        &server
             .read_layout_for("headless-source")
             .expect("source layout seeded"),
-        Workspace::single(source.clone())
+        &source,
     );
-    assert_eq!(
-        server
+    assert_single_pane_layout(
+        &server
             .read_layout_for("headless-destination")
             .expect("destination layout seeded"),
-        Workspace::single(destination.clone())
+        &destination,
     );
 
     let before = run_in_pane(&server, &source, "printf 'ALF7_BEFORE:%s\\n' \"$$\"");
@@ -566,7 +576,7 @@ fn json_created_sessions_are_immediately_layout_ready_for_cross_session_move() {
         .to_owned();
 
     let moved = server.json(&[
-        "move-pane",
+        "mv",
         &format!("@{}", source.local_id().expect("source id")),
         &format!("@{}", destination.local_id().expect("destination id")),
         "--split",
@@ -580,7 +590,7 @@ fn json_created_sessions_are_immediately_layout_ready_for_cross_session_move() {
         .expect("moved destination layout");
     assert_eq!(
         phux_client::layout::leaves(
-            destination_layout.windows[0]
+            destination_layout.groups[0]
                 .state
                 .tree
                 .as_ref()
@@ -632,31 +642,32 @@ fn last_tiny_view_detach_restores_headless_geometry_and_keeps_the_shell() {
 
 #[test]
 #[ignore = "spawns a real server and PTY-backed shells; run in the e2e lane"]
-fn malformed_destination_layout_keeps_the_json_error_contract() {
+fn malformed_legacy_destination_layout_cannot_break_a_cross_session_move() {
     let server = ServerGuard::start();
     let source = json_created_pane(&server, "bad-layout-source");
     let destination = json_created_pane(&server, "bad-layout-destination");
+    // The session arrangement is the record (R17): bytes that do not decode
+    // under the legacy layout key never replace it.
     server.write_layout_bytes("bad-layout-destination", b"not-cbor".to_vec());
 
-    let output = server.command(&[
-        "move-pane",
+    let moved = server.json(&[
+        "mv",
         &format!("@{}", source.local_id().expect("source id")),
         &format!("@{}", destination.local_id().expect("destination id")),
         "--json",
     ]);
-    assert_eq!(output.status.code(), Some(1));
-    assert!(
-        output.stdout.is_empty(),
-        "JSON failure must keep stdout empty"
-    );
-    let error: serde_json::Value = serde_json::from_slice(&output.stderr)
-        .unwrap_or_else(|err| panic!("structured stderr: {err}: {:?}", output.stderr));
-    assert_eq!(error["schema_version"], 1);
-    assert_eq!(error["error"]["code"], "destination_layout_failed");
-    assert_eq!(error["exit_code"], 1);
-    assert!(
-        error["remedy"]
-            .as_str()
-            .is_some_and(|remedy| !remedy.is_empty())
+    assert_eq!(moved["cross_session"], true);
+    let destination_layout = server
+        .read_layout_for("bad-layout-destination")
+        .expect("destination arrangement");
+    assert_eq!(
+        phux_client::layout::leaves(
+            destination_layout.groups[0]
+                .state
+                .tree
+                .as_ref()
+                .expect("destination tree")
+        ),
+        vec![destination, source]
     );
 }

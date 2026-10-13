@@ -118,8 +118,9 @@ fn a_second_server_on_a_live_socket_is_socket_busy() {
     });
 }
 
+/// R13: once nothing runs and the last client leaves, the server exits.
 #[test]
-fn killing_the_last_pane_self_exits_after_serving_a_client() {
+fn killing_the_last_pane_self_exits_once_the_client_leaves() {
     run_local(async {
         let (_tmp, socket, handle) = seeded("read _", None);
         let mut stream = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
@@ -136,7 +137,10 @@ fn killing_the_last_pane_self_exits_after_serving_a_client() {
             },
         )
         .await;
-        assert_exits(handle, "its only pane was killed").await;
+        // The kill's reply, then leave.
+        let _ = recv_typed(&mut stream).await;
+        drop(stream);
+        assert_exits(handle, "its only pane was killed and its client left").await;
     });
 }
 
@@ -151,10 +155,11 @@ fn a_server_without_clients_survives_its_seed_pane_dying() {
     });
 }
 
-/// Close Tab of a keep-empty session's last pane leaves it empty, and that
-/// parked session holds the server up with zero processes.
+/// Close Tab of a persistent session's last pane leaves it empty. The
+/// connected client holds the server up; once it leaves, the parked
+/// session no longer does (R13): its record outlives the process instead.
 #[test]
-fn a_parked_keep_empty_session_holds_the_server_up() {
+fn a_parked_persistent_session_does_not_hold_the_server_up_alone() {
     run_local(async {
         let (_tmp, socket, handle) = seeded("read _", None);
         let mut stream = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
@@ -185,12 +190,8 @@ fn a_parked_keep_empty_session_holds_the_server_up() {
             session(s, "solo").is_some_and(|solo| solo.window_count == 0 && solo.keep_empty)
         })
         .await;
-        assert_stays_up(
-            handle,
-            Duration::from_secs(1),
-            "a keep-empty session remains",
-        )
-        .await;
+        drop(stream);
+        assert_exits(handle, "nothing runs and no client is connected").await;
     });
 }
 

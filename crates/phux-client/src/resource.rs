@@ -1,8 +1,10 @@
-//! Resource kinds as a client sees them in a `GET_STATE` snapshot (ADR-0102):
-//! the one place the client decides which entries are panes (Terminal-kind)
-//! and which are `AgentSession` children bound to one.
+//! Resource kinds as a client sees them in a `GET_STATE` snapshot (ADR-0102).
+//!
+//! The one place the client decides which entries are panes (Terminal-kind)
+//! and which are `AgentSession` children bound to one, and the one join from
+//! a resource to the session it belongs to ([`session_of`]).
 
-use phux_protocol::ids::{ResourceId, ResourceKind};
+use phux_protocol::ids::{ResourceId, ResourceKind, SessionId};
 use phux_protocol::wire::frame::{CloseReason, ControlAction, ResourceLifecycle};
 use phux_protocol::wire::info::{ExitFacet, ResourceInfo, SessionSnapshot};
 
@@ -139,6 +141,43 @@ pub fn find<'a>(snapshot: &'a SessionSnapshot, id: &ResourceId) -> Option<&'a Re
     snapshot.resources.iter().find(|info| info.id == *id)
 }
 
+/// The session `id` belongs to.
+///
+/// The snapshot's `session` facet, or, from a server that predates it, the
+/// session of the legacy window the resource sits in. `None` for a resource
+/// the snapshot does not list, or one whose session it cannot name (a
+/// satellite resource behind a hub).
+#[must_use]
+pub fn session_of(snapshot: &SessionSnapshot, id: &ResourceId) -> Option<SessionId> {
+    let info = find(snapshot, id)?;
+    info.session.or_else(|| {
+        snapshot
+            .windows
+            .iter()
+            .find(|window| window.id == info.window_id)
+            .map(|window| window.session_id)
+    })
+}
+
+/// Every resource of any kind that belongs to `session`, in snapshot order.
+pub fn in_session(
+    snapshot: &SessionSnapshot,
+    session: SessionId,
+) -> impl Iterator<Item = &ResourceInfo> {
+    snapshot
+        .resources
+        .iter()
+        .filter(move |info| session_of(snapshot, &info.id) == Some(session))
+}
+
+/// Every Terminal-kind resource that belongs to `session`, in snapshot order.
+pub fn terminals_in(
+    snapshot: &SessionSnapshot,
+    session: SessionId,
+) -> impl Iterator<Item = &ResourceInfo> {
+    in_session(snapshot, session).filter(|info| is_terminal(info))
+}
+
 /// Every Terminal-kind resource, in snapshot order.
 pub fn terminals(snapshot: &SessionSnapshot) -> impl Iterator<Item = &ResourceInfo> {
     snapshot.resources.iter().filter(|info| is_terminal(info))
@@ -163,7 +202,7 @@ pub fn children_of<'a>(
 /// [`AgentSessionError::NoSession`] / [`AgentSessionError::AmbiguousSession`]
 /// for a Terminal with no / several live children (an absent target counts
 /// as a Terminal), [`AgentSessionError::WrongKind`] for any other kind.
-pub fn session_of(
+pub fn agent_session_of(
     snapshot: &SessionSnapshot,
     target: &ResourceId,
 ) -> Result<ResourceId, AgentSessionError> {
@@ -229,19 +268,19 @@ mod tests {
     }
 
     #[test]
-    fn session_of_resolves_a_pane_to_its_unique_child_or_refuses() {
+    fn agent_session_of_resolves_a_pane_to_its_unique_child_or_refuses() {
         let snap = snapshot();
         assert_eq!(
-            session_of(&snap, &ResourceId::local(7)).unwrap(),
+            agent_session_of(&snap, &ResourceId::local(7)).unwrap(),
             ResourceId::local(9)
         );
         assert_eq!(
-            session_of(&snap, &ResourceId::local(9)).unwrap(),
+            agent_session_of(&snap, &ResourceId::local(9)).unwrap(),
             ResourceId::local(9),
             "a session id names itself"
         );
         assert!(matches!(
-            session_of(&snap, &ResourceId::local(8)),
+            agent_session_of(&snap, &ResourceId::local(8)),
             Err(AgentSessionError::AmbiguousSession { candidates, .. })
                 if candidates == [ResourceId::local(10), ResourceId::local(11)]
         ));
@@ -253,8 +292,38 @@ mod tests {
                 24,
             )]);
         assert!(matches!(
-            session_of(&lone, &ResourceId::local(1)),
+            agent_session_of(&lone, &ResourceId::local(1)),
             Err(AgentSessionError::NoSession { .. })
         ));
+    }
+
+    /// The `session` facet wins; a server that predates it is joined through
+    /// its legacy window.
+    #[test]
+    fn session_of_prefers_the_session_facet_and_falls_back_to_the_window() {
+        use phux_protocol::wire::info::WindowInfo;
+        let window = WindowId::new(4);
+        let snap = SessionSnapshot::new(SessionId::new(1), window, ResourceId::local(1))
+            .with_windows(vec![WindowInfo::new(window, SessionId::new(2), "window-0")])
+            .with_resources(vec![
+                ResourceInfo::new(ResourceId::local(1), window, 80, 24)
+                    .with_session(Some(SessionId::new(3))),
+                ResourceInfo::new(ResourceId::local(2), window, 80, 24),
+                ResourceInfo::new(ResourceId::local(5), WindowId::new(99), 80, 24),
+            ]);
+        assert_eq!(
+            session_of(&snap, &ResourceId::local(1)),
+            Some(SessionId::new(3))
+        );
+        assert_eq!(
+            session_of(&snap, &ResourceId::local(2)),
+            Some(SessionId::new(2))
+        );
+        assert_eq!(session_of(&snap, &ResourceId::local(5)), None);
+        assert_eq!(session_of(&snap, &ResourceId::local(6)), None);
+        let in_two: Vec<_> = terminals_in(&snap, SessionId::new(2))
+            .map(|info| info.id.clone())
+            .collect();
+        assert_eq!(in_two, [ResourceId::local(2)]);
     }
 }

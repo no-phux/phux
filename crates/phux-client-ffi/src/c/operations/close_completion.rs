@@ -7,16 +7,23 @@ use super::{BridgeError, Operations, Pending, ResourceId};
 pub(super) struct PendingClose {
     targets: Vec<ResourceId>,
     closed: Vec<bool>,
-    acknowledged: bool,
+    /// Command acknowledgements still owed: one for a kill or a batch, one
+    /// per terminal when each is terminated on its own.
+    acks: usize,
 }
 
 impl PendingClose {
     /// Queue preflight bounds this to `1..=MAX_DYNAMIC_TERMINALS` unique targets.
     pub(super) fn new(targets: Vec<ResourceId>) -> Self {
+        Self::with_acks(targets, 1)
+    }
+
+    /// A close answered by `acks` separate acknowledgements.
+    pub(super) fn with_acks(targets: Vec<ResourceId>, acks: usize) -> Self {
         Self {
             closed: vec![false; targets.len()],
             targets,
-            acknowledged: false,
+            acks,
         }
     }
 
@@ -29,10 +36,10 @@ impl PendingClose {
     }
 
     fn acknowledge(&mut self) -> Result<(), BridgeError> {
-        if self.acknowledged {
+        if self.acks == 0 {
             return Err(BridgeError::protocol("duplicate close acknowledgement"));
         }
-        self.acknowledged = true;
+        self.acks -= 1;
         Ok(())
     }
 
@@ -43,7 +50,7 @@ impl PendingClose {
     }
 
     fn complete(&self) -> bool {
-        self.acknowledged && self.closed.iter().all(|closed| *closed)
+        self.acks == 0 && self.closed.iter().all(|closed| *closed)
     }
 }
 

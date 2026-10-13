@@ -142,10 +142,14 @@ fn long_help_has_one_complete_grouped_inventory() {
 
 /// The root page is a single readable screenful at 80 columns: no line
 /// wider than the width it is laid out for, and the page as a whole stays
-/// under the bound. Fifty-two visible verbs on their own rows (the three
-/// approval verbs of ADR-0128 among them) plus six group headings set the
-/// floor; the bound leaves no room for a reference-style epilogue to creep
-/// back in.
+/// under the bound. The visible verbs on their own rows (the three approval
+/// verbs of ADR-0128 among them) plus six group headings set the floor; the
+/// bound leaves no room for a reference-style epilogue to creep back in.
+///
+/// The bound rose from 93 to 97 with the organization verbs (`rm`,
+/// `relaunch`, `restore`, `mv`) and `archive`, while `move-pane` and
+/// `workspace` became hidden aliases: four lines of discoverable lifecycle
+/// verbs are worth more than hiding them (R20).
 #[test]
 fn root_long_help_fits_eighty_columns_and_stays_short() {
     let long = root_long_help();
@@ -157,7 +161,7 @@ fn root_long_help_fits_eighty_columns_and_stays_short() {
     }
     let lines = long.lines().count();
     assert!(
-        lines <= 93,
+        lines <= 97,
         "root help grew to {lines} lines; the page is meant to be one screen"
     );
     assert!(
@@ -334,12 +338,13 @@ fn taught_selector_token(selector: &phux_client::selector::Selector) -> &'static
     match selector {
         Selector::Current => "`.`",
         Selector::Session(_) => "`name`",
-        Selector::Window(..) => "`name:W`",
+        Selector::Group(..) => "`name:W`",
         Selector::Pane(..) => "`name:W.P`",
         Selector::ResourceId(_) => "@N",
         Selector::SatelliteResourceId { .. } => "host/@N",
         Selector::Tag(_) => "#tag",
         Selector::Agent(_) => "%name",
+        Selector::Key(_) => "`^key`",
     }
 }
 
@@ -364,6 +369,7 @@ fn skill_teaches_every_selector_sigil_the_parser_accepts() {
         "work:1.0",
         "#build",
         "%reviewer",
+        "^ab23cd",
     ] {
         let Ok(selector) = phux_client::selector::parse(probe) else {
             continue;

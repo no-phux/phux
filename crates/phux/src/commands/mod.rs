@@ -244,6 +244,7 @@ impl From<SignalArg> for TerminalSignal {
 
 pub(crate) mod agent;
 pub(crate) mod approvals;
+pub(crate) mod archive;
 pub(crate) mod ask;
 pub(crate) mod attach;
 pub(crate) mod bootstrap;
@@ -257,6 +258,7 @@ pub(crate) mod detach;
 pub(crate) mod doctor;
 pub(crate) mod enroll;
 pub(crate) mod gen_reference_docs;
+pub(crate) mod git;
 pub(crate) mod host;
 pub(crate) mod json_err;
 pub(crate) mod kill;
@@ -265,6 +267,7 @@ pub(crate) mod logs;
 pub(crate) mod ls;
 pub(crate) mod mcp;
 pub(crate) mod new;
+pub(crate) mod org;
 pub(crate) mod pair;
 pub(crate) mod partial;
 pub(crate) mod paste;
@@ -306,7 +309,6 @@ mod stall_peer;
 pub(crate) mod watch;
 pub(crate) mod whoami;
 pub(crate) mod workload;
-pub(crate) mod workspace;
 pub(crate) mod worktree;
 
 /// Default name the `phux server` subcommand pre-seeds, and the name
@@ -355,6 +357,10 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
             WorkspaceAction::Inspect { .. } => Some("workspace inspect"),
             WorkspaceAction::Save { .. } | WorkspaceAction::Restore { .. } => None,
         },
+        Command::Archive { action } => match action {
+            ArchiveAction::Import { plan: true, .. } => Some("archive import --plan"),
+            ArchiveAction::Import { .. } | ArchiveAction::Export { .. } => None,
+        },
         Command::Service { action } => match action {
             // `install` bakes the socket into the generated unit.
             ServiceAction::Install { .. } => None,
@@ -393,6 +399,7 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
             ProjectAction::Trust { .. } => Some("project trust"),
             ProjectAction::Untrust { .. } => Some("project untrust"),
             ProjectAction::Status { .. } => Some("project status"),
+            ProjectAction::Inspect { .. } => Some("project inspect"),
         },
         Command::Workload { .. } => Some("workload"),
         Command::Completion { .. } => Some("completion"),
@@ -690,15 +697,15 @@ pub(crate) enum Command {
         )]
         exit_after_idle: Option<u64>,
 
-        /// Keep a crash-safe workspace archive at PATH, as
-        /// `phux service install --restore` runs it. On a fresh start the
-        /// server restores PATH (session names, layout, cwd, native agent
-        /// sessions) once it is listening; from then on it rewrites PATH
+        /// Deprecated: the server now keeps its sessions across a restart
+        /// itself, and `phux restore` relaunches what a restart ended. The
+        /// flag still works, as an export schedule: the server keeps the
+        /// archive `phux archive export` writes at PATH, rewriting it
         /// atomically (temp file, fsync, rename) a few seconds after a
-        /// session, window, pane, name, cwd, layout, or agent-session change,
-        /// and at least once a minute, so a crash, SIGKILL, or power loss
-        /// restores the latest workspace. A hot upgrade keeps saving without
-        /// restoring again. A development build refuses a production path.
+        /// change and at least once a minute. On a fresh start it imports
+        /// the sessions PATH has and the server lacks, starting none of
+        /// them, as `phux archive import` does. A development build refuses
+        /// a production path.
         #[usage(long, value_name = "PATH", conflicts("--ensure"))]
         autosave: Option<std::path::PathBuf>,
 
@@ -818,6 +825,12 @@ pub(crate) enum Command {
     /// `session-name-template`, disambiguated with fresh `${random-name}`
     /// picks when the template draws one, then a numeric suffix.
     ///
+    /// A session you name is persistent: it stays, empty, after its last
+    /// process exits, until `phux rm` or `phux kill` deletes it. A session
+    /// whose name was generated, like the one bare `phux` starts, is
+    /// ephemeral: it ends with its last process. `--ephemeral` makes a
+    /// named session ephemeral too.
+    ///
     /// With `--json`, creates the session *without* attaching and prints
     /// the seed pane's id as JSON instead. This neither attaches nor
     /// resizes, and the create is atomic server-side (no attach race).
@@ -875,12 +888,17 @@ pub(crate) enum Command {
         #[usage(flatten)]
         remote: RemoteOpt,
 
-        /// Create the session with no terminal. An empty session is
-        /// keep-empty: it survives its last window and only `phux kill`
-        /// removes it. Without `--json` the new session is attached and shows
-        /// an empty state; open a window from there.
-        #[usage(long, conflicts("--command", "--env", "--cwd"))]
+        /// Create the session with no process. It is persistent, so it
+        /// stays until `phux rm` or `phux kill` deletes it. Without `--json`
+        /// the new session is attached and shows an empty state; open a
+        /// window from there.
+        #[usage(long, conflicts("--command", "--env", "--cwd", "--ephemeral"))]
         empty: bool,
+
+        /// Make the session ephemeral: it ends when its last process exits,
+        /// even though you named it.
+        #[usage(long)]
+        ephemeral: bool,
 
         /// Command (and arguments) to run in the seed pane instead of the
         /// default shell. Must follow `--`: `phux new work -- htop`.
@@ -1027,6 +1045,11 @@ pub(crate) enum Command {
     /// is resolved client-side against a server-state snapshot to a set of
     /// Terminals; the server is then asked to kill each.
     ///
+    /// Killing a whole session terminates every member, removes each once
+    /// it has stopped, then deletes the session, and prints one result line
+    /// per member. Work added to the session meanwhile survives, and the
+    /// session is then kept.
+    ///
     /// `--server` stops the server process instead, ending every session on
     /// it. Local socket only: the server accepts that stop on its local
     /// socket alone, so `--server` cannot combine with `--remote`.
@@ -1099,14 +1122,46 @@ pub(crate) enum Command {
         json: bool,
     },
 
-    /// Move a pane beside another, across sessions too
+    /// Move a pane into another session, or beside another pane
     ///
-    /// SOURCE is collapsed out of its current tree position and inserted
-    /// beside TARGET. Both selectors must resolve to exactly one local pane.
-    /// When TARGET lives in a different session the pane is re-parented on
-    /// the server first — its process, scrollback, and id survive the move.
-    #[usage(name = "move-pane")]
+    /// When DEST names a session (`work`, or a session key `^ab23cd`), SOURCE
+    /// becomes a member of it and nothing else changes: its process,
+    /// scrollback, and id survive, and it is not placed in the destination's
+    /// layout. Otherwise DEST is a pane: SOURCE is collapsed out of its tree
+    /// position and inserted beside it, re-parented across sessions first
+    /// when needed.
     #[usage(help_heading = "Panes", display_order = 30)]
+    Mv {
+        /// Pane to move.
+        source: String,
+        /// Destination session, or the pane to place SOURCE beside.
+        dest: String,
+        /// Split axis beside a destination pane: `horizontal` stacks the
+        /// panes, `vertical` places them side-by-side.
+        #[usage(long, value_enum, default = "horizontal")]
+        split: SpawnSplit,
+        /// Fraction assigned to a destination pane; must be strictly between
+        /// 0 and 1.
+        #[usage(
+            long,
+            default = "0.5",
+            default_value_t = 0.5,
+            validate = "float(value) > 0 && float(value) < 1",
+            validate_error = "ratio must be finite and strictly between 0 and 1"
+        )]
+        ratio: f32,
+        /// Named projection(s) to edit instead of the shared default, for a
+        /// move beside a pane. A same-session move takes at most one KEY; a
+        /// cross-session move takes two (source and destination) or none.
+        #[usage(long, value_name = "KEY")]
+        projection: Vec<String>,
+        /// Emit a schema-versioned JSON result or error.
+        #[usage(long)]
+        json: bool,
+    },
+
+    /// Move a pane beside another (deprecated: use `phux mv`)
+    #[usage(name = "move-pane", hide)]
     MovePane {
         /// Pane to relocate.
         source: String,
@@ -1435,22 +1490,75 @@ pub(crate) enum Command {
         close_agent_sessions: bool,
     },
 
-    /// Rename a session
+    /// Rename a session or a pane
     ///
-    /// Reassigns `SESSION`'s human-readable name to `NEW_NAME` in one
-    /// round-trip. The server is authoritative;
-    /// attached clients pick up the new name on their next snapshot. An
-    /// unknown `SESSION` or a `NEW_NAME` already in use is an error.
+    /// Reassigns `TARGET`'s human-readable name to `NEW_NAME` in one
+    /// round-trip. `TARGET` is a session name, or a pane selector (`@N`,
+    /// `name:N.M`, a key `^ab23cd`) whose label to set. The server is
+    /// authoritative; attached clients pick up the new name on their next
+    /// snapshot. An unknown `TARGET`, or a session `NEW_NAME` already in
+    /// use, is an error.
     #[usage(help_heading = "Sessions", display_order = 15)]
     Rename {
-        /// Current session name.
-        session: String,
+        /// Current session name, or a pane selector.
+        target: String,
 
-        /// New session name.
+        /// New name.
         new_name: String,
 
         #[usage(flatten)]
         remote: RemoteOpt,
+    },
+
+    /// Remove a stopped pane, or delete an empty session
+    ///
+    /// `TARGET` is a pane selector (`@N`, `name:N.M`, a key `^ab23cd`) whose
+    /// process has ended, or a session name with no members. A pane that
+    /// still runs, or a session that still has members, is refused: stop it
+    /// with `phux kill` first.
+    #[usage(help_heading = "Sessions", display_order = 17)]
+    Rm {
+        /// The pane or session to remove.
+        target: String,
+        /// Remove without asking.
+        ///
+        /// Without it, `phux rm` asks on a terminal, and when stdin is not
+        /// one it refuses with exit 2 having sent nothing.
+        #[usage(long)]
+        yes: bool,
+        /// Emit a schema-versioned JSON result or error.
+        #[usage(long)]
+        json: bool,
+    },
+
+    /// Start a stopped pane again
+    ///
+    /// Starts a new run of `TARGET` (a pane selector or key `^ab23cd`) with
+    /// the command, directory, and environment it was launched with, in the
+    /// same session. Refused while it still runs, or while a run that a
+    /// server restart lost track of may still be running.
+    #[usage(help_heading = "Sessions", display_order = 18)]
+    Relaunch {
+        /// The pane to start again.
+        target: String,
+        /// Emit a schema-versioned JSON result or error.
+        #[usage(long)]
+        json: bool,
+    },
+
+    /// Relaunch every pane a server restart ended
+    ///
+    /// Starts each pane whose process ended because the server stopped while
+    /// it ran, and each pane imported but never started, in its session, with
+    /// its directory and agent resume. With `SESSION`, only that session's
+    /// panes. Prints one result line per pane.
+    #[usage(help_heading = "Sessions", display_order = 19)]
+    Restore {
+        /// Only this session's panes.
+        session: Option<String>,
+        /// Emit a schema-versioned JSON result or error.
+        #[usage(long)]
+        json: bool,
     },
 
     /// Read a pane's screen as text or JSON
@@ -2089,12 +2197,20 @@ pub(crate) enum Command {
         action: ThemeAction,
     },
 
-    /// Inspect a git workspace and its worktrees
+    /// Export sessions to an archive file, or import one
     ///
-    /// This is a local repo operation: it never contacts a running phux server
-    /// and never creates or deletes worktrees. Agents use it to map code
-    /// checkouts to phux sessions/panes before spawning or attaching work.
+    /// `export` writes the running server's sessions, windows, split trees,
+    /// directories, and resumable agent sessions as JSON. `import` recreates
+    /// an archive's missing sessions, empty and persistent, without starting
+    /// any process.
     #[usage(help_heading = "More", display_order = 65)]
+    Archive {
+        #[usage(subcommand)]
+        action: ArchiveAction,
+    },
+
+    /// Deprecated spelling of `phux archive` and `phux project inspect`
+    #[usage(hide)]
     Workspace {
         #[usage(subcommand)]
         action: WorkspaceAction,
@@ -2544,13 +2660,11 @@ pub(crate) enum ServiceAction {
         #[usage(long, value_name = "HOST:PORT")]
         listen: Option<String>,
 
-        /// Keep the workspace archive and restore it on start. The server
-        /// runs with `--autosave`, rewriting the archive atomically a few
-        /// seconds after the workspace changes, and the unit saves once more
-        /// on stop, so a crash or power loss restores the latest layout.
-        /// Off by default: a session list repopulated with fresh shells is a
-        /// surprise unless asked for. Restores names, layout, and cwd —
-        /// never running processes.
+        /// Keep a session archive beside the server. The server runs with
+        /// `--autosave`, exporting the archive atomically a few seconds after
+        /// its sessions change, and the unit exports once more on stop. The
+        /// server keeps its sessions across a restart either way; after one,
+        /// `phux restore` relaunches the processes it ended.
         #[usage(long)]
         restore: bool,
 
@@ -2680,6 +2794,21 @@ pub(crate) enum ProjectAction {
     Status {
         /// Project name or directory (default: the current one).
         target: Option<String>,
+
+        /// Emit a stable JSON document instead of human text.
+        #[usage(long)]
+        json: bool,
+    },
+
+    /// Map a git repository and its checked-out worktrees.
+    ///
+    /// A local repo operation: it never contacts a phux server and never
+    /// creates or deletes a worktree. Agents use it to map checkouts to
+    /// sessions before spawning or attaching work.
+    Inspect {
+        /// Path inside the repository or worktree to inspect.
+        #[usage(default = ".")]
+        path: std::path::PathBuf,
 
         /// Emit a stable JSON document instead of human text.
         #[usage(long)]
@@ -3113,7 +3242,44 @@ pub(crate) enum PluginAction {
     },
 }
 
-/// `phux workspace <action>` — workspace inspection and session archives.
+/// `phux archive <action>` — the session archive.
+#[derive(Debug, Subcommands)]
+pub(crate) enum ArchiveAction {
+    /// Write the running server's sessions as a JSON archive.
+    Export {
+        /// Write the archive to a path instead of stdout.
+        #[usage(long, short = 'o', value_name = "PATH")]
+        output: Option<std::path::PathBuf>,
+
+        /// Read each session's split tree from this projection key PREFIX
+        /// (`<PREFIX>.layout/v1`) instead of the shared default, appending
+        /// `/<session-id>` itself for each session archived. Unlike every
+        /// other `--projection` flag, this one takes a bare prefix, not a
+        /// full key: a full `<prefix>.layout/v1/<id>` key is refused. A
+        /// session with nothing stored under its own key falls back to its
+        /// bare pane list; when this flag is given, that absence is also
+        /// reported on stderr.
+        #[usage(long, value_name = "PREFIX")]
+        projection: Option<String>,
+    },
+
+    /// Recreate an archive's missing sessions without starting them.
+    ///
+    /// Each missing session becomes an empty, persistent session with its
+    /// archived host, project, and directory; nothing is launched. A session
+    /// of the same name already on the server is skipped.
+    Import {
+        /// JSON archive path, or '-' to read from stdin.
+        archive: std::path::PathBuf,
+        /// Print the archive's session, host, and directory organization
+        /// and do not dial a server.
+        #[usage(long)]
+        plan: bool,
+    },
+}
+
+/// `phux workspace <action>` — the deprecated spelling of `phux archive
+/// export` / `import` and `phux project inspect`.
 #[derive(Debug, Subcommands)]
 pub(crate) enum WorkspaceAction {
     /// Inspect the git repository and its checked-out worktrees.
@@ -3127,7 +3293,7 @@ pub(crate) enum WorkspaceAction {
         json: bool,
     },
 
-    /// Save the running phux workspace as a JSON archive.
+    /// Save the running server's sessions as a JSON archive.
     Save {
         /// Write the archive to a path instead of stdout.
         #[usage(long, short = 'o', value_name = "PATH")]
@@ -3145,7 +3311,7 @@ pub(crate) enum WorkspaceAction {
         projection: Option<String>,
     },
 
-    /// Restore missing sessions from a workspace archive.
+    /// Recreate an archive's missing sessions without starting them.
     Restore {
         /// JSON archive path, or '-' to read from stdin.
         archive: std::path::PathBuf,

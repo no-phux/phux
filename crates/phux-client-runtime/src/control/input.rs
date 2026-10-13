@@ -273,10 +273,14 @@ impl ControlPlane {
     /// uploads.
     #[must_use]
     pub fn next_operation_deadline(&self) -> Option<Instant> {
-        match (self.next_input_deadline(), self.next_upload_deadline()) {
-            (Some(input), Some(upload)) => Some(input.min(upload)),
-            (input, upload) => input.or(upload),
-        }
+        [
+            self.next_input_deadline(),
+            self.next_upload_deadline(),
+            self.next_org_deadline(),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     /// Resolve every operation past its retry horizon. Returns whether any
@@ -284,7 +288,8 @@ impl ControlPlane {
     pub fn expire_operations(&mut self) -> bool {
         let input = self.expire_inputs();
         let uploads = self.expire_uploads();
-        input || uploads
+        let organization = self.expire_org();
+        input || uploads || organization
     }
 
     /// Resolve every acknowledged input past the retry horizon. Returns

@@ -123,9 +123,9 @@ fn get_perf_reports_hot_path_metrics_and_resets_on_request() {
             histogram_count(&report, "wire.write") > 0,
             "frames were written to us"
         );
-        // Gauges reflect the registry.
+        // Gauges reflect the records: the seeded session and the Inbox.
         match &report.metric("proc.sessions").unwrap().value {
-            MetricValue::Gauge(n) => assert_eq!(*n, 1),
+            MetricValue::Gauge(n) => assert_eq!(*n, 2),
             other => panic!("{other:?}"),
         }
 

@@ -14,6 +14,7 @@ legacy behavior.
 
 Status: Accepted
 Date: 2026-07-15
+Superseded in part by [ADR-0161](./0161-organization-is-typed-commands-behind-a-feature-bit.md): placement is the typed session arrangement, not client-written L3 metadata.
 
 ## Context
 

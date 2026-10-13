@@ -71,11 +71,16 @@ impl super::SessionLoop {
             self.layout_get_request_id = None;
             // #1207: heal a missing or partial key instead of hiding panes,
             // and save it so every client and `phux insert-pane` agree.
+            // On an `ORGANIZATION` server the layout is the session's
+            // arrangement record, and a member it leaves out was closed on
+            // purpose: it stays unarranged behind the reopen action (R15).
+            // Only an absent record, or a legacy key, is healed.
             let key_absent = !outcome.layout_replaced;
-            if self.place_unplaced_panes() {
+            let heal = key_absent || !self.organization_supported;
+            if heal && self.place_unplaced_panes() {
                 outcome.layout_replaced = true;
                 outcome.emit_set_metadata = true;
-            } else if key_absent && !self.mirror.workspace.windows.is_empty() {
+            } else if key_absent && !self.mirror.workspace.groups.is_empty() {
                 outcome.emit_set_metadata = true;
             }
         }
@@ -191,7 +196,7 @@ impl super::SessionLoop {
     }
 
     /// Apply one frame and surface an exit, if this frame ended the attach.
-    async fn apply_frame_step<W: crate::attach::RenderSink>(
+    pub(super) async fn apply_frame_step<W: crate::attach::RenderSink>(
         &mut self,
         conn: &mut Connection,
         out: &mut W,
@@ -239,6 +244,12 @@ impl super::SessionLoop {
     ) -> Result<Step, AttachError> {
         // Only a burst that did not end the attach may spend.
         self.emit_deferred_bootstrap_outbound(conn).await?;
+        if let Some(exit) = self
+            .settle_arrangement_read(conn, out, sidebar, repaint)
+            .await?
+        {
+            return Ok(exit);
+        }
         self.drain_repaint(out, sidebar, repaint);
         // Settle the pacer's debt here when the timer cannot be trusted (see
         // [`burst_settles_debt`]). After `drain_repaint`, so a full repaint
@@ -566,7 +577,7 @@ impl super::SessionLoop {
         let ls = self
             .mirror
             .workspace
-            .render_window(self.mirror.zoomed.as_ref())?;
+            .render_group(self.mirror.zoomed.as_ref())?;
         ls.tree.as_ref().map(|_| {
             crate::attach::multi_pane::compute_layout_in(
                 ls.as_ref(),
@@ -632,6 +643,16 @@ impl super::SessionLoop {
         self.emit_stream_cursor_requests(conn, outcome).await?;
         self.emit_layout_followups(conn, outcome, sidebar, prev_rects)
             .await?;
+        // Another writer changed this session's arrangement record: read it
+        // once the burst settles.
+        if outcome.arrangement_changed && self.arrangement.is_some() {
+            self.arrangement_read_owed = true;
+        }
+        // The server moved a resource into or out of this session: a fresh
+        // graph recomputes the members.
+        if outcome.members_dirty {
+            self.request_host_inventory(conn).await?;
+        }
         // ADR-0147: a floating overlay just opened; state its box size, as a
         // split's reflow does for a new tile.
         if outcome.size_floating {

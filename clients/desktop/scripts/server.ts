@@ -79,20 +79,15 @@ export function sessionNames(phux: string, socket: string): string[] {
   );
 }
 
-/** The desktop attaches an existing session; create the requested one when absent. */
+/**
+ * Create an explicitly requested session when absent. `phux new` makes a
+ * session it is given a name for persistent.
+ */
 export function ensureSession(phux: string, socket: string, name: string): void {
   if (sessionNames(phux, socket).includes(name)) return;
   if (!json(phux, ["--socket", socket, "new", "--json", "-s", name])) {
     throw new Error(`Could not create phux session "${name}"`);
   }
-}
-
-/** An explicit choice, else `default`, else the first session, else a new `default`. */
-export function pickSession(phux: string, socket: string, requested?: string): string {
-  if (requested) return requested;
-  const names = sessionNames(phux, socket);
-  if (names.includes("default")) return "default";
-  return names[0] ?? "default";
 }
 
 function json(phux: string, args: string[]): object | undefined {

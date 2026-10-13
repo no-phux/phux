@@ -4,6 +4,8 @@
 //! the sole [`Listener`] and wakes a bounded channel; it does not poll and it
 //! does not retry a refused command.
 
+pub mod home;
+pub mod org;
 pub mod path;
 
 pub use path::{
@@ -15,12 +17,13 @@ pub use path::{
 use phux_client_ffi::projection::{agent::badge, id, status};
 use phux_client_runtime::control::ControlOptions;
 use phux_client_runtime::control::{
-    Event, PaneDescriptor, PathAnswer, ServerInfo, SpawnRequest, Status, Topology,
+    Event, PaneDescriptor, PathAnswer, ServerInfo, SpawnRequest, Status, Topology, mint_operation,
 };
 use phux_client_runtime::{Client, ClientOptions, Listener, Runtime, Target};
 use phux_protocol::ResourceId;
-use phux_protocol::caps::ServerFeature;
-use phux_protocol::wire::frame::{AttachTarget, RolePolicy};
+use phux_protocol::caps::{ServerFeature, ServerFeatureExt};
+use phux_protocol::ids::{ArrangementKey, OperationId, SessionKey};
+use phux_protocol::wire::frame::{AttachTarget, Command, LaunchSpec, RolePolicy, SessionLifetime};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -85,7 +88,11 @@ pub struct Connection {
     pub agents: HashMap<ResourceId, AgentInfo>,
     /// Session id to `phux.session.project/v1` tag.
     pub projects: HashMap<u32, String>,
+    /// The arrangement group that shows each terminal, by name.
+    pub groups: HashMap<ResourceId, String>,
     session: String,
+    /// Arrangements asked for on this connection, so each is read once.
+    fetched: HashSet<ArrangementKey>,
     closed: bool,
     known: HashSet<ResourceId>,
     identity: Option<ConnectionIdentity>,
@@ -146,7 +153,9 @@ impl Connection {
             error: None,
             agents: HashMap::new(),
             projects: HashMap::new(),
+            groups: HashMap::new(),
             session,
+            fetched: HashSet::new(),
             closed: false,
             known: HashSet::new(),
             identity: None,
@@ -203,6 +212,9 @@ impl Connection {
             self.error = None;
         }
         self.accept(&observation.events, observation.connection_epoch);
+        if changed {
+            self.follow_arrangements(&observation.events);
+        }
         self.invalidate_paint(&observation.events);
         self.revision = self.revision.saturating_add(1);
         observation.events
@@ -249,6 +261,74 @@ impl Connection {
             .iter()
             .find(|session| session.name == self.session)
             .map(|session| session.id)
+    }
+
+    /// Whether the server takes typed organization commands (`ORGANIZATION`).
+    #[must_use]
+    pub fn organization(&self) -> bool {
+        self.server
+            .as_ref()
+            .is_some_and(|server| server.has_ext(ServerFeatureExt::Organization))
+    }
+
+    /// The arrangement group name that shows `terminal`, when one is known.
+    #[must_use]
+    pub fn group_name(&self, terminal: &ResourceId) -> Option<&str> {
+        self.groups.get(terminal).map(String::as_str)
+    }
+
+    /// Read each session's arrangement once per connection and rebuild the
+    /// terminal-to-group names from the replica.
+    fn follow_arrangements(&mut self, events: &[Event]) {
+        if events.iter().any(starts_connection) {
+            self.fetched.clear();
+        }
+        if !self.organization() {
+            self.groups.clear();
+            return;
+        }
+        let replica = self.client.organization();
+        for session in replica.sessions() {
+            if let Some(arrangement) = session.arrangement
+                && replica.arrangement(&arrangement).is_none()
+                && self.fetched.insert(arrangement)
+            {
+                let _ = self.client.fetch_arrangement(arrangement);
+            }
+        }
+        self.groups = org::group_names(&replica);
+    }
+
+    /// Create a persistent session whose first terminal starts in
+    /// `directory`. The outcome is [`Event::OrganizationOperation`] for the
+    /// returned id.
+    ///
+    /// # Errors
+    ///
+    /// A sentence when the journal refuses the submission.
+    pub fn create_session(&self, name: &str, directory: &str) -> Result<OperationId, String> {
+        let mut launch = LaunchSpec::new(Vec::new());
+        launch.cwd = Some(directory.to_owned());
+        self.client
+            .submit_organization(Command::SessionCreate {
+                operation: mint_operation(),
+                name: name.to_owned(),
+                lifetime: SessionLifetime::Persistent,
+                attrs: Vec::new(),
+                launch: Some(Box::new(launch)),
+            })
+            .map_err(|error| error.to_string())
+    }
+
+    /// Start the kill-session workflow. The result is
+    /// [`Event::KillFinished`] for the returned id; `None` while the
+    /// organization records are not loaded or do not list the session.
+    #[must_use]
+    pub fn kill_session(&self, session: SessionKey) -> Option<u64> {
+        if self.closed {
+            return None;
+        }
+        self.client.kill_session(session)
     }
 
     /// Ask the runtime to drop the socket and redial. A terminal client cannot reopen.

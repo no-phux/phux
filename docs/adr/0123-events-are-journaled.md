@@ -14,6 +14,7 @@ wake-up over state read by level, not durable history.
 
 Status: Accepted
 Date: 2026-09-14
+See [ADR-0161](./0161-organization-is-typed-commands-behind-a-feature-bit.md) for organization events on the journal and the actor principal they carry.
 
 ## Context
 

@@ -38,6 +38,10 @@ static SOCKET_COUNTER: AtomicU32 = AtomicU32::new(0);
 pub struct ServerGuard {
     process: ServerProcess,
     pub socket: PathBuf,
+    /// The server's private `XDG_STATE_HOME` and `XDG_CONFIG_HOME`, which
+    /// [`Self::cmd`] and [`Self::cmd_global`] reuse so a client verb sees the
+    /// same state and config as the server it dials.
+    pub xdg: super::ambient::XdgDirs,
     /// Instant the child was spawned, matching the server's idle-clock origin.
     pub spawned_at: Instant,
 }
@@ -92,6 +96,7 @@ impl ServerGuard {
     pub fn cmd(&self, args: &[&str]) -> Command {
         let (verb, rest) = args.split_first().expect("at least a verb");
         let mut cmd = super::ambient::phux_cmd(crate::runner::phux_bin());
+        self.xdg.apply(&mut cmd);
         cmd.arg(verb)
             .arg("--socket")
             .arg(&self.socket)
@@ -104,6 +109,7 @@ impl ServerGuard {
     #[must_use]
     pub fn cmd_global(&self, args: &[&str]) -> Command {
         let mut cmd = super::ambient::phux_cmd(crate::runner::phux_bin());
+        self.xdg.apply(&mut cmd);
         cmd.arg("--socket")
             .arg(&self.socket)
             .args(args)
@@ -129,7 +135,9 @@ impl ServerGuard {
 
 /// Builder for a [`ServerGuard`]. Every field has a default that matches the
 /// duplicated harnesses: session `work`, idle backstop
-/// [`SERVER_IDLE_LIMIT_SECS`], no seed command, inherited environment.
+/// [`SERVER_IDLE_LIMIT_SECS`], no seed command, inherited environment. The
+/// server always gets a fresh `XDG_STATE_HOME` and `XDG_CONFIG_HOME`; an
+/// explicit [`Self::env`] for either key overrides it.
 #[derive(Debug)]
 pub struct ServerSpawn {
     prefix: String,
@@ -208,12 +216,19 @@ impl ServerSpawn {
     #[must_use]
     pub fn start_with(self, configure: impl FnOnce(&mut Command)) -> ServerGuard {
         let socket = unique_socket(&self.prefix);
+        let mut xdg = super::ambient::XdgDirs::fresh(&self.prefix);
         let mut cmd = super::ambient::phux_cmd(crate::runner::phux_bin());
         if self.env_clear {
             cmd.env_clear();
         }
+        xdg.apply(&mut cmd);
         for (key, value) in &self.extra_env {
             cmd.env(key, value);
+            if key == "XDG_STATE_HOME" {
+                xdg.state = PathBuf::from(value);
+            } else if key == "XDG_CONFIG_HOME" {
+                xdg.config = PathBuf::from(value);
+            }
         }
         cmd.args(["server", "--session", &self.session, "--socket"])
             .arg(&socket);
@@ -230,6 +245,7 @@ impl ServerSpawn {
         let guard = ServerGuard {
             process: ServerProcess::from_child(child, socket.clone()),
             socket,
+            xdg,
             spawned_at,
         };
         wait_for_socket(&guard.socket);

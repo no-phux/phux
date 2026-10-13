@@ -277,7 +277,7 @@ test "same-machine windows on independent sessions carry their own session label
     _ = try remote.drainReadiness();
     try fixture.stageFixture(remote.bridge, "attached.bin");
     _ = try remote.drainReadiness();
-    try fixture.stageWorkspaceFixture(remote.bridge, "workspace_initial_metadata.bin");
+    try fixture.stageWorkspaceFixture(remote.bridge, "workspace_arranged_metadata.bin");
     try fixture.stageFixture(remote.bridge, "workspace_sessions_a_state.bin");
     _ = try remote.drainReadiness();
     model.shared_workspace.attachment_id = remote.context_id;

@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-06
+last-reviewed: 2026-10-13
 ---
 
 # Shipping-engine wire fixtures
@@ -34,7 +34,18 @@ Use a private target directory per worktree for concurrent builds.
   Attach, session, window, and initial client IDs are 1. The session and window
   are named `fixture`. The focused terminal is local terminal 7, 80 columns by
   24 rows, stream 7, bootstrap 1, base sequence 0, chunk sequence 0. There is no
-  history cursor.
+  history cursor. The session carries its persistent key (sixteen `0x5e`
+  bytes) and lifetime `persistent`; the terminal names session 1 in its
+  session facet.
+- Organization records: `hello_organization.bin` is `hello.bin` that also
+  advertises `ORGANIZATION` (extended feature `0x10`). A fresh client answers
+  it with a `GET_ORGANIZATION` seed; `organization_page.bin` is that seed's
+  one-page answer, correlated to the request id the C ABI sends first:
+  authority sixteen `0xa0` bytes, Inbox `inbox` (session 2, sixteen `0x1b`
+  bytes, empty), and `fixture` (session 1) holding terminal 7 running (key
+  sixteen `0x77` bytes) and a completed, retained shell that exited 3 (key
+  sixteen `0x78` bytes, no live handle). The generator checks the records,
+  `PhuxSessionRecord`, and the keyed `PhuxResourceInfo` after `attached.bin`.
 - `session_renamed.bin`: one `METADATA_CHANGED` of `phux.session.name/v1`
   (Global) with the applied value `fixture\0renamed`: the server's broadcast of
   a rename of the attached session. The generator checks that an attached

@@ -380,10 +380,15 @@ impl ControlPlane {
         request_id
     }
 
-    /// Close a batch of terminals atomically (`CLOSE_TAB_RESOURCES`);
-    /// `None` when the server did not advertise it. The reply is
+    /// Close a batch of terminals. Against a server that advertises
+    /// `ORGANIZATION`, each is terminated (`RESOURCE_TERMINATE`), leaving
+    /// membership and arrangement to the server; otherwise one atomic
+    /// `CLOSE_TAB_RESOURCES`. `None` when neither is available. The reply is
     /// [`Event::TerminalsClosed`].
     pub fn close_terminals(&mut self, ids: Vec<ResourceId>) -> Option<u32> {
+        if let Some(request_id) = self.close_terminals_by_record(&ids) {
+            return Some(request_id);
+        }
         if !self.server_has(ServerFeature::CloseTabResources) {
             return None;
         }

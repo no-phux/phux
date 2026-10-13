@@ -144,8 +144,29 @@ const GLOBAL_OWNER_UDS: Subject = Subject::Global {
 
 /// The §6 subject phrases and the `Subject` each one means. The first
 /// prefix that matches wins, so a longer phrase precedes its own prefix.
-const SPEC_SUBJECTS: [(&str, Subject); 24] = [
+const SPEC_SUBJECTS: [(&str, Subject); 30] = [
     ("named session", Subject::NamedSession),
+    (
+        "filtered to the organization records",
+        Subject::OrganizationView,
+    ),
+    ("the session the command's key names", Subject::KeyedSession),
+    (
+        "the resource the command's key names",
+        Subject::KeyedResource,
+    ),
+    (
+        "every session a moved resource leaves",
+        Subject::MoveSessions,
+    ),
+    (
+        "every session and resource the undone operation's",
+        Subject::UndoneOperation,
+    ),
+    (
+        "the session that owns the arrangement",
+        Subject::ArrangementOwner,
+    ),
     (
         "Global, and the authenticated transport MUST be the owner UDS",
         GLOBAL_OWNER_UDS,
@@ -482,7 +503,10 @@ fn every_client_frame_type_has_a_classification() {
 fn unknown_and_retired_tags_classify_as_deny() {
     // SPAWN 0x00, RESIZE_TERMINAL 0x04, RUN_HOOK 0x06 (unallocated); 0x0a and
     // 0x0b (freed by the dissolved session verbs).
-    for tag in [0x00, 0x04, 0x06, 0x0a, 0x0b] {
+    // 0x2f..=0x34 are reserved for the workspace commands (L1 §5.7).
+    for tag in [
+        0x00, 0x04, 0x06, 0x0a, 0x0b, 0x2f, 0x30, 0x31, 0x32, 0x33, 0x34,
+    ] {
         assert!(kinds::command_method(tag).is_none(), "{tag:#04x}");
         assert!(!decoder_allocates_command_tag(tag), "{tag:#04x}");
     }

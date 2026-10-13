@@ -185,7 +185,7 @@ mod tests {
             events: Vec::new(),
             panes,
             links: Vec::new(),
-            workspaces: Vec::new(),
+            profiles: Vec::new(),
             widgets: Vec::new(),
             sidebar: Vec::new(),
             themes: Vec::new(),

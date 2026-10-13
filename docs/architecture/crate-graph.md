@@ -143,7 +143,7 @@ the resource substrate. Mapping each onto code currently in tree:
 | Layer | Concept | Implemented in tree as |
 |---|---|---|
 | **L1** | Resource: identity + kind + lifecycle + opaque output stream + bootstrap + events; the Terminal facet adds PTY, libghostty `Terminal`, structured input, and snapshots; the AgentSession facet adds producer-fed JSONL records | `ResourceCore` plus the Terminal and AgentSession engines in `phux-server::resource`; wire `ResourceId` and the `SPAWN_RESOURCE` / `RESOURCE_SPAWNED` / `RESOURCE_CLOSED` / `BOOTSTRAP_*` / `RESOURCE_OUTPUT` / `APPEND_RESOURCE_OUTPUT` / `INPUT_*` / `BELL` / `EVENT` messages (`OSC_EVENT` is spec-only) |
-| **L2** | Reserved; no collection tier | unused; see [`../spec/L2.md`](../spec/L2.md) |
+| **L2** | Organization model: sessions, membership, lifetime, arrangements (no frame family; commands on the L1 envelope) | records and `apply` in `phux-core`; `ServerState::commit` and `org_store` in `phux-server`; see [`../spec/L2.md`](../spec/L2.md) |
 | **L3** | Opaque metadata KV scoped to Terminal / group / global | `MetadataStore` on `ServerState` (`phux-server::state::metadata`): three maps mirroring the three wire `Scope`s, values opaque `Vec<u8>`, with `GET` / `SET` / `LIST` / `DELETE` / `SUBSCRIBE` and `METADATA_CHANGED` fan-out |
 
 Cross-cuts:

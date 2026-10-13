@@ -502,7 +502,7 @@ mod tests {
             events: Vec::new(),
             panes: Vec::new(),
             links: Vec::new(),
-            workspaces: Vec::new(),
+            profiles: Vec::new(),
             widgets: Vec::new(),
             sidebar: Vec::new(),
             themes: Vec::new(),

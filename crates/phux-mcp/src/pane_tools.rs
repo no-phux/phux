@@ -243,8 +243,7 @@ async fn spawn_placed(
         .await
         .map_err(|err| transport_error(&err, socket, "spawn"))?
         .into_parts();
-    let (owner, owner_window, owner_session) =
-        placement_owner(socket, &selector, &snapshot).await?;
+    let (owner, owner_session) = placement_owner(socket, &selector, &snapshot).await?;
     if let FrameKind::SpawnResource { owner_terminal, .. } = &mut frame {
         *owner_terminal = Some(owner.clone());
     }
@@ -256,7 +255,6 @@ async fn spawn_placed(
     };
     let placement = Placement {
         owner,
-        owner_window,
         owner_session,
         new_pane: new_pane.clone(),
     };
@@ -285,19 +283,12 @@ async fn spawn_placed(
     }
 }
 
-/// The local Terminal `selector` names, with its window and session.
+/// The local Terminal `selector` names, with its session.
 async fn placement_owner(
     socket: &Path,
     selector: &Selector,
     snapshot: &SessionSnapshot,
-) -> Result<
-    (
-        ResourceId,
-        phux_protocol::ids::WindowId,
-        phux_protocol::ids::SessionId,
-    ),
-    ToolError,
-> {
+) -> Result<(ResourceId, phux_protocol::ids::SessionId), ToolError> {
     let candidates = state::resolve_targets(socket, selector, snapshot)
         .await
         .map_err(|err| crate::tools::agent_resolve_error(&err))?;
@@ -306,9 +297,9 @@ async fn placement_owner(
     if !matches!(owner, ResourceId::Local { .. }) {
         return Err(ToolError::new("explicit spawn placement is local-only"));
     }
-    let (window, session) = phux_client::spawn::ownership_for_terminal(snapshot, &owner)
+    let session = phux_client::spawn::ownership_for_terminal(snapshot, &owner)
         .ok_or_else(|| ToolError::new("target has no local session ownership"))?;
-    Ok((owner, window, session))
+    Ok((owner, session))
 }
 
 fn spawn_document(result: SpawnResult) -> Result<Value, ToolError> {

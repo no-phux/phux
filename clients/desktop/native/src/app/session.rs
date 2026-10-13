@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui::{
-    App, AppContext, Context, Entity, KeyBinding, Menu, MenuItem, NoAction, Point, SharedString,
-    Size, Subscription, Task, TitlebarOptions, WindowBackgroundAppearance, WindowBounds,
-    WindowHandle, WindowId, WindowOptions, px, size,
+    App, AppContext, Context, Entity, EntityId, KeyBinding, Menu, MenuItem, NoAction, Point,
+    SharedString, Size, Subscription, Task, TitlebarOptions, WindowBackgroundAppearance,
+    WindowBounds, WindowHandle, WindowId, WindowOptions, px, size,
 };
 use gpui_kit::component::Root;
 use gpui_kit::{self, AnyWindowHandle};
@@ -31,6 +31,8 @@ pub struct Desktop {
     socket: PathBuf,
     home_session: String,
     layout: PathBuf,
+    /// The launch named its layout file; rehoming keeps it.
+    explicit_layout: bool,
     quick_layout: PathBuf,
     legacy_layout: Option<PathBuf>,
     legacy_quick: Option<PathBuf>,
@@ -61,6 +63,7 @@ impl Desktop {
             socket: PathBuf::new(),
             home_session: String::new(),
             layout: PathBuf::new(),
+            explicit_layout: false,
             quick_layout: PathBuf::new(),
             legacy_layout: None,
             legacy_quick: None,
@@ -98,6 +101,7 @@ impl Desktop {
         let paths = crate::workspace::layout_paths(&socket, &options.session);
         // An explicit layout file is used as given: no legacy import beside it.
         let explicit = !options.layout_path.as_os_str().is_empty();
+        self.explicit_layout = explicit;
         self.layout = if explicit {
             options.layout_path
         } else {
@@ -135,6 +139,51 @@ impl Desktop {
         };
         self.publish_menus(cx);
         Ok(handle)
+    }
+
+    /// Reopen the window `old` on `session`, for a launch that could not name
+    /// a session: the home session and the layout files follow it.
+    pub fn rehome(&mut self, old: EntityId, session: String, cx: &mut Context<Self>) {
+        self.home_session = session.clone();
+        if !self.explicit_layout {
+            let paths =
+                crate::workspace::layout_paths(&self.socket.display().to_string(), &session);
+            self.layout = paths.layout;
+            self.quick_layout = paths.quick;
+            self.legacy_layout = Some(paths.legacy_layout);
+            self.legacy_quick = Some(paths.legacy_quick);
+        }
+        let quick = self
+            .quick
+            .as_ref()
+            .is_some_and(|opened| opened.desk.entity_id() == old);
+        let request = if quick {
+            self.quick_request(cx)
+        } else {
+            OpenRequest {
+                role: WindowRole::Main,
+                session,
+                fresh: false,
+                initial_terminal: None,
+                layout_path: self.layout.clone(),
+                legacy_layout: self.legacy_layout.clone(),
+                startup_error: None,
+                main_display: None,
+            }
+        };
+        let replaced = self
+            .windows
+            .iter()
+            .chain(self.quick.as_ref())
+            .find(|opened| opened.desk.entity_id() == old)
+            .map(|opened| opened.handle);
+        if let Err(error) = self.open_window(request, true, quick, cx) {
+            log::error!("could not reopen the window: {error:#}");
+            return;
+        }
+        if let Some(handle) = replaced {
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
+        }
     }
 
     pub fn open_session(&mut self, session: String, cx: &mut Context<Self>) {

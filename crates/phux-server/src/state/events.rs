@@ -505,7 +505,10 @@ impl ServerState {
     /// Stamp `record` in the journal and offer it to every subscription,
     /// under the state lock. Returns the `seq` (`None` if exhausted).
     pub fn record_and_fanout(&mut self, mut record: EventRecord) -> Option<u64> {
-        let actor = record.actor.map(|client| self.clients.actor_ref(client));
+        let actor = record
+            .actor_ref
+            .take()
+            .or_else(|| record.actor.map(|client| self.clients.actor_ref(client)));
         record.subject = crate::policy::filter::EventSubject::at(
             self,
             record.terminal.as_ref(),

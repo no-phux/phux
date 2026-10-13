@@ -76,7 +76,7 @@ Every close action has a full-title accessible name; the selected tab also has
 a full-title close tooltip. Side tabs compose the icon, eliding title and close
 control inside one selected row, never overlaying the SDK's painted icon slot.
 
-Both tab context menus offer Rename Tab, movement and Close Tab. Rename captures
+Both tab context menus offer Rename Tab, movement, Close View and Kill Tab. Rename captures
 the invoked tab, prefills its current name, and writes the shared workspace
 window name on that tab's owning attachment. It never renames the session or
 speculates local success. Confirmation comes from the durable workspace mutation;

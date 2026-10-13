@@ -11,7 +11,7 @@ use crate::attach::chrome_ctx::{ChromeCtx, PaneScene};
 use crate::attach::pane_state::{ExitMark, PaneSlot, VcsIndex};
 use crate::attach::review::ReviewIndex;
 use crate::attach::server_frame::AgentMetaIndex;
-use crate::layout::Workspace;
+use crate::layout::ArrangementDoc;
 use crate::render::chrome::sidebar::{AgentEntry, SidebarPainter};
 use crate::render::chrome::status_bar::StatusBarPainter;
 use phux_client::agent_meta::{AgentAttention, AgentMetaState, AgentRecord};
@@ -94,7 +94,7 @@ fn format_attention_hint(asking: usize) -> Option<String> {
 fn no_peers() -> crate::attach::sidebar_zones::PeerInputs<'static> {
     use std::sync::LazyLock;
     static SESSIONS: &[phux_protocol::wire::info::SessionInfo] = &[];
-    static LAYOUTS: LazyLock<HashMap<phux_protocol::ids::SessionId, Workspace>> =
+    static LAYOUTS: LazyLock<HashMap<phux_protocol::ids::SessionId, ArrangementDoc>> =
         LazyLock::new(HashMap::new);
     static AGENTS: LazyLock<HashMap<ResourceId, AgentRecord>> = LazyLock::new(HashMap::new);
     static ATTENTION: LazyLock<std::collections::HashSet<ResourceId>> =
@@ -196,7 +196,7 @@ fn feed_sidebar(
     sidebar_painter: &mut SidebarPainter,
     windows: Vec<phux_config::widget::WindowInfo>,
     local: Vec<AgentEntry>,
-    workspace: &Workspace,
+    workspace: &ArrangementDoc,
     peers: &crate::attach::sidebar_zones::PeerInputs<'_>,
 ) -> bool {
     let mut changed = sidebar_painter.set_windows(windows);
@@ -206,7 +206,7 @@ fn feed_sidebar(
     // Satellite agents append after that order, grouped by name then host.
     let mut agents = crate::attach::sidebar_zones::needs_you_queue(local, peers);
     let mut open = HashSet::new();
-    for window in &workspace.windows {
+    for window in &workspace.groups {
         if let Some(tree) = window.state.tree.as_ref() {
             open.extend(crate::layout::leaves(tree));
         }
@@ -223,11 +223,11 @@ fn feed_sidebar(
 /// agree.
 pub(super) fn badge_windows(
     windows: &mut [phux_config::widget::WindowInfo],
-    workspace: &Workspace,
+    workspace: &ArrangementDoc,
     agents: &[AgentEntry],
     theme: &crate::render::Theme,
 ) {
-    for (i, (info, window)) in windows.iter_mut().zip(&workspace.windows).enumerate() {
+    for (i, (info, window)) in windows.iter_mut().zip(&workspace.groups).enumerate() {
         let focused_leaf = window.state.focus.as_ref().and_then(|focus| {
             window
                 .state
@@ -258,7 +258,7 @@ pub(super) fn badge_windows(
 /// The window widget's input. Labels prefer a user-given name, then the
 /// agent name, the OSC title, the cwd, and finally the auto-numbered name.
 pub(super) fn window_infos(
-    workspace: &Workspace,
+    workspace: &ArrangementDoc,
     panes: &HashMap<ResourceId, PaneSlot>,
     // Only the active window's tab shows the zoom marker.
     zoomed: Option<&ResourceId>,
@@ -270,7 +270,7 @@ pub(super) fn window_infos(
     vcs: &mut VcsIndex,
 ) -> Vec<phux_config::widget::WindowInfo> {
     workspace
-        .windows
+        .groups
         .iter()
         .enumerate()
         .map(|(i, w)| {
@@ -319,7 +319,7 @@ pub(super) fn window_infos(
         .collect()
 }
 
-/// A name [`Workspace::default_window_name`] handed out (a bare integer):
+/// A name [`ArrangementDoc::default_group_name`] handed out (a bare integer):
 /// it would read as a second, disagreeing index, so the tab prefers context.
 fn auto_named(name: &str) -> bool {
     !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit())
@@ -373,14 +373,14 @@ fn window_exited_mark(
 /// a pane with neither is a shell and gets no row. Rows never reorder on
 /// lifecycle changes, so navigation targets stay put.
 pub(super) fn agent_entries(
-    workspace: &Workspace,
+    workspace: &ArrangementDoc,
     panes: &HashMap<ResourceId, PaneSlot>,
     agent_meta: &AgentMetaIndex,
     agent_sessions: &AgentSessionRows,
     review: &ReviewIndex,
 ) -> Vec<AgentEntry> {
     let mut rows = Vec::new();
-    for (i, w) in workspace.windows.iter().enumerate() {
+    for (i, w) in workspace.groups.iter().enumerate() {
         let leaves = w
             .state
             .tree
@@ -595,8 +595,8 @@ mod tests {
     fn window_infos_flags_attention_on_the_asking_window() {
         let front = ResourceId::local(1);
         let back = ResourceId::local(2);
-        let mut workspace = Workspace::single(front.clone());
-        workspace.add_window("2".to_owned(), back.clone());
+        let mut workspace = ArrangementDoc::single(front.clone());
+        workspace.add_group("2".to_owned(), back.clone());
         workspace.select(0);
         let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         panes.insert(front, PaneSlot::new_with_size(80, 24).expect("slot"));
@@ -638,8 +638,8 @@ mod tests {
     fn window_infos_flags_exited_on_the_retained_window() {
         let front = ResourceId::local(1);
         let back = ResourceId::local(2);
-        let mut workspace = Workspace::single(front.clone());
-        workspace.add_window("2".to_owned(), back.clone());
+        let mut workspace = ArrangementDoc::single(front.clone());
+        workspace.add_group("2".to_owned(), back.clone());
         workspace.select(0);
         let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         panes.insert(front, PaneSlot::new_with_size(80, 24).expect("slot"));
@@ -676,8 +676,8 @@ mod tests {
         use crate::layout::{LayoutNode, LayoutState, SplitDir};
         let live = ResourceId::local(1);
         let dead = ResourceId::local(2);
-        let mut workspace = Workspace::single(live.clone());
-        workspace.windows[0].state = LayoutState {
+        let mut workspace = ArrangementDoc::single(live.clone());
+        workspace.groups[0].state = LayoutState {
             tree: Some(LayoutNode::Split {
                 dir: SplitDir::Horizontal,
                 ratio: 0.5,
@@ -715,7 +715,7 @@ mod tests {
     #[test]
     fn window_infos_label_precedence() {
         let id = ResourceId::local(1);
-        let workspace = Workspace::single(id.clone());
+        let workspace = ArrangementDoc::single(id.clone());
         let reviewer = AgentRecord {
             name: "reviewer".to_owned(),
             state: phux_client::agent_meta::AgentMetaState::Blocked,
@@ -752,9 +752,9 @@ mod tests {
         let working = ResourceId::local(1);
         let done = ResourceId::local(2);
         let blocked = ResourceId::local(3);
-        let mut workspace = Workspace::single(working.clone());
-        workspace.add_window("w2".to_owned(), done.clone());
-        workspace.add_window("w3".to_owned(), blocked.clone());
+        let mut workspace = ArrangementDoc::single(working.clone());
+        workspace.add_group("w2".to_owned(), done.clone());
+        workspace.add_group("w3".to_owned(), blocked.clone());
 
         let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         for id in [&working, &done, &blocked] {
@@ -811,8 +811,8 @@ mod tests {
     fn focusing_an_unreviewed_done_pane_flips_seen_and_dirties_the_chrome() {
         let working = ResourceId::local(1);
         let done = ResourceId::local(2);
-        let mut workspace = Workspace::single(working.clone());
-        workspace.add_window("w2".to_owned(), done.clone());
+        let mut workspace = ArrangementDoc::single(working.clone());
+        workspace.add_group("w2".to_owned(), done.clone());
 
         let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         for id in [&working, &done] {
@@ -916,9 +916,9 @@ mod tests {
         let old = ResourceId::local(1);
         let fresh = ResourceId::local(2);
         let never = ResourceId::local(3);
-        let mut workspace = Workspace::single(old.clone());
-        workspace.add_window("w2".to_owned(), fresh.clone());
-        workspace.add_window("w3".to_owned(), never.clone());
+        let mut workspace = ArrangementDoc::single(old.clone());
+        workspace.add_group("w2".to_owned(), fresh.clone());
+        workspace.add_group("w3".to_owned(), never.clone());
 
         let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         let mut records: HashMap<ResourceId, AgentRecord> = HashMap::new();
@@ -959,7 +959,7 @@ mod tests {
     #[test]
     fn agent_entries_prefer_the_declared_record() {
         let id = ResourceId::local(1);
-        let workspace = Workspace::single(id.clone());
+        let workspace = ArrangementDoc::single(id.clone());
         let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         let mut slot = PaneSlot::new_with_size(80, 24).expect("slot");
         slot.terminal.vt_write(b"\x1b]2;codex resume\x07");
@@ -997,8 +997,8 @@ mod tests {
     fn agent_entries_require_structured_identity() {
         let claude = ResourceId::local(1);
         let shell = ResourceId::local(2);
-        let mut workspace = Workspace::single(claude.clone());
-        workspace.add_window("scratch".to_owned(), shell.clone());
+        let mut workspace = ArrangementDoc::single(claude.clone());
+        workspace.add_group("scratch".to_owned(), shell.clone());
         let (_, _, panes) = published_test_state(&[
             (&claude, 80, 24, b"\x1b]2;Claude Code - ~/src/phux\x07"),
             (&shell, 80, 24, b"\x1b]2;~/src/phux\x07"),
@@ -1022,7 +1022,7 @@ mod tests {
     #[test]
     fn agent_entries_carry_record_attention() {
         let id = ResourceId::local(1);
-        let workspace = Workspace::single(id.clone());
+        let workspace = ArrangementDoc::single(id.clone());
         let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         panes.insert(id.clone(), PaneSlot::new_with_size(80, 24).expect("slot"));
         let mut records: HashMap<ResourceId, AgentRecord> = HashMap::new();
@@ -1052,7 +1052,7 @@ mod tests {
     fn agent_entries_take_state_from_the_stream_and_name_from_the_record() {
         use crate::attach::agent_rows::AgentSessionRow;
         let id = ResourceId::local(1);
-        let workspace = Workspace::single(id.clone());
+        let workspace = ArrangementDoc::single(id.clone());
         let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         panes.insert(id.clone(), PaneSlot::new_with_size(80, 24).expect("slot"));
         let mut records: HashMap<ResourceId, AgentRecord> = HashMap::new();
@@ -1099,7 +1099,7 @@ mod tests {
     fn agent_entries_list_a_stream_without_any_record() {
         use crate::attach::agent_rows::AgentSessionRow;
         let id = ResourceId::local(1);
-        let workspace = Workspace::single(id.clone());
+        let workspace = ArrangementDoc::single(id.clone());
         let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
         panes.insert(id.clone(), PaneSlot::new_with_size(80, 24).expect("slot"));
         let mut sessions: AgentSessionRows = HashMap::new();
@@ -1146,8 +1146,8 @@ mod tests {
         // The active window's `zoomed` reflects the zoom state;
         // a non-active window is never marked zoomed.
         let active = ResourceId::local(1);
-        let mut workspace = Workspace::single(active.clone());
-        workspace.add_window("2".to_owned(), ResourceId::local(2));
+        let mut workspace = ArrangementDoc::single(active.clone());
+        workspace.add_group("2".to_owned(), ResourceId::local(2));
         workspace.select(0); // active window is index 0
         let panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
 
@@ -1177,7 +1177,7 @@ mod tests {
     #[test]
     fn an_auto_numbered_window_is_labelled_by_where_it_works() {
         let id = ResourceId::local(1);
-        let workspace = Workspace::single(id.clone());
+        let workspace = ArrangementDoc::single(id.clone());
         let (_, _, mut panes) = published_test_state(&[(&id, 80, 24, b"")]);
         panes.get_mut(&id).expect("slot").cwd = Some("/src/phux/".to_owned());
         let infos = window_infos(
@@ -1195,8 +1195,8 @@ mod tests {
     #[test]
     fn a_name_the_user_gave_beats_the_agent_and_the_title() {
         let id = ResourceId::local(1);
-        let mut workspace = Workspace::single(id.clone());
-        workspace.windows[0].name = "deploy".to_owned();
+        let mut workspace = ArrangementDoc::single(id.clone());
+        workspace.groups[0].name = "deploy".to_owned();
         let (_, _, panes) = published_test_state(&[(&id, 80, 24, b"\x1b]2;~/src\x07")]);
         let records = HashMap::from([(
             id,
@@ -1214,7 +1214,7 @@ mod tests {
     #[test]
     fn badge_windows_marks_the_focused_agent() {
         let id = ResourceId::local(1);
-        let workspace = Workspace::single(id.clone());
+        let workspace = ArrangementDoc::single(id.clone());
         let (_, _, panes) = published_test_state(&[(&id, 80, 24, b"")]);
         let mut infos = window_infos(
             &workspace,

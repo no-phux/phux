@@ -176,25 +176,22 @@ mod tests {
     use super::*;
     use phux_core::ids::ResourceId as CoreResourceId;
     use phux_core::ids::SessionId as CoreSessionId;
-    use phux_core::registry::Registry;
 
     /// The session-space instantiation, which these tests exercise.
     type SessionBridge = IdBridge<CoreSessionId, WireSessionId>;
 
-    fn fresh_core_ids(n: usize) -> (Registry, Vec<CoreSessionId>) {
-        let mut reg = Registry::new();
+    fn fresh_core_ids(n: usize) -> (crate::state::ServerState, Vec<CoreSessionId>) {
+        let mut state = crate::state::ServerState::new();
         let ids = (0..n)
-            .map(|i| reg.new_session(format!("s{i}")))
+            .map(|i| state.seed_empty_session(&format!("s{i}")).expect("session"))
             .collect::<Vec<_>>();
-        (reg, ids)
+        (state, ids)
     }
 
-    fn fresh_core_terminal() -> (Registry, CoreResourceId) {
-        let mut reg = Registry::new();
-        let session = reg.new_session("s".to_owned());
-        let window = reg.new_window(session).expect("new window");
-        let terminal = reg.new_terminal(window).expect("new terminal");
-        (reg, terminal)
+    fn fresh_core_terminal() -> (crate::state::ServerState, CoreResourceId) {
+        let mut state = crate::state::ServerState::new();
+        let (_, terminal) = state.seed_session("s");
+        (state, terminal)
     }
 
     #[test]

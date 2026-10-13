@@ -19,8 +19,8 @@ fn checked_in_example_manifests_load() -> Result<(), Box<dyn std::error::Error>>
     assert_eq!(loaded.events[0].id, "idle");
     assert_eq!(loaded.panes[0].id, "board");
     assert_eq!(loaded.links[0].id, "ticket");
-    assert_eq!(loaded.workspaces[0].id, "ops-bench");
-    assert_eq!(loaded.workspaces[0].panes[0].pane, "board");
+    assert_eq!(loaded.profiles[0].id, "ops-bench");
+    assert_eq!(loaded.profiles[0].panes[0].pane, "board");
 
     let loaded = plugin::load_plugin_manifest(&examples.join("theme-pack/phux-plugin.toml"))?;
     assert_eq!(loaded.themes[0].name, "phux-dark");
@@ -32,10 +32,10 @@ fn checked_in_example_manifests_load() -> Result<(), Box<dyn std::error::Error>>
     assert_eq!(loaded.actions[1].id, "restore-latest");
     assert_eq!(loaded.events[0].id, "idle-autosave");
     assert_eq!(loaded.events[1].on, "session.changed");
-    assert_eq!(loaded.workspaces[0].id, "continuum");
-    assert_eq!(loaded.workspaces[0].actions, ["autosave", "restore-latest"]);
+    assert_eq!(loaded.profiles[0].id, "continuum");
+    assert_eq!(loaded.profiles[0].actions, ["autosave", "restore-latest"]);
     assert_eq!(
-        loaded.workspaces[0].events,
+        loaded.profiles[0].events,
         ["idle-autosave", "session-autosave"]
     );
     Ok(())
@@ -85,7 +85,7 @@ schemes = ["https"]
 patterns = ["https://linear.app/*"]
 command = ["open", "{url}"]
 
-[[workspaces]]
+[[profiles]]
 id = "agent-bench"
 title = "Agent Bench"
 description = "Restore and supervise the agent bench"
@@ -94,7 +94,7 @@ agents = ["codex"]
 actions = ["summarize"]
 events = ["idle"]
 
-[[workspaces.panes]]
+[[profiles.panes]]
 id = "board-role"
 pane = "board"
 role = "board"
@@ -121,14 +121,47 @@ role = "board"
     );
     assert_eq!(loaded.links[0].id, "ticket");
     assert_eq!(loaded.links[0].schemes, ["https"]);
-    assert_eq!(loaded.workspaces[0].id, "agent-bench");
-    assert_eq!(loaded.workspaces[0].title, "Agent Bench");
-    assert_eq!(loaded.workspaces[0].agents, ["codex"]);
-    assert_eq!(loaded.workspaces[0].actions, ["summarize"]);
-    assert_eq!(loaded.workspaces[0].events, ["idle"]);
-    assert_eq!(loaded.workspaces[0].panes[0].id, "board-role");
-    assert_eq!(loaded.workspaces[0].panes[0].pane, "board");
-    assert_eq!(loaded.workspaces[0].panes[0].role, "board");
+    assert_eq!(loaded.profiles[0].id, "agent-bench");
+    assert_eq!(loaded.profiles[0].title, "Agent Bench");
+    assert_eq!(loaded.profiles[0].agents, ["codex"]);
+    assert_eq!(loaded.profiles[0].actions, ["summarize"]);
+    assert_eq!(loaded.profiles[0].events, ["idle"]);
+    assert_eq!(loaded.profiles[0].panes[0].id, "board-role");
+    assert_eq!(loaded.profiles[0].panes[0].pane, "board");
+    assert_eq!(loaded.profiles[0].panes[0].role, "board");
+    Ok(())
+}
+
+/// A manifest written before `[[profiles]]` still loads: `[[workspaces]]`
+/// is read as its alias for one release.
+#[test]
+fn plugin_manifest_reads_workspaces_as_a_profiles_alias() -> Result<(), Box<dyn std::error::Error>>
+{
+    let dir = TempDir::new()?;
+    let manifest = write_manifest(
+        dir.path(),
+        &manifest(
+            "example.legacy",
+            r#"
+[[panes]]
+id = "board"
+title = "Board"
+command = ["board"]
+
+[[workspaces]]
+id = "bench"
+title = "Bench"
+
+[[workspaces.panes]]
+id = "main"
+pane = "board"
+role = "board"
+"#,
+        ),
+    );
+    let loaded = plugin::load_plugin_manifest(&manifest)?;
+    assert_eq!(loaded.profiles[0].id, "bench");
+    assert_eq!(loaded.profiles[0].panes[0].pane, "board");
     Ok(())
 }
 
@@ -220,18 +253,18 @@ command = ["true"]
             "requires at least one scheme or pattern",
         ),
         (
-            "workspace referencing an undeclared pane",
+            "profile referencing an undeclared pane",
             r#"
-[[workspaces]]
+[[profiles]]
 id = "bench"
 title = "Bench"
 
-[[workspaces.panes]]
+[[profiles.panes]]
 id = "missing"
 pane = "not-declared"
 role = "lead"
 "#,
-            "workspace bench references unknown pane 'not-declared'",
+            "profile bench references unknown pane 'not-declared'",
         ),
         (
             "sidebar format token typo",

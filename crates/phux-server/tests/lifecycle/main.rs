@@ -12,6 +12,7 @@ mod agent_session;
 mod attach_roles;
 mod common;
 mod conditional_kill;
+mod crash_restart;
 mod idempotency;
 mod keep_empty;
 mod kill_visibility;

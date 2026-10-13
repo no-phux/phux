@@ -144,6 +144,10 @@ impl super::SessionLoop {
         let Some(session) = self.peers.focused_session else {
             return Ok(());
         };
+        let workspace = self.mirror.workspace.clone();
+        if self.write_arrangement(&workspace).await {
+            return Ok(());
+        }
         let Some(bytes) = encode_layout_or_log(&self.mirror.workspace) else {
             return Ok(());
         };
@@ -160,8 +164,8 @@ impl super::SessionLoop {
         .await
     }
 
-    /// ADR-0105: tombstone the stored layout once a keep-empty session's last
-    /// pane closed.
+    /// Drop the stored layout once a persistent session's last terminal
+    /// closed: an empty arrangement record, or a tombstone on the legacy key.
     pub(super) async fn clear_stored_layout(
         &mut self,
         conn: &mut Connection,
@@ -169,6 +173,12 @@ impl super::SessionLoop {
         let Some(session) = self.peers.focused_session else {
             return Ok(());
         };
+        if self
+            .write_arrangement(&crate::layout::ArrangementDoc::default())
+            .await
+        {
+            return Ok(());
+        }
         let request_id = self.take_request_id();
         send_unless_peer_gone(
             conn,
@@ -231,7 +241,7 @@ impl super::SessionLoop {
         if !self.mirror.workspace.select(idx) {
             tracing::warn!(
                 index = idx,
-                windows = self.mirror.workspace.windows.len(),
+                windows = self.mirror.workspace.groups.len(),
                 "cross-session window pick out of range; keeping restored focus",
             );
             return;
@@ -239,7 +249,7 @@ impl super::SessionLoop {
         let next_focus = self
             .mirror
             .workspace
-            .active_window()
+            .active_group()
             .and_then(|ls| ls.focus.clone());
         self.focus_history
             .transition(&mut self.mirror.focused_resource, next_focus);
@@ -273,7 +283,7 @@ impl super::SessionLoop {
     }
 
     pub(super) fn focus_resource_in_workspace(&mut self, id: &ResourceId) -> bool {
-        let Some(idx) = self.mirror.workspace.windows.iter().position(|window| {
+        let Some(idx) = self.mirror.workspace.groups.iter().position(|window| {
             window
                 .state
                 .tree
@@ -283,7 +293,7 @@ impl super::SessionLoop {
             return false;
         };
         let _ = self.mirror.workspace.select(idx);
-        if let Some(ls) = self.mirror.workspace.active_window_mut() {
+        if let Some(ls) = self.mirror.workspace.active_group_mut() {
             ls.focus = Some(id.clone());
         }
         self.focus_history
@@ -302,9 +312,9 @@ impl super::SessionLoop {
         let placed: Vec<ResourceId> = self
             .mirror
             .workspace
-            .windows
+            .groups
             .iter()
-            .filter_map(|window| window.state.tree.as_ref())
+            .filter_map(|group| group.state.tree.as_ref())
             .flat_map(crate::layout::leaves)
             .collect();
         let live = session_terminals(&self.peers.windows, &self.peers.resources, session);
@@ -312,7 +322,7 @@ impl super::SessionLoop {
             .into_iter()
             .filter(|id| !placed.contains(id))
             // A slot means ATTACHED seeded its mirror; a floating overlay
-            // never takes a window (ADR-0147).
+            // never takes a group (ADR-0147).
             .filter(|id| {
                 self.mirror
                     .panes
@@ -327,32 +337,41 @@ impl super::SessionLoop {
         let active = workspace.active;
         for id in unplaced {
             tracing::info!(resource = %id, "placing a live pane the stored layout omits");
-            let name = workspace.default_window_name();
-            workspace.add_window(name, id);
+            let name = workspace.default_group_name();
+            workspace.add_group(name, id);
         }
         workspace.active = active;
         true
     }
 
+    /// Adopt a terminal of this session from the cached graph as its own
+    /// tab; `false` when the graph does not list it in this session.
     pub(super) fn adopt_inventory_resource(&mut self, id: &ResourceId) -> bool {
-        let Some(window) = self.peers.windows.iter().find(|window| {
-            self.peers
-                .focused_session
-                .is_none_or(|session| window.session_id == session)
-                && crate::attach::sidebar_zones::window_contains_terminal(
-                    window,
-                    &self.peers.resources,
-                    id,
-                )
+        let Some(info) = self.peers.resources.iter().find(|info| {
+            info.id == *id
+                && info.kind.is_terminal()
+                && self.peers.focused_session.is_none_or(|session| {
+                    crate::attach::sidebar_zones::resource_session(info, &self.peers.windows)
+                        == Some(session)
+                })
         }) else {
             return false;
         };
-        // `GET_STATE` carries no layout (ADR-0030): adopt the pane alone.
+        // `GET_STATE` carries no layout (ADR-0030): adopt the pane alone. A
+        // legacy server's window names the tab.
         let layout = crate::layout::LayoutNode::Leaf(id.clone());
-        let name = window.name.clone();
+        let name = self
+            .peers
+            .windows
+            .iter()
+            .find(|window| window.id == info.window_id)
+            .map_or_else(
+                || self.mirror.workspace.default_group_name(),
+                |window| window.name.clone(),
+            );
         let inventory_leaves = crate::layout::leaves(&layout);
-        if self.mirror.workspace.windows.len() == 1 {
-            let bootstrap = self.mirror.workspace.windows[0]
+        if self.mirror.workspace.groups.len() == 1 {
+            let bootstrap = self.mirror.workspace.groups[0]
                 .state
                 .tree
                 .as_ref()
@@ -360,7 +379,7 @@ impl super::SessionLoop {
                 .unwrap_or_default();
             if bootstrap.len() == 1 && inventory_leaves.iter().any(|leaf| bootstrap.contains(leaf))
             {
-                let w = &mut self.mirror.workspace.windows[0];
+                let w = &mut self.mirror.workspace.groups[0];
                 w.name = name;
                 w.state.tree = Some(layout);
                 w.state.focus = Some(id.clone());
@@ -368,8 +387,8 @@ impl super::SessionLoop {
                 return true;
             }
         }
-        self.mirror.workspace.add_window(name, id.clone());
-        if let Some(ls) = self.mirror.workspace.active_window_mut() {
+        self.mirror.workspace.add_group(name, id.clone());
+        if let Some(ls) = self.mirror.workspace.active_group_mut() {
             ls.tree = Some(layout);
             ls.focus = Some(id.clone());
         }
@@ -382,7 +401,7 @@ impl super::SessionLoop {
         let picked = self
             .mirror
             .workspace
-            .active_window()
+            .active_group()
             .and_then(|ls| ls.tree.as_ref())
             .map(crate::layout::leaves)
             .and_then(|leaves| leaves.get(ord).cloned());
@@ -394,7 +413,7 @@ impl super::SessionLoop {
             );
             return;
         };
-        if let Some(ls) = self.mirror.workspace.active_window_mut() {
+        if let Some(ls) = self.mirror.workspace.active_group_mut() {
             ls.focus = Some(leaf.clone());
         }
         self.focus_history

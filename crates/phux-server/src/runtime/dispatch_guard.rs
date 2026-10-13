@@ -63,17 +63,31 @@ pub(super) async fn guard_command(
     match state.with(|s| crate::policy::authorize_command(s, client_id, command)) {
         Ok(crate::policy::Admission::Run) => return Guarded::Admitted,
         Ok(crate::policy::Admission::Hold) => return Guarded::Held,
-        Err(_) => {}
+        Err(denial) => {
+            // R08: an organization command is refused in its own shape,
+            // naming a verb it lacked; every other command keeps the error.
+            let result = if command.is_organization() {
+                CommandResult::Refused(phux_protocol::wire::frame::Refusal::Unauthorized {
+                    verb: denial
+                        .verbs
+                        .iter()
+                        .next()
+                        .unwrap_or(phux_protocol::kinds::Verb::Inventory),
+                })
+            } else {
+                CommandResult::Error {
+                    code: ErrorCode::PermissionDenied,
+                    message: DENIED.to_owned(),
+                }
+            };
+            let _ = out_tx
+                .send(Outbound::Frame(FrameKind::CommandResult {
+                    request_id,
+                    result,
+                }))
+                .await;
+        }
     }
-    let _ = out_tx
-        .send(Outbound::Frame(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::Error {
-                code: ErrorCode::PermissionDenied,
-                message: DENIED.to_owned(),
-            },
-        }))
-        .await;
     Guarded::Refused
 }
 

@@ -992,7 +992,7 @@ async fn attach_with_cells(cell_px: (u16, u16)) -> web_sys::WebSocket {
     use phux_protocol::wire::frame::FrameKind;
 
     let vt = phux_vt_web::Vt::load().await.expect("load engine");
-    let session = Rc::new(RefCell::new(phux_web::Session::new(&vt, 80, 24)));
+    let session = Rc::new(RefCell::new(phux_web::Connection::new(&vt, 80, 24)));
     session.borrow_mut().set_cell_size(cell_px.0, cell_px.1);
     let socket = web_sys::WebSocket::new(WS_URL).unwrap();
     socket.set_binary_type(web_sys::BinaryType::Arraybuffer);
@@ -1014,7 +1014,9 @@ async fn attach_with_cells(cell_px: (u16, u16)) -> web_sys::WebSocket {
         Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |event: web_sys::MessageEvent| {
             let bytes = js_sys::Uint8Array::new(&event.data()).to_vec();
             match FrameKind::decode(&bytes) {
-                Ok((frame @ FrameKind::HelloOk { .. }, _)) => {
+                // HELLO_OK opens discovery and its reply carries the ATTACH,
+                // so both go through the connection.
+                Ok((frame @ (FrameKind::HelloOk { .. } | FrameKind::CommandResult { .. }), _)) => {
                     send(session.borrow_mut().on_frame(frame).send);
                 }
                 Ok((FrameKind::Attached { .. }, _)) => attached.set(true),

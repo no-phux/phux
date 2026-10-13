@@ -157,6 +157,24 @@ pub const Coordinator = struct {
         try self.requestDirect(model, mutation, command_id, origin);
     }
 
+    /// Whether a new edit could be dispatched now: nothing queued here and no
+    /// refresh or edit of the provider's in flight.
+    pub fn idle(self: *Coordinator, model: anytype) bool {
+        if (self.firstPending() != null) return false;
+        const remote = model.phux() orelse return false;
+        return remote.workspaceSnapshot().status != .pending;
+    }
+
+    /// Place `ref`, a terminal of the attached session that no group shows,
+    /// in a new group of its own. Uncorrelated: the confirming publication
+    /// shows it, and a refusal leaves the terminal unarranged.
+    pub fn requestArrange(self: *Coordinator, model: anytype, ref: TerminalRef) !void {
+        var mutation = try currentMutation(model);
+        mutation.kind = .add;
+        mutation.terminal_ref = ref;
+        try self.requestDirect(model, mutation, null, .ui);
+    }
+
     pub fn requestRemoveWindow(self: *Coordinator, model: anytype, id: WindowId) !void {
         return self.removeWindowRequest(model, id, null, .ui);
     }

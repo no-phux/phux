@@ -1377,43 +1377,6 @@ async fn teardown_drain_survives_an_in_flight_native_capture() {
     actor.terminal.borrow_mut().vt_write(b"ok");
 }
 
-/// Resetting for a replacement child while a capture holds the terminal
-/// must land the cut first instead of aborting the server.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-#[tokio::test(flavor = "current_thread")]
-async fn reset_for_replacement_survives_an_in_flight_native_capture() {
-    let bundle = TerminalActor::new(80, 24).expect("new actor");
-    let mut actor = bundle.actor;
-    let (reply, replied) = oneshot::channel();
-    actor.start_native_bootstrap(NativeBootstrapRequest {
-        owner: 31,
-        terminal_id: phux_protocol::ids::ResourceId::local(1),
-        stream_id: phux_protocol::ids::StreamId::new(1).expect("stream id"),
-        bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id"),
-        limits: phux_protocol::caps::BootstrapLimits::default(),
-        max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-        max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
-        reply,
-    });
-    assert!(
-        actor.pending_native_bootstrap.is_some(),
-        "the capture must be in flight for this to be the race under test",
-    );
-
-    // The panic was here.
-    actor.reset_for_replacement();
-
-    assert!(
-        actor.pending_native_bootstrap.is_none(),
-        "the in-flight cut must be landed, not left holding the terminal",
-    );
-    assert!(
-        replied.await.expect("capture reply").is_err(),
-        "the waiter must be answered, not left hanging on a cut that was discarded",
-    );
-    actor.terminal.borrow_mut().vt_write(b"ok");
-}
-
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn native_bootstrap_capture_lifetime_retires_staged_state() {

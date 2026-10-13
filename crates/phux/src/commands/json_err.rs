@@ -165,6 +165,9 @@ pub(crate) mod codes {
     pub(crate) const INVALID_INPUT_BATCH: &str = "invalid_input_batch";
     /// The authenticated peer is not allowed to perform the operation.
     pub(crate) const PERMISSION_DENIED: &str = "permission_denied";
+    /// `phux agent start` could not mint the agent's delegated credential, so
+    /// nothing was typed.
+    pub(crate) const DELEGATION_FAILED: &str = "delegation_failed";
     /// PTY delivery is indeterminate; retrying under a new id risks a duplicate.
     pub(crate) const DELIVERY_UNKNOWN: &str = "delivery_unknown";
     /// PTY input definitely was not written (proven at a point other than

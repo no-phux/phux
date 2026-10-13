@@ -272,7 +272,7 @@ mod tests {
         s.set_retain_policy(policy());
         let mut panes = Vec::new();
         for name in ["a", "b", "c"] {
-            let (_, _, pane) = s.seed_session(name);
+            let (_, pane) = s.seed_session(name);
             let token = CancellationToken::new();
             s.resources.register_token_for_test(pane, token);
             s.note_retain_request(pane, 30);
@@ -296,7 +296,7 @@ mod tests {
             .retain_exited(panes[2], ExitOutcome::signaled(9), 2)
             .expect("retained");
         assert!(!first.token.is_cancelled(), "two fit under a bound of two");
-        let (_, _, fourth) = s.seed_session("d");
+        let (_, fourth) = s.seed_session("d");
         s.resources
             .register_token_for_test(fourth, CancellationToken::new());
         s.note_retain_request(fourth, 30);

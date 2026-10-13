@@ -135,12 +135,41 @@ pub(crate) const TOOLS: &[Row] = &[
         "new",
         "`phux new` auto-starts a local server when none is listening, which runs the phux \
          binary; `phux_client::session` has the create, but not that server lifecycle",
-        Touches::Wire(&[RESOLVE, SESSION_CREATE_KEY, METADATA_WRITE, "GET_METADATA"]),
+        Touches::Wire(&[
+            RESOLVE,
+            "SESSION_CREATE",
+            SESSION_CREATE_KEY,
+            METADATA_WRITE,
+            "GET_METADATA",
+        ]),
     ),
     cli(
         "phux_kill",
         "kill",
-        Touches::Wire(&[RESOLVE, "KILL_RESOURCES", "KILL_RESOURCE"]),
+        Touches::Wire(&[
+            RESOLVE,
+            "KILL_RESOURCES",
+            "KILL_RESOURCE",
+            "GET_ORGANIZATION",
+            "RESOURCE_TERMINATE",
+            "RESOURCE_REMOVE",
+            "SESSION_DELETE",
+        ]),
+    ),
+    cli(
+        "phux_rm",
+        "rm",
+        Touches::Wire(&[
+            RESOLVE,
+            "GET_ORGANIZATION",
+            "RESOURCE_REMOVE",
+            "SESSION_DELETE",
+        ]),
+    ),
+    cli(
+        "phux_relaunch",
+        "relaunch",
+        Touches::Wire(&[RESOLVE, "GET_ORGANIZATION", "RESOURCE_RELAUNCH"]),
     ),
     cli("phux_detach", "detach", Touches::Wire(&["DETACH_CLIENTS"])),
     cli(
@@ -183,7 +212,11 @@ pub(crate) const TOOLS: &[Row] = &[
         "tag",
         Touches::Wire(&[RESOLVE, "GET_METADATA", METADATA_WRITE]),
     ),
-    cli("phux_rename", "rename", Touches::Wire(&[SESSION_NAME_KEY])),
+    cli(
+        "phux_rename",
+        "rename",
+        Touches::Wire(&[SESSION_NAME_KEY, "SESSION_RENAME"]),
+    ),
     cli(
         "phux_insert_pane",
         "insert-pane",
@@ -191,7 +224,7 @@ pub(crate) const TOOLS: &[Row] = &[
     ),
     cli(
         "phux_move_pane",
-        "move-pane",
+        "mv",
         Touches::Wire(&[RESOLVE, "GET_METADATA", METADATA_WRITE, "MOVE_RESOURCE"]),
     ),
     cli(
@@ -200,17 +233,29 @@ pub(crate) const TOOLS: &[Row] = &[
         Touches::Wire(&[RESOLVE, "GET_METADATA", METADATA_WRITE]),
     ),
     residue(
-        "phux_workspace",
-        "workspace",
-        "git worktree inspection and the session archive save/restore live in the CLI command",
-        Touches::Wire(&[RESOLVE, "GET_METADATA", METADATA_WRITE, SESSION_CREATE_KEY]),
+        "phux_archive",
+        "archive",
+        "the archive capture, its agent-session bridge, and the import live in the CLI command",
+        Touches::Wire(&[
+            RESOLVE,
+            "GET_METADATA",
+            METADATA_WRITE,
+            "GET_ORGANIZATION",
+            "SESSION_CREATE",
+        ]),
+    ),
+    residue(
+        "phux_project_inspect",
+        "project inspect",
+        "git worktree inspection runs `git` from the CLI command; phux-client has no git",
+        Touches::LocalRead,
     ),
     cli("phux_plugin_action", "config run", Touches::LocalExec),
     Row {
-        name: "phux_plugin_workspace",
+        name: "phux_plugin_profile",
         surface: Surface::AutomationOnly(
-            "lists the workspace profiles configured plugin manifests declare; `phux plugin \
-             list` and `phux config plugins` list the manifests, not their workspace profiles",
+            "lists the profiles configured plugin manifests declare; `phux plugin list` and \
+             `phux config plugins` list the manifests, not their profiles",
         ),
         exec: Exec::InProcess,
         touches: Touches::LocalRead,
@@ -395,6 +440,11 @@ pub(crate) const CLI_ONLY: &[(&str, &str)] = &[
         "`phux_approve` decides both ways: `decision: deny` is `phux deny` (ADR-0128)",
     ),
     ("resize", "not exposed over MCP yet; a known parity gap"),
+    (
+        "restore",
+        "an operator's after-restart sweep; an agent relaunches the one pane it means with \
+         `phux_relaunch`",
+    ),
     (
         "rec",
         "not exposed over MCP yet; a recording is written to a file on the adapter's host",

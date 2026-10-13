@@ -91,14 +91,14 @@ fn closeEndedPane(model: *Model, ref: support.TerminalRef) bool {
     return true;
 }
 
-/// A window an ended shell left without tabs. A keep-empty session keeps it,
-/// showing Empty session (ADR-0114). Otherwise the emptied window closes, and
+/// A window an ended shell left without tabs. A persistent session keeps it,
+/// showing Empty session (ADR-0160). Otherwise the emptied window closes, and
 /// closing the last window quits (DECISIONS.md, "An emptied window closes").
 fn settleEmptiedWindow(model: *Model, fx: anytype, window: usize, epoch: u64) bool {
     if (!model.windowOpen(window) or model.window_epochs[window] != epoch) return false;
     const workspace = model.wsAt(window) orelse return false;
     if (workspace.tab_count != 0) return false;
-    if (keepsEmptySession(model, window)) {
+    if (persistentSession(model, window)) {
         workspace.web_selected = false;
         return true;
     }
@@ -106,11 +106,11 @@ fn settleEmptiedWindow(model: *Model, fx: anytype, window: usize, epoch: u64) bo
     return true;
 }
 
-fn keepsEmptySession(model: *const Model, window: usize) bool {
+fn persistentSession(model: *const Model, window: usize) bool {
     const remote = model.phuxForWindowConst(window) orelse return false;
     const id = remote.selectedSessionId() orelse return false;
     for (remote.sessionCatalog()) |session| {
-        if (session.id == id) return session.keep_empty;
+        if (session.id == id) return session.lifetime == .persistent;
     }
     return false;
 }

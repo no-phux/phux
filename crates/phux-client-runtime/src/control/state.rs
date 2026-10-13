@@ -64,6 +64,8 @@ impl ControlPlane {
                 // transcribe correlations were resolved by
                 // `reset_extension_correlations`.
                 Pending::RefreshTopology
+                | Pending::OrgPage(_)
+                | Pending::OrgArrangement(_)
                 | Pending::PutFile(_)
                 | Pending::Transcribe(_)
                 | Pending::AgentSubscription(_)

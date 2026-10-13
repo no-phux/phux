@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use phux_protocol::ids::{ResourceId, SessionId};
 use phux_protocol::wire::info::{HostInventory, ResourceInfo, SessionInfo, WindowInfo};
 
-use crate::layout::Workspace;
+use crate::layout::ArrangementDoc;
 use crate::render::chrome::sidebar::{AgentEntry, SessionRosterEntry, attention_rank};
 use phux_client::agent_meta::{AgentAttention, AgentMetaState, AgentRecord};
 
@@ -34,12 +34,14 @@ pub(super) struct PeerInputs<'a> {
     pub sessions: &'a [SessionInfo],
     /// Which of those sessions this client is attached to.
     pub focused_session: Option<SessionId>,
-    /// Windows from the same snapshot graph, joined via `WindowInfo::session_id`.
+    /// Windows from the same snapshot graph: a legacy server's tab grouping,
+    /// and the session join for a resource that reports no session.
     pub windows: &'a [WindowInfo],
-    /// Resources from the same snapshot graph, joined via `ResourceInfo::window_id`.
+    /// Resources from the same snapshot graph, joined to their session with
+    /// [`resource_session`].
     pub resources: &'a [ResourceInfo],
     /// Each peer session's persisted pane tree.
-    pub foreign_layouts: &'a HashMap<SessionId, Workspace>,
+    pub foreign_layouts: &'a HashMap<SessionId, ArrangementDoc>,
     /// Each peer pane's `phux.agent/v1` record.
     pub foreign_agents: &'a HashMap<ResourceId, AgentRecord>,
     /// Peer panes that raised an ADR-0035 `Asked`.
@@ -51,7 +53,48 @@ pub(super) struct PeerInputs<'a> {
     pub review: &'a ReviewIndex,
 }
 
+/// The session `info` belongs to: its `session` facet, else the session of
+/// the legacy window it sits in. The slice form of
+/// [`phux_client::resource::session_of`], with the same rule, for the
+/// driver's cached graph.
+pub(in crate::attach) fn resource_session(
+    info: &ResourceInfo,
+    windows: &[WindowInfo],
+) -> Option<SessionId> {
+    info.session.or_else(|| {
+        windows
+            .iter()
+            .find(|window| window.id == info.window_id)
+            .map(|window| window.session_id)
+    })
+}
+
+/// The Terminal-kind resources of `session` in the cached graph.
+pub(in crate::attach) fn session_terminal_ids(
+    resources: &[ResourceInfo],
+    windows: &[WindowInfo],
+    session: SessionId,
+) -> Vec<ResourceId> {
+    resources
+        .iter()
+        .filter(|info| info.kind.is_terminal())
+        .filter(|info| resource_session(info, windows) == Some(session))
+        .map(|info| info.id.clone())
+        .collect()
+}
+
 impl<'a> PeerInputs<'a> {
+    /// How many terminals each session holds in the cached graph.
+    pub(in crate::attach) fn terminal_counts(&self) -> HashMap<SessionId, usize> {
+        let mut counts = HashMap::new();
+        for info in self.resources.iter().filter(|info| info.kind.is_terminal()) {
+            if let Some(session) = resource_session(info, self.windows) {
+                *counts.entry(session).or_insert(0) += 1;
+            }
+        }
+        counts
+    }
+
     /// ADR-0140: every hosts-provider machine except the attached one, in
     /// provider order. Empty when the CLI recorded no origin.
     pub(super) fn other_machines(&self) -> Vec<&'a phux_core::host_list::HostJson> {
@@ -79,17 +122,20 @@ struct PeerLeaf {
 
 /// A persisted TUI workspace with at least one window. An empty entry is
 /// treated as missing so the server graph can still name the session's panes.
-fn persisted_layout<'a>(peers: &'a PeerInputs<'_>, session: SessionId) -> Option<&'a Workspace> {
+fn persisted_layout<'a>(
+    peers: &'a PeerInputs<'_>,
+    session: SessionId,
+) -> Option<&'a ArrangementDoc> {
     peers
         .foreign_layouts
         .get(&session)
-        .filter(|ws| !ws.windows.is_empty())
+        .filter(|ws| !ws.groups.is_empty())
 }
 
 /// Every pane of `workspace` as `(window index, dfs ordinal, id)`.
-fn leaves_with_position(workspace: &Workspace) -> Vec<(usize, usize, ResourceId)> {
+fn leaves_with_position(workspace: &ArrangementDoc) -> Vec<(usize, usize, ResourceId)> {
     let mut out = Vec::new();
-    for (w, window) in workspace.windows.iter().enumerate() {
+    for (w, window) in workspace.groups.iter().enumerate() {
         if let Some(tree) = window.state.tree.as_ref() {
             for (p, id) in crate::layout::leaves(tree).into_iter().enumerate() {
                 out.push((w, p, id));
@@ -118,46 +164,28 @@ fn peer_leaves(peers: &PeerInputs<'_>, session: &SessionInfo) -> Vec<PeerLeaf> {
     graph_leaves(peers, session.id)
 }
 
+/// A session's terminals from the server graph, joined by session; a legacy
+/// server's window still orders them and names their tab.
 fn graph_leaves(peers: &PeerInputs<'_>, session: SessionId) -> Vec<PeerLeaf> {
-    let mut windows: Vec<&WindowInfo> = peers
-        .windows
+    let mut out: Vec<(u16, u32, PeerLeaf)> = peers
+        .resources
         .iter()
-        .filter(|window| window.session_id == session)
-        .collect();
-    windows.sort_by_key(|window| (window.index, window.id));
-    let mut out = Vec::new();
-    for window in windows {
-        for id in window_terminal_ids(window, peers.resources) {
-            out.push(PeerLeaf {
-                window: usize::from(window.index),
+        .filter(|info| info.kind.is_terminal())
+        .filter(|info| resource_session(info, peers.windows) == Some(session))
+        .map(|info| {
+            let window = peers.windows.iter().find(|w| w.id == info.window_id);
+            let index = window.map_or(0, |w| w.index);
+            let leaf = PeerLeaf {
+                window: usize::from(index),
                 pane: None,
-                id,
-                window_name: window.name.clone(),
-            });
-        }
-    }
-    out
-}
-
-fn window_terminal_ids(window: &WindowInfo, resources: &[ResourceInfo]) -> Vec<ResourceId> {
-    let mut ids: Vec<_> = resources
-        .iter()
-        .filter(|resource| resource.window_id == window.id && resource.kind.is_terminal())
-        .map(|resource| resource.id.clone())
+                id: info.id.clone(),
+                window_name: window.map(|w| w.name.clone()).unwrap_or_default(),
+            };
+            (index, window.map_or(0, |w| w.id.get()), leaf)
+        })
         .collect();
-    ids.sort();
-    ids
-}
-
-/// Whether `window` holds `id` according to the snapshot's resource list.
-pub(super) fn window_contains_terminal(
-    window: &WindowInfo,
-    resources: &[ResourceInfo],
-    id: &ResourceId,
-) -> bool {
-    window_terminal_ids(window, resources)
-        .iter()
-        .any(|leaf| leaf == id)
+    out.sort_by(|a, b| (a.0, a.1, &a.2.id).cmp(&(b.0, b.1, &b.2.id)));
+    out.into_iter().map(|(_, _, leaf)| leaf).collect()
 }
 
 /// Resource identities the foreign agent cache should retain: layout leaves
@@ -446,7 +474,7 @@ fn satellite_roster(hosts: &[HostInventory]) -> Vec<SessionRosterEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::Workspace;
+    use crate::layout::ArrangementDoc;
     use phux_protocol::ids::WindowId;
 
     fn sinfo(id: u32, name: &str) -> SessionInfo {
@@ -497,7 +525,7 @@ mod tests {
         sessions: Vec<SessionInfo>,
         windows: Vec<WindowInfo>,
         resources: Vec<ResourceInfo>,
-        layouts: HashMap<SessionId, Workspace>,
+        layouts: HashMap<SessionId, ArrangementDoc>,
         agents: HashMap<ResourceId, AgentRecord>,
         attention: HashSet<ResourceId>,
         project_tags: HashMap<SessionId, String>,
@@ -526,8 +554,8 @@ mod tests {
 
     /// One peer session, `peer`, holding two panes.
     fn fixture() -> Fixture {
-        let mut ws = Workspace::single(ResourceId::local(10));
-        ws.add_window("two".to_owned(), ResourceId::local(11));
+        let mut ws = ArrangementDoc::single(ResourceId::local(10));
+        ws.add_group("two".to_owned(), ResourceId::local(11));
         let mut layouts = HashMap::new();
         layouts.insert(SessionId::new(2), ws);
         Fixture {
@@ -571,6 +599,9 @@ mod tests {
                     attached_clients: 0,
                     keep_empty: false,
                     empty: false,
+                    lifetime: None,
+                    members: 0,
+                    exec: phux_core::session_list::ExecCounts::default(),
                 })
                 .collect(),
         }
@@ -766,7 +797,7 @@ mod tests {
         let mut f = fixture();
         let sat = ResourceId::satellite("prod-3", 1);
         f.layouts
-            .insert(SessionId::new(2), Workspace::single(sat.clone()));
+            .insert(SessionId::new(2), ArrangementDoc::single(sat.clone()));
         // Even a record cached from somewhere must not promote it.
         f.agents
             .insert(sat, record("claude", AgentMetaState::Blocked));
@@ -864,8 +895,8 @@ mod tests {
             ]
         );
 
-        let mut ws = Workspace::single(ResourceId::local(10));
-        ws.add_window("two".to_owned(), ResourceId::local(11));
+        let mut ws = ArrangementDoc::single(ResourceId::local(10));
+        ws.add_group("two".to_owned(), ResourceId::local(11));
         f.layouts.insert(SessionId::new(2), ws);
         let after = needs_you_queue(Vec::new(), &f.inputs());
         assert_eq!(after.len(), 2, "{after:?}");

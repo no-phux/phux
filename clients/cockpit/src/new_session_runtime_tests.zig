@@ -39,8 +39,8 @@ test "new session runtime keeps simultaneous same-host captures on independent C
     try std.testing.expect(a.provider_context != b.provider_context);
     try std.testing.expect(a.host_context != b.host_context);
     try std.testing.expect(runtime.current(engine, a));
-    const aid = try runtime.send(engine, a, "first", "", true);
-    const bid = try runtime.send(engine, b, "second", "", true);
+    const aid = try runtime.send(engine, a, "first", "", .persistent);
+    const bid = try runtime.send(engine, b, "second", "", .persistent);
     try std.testing.expectEqual(aid, bid); // Identical per-Client request IDs.
     try std.testing.expect(runtime.poll(engine, a, aid) == .pending);
     try std.testing.expect(runtime.poll(engine, b, bid) == .pending);
@@ -66,16 +66,16 @@ test "new session runtime never releases a reused request ID into a reconnected 
     defer engine.destroy();
     const remote = try peer(engine);
     const old = runtime.capture(engine, remote, 1).?;
-    const old_id = try runtime.send(engine, old, "old", "", true);
+    const old_id = try runtime.send(engine, old, "old", "", .persistent);
     try remote.host.reconnect("new-session-runtime-test");
     try negotiate(remote);
     const replacement = runtime.capture(engine, remote, 1).?;
     try std.testing.expect(old.connection_epoch != replacement.connection_epoch);
-    const new_id = try runtime.send(engine, replacement, "replacement", "", true);
+    const new_id = try runtime.send(engine, replacement, "replacement", "", .persistent);
     try std.testing.expectEqual(old_id, new_id);
     try std.testing.expect(!runtime.current(engine, old));
     try std.testing.expect(runtime.poll(engine, old, old_id) == .unknown);
-    try std.testing.expectError(error.InvalidState, runtime.send(engine, old, "stale", "", true));
+    try std.testing.expectError(error.InvalidState, runtime.send(engine, old, "stale", "", .persistent));
     runtime.release(engine, old, old_id);
     try std.testing.expect(runtime.poll(engine, replacement, new_id) == .pending);
     remote.host.disconnect();
@@ -101,8 +101,8 @@ const Hooks = struct {
     pub fn newSessionDestinationCurrent(self: *@This(), destination: sessions.Destination) bool {
         return runtime.current(self.engine, destination);
     }
-    pub fn sendNewSession(self: *@This(), destination: sessions.Destination, name: []const u8, directory: []const u8, keep_empty: bool) !u32 {
-        return runtime.send(self.engine, destination, name, directory, keep_empty);
+    pub fn sendNewSession(self: *@This(), destination: sessions.Destination, name: []const u8, directory: []const u8, lifetime: support.SessionLifetime) !u32 {
+        return runtime.send(self.engine, destination, name, directory, lifetime);
     }
     pub fn pollNewSession(self: *@This(), destination: sessions.Destination, id: u32) sessions.Outcome {
         return runtime.poll(self.engine, destination, id);
@@ -220,7 +220,7 @@ test "new session runtime focuses through Engine empty-session navigation only w
         .window_count = 0,
         .attached_client_count = 0,
         .focused = false,
-        .keep_empty = true,
+        .lifetime = .persistent,
         .empty = true,
     });
     const destination = runtime.capture(engine, remote, 9).?;

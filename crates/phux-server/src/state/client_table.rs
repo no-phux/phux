@@ -262,7 +262,8 @@ impl ClientTable {
         super::events::offer_to_all(self.event_subscriptions.values_mut(), entry);
     }
 
-    /// The `ActorRef` naming `client`: wire id, credential, and HELLO name.
+    /// The `ActorRef` naming `client`: wire id, credential, HELLO name, and
+    /// the principal pair its grant authenticated (ADR-0163).
     #[must_use]
     pub(super) fn actor_ref(&self, client: ClientId) -> ActorRef {
         let wire = phux_protocol::ids::ClientId::new(u32::try_from(client.0).unwrap_or(u32::MAX));
@@ -271,9 +272,18 @@ impl ClientTable {
             .get(&client)
             .and_then(|identity| identity.credential.as_ref())
             .map(|credential| credential.id.clone());
+        let grant = self.grants.get(&client);
         ActorRef::new(wire)
             .with_credential_id(credential_id)
             .with_client_name(self.client_names.get(&client).cloned())
+            .with_principal(
+                grant.and_then(|grant| crate::org_wire::principal_id(grant.principal())),
+            )
+            .with_on_behalf_of(
+                grant
+                    .and_then(crate::policy::ConnectionGrant::on_behalf_of)
+                    .and_then(crate::org_wire::principal_id),
+            )
     }
 
     /// Drop `client`'s per-terminal event scope for `wire`; an empty

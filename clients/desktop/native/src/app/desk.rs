@@ -17,7 +17,7 @@ use phux_client_runtime::Client;
 use phux_client_runtime::control::{DeliveryOutcome, Event, PathAnswer, Status};
 use phux_client_runtime::engine::{Scroll, TextRegion};
 use phux_protocol::ResourceId;
-use phux_protocol::ids::SatelliteHost;
+use phux_protocol::ids::{OperationId, ResourceKey, SatelliteHost};
 
 use crate::connection::path::{self as paths};
 use crate::connection::{AgentInfo, Connection};
@@ -87,11 +87,23 @@ pub enum Modal {
     Goto,
     Settings,
     Path,
-    Rename { tab_id: String },
-    Session { create: bool, current: String },
-    CloseSession { name: String },
+    Rename {
+        tab_id: String,
+    },
+    Session {
+        create: bool,
+        current: String,
+    },
+    /// Kill a whole session: every member ends and the session is deleted.
+    KillSession {
+        name: String,
+        session: u32,
+    },
     WindowSession,
-    Terminate { terminal: ResourceId, title: String },
+    Terminate {
+        terminal: ResourceId,
+        title: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -155,6 +167,10 @@ pub struct Desk {
     /// The window title last written.
     window_title: String,
     closed: bool,
+    /// Session creates awaiting their outcome, by operation, with the name.
+    creates: HashMap<OperationId, String>,
+    /// Kill workflows awaiting their report, with the session name and member labels.
+    kills: HashMap<u64, (String, HashMap<ResourceKey, String>)>,
 }
 
 pub struct Link {
@@ -252,6 +268,8 @@ impl Desk {
             drag_region: None,
             window_title: String::new(),
             closed: false,
+            creates: HashMap::new(),
+            kills: HashMap::new(),
         };
         if let Some(error) = request.startup_error {
             desk.toast(
@@ -281,6 +299,12 @@ impl Desk {
     }
 
     fn attach(&mut self, initial: Option<ResourceId>, cx: &mut Context<Self>) {
+        if self.session.is_empty() {
+            // The launch could not name a session; its reason is already shown.
+            self.connect_error = Some("No session to open".into());
+            cx.notify();
+            return;
+        }
         match Connection::connect(self.socket.clone(), self.session.clone()) {
             Ok(connection) => {
                 let mut workspace = Workspace::new(
@@ -401,6 +425,33 @@ impl Desk {
             self.agent_seen.remove(terminal_id);
             self.toasts
                 .retain(|toast| toast.terminal.as_ref() != Some(terminal_id));
+        }
+        if let Event::KillFinished { workflow, report } = event
+            && let Some((name, labels)) = self.kills.remove(workflow)
+        {
+            let summary = crate::connection::org::kill_summary(&name, report, &labels);
+            let kind = if summary.complete {
+                ToastKind::Success
+            } else {
+                ToastKind::Error
+            };
+            self.toast(kind, &summary.title, Some(summary.body));
+        }
+        if let Event::OrganizationOperation { operation, outcome } = event
+            && let Some(name) = self.creates.remove(operation)
+        {
+            if outcome.succeeded() {
+                self.toast(ToastKind::Success, "Session created", Some(name));
+            } else {
+                self.toast(
+                    ToastKind::Error,
+                    "Could not create the session",
+                    Some(format!(
+                        "{name}: {}",
+                        crate::connection::org::outcome_sentence(outcome)
+                    )),
+                );
+            }
         }
         if let Event::Detached { message, .. } = event {
             self.toast(ToastKind::Error, "Detached", Some(message.clone()));
@@ -553,6 +604,7 @@ impl Desk {
                 }
             }
             "rename-session" => self.open_rename_session(),
+            "kill-session" => self.ask_kill_session(),
             "folder" => self.open_folder(window, cx),
             "insert-path" => self.open_path_picker(),
             "split-right" => {
@@ -684,8 +736,8 @@ impl Desk {
                     cx.stop_propagation();
                     return;
                 }
-                Modal::CloseSession { .. } => {
-                    self.confirm_close_session(window, cx);
+                Modal::KillSession { .. } => {
+                    self.confirm_kill_session(window, cx);
                     cx.stop_propagation();
                     return;
                 }
@@ -950,13 +1002,25 @@ impl Desk {
             .link
             .as_ref()
             .is_none_or(|link| link.connection.status != Status::Attached)
-            && let Some(error) = host::ensure_server(&self.phux, &self.socket, &self.session)
         {
-            self.toast(
-                ToastKind::Error,
-                "Could not start the phux server",
-                Some(error),
-            );
+            match host::ensure_server(&self.phux, &self.socket, &self.session) {
+                // A launch that could not name a session reopens on the one
+                // the server now offers, with that session's saved layout.
+                Ok(name) if self.session.is_empty() => {
+                    let old = cx.entity_id();
+                    let desktop = self.desktop.clone();
+                    cx.defer(move |cx| {
+                        desktop.update(cx, |desktop, cx| desktop.rehome(old, name, cx));
+                    });
+                    return;
+                }
+                Ok(_) => {}
+                Err(error) => self.toast(
+                    ToastKind::Error,
+                    "Could not start the phux server",
+                    Some(error),
+                ),
+            }
         }
         self.persist();
         let snapshot = self.last_saved.clone();
@@ -1132,7 +1196,9 @@ impl Desk {
         self.after_command(window, cx);
     }
 
-    /// Create or rename a session. A failure keeps the dialog open with a toast.
+    /// Create or rename a session. A refusal before anything is sent keeps
+    /// the dialog open with a toast. A create on an `ORGANIZATION` server is
+    /// persistent and reports its outcome when the server answers.
     pub fn apply_session(
         &mut self,
         name: String,
@@ -1143,13 +1209,36 @@ impl Desk {
         let Modal::Session { create, current } = self.modal.clone() else {
             return;
         };
+        let directory = directory.unwrap_or_default();
+        if create
+            && let Some(link) = self.link.as_ref()
+            && link.connection.organization()
+        {
+            let submitted = match crate::workspace::create_session_error(&name, &directory) {
+                Some(refused) => Err(refused.to_owned()),
+                None => link
+                    .connection
+                    .create_session(name.trim(), directory.trim()),
+            };
+            match submitted {
+                Ok(operation) => {
+                    self.creates.insert(operation, name.trim().to_owned());
+                    self.close_modal(window, cx);
+                    self.after_command(window, cx);
+                }
+                Err(failure) => {
+                    self.toast(
+                        ToastKind::Error,
+                        "Could not create the session",
+                        Some(failure),
+                    );
+                    cx.notify();
+                }
+            }
+            return;
+        }
         let failure = if create {
-            host::create_session(
-                &self.phux,
-                &self.socket,
-                &name,
-                directory.as_deref().unwrap_or(""),
-            )
+            host::create_session(&self.phux, &self.socket, &name, &directory)
         } else {
             host::rename_session(&self.phux, &self.socket, &current, &name)
         };
@@ -1182,24 +1271,95 @@ impl Desk {
         self.after_command(window, cx);
     }
 
-    pub fn confirm_close_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Modal::CloseSession { name } = self.modal.clone() else {
+    /// Ask to kill the focused pane's session.
+    fn ask_kill_session(&mut self) {
+        let Some((name, session)) = self
+            .focused_pane()
+            .map(|pane| (pane.session_name.clone(), pane.session_id))
+            .filter(|(name, _)| !name.trim().is_empty())
+        else {
+            self.toast(
+                ToastKind::Error,
+                "No session",
+                Some("Focus a pane in the session you want to kill.".into()),
+            );
+            return;
+        };
+        self.modal = Modal::KillSession { name, session };
+    }
+
+    pub fn confirm_kill_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Modal::KillSession { name, session } = self.modal.clone() else {
             return;
         };
         self.close_modal(window, cx);
-        if let Some(failure) = host::close_session(&self.phux, &self.socket, &name) {
+        self.kill_session(&name, session);
+        self.after_command(window, cx);
+    }
+
+    /// Kill `session` by the runtime's kill workflow, which reports each
+    /// member's result; a server without `ORGANIZATION` gets `phux kill`.
+    fn kill_session(&mut self, name: &str, session: u32) {
+        let Some(link) = self.link.as_ref() else {
             self.toast(
                 ToastKind::Error,
-                "Could not close the session",
-                Some(failure),
+                "Could not kill the session",
+                Some("Not connected.".into()),
             );
-        } else {
-            if let Some(link) = self.link.as_ref() {
+            return;
+        };
+        if !link.connection.organization() {
+            if let Some(failure) = host::kill_session(&self.phux, &self.socket, name) {
+                self.toast(
+                    ToastKind::Error,
+                    "Could not kill the session",
+                    Some(failure),
+                );
+            } else {
                 let _ = link.connection.refresh_topology();
+                self.toast(ToastKind::Success, &format!("Killed {name}"), None);
             }
-            self.toast(ToastKind::Success, "Session closed", Some(name));
+            return;
         }
-        self.after_command(window, cx);
+        let key = link
+            .connection
+            .topology
+            .as_ref()
+            .and_then(|topology| topology.sessions.iter().find(|s| s.id == session))
+            .and_then(|descriptor| descriptor.key);
+        let labels: HashMap<ResourceKey, String> = link
+            .connection
+            .panes()
+            .iter()
+            .filter(|pane| pane.session_id == session)
+            .filter_map(|pane| {
+                let label = pane_label(Some(pane), link.connection.group_name(&pane.terminal_id));
+                pane.key.map(|key| (key, label))
+            })
+            .collect();
+        let members = labels.len();
+        match key.and_then(|key| link.connection.kill_session(key)) {
+            Some(workflow) => {
+                self.kills.insert(workflow, (name.to_owned(), labels));
+                self.toast(
+                    ToastKind::Info,
+                    &format!("Killing {name}"),
+                    Some(format!(
+                        "Ending {members} {}…",
+                        if members == 1 {
+                            "terminal"
+                        } else {
+                            "terminals"
+                        }
+                    )),
+                );
+            }
+            None => self.toast(
+                ToastKind::Error,
+                "Could not kill the session",
+                Some("Its records are not loaded yet. Try again in a moment.".into()),
+            ),
+        }
     }
 
     pub fn open_session_window(
@@ -2014,14 +2174,15 @@ impl Desk {
         self.active_tab().map(|tab| tab.id.clone())
     }
 
-    /// The terminal's title, else its directory's name, else its window's name, else "shell".
+    /// The terminal's label by [`pane_label`].
     pub fn pane_title(&self, terminal: Option<&ResourceId>) -> String {
-        let pane = terminal.and_then(|terminal| {
-            self.link
-                .as_ref()
-                .and_then(|link| link.connection.pane(terminal))
-        });
-        pane_label(pane)
+        let Some((link, terminal)) = self.link.as_ref().zip(terminal) else {
+            return pane_label(None, None);
+        };
+        pane_label(
+            link.connection.pane(terminal),
+            link.connection.group_name(terminal),
+        )
     }
 
     /// Human connection status and its tone, for the status bar and Settings.
@@ -2421,7 +2582,43 @@ fn toast_lifetime(kind: ToastKind) -> Duration {
 
 #[cfg(test)]
 mod tests {
-    use super::tab_drop_index;
+    use super::{pane_label, tab_drop_index};
+    use phux_client_runtime::control::PaneDescriptor;
+    use phux_protocol::ResourceId;
+
+    fn pane(name: Option<&str>, title: Option<&str>, cwd: Option<&str>) -> PaneDescriptor {
+        PaneDescriptor {
+            terminal_id: ResourceId::local(1),
+            session_id: 1,
+            session_name: "work".into(),
+            cols: 80,
+            rows: 24,
+            title: title.map(str::to_owned),
+            cwd: cwd.map(str::to_owned),
+            is_focused: false,
+            key: None,
+            revision: None,
+            name: name.map(str::to_owned),
+            activation: None,
+            exec: None,
+        }
+    }
+
+    #[test]
+    fn a_label_is_the_name_then_title_then_folder_then_group() {
+        let group = Some("logs");
+        let all = pane(Some("api"), Some("vim"), Some("/src/phux"));
+        assert_eq!(pane_label(Some(&all), group), "api");
+        let untitled = pane(Some(" "), Some("vim"), Some("/src/phux"));
+        assert_eq!(pane_label(Some(&untitled), group), "vim");
+        assert_eq!(
+            pane_label(Some(&pane(None, None, Some("/src/phux/"))), group),
+            "phux"
+        );
+        assert_eq!(pane_label(Some(&pane(None, None, None)), group), "logs");
+        assert_eq!(pane_label(Some(&pane(None, None, None)), None), "shell");
+        assert_eq!(pane_label(None, group), "shell");
+    }
 
     #[test]
     fn a_dragged_tab_lands_after_the_last_center_left_of_the_pointer() {
@@ -2477,30 +2674,31 @@ pub(crate) enum Tone {
     Bad,
 }
 
-/// One title rule for tabs, the sidebar, headers and the palette.
-pub(crate) fn pane_label(pane: Option<&phux_client_runtime::control::PaneDescriptor>) -> String {
+/// One title rule for tabs, the sidebar, headers and the palette: the
+/// resource's own name, else its title, else its directory's name, else the
+/// name of the arrangement group that shows it, else "shell".
+pub(crate) fn pane_label(
+    pane: Option<&phux_client_runtime::control::PaneDescriptor>,
+    group: Option<&str>,
+) -> String {
     let Some(pane) = pane else {
         return "shell".into();
     };
-    if let Some(title) = pane
-        .title
-        .as_deref()
-        .map(str::trim)
-        .filter(|title| !title.is_empty())
-    {
-        return title.to_owned();
-    }
-    if let Some(base) = pane
-        .cwd
-        .as_deref()
-        .and_then(|cwd| cwd.rsplit('/').find(|part| !part.is_empty()))
-    {
-        return base.to_owned();
-    }
-    if !pane.window_name.trim().is_empty() {
-        return pane.window_name.trim().to_owned();
-    }
-    "shell".into()
+    let named = |text: Option<&str>| {
+        text.map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned)
+    };
+    named(pane.name.as_deref())
+        .or_else(|| named(pane.title.as_deref()))
+        .or_else(|| {
+            pane.cwd
+                .as_deref()
+                .and_then(|cwd| cwd.rsplit('/').find(|part| !part.is_empty()))
+                .map(str::to_owned)
+        })
+        .or_else(|| named(group))
+        .unwrap_or_else(|| "shell".into())
 }
 
 pub fn tab_title(desk: &Desk, tab: &crate::workspace::layout::DeskTab) -> String {

@@ -10,7 +10,7 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
-    Spawn, WIRE_RECV_TIMEOUT, join_after_shutdown, recv_typed_before, run_local, spawn_resource,
+    WIRE_RECV_TIMEOUT, join_after_shutdown, recv_typed_before, run_local,
     spawn_server_with_seed_cmd,
 };
 
@@ -57,18 +57,6 @@ fn attached_and_unattached_subscribers_receive_title_bell_and_pane_closed() {
 
         let (mut attached, _) = connect_as(&socket_path, "attached", full_caps()).await;
         attach_pane(&mut attached, "demo").await;
-        // A live sibling, so the seed's exit closes it instead of replacing
-        // the session's last shell in place (ADR-0131).
-        let sibling = spawn_resource(
-            &mut attached,
-            2,
-            Spawn::command(&["/bin/sh", "-c", "sleep 600"]),
-        )
-        .await;
-        assert!(
-            matches!(sibling, phux_protocol::wire::frame::SpawnResult::Ok(_)),
-            "{sibling:?}"
-        );
         subscribe_all(&mut attached, 1).await;
         let (mut watcher, _) = connect_as(&socket_path, "watcher", full_caps()).await;
         subscribe_all(&mut watcher, 1).await;

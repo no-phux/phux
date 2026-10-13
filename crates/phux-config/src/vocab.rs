@@ -11,6 +11,8 @@ pub const ACTION_NAMES: &[&str] = &[
     "split-pane",
     "move-pane",
     "kill-pane",
+    "close-view",
+    "reopen-views",
     "new-window",
     "go-to-directory",
     "find-path",

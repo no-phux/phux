@@ -88,15 +88,15 @@ fn wait_for_terminal_absent(socket: &str, selector: &str) {
     panic!("{selector} was still present {budget:?} after kill");
 }
 
-/// `workspace save` archives a session's real L3 split layout (not the flat
-/// fallback), and save -> restore -> save keeps the same split.
+/// `archive export` archives a session's real L3 split layout (not the flat
+/// fallback), and export -> import -> restore -> export keeps the same split.
 #[test]
 #[ignore = "spawns real phux servers; run explicitly when validating workspace archives."]
 #[allow(
     clippy::too_many_lines,
     reason = "one linear save-restore-resave round trip keeps its own assertions together"
 )]
-fn workspace_save_captures_and_restore_replays_a_real_split_tree() {
+fn archive_export_captures_a_real_split_tree_and_restore_replays_it() {
     let source = start("source");
     let dest = start("seed");
     let archive_dir = tempfile::tempdir().expect("archive tempdir");
@@ -139,14 +139,14 @@ fn workspace_save_captures_and_restore_replays_a_real_split_tree() {
     assert_eq!(code, 0, "placed spawn failed: {stderr}");
 
     let (code, stdout, stderr) = run(&[
-        "workspace",
-        "save",
+        "archive",
+        "export",
         "--socket",
         &source_socket,
         "--output",
         &source_archive.to_string_lossy(),
     ]);
-    assert_eq!(code, 0, "workspace save failed: {stderr}");
+    assert_eq!(code, 0, "archive export failed: {stderr}");
     assert!(stdout.is_empty());
 
     let saved: serde_json::Value = serde_json::from_str(
@@ -165,13 +165,13 @@ fn workspace_save_captures_and_restore_replays_a_real_split_tree() {
     );
 
     let (code, stdout, stderr) = run(&[
-        "workspace",
-        "restore",
+        "archive",
+        "import",
         &source_archive.to_string_lossy(),
         "--socket",
         &dest_socket,
     ]);
-    assert_eq!(code, 0, "workspace restore failed: {stderr}");
+    assert_eq!(code, 0, "archive import failed: {stderr}");
     let summary: serde_json::Value = serde_json::from_str(&stdout).expect("restore summary JSON");
     assert_eq!(summary["schema_version"], 2);
     assert!(
@@ -185,16 +185,20 @@ fn workspace_save_captures_and_restore_replays_a_real_split_tree() {
             .iter()
             .any(|name| name == "split-bench")
     );
+    // An import starts nothing (R16); `phux restore` starts the imported
+    // dormant panes.
+    let (code, _, stderr) = run(&["restore", "split-bench", "--socket", &dest_socket]);
+    assert_eq!(code, 0, "restore split-bench failed: {stderr}");
 
     let (code, stdout, stderr) = run(&[
-        "workspace",
-        "save",
+        "archive",
+        "export",
         "--socket",
         &dest_socket,
         "--output",
         &dest_archive.to_string_lossy(),
     ]);
-    assert_eq!(code, 0, "workspace save (post-restore) failed: {stderr}");
+    assert_eq!(code, 0, "archive export (post-restore) failed: {stderr}");
     assert!(stdout.is_empty());
     let resaved: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(&dest_archive).expect("read resaved archive"),
@@ -215,12 +219,12 @@ fn workspace_save_captures_and_restore_replays_a_real_split_tree() {
     );
 }
 
-/// Restoring an archive whose session is on host `edge`, in `/src/api`, and
+/// Importing an archive whose session is on host `edge`, in `/src/api`, and
 /// tagged `phux` keeps that organization. The directory does not have to
 /// exist: the child falls back, and the registry still records the request.
 #[test]
 #[ignore = "spawns real phux servers; run explicitly when validating workspace archives."]
-fn restore_keeps_edge_host_src_api_directory_and_phux_project() {
+fn import_keeps_edge_host_src_api_directory_and_phux_project() {
     let dest = start("edge");
     let archive_dir = tempfile::tempdir().expect("archive tempdir");
     let archive = archive_dir.path().join("edge.json");
@@ -243,8 +247,7 @@ fn restore_keeps_edge_host_src_api_directory_and_phux_project() {
     .expect("write archive");
     let socket = dest.socket_text();
 
-    let (code, stdout, stderr) =
-        run(&["workspace", "restore", "--plan", &archive.to_string_lossy()]);
+    let (code, stdout, stderr) = run(&["archive", "import", "--plan", &archive.to_string_lossy()]);
     assert_eq!(code, 0, "restore --plan failed: {stderr}");
     assert!(
         stdout.contains("api host=edge directory=/src/api project=phux"),
@@ -252,13 +255,13 @@ fn restore_keeps_edge_host_src_api_directory_and_phux_project() {
     );
 
     let (code, stdout, stderr) = run(&[
-        "workspace",
-        "restore",
+        "archive",
+        "import",
         &archive.to_string_lossy(),
         "--socket",
         &socket,
     ]);
-    assert_eq!(code, 0, "workspace restore failed: {stderr} {stdout}");
+    assert_eq!(code, 0, "archive import failed: {stderr} {stdout}");
     let summary: serde_json::Value = serde_json::from_str(&stdout).expect("restore summary JSON");
     assert!(
         summary["failed"].as_array().is_none_or(Vec::is_empty),
@@ -274,14 +277,14 @@ fn restore_keeps_edge_host_src_api_directory_and_phux_project() {
     );
 
     let (code, _stdout, stderr) = run(&[
-        "workspace",
-        "save",
+        "archive",
+        "export",
         "--socket",
         &socket,
         "--output",
         &resaved.to_string_lossy(),
     ]);
-    assert_eq!(code, 0, "workspace save after restore failed: {stderr}");
+    assert_eq!(code, 0, "archive export after restore failed: {stderr}");
     let saved: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&resaved).expect("read resaved archive"))
             .expect("resaved archive JSON");
@@ -342,17 +345,17 @@ fn total_panes(windows: &[serde_json::Value]) -> usize {
 }
 
 /// A stored layout can miss live panes (a headless spawn never touches it)
-/// and keep leaves of closed panes (nothing prunes them). `workspace save`
+/// and keep leaves of closed panes (nothing prunes them). `archive export`
 /// must drop the dead leaf and put the headless pane in an `"unplaced"`
-/// window with a warning, so save -> restore -> save keeps exactly the two
-/// live panes.
+/// window with a warning, so export -> import -> restore -> export keeps
+/// exactly the two live panes.
 #[test]
 #[ignore = "spawns real phux servers; run explicitly when validating workspace archives."]
 #[allow(
     clippy::too_many_lines,
     reason = "one linear repro-save-restore-resave round trip keeps its own assertions together"
 )]
-fn workspace_save_reconciles_a_dead_layout_leaf_and_a_headless_spawn() {
+fn archive_export_reconciles_a_dead_layout_leaf_and_a_headless_spawn() {
     // One session only, so the headless spawn can join nothing else; its
     // seed pane is always `@1`.
     let source = start("reconcile-repro");
@@ -399,14 +402,14 @@ fn workspace_save_reconciles_a_dead_layout_leaf_and_a_headless_spawn() {
     assert_eq!(code, 0, "headless spawn failed: {stderr}");
 
     let (code, stdout, stderr) = run(&[
-        "workspace",
-        "save",
+        "archive",
+        "export",
         "--socket",
         &source_socket,
         "--output",
         &source_archive.to_string_lossy(),
     ]);
-    assert_eq!(code, 0, "workspace save failed: {stderr}");
+    assert_eq!(code, 0, "archive export failed: {stderr}");
     assert!(stdout.is_empty());
     assert!(
         stderr.contains("reconcile-repro") && stderr.contains("absent from its stored layout"),
@@ -447,28 +450,32 @@ fn workspace_save_reconciles_a_dead_layout_leaf_and_a_headless_spawn() {
     );
 
     let (code, stdout, stderr) = run(&[
-        "workspace",
-        "restore",
+        "archive",
+        "import",
         &source_archive.to_string_lossy(),
         "--socket",
         &dest_socket,
     ]);
-    assert_eq!(code, 0, "workspace restore failed: {stderr}");
+    assert_eq!(code, 0, "archive import failed: {stderr}");
     let summary: serde_json::Value = serde_json::from_str(&stdout).expect("restore summary JSON");
     assert!(
         summary["failed"].as_array().is_none_or(Vec::is_empty),
         "restore must not report a failure: {summary}"
     );
+    // An import starts nothing (R16); `phux restore` starts the imported
+    // dormant panes.
+    let (code, _, stderr) = run(&["restore", "reconcile-repro", "--socket", &dest_socket]);
+    assert_eq!(code, 0, "restore reconcile-repro failed: {stderr}");
 
     let (code, stdout, stderr) = run(&[
-        "workspace",
-        "save",
+        "archive",
+        "export",
         "--socket",
         &dest_socket,
         "--output",
         &dest_archive.to_string_lossy(),
     ]);
-    assert_eq!(code, 0, "workspace save (post-restore) failed: {stderr}");
+    assert_eq!(code, 0, "archive export (post-restore) failed: {stderr}");
     assert!(stdout.is_empty());
     let resaved: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(&dest_archive).expect("read resaved archive"),
@@ -485,7 +492,7 @@ fn workspace_save_reconciles_a_dead_layout_leaf_and_a_headless_spawn() {
 
 #[test]
 #[ignore = "spawns real phux servers; run explicitly when validating workspace archives."]
-fn workspace_restore_starts_archived_command_process() {
+fn import_then_restore_starts_archived_command_process() {
     let dest = start("seed");
     let archive_dir = tempfile::tempdir().expect("archive tempdir");
     let archive_path = archive_dir.path().join("workspace-command.json");
@@ -535,14 +542,8 @@ fn workspace_restore_starts_archived_command_process() {
     let archive_arg = archive_path.to_string_lossy().into_owned();
     let socket_arg = dest.socket_text();
 
-    let (code, stdout, stderr) = run(&[
-        "workspace",
-        "restore",
-        &archive_arg,
-        "--socket",
-        &socket_arg,
-    ]);
-    assert_eq!(code, 0, "workspace restore failed: {stderr}");
+    let (code, stdout, stderr) = run(&["archive", "import", &archive_arg, "--socket", &socket_arg]);
+    assert_eq!(code, 0, "archive import failed: {stderr}");
     let summary: serde_json::Value = serde_json::from_str(&stdout).expect("restore summary JSON");
     assert!(
         summary["restored"]
@@ -551,6 +552,10 @@ fn workspace_restore_starts_archived_command_process() {
             .iter()
             .any(|name| name == "restored-proc")
     );
+    // An import starts nothing (R16); `phux restore` starts the imported
+    // dormant panes.
+    let (code, _, stderr) = run(&["restore", "restored-proc", "--socket", &socket_arg]);
+    assert_eq!(code, 0, "restore restored-proc failed: {stderr}");
 
     // Ambient budget: the marker is unique, so only load can expire it.
     let (code, _stdout, stderr) = run(&[
@@ -721,8 +726,8 @@ fn native_agent_session_is_replayed_after_pane_restart_and_rejects_stale_ownersh
     wait_for_terminal_absent(&source_socket, "@1");
     let (code, _, stderr) = run_with_xdg(
         &[
-            "workspace",
-            "save",
+            "archive",
+            "export",
             "--socket",
             &source_socket,
             "--output",
@@ -766,8 +771,8 @@ fn native_agent_session_is_replayed_after_pane_restart_and_rejects_stale_ownersh
     let dest_socket = dest.socket_text();
     let (code, stdout, stderr) = run_with_xdg(
         &[
-            "workspace",
-            "restore",
+            "archive",
+            "import",
             &source_archive_arg,
             "--socket",
             &dest_socket,
@@ -783,6 +788,13 @@ fn native_agent_session_is_replayed_after_pane_restart_and_rejects_stale_ownersh
             .iter()
             .any(|name| name == "agent-restart")
     );
+    // An import starts nothing (R16); `phux restore` starts the imported
+    // dormant panes.
+    let (code, _, stderr) = run_with_xdg(
+        &["restore", "agent-restart", "--socket", &dest_socket],
+        &xdg,
+    );
+    assert_eq!(code, 0, "restore agent-restart failed: {stderr}");
     let resume_marker = format!("FAKE_AGENT_ARGS=--resume {native_id}");
     wait_painted_then(&dest_socket, "agent-restart", &resume_marker);
     let plugin_cwd = root
@@ -807,8 +819,8 @@ fn native_agent_session_is_replayed_after_pane_restart_and_rejects_stale_ownersh
 
     let (code, _, stderr) = run_with_xdg(
         &[
-            "workspace",
-            "save",
+            "archive",
+            "export",
             "--socket",
             &dest_socket,
             "--output",
@@ -851,8 +863,8 @@ fn native_agent_session_is_replayed_after_pane_restart_and_rejects_stale_ownersh
     let stale_socket = stale_dest.socket_text();
     let (code, _, stderr) = run_with_xdg(
         &[
-            "workspace",
-            "restore",
+            "archive",
+            "import",
             &stale_archive_arg,
             "--socket",
             &stale_socket,
@@ -906,8 +918,8 @@ fn shell_started_agent_session_is_archived_and_resumed() {
     assert_eq!(code, 0, "open the shell-started agent session: {stderr}");
     let (code, _, stderr) = run_with_xdg(
         &[
-            "workspace",
-            "save",
+            "archive",
+            "export",
             "--socket",
             &source_socket,
             "--output",
@@ -944,16 +956,15 @@ fn shell_started_agent_session_is_archived_and_resumed() {
     let dest = start("shell-agent-seed");
     let dest_socket = dest.socket_text();
     let (code, _, stderr) = run_with_xdg(
-        &[
-            "workspace",
-            "restore",
-            &archive_arg,
-            "--socket",
-            &dest_socket,
-        ],
+        &["archive", "import", &archive_arg, "--socket", &dest_socket],
         &xdg,
     );
     assert_eq!(code, 0, "native restore failed: {stderr}");
+    // An import starts nothing (R16); `phux restore` starts the imported
+    // dormant panes.
+    let (code, _, stderr) =
+        run_with_xdg(&["restore", "shell-agent", "--socket", &dest_socket], &xdg);
+    assert_eq!(code, 0, "restore shell-agent failed: {stderr}");
     wait_painted_then(
         &dest_socket,
         "shell-agent",

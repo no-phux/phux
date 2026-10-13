@@ -98,6 +98,7 @@ fn catalog() -> Vec<CommandSpec> {
             Some("cmd+shift+n"),
         ),
         spec("rename-session", "Rename Session…", "Terminal", None),
+        spec("kill-session", "Kill Session…", "Terminal", None),
         spec(
             "new-home",
             "New Terminal in Home Directory",

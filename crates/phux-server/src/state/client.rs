@@ -164,21 +164,7 @@ impl ServerState {
 
         // Subscribe every pane, not just the active one: the input gate
         // drops keys to unsubscribed panes, and every pane renders live.
-        let session_panes: Vec<ResourceId> = self
-            .sessions
-            .registry
-            .session(session_id)
-            .map(|s| s.windows.clone())
-            .unwrap_or_default()
-            .into_iter()
-            .flat_map(|wid| {
-                self.sessions
-                    .registry
-                    .window(wid)
-                    .map(|w| w.slots.clone())
-                    .unwrap_or_default()
-            })
-            .collect();
+        let session_panes: Vec<ResourceId> = self.sessions.terminal_members(session_id);
         for pane in session_panes {
             self.resources.subscribe(client_id, pane);
         }
@@ -217,8 +203,8 @@ impl ServerState {
         let geometry_targets = self.viewport_terminals(client_id);
         self.clients.attached.remove(&client_id);
         // Drop local and satellite leases; the runtime already broadcast and
-        // relayed the releases.
-        self.leases.release_all_for(client_id);
+        // relayed the releases. Each local release opens a new epoch.
+        self.release_all_input_leases(client_id);
         // Cancel owned pumps, then drop the client from subscriber lists.
         self.resources.cancel_pumps_for_client(client_id);
         self.resources.drop_client_subscriptions(client_id);

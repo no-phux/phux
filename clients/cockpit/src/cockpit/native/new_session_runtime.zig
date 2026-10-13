@@ -41,11 +41,11 @@ pub fn current(engine: anytype, destination: sessions.Destination) bool {
     };
 }
 
-pub fn send(engine: anytype, destination: sessions.Destination, name: []const u8, directory: []const u8, keep_empty: bool) !u32 {
+pub fn send(engine: anytype, destination: sessions.Destination, name: []const u8, directory: []const u8, lifetime: support.SessionLifetime) !u32 {
     if (comptime !support.phux_enabled) return error.InvalidState;
-    if (!keep_empty or !current(engine, destination)) return error.InvalidState;
+    if (lifetime == .unknown or !current(engine, destination)) return error.InvalidState;
     const remote = resolve(engine.model, destination) orelse return error.InvalidState;
-    return remote.requestCreateSessionIn(name, directory, true);
+    return remote.requestCreateSessionIn(name, directory, lifetime);
 }
 
 /// Returned text borrows the owning Client; Controller copies it before release.
@@ -74,7 +74,7 @@ pub fn release(engine: anytype, destination: sessions.Destination, request_id: u
 
 /// selectExact(engine, remote, session, window, window_epoch, fx)!void is the
 /// Engine's exact-session navigation path. It must preserve other windows and
-/// represent keep-empty sessions without inventing a terminal or coordinator.
+/// represent empty persistent sessions without inventing a terminal or coordinator.
 pub fn didCreate(engine: anytype, destination: sessions.Destination, session: u32, selection_epoch: u64, fx: anytype, comptime selectExact: anytype) void {
     if (comptime !support.phux_enabled) return;
     if (session == 0 or selection_epoch == std.math.maxInt(u64)) return;

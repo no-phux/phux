@@ -22,7 +22,7 @@ pub mod touch;
 
 pub use panes::PaneRect;
 
-pub use session::{AgentBadge, Outcome, Session};
+pub use session::{AgentBadge, AttachPreference, Connection, Outcome};
 
 use std::cell::RefCell;
 use std::ops::Range;
@@ -83,12 +83,22 @@ impl HostedClient {
         self.client.focus_next_pane()
     }
 
-    /// Close the focused terminal without closing its siblings.
+    /// Close the focused pane's view. Presentation only: the terminal keeps
+    /// running in its session, and the remaining panes take its space.
+    ///
+    /// # Errors
+    /// Refuses the last view; use the host's Release Session control instead.
+    pub fn close_pane(&self) -> Result<(), JsValue> {
+        self.client.close_view()
+    }
+
+    /// Kill the focused terminal, ending its process, without closing its
+    /// siblings.
     ///
     /// # Errors
     /// Refuses the last pane; use the host's Release Session control instead.
-    pub fn close_pane(&self) -> Result<(), JsValue> {
-        self.client.close_pane()
+    pub fn kill_pane(&self) -> Result<(), JsValue> {
+        self.client.kill_pane()
     }
 
     /// Send one on-screen key as typed at the terminal: `Escape`, `Tab`,

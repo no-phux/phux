@@ -289,7 +289,15 @@ pub(super) fn needs_for(
         Subject::HeldAction => super::hold::held_action_needs(s, request),
         // A filtered result needs its verb somewhere; what it returns is
         // filtered at the source (`super::filter`).
-        Subject::ObservableTerminals | Subject::InventoryMatches => Some(one(Point::Anywhere)),
+        // An organization page is filtered record by record the same way.
+        Subject::ObservableTerminals | Subject::InventoryMatches | Subject::OrganizationView => {
+            Some(one(Point::Anywhere))
+        }
+        Subject::KeyedSession => keyed_session(s, request).map(one),
+        Subject::KeyedResource => keyed_resource(s, request).map(one),
+        Subject::MoveSessions => move_sessions(s, verbs, request),
+        Subject::UndoneOperation => undone_operation(s, verbs, request),
+        Subject::ArrangementOwner => arrangement_owner(s, request).map(one),
         Subject::Global {
             owner_uds_only: false,
         } => Some(one(Point::Global)),
@@ -309,9 +317,16 @@ const fn subject_kind(subject: Subject) -> &'static str {
         | Subject::EveryNamedTerminal
         | Subject::AttachedTerminals
         | Subject::MovedAndOwnerTerminals
-        | Subject::ParentOfNamed => "terminal",
-        Subject::ObservableTerminals | Subject::InventoryMatches => "any",
-        Subject::ResolvedGroup
+        | Subject::ParentOfNamed
+        | Subject::KeyedResource => "terminal",
+        Subject::ObservableTerminals | Subject::InventoryMatches | Subject::OrganizationView => {
+            "any"
+        }
+        Subject::KeyedSession
+        | Subject::MoveSessions
+        | Subject::UndoneOperation
+        | Subject::ArrangementOwner
+        | Subject::ResolvedGroup
         | Subject::SelectedLocalGroup
         | Subject::NamedSession
         | Subject::PayloadGroup
@@ -420,7 +435,7 @@ fn local_terminal(s: &ServerState, id: u32, core: Option<CoreResourceId>) -> Ter
 
 /// A local resource by core id, matched only as itself. One with no wire id
 /// yet is [`Located::Unnamed`], never skipped.
-fn local_point(s: &ServerState, core: CoreResourceId) -> TerminalPoint {
+pub(super) fn local_point(s: &ServerState, core: CoreResourceId) -> TerminalPoint {
     let at = match s.terminal_wire_of(core) {
         Some(WireResourceId::Local { id }) => Located::Local(id),
         _ => Located::Unnamed,
@@ -432,10 +447,11 @@ fn local_point(s: &ServerState, core: CoreResourceId) -> TerminalPoint {
     }
 }
 
-/// The wire session id of the session whose window holds `core`.
+/// The wire session id of the session `core` is a member of now, so a
+/// membership move changes what a `group:` selector reaches in the same
+/// commit.
 pub(super) fn group_of(s: &ServerState, core: CoreResourceId) -> Option<u32> {
-    let window = s.registry().resource(core)?.window?;
-    let session = s.registry().window(window)?.session;
+    let session = s.registry().session_of(core)?;
     s.idspace.session_wire(session).map(WireSessionId::get)
 }
 
@@ -552,8 +568,143 @@ const fn command_terminal(command: &Command) -> Option<&WireResourceId> {
         | Command::PutFile { terminal_id, .. }
         | Command::Transcribe { terminal_id, .. }
         | Command::AppendResourceOutput { terminal_id, .. } => Some(terminal_id),
+        Command::ResourceTerminate { target, .. } => Some(&target.resource),
         _ => None,
     }
+}
+
+/// A session by wire key as a Group point; `None` when no record has it.
+fn session_key_point(s: &ServerState, key: &phux_protocol::ids::SessionKey) -> Option<Point> {
+    let id = s
+        .registry()
+        .session_id(&crate::org_wire::core_session_key(key))?;
+    Some(session_point(s, Some(id)))
+}
+
+/// A resource by wire key as a Terminal point matched through its current
+/// session's Group; `None` when no record has it.
+fn resource_key_point(s: &ServerState, key: &phux_protocol::ids::ResourceKey) -> Option<Point> {
+    let id = s
+        .registry()
+        .resource_id(&crate::org_wire::core_resource_key(key))?;
+    Some(Point::Terminal(local_point(s, id)))
+}
+
+/// The session a keyed session command names.
+fn keyed_session(s: &ServerState, request: Request<'_>) -> Option<Point> {
+    let Request::Command(command) = request else {
+        return None;
+    };
+    match command {
+        Command::SessionRename { session, .. }
+        | Command::SessionSetLifetime { session, .. }
+        | Command::SessionDelete { session, .. }
+        | Command::InboxResolve { session, .. }
+        | Command::ResourceCreate { session, .. } => session_key_point(s, session),
+        _ => None,
+    }
+}
+
+/// The resource a keyed resource command names.
+fn keyed_resource(s: &ServerState, request: Request<'_>) -> Option<Point> {
+    let Request::Command(command) = request else {
+        return None;
+    };
+    match command {
+        Command::ResourceRename { resource, .. }
+        | Command::ResourceRemove { resource, .. }
+        | Command::ResourceRelaunch { resource, .. }
+        | Command::ResourceAbandon { resource, .. } => resource_key_point(s, resource),
+        _ => None,
+    }
+}
+
+/// Every source session a move takes from, each moved resource's current
+/// session, and the destination; one unresolvable key refuses the move.
+fn move_sessions(s: &ServerState, verbs: Verbs, request: Request<'_>) -> Option<Vec<Need>> {
+    let Request::Command(command) = request else {
+        return None;
+    };
+    let mut points = Vec::new();
+    match command {
+        Command::ResourceMove {
+            resource, from, to, ..
+        } => {
+            points.push(resource_key_point(s, resource)?);
+            points.push(session_key_point(s, from)?);
+            points.push(session_key_point(s, to)?);
+        }
+        Command::ResourceMoveMany { items, to, .. } => {
+            for item in items {
+                points.push(resource_key_point(s, &item.resource)?);
+                points.push(session_key_point(s, &item.from)?);
+            }
+            points.push(session_key_point(s, to)?);
+        }
+        _ => return None,
+    }
+    Some(
+        points
+            .into_iter()
+            .map(|point| Need::new(verbs, point))
+            .collect(),
+    )
+}
+
+/// Every session and resource the undone operation's recorded inverse
+/// touches, under current membership.
+fn undone_operation(s: &ServerState, verbs: Verbs, request: Request<'_>) -> Option<Vec<Need>> {
+    let Request::Command(Command::OrganizationUndo { undo, .. }) = request else {
+        return None;
+    };
+    let receipt = s.org().receipt(&crate::org_wire::core_operation(undo))?;
+    let Some(inverse) = receipt.undo.as_ref() else {
+        return Some(vec![Need::new(verbs, Point::Global)]);
+    };
+    let session = |key: &phux_core::SessionKey| {
+        s.registry()
+            .session_id(key)
+            .map(|id| session_point(s, Some(id)))
+    };
+    let mut points = Vec::new();
+    for edit in &inverse.inverse {
+        match edit {
+            phux_core::InverseEdit::Membership { resource, to } => {
+                let id = s.registry().resource_id(resource)?;
+                points.push(Point::Terminal(local_point(s, id)));
+                points.push(session(to)?);
+            }
+            phux_core::InverseEdit::Intake { session: key, .. } => points.push(session(key)?),
+        }
+    }
+    Some(
+        points
+            .into_iter()
+            .map(|point| Need::new(verbs, point))
+            .collect(),
+    )
+}
+
+/// The session that owns the arrangement a command names.
+fn arrangement_owner(s: &ServerState, request: Request<'_>) -> Option<Point> {
+    let Request::Command(command) = request else {
+        return None;
+    };
+    let (Command::ArrangementGet { arrangement: key }
+    | Command::ArrangementReplace {
+        arrangement: key, ..
+    }) = command
+    else {
+        return None;
+    };
+    let record = s
+        .org()
+        .arrangement(&crate::org_wire::core_arrangement_key(key))?;
+    let phux_core::ArrangementOwner::Session(owner) = record.owner else {
+        return None;
+    };
+    let id = s.registry().session_id(&owner)?;
+    Some(session_point(s, Some(id)))
 }
 
 /// `KILL_RESOURCES` / `CLOSE_TAB_RESOURCES`: every named Terminal, all-or-nothing.

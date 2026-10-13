@@ -93,6 +93,6 @@ fn plugin_json(plugin: &LoadedPlugin) -> serde_json::Value {
         "events": manifest.events,
         "panes": manifest.panes,
         "links": manifest.links,
-        "workspaces": manifest.workspaces,
+        "profiles": manifest.profiles,
     })
 }

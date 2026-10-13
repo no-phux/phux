@@ -1,11 +1,16 @@
 //! The existing-pane move shared by headless and interactive clients.
 //!
-//! Same-session: one confirmed L3 layout mutation. Cross-session: ADR-0056's
-//! L1 re-parent, then destination-first layout publication and source
-//! cleanup. The [`ResourceId`] is never replaced.
+//! Same-session: one arrangement edit ([`crate::layout_ops`]). Cross-session
+//! against a server that advertises `ORGANIZATION`: one `RESOURCE_MOVE`
+//! (membership only; the server prunes the source arrangement in the same
+//! transaction), then a compare-and-swap edit of the destination
+//! arrangement, undone by `ORGANIZATION_UNDO` of the move's receipt when the
+//! placement cannot be written. Against an older server: ADR-0056's L1
+//! re-parent, then destination-first layout publication and source cleanup.
+//! The [`ResourceId`] is never replaced and the process keeps running.
 
 use phux_protocol::caps::ServerFeature;
-use phux_protocol::ids::{ResourceId, SessionId, WindowId};
+use phux_protocol::ids::{ResourceId, SessionId};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, FrameKind, MoveError, MoveResult, Scope, StateScope,
 };
@@ -14,7 +19,7 @@ use thiserror::Error;
 
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
-use crate::layout::{LayoutNode, SplitDir, Workspace, leaves};
+use crate::layout::{ArrangementDoc, LayoutNode, SplitDir, leaves};
 use crate::layout_ops::{
     DEFAULT_LAYOUT_GROUP_ID, LayoutMutation, LayoutOps, LayoutOpsError, layout_key,
     validate_projection_key,
@@ -26,7 +31,7 @@ pub struct PaneMoveOutcome {
     /// Fresh server-reported name of the destination session.
     pub destination_session_name: String,
     /// Confirmed destination workspace, suitable for immediate TUI adoption.
-    pub destination_workspace: Workspace,
+    pub destination_workspace: ArrangementDoc,
     /// Whether L1 ownership crossed a session boundary.
     pub cross_session: bool,
 }
@@ -47,7 +52,7 @@ pub enum PaneMoveError {
         role: &'static str,
     },
     /// The destination changed ownership while the move was in flight.
-    #[error("the destination pane changed windows while the move was in flight; {rollback}")]
+    #[error("the destination pane changed sessions while the move was in flight; {rollback}")]
     DestinationChanged {
         /// Whether ownership could be restored.
         rollback: &'static str,
@@ -58,6 +63,9 @@ pub enum PaneMoveError {
     /// The server refused the ownership move.
     #[error("server refused the pane move: {0}")]
     MoveRefused(String),
+    /// An organization request failed before membership changed.
+    #[error(transparent)]
+    Org(#[from] crate::org::OrgError),
     /// Ownership moved, but the resulting server state could not be read.
     #[error(
         "the server moved the pane but its resulting ownership could not be read ({error}); {rollback}"
@@ -100,8 +108,6 @@ pub enum PaneMoveError {
 struct CrossMovePlan {
     source: ResourceId,
     target: ResourceId,
-    source_window: WindowId,
-    destination_window: WindowId,
     source_session: SessionId,
     destination_session: SessionId,
     destination_session_name: String,
@@ -140,15 +146,10 @@ pub async fn move_pane(
     }
 
     let snapshot = read_snapshot(conn, 1).await?;
-    let source_window =
-        window_for(&snapshot, &source).ok_or(PaneMoveError::UnknownPane { role: "source" })?;
-    let destination_window = window_for(&snapshot, &target).ok_or(PaneMoveError::UnknownPane {
-        role: "destination",
-    })?;
-    let source_session = session_for_window(&snapshot, source_window)
+    let source_session = crate::resource::session_of(&snapshot, &source)
         .ok_or(PaneMoveError::UnknownPane { role: "source" })?;
     let destination_session =
-        session_for_window(&snapshot, destination_window).ok_or(PaneMoveError::UnknownPane {
+        crate::resource::session_of(&snapshot, &target).ok_or(PaneMoveError::UnknownPane {
             role: "destination",
         })?;
     let destination_session_name = session_name(&snapshot, destination_session)
@@ -176,6 +177,20 @@ pub async fn move_pane(
         });
     }
 
+    let (source_key, destination_key) =
+        resolve_cross_session_projection(projection, source_session, destination_session)?;
+    if crate::org::supported(conn) && projection.is_empty() {
+        return move_by_record(
+            conn,
+            &source,
+            &target,
+            destination_session,
+            destination_session_name,
+            dir,
+            ratio,
+        )
+        .await;
+    }
     if !conn.negotiated_bootstrap().is_some_and(|bootstrap| {
         bootstrap
             .server_features
@@ -183,14 +198,10 @@ pub async fn move_pane(
     }) {
         return Err(PaneMoveError::ServerTooOld);
     }
-    let (source_key, destination_key) =
-        resolve_cross_session_projection(projection, source_session, destination_session)?;
     let plan = CrossMovePlan {
-        rollback_owner: sibling_in_window(&snapshot, &source),
+        rollback_owner: sibling_in_session(&snapshot, &source),
         source,
         target,
-        source_window,
-        destination_window,
         source_session,
         destination_session,
         destination_session_name,
@@ -242,6 +253,70 @@ fn resolve_cross_session_projection(
     Err(PaneMoveError::ProjectionArityMismatch)
 }
 
+/// A cross-session move against a server that advertises `ORGANIZATION`:
+/// `RESOURCE_MOVE`, then the destination arrangement edit, undone when the
+/// edit cannot be written.
+async fn move_by_record(
+    conn: &mut Connection,
+    source: &ResourceId,
+    target: &ResourceId,
+    destination_session: SessionId,
+    destination_session_name: String,
+    dir: SplitDir,
+    ratio: f32,
+) -> Result<PaneMoveOutcome, PaneMoveError> {
+    let inventory =
+        crate::org::fetch(conn, phux_protocol::wire::frame::OrgFilter::All, 0x6e00).await?;
+    let source_key = inventory
+        .resource_by_live(source)
+        .ok_or(PaneMoveError::UnknownPane { role: "source" })?
+        .key;
+    let destination_key = inventory
+        .session_by_live(destination_session)
+        .ok_or(PaneMoveError::UnknownPane {
+            role: "destination",
+        })?
+        .key;
+    let receipt = match crate::org::move_resource(conn, source_key, destination_key).await {
+        Ok(receipt) => receipt,
+        Err(crate::org::OrgError::Refused(refusal)) => {
+            return Err(PaneMoveError::MoveRefused(crate::org::refusal_sentence(
+                &refusal,
+            )));
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let placed = LayoutOps::new(conn, destination_session, 0x6e40)
+        .mutate_or_seed(
+            ArrangementDoc::single(target.clone()),
+            LayoutMutation::Split {
+                target: target.clone(),
+                new_pane: source.clone(),
+                dir,
+                ratio,
+            },
+        )
+        .await;
+    match placed {
+        Ok(destination_workspace) => Ok(PaneMoveOutcome {
+            destination_session_name,
+            destination_workspace,
+            cross_session: true,
+        }),
+        Err(error) => {
+            let rollback = if crate::org::undo(conn, &receipt).await.is_ok() {
+                "the move was undone"
+            } else {
+                "the move could not be undone; inspect and place the pane explicitly"
+            };
+            Err(PaneMoveError::DestinationLayout {
+                error: error.to_string(),
+                rollback,
+            })
+        }
+    }
+}
+
 async fn execute_cross_move(
     conn: &mut Connection,
     plan: &CrossMovePlan,
@@ -255,8 +330,8 @@ async fn execute_cross_move(
             return Err(PaneMoveError::PostMoveState { error, rollback });
         }
     };
-    if window_for(&post_move, &plan.source) != Some(plan.destination_window)
-        || window_for(&post_move, &plan.target) != Some(plan.destination_window)
+    if crate::resource::session_of(&post_move, &plan.source) != Some(plan.destination_session)
+        || crate::resource::session_of(&post_move, &plan.target) != Some(plan.destination_session)
     {
         let rollback = rollback_suffix(conn, plan).await;
         return Err(PaneMoveError::DestinationChanged { rollback });
@@ -367,19 +442,19 @@ async fn rollback_move(conn: &mut Connection, plan: &CrossMovePlan) -> bool {
     let Some(owner) = &plan.rollback_owner else {
         return false;
     };
-    let owner_still_at_source = read_snapshot(conn, 30)
-        .await
-        .is_ok_and(|snapshot| window_for(&snapshot, owner) == Some(plan.source_window));
+    let owner_still_at_source = read_snapshot(conn, 30).await.is_ok_and(|snapshot| {
+        crate::resource::session_of(&snapshot, owner) == Some(plan.source_session)
+    });
     owner_still_at_source
         && request_move(conn, 31, &plan.source, owner).await.is_ok()
-        && read_snapshot(conn, 32)
-            .await
-            .is_ok_and(|snapshot| window_for(&snapshot, &plan.source) == Some(plan.source_window))
+        && read_snapshot(conn, 32).await.is_ok_and(|snapshot| {
+            crate::resource::session_of(&snapshot, &plan.source) == Some(plan.source_session)
+        })
 }
 
 async fn rollback_suffix(conn: &mut Connection, plan: &CrossMovePlan) -> &'static str {
     if rollback_move(conn, plan).await {
-        "the pane was moved back to its original window"
+        "the pane was moved back to its original session"
     } else {
         "the pane's current ownership could not be restored; inspect and place it explicitly"
     }
@@ -469,22 +544,6 @@ async fn close_source_leaf(
     }
 }
 
-fn window_for(snapshot: &SessionSnapshot, terminal: &ResourceId) -> Option<WindowId> {
-    snapshot
-        .resources
-        .iter()
-        .find(|resource| &resource.id == terminal)
-        .map(|resource| resource.window_id)
-}
-
-fn session_for_window(snapshot: &SessionSnapshot, window: WindowId) -> Option<SessionId> {
-    snapshot
-        .windows
-        .iter()
-        .find(|candidate| candidate.id == window)
-        .map(|candidate| candidate.session_id)
-}
-
 fn session_name(snapshot: &SessionSnapshot, session: SessionId) -> Option<&str> {
     snapshot
         .sessions
@@ -493,32 +552,32 @@ fn session_name(snapshot: &SessionSnapshot, session: SessionId) -> Option<&str> 
         .map(|candidate| candidate.name.as_str())
 }
 
-fn sibling_in_window(snapshot: &SessionSnapshot, source: &ResourceId) -> Option<ResourceId> {
-    let source_window = window_for(snapshot, source)?;
-    snapshot
-        .resources
-        .iter()
-        .find(|resource| resource.window_id == source_window && &resource.id != source)
+/// Another Terminal of `source`'s session: the owner a rollback re-parents
+/// the pane beside.
+fn sibling_in_session(snapshot: &SessionSnapshot, source: &ResourceId) -> Option<ResourceId> {
+    let session = crate::resource::session_of(snapshot, source)?;
+    crate::resource::terminals_in(snapshot, session)
+        .find(|resource| &resource.id != source)
         .map(|resource| resource.id.clone())
 }
 
-fn workspace_contains(workspace: &Workspace, terminal: &ResourceId) -> bool {
+fn workspace_contains(workspace: &ArrangementDoc, terminal: &ResourceId) -> bool {
     workspace
-        .windows
+        .groups
         .iter()
         .filter_map(|window| window.state.tree.as_ref())
         .any(|tree| leaves(tree).contains(terminal))
 }
 
 fn workspace_has_placement(
-    workspace: &Workspace,
+    workspace: &ArrangementDoc,
     target: &ResourceId,
     moved: &ResourceId,
     dir: SplitDir,
     ratio: f32,
 ) -> bool {
     workspace
-        .windows
+        .groups
         .iter()
         .filter_map(|window| window.state.tree.as_ref())
         .any(|tree| tree_has_placement(tree, target, moved, dir, ratio))
@@ -553,11 +612,12 @@ fn tree_has_placement(
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 mod tests {
     use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
+    use phux_protocol::ids::WindowId;
     use phux_protocol::wire::frame::{ErrorCode, FrameKind};
     use phux_protocol::wire::info::{ResourceInfo, SessionInfo, WindowInfo};
 
     use super::*;
-    use crate::layout::{LayoutState, WindowState};
+    use crate::layout::{Group, LayoutState};
     use crate::testkit::{ScriptSpec, serve_one};
 
     fn tid(id: u32) -> ResourceId {
@@ -573,9 +633,9 @@ mod tests {
         }
     }
 
-    fn workspace(name: &str, tree: LayoutNode, focus: u32) -> Workspace {
-        Workspace {
-            windows: vec![WindowState::new(
+    fn workspace(name: &str, tree: LayoutNode, focus: u32) -> ArrangementDoc {
+        ArrangementDoc {
+            groups: vec![Group::new(
                 name.to_owned(),
                 LayoutState {
                     tree: Some(tree),
@@ -704,7 +764,7 @@ mod tests {
             .unwrap();
         assert!(!outcome.cross_session);
         assert_eq!(
-            outcome.destination_workspace.windows[0].state.focus,
+            outcome.destination_workspace.groups[0].state.focus,
             Some(tid(1)),
             "focus follows the moved Terminal identity"
         );
@@ -729,7 +789,7 @@ mod tests {
         assert!(outcome.cross_session);
         assert_eq!(
             leaves(
-                outcome.destination_workspace.windows[0]
+                outcome.destination_workspace.groups[0]
                     .state
                     .tree
                     .as_ref()
@@ -738,7 +798,7 @@ mod tests {
             vec![tid(3), tid(1)]
         );
         assert_eq!(
-            outcome.destination_workspace.windows[0].state.focus,
+            outcome.destination_workspace.groups[0].state.focus,
             Some(tid(1))
         );
         drop(conn);
@@ -754,13 +814,13 @@ mod tests {
                 FrameKind::SetMetadata { key, value, .. }
                     if key == &layout_key(SessionId::new(1)) =>
                 {
-                    Workspace::decode_cbor(value).ok()
+                    ArrangementDoc::decode_cbor(value).ok()
                 }
                 _ => None,
             })
             .expect("source cleanup write");
         assert_eq!(
-            leaves(source_write.windows[0].state.tree.as_ref().unwrap()),
+            leaves(source_write.groups[0].state.tree.as_ref().unwrap()),
             vec![tid(2)]
         );
     }
@@ -964,5 +1024,89 @@ mod tests {
         }
         drop(conn);
         server.await.unwrap();
+    }
+
+    /// Under `ORGANIZATION` a cross-session move is a membership move plus a
+    /// compare-and-swap of the destination arrangement: no `MOVE_RESOURCE`,
+    /// no source cleanup write (the server prunes the source arrangement).
+    #[tokio::test]
+    async fn a_cross_session_move_rides_resource_move_and_the_destination_arrangement() {
+        use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExtSet};
+        use phux_protocol::wire::frame::{
+            ArrangementDoc as WireDoc, ArrangementGroup, ArrangementNode, EntryRef, EntryTarget,
+            SessionLifetime,
+        };
+        let mut fixture = crate::testkit::OrgFixture::new();
+        let work = fixture.session("work", SessionLifetime::Persistent);
+        let play = fixture.session("play", SessionLifetime::Persistent);
+        let a = fixture.shell(work);
+        let b = fixture.shell(play);
+        fixture.arrangement(
+            play,
+            WireDoc {
+                groups: vec![ArrangementGroup {
+                    id: [3; 16],
+                    name: None,
+                    tree: ArrangementNode::Leaf(EntryRef {
+                        entry: [4; 16],
+                        target: EntryTarget::Member(b),
+                    }),
+                }],
+            },
+        );
+        let (pane_a, pane_b) = (fixture.live(&a).unwrap(), fixture.live(&b).unwrap());
+        let dir = tempfile::tempdir().unwrap();
+        let spec = ScriptSpec::new()
+            .server_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]))
+            .organization(fixture);
+        let (socket, server) = serve_one(dir.path(), spec);
+        let mut conn = Connection::connect(&socket).await.unwrap();
+        let outcome = move_pane(
+            &mut conn,
+            pane_a.clone(),
+            pane_b.clone(),
+            SplitDir::Horizontal,
+            0.5,
+            &[],
+        )
+        .await
+        .unwrap();
+        assert!(outcome.cross_session);
+        assert_eq!(outcome.destination_session_name, "play");
+        assert_eq!(
+            leaves(
+                outcome.destination_workspace.groups[0]
+                    .state
+                    .tree
+                    .as_ref()
+                    .unwrap()
+            ),
+            vec![pane_b, pane_a]
+        );
+        drop(conn);
+        let seen = server.await.unwrap();
+        let count = |pick: fn(&FrameKind) -> bool| seen.iter().filter(|f| pick(f)).count();
+        assert_eq!(
+            count(|f| matches!(
+                f,
+                FrameKind::Command {
+                    command: Command::ResourceMove { .. },
+                    ..
+                }
+            )),
+            1
+        );
+        assert_eq!(
+            count(|f| matches!(
+                f,
+                FrameKind::Command {
+                    command: Command::ArrangementReplace { .. },
+                    ..
+                }
+            )),
+            1
+        );
+        assert_eq!(count(|f| matches!(f, FrameKind::MoveResource { .. })), 0);
+        assert_eq!(count(|f| matches!(f, FrameKind::SetMetadata { .. })), 0);
     }
 }

@@ -432,9 +432,9 @@ export interface Model {
   readonly renameContinuation: number;
   /// 1 describe, 2 rename/status. A terminal valid for another stage is stale.
   readonly renameRequestStage: number;
-  /// The Empty session state (ADR-0105, empty_session.zig): the windows the
+  /// The Empty session state (ADR-0160, empty_session.zig): the windows the
   /// snapshot says show it, as a mask, and per window whether it is drawn
-  /// (it gives way to every modal). A keep-empty session with no windows is
+  /// (it gives way to every modal). A persistent session with no members is
   /// offered with New Tab, never shown as broken.
   readonly emptyWindows: number;
   readonly mainEmptyOpen: boolean;
@@ -568,6 +568,7 @@ export type Msg =
   | { readonly kind: "command_result_failed"; readonly error: Uint8Array }
   | { readonly kind: "select_target"; readonly target: Uint8Array }
   | { readonly kind: "close_tab_target"; readonly target: Uint8Array }
+  | { readonly kind: "kill_tab_target"; readonly target: Uint8Array }
   | { readonly kind: "move_tab_previous_target"; readonly target: Uint8Array }
   | { readonly kind: "move_tab_next_target"; readonly target: Uint8Array }
   | { readonly kind: "tab_command_completed"; readonly body: Uint8Array }
@@ -2579,6 +2580,7 @@ function tabNativeCommand(name: string): Msg | null {
   if (name === "tab.previous") return { kind: "native_command", command: 1 };
   if (name === "tab.next") return { kind: "native_command", command: 2 };
   if (name === "terminal.close") return { kind: "native_command", command: 3 };
+  if (name === "terminal.close-view") return { kind: "native_command", command: 29 };
   if (name === "pane.split-right") return { kind: "native_command", command: 4 };
   if (name === "pane.split-down") return { kind: "native_command", command: 5 };
   if (name === "pane.previous") return { kind: "native_command", command: 6 };
@@ -2988,7 +2990,7 @@ function tabCommandTransition(model: Model, msg: Msg): TabCommandTransition | nu
   if (msg.kind === "tab_command_failed") {
     return { model: tabCommandModel(model, unknownTabCommand(model.tabCommands)), request: NO_BYTES };
   }
-  if (msg.kind === "close_tab_target" || msg.kind === "move_tab_previous_target" || msg.kind === "move_tab_next_target" || msg.kind === "close_other_tabs") {
+  if (msg.kind === "close_tab_target" || msg.kind === "kill_tab_target" || msg.kind === "move_tab_previous_target" || msg.kind === "move_tab_next_target" || msg.kind === "close_other_tabs") {
     const decision = enqueueTabActionCommand(model.tabCommands, msg.target, tabAction(msg));
     return { model: freshCommandModel(model, decision), request: decision.request };
   }
@@ -3003,6 +3005,7 @@ function tabAction(msg: Msg): number {
   if (msg.kind === "move_tab_previous_target") return 5;
   if (msg.kind === "move_tab_next_target") return 6;
   if (msg.kind === "close_other_tabs") return 8;
+  if (msg.kind === "kill_tab_target") return 9;
   return 0;
 }
 
@@ -3019,7 +3022,7 @@ function operationIntent(model: Model, msg: Msg): Uint8Array {
 }
 
 function durableNativeCommand(command: number): boolean {
-  return command === 3 || command === 4 || command === 5 || command === 8 || command === 9;
+  return command === 3 || command === 4 || command === 5 || command === 8 || command === 9 || command === 29;
 }
 
 function outcomeNotice(model: Model, decision: ResultDecision): Uint8Array {

@@ -17,8 +17,8 @@ expression: text
                          ╭ Sessions ──────────────────────────────────────╮
                          │ >                                              │
                          │ Local                                          │
-                         │   work                       1 window, current │
-                         │   notes                               1 window │
+                         │   work          1 terminal, ephemeral, current │
+                         │   notes                 2 terminals, ephemeral │
                          │ edge - 2 sessions                              │
                          │   build            on edge, 2 windows, 3 panes │
                          │   logs               on edge, 1 window, 1 pane │
@@ -26,7 +26,7 @@ expression: text
                          │ down - unreachable: link is down               │
                          │ mini - 2 sessions                              │
                          │   build                     on mini, 2 windows │
-                         │   phall          on mini, 1 window, 1 attached │
+                         │   phall on mini, 3 members, persistent, 1 att… │
                          │ spare - connected, no sessions                 │
                          │ xps - unreachable: timed out                   │
                          │ + New session…                          create │

@@ -20,18 +20,19 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use phux_client_ffi::{
-    ABI_VERSION, PhuxAttachOptions, PhuxBytes, PhuxCatalogTerminal, PhuxClient, PhuxClientOptions,
-    PhuxClientResult, PhuxClientState, PhuxConnectOptions, PhuxKeyEvent, PhuxResourceId,
-    PhuxResourceInfo, PhuxSessionInfo, PhuxTerminalGridView, PhuxWorkspaceInfo,
-    PhuxWorkspaceMutation, PhuxWorkspaceWindow, phux_client_catalog_terminal_get,
-    phux_client_connect, phux_client_connection_epoch, phux_client_connection_error,
-    phux_client_feed_frame, phux_client_free, phux_client_is_connected, phux_client_new,
-    phux_client_outgoing_count, phux_client_poll, phux_client_poll_pending,
-    phux_client_queue_attach, phux_client_resource_count, phux_client_resource_get,
-    phux_client_send_key, phux_client_send_paste, phux_client_session_get, phux_client_state,
-    phux_client_terminal_grid, phux_client_terminal_resize, phux_client_viewport_resize,
-    phux_client_workspace_info, phux_client_workspace_mutate, phux_client_workspace_refresh,
-    phux_client_workspace_window_get,
+    ABI_VERSION, PHUX_ARRANGEMENT_BACKEND_ORGANIZATION, PHUX_ARRANGEMENT_STATE_AUTHORITATIVE,
+    PhuxArrangementGroup, PhuxArrangementInfo, PhuxArrangementMutation, PhuxAttachOptions,
+    PhuxBytes, PhuxCatalogTerminal, PhuxClient, PhuxClientOptions, PhuxClientResult,
+    PhuxClientState, PhuxConnectOptions, PhuxKeyEvent, PhuxResourceId, PhuxResourceInfo,
+    PhuxSessionInfo, PhuxTerminalGridView, phux_client_arrangement_group_get,
+    phux_client_arrangement_info, phux_client_arrangement_mutate, phux_client_arrangement_refresh,
+    phux_client_catalog_terminal_get, phux_client_connect, phux_client_connection_epoch,
+    phux_client_connection_error, phux_client_feed_frame, phux_client_free,
+    phux_client_is_connected, phux_client_new, phux_client_outgoing_count, phux_client_poll,
+    phux_client_poll_pending, phux_client_queue_attach, phux_client_resource_count,
+    phux_client_resource_get, phux_client_send_key, phux_client_send_paste,
+    phux_client_session_get, phux_client_state, phux_client_terminal_grid,
+    phux_client_terminal_resize, phux_client_viewport_resize,
 };
 use phux_server_testkit::{run_local, spawn_server, spawn_server_with_seed_cmd};
 use tempfile::TempDir;
@@ -389,21 +390,21 @@ async fn connected_lane() {
     server.await.unwrap().unwrap();
 }
 
-fn workspace_info(client: *mut PhuxClient) -> PhuxWorkspaceInfo {
-    let mut info = PhuxWorkspaceInfo::default();
+fn arrangement_info(client: *mut PhuxClient) -> PhuxArrangementInfo {
+    let mut info = PhuxArrangementInfo::default();
     // SAFETY: owning-thread live client and initialized, disjoint output.
     assert_eq!(
-        unsafe { phux_client_workspace_info(client, &raw mut info) },
+        unsafe { phux_client_arrangement_info(client, &raw mut info) },
         PhuxClientResult::Ok
     );
     info
 }
 
-fn workspace_window(client: *mut PhuxClient) -> PhuxWorkspaceWindow {
-    let mut window = PhuxWorkspaceWindow::default();
+fn arrangement_window(client: *mut PhuxClient) -> PhuxArrangementGroup {
+    let mut window = PhuxArrangementGroup::default();
     // SAFETY: owning-thread live client and initialized, disjoint output.
     assert_eq!(
-        unsafe { phux_client_workspace_window_get(client, 0, &raw mut window) },
+        unsafe { phux_client_arrangement_group_get(client, 0, &raw mut window) },
         PhuxClientResult::Ok
     );
     window
@@ -484,7 +485,7 @@ fn run_line(client: *mut PhuxClient, terminal: &PhuxResourceId, command: &str) -
     clippy::too_many_lines,
     reason = "one retained-handle server-restart scenario"
 )]
-fn retained_handle_recovers_workspace_catalog_and_seed_terminal_after_restart() {
+fn retained_handle_recovers_arrangement_catalog_and_seed_terminal_after_restart() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket = tmp.path().join("phux.sock");
@@ -548,13 +549,23 @@ fn retained_handle_recovers_workspace_catalog_and_seed_terminal_after_restart() 
                 unsafe { phux_client_queue_attach(client.0, &raw const attach) },
                 PhuxClientResult::Ok
             );
-            poll_until(client.0, "fresh workspace metadata and catalog", || {
-                let info = workspace_info(client.0);
-                info.revision > previous_revision && info.state == 1 && info.status == 2
+            poll_until(client.0, "fresh arrangement metadata and catalog", || {
+                let info = arrangement_info(client.0);
+                info.revision > previous_revision
+                    && info.state == PHUX_ARRANGEMENT_STATE_AUTHORITATIVE
+                    && info.status == 2
             })
             .await;
-            let info = workspace_info(client.0);
-            assert_eq!((info.window_count, info.terminal_count), (1, 1));
+            let info = arrangement_info(client.0);
+            assert_eq!(
+                info.backend, PHUX_ARRANGEMENT_BACKEND_ORGANIZATION,
+                "every session has a stored arrangement from creation"
+            );
+            assert_eq!(
+                (info.group_count, info.unarranged_count, info.terminal_count),
+                (1, 0, 1),
+                "the server arranges the launched seed terminal in one group"
+            );
             let mut catalog = PhuxCatalogTerminal::default();
             let mut listed_session = PhuxSessionInfo::default();
             // SAFETY: live client and initialized disjoint outputs.
@@ -573,7 +584,11 @@ fn retained_handle_recovers_workspace_catalog_and_seed_terminal_after_restart() 
             assert_eq!(terminal.kind, 0);
             if let Some(previous) = previous_terminal {
                 assert_eq!(terminal.id, previous, "restart reuses the seed resource ID");
-                assert_ne!(copy_span(workspace_window(client.0).name), "retired-layout");
+                assert_ne!(
+                    copy_span(arrangement_window(client.0).name),
+                    "retired-layout",
+                    "the old server's arrangement retired with it"
+                );
             }
             let marker = format!("FFI_RECOVERY_{generation}");
             // The full marker is absent from the shell command itself, so
@@ -589,38 +604,40 @@ fn retained_handle_recovers_workspace_catalog_and_seed_terminal_after_restart() 
             .await;
 
             if generation == 1 {
-                let window = workspace_window(client.0);
-                let mutation = PhuxWorkspaceMutation {
+                let mutation = PhuxArrangementMutation {
                     request_id: 1,
                     expected_revision: info.revision,
                     session_id: info.session_id,
                     kind: 6,
-                    window_id: window.window_id,
+                    group_id: arrangement_window(client.0).group_id,
                     name: span("retired-layout"),
-                    ..PhuxWorkspaceMutation::default()
+                    ..PhuxArrangementMutation::default()
                 };
                 // SAFETY: readable mutation and live exclusively accessed client.
                 assert_eq!(
-                    unsafe { phux_client_workspace_mutate(client.0, &raw const mutation) },
+                    unsafe { phux_client_arrangement_mutate(client.0, &raw const mutation) },
                     PhuxClientResult::Ok
                 );
-                poll_until(client.0, "confirmed old-server workspace", || {
-                    let info = workspace_info(client.0);
+                poll_until(client.0, "confirmed old-server arrangement", || {
+                    let info = arrangement_info(client.0);
                     info.state == 2 && info.status == 2
                 })
                 .await;
-                assert_eq!(copy_span(workspace_window(client.0).name), "retired-layout");
+                assert_eq!(
+                    copy_span(arrangement_window(client.0).name),
+                    "retired-layout"
+                );
             }
             if generation == 1 {
                 // Never poll this read's replies. Even if they reach the socket,
                 // the binding transaction is interrupted across server restart.
                 // SAFETY: live client on its owning thread.
                 assert_eq!(
-                    unsafe { phux_client_workspace_refresh(client.0, 2) },
+                    unsafe { phux_client_arrangement_refresh(client.0, 2) },
                     PhuxClientResult::Ok
                 );
             }
-            previous_revision = workspace_info(client.0).revision;
+            previous_revision = arrangement_info(client.0).revision;
             previous_terminal = Some(terminal.id);
             drop(shutdown);
             tokio::time::timeout(DEADLINE, server)

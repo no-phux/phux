@@ -81,11 +81,13 @@ subscriptions. Missing status reads as unknown, not as an error.
 
 An untitled tab uses the live working directory's basename (`/` for root)
 before the attach catalog's name. `EXITED` with reason `Exited` or `Killed`
-closes the pane; other reasons retain their existing handling. Natural
-`exit` of a session's last shell does not publish `EXITED`: the server
-replaces the child in place. Closing the last pane of a keep-empty session
-shows Empty session (ADR-0114); otherwise the window closes. Closing the
-last window quits. These outcomes do not depend on whether the close event
+closes the pane; other reasons retain their existing handling. A shell's
+`exit` removes its terminal, and nothing is respawned
+([ADR-0162](../adr/0162-organization-records-persist-and-activations-reconcile.md)).
+When a persistent session loses its last pane, Cockpit shows Empty session;
+an ephemeral session is deleted and its window closes
+([ADR-0160](../adr/0160-sessions-own-resources-and-window-is-retired.md)).
+Closing the last window quits. These outcomes do not depend on whether the close event
 or workspace snapshot arrives first.
 
 Command boundaries determine `atPrompt()`. A command that ran for at least

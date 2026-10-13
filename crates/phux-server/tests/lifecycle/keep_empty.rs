@@ -1,7 +1,12 @@
-//! ADR-0105/0114/0129: a keep-empty session survives its last window, and
-//! every session removal path cleans up its layout keys. Each server keeps a
-//! pre-seeded `anchor` session, so these assertions are about the session,
-//! not the server's own last-session exit (`server_self_exit.rs`).
+//! ADR-0160 session lifetime through the legacy keep-empty surface: the
+//! `phux.session.keep_empty/v1` mark and a create's `keep_empty`/`empty`
+//! flags are translated into `SessionLifetime` commits (`true` persistent,
+//! a bare create ephemeral). A persistent session survives its last
+//! resource, an ephemeral one is deleted with it, a legacy group kill keeps
+//! its destructive meaning, and every path that empties or deletes a
+//! session cleans up its layout keys. Each server keeps a pre-seeded,
+//! persistent `anchor` session, so these assertions are about the session,
+//! not the server's own exit.
 
 use phux_protocol::ids::{GroupId, ResourceId};
 use phux_protocol::wire::frame::{
@@ -145,9 +150,9 @@ fn close_tab_leaves_keep_empty_visible_until_the_mark_is_cleared() {
     });
 }
 
-/// The reap cascade stops at a keep-empty session when its last pane dies;
-/// a default session goes with its pane; a `KILL_RESOURCES` naming every
-/// pane of a keep-empty session is a group teardown that removes it.
+/// A persistent session survives its last pane's death; an ephemeral one
+/// (a bare create) is deleted with it; a `KILL_RESOURCES` naming every pane
+/// of a persistent session is a group teardown that deletes it.
 #[test]
 fn reaps_stop_at_keep_empty_sessions_except_a_group_kill() {
     phux_server_testkit::run_local(async {
@@ -178,10 +183,10 @@ fn reaps_stop_at_keep_empty_sessions_except_a_group_kill() {
     });
 }
 
-/// Every way a session loses its last window or goes away deletes the
+/// Every way a session loses its last resource or goes away deletes the
 /// `<prefix>.layout/v1/<id>` keys naming it (L3 §3.2/§3.5): the default TUI
-/// key and a named projection alike, whether the session is keep-empty
-/// (window closes), ordinary (reaped), or parked and then cleared.
+/// key and a named projection alike, whether the session is persistent
+/// (emptied), ephemeral (deleted), or parked and then made ephemeral.
 #[test]
 fn every_removal_path_deletes_the_sessions_layout_keys() {
     phux_server_testkit::run_local(async {
@@ -229,7 +234,7 @@ fn every_removal_path_deletes_the_sessions_layout_keys() {
         }
 
         // A key written while `kept` sits parked goes when the cleared mark
-        // reaps it through `reap_session_if_empty`.
+        // makes it ephemeral, which deletes the empty session.
         let parked_write = FrameKind::SetMetadata {
             request_id: 40,
             scope: scope.clone(),
@@ -278,7 +283,15 @@ fn empty_sessions_are_created_attached_filled_and_cleared() {
         let snapshot = state(&mut conn, 2).await;
         let parked = session(&snapshot, "parked").unwrap();
         assert!(parked.keep_empty && parked.is_empty() && parked.window_count == 0);
-        assert!(!session(&snapshot, ANCHOR).unwrap().keep_empty);
+        assert!(
+            session(&snapshot, ANCHOR).unwrap().keep_empty,
+            "the named seed is persistent"
+        );
+        assert_eq!(
+            session(&snapshot, "parked").unwrap().lifetime,
+            Some(phux_protocol::wire::frame::SessionLifetime::Persistent),
+            "the legacy facet and the lifetime agree"
+        );
 
         let body = serde_json::json!({
             "name": "confused",

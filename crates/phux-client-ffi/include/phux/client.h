@@ -9,7 +9,14 @@
 extern "C" {
 #endif
 
-#define PHUX_CLIENT_ABI_VERSION 2u
+#define PHUX_CLIENT_ABI_VERSION 3u
+/* Version 3 (the domain model): every PhuxWorkspace* record and function is
+ * now PhuxArrangement* (window fields are group fields), the shared
+ * arrangement is a compare-and-swap of the session's stored arrangement,
+ * PhuxResourceInfo gained trailing fields, session creation takes a
+ * PhuxSessionLifetime, and the organization section below is new.
+ * PhuxSessionInfo is frozen: PhuxSessionRecord carries what it lacks. Every
+ * sized record still requires version == PHUX_CLIENT_ABI_VERSION. */
 /* Additive members of an open enum (PhuxClientStatusKind, PhuxClientDamageKind,
  * PhuxClientAgentRecordsKind, and similarly documented "additive" kinds) do
  * not bump this version: a host must already tolerate a member it does not
@@ -325,7 +332,10 @@ typedef struct PhuxResourceId {
     PhuxBytes host;
 } PhuxResourceId;
 
-/** Borrowed server-owned session summary from the latest ATTACHED snapshot. */
+/** Borrowed server-owned session summary from the latest ATTACHED snapshot.
+ * Frozen at its version 2 layout: window_count is the legacy count (one per
+ * non-empty session); read PhuxSessionRecord at the same index for keys,
+ * lifetime, revision, members, and state counts. */
 typedef struct PhuxSessionInfo {
     uint32_t session_id;
     PhuxBytes name;
@@ -355,7 +365,10 @@ typedef enum PhuxResourceKind {
  * terminal-facet calls with PHUX_CLIENT_INVALID_STATE. parent is NULL when the
  * resource has no parent, otherwise it borrows bridge storage until the next
  * mutable call. provider/native_id/state are UTF-8 spans, empty for kinds
- * without an agent facet.
+ * without an agent facet. session_id is the live session it belongs to (0
+ * when the snapshot names none); cols/rows its grid (0 for kinds without
+ * one); key its persistent ResourceKey from the organization replica, all
+ * zero when unknown.
  */
 typedef struct PhuxResourceInfo {
     size_t size;
@@ -366,6 +379,10 @@ typedef struct PhuxResourceInfo {
     PhuxBytes provider;
     PhuxBytes native_id;
     PhuxBytes state;
+    uint32_t session_id;
+    uint16_t cols;
+    uint16_t rows;
+    uint8_t key[16];
 } PhuxResourceInfo;
 
 typedef struct PhuxClientOptions {
@@ -418,7 +435,7 @@ typedef struct PhuxAttachOptions {
 
 /** Initialize size = sizeof(struct), version = PHUX_CLIENT_ABI_VERSION.
  * Request IDs are in 1..0x7fffffff and strictly increasing across
- * spawn/attach/detach-terminal and workspace refresh/mutation calls for this
+ * spawn/attach/detach-terminal and arrangement refresh/mutation calls for this
  * client, including after results are cleared. Validation failure
  * does not consume an ID. All operations require completed session ATTACH.
  * Pending requests plus retained completions are bounded by MAX_OPERATIONS;
@@ -494,7 +511,10 @@ typedef enum PhuxOperationStatus {
 typedef enum PhuxOperationErrorDomain {
     PHUX_OPERATION_ERROR_NONE = 0,
     PHUX_OPERATION_ERROR_SPAWN = 1,
-    PHUX_OPERATION_ERROR_PROTOCOL = 2
+    PHUX_OPERATION_ERROR_PROTOCOL = 2,
+    /* error_code is a PhuxOrgRefusal: an organization command (a close sent
+     * as RESOURCE_TERMINATE) was refused. */
+    PHUX_OPERATION_ERROR_ORGANIZATION = 3
 } PhuxOperationErrorDomain;
 
 /** Initialize size/version before operation_get. Success is command acceptance,
@@ -965,43 +985,92 @@ PhuxClientResult phux_client_disconnect(PhuxClient *client);
 PhuxClientResult phux_client_feed_frame(PhuxClient *client, const uint8_t *data, size_t len);
 size_t phux_client_session_count(const PhuxClient *client);
 PhuxClientResult phux_client_session_get(const PhuxClient *client, size_t index, PhuxSessionInfo *out_session);
-/* Read-only resource catalog from the latest accepted ATTACHED or workspace
- * GET_STATE (see PhuxResourceInfo). Workspace refresh subscribes AgentSession
+/* Read-only resource catalog from the latest accepted ATTACHED or arrangement
+ * GET_STATE (see PhuxResourceInfo). Arrangement refresh subscribes AgentSession
  * streams independently of terminal replica admission.
  * Zero before ATTACHED or for an invalid client. Spans borrowed until the next
  * mutable call. */
 size_t phux_client_resource_count(const PhuxClient *client);
 PhuxClientResult phux_client_resource_get(const PhuxClient *client, size_t index, PhuxResourceInfo *out_resource);
-/* Rust-owned shared topology, ABI version 1. All output records require initialized
+/* ------------------------------------------------- shared arrangement
+ *
+ * The attached session's arrangement: its groups (tabs), each one split tree
+ * of terminal leaves. Rust-owned. All output records require initialized
  * size/version. Borrowed names/IDs expire on the next mutable client call.
- * Catalog bounds: 256 sessions, 256 terminals; topology: 32 windows, 512 nodes,
- * depth 64. Names/title/cwd/host are bounded to 4096 UTF-8 bytes (refusal, no truncation).
- * Registry window IDs are NOT these durable 128-bit layout window IDs.
- * Initial attachment exposes catalog only (state 0) until metadata/state replies
- * complete. Only confirmed metadata absence yields fallback. Present layouts
- * require schema v3 and stable IDs; unsupported stored data is refused, not reset.
- * No focus is shared; clients preserve their own selection by stable IDs. */
-typedef struct PhuxWorkspaceInfo {
+ * Catalog bounds: 256 sessions, 256 terminals; arrangement: 32 groups, 512
+ * nodes, depth 64. Names/title/cwd/host are bounded to 4096 UTF-8 bytes
+ * (refusal, no truncation). Group IDs are random 128-bit identities, stable
+ * while the group exists.
+ *
+ * An arrangement is presentation only. It never decides what a session
+ * holds: closing a view never ends work, and an empty arrangement means the
+ * members are not arranged, not that the session is empty. Nothing is
+ * synthesized when a session has no stored arrangement (state UNARRANGED,
+ * zero groups); unarranged_count says how many of its terminals no group
+ * shows, so a host can offer to arrange them.
+ *
+ * Backend ORGANIZATION (the server advertised ORGANIZATION and the session
+ * has a stored arrangement): reads are ARRANGEMENT_GET; a mutation is a
+ * compare-and-swap ARRANGEMENT_REPLACE at server_revision, followed by a
+ * confirming read. A concurrent writer makes it fail (status REFUSED, the
+ * message names the current revision) and the confirming read publishes the
+ * winner; redo the edit against it. It is never last-write-wins. Stored
+ * entries whose resource has no live handle here are kept on write
+ * (unplaced_count). The client follows the stored arrangement through the
+ * organization replica and re-reads it on its own (request_id 0) when it
+ * moves past server_revision.
+ *
+ * Backend LEGACY (no ORGANIZATION, or no stored arrangement yet): the
+ * phux.tui.layout/v1/<session-id> metadata value, written by whole-value
+ * last-write-wins SET and a confirming GET; expected_revision fences only
+ * this client's snapshot. An ORGANIZATION server creates the stored
+ * arrangement from that first write.
+ *
+ * Initial attachment exposes catalog only (state UNAVAILABLE) until the
+ * document/state replies complete. Present legacy layouts require schema v3
+ * and stable IDs; unsupported stored data is refused, not reset. No focus is
+ * shared; clients preserve their own selection by stable IDs. */
+#define PHUX_ARRANGEMENT_STATE_UNAVAILABLE 0u
+#define PHUX_ARRANGEMENT_STATE_UNARRANGED 1u
+#define PHUX_ARRANGEMENT_STATE_AUTHORITATIVE 2u
+#define PHUX_ARRANGEMENT_STATE_LAST_GOOD_WITH_ERROR 3u
+#define PHUX_ARRANGEMENT_BACKEND_NONE 0u
+#define PHUX_ARRANGEMENT_BACKEND_LEGACY 1u
+#define PHUX_ARRANGEMENT_BACKEND_ORGANIZATION 2u
+typedef struct PhuxArrangementInfo {
     size_t size;
     uint32_t version;
+    /* This client's publication counter: bumps on any published change. */
     uint64_t revision;
     uint32_t session_id;
-    /* state: 0 unavailable, 1 fallback, 2 authoritative, 3 last-good with error. */
+    /* PHUX_ARRANGEMENT_STATE_* */
     uint32_t state;
-    uint32_t window_count, node_count, terminal_count;
+    uint32_t group_count, node_count, terminal_count;
     /* Latest refresh/mutation: 0 idle, 1 pending, 2 confirmed, 3 refused,
-     * 4 disconnected/unknown outcome. request_id=0 is automatic initial read. */
+     * 4 disconnected/unknown outcome. request_id=0 is an automatic read. */
     uint32_t request_id, status;
     PhuxBytes message;
-} PhuxWorkspaceInfo;
-typedef struct PhuxWorkspaceWindow {
+    /* PHUX_ARRANGEMENT_BACKEND_* the publication came from. */
+    uint32_t backend;
+    /* The stored arrangement's revision (what a replace expects); 0 for LEGACY. */
+    uint64_t server_revision;
+    /* The selected session's key and its stored arrangement's key; all zero
+     * when unknown or absent. */
+    uint8_t session_key[16];
+    uint8_t arrangement_key[16];
+    /* Terminals of the session no group shows; stored entries without a live
+     * handle here. */
+    uint32_t unarranged_count;
+    uint32_t unplaced_count;
+} PhuxArrangementInfo;
+typedef struct PhuxArrangementGroup {
     size_t size;
     uint32_t version;
-    uint8_t window_id[16];
+    uint8_t group_id[16];
     PhuxBytes name;
     uint32_t root_node;
-} PhuxWorkspaceWindow;
-typedef struct PhuxWorkspaceNode {
+} PhuxArrangementGroup;
+typedef struct PhuxArrangementNode {
     size_t size;
     uint32_t version;
     /* leaf=1, side-by-side=2, stacked=3; child indices are snapshot-global. */
@@ -1009,7 +1078,7 @@ typedef struct PhuxWorkspaceNode {
     PhuxResourceId terminal_id;
     uint32_t first, second;
     float ratio;
-} PhuxWorkspaceNode;
+} PhuxArrangementNode;
 typedef struct PhuxCatalogTerminal {
     size_t size;
     uint32_t version;
@@ -1018,17 +1087,18 @@ typedef struct PhuxCatalogTerminal {
     uint32_t session_id;
     PhuxBytes title, cwd;
 } PhuxCatalogTerminal;
-typedef struct PhuxWorkspaceMutation {
+typedef struct PhuxArrangementMutation {
     size_t size;
     uint32_t version, request_id;
     uint64_t expected_revision;
     uint32_t session_id;
-    /* add=1, split=2, remove presentation=3, reorder=4, resize=5, rename=6,
-     * remove entire window presentation=7. Neither removal kills terminals.
-     * Kind 3 refuses the last pane, repairs focus, and prunes empty windows. */
+    /* add group=1, split=2, close view=3, reorder=4, resize=5, rename=6,
+     * close group=7. Closing a view or a group never ends work: the
+     * terminals keep running and stay members of the session.
+     * Kind 3 refuses the last pane, repairs focus, and prunes empty groups. */
     uint32_t kind;
-    uint8_t window_id[16];
-    /* add: terminal_id seeds a Rust-minted ID (window_id ignored).
+    uint8_t group_id[16];
+    /* add: terminal_id seeds a Rust-minted group ID (group_id ignored).
      * split: terminal_id is target, new_terminal_id is the new sibling. */
     PhuxResourceId terminal_id, new_terminal_id;
     PhuxBytes name;
@@ -1039,19 +1109,20 @@ typedef struct PhuxWorkspaceMutation {
     /* Root-to-split path, low bit first: 0 first child, 1 second child. */
     uint32_t path_len;
     uint64_t path_bits;
-} PhuxWorkspaceMutation;
+} PhuxArrangementMutation;
 /* Host request IDs across spawn/subscribe/refresh/mutate/named-projection
  * must strictly increase, 1..0x7fffffff. The bridge reserves the upper half for internal correlation.
- * One refresh OR mutation may be pending. Poll <=1s and before palette display.
- * Refresh never changes the actual attached session or allocates emulators.
- * Mutation is whole-value LWW SET followed by GET confirmation, NOT CAS:
- * expected_revision fences this client's snapshot, not concurrent server writers.
- * Adopt only the confirmed current snapshot; never retry unknown spawns. */
-PhuxClientResult phux_client_workspace_refresh(PhuxClient *client, uint32_t request_id);
-PhuxClientResult phux_client_workspace_mutate(PhuxClient *client, const PhuxWorkspaceMutation *mutation);
-PhuxClientResult phux_client_workspace_info(const PhuxClient *client, PhuxWorkspaceInfo *out_info);
-PhuxClientResult phux_client_workspace_window_get(const PhuxClient *client, size_t index, PhuxWorkspaceWindow *out_window);
-PhuxClientResult phux_client_workspace_node_get(const PhuxClient *client, size_t index, PhuxWorkspaceNode *out_node);
+ * One refresh OR mutation may be pending. Refresh never changes the actual
+ * attached session or allocates emulators. expected_revision is
+ * PhuxArrangementInfo.revision: it fences this client's snapshot; the server
+ * fences concurrent writers by compare-and-swap on the ORGANIZATION backend
+ * only (see above). Adopt only the confirmed current snapshot; never retry
+ * unknown spawns. On the LEGACY backend, poll <=1s and before palette display. */
+PhuxClientResult phux_client_arrangement_refresh(PhuxClient *client, uint32_t request_id);
+PhuxClientResult phux_client_arrangement_mutate(PhuxClient *client, const PhuxArrangementMutation *mutation);
+PhuxClientResult phux_client_arrangement_info(const PhuxClient *client, PhuxArrangementInfo *out_info);
+PhuxClientResult phux_client_arrangement_group_get(const PhuxClient *client, size_t index, PhuxArrangementGroup *out_group);
+PhuxClientResult phux_client_arrangement_node_get(const PhuxClient *client, size_t index, PhuxArrangementNode *out_node);
 PhuxClientResult phux_client_catalog_terminal_get(const PhuxClient *client, size_t index, PhuxCatalogTerminal *out_terminal);
 
 /* Named projections (ADR-0129, docs/spec/L3.md section 3.5). Additive to ABI
@@ -1226,7 +1297,7 @@ PhuxClientResult phux_client_search_results_release(PhuxClient *client);
  * (0x00008000); otherwise PHUX_CLIENT_INVALID_STATE and nothing is queued,
  * because an older server drops the frame and a reply would never come.
  * request_id shares the strictly increasing host request space with spawn,
- * subscribe and workspace refresh/mutation. path is UTF-8 without NUL, at
+ * subscribe and arrangement refresh/mutation. path is UTF-8 without NUL, at
  * most 4096 bytes: empty or "~" for the serving user's home, "~/rest", or an
  * absolute path; the server normalizes it lexically and follows no symlinks.
  *
@@ -1454,15 +1525,22 @@ PhuxClientResult phux_client_operation_instance(const PhuxClient *client, size_t
 PhuxClientResult phux_client_queue_kill_if(PhuxClient *client, uint32_t request_id, const PhuxResourceId *terminal_id, const uint8_t instance[16]);
 
 /* Intentional termination of a current, live terminal owned by this ATTACH.
- * KILL_RESOURCE, or instance-only KILL_RESOURCE_IF when a bound spawn supplied
- * evidence. Satellite IDs REQUIRE bound-spawn instance evidence: otherwise
+ * Against a server that advertised ORGANIZATION whose records this client
+ * holds (PhuxOrganizationInfo.state LIVE), a local terminal is terminated by
+ * RESOURCE_TERMINATE of its current activation: the reply is ACCEPTED, not Ok,
+ * and a refusal reports error_domain PHUX_OPERATION_ERROR_ORGANIZATION with a
+ * PhuxOrgRefusal code (STALE when the activation is no longer current).
+ * Otherwise it is KILL_RESOURCE, or instance-only KILL_RESOURCE_IF when a bound
+ * spawn supplied evidence. Satellite IDs always take the kill path and REQUIRE
+ * bound-spawn instance evidence: otherwise
  * INVALID_STATE with last_error is returned before enqueue/ID consumption.
  * A hub connection alone cannot fence a satellite restart. The satellite must
  * evaluate the unchanged instance precondition or the relay returns refusal.
  * This does not weaken abandoned-spawn cleanup above. Result kind 5
  * reports correlated success/refusal/unknown outcome. SUCCESS is published only
- * after this exact Client has processed command Ok AND RESOURCE_CLOSED for the
- * captured terminal, in either order. Ok alone only acknowledges cancellation;
+ * after this exact Client has processed command Ok (ACCEPTED for a terminate)
+ * AND RESOURCE_CLOSED for the captured terminal, in either order. Ok alone
+ * only acknowledges cancellation;
  * it never produces a success receipt or fabricates replica retirement.
  * Disconnect while either proof is missing reports UNKNOWN_OUTCOME, including
  * after Ok. Clearing completed results leaves pending close evidence intact.
@@ -1484,35 +1562,43 @@ PhuxClientResult phux_client_queue_close_resource(PhuxClient *client, uint32_t r
  * batch has no instance precondition; never move it to another connection. */
 PhuxClientResult phux_client_queue_close_resources(PhuxClient *client, uint32_t request_id, const PhuxResourceId *terminal_ids, size_t count);
 
-/* Same validations, fence, and kind-6 completion as queue_close_resources, but
- * the wire command is CLOSE_TAB_RESOURCES (L1 §5.2.2): a full-coverage batch
- * leaves a keep-empty named session empty instead of reaping it. End Session
- * and phux kill SESSION keep queue_close_resources / KILL_RESOURCES. */
+/* Same validations, fence, and kind-6 completion as queue_close_resources.
+ * Against an ORGANIZATION server whose records this client holds for every
+ * ID, each terminal is terminated on its own (RESOURCE_TERMINATE: the first
+ * on request_id, the rest on bridge-internal ids); SUCCESS needs every
+ * ACCEPTED and every RESOURCE_CLOSED, and the first refusal settles the
+ * request REFUSED (domain ORGANIZATION). It is not atomic; a session's
+ * lifetime, not this call, decides whether an emptied session stays.
+ * Otherwise the wire command is CLOSE_TAB_RESOURCES (L1 §5.2.2): a
+ * full-coverage batch leaves a persistent session empty instead of reaping
+ * it. Ending a whole session is phux_client_kill_session (organization
+ * section) against an ORGANIZATION server, else queue_close_resources. */
 PhuxClientResult phux_client_queue_close_tab_resources(PhuxClient *client, uint32_t request_id, const PhuxResourceId *terminal_ids, size_t count);
 /** *out_supported: HELLO_OK advertised CLOSE_TAB_RESOURCES. */
 PhuxClientResult phux_client_close_tab_resources_supported(const PhuxClient *client, bool *out_supported);
 /** *out_supported: HELLO_OK advertised CONDITIONAL_KILL. */
 PhuxClientResult phux_client_conditional_kill_supported(const PhuxClient *client, bool *out_supported);
 
-/* ------------------------------------------------ keep-empty sessions
+/* ------------------------------------------------ persistent sessions
  *
- * ADR-0105: a keep-empty session survives its last window. The mark rides
- * the ATTACHED and GET_STATE snapshots' trailing keep-empty list
- * (docs/spec/L1.md section 9.1), after the resource facets and the hosts
- * inventory. Additive to ABI version 2; PhuxSessionInfo is unchanged.
+ * A session's lifetime decides whether it survives its last member:
+ * PERSISTENT does, EPHEMERAL is deleted with it (the legacy keep-empty mark
+ * is lifetime PERSISTENT). PhuxSessionRecord.lifetime carries it; these
+ * flags remain for hosts that read only PhuxSessionInfo.
  *
  * phux_client_session_flags reads the flags of the session
- * phux_client_session_get reads at the same index: KEEP_EMPTY for a marked
- * session, and EMPTY as well when it holds no windows. Both are reported
- * only when HELLO_OK advertised KEEP_EMPTY_SESSIONS (0x00020000); from any
- * other server every session reads 0, so a window_count of 0 there is not a
+ * phux_client_session_get reads at the same index: KEEP_EMPTY for a
+ * persistent session, and EMPTY as well when it has no members (from a
+ * server that reports lifetimes) or no windows (from an older one that
+ * advertised KEEP_EMPTY_SESSIONS, 0x00020000). From a server that reports
+ * neither, every session reads 0, so a window_count of 0 there is not a
  * claim that a session is empty. INVALID_ARGUMENT for an index at or past
  * phux_client_session_count or a null output. */
 #define PHUX_SESSION_FLAG_KEEP_EMPTY 0x1u
 #define PHUX_SESSION_FLAG_EMPTY 0x2u
 
 PhuxClientResult phux_client_session_flags(const PhuxClient *client, size_t index, uint32_t *out_flags);
-/** *out_supported: HELLO_OK advertised KEEP_EMPTY_SESSIONS. */
+/** *out_supported: HELLO_OK advertised KEEP_EMPTY_SESSIONS or ORGANIZATION. */
 PhuxClientResult phux_client_keep_empty_supported(const PhuxClient *client, bool *out_supported);
 
 /* ------------------------------------------------------- session rename
@@ -1538,7 +1624,15 @@ PhuxClientResult phux_client_keep_empty_supported(const PhuxClient *client, bool
  * when it moves. request_id shares the strictly increasing host request
  * space and is consumed by every accepted call, a refused one included. Both
  * names are UTF-8 without NUL, 1..4096 bytes (INVALID_ARGUMENT otherwise).
- * One rename may be PENDING (INVALID_STATE otherwise). */
+ * One rename may be PENDING (INVALID_STATE otherwise).
+ *
+ * Against a server that advertised ORGANIZATION whose records this client
+ * holds, a rename that must be sent is instead one typed SESSION_RENAME at
+ * the session record's revision, through the runtime's operation journal
+ * (request_id is consumed but not put on the wire): the commit settles it
+ * RENAMED, a refusal REFUSED with its sentence, an unresolvable outcome
+ * UNKNOWN_OUTCOME. A rename from another client arrives through the
+ * organization records and moves sessions_revision the same way. */
 typedef enum PhuxSessionRenameStatus {
     PHUX_SESSION_RENAME_NONE = 0,
     PHUX_SESSION_RENAME_PENDING = 1,
@@ -1564,17 +1658,28 @@ typedef struct PhuxSessionRenameInfo {
 PhuxClientResult phux_client_rename_session(PhuxClient *client, uint32_t request_id, PhuxBytes current, PhuxBytes new_name);
 PhuxClientResult phux_client_session_rename_info(const PhuxClient *client, PhuxSessionRenameInfo *out_info);
 
-/* Create an empty durable session on this exact negotiated connection, using
- * the CLI's nonce-correlated session-create operation. keep_empty must be true;
- * a server without KEEP_EMPTY_SESSIONS is refused before any write. No ATTACH
- * is sent and the current session remains selected. request_id shares the
- * monotonic operation namespace. Names are UTF-8, 1..240 bytes, no controls. */
-PhuxClientResult phux_client_create_session(PhuxClient *client, uint32_t request_id, PhuxBytes name, bool keep_empty);
+/* Create a session on this exact negotiated connection. lifetime is a
+ * PhuxSessionLifetime (PERSISTENT or EPHEMERAL; anything else is
+ * INVALID_ARGUMENT). No ATTACH is sent and the current session remains
+ * selected. request_id shares the monotonic operation namespace. Names are
+ * UTF-8, 1..240 bytes, no controls.
+ *
+ * Against a server that advertised ORGANIZATION whose records this client
+ * holds: one typed SESSION_CREATE through the runtime's operation journal. A
+ * PERSISTENT session without a directory is created empty; an EPHEMERAL one
+ * always launches its first shell (it is never empty). On commit an ordered
+ * GET_STATE binds the created key to its live session_id.
+ *
+ * Otherwise: the CLI's nonce-correlated keep-empty metadata operation. Only
+ * PERSISTENT is possible there, and a server without KEEP_EMPTY_SESSIONS is
+ * refused before any write (INVALID_STATE). */
+PhuxClientResult phux_client_create_session(PhuxClient *client, uint32_t request_id, PhuxBytes name, uint32_t lifetime);
 
-/* Same as phux_client_create_session. A non-empty directory is the session
- * seed cwd (`cwd` in the create document). An empty directory stays an empty
- * session. The old function is unchanged. */
-PhuxClientResult phux_client_create_session_in(PhuxClient *client, uint32_t request_id, PhuxBytes name, PhuxBytes directory, bool keep_empty);
+/* Same as phux_client_create_session. A non-empty directory is the session's
+ * directory and launches its first shell there (`cwd` in the legacy create
+ * document). An empty directory is the same session as
+ * phux_client_create_session. */
+PhuxClientResult phux_client_create_session_in(PhuxClient *client, uint32_t request_id, PhuxBytes name, PhuxBytes directory, uint32_t lifetime);
 
 typedef struct PhuxSessionCreateInfo {
     size_t size;
@@ -1604,6 +1709,292 @@ PhuxClientResult phux_client_session_create_release(PhuxClient *client, uint32_t
  * once DETACHED. */
 PhuxClientResult phux_client_follow_session_names(PhuxClient *client);
 
+/* ---------------------------------------------------------- organization
+ *
+ * Sessions, resources, and the Inbox as the server's organization records
+ * them (docs/spec/L1.md section 5.7), when HELLO_OK advertised
+ * ORGANIZATION (features_ext 0x10). New in ABI version 3.
+ *
+ * On every connection that advertises it, the client reads the records
+ * (paged GET_ORGANIZATION) and then follows them through the event journal
+ * it subscribes to after ATTACH_READY; PhuxOrganizationInfo.state reports
+ * where that is, and revision moves whenever the records changed under this
+ * client. A standby client that never attaches sees the records as of its
+ * last phux_client_organization_refresh.
+ *
+ * Keys are 16 raw bytes; all zero means absent (no key is all zero). Their
+ * text form (key_text) is lowercase base32, accepted in full and shown as
+ * its shortest unique prefix of at least 6 characters.
+ *
+ * Every operation below takes a host request_id from the strictly
+ * increasing host request space and refuses with INVALID_STATE, nothing
+ * queued and no request ID consumed, unless ORGANIZATION was advertised and
+ * the records are LIVE, or when the records do not hold a named record. It
+ * carries a fresh operation id; after a reconnect inside the server's retry
+ * horizon the runtime resends it with the same id (connected lane), and past
+ * it the result settles UNKNOWN: reconcile from the records before acting
+ * again. Results are retained per request until released, together with
+ * pending ones bounded by PHUX_CLIENT_MAX_OPERATIONS. Each result names its
+ * targets: the resources it addressed, or for a session operation the
+ * session; a kill names the session first, then every member in membership
+ * order, so a partial outcome is never reported as one atomic result. */
+typedef enum PhuxSessionLifetime {
+    PHUX_SESSION_LIFETIME_UNKNOWN = 0,   /* a server that reports none */
+    PHUX_SESSION_LIFETIME_PERSISTENT = 1,
+    PHUX_SESSION_LIFETIME_EPHEMERAL = 2
+} PhuxSessionLifetime;
+
+/* An activation's execution state; NONE when the record never ran. */
+typedef enum PhuxExecState {
+    PHUX_EXEC_NONE = 0,
+    PHUX_EXEC_STARTING = 1,
+    PHUX_EXEC_RUNNING = 2,
+    PHUX_EXEC_STOPPING = 3,
+    PHUX_EXEC_COMPLETED = 4,
+    PHUX_EXEC_FAILED = 5,
+    PHUX_EXEC_LOST = 6,      /* may still run; remove and relaunch refuse */
+    PHUX_EXEC_ABANDONED = 7
+} PhuxExecState;
+
+/* How an activation ended: EXITED carries the exit status and SIGNALED the
+ * signal in outcome_code; UNOBSERVED ended while no server ran. */
+typedef enum PhuxOutcomeKind {
+    PHUX_OUTCOME_NONE = 0,
+    PHUX_OUTCOME_EXITED = 1,
+    PHUX_OUTCOME_SIGNALED = 2,
+    PHUX_OUTCOME_UNOBSERVED = 3,
+    PHUX_OUTCOME_OTHER = 4
+} PhuxOutcomeKind;
+
+/** Initialize size = sizeof(struct), version = PHUX_CLIENT_ABI_VERSION.
+ * state: 0 empty or unsupported, 1 reading, 2 LIVE, 3 stale (a journal gap;
+ * a re-read is in flight). authority and inbox are the authority key and its
+ * designated Inbox session's key. message is the last reason the records
+ * could not be read, empty otherwise; borrowed until the next mutable call. */
+typedef struct PhuxOrganizationInfo {
+    size_t size;
+    uint32_t version;
+    bool supported;
+    uint32_t state;
+    uint8_t authority[16];
+    uint8_t inbox[16];
+    uint64_t revision;
+    uint32_t record_count;
+    PhuxBytes message;
+} PhuxOrganizationInfo;
+
+PhuxClientResult phux_client_organization_supported(const PhuxClient *client, bool *out_supported);
+PhuxClientResult phux_client_organization_info(const PhuxClient *client, PhuxOrganizationInfo *out_info);
+/** Read the records again from the first page. INVALID_STATE without
+ * ORGANIZATION or before HELLO_OK. */
+PhuxClientResult phux_client_organization_refresh(PhuxClient *client);
+
+/* PhuxSessionRecord.flags */
+#define PHUX_SESSION_RECORD_FOCUSED 0x1u
+#define PHUX_SESSION_RECORD_AWAITING_ORGANIZATION 0x2u /* imported work in the Inbox */
+#define PHUX_SESSION_RECORD_INBOX 0x4u                 /* the designated Inbox session */
+#define PHUX_SESSION_RECORD_ORGANIZED 0x8u             /* the records hold this session */
+#define PHUX_SESSION_RECORD_EMPTY 0x10u
+
+/** The full record of the session phux_client_session_get reads at the same
+ * index. Initialize size/version. key and lifetime come from the snapshot or
+ * the records; revision, arrangement_key, and the state counts only with
+ * PHUX_SESSION_RECORD_ORGANIZED (zero otherwise). member_count counts every
+ * member of every kind (from the snapshot without ORGANIZED). running_count
+ * covers STARTING/RUNNING/STOPPING, completed_count COMPLETED/FAILED/
+ * ABANDONED, lost_count LOST. The Inbox a host shows is the INBOX session
+ * plus every AWAITING_ORGANIZATION session, with their members. Spans are
+ * borrowed until the next mutable call. */
+typedef struct PhuxSessionRecord {
+    size_t size;
+    uint32_t version;
+    uint32_t session_id;
+    uint8_t key[16];
+    uint8_t arrangement_key[16];
+    uint64_t revision;
+    int64_t created_at_unix_secs;
+    uint32_t lifetime;          /* PhuxSessionLifetime */
+    uint32_t flags;             /* PHUX_SESSION_RECORD_* */
+    uint32_t member_count;
+    uint32_t running_count;
+    uint32_t completed_count;
+    uint32_t lost_count;
+    uint16_t attached_client_count;
+    PhuxBytes name;
+    PhuxBytes key_text;
+} PhuxSessionRecord;
+
+PhuxClientResult phux_client_session_record_get(const PhuxClient *client, size_t index, PhuxSessionRecord *out_record);
+
+/** One resource record, live or not: a completed resource whose exit policy
+ * retains it, or a LOST activation, has no live handle (live false) but is
+ * still a member of its session. kind is the wire ResourceKind tag. on_exit
+ * is 0 remove, 1 retain. session_id is the live handle of its session, 0
+ * when that session has none here. Initialize size/version. Spans and
+ * live_id.host are borrowed until the next mutable call. */
+typedef struct PhuxResourceRecord {
+    size_t size;
+    uint32_t version;
+    uint32_t kind;
+    uint8_t key[16];
+    uint8_t session_key[16];
+    uint64_t revision;
+    uint64_t activation_id;     /* 0: never activated */
+    uint32_t exec_state;        /* PhuxExecState */
+    uint32_t outcome_kind;      /* PhuxOutcomeKind */
+    int32_t outcome_code;
+    uint32_t on_exit;
+    bool live;
+    PhuxResourceId live_id;
+    uint32_t session_id;
+    PhuxBytes name;
+    PhuxBytes key_text;
+} PhuxResourceRecord;
+
+size_t phux_client_record_count(const PhuxClient *client);
+PhuxClientResult phux_client_record_get(const PhuxClient *client, size_t index, PhuxResourceRecord *out_record);
+
+typedef enum PhuxOrgKind {
+    PHUX_ORG_MOVE = 1,
+    PHUX_ORG_MOVE_MANY = 2,
+    PHUX_ORG_TERMINATE = 3,
+    PHUX_ORG_REMOVE = 4,
+    PHUX_ORG_RELAUNCH = 5,
+    PHUX_ORG_DELETE_SESSION = 6,
+    PHUX_ORG_SET_LIFETIME = 7,
+    PHUX_ORG_INBOX_RESOLVE = 8,
+    PHUX_ORG_UNDO = 9,
+    PHUX_ORG_KILL_SESSION = 10
+} PhuxOrgKind;
+
+/* COMMITTED: the edit is recorded. ACCEPTED: a terminate was accepted; its
+ * end arrives as a record change (exec_state). PARTIAL: some targets took
+ * effect and some did not. UNKNOWN: it may have reached the server;
+ * reconcile before acting again. NOT_SENT: it never reached a socket. */
+typedef enum PhuxOrgStatus {
+    PHUX_ORG_PENDING = 1,
+    PHUX_ORG_COMMITTED = 2,
+    PHUX_ORG_ACCEPTED = 3,
+    PHUX_ORG_REFUSED = 4,
+    PHUX_ORG_ERROR = 5,
+    PHUX_ORG_UNKNOWN = 6,
+    PHUX_ORG_NOT_SENT = 7,
+    PHUX_ORG_PARTIAL = 8
+} PhuxOrgStatus;
+
+/* The wire refusal, plus one. CONFLICT means a record changed meanwhile
+ * (conflict_revision names its revision now); NOT_EMPTY that work arrived in
+ * a session being deleted; EXECUTION_UNCERTAIN that a LOST activation blocks
+ * a remove or relaunch. */
+typedef enum PhuxOrgRefusal {
+    PHUX_ORG_REFUSAL_NONE = 0,
+    PHUX_ORG_REFUSAL_UNAUTHORIZED = 1,
+    PHUX_ORG_REFUSAL_NOT_FOUND = 2,
+    PHUX_ORG_REFUSAL_CONFLICT = 3,
+    PHUX_ORG_REFUSAL_STALE = 4,
+    PHUX_ORG_REFUSAL_NOT_EMPTY = 5,
+    PHUX_ORG_REFUSAL_UNSUPPORTED = 6,
+    PHUX_ORG_REFUSAL_INVALID_ARGUMENT = 7,
+    PHUX_ORG_REFUSAL_NAME_TAKEN = 8,
+    PHUX_ORG_REFUSAL_EXECUTION_UNCERTAIN = 9,
+    PHUX_ORG_REFUSAL_LEASE_HELD = 10,
+    PHUX_ORG_REFUSAL_DUPLICATE_OPERATION = 11,
+    PHUX_ORG_REFUSAL_STORE_FAILURE = 12,
+    PHUX_ORG_REFUSAL_OTHER = 255
+} PhuxOrgRefusal;
+
+/* KEPT: a member could not be removed, so the session delete was not sent.
+ * TIMED_OUT: it did not stop in time. NO_LIVE_TARGET: it executes on
+ * another server and cannot be terminated from here. */
+typedef enum PhuxOrgTargetStatus {
+    PHUX_ORG_TARGET_PENDING = 1,
+    PHUX_ORG_TARGET_DONE = 2,
+    PHUX_ORG_TARGET_ALREADY_GONE = 3,
+    PHUX_ORG_TARGET_REFUSED = 4,
+    PHUX_ORG_TARGET_UNKNOWN = 5,
+    PHUX_ORG_TARGET_TIMED_OUT = 6,
+    PHUX_ORG_TARGET_NO_LIVE_TARGET = 7,
+    PHUX_ORG_TARGET_KEPT = 8,
+    PHUX_ORG_TARGET_NOT_SENT = 9
+} PhuxOrgTargetStatus;
+
+/** Initialize size/version. kind PhuxOrgKind, status PhuxOrgStatus, refusal
+ * the first failing target's PhuxOrgRefusal. revision is the primary
+ * record's resulting revision for a single committed edit. undoable: a
+ * committed membership or intake edit (MOVE, MOVE_MANY, INBOX_RESOLVE) whose
+ * receipts this client holds. message is a sentence, never parsed; borrowed
+ * until the next mutable call. */
+typedef struct PhuxOrgResult {
+    size_t size;
+    uint32_t version;
+    uint32_t request_id;
+    uint32_t kind;
+    uint32_t status;
+    uint32_t refusal;
+    bool undoable;
+    uint64_t revision;
+    uint64_t conflict_revision;
+    uint32_t target_count;
+    PhuxBytes message;
+} PhuxOrgResult;
+
+/** Initialize size/version. key is a session key when is_session, else a
+ * resource key. status PhuxOrgTargetStatus. */
+typedef struct PhuxOrgTarget {
+    size_t size;
+    uint32_t version;
+    uint8_t key[16];
+    bool is_session;
+    uint32_t status;
+    uint32_t refusal;
+    PhuxBytes message;
+} PhuxOrgTarget;
+
+/* Every key argument points at 16 readable bytes. */
+/** Move one resource into another session: membership only, it keeps running. */
+PhuxClientResult phux_client_org_move(PhuxClient *client, uint32_t request_id, const uint8_t *resource, const uint8_t *to_session);
+/** Move 1..1024 distinct resources (count * 16 contiguous key bytes) into one
+ * session: one atomic batch per server-bounded chunk, each chunk's outcome
+ * on its own targets. */
+PhuxClientResult phux_client_org_move_many(PhuxClient *client, uint32_t request_id, const uint8_t *resources, size_t count, const uint8_t *to_session);
+/** End a resource's current activation here (graceful, or forced). ACCEPTED;
+ * the end arrives as the record's exec_state. */
+PhuxClientResult phux_client_org_terminate(PhuxClient *client, uint32_t request_id, const uint8_t *resource, bool force);
+/** Remove an inactive resource record. */
+PhuxClientResult phux_client_org_remove(PhuxClient *client, uint32_t request_id, const uint8_t *resource);
+/** Start a new activation of an inactive resource from its launch. */
+PhuxClientResult phux_client_org_relaunch(PhuxClient *client, uint32_t request_id, const uint8_t *resource);
+/** Delete an empty session; REFUSED NOT_EMPTY while it has members. */
+PhuxClientResult phux_client_org_delete_session(PhuxClient *client, uint32_t request_id, const uint8_t *session);
+/** Make a session PERSISTENT or EPHEMERAL; EPHEMERAL on an empty session deletes it. */
+PhuxClientResult phux_client_org_set_lifetime(PhuxClient *client, uint32_t request_id, const uint8_t *session, uint32_t lifetime);
+/** Clear an imported session's Inbox mark; its members and arrangement stay. */
+PhuxClientResult phux_client_org_inbox_resolve(PhuxClient *client, uint32_t request_id, const uint8_t *session);
+/** Undo the undoable result of original_request_id by its receipts (one undo
+ * per committed chunk). Refused by the server once the receipts expire or
+ * the records moved on; never reverses execution. Undo before releasing the
+ * original result. */
+PhuxClientResult phux_client_org_undo(PhuxClient *client, uint32_t request_id, uint32_t original_request_id);
+/** Kill a whole session: terminate each executing member, wait until each is
+ * inactive (forcing after half the wait), remove each, then delete the
+ * session at the revision the workflow last committed against. The member
+ * set is fixed now: work that arrives meanwhile survives and the delete
+ * reports NOT_EMPTY. COMMITTED when the session went away, PARTIAL when some
+ * members were removed and it stayed. */
+PhuxClientResult phux_client_kill_session(PhuxClient *client, uint32_t request_id, const uint8_t *session);
+/** Resolve operations past their retry horizon and time out kill workflows.
+ * The connected lane does this itself; an embedded host calls it while a
+ * result is PENDING, at the latest after *out_next_ms milliseconds
+ * (UINT64_MAX when nothing is due; out_next_ms may be NULL). */
+PhuxClientResult phux_client_expire_operations(PhuxClient *client, uint64_t *out_next_ms);
+
+/** Results in request-id order, pending ones included. */
+size_t phux_client_org_result_count(const PhuxClient *client);
+PhuxClientResult phux_client_org_result_get(const PhuxClient *client, size_t index, PhuxOrgResult *out_result);
+PhuxClientResult phux_client_org_target_get(const PhuxClient *client, size_t result_index, size_t target_index, PhuxOrgTarget *out_target);
+/** Release a settled result; INVALID_STATE while it is PENDING. */
+PhuxClientResult phux_client_org_result_release(PhuxClient *client, uint32_t request_id);
+
 /* ------------------------------------------------------- connected mode
  *
  * phux_client_new builds the EMBEDDED lane: the embedder owns the socket,
@@ -1616,7 +2007,7 @@ PhuxClientResult phux_client_follow_session_names(PhuxClient *client);
  * no framing of its own.
  *
  * The DECODE POINT DOES NOT MOVE. This ABI's per-frame behavior --
- * retired-close suppression, bootstrap-profile validation, workspace
+ * retired-close suppression, bootstrap-profile validation, arrangement
  * reconciliation -- reads binding-owned catalog state that only the owning
  * thread may touch. So the driver retains inbound frames and
  * phux_client_poll feeds them from the owning thread, through the same path

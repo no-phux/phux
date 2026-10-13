@@ -15,6 +15,7 @@ off. Layout operations remain L3 metadata with no wire change.
 
 Status: Accepted
 Date: 2026-07-15
+See [ADR-0160](./0160-sessions-own-resources-and-window-is-retired.md) for the typed shared arrangement that replaces shared layout metadata.
 
 ## Context
 

@@ -8,13 +8,18 @@ use phux_protocol::caps::{
     ImageProtocolSet, ServerCapabilities, ServerFeatureExt, ServerFeatureExtSet,
 };
 use phux_protocol::ids::{
-    BootstrapId, ClientId, ResourceId, SatelliteHost, SessionId, StreamId, WindowId,
+    ActivationId, AuthorityId, BootstrapId, ClientId, ResourceId, ResourceKey, Revision,
+    SatelliteHost, ServerInstance, SessionId, SessionKey, StreamId, WindowId,
 };
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
-use phux_protocol::wire::frame::{FrameKind, PathKind, PathResults, PathRow, PathStatus};
-use phux_protocol::wire::info::{AgentFacet, ResourceInfo, SessionSnapshot};
+use phux_protocol::wire::frame::{
+    ActivationInfo, AttachTarget, Command, CommandResult, CommandValue, ExecState, FrameKind,
+    OrgFilter, OrganizationPage, PathKind, PathResults, PathRow, PathStatus, Refusal,
+    ResourceRecord, SessionRecord,
+};
+use phux_protocol::wire::info::{AgentFacet, ResourceInfo, SessionInfo, SessionSnapshot};
 use phux_vt_web::Vt;
-use phux_web::Session;
+use phux_web::{AttachPreference, Connection};
 use wasm_bindgen_test::wasm_bindgen_test;
 
 fn stream(raw: u64) -> StreamId {
@@ -52,7 +57,7 @@ fn path_reply(request_id: u32, path: &str) -> FrameKind {
     }
 }
 
-async fn path_session(supported: bool, second_pane: bool) -> Session {
+async fn path_session(supported: bool, second_pane: bool) -> Connection {
     let panes = if second_pane {
         vec![ResourceId::local(101), ResourceId::local(102)]
     } else {
@@ -61,9 +66,9 @@ async fn path_session(supported: bool, second_pane: bool) -> Session {
     path_session_with_panes(supported, panes).await
 }
 
-async fn path_session_with_panes(supported: bool, panes: Vec<ResourceId>) -> Session {
+async fn path_session_with_panes(supported: bool, panes: Vec<ResourceId>) -> Connection {
     let vt = Vt::load().await.expect("load engine");
-    let mut session = Session::new(&vt, 20, 3);
+    let mut session = Connection::new(&vt, 20, 3);
     session.on_frame(path_hello(supported));
     let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), panes[0].clone())
         .with_resources(
@@ -249,7 +254,7 @@ fn hello_ok(profile: BootstrapProfile, limits: BootstrapLimits) -> FrameKind {
 #[wasm_bindgen_test]
 async fn hello_ok_without_aggregate_ready_is_not_connection_ready() {
     let vt = Vt::load().await.expect("load engine");
-    let mut session = Session::new(&vt, 80, 24);
+    let mut session = Connection::new(&vt, 80, 24);
     let outcome = session.on_frame(hello_ok(
         BootstrapProfile::SynthesizedVtRaw,
         BootstrapLimits::default(),
@@ -310,7 +315,7 @@ fn native_profile() -> BootstrapProfile {
 #[wasm_bindgen_test]
 async fn raw_transcript_waits_for_dual_and_global_ready_without_ack() {
     let vt = Vt::load().await.expect("load engine");
-    let mut session = Session::new(&vt, 20, 3);
+    let mut session = Connection::new(&vt, 20, 3);
     let terminal_id = ResourceId::local(1);
     let stream_id = stream(1);
     let bootstrap_id = bootstrap(1);
@@ -321,7 +326,7 @@ async fn raw_transcript_waits_for_dual_and_global_ready_without_ack() {
     ));
     assert!(hello.fatal.is_none());
     assert_eq!(hello.send.len(), 2);
-    let (attach, _) = FrameKind::decode(&hello.send[1]).expect("decode attach");
+    let attach = decode_one(&attach_after_state(&mut session, &hello));
     assert!(matches!(attach, FrameKind::Attach { attach_id: 1, .. }));
 
     assert!(
@@ -400,7 +405,7 @@ async fn raw_transcript_waits_for_dual_and_global_ready_without_ack() {
 #[wasm_bindgen_test]
 async fn state_sync_output_acks_the_exact_generation() {
     let vt = Vt::load().await.expect("load engine");
-    let mut session = Session::new(&vt, 10, 2);
+    let mut session = Connection::new(&vt, 10, 2);
     let terminal_id = ResourceId::local(2);
     let stream_id = stream(2);
     let bootstrap_id = bootstrap(2);
@@ -458,7 +463,7 @@ async fn state_sync_output_acks_the_exact_generation() {
 #[wasm_bindgen_test]
 async fn history_cursor_chain_is_echoed_and_bounded_after_ready() {
     let vt = Vt::load().await.expect("load engine");
-    let mut session = Session::new(&vt, 10, 2);
+    let mut session = Connection::new(&vt, 10, 2);
     let terminal_id = ResourceId::local(3);
     let stream_id = stream(3);
     let bootstrap_id = bootstrap(3);
@@ -543,7 +548,7 @@ async fn history_cursor_chain_is_echoed_and_bounded_after_ready() {
 #[wasm_bindgen_test]
 async fn replacement_stages_without_touching_published_grid() {
     let vt = Vt::load().await.expect("load engine");
-    let mut session = Session::new(&vt, 10, 2);
+    let mut session = Connection::new(&vt, 10, 2);
     let terminal_id = ResourceId::local(4);
     let stream_id = stream(4);
     let first_bootstrap = bootstrap(4);
@@ -622,7 +627,7 @@ async fn replacement_stages_without_touching_published_grid() {
 #[wasm_bindgen_test]
 async fn attach_barrier_close_repaints_the_prior_visible_terminal_to_blank() {
     let vt = Vt::load().await.expect("load engine");
-    let mut session = Session::new(&vt, 10, 2);
+    let mut session = Connection::new(&vt, 10, 2);
     let terminal_id = ResourceId::local(6);
     let stream_id = stream(6);
     let bootstrap_id = bootstrap(7);
@@ -696,10 +701,10 @@ async fn hello_ok_rejects_version_drift_and_oversized_limits_before_payload() {
         unreachable!();
     };
     *protocol_patch = protocol_patch.saturating_add(1);
-    let mut session = Session::new(&vt, 80, 24);
+    let mut session = Connection::new(&vt, 80, 24);
     assert!(session.on_frame(wrong_version).fatal.is_some());
 
-    let mut synthesized_only = Session::new_synthesized_compat(&vt, 80, 24);
+    let mut synthesized_only = Connection::new_synthesized_compat(&vt, 80, 24);
     let drift = synthesized_only.on_frame(hello_ok(native_profile(), BootstrapLimits::default()));
     assert!(drift.fatal.is_some());
     assert!(
@@ -710,7 +715,7 @@ async fn hello_ok_rejects_version_drift_and_oversized_limits_before_payload() {
 
     let oversized =
         BootstrapLimits::new(512 * 1024, 2 * 1024 * 1024).expect("within protocol hard limits");
-    let mut session = Session::new(&vt, 80, 24);
+    let mut session = Connection::new(&vt, 80, 24);
     assert!(
         session
             .on_frame(hello_ok(BootstrapProfile::SynthesizedVtRaw, oversized))
@@ -729,7 +734,7 @@ async fn hello_advertises_synthesized_until_wasm_speaks_official_snapshot() {
         "wasm must not publish native checkpoint until rebuilt against official GHOSTSNP"
     );
 
-    let session = Session::new(&vt, 80, 24);
+    let session = Connection::new(&vt, 80, 24);
     let frames = session.handshake();
     let (hello, rest) = FrameKind::decode(&frames[0]).expect("decode hello");
     assert!(rest.is_empty());
@@ -756,7 +761,7 @@ async fn hello_advertises_synthesized_until_wasm_speaks_official_snapshot() {
             .contains(BootstrapProfileKind::SynthesizedVtStateSync)
     );
 
-    let compatibility = Session::new_synthesized_compat(&vt, 80, 24);
+    let compatibility = Connection::new_synthesized_compat(&vt, 80, 24);
     assert!(
         !compatibility
             .advertised_capabilities()
@@ -776,7 +781,7 @@ async fn hello_advertises_synthesized_until_wasm_speaks_official_snapshot() {
 #[wasm_bindgen_test]
 async fn session_rejects_native_hello_ok_until_wasm_speaks_official_snapshot() {
     let vt = Vt::load().await.expect("load engine");
-    let mut session = Session::new(&vt, 80, 24);
+    let mut session = Connection::new(&vt, 80, 24);
     let negotiated = session.on_frame(hello_ok(native_profile(), BootstrapLimits::default()));
     assert!(negotiated.fatal.is_some());
     assert!(
@@ -802,7 +807,7 @@ async fn engine_and_negotiated_memory_limits_are_hard_bounds() {
     let terminal_id = ResourceId::local(71);
     let stream_id = stream(71);
     let bootstrap_id = bootstrap(71);
-    let mut session = Session::new(&vt, 20, 3);
+    let mut session = Connection::new(&vt, 20, 3);
     assert!(
         session
             .on_frame(hello_ok(BootstrapProfile::SynthesizedVtRaw, limits))
@@ -833,7 +838,7 @@ async fn engine_and_negotiated_memory_limits_are_hard_bounds() {
 #[wasm_bindgen_test]
 async fn wire_round_trip_rejects_wrong_generation_without_duplicate_apply() {
     let vt = Vt::load().await.expect("load engine");
-    let mut session = Session::new(&vt, 10, 2);
+    let mut session = Connection::new(&vt, 10, 2);
     let terminal_id = ResourceId::local(5);
     let stream_id = stream(5);
     let bootstrap_id = bootstrap(6);
@@ -917,7 +922,7 @@ fn agent_record(seq: u64, kind: &str, data: &str) -> Bytes {
     ))
 }
 
-fn badge_summary(session: &Session) -> Vec<(String, String)> {
+fn badge_summary(session: &Connection) -> Vec<(String, String)> {
     session
         .agent_badges()
         .into_iter()
@@ -928,7 +933,7 @@ fn badge_summary(session: &Session) -> Vec<(String, String)> {
 #[wasm_bindgen_test]
 async fn agent_sessions_become_badges_and_never_panes() {
     let vt = Vt::load().await.expect("load engine");
-    let mut session = Session::new(&vt, 10, 2);
+    let mut session = Connection::new(&vt, 10, 2);
     let terminal_id = ResourceId::local(8);
     let agent_id = ResourceId::local(9);
     let stream_id = stream(8);
@@ -1112,7 +1117,7 @@ fn agent_requests(outcome: &phux_web::Outcome) -> Vec<ResourceId> {
 #[wasm_bindgen_test]
 async fn pre_snapshot_agent_announcements_survive_parent_admission() {
     let vt = Vt::load().await.expect("engine");
-    let mut session = Session::new(&vt, 20, 3);
+    let mut session = Connection::new(&vt, 20, 3);
     session.on_frame(hello_ok(
         BootstrapProfile::SynthesizedVtRaw,
         BootstrapLimits::default(),
@@ -1232,7 +1237,7 @@ async fn closing_split_parent_discards_its_pending_agent_discovery() {
 #[wasm_bindgen_test]
 async fn agent_discovery_admission_is_bounded_and_duplicate_safe() {
     let vt = Vt::load().await.expect("engine");
-    let mut session = Session::new(&vt, 20, 3);
+    let mut session = Connection::new(&vt, 20, 3);
     session.on_frame(hello_ok(
         BootstrapProfile::SynthesizedVtRaw,
         BootstrapLimits::default(),
@@ -1351,14 +1356,14 @@ fn reported_pixels(frame: &[u8]) -> (Option<u16>, Option<u16>) {
 #[wasm_bindgen_test]
 async fn the_viewport_reports_the_cell_grid_in_pixels() {
     let vt = Vt::load().await.expect("load engine");
-    let mut session = Session::new(&vt, 80, 24);
+    let mut session = Connection::new(&vt, 80, 24);
     session.set_cell_size(9, 18);
     let attach = session.on_frame(hello_ok(
         BootstrapProfile::SynthesizedVtRaw,
         BootstrapLimits::default(),
     ));
     assert_eq!(
-        reported_pixels(&attach.send[1]),
+        reported_pixels(&attach_after_state(&mut session, &attach)),
         (Some(80 * 9), Some(24 * 18))
     );
     let resize = session.resize_frame(100, 30).expect("VIEWPORT_RESIZE");
@@ -1373,7 +1378,7 @@ async fn the_viewport_reports_the_cell_grid_in_pixels() {
 #[wasm_bindgen_test]
 async fn resize_rides_the_attach_before_hello_ok_and_viewport_resize_after() {
     let vt = Vt::load().await.expect("load engine");
-    let mut session = Session::new(&vt, 80, 24);
+    let mut session = Connection::new(&vt, 80, 24);
     assert!(
         session.resize_frame(100, 30).is_none(),
         "no stateful frame before HELLO_OK"
@@ -1382,8 +1387,9 @@ async fn resize_rides_the_attach_before_hello_ok_and_viewport_resize_after() {
         BootstrapProfile::SynthesizedVtRaw,
         BootstrapLimits::default(),
     ));
-    let FrameKind::Attach { viewport, .. } = decode_one(&attach.send[1]) else {
-        panic!("HELLO_OK is answered by ATTACH");
+    let FrameKind::Attach { viewport, .. } = decode_one(&attach_after_state(&mut session, &attach))
+    else {
+        panic!("the session list is answered by ATTACH");
     };
     assert_eq!((viewport.cols, viewport.rows), (100, 30));
 
@@ -1415,7 +1421,7 @@ async fn live_bells_ring_bootstrap_bells_do_not_and_mouse_input_is_structured() 
     use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 
     let vt = Vt::load().await.expect("load engine");
-    let mut session = Session::new(&vt, 20, 3);
+    let mut session = Connection::new(&vt, 20, 3);
     let terminal_id = ResourceId::local(1);
     let (stream_id, bootstrap_id) = (stream(1), bootstrap(1));
     session.on_frame(hello_ok(
@@ -1486,14 +1492,14 @@ async fn live_bells_ring_bootstrap_bells_do_not_and_mouse_input_is_structured() 
     ));
 }
 
-fn requested_spawn(session: &mut Session, axis: &str) -> u32 {
+fn requested_spawn(session: &mut Connection, axis: &str) -> u32 {
     match decode_one(&session.split_pane_frame(axis).expect("split request")) {
         FrameKind::SpawnResource { request_id, .. } => request_id,
         other => panic!("expected spawn, got {other:?}"),
     }
 }
 
-fn announce_split(session: &mut Session, request_id: u32, id: ResourceId) -> u32 {
+fn announce_split(session: &mut Connection, request_id: u32, id: ResourceId) -> u32 {
     let outcome = session.on_frame(FrameKind::ResourceSpawned {
         request_id,
         result: phux_protocol::wire::frame::SpawnResult::Ok(id.clone()),
@@ -1511,7 +1517,7 @@ fn announce_split(session: &mut Session, request_id: u32, id: ResourceId) -> u32
 }
 
 fn bootstrap_split(
-    session: &mut Session,
+    session: &mut Connection,
     id: ResourceId,
     serial: u64,
     text: &'static [u8],
@@ -1660,12 +1666,12 @@ async fn refused_split_and_attach_leave_the_original_usable() {
 }
 
 #[wasm_bindgen_test]
-async fn closing_a_pane_waits_for_resource_closed_and_restores_sibling_size() {
+async fn killing_a_pane_waits_for_resource_closed_and_restores_sibling_size() {
     use phux_protocol::wire::frame::{CloseReason, Command, CommandResult};
     let mut session = path_session(false, false).await;
     assert!(
         session
-            .close_pane_frame()
+            .kill_pane_frame()
             .unwrap_err()
             .contains("Release Session")
     );
@@ -1695,7 +1701,7 @@ async fn closing_a_pane_waits_for_resource_closed_and_restores_sibling_size() {
         sizes,
         vec![(original.clone(), 29, 15), (second.clone(), 30, 15)]
     );
-    let request_id = match decode_one(&session.close_pane_frame().unwrap()) {
+    let request_id = match decode_one(&session.kill_pane_frame().unwrap()) {
         FrameKind::Command {
             request_id,
             command: Command::KillResource { terminal_id, .. },
@@ -1722,12 +1728,12 @@ async fn closing_a_pane_waits_for_resource_closed_and_restores_sibling_size() {
     assert_eq!(session.pane_rects()[0].1.cols, 60);
     assert!(closed.send.iter().any(|frame| matches!(decode_one(frame),
         FrameKind::ResizeTerminal { terminal_id, cols: 60, rows: 15, .. } if terminal_id == original)));
-    assert!(session.close_pane_frame().is_err());
+    assert!(session.kill_pane_frame().is_err());
     assert!(session.key_frame(key()).is_some());
 }
 
 #[wasm_bindgen_test]
-async fn panes_stop_at_four_and_survive_a_refused_close() {
+async fn panes_stop_at_four_and_survive_a_refused_kill() {
     use phux_protocol::wire::frame::CommandResult;
     let mut session = path_session(false, false).await;
     session.resize_panes(120, 40);
@@ -1756,7 +1762,7 @@ async fn panes_stop_at_four_and_survive_a_refused_close() {
             .contains("Four")
     );
     let focused = session.focused_pane();
-    let request_id = match decode_one(&session.close_pane_frame().unwrap()) {
+    let request_id = match decode_one(&session.kill_pane_frame().unwrap()) {
         FrameKind::Command { request_id, .. } => request_id,
         other => panic!("{other:?}"),
     };
@@ -1867,4 +1873,439 @@ async fn failed_split_quarantines_queued_frames_without_weakening_other_streams(
         unrelated.fatal.is_some(),
         "unknown streams remain a protocol fault"
     );
+}
+
+/// Answer the `GET_STATE` that follows `HELLO_OK` with one existing session
+/// and return the `ATTACH` the connection sends for it.
+fn attach_after_state(session: &mut Connection, hello: &phux_web::Outcome) -> Vec<u8> {
+    let request_id = state_request(&hello.send[1]);
+    let reply = session.on_frame(state_reply(
+        request_id,
+        vec![SessionInfo::new(SessionId::new(1), "work")],
+    ));
+    assert_eq!(
+        reply.send.len(),
+        1,
+        "the session list is answered by ATTACH"
+    );
+    reply.send[0].clone()
+}
+
+fn state_request(frame: &[u8]) -> u32 {
+    match decode_one(frame) {
+        FrameKind::Command {
+            request_id,
+            command: Command::GetState { .. },
+        } => request_id,
+        other => panic!("expected GET_STATE, got {other:?}"),
+    }
+}
+
+fn state_reply(request_id: u32, sessions: Vec<SessionInfo>) -> FrameKind {
+    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+        .with_sessions(sessions);
+    FrameKind::CommandResult {
+        request_id,
+        result: CommandResult::OkWith(CommandValue::State(snapshot)),
+    }
+}
+
+fn attach_target(frame: &[u8]) -> AttachTarget {
+    match decode_one(frame) {
+        FrameKind::Attach { target, .. } => target,
+        other => panic!("expected ATTACH, got {other:?}"),
+    }
+}
+
+fn organization_caps() -> ServerCapabilities {
+    ServerCapabilities::new()
+        .with_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]))
+}
+
+fn hello_with(caps: ServerCapabilities) -> FrameKind {
+    let mut frame = hello_ok(
+        BootstrapProfile::SynthesizedVtRaw,
+        BootstrapLimits::default(),
+    );
+    if let FrameKind::HelloOk { server_caps, .. } = &mut frame {
+        *server_caps = caps;
+    }
+    frame
+}
+
+fn session_key(byte: u8) -> SessionKey {
+    SessionKey::new([byte; 16]).expect("non-zero key")
+}
+
+fn organization_page(request_id: u32, page: OrganizationPage) -> FrameKind {
+    FrameKind::CommandResult {
+        request_id,
+        result: CommandResult::OkWith(CommandValue::OrganizationPage(Box::new(page))),
+    }
+}
+
+fn empty_page() -> OrganizationPage {
+    OrganizationPage::new(
+        AuthorityId::new([9; 16]).expect("non-zero authority"),
+        Revision::new(1),
+        0,
+    )
+}
+
+#[wasm_bindgen_test]
+async fn a_legacy_server_attaches_its_most_recent_session_and_creates_nothing() {
+    let vt = Vt::load().await.expect("load engine");
+    let mut session = Connection::new(&vt, 80, 24);
+    let hello = session.on_frame(hello_with(ServerCapabilities::new()));
+    let request_id = state_request(&hello.send[1]);
+    let reply = session.on_frame(state_reply(
+        request_id,
+        vec![
+            SessionInfo::new(SessionId::new(4), "old").with_created_at_unix_secs(10),
+            SessionInfo::new(SessionId::new(2), "new").with_created_at_unix_secs(20),
+        ],
+    ));
+    assert_eq!(
+        attach_target(&reply.send[0]),
+        AttachTarget::ById(SessionId::new(2))
+    );
+}
+
+#[wasm_bindgen_test]
+async fn only_an_empty_legacy_server_gets_a_default_session() {
+    let vt = Vt::load().await.expect("load engine");
+    let mut session = Connection::new(&vt, 80, 24);
+    let hello = session.on_frame(hello_with(ServerCapabilities::new()));
+    let request_id = state_request(&hello.send[1]);
+    let reply = session.on_frame(state_reply(request_id, Vec::new()));
+    assert!(matches!(
+        attach_target(&reply.send[0]),
+        AttachTarget::CreateIfMissing { name, .. } if name == "default"
+    ));
+}
+
+#[wasm_bindgen_test]
+async fn an_unreadable_state_attaches_the_last_session_without_creating() {
+    let vt = Vt::load().await.expect("load engine");
+    let mut session = Connection::new(&vt, 80, 24);
+    let hello = session.on_frame(hello_with(ServerCapabilities::new()));
+    let request_id = state_request(&hello.send[1]);
+    let reply = session.on_frame(FrameKind::CommandResult {
+        request_id,
+        result: CommandResult::Error {
+            code: phux_protocol::wire::frame::ErrorCode::InvalidCommand,
+            message: "no inventory".to_owned(),
+        },
+    });
+    assert_eq!(attach_target(&reply.send[0]), AttachTarget::Last);
+    assert!(session.pane_error().is_none());
+}
+
+#[wasm_bindgen_test]
+async fn an_organization_server_opens_the_inbox() {
+    let vt = Vt::load().await.expect("load engine");
+    let mut session = Connection::new(&vt, 80, 24);
+    let hello = session.on_frame(hello_with(organization_caps()));
+    assert!(session.organization_supported());
+    let request_id = match decode_one(&hello.send[1]) {
+        FrameKind::Command {
+            request_id,
+            command:
+                Command::GetOrganization {
+                    filter: OrgFilter::Intake,
+                    ..
+                },
+        } => request_id,
+        other => panic!("expected GET_ORGANIZATION, got {other:?}"),
+    };
+    let inbox = session_key(3);
+    let page = empty_page().with_inbox(Some(inbox)).with_sessions(vec![
+        SessionRecord::new(session_key(5), "imported", Revision::new(1))
+            .with_awaiting_organization(true)
+            .with_live(Some(SessionId::new(8))),
+        SessionRecord::new(inbox, "Inbox", Revision::new(1))
+            .with_members(1)
+            .with_live(Some(SessionId::new(6))),
+    ]);
+    let reply = session.on_frame(organization_page(request_id, page));
+    assert_eq!(
+        attach_target(&reply.send[0]),
+        AttachTarget::ById(SessionId::new(6))
+    );
+}
+
+#[wasm_bindgen_test]
+async fn an_empty_inbox_falls_back_to_the_most_recent_session() {
+    let vt = Vt::load().await.expect("load engine");
+    let mut session = Connection::new(&vt, 80, 24);
+    let hello = session.on_frame(hello_with(organization_caps()));
+    let FrameKind::Command { request_id, .. } = decode_one(&hello.send[1]) else {
+        panic!("expected a command");
+    };
+    let inbox = session_key(3);
+    let page = empty_page().with_inbox(Some(inbox)).with_sessions(vec![
+        SessionRecord::new(inbox, "Inbox", Revision::new(1)).with_live(Some(SessionId::new(6))),
+    ]);
+    let reply = session.on_frame(organization_page(request_id, page));
+    let request_id = state_request(&reply.send[0]);
+    let reply = session.on_frame(state_reply(
+        request_id,
+        vec![SessionInfo::new(SessionId::new(7), "default")],
+    ));
+    assert_eq!(
+        attach_target(&reply.send[0]),
+        AttachTarget::ById(SessionId::new(7))
+    );
+}
+
+#[wasm_bindgen_test]
+async fn a_refused_organization_read_falls_back_to_the_session_list() {
+    let vt = Vt::load().await.expect("load engine");
+    let mut session = Connection::new(&vt, 80, 24);
+    let hello = session.on_frame(hello_with(organization_caps()));
+    let FrameKind::Command { request_id, .. } = decode_one(&hello.send[1]) else {
+        panic!("expected a command");
+    };
+    let reply = session.on_frame(FrameKind::CommandResult {
+        request_id,
+        result: CommandResult::Refused(Refusal::NotFound),
+    });
+    let request_id = state_request(&reply.send[0]);
+    let reply = session.on_frame(state_reply(
+        request_id,
+        vec![SessionInfo::new(SessionId::new(7), "work")],
+    ));
+    assert_eq!(
+        attach_target(&reply.send[0]),
+        AttachTarget::ById(SessionId::new(7))
+    );
+}
+
+#[wasm_bindgen_test]
+async fn a_page_asking_for_the_most_recent_session_skips_the_inbox() {
+    let vt = Vt::load().await.expect("load engine");
+    let mut session = Connection::new(&vt, 80, 24);
+    session.set_attach_preference(AttachPreference::MostRecent);
+    let hello = session.on_frame(hello_with(organization_caps()));
+    state_request(&hello.send[1]);
+}
+
+#[wasm_bindgen_test]
+async fn closing_a_view_ends_nothing_and_gives_its_space_to_the_sibling() {
+    let mut session = path_session(false, true).await;
+    let first = ResourceId::local(101);
+    let second = ResourceId::local(102);
+    session.resize_panes(40, 3);
+    session.focus_pane(&second).expect("focus second");
+    let frames = session.close_view().expect("close view");
+    assert!(!frames.is_empty());
+    for frame in &frames {
+        assert!(
+            matches!(decode_one(frame), FrameKind::ResizeTerminal { terminal_id, .. } if terminal_id == first),
+            "closing a view only resizes the remaining pane"
+        );
+    }
+    assert!(!session.pane_pending());
+    assert_eq!(session.pane_rects().len(), 1);
+    assert_eq!(session.focused_pane(), Some(first.clone()));
+    // The closed view's terminal is still attached and still streams.
+    assert!(session.pane_terminal(&second).is_some());
+    let output = session.on_frame(FrameKind::ResourceOutput {
+        terminal_id: second,
+        stream_id: stream(2),
+        bootstrap_id: bootstrap(2),
+        seq: 1,
+        bytes: Bytes::from_static(b"still running"),
+    });
+    assert!(output.fatal.is_none());
+    let refused = session.close_view().unwrap_err();
+    assert!(refused.contains("last view"), "{refused}");
+    assert!(session.key_frame(key()).is_some());
+}
+
+/// A two-pane connection to an `ORGANIZATION` server whose attached session
+/// has `key`.
+async fn organization_session(key: SessionKey) -> Connection {
+    let vt = Vt::load().await.expect("load engine");
+    let mut session = Connection::new(&vt, 20, 3);
+    session.on_frame(hello_with(organization_caps()));
+    let panes = [ResourceId::local(101), ResourceId::local(102)];
+    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), panes[0].clone())
+        .with_sessions(vec![
+            SessionInfo::new(SessionId::new(1), "Inbox").with_key(Some(key)),
+        ])
+        .with_resources(
+            panes
+                .iter()
+                .cloned()
+                .map(|id| ResourceInfo::new(id, WindowId::new(1), 20, 3))
+                .collect(),
+        );
+    session.on_frame(FrameKind::Attached {
+        attach_id: 1,
+        snapshot,
+        initial_client_id: ClientId::new(1),
+    });
+    for (i, id) in panes.iter().enumerate() {
+        let stream_id = stream(i as u64 + 1);
+        let bootstrap_id = bootstrap(i as u64 + 1);
+        session.on_frame(begin(
+            id.clone(),
+            stream_id,
+            bootstrap_id,
+            phux_protocol::caps::BootstrapStreamProfile::SynthesizedVtRaw,
+            20,
+            3,
+            0,
+        ));
+        session.on_frame(FrameKind::BootstrapReady {
+            terminal_id: id.clone(),
+            stream_id,
+            bootstrap_id,
+            history_cursor: None,
+        });
+    }
+    session.on_frame(FrameKind::AttachReady { attach_id: 1 });
+    session
+}
+
+fn running(
+    key: ResourceKey,
+    session: SessionKey,
+    live: ResourceId,
+    activation: u64,
+) -> ResourceRecord {
+    ResourceRecord::new(key, session, Revision::new(1))
+        .with_live(Some(live))
+        .with_activation(Some(ActivationInfo::new(
+            ActivationId::new(activation),
+            ServerInstance::new([7; 16]),
+            ExecState::Running,
+        )))
+}
+
+#[wasm_bindgen_test]
+async fn killing_on_an_organization_server_terminates_the_current_activation() {
+    let key = session_key(4);
+    let mut session = organization_session(key).await;
+    let target = ResourceId::local(102);
+    session.focus_pane(&target).expect("focus second");
+    let request_id = match decode_one(&session.kill_pane_frame().expect("kill")) {
+        FrameKind::Command {
+            request_id,
+            command:
+                Command::GetOrganization {
+                    filter: OrgFilter::Session(filter),
+                    ..
+                },
+        } => {
+            assert_eq!(filter, key);
+            request_id
+        }
+        other => panic!("expected the session page, got {other:?}"),
+    };
+    assert!(session.pane_pending());
+    let page = empty_page().with_resources(vec![
+        running(
+            ResourceKey::new([1; 16]).unwrap(),
+            key,
+            ResourceId::local(101),
+            1,
+        ),
+        running(ResourceKey::new([2; 16]).unwrap(), key, target.clone(), 3),
+    ]);
+    let terminate = session.on_frame(organization_page(request_id, page));
+    let request_id = match decode_one(&terminate.send[0]) {
+        FrameKind::Command {
+            request_id,
+            command: Command::ResourceTerminate { target: live, .. },
+        } => {
+            assert_eq!(live.resource, target);
+            assert_eq!(live.instance, ServerInstance::new([7; 16]));
+            assert_eq!(live.activation, ActivationId::new(3));
+            request_id
+        }
+        other => panic!("expected RESOURCE_TERMINATE, got {other:?}"),
+    };
+    session.on_frame(FrameKind::CommandResult {
+        request_id,
+        result: CommandResult::Accepted {
+            operation: phux_protocol::ids::OperationId::new([5; 16]).unwrap(),
+        },
+    });
+    assert!(session.pane_pending(), "the pane stays until it closes");
+    assert_eq!(session.pane_rects().len(), 2);
+    session.on_frame(FrameKind::ResourceClosed {
+        terminal_id: target,
+        exit_status: None,
+        reason: phux_protocol::wire::frame::CloseReason::Unknown,
+        signal: None,
+    });
+    assert!(!session.pane_pending());
+    assert_eq!(session.pane_rects().len(), 1);
+}
+
+#[wasm_bindgen_test]
+async fn an_unlisted_kill_target_falls_back_and_a_refusal_keeps_the_pane() {
+    let key = session_key(4);
+    let mut session = organization_session(key).await;
+    let target = ResourceId::local(102);
+    session.focus_pane(&target).expect("focus second");
+    let FrameKind::Command { request_id, .. } = decode_one(&session.kill_pane_frame().unwrap())
+    else {
+        panic!("expected a command");
+    };
+    // A page set that does not list the target falls back to KILL_RESOURCE.
+    let fallback = session.on_frame(organization_page(request_id, empty_page()));
+    let request_id = match decode_one(&fallback.send[0]) {
+        FrameKind::Command {
+            request_id,
+            command: Command::KillResource { terminal_id, .. },
+        } => {
+            assert_eq!(terminal_id, target);
+            request_id
+        }
+        other => panic!("expected the legacy kill, got {other:?}"),
+    };
+    session.on_frame(FrameKind::CommandResult {
+        request_id,
+        result: CommandResult::Error {
+            code: phux_protocol::wire::frame::ErrorCode::InvalidCommand,
+            message: "not permitted".to_owned(),
+        },
+    });
+    assert!(!session.pane_pending());
+    assert_eq!(session.pane_rects().len(), 2);
+    assert!(session.pane_error().unwrap().contains("not permitted"));
+}
+
+#[wasm_bindgen_test]
+async fn a_refused_terminate_keeps_the_pane_and_says_why() {
+    let key = session_key(4);
+    let mut session = organization_session(key).await;
+    let target = ResourceId::local(102);
+    session.focus_pane(&target).expect("focus second");
+    let FrameKind::Command { request_id, .. } = decode_one(&session.kill_pane_frame().unwrap())
+    else {
+        panic!("expected a command");
+    };
+    let page = empty_page().with_resources(vec![running(
+        ResourceKey::new([2; 16]).unwrap(),
+        key,
+        target,
+        3,
+    )]);
+    let terminate = session.on_frame(organization_page(request_id, page));
+    let FrameKind::Command { request_id, .. } = decode_one(&terminate.send[0]) else {
+        panic!("expected a command");
+    };
+    session.on_frame(FrameKind::CommandResult {
+        request_id,
+        result: CommandResult::Refused(Refusal::Unsupported {
+            capability: "terminate".to_owned(),
+        }),
+    });
+    assert!(!session.pane_pending());
+    assert_eq!(session.pane_rects().len(), 2);
+    assert!(session.pane_error().unwrap().contains("unsupported"));
 }

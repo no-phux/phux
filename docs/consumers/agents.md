@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-30
+last-reviewed: 2026-10-13
 ---
 
 # The phux agent CLI
@@ -227,7 +227,11 @@ write to the same pane is refused as busy (`RESOURCE_EXHAUSTED`), so
 serialize writes to one pane.
 
 `phux agent start` starts an agent in an existing shell pane without
-creating, splitting, moving, or focusing layout.
+creating, splitting, moving, or focusing layout. The agent runs on a
+delegated credential, not yours: the typed line sets `PHUX_SOCKET` to a
+socket of its own whose grant is `INVENTORY`, `OBSERVE`, `INPUT`, and `BIND`
+on that pane's session, on your behalf
+([ADR-0163](../adr/0163-actors-and-delegated-agent-grants.md) §5).
 
 ## 5. Observe: snapshot, wait, watch, ask
 
@@ -348,14 +352,17 @@ help: [CLI reference](../reference/cli.md). MCP tool inputs:
 On failure, **stdout stays empty** and stderr carries one JSON error
 object (exceptions noted). `--json` is the long flag; there is no `-j`.
 
-### `ls` (`schema_version` 3)
+### `ls` (`schema_version` 4)
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "sessions": [
     { "name": "work", "windows": 1, "attached": true, "attached_clients": 1,
-      "keep_empty": false, "empty": false }
+      "keep_empty": true, "empty": false, "lifetime": "persistent",
+      "members": 2,
+      "exec": { "dormant": 0, "starting": 0, "running": 1, "stopping": 0,
+                "completed": 1, "failed": 0, "lost": 0, "abandoned": 0 } }
   ],
   "terminals": ["@3"],
   "resources": [
@@ -375,7 +382,11 @@ object (exceptions noted). `--json` is the long flag; there is no `-j`.
 diagnostic text. `resources`, `lifecycle` (`running`, `frozen`, `exited`),
 `exit` (`{ status, signal, reason, exited_at_ms, retained_until_ms }` for a
 retained pane), `keep_empty`, and `empty` are additive: read an absent key as
-absent / `running` / `null` / `false`. `kind` is `terminal`, `agent_session`,
+absent / `running` / `null` / `false`. Version 4 adds each session's
+`lifetime` (`persistent` survives its last process; `ephemeral` ends with it;
+`null` from a server that does not report one), `members` (its resource
+count), and `exec` (members per execution state; `dormant` never launched).
+`keep_empty` is `lifetime == "persistent"` and `empty` is `members == 0`. `kind` is `terminal`, `agent_session`,
 or `unknown`. `sessions` lists this host only. `hosts` is the fleet grouped by machine; read it as
 complete only when `hosts_complete` is `true` (the server advertises
 `HOST_SESSIONS`). `host` is `null` for this machine (`local: true`).
@@ -463,6 +474,33 @@ the create safe to retry: a repeat answers the first create's result
 instead of failing on the name. It needs `spawn_idempotency` in
 `phux status --json` `features`; otherwise it is refused before any
 write with `unsupported_server`, exit 2.
+
+### `rm` / `relaunch` / `restore`
+
+```json
+{ "schema_version": 1, "verb": "rm", "target": "@7", "key": "^ab23cd",
+  "revision": 4, "terminal_id": null }
+```
+
+`rm` removes a pane whose process has ended, or deletes a session with no
+members; `relaunch` starts a stopped pane again, and its `terminal_id` names
+the new run. A target is a selector or a key prefix `^ab23cd` (six or more
+base32 digits of a key). A refusal is the error object with the
+organization refusal as its `code` (`not_empty`, `conflict`,
+`execution_uncertain`, ...), exit 2. `restore --json` is
+`{ schema_version: 1, restored: [{ key, result, terminal_id | code, message }] }`,
+one entry per pane a server restart ended or that never started (an
+imported archive's dormant pane); it exits 2 when any was refused.
+
+### `kill`
+
+A whole-session kill prints one line per member (`^ab23cd  removed`) and one
+for the session (`session ^ef45gh  deleted`). Over MCP, `phux_kill` returns
+the same as `report`: `{ session, session_result, session_detail, targets:
+[{ key, result, detail }] }`, where `result` is `removed`, `already_gone`,
+`refused`, `unknown`, `timed_out`, or `no_live_target`, and `session_result`
+is `deleted`, `already_gone`, `kept`, `refused`, or `unknown`. A kill that
+does not delete the session is an error carrying the same report.
 
 ### `spawn` / `launch` / spatial
 
@@ -903,7 +941,8 @@ delivered; retry safe), `delivery_unknown` (never resend),
 `invalid_agent_name`, `unsupported_agent_kind`,
 `agent_detection_unavailable`, `agent_name_conflict`, `target_not_shell`,
 `invalid_launch_argv`, `ambiguous_integration`, `agent_start_timeout`,
-`agent_kind_mismatch`. Resource: `wrong_resource_kind`, `not_producer`,
+`agent_kind_mismatch`, `delegation_failed` (the agent's credential could not
+be minted, so nothing was typed). Resource: `wrong_resource_kind`, `not_producer`,
 `record_invalid`, `overflow`, `unsupported_server`. Offline explain:
 `capture_unreadable`, `capture_invalid`, `unknown_agent_kind`. Watch:
 `unknown_event_name`.
@@ -924,9 +963,12 @@ A script wanting its own arrangement uses its own key prefix
 (`app.foo.layout/v1`, [metadata protocol](../spec/L3.md) §3.5) and names it
 with `--projection <prefix>.layout/v1/<session-id>` on the spatial and
 placement verbs; a cross-session `move-pane` passes it twice or not at all.
-Durability is `phux workspace save` / `restore`, which read and replay each
+Durability is `phux archive export` / `import`: export writes each
 session's split tree from that envelope
-([ADR-0129](../adr/0129-projections-are-named-by-key.md)).
+([ADR-0129](../adr/0129-projections-are-named-by-key.md)), and import
+recreates the missing sessions with their panes as dormant records in the
+session's arrangement, starting nothing. `phux restore SESSION` then starts
+them (`--json` is the `restore` document in §7).
 
 ## 10. Fallback hierarchy
 

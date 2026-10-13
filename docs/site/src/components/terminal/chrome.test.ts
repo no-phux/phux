@@ -46,7 +46,7 @@ describe("terminal presentation", () => {
     expect(html).toContain('class="pterm-split-primary" aria-label="Split pane left/right" title="Split left/right" disabled=""');
     expect(html).toContain('aria-label="Split top/bottom" title="Split top/bottom" disabled=""');
     expect(html).toContain("Next pane");
-    expect(html).toContain("Close pane");
+    expect(html).toContain("Close view");
   });
   test("pending attach exposes explicit cancellation without repeated footer labels", () => {
     const html = renderToStaticMarkup(createElement(SessionControls, { phase: "connecting", identity: null, release: noop, logout: noop }));

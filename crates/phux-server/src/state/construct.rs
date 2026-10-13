@@ -7,8 +7,14 @@ impl ServerState {
     /// Build an empty state.
     #[must_use]
     pub fn new() -> Self {
+        let idspace = IdSpace::new();
+        let org = super::org::fresh_org(
+            phux_core::InstanceId::from_bytes(*idspace.instance().as_bytes()),
+            super::org::now_stamp(),
+        );
         Self {
-            sessions: SessionTable::new(),
+            sessions: SessionTable::new(phux_core::Registry::new(org)),
+            org: super::org::OrgSide::memory(),
             clients: ClientTable::new(),
             journal: super::journal::Journal::new(
                 usize::try_from(phux_config::DEFAULT_EVENT_JOURNAL_ENTRIES).unwrap_or(usize::MAX),
@@ -16,8 +22,9 @@ impl ServerState {
             ),
             resources: ResourceTable::new(),
             leases: LeaseTable::new(),
+            delegations: crate::delegation::DelegationTable::default(),
             satellite_spawns: super::satellite_spawns::SatelliteSpawnLedger::default(),
-            idspace: IdSpace::new(),
+            idspace,
             metadata: MetadataStore::default(),
             agent: AgentState::new(),
             config: super::ServerConfig::default(),

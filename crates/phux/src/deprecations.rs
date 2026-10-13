@@ -52,6 +52,10 @@ pub(crate) struct Deprecation {
     pub(crate) example_argv: &'static [&'static str],
     /// Release that hid the spelling behind its replacement.
     pub(crate) deprecated_in: &'static str,
+    /// Whether the example needs a running server. Such a row's example runs
+    /// against a dead socket instead, and must fail after the warning (a
+    /// flag row's contract).
+    pub(crate) needs_server: bool,
     /// Release scheduled to remove the spelling — the earliest release it
     /// can disappear in, after surviving at least one full release cycle
     /// with the warning in place.
@@ -84,4 +88,29 @@ impl Deprecation {
 }
 
 /// Every deprecated spelling the binary currently accepts.
-pub(crate) const DEPRECATED: &[Deprecation] = &[];
+pub(crate) const DEPRECATED: &[Deprecation] = &[
+    Deprecation {
+        surface: DeprecatedSurface::Verb,
+        old: "phux workspace",
+        new: "phux archive export / import, phux project inspect",
+        note: "phux: `phux workspace` is deprecated and will be removed; use `phux archive \
+               export / import, phux project inspect`",
+        setup_argv: &[],
+        // A local repo read: no server, and the audit runs inside the repo.
+        example_argv: &["workspace", "inspect", "."],
+        needs_server: false,
+        deprecated_in: "v0.57.0",
+        removed_in: "v0.59.0",
+    },
+    Deprecation {
+        surface: DeprecatedSurface::Verb,
+        old: "phux move-pane",
+        new: "phux mv",
+        note: "phux: `phux move-pane` is deprecated and will be removed; use `phux mv`",
+        setup_argv: &[],
+        example_argv: &["move-pane", "@1", "@2"],
+        needs_server: true,
+        deprecated_in: "v0.57.0",
+        removed_in: "v0.59.0",
+    },
+];

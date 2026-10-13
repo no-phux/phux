@@ -91,7 +91,7 @@ fn decode_queued(
 }
 
 /// Terminal output whose only per-frame hook is participant validation.
-/// Agent streams keep the per-frame path: their records drive workspace
+/// Agent streams keep the per-frame path: their records drive arrangement
 /// projections that later frames' validation may read.
 fn joins_output_run(client: &Client, frame: &FrameKind) -> bool {
     matches!(

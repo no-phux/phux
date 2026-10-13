@@ -17,6 +17,13 @@
 //! The blob is a compatibility boundary (old writer, newer reader):
 //! [`StateBlob::version`] gates incompatible changes, additive fields use
 //! `#[serde(default)]`, and unknown fields are ignored.
+//!
+//! The organization records ride in [`StateBlob::org`], and each carried
+//! session and resource names its record by key. Windows are synthesized:
+//! one per session that has live panes, so an older reader still rebuilds
+//! the tree. A blob without [`StateBlob::org`] comes from an image that
+//! predates the records; its windows are flattened into members and an
+//! arrangement on resume.
 
 use std::os::fd::RawFd;
 use std::path::PathBuf;
@@ -75,6 +82,10 @@ pub struct StateBlob {
     /// reads as none.
     #[serde(default)]
     pub metadata: Vec<MetadataBlob>,
+    /// The organization records at the cut. Additive: an image that
+    /// predates them writes none, and its tree is imported on resume.
+    #[serde(default)]
+    pub org: Option<OrgBlob>,
 }
 
 /// One carried L3 metadata entry.
@@ -86,6 +97,20 @@ pub struct MetadataBlob {
     pub key: String,
     /// The stored value.
     pub value: Vec<u8>,
+}
+
+/// The organization records an upgrade carries, so a resume whose store
+/// does not have them (an in-memory store) still has every record.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OrgBlob {
+    /// The authority and its designated Inbox.
+    pub authority: phux_core::Authority,
+    /// Every session record.
+    pub sessions: Vec<phux_core::Session>,
+    /// Every resource record.
+    pub resources: Vec<phux_core::Resource>,
+    /// Every arrangement record.
+    pub arrangements: Vec<phux_core::Arrangement>,
 }
 
 impl StateBlob {
@@ -183,6 +208,9 @@ pub struct SessionBlob {
     /// blob from an image that predates keep-empty sessions reads as `false`.
     #[serde(default)]
     pub keep_empty: bool,
+    /// The session record's key in [`StateBlob::org`]. Additive.
+    #[serde(default)]
+    pub key: Option<phux_core::SessionKey>,
 }
 
 /// A window in the blob.
@@ -253,6 +281,9 @@ pub struct PaneBlob {
     /// exits (ADR-0124), so the request survives the upgrade.
     #[serde(default)]
     pub retain_secs: Option<u32>,
+    /// The resource record's key in [`StateBlob::org`]. Additive.
+    #[serde(default)]
+    pub key: Option<phux_core::ResourceKey>,
 }
 
 /// An `AgentSession` in the blob (ADR-0103): its identity, derived state,
@@ -286,6 +317,9 @@ pub struct AgentSessionBlob {
     /// re-prunes to its own ceiling.
     #[serde(default)]
     pub records: Vec<String>,
+    /// The resource record's key in [`StateBlob::org`]. Additive.
+    #[serde(default)]
+    pub key: Option<phux_core::ResourceKey>,
 }
 
 /// A retained pane's exit record (ADR-0124), as the upgrade blob carries it.
@@ -303,7 +337,7 @@ pub struct RetainedExitBlob {
     pub retained_until_ms: u64,
 }
 
-/// A serializable mirror of [`LayoutNode`](phux_core::window::LayoutNode),
+/// A serializable mirror of [`LayoutNode`](phux_core::LayoutNode),
 /// with panes referenced by wire id instead of core `ResourceId`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LayoutBlob {
@@ -324,7 +358,7 @@ pub enum LayoutBlob {
 }
 
 /// Serializable mirror of
-/// [`SplitDir`](phux_core::window::SplitDir).
+/// [`SplitDir`](phux_core::SplitDir).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SplitDirBlob {
     /// Side-by-side.
@@ -357,6 +391,7 @@ mod tests {
                 last_touched: Some(7),
                 root: Some(PathBuf::from("/home/u/proj")),
                 keep_empty: true,
+                key: None,
             }],
             windows: vec![WindowBlob {
                 wire_id: 1,
@@ -388,6 +423,7 @@ mod tests {
                     scrollback_bytes: b"old line\r\n".to_vec(),
                     retained_exit: None,
                     retain_secs: None,
+                    key: None,
                 },
                 PaneBlob {
                     wire_id: 2,
@@ -405,6 +441,7 @@ mod tests {
                     scrollback_bytes: vec![],
                     retained_exit: None,
                     retain_secs: None,
+                    key: None,
                 },
             ],
             agent_sessions: vec![AgentSessionBlob {
@@ -419,12 +456,14 @@ mod tests {
                 records: vec![
                     "{\"seq\":9,\"ts_ms\":1,\"type\":\"prompt\",\"data\":{}}\n".to_owned(),
                 ],
+                key: None,
             }],
             metadata: vec![MetadataBlob {
                 group: Some(1),
                 key: "phux.tui.layout/v1/1".to_owned(),
                 value: vec![0xa1, 0x01],
             }],
+            org: None,
         }
     }
 

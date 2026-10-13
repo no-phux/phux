@@ -260,6 +260,9 @@ pub(crate) struct Operations {
     // pending detach, preserving cursor/flow control if withdrawal is refused.
     deferred_sends: HashMap<ResourceId, DeferredSends>,
     last_request_id: u32,
+    /// Bridge-internal request ids of a close terminated one terminal at a
+    /// time, to the host request they answer.
+    parts: HashMap<u32, u32>,
 }
 
 impl Operations {
@@ -321,7 +324,8 @@ impl Operations {
     }
 
     pub(crate) fn check_request_id(&self, request_id: u32) -> Result<(), BridgeError> {
-        if request_id <= self.last_request_id || request_id >= crate::c::workspace::INTERNAL_START {
+        if request_id <= self.last_request_id || request_id >= crate::c::arrangement::INTERNAL_START
+        {
             return Err(BridgeError::invalid(
                 "host request IDs must strictly increase in 1..0x7fffffff",
             ));
@@ -367,6 +371,7 @@ impl Operations {
         error_code: u32,
         message: &str,
     ) {
+        self.parts.retain(|_, host| *host != request_id);
         let Some(pending) = self.pending.remove(&request_id) else {
             return;
         };
@@ -406,6 +411,7 @@ impl Operations {
         self.dynamic.clear();
         self.instances.clear();
         self.deferred_sends.clear();
+        self.parts.clear();
     }
 }
 
@@ -1051,6 +1057,56 @@ fn ensure_queue_capacity(client: &Client, request_id: u32) -> Result<(), BridgeE
     Ok(())
 }
 
+/// `PhuxOperationResult.error_domain` of a refusal an organization command
+/// answered: `error_code` is a `PhuxOrgRefusal`.
+pub const ERROR_DOMAIN_ORGANIZATION: u32 = 3;
+
+/// Answers to the bridge-internal parts of a close terminated one terminal
+/// at a time, re-addressed to the host request they belong to. Runs ahead
+/// of the arrangement dispatcher, which owns every other internal id. A part
+/// of a request that already settled is consumed silently.
+pub(crate) fn dispatch_parts(
+    client: &mut Client,
+    frame: FrameKind,
+) -> Result<Option<FrameKind>, BridgeError> {
+    let (part, frame) = match frame {
+        FrameKind::CommandResult { request_id, result }
+            if client.operations.parts.contains_key(&request_id) =>
+        {
+            let host = client.operations.parts.remove(&request_id);
+            (
+                host,
+                host.map(|host| FrameKind::CommandResult {
+                    request_id: host,
+                    result,
+                }),
+            )
+        }
+        FrameKind::Error {
+            request_id: Some(request_id),
+            code,
+            message,
+        } if client.operations.parts.contains_key(&request_id) => {
+            let host = client.operations.parts.remove(&request_id);
+            (
+                host,
+                host.map(|host| FrameKind::Error {
+                    request_id: Some(host),
+                    code,
+                    message,
+                }),
+            )
+        }
+        other => return Ok(Some(other)),
+    };
+    if let (Some(host), Some(frame)) = (part, frame)
+        && client.operations.pending.contains_key(&host)
+    {
+        dispatch(client, frame)?;
+    }
+    Ok(None)
+}
+
 pub(crate) fn dispatch(
     client: &mut Client,
     frame: FrameKind,
@@ -1168,6 +1224,27 @@ fn complete_subscription(
         ));
     }
     match result {
+        // A `RESOURCE_TERMINATE` close is accepted, not committed: its end
+        // arrives as `RESOURCE_CLOSED`, exactly like a kill's.
+        CommandResult::Accepted { .. }
+            if matches!(
+                client.operations.pending(request_id)?,
+                Pending::Close(_) | Pending::CloseMany(_)
+            ) =>
+        {
+            client.operations.acknowledge_close(request_id)?;
+        }
+        CommandResult::Refused(refusal) => {
+            let code = crate::projection::organization::refusal_code(&refusal);
+            let message = phux_client_core::org_ops::refusal_sentence(&refusal);
+            refuse_operation(
+                client,
+                request_id,
+                ERROR_DOMAIN_ORGANIZATION,
+                code,
+                &message,
+            )?;
+        }
         CommandResult::Ok => {
             if client.operations.acknowledge_close(request_id)? {
                 return Ok(());

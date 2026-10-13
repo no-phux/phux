@@ -17,6 +17,7 @@ pub mod autosave;
 pub mod connector;
 pub mod cwd_query;
 pub mod daemon;
+pub mod delegation;
 pub mod downsample;
 pub mod grid;
 pub mod health; // phux-zomb.6 (server start history: crash-loop is reportable)
@@ -27,10 +28,13 @@ pub mod input;
 pub mod mailbox;
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub mod native_state;
+pub mod org_store;
+pub mod org_wire;
 pub mod perf;
 pub mod policy;
 pub(crate) mod proc_query;
 pub(crate) mod push;
+pub mod reconcile;
 pub mod resource;
 pub mod runtime;
 pub mod state;
@@ -45,6 +49,7 @@ pub mod workload;
 pub use hub::link::{HubLinkStatuses, LinkStatus};
 pub use hub::{HubEntry, HubTable, HubTableError, SatelliteSource, SatelliteTarget, TableDiff};
 pub use id_bridge::IdBridge;
+pub use org_store::OrgStoreLocation;
 pub use resource::{
     ResourceCore, ResourceFacetHandle, ResourceHandle, ResourceId, ResourceKind, WrongResourceKind,
 };

@@ -14,6 +14,7 @@ projects onto them. Absent is today's attach, byte for byte.
 
 Status: Accepted
 Date: 2026-09-15
+See [ADR-0163](./0163-actors-and-delegated-agent-grants.md) for human lease precedence and lease epochs.
 
 ## Context
 

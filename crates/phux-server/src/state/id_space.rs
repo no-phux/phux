@@ -1,13 +1,18 @@
 //! The server's wire-id space (ADR-0016): the sessions, terminals, and
-//! windows bridges between `phux-core` keys and `phux-protocol` `u32` ids,
-//! held here because those crates must not depend on each other.
+//! legacy-window bridges between `phux-core` handles and `phux-protocol`
+//! `u32` ids, held here because those crates must not depend on each other.
+//!
+//! Windows are gone from the model; the window bridge interns the one
+//! synthetic window a legacy `GET_STATE` reports per non-empty session
+//! (R06), keyed by that session, so its id is stable across calls and
+//! upgrades.
 //!
 //! All three are an [`IdBridge`] with one exhaustion rule: fail fast rather
 //! than alias (see [`crate::id_bridge`]), so ids run `1..=u32::MAX - 1`.
 //! Only `ResourceId::Local` is minted; satellite terminals never enter
 //! these tables, so [`Self::terminal_from_wire`] returns `None` for them.
 
-use phux_core::ids::{ResourceId, SessionId, WindowId};
+use phux_core::ids::{ResourceId, SessionId};
 use phux_protocol::ids::{
     ResourceId as WireResourceId, SessionId as WireSessionId, WindowId as WireWindowId,
 };
@@ -23,8 +28,8 @@ pub struct IdSpace {
     /// Terminal bridge; its reverse map is the existence check for every
     /// Terminal-scoped command.
     terminals: IdBridge<ResourceId, WireResourceId>,
-    /// Window bridge.
-    windows: IdBridge<WindowId, WireWindowId>,
+    /// Legacy window bridge: one synthetic window per session.
+    windows: IdBridge<SessionId, WireWindowId>,
     /// The terminal id space's instance token (ADR-0109), minted with the
     /// allocator; an upgrade restores both.
     instance: phux_protocol::ids::ServerInstance,
@@ -100,9 +105,11 @@ impl IdSpace {
         self.sessions.bind(core, wire);
     }
 
-    /// Drop `core`'s session mapping (the id is not reused).
+    /// Drop `core`'s session mapping and its synthetic window's (neither id
+    /// is reused).
     pub fn forget_session(&mut self, core: SessionId) {
         let _ = self.sessions.forget(core);
+        let _ = self.windows.forget(core);
     }
 
     /// The next session wire id this space would allocate.
@@ -165,29 +172,30 @@ impl IdSpace {
 
     // -- windows ------------------------------------------------------
 
-    /// Wire window id, allocating if needed.
+    /// Wire id of `session`'s synthetic window, allocating if needed.
     ///
     /// # Panics
     ///
     /// If the space is exhausted.
-    pub(super) fn intern_window(&mut self, window: WindowId) -> WireWindowId {
-        self.windows.intern(window)
+    pub(super) fn intern_window(&mut self, session: SessionId) -> WireWindowId {
+        self.windows.intern(session)
     }
 
     /// Forward lookup without allocating.
     #[must_use]
-    pub(super) fn window_wire(&self, window: WindowId) -> Option<WireWindowId> {
-        self.windows.wire(window).copied()
+    pub(super) fn window_wire(&self, session: SessionId) -> Option<WireWindowId> {
+        self.windows.wire(session).copied()
     }
 
-    /// Bind a window mapping from an upgrade blob.
-    pub(super) fn bind_window(&mut self, window: WindowId, wire: WireWindowId) {
-        self.windows.bind(window, wire);
+    /// The session whose synthetic window `wire` names.
+    #[must_use]
+    pub fn session_of_window(&self, wire: WireWindowId) -> Option<SessionId> {
+        self.windows.resolve(&wire)
     }
 
-    /// Drop `window`'s mapping (not reused).
-    pub(super) fn retire_window(&mut self, window: WindowId) {
-        let _ = self.windows.forget(window);
+    /// Bind a synthetic window mapping from an upgrade blob.
+    pub(super) fn bind_window(&mut self, session: SessionId, wire: WireWindowId) {
+        self.windows.bind(session, wire);
     }
 
     /// The next window wire id this space would allocate.
@@ -207,16 +215,25 @@ mod tests {
     use super::*;
     use phux_core::registry::Registry;
 
-    /// Two distinct core ids in each space, from one registry.
-    fn two_of_each() -> (Registry, [SessionId; 2], [WindowId; 2], [ResourceId; 2]) {
-        let mut reg = Registry::new();
-        let s0 = reg.new_session("s0".to_owned());
-        let s1 = reg.new_session("s1".to_owned());
-        let w0 = reg.new_window(s0).expect("window 0");
-        let w1 = reg.new_window(s1).expect("window 1");
-        let t0 = reg.new_terminal(w0).expect("terminal 0");
-        let t1 = reg.new_terminal(w1).expect("terminal 1");
-        (reg, [s0, s1], [w0, w1], [t0, t1])
+    /// Two distinct handles in each space, from one registry.
+    fn two_of_each() -> (Registry, [SessionId; 2], [ResourceId; 2]) {
+        let mut state = crate::state::ServerState::new();
+        let (s0, t0) = state.seed_session("s0");
+        let (s1, t1) = state.seed_session("s1");
+        let reg = Registry::new(state.org().clone());
+        let s0 = reg
+            .session_id(&state.registry().session_key(s0).expect("s0"))
+            .expect("s0");
+        let s1 = reg
+            .session_id(&state.registry().session_key(s1).expect("s1"))
+            .expect("s1");
+        let t0 = reg
+            .resource_id(&state.registry().resource_key(t0).expect("t0"))
+            .expect("t0");
+        let t1 = reg
+            .resource_id(&state.registry().resource_key(t1).expect("t1"))
+            .expect("t1");
+        (reg, [s0, s1], [t0, t1])
     }
 
     // --- the u32 boundary: `u32::MAX - 1` is the last id minted ---
@@ -224,7 +241,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "terminal wire-id space exhausted")]
     fn terminal_space_panics_instead_of_saturating() {
-        let (_reg, _, _, terminals) = two_of_each();
+        let (_reg, _, terminals) = two_of_each();
         let mut space = IdSpace::new();
         space.set_next_terminal_wire(u32::MAX - 1);
         let _ = space.intern_terminal(terminals[0]);
@@ -235,7 +252,7 @@ mod tests {
 
     #[test]
     fn terminal_from_wire_is_none_for_a_satellite_id() {
-        let (_reg, _, _, terminals) = two_of_each();
+        let (_reg, _, terminals) = two_of_each();
         let mut space = IdSpace::new();
         let wire = space.intern_terminal(terminals[0]);
         let raw = wire.local_id().expect("minted id is Local");
@@ -251,12 +268,12 @@ mod tests {
 
     #[test]
     fn every_space_allocates_monotonically_from_one() {
-        let (_reg, sessions, windows, terminals) = two_of_each();
+        let (_reg, sessions, terminals) = two_of_each();
         let mut space = IdSpace::new();
         assert_eq!(space.intern_session(sessions[0]), WireSessionId(1));
         assert_eq!(space.intern_session(sessions[1]), WireSessionId(2));
-        assert_eq!(space.intern_window(windows[0]), WireWindowId(1));
-        assert_eq!(space.intern_window(windows[1]), WireWindowId(2));
+        assert_eq!(space.intern_window(sessions[0]), WireWindowId(1));
+        assert_eq!(space.intern_window(sessions[1]), WireWindowId(2));
         assert_eq!(
             space.intern_terminal(terminals[0]),
             WireResourceId::local(1)
@@ -269,13 +286,17 @@ mod tests {
 
     #[test]
     fn retiring_does_not_recycle_wire_ids() {
-        let (_reg, sessions, windows, terminals) = two_of_each();
+        let (_reg, sessions, terminals) = two_of_each();
         let mut space = IdSpace::new();
 
         let s0 = space.intern_session(sessions[0]);
+        let w0 = space.intern_window(sessions[0]);
+        assert_eq!(space.intern_window(sessions[0]), w0, "stable per session");
         space.forget_session(sessions[0]);
         assert!(space.resolve_session(s0).is_none());
+        assert!(space.window_wire(sessions[0]).is_none());
         assert_eq!(space.intern_session(sessions[1]), WireSessionId(2));
+        assert_eq!(space.intern_window(sessions[1]), WireWindowId(2));
 
         let t0 = space.intern_terminal(terminals[0]);
         assert_eq!(space.retire_terminal(terminals[0]), Some(t0.clone()));
@@ -284,10 +305,5 @@ mod tests {
             space.intern_terminal(terminals[1]),
             WireResourceId::local(2)
         );
-
-        let _ = space.intern_window(windows[0]);
-        space.retire_window(windows[0]);
-        assert!(space.window_wire(windows[0]).is_none());
-        assert_eq!(space.intern_window(windows[1]), WireWindowId(2));
     }
 }

@@ -108,8 +108,8 @@ fn begin(engine: *engine_module.Engine, terminal: ?contract.TerminalRef) !void {
 
 fn workspace(engine: *engine_module.Engine) !void {
     const remote = engine.model.phux().?;
-    try fixture.stageWorkspaceFixture(remote.bridge, "workspace_initial_metadata.bin");
-    try fixture.stageWorkspaceFixture(remote.bridge, "workspace_initial_state.bin");
+    try fixture.stageWorkspaceFixture(remote.bridge, "workspace_arranged_metadata.bin");
+    try fixture.stageWorkspaceFixture(remote.bridge, "workspace_arranged_state.bin");
     _ = try remote.drainReadiness();
 }
 

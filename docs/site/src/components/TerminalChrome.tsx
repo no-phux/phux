@@ -87,7 +87,7 @@ export function PaneControls({ panes, error, splitVertical, splitHorizontal, nex
     <button className="pterm-split-primary" aria-label="Split pane left/right" title="Split left/right" disabled={panes.pending || panes.count >= 4} onClick={splitVertical}>Split pane</button>
     <button aria-label="Split top/bottom" title="Split top/bottom" disabled={panes.pending || panes.count >= 4} onClick={splitHorizontal}>Top/bottom</button>
     <button disabled={panes.pending || panes.count < 2} onClick={nextPane}>Next pane</button>
-    <button disabled={panes.pending || panes.count < 2} onClick={closePane}>Close pane</button>
+    <button disabled={panes.pending || panes.count < 2} onClick={closePane}>Close view</button>
     <span className="pterm-pane-status" role="status">{error || (panes.pending ? "Updating panes…" : "")}</span>
   </nav>;
 }
@@ -123,7 +123,7 @@ export function TerminalInfo({ native, backend, identity, startupMs, live, focus
         <span><kbd>Ctrl+a</kbd> <kbd>%</kbd> split left/right</span>
         <span><kbd>Ctrl+a</kbd> <kbd>&quot;</kbd> split top/bottom</span>
         <span><kbd>Ctrl+a</kbd> <kbd>o</kbd> next pane</span>
-        <span><kbd>Ctrl+a</kbd> <kbd>x</kbd> close pane</span>
+        <span><kbd>Ctrl+a</kbd> <kbd>x</kbd> kill pane</span>
       </aside>
       <p className="pterm-info-note">Click a pane to type there. This demo is disposable: switching runtime or closing this window releases its session. Install phux to keep your work running.</p>
       {children}

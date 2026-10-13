@@ -635,6 +635,7 @@ impl Drop for ControlGuard<'_> {
 mod commands;
 mod extensions;
 mod input;
+mod organization;
 mod projection;
 
 impl Client {

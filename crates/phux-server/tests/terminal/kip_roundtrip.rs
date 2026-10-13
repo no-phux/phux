@@ -10,9 +10,7 @@
 //! the phux-7vx ncurses `fullkbd` reproducer, was never available, so the
 //! default `TERM` stays `xterm-256color` (`defaults.term` opts in).
 //!
-//! "The app quit" is the probed pane's `RESOURCE_CLOSED { Exited }`, which
-//! needs a second pane in the window (a sole Terminal's exit respawns a shell
-//! in place, phux-5y00); see `TuiProbe::pin_anchor_pane`.
+//! "The app quit" is the probed pane's `RESOURCE_CLOSED { Exited }`.
 
 #![allow(clippy::print_stderr, reason = "skip markers + KIP forensics")]
 
@@ -21,7 +19,7 @@ use std::time::Duration;
 
 use phux_protocol::ids::ResourceId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
-use phux_protocol::wire::frame::{CloseReason, FrameKind, SpawnResult};
+use phux_protocol::wire::frame::{CloseReason, FrameKind};
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
@@ -29,8 +27,8 @@ use tokio::time::timeout_at;
 
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, Spawn, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local,
-    seed_pty, send_frame, spawn_server_with, wait_for_server_screen_text, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local, seed_pty,
+    send_frame, spawn_server_with, wait_for_server_screen_text, wait_for_socket,
 };
 
 use super::common::{named_key, sh};
@@ -156,32 +154,7 @@ impl TuiProbe {
                 _ => {}
             }
         }
-        probe.pin_anchor_pane().await;
         probe
-    }
-
-    /// Spawn an inert `/bin/cat` into the probed pane's window so the TUI's
-    /// natural exit closes its pane instead of respawning a shell in place
-    /// (and the session never empties, so the server cannot self-exit).
-    async fn pin_anchor_pane(&mut self) {
-        let spawn = Spawn {
-            owner_terminal: Some(self.terminal_id.clone()),
-            ..Spawn::command(&["/bin/cat"])
-        };
-        send_frame(&mut self.stream, &spawn.frame(9001)).await;
-        let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
-        // Pump rather than skip: the probed pane is already painting.
-        while let Some(frame) = self.pump_once(deadline).await {
-            if let FrameKind::ResourceSpawned {
-                request_id: 9001,
-                result,
-            } = frame
-            {
-                assert!(matches!(result, SpawnResult::Ok(_)), "anchor: {result:?}");
-                return;
-            }
-        }
-        panic!("anchor pane never spawned");
     }
 
     async fn send_key(&mut self, event: KeyEvent) {

@@ -55,13 +55,25 @@
       "parent": null
     }
   ],
-  "schema_version": 3,
+  "schema_version": 4,
   "sessions": [
     {
       "attached": false,
       "attached_clients": 0,
       "empty": false,
+      "exec": {
+        "abandoned": 0,
+        "completed": 1,
+        "dormant": 0,
+        "failed": 0,
+        "lost": 0,
+        "running": 3,
+        "starting": 0,
+        "stopping": 0
+      },
       "keep_empty": false,
+      "lifetime": null,
+      "members": 4,
       "name": "work",
       "windows": 1
     }

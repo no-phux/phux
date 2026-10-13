@@ -12,7 +12,7 @@ use crate::attach::pane_state::AttentionNavigation;
 use crate::attach::plugin_actions::{PluginActionEntry, PluginRunResult};
 use crate::attach::plugin_panes::PluginPaneEntry;
 use crate::attach::sidebar_zones::PeerInputs;
-use crate::layout::{SplitDir, Workspace};
+use crate::layout::{ArrangementDoc, SplitDir};
 use crate::render::overlay::OverlayState;
 use crate::render::{ChromeBreakpoints, Theme};
 
@@ -32,11 +32,15 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// Client-local focus transition/MRU bookkeeping.
     pub focus_history: FocusHistory,
     /// Client-side multi-window mirror. Pane actions operate on the
-    /// active window ([`Workspace::active_window_mut`]); the whole
+    /// active window ([`ArrangementDoc::active_group_mut`]); the whole
     /// workspace is what gets serialized to L3 on a `SET_METADATA`.
-    pub workspace: &'a mut Workspace,
+    pub workspace: &'a mut ArrangementDoc,
     /// A correlated initial layout GET confirmed valid metadata or absence.
     pub layout_read_complete: bool,
+    /// Set when the session's arrangement is a record the driver writes over
+    /// its control connection: a layout broadcast raises it instead of
+    /// sending `SET_METADATA`, and the driver writes after the batch.
+    pub arrangement_write_owed: Option<&'a mut bool>,
     /// Outer-viewport `(cols, rows)`. Used by `apply_resize` to convert
     /// `amount` (cells) to a ratio delta.
     pub viewport: (u16, u16),
@@ -77,6 +81,8 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     pub own_client_id: Option<phux_protocol::ids::ClientId>,
     /// Terminals whose close this client requested (no exit notice).
     pub expected_closes: &'a mut HashSet<ResourceId>,
+    /// Terminal-kind members of the attached session, arranged or not.
+    pub session_members: &'a HashSet<ResourceId>,
     /// `request_id` -> Terminal for sent kills; a `TerminalNotFound` refusal
     /// folds the dead leaf out.
     pub pending_kills: &'a mut HashMap<u32, ResourceId>,

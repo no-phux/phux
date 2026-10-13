@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Phux — The whole model, in one picture</title>
+<style>
+:root{--bg:#101317;--panel:#191e24;--ink:#e9edf2;--muted:#a9b3c0;--line:#354352;--mint:#88dac4;--blue:#a6c6ff;--violet:#c9b3ff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,sans-serif}main{max-width:1120px;margin:auto;padding:24px 28px 40px}header{display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:12px;letter-spacing:.08em;color:var(--muted)}header a,a{color:var(--mint)}h1{font-size:clamp(26px,4vw,42px);line-height:1.15;letter-spacing:-.035em;margin:22px 0 10px}.lede{margin:0 0 18px;color:var(--muted);font-size:17px}.diagram{width:100%;display:block}svg text{font-family:system-ui,-apple-system,sans-serif}.diagram-label{font-size:13px;letter-spacing:1.5px;font-weight:700}.diagram-title{font-size:22px;font-weight:650}.diagram-small{font-size:14px}.resource-name{font-size:17px;font-weight:600}.caption{color:var(--muted);font-size:13px;margin:5px 0 20px;text-align:center}.rules{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:0 0 18px}.rule{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}.rule strong{font-size:15px;display:block}.rule p{font-size:13px;margin:5px 0 0;color:var(--muted)}details{border-top:1px solid var(--line);padding:13px 0}summary{cursor:pointer;font-weight:600;font-size:14px}details p,details li{font-size:14px;color:var(--muted)}details ul{padding-left:22px}details a{display:inline-block;margin-top:10px}.notes{padding:12px 0}label{display:block;font-size:14px;font-weight:600;margin-bottom:8px}textarea{width:100%;min-height:100px;padding:12px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:8px;font:inherit;resize:vertical}.actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:8px}button{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:8px 12px;font:inherit;font-size:13px;cursor:pointer}.status{font-size:12px;color:var(--muted)}a:focus-visible,button:focus-visible,summary:focus-visible,textarea:focus-visible{outline:3px solid var(--mint);outline-offset:3px}.narrow{display:none}
+@media(max-width:900px){.rules{grid-template-columns:repeat(2,1fr)}}@media(max-width:650px){main{padding:18px 16px}.wide{display:none}.narrow{display:block}.rules{grid-template-columns:1fr;gap:8px}.rule{padding:10px 12px}.lede{font-size:15px}h1{font-size:28px}.caption{text-align:left}}
+@media print{body{background:white;color:black}main{padding:0}.notes,.actions,header a{display:none}.rule{background:white;color:black;border-color:#aaa}.rule p,.caption,.lede{color:#444}svg{print-color-adjust:exact;-webkit-print-color-adjust:exact}details{display:none}}
+.inbox{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:12px 16px;margin:0 0 16px;border:1px solid var(--mint);border-radius:10px;background:var(--panel);font-size:14px}.inbox strong{color:var(--mint)}.inbox span{color:var(--muted)}
+</style>
+</head>
+<body>
+<main>
+<header><span>PHUX / PROPOSED DOMAIN MODEL</span><a href="DESIGN.md">Markdown</a></header>
+<h1>Resource → Session → Workspace</h1>
+<p class="lede">One world of work for people and bots. Resources → groups → linked groups across machines.</p>
+
+<svg class="diagram wide" viewBox="0 0 1060 370" role="img" aria-labelledby="wide-title wide-desc">
+<title id="wide-title">One workspace links sessions on a laptop and a Mac mini; each session groups resources.</title>
+<desc id="wide-desc">Workspace Ship the product contains links to Frontend on Laptop and Backend on Mac mini. Frontend has Terminal and Browser resources. Backend has Terminal and Other resources. Squares show resources without owning their execution.</desc>
+<rect x="2" y="2" width="1056" height="365" rx="18" fill="#141b20" stroke="#88dac4" stroke-width="2"/>
+<text x="28" y="32" fill="#88dac4" class="diagram-label">WORKSPACE</text>
+<text x="28" y="64" fill="#e9edf2" class="diagram-title">Ship the product</text>
+<text x="1030" y="46" text-anchor="end" fill="#a9b3c0" class="diagram-small">Sessions linked, not copied</text>
+<path d="M530 78 V99 M270 99 H790 M270 99 V115 M790 99 V115" stroke="#88dac4" stroke-width="2" fill="none"/>
+<rect x="28" y="116" width="486" height="223" rx="12" fill="#191e24" stroke="#a6c6ff" stroke-width="1.5"/>
+<rect x="546" y="116" width="486" height="223" rx="12" fill="#191e24" stroke="#c9b3ff" stroke-width="1.5"/>
+<text x="48" y="146" fill="#a6c6ff" class="diagram-label">SESSION</text>
+<text x="48" y="178" fill="#e9edf2" class="diagram-title">Frontend</text>
+<text x="492" y="151" text-anchor="end" fill="#a9b3c0" class="diagram-small">Laptop</text>
+<text x="566" y="146" fill="#c9b3ff" class="diagram-label">SESSION</text>
+<text x="566" y="178" fill="#e9edf2" class="diagram-title">Backend</text>
+<text x="1012" y="151" text-anchor="end" fill="#a9b3c0" class="diagram-small">Mac mini</text>
+<rect x="48" y="199" width="212" height="119" rx="9" fill="#101317" stroke="#354352"/>
+<rect x="280" y="199" width="212" height="119" rx="9" fill="#101317" stroke="#354352"/>
+<rect x="566" y="199" width="212" height="119" rx="9" fill="#101317" stroke="#354352"/>
+<rect x="798" y="199" width="212" height="119" rx="9" fill="#101317" stroke="#354352"/>
+<text x="64" y="226" fill="#a9b3c0" class="diagram-label">RESOURCE</text>
+<text x="296" y="226" fill="#a9b3c0" class="diagram-label">RESOURCE</text>
+<text x="582" y="226" fill="#a9b3c0" class="diagram-label">RESOURCE</text>
+<text x="814" y="226" fill="#a9b3c0" class="diagram-label">RESOURCE</text>
+<text x="64" y="266" fill="#e9edf2" class="resource-name">Terminal</text>
+<text x="296" y="266" fill="#e9edf2" class="resource-name">Browser</text>
+<text x="582" y="266" fill="#e9edf2" class="resource-name">Terminal</text>
+<text x="814" y="266" fill="#e9edf2" class="resource-name">Other kind</text>
+<text x="64" y="292" fill="#a9b3c0" class="diagram-small">Dev shell</text>
+<text x="296" y="292" fill="#a9b3c0" class="diagram-small">Preview page</text>
+<text x="582" y="292" fill="#a9b3c0" class="diagram-small">API shell</text>
+<text x="814" y="292" fill="#a9b3c0" class="diagram-small">Not terminal-shaped</text>
+</svg>
+
+<svg class="diagram narrow" viewBox="0 0 400 560" role="img" aria-labelledby="narrow-title narrow-desc">
+<title id="narrow-title">A workspace links two sessions across machines, each grouping resources.</title>
+<desc id="narrow-desc">Ship the product links Frontend on Laptop, with Terminal and Browser resources, to Backend on Mac mini, with Terminal and Other resources.</desc>
+<rect x="2" y="2" width="396" height="555" rx="14" fill="#141b20" stroke="#88dac4" stroke-width="2"/>
+<text x="22" y="30" fill="#88dac4" class="diagram-label">WORKSPACE</text>
+<text x="22" y="61" fill="#e9edf2" class="diagram-title">Ship the product</text>
+<text x="22" y="87" fill="#a9b3c0" class="diagram-small">Sessions linked across machines</text>
+<rect x="20" y="108" width="360" height="196" rx="10" fill="#191e24" stroke="#a6c6ff" stroke-width="1.5"/>
+<text x="36" y="135" fill="#a6c6ff" class="diagram-label">SESSION</text>
+<text x="36" y="164" fill="#e9edf2" class="diagram-title">Frontend</text>
+<text x="364" y="136" text-anchor="end" fill="#a9b3c0" class="diagram-small">Laptop</text>
+<rect x="36" y="182" width="156" height="102" rx="8" fill="#101317" stroke="#354352"/>
+<rect x="208" y="182" width="156" height="102" rx="8" fill="#101317" stroke="#354352"/>
+<text x="48" y="205" fill="#a9b3c0" class="diagram-label">RESOURCE</text>
+<text x="220" y="205" fill="#a9b3c0" class="diagram-label">RESOURCE</text>
+<text x="48" y="239" fill="#e9edf2" class="resource-name">Terminal</text>
+<text x="220" y="239" fill="#e9edf2" class="resource-name">Browser</text>
+<text x="48" y="265" fill="#a9b3c0" class="diagram-small">Dev shell</text>
+<text x="220" y="265" fill="#a9b3c0" class="diagram-small">Preview page</text>
+<path d="M200 305 V330" stroke="#88dac4" stroke-width="2"/>
+<rect x="20" y="330" width="360" height="196" rx="10" fill="#191e24" stroke="#c9b3ff" stroke-width="1.5"/>
+<text x="36" y="357" fill="#c9b3ff" class="diagram-label">SESSION</text>
+<text x="36" y="386" fill="#e9edf2" class="diagram-title">Backend</text>
+<text x="364" y="358" text-anchor="end" fill="#a9b3c0" class="diagram-small">Mac mini</text>
+<rect x="36" y="404" width="156" height="102" rx="8" fill="#101317" stroke="#354352"/>
+<rect x="208" y="404" width="156" height="102" rx="8" fill="#101317" stroke="#354352"/>
+<text x="48" y="427" fill="#a9b3c0" class="diagram-label">RESOURCE</text>
+<text x="220" y="427" fill="#a9b3c0" class="diagram-label">RESOURCE</text>
+<text x="48" y="461" fill="#e9edf2" class="resource-name">Terminal</text>
+<text x="220" y="461" fill="#e9edf2" class="resource-name">Other kind</text>
+<text x="48" y="487" fill="#a9b3c0" class="diagram-small">API shell</text>
+<text x="220" y="487" fill="#a9b3c0" class="diagram-small">Anything supported</text>
+</svg>
+
+<p class="caption">Square = a view of a resource. Same work, different layouts on desktop and phone.</p>
+<section class="inbox" aria-label="Inbox intake"><strong>INBOX →</strong><span>Existing groups + unorganized work. Nothing flattened.</span><span>Drag · keyboard · bulk · undo</span></section>
+<section class="rules" aria-label="Four essential rules">
+<div class="rule"><strong>Close square → work keeps running</strong><p>Kill is a separate, explicit action.</p></div>
+<div class="rule"><strong>Empty named session → it stays</strong><p>Quick sessions are ephemeral, by choice, not by accident.</p></div>
+<div class="rule"><strong>Delete workspace → sessions stay</strong><p>It owns links, not their execution.</p></div>
+<div class="rule"><strong>People + bots → same work</strong><p>Bots operate at scale. People see groups and exceptions. Actions are attributed.</p></div>
+</section>
+
+<details><summary>Who owns what?</summary>
+<ul><li><strong>Core:</strong> one model for identity, membership, and lifecycle.</li><li><strong>Owning server:</strong> records, execution, access, and who did what.</li><li><strong>Clients:</strong> views, layout, and focus. No alternative session rules.</li></ul>
+</details>
+<details><summary>The constraints that keep this honest</summary>
+<ul><li>One resource → one session → one owner.</li><li>A session can be linked into several workspaces.</li><li>Names and IP addresses are not identity.</li><li>Offline does not mean dead.</li><li>Saved organization does not mean processes survive reboot.</li><li>Browsers and other kinds have their own capabilities—not fake terminal fields.</li></ul>
+</details>
+<details><summary>Inbox is a starting place, not another hierarchy</summary>
+<p>Imported sessions stay intact. Truly ungrouped work goes into its owning machine's Inbox session. One Inbox view brings authorized work together across machines.</p>
+<p>Move resources between sessions on the same machine; link sessions across machines. Organizing never restarts work. Undo checks current permissions and changes—never overwriting somebody else's edits.</p>
+</details>
+<details><summary>The full design — only when you need it</summary>
+<p>The model, then the implementable contracts, the staged build plan, the migration from today's tree, and the browser kind.</p>
+<a href="FULL-DESIGN.html">Domain model</a> · <a href="CONTRACTS.html">Contracts</a> · <a href="PLAN.html">Build plan</a> · <a href="REFACTOR-MAP.html">Refactor map</a> · <a href="MIGRATION.html">Migration</a> · <a href="BROWSER-KIND.html">Browser kind</a>
+</details>
+<details id="review"><summary>Make a note</summary>
+<section class="notes"><label for="note">What should change?</label><textarea id="note" placeholder="Point at the picture or a rule. Tell me what to change."></textarea><div class="actions"><button id="export" type="button">Export note</button><span id="status" class="status" role="status">Saved locally when this browser supports it. Export to share.</span></div></section>
+</details>
+</main>
+<script>
+const key = 'phux-domain-visual-review-2026-10-12';
+const note = document.getElementById('note');
+const status = document.getElementById('status');
+try { note.value = localStorage.getItem(key) || ''; }
+catch { status.textContent = 'Local saving unavailable. Export before closing.'; }
+note.addEventListener('input', () => {
+  try { localStorage.setItem(key, note.value); status.textContent = 'Saved locally. Export to share.'; }
+  catch { status.textContent = 'Local saving unavailable. Export before closing.'; }
+});
+document.getElementById('export').addEventListener('click', () => {
+  const blob = new Blob(['# Phux visual model — review note\n\n' + note.value + '\n'], {type:'text/markdown;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'phux-visual-review.md';
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+</script>
+</body>
+</html>

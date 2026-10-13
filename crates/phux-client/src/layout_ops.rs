@@ -1,21 +1,35 @@
-//! Headless read-modify-write of a session's persisted TUI layout
-//! (`phux.tui.layout/v1/<session>`, a v3 [`Workspace`] envelope) over L3
-//! metadata, for the CLI and MCP.
+//! Headless read-modify-write of a session's shared arrangement, for the CLI
+//! and MCP.
 //!
-//! There is deliberately no headless focus mutation (ADR-0049). Writes are
+//! Against a server that advertises `ORGANIZATION`, the arrangement is the
+//! session's record: [`LayoutOps`] reads it with `ARRANGEMENT_GET`,
+//! translates its keys to live handles ([`crate::layout::wire`]), applies the
+//! pure [`apply_mutation`], and writes it back with `ARRANGEMENT_REPLACE`
+//! naming the revision it read: a real compare-and-swap, retried on
+//! `CONFLICT` against a fresh read. A session with no arrangement yet is
+//! seeded through the legacy key, which the server translates into one.
+//!
+//! Against an older server, and always for a named projection key
+//! (ADR-0129), the layout is the v3 [`ArrangementDoc`] envelope under L3
+//! metadata (`phux.tui.layout/v1/<session>`). Writes there are
 //! last-write-wins; a trailing `GET_METADATA` flushes the fire-and-forget SET
-//! and confirms it. Use a dedicated, unsubscribed connection.
+//! and confirms it.
+//!
+//! There is deliberately no headless focus mutation (ADR-0049). Use a
+//! dedicated, unsubscribed connection.
 
-use phux_protocol::ids::{GroupId, ResourceId, SessionId};
-use phux_protocol::wire::frame::{FrameKind, Scope};
+use phux_protocol::ids::{ArrangementKey, GroupId, ResourceId, Revision, SessionId};
+use phux_protocol::wire::frame::{Command, FrameKind, OrgFilter, Refusal, Scope};
 use thiserror::Error;
 
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
+use crate::layout::wire::{EntryBinding, HandleMap, WireError};
 use crate::layout::{
-    LayoutDecodeError, LayoutEncodeError, LayoutError, LayoutNode, SplitDir, Workspace, kill_pane,
-    leaves, repair_focus, split_at,
+    ArrangementDoc, LayoutDecodeError, LayoutEncodeError, LayoutError, LayoutNode, SplitDir,
+    kill_pane, leaves, repair_focus, split_at,
 };
+use crate::org::{self, OrgError, OrgOutcome};
 
 pub use crate::layout::{LAYOUT_KEY, layout_key};
 
@@ -64,7 +78,7 @@ pub fn validate_projection_key(key: &str, session: SessionId) -> Result<(), Layo
     Ok(())
 }
 
-/// One pure mutation of a decoded [`Workspace`].
+/// One pure mutation of a decoded [`ArrangementDoc`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum LayoutMutation {
     /// Insert `new_pane` beside `target`.
@@ -155,6 +169,15 @@ pub enum LayoutOpsError {
         "projection key {0:?} must be `<prefix>.layout/v1/<session-id>` naming the addressed session"
     )]
     InvalidProjectionKey(String),
+    /// An organization request failed.
+    #[error(transparent)]
+    Org(#[from] OrgError),
+    /// The document names a pane that is not a member record of this server.
+    #[error(transparent)]
+    Wire(#[from] WireError),
+    /// Every compare-and-swap attempt lost to a concurrent writer.
+    #[error("the arrangement kept changing underneath this edit; retry")]
+    Conflict,
     /// The confirming read found other bytes than those just written.
     #[error(
         "layout write was not confirmed: the read-back value did not match what was written \
@@ -164,13 +187,32 @@ pub enum LayoutOpsError {
     NotConfirmed,
 }
 
-/// Layout metadata client over a dedicated [`Connection`], allocating
-/// request ids from `first_request_id`.
+/// A session arrangement as read from the server, with what writing it back
+/// needs.
+#[derive(Debug, Clone)]
+pub struct ReadArrangement {
+    /// The handle-space document.
+    pub document: ArrangementDoc,
+    /// The arrangement's key.
+    pub key: ArrangementKey,
+    /// The revision `document` was read at.
+    pub revision: Revision,
+    /// Key-to-handle translation for the session's members.
+    pub handles: HandleMap,
+    /// Entry ids and unplaceable entries, for the write-back.
+    pub binding: EntryBinding,
+}
+
+/// Layout client over a dedicated [`Connection`], allocating request ids from
+/// `first_request_id`. See the module docs for the two paths.
 #[derive(Debug)]
 pub struct LayoutOps<'a> {
     conn: &'a mut Connection,
+    session: SessionId,
     group: GroupId,
     key: String,
+    /// A named projection never maps to the session arrangement (R17).
+    projection: bool,
     next_request_id: u32,
 }
 
@@ -191,8 +233,10 @@ impl<'a> LayoutOps<'a> {
     ) -> Self {
         Self {
             conn,
+            session,
             group,
             key: layout_key(session),
+            projection: false,
             next_request_id: first_request_id,
         }
     }
@@ -213,22 +257,141 @@ impl<'a> LayoutOps<'a> {
         validate_projection_key(&key, session)?;
         Ok(Self {
             conn,
+            session,
             group: DEFAULT_LAYOUT_GROUP_ID,
             key,
+            projection: true,
             next_request_id: first_request_id,
         })
     }
 
-    /// Read and decode this session's current v3 layout. Earlier schemas refuse.
+    /// Whether this client edits the session's arrangement record rather
+    /// than legacy layout metadata.
+    #[must_use]
+    pub fn uses_arrangement(&self) -> bool {
+        !self.projection && org::supported(self.conn)
+    }
+
+    /// Read this session's current layout: its arrangement record, or the v3
+    /// envelope from an older server (earlier schemas refuse).
     ///
     /// # Errors
     ///
-    /// Returns [`LayoutOpsError::MissingLayout`] when the key is absent, plus
-    /// transport, refusal, or envelope decode errors.
-    pub async fn read(&mut self) -> Result<Workspace, LayoutOpsError> {
+    /// Returns [`LayoutOpsError::MissingLayout`] when the session has none,
+    /// plus transport, refusal, or decode errors.
+    pub async fn read(&mut self) -> Result<ArrangementDoc, LayoutOpsError> {
+        if self.uses_arrangement() {
+            return self.read_arrangement().await.map(|read| read.document);
+        }
         let value = self.get_value().await?;
         let bytes = value.ok_or(LayoutOpsError::MissingLayout)?;
-        Workspace::decode_cbor(&bytes).map_err(Into::into)
+        ArrangementDoc::decode_cbor(&bytes).map_err(Into::into)
+    }
+
+    /// Read this session's arrangement record with its key, revision, and
+    /// key translation.
+    ///
+    /// # Errors
+    ///
+    /// [`LayoutOpsError::MissingLayout`] when the session has no arrangement
+    /// (or is not listed), [`LayoutOpsError::Org`] for a failed request.
+    pub async fn read_arrangement(&mut self) -> Result<ReadArrangement, LayoutOpsError> {
+        let request_id = self.allocate_request_id();
+        let inventory = org::fetch(self.conn, OrgFilter::All, request_id).await?;
+        self.next_request_id = self.next_request_id.wrapping_add(64);
+        let session = inventory
+            .session_by_live(self.session)
+            .ok_or(LayoutOpsError::MissingLayout)?;
+        let key = session.arrangement.ok_or(LayoutOpsError::MissingLayout)?;
+        let handles = HandleMap::from_pairs(
+            inventory
+                .members(&session.key)
+                .map(|record| (record.key, record.live.clone())),
+        );
+        let request_id = self.allocate_request_id();
+        let value = match org::arrangement(self.conn, request_id, key).await {
+            Ok(value) => value,
+            Err(OrgError::Refused(Refusal::NotFound)) => return Err(LayoutOpsError::MissingLayout),
+            Err(err) => return Err(err.into()),
+        };
+        let (document, binding) = crate::layout::wire::from_protocol(&value.document, &handles);
+        Ok(ReadArrangement {
+            document,
+            key,
+            revision: value.revision,
+            handles,
+            binding,
+        })
+    }
+
+    /// Replace the arrangement `read` came from with `document`, naming the
+    /// revision it was read at. `Ok(None)` when another writer committed
+    /// first (`CONFLICT`): read again and redo the edit.
+    async fn replace(
+        &mut self,
+        read: &ReadArrangement,
+        document: &ArrangementDoc,
+    ) -> Result<Option<ArrangementDoc>, LayoutOpsError> {
+        let wire = crate::layout::wire::to_protocol(document, &read.handles, &read.binding)?;
+        let command = Command::ArrangementReplace {
+            operation: org::mint_operation(),
+            arrangement: read.key,
+            expected: read.revision,
+            document: wire,
+        };
+        let request_id = self.allocate_request_id();
+        match org::request(self.conn, request_id, command).await?.0 {
+            OrgOutcome::Committed(_) => Ok(Some(document.clone())),
+            OrgOutcome::Refused(Refusal::Conflict { .. }) => Ok(None),
+            OrgOutcome::Refused(refusal) => Err(LayoutOpsError::Refused(
+                crate::org::refusal_sentence(&refusal),
+            )),
+            OrgOutcome::Error { message, .. } => Err(LayoutOpsError::Refused(message)),
+            other => Err(LayoutOpsError::Refused(format!(
+                "unexpected reply: {other:?}"
+            ))),
+        }
+    }
+
+    /// Edit the arrangement with `edit`, compare-and-swap, retrying on
+    /// conflict against a fresh read.
+    async fn edit_arrangement(
+        &mut self,
+        mut edit: impl FnMut(&mut ArrangementDoc) -> Result<(), LayoutOpsError>,
+    ) -> Result<ArrangementDoc, LayoutOpsError> {
+        for _ in 0..org::MAX_CAS_ATTEMPTS {
+            let read = self.read_arrangement().await?;
+            let mut document = read.document.clone();
+            edit(&mut document)?;
+            if let Some(written) = self.replace(&read, &document).await? {
+                return Ok(written);
+            }
+        }
+        Err(LayoutOpsError::Conflict)
+    }
+
+    /// Seed a session that has no arrangement record yet through the legacy
+    /// key (the server translates it into the session's arrangement), then
+    /// read the record back.
+    async fn seed_arrangement(
+        &mut self,
+        fallback: &ArrangementDoc,
+    ) -> Result<ArrangementDoc, LayoutOpsError> {
+        let bytes = fallback.encode_cbor()?;
+        let set_request_id = self.allocate_request_id();
+        self.conn
+            .send(&FrameKind::SetMetadata {
+                request_id: set_request_id,
+                scope: Scope::Group(self.group),
+                key: self.key.clone(),
+                value: bytes,
+            })
+            .await?;
+        match self.read_arrangement().await {
+            Ok(read) => Ok(read.document),
+            Err(LayoutOpsError::MissingLayout) => Ok(fallback.clone()),
+            Err(err) => Err(err),
+        }
     }
 
     /// Read this session's layout, writing and confirming `fallback` only
@@ -237,7 +400,17 @@ impl<'a> LayoutOps<'a> {
     /// # Errors
     ///
     /// Returns transport, refusal, or envelope codec errors.
-    pub async fn read_or_seed(&mut self, fallback: Workspace) -> Result<Workspace, LayoutOpsError> {
+    pub async fn read_or_seed(
+        &mut self,
+        fallback: ArrangementDoc,
+    ) -> Result<ArrangementDoc, LayoutOpsError> {
+        if self.uses_arrangement() {
+            return match self.read().await {
+                Ok(document) => Ok(document),
+                Err(LayoutOpsError::MissingLayout) => self.seed_arrangement(&fallback).await,
+                Err(err) => Err(err),
+            };
+        }
         match self.read().await {
             Ok(workspace) => Ok(workspace),
             Err(LayoutOpsError::MissingLayout) => self.write_and_confirm(&fallback).await,
@@ -251,7 +424,15 @@ impl<'a> LayoutOps<'a> {
     /// # Errors
     ///
     /// Returns transport/envelope errors or a mutation-specific rejection.
-    pub async fn mutate(&mut self, mutation: LayoutMutation) -> Result<Workspace, LayoutOpsError> {
+    pub async fn mutate(
+        &mut self,
+        mutation: LayoutMutation,
+    ) -> Result<ArrangementDoc, LayoutOpsError> {
+        if self.uses_arrangement() {
+            return self
+                .edit_arrangement(|document| apply_mutation(document, &mutation))
+                .await;
+        }
         let mut workspace = self.read().await?;
         apply_mutation(&mut workspace, &mutation)?;
         self.write_and_confirm(&workspace).await
@@ -260,14 +441,35 @@ impl<'a> LayoutOps<'a> {
     /// Mutate the stored workspace, or seed it from `fallback` when this
     /// session has no layout metadata yet.
     ///
+    /// Against an arrangement record, each `fallback` group none of whose
+    /// panes is arranged yet is appended before the mutation applies: an
+    /// empty arrangement takes `fallback` whole, and a member that is not
+    /// arranged (a seed never placed, or a closed view) gets a new group
+    /// rather than failing the edit.
+    ///
     /// # Errors
     ///
     /// Returns transport/envelope errors or a mutation-specific rejection.
     pub async fn mutate_or_seed(
         &mut self,
-        fallback: Workspace,
+        fallback: ArrangementDoc,
         mutation: LayoutMutation,
-    ) -> Result<Workspace, LayoutOpsError> {
+    ) -> Result<ArrangementDoc, LayoutOpsError> {
+        if self.uses_arrangement() {
+            match self.read_arrangement().await {
+                Ok(_) => {}
+                Err(LayoutOpsError::MissingLayout) => {
+                    self.seed_arrangement(&fallback).await?;
+                }
+                Err(err) => return Err(err),
+            }
+            return self
+                .edit_arrangement(|document| {
+                    adopt_unarranged_groups(document, &fallback);
+                    apply_mutation(document, &mutation)
+                })
+                .await;
+        }
         let mut workspace = match self.read().await {
             Ok(workspace) => workspace,
             Err(LayoutOpsError::MissingLayout) => fallback,
@@ -299,8 +501,21 @@ impl<'a> LayoutOps<'a> {
     /// write (a concurrent writer, or an oversized value silently dropped).
     pub async fn write_and_confirm(
         &mut self,
-        workspace: &Workspace,
-    ) -> Result<Workspace, LayoutOpsError> {
+        workspace: &ArrangementDoc,
+    ) -> Result<ArrangementDoc, LayoutOpsError> {
+        if self.uses_arrangement() {
+            return match self.read_arrangement().await {
+                Ok(_) => {
+                    self.edit_arrangement(|document| {
+                        document.clone_from(workspace);
+                        Ok(())
+                    })
+                    .await
+                }
+                Err(LayoutOpsError::MissingLayout) => self.seed_arrangement(workspace).await,
+                Err(err) => Err(err),
+            };
+        }
         let bytes = workspace.encode_cbor()?;
         let set_request_id = self.allocate_request_id();
         self.conn
@@ -318,7 +533,7 @@ impl<'a> LayoutOps<'a> {
         if read_back != bytes {
             return Err(LayoutOpsError::NotConfirmed);
         }
-        Workspace::decode_cbor(&read_back).map_err(Into::into)
+        ArrangementDoc::decode_cbor(&read_back).map_err(Into::into)
     }
 
     const fn allocate_request_id(&mut self) -> u32 {
@@ -337,7 +552,7 @@ impl<'a> LayoutOps<'a> {
 pub async fn write_layout_on(
     socket_path: &std::path::Path,
     session: SessionId,
-    workspace: &Workspace,
+    workspace: &ArrangementDoc,
     first_request_id: u32,
 ) -> Result<(), LayoutOpsError> {
     let mut conn = Connection::connect(socket_path).await?;
@@ -354,7 +569,7 @@ pub async fn write_layout_on(
 /// Rejects missing/duplicate targets, invalid ratios, same-pane operations,
 /// and closing the final pane.
 pub fn apply_mutation(
-    workspace: &mut Workspace,
+    workspace: &mut ArrangementDoc,
     mutation: &LayoutMutation,
 ) -> Result<(), LayoutOpsError> {
     match mutation {
@@ -384,11 +599,11 @@ pub fn apply_mutation(
 /// The tree of `workspace.windows[index]`, blaming `blame` when the window
 /// carries no tree at all.
 fn window_tree<'a>(
-    workspace: &'a Workspace,
+    workspace: &'a ArrangementDoc,
     index: usize,
     blame: &ResourceId,
 ) -> Result<&'a LayoutNode, LayoutOpsError> {
-    workspace.windows[index]
+    workspace.groups[index]
         .state
         .tree
         .as_ref()
@@ -396,14 +611,17 @@ fn window_tree<'a>(
 }
 
 /// The index of the window holding `target`, or [`LayoutOpsError::ForeignTarget`].
-fn require_window(workspace: &Workspace, target: &ResourceId) -> Result<usize, LayoutOpsError> {
+fn require_window(
+    workspace: &ArrangementDoc,
+    target: &ResourceId,
+) -> Result<usize, LayoutOpsError> {
     find_window(workspace, target).ok_or_else(|| LayoutOpsError::ForeignTarget(target.clone()))
 }
 
 /// Split `target` to make room for `new_pane`, moving focus to the new pane
 /// only when `focus_new_pane` is set.
 fn apply_split(
-    workspace: &mut Workspace,
+    workspace: &mut ArrangementDoc,
     target: &ResourceId,
     new_pane: &ResourceId,
     dir: SplitDir,
@@ -415,9 +633,9 @@ fn apply_split(
     }
     let index = require_window(workspace, target)?;
     let tree = window_tree(workspace, index, target)?;
-    workspace.windows[index].state.tree = Some(split_at(tree, target, new_pane, dir, ratio)?);
+    workspace.groups[index].state.tree = Some(split_at(tree, target, new_pane, dir, ratio)?);
     if focus_new_pane {
-        workspace.windows[index].state.focus = Some(new_pane.clone());
+        workspace.groups[index].state.focus = Some(new_pane.clone());
         workspace.active = index;
     }
     Ok(())
@@ -425,7 +643,7 @@ fn apply_split(
 
 /// Exchange the leaf positions of `first` and `second` across every window.
 fn apply_swap(
-    workspace: &mut Workspace,
+    workspace: &mut ArrangementDoc,
     first: &ResourceId,
     second: &ResourceId,
 ) -> Result<(), LayoutOpsError> {
@@ -434,7 +652,7 @@ fn apply_swap(
     }
     require_window(workspace, first)?;
     require_window(workspace, second)?;
-    for window in &mut workspace.windows {
+    for window in &mut workspace.groups {
         if let Some(tree) = window.state.tree.as_ref() {
             window.state.tree = Some(swap_leaves(tree, first, second)?);
         }
@@ -444,7 +662,7 @@ fn apply_swap(
 }
 
 /// Remove `target`, refusing to close the workspace's final pane.
-fn apply_close(workspace: &mut Workspace, target: &ResourceId) -> Result<(), LayoutOpsError> {
+fn apply_close(workspace: &mut ArrangementDoc, target: &ResourceId) -> Result<(), LayoutOpsError> {
     workspace.close_pane(target).map_err(|err| match err {
         LayoutError::LastPane => LayoutOpsError::LastPane,
         LayoutError::PaneNotInLayout(id) => LayoutOpsError::ForeignTarget(id),
@@ -453,7 +671,7 @@ fn apply_close(workspace: &mut Workspace, target: &ResourceId) -> Result<(), Lay
 }
 
 fn apply_move(
-    workspace: &mut Workspace,
+    workspace: &mut ArrangementDoc,
     source: &ResourceId,
     target: &ResourceId,
     dir: SplitDir,
@@ -486,7 +704,7 @@ fn apply_move(
 /// Re-place `source` next to `target` inside the single window holding both:
 /// collapse the source leaf first, then split the collapsed tree.
 fn move_within_window(
-    workspace: &mut Workspace,
+    workspace: &mut ArrangementDoc,
     index: usize,
     source: &ResourceId,
     target: &ResourceId,
@@ -496,8 +714,8 @@ fn move_within_window(
     let tree = window_tree(workspace, index, source)?;
     let collapsed = kill_pane(tree, source)?.ok_or(LayoutOpsError::LastPane)?;
     let moved = split_at(&collapsed, target, source, dir, ratio)?;
-    workspace.windows[index].state.tree = Some(moved);
-    workspace.windows[index].state.focus = Some(source.clone());
+    workspace.groups[index].state.tree = Some(moved);
+    workspace.groups[index].state.focus = Some(source.clone());
     workspace.active = index;
     Ok(())
 }
@@ -505,7 +723,7 @@ fn move_within_window(
 /// Move `source` out of its window and into `target`'s, repairing the vacated
 /// window's focus and pruning it if it emptied.
 fn move_across_windows(
-    workspace: &mut Workspace,
+    workspace: &mut ArrangementDoc,
     (source_index, target_index): (usize, usize),
     source: &ResourceId,
     target: &ResourceId,
@@ -513,20 +731,42 @@ fn move_across_windows(
     ratio: f32,
 ) -> Result<(), LayoutOpsError> {
     let source_tree = window_tree(workspace, source_index, source)?;
-    workspace.windows[source_index].state.tree = kill_pane(source_tree, source)?;
-    repair_focus(&mut workspace.windows[source_index].state);
+    workspace.groups[source_index].state.tree = kill_pane(source_tree, source)?;
+    repair_focus(&mut workspace.groups[source_index].state);
 
     let target_tree = window_tree(workspace, target_index, target)?;
-    workspace.windows[target_index].state.tree =
+    workspace.groups[target_index].state.tree =
         Some(split_at(target_tree, target, source, dir, ratio)?);
-    workspace.windows[target_index].state.focus = Some(source.clone());
+    workspace.groups[target_index].state.focus = Some(source.clone());
     workspace.active = target_index;
-    workspace.prune_empty_windows();
+    workspace.prune_empty_groups();
     Ok(())
 }
 
-fn find_window(workspace: &Workspace, target: &ResourceId) -> Option<usize> {
-    workspace.windows.iter().position(|window| {
+/// Append each group of `fallback` none of whose panes `workspace` arranges
+/// yet. Leaves `active` alone unless `workspace` had no groups.
+fn adopt_unarranged_groups(workspace: &mut ArrangementDoc, fallback: &ArrangementDoc) {
+    let was_empty = workspace.groups.is_empty();
+    for group in &fallback.groups {
+        let Some(tree) = group.state.tree.as_ref() else {
+            continue;
+        };
+        if leaves(tree)
+            .iter()
+            .all(|pane| find_window(workspace, pane).is_none())
+        {
+            workspace.groups.push(group.clone());
+        }
+    }
+    if was_empty {
+        workspace.active = fallback
+            .active
+            .min(workspace.groups.len().saturating_sub(1));
+    }
+}
+
+fn find_window(workspace: &ArrangementDoc, target: &ResourceId) -> Option<usize> {
+    workspace.groups.iter().position(|window| {
         window
             .state
             .tree
@@ -561,7 +801,7 @@ fn swap_leaves(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::{LayoutState, WindowState};
+    use crate::layout::{Group, LayoutState};
     use crate::testkit::{ScriptSpec, ScriptedServer};
     use phux_protocol::wire::frame::ErrorCode;
 
@@ -618,20 +858,51 @@ mod tests {
         }
     }
 
-    fn two_window_workspace() -> Workspace {
-        Workspace {
-            windows: vec![
-                WindowState::new(
+    fn two_window_workspace() -> ArrangementDoc {
+        ArrangementDoc {
+            groups: vec![
+                Group::new(
                     "editor".to_owned(),
                     LayoutState {
                         tree: Some(split(1, 2, SplitDir::Horizontal, 0.6)),
                         focus: Some(tid(1)),
                     },
                 ),
-                WindowState::new("tests".to_owned(), LayoutState::single(tid(3))),
+                Group::new("tests".to_owned(), LayoutState::single(tid(3))),
             ],
             active: 0,
         }
+    }
+
+    /// An empty arrangement takes the fallback whole, so a placed spawn
+    /// beside an unarranged seed creates the first group instead of failing.
+    #[test]
+    fn placement_into_an_empty_arrangement_creates_a_group() {
+        let mut document = ArrangementDoc::new();
+        adopt_unarranged_groups(&mut document, &ArrangementDoc::single(tid(1)));
+        let mutation = LayoutMutation::SplitPreservingFocus {
+            target: tid(1),
+            new_pane: tid(2),
+            dir: SplitDir::Vertical,
+            ratio: 0.5,
+        };
+        apply_mutation(&mut document, &mutation).expect("placement succeeds");
+        assert_eq!(document.groups.len(), 1);
+        assert_eq!(document.active, 0);
+        let tree = document.groups[0].state.tree.as_ref().expect("tree");
+        assert_eq!(leaves(tree), vec![tid(1), tid(2)]);
+    }
+
+    /// A fallback group is appended only when none of its panes is arranged:
+    /// an arranged owner keeps its place, an unarranged one gets a new group.
+    #[test]
+    fn adopt_unarranged_groups_skips_arranged_panes() {
+        let mut document = two_window_workspace();
+        adopt_unarranged_groups(&mut document, &ArrangementDoc::single(tid(3)));
+        assert_eq!(document.groups.len(), 2);
+        adopt_unarranged_groups(&mut document, &ArrangementDoc::single(tid(9)));
+        assert_eq!(document.groups.len(), 3);
+        assert_eq!(document.active, 0, "an existing active group is kept");
     }
 
     // Fixed bytes from the pre-window v1 encoder, kept literal so an encoder
@@ -650,7 +921,7 @@ mod tests {
     #[test]
     fn fixed_v1_fixture_is_refused_without_implicit_rewrite() {
         assert!(matches!(
-            Workspace::decode_cbor(LEGACY_V1_FIXTURE),
+            ArrangementDoc::decode_cbor(LEGACY_V1_FIXTURE),
             Err(LayoutDecodeError::UnsupportedVersion(1))
         ));
     }
@@ -658,7 +929,7 @@ mod tests {
     #[test]
     fn current_fixture_supports_split_and_swap() {
         let fixture = two_window_workspace().encode_cbor().unwrap();
-        let mut workspace = Workspace::decode_cbor(&fixture).unwrap();
+        let mut workspace = ArrangementDoc::decode_cbor(&fixture).unwrap();
 
         apply_mutation(
             &mut workspace,
@@ -670,9 +941,9 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(workspace.windows[1].state.focus, Some(tid(4)));
+        assert_eq!(workspace.groups[1].state.focus, Some(tid(4)));
         assert_eq!(
-            leaves(workspace.windows[1].state.tree.as_ref().unwrap()),
+            leaves(workspace.groups[1].state.tree.as_ref().unwrap()),
             vec![tid(3), tid(4)]
         );
 
@@ -685,11 +956,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            leaves(workspace.windows[0].state.tree.as_ref().unwrap()),
+            leaves(workspace.groups[0].state.tree.as_ref().unwrap()),
             vec![tid(4), tid(2)]
         );
         assert_eq!(
-            leaves(workspace.windows[1].state.tree.as_ref().unwrap()),
+            leaves(workspace.groups[1].state.tree.as_ref().unwrap()),
             vec![tid(3), tid(1)]
         );
     }
@@ -708,10 +979,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(workspace.active, 0);
-        assert_eq!(workspace.windows[0].state.focus, Some(tid(1)));
-        assert_eq!(workspace.windows[1].state.focus, Some(tid(3)));
+        assert_eq!(workspace.groups[0].state.focus, Some(tid(1)));
+        assert_eq!(workspace.groups[1].state.focus, Some(tid(3)));
         assert_eq!(
-            leaves(workspace.windows[1].state.tree.as_ref().unwrap()),
+            leaves(workspace.groups[1].state.tree.as_ref().unwrap()),
             vec![tid(3), tid(4)]
         );
     }
@@ -724,8 +995,8 @@ mod tests {
             left: Box::new(split(1, 2, SplitDir::Vertical, 0.4)),
             right: Box::new(LayoutNode::Leaf(tid(3))),
         };
-        let mut workspace = Workspace {
-            windows: vec![WindowState::new(
+        let mut workspace = ArrangementDoc {
+            groups: vec![Group::new(
                 "1".to_owned(),
                 LayoutState {
                     tree: Some(nested),
@@ -736,10 +1007,10 @@ mod tests {
         };
         apply_mutation(&mut workspace, &LayoutMutation::Close { target: tid(2) }).unwrap();
         assert_eq!(
-            leaves(workspace.active_window().unwrap().tree.as_ref().unwrap()),
+            leaves(workspace.active_group().unwrap().tree.as_ref().unwrap()),
             vec![tid(1), tid(3)]
         );
-        assert_eq!(workspace.active_window().unwrap().focus, Some(tid(1)));
+        assert_eq!(workspace.active_group().unwrap().focus, Some(tid(1)));
     }
 
     #[test]
@@ -755,13 +1026,13 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(workspace.windows.len(), 1);
+        assert_eq!(workspace.groups.len(), 1);
         assert_eq!(
-            leaves(workspace.windows[0].state.tree.as_ref().unwrap()),
+            leaves(workspace.groups[0].state.tree.as_ref().unwrap()),
             vec![tid(1), tid(2), tid(3)]
         );
-        assert_eq!(workspace.windows[0].state.focus, Some(tid(3)));
-        let LayoutNode::Split { right, .. } = workspace.windows[0].state.tree.as_ref().unwrap()
+        assert_eq!(workspace.groups[0].state.focus, Some(tid(3)));
+        let LayoutNode::Split { right, .. } = workspace.groups[0].state.tree.as_ref().unwrap()
         else {
             panic!("expected outer split");
         };
@@ -771,7 +1042,7 @@ mod tests {
     #[test]
     fn malformed_and_foreign_targets_are_rejected_without_mutation() {
         assert!(matches!(
-            Workspace::decode_cbor(b"not cbor"),
+            ArrangementDoc::decode_cbor(b"not cbor"),
             Err(LayoutDecodeError::Cbor(_))
         ));
         let mut workspace = two_window_workspace();
@@ -794,7 +1065,7 @@ mod tests {
         assert!(matches!(err, LayoutOpsError::DuplicatePane(id) if id == tid(2)));
         assert!(matches!(
             apply_mutation(
-                &mut Workspace::single(tid(1)),
+                &mut ArrangementDoc::single(tid(1)),
                 &LayoutMutation::Close { target: tid(1) }
             ),
             Err(LayoutOpsError::LastPane)
@@ -844,7 +1115,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            leaves(confirmed.windows[0].state.tree.as_ref().unwrap()),
+            leaves(confirmed.groups[0].state.tree.as_ref().unwrap()),
             vec![tid(2), tid(1)]
         );
         drop(client);
@@ -868,9 +1139,9 @@ mod tests {
         else {
             panic!("expected SET on request 11, got {:?}", seen.get(1));
         };
-        let written = Workspace::decode_cbor(value).unwrap();
+        let written = ArrangementDoc::decode_cbor(value).unwrap();
         assert_eq!(
-            leaves(written.windows[0].state.tree.as_ref().unwrap()),
+            leaves(written.groups[0].state.tree.as_ref().unwrap()),
             vec![tid(2), tid(1)]
         );
         assert!(
@@ -906,7 +1177,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            leaves(confirmed.windows[0].state.tree.as_ref().unwrap()),
+            leaves(confirmed.groups[0].state.tree.as_ref().unwrap()),
             vec![tid(2), tid(1)]
         );
         drop(ops);
@@ -933,7 +1204,7 @@ mod tests {
     /// not be accepted as this write's result.
     #[tokio::test]
     async fn write_and_confirm_refuses_a_read_back_that_does_not_match_what_was_written() {
-        let stale = Workspace::single(tid(9)).encode_cbor().unwrap();
+        let stale = ArrangementDoc::single(tid(9)).encode_cbor().unwrap();
         let key = layout_key(SessionId::new(7));
         let spec = ScriptSpec::new()
             .stored_metadata(Scope::Group(DEFAULT_LAYOUT_GROUP_ID), &key, stale)
@@ -941,7 +1212,7 @@ mod tests {
         let (mut client, server_task) = scripted(spec);
 
         let result = LayoutOps::new(&mut client, SessionId::new(7), 10)
-            .write_and_confirm(&Workspace::single(tid(1)))
+            .write_and_confirm(&ArrangementDoc::single(tid(1)))
             .await;
         assert!(
             matches!(result, Err(LayoutOpsError::NotConfirmed)),
@@ -968,7 +1239,7 @@ mod tests {
     #[tokio::test]
     async fn read_or_seed_initializes_an_absent_layout_and_confirms_it() {
         let (mut client, server_task) = scripted(ScriptSpec::new());
-        let fallback = Workspace::single(tid(7));
+        let fallback = ArrangementDoc::single(tid(7));
 
         let confirmed = LayoutOps::new(&mut client, SessionId::new(3), 20)
             .read_or_seed(fallback.clone())
@@ -992,7 +1263,7 @@ mod tests {
             panic!("expected conditional seed SET, got {:?}", seen.get(1));
         };
         assert_eq!(key, &layout_key(SessionId::new(3)));
-        assert_eq!(Workspace::decode_cbor(value).unwrap(), fallback);
+        assert_eq!(ArrangementDoc::decode_cbor(value).unwrap(), fallback);
         assert!(matches!(
             seen.get(2),
             Some(FrameKind::GetMetadata { request_id: 22, .. })
@@ -1010,7 +1281,7 @@ mod tests {
         let (mut client, server_task) = scripted(spec);
 
         let confirmed = LayoutOps::new(&mut client, SessionId::new(3), 20)
-            .read_or_seed(Workspace::single(tid(99)))
+            .read_or_seed(ArrangementDoc::single(tid(99)))
             .await
             .unwrap();
         assert_eq!(confirmed, existing);
@@ -1021,5 +1292,153 @@ mod tests {
             seen.as_slice(),
             [FrameKind::GetMetadata { request_id: 20, .. }]
         ));
+    }
+
+    mod organization {
+        use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExtSet};
+        use phux_protocol::ids::{ResourceKey, SessionKey};
+        use phux_protocol::wire::frame::{
+            ArrangementDoc as WireDoc, ArrangementGroup, ArrangementNode, Command, EntryRef,
+            EntryTarget, SessionLifetime,
+        };
+
+        use super::*;
+        use crate::testkit::{OrgFixture, serve_one};
+
+        fn member(key: ResourceKey, n: u8) -> ArrangementNode {
+            ArrangementNode::Leaf(EntryRef {
+                entry: [n; 16],
+                target: EntryTarget::Member(key),
+            })
+        }
+
+        /// A session with two shells, `a` arranged alone in one group.
+        fn arranged() -> (OrgFixture, SessionKey, ResourceKey, ResourceKey) {
+            let mut fixture = OrgFixture::new();
+            let work = fixture.session("work", SessionLifetime::Persistent);
+            let a = fixture.shell(work);
+            let b = fixture.shell(work);
+            fixture.arrangement(
+                work,
+                WireDoc {
+                    groups: vec![ArrangementGroup {
+                        id: [7; 16],
+                        name: Some("main".to_owned()),
+                        tree: member(a, 1),
+                    }],
+                },
+            );
+            (fixture, work, a, b)
+        }
+
+        async fn connect(
+            fixture: OrgFixture,
+        ) -> (
+            Connection,
+            tokio::task::JoinHandle<Vec<FrameKind>>,
+            tempfile::TempDir,
+        ) {
+            let dir = tempfile::tempdir().unwrap();
+            let spec = ScriptSpec::new()
+                .server_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]))
+                .organization(fixture);
+            let (socket, server) = serve_one(dir.path(), spec);
+            (Connection::connect(&socket).await.unwrap(), server, dir)
+        }
+
+        fn replaces(seen: &[FrameKind]) -> Vec<WireDoc> {
+            seen.iter()
+                .filter_map(|frame| match frame {
+                    FrameKind::Command {
+                        command: Command::ArrangementReplace { document, .. },
+                        ..
+                    } => Some(document.clone()),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        /// The read translates keys to live handles; the edit is a
+        /// compare-and-swap retried after a conflict, keeping the entry id
+        /// and group identity it read.
+        #[tokio::test]
+        async fn mutate_is_a_compare_and_swap_retried_on_conflict() {
+            let (fixture, work, a, b) = arranged();
+            let session = fixture.live_session(&work).unwrap();
+            let (pane_a, pane_b) = (fixture.live(&a).unwrap(), fixture.live(&b).unwrap());
+            let (mut conn, server, _dir) = connect(fixture.inject_conflicts(1)).await;
+            let mut ops = LayoutOps::new(&mut conn, session, 10);
+            assert!(ops.uses_arrangement());
+            let read = ops.read().await.unwrap();
+            assert_eq!(read.groups[0].id, [7; 16]);
+            assert_eq!(read.groups[0].name, "main");
+            assert_eq!(
+                leaves(read.groups[0].state.tree.as_ref().unwrap()),
+                vec![pane_a.clone()]
+            );
+            let written = ops
+                .mutate(LayoutMutation::Split {
+                    target: pane_a.clone(),
+                    new_pane: pane_b.clone(),
+                    dir: SplitDir::Horizontal,
+                    ratio: 0.5,
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                leaves(written.groups[0].state.tree.as_ref().unwrap()),
+                vec![pane_a, pane_b]
+            );
+            drop(ops);
+            drop(conn);
+            let seen = server.await.unwrap();
+            let replaces = replaces(&seen);
+            assert_eq!(replaces.len(), 2, "one conflict, then the commit");
+            let entries = crate::layout::wire::wire_leaves(&replaces[1].groups[0].tree);
+            assert_eq!(entries[0].entry, [1; 16], "the read entry id survives");
+            assert_eq!(entries[1].target, EntryTarget::Member(b));
+            assert!(
+                !seen
+                    .iter()
+                    .any(|frame| matches!(frame, FrameKind::SetMetadata { .. })),
+                "no legacy metadata write: {seen:?}"
+            );
+        }
+
+        /// A session without an arrangement is seeded through the legacy key
+        /// (the server translates it); a projection key never touches the
+        /// arrangement.
+        #[tokio::test]
+        async fn a_missing_arrangement_seeds_through_the_legacy_key() {
+            let mut fixture = OrgFixture::new();
+            let work = fixture.session("work", SessionLifetime::Persistent);
+            let a = fixture.shell(work);
+            let session = fixture.live_session(&work).unwrap();
+            let pane = fixture.live(&a).unwrap();
+            let (mut conn, server, _dir) = connect(fixture).await;
+            let seeded = LayoutOps::new(&mut conn, session, 10)
+                .read_or_seed(ArrangementDoc::single(pane.clone()))
+                .await
+                .unwrap();
+            assert_eq!(
+                leaves(seeded.groups[0].state.tree.as_ref().unwrap()),
+                vec![pane]
+            );
+            let projection = LayoutOps::with_key(
+                &mut conn,
+                session,
+                format!("myapp.layout/v1/{}", session.get()),
+                40,
+            )
+            .unwrap();
+            assert!(!projection.uses_arrangement());
+            drop(projection);
+            drop(conn);
+            let seen = server.await.unwrap();
+            assert!(seen.iter().any(|frame| matches!(
+                frame,
+                FrameKind::SetMetadata { key, .. } if *key == layout_key(session)
+            )));
+        }
     }
 }

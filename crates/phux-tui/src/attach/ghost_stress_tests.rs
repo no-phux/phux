@@ -24,7 +24,7 @@ use super::paint::{SidebarEdge, SidebarReservation, content_rect, paint_full_fra
 use super::pane_state::PaneSlot;
 use super::server_frame::{FrameEnv, handle_server_frame};
 use super::session_mirror::SessionMirror;
-use crate::layout::{LayoutState, WindowState, Workspace};
+use crate::layout::{ArrangementDoc, Group, LayoutState};
 use crate::predict::{PredictionState, PredictiveConfig};
 
 const fn tid(id: u32) -> ResourceId {
@@ -100,10 +100,10 @@ struct Rig {
 }
 
 impl Rig {
-    fn new(workspace: Workspace, viewport: (u16, u16)) -> Self {
-        let focused = workspace.active_window().and_then(|ls| ls.focus.clone());
+    fn new(workspace: ArrangementDoc, viewport: (u16, u16)) -> Self {
+        let focused = workspace.active_group().and_then(|ls| ls.focus.clone());
         let terminals = workspace
-            .windows
+            .groups
             .iter()
             .filter_map(|window| window.state.tree.as_ref())
             .flat_map(crate::layout::leaves)
@@ -236,7 +236,7 @@ impl Rig {
         if let Some(ls) = self
             .mirror
             .workspace
-            .render_window(self.mirror.zoomed.as_ref())
+            .render_group(self.mirror.zoomed.as_ref())
         {
             let theme = crate::render::theme::Theme::default();
             let mut chrome = crate::attach::chrome_ctx::ChromeCtx {
@@ -266,7 +266,7 @@ impl Rig {
         self.mirror.focused_resource = self
             .mirror
             .workspace
-            .active_window()
+            .active_group()
             .and_then(|ls| ls.focus.clone());
         self.full_repaint();
     }
@@ -329,7 +329,7 @@ impl Rig {
         let ls = self
             .mirror
             .workspace
-            .render_window(self.mirror.zoomed.as_ref())
+            .render_group(self.mirror.zoomed.as_ref())
             .expect("active window");
         let rects = super::multi_pane::compute_layout_in(ls.as_ref(), content, self.viewport).rects;
 
@@ -389,11 +389,11 @@ impl Rig {
 }
 
 /// Window 0: a single full-content pane. Window 1: a side-by-side split.
-fn two_window_workspace(p: &ResourceId, q: &ResourceId, r: &ResourceId) -> Workspace {
-    Workspace {
-        windows: vec![
-            WindowState::new("one".to_owned(), LayoutState::single(p.clone())),
-            WindowState::new("two".to_owned(), split(q, r)),
+fn two_window_workspace(p: &ResourceId, q: &ResourceId, r: &ResourceId) -> ArrangementDoc {
+    ArrangementDoc {
+        groups: vec![
+            Group::new("one".to_owned(), LayoutState::single(p.clone())),
+            Group::new("two".to_owned(), split(q, r)),
         ],
         active: 0,
     }
@@ -417,8 +417,8 @@ fn split(q: &ResourceId, r: &ResourceId) -> LayoutState {
 #[test]
 fn every_paint_path_letterboxes_an_undersized_mirror_like_the_full_frame() {
     let (p, q, r) = (tid(1), tid(2), tid(3));
-    let one = |layout| Workspace {
-        windows: vec![WindowState::new("w".to_owned(), layout)],
+    let one = |layout| ArrangementDoc {
+        groups: vec![Group::new("w".to_owned(), layout)],
         active: 0,
     };
     // Server grid smaller than the client rect: a resize handshake in flight.

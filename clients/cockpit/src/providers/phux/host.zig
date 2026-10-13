@@ -12,7 +12,7 @@ const provider = @import("provider_contract");
 const presentation_module = @import("presentation.zig");
 const c = @import("abi.zig").c;
 const operations = @import("operations.zig");
-const workspace_bridge = @import("workspace_bridge.zig");
+const arrangement_bridge = @import("arrangement_bridge.zig");
 const agent_sessions = @import("agent_sessions.zig");
 const path_query = @import("path_query.zig");
 pub const path_queries = path_query;
@@ -132,11 +132,11 @@ pub const SessionSummary = struct {
     window_count: u16,
     attached_client_count: u16,
     focused: bool,
-    /// ADR-0105: the session survives its last window. Only a server that
-    /// advertises KEEP_EMPTY_SESSIONS reports it (phux_client_session_flags).
-    keep_empty: bool = false,
-    /// A keep-empty session that holds no windows: a real, empty session,
-    /// never a broken one.
+    /// Whether the session survives its last member. Read from the session
+    /// record; a server that reports only the legacy keep-empty mark reads
+    /// persistent for a marked session, and one that reports neither unknown.
+    lifetime: provider.SessionLifetime = .unknown,
+    /// A session with no members: a real, empty session, never a broken one.
     empty: bool = false,
 
     fn deinit(session: *SessionSummary, gpa: std.mem.Allocator) void {
@@ -400,7 +400,7 @@ pub const Host = struct {
     color_policy: ColorPolicy = .{},
     metadata_changed: bool = false,
     workspace_changed: bool = false,
-    workspace_store: workspace_bridge.Store = .{},
+    workspace_store: arrangement_bridge.Store = .{},
     /// Agent sessions from the resource catalog, with the state their record
     /// streams declare. Never a replica: see agent_sessions.zig.
     agents: agent_sessions.Registry = .{},
@@ -671,11 +671,22 @@ pub const Host = struct {
         return host.attached_session_id;
     }
 
+    /// Resolve organization operations past their retry horizon and time out
+    /// kill workflows (phux_client_expire_operations). The connected lane's
+    /// runtime does this itself; the embedded lane relies on this call, which
+    /// the engine makes on its workspace timer. A forced terminate a kill
+    /// workflow queues is staged here.
+    pub fn expireOperations(host: *Host) void {
+        if (host.disconnected) return;
+        if (c.phux_client_expire_operations(host.client, null) != c.PHUX_CLIENT_OK) return;
+        host.stageOutgoing() catch host.disconnect();
+    }
+
     pub fn requestWorkspaceRefresh(host: *Host) !?u32 {
         try host.requireAttached();
         if (host.workspace_store.info.status == .pending) return null;
         const request_id = try host.operation_ledger.nextRequestId();
-        try resultError(c.phux_client_workspace_refresh(host.client, request_id));
+        try resultError(c.phux_client_arrangement_refresh(host.client, request_id));
         host.workspaceAccepted(request_id);
         return request_id;
     }
@@ -687,8 +698,8 @@ pub const Host = struct {
         const name = try workspace.Text.init(value.name);
         var owned = value;
         owned.name = name.slice();
-        const raw = try workspace_bridge.mutation(&owned, request_id, host.provider_id);
-        try resultError(c.phux_client_workspace_mutate(host.client, &raw));
+        const raw = try arrangement_bridge.mutation(&owned, request_id, host.provider_id);
+        try resultError(c.phux_client_arrangement_mutate(host.client, &raw));
         host.workspaceAccepted(request_id);
         return request_id;
     }
@@ -715,8 +726,8 @@ pub const Host = struct {
     }
 
     fn copyWorkspace(host: *Host) !bool {
-        var raw = workspace_bridge.record(c.PhuxWorkspaceInfo);
-        try resultError(c.phux_client_workspace_info(host.client, &raw));
+        var raw = arrangement_bridge.record(c.PhuxArrangementInfo);
+        try resultError(c.phux_client_arrangement_info(host.client, &raw));
         // Attached identity remains authoritative even if a roster conversion
         // is refused; global GET_STATE focus is never a session-switch signal.
         if (raw.session_id != 0) host.attached_session_id = raw.session_id;
@@ -872,8 +883,10 @@ pub const Host = struct {
         return request_id;
     }
 
-    /// A tab's exact leaves, validated together and sent as one
-    /// CLOSE_TAB_RESOURCES so a keep-empty session survives its last tab.
+    /// A tab's exact leaves, validated together and terminated as one
+    /// request: against an ORGANIZATION server one RESOURCE_TERMINATE per
+    /// terminal, otherwise one CLOSE_TAB_RESOURCES. The session's lifetime,
+    /// not this call, decides whether an emptied session stays.
     pub fn requestCloseResources(host: *Host, refs: []const provider.TerminalRef, expected_epoch: u64) !u32 {
         const request_id = try host.preflightOperation();
         if (expected_epoch != host.connectionEpoch()) return error.InvalidIdentity;
@@ -1814,8 +1827,18 @@ pub const Host = struct {
             var session = try copySessionSummary(host.gpa, raw);
             var flags: u32 = 0;
             if (c.phux_client_session_flags(host.client, index, &flags) == c.PHUX_CLIENT_OK) {
-                session.keep_empty = flags & c.PHUX_SESSION_FLAG_KEEP_EMPTY != 0;
+                if (flags & c.PHUX_SESSION_FLAG_KEEP_EMPTY != 0) session.lifetime = .persistent;
                 session.empty = flags & c.PHUX_SESSION_FLAG_EMPTY != 0;
+            }
+            var record = arrangement_bridge.record(c.PhuxSessionRecord);
+            if (c.phux_client_session_record_get(host.client, index, &record) == c.PHUX_CLIENT_OK) {
+                if (std.enums.fromInt(provider.SessionLifetime, record.lifetime)) |lifetime| {
+                    if (lifetime != .unknown) session.lifetime = lifetime;
+                }
+                // Emptiness counts members only from the records; a snapshot can
+                // omit another session's resources.
+                if (record.flags & c.PHUX_SESSION_RECORD_ORGANIZED != 0)
+                    session.empty = record.flags & c.PHUX_SESSION_RECORD_EMPTY != 0;
             }
             next.append(host.gpa, session) catch {
                 var owned = session;
@@ -1877,18 +1900,23 @@ pub const Host = struct {
     }
 
     pub const RenameStatus = enum(u32) { none = 0, pending = 1, renamed = 2, refused = 3, unknown_outcome = 4, _ };
-    /// Create on this exact coordinator connection. The FFI sends the CLI's
-    /// create metadata request and confirms its nonce before publishing an ID.
-    pub fn requestCreateSession(host: *Host, name: []const u8, keep_empty: bool) !u32 {
-        return host.requestCreateSessionIn(name, "", keep_empty);
+    /// Create on this exact coordinator connection with an explicit
+    /// lifetime. Against an ORGANIZATION server the FFI sends one typed
+    /// SESSION_CREATE; otherwise the CLI's create metadata request, which
+    /// only a persistent session can use. Either way the outcome is confirmed
+    /// before an ID is published.
+    pub fn requestCreateSession(host: *Host, name: []const u8, lifetime: provider.SessionLifetime) !u32 {
+        return host.requestCreateSessionIn(name, "", lifetime);
     }
 
-    /// Create on this connection. A non-empty `directory` is the seed cwd.
-    /// An empty directory is the same empty session as `requestCreateSession`.
-    pub fn requestCreateSessionIn(host: *Host, name: []const u8, directory: []const u8, keep_empty: bool) !u32 {
+    /// Create on this connection. A non-empty `directory` is the session's
+    /// directory and launches its first shell there. An empty directory is
+    /// the same session as `requestCreateSession`.
+    pub fn requestCreateSessionIn(host: *Host, name: []const u8, directory: []const u8, lifetime: provider.SessionLifetime) !u32 {
         if (host.disconnected) return error.InvalidState;
+        if (lifetime == .unknown) return error.InvalidArgument;
         const request_id = try host.operation_ledger.nextRequestId();
-        try resultError(c.phux_client_create_session_in(host.client, request_id, bytes(name), bytes(directory), keep_empty));
+        try resultError(c.phux_client_create_session_in(host.client, request_id, bytes(name), bytes(directory), @intFromEnum(lifetime)));
         host.operation_ledger.last_id = request_id;
         host.stageOutgoing() catch host.disconnect();
         return request_id;
@@ -1969,13 +1997,13 @@ pub const Host = struct {
     }
 
     /// A digest of what a switcher row shows (id, name, window count,
-    /// keep-empty), so a changed Empty-session label repaints.
+    /// lifetime, emptiness), so a changed Empty-session label repaints.
     fn sessionsDigest(sessions: []const SessionSummary, generation: u64) u64 {
         var hasher = std.hash.Wyhash.init(generation);
         for (sessions) |session| {
             hasher.update(std.mem.asBytes(&session.id));
             hasher.update(std.mem.asBytes(&session.window_count));
-            hasher.update(&.{ @intFromBool(session.keep_empty), @intFromBool(session.empty) });
+            hasher.update(&.{ @as(u8, @intCast(@intFromEnum(session.lifetime))), @intFromBool(session.empty) });
             hasher.update(session.name);
             hasher.update(&.{0});
         }
@@ -2124,7 +2152,7 @@ pub const Host = struct {
     fn catalogContainsAgent(host: *const Host, id: RemoteId) !bool {
         const count = c.phux_client_resource_count(host.client);
         for (0..count) |index| {
-            var raw = workspace_bridge.record(c.PhuxResourceInfo);
+            var raw = arrangement_bridge.record(c.PhuxResourceInfo);
             try resultError(c.phux_client_resource_get(host.client, index, &raw));
             if (raw.kind != c.PHUX_RESOURCE_AGENT_SESSION) continue;
             if ((try remoteFromC(raw.terminal_id)).eql(id)) return true;
@@ -2178,7 +2206,7 @@ pub const Host = struct {
         var identities: std.ArrayListUnmanaged(agent_sessions.IdentityEntry) = .empty;
         defer identities.deinit(host.gpa);
         for (0..count) |index| {
-            var raw = workspace_bridge.record(c.PhuxResourceInfo);
+            var raw = arrangement_bridge.record(c.PhuxResourceInfo);
             try resultError(c.phux_client_resource_get(host.client, index, &raw));
             try host.appendAgentEntry(&entries, raw);
             try host.appendAgentIdentity(&identities, raw);
@@ -2746,7 +2774,7 @@ fn resourceInfoFixture(
     native_id: []const u8,
     state: []const u8,
 ) c.PhuxResourceInfo {
-    var raw = workspace_bridge.record(c.PhuxResourceInfo);
+    var raw = arrangement_bridge.record(c.PhuxResourceInfo);
     raw.terminal_id = .{ .kind = c.PHUX_RESOURCE_ID_LOCAL, .id = id, .host = bytes("") };
     raw.kind = kind;
     raw.parent = parent;
@@ -3237,7 +3265,7 @@ test "session summaries copy every server field and own their names" {
 }
 
 test "a listing's digest moves when a session gains or loses its windows, not only its name" {
-    // phux-c2td.31: a listing peer's keep-empty session that gains a window
+    // phux-c2td.31: a listing peer's persistent session that gains a window
     // keeps its id and name. The digest hashed only those, so the refresh
     // reported no change and its row kept the Empty session label.
     var name = [_]u8{ 's', 'c', 'r', 'a', 't', 'c', 'h' };
@@ -3248,7 +3276,7 @@ test "a listing's digest moves when a session gains or loses its windows, not on
         .window_count = 0,
         .attached_client_count = 0,
         .focused = false,
-        .keep_empty = true,
+        .lifetime = .persistent,
         .empty = true,
     };
     const baseline = Host.sessionsDigest(&.{empty}, 1);
@@ -3262,7 +3290,7 @@ test "a listing's digest moves when a session gains or loses its windows, not on
     counted.window_count = 2;
     try std.testing.expect(Host.sessionsDigest(&.{counted}, 1) != baseline);
     var unflagged = empty;
-    unflagged.keep_empty = false;
+    unflagged.lifetime = .ephemeral;
     try std.testing.expect(Host.sessionsDigest(&.{unflagged}, 1) != baseline);
     var not_empty = empty;
     not_empty.empty = false;
@@ -3547,18 +3575,18 @@ test "workspace C publication owns borrowed bytes and rejects invalid capacity a
     const saved_name = try host.gpa.dupe(u8, before.windows[0].name.slice());
     defer host.gpa.free(saved_name);
     const saved_id = before.windows[0].id;
-    var borrowed = workspace_bridge.record(c.PhuxWorkspaceWindow);
-    try resultError(c.phux_client_workspace_window_get(host.client, 0, &borrowed));
+    var borrowed = arrangement_bridge.record(c.PhuxArrangementGroup);
+    try resultError(c.phux_client_arrangement_group_get(host.client, 0, &borrowed));
     try std.testing.expect(borrowed.name.len != 0);
     try std.testing.expect(@intFromPtr(borrowed.name.data) != @intFromPtr(before.windows[0].name.slice().ptr));
     // The FFI invalidates all borrows; the host snapshot remains independent.
     try resultError(c.phux_client_effect_clear(host.client));
     try std.testing.expectEqualStrings(saved_name, host.workspaceSnapshot().windows[0].name.slice());
-    var raw = workspace_bridge.record(c.PhuxWorkspaceInfo);
-    try resultError(c.phux_client_workspace_info(host.client, &raw));
-    raw.window_count = workspace.max_windows + 1;
+    var raw = arrangement_bridge.record(c.PhuxArrangementInfo);
+    try resultError(c.phux_client_arrangement_info(host.client, &raw));
+    raw.group_count = workspace.max_windows + 1;
     try std.testing.expectError(error.WorkspaceCapacity, host.workspace_store.captureInfo(host.gpa, host.client, raw));
-    raw.window_count = 0;
+    raw.group_count = 0;
     raw.node_count = workspace.max_nodes + 1;
     try std.testing.expectError(error.WorkspaceCapacity, host.workspace_store.captureInfo(host.gpa, host.client, raw));
     raw.node_count = 0;
@@ -3621,9 +3649,10 @@ test "session create uses negotiated owning connection and reports disconnect as
     try test_support.stageFixture(&bridge, "hello_keep_empty.bin");
     _ = try host.drainReadiness();
     bridge.outgoing.reset();
-    try std.testing.expectError(error.InvalidState, host.requestCreateSession("work", false));
+    try std.testing.expectError(error.InvalidState, host.requestCreateSession("work", .ephemeral));
+    try std.testing.expectError(error.InvalidArgument, host.requestCreateSession("work", .unknown));
     try test_support.expectOutgoingCount(&bridge, 0);
-    const id = try host.requestCreateSession("work", true);
+    const id = try host.requestCreateSession("work", .persistent);
     try std.testing.expectEqual(@as(u32, 1), id);
     try std.testing.expectEqual(Host.SessionCreateStatus.pending, host.sessionCreateInfo(id).status);
     try test_support.expectOutgoingCount(&bridge, 3);
@@ -3695,6 +3724,19 @@ fn completeWorkspaceFixture(host: *Host, comptime name: []const u8) !void {
     _ = try host.drainReadiness();
     try test_support.stageWorkspaceFixture(host.bridge, name ++ "_metadata.bin");
     _ = try host.drainReadiness();
+}
+
+test "a session with no stored layout publishes no groups and counts its terminal unarranged" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    try test_support.attachHostUnarranged(host);
+    const published = host.workspaceSnapshot();
+    try std.testing.expectEqual(workspace.State.unarranged, published.state);
+    try std.testing.expectEqual(@as(usize, 0), published.windows.len);
+    try std.testing.expectEqual(@as(u32, 1), published.unarranged_count);
+    try std.testing.expectEqual(@as(usize, 1), host.catalogTerminals().len);
 }
 
 test "old shared schema is refused without replacing last-good topology or writing metadata" {

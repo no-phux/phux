@@ -39,7 +39,10 @@ use crate::c::types::{
 use crate::projection::event::{Lifecycle, TerminalSignal};
 use crate::projection::{event as projected_event, grid};
 
-#[derive(Debug, Clone)]
+/// One session from the latest snapshot, enriched with its organization
+/// record when the replica holds it. `window_count` is the legacy count the
+/// frozen `PhuxSessionInfo` carries; `PhuxSessionRecord` reads the rest.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct SessionSummary {
     pub session_id: u32,
     pub name: Vec<u8>,
@@ -47,7 +50,19 @@ pub(crate) struct SessionSummary {
     pub window_count: u16,
     pub attached_client_count: u16,
     pub focused: bool,
+    /// The session survives its last member: `lifetime == Persistent`, or
+    /// the legacy keep-empty mark from a server without lifetimes.
     pub keep_empty: bool,
+    /// The persistent key, from the snapshot or the replica.
+    pub key: Option<phux_protocol::ids::SessionKey>,
+    /// [`Self::key`] in its full text form; empty without a key.
+    pub key_text: Vec<u8>,
+    /// Whether it outlives its last member, when the server reports it.
+    pub lifetime: Option<phux_protocol::wire::frame::SessionLifetime>,
+    /// Members the snapshot lists, of every kind.
+    pub snapshot_members: u32,
+    /// What the organization replica adds.
+    pub org: crate::c::organization::SessionOrg,
 }
 
 /// One resource from the latest runtime-owned topology snapshot.
@@ -59,6 +74,13 @@ pub(crate) struct ResourceSummary {
     pub provider: Vec<u8>,
     pub native_id: Vec<u8>,
     pub state: Vec<u8>,
+    /// The live session it belongs to, 0 when the snapshot names none.
+    pub session_id: u32,
+    /// Its grid size; 0 for kinds without a grid.
+    pub cols: u16,
+    pub rows: u16,
+    /// Its persistent key from the organization replica, all zero when unknown.
+    pub key: [u8; 16],
     parent_view: PhuxResourceId,
     parent_host: Vec<u8>,
 }
@@ -83,6 +105,10 @@ impl ResourceSummary {
             provider,
             native_id,
             state,
+            session_id: 0,
+            cols: 0,
+            rows: 0,
+            key: [0; 16],
             parent_view: PhuxResourceId::default(),
             parent_host,
         };
@@ -156,7 +182,8 @@ pub(crate) struct Client {
     pub resources: Vec<ResourceSummary>,
     pub agent_streams: HashMap<ResourceId, Option<AgentStreamInfo>>,
     pub operations: crate::c::operations::Operations,
-    pub workspace: crate::c::workspace::SharedWorkspace,
+    pub arrangement: crate::c::arrangement::SharedArrangement,
+    pub org: crate::c::organization::OrgState,
     pub server_id: Vec<u8>,
     pub last_error: Vec<u8>,
     /// Borrow-retained copy of the runtime's connection failure.
@@ -196,7 +223,7 @@ impl Client {
     ///
     /// `deliver_inbound` is [`InboundDelivery::Queued`] in either lane: this
     /// ABI's per-frame hooks (retired-close suppression, bootstrap-profile
-    /// validation) read workspace-subscription state that only the owning
+    /// validation) read arrangement-subscription state that only the owning
     /// thread may touch, so the decode point
     /// stays here even when the runtime owns the socket.
     pub(crate) fn control_options(limits: &Limits) -> (ControlOptions, HistoryCacheConfig) {
@@ -217,12 +244,12 @@ impl Client {
             attach: None,
             attach_role: None,
             event_after_seq: None,
-            // The ABI workspace subscription owns foreign-pane admission;
+            // The ABI arrangement subscription owns foreign-pane admission;
             // enabling the generic runtime path as well would issue a second
             // ATTACH_RESOURCE for the same spawn.
             auto_attach_foreign_spawns: false,
-            // Workspace refresh subscribes AgentSession streams itself
-            // (`crate::c::workspace::resources`).
+            // Arrangement refresh subscribes AgentSession streams itself
+            // (`crate::c::arrangement::resources`).
             subscribe_agent_sessions: false,
             bootstrap_limits,
             deliver_inbound: InboundDelivery::Queued,
@@ -256,7 +283,8 @@ impl Client {
             resources: Vec::new(),
             agent_streams: HashMap::new(),
             operations: crate::c::operations::Operations::default(),
-            workspace: crate::c::workspace::SharedWorkspace::default(),
+            arrangement: crate::c::arrangement::SharedArrangement::default(),
+            org: crate::c::organization::OrgState::default(),
             server_id: Vec::new(),
             last_error: Vec::new(),
             connection_error: Vec::new(),
@@ -363,12 +391,13 @@ impl Client {
     fn retire_connection(&mut self) {
         self.agent_receipts.clear();
         self.operations.disconnect();
-        self.workspace.disconnect();
+        self.arrangement.disconnect();
         self.directory.disconnect();
         self.session_query.disconnect();
         self.session_creates.disconnect();
         self.session_rename.disconnect();
         self.projection.disconnect();
+        crate::c::organization::disconnect(self);
         self.outgoing.clear();
         self.sessions.clear();
         self.resources.clear();
@@ -697,6 +726,9 @@ impl Client {
         for event in events {
             attached |= self.process_runtime_event(event)?;
         }
+        if std::mem::take(&mut self.org.sessions_dirty) {
+            crate::c::organization::changed(self);
+        }
         self.sync_server_features();
         self.publish_effects();
         self.drain_outbound();
@@ -720,6 +752,9 @@ impl Client {
             self.retire_connection();
             return Ok(false);
         }
+        let Some(event) = crate::c::organization::on_event(self, event) else {
+            return Ok(false);
+        };
         let event = match self.process_topology_event(event)? {
             EventProjection::Handled(attached) => return Ok(attached),
             EventProjection::Next(event) => event,
@@ -742,7 +777,11 @@ impl Client {
                 attach_id,
                 snapshot,
             } => {
-                self.resources = snapshot.resources.iter().map(resource_summary).collect();
+                self.resources = snapshot
+                    .resources
+                    .iter()
+                    .map(|resource| resource_summary(&snapshot, resource))
+                    .collect();
                 for resource in &snapshot.resources {
                     if resource.kind == ResourceKind::AgentSession {
                         self.agent_streams
@@ -750,9 +789,10 @@ impl Client {
                             .or_insert(None);
                     }
                 }
-                self.sessions = crate::c::workspace::session_summaries(snapshot.clone())?;
+                self.sessions = crate::c::arrangement::session_summaries(snapshot.clone())?;
+                self.org.sessions_dirty = true;
                 if attach_id.is_some() {
-                    crate::c::workspace::attached(self, snapshot);
+                    crate::c::arrangement::attached(self, snapshot);
                 }
             }
             Event::TerminalChanged { terminal_id } => self.damage_effect(&terminal_id),
@@ -763,7 +803,7 @@ impl Client {
                 self.attach_queued = false;
                 self.expected_attach_id = None;
                 self.attached = true;
-                crate::c::workspace::initial_read(self);
+                crate::c::arrangement::initial_read(self);
                 return Ok(EventProjection::Handled(true));
             }
             event => return Ok(EventProjection::Next(event)),
@@ -938,8 +978,8 @@ impl Client {
     }
 
     pub(crate) fn finish_terminal_close(&mut self, id: &ResourceId) -> Result<(), BridgeError> {
-        self.workspace.subscriptions.cancel(id);
-        self.workspace.subscriptions.mark_closed(id);
+        self.arrangement.subscriptions.cancel(id);
+        self.arrangement.subscriptions.mark_closed(id);
         if let Some(stream) = self.agent_streams.remove(id) {
             let (stream_id, bootstrap_id) = stream.map_or((0, 0), |info| {
                 (info.stream_id.get(), info.bootstrap_id.get())
@@ -1077,6 +1117,7 @@ impl Client {
         self.close_tab_resources = server.has(ServerFeature::CloseTabResources);
         self.attach_roles = server.has(ServerFeature::AttachRoles);
         self.l3_metadata = server.layers.contains(Layer::L3);
+        crate::c::organization::seed(self);
     }
 
     fn engine(&self) -> Result<phux_client_runtime::engine::EngineHandle, BridgeError> {
@@ -1244,10 +1285,11 @@ fn engine_bridge(error: EngineError) -> BridgeError {
 }
 
 pub(crate) fn resource_summary(
+    snapshot: &phux_protocol::wire::info::SessionSnapshot,
     resource: &phux_protocol::wire::info::ResourceInfo,
 ) -> ResourceSummary {
     let agent = resource.agent.as_ref();
-    ResourceSummary::new(
+    let mut summary = ResourceSummary::new(
         resource.id.clone(),
         u32::from(resource.kind.as_wire()),
         resource.parent.clone(),
@@ -1256,7 +1298,30 @@ pub(crate) fn resource_summary(
             .and_then(|facet| facet.native_id.as_ref())
             .map_or_else(Vec::new, |value| value.as_bytes().to_vec()),
         agent.map_or_else(Vec::new, |facet| facet.state.as_bytes().to_vec()),
-    )
+    );
+    summary.session_id = resource_session(snapshot, resource);
+    summary.cols = resource.cols;
+    summary.rows = resource.rows;
+    summary
+}
+
+/// The live session a snapshot resource belongs to: its `session` facet,
+/// or from a server that predates it, the session of its legacy window; 0
+/// when neither names one.
+pub(crate) fn resource_session(
+    snapshot: &phux_protocol::wire::info::SessionSnapshot,
+    resource: &phux_protocol::wire::info::ResourceInfo,
+) -> u32 {
+    resource
+        .session
+        .or_else(|| {
+            snapshot
+                .windows
+                .iter()
+                .find(|window| window.id == resource.window_id)
+                .map(|window| window.session_id)
+        })
+        .map_or(0, phux_protocol::SessionId::get)
 }
 
 fn resource_id_with_host(id: &ResourceId, host: &[u8]) -> PhuxResourceId {

@@ -10,7 +10,7 @@ use phux_protocol::wire::frame::{FrameKind, Scope};
 use crate::attach::connection::Connection;
 use crate::attach::outcome::AttachError;
 use crate::attach::server_frame::AgentMetaIndex;
-use crate::layout::Workspace;
+use crate::layout::ArrangementDoc;
 use phux_client::agent_meta::{
     AgentRecord, RESOURCE_AGENT_KEY, RESOURCE_ASKED_KEY, parse_agent_record,
 };
@@ -46,7 +46,7 @@ pub(super) struct PeerWatch {
     pub(super) focused_session: Option<SessionId>,
     /// Peer sessions' persisted layouts (one `GET_METADATA` per peer), for
     /// one-step cross-session window rows in the picker.
-    pub(super) foreign_layouts: HashMap<SessionId, Workspace>,
+    pub(super) foreign_layouts: HashMap<SessionId, ArrangementDoc>,
     /// In-flight peer-layout GETs, by request id.
     pub(super) foreign_layout_pending: HashMap<u32, SessionId>,
     /// `phux.agent/v1` records of foreign panes, so the fleet dashboard and
@@ -221,7 +221,7 @@ impl PeerWatch {
     /// Fold a peer layout GET reply; `None` or garbage clears the entry.
     pub(super) fn apply_layout_reply(&mut self, session: SessionId, value: Option<&[u8]>) {
         match value {
-            Some(bytes) => match Workspace::decode_cbor(bytes) {
+            Some(bytes) => match ArrangementDoc::decode_cbor(bytes) {
                 Ok(ws) => {
                     self.foreign_layouts.insert(session, ws);
                 }

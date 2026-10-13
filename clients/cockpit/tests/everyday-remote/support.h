@@ -165,20 +165,20 @@ static PhuxResourceId completion(uint32_t request, uint32_t kind) {
     return id;
 }
 
-static PhuxWorkspaceInfo workspace(void) {
-    PhuxWorkspaceInfo info = {.size = sizeof(info), .version = PHUX_CLIENT_ABI_VERSION};
-    checked(phux_client_workspace_info(client, &info));
-    while (info.state == 0 || info.status == 1) {
+static PhuxArrangementInfo arrangement(void) {
+    PhuxArrangementInfo info = {.size = sizeof(info), .version = PHUX_CLIENT_ABI_VERSION};
+    checked(phux_client_arrangement_info(client, &info));
+    while (info.state == PHUX_ARRANGEMENT_STATE_UNAVAILABLE || info.status == 1) {
         assert(pump(5000));
-        checked(phux_client_workspace_info(client, &info));
+        checked(phux_client_arrangement_info(client, &info));
     }
-    assert(info.state == 1 || info.state == 2);
+    assert(info.state == PHUX_ARRANGEMENT_STATE_UNARRANGED || info.state == PHUX_ARRANGEMENT_STATE_AUTHORITATIVE);
     return info;
 }
 
-static PhuxWorkspaceWindow window(void) {
-    (void)workspace();
-    PhuxWorkspaceWindow result = {.size = sizeof(result), .version = PHUX_CLIENT_ABI_VERSION};
-    checked(phux_client_workspace_window_get(client, 0, &result));
+static PhuxArrangementGroup group(void) {
+    assert(arrangement().group_count > 0);
+    PhuxArrangementGroup result = {.size = sizeof(result), .version = PHUX_CLIENT_ABI_VERSION};
+    checked(phux_client_arrangement_group_get(client, 0, &result));
     return result;
 }

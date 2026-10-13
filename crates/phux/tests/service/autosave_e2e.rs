@@ -1,7 +1,8 @@
-//! `phux server --autosave` (ADR-0150): the archive tracks the workspace
-//! while the server runs, so a `SIGKILL` (the stand-in for a crash, an
-//! abort, or power loss) leaves the latest layout on disk, and both a fresh
-//! autosaving server and `phux workspace restore` bring it back.
+//! `phux server --autosave` (ADR-0150), now an export schedule: the archive
+//! tracks the sessions while the server runs, so a `SIGKILL` (the stand-in
+//! for a crash, an abort, or power loss) leaves the latest export on disk.
+//! `phux archive import` recreates its sessions without starting anything,
+//! and a fresh autosaving server comes back with them.
 
 #![allow(clippy::expect_used, clippy::panic, reason = "tests")]
 
@@ -67,9 +68,9 @@ fn wait_for_archive(
     panic!("archive never reached the expected state within {SAVE_BUDGET:?}; last: {last:?}");
 }
 
-/// The live workspace of `server`, as `workspace save` renders it.
+/// The live sessions of `server`, as `archive export` renders them.
 fn live(server: &common::ServerGuard) -> serde_json::Value {
-    serde_json::from_str(&server.success(&["workspace", "save"])).expect("workspace save JSON")
+    serde_json::from_str(&server.success(&["archive", "export"])).expect("archive export JSON")
 }
 
 /// Poll `server` until its live workspace satisfies `want`.
@@ -126,22 +127,22 @@ fn a_sigkilled_server_leaves_the_latest_workspace_and_restore_brings_it_back() {
         "no temp file is left behind"
     );
 
-    // `workspace restore` into a plain server brings the sessions back.
+    // `archive import` into a plain server recreates the sessions, empty and
+    // persistent: an import never starts a process (R16).
     let plain = common::ServerGuard::builder("as-plain")
         .session("seed")
         .start();
     let archive_text = archive.to_string_lossy().into_owned();
-    plain.success(&["workspace", "restore", &archive_text]);
-    let restored = live(&plain);
-    assert_eq!(names(&restored), ["beta", "gamma", "seed"]);
-    assert!(
-        sessions(&restored)
-            .iter()
-            .any(|(name, cwd)| name == "beta" && cwd.as_deref() == Some(work_text.as_str())),
-        "restore brings back the cwd: {restored}"
-    );
+    plain.success(&["archive", "import", &archive_text]);
+    let imported = live(&plain);
+    assert_eq!(names(&imported), ["beta", "gamma", "seed"]);
+    for (name, cwd) in sessions(&imported) {
+        if name != "seed" {
+            assert_eq!(cwd, None, "{name} was imported without a running pane");
+        }
+    }
 
-    // A supervised restart (a fresh autosaving server) restores it itself.
+    // A supervised restart (a fresh autosaving server) comes back with them.
     let restarted = start_autosaving("as-restart", &archive);
     wait_for_live(&restarted, |doc| names(doc) == ["beta", "gamma", "seed"]);
 }

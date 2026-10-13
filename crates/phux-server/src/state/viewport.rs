@@ -161,16 +161,6 @@ impl ServerState {
                 .is_some_and(|pane| pane.dims.0 < min_cols || pane.dims.1 < min_rows)
     }
 
-    fn session_terminals(&self, session: phux_core::ids::SessionId) -> Vec<ResourceId> {
-        self.registry()
-            .session(session)
-            .into_iter()
-            .flat_map(|session| session.windows.iter())
-            .filter_map(|window| self.registry().window(*window))
-            .flat_map(|window| window.slots.iter().copied())
-            .collect()
-    }
-
     fn latest_terminal_viewport(
         &self,
         terminal: ResourceId,

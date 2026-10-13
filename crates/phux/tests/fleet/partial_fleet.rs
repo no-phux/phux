@@ -133,7 +133,7 @@ fn ls_answers_and_reports_completeness() {
     let output = run_verb(partial_fleet(), &["ls", "--json"]);
     assert!(output.status.success());
     let doc: serde_json::Value = serde_json::from_str(&stdout_of(&output)).expect("ls --json");
-    assert_eq!(doc["schema_version"], 3);
+    assert_eq!(doc["schema_version"], 4);
     assert_eq!(doc["unreachable"], serde_json::json!([OUTAGE]));
 }
 

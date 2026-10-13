@@ -305,7 +305,7 @@ fn startCollision(fx: *SessionFx) !Collision {
     _ = try remote.drainReadiness();
     try fixture.stageFixture(remote.bridge, "attached.bin");
     _ = try remote.drainReadiness();
-    try fixture.stageWorkspaceFixture(remote.bridge, "workspace_initial_metadata.bin");
+    try fixture.stageWorkspaceFixture(remote.bridge, "workspace_arranged_metadata.bin");
     try fixture.stageFixture(remote.bridge, "workspace_sessions_a_state.bin");
     _ = try remote.drainReadiness();
     model.shared_workspace.attachment_id = remote.context_id;
@@ -334,7 +334,7 @@ fn startCollision(fx: *SessionFx) !Collision {
     _ = engine.onPeerChannel(fx, .{ .key = engine.peerChannelKey(fx.restarted.?), .kind = .data }, null);
     try fixture.stageFixture(second.bridge, "attached_session_b.bin");
     _ = engine.onPeerChannel(fx, .{ .key = engine.peerChannelKey(fx.restarted.?), .kind = .data }, null);
-    try fixture.stageWorkspaceFixture(second.bridge, "workspace_initial_metadata.bin");
+    try fixture.stageWorkspaceFixture(second.bridge, "workspace_arranged_metadata.bin");
     try fixture.stageFixture(second.bridge, "workspace_session_b_state.bin");
     _ = engine.onPeerChannel(fx, .{ .key = engine.peerChannelKey(fx.restarted.?), .kind = .data }, null);
     try std.testing.expectEqual(@as(u32, 2), model.peers.items[fx.restarted.?].workspace.session);

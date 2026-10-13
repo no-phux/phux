@@ -510,14 +510,14 @@ mod tests {
         }
     }
 
-    /// While zoomed, routing hit-tests `Workspace::render_window`, so a click
+    /// While zoomed, routing hit-tests `ArrangementDoc::render_group`, so a click
     /// over the hidden pane lands on the zoomed one.
     #[test]
     fn route_mouse_while_zoomed_targets_the_zoomed_pane() {
-        use crate::layout::{WindowState, Workspace};
+        use crate::layout::{ArrangementDoc, Group};
         let tree = split_at(&leaf(1), &t(1), &t(2), SplitDir::Horizontal, 0.5).unwrap();
-        let workspace = Workspace {
-            windows: vec![WindowState::new(
+        let workspace = ArrangementDoc {
+            groups: vec![Group::new(
                 "1".to_owned(),
                 LayoutState {
                     tree: Some(tree),
@@ -528,13 +528,13 @@ mod tests {
         };
         // In the real tiled tree pane t(2) owns the right half; a click
         // there would normally route to t(2).
-        let tiled = compute_layout(workspace.active_window().unwrap(), (80, 24));
+        let tiled = compute_layout(workspace.active_group().unwrap(), (80, 24));
         let right_rect = tiled.rects.get(&t(2)).copied().unwrap();
         let click_x = right_rect.x + 2;
         let click_y = right_rect.y + 1;
         // Zoom pane t(1): the render layout collapses to a single leaf, so
         // the same click lands on t(1) instead.
-        let render = workspace.render_window(Some(&t(1))).unwrap();
+        let render = workspace.render_group(Some(&t(1))).unwrap();
         let decision = route_mouse_event(
             &render,
             full_content(80, 24),

@@ -13,8 +13,9 @@ Default sessions keep today's tmux cascade, so the "exit closes everything"
 habit and the ADR-0063 self-exit rule are untouched. Clients render an empty
 state instead of detaching.
 
-Status: Accepted
+Status: Superseded by ADR-0160
 Date: 2026-09-10
+Superseded by [ADR-0160](./0160-sessions-own-resources-and-window-is-retired.md): session lifetime is an explicit persistent or ephemeral property set at create, and named sessions persist by default.
 
 ## Context
 

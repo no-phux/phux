@@ -285,9 +285,10 @@ every viewport it held end and the new connection asks GET_STATE. Picking
 one of its sessions shows it again.
 
 Every edit of a peer's tab goes to that coordinator and to no other
-(`src/cockpit/peer_edits.zig`): Close Tab and Close Pane (the same
+(`src/cockpit/peer_edits.zig`): Close View of a tab or pane (the same
 layout-only removal the active coordinator's tabs send to theirs; its
-terminals keep running there), splits, reordering within its own order, and
+terminals keep running there), Kill Pane and Kill Tab (a terminate of each
+terminal on that coordinator), splits, reordering within its own order, and
 a divider drag. New Tab with one of its panes focused opens on it, and so
 does Open a new tab here on a directory listing made through it (see
 [Go to Directory](DIRECTORY_PICKER.md#panes-of-another-coordinator)). New
@@ -399,14 +400,18 @@ A rename whose connection ended first reads as refused, outcome unknown.
 
 ### Empty sessions
 
-A keep-empty session ([ADR-0105](../../../docs/adr/0105-sessions-can-outlive-their-last-window.md))
-survives its last window, so a coordinator can hold a session with no
-windows. phux-client-ffi reads the mark from the snapshot's trailing
-keep-empty list ([L1.md](../../../docs/spec/L1.md) section 9.1) and reports
-it through `phux_client_session_flags` (KEEP_EMPTY, and EMPTY when the
-session has no windows) only when HELLO_OK advertised `KEEP_EMPTY_SESSIONS`
-(0x00020000); an older server's sessions always read 0. Its switcher row reads
+A persistent session ([ADR-0160](../../../docs/adr/0160-sessions-own-resources-and-window-is-retired.md))
+survives its last member, so a coordinator can hold a session with none.
+Cockpit reads the lifetime from `PhuxSessionRecord` and EMPTY from it or from
+`phux_client_session_flags`; a server that reports only the legacy keep-empty
+mark (`KEEP_EMPTY_SESSIONS`, 0x00020000) reads persistent for a marked
+session, and an older server's sessions read unknown. Its switcher row reads
 `Empty session · <host>` instead of `Phux session`.
+
+A session's arrangement can also show none of its terminals: a fresh session
+publishes no groups and its first shell is unarranged. Cockpit places an
+unarranged terminal of its attached session in a group of its own when the
+arrangement has no groups, so the window shows a tab rather than nothing.
 
 Cockpit shows such a session as an Empty session state with New Tab
 (`src/cockpit/native/empty_session.zig`), never as a broken session. A window

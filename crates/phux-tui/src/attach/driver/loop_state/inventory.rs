@@ -161,7 +161,29 @@ impl super::SessionLoop {
         }
         if !snapshot.resources.is_empty() {
             self.peers.resources.clone_from(&snapshot.resources);
+            self.refresh_members();
         }
+        if let Some(info) = snapshot
+            .sessions
+            .iter()
+            .find(|session| Some(session.id) == self.peers.focused_session)
+        {
+            self.mirror.lifetime = crate::attach::session_mirror::session_lifetime(info);
+        }
+    }
+
+    /// Recompute the attached session's members from the cached graph.
+    pub(super) fn refresh_members(&mut self) {
+        let Some(session) = self.peers.focused_session else {
+            return;
+        };
+        self.mirror.members = crate::attach::sidebar_zones::session_terminal_ids(
+            &self.peers.resources,
+            &self.peers.windows,
+            session,
+        )
+        .into_iter()
+        .collect();
     }
 
     /// Fold windows/resources carried on an ATTACHED outcome.

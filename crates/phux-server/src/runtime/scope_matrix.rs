@@ -93,8 +93,8 @@ fn paired(scopes: &[&str]) -> Fixture {
 fn fixture(engine: Engine, ceiling: impl FnOnce(&Topology) -> Vec<String>) -> Fixture {
     let state = SharedState::new();
     let (alpha, beta, alpha_group) = state.with_mut(|s| {
-        let (alpha_session, _, alpha_core) = s.seed_session("alpha");
-        let (_, _, beta_core) = s.seed_session("beta");
+        let (alpha_session, alpha_core) = s.seed_session("alpha");
+        let (_, beta_core) = s.seed_session("beta");
         let alpha = s.intern_terminal_wire(alpha_core);
         let beta = s.intern_terminal_wire(beta_core);
         (alpha, beta, s.idspace.intern_session(alpha_session).get())

@@ -532,8 +532,8 @@ fn session_block(
         let handle = handle.clone();
         move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
             let rename = handle.clone();
-            let close = handle.clone();
-            let (rename_name, close_name) = (name.clone(), name.clone());
+            let kill = handle.clone();
+            let (rename_name, kill_name) = (name.clone(), name.clone());
             menu.item(
                 PopupMenuItem::new("Rename Session…").on_click(move |_, window, cx| {
                     let current = rename_name.clone();
@@ -550,10 +550,10 @@ fn session_block(
                 }),
             )
             .item(
-                PopupMenuItem::new("Close Session…").on_click(move |_, window, cx| {
-                    let name = close_name.clone();
-                    let _ = close.update(cx, |desk, cx| {
-                        desk.open_modal(Modal::CloseSession { name }, window, cx)
+                PopupMenuItem::new("Kill Session…").on_click(move |_, window, cx| {
+                    let name = kill_name.clone();
+                    let _ = kill.update(cx, |desk, cx| {
+                        desk.open_modal(Modal::KillSession { name, session: id }, window, cx)
                     });
                 }),
             )
@@ -716,7 +716,7 @@ fn pane_row(
                         } else {
                             &colors.subtext
                         }))
-                        .child(desk::pane_label(Some(pane))),
+                        .child(desk.pane_title(Some(&pane.terminal_id))),
                 )
                 .child(
                     div()
@@ -809,7 +809,7 @@ fn agent_row(
                         .truncate()
                         .text_xs()
                         .text_color(from_hex(&colors.muted))
-                        .child(desk::pane_label(Some(pane))),
+                        .child(desk.pane_title(Some(&pane.terminal_id))),
                 ),
         )
         .child(

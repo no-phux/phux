@@ -87,8 +87,8 @@ fn credential_id(client: ClientId) -> String {
 fn world(grants: impl FnOnce(u32, u32) -> Vec<(ClientId, Vec<String>)>) -> World {
     let state = SharedState::new();
     let (alpha, beta) = state.with_mut(|s| {
-        let (_, _, alpha) = s.seed_session("alpha");
-        let (_, _, beta) = s.seed_session("beta");
+        let (_, alpha) = s.seed_session("alpha");
+        let (_, beta) = s.seed_session("beta");
         (s.intern_terminal_wire(alpha), s.intern_terminal_wire(beta))
     });
     let (WireResourceId::Local { id: a }, WireResourceId::Local { id: b }) = (&alpha, &beta) else {

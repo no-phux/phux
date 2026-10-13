@@ -61,17 +61,30 @@ fn title(engine: *engine_module.Engine, id: u32, storage: []u8) []const u8 {
 fn stageWorkspaceReply(engine: *engine_module.Engine, name: []const u8, request: u32) !void {
     const bytes = try fixture.readFixture(name);
     defer testing.allocator.free(bytes);
+    try stageCorrelated(engine, bytes, request);
+}
+
+fn stageCorrelated(engine: *engine_module.Engine, bytes: []u8, request: u32) !void {
     try testing.expectEqualSlices(u8, &.{ 1, 4, 4 }, bytes[5..8]);
     std.mem.writeInt(u32, bytes[8..12], 0x8000_0000 + request, .big);
     try testing.expect(engine.model.phux().?.bridge.incoming.stage(bytes));
 }
 
 /// Stage a workspace refresh whose registry holds `state`, with no layout
-/// metadata; `first` is the refresh's first internal request.
+/// metadata (no groups); `first` is the refresh's first internal request.
 fn stageRefresh(engine: *engine_module.Engine, state: []const u8, first: u32) !void {
     try testing.expect((try engine.model.phux().?.requestWorkspaceRefresh()) != null);
     try stageWorkspaceReply(engine, state, first);
     try stageWorkspaceReply(engine, "status-no-layout-metadata.bin", first + 1);
+}
+
+/// As `stageRefresh`, with a stored layout showing terminal 7 in one group.
+fn stageArrangedRefresh(engine: *engine_module.Engine, state: []const u8, first: u32) !void {
+    try testing.expect((try engine.model.phux().?.requestWorkspaceRefresh()) != null);
+    try stageWorkspaceReply(engine, state, first);
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(testing.io, "src/providers/phux/fixtures/workspace_refresh_metadata.bin", testing.allocator, .limited(64 * 1024));
+    defer testing.allocator.free(bytes);
+    try stageCorrelated(engine, bytes, first + 1);
 }
 
 /// Attached to a keep-empty session 1 holding terminal 7 (ADR-0114).
@@ -85,7 +98,7 @@ fn startKeepEmpty() !*engine_module.Engine {
     var fx: NoticeFx = .{};
     _ = drain(engine, &fx);
     remote.bridge.outgoing.reset();
-    try stageRefresh(engine, "status-keep-empty-state.bin", 2);
+    try stageArrangedRefresh(engine, "status-keep-empty-state.bin", 2);
     _ = drain(engine, &fx);
     try testing.expect(engine.model.locateTerminal(ref(7)) != null);
     return engine;

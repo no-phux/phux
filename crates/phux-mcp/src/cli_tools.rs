@@ -1,8 +1,9 @@
 //! Schemas for the orchestration tools, and the two that still run the CLI.
 //!
-//! `phux_launch` and `phux_workspace` stay on the CLI residue (their reasons
-//! are in `crate::tool_table`); spawn, signal, tag, rename, and the spatial
-//! edits run in-process in `crate::pane_tools`, dispatched from here.
+//! `phux_launch`, `phux_archive`, and `phux_project_inspect` stay on the CLI
+//! residue (their reasons are in `crate::tool_table`); spawn, signal, tag,
+//! rename, and the spatial edits run in-process in `crate::pane_tools`,
+//! dispatched from here.
 
 #![allow(
     clippy::similar_names,
@@ -197,17 +198,27 @@ pub(crate) fn swap_schema() -> Value {
     )
 }
 
-pub(crate) fn workspace_schema() -> Value {
+pub(crate) fn archive_schema() -> Value {
     schema(
-        "phux_workspace",
-        "Inspect a git workspace, save the running session archive, or restore an archive.",
+        "phux_archive",
+        "Export the running server's sessions as an archive document, or import an archive file: \
+         its missing sessions are recreated empty and persistent, and nothing is started.",
         json!({
-            "action": { "type": "string", "enum": ["inspect", "save", "restore"] },
-            "path": string_schema(),
+            "action": { "type": "string", "enum": ["export", "import"] },
             "archive": string_schema(),
             "socket": string_schema(),
         }),
         &["action"],
+    )
+}
+
+pub(crate) fn project_inspect_schema() -> Value {
+    schema(
+        "phux_project_inspect",
+        "Map a git repository and its checked-out worktrees. Local only: never contacts a \
+         server, never creates or deletes a worktree.",
+        json!({ "path": string_schema() }),
+        &[],
     )
 }
 
@@ -232,7 +243,8 @@ async fn call_with_adapter(
 ) -> Result<Value, ToolError> {
     match name {
         "phux_launch" => launch(args, adapter).await,
-        "phux_workspace" => workspace(args, adapter).await,
+        "phux_archive" => archive(args, adapter).await,
+        "phux_project_inspect" => project_inspect(args, adapter).await,
         other => Err(ToolError::new(format!("unknown CLI parity tool: {other}"))),
     }
 }
@@ -353,39 +365,39 @@ fn launch_one_argv(
     Ok(argv)
 }
 
-async fn workspace(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolError> {
-    strict_object(args, &["action", "path", "archive", "socket"], &["action"])?;
-    let action = enum_string(args, "action", &["inspect", "save", "restore"], None)?;
-    let mut argv = vec!["workspace".to_owned(), action.clone()];
+async fn archive(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolError> {
+    strict_object(args, &["action", "archive", "socket"], &["action"])?;
+    let action = enum_string(args, "action", &["export", "import"], None)?;
+    let mut argv = vec!["archive".to_owned(), action.clone()];
     match action.as_str() {
-        "inspect" => {
-            reject_present(args, &["archive", "socket"])?;
-            if let Some(path) = bounded_string(args, "path", false)? {
-                argv.push(path);
-            }
-            argv.push("--json".to_owned());
-            adapter.run_json(argv, DEFAULT_CALL_TIMEOUT).await
-        }
-        "save" => {
-            reject_present(args, &["path", "archive"])?;
+        "export" => {
+            reject_present(args, &["archive"])?;
             push_socket(&mut argv, args)?;
             adapter.run_json(argv, DEFAULT_CALL_TIMEOUT).await
         }
-        "restore" => {
-            reject_present(args, &["path"])?;
+        "import" => {
             let archive = bounded_string(args, "archive", true)?.unwrap_or_default();
             if archive == "-" {
                 return Err(ToolError::new(
                     "stdin archive input is unavailable over MCP; provide a bounded path",
                 ));
             }
-            argv.push(archive.clone());
+            argv.push(archive);
             push_socket(&mut argv, args)?;
-            adapter.run(argv, DEFAULT_CALL_TIMEOUT).await?;
-            Ok(json!({ "schema_version": 1, "restored": true, "archive": archive }))
+            adapter.run_json(argv, DEFAULT_CALL_TIMEOUT).await
         }
-        _ => Err(ToolError::new("unsupported workspace action")),
+        _ => Err(ToolError::new("unsupported archive action")),
     }
+}
+
+async fn project_inspect(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolError> {
+    strict_object(args, &["path"], &[])?;
+    let mut argv = vec!["project".to_owned(), "inspect".to_owned()];
+    if let Some(path) = bounded_string(args, "path", false)? {
+        argv.push(path);
+    }
+    argv.push("--json".to_owned());
+    adapter.run_json(argv, DEFAULT_CALL_TIMEOUT).await
 }
 
 fn push_placement(
@@ -468,11 +480,13 @@ mod tests {
                 "phux_launch",
                 json!({ "integration": "codex", "split": "vertical" }),
             ),
-            ("phux_workspace", json!({ "action": "delete" })),
+            ("phux_archive", json!({ "action": "delete" })),
             (
-                "phux_workspace",
-                json!({ "action": "restore", "archive": "-" }),
+                "phux_archive",
+                json!({ "action": "import", "archive": "-" }),
             ),
+            ("phux_archive", json!({ "action": "import" })),
+            ("phux_project_inspect", json!({ "socket": "/sock" })),
         ] {
             assert!(
                 call_with_adapter(name, &args, &adapter).await.is_err(),
@@ -481,7 +495,7 @@ mod tests {
         }
     }
 
-    /// The two residue tools execute the exact canonical argv.
+    /// The residue tools execute the exact canonical argv.
     #[tokio::test]
     async fn residue_handlers_execute_the_exact_canonical_argv() {
         let (_temp, adapter, log) = fake::cli("printf '{}\\n'\n");
@@ -504,9 +518,17 @@ mod tests {
         assert_argv(
             &adapter,
             &log,
-            "phux_workspace",
-            json!({ "action": "inspect", "path": "/repo" }),
-            &["workspace", "inspect", "/repo", "--json"],
+            "phux_project_inspect",
+            json!({ "path": "/repo" }),
+            &["project", "inspect", "/repo", "--json"],
+        )
+        .await;
+        assert_argv(
+            &adapter,
+            &log,
+            "phux_archive",
+            json!({ "action": "import", "archive": "/a.json", "socket": "/sock" }),
+            &["archive", "import", "/a.json", "--socket", "/sock"],
         )
         .await;
     }

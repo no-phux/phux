@@ -70,10 +70,17 @@ fn sendMutation(engine: *Engine) !void {
     try testing.expectEqual(.pending, engine.model.phux().?.workspaceSnapshot().status);
 }
 
+/// `written`: the add's layout write, when the outgoing queue no longer holds it.
 fn confirm(engine: *Engine, accepted: bool) !void {
-    if (accepted) {
-        try workspaceReply(engine, "workspace_add_metadata.bin", 14, 5);
+    return confirmWritten(engine, accepted, null);
+}
+
+fn confirmWritten(engine: *Engine, accepted: bool, written: ?[]const u8) !void {
+    if (written) |value| {
+        try fixture.stageLayoutValue(engine.model.phux().?.bridge, value, 5);
         try workspaceReply(engine, "workspace_add_state.bin", 13, 4);
+    } else if (accepted) {
+        try fixture.confirmLayoutWrite(engine.model.phux().?.bridge, 5, "workspace_add_state.bin", 13, 4);
     } else {
         try workspaceReply(engine, "workspace_refresh_metadata.bin", 3, 5);
         try workspaceReply(engine, "workspace_refresh_state.bin", 2, 4);
@@ -256,9 +263,11 @@ test "adopted spawn confirmed write survives destination loss without destructiv
     try adopt(engine, result, 1, model.window_epochs[1], true);
     try ready(engine);
     try sendMutation(engine);
+    const written = try fixture.queuedLayoutWrite(model.phux().?.bridge);
+    defer testing.allocator.free(written);
     model.phux().?.bridge.outgoing.reset();
     model.closeWindow(1);
-    try confirm(engine, true);
+    try confirmWritten(engine, true, written);
     try testing.expectEqual(.destination_lost, engine.creation.peekCompletion().?.placement);
     try testing.expect(!model.phux().?.bridge.outgoing.hasPending());
 }

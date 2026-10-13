@@ -135,10 +135,11 @@ impl ServerState {
     }
 
     /// `ACQUIRE_INPUT { SEIZE }` with no TTL; a caller already holding the
-    /// lease keeps it untouched.
+    /// lease keeps it untouched, and a non-human caller leaves a human's
+    /// lease alone (ADR-0163 §6) and attaches without it.
     fn seize_for_attach(&mut self, client: ClientId, core: ResourceId) -> Option<ControlAction> {
         let prior = self.input_lease_holder(core);
-        if prior == Some(client) {
+        if prior == Some(client) || self.lease_protected_from(core, client) {
             return None;
         }
         self.set_input_lease(core, client);

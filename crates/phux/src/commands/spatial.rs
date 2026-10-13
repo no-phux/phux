@@ -78,6 +78,29 @@ pub(crate) fn run_move_pane(
     )
 }
 
+/// `phux mv SOURCE DEST` (and its deprecated spelling `phux move-pane`): a
+/// membership move when DEST names a session
+/// ([`crate::commands::org::run_move_into_session`]), else a placement
+/// beside the pane DEST names ([`run_move_pane`]).
+pub(crate) fn run_mv(
+    source: &str,
+    dest: &str,
+    direction: Direction,
+    ratio: f32,
+    projection: Vec<String>,
+    json: bool,
+    socket: Option<PathBuf>,
+) -> ExitCode {
+    match crate::commands::org::classify_dest(dest, socket.as_deref()) {
+        crate::commands::org::MoveDest::Session => {
+            crate::commands::org::run_move_into_session(source, dest, json, socket)
+        }
+        crate::commands::org::MoveDest::Pane => {
+            run_move_pane(source, dest, direction, ratio, projection, json, socket)
+        }
+    }
+}
+
 /// Exchange two existing pane leaves in one session layout.
 pub(crate) fn run_swap_pane(
     first: &str,

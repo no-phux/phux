@@ -550,6 +550,18 @@ fn json_output_requested() -> bool {
     std::env::args_os().any(|arg| arg == "--json")
 }
 
+/// Print `old`'s deprecation note (its [`deprecations::DEPRECATED`] row) on
+/// stderr, once, unless the caller asked for `--json`: stdout then carries
+/// only the document, and stderr only the one-line error contract.
+fn warn_deprecated(old: &str, json: bool) {
+    if json {
+        return;
+    }
+    if let Some(row) = deprecations::DEPRECATED.iter().find(|row| row.old == old) {
+        eprintln!("{}", row.note);
+    }
+}
+
 /// Endpoints answered straight from argv, before clap parses anything.
 ///
 /// Returns `Some(code)` when this invocation is one of them and no further
@@ -1105,6 +1117,7 @@ fn dispatch(
             idempotency_key,
             remote,
             empty,
+            ephemeral,
             command,
         }) => match commands::spawn::parse_key_arg(idempotency_key.as_deref(), json) {
             Ok(idempotency_key) => commands::new::run_new(
@@ -1115,6 +1128,7 @@ fn dispatch(
                 commands::new::NewMode {
                     json,
                     empty,
+                    ephemeral,
                     idempotency_key,
                 },
                 command,
@@ -1206,6 +1220,22 @@ fn dispatch(
             json,
             socket,
         ),
+        Some(Command::Mv {
+            source,
+            dest,
+            split,
+            ratio,
+            projection,
+            json,
+        }) => commands::spatial::run_mv(
+            &source,
+            &dest,
+            split.into(),
+            ratio,
+            projection,
+            json,
+            socket,
+        ),
         Some(Command::MovePane {
             source,
             target,
@@ -1213,15 +1243,27 @@ fn dispatch(
             ratio,
             projection,
             json,
-        }) => commands::spatial::run_move_pane(
-            &source,
-            &target,
-            split.into(),
-            ratio,
-            projection,
-            json,
-            socket,
-        ),
+        }) => {
+            warn_deprecated("phux move-pane", json);
+            commands::spatial::run_mv(
+                &source,
+                &target,
+                split.into(),
+                ratio,
+                projection,
+                json,
+                socket,
+            )
+        }
+        Some(Command::Rm { target, yes, json }) => {
+            commands::org::run_rm(&target, yes, json, socket)
+        }
+        Some(Command::Relaunch { target, json }) => {
+            commands::org::run_relaunch(&target, json, socket)
+        }
+        Some(Command::Restore { session, json }) => {
+            commands::org::run_restore(session.as_deref(), json, socket)
+        }
         Some(Command::SwapPane {
             first,
             second,
@@ -1256,10 +1298,10 @@ fn dispatch(
             close_agent_sessions,
         }) => commands::upgrade::run_upgrade(socket, close_agent_sessions),
         Some(Command::Rename {
-            session,
+            target,
             new_name,
             remote,
-        }) => commands::rename::run_rename(&session, &new_name, remote.with_socket(socket)),
+        }) => commands::rename::run_rename(&target, &new_name, remote.with_socket(socket)),
         Some(Command::Snapshot {
             session,
             json,
@@ -1415,7 +1457,15 @@ fn dispatch(
         Some(Command::Config { action }) => commands::config::run_config(&action, socket),
         Some(Command::Plugin { action }) => commands::plugin::run_plugin(&action),
         Some(Command::Theme { action }) => commands::theme::run_theme(&action, socket),
-        Some(Command::Workspace { action }) => commands::workspace::run_workspace(&action, socket),
+        Some(Command::Archive { action }) => commands::archive::run_archive(&action, socket),
+        Some(Command::Workspace { action }) => {
+            let json = matches!(
+                action,
+                commands::WorkspaceAction::Inspect { json: true, .. }
+            );
+            warn_deprecated("phux workspace", json);
+            commands::archive::run_workspace_alias(&action, socket)
+        }
         Some(Command::Tag { action }) => commands::tag::run_tag(&action, socket),
         Some(Command::StdioBridge {}) => commands::stdio_bridge::run_stdio_bridge(socket),
         Some(Command::Bootstrap {
@@ -2600,8 +2650,8 @@ mod tests {
         ];
 
         /// Collect every hidden row of the tree under `path`: hidden long
-        /// flags as `<path> --<flag>`, hidden subcommands expanded to one
-        /// row per leaf action (matching the table's `old` spellings).
+        /// flags as `<path> --<flag>`, and each hidden subcommand as one
+        /// row, its actions included (matching the table's `old` spellings).
         fn walk(meta: &usage::spec::CommandMeta<'_>, path: &str, rows: &mut BTreeSet<String>) {
             for flag in meta.flags {
                 if flag.hide {
@@ -2613,13 +2663,8 @@ mod tests {
             for sub in meta.subcommands {
                 let sub_path = format!("{path} {}", sub.cmd.name);
                 if sub.hide {
-                    if sub.subcommands.is_empty() {
-                        rows.insert(sub_path);
-                    } else {
-                        for leaf in sub.subcommands {
-                            rows.insert(format!("{sub_path} {}", leaf.cmd.name));
-                        }
-                    }
+                    // A hidden verb is deprecated whole, its actions with it.
+                    rows.insert(sub_path);
                 } else {
                     walk(sub, &sub_path, rows);
                 }

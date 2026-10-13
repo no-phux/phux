@@ -38,7 +38,7 @@ mod ambient;
     unused_imports,
     reason = "re-exported for suites that spawn phux directly; others use ServerGuard"
 )]
-pub use ambient::{ambient_phux_keys, phux_cmd};
+pub use ambient::{XdgDirs, ambient_phux_keys, isolated_xdg, phux_cmd};
 
 mod server_guard;
 #[allow(
@@ -465,6 +465,7 @@ impl PtyAttach {
         command.env("TERM", "xterm-256color");
         command.env("RUST_LOG", "off");
         command.env("XDG_CONFIG_HOME", config.path());
+        command.env("XDG_STATE_HOME", &ambient::isolated_xdg().state);
         configure(config.path(), &mut command);
         let child = pair
             .slave

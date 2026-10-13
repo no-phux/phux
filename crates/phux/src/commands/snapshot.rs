@@ -232,12 +232,12 @@ async fn rendered_attach_target(
     )
 }
 
-/// The name of the session whose window holds `pane`.
+/// The name of the session `pane` belongs to.
 fn session_of_pane(
     snapshot: &phux_protocol::wire::info::SessionSnapshot,
     pane: &phux_protocol::ids::ResourceId,
 ) -> Option<String> {
-    let (_, session) = phux_client::spawn::ownership_for_terminal(snapshot, pane)?;
+    let session = phux_client::spawn::ownership_for_terminal(snapshot, pane)?;
     snapshot
         .sessions
         .iter()

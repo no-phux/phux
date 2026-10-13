@@ -13,6 +13,7 @@ use crate::uniffi::engine;
 
 #[cfg(test)]
 mod agent_records;
+mod organization;
 #[cfg(test)]
 mod quic_live;
 mod search;
@@ -175,6 +176,8 @@ pub struct RemoteClient {
     input_deliveries: Mutex<Vec<WireInputDelivery>>,
     authoritative_damage: Mutex<HashSet<ResourceId>>,
     generations: Mutex<HashMap<ResourceId, u64>>,
+    /// Committed organization receipts, newest last, kept for `undo`.
+    receipts: Mutex<std::collections::VecDeque<phux_protocol::wire::frame::Committed>>,
 }
 
 #[uniffi::export]
@@ -669,10 +672,14 @@ impl RemoteClient {
             .unwrap_or_default()
     }
 
+    /// The session graph with the organization replica's records and held
+    /// arrangements.
     pub fn topology(&self) -> Option<SessionTopology> {
-        self.runtime_client()
-            .and_then(|client| client.topology())
-            .map(|graph| topology::session_graph(graph).into())
+        let client = self.runtime_client()?;
+        let replica = client.organization();
+        client
+            .topology()
+            .map(|graph| topology::session_graph(graph, Some(&replica)).into())
     }
 
     pub fn send_text(&self, terminal_id: String, text: String) {
@@ -822,6 +829,7 @@ impl RemoteClient {
             input_deliveries: Mutex::new(Vec::new()),
             authoritative_damage: Mutex::new(HashSet::new()),
             generations: Mutex::new(HashMap::new()),
+            receipts: Mutex::new(std::collections::VecDeque::new()),
         })
     }
 }
@@ -995,9 +1003,10 @@ impl RemoteClient {
             events_dropped: observation.events_dropped,
             status: status::connection(Some(observation.status)).into(),
             last_error: observation.last_error,
-            topology: observation
-                .topology
-                .map(|graph| topology::session_graph(graph).into()),
+            topology: observation.topology.map(|graph| {
+                let replica = self.runtime_client().map(|client| client.organization());
+                topology::session_graph(graph, replica.as_ref()).into()
+            }),
         }
     }
 
@@ -1066,6 +1075,10 @@ impl RemoteClient {
             Event::TerminalsClosed { request_id, error } => {
                 projected.push(WireEvent::TerminalsClosed { request_id, error });
             }
+            event @ (Event::OrganizationChanged
+            | Event::OrganizationUnavailable { .. }
+            | Event::OrganizationOperation { .. }
+            | Event::KillFinished { .. }) => projected.extend(self.organization_event(event)),
             Event::AgentPublication {
                 publication,
                 session,

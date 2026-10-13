@@ -29,17 +29,21 @@ use phux_protocol::wire::{
     ListenerDisabledReason, RemoteListenerSlot, RemoteListenerTransport, RemoteListenersReport,
 };
 
+#[cfg(test)]
+mod actor_conformance;
 pub mod attach;
 pub mod client;
 mod command_tasks;
 pub mod commands;
 mod committed_close;
+pub mod delegation;
 mod directory;
 mod ephemeral_listener;
 pub mod idempotent_create;
 pub mod input_lane;
 pub mod keyed_ops;
 pub mod operation_dedupe;
+mod organization;
 mod path_search;
 mod process_env;
 mod program_status;
@@ -156,6 +160,10 @@ pub struct ServerConfig {
     /// default sets nothing, so an in-process server never inherits the
     /// launching shell's (a production pane exports several).
     pub env: ServerEnv,
+    /// Where the organization store lives (ADR-0162). `phux server` uses
+    /// [`crate::OrgStoreLocation::default_path`]; in-process servers default
+    /// to memory so no test opens a shared store.
+    pub org_store: crate::OrgStoreLocation,
 }
 
 /// The opt-in flags the running server applied.
@@ -217,6 +225,7 @@ impl ServerConfig {
             hook_catalog: crate::hooks::HookCatalog::default(),
             exit_after_idle: None,
             env: ServerEnv::default(),
+            org_store: crate::OrgStoreLocation::Memory,
         }
     }
 }
@@ -260,6 +269,7 @@ fn spawn_idle_exit_watchdog(
                         idle_limit_secs = idle_limit.as_secs_f64(),
                         "unattended for the configured idle limit; server exiting"
                     );
+                    state.with_mut(crate::state::ServerState::begin_shutdown);
                     root_token.cancel();
                 }
                 return;
@@ -355,6 +365,15 @@ pub enum ServerError {
     /// resume fails closed rather than serve a partial tree.
     #[error("resume rebuild: {0}")]
     Rebuild(#[from] crate::state::RebuildError),
+
+    /// The organization store could not be opened, read, or written; the
+    /// server refuses to start rather than guess at its records.
+    #[error("organization store: {0}")]
+    OrgStore(#[from] crate::org_store::StoreError),
+
+    /// The stored records break an organization invariant.
+    #[error("organization records: {0}")]
+    Organization(#[from] phux_core::InvariantViolation),
 
     /// The token store that authorizes bridged connector consumers could not
     /// be loaded; connectors fail closed.
@@ -647,6 +666,7 @@ impl ServerRuntime {
         install_policy_posture(&state, posture, posture_engine);
 
         let pre_seeded = self.cfg.pre_seeded_session.clone();
+        let org_store = self.cfg.org_store.clone();
         let seed_with_pty = self.cfg.seed_with_pty;
         let seed_command = self.cfg.seed_command.clone();
         let scrollback = self.cfg.scrollback;
@@ -666,7 +686,7 @@ impl ServerRuntime {
         let root_token = CancellationToken::new();
         let result = local
             .run_until(async move {
-                spawn_shutdown_folder(shutdown, &root_token);
+                spawn_shutdown_folder(shutdown, &state, &root_token);
                 arm_idle_exit(&state, exit_after_idle, &root_token);
                 install_hook_dispatcher(&state, hook_catalog, hook_socket_path);
                 state.with_mut(|s| {
@@ -705,10 +725,29 @@ impl ServerRuntime {
                     hook(&state.with(|s| s.remote_listeners().clone()));
                 }
 
+                // ADR-0162 startup order: open the store, resume (or import)
+                // the upgrade blob, persist a first start, reconcile what a
+                // previous run left live, then seed. Nothing relaunches.
                 let cold_start = resume_blob.is_none();
-                if let Some(blob) = resume_blob {
-                    resume_session_tree(&state, &blob, &root_token)?;
-                } else if let Some(name) = pre_seeded.as_deref() {
+                open_org_store(&state, &org_store)?;
+                if let Some(blob) = &resume_blob {
+                    resume_session_tree(&state, blob, &root_token)?;
+                }
+                state.with_mut(crate::state::ServerState::persist_first_start)?;
+                let reconciled = state.with_mut(crate::state::ServerState::reconcile);
+                if reconciled != crate::state::Reconciled::default() {
+                    info!(
+                        lost = reconciled.lost,
+                        unobserved = reconciled.unobserved,
+                        "reconciled activations a previous run left live"
+                    );
+                }
+                let seed_missing = pre_seeded
+                    .as_deref()
+                    .filter(|name| state.with(|s| s.session_by_name(name).is_none()));
+                if resume_blob.is_none()
+                    && let Some(name) = seed_missing
+                {
                     seed_initial_session(
                         &state,
                         name,
@@ -1027,14 +1066,18 @@ fn auto_overlay_allowed(ports: AutoOverlayPorts, state: &SharedState) -> bool {
 
 /// Fold the external shutdown future into the root token. `spawn_local` (not
 /// `tokio::spawn`) because the runtime is current-thread with no worker pool.
-fn spawn_shutdown_folder<F>(shutdown: F, root_token: &CancellationToken)
+fn spawn_shutdown_folder<F>(shutdown: F, state: &SharedState, root_token: &CancellationToken)
 where
     F: Future<Output = ()> + 'static,
 {
     let token = root_token.clone();
+    let state = state.clone();
     tokio::task::spawn_local(async move {
         shutdown.await;
         debug!("shutdown future resolved; cancelling root token");
+        // Records of what the teardown ends stay for the next start to
+        // reconcile, as after a crash.
+        state.with_mut(crate::state::ServerState::begin_shutdown);
         token.cancel();
     });
 }
@@ -1172,6 +1215,53 @@ fn inner_tls_for(
             error!(error = %err, "end-to-end TLS for relay consumers unavailable");
             None
         }
+    }
+}
+
+/// Open the organization store and install its records; a store that was
+/// never written leaves a fresh authority in memory for
+/// [`crate::state::ServerState::persist_first_start`] to write once any
+/// upgrade blob has been considered.
+fn open_org_store(
+    state: &SharedState,
+    location: &crate::OrgStoreLocation,
+) -> Result<(), ServerError> {
+    let mut store = location.open()?;
+    let stored = store.load()?;
+    state.with_mut(|s| -> Result<(), ServerError> {
+        let instance = s.instance_id();
+        if let Some(stored) = stored {
+            let mut org = phux_core::Org::restore(
+                stored.authority,
+                instance,
+                stored.sessions,
+                stored.resources,
+                stored.arrangements,
+                stored.receipts,
+            )?;
+            // Every session has an arrangement; a store written before that
+            // rule gets the missing ones now.
+            if org.sessions().any(|session| session.arrangement.is_none()) {
+                crate::state::ensure_arrangements(&mut org);
+                store.import(&org, None, crate::state::now_stamp())?;
+            }
+            s.install_org(store, org, true);
+        } else {
+            let org = crate::state::fresh_org(instance, crate::state::now_stamp());
+            s.install_org(store, org, false);
+        }
+        Ok(())
+    })?;
+    if let Some(path) = location_path(location) {
+        debug!(path = %path.display(), "organization store open");
+    }
+    Ok(())
+}
+
+const fn location_path(location: &crate::OrgStoreLocation) -> Option<&PathBuf> {
+    match location {
+        crate::OrgStoreLocation::Path(path) => Some(path),
+        crate::OrgStoreLocation::Memory => None,
     }
 }
 
@@ -1893,13 +1983,13 @@ mod tests {
     /// Returns its core id, its wire id, and its engine token.
     fn register_seeded_pane(
         state: &mut crate::state::ServerState,
-        window: phux_core::ids::WindowId,
+        session: phux_core::ids::SessionId,
     ) -> (
         phux_core::ids::ResourceId,
         phux_protocol::ids::ResourceId,
         CancellationToken,
     ) {
-        let pane = state.registry_mut().new_terminal(window).expect("pane");
+        let pane = state.add_pane_to_session(session).expect("pane");
         let bundle =
             crate::terminal_actor::TerminalActor::new_with_seed(20, 5, b"seeded").expect("actor");
         let token = bundle.token;
@@ -1918,10 +2008,9 @@ mod tests {
         [CancellationToken; 2],
     ) {
         let mut old = crate::state::ServerState::new();
-        let sid = old.registry_mut().new_session("main".to_owned());
-        let wid = old.registry_mut().new_window(sid).expect("window");
-        let (exited, exited_wire, exited_token) = register_seeded_pane(&mut old, wid);
-        let (running, running_wire, running_token) = register_seeded_pane(&mut old, wid);
+        let sid = old.seed_empty_session("main").expect("session");
+        let (exited, exited_wire, exited_token) = register_seeded_pane(&mut old, sid);
+        let (running, running_wire, running_token) = register_seeded_pane(&mut old, sid);
         let _ = old.build_session_snapshot(sid);
         old.note_retain_request(running, 60);
         old.note_retain_request(exited, 60);
@@ -1968,7 +2057,7 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(Box::pin(async {
-                let (old, wire, running_wire, tokens) = old_image_with_retained_panes();
+                let (mut old, wire, running_wire, tokens) = old_image_with_retained_panes();
                 let blob = old.build_upgrade_blob(7).await;
                 let crossed = blob
                     .panes
@@ -2062,6 +2151,7 @@ mod tests {
             panes,
             agent_sessions: Vec::new(),
             metadata: Vec::new(),
+            org: None,
         }
     }
 
@@ -2147,6 +2237,7 @@ mod tests {
                         last_touched: None,
                         root: None,
                         keep_empty: false,
+                        key: None,
                     }],
                     Vec::new(),
                     Vec::new(),
@@ -2510,7 +2601,7 @@ mod tests {
     #[test]
     fn viewport_resize_updates_dims_and_queues_actor_resize() {
         let state = SharedState::new();
-        let (sid, _wid, pid) = state.with_mut(|s| s.seed_session("test-session"));
+        let (sid, pid) = state.with_mut(|s| s.seed_session("test-session"));
         let mut rx = register_stub(&state, pid);
         let dims = || {
             state
@@ -2550,7 +2641,7 @@ mod tests {
     #[test]
     fn terminal_resize_forwards_cell_px_or_keeps_the_last() {
         let state = SharedState::new();
-        let (_, _, pane) = state.with_mut(|s| s.seed_session("home"));
+        let (_, pane) = state.with_mut(|s| s.seed_session("home"));
         let mut rx = register_stub(&state, pane);
         let client = attach_client(&state, "home");
         let wire = state.with_mut(|s| s.intern_terminal_wire(pane));
@@ -2582,7 +2673,7 @@ mod tests {
     #[test]
     fn pane_sizing_attach_resizes_each_pane_at_most_once() {
         let state = SharedState::new();
-        let (_, _, pane) = state.with_mut(|s| s.seed_session("home"));
+        let (_, pane) = state.with_mut(|s| s.seed_session("home"));
         let mut rx = register_stub(&state, pane);
         let target = || {
             state.with_mut(|s| crate::state::AttachSnapshotPane {
@@ -2629,8 +2720,8 @@ mod tests {
     #[test]
     fn vote_free_detach_resets_only_an_unusably_small_pane() {
         let state = SharedState::new();
-        let (_, window, tiny) = state.with_mut(|s| s.seed_session("home"));
-        let normal = state.with_mut(|s| s.registry_mut().new_terminal(window).unwrap());
+        let (window, tiny) = state.with_mut(|s| s.seed_session("home"));
+        let normal = state.with_mut(|s| s.add_pane_to_session(window).unwrap());
         let mut tiny_rx = register_stub(&state, tiny);
         let mut normal_rx = register_stub(&state, normal);
         let client = attach_client(&state, "home");
@@ -2661,11 +2752,11 @@ mod tests {
     #[test]
     fn viewport_resize_fans_out_only_to_live_subscribed_session_panes() {
         let state = SharedState::new();
-        let (_, window, active) = state.with_mut(|s| s.seed_session("home"));
-        let inactive = state.with_mut(|s| s.registry_mut().new_terminal(window).unwrap());
-        let retained = state.with_mut(|s| s.registry_mut().new_terminal(window).unwrap());
-        let (_, _, foreign) = state.with_mut(|s| s.seed_session("foreign"));
-        let unsubscribed = state.with_mut(|s| s.registry_mut().new_terminal(window).unwrap());
+        let (window, active) = state.with_mut(|s| s.seed_session("home"));
+        let inactive = state.with_mut(|s| s.add_pane_to_session(window).unwrap());
+        let retained = state.with_mut(|s| s.add_pane_to_session(window).unwrap());
+        let (_, foreign) = state.with_mut(|s| s.seed_session("foreign"));
+        let unsubscribed = state.with_mut(|s| s.add_pane_to_session(window).unwrap());
         let mut receivers: Vec<_> = [active, inactive, retained, foreign, unsubscribed]
             .into_iter()
             .map(|pane| register_stub(&state, pane))
@@ -2727,7 +2818,7 @@ mod tests {
     fn viewport_resize_preserves_policy_and_zero_vote_protection() {
         use phux_config::WindowSize;
         let state = SharedState::new();
-        let (_, _, pane) = state.with_mut(|s| s.seed_session("home"));
+        let (_, pane) = state.with_mut(|s| s.seed_session("home"));
         let mut receiver = register_stub(&state, pane);
         let small = attach_client(&state, "home");
         let large = attach_client(&state, "home");
@@ -2767,7 +2858,7 @@ mod tests {
     #[test]
     fn closed_resize_delivery_never_advances_registry_geometry() {
         let state = SharedState::new();
-        let (_, _, pane) = state.with_mut(|s| s.seed_session("home"));
+        let (_, pane) = state.with_mut(|s| s.seed_session("home"));
         drop(register_stub(&state, pane));
         let client = attach_client(&state, "home");
         let target = state.with_mut(|s| crate::state::AttachSnapshotPane {
@@ -2802,11 +2893,11 @@ mod tests {
         local
             .run_until(async {
                 let state = SharedState::new();
-                let (_sid, wid, first) = state.with_mut(|s| s.seed_session("multi"));
+                let (wid, first) = state.with_mut(|s| s.seed_session("multi"));
                 let mut panes = vec![first];
                 state.with_mut(|s| {
                     for _ in 1..N {
-                        panes.push(s.registry_mut().new_terminal(wid).expect("new_pane"));
+                        panes.push(s.add_pane_to_session(wid).expect("new_pane"));
                     }
                 });
                 // No actor answers consumer registration: raw per-pane pumps.
@@ -2878,7 +2969,7 @@ mod tests {
         local
             .run_until(async {
                 let state = SharedState::new();
-                let (_sid, _wid, pid) = state.with_mut(|s| s.seed_session("lifecycle"));
+                let (_sid, pid) = state.with_mut(|s| s.seed_session("lifecycle"));
                 let mut rx = register_stub(&state, pid);
                 let (out_tx, mut out_rx) =
                     tokio::sync::mpsc::channel::<Outbound>(crate::state::DEFAULT_CLIENT_MAILBOX);
@@ -2976,7 +3067,7 @@ mod tests {
             );
             assert!(event.context.contains_key("terminal-id"));
 
-            let (_sid, _wid, pane) = state.with_mut(|s| s.seed_session("dying"));
+            let (_sid, pane) = state.with_mut(|s| s.seed_session("dying"));
             let (exit_tx, exit_rx) = tokio::sync::oneshot::channel();
             spawn_terminal_exit_watcher(state.clone(), pane, Some(exit_rx), token, None);
             exit_tx
@@ -3007,7 +3098,7 @@ mod tests {
             let state = SharedState::new();
             let mut hooks = capture_hooks(&state);
             let root = CancellationToken::new();
-            let (_sid, _wid, pane) = state.with_mut(|s| s.seed_session("doomed"));
+            let (_sid, pane) = state.with_mut(|s| s.seed_session("doomed"));
             state.with_mut(crate::state::ServerState::arm_self_exit);
             let (exit_tx, exit_rx) = tokio::sync::oneshot::channel();
             spawn_terminal_exit_watcher(state.clone(), pane, Some(exit_rx), root.clone(), None);
@@ -3023,8 +3114,8 @@ mod tests {
             assert_eq!(committed.len(), 1);
             committed_close::announce(&state, committed);
             assert!(
-                state.with(|s| s.registry().session_count() == 0 && !s.self_exit_due()),
-                "the session is gone at commit, but the process is still in its grace"
+                state.with(|s| s.registry().record(pane).is_none() && !s.self_exit_due()),
+                "the record is gone at commit, but the process is still in its grace"
             );
 
             exit_tx
@@ -3057,7 +3148,7 @@ mod tests {
         local.block_on(&rt, async {
             let state = SharedState::new();
             let mut hooks = capture_hooks(&state);
-            let (_sid, _wid, pane) = state.with_mut(|s| s.seed_session("focus"));
+            let (_sid, pane) = state.with_mut(|s| s.seed_session("focus"));
             let mut rx = register_stub(&state, pane);
             let wire_terminal_id = state.with_mut(|s| s.intern_terminal_wire(pane));
             let client_id = attach_client(&state, "focus");
@@ -3142,7 +3233,7 @@ mod tests {
         local
             .run_until(async {
                 let state = SharedState::new();
-                let (_sid, _wid, terminal) = state.with_mut(|s| s.seed_session("native-fatal"));
+                let (_sid, terminal) = state.with_mut(|s| s.seed_session("native-fatal"));
                 let (handle, mut rx) = stub_terminal();
                 let output_tx = handle.output.clone();
                 state.with_mut(|s| {

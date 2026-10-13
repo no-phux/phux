@@ -56,6 +56,11 @@ must not be reported as a successful process exit.
 - MCP input mutates a real PTY that a human may share. Layout changes never
   move the human's client-local focus.
 - Prefer exact pane ids for writes; session names and tags may select sets.
+- `phux_kill` on a session terminates, removes, and deletes member by member
+  and returns each outcome under `report`. `phux_rm` removes a stopped pane or
+  an empty session; `phux_relaunch` restarts a stopped pane. Both destructive
+  tools need `confirm: true`. `phux_new` makes a persistent session unless
+  `lifetime` is `ephemeral`.
 - Never send input into the pane hosting your own harness. Create a sibling
   terminal for shell work; do not send shell commands into an agent TUI.
 - Before kill, detach, or a destructive signal, resolve and display the target,

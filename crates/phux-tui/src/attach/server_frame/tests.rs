@@ -27,7 +27,7 @@ use crate::attach::outcome::{AttachEnd, AttachError};
 use crate::attach::pane_state::{AttachKernel, PaneSlot};
 use crate::attach::render::ReplicaWalk;
 use crate::attach::session_mirror::SessionMirror;
-use crate::layout::{LayoutState, WindowState, Workspace};
+use crate::layout::{ArrangementDoc, Group, LayoutState};
 use crate::predict::{PredictionState, PredictiveConfig};
 use crate::render::chrome::status_bar::NoticeSeverity;
 
@@ -229,16 +229,16 @@ fn split2(a: u32, b: u32, focus: u32) -> LayoutState {
 }
 
 /// A single-window workspace wrapping `state`.
-fn ws1(state: LayoutState) -> Workspace {
-    Workspace {
-        windows: vec![WindowState::new("1".to_owned(), state)],
+fn ws1(state: LayoutState) -> ArrangementDoc {
+    ArrangementDoc {
+        groups: vec![Group::new("1".to_owned(), state)],
         active: 0,
     }
 }
 
 /// Leaves of a workspace's window at `idx`.
-fn window_leaves(ws: &Workspace, idx: usize) -> Vec<ResourceId> {
-    ws.windows[idx]
+fn window_leaves(ws: &ArrangementDoc, idx: usize) -> Vec<ResourceId> {
+    ws.groups[idx]
         .state
         .tree
         .as_ref()
@@ -247,12 +247,12 @@ fn window_leaves(ws: &Workspace, idx: usize) -> Vec<ResourceId> {
 }
 
 /// Pane 1 split with `other` side by side, focused on `focus`.
-fn beside(workspace: &mut Workspace, other: &ResourceId) {
+fn beside(workspace: &mut ArrangementDoc, other: &ResourceId) {
     let tree = workspace
-        .active_window()
+        .active_group()
         .and_then(|w| w.tree.clone())
         .expect("tree");
-    workspace.active_window_mut().expect("window").tree = Some(
+    workspace.active_group_mut().expect("window").tree = Some(
         crate::layout::split_at(&tree, &tid(1), other, SplitDir::Horizontal, 0.5).expect("split"),
     );
 }
@@ -303,9 +303,9 @@ impl H {
 
     /// A client on `ws`, focused on its active window's focus, with a warm
     /// slot for every pane in `slots`.
-    fn on(ws: Workspace, slots: &[&ResourceId]) -> Self {
+    fn on(ws: ArrangementDoc, slots: &[&ResourceId]) -> Self {
         let mut h = Self::new();
-        h.mirror.focused_resource = ws.active_window().and_then(|w| w.focus.clone());
+        h.mirror.focused_resource = ws.active_group().and_then(|w| w.focus.clone());
         h.mirror.workspace = ws;
         for id in slots {
             h.mirror
@@ -316,7 +316,7 @@ impl H {
     }
 
     /// A client on `ws` whose panes are published replicas of `entries`.
-    fn published(ws: Workspace, entries: &[(&ResourceId, u16, u16, &[u8])]) -> Self {
+    fn published(ws: ArrangementDoc, entries: &[(&ResourceId, u16, u16, &[u8])]) -> Self {
         let (kernel, effects, panes) = crate::attach::pane_state::published_test_state(entries);
         let mut h = Self::on(ws, &[]);
         h.mirror.engine_kernel = kernel;
@@ -409,7 +409,7 @@ impl H {
             && let Some(active) = self
                 .mirror
                 .workspace
-                .render_window(self.mirror.zoomed.as_ref())
+                .render_group(self.mirror.zoomed.as_ref())
         {
             let theme = crate::render::theme::Theme::default();
             let mut chrome = crate::attach::chrome_ctx::ChromeCtx {
@@ -435,7 +435,7 @@ impl H {
     fn leaves(&self) -> Vec<ResourceId> {
         self.mirror
             .workspace
-            .active_window()
+            .active_group()
             .and_then(|w| w.tree.as_ref())
             .map(crate::layout::leaves)
             .unwrap_or_default()
@@ -619,7 +619,10 @@ fn bootstrap_ready_surfaces_publication_damage_without_attach_barrier() {
 #[test]
 fn terminal_output_seq_zero_is_rejected() {
     let pane = tid(1);
-    let mut h = H::published(Workspace::single(pane.clone()), &[(&pane, 80, 24, b"")]);
+    let mut h = H::published(
+        ArrangementDoc::single(pane.clone()),
+        &[(&pane, 80, 24, b"")],
+    );
     let route = route_engine_frame(
         &output_frame(&pane, 0, b"hi"),
         &mut h.mirror.engine_kernel,
@@ -827,26 +830,26 @@ fn history_tombstone_marks_the_pane_degraded() {
 fn reconcile_accepts_authorized_replacement_and_keeps_trees() {
     let reconcile = super::reconcile_loaded_workspace;
     let mut replacement = ws1(split2(1, 2, 1));
-    let local = Workspace::single(tid(9));
-    replacement.windows[0].id = local.windows[0].id;
+    let local = ArrangementDoc::single(tid(9));
+    replacement.groups[0].id = local.groups[0].id;
     let out = reconcile(replacement, &local, Some(&tid(9)));
     assert_eq!(
         window_leaves(&out, 0),
         vec![tid(1), tid(2)],
         "session authority does not depend on currently admitted replicas"
     );
-    assert_eq!(out.windows[0].state.focus, Some(tid(1)));
-    assert_eq!(out.windows[0].id, local.windows[0].id);
+    assert_eq!(out.groups[0].state.focus, Some(tid(1)));
+    assert_eq!(out.groups[0].id, local.groups[0].id);
 
     // A tree containing the session pane, or with no focus to validate
     // against, is kept whole.
     let out = reconcile(
         ws1(split2(1, 2, 1)),
-        &Workspace::single(tid(1)),
+        &ArrangementDoc::single(tid(1)),
         Some(&tid(1)),
     );
     assert_eq!(window_leaves(&out, 0), vec![tid(1), tid(2)]);
-    let out = reconcile(ws1(split2(1, 2, 1)), &Workspace::default(), None);
+    let out = reconcile(ws1(split2(1, 2, 1)), &ArrangementDoc::default(), None);
     assert_eq!(window_leaves(&out, 0).len(), 2);
 }
 
@@ -854,15 +857,15 @@ fn reconcile_accepts_authorized_replacement_and_keeps_trees() {
 /// ("open vim in one window, it shows in the other").
 #[test]
 fn reconcile_multi_window_does_not_alias_non_active_windows() {
-    let ws = Workspace {
-        windows: vec![
-            WindowState::new("1".to_owned(), LayoutState::single(tid(1))),
-            WindowState::new("2".to_owned(), LayoutState::single(tid(2))),
+    let ws = ArrangementDoc {
+        groups: vec![
+            Group::new("1".to_owned(), LayoutState::single(tid(1))),
+            Group::new("2".to_owned(), LayoutState::single(tid(2))),
         ],
         active: 0,
     };
     let out = super::reconcile_loaded_workspace(ws.clone(), &ws, Some(&tid(1)));
-    assert_eq!(out.windows.len(), 2);
+    assert_eq!(out.groups.len(), 2);
     assert_eq!(window_leaves(&out, 0), vec![tid(1)]);
     assert_eq!(window_leaves(&out, 1), vec![tid(2)]);
 }
@@ -871,25 +874,25 @@ fn reconcile_multi_window_does_not_alias_non_active_windows() {
 /// deterministically rather than adopting the sender's focus.
 #[test]
 fn reconcile_repairs_missing_local_focus_and_invalid_active_index() {
-    let mut local = Workspace::single(tid(1));
-    local.add_window("2".to_owned(), tid(2));
-    local.add_window("3".to_owned(), tid(9));
-    let incoming = Workspace {
-        windows: vec![
-            WindowState::new("1".to_owned(), split2(1, 4, 4)),
-            WindowState::new("2".to_owned(), split2(2, 3, 3)),
+    let mut local = ArrangementDoc::single(tid(1));
+    local.add_group("2".to_owned(), tid(2));
+    local.add_group("3".to_owned(), tid(9));
+    let incoming = ArrangementDoc {
+        groups: vec![
+            Group::new("1".to_owned(), split2(1, 4, 4)),
+            Group::new("2".to_owned(), split2(2, 3, 3)),
         ],
         active: 0,
     };
     let out = super::reconcile_loaded_workspace(incoming, &local, Some(&tid(9)));
     assert_eq!(out.active, 1, "removed local index clamps to last window");
-    assert_eq!(out.windows[0].state.focus, Some(tid(1)));
-    assert_eq!(out.windows[1].state.focus, Some(tid(2)));
+    assert_eq!(out.groups[0].state.focus, Some(tid(1)));
+    assert_eq!(out.groups[1].state.focus, Some(tid(2)));
 }
 
 #[test]
 fn duplicate_hello_ok_is_fatal_in_attached_phase() {
-    let mut h = H::on(Workspace::single(tid(1)), &[&tid(1)]);
+    let mut h = H::on(ArrangementDoc::single(tid(1)), &[&tid(1)]);
     let error = h
         .try_send(FrameKind::HelloOk {
             protocol_major: phux_protocol::PROTOCOL_VERSION.major,
@@ -911,7 +914,7 @@ fn duplicate_hello_ok_is_fatal_in_attached_phase() {
 /// catch-all (that would tear down a healthy attach over a picker reply).
 #[test]
 fn directory_listing_reply_is_handed_to_the_driver() {
-    let mut h = H::on(Workspace::single(tid(1)), &[&tid(1)]);
+    let mut h = H::on(ArrangementDoc::single(tid(1)), &[&tid(1)]);
     let result = Ok(phux_protocol::wire::frame::DirectoryListing {
         path: "/".to_owned(),
         parent: None,
@@ -930,7 +933,7 @@ fn directory_listing_reply_is_handed_to_the_driver() {
 /// newest in-flight query.
 #[test]
 fn path_results_reply_reaches_driver_for_generation_matching() {
-    let mut h = H::on(Workspace::single(tid(1)), &[&tid(1)]);
+    let mut h = H::on(ArrangementDoc::single(tid(1)), &[&tid(1)]);
     let result = Ok(phux_protocol::wire::frame::PathResults {
         root: "/src".into(),
         parent: Some("/".into()),
@@ -958,7 +961,7 @@ fn raced_request_correlated_replies_are_inert_not_fatal() {
             result: phux_protocol::wire::frame::MoveResult::Ok(pane.clone()),
         },
     ] {
-        let mut h = H::on(Workspace::single(pane.clone()), &[&pane]);
+        let mut h = H::on(ArrangementDoc::single(pane.clone()), &[&pane]);
         let before = h.mirror.workspace.clone();
         let outcome = h
             .try_send(frame.clone())
@@ -992,20 +995,20 @@ fn raced_request_correlated_replies_are_inert_not_fatal() {
 /// active window and per-window focuses cannot yank this client.
 #[test]
 fn metadata_changed_preserves_valid_local_window_and_pane_focus() {
-    let local = Workspace {
-        windows: vec![
-            WindowState::new("local-one".to_owned(), split2(1, 2, 2)),
-            WindowState::new("local-two".to_owned(), split2(3, 4, 4)),
+    let local = ArrangementDoc {
+        groups: vec![
+            Group::new("local-one".to_owned(), split2(1, 2, 2)),
+            Group::new("local-two".to_owned(), split2(3, 4, 4)),
         ],
         active: 1,
     };
     let mut sibling = local.clone();
     sibling.active = 0;
-    sibling.windows[0].name = "shared-one".to_owned();
-    sibling.windows[1].name = "shared-two".to_owned();
-    sibling.windows[0].state.focus = Some(tid(1));
-    sibling.windows[1].state.focus = Some(tid(3));
-    if let Some(LayoutNode::Split { ratio, .. }) = sibling.windows[1].state.tree.as_mut() {
+    sibling.groups[0].name = "shared-one".to_owned();
+    sibling.groups[1].name = "shared-two".to_owned();
+    sibling.groups[0].state.focus = Some(tid(1));
+    sibling.groups[1].state.focus = Some(tid(3));
+    if let Some(LayoutNode::Split { ratio, .. }) = sibling.groups[1].state.tree.as_mut() {
         *ratio = 0.7;
     }
     let mut h = H::on(local, &[&tid(1), &tid(2), &tid(3), &tid(4)]);
@@ -1016,19 +1019,19 @@ fn metadata_changed_preserves_valid_local_window_and_pane_focus() {
         h.mirror.workspace.active, 1,
         "sender cannot change the local window"
     );
-    assert_eq!(h.mirror.workspace.windows[0].state.focus, Some(tid(2)));
-    assert_eq!(h.mirror.workspace.windows[1].state.focus, Some(tid(4)));
+    assert_eq!(h.mirror.workspace.groups[0].state.focus, Some(tid(2)));
+    assert_eq!(h.mirror.workspace.groups[1].state.focus, Some(tid(4)));
     assert_eq!(
         h.mirror.focused_resource,
         Some(tid(4)),
         "driver mirror stays client-local"
     );
     assert_eq!(
-        h.mirror.workspace.windows[0].name, "shared-one",
+        h.mirror.workspace.groups[0].name, "shared-one",
         "names are topology"
     );
     assert!(matches!(
-        h.mirror.workspace.windows[1].state.tree,
+        h.mirror.workspace.groups[1].state.tree,
         Some(LayoutNode::Split { ratio, .. }) if (ratio - 0.7).abs() < f32::EPSILON
     ));
 }
@@ -1036,7 +1039,7 @@ fn metadata_changed_preserves_valid_local_window_and_pane_focus() {
 #[test]
 fn old_layout_schema_refuses_attach_and_broadcast_without_resetting_metadata() {
     let bytes = b"\xa1\x67version\x02".to_vec();
-    let mut h = H::on(Workspace::single(tid(1)), &[&tid(1)]);
+    let mut h = H::on(ArrangementDoc::single(tid(1)), &[&tid(1)]);
     h.layout_request = Some(42);
     let before = h.mirror.workspace.clone();
     for frame in [
@@ -1059,11 +1062,11 @@ fn old_layout_schema_refuses_attach_and_broadcast_without_resetting_metadata() {
 
 #[test]
 fn shared_window_identity_preserves_focus_on_reorder_and_empty_is_authoritative() {
-    let mut local = Workspace::single(tid(1));
-    local.add_window("two".into(), tid(2));
-    let active_id = local.windows[1].id;
+    let mut local = ArrangementDoc::single(tid(1));
+    local.add_group("two".into(), tid(2));
+    let active_id = local.groups[1].id;
     let mut incoming = local.clone();
-    incoming.windows.swap(0, 1);
+    incoming.groups.swap(0, 1);
     incoming.active = 1;
     let mut h = H::on(local, &[&tid(1), &tid(2)]);
 
@@ -1074,17 +1077,17 @@ fn shared_window_identity_preserves_focus_on_reorder_and_empty_is_authoritative(
     assert!(outcome.layout_replaced);
     assert_eq!(h.mirror.workspace.active, 0);
     assert_eq!(
-        h.mirror.workspace.windows[h.mirror.workspace.active].id,
+        h.mirror.workspace.groups[h.mirror.workspace.active].id,
         active_id
     );
     assert_eq!(h.mirror.focused_resource, Some(tid(2)));
 
     let outcome = h.send(layout_changed(
         1,
-        Some(Workspace::new().encode_topology_cbor().unwrap()),
+        Some(ArrangementDoc::new().encode_topology_cbor().unwrap()),
     ));
     assert!(outcome.layout_replaced);
-    assert!(h.mirror.workspace.windows.is_empty());
+    assert!(h.mirror.workspace.groups.is_empty());
     assert_eq!(h.mirror.focused_resource, None);
     assert_eq!(
         h.mirror.panes.len(),
@@ -1129,7 +1132,7 @@ fn a_peer_layout_broadcast_leaves_the_local_workspace_untouched() {
 fn unscoped_and_projection_layout_keys_are_never_adopted() {
     let bytes = ws1(split2(1, 2, 1)).encode_cbor().unwrap();
     for key in [phux_client::layout_ops::LAYOUT_KEY, "myapp.layout/v1/1"] {
-        let mut h = H::on(Workspace::single(tid(1)), &[&tid(1), &tid(2)]);
+        let mut h = H::on(ArrangementDoc::single(tid(1)), &[&tid(1), &tid(2)]);
         let before = h.mirror.workspace.clone();
         let outcome = h.send(meta_changed(
             Scope::Group(super::DEFAULT_GROUP_ID),
@@ -1147,7 +1150,7 @@ fn unscoped_and_projection_layout_keys_are_never_adopted() {
 #[test]
 fn a_foreign_agent_record_push_stays_out_of_the_local_index() {
     use phux_protocol::wire::frame::RESOURCE_AGENT_KEY;
-    let mut h = H::on(Workspace::single(tid(1)), &[&tid(1), &tid(77)]);
+    let mut h = H::on(ArrangementDoc::single(tid(1)), &[&tid(1), &tid(77)]);
     let record = br#"{"name":"claude","kind":"claude","state":"blocked"}"#.to_vec();
     let outcome = h.send(meta_changed(
         Scope::Resource(tid(77)),
@@ -1164,12 +1167,12 @@ fn a_foreign_agent_record_push_stays_out_of_the_local_index() {
 #[test]
 fn session_keyed_replacement_keeps_stable_window_with_all_new_leaves() {
     let local = ws1(split2(1, 2, 2));
-    let stable_id = local.windows[0].id;
+    let stable_id = local.groups[0].id;
     let mut replacement = ws1(split2(5, 6, 6));
-    replacement.windows[0].id = stable_id;
+    replacement.groups[0].id = stable_id;
     let mut h = H::on(local, &[&tid(1), &tid(2)]);
     let outcome = h.send(layout_changed(1, Some(replacement.encode_cbor().unwrap())));
-    assert_eq!(h.mirror.workspace.windows[0].id, stable_id);
+    assert_eq!(h.mirror.workspace.groups[0].id, stable_id);
     assert_eq!(window_leaves(&h.mirror.workspace, 0), vec![tid(5), tid(6)]);
     assert_eq!(h.mirror.focused_resource, Some(tid(5)));
     assert_eq!(outcome.attach_panes, vec![tid(5), tid(6)]);
@@ -1181,15 +1184,15 @@ fn session_keyed_replacement_keeps_stable_window_with_all_new_leaves() {
 fn metadata_changed_discovers_peer_added_leaf_without_moving_focus() {
     let local = ws1(split2(1, 2, 1));
     let mut sibling = local.clone();
-    let tree = sibling.windows[0].state.tree.as_ref().unwrap();
-    sibling.windows[0].state.tree =
+    let tree = sibling.groups[0].state.tree.as_ref().unwrap();
+    sibling.groups[0].state.tree =
         Some(crate::layout::split_at(tree, &tid(2), &tid(3), SplitDir::Vertical, 0.3).unwrap());
-    sibling.windows[0].state.focus = Some(tid(3));
+    sibling.groups[0].state.focus = Some(tid(3));
     let mut h = H::on(local, &[&tid(1), &tid(2)]);
     let outcome = h.send(layout_changed(1, Some(sibling.encode_cbor().unwrap())));
     assert_eq!(outcome.attach_panes, vec![tid(3)]);
     assert_eq!(h.mirror.focused_resource, Some(tid(1)));
-    assert_eq!(h.mirror.workspace.windows[0].state.focus, Some(tid(1)));
+    assert_eq!(h.mirror.workspace.groups[0].state.focus, Some(tid(1)));
     assert_eq!(
         window_leaves(&h.mirror.workspace, 0),
         vec![tid(1), tid(2), tid(3)]
@@ -1200,7 +1203,7 @@ fn metadata_changed_discovers_peer_added_leaf_without_moving_focus() {
 /// bootstrap focus wins when it remains a leaf.
 #[test]
 fn metadata_value_preserves_valid_bootstrap_focus() {
-    let mut h = H::on(Workspace::single(tid(2)), &[&tid(1), &tid(2)]);
+    let mut h = H::on(ArrangementDoc::single(tid(2)), &[&tid(1), &tid(2)]);
     h.layout_request = Some(41);
     let outcome = h.send(FrameKind::MetadataValue {
         request_id: 41,
@@ -1208,23 +1211,26 @@ fn metadata_value_preserves_valid_bootstrap_focus() {
     });
     assert!(outcome.layout_replaced);
     assert_eq!(window_leaves(&h.mirror.workspace, 0), vec![tid(1), tid(2)]);
-    assert_eq!(h.mirror.workspace.windows[0].state.focus, Some(tid(2)));
+    assert_eq!(h.mirror.workspace.groups[0].state.focus, Some(tid(2)));
     assert_eq!(h.mirror.focused_resource, Some(tid(2)));
 }
 
 /// A layout tombstone resets to a single-pane workspace on the local focus.
 #[test]
 fn layout_tombstone_resets_to_local_focused_pane() {
-    let local = Workspace {
-        windows: vec![
-            WindowState::new("1".to_owned(), LayoutState::single(tid(1))),
-            WindowState::new("2".to_owned(), LayoutState::single(tid(2))),
+    let local = ArrangementDoc {
+        groups: vec![
+            Group::new("1".to_owned(), LayoutState::single(tid(1))),
+            Group::new("2".to_owned(), LayoutState::single(tid(2))),
         ],
         active: 1,
     };
     let mut h = H::on(local, &[&tid(1), &tid(2)]);
     assert!(h.send(layout_changed(1, None)).layout_replaced);
-    assert_eq!(h.mirror.workspace, Workspace::single(tid(2)));
+    assert_eq!(
+        crate::attach::arrangement_shape(&h.mirror.workspace),
+        crate::attach::arrangement_shape(&ArrangementDoc::single(tid(2)))
+    );
     assert_eq!(h.mirror.focused_resource, Some(tid(2)));
 }
 
@@ -1233,7 +1239,7 @@ fn layout_tombstone_resets_to_local_focused_pane() {
 #[test]
 fn early_local_ask_survives_persisted_layout_adoption() {
     let (first, later) = (tid(1), tid(2));
-    let mut h = H::on(Workspace::single(first.clone()), &[&first, &later]);
+    let mut h = H::on(ArrangementDoc::single(first.clone()), &[&first, &later]);
     h.layout_request = Some(42);
     assert_eq!(
         h.send(event(&later, asked())).foreign_attention,
@@ -1264,8 +1270,11 @@ fn early_local_ask_survives_persisted_layout_adoption() {
 #[test]
 fn output_before_snapshot_uses_current_viewport_width() {
     let pane = tid(1);
-    let mut h = H::published(Workspace::single(pane.clone()), &[(&pane, 120, 30, b"")])
-        .with_viewport((120, 30));
+    let mut h = H::published(
+        ArrangementDoc::single(pane.clone()),
+        &[(&pane, 120, 30, b"")],
+    )
+    .with_viewport((120, 30));
     h.send(output_frame(&pane, 1, b"\x1b[1;100HX"));
     let terminal =
         crate::attach::pane_state::published_terminal(&h.mirror.engine_kernel, &pane).unwrap();
@@ -1279,7 +1288,10 @@ fn output_before_snapshot_uses_current_viewport_width() {
 #[test]
 fn synchronized_output_paints_only_after_end_across_frames() {
     let pane = tid(1);
-    let mut h = H::published(Workspace::single(pane.clone()), &[(&pane, 80, 24, b"")]);
+    let mut h = H::published(
+        ArrangementDoc::single(pane.clone()),
+        &[(&pane, 80, 24, b"")],
+    );
     h.output(&pane, b"\x1b[?2026hhalf-drawn");
     assert!(h.out.is_empty(), "begin/body must update only the mirror");
     assert!(h.mirror.panes[&pane].sync_output_since.is_some());
@@ -1294,7 +1306,10 @@ fn synchronized_output_paints_only_after_end_across_frames() {
 #[test]
 fn an_incremental_output_paint_is_one_synchronized_block() {
     let pane = tid(1);
-    let mut h = H::published(Workspace::single(pane.clone()), &[(&pane, 80, 24, b"")]);
+    let mut h = H::published(
+        ArrangementDoc::single(pane.clone()),
+        &[(&pane, 80, 24, b"")],
+    );
     h.output(&pane, b"hello frame");
     let s = h.out_str();
     assert_eq!(s.matches("\x1b[?2026h").count(), 1, "{s:?}");
@@ -1316,7 +1331,10 @@ fn an_incremental_output_paint_is_one_synchronized_block() {
 #[test]
 fn a_deferred_output_frame_emits_nothing_but_still_applies() {
     let pane = tid(1);
-    let mut h = H::published(Workspace::single(pane.clone()), &[(&pane, 80, 24, b"")]);
+    let mut h = H::published(
+        ArrangementDoc::single(pane.clone()),
+        &[(&pane, 80, 24, b"")],
+    );
     h.defer_paint = true;
     let outcome = h.output(&pane, b"deferred glyphs");
     assert!(h.out.is_empty(), "{:?}", h.out);
@@ -1333,7 +1351,10 @@ fn a_deferred_output_frame_emits_nothing_but_still_applies() {
 #[test]
 fn a_frame_that_changes_nothing_writes_nothing() {
     let pane = tid(1);
-    let mut h = H::published(Workspace::single(pane.clone()), &[(&pane, 80, 24, b"")]);
+    let mut h = H::published(
+        ArrangementDoc::single(pane.clone()),
+        &[(&pane, 80, 24, b"")],
+    );
     h.output(&pane, b"steady");
     assert!(!h.out.is_empty());
     h.out.clear();
@@ -1346,7 +1367,10 @@ fn a_frame_that_changes_nothing_writes_nothing() {
 #[test]
 fn title_changes_mark_chrome_dirty() {
     let pane = tid(1);
-    let mut h = H::published(Workspace::single(pane.clone()), &[(&pane, 80, 24, b"")]);
+    let mut h = H::published(
+        ArrangementDoc::single(pane.clone()),
+        &[(&pane, 80, 24, b"")],
+    );
     for (bytes, dirty) in [
         (&b"just glyphs, no title"[..], false),
         (b"\x1b]2;\xe2\x9c\xb3 claude\x07", true),
@@ -1368,7 +1392,10 @@ fn title_changes_mark_chrome_dirty() {
 #[test]
 fn snapshot_during_synchronized_output_waits_for_live_end() {
     let pane = tid(1);
-    let mut h = H::published(Workspace::single(pane.clone()), &[(&pane, 80, 24, b"")]);
+    let mut h = H::published(
+        ArrangementDoc::single(pane.clone()),
+        &[(&pane, 80, 24, b"")],
+    );
     h.output(&pane, b"\x1b[?2026hpartial");
     h.snapshot(&pane, 80, 24, b"\x1b[!p\x1b[2J\x1b[Hstable snapshot");
     assert!(
@@ -1487,8 +1514,8 @@ fn every_pane_repaints_into_its_rect_on_output_and_snapshot() {
 #[test]
 fn output_for_inactive_window_pane_warms_mirror_but_does_not_paint() {
     let (active, other) = (tid(1), tid(2));
-    let mut ws = Workspace::single(active.clone());
-    ws.add_window("2".to_owned(), other.clone());
+    let mut ws = ArrangementDoc::single(active.clone());
+    ws.add_group("2".to_owned(), other.clone());
     ws.select(0);
     let mut h = H::published(ws, &[(&active, 80, 24, b""), (&other, 80, 24, b"")]);
     h.output(&other, b"offscreen");
@@ -1582,7 +1609,10 @@ fn routine_kernel_statuses_do_not_log_at_warn() {
     tracing::subscriber::with_default(subscriber, || {
         tracing_core::callsite::rebuild_interest_cache();
         let pane = tid(1);
-        let mut h = H::published(Workspace::single(pane.clone()), &[(&pane, 80, 24, b"")]);
+        let mut h = H::published(
+            ArrangementDoc::single(pane.clone()),
+            &[(&pane, 80, 24, b"")],
+        );
         h.output(&pane, b"\x1b]2;working\x07\x07");
     });
 
@@ -1595,7 +1625,7 @@ fn routine_kernel_statuses_do_not_log_at_warn() {
 
 #[test]
 fn bell_frame_writes_bel_to_sink() {
-    let mut h = H::on(Workspace::single(tid(1)), &[]);
+    let mut h = H::on(ArrangementDoc::single(tid(1)), &[]);
     h.send(FrameKind::Bell {
         terminal_id: tid(1),
     });
@@ -1623,15 +1653,15 @@ fn spawn_window(h: &mut H, result: SpawnResult) -> FrameOutcome {
 /// async completion records the pane being left as the MRU target.
 #[test]
 fn window_spawned_opens_active_window_focused_on_new_pane() {
-    let mut h = H::on(Workspace::single(tid(1)), &[&tid(1)]);
+    let mut h = H::on(ArrangementDoc::single(tid(1)), &[&tid(1)]);
     let mut history = crate::attach::focus::FocusHistory::default();
     let before = h.mirror.focused_resource.clone();
     let outcome = spawn_window(&mut h, SpawnResult::Ok(tid(2)));
     assert_eq!(
-        (h.mirror.workspace.windows.len(), h.mirror.workspace.active),
+        (h.mirror.workspace.groups.len(), h.mirror.workspace.active),
         (2, 1)
     );
-    assert_eq!(h.mirror.workspace.windows[1].name, "2");
+    assert_eq!(h.mirror.workspace.groups[1].name, "2");
     history.observe(before, h.mirror.focused_resource.as_ref());
     history.repair(h.mirror.focused_resource.as_ref(), &h.mirror.workspace);
     assert_eq!(h.mirror.focused_resource, Some(tid(2)));
@@ -1653,7 +1683,7 @@ fn new_window_from_the_empty_state_opens_the_first_window() {
     let mut h = H::new();
     let outcome = spawn_window(&mut h, SpawnResult::Ok(tid(5)));
     assert_eq!(
-        (h.mirror.workspace.windows.len(), h.mirror.workspace.active),
+        (h.mirror.workspace.groups.len(), h.mirror.workspace.active),
         (1, 0)
     );
     assert_eq!(h.mirror.focused_resource, Some(tid(5)));
@@ -1676,10 +1706,10 @@ fn a_window_spawned_on_a_satellite_waits_for_its_attach() {
             Some(edge_token()),
         ),
     ] {
-        let mut h = H::on(Workspace::single(tid(1)), &[&tid(1)]);
+        let mut h = H::on(ArrangementDoc::single(tid(1)), &[&tid(1)]);
         let outcome = spawn_window(&mut h, result);
         assert_eq!(
-            h.mirror.workspace.windows.len(),
+            h.mirror.workspace.groups.len(),
             1,
             "nothing opens before the attach"
         );
@@ -1702,7 +1732,7 @@ fn a_window_spawned_on_a_satellite_waits_for_its_attach() {
 /// Drive one reply with a window named `name` parked on request 9 adopting
 /// `adopt`, against `ws` focused on pane 1, with `in_flight` parked too.
 fn adopt_reply_in(
-    ws: Workspace,
+    ws: ArrangementDoc,
     in_flight: Vec<(u32, PendingWindow)>,
     name: &str,
     adopt: Adopt,
@@ -1723,7 +1753,13 @@ fn adopt_reply_in(
 }
 
 fn adopt_reply(adopt: Adopt, frame: FrameKind) -> (FrameOutcome, H) {
-    adopt_reply_in(Workspace::single(tid(1)), Vec::new(), "2", adopt, frame)
+    adopt_reply_in(
+        ArrangementDoc::single(tid(1)),
+        Vec::new(),
+        "2",
+        adopt,
+        frame,
+    )
 }
 
 fn spawned_edge() -> Adopt {
@@ -1735,8 +1771,8 @@ fn spawned_edge() -> Adopt {
 #[test]
 fn a_spawned_satellite_window_opens_when_its_attach_succeeds() {
     let (outcome, h) = adopt_reply(spawned_edge(), command_ok(9));
-    assert_eq!(h.mirror.workspace.windows.len(), 2);
-    assert_eq!(h.mirror.workspace.windows[1].name, "2");
+    assert_eq!(h.mirror.workspace.groups.len(), 2);
+    assert_eq!(h.mirror.workspace.groups[1].name, "2");
     assert_eq!(h.mirror.focused_resource, Some(edge_pane()));
     assert!(outcome.layout_replaced && outcome.emit_set_metadata);
     assert!(!h.belled());
@@ -1763,7 +1799,7 @@ fn a_spawned_satellite_window_refusal_bells_and_names_the_host() {
     ] {
         let (outcome, h) = adopt_reply(spawned_edge(), frame);
         assert_eq!(
-            h.mirror.workspace.windows.len(),
+            h.mirror.workspace.groups.len(),
             1,
             "no blank window is left behind"
         );
@@ -1785,15 +1821,15 @@ fn a_spawned_satellite_window_refusal_bells_and_names_the_host() {
 /// holding it, or another open waiting on it.
 #[test]
 fn a_refused_attach_never_kills_a_referenced_pane() {
-    let mut held = Workspace::single(tid(1));
-    held.add_window("edge".to_owned(), edge_pane());
+    let mut held = ArrangementDoc::single(tid(1));
+    held.add_group("edge".to_owned(), edge_pane());
     let picker_open = PendingWindow {
         name: "edge/build".to_owned(),
         adopt: Some(Adopt::Existing(edge_pane())),
     };
     for (ws, in_flight, parked) in [
         (held, Vec::new(), 0),
-        (Workspace::single(tid(1)), vec![(10, picker_open)], 1),
+        (ArrangementDoc::single(tid(1)), vec![(10, picker_open)], 1),
     ] {
         let (outcome, h) = adopt_reply_in(ws, in_flight, "2", spawned_edge(), reachable_refusal());
         assert!(h.belled(), "the refusal still bells");
@@ -1830,8 +1866,8 @@ fn an_unreachable_refusal_strands_only_a_bound_unreferenced_pane() {
     let (outcome, _) = adopt_reply(spawned_edge(), unreachable_refusal(9));
     assert!(outcome.unreachable_strays.is_empty(), "unbound: nothing");
 
-    let mut held = Workspace::single(tid(1));
-    held.add_window("edge".to_owned(), edge_pane());
+    let mut held = ArrangementDoc::single(tid(1));
+    held.add_group("edge".to_owned(), edge_pane());
     let (outcome, _) = adopt_reply_in(held, Vec::new(), "2", bound.clone(), unreachable_refusal(9));
     assert!(outcome.unreachable_strays.is_empty(), "a held pane is kept");
 
@@ -1846,12 +1882,12 @@ fn an_unreachable_refusal_strands_only_a_bound_unreferenced_pane() {
 #[test]
 fn satellite_session_attach_opens_its_window_or_refuses_cleanly() {
     let existing = || Adopt::Existing(edge_pane());
-    let ws = || Workspace::single(tid(1));
+    let ws = || ArrangementDoc::single(tid(1));
     let (outcome, h) = adopt_reply_in(ws(), Vec::new(), "edge/build", existing(), command_ok(9));
-    assert_eq!(h.mirror.workspace.windows.len(), 2);
+    assert_eq!(h.mirror.workspace.groups.len(), 2);
     assert_eq!(
         (
-            h.mirror.workspace.windows[1].name.as_str(),
+            h.mirror.workspace.groups[1].name.as_str(),
             h.mirror.workspace.active
         ),
         ("edge/build", 1)
@@ -1870,7 +1906,7 @@ fn satellite_session_attach_opens_its_window_or_refuses_cleanly() {
         },
     ] {
         let (outcome, h) = adopt_reply_in(ws(), Vec::new(), "edge/build", existing(), frame);
-        assert_eq!(h.mirror.workspace.windows.len(), 1);
+        assert_eq!(h.mirror.workspace.groups.len(), 1);
         assert_eq!(h.mirror.focused_resource, Some(tid(1)));
         assert!(!outcome.emit_set_metadata && !outcome.layout_replaced);
         assert!(h.belled());
@@ -1904,7 +1940,7 @@ fn satellite_split(adopt: Option<ResourceId>) -> PendingSplit {
 /// Drive one reply with `split` parked under request 9, against `ws`
 /// focused on `focused`.
 fn split_reply_in(
-    ws: Workspace,
+    ws: ArrangementDoc,
     focused: ResourceId,
     split: PendingSplit,
     frame: FrameKind,
@@ -1917,7 +1953,7 @@ fn split_reply_in(
 }
 
 fn split_reply(split: PendingSplit, frame: FrameKind) -> (FrameOutcome, H) {
-    split_reply_in(Workspace::single(tid(1)), tid(1), split, frame)
+    split_reply_in(ArrangementDoc::single(tid(1)), tid(1), split, frame)
 }
 
 fn spawned(id: ResourceId) -> FrameKind {
@@ -1935,7 +1971,7 @@ fn a_split_reply_zooms_only_under_zoom_on_spawn() {
     for zoom_on_spawn in [true, false] {
         let mut split = parked_split(SplitHost::Attached, None);
         split.zoom_on_spawn = zoom_on_spawn;
-        let mut h = H::on(Workspace::single(tid(1)), &[&tid(1)]);
+        let mut h = H::on(ArrangementDoc::single(tid(1)), &[&tid(1)]);
         h.mirror.zoomed = Some(tid(1));
         h.mirror.pending_splits.insert(9, split);
         let mut history = crate::attach::focus::FocusHistory::default();
@@ -2118,8 +2154,8 @@ fn a_satellite_split_on_an_older_hub_says_it_opened_on_this_host() {
 /// pane's window, without moving the visible window or focus.
 #[test]
 fn a_split_parked_across_a_window_switch_lands_beside_its_source() {
-    let mut ws = Workspace::single(tid(1));
-    ws.add_window("2".to_owned(), tid(5));
+    let mut ws = ArrangementDoc::single(tid(1));
+    ws.add_group("2".to_owned(), tid(5));
     let (outcome, h) = split_reply_in(
         ws,
         tid(5),
@@ -2158,7 +2194,7 @@ fn a_split_whose_source_pane_closed_is_dropped() {
             tid(2),
         ),
     ] {
-        let (outcome, h) = split_reply_in(Workspace::single(tid(3)), tid(3), split, frame);
+        let (outcome, h) = split_reply_in(ArrangementDoc::single(tid(3)), tid(3), split, frame);
         assert_eq!(h.leaves(), vec![tid(3)]);
         assert_eq!(h.mirror.focused_resource, Some(tid(3)));
         assert!(!outcome.emit_set_metadata && !outcome.layout_replaced);
@@ -2177,7 +2213,7 @@ fn a_split_whose_source_pane_closed_is_dropped() {
 /// `SatelliteUnreachable` greys the satellite pane and keeps its leaf.
 #[test]
 fn satellite_unreachable_greys_the_pane_and_keeps_its_leaf() {
-    let mut ws = Workspace::single(tid(1));
+    let mut ws = ArrangementDoc::single(tid(1));
     beside(&mut ws, &edge_pane());
     let mut h = H::on(ws, &[&tid(1), &edge_pane()]);
     h.mirror.focused_resource = Some(edge_pane());
@@ -2201,7 +2237,7 @@ fn satellite_unreachable_greys_the_pane_and_keeps_its_leaf() {
 fn last_pane_closed_detaches_the_client() {
     for status in [Some(0), None] {
         let pane = tid(1);
-        let mut h = H::on(Workspace::single(pane.clone()), &[&pane]);
+        let mut h = H::on(ArrangementDoc::single(pane.clone()), &[&pane]);
         let outcome = h.send(closed(&pane, status));
         assert!(outcome.exit);
         assert_eq!(
@@ -2210,7 +2246,7 @@ fn last_pane_closed_detaches_the_client() {
                 exit_status: status
             })
         );
-        assert!(h.mirror.workspace.windows.is_empty());
+        assert!(h.mirror.workspace.groups.is_empty());
         assert!(!h.mirror.panes.contains_key(&pane));
     }
 }
@@ -2239,7 +2275,7 @@ fn closing_one_of_several_panes_keeps_the_client_attached() {
         }
         let outcome = h.send(closed(pane, status));
         assert!(!outcome.exit);
-        assert_eq!(h.mirror.workspace.windows.len(), 1);
+        assert_eq!(h.mirror.workspace.groups.len(), 1);
         assert!(outcome.layout_replaced && outcome.emit_set_metadata && outcome.reflow_panes);
         assert_eq!(
             outcome.notices.first().map(|n| n.text.as_str()),
@@ -2285,7 +2321,7 @@ fn detached_carries_the_servers_reason_into_the_exit() {
         Some(DetachReason::ServerShutdown),
         Some(DetachReason::Replaced),
     ] {
-        let mut h = H::on(Workspace::single(tid(1)), &[&tid(1)]);
+        let mut h = H::on(ArrangementDoc::single(tid(1)), &[&tid(1)]);
         let outcome = h.send(FrameKind::Detached {
             reason,
             message: "diagnostic only".to_owned(),
@@ -2295,32 +2331,181 @@ fn detached_carries_the_servers_reason_into_the_exit() {
     }
 }
 
-/// ADR-0105: the last pane of a keep-empty session closing keeps the attach,
-/// leaves the empty state, and tombstones the dead layout. The mark follows
-/// `keep_empty/v1` broadcasts for this session only.
+/// The last pane of a persistent session closing keeps the attach, leaves
+/// the empty state, and tombstones the dead layout. A legacy server's
+/// `keep_empty/v1` broadcast sets the lifetime, for this session only.
 #[test]
-fn keep_empty_mark_keeps_the_attach_when_the_last_pane_closes() {
-    use phux_protocol::wire::frame::SESSION_KEEP_EMPTY_KEY;
+fn a_persistent_session_stays_attached_when_its_last_pane_closes() {
+    use phux_protocol::wire::frame::{SESSION_KEEP_EMPTY_KEY, SessionLifetime};
     let pane = tid(1);
-    let mut h = H::on(Workspace::single(pane.clone()), &[&pane]);
+    let mut h = H::on(ArrangementDoc::single(pane.clone()), &[&pane]);
+    h.mirror.members.insert(pane.clone());
     h.mirror.session_name = "work".to_owned();
     let mark =
         |value: &[u8]| meta_changed(Scope::Global, SESSION_KEEP_EMPTY_KEY, Some(value.to_vec()));
     h.send(mark(b"other\0true"));
-    assert!(
-        !h.mirror.keep_empty_session,
+    assert_eq!(
+        h.mirror.lifetime,
+        SessionLifetime::Ephemeral,
         "another session's mark is not ours"
     );
     h.send(mark(b"work\0true"));
-    assert!(h.mirror.keep_empty_session);
+    assert_eq!(h.mirror.lifetime, SessionLifetime::Persistent);
 
     let outcome = h.send(closed(&pane, Some(0)));
     assert!(!outcome.exit && outcome.exit_reason.is_none());
     assert!(outcome.clear_layout, "the dead layout is tombstoned");
     assert!(outcome.layout_replaced, "the empty state is painted");
-    assert!(h.mirror.workspace.windows.is_empty());
+    assert!(h.mirror.workspace.groups.is_empty());
     assert_eq!(h.mirror.focused_resource, None);
     assert!(!h.mirror.panes.contains_key(&pane));
+    assert!(h.mirror.members.is_empty());
+}
+
+/// R15: an ephemeral session whose last arranged pane closes stays attached
+/// while another member runs with no view, keeping the empty arrangement;
+/// it detaches when that member ends too, since the session ends with it.
+#[test]
+fn an_emptied_arrangement_stays_attached_while_members_run() {
+    let (shown, hidden) = (tid(1), tid(2));
+    let mut h = H::on(ArrangementDoc::single(shown.clone()), &[&shown, &hidden]);
+    h.mirror.members.extend([shown.clone(), hidden.clone()]);
+
+    let outcome = h.send(closed(&shown, Some(0)));
+    assert!(!outcome.exit, "a member still runs");
+    assert!(outcome.layout_replaced && outcome.emit_set_metadata);
+    assert!(!outcome.clear_layout, "the empty arrangement is kept");
+    assert!(h.mirror.workspace.groups.is_empty());
+    assert_eq!(h.mirror.unarranged_members(), vec![hidden.clone()]);
+
+    let outcome = h.send(closed(&hidden, Some(3)));
+    assert!(outcome.exit);
+    assert_eq!(
+        outcome.exit_reason,
+        Some(AttachEnd::LastPaneClosed {
+            exit_status: Some(3)
+        })
+    );
+}
+
+/// R15: deletion of the attached session detaches; another session's
+/// deletion, or an event before the key is known, does not. A lifetime
+/// change for this session is adopted.
+#[test]
+fn deleting_the_attached_session_detaches() {
+    use phux_protocol::ids::{Revision, SessionKey};
+    use phux_protocol::wire::frame::SessionLifetime;
+    let ours = SessionKey::new([1; 16]).expect("key");
+    let theirs = SessionKey::new([2; 16]).expect("key");
+    let event = |event| FrameKind::Event {
+        terminal: None,
+        event,
+        stamp: None,
+    };
+    let deleted = |session| {
+        event(AgentEvent::SessionDeleted {
+            session,
+            revision: Revision::new(3),
+            name: "scratch".to_owned(),
+        })
+    };
+    let mut h = H::on(ArrangementDoc::single(tid(1)), &[&tid(1)]);
+    assert!(!h.send(deleted(ours)).exit, "no key known yet");
+    h.mirror.session_key = Some(ours);
+    assert!(!h.send(deleted(theirs)).exit);
+    h.send(event(AgentEvent::SessionLifetimeChanged {
+        session: ours,
+        lifetime: SessionLifetime::Persistent,
+        revision: Revision::new(2),
+    }));
+    assert_eq!(h.mirror.lifetime, SessionLifetime::Persistent);
+    let outcome = h.send(deleted(ours));
+    assert!(outcome.exit);
+    assert_eq!(
+        outcome.exit_reason,
+        Some(AttachEnd::Detached {
+            reason: Some(DetachReason::SessionKilled)
+        })
+    );
+}
+
+/// An ephemeral session's deletion arrives ahead of its last member's
+/// `RESOURCE_CLOSED`; that close ends the attach and names the exit.
+#[test]
+fn an_ephemeral_session_deletion_defers_to_its_last_close() {
+    use phux_protocol::ids::{Revision, SessionKey};
+    use phux_protocol::wire::frame::SessionLifetime;
+    let ours = SessionKey::new([1; 16]).expect("key");
+    let mut h = H::on(ArrangementDoc::single(tid(1)), &[&tid(1)]);
+    h.mirror.session_key = Some(ours);
+    h.mirror.lifetime = SessionLifetime::Ephemeral;
+    let outcome = h.send(FrameKind::Event {
+        terminal: None,
+        event: AgentEvent::SessionDeleted {
+            session: ours,
+            revision: Revision::new(2),
+            name: "scratch".to_owned(),
+        },
+        stamp: None,
+    });
+    assert!(!outcome.exit, "the last close explains the ending");
+    let outcome = h.send(closed(&tid(1), Some(7)));
+    assert!(outcome.exit);
+    assert_eq!(
+        outcome.exit_reason,
+        Some(AttachEnd::LastPaneClosed {
+            exit_status: Some(7)
+        })
+    );
+}
+
+/// An arrangement change for this session asks the driver to read the
+/// record again; another session's does not.
+#[test]
+fn arrangement_changes_for_this_session_ask_for_a_reread() {
+    use phux_protocol::ids::{ArrangementKey, Revision, SessionKey};
+    use phux_protocol::wire::frame::ArrangementOwner;
+    let ours = SessionKey::new([1; 16]).expect("key");
+    let theirs = SessionKey::new([2; 16]).expect("key");
+    let changed = |session| FrameKind::Event {
+        terminal: None,
+        event: AgentEvent::ArrangementChanged {
+            arrangement: ArrangementKey::new([5; 16]).expect("key"),
+            owner: ArrangementOwner::Session(session),
+            revision: Some(Revision::new(4)),
+        },
+        stamp: None,
+    };
+    let mut h = H::on(ArrangementDoc::single(tid(1)), &[&tid(1)]);
+    h.mirror.session_key = Some(ours);
+    assert!(h.send(changed(ours)).arrangement_changed);
+    assert!(!h.send(changed(theirs)).arrangement_changed);
+}
+
+/// A membership change for this session asks the driver for a fresh
+/// inventory; one between two other sessions does not.
+#[test]
+fn membership_events_for_this_session_refresh_the_members() {
+    use phux_protocol::ids::{ResourceKey, Revision, SessionKey};
+    let ours = SessionKey::new([1; 16]).expect("key");
+    let theirs = SessionKey::new([2; 16]).expect("key");
+    let elsewhere = SessionKey::new([3; 16]).expect("key");
+    let moved = |from, to| FrameKind::Event {
+        terminal: None,
+        event: AgentEvent::MembershipChanged {
+            resource: ResourceKey::new([9; 16]).expect("key"),
+            from,
+            to,
+            from_revision: Revision::new(1),
+            to_revision: Revision::new(1),
+        },
+        stamp: None,
+    };
+    let mut h = H::on(ArrangementDoc::single(tid(1)), &[&tid(1)]);
+    h.mirror.session_key = Some(ours);
+    assert!(h.send(moved(theirs, ours)).members_dirty);
+    assert!(h.send(moved(ours, theirs)).members_dirty);
+    assert!(!h.send(moved(theirs, elsewhere)).members_dirty);
 }
 
 /// A session-rename broadcast updates our status name only when it names us,
@@ -2328,7 +2513,7 @@ fn keep_empty_mark_keeps_the_attach_when_the_last_pane_closes() {
 #[test]
 fn session_rename_broadcast_updates_this_clients_status_name() {
     use phux_protocol::wire::frame::{SESSION_NAME_KEY, encode_session_rename};
-    let mut h = H::on(Workspace::single(tid(1)), &[&tid(1)]);
+    let mut h = H::on(ArrangementDoc::single(tid(1)), &[&tid(1)]);
     h.mirror.session_name = "work".to_owned();
     let rename = |from, to| {
         meta_changed(
@@ -2363,11 +2548,15 @@ fn attaching_to_an_empty_session_starts_and_stays_empty() {
     let sid = SessionId::new(4);
     let snapshot = SessionSnapshot::new(sid, WindowId::new(0), ResourceId::local(0))
         .with_sessions(vec![SessionInfo::new(sid, "parked").with_keep_empty(true)]);
-    let mut h = H::on(Workspace::single(tid(9)), &[]);
+    let mut h = H::on(ArrangementDoc::single(tid(9)), &[]);
     let outcome = h.send(attached(snapshot, 3));
-    assert!(h.mirror.keep_empty_session);
+    assert_eq!(
+        h.mirror.lifetime,
+        phux_protocol::wire::frame::SessionLifetime::Persistent,
+        "a legacy keep-empty facet reads as persistent"
+    );
     assert_eq!(h.mirror.session_name, "parked");
-    assert!(h.mirror.workspace.windows.is_empty());
+    assert!(h.mirror.workspace.groups.is_empty());
     assert_eq!(h.mirror.focused_resource, None);
     assert!(
         h.mirror.panes.is_empty(),
@@ -2379,11 +2568,11 @@ fn attaching_to_an_empty_session_starts_and_stays_empty() {
     h.layout_request = Some(7);
     let outcome = h.send(FrameKind::MetadataValue {
         request_id: 7,
-        value: Some(Workspace::single(tid(9)).encode_cbor().unwrap()),
+        value: Some(ArrangementDoc::single(tid(9)).encode_cbor().unwrap()),
     });
     assert!(outcome.layout_get_answered);
     assert!(outcome.attach_panes.is_empty(), "no dead pane is attached");
-    assert!(h.mirror.workspace.windows.is_empty());
+    assert!(h.mirror.workspace.groups.is_empty());
     assert_eq!(h.mirror.focused_resource, None);
 }
 
@@ -2402,7 +2591,7 @@ fn asked_event_sets_attention_and_dirties_chrome_once() {
     assert!(h.mirror.panes[&right].attention);
 
     let unknown = tid(9);
-    let mut h = H::on(Workspace::single(left.clone()), &[&left]);
+    let mut h = H::on(ArrangementDoc::single(left.clone()), &[&left]);
     assert!(!h.send(event(&unknown, asked())).chrome_dirty);
     assert!(!h.mirror.panes.contains_key(&unknown));
 }
@@ -2411,7 +2600,7 @@ fn asked_event_sets_attention_and_dirties_chrome_once() {
 #[test]
 fn peer_asked_event_with_a_cached_slot_routes_to_foreign_attention() {
     let peer = tid(9);
-    let mut h = H::on(Workspace::single(tid(1)), &[&tid(1), &peer]);
+    let mut h = H::on(ArrangementDoc::single(tid(1)), &[&tid(1), &peer]);
     let outcome = h.send(event(&peer, asked()));
     assert_eq!(outcome.foreign_attention, Some(peer.clone()));
     assert!(
@@ -2426,7 +2615,7 @@ fn peer_asked_event_with_a_cached_slot_routes_to_foreign_attention() {
 #[test]
 fn cwd_and_exit_events_update_the_slot_and_coalesce() {
     let pane = tid(1);
-    let mut h = H::on(Workspace::single(pane.clone()), &[&pane]);
+    let mut h = H::on(ArrangementDoc::single(pane.clone()), &[&pane]);
     let cwd = |dir: &str| AgentEvent::CwdChanged {
         cwd: dir.to_owned(),
     };
@@ -2477,7 +2666,7 @@ fn control_event(holder: Option<ClientId>) -> AgentEvent {
 fn focused_holder_transition_yields_a_notice_and_initial_state_does_not() {
     let pane = tid(1);
     let holder = ClientId::new(9);
-    let mut h = H::on(Workspace::single(pane.clone()), &[&pane]);
+    let mut h = H::on(ArrangementDoc::single(pane.clone()), &[&pane]);
     let initial = h.send(event(&pane, control_event(Some(holder))));
     assert!(initial.chrome_dirty && initial.notices.is_empty());
     assert_eq!(h.mirror.panes[&pane].input_holder, Some(holder));
@@ -2502,7 +2691,10 @@ fn focused_holder_transition_yields_a_notice_and_initial_state_does_not() {
 fn unfocused_holder_transition_yields_no_notice() {
     let (focused, background) = (tid(1), tid(2));
     let holder = ClientId::new(4);
-    let mut h = H::on(Workspace::single(focused.clone()), &[&focused, &background]);
+    let mut h = H::on(
+        ArrangementDoc::single(focused.clone()),
+        &[&focused, &background],
+    );
     h.send(event(&background, control_event(None)));
     let outcome = h.send(event(&background, control_event(Some(holder))));
     assert!(outcome.chrome_dirty && outcome.notices.is_empty());
@@ -2519,7 +2711,7 @@ fn no_error_code_is_fatal_in_the_attached_phase() {
     assert!(!codes.is_empty());
     for code in codes {
         for request_id in [None, Some(11_u32)] {
-            let mut h = H::on(Workspace::single(tid(1)), &[&tid(1)]);
+            let mut h = H::on(ArrangementDoc::single(tid(1)), &[&tid(1)]);
             let outcome = h
                 .try_send(FrameKind::Error {
                     request_id,
@@ -2559,7 +2751,7 @@ fn no_error_code_is_fatal_in_the_attached_phase() {
 fn agent_metadata_broadcast_updates_index_and_tombstone_clears_it() {
     use phux_protocol::wire::frame::RESOURCE_AGENT_KEY;
     let pane = tid(1);
-    let mut h = H::on(Workspace::single(pane.clone()), &[&pane]);
+    let mut h = H::on(ArrangementDoc::single(pane.clone()), &[&pane]);
     let record = |value: Option<&[u8]>| {
         meta_changed(
             Scope::Resource(pane.clone()),
@@ -2588,7 +2780,7 @@ fn agent_metadata_broadcast_updates_index_and_tombstone_clears_it() {
 #[test]
 fn agent_metadata_get_reply_is_correlated_by_request_id() {
     let pane = tid(1);
-    let mut h = H::on(Workspace::single(pane.clone()), &[&pane]);
+    let mut h = H::on(ArrangementDoc::single(pane.clone()), &[&pane]);
     h.mirror.agent_meta.pending.insert(77, pane.clone());
     let outcome = h.send(FrameKind::MetadataValue {
         request_id: 77,
@@ -2613,7 +2805,7 @@ fn agent_metadata_get_reply_is_correlated_by_request_id() {
 #[test]
 fn config_reload_doorbell_flags_reload_and_ignores_tombstones() {
     use phux_protocol::wire::frame::CONFIG_RELOAD_KEY;
-    let mut h = H::on(Workspace::single(tid(1)), &[&tid(1)]);
+    let mut h = H::on(ArrangementDoc::single(tid(1)), &[&tid(1)]);
     let outcome = h.send(meta_changed(
         Scope::Global,
         CONFIG_RELOAD_KEY,
@@ -2786,8 +2978,8 @@ fn closing_an_agent_session_removes_only_its_row() {
 #[test]
 fn a_layout_naming_an_agent_session_is_refused() {
     let (mut h, _) = kind_attached();
-    let mut bad = Workspace::single(tid(1));
-    bad.windows[0].state = split2(1, 2, 1);
+    let mut bad = ArrangementDoc::single(tid(1));
+    bad.groups[0].state = split2(1, 2, 1);
     let error = h
         .try_send(layout_changed(1, Some(bad.encode_cbor().unwrap())))
         .expect_err("non-terminal layout must be refused");
@@ -2827,7 +3019,7 @@ fn a_live_spawned_agent_session_is_declared_and_attached_as_a_stream() {
 /// A client on one layout pane with a floating overlay spawn parked as
 /// request 9.
 fn floating_parked() -> H {
-    let mut h = H::on(Workspace::single(tid(1)), &[&tid(1)]);
+    let mut h = H::on(ArrangementDoc::single(tid(1)), &[&tid(1)]);
     h.mirror
         .pending_floating
         .insert(9, "Agent Board".to_owned());
@@ -2887,7 +3079,10 @@ fn the_floating_overlay_closes_with_its_process() {
     assert!(outcome.layout_replaced && !outcome.exit);
     assert!(outcome.notices.is_empty(), "{:?}", outcome.notices);
     assert!(!h.mirror.panes.contains_key(&tid(2)));
-    assert_eq!(h.mirror.workspace, Workspace::single(tid(1)));
+    assert_eq!(
+        crate::attach::arrangement_shape(&h.mirror.workspace),
+        crate::attach::arrangement_shape(&ArrangementDoc::single(tid(1)))
+    );
     assert_eq!(h.mirror.paint_focus(), Some(tid(1)));
 }
 
@@ -2920,7 +3115,7 @@ fn a_retained_floating_overlay_is_killed_when_its_process_exits() {
 fn output_under_the_floating_overlay_waits_and_the_overlay_paints_in_its_box() {
     let (pane, overlay) = (tid(1), tid(2));
     let mut h = H::published(
-        Workspace::single(pane.clone()),
+        ArrangementDoc::single(pane.clone()),
         &[(&pane, 80, 24, b""), (&overlay, 80, 24, b"")],
     );
     h.mirror
@@ -2955,7 +3150,10 @@ fn output_under_the_floating_overlay_waits_and_the_overlay_paints_in_its_box() {
 fn a_live_osc52_write_rides_the_outcome_but_a_replayed_one_does_not() {
     let pane = tid(1);
     let old = b"\x1b]52;c;b2xk\x07".as_slice();
-    let mut h = H::published(Workspace::single(pane.clone()), &[(&pane, 80, 24, old)]);
+    let mut h = H::published(
+        ArrangementDoc::single(pane.clone()),
+        &[(&pane, 80, 24, old)],
+    );
     let outcome = h.output(&pane, b"\x1b]52;c;aGVsbG8=\x07");
     let writes: Vec<_> = outcome
         .clipboard_writes

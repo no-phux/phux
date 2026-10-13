@@ -13,7 +13,7 @@
 //!
 //! [ADR-0125]: https://github.com/no-phux/phux/blob/main/docs/adr/0125-kind-catalog-is-generated-metadata.md
 
-use crate::caps::ServerFeature;
+use crate::caps::{ServerFeature, ServerFeatureExt};
 use crate::ids::{ResourceId, ResourceKind, SatelliteHost};
 use crate::wire::frame::{
     APPROVAL_DECIDE_KEY_PREFIX, APPROVAL_DENY, APPROVAL_KEY_PREFIX, EVENT_TAG_APPROVAL_DECIDED,
@@ -42,6 +42,19 @@ use crate::wire::frame::{
     TYPE_RESIZE_TERMINAL, TYPE_SET_METADATA, TYPE_SPAWN_RESOURCE, TYPE_SUBSCRIBE_EVENTS,
     TYPE_SUBSCRIBE_METADATA, TYPE_VIEWPORT_RESIZE, WHOAMI_KEY, decode_session_keep_empty,
 };
+use crate::wire::frame::{
+    COMMAND_TAG_ARRANGEMENT_GET, COMMAND_TAG_ARRANGEMENT_REPLACE, COMMAND_TAG_DELEGATE_AGENT,
+    COMMAND_TAG_GET_ORGANIZATION, COMMAND_TAG_INBOX_RESOLVE, COMMAND_TAG_ORGANIZATION_UNDO,
+    COMMAND_TAG_RESOURCE_ABANDON, COMMAND_TAG_RESOURCE_CREATE, COMMAND_TAG_RESOURCE_MOVE,
+    COMMAND_TAG_RESOURCE_MOVE_MANY, COMMAND_TAG_RESOURCE_RELAUNCH, COMMAND_TAG_RESOURCE_REMOVE,
+    COMMAND_TAG_RESOURCE_RENAME, COMMAND_TAG_RESOURCE_TERMINATE, COMMAND_TAG_REVOKE_DELEGATION,
+    COMMAND_TAG_SESSION_CREATE, COMMAND_TAG_SESSION_DELETE, COMMAND_TAG_SESSION_RENAME,
+    COMMAND_TAG_SESSION_SET_LIFETIME, EVENT_TAG_ACTIVATION_CHANGED, EVENT_TAG_ARRANGEMENT_CHANGED,
+    EVENT_TAG_INTAKE_CHANGED, EVENT_TAG_LEASE_CHANGED, EVENT_TAG_MEMBERSHIP_CHANGED,
+    EVENT_TAG_RESOURCE_CREATED, EVENT_TAG_RESOURCE_REMOVED, EVENT_TAG_RESOURCE_RENAMED,
+    EVENT_TAG_SESSION_CREATED, EVENT_TAG_SESSION_DELETED, EVENT_TAG_SESSION_LIFETIME_CHANGED,
+    EVENT_TAG_SESSION_RENAMED,
+};
 use crate::wire::frame::{EVENT_TAG_SOURCE_GAP, SESSION_NAME_KEY};
 
 // -----------------------------------------------------------------------------
@@ -65,17 +78,25 @@ pub enum Verb {
     Input = 0x10,
     /// Process or server lifecycle, hooks, forced detach, or signals.
     Signal = 0x20,
+    /// Rename, move membership, edit arrangements, resolve intake, or undo an
+    /// organization edit (scope schema v2).
+    Organize = 0x40,
+    /// Terminate an activation, remove a resource record, delete a session,
+    /// or abandon a lost activation (scope schema v2).
+    Terminate = 0x80,
 }
 
 impl Verb {
     /// Every verb, in bit order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 8] = [
         Self::Inventory,
         Self::Observe,
         Self::Create,
         Self::Bind,
         Self::Input,
         Self::Signal,
+        Self::Organize,
+        Self::Terminate,
     ];
 
     /// The verb's bit in a scope grant.
@@ -94,6 +115,8 @@ impl Verb {
             Self::Bind => "BIND",
             Self::Input => "INPUT",
             Self::Signal => "SIGNAL",
+            Self::Organize => "ORGANIZE",
+            Self::Terminate => "TERMINATE",
         }
     }
 }
@@ -106,9 +129,30 @@ impl Verbs {
     /// The empty set.
     pub const EMPTY: Self = Self(0);
 
-    /// The bits a v1 grant may carry. `0xC0` is unknown in v1 and a grant
-    /// carrying it is rejected, never ignored.
-    pub const KNOWN_BITS: u8 = 0x3F;
+    /// The bits a grant may carry under the current scope schema (v2): all
+    /// eight verbs.
+    pub const KNOWN_BITS: u8 = 0xFF;
+
+    /// The bits a scope-schema v1 grant may carry. `0xC0` is unknown in v1,
+    /// and a v1 grant carrying it is rejected, never ignored.
+    pub const V1_KNOWN_BITS: u8 = 0x3F;
+
+    /// A v1 grant's verbs as schema v2 reads them (workload-auth §5):
+    /// `SIGNAL` implies `TERMINATE` and `CREATE` implies `ORGANIZE`, so a
+    /// registry written before the split reaches the organization
+    /// equivalents of what it could already do. Legacy commands keep their
+    /// exact requirements, so the implication grants no legacy operation.
+    #[must_use]
+    pub const fn with_v1_implications(self) -> Self {
+        let mut bits = self.0;
+        if bits & Verb::Signal.bit() != 0 {
+            bits |= Verb::Terminate.bit();
+        }
+        if bits & Verb::Create.bit() != 0 {
+            bits |= Verb::Organize.bit();
+        }
+        Self(bits)
+    }
 
     /// The verbs `INVENTORY` and `OBSERVE`: the ones that read without
     /// changing anything.
@@ -249,6 +293,26 @@ pub enum Subject {
     /// approval. An id with no pending approval resolves to nothing, so it
     /// is refused like an absent target.
     HeldAction,
+    /// The organization records the grant inventories, as a filtered page:
+    /// a session through its Group, a resource through its session, and
+    /// authority-wide totals and the Inbox designation only with the Global
+    /// selector.
+    OrganizationView,
+    /// The session the command's `SessionKey` names, resolved
+    /// side-effect-free to its live Group. An absent key resolves to no
+    /// subject, so it is refused like an unauthorized one.
+    KeyedSession,
+    /// The resource the command's `ResourceKey` names, matched through its
+    /// current session's Group.
+    KeyedResource,
+    /// Every session a membership move takes a resource from, and the
+    /// destination session; all-or-nothing.
+    MoveSessions,
+    /// Every session and resource the undone operation's recorded inverse
+    /// touches, under current membership.
+    UndoneOperation,
+    /// The session that owns the arrangement.
+    ArrangementOwner,
     /// The Global selector.
     Global {
         /// The transport predicate: the authenticated transport must also be
@@ -684,12 +748,77 @@ static C_APPEND_RESOURCE_OUTPUT: Rule = Rule::verbs(
     &[Verb::Bind, Verb::Input],
     Subject::ParentOfNamed,
 );
+static C_GET_ORGANIZATION: Rule = Rule::verbs(
+    "`GET_ORGANIZATION`",
+    &[Verb::Inventory],
+    Subject::OrganizationView,
+);
+static C_SESSION_CREATE: Rule = Rule::verbs("`SESSION_CREATE`", &[Verb::Create], GLOBAL);
+static C_SESSION_ORGANIZE: Rule = Rule::verbs(
+    "`SESSION_RENAME`, `SESSION_SET_LIFETIME`, `INBOX_RESOLVE`",
+    &[Verb::Organize],
+    Subject::KeyedSession,
+);
+static C_SESSION_DELETE: Rule = Rule::verbs(
+    "`SESSION_DELETE`",
+    &[Verb::Terminate],
+    Subject::KeyedSession,
+);
+static C_RESOURCE_CREATE: Rule =
+    Rule::verbs("`RESOURCE_CREATE`", &[Verb::Create], Subject::KeyedSession);
+static C_RESOURCE_MOVE: Rule = Rule::verbs(
+    "`RESOURCE_MOVE`, `RESOURCE_MOVE_MANY`",
+    &[Verb::Organize],
+    Subject::MoveSessions,
+);
+static C_RESOURCE_RENAME: Rule = Rule::verbs(
+    "`RESOURCE_RENAME`",
+    &[Verb::Organize],
+    Subject::KeyedResource,
+);
+static C_RESOURCE_TERMINATE: Rule = Rule::verbs(
+    "`RESOURCE_TERMINATE`",
+    &[Verb::Terminate],
+    Subject::NamedTerminal,
+);
+static C_RESOURCE_REMOVE: Rule = Rule::verbs(
+    "`RESOURCE_REMOVE`",
+    &[Verb::Terminate],
+    Subject::KeyedResource,
+);
+static C_RESOURCE_RELAUNCH: Rule = Rule::verbs(
+    "`RESOURCE_RELAUNCH`",
+    &[Verb::Create],
+    Subject::KeyedResource,
+);
+static C_RESOURCE_ABANDON: Rule =
+    Rule::verbs("`RESOURCE_ABANDON`", &[Verb::Terminate], GLOBAL_OWNER_UDS);
+static C_ORGANIZATION_UNDO: Rule = Rule::verbs(
+    "`ORGANIZATION_UNDO`",
+    &[Verb::Organize],
+    Subject::UndoneOperation,
+);
+static C_ARRANGEMENT_GET: Rule = Rule::verbs(
+    "`ARRANGEMENT_GET`",
+    &[Verb::Inventory],
+    Subject::ArrangementOwner,
+);
+static C_ARRANGEMENT_REPLACE: Rule = Rule::verbs(
+    "`ARRANGEMENT_REPLACE`",
+    &[Verb::Organize],
+    Subject::ArrangementOwner,
+);
+static C_DELEGATION: Rule = Rule::verbs(
+    "`DELEGATE_AGENT`, `REVOKE_DELEGATION`",
+    &[Verb::Terminate],
+    GLOBAL_OWNER_UDS,
+);
 static C_UNCLASSIFIED: Rule = Rule::deny("Unknown, retired, or otherwise unclassified command tag");
 
 /// The nested-command table of workload-auth §6, in spec row order.
 ///
 /// [`classify_command`] returns one of these rows for every decoded command.
-pub static COMMAND_RULES: [&Rule; 28] = [
+pub static COMMAND_RULES: [&Rule; 43] = [
     &C_SPAWN,
     &C_ATTACH_RESOURCE,
     &C_DETACH_RESOURCE,
@@ -717,6 +846,21 @@ pub static COMMAND_RULES: [&Rule; 28] = [
     &C_GET_PERF,
     &C_GET_PERF_RESET,
     &C_APPEND_RESOURCE_OUTPUT,
+    &C_GET_ORGANIZATION,
+    &C_SESSION_CREATE,
+    &C_SESSION_ORGANIZE,
+    &C_SESSION_DELETE,
+    &C_RESOURCE_CREATE,
+    &C_RESOURCE_MOVE,
+    &C_RESOURCE_RENAME,
+    &C_RESOURCE_TERMINATE,
+    &C_RESOURCE_REMOVE,
+    &C_RESOURCE_RELAUNCH,
+    &C_RESOURCE_ABANDON,
+    &C_ORGANIZATION_UNDO,
+    &C_ARRANGEMENT_GET,
+    &C_ARRANGEMENT_REPLACE,
+    &C_DELEGATION,
     &C_UNCLASSIFIED,
 ];
 
@@ -842,6 +986,23 @@ pub fn command_rule(command: &Command) -> &'static Rule {
         Command::GetPerf { reset: true } => &C_GET_PERF_RESET,
         Command::AppendResourceOutput { .. } => &C_APPEND_RESOURCE_OUTPUT,
         Command::Transcribe { .. } => &C_TRANSCRIBE,
+        Command::GetOrganization { .. } => &C_GET_ORGANIZATION,
+        Command::SessionCreate { .. } => &C_SESSION_CREATE,
+        Command::SessionRename { .. }
+        | Command::SessionSetLifetime { .. }
+        | Command::InboxResolve { .. } => &C_SESSION_ORGANIZE,
+        Command::SessionDelete { .. } => &C_SESSION_DELETE,
+        Command::ResourceCreate { .. } => &C_RESOURCE_CREATE,
+        Command::ResourceMove { .. } | Command::ResourceMoveMany { .. } => &C_RESOURCE_MOVE,
+        Command::ResourceRename { .. } => &C_RESOURCE_RENAME,
+        Command::ResourceTerminate { .. } => &C_RESOURCE_TERMINATE,
+        Command::ResourceRemove { .. } => &C_RESOURCE_REMOVE,
+        Command::ResourceRelaunch { .. } => &C_RESOURCE_RELAUNCH,
+        Command::ResourceAbandon { .. } => &C_RESOURCE_ABANDON,
+        Command::OrganizationUndo { .. } => &C_ORGANIZATION_UNDO,
+        Command::ArrangementGet { .. } => &C_ARRANGEMENT_GET,
+        Command::ArrangementReplace { .. } => &C_ARRANGEMENT_REPLACE,
+        Command::DelegateAgent { .. } | Command::RevokeDelegation { .. } => &C_DELEGATION,
     }
 }
 
@@ -1312,7 +1473,130 @@ pub static SERVER_METHODS: &[MethodSpec] = &[
         [F_WHOAMI],
         Some(FeatureGate::Features(ServerFeature::Whoami))
     ),
+    // The organization commands (L1 §5.7): records named by keys, edited
+    // under expected revisions, answered with receipts or refusals.
+    method!(
+        "GET_ORGANIZATION",
+        Carrier::Command(COMMAND_TAG_GET_ORGANIZATION),
+        [C_GET_ORGANIZATION],
+        ORGANIZATION
+    ),
+    method!(
+        "SESSION_CREATE",
+        Carrier::Command(COMMAND_TAG_SESSION_CREATE),
+        [C_SESSION_CREATE],
+        ORGANIZATION
+    ),
+    method!(
+        "SESSION_RENAME",
+        Carrier::Command(COMMAND_TAG_SESSION_RENAME),
+        [C_SESSION_ORGANIZE],
+        ORGANIZATION
+    ),
+    method!(
+        "SESSION_SET_LIFETIME",
+        Carrier::Command(COMMAND_TAG_SESSION_SET_LIFETIME),
+        [C_SESSION_ORGANIZE],
+        ORGANIZATION
+    ),
+    dangerous(method!(
+        "SESSION_DELETE",
+        Carrier::Command(COMMAND_TAG_SESSION_DELETE),
+        [C_SESSION_DELETE],
+        ORGANIZATION
+    )),
+    method!(
+        "RESOURCE_CREATE",
+        Carrier::Command(COMMAND_TAG_RESOURCE_CREATE),
+        [C_RESOURCE_CREATE],
+        ORGANIZATION
+    ),
+    method!(
+        "RESOURCE_MOVE",
+        Carrier::Command(COMMAND_TAG_RESOURCE_MOVE),
+        [C_RESOURCE_MOVE],
+        ORGANIZATION
+    ),
+    method!(
+        "RESOURCE_MOVE_MANY",
+        Carrier::Command(COMMAND_TAG_RESOURCE_MOVE_MANY),
+        [C_RESOURCE_MOVE],
+        ORGANIZATION
+    ),
+    method!(
+        "RESOURCE_RENAME",
+        Carrier::Command(COMMAND_TAG_RESOURCE_RENAME),
+        [C_RESOURCE_RENAME],
+        ORGANIZATION
+    ),
+    dangerous(method!(
+        "RESOURCE_TERMINATE",
+        Carrier::Command(COMMAND_TAG_RESOURCE_TERMINATE),
+        [C_RESOURCE_TERMINATE],
+        ORGANIZATION
+    )),
+    dangerous(method!(
+        "RESOURCE_REMOVE",
+        Carrier::Command(COMMAND_TAG_RESOURCE_REMOVE),
+        [C_RESOURCE_REMOVE],
+        ORGANIZATION
+    )),
+    method!(
+        "RESOURCE_RELAUNCH",
+        Carrier::Command(COMMAND_TAG_RESOURCE_RELAUNCH),
+        [C_RESOURCE_RELAUNCH],
+        ORGANIZATION
+    ),
+    dangerous(method!(
+        "RESOURCE_ABANDON",
+        Carrier::Command(COMMAND_TAG_RESOURCE_ABANDON),
+        [C_RESOURCE_ABANDON],
+        ORGANIZATION
+    )),
+    method!(
+        "INBOX_RESOLVE",
+        Carrier::Command(COMMAND_TAG_INBOX_RESOLVE),
+        [C_SESSION_ORGANIZE],
+        ORGANIZATION
+    ),
+    method!(
+        "ORGANIZATION_UNDO",
+        Carrier::Command(COMMAND_TAG_ORGANIZATION_UNDO),
+        [C_ORGANIZATION_UNDO],
+        ORGANIZATION
+    ),
+    method!(
+        "ARRANGEMENT_GET",
+        Carrier::Command(COMMAND_TAG_ARRANGEMENT_GET),
+        [C_ARRANGEMENT_GET],
+        ORGANIZATION
+    ),
+    method!(
+        "ARRANGEMENT_REPLACE",
+        Carrier::Command(COMMAND_TAG_ARRANGEMENT_REPLACE),
+        [C_ARRANGEMENT_REPLACE],
+        ORGANIZATION
+    ),
+    // Delegated agent credentials (ADR-0163 §5): the owner hands an agent a
+    // grant narrower than its own. New, so no stored grant reached them
+    // before; served whatever `ORGANIZATION` says.
+    method!(
+        "DELEGATE_AGENT",
+        Carrier::Command(COMMAND_TAG_DELEGATE_AGENT),
+        [C_DELEGATION]
+    ),
+    method!(
+        "REVOKE_DELEGATION",
+        Carrier::Command(COMMAND_TAG_REVOKE_DELEGATION),
+        [C_DELEGATION]
+    ),
 ];
+
+/// The gate of every organization method: `features_ext.ORGANIZATION`.
+const ORGANIZATION: Option<FeatureGate> = Some(FeatureGate::FeaturesExt {
+    mask: ServerFeatureExt::Organization.mask(),
+    wire_name: ServerFeatureExt::Organization.wire_name(),
+});
 
 /// The substrate every kind shares (L1 §1.1): spawn and close, the output
 /// subscription, kill, events, inventory, and the resource's L3 scope.
@@ -1424,7 +1708,9 @@ pub static SUBSTRATE_METHODS: &[MethodSpec] = &[
 ///
 /// `journal_gap` tells a subscriber which journal `seq` range it missed; it
 /// is never journaled itself (L1 §7.3). `approval_requested` and
-/// `approval_decided` report a held `SIGNAL` action (ADR-0128).
+/// `approval_decided` report a held `SIGNAL` action (ADR-0128). The
+/// organization events (L1 §5.7) report committed changes to keyed records,
+/// which outlive any one live resource.
 pub static SERVER_EVENTS: &[EventSpec] = &[
     EventSpec {
         name: "journal_gap",
@@ -1437,6 +1723,54 @@ pub static SERVER_EVENTS: &[EventSpec] = &[
     EventSpec {
         name: "approval_decided",
         tag: EVENT_TAG_APPROVAL_DECIDED,
+    },
+    EventSpec {
+        name: "session_created",
+        tag: EVENT_TAG_SESSION_CREATED,
+    },
+    EventSpec {
+        name: "session_renamed",
+        tag: EVENT_TAG_SESSION_RENAMED,
+    },
+    EventSpec {
+        name: "session_deleted",
+        tag: EVENT_TAG_SESSION_DELETED,
+    },
+    EventSpec {
+        name: "session_lifetime_changed",
+        tag: EVENT_TAG_SESSION_LIFETIME_CHANGED,
+    },
+    EventSpec {
+        name: "membership_changed",
+        tag: EVENT_TAG_MEMBERSHIP_CHANGED,
+    },
+    EventSpec {
+        name: "resource_created",
+        tag: EVENT_TAG_RESOURCE_CREATED,
+    },
+    EventSpec {
+        name: "resource_removed",
+        tag: EVENT_TAG_RESOURCE_REMOVED,
+    },
+    EventSpec {
+        name: "activation_changed",
+        tag: EVENT_TAG_ACTIVATION_CHANGED,
+    },
+    EventSpec {
+        name: "arrangement_changed",
+        tag: EVENT_TAG_ARRANGEMENT_CHANGED,
+    },
+    EventSpec {
+        name: "lease_changed",
+        tag: EVENT_TAG_LEASE_CHANGED,
+    },
+    EventSpec {
+        name: "intake_changed",
+        tag: EVENT_TAG_INTAKE_CHANGED,
+    },
+    EventSpec {
+        name: "resource_renamed",
+        tag: EVENT_TAG_RESOURCE_RENAMED,
     },
 ];
 

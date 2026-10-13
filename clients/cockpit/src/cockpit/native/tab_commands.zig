@@ -78,6 +78,9 @@ pub const Action = enum(u8) {
     /// chain of revision-fenced removes. 7 stays unassigned: captured-action
     /// tests use it as a malformed kind.
     others = 8,
+    /// Kill Tab: end the work of every terminal the tab shows. `close` only
+    /// removes the tab's view; its terminals keep running.
+    kill = 9,
 };
 
 pub const ActionTarget = struct {
@@ -109,6 +112,7 @@ fn decodeAction(kind: u8, id: u64, bytes: []const u8) ?Request {
         5 => .previous,
         6 => .next,
         8 => .others,
+        9 => .kill,
         else => return null,
     };
     const target = decodeTab(bytes) orelse return null;
@@ -120,7 +124,7 @@ fn decodeOperation(bytes: []const u8) ?protocol.Intent {
     switch (operation.kind) {
         .new_terminal, .new_window, .close_tab => return operation,
         .native_command => switch (operation.argument) {
-            3, 4, 5, 8, 9 => return operation,
+            3, 4, 5, 8, 9, 29 => return operation,
             else => return null,
         },
         else => return null,

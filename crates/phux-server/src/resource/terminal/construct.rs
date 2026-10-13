@@ -198,6 +198,12 @@ impl TerminalActor {
 
         let (pty_rx, pty_tx, pty) = initialize_pty(pty_source, cols, rows)?;
         let child_facts = ChildFacts::capture(pty.as_ref());
+        // R12: the identity a restart reconciles this activation by.
+        let proc = pty
+            .as_ref()
+            .and_then(|p| p.child.process_id())
+            .and_then(|pid| i32::try_from(pid).ok())
+            .and_then(crate::reconcile::proc_identity);
         Self::install_effects(&mut terminal, &size_report, pty_tx.as_ref())?;
 
         let actor = Self {
@@ -316,6 +322,7 @@ impl TerminalActor {
             handle,
             token: bundle_token,
             exit_notify: Some(core_channels.exit_notify),
+            proc,
         })
     }
 

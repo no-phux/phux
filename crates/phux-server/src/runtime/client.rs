@@ -679,14 +679,16 @@ mod pane_event_drain_tests {
     #[test]
     fn a_reaped_pane_journals_nothing_after_its_close() {
         let mut s = crate::state::ServerState::new();
-        let (_session, _window, pane) = s.seed_session("drain");
+        let (_session, pane) = s.seed_session("drain");
         let wire = s.intern_terminal_wire(pane);
+        // The seed's organization events are journaled too.
+        let seeded = s.journal_head();
         journal_drained_event(&mut s, &wire, AgentEvent::Bell.into(), 0);
         let live = s.journal_head();
-        assert_eq!(live, 1, "a live pane's event is journaled");
+        assert_eq!(live, seeded + 1, "a live pane's event is journaled");
         let _ = reap_pane_journaling_close(&mut s, pane);
         let closed = s.journal_head();
-        assert_eq!(closed, live + 1, "the close");
+        assert!(closed > live, "the close, and the record's removal");
         journal_drained_event(&mut s, &wire, AgentEvent::Bell.into(), 2);
         assert_eq!(s.journal_head(), closed, "nothing follows pane_closed");
     }
@@ -1202,13 +1204,7 @@ pub(crate) fn spawn_terminal_exit_watcher(
     };
     state.with_mut(|s| s.begin_exit_watch(pane));
     tokio::task::spawn_local(async move {
-        let (mut exit, mut events) = journal_until_exit(&state, rx, events).await;
-        while let Some(next_rx) = replace_last_shell(&state, pane, &root_token).await {
-            info!("last shell exited; respawning a default shell in place");
-            let next = journal_until_exit(&state, next_rx, events).await;
-            exit = next.0;
-            events = next.1;
-        }
+        let (exit, mut events) = journal_until_exit(&state, rx, events).await;
         // ADR-0124: a retained pane stays `Exited` until purged or expired,
         // then takes the ordinary close path below.
         let retained = state.with_mut(|s| retain_exited_pane(s, pane, exit, events.as_mut()));
@@ -1254,10 +1250,10 @@ fn fire_exit_hook_after_kill(
     }
 }
 
-/// End `pane`'s exit watch, and self-exit once the last session is gone and
-/// no killed process is still in its hangup grace, but only after serving a
-/// client (a fresh auto-spawned server's launcher is still connecting) and
-/// not during an ordinary shutdown.
+/// End `pane`'s exit watch, and self-exit once nothing runs and no client
+/// is connected (R13) and no killed process is still in its hangup grace,
+/// but only after serving a client (a fresh auto-spawned server's launcher
+/// is still connecting) and not during an ordinary shutdown.
 async fn end_exit_watch(
     state: &SharedState,
     pane: CoreResourceId,
@@ -1274,50 +1270,8 @@ async fn end_exit_watch(
     // Let writers flush `RESOURCE_CLOSED` before the root cancel closes
     // their transports.
     yield_until_close_frames_taken(targets).await;
-    info!("last session reaped after serving clients; server self-exit");
+    info!("nothing left running after serving clients; server self-exit");
     root_token.cancel();
-}
-
-/// If `pane` is the session's last Terminal and this was a natural process
-/// exit, replace the child in place and return the next EOF receiver.
-async fn replace_last_shell(
-    state: &SharedState,
-    pane: CoreResourceId,
-    root_token: &CancellationToken,
-) -> Option<oneshot::Receiver<ExitOutcome>> {
-    if root_token.is_cancelled() {
-        return None;
-    }
-    let handle = state.with(|s| {
-        s.should_replace_last_shell(pane)
-            .then(|| s.resource_handle(pane).cloned())
-            .flatten()
-    })?;
-    let command = replacement_shell_command(state, pane);
-    let (reply_tx, reply_rx) = oneshot::channel();
-    handle
-        .control
-        .send(crate::resource::ControlRequest::ReplaceChild {
-            command: crate::resource::ReplacementCommand(command),
-            reply: reply_tx,
-        })
-        .await
-        .ok()?;
-    reply_rx.await.ok()?.ok()
-}
-
-fn replacement_shell_command(
-    state: &SharedState,
-    pane: CoreResourceId,
-) -> portable_pty::CommandBuilder {
-    state.with_mut(|s| {
-        let mut cmd = crate::terminal_actor::default_shell_command(s.shell(), s.login_shell());
-        crate::terminal_actor::apply_term(&mut cmd, s.term());
-        let wire = s.intern_terminal_wire(pane);
-        crate::terminal_actor::apply_terminal_id(&mut cmd, &wire);
-        crate::terminal_actor::apply_server_socket(&mut cmd, s.server_socket_path());
-        cmd
-    })
 }
 
 /// A pane kept as `Exited` after its process exited (ADR-0124), as its exit
@@ -1346,6 +1300,8 @@ fn retain_exited_pane(
     events: Option<&mut PaneEvents>,
 ) -> Option<RetainedExit> {
     let retention = s.retain_exited(pane, exit, unix_now_ms())?;
+    // The record keeps its outcome (`ExitPolicy::Retain`).
+    s.activation_ended(pane, exit, false);
     let wire_terminal_id = s.intern_terminal_wire(pane);
     if let Some(events) = events {
         journal_pending_events(s, events);
@@ -1485,7 +1441,7 @@ fn reap_exited_pane(
         exit.status,
         attribution,
     );
-    let (_, actor_token) = s.reap_terminal_deferring_actor_cancel(pane);
+    let (_, actor_token) = s.reap_terminal_deferring_actor_cancel(pane, exit);
     // ADR-0105: clients of a session a group kill released are detached.
     let killed_clients: Vec<_> = s
         .take_killed_sessions()
@@ -1571,14 +1527,12 @@ mod cascade_close_tests {
     #[test]
     fn reap_cascades_through_grandchildren() {
         let mut state = ServerState::new();
-        let (_session, _window, grandparent) = state.seed_session("main");
+        let (_session, grandparent) = state.seed_session("main");
         let child = state
-            .registry_mut()
-            .new_agent_session(grandparent, agent("child"))
+            .new_agent_session(grandparent, &agent("child"))
             .expect("child");
         let grandchild = state
-            .registry_mut()
-            .new_agent_session(grandparent, agent("grandchild"))
+            .new_agent_session(grandparent, &agent("grandchild"))
             .expect("grandchild seed");
         state
             .registry_mut()
@@ -2206,12 +2160,21 @@ pub(crate) async fn accept_loop<L: Incoming>(
                         let task_supports_quic_streams = listener.supports_quic_streams();
                         clients.spawn_local(async move {
                             let _live = live;
-                            if let Err(err) = handle_client(reader, writer, task_state.clone(), client_id, client_token, task_root_token, task_input_lane, task_transport, task_supports_quic_streams).await {
+                            if let Err(err) = handle_client(reader, writer, task_state.clone(), client_id, client_token, task_root_token.clone(), task_input_lane, task_transport, task_supports_quic_streams).await {
                                 warn!(error = %err, "client task ended with error");
                             }
                             // The one site that forgets connection state.
                             release_connection_state(&task_state, client_id);
-                            task_state.with_mut(ServerState::note_connection_closed);
+                            // R13: the last connection closing on a server
+                            // that runs nothing ends it.
+                            let due = task_state.with_mut(|s| {
+                                s.note_connection_closed();
+                                s.self_exit_due()
+                            });
+                            if due && !task_root_token.is_cancelled() {
+                                info!("last client left a server running nothing; server self-exit");
+                                task_root_token.cancel();
+                            }
                         });
                     }
                     Err(err) => {
@@ -2862,6 +2825,8 @@ async fn negotiate_hello(
                 ServerFeatureExt::ResizeCellPx,
                 ServerFeatureExt::CommittedTeardown,
                 ServerFeatureExt::AgentStreamResume,
+                // ADR-0161: every organization command commits and is enforced.
+                ServerFeatureExt::Organization,
             ]))
             .with_compression(compression),
         server_id: state.with(|server| server.server_incarnation().as_bytes().to_vec()),
@@ -2910,6 +2875,26 @@ async fn authorize_hello(state: &SharedState, client_id: ClientId) -> Result<(),
             code: ErrorCode::PermissionDenied,
             message: "policy denied: unauthorized: not authorized".to_owned(),
         });
+    }
+    // ADR-0163: a connection that arrived on a delegated credential's own
+    // socket acts as that credential, never as the owner the socket's uid
+    // would otherwise make it.
+    if let Some(id) = super::delegation::delegated_credential(&peer, credential.as_ref()) {
+        let grant = state.with(|s| s.delegated_grant(id, chrono::Utc::now()));
+        let Some(grant) = grant else {
+            warn!(
+                ?client_id,
+                "HELLO denied: the delegated credential is withdrawn or expired"
+            );
+            return Err(ConnectionClose {
+                attached_reason: None,
+                detach_reason: DetachReason::AuthenticationFailed,
+                code: ErrorCode::PermissionDenied,
+                message: "policy denied: unauthorized: not authorized".to_owned(),
+            });
+        };
+        state.with_mut(|s| s.set_connection_grant(client_id, grant));
+        return Ok(());
     }
     let engine = state.with(|s| s.policy_engine().clone());
     // workload-auth §5: the grant comes from the verified identity alone.
@@ -4310,10 +4295,11 @@ struct SessionCreateRequest {
     empty: bool,
 }
 
-/// Run the create a `SESSION_CREATE_KEY` request asked for: an empty,
-/// keep-empty session (ADR-0105), or a seeded one that is optionally marked
-/// keep-empty afterwards in the same single-threaded turn. Returns the seed
-/// pane's wire id, or `None` for an empty session.
+/// Translate a `SESSION_CREATE_KEY` request into a `SessionCreate` commit
+/// attributed to the writer: `empty` creates an empty persistent session,
+/// `keep_empty` a persistent one with a seed pane, and a bare create an
+/// ephemeral one whose last pane's exit deletes it. Returns the seed pane's
+/// wire id, or `None` for an empty session.
 fn run_session_create(
     state: &SharedState,
     writer: ClientId,
@@ -4321,7 +4307,9 @@ fn run_session_create(
     root_token: &CancellationToken,
 ) -> Result<Option<WireResourceId>, String> {
     if request.empty {
-        return crate::runtime::commands::create_empty_session(state, &request.name).map(|()| None);
+        let actor = state.with(|s| s.actor_for(writer));
+        return crate::runtime::commands::create_empty_session(state, &request.name, &actor)
+            .map(|()| None);
     }
     // The seed pane's `pane_spawned` names this writer and the create's
     // token (ADR-0123, ADR-0126).
@@ -4336,6 +4324,11 @@ fn run_session_create(
                 .and_then(phux_protocol::ids::IdempotencyKey::new),
             retain_secs: None,
         },
+        lifetime: if request.keep_empty {
+            phux_core::SessionLifetime::Persistent
+        } else {
+            phux_core::SessionLifetime::Ephemeral
+        },
     };
     let wire = crate::runtime::commands::create_named_session(
         state,
@@ -4346,9 +4339,6 @@ fn run_session_create(
         origin,
         root_token,
     )?;
-    if request.keep_empty {
-        state.with_mut(|s| s.set_session_keep_empty(&request.name, true));
-    }
     Ok(Some(wire))
 }
 
@@ -4374,10 +4364,11 @@ fn session_create_payload(
     payload
 }
 
-/// Apply a `phux.session.keep_empty/v1` write (ADR-0105) to the registry.
-/// A change is broadcast to the key's subscribers; clearing the mark on an
-/// empty session removes it, detaching its clients and possibly self-exiting
-/// as the reap cascade does.
+/// Translate a `phux.session.keep_empty/v1` write into a
+/// `SessionSetLifetime` commit attributed to the writer: `true` is
+/// persistent, `false` ephemeral. A change is broadcast to the key's
+/// subscribers; ephemeral on an empty session deletes it, detaching its
+/// clients and possibly self-exiting.
 fn apply_session_keep_empty(
     state: &SharedState,
     client_id: ClientId,
@@ -4397,8 +4388,8 @@ fn apply_session_keep_empty(
         return;
     };
     let (outcome, clients, server_drained) = state.with_mut(|s| {
-        let session = s.find_session_by_name(name);
-        let outcome = s.set_session_keep_empty(name, keep);
+        let actor = s.actor_for(client_id);
+        let outcome = s.set_session_keep_empty(name, keep, &actor);
         if matches!(
             outcome,
             KeepEmptyOutcome::Changed | KeepEmptyOutcome::Removed
@@ -4410,12 +4401,12 @@ fn apply_session_keep_empty(
                 Some(client_id),
             );
         }
-        let removed = outcome == KeepEmptyOutcome::Removed;
-        let clients = match session {
-            Some(session) if removed => s.attached_clients_in_session(session),
-            _ => Vec::new(),
-        };
-        let drained = removed && s.registry().session_count() == 0 && s.has_served_client();
+        let clients: Vec<_> = s
+            .take_killed_sessions()
+            .into_iter()
+            .flat_map(|session| s.attached_clients_in_session(session))
+            .collect();
+        let drained = outcome == KeepEmptyOutcome::Removed && s.self_exit_due();
         (outcome, clients, drained)
     });
     debug!(
@@ -4428,7 +4419,7 @@ fn apply_session_keep_empty(
     );
     detach_clients_of_killed_session(state, clients);
     if server_drained && !root_token.is_cancelled() {
-        info!("last session killed after serving clients; server self-exit");
+        info!("nothing left running after serving clients; server self-exit");
         root_token.cancel();
     }
 }
@@ -4751,8 +4742,8 @@ fn reject_set_metadata(
     false
 }
 
-/// Apply a session rename written as `current_name\0new_name` to the
-/// registry. An applied change fans out the `current\0new` value to the
+/// Translate a session rename written as `current_name\0new_name` into a
+/// `SessionRename` commit attributed to the writer. An applied change fans out the `current\0new` value to the
 /// key's subscribers; a malformed value or unknown session is a no-op.
 fn apply_session_rename(
     state: &SharedState,
@@ -4774,7 +4765,8 @@ fn apply_session_rename(
         return;
     };
     let (outcome, delivered) = state.with_mut(|s| {
-        let outcome = s.rename_session(&current, &new_name);
+        let actor = s.actor_for(client_id);
+        let outcome = s.rename_session_as(&current, &new_name, &actor);
         // `Renamed` also covers a rename to the same name; broadcast only a
         // real change.
         let delivered =
@@ -4859,6 +4851,17 @@ pub(crate) fn handle_set_metadata(
     if key == phux_protocol::wire::frame::SESSION_KEEP_EMPTY_KEY && matches!(scope, Scope::Global) {
         apply_session_keep_empty(state, client_id, request_id, scope, &value, root_token);
         return;
+    }
+    // R17: the TUI layout key is translated into the session's arrangement,
+    // attributed to the writer, then stored and broadcast as before.
+    if let Some(session) = state.with(|s| s.tui_layout_session(scope, key)) {
+        let translated = state.with_mut(|s| {
+            let actor = s.actor_for(client_id);
+            s.translate_layout_write(session, &value, &actor)
+        });
+        if let Err(reason) = translated {
+            debug!(?client_id, request_id, %key, %reason, "layout write not translated");
+        }
     }
     // ADR-0155: a push grant is stored like any key, but the server also
     // remembers who wrote it, so a later ask is pushed only once that
@@ -6631,7 +6634,7 @@ mod fatal_preflight_close_tests {
         LocalSet::new()
             .run_until(async {
                 let state = SharedState::new();
-                let (_session, _window, terminal) =
+                let (_session, terminal) =
                     state.with_mut(|server| server.seed_session("fatal-duplex"));
                 let (handle, mut consumer_attach_rx, mut native_bootstrap_rx) =
                     native_failure_handle();
@@ -6885,7 +6888,7 @@ mod metadata_tests {
         use phux_protocol::wire::frame::RESOURCE_AGENT_SESSION_KEY;
 
         let state = SharedState::new();
-        let (_session, _window, pane) = state.with_mut(|s| s.seed_session("scope-test"));
+        let (_session, pane) = state.with_mut(|s| s.seed_session("scope-test"));
         let scope = Scope::Resource(state.with_mut(|s| s.intern_terminal_wire(pane)));
         set(&state, &scope, "phux.test/v1", b"live");
         assert_eq!(get(&state, &scope, "phux.test/v1"), Some(b"live".to_vec()));
@@ -6930,7 +6933,18 @@ mod metadata_tests {
     #[test]
     fn a_late_layout_write_for_a_reaped_session_is_not_stored() {
         let state = SharedState::new();
-        let (session, _window, pane) = state.with_mut(|s| s.seed_session("resurrect-test"));
+        let (session, pane) = state.with_mut(|s| {
+            s.create_terminal(
+                crate::state::TerminalTarget::NewSession {
+                    name: "resurrect-test",
+                    lifetime: phux_core::SessionLifetime::Ephemeral,
+                },
+                phux_core::TerminalLaunch::default(),
+                phux_core::ExitPolicy::Remove,
+                &phux_core::Actor::owner(),
+            )
+            .expect("ephemeral session")
+        });
         let wire = state.with_mut(|s| s.idspace.intern_session(session));
         let key = format!("phux.tui.layout/v1/{}", wire.get());
         let scope = Scope::Group(crate::state::DEFAULT_GROUP_ID);
@@ -6954,7 +6968,7 @@ mod metadata_tests {
         set(&state, &Scope::Global, &reserved_key, b"forged");
         assert!(get(&state, &Scope::Global, &reserved_key).is_none());
 
-        let (_session, _window, pane) = state.with_mut(|s| s.seed_session("occupant-owner"));
+        let (_session, pane) = state.with_mut(|s| s.seed_session("occupant-owner"));
         let scope = Scope::Resource(state.with_mut(|s| s.intern_terminal_wire(pane)));
         let key = phux_protocol::wire::frame::RESOURCE_PANE_OCCUPANT_KEY;
         let authoritative = br#"{"foreground":"zsh","is_pane_shell":true}"#.to_vec();
@@ -7000,8 +7014,12 @@ mod metadata_tests {
                 let original_id = session_id(&state);
                 assert_eq!(receipt["session_id"], original_id);
                 state.with_mut(|s| s.rename_session("original", "renamed"));
-                crate::runtime::commands::create_empty_session(&state, "original")
-                    .expect("replacement");
+                crate::runtime::commands::create_empty_session(
+                    &state,
+                    "original",
+                    &phux_core::Actor::owner(),
+                )
+                .expect("replacement");
                 assert_ne!(original_id, session_id(&state));
                 assert_eq!(get(&state, &Scope::Global, &key), Some(bytes));
             })
@@ -7375,7 +7393,7 @@ mod agent_drain_tests {
         local(async {
             let state = SharedState::new();
             let (pane, terminal) = state.with_mut(|s| {
-                let (_session, _window, pane) = s.seed_session("demo");
+                let (_session, pane) = s.seed_session("demo");
                 (pane, s.intern_terminal_wire(pane))
             });
             let ask = AskedPayload {

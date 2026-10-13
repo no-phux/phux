@@ -1,0 +1,172 @@
+use serde::{Deserialize, Serialize};
+
+use phux_protocol::ResourceId;
+
+use super::LayoutDecodeError;
+use crate::layout::{LayoutNode, SplitDir};
+
+/// Minimal envelope shape used to peek the `version` byte before
+/// committing to a full decode of the current schema.
+#[derive(Debug, Deserialize)]
+pub(in crate::layout) struct VersionProbe {
+    /// The envelope schema version (`3` workspace with required stable IDs).
+    pub version: u8,
+}
+
+/// The v3 multi-window envelope (docs/spec/L3.md §3.2).
+#[derive(Debug, Serialize, Deserialize)]
+pub(in crate::layout) struct CborWorkspaceEnvelope {
+    /// Envelope schema version (`3`).
+    pub version: u8,
+    /// The workspace's windows, in order.
+    pub windows: Vec<CborWindow>,
+    /// Index into `windows` of the active window.
+    pub focused_window_index: u32,
+}
+
+/// One window inside [`CborWorkspaceEnvelope`].
+#[derive(Debug, Serialize, Deserialize)]
+pub(in crate::layout) struct CborWindow {
+    /// Required, nonzero stable layout identity.
+    pub id: [u8; 16],
+    /// The window's display name.
+    pub name: String,
+    /// The window's binary split tree.
+    pub root: CborLayoutNode,
+    /// The focused leaf within this window.
+    pub focused_terminal: CborResourceId,
+}
+
+/// CBOR shadow of [`LayoutNode`]: pins the envelope schema apart from the
+/// in-memory tree and converts via `From`.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(in crate::layout) enum CborLayoutNode {
+    /// A single pane (tree leaf).
+    Leaf {
+        /// The leaf's terminal id.
+        pane: CborResourceId,
+    },
+    /// An interior split of two child subtrees.
+    Split {
+        /// Split orientation.
+        dir: CborSplitDir,
+        /// Fraction of the parent given to `left`, in `(0.0, 1.0)`.
+        ratio: f32,
+        /// The first (left/top) child subtree.
+        left: Box<Self>,
+        /// The second (right/bottom) child subtree.
+        right: Box<Self>,
+    },
+}
+
+/// CBOR shadow of [`SplitDir`].
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(in crate::layout) enum CborSplitDir {
+    /// A left/right split (vertical divider between panes).
+    Horizontal,
+    /// A top/bottom split (horizontal divider between panes).
+    Vertical,
+}
+
+/// CBOR shadow of [`ResourceId`].
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(in crate::layout) enum CborResourceId {
+    /// A terminal local to this server.
+    Local {
+        /// The local numeric id.
+        id: u32,
+    },
+    /// A terminal hosted on a federated satellite.
+    Satellite {
+        /// The satellite host identifier.
+        host: String,
+        /// The terminal's id on that host.
+        id: u32,
+    },
+}
+
+impl From<SplitDir> for CborSplitDir {
+    fn from(value: SplitDir) -> Self {
+        match value {
+            SplitDir::Horizontal => Self::Horizontal,
+            SplitDir::Vertical => Self::Vertical,
+        }
+    }
+}
+
+impl From<CborSplitDir> for SplitDir {
+    fn from(value: CborSplitDir) -> Self {
+        match value {
+            CborSplitDir::Horizontal => Self::Horizontal,
+            CborSplitDir::Vertical => Self::Vertical,
+        }
+    }
+}
+
+impl From<&ResourceId> for CborResourceId {
+    fn from(value: &ResourceId) -> Self {
+        match value {
+            ResourceId::Local { id } => Self::Local { id: *id },
+            ResourceId::Satellite { host, id } => Self::Satellite {
+                host: host.as_str().to_owned(),
+                id: *id,
+            },
+        }
+    }
+}
+
+impl From<CborResourceId> for ResourceId {
+    fn from(value: CborResourceId) -> Self {
+        match value {
+            CborResourceId::Local { id } => Self::local(id),
+            CborResourceId::Satellite { host, id } => Self::satellite(host.as_str(), id),
+        }
+    }
+}
+
+impl From<&LayoutNode> for CborLayoutNode {
+    fn from(value: &LayoutNode) -> Self {
+        match value {
+            LayoutNode::Leaf(pane) => Self::Leaf { pane: pane.into() },
+            LayoutNode::Split {
+                dir,
+                ratio,
+                left,
+                right,
+            } => Self::Split {
+                dir: (*dir).into(),
+                ratio: *ratio,
+                left: Box::new(Self::from(left.as_ref())),
+                right: Box::new(Self::from(right.as_ref())),
+            },
+        }
+    }
+}
+
+impl CborLayoutNode {
+    /// Convert this CBOR shadow back into a [`LayoutNode`], validating the split ratio.
+    pub(in crate::layout) fn into_layout_node(self) -> Result<LayoutNode, LayoutDecodeError> {
+        Ok(match self {
+            Self::Leaf { pane } => LayoutNode::Leaf(pane.into()),
+            Self::Split {
+                dir,
+                ratio,
+                left,
+                right,
+            } => {
+                if !ratio.is_finite() || !(0.0..=1.0).contains(&ratio) {
+                    return Err(LayoutDecodeError::MalformedRatio(ratio));
+                }
+                LayoutNode::Split {
+                    dir: dir.into(),
+                    ratio,
+                    left: Box::new(left.into_layout_node()?),
+                    right: Box::new(right.into_layout_node()?),
+                }
+            }
+        })
+    }
+}

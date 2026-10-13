@@ -3,7 +3,7 @@
 use bytes::Bytes;
 
 use super::{
-    ControlError, ControlPlane, EngineEvent, Event, FrameKind, HistoryRejectionReason,
+    AgentEvent, ControlError, ControlPlane, EngineEvent, Event, FrameKind, HistoryRejectionReason,
     HistoryUnavailableReason, WireRejection, WireTombstone,
 };
 
@@ -365,8 +365,17 @@ impl ControlPlane {
                 Ok(())
             }
             FrameKind::Event {
-                terminal, event, ..
-            } => self.agent_event(terminal, event),
+                terminal,
+                event,
+                stamp,
+            } => {
+                if super::organization::is_organization_event(&event)
+                    || matches!(event, AgentEvent::JournalGap { .. })
+                {
+                    self.organization_event(stamp.as_ref().map(|stamp| stamp.seq), &event);
+                }
+                self.agent_event(terminal, event)
+            }
             frame => self.feed_stream_frame(frame),
         }
     }

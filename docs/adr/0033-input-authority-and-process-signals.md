@@ -21,6 +21,7 @@ is the seed of the recorded audit trail.
 Status: Accepted
 Date: 2026-06-16
 See [ADR-0127](./0127-attach-roles-are-lease-intent.md) for attach roles as declared intent on the lease.
+Superseded in part by [ADR-0163](./0163-actors-and-delegated-agent-grants.md): a non-human principal cannot take an input lease a human holds.
 
 ## Context
 

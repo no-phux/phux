@@ -1,6 +1,6 @@
 //! `ServerState`'s wire-id facade over [`IdSpace`](super::IdSpace).
 
-use phux_core::ids::{ResourceId, WindowId};
+use phux_core::ids::{ResourceId, SessionId};
 use phux_protocol::ids::{ResourceId as WireResourceId, WindowId as WireWindowId};
 
 use super::ServerState;
@@ -18,8 +18,9 @@ impl ServerState {
         self.idspace.terminal_from_wire(wire)
     }
 
-    /// Wire window id for `window`, allocating one if needed.
-    pub fn intern_window_wire(&mut self, window: WindowId) -> WireWindowId {
-        self.idspace.intern_window(window)
+    /// Wire id of `session`'s synthetic legacy window (R06), allocating one
+    /// if needed. Stable for the session's life and across upgrades.
+    pub fn intern_window_wire(&mut self, session: SessionId) -> WireWindowId {
+        self.idspace.intern_window(session)
     }
 }

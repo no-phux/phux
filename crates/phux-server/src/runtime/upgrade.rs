@@ -1033,10 +1033,8 @@ mod tests {
     async fn pane_handoff_with_a_closed_mailbox_aborts_for_retry() {
         let (dead, receiver) = mpsc::channel(1);
         drop(receiver);
-        let mut registry = phux_core::registry::Registry::new();
-        let session = registry.new_session("s".to_owned());
-        let window = registry.new_window(session).unwrap();
-        let dead_pane = registry.new_terminal(window).unwrap();
+        let mut state = crate::state::ServerState::new();
+        let (_, dead_pane) = state.seed_session("s");
 
         let err = collect_pane_handoffs(vec![(dead_pane, dead)], Duration::from_secs(1))
             .await
@@ -1083,7 +1081,7 @@ mod tests {
             .run_until(async {
                 let state = SharedState::new();
                 let (live_pane, orphan, agent) = state.with_mut(|s| {
-                    let (sid, wid, live_pane) = s.seed_session("main");
+                    let (sid, live_pane) = s.seed_session("main");
                     let live = crate::terminal_actor::TerminalActor::new_with_seed(20, 5, b"live")
                         .unwrap();
                     let live_token = live.token.clone();
@@ -1094,14 +1092,14 @@ mod tests {
                         live.actor.run(),
                     );
 
-                    // A leaked handle: its engine is gone and its registry
-                    // entry was removed without forgetting the handle.
+                    // A leaked handle: its engine is gone and its record was
+                    // removed before the handle was registered.
                     let orphan = s.add_pane_to_session(sid).unwrap();
+                    s.retire_record(orphan, phux_core::process::ExitOutcome::UNKNOWN);
                     let dead =
                         crate::terminal_actor::TerminalActor::new_with_seed(20, 5, b"").unwrap();
                     let _ = s.register_resource_handle(orphan, dead.handle, dead.token);
                     drop(dead.actor);
-                    let _ = s.registry_mut().remove_resource(orphan);
 
                     // An agent session bound to the live pane.
                     let facet = phux_core::resource::AgentFacet {
@@ -1109,10 +1107,7 @@ mod tests {
                         native_id: None,
                         state: None,
                     };
-                    let agent = s
-                        .registry_mut()
-                        .new_agent_session(live_pane, facet)
-                        .unwrap();
+                    let agent = s.new_agent_session(live_pane, &facet).unwrap();
                     let token = tokio_util::sync::CancellationToken::new();
                     let bundle = crate::resource::agent_session::AgentSessionActor::build(
                         live_pane,
@@ -1124,7 +1119,7 @@ mod tests {
                     let _ = s.spawn_resource_actor(agent, bundle.handle, token, bundle.actor.run());
 
                     let _ = s.build_session_snapshot(sid);
-                    let _ = s.intern_window_wire(wid);
+                    let _ = s.intern_window_wire(sid);
                     s.set_upgrade_context(
                         7,
                         PathBuf::from("/nonexistent/phux.sock"),
@@ -1583,7 +1578,7 @@ mod tests {
             native_id: native_id.map(str::to_owned),
             state: Some("working".to_owned()),
         };
-        let core = s.registry_mut().new_agent_session(parent, facet).unwrap();
+        let core = s.new_agent_session(parent, &facet).unwrap();
         let token = tokio_util::sync::CancellationToken::new();
         let bundle = crate::resource::agent_session::AgentSessionActor::build(
             parent,
@@ -1612,7 +1607,7 @@ mod tests {
         phux_protocol::ids::ResourceId,
         mpsc::Sender<crate::resource::agent_session::AppendRequest>,
     ) {
-        let (sid, wid, live_pane) = s.seed_session("main");
+        let (sid, live_pane) = s.seed_session("main");
         let live = crate::terminal_actor::TerminalActor::new_with_seed(20, 5, b"live").unwrap();
         let live_token = live.token.clone();
         let pane_wire =
@@ -1630,7 +1625,7 @@ mod tests {
             .unwrap();
 
         let _ = s.build_session_snapshot(sid);
-        let _ = s.intern_window_wire(wid);
+        let _ = s.intern_window_wire(sid);
         s.set_upgrade_context(
             7,
             PathBuf::from("/nonexistent/phux.sock"),

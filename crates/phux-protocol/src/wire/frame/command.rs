@@ -1,11 +1,19 @@
 //! Control-plane command, result, and agent-event types — SPEC §5
 //! (ADR-0021) and SPEC §7.5 (ADR-0022).
 
-use crate::ids::{ClientId, FileUploadId, GroupId, InputOperationId, ResourceId, ResourceKind};
+use crate::ids::{
+    ActivationId, ArrangementKey, ClientId, FileUploadId, GroupId, InputOperationId, LeaseEpoch,
+    OperationId, ResourceId, ResourceKey, ResourceKind, Revision, SessionKey,
+};
 use crate::input::InputEvent;
 use crate::wire::info::SessionSnapshot;
 
-use super::ErrorCode;
+use super::org::{
+    ArrangementDoc, ArrangementOwner, ArrangementValue, Committed, ExecState, ExitPolicy,
+    LaunchMode, LaunchSpec, LiveTarget, MoveItem, OrgFilter, OrganizationPage, Outcome,
+    RecordRevision, Refusal, SessionLifetime, TerminateMode,
+};
+use super::{ActorRef, ErrorCode};
 
 wire_enum! { to_u8 / from_u8;
 /// Event class filter for [`Command::SubscribeResourceEvents`].
@@ -433,6 +441,226 @@ pub enum Command {
         /// The Terminals to terminate.
         ids: Vec<ResourceId>,
     },
+    /// Read one bounded page of the organization (`docs/spec/L1.md` §5.7):
+    /// the records the caller inventories, with revisions, live handles,
+    /// totals, and the journal cursor to subscribe after. Answered
+    /// `OkWith(OrganizationPage)`. Gated, like every organization command,
+    /// on [`ServerFeatureExt::Organization`](crate::caps::ServerFeatureExt::Organization).
+    GetOrganization {
+        /// Which records to list.
+        filter: OrgFilter,
+        /// Records per page; `0` asks for the server default.
+        page_size: u32,
+        /// The previous page's `next_cursor`, or `None` for the first page.
+        cursor: Option<Vec<u8>>,
+    },
+    /// Create a session, and with `launch` its first resource and launch
+    /// intent, in one transaction. An `Ephemeral` session requires `launch`.
+    SessionCreate {
+        /// Caller-generated operation id.
+        operation: OperationId,
+        /// Unique among live sessions; at most 256 bytes.
+        name: String,
+        /// Whether it outlives its last resource.
+        lifetime: SessionLifetime,
+        /// Descriptive attributes, in order.
+        attrs: Vec<(String, String)>,
+        /// The first resource's launch, if any.
+        launch: Option<Box<LaunchSpec>>,
+    },
+    /// Rename a session; a label change only.
+    SessionRename {
+        /// Caller-generated operation id.
+        operation: OperationId,
+        /// The session.
+        session: SessionKey,
+        /// Its expected revision.
+        expected: Revision,
+        /// The new name; at most 256 bytes.
+        name: String,
+    },
+    /// Change a session's lifetime; `Ephemeral` on an empty session deletes
+    /// it.
+    SessionSetLifetime {
+        /// Caller-generated operation id.
+        operation: OperationId,
+        /// The session.
+        session: SessionKey,
+        /// Its expected revision.
+        expected: Revision,
+        /// The new lifetime.
+        lifetime: SessionLifetime,
+    },
+    /// Delete an empty session; refused `NotEmpty` while it has members.
+    SessionDelete {
+        /// Caller-generated operation id.
+        operation: OperationId,
+        /// The session.
+        session: SessionKey,
+        /// Its expected revision.
+        expected: Revision,
+    },
+    /// Create a resource record in a session, with its membership and launch
+    /// intent, in one transaction.
+    ResourceCreate {
+        /// Caller-generated operation id.
+        operation: OperationId,
+        /// The session it joins.
+        session: SessionKey,
+        /// What backs it.
+        kind: ResourceKind,
+        /// How it starts; `None` for a kind that needs no launch.
+        launch: Option<Box<LaunchSpec>>,
+        /// Display name; at most 256 bytes.
+        name: Option<String>,
+        /// What happens to the record when execution ends.
+        on_exit: ExitPolicy,
+        /// Whether the first activation starts now or the record stays
+        /// dormant until relaunched.
+        launch_mode: LaunchMode,
+    },
+    /// Move one resource between sessions; membership only, no restart.
+    ResourceMove {
+        /// Caller-generated operation id.
+        operation: OperationId,
+        /// The resource.
+        resource: ResourceKey,
+        /// Its current session.
+        from: SessionKey,
+        /// The source session's expected revision.
+        from_expected: Revision,
+        /// The destination session.
+        to: SessionKey,
+        /// The destination's expected revision.
+        to_expected: Revision,
+    },
+    /// Move a fixed set of resources into one session atomically: one
+    /// refused item refuses the whole batch. At most
+    /// [`MAX_ORG_BATCH`](super::MAX_ORG_BATCH) items.
+    ResourceMoveMany {
+        /// Caller-generated operation id.
+        operation: OperationId,
+        /// The resources, each with its source session and revision.
+        items: Vec<MoveItem>,
+        /// The destination session.
+        to: SessionKey,
+        /// The destination's expected revision.
+        to_expected: Revision,
+    },
+    /// Rename a resource; `None` clears the name.
+    ResourceRename {
+        /// Caller-generated operation id.
+        operation: OperationId,
+        /// The resource.
+        resource: ResourceKey,
+        /// Its expected revision.
+        expected: Revision,
+        /// The new name; at most 256 bytes.
+        name: Option<String>,
+    },
+    /// End a resource's current activation. Answered `Accepted`; the
+    /// outcome arrives as `ActivationChanged`.
+    ResourceTerminate {
+        /// Caller-generated operation id.
+        operation: OperationId,
+        /// The activation to end; a stale one is refused `Stale`.
+        target: LiveTarget,
+        /// Graceful or forced.
+        mode: TerminateMode,
+    },
+    /// Remove a resource record whose execution is proven inactive.
+    ResourceRemove {
+        /// Caller-generated operation id.
+        operation: OperationId,
+        /// The resource.
+        resource: ResourceKey,
+        /// Its expected revision.
+        expected: Revision,
+    },
+    /// Start a new activation from the resource's launch; refused while one
+    /// is current or lost.
+    ResourceRelaunch {
+        /// Caller-generated operation id.
+        operation: OperationId,
+        /// The resource.
+        resource: ResourceKey,
+        /// Its expected revision.
+        expected: Revision,
+    },
+    /// Release a lost activation from management (owner only).
+    ResourceAbandon {
+        /// Caller-generated operation id.
+        operation: OperationId,
+        /// The resource.
+        resource: ResourceKey,
+        /// Its expected revision.
+        expected: Revision,
+        /// The lost activation.
+        activation: ActivationId,
+    },
+    /// Clear an imported session's intake mark; members and execution are
+    /// untouched.
+    InboxResolve {
+        /// Caller-generated operation id.
+        operation: OperationId,
+        /// The imported session.
+        session: SessionKey,
+        /// Its expected revision.
+        expected: Revision,
+    },
+    /// Apply a committed organization edit's inverse when every recorded
+    /// resulting revision still holds. Never reverses execution.
+    OrganizationUndo {
+        /// Caller-generated id of this undo.
+        operation: OperationId,
+        /// The operation to undo.
+        undo: OperationId,
+        /// The resulting revisions its receipt reported; at most
+        /// [`MAX_ORG_BATCH`](super::MAX_ORG_BATCH).
+        expected: Vec<RecordRevision>,
+    },
+    /// Read an arrangement; answered `OkWith(Arrangement)`.
+    ArrangementGet {
+        /// The arrangement.
+        arrangement: ArrangementKey,
+    },
+    /// Replace an arrangement's document. A session arrangement may name
+    /// only that session's members.
+    ArrangementReplace {
+        /// Caller-generated operation id.
+        operation: OperationId,
+        /// The arrangement.
+        arrangement: ArrangementKey,
+        /// Its expected revision.
+        expected: Revision,
+        /// The new document; at most
+        /// [`MAX_ARRANGEMENT_BYTES`](super::MAX_ARRANGEMENT_BYTES) encoded.
+        document: ArrangementDoc,
+    },
+    /// Mint a delegated agent credential on `session` (ADR-0163 §5):
+    /// `INVENTORY`, `OBSERVE`, `INPUT`, and `BIND` on that session only, on behalf
+    /// of the sender, through an owner-only socket of its own. Owner socket
+    /// only; answered `OkWith(Delegation)`. A repeat of `operation` answers
+    /// the credential it minted.
+    DelegateAgent {
+        /// Caller-generated operation id.
+        operation: OperationId,
+        /// The session the agent may act on.
+        session: SessionKey,
+        /// Requested lifetime in seconds; `0` asks for the server default.
+        /// The server clamps it to its maximum.
+        ttl_secs: u32,
+    },
+    /// Withdraw a delegated agent credential: its socket closes and every
+    /// connection acting as it is revoked. Owner socket only; answered `Ok`,
+    /// also when the credential is already gone.
+    RevokeDelegation {
+        /// Caller-generated operation id.
+        operation: OperationId,
+        /// The credential, as [`Delegation::credential_id`](super::Delegation::credential_id)
+        /// named it; at most 256 bytes.
+        credential_id: String,
+    },
 }
 
 impl Command {
@@ -472,8 +700,9 @@ impl Command {
         }
     }
 
-    /// The trailing `operation_id` of a keyed supervisory command
-    /// (`docs/spec/L1.md` §5.1.1), or `None`.
+    /// The operation id of a keyed supervisory command
+    /// (`docs/spec/L1.md` §5.1.1) or of a mutating organization command
+    /// (§5.7), or `None`.
     #[must_use]
     pub const fn idempotency_key(&self) -> Option<&crate::ids::IdempotencyKey> {
         match self {
@@ -481,8 +710,52 @@ impl Command {
             | Self::KillResourceIf { operation_id, .. }
             | Self::KillResources { operation_id, .. }
             | Self::SignalTerminal { operation_id, .. } => operation_id.as_ref(),
+            Self::SessionCreate { operation, .. }
+            | Self::SessionRename { operation, .. }
+            | Self::SessionSetLifetime { operation, .. }
+            | Self::SessionDelete { operation, .. }
+            | Self::ResourceCreate { operation, .. }
+            | Self::ResourceMove { operation, .. }
+            | Self::ResourceMoveMany { operation, .. }
+            | Self::ResourceRename { operation, .. }
+            | Self::ResourceTerminate { operation, .. }
+            | Self::ResourceRemove { operation, .. }
+            | Self::ResourceRelaunch { operation, .. }
+            | Self::ResourceAbandon { operation, .. }
+            | Self::InboxResolve { operation, .. }
+            | Self::OrganizationUndo { operation, .. }
+            | Self::ArrangementReplace { operation, .. } => Some(operation),
             _ => None,
         }
+    }
+
+    /// Whether this is an organization command (`docs/spec/L1.md` §5.7):
+    /// one a server serves only while it advertises
+    /// [`ServerFeatureExt::Organization`](crate::caps::ServerFeatureExt::Organization),
+    /// and the only kind a reply may answer with [`CommandResult::Refused`]
+    /// or [`CommandResult::Accepted`].
+    #[must_use]
+    pub const fn is_organization(&self) -> bool {
+        matches!(
+            self,
+            Self::GetOrganization { .. }
+                | Self::SessionCreate { .. }
+                | Self::SessionRename { .. }
+                | Self::SessionSetLifetime { .. }
+                | Self::SessionDelete { .. }
+                | Self::ResourceCreate { .. }
+                | Self::ResourceMove { .. }
+                | Self::ResourceMoveMany { .. }
+                | Self::ResourceRename { .. }
+                | Self::ResourceTerminate { .. }
+                | Self::ResourceRemove { .. }
+                | Self::ResourceRelaunch { .. }
+                | Self::ResourceAbandon { .. }
+                | Self::InboxResolve { .. }
+                | Self::OrganizationUndo { .. }
+                | Self::ArrangementGet { .. }
+                | Self::ArrangementReplace { .. }
+        )
     }
 }
 
@@ -631,6 +904,15 @@ pub enum CommandValue {
     Bytes(Vec<u8>),
     /// Acknowledgement for a sandboxed file-upload chunk.
     FileUpload(FileUploadAck),
+    /// One page of the organization (reply to `GET_ORGANIZATION`).
+    OrganizationPage(Box<OrganizationPage>),
+    /// An arrangement and its revision (reply to `ARRANGEMENT_GET`).
+    Arrangement(Box<ArrangementValue>),
+    /// A committed organization edit and its receipt (reply to a mutating
+    /// organization command).
+    Committed(Box<Committed>),
+    /// A minted delegated agent credential (reply to `DELEGATE_AGENT`).
+    Delegation(Box<super::Delegation>),
 }
 
 /// The outcome of a [`Command`], carried by
@@ -649,6 +931,18 @@ pub enum CommandResult {
         code: ErrorCode,
         /// Human-readable diagnostic (UTF-8; unconstrained otherwise).
         message: String,
+    },
+    /// An organization command was refused and had no effect. Sent only in
+    /// reply to an organization command ([`Command::is_organization`]): an
+    /// older decoder fails the whole frame on this tag, so a legacy command,
+    /// or a legacy write the server translates, never receives it.
+    Refused(Refusal),
+    /// An organization command was accepted; its execution effects follow as
+    /// events stamped with `operation`. Sent only in reply to an
+    /// organization command, like [`Self::Refused`].
+    Accepted {
+        /// The accepted operation.
+        operation: OperationId,
     },
 }
 
@@ -760,6 +1054,124 @@ pub enum AgentEvent {
         /// Who sent the input: the client's HELLO name, or `client:<id>`
         /// when it has none.
         origin: String,
+    },
+    /// A session record was created (`docs/spec/L1.md` §5.7). Field-tagged
+    /// body, like every organization event.
+    SessionCreated {
+        /// The session.
+        session: SessionKey,
+        /// Its name.
+        name: String,
+        /// Its lifetime.
+        lifetime: SessionLifetime,
+        /// Its revision after the change.
+        revision: Revision,
+    },
+    /// A session was renamed.
+    SessionRenamed {
+        /// The session.
+        session: SessionKey,
+        /// The new name.
+        name: String,
+        /// Its revision after the change.
+        revision: Revision,
+    },
+    /// A session record was deleted.
+    SessionDeleted {
+        /// The session.
+        session: SessionKey,
+        /// The name it had.
+        name: String,
+        /// Its final revision.
+        revision: Revision,
+    },
+    /// A session's lifetime changed.
+    SessionLifetimeChanged {
+        /// The session.
+        session: SessionKey,
+        /// The new lifetime.
+        lifetime: SessionLifetime,
+        /// Its revision after the change.
+        revision: Revision,
+    },
+    /// A resource moved between sessions.
+    MembershipChanged {
+        /// The resource.
+        resource: ResourceKey,
+        /// The session it left.
+        from: SessionKey,
+        /// The session it joined.
+        to: SessionKey,
+        /// The source session's revision after the change.
+        from_revision: Revision,
+        /// The destination session's revision after the change.
+        to_revision: Revision,
+    },
+    /// A resource record was created.
+    ResourceCreated {
+        /// The resource.
+        resource: ResourceKey,
+        /// Its session.
+        session: SessionKey,
+        /// What backs it.
+        kind: ResourceKind,
+    },
+    /// A resource record was removed.
+    ResourceRemoved {
+        /// The resource.
+        resource: ResourceKey,
+        /// The session it belonged to.
+        session: SessionKey,
+        /// What backed it.
+        kind: ResourceKind,
+    },
+    /// A resource's activation changed state.
+    ActivationChanged {
+        /// The resource.
+        resource: ResourceKey,
+        /// The activation.
+        activation: ActivationId,
+        /// Its new state.
+        state: ExecState,
+        /// How it ended, once it has.
+        outcome: Option<Outcome>,
+    },
+    /// An arrangement's document changed, or the arrangement was deleted.
+    ArrangementChanged {
+        /// The arrangement.
+        arrangement: ArrangementKey,
+        /// The record that owns it.
+        owner: ArrangementOwner,
+        /// Its revision after the change; `None` when it was deleted.
+        revision: Option<Revision>,
+    },
+    /// A resource was renamed.
+    ResourceRenamed {
+        /// The resource.
+        resource: ResourceKey,
+        /// The new name; `None` when it was cleared.
+        name: Option<String>,
+        /// Its revision after the change.
+        revision: Revision,
+    },
+    /// A resource's input lease changed hands.
+    LeaseChanged {
+        /// The resource.
+        resource: ResourceKey,
+        /// The new lease epoch.
+        epoch: LeaseEpoch,
+        /// The new holder, or `None` when released.
+        holder: Option<ActorRef>,
+    },
+    /// A session's intake mark changed: an `INBOX_RESOLVE`, or an undo
+    /// restoring it.
+    IntakeChanged {
+        /// The session.
+        session: SessionKey,
+        /// Whether it now awaits organization.
+        awaiting_organization: bool,
+        /// Its revision after the change.
+        revision: Revision,
     },
     /// An event tag this build does not know, body kept verbatim. Produced
     /// only by the decoder.

@@ -12,7 +12,7 @@ mod common;
 use std::time::{Duration, Instant};
 
 use phux_client::attach::connection::Connection;
-use phux_client::layout::Workspace;
+use phux_client::layout::ArrangementDoc;
 use phux_client::layout_ops::layout_key;
 use phux_protocol::ids::{GroupId, ResourceId, SessionId};
 use phux_protocol::wire::frame::{FrameKind, Scope};
@@ -87,9 +87,9 @@ impl ServerGuard {
                     if let FrameKind::MetadataValue {
                         value: Some(bytes), ..
                     } = conn.recv().await.expect("candidate layout reply")
-                        && let Ok(workspace) = Workspace::decode_cbor(&bytes)
+                        && let Ok(workspace) = ArrangementDoc::decode_cbor(&bytes)
                         && workspace
-                            .windows
+                            .groups
                             .iter()
                             .filter_map(|w| w.state.tree.as_ref())
                             .flat_map(phux_client::layout::leaves)

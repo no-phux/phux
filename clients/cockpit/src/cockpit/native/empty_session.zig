@@ -1,4 +1,4 @@
-//! Keep-empty sessions (ADR-0105): the Empty session state
+//! Empty persistent sessions (ADR-0160): the Empty session state
 //! (docs/REMOTE_HOSTS.md, "Empty sessions"). A window shows it, with New Tab,
 //! for its exact attached session when that session is empty and the window
 //! has no tab, or for an exact empty pick (`Model.empty_picks`) in the window

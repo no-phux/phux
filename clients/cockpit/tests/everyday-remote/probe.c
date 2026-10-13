@@ -112,31 +112,43 @@ static PhuxResourceId split_work(PhuxResourceId first) {
     checked(phux_client_queue_spawn(client, &spawn));
     PhuxResourceId second = completion(1, PHUX_OPERATION_SPAWN);
     (void)grid(second);
-    checked(phux_client_workspace_refresh(client, 2));
-    PhuxWorkspaceInfo info = workspace();
-    PhuxWorkspaceWindow current = window();
-    PhuxWorkspaceMutation split = {.size = sizeof(split), .version = PHUX_CLIENT_ABI_VERSION,
-        .request_id = 3, .session_id = info.session_id, .expected_revision = info.revision,
+    checked(phux_client_arrangement_refresh(client, 2));
+    PhuxArrangementInfo info = arrangement();
+    uint32_t request = 3;
+    if (info.group_count == 0) {
+        // A fresh session arranges nothing: its first terminal is unarranged
+        // until a client places it in a group.
+        assert(info.unarranged_count >= 1);
+        PhuxArrangementMutation add = {.size = sizeof(add), .version = PHUX_CLIENT_ABI_VERSION,
+            .request_id = request++, .session_id = info.session_id, .expected_revision = info.revision,
+            .kind = 1, .terminal_id = first};
+        checked(phux_client_arrangement_mutate(client, &add));
+        info = arrangement();
+        assert(info.status == 2 && info.group_count == 1);
+    }
+    PhuxArrangementGroup current = group();
+    PhuxArrangementMutation split = {.size = sizeof(split), .version = PHUX_CLIENT_ABI_VERSION,
+        .request_id = request++, .session_id = info.session_id, .expected_revision = info.revision,
         .kind = 2, .terminal_id = first, .new_terminal_id = second, .direction = 2, .ratio = 0.5};
-    memcpy(split.window_id, current.window_id, 16);
-    checked(phux_client_workspace_mutate(client, &split));
-    info = workspace();
+    memcpy(split.group_id, current.group_id, 16);
+    checked(phux_client_arrangement_mutate(client, &split));
+    info = arrangement();
     assert(info.status == 2 && info.node_count == 3);
-    split.request_id = 4;
+    split.request_id = request++;
     split.expected_revision = info.revision;
     split.kind = 6;
     split.name = text("Transport proof");
-    checked(phux_client_workspace_mutate(client, &split));
-    assert(workspace().status == 2);
+    checked(phux_client_arrangement_mutate(client, &split));
+    assert(arrangement().status == 2);
     send_once(second, "second-terminal-only\n", "second-executed", 0);
     assert(execution_count("executed") == 1);
     return second;
 }
 
 static void assert_restored_layout(void) {
-    PhuxWorkspaceInfo info = workspace();
-    assert(info.state == 2 && info.node_count == 3);
-    PhuxWorkspaceWindow current = window();
+    PhuxArrangementInfo info = arrangement();
+    assert(info.state == PHUX_ARRANGEMENT_STATE_AUTHORITATIVE && info.node_count == 3);
+    PhuxArrangementGroup current = group();
     assert(current.name.len == strlen("Transport proof"));
     assert(memcmp(current.name.data, "Transport proof", current.name.len) == 0);
 }

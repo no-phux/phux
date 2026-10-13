@@ -1,25 +1,23 @@
-//! The session tree and its ledgers: the [`Registry`], last-touch order
+//! The organization registry and its per-session ledgers: last-touch order
 //! (for `AttachTarget::Last`), the two `defaults.cwd-inheritance` ledgers,
-//! and keep-empty release tracking. Entries share the entity's lifetime and
-//! are dropped in the reap cascade. Logic that also needs wire ids, actors,
-//! or clients stays on `ServerState`, reaching in through
-//! [`Self::registry`]. Everything is `pub(super)` and sync.
+//! and the sessions a commit deleted whose clients still await a detach.
+//! Records change only through [`super::ServerState::commit`]; this table
+//! holds what is not a record. Everything is `pub(super)` and sync.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
-use phux_core::ids::{ResourceId, SessionId, WindowId};
+use phux_core::ids::{ResourceId, SessionId};
 use phux_core::registry::Registry;
+use phux_core::resource::ResourceKind;
 use phux_core::session::Session;
 
-use super::RenameOutcome;
-
-/// The session/window/pane tree plus its per-session and per-window
-/// ledgers.
+/// The registry plus its per-session ledgers.
 #[derive(Debug)]
 pub(super) struct SessionTable {
-    /// Every session, window, and pane. `pub(super)` for disjoint-field
-    /// borrows; read outside `state` via `ServerState::registry`.
+    /// Every session and resource record with its live handle.
+    /// `pub(super)` for disjoint-field borrows; read outside `state` via
+    /// `ServerState::registry`.
     pub(super) registry: Registry,
     /// Per-session last-touch stamps resolving `AttachTarget::Last` (only
     /// the order matters).
@@ -29,32 +27,24 @@ pub(super) struct SessionTable {
     next_touch_timestamp: u64,
     /// Frozen creation directory per session (`session-root` policy).
     roots: HashMap<SessionId, PathBuf>,
-    /// Latest cwd per window (`last-cwd-per-window` policy).
-    window_last_cwd: HashMap<WindowId, PathBuf>,
-    /// Keep-empty sessions a group `KILL_RESOURCES` released (ADR-0105);
-    /// their clients get `SESSION_KILLED` when the cascade removes them.
-    released_keep_empty: HashSet<SessionId>,
-    /// Removed released sessions whose clients still await detach.
+    /// Latest cwd per session (`last-cwd-per-window` policy, which names the
+    /// session's one view now that windows are gone).
+    last_cwd: HashMap<SessionId, PathBuf>,
+    /// Sessions a commit deleted whose clients still await
+    /// `DETACHED { SESSION_KILLED }`.
     killed_pending: Vec<SessionId>,
 }
 
-impl Default for SessionTable {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl SessionTable {
-    /// Build an empty table with the last-touch clock at `1`.
+    /// Build a table over `registry` with the last-touch clock at `1`.
     #[must_use]
-    pub(super) fn new() -> Self {
+    pub(super) fn new(registry: Registry) -> Self {
         Self {
-            registry: Registry::new(),
+            registry,
             last_touched: HashMap::new(),
             next_touch_timestamp: 1,
             roots: HashMap::new(),
-            window_last_cwd: HashMap::new(),
-            released_keep_empty: HashSet::new(),
+            last_cwd: HashMap::new(),
             killed_pending: Vec::new(),
         }
     }
@@ -86,104 +76,62 @@ impl SessionTable {
 
     // -- session lookup -------------------------------------------------
 
-    /// Look up the active pane of the active window of `session`, if any.
+    /// The Terminal a session-addressed action without a pane lands on
+    /// (R14): the member that last took human input, else the first leaf
+    /// of the arrangement's first group, else the first Terminal member.
     #[must_use]
-    pub(super) fn active_pane_of(&self, session: SessionId) -> Option<ResourceId> {
-        let session = self.registry.session(session)?;
-        let window_id = session.active?;
-        let window = self.registry.window(window_id)?;
-        window.active
+    pub(super) fn default_pane_of(&self, session: SessionId) -> Option<ResourceId> {
+        let record = self.registry.session(session)?;
+        let is_terminal = |id: &ResourceId| {
+            self.registry
+                .resource(*id)
+                .is_some_and(|r| r.kind == ResourceKind::Terminal)
+        };
+        if let Some(id) = record
+            .recent
+            .and_then(|k| self.registry.resource_id(&k))
+            .filter(is_terminal)
+        {
+            return Some(id);
+        }
+        let arranged = record
+            .arrangement
+            .and_then(|k| self.registry.org().arrangement(&k))
+            .and_then(|a| a.resources().into_iter().next())
+            .and_then(|k| self.registry.resource_id(&k))
+            .filter(is_terminal);
+        arranged.or_else(|| self.seed_pane_of(session))
     }
 
     /// Borrow the session named `name`, if it exists.
     #[must_use]
     pub(super) fn by_name(&self, name: &str) -> Option<&Session> {
-        let id = self.find_by_name(name)?;
-        self.registry.session(id)
+        self.registry.org().session_by_name(name)
     }
 
     /// The [`SessionId`] named `name`.
     pub(super) fn find_by_name(&self, name: &str) -> Option<SessionId> {
-        self.registry
-            .sessions()
-            .find(|(_, s)| s.name == name)
-            .map(|(id, _)| id)
+        self.registry.session_by_name(name)
     }
 
-    /// The window owning `session`'s active pane.
-    #[must_use]
-    pub(super) fn active_window_of(&self, session: SessionId) -> Option<WindowId> {
-        self.registry.session(session)?.active
-    }
-
-    /// `session`'s seed (oldest) pane.
+    /// `session`'s oldest Terminal member.
     #[must_use]
     pub(super) fn seed_pane_of(&self, session: SessionId) -> Option<ResourceId> {
-        let session = self.registry.session(session)?;
-        let window_id = *session.windows.first()?;
-        let window = self.registry.window(window_id)?;
-        window.slots.first().copied()
+        self.terminal_members(session).into_iter().next()
     }
 
-    // -- mutation -------------------------------------------------------
-
-    /// Rename `current` to `new_name`; names are unique.
-    pub(super) fn rename(&mut self, current: &str, new_name: &str) -> RenameOutcome {
-        let Some(id) = self.find_by_name(current) else {
-            return RenameOutcome::NotFound;
-        };
-        // Renaming to the same name succeeds.
-        if current != new_name && self.find_by_name(new_name).is_some() {
-            return RenameOutcome::NameTaken;
-        }
-        if let Some(session) = self.registry.session_mut(id) {
-            new_name.clone_into(&mut session.name);
-        }
-        RenameOutcome::Renamed
-    }
-
-    /// Seed a session, window, and pane.
-    ///
-    /// # Panics
-    ///
-    /// Only on a `Registry` regression (the parents were just created).
-    #[allow(clippy::expect_used, reason = "unreachable: parent just created")]
-    pub(super) fn seed(&mut self, name: &str) -> (SessionId, WindowId, ResourceId) {
-        let sid = self.registry.new_session(name.to_owned());
-        let wid = self.registry.new_window(sid).expect("session just created");
-        let pid = self
-            .registry
-            .new_terminal(wid)
-            .expect("window just created");
-        (sid, wid, pid)
-    }
-
-    /// Create a keep-empty session with no windows (ADR-0105).
-    pub(super) fn seed_empty(&mut self, name: &str) -> SessionId {
-        let sid = self.registry.new_session(name.to_owned());
-        if let Some(session) = self.registry.session_mut(sid) {
-            session.keep_empty = true;
-        }
-        sid
-    }
-
-    /// Add a pane to `session`'s first window, creating one if the session
-    /// has none (ADR-0105). `None` if `session` is unknown.
+    /// `session`'s Terminal members, in membership order.
     #[must_use]
-    pub(super) fn add_pane(&mut self, session: SessionId) -> Option<ResourceId> {
-        let existing = self.registry.session(session)?.windows.first().copied();
-        let wid = match existing {
-            Some(wid) => wid,
-            None => self.registry.new_window(session).ok()?,
-        };
-        self.registry.new_terminal(wid).ok()
-    }
-
-    /// Add a pane to the window that owns `owner`.
-    #[must_use]
-    pub(super) fn add_pane_beside(&mut self, owner: ResourceId) -> Option<ResourceId> {
-        let window = self.registry.resource(owner)?.window?;
-        self.registry.new_terminal(window).ok()
+    pub(super) fn terminal_members(&self, session: SessionId) -> Vec<ResourceId> {
+        self.registry
+            .members(session)
+            .into_iter()
+            .filter(|id| {
+                self.registry
+                    .resource(*id)
+                    .is_some_and(|r| r.kind == ResourceKind::Terminal)
+            })
+            .collect()
     }
 
     // -- cwd-inheritance ledgers (phux-nyx) -----------------------------
@@ -200,46 +148,32 @@ impl SessionTable {
         self.roots.entry(session).or_insert(root)
     }
 
-    /// `window`'s latest recorded cwd.
+    /// `session`'s latest recorded cwd.
     #[must_use]
-    pub(super) fn last_cwd(&self, window: WindowId) -> Option<&PathBuf> {
-        self.window_last_cwd.get(&window)
+    pub(super) fn last_cwd(&self, session: SessionId) -> Option<&PathBuf> {
+        self.last_cwd.get(&session)
     }
 
-    /// Record `window`'s latest cwd.
-    pub(super) fn record_last_cwd(&mut self, window: WindowId, cwd: PathBuf) {
-        self.window_last_cwd.insert(window, cwd);
+    /// Record `session`'s latest cwd.
+    pub(super) fn record_last_cwd(&mut self, session: SessionId, cwd: PathBuf) {
+        self.last_cwd.insert(session, cwd);
     }
 
     // -- teardown -------------------------------------------------------
 
-    /// Forget a removed window's cwd.
-    pub(super) fn forget_window(&mut self, window: WindowId) {
-        self.window_last_cwd.remove(&window);
-    }
-
-    /// Drop a removed session's last-touch stamp and frozen root.
+    /// Drop a removed session's last-touch stamp, frozen root, and cwd.
     pub(super) fn forget_session(&mut self, session: SessionId) {
         self.last_touched.remove(&session);
         self.roots.remove(&session);
-        self.released_keep_empty.remove(&session);
+        self.last_cwd.remove(&session);
     }
 
-    // -- ADR-0105 group-kill ledger -------------------------------------
-
-    /// Remember that a group kill released `session`'s keep-empty mark.
-    pub(super) fn mark_released(&mut self, session: SessionId) {
-        self.released_keep_empty.insert(session);
-    }
-
-    /// Queue a removed, released session's clients for `SESSION_KILLED`.
+    /// Queue a deleted session's clients for `SESSION_KILLED`.
     pub(super) fn note_removed(&mut self, session: SessionId) {
-        if self.released_keep_empty.remove(&session) {
-            self.killed_pending.push(session);
-        }
+        self.killed_pending.push(session);
     }
 
-    /// Drain the removed, released sessions whose clients still need a detach.
+    /// Drain the deleted sessions whose clients still need a detach.
     pub(super) fn take_killed(&mut self) -> Vec<SessionId> {
         std::mem::take(&mut self.killed_pending)
     }
@@ -260,11 +194,6 @@ impl SessionTable {
     /// Restore a session's frozen root recorded in an upgrade blob.
     pub(super) fn bind_root(&mut self, session: SessionId, root: PathBuf) {
         self.roots.insert(session, root);
-    }
-
-    /// Restore a window's last-cwd entry recorded in an upgrade blob.
-    pub(super) fn bind_last_cwd(&mut self, window: WindowId, cwd: PathBuf) {
-        self.window_last_cwd.insert(window, cwd);
     }
 
     /// The next last-touch stamp (serialized in the upgrade blob).

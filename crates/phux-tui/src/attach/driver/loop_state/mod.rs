@@ -352,6 +352,17 @@ pub(super) fn undelivered_notices(
 pub(super) struct SessionLoop {
     /// Original attach dial, reused for dedicated control-plane requests.
     control_dial: Option<Box<crate::attach::Dial>>,
+    /// Whether the server advertised `ORGANIZATION`: the session's
+    /// arrangement is a record edited over [`Self::arrangement`].
+    organization_supported: bool,
+    /// The attached session's arrangement record over a dedicated control
+    /// connection; `None` keeps the legacy `phux.tui.layout/v1` key.
+    arrangement: Option<crate::attach::arrangement_link::ArrangementLink>,
+    /// Read the arrangement record and adopt it once this burst settles: the
+    /// attach's first read, or an `ARRANGEMENT_CHANGED` for this session.
+    arrangement_read_owed: bool,
+    /// An input action changed shared layout; write it once the batch ends.
+    arrangement_write_owed: bool,
     /// Whether the server builds a spawned pane at the geometry we name.
     spawn_initial_size_supported: bool,
     /// What the `go-to-directory` picker can list on this server.
@@ -380,7 +391,7 @@ pub(super) struct SessionLoop {
     /// The attached session as this client mirrors it: the kernel, pane
     /// slots, layout, focus, and the frame-correlated bookkeeping.
     mirror: SessionMirror,
-    /// One-entry focus MRU, deliberately outside Workspace so focus history
+    /// One-entry focus MRU, deliberately outside `ArrangementDoc` so focus history
     /// never persists (ADR-0019).
     focus_history: crate::attach::focus::FocusHistory,
     /// This client's `ClientId` from ATTACHED, for the supervisory badge.
@@ -598,6 +609,12 @@ impl SessionLoop {
         orphan_kills.set_conditional_kill(conditional_kill_supported);
         Ok(Self {
             control_dial: None,
+            organization_supported: negotiated
+                .server_features_ext
+                .contains(phux_protocol::ServerFeatureExt::Organization),
+            arrangement: None,
+            arrangement_read_owed: false,
+            arrangement_write_owed: false,
             acknowledged_input_supported: server_features
                 .contains(ServerFeature::AcknowledgedInput),
             input_replay: None,
@@ -698,6 +715,7 @@ impl SessionLoop {
     }
 }
 
+mod arrangement;
 mod bootstrap;
 mod frames;
 mod input;

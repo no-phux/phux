@@ -58,7 +58,8 @@ pub enum RenameOutcome {
     NameTaken,
 }
 
-/// Outcome of [`super::ServerState::set_session_keep_empty`] (ADR-0105).
+/// Outcome of [`super::ServerState::set_session_keep_empty`], the legacy
+/// keep-empty mark translated into a session lifetime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeepEmptyOutcome {
     /// The session's mark flipped to the requested value; the session stays.

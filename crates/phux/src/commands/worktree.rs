@@ -14,7 +14,7 @@ use phux_server::runtime::default_socket_path;
 
 use crate::commands::{WorktreeAction, cli_runtime};
 
-use super::workspace::{WorktreeInfo, git_bytes, git_text, parse_worktrees};
+use super::git::{WorktreeInfo, git_bytes, git_text, parse_worktrees};
 
 /// Fallback session name when a worktree basename sanitizes to nothing;
 /// `-s NAME` overrides.
@@ -421,6 +421,8 @@ fn bind_session(req: Binding<'_>) -> ExitCode {
         false,
         json,
         None,
+        // A worktree's session is named after it: persistent.
+        phux_protocol::wire::frame::SessionLifetime::Persistent,
     )) {
         // The create already told us the seed pane's id; `--json` just stops
         // throwing it away.

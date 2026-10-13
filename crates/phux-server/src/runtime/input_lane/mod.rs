@@ -163,7 +163,7 @@ impl RoutedInput {
 /// Cloneable handle a client task uses to hand input to the lane. Cloning is
 /// cheap (`mpsc::Sender` clone); every clone keeps the lane thread alive.
 #[derive(Clone, Debug)]
-pub(crate) struct InputLaneHandle {
+pub struct InputLaneHandle {
     tx: mpsc::Sender<RoutedInput>,
     admission: Arc<AcknowledgedAdmission>,
     cache: SharedOperationCache,
@@ -1098,7 +1098,7 @@ mod tests {
         let mut actor = bundle.actor;
         let (_pty_evt_tx, writer_rx) = actor.install_test_pty_channels();
         let (wire, core) = state.with_mut(|s| {
-            let (_sid, _wid, core) = s.seed_session(session);
+            let (_sid, core) = s.seed_session(session);
             (
                 s.register_resource_handle(core, handle, token.clone()),
                 core,
@@ -1281,7 +1281,7 @@ mod tests {
         let first = TerminalActor::new(80, 24).expect("first actor");
         let second = TerminalActor::new(80, 24).expect("second actor");
         let state = SharedState::new();
-        let pane = state.with_mut(|s| s.seed_session("s").2);
+        let pane = state.with_mut(|s| s.seed_session("s").1);
         let mut encoders = std::collections::HashMap::new();
         let facet = |bundle: &crate::terminal_actor::TerminalActorBundle| {
             bundle.handle.terminal().expect("facet").clone()
@@ -1469,7 +1469,7 @@ mod tests {
         }
         let state = SharedState::new();
         let (wire, client) = state.with_mut(|s| {
-            let pane = s.seed_session("s").2;
+            let pane = s.seed_session("s").1;
             let wire =
                 s.register_resource_handle(pane, bundle.handle.clone(), bundle.token.clone());
             (wire, s.new_client_id())
@@ -1505,7 +1505,7 @@ mod tests {
                             drop(bundle);
                         }
                         let wire = state.with_mut(|s| {
-                            let pane = s.seed_session("s").2;
+                            let pane = s.seed_session("s").1;
                             s.register_resource_handle(pane, handle, token.clone())
                         });
                         (token, wire)

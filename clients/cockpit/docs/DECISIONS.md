@@ -57,11 +57,14 @@ built by letting the providers diverge.
 
 ## An emptied window closes — including the main one
 
-**Keep-empty exception, 2026-09-11:** [ADR-0114](../../../docs/adr/0114-cockpit-closes-terminals-and-detaches-windows.md)
-retains an Empty session view after a keep-empty session's last terminal ends.
+**Persistent-session exception, 2026-09-11, revised 2026-10-13:** [ADR-0114](../../../docs/adr/0114-cockpit-closes-terminals-and-detaches-windows.md)
+retains an Empty session view after a persistent session's last terminal ends
+([ADR-0160](../../../docs/adr/0160-sessions-own-resources-and-window-is-retired.md)).
 Cmd+W there closes the client window without ending the named session. The
-last-window close still quits. Close Pane/Tab ends work; OS-window close detaches
-Phux views and preserves their shared layout.
+last-window close still quits. A verb named kill ends work, and one named close
+never does: Kill Pane and Kill Tab terminate and carry no shortcut, Close View (Cmd+W)
+only removes the view from the session's arrangement, and OS-window close detaches Phux views
+and preserves their shared layout.
 
 **Decided 2026-08-10.** When a window's last tab closes, that window goes away.
 
