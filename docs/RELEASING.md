@@ -104,24 +104,31 @@ Workflows use only `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-24.04-arm`, and
 `xcode-27` (macOS 27 with Xcode 27); no larger or self-hosted runners.
 
 The Actions cache is capped at 10 GB per repository with LRU eviction, and a
-cache saved on `refs/pull/N/merge` is only restorable from that PR. So the
-Linux Rust lanes' mbx cache (`.github/actions/setup-rust-lane`, one `objects`
-entry per lane) saves on `main` pushes only, as do the other lanes'
-`rust-cache` entries, and Cockpit's sccache runs
-`SCCACHE_GHA_RW_MODE=READ_ONLY` off `main`; any new PR-lane cache needs the
-same treatment. The mbx primary key is the lane, `flake.lock`, `Cargo.lock`,
-and the UTC day. It does not include the commit: an exact hit skips the
-objects export, and keying on the commit repackaged the test lane's
-multi-gigabyte store on every push. A new day or lockfile still restores the
-previous entry by prefix, then saves once. `prune-build-cache` keeps the
-newest entry per lane. The account allows 20 concurrent standard jobs, only
-5 of them macOS. `pr-janitor` cancels a closed PR's live runs and deletes
-its merge-ref caches. Concurrency groups use the `mini-v1-` namespace.
+cache saved on `refs/pull/N/merge` is only restorable from that PR. The check
+and icount mbx caches (`.github/actions/setup-rust-lane`, one `objects` entry
+per lane) save on `main` pushes only, as do the other lanes' `rust-cache`
+entries, and Cockpit's sccache runs `SCCACHE_GHA_RW_MODE=READ_ONLY` off
+`main`; any new PR-lane cache needs the same treatment. The mbx primary key
+is the lane, `flake.lock`, `Cargo.lock`, and the UTC day. It does not include
+the commit: an exact hit skips the objects export. A new day or lockfile
+still restores the previous entry by prefix, then saves once.
+`prune-build-cache` keeps the newest check and icount entry and deletes every
+test-lane entry. The account allows 20 concurrent standard jobs, only 5 of
+them macOS. `pr-janitor` cancels a closed PR's live runs and deletes its
+merge-ref caches. Concurrency groups use the `mini-v1-` namespace.
 
-The Linux Rust lanes collect the restored mbx store before compiling, never
-between a build and its objects export. Pending export groups reference action
-results that GC can evict. The cap has to sit above the lane's working set:
-an 8 GiB cap deleted the test lane's restored action results and the build
+The test lane does not use that objects cache. Run 38442503688 saved
+5940645663 bytes. Cockpit's zig cache is about 4.8 GB, and with the other
+entries the repository was already near the cap, so that archive (and the
+smaller mbx entries) had been evicted within the hour. Downloading and
+importing it takes about five minutes, against about seven minutes of cold
+compile, and packaging the export takes about eleven. `PHUX_CI_MBX=1` still
+wraps Cargo so the job's unit tests and e2e share one disk store.
+
+The check and icount lanes collect the restored mbx store before compiling,
+never between a build and its objects export. Pending export groups reference
+action results that GC can evict. The cap has to sit above the lane's working
+set: an 8 GiB cap deleted a restored store's action results and the build
 recorded no hits. Post-build headroom cleanup removes Cargo downloads only;
 it leaves those action results and their objects intact.
 

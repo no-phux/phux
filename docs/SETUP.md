@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-10-05
+last-reviewed: 2026-10-13
 ---
 
 # Contributor setup
@@ -124,8 +124,8 @@ whether `mbx` is on `PATH`. In the Nix shell the wrapper also unsets `SDKROOT`, 
 every native link uncacheable, and mbx caches build-script C only when it picks
 the compiler; `cc`, `c++` and `xcrun --sdk macosx` resolve to the same tools. CI
 shells keep plain Cargo unless a job sets `PHUX_CI_MBX=1`, which the hosted
-Linux Rust lanes do after `.github/actions/setup-rust-lane` restores their mbx
-cache. Upstream ships no Intel-macOS binary, so that platform builds without it.
+Linux Rust lanes set from `.github/actions/setup-rust-lane`. Upstream ships no
+Intel-macOS binary, so that platform builds without it.
 
 ```sh
 mbx doctor            # tools, cache access, and reflink/hard-link/copy mode

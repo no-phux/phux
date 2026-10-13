@@ -14,11 +14,12 @@
 # favor of opt-in lanes.)
 #
 # Build+run stay on one runner (matching ci.yml). Cachix persists the
-# devshell, and the mbx build cache restores what main's ci.yml test lane
-# saved; this lane never saves (dispatch and label runs are restore-only) —
-# see .github/actions/setup-rust-lane for the shared 10 GB GitHub cache
-# rationale. Pull requests can read the public Cachix cache but
-# cannot push because GitHub withholds repository secrets from forks.
+# devshell. This lane shares ci.yml's `test` cache lane, which does not
+# restore or save a GitHub objects archive: that closure is about 5.5 GB and
+# does not fit beside Cockpit's zig cache in the 10 GB budget. Do not give
+# stress its own objects entry. Pull requests can read the public Cachix
+# cache but cannot push because GitHub withholds repository secrets from
+# forks.
 
 name: stress
 
@@ -45,14 +46,13 @@ jobs:
     # workflow_dispatch always runs; a pull_request fires this lane
     # only when tagged with the `stress` label.
     if: ${{ github.event_name != 'pull_request' || github.event.label.name == 'stress' }}
-    # Match ci.yml's standard ARM runner, so main's test-lane cache applies.
+    # Match ci.yml's standard ARM runner and its test profile.
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # Shared lane setup (disk headroom, Nix + Cachix, mbx build cache):
-      # .github/actions/setup-rust-lane. This lane builds the nextest test
-      # profile, so it shares ci.yml's `test` cache lane — the opt-in run
-      # reuses what main's CI saved instead of maintaining a third copy.
+      # Shared lane setup (disk headroom, Nix + Cachix, in-job mbx). The
+      # `test` lane does not use the GitHub objects cache; see
+      # .github/actions/setup-rust-lane.
       - uses: ./.github/actions/setup-rust-lane
         id: setup
         with:

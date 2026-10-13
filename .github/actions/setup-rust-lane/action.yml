@@ -2,30 +2,33 @@
 #
 # This block was copy-pasted across three jobs, and the copies had already
 # drifted once (the stress lane carried no compiler cache while the ci lanes
-# did). One definition keeps the cache-key policy, the disk-headroom trim, and
-# the build cache identical everywhere they run.
+# did). One definition keeps the cache-key policy and the disk-headroom trim
+# the same everywhere they run.
 #
 # Steps, in order:
 #   1. Drop unused preinstalled toolchains from the ephemeral hosted runner.
 #   2. Nix + Cachix: the pinned devshell (rustc, zig, nextest, deny, mbx).
-#   3. mbx (jdx/mr-boxington), the same pinned build cache local shells use
-#      (docs/SETUP.md#build-cache-mbx). It content-keys every compilation,
-#      build-script run, and native (mold) link, so a fresh checkout's new
-#      source mtimes no longer force the workspace to recompile, and test
-#      binaries restore instead of relinking. The GitHub `objects` payload
-#      carries only what this lane's builds used or produced; saves are
-#      restricted to pushes to main so PR writes cannot thrash the shared
-#      10 GB LRU and evict the warm base every lane restores from. The primary
-#      key excludes the commit: an exact hit skips the post-step export, and a
-#      per-commit key repackaged the test lane's ~4 GB archive (~11 min) on
-#      every main push. The key changes with flake.lock, Cargo.lock, or the
-#      UTC day, and ci.yml's prune-build-cache keeps the newest entry.
+#   3. mbx (jdx/mr-boxington) for the check and icount lanes, the same pinned
+#      build cache local shells use (docs/SETUP.md#build-cache-mbx). It
+#      content-keys every compilation, build-script run, and native (mold)
+#      link. The GitHub `objects` payload carries only what that lane's builds
+#      used or produced; saves are restricted to pushes to main so PR writes
+#      cannot thrash the shared 10 GB LRU. The primary key excludes the
+#      commit: an exact hit skips the post-step export. The key changes with
+#      flake.lock, Cargo.lock, or the UTC day, and ci.yml's prune-build-cache
+#      keeps the newest check and icount entry.
+#      The test lane does not restore or save that payload. Run 38442503688
+#      saved a 5.5 GB archive (5940645663 bytes) and the repo's other caches,
+#      including Cockpit's ~4.8 GB zig entry, already fill the 10 GB cap, so
+#      the archive was gone before the next job. Importing it takes about as
+#      long as the cold compile, and packaging the export takes about eleven
+#      minutes. PHUX_CI_MBX still wraps Cargo, so unit tests and e2e share one
+#      disk store inside the job.
 #      Objects mode leaves GC off during the build. A cap under the restored
-#      working set deletes the action results the next build needs (the test
-#      lane restored ~19 GiB logical and then recorded 0 hits). Collect only
-#      above that working set, and only before any build records its export
-#      group; after the lane, release Cargo downloads without evicting the
-#      group's pending action results.
+#      working set deletes the action results the next build needs. Collect
+#      only above that working set, and only before any build records its
+#      export group; after the lane, release Cargo downloads without evicting
+#      the group's pending action results.
 #
 # No CPU fingerprint: libghostty-vt-sys builds Zig for `-Dcpu=baseline` unless
 # LIBGHOSTTY_VT_SYS_CPU says otherwise (and its build script declares that
@@ -39,7 +42,10 @@ inputs:
     description: Cachix auth token (secrets are not implicitly visible to composite actions).
     required: true
   cache-lane:
-    description: Build-cache series; keep one per cargo profile (check, test, icount) so lanes never restore each other's closure.
+    description: >
+      Build-cache series. `check` and `icount` each keep their own GitHub
+      objects entry. `test` skips that cache: its archive does not fit in the
+      shared 10 GB budget.
     required: true
 
 outputs:
@@ -111,8 +117,13 @@ runs:
           echo "restore_key=${platform}-mbx-${generation}-"
         } >> "$GITHUB_OUTPUT"
 
+    # The test profile's objects archive is ~5.5 GB compressed. It cannot
+    # stay resident next to Cockpit's zig cache, and the restore costs about
+    # as much as recompiling. check and icount archives are ~1.5 GiB logical
+    # and save in seconds.
     - uses: jdx/mr-boxington-action@d0825fbaf3cc36ca2609aa38e71046265a1f1e37 # v1.7.1
       id: mbx
+      if: inputs.cache-lane != 'test'
       with:
         backend: github
         github-cache-mode: objects
@@ -124,13 +135,14 @@ runs:
         restore-keys: ${{ steps.mbx-env.outputs.restore_key }}
 
     - name: bound restored objects before recording builds
+      if: inputs.cache-lane != 'test'
       shell: bash
       run: |
         set -euo pipefail
-        # --max-size caps the action store only. A cap of 8 GiB sat under the
-        # test lane's restored store (~19 GiB logical) and deleted every
+        # --max-size caps the action store only. A cap of 8 GiB sat under a
+        # restored store (~19 GiB logical, run 38442503688) and deleted every
         # action result before the build, which then recorded 0 hits. 48 GiB
-        # is above that working set on the 145 GB hosted disk and still
-        # bounds a runaway store. Collection after the first build would
-        # drop the export group, so this stays in front of it.
+        # is above the check and icount working sets on the 145 GB hosted
+        # disk and still bounds a runaway store. Collection after the first
+        # build would drop the export group, so this stays in front of it.
         mbx gc --max-size 48GiB
