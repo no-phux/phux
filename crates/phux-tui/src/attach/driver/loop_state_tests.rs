@@ -2601,11 +2601,13 @@ async fn an_organization_record_keeps_a_closed_view_unarranged() {
         .filter_map(|group| group.state.tree.as_ref())
         .flat_map(crate::layout::leaves)
         .collect();
-    assert_eq!(leaves, [focus.clone()]);
+    assert_eq!(leaves, std::slice::from_ref(&focus));
     assert_eq!(state.mirror.unarranged_members(), vec![hidden]);
     let saved = frames_sent(&mut client, &mut server)
         .await
         .into_iter()
         .any(|frame| matches!(frame, FrameKind::SetMetadata { .. }));
+    drop(client);
+    drop(server);
     assert!(!saved, "a deliberate closed view is not written back");
 }
