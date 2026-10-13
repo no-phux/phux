@@ -1250,6 +1250,20 @@ fn record_pending_ref(
     }
 }
 
+/// Join already-read PTY chunks the way one actor burst does.
+///
+/// The instruction-count guard measures the copy. The actor's coalesce loop
+/// is the production caller of [`join_pty_burst`].
+pub(super) fn icount_join_pty_burst(chunks: Vec<Bytes>) -> Bytes {
+    let mut iter = chunks.into_iter();
+    let Some(first) = iter.next() else {
+        return Bytes::new();
+    };
+    let rest: Vec<Bytes> = iter.collect();
+    let total = first.len() + rest.iter().map(Bytes::len).sum::<usize>();
+    join_pty_burst(first, &rest, total)
+}
+
 /// Join one burst into a single payload. A lone chunk moves through as-is;
 /// a burst (every burst on macOS, where reads cap at 1 KiB) is copied once
 /// into a buffer sized to exactly `total` bytes, so there is no regrowth and
@@ -1522,5 +1536,26 @@ mod resync_debounce_tests {
 
         assert!(sleep.deadline() > gap_deadline);
         assert_eq!(debounce.take().0, ResyncReason::Resize);
+    }
+}
+
+#[cfg(test)]
+mod icount_join_tests {
+    use super::icount_join_pty_burst;
+    use bytes::Bytes;
+
+    #[test]
+    fn a_burst_is_one_payload() {
+        let joined = icount_join_pty_burst(vec![
+            Bytes::from_static(b"ab"),
+            Bytes::from_static(b"cd"),
+        ]);
+        assert_eq!(joined.as_ref(), b"abcd");
+    }
+
+    #[test]
+    fn a_lone_chunk_is_moved() {
+        let joined = icount_join_pty_burst(vec![Bytes::from_static(b"only")]);
+        assert_eq!(joined.as_ref(), b"only");
     }
 }

@@ -33,7 +33,7 @@ inputs:
     description: Cachix auth token (secrets are not implicitly visible to composite actions).
     required: true
   cache-lane:
-    description: Build-cache series; keep one per cargo profile (check, test) so lanes never restore each other's closure.
+    description: Build-cache series; keep one per cargo profile (check, test, icount) so lanes never restore each other's closure.
     required: true
 
 outputs:

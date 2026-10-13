@@ -1,0 +1,44 @@
+# Advisory wall-time samples. Not a ruleset context and not a job of ci.yml.
+# A harness crash fails the run. Sample values are artifacts, not budgets.
+name: perf-nightly
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mini-v1-perf-nightly
+  cancel-in-progress: true
+
+jobs:
+  wall-time:
+    name: wall-time
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust-lane
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          cache-lane: icount
+      - name: attach, echo, throughput, and session scaling
+        run: |
+          nix develop -c bash -euo pipefail <<'EOF'
+          tmux_bin="$(nix shell --inputs-from . nixpkgs#tmux -c bash -c 'command -v tmux')"
+          export PATH="$(dirname "$tmux_bin"):$PATH"
+          cargo build --locked --profile icount -p phux --bin phux
+          bash scripts/bench/perf-nightly.sh target/icount/phux target/perf-nightly
+          EOF
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: perf-nightly
+          path: target/perf-nightly
+          if-no-files-found: warn
+          retention-days: 14

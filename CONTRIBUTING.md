@@ -125,6 +125,7 @@ Product recipes stay out of the root `justfile` so CI can route by module.
 | build-cache portability | `just cache-portable-check` | same recipe |
 | embedded skill contract | `just skill-contract` | same |
 | fast e2e + perf gates | `just e2e` | `just e2e`, via `just ci-full` |
+| instruction counts | `perf-icount` job in `ci.yml` (`just perf-icount`) | `just perf-icount` inside `nix develop` on x86_64; see [Performance CI](./docs/performance-ci.md) |
 | agent example smoke | `just agents-fleet-smoke` | same, via `just ci-full` |
 
 Unit and e2e tests share the default feature set; optional profiling

@@ -70,7 +70,8 @@ ROUTES = (
     # Root justfile is imports + `default`. Product recipes live in just/*.just.
     # Perf/release/mutation and release-please config are compile-free.
     (("justfile", "just/perf.just", "just/release.just", "just/mutation.just",
-      "release-please-config.json", "scripts/check-*"), set()),
+      "release-please-config.json", "scripts/check-*",
+      "scripts/bench/perf-nightly.sh"), set()),
     # Product-skills publish mirror and maintainer-only beads skill. The
     # compiled using-phux* skills stay on the RUST route above.
     (("scripts/export-product-skills.sh", "scripts/product-skills",
@@ -348,6 +349,33 @@ def test_filterset(files, packages=None):
     return " + ".join(f"rdeps(={name})" for name in sorted(crates))
 
 
+# Instruction-count job. Stars include slashes. An empty diff fails closed.
+# Docs and unrelated crates (the TUI, for example) stay off this lane.
+PERF_ICOUNT_PATHS = (
+    "crates/phux-server/*",
+    "crates/phux-protocol/*",
+    "crates/phux-client-core/*",
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    ".cargo/*",
+    "flake.nix",
+    "flake.lock",
+    "benchmarks/icount-baseline.json",
+    "scripts/ci/perf-icount.sh",
+    "scripts/ci/perf_icount.py",
+    "scripts/ci/test_perf_icount.py",
+    "just/perf.just",
+    ".github/workflows/ci.yml",
+)
+
+
+def perf_icount_needed(files):
+    if not files:
+        return True
+    return any(matches(path, PERF_ICOUNT_PATHS) for path in files)
+
+
 def classify(files):
     files = [path for path in files if path]
     packages = workspace_packages()
@@ -362,6 +390,7 @@ def classify(files):
     outputs = {surface + "_needed": surface in selected for surface in SURFACES}
     outputs["docs_only"] = bool(files) and all(is_doc(path) for path in files)
     outputs["workflow_only"] = bool(files) and all(matches(path, WORKFLOWS) for path in files)
+    outputs["perf_icount_needed"] = perf_icount_needed(files)
     outputs["test_filterset"] = test_filterset(files, packages)
     outputs.update(unit_plan(files, packages))
     outputs.update(artifact_flags(files, packages, manifests))

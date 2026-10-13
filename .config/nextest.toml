@@ -77,6 +77,13 @@ threads-required = 'num-cpus'
 filter = 'package(phux-server) & test(pane_kill_lets_a_terminal_flush_finish_inside_the_grace)'
 threads-required = 'num-cpus'
 
+# A 16 MiB PTY flood is a CPU hog for a few seconds and shares the server
+# integration pool. Give it the machine so its neighbours keep their
+# deadlines, and so its own drain is not the thing that misses the marker.
+[[profile.default.overrides]]
+filter = 'package(phux-server) & test(flood_16mib_stays_under_counter_ceilings)'
+threads-required = 'num-cpus'
+
 # This one is here to protect its NEIGHBOURS as much as itself. The fixture is
 # a process that writes to its terminal as fast as it can until it is
 # SIGKILLed at the grace deadline — a deliberate CPU hog for half a second,

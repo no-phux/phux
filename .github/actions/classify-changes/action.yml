@@ -37,6 +37,9 @@ outputs:
   e2e_needed:
     description: Run the ignored e2e set. False for a non-e2e integration-test-only diff.
     value: ${{ steps.detect.outputs.e2e_needed }}
+  perf_icount_needed:
+    description: Instruction-count guard. True for hot-path crates, the baseline, and an empty diff.
+    value: ${{ steps.detect.outputs.perf_icount_needed }}
   ffi_needed:
     description: FFI staticlib inputs changed.
     value: ${{ steps.detect.outputs.ffi_needed }}
