@@ -22,6 +22,13 @@ spec.loader.exec_module(browser)
 
 
 class BrowserRunnerTests(unittest.TestCase):
+    def test_harness_build_opts_out_of_dev_opt_level(self):
+        base = {"CARGO_TARGET_DIR": "/tmp/web-native", "PATH": "/usr/bin"}
+        build = browser.harness_build_env(base)
+        self.assertEqual(build["CARGO_PROFILE_DEV_OPT_LEVEL"], "0")
+        self.assertEqual(build["CARGO_TARGET_DIR"], "/tmp/web-native")
+        self.assertNotIn("CARGO_PROFILE_DEV_OPT_LEVEL", base)
+
     def test_agent_fixture_is_canned_token_gated_and_cleans_up(self):
         fixture = browser.AgentFixture("/test/phux", "/tmp/owned-test.sock", {})
         with patch.object(fixture, "command") as command:

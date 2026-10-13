@@ -341,6 +341,19 @@ def interrupted(signum, _frame):
     raise SystemExit(128 + signum)
 
 
+def harness_build_env(env):
+    """Compile the throwaway native harness at opt-level 0.
+
+    The workspace dev profile is opt-level 1. Run 38457853567 spent 7m 00s
+    in this one cargo build; the browser checks after it were seconds.
+    Keep the override off the caller's env so wasm-pack still matches the
+    artifacts earlier steps in the job already built.
+    """
+    build_env = dict(env)
+    build_env["CARGO_PROFILE_DEV_OPT_LEVEL"] = "0"
+    return build_env
+
+
 def main():
     signal.signal(signal.SIGTERM, interrupted)
     signal.signal(signal.SIGINT, interrupted)
@@ -355,15 +368,15 @@ def main():
             env.setdefault(variable, executable)
     env["CARGO_TARGET_DIR"] = str(Path(env.get("CARGO_TARGET_DIR", ROOT / "target/web-native")).resolve())
     # One Cargo schedule for the demo server and the phux binary. Split
-    # invocations on 2 jobs were 5m 55s then 3m 41s (run 38451988979); the
-    # browser tests after that were about 12s. Cargo's default job count is
-    # the machine's CPU count, which is 4 on the hosted x64 runner.
+    # invocations on 2 jobs were 5m 55s then 3m 41s (run 38451988979).
+    # One schedule at the runner's 4 cores was 7m 00s (run 38457853567).
+    # Cargo's default job count is the machine's CPU count.
     try:
         with (logs / "build.log").open("w") as log:
             run(["cargo", "build", "--locked",
                  "-p", "phux-server", "--example", "ws_demo_server",
                  "-p", "phux", "--bin", "phux"],
-                cwd=ROOT, env=env, timeout=1200, log=log)
+                cwd=ROOT, env=harness_build_env(env), timeout=1200, log=log)
         with tempfile.TemporaryDirectory(prefix="phux-browser-") as scratch:
             env["TMPDIR"] = scratch
             if env.get("PHUX_BROWSER_AUTH_ONLY") != "1":
