@@ -256,6 +256,26 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
             encode_terminal_id(terminal_id, enc);
             enc.write_bytes(bytes);
         }
+        org @ (Command::GetOrganization { .. }
+        | Command::SessionCreate { .. }
+        | Command::SessionRename { .. }
+        | Command::SessionSetLifetime { .. }
+        | Command::SessionDelete { .. }
+        | Command::ResourceCreate { .. }
+        | Command::ResourceMove { .. }
+        | Command::ResourceMoveMany { .. }
+        | Command::ResourceRename { .. }
+        | Command::ResourceTerminate { .. }
+        | Command::ResourceRemove { .. }
+        | Command::ResourceRelaunch { .. }
+        | Command::ResourceAbandon { .. }
+        | Command::InboxResolve { .. }
+        | Command::OrganizationUndo { .. }
+        | Command::ArrangementGet { .. }
+        | Command::ArrangementReplace { .. }) => {
+            let written = super::org::encode_org_command(org, enc);
+            debug_assert!(written, "every organization command has a tag");
+        }
     }
 }
 
@@ -312,6 +332,9 @@ pub(in crate::wire) fn decode_command(dec: &mut Decoder<'_>) -> Result<Command, 
         return Ok(command);
     }
     if let Some(command) = decode_resource_command(tag, dec)? {
+        return Ok(command);
+    }
+    if let Some(command) = super::org::decode_org_command(tag, dec)? {
         return Ok(command);
     }
     Err(DecodeError::unknown_enum("Command", tag))
@@ -767,6 +790,16 @@ pub(in crate::wire) fn encode_command_result(result: &CommandResult, enc: &mut E
             enc.write_u16_be(code.as_wire());
             enc.write_str(message);
         }
+        CommandResult::Refused(refusal) => {
+            enc.write_u8(super::COMMAND_RESULT_TAG_REFUSED);
+            super::org::encode_refusal(refusal, enc);
+        }
+        CommandResult::Accepted { operation } => {
+            enc.write_u8(super::COMMAND_RESULT_TAG_ACCEPTED);
+            for byte in operation.as_bytes() {
+                enc.write_u8(*byte);
+            }
+        }
     }
 }
 
@@ -783,6 +816,17 @@ pub(in crate::wire) fn decode_command_result(
                 .ok_or_else(|| DecodeError::unknown_enum("ErrorCode", code_raw))?;
             let message = dec.read_str()?.to_owned();
             Ok(CommandResult::Error { code, message })
+        }
+        super::COMMAND_RESULT_TAG_REFUSED => {
+            Ok(CommandResult::Refused(super::org::decode_refusal(dec)?))
+        }
+        super::COMMAND_RESULT_TAG_ACCEPTED => {
+            let mut bytes = [0; 16];
+            for byte in &mut bytes {
+                *byte = dec.read_u8()?;
+            }
+            let operation = IdempotencyKey::new(bytes).ok_or(DecodeError::InvalidIdempotencyKey)?;
+            Ok(CommandResult::Accepted { operation })
         }
         other => Err(DecodeError::unknown_enum("CommandResult", other)),
     }
@@ -815,6 +859,18 @@ fn encode_command_value(value: &CommandValue, enc: &mut Encoder<'_>) {
             enc.write_u64_be(ack.next_offset);
             enc.write_option(ack.path.as_deref(), Encoder::write_str);
         }
+        CommandValue::OrganizationPage(page) => {
+            enc.write_u8(super::COMMAND_VALUE_TAG_ORGANIZATION_PAGE);
+            super::org::encode_organization_page(page, enc);
+        }
+        CommandValue::Arrangement(value) => {
+            enc.write_u8(super::COMMAND_VALUE_TAG_ARRANGEMENT);
+            super::org::encode_arrangement_value(value, enc);
+        }
+        CommandValue::Committed(committed) => {
+            enc.write_u8(super::COMMAND_VALUE_TAG_COMMITTED);
+            super::org::encode_committed(committed, enc);
+        }
     }
 }
 
@@ -838,6 +894,15 @@ fn decode_command_value(dec: &mut Decoder<'_>) -> Result<CommandValue, DecodeErr
                 path,
             }))
         }
+        super::COMMAND_VALUE_TAG_ORGANIZATION_PAGE => Ok(CommandValue::OrganizationPage(Box::new(
+            super::org::decode_organization_page(dec)?,
+        ))),
+        super::COMMAND_VALUE_TAG_ARRANGEMENT => Ok(CommandValue::Arrangement(Box::new(
+            super::org::decode_arrangement_value(dec)?,
+        ))),
+        super::COMMAND_VALUE_TAG_COMMITTED => Ok(CommandValue::Committed(Box::new(
+            super::org::decode_committed(dec)?,
+        ))),
         other => Err(DecodeError::unknown_enum("CommandValue", other)),
     }
 }
@@ -861,6 +926,10 @@ pub(in crate::wire) fn decode_optional_i32(
 // unknown tag is captured verbatim as `Unknown` and a known body is bounded
 // by its own length.
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one arm per AgentEvent wire tag; the dispatch is a flat encode table"
+)]
 pub(in crate::wire) fn encode_agent_event(event: &AgentEvent, enc: &mut Encoder<'_>) {
     let mut body = BytesMut::new();
     let tag = {
@@ -948,6 +1017,20 @@ pub(in crate::wire) fn encode_agent_event(event: &AgentEvent, enc: &mut Encoder<
                 write_approval_id(id, &mut body_enc);
                 body_enc.write_u8(outcome.to_u8());
                 EVENT_TAG_APPROVAL_DECIDED
+            }
+            org @ (AgentEvent::SessionCreated { .. }
+            | AgentEvent::SessionRenamed { .. }
+            | AgentEvent::SessionDeleted { .. }
+            | AgentEvent::SessionLifetimeChanged { .. }
+            | AgentEvent::MembershipChanged { .. }
+            | AgentEvent::ResourceCreated { .. }
+            | AgentEvent::ResourceRemoved { .. }
+            | AgentEvent::ActivationChanged { .. }
+            | AgentEvent::ArrangementChanged { .. }
+            | AgentEvent::LeaseChanged { .. }
+            | AgentEvent::IntakeChanged { .. }
+            | AgentEvent::ResourceRenamed { .. }) => {
+                super::org::encode_org_event(org, &mut body_enc).unwrap_or_default()
             }
             // Re-emit an unknown event's body verbatim so relays are lossless.
             AgentEvent::Unknown { tag, .. } => *tag,
@@ -1056,10 +1139,12 @@ pub(in crate::wire) fn decode_agent_event(
             })
         }
 
-        other => AgentEvent::Unknown {
+        // An organization event whose body is malformed or names an unknown
+        // enum value is kept opaque rather than failing the frame.
+        other => super::org::decode_org_event(other, body).unwrap_or_else(|| AgentEvent::Unknown {
             tag: other,
             body: body.to_vec(),
-        },
+        }),
     };
     Ok(event)
 }

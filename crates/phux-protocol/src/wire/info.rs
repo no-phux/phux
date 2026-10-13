@@ -7,7 +7,10 @@
 
 use bytes::BytesMut;
 
-use crate::ids::{ClientId, ResourceId, ResourceKind, SatelliteHost, SessionId, WindowId};
+use crate::ids::{
+    ClientId, ResourceId, ResourceKind, SatelliteHost, SessionId, SessionKey, WindowId,
+};
+use crate::wire::frame::SessionLifetime;
 
 use super::decode::Decoder;
 use super::encode::Encoder;
@@ -22,6 +25,35 @@ use super::frame::{
 const LAYOUT_TAG_LEAF: u8 = 0;
 /// Tag byte of a split in the retired `WindowInfo` layout slot.
 const LAYOUT_TAG_SPLIT: u8 = 1;
+
+/// Prefix of the TUI's per-session layout key.
+///
+/// The key is `phux.tui.layout/v1/<session-id>`, the wire `SessionId` in
+/// decimal. A server advertising
+/// [`ServerFeatureExt::Organization`](crate::caps::ServerFeatureExt::Organization)
+/// translates this key to and from the session's arrangement; every other
+/// layout key stays opaque metadata.
+pub const TUI_LAYOUT_KEY_PREFIX: &str = "phux.tui.layout/v1/";
+
+/// The TUI layout key of `session`: [`TUI_LAYOUT_KEY_PREFIX`] then its id.
+#[must_use]
+pub fn tui_layout_key(session: SessionId) -> String {
+    format!("{TUI_LAYOUT_KEY_PREFIX}{}", session.get())
+}
+
+/// The session a [`TUI_LAYOUT_KEY_PREFIX`] key names: `None` unless the rest
+/// is a canonical `u32` decimal (no sign, no leading zero).
+#[must_use]
+pub fn tui_layout_key_session(key: &str) -> Option<SessionId> {
+    let digits = key.strip_prefix(TUI_LAYOUT_KEY_PREFIX)?;
+    let canonical = !digits.is_empty()
+        && digits.bytes().all(|b| b.is_ascii_digit())
+        && (digits == "0" || !digits.starts_with('0'));
+    canonical
+        .then(|| digits.parse().ok())
+        .flatten()
+        .map(SessionId::new)
+}
 
 /// One session, sufficient for UI chrome and `phux ls`; its windows are in
 /// [`SessionSnapshot::windows`]. Construct via [`Self::new`] and `with_*`.
@@ -42,8 +74,16 @@ pub struct SessionInfo {
     /// Number of attached clients, denormalized at snapshot time.
     pub attached_client_count: u16,
     /// Whether the session survives its last window (ADR-0105); rides the
-    /// trailing session facets, so older peers read `false`.
+    /// trailing session facets, so older peers read `false`. A server that
+    /// reports [`Self::lifetime`] keeps it equal to
+    /// `lifetime == Persistent`.
     pub keep_empty: bool,
+    /// The session's lifetime (`docs/spec/L1.md` §5.7), from the extension
+    /// block's `SESSION_STATE`; `None` from a server that does not report it.
+    pub lifetime: Option<SessionLifetime>,
+    /// The session's persistent key, from the extension block's
+    /// `SESSION_STATE`; `None` from a server that does not report it.
+    pub key: Option<SessionKey>,
 }
 
 impl SessionInfo {
@@ -58,6 +98,8 @@ impl SessionInfo {
             window_count: 0,
             attached_client_count: 0,
             keep_empty: false,
+            lifetime: None,
+            key: None,
         }
     }
 
@@ -66,6 +108,31 @@ impl SessionInfo {
     pub const fn with_keep_empty(mut self, keep_empty: bool) -> Self {
         self.keep_empty = keep_empty;
         self
+    }
+
+    /// Builder setter for [`Self::lifetime`]. Also sets
+    /// [`Self::keep_empty`] to `lifetime == Persistent`, so the legacy facet
+    /// and the lifetime cannot disagree; `None` leaves `keep_empty` alone.
+    #[must_use]
+    pub const fn with_lifetime(mut self, lifetime: Option<SessionLifetime>) -> Self {
+        self.lifetime = lifetime;
+        if let Some(lifetime) = lifetime {
+            self.keep_empty = matches!(lifetime, SessionLifetime::Persistent);
+        }
+        self
+    }
+
+    /// Builder setter for [`Self::key`].
+    #[must_use]
+    pub const fn with_key(mut self, key: Option<SessionKey>) -> Self {
+        self.key = key;
+        self
+    }
+
+    /// Whether this session's extension-block `SESSION_STATE` has anything
+    /// to say.
+    const fn has_session_state(&self) -> bool {
+        self.lifetime.is_some() || self.key.is_some()
     }
 
     /// Whether the session currently holds no windows: a keep-empty session
@@ -269,6 +336,10 @@ pub struct ResourceInfo {
     pub input_holder: Option<ClientId>,
     /// `VIEWER` subscribers, ascending (ADR-0127).
     pub viewers: Vec<ClientId>,
+    /// The session the resource belongs to, from the extension block's
+    /// `RESOURCE_SESSION`; `None` from a server that does not report it, in
+    /// which case the join runs through [`Self::window_id`].
+    pub session: Option<SessionId>,
 }
 
 impl ResourceInfo {
@@ -289,7 +360,15 @@ impl ResourceInfo {
             exit: None,
             input_holder: None,
             viewers: Vec::new(),
+            session: None,
         }
+    }
+
+    /// Builder setter for [`Self::session`].
+    #[must_use]
+    pub const fn with_session(mut self, session: Option<SessionId>) -> Self {
+        self.session = session;
+        self
     }
 
     /// Construct the entry for a non-Terminal resource: no window
@@ -310,6 +389,7 @@ impl ResourceInfo {
             exit: None,
             input_holder: None,
             viewers: Vec::new(),
+            session: None,
         }
     }
 
@@ -742,8 +822,11 @@ pub(super) fn decode_session_info(dec: &mut Decoder<'_>) -> Result<SessionInfo, 
         created_at_unix_secs,
         window_count,
         attached_client_count,
-        // Not positional: it rides the snapshot's trailing session facets.
+        // Not positional: these ride the trailing session facets and the
+        // extension block.
         keep_empty: false,
+        lifetime: None,
+        key: None,
     })
 }
 
@@ -804,6 +887,7 @@ pub(super) fn decode_terminal_info(dec: &mut Decoder<'_>) -> Result<ResourceInfo
         exit: None,
         input_holder: None,
         viewers: Vec::new(),
+        session: None,
     })
 }
 
@@ -867,7 +951,7 @@ pub(super) fn encode_session_snapshot(snap: &SessionSnapshot, enc: &mut Encoder<
     enc.write_u32_be(snap.focused_session.get());
     enc.write_u32_be(snap.focused_window.get());
     encode_terminal_id(&snap.focused_resource, enc);
-    let extension = encode_snapshot_extension(&snap.resources, snap.journal_head());
+    let extension = encode_snapshot_extension(&snap.sessions, &snap.resources, snap.journal_head());
     let extension_follows = !extension.is_empty();
     let session_rows = snap.sessions.iter().filter(|s| s.keep_empty).count();
     let listeners_follow = snap.listeners().is_some() || extension_follows;
@@ -883,8 +967,14 @@ pub(super) fn encode_session_snapshot(snap: &SessionSnapshot, enc: &mut Encoder<
 }
 
 /// Build the snapshot extension block: `RESOURCE_STATE` per non-default
-/// resource, then the journal head; empty means nothing is written.
-fn encode_snapshot_extension(resources: &[ResourceInfo], journal_head: Option<u64>) -> BytesMut {
+/// resource, the journal head, `RESOURCE_SESSION` per resource with a
+/// reported session, then `SESSION_STATE` per session with a reported
+/// lifetime or key; empty means nothing is written.
+fn encode_snapshot_extension(
+    sessions: &[SessionInfo],
+    resources: &[ResourceInfo],
+    journal_head: Option<u64>,
+) -> BytesMut {
     let mut block = BytesMut::new();
     let mut enc = Encoder::new(&mut block);
     for info in resources.iter().filter(|r| r.has_resource_state()) {
@@ -895,6 +985,25 @@ fn encode_snapshot_extension(resources: &[ResourceInfo], journal_head: Option<u6
     if let Some(head) = journal_head {
         enc.write_field_with(field::snapshot_extension::JOURNAL_HEAD, |e| {
             e.write_u64_be(head);
+        });
+    }
+    for info in resources {
+        if let Some(session) = info.session {
+            enc.write_field_with(field::snapshot_extension::RESOURCE_SESSION, |e| {
+                encode_terminal_id(&info.id, e);
+                e.write_u32_be(session.get());
+            });
+        }
+    }
+    for info in sessions.iter().filter(|s| s.has_session_state()) {
+        enc.write_field_with(field::snapshot_extension::SESSION_STATE, |e| {
+            e.write_u32_be(info.id.get());
+            if let Some(lifetime) = info.lifetime {
+                e.write_field(field::session_state::LIFETIME, &[lifetime.to_u8()]);
+            }
+            if let Some(key) = &info.key {
+                e.write_field(field::session_state::KEY, key.as_bytes());
+            }
         });
     }
     block
@@ -945,9 +1054,11 @@ fn decode_exit_facet(dec: &mut Decoder<'_>) -> Result<ExitFacet, DecodeError> {
 }
 
 /// Read the extension block if bytes remain, joining each `RESOURCE_STATE`
-/// by id, and return its journal head.
+/// and `RESOURCE_SESSION` onto its resource and each `SESSION_STATE` onto
+/// its session by id, and return its journal head.
 fn decode_snapshot_extension(
     dec: &mut Decoder<'_>,
+    sessions: &mut [SessionInfo],
     resources: &mut [ResourceInfo],
 ) -> Result<Option<u64>, DecodeError> {
     if dec.at_body_end() {
@@ -961,10 +1072,44 @@ fn decode_snapshot_extension(
             field::snapshot_extension::JOURNAL_HEAD => {
                 journal_head = Some(Decoder::new(value).read_u64_be()?);
             }
+            field::snapshot_extension::RESOURCE_SESSION => {
+                let mut v = Decoder::new(value);
+                let resource = decode_terminal_id(&mut v)?;
+                let session = SessionId::new(v.read_u32_be()?);
+                if let Some(info) = resources.iter_mut().find(|r| r.id == resource) {
+                    info.session = Some(session);
+                }
+            }
+            field::snapshot_extension::SESSION_STATE => apply_session_state(value, sessions)?,
             _ => {}
         }
     }
     Ok(journal_head)
+}
+
+/// Join one `SESSION_STATE` value onto its session (ignored when none); an
+/// unknown lifetime byte or a zero key reads as not reported.
+fn apply_session_state(value: &[u8], sessions: &mut [SessionInfo]) -> Result<(), DecodeError> {
+    let mut dec = Decoder::new(value);
+    let id = SessionId::new(dec.read_u32_be()?);
+    let mut lifetime = None;
+    let mut key = None;
+    while let Some((field_id, v)) = dec.read_field()? {
+        match field_id {
+            field::session_state::LIFETIME => {
+                lifetime = SessionLifetime::from_u8(Decoder::new(v).read_u8()?);
+            }
+            field::session_state::KEY => {
+                key = <[u8; 16]>::try_from(v).ok().and_then(SessionKey::new);
+            }
+            _ => {}
+        }
+    }
+    if let Some(info) = sessions.iter_mut().find(|s| s.id == id) {
+        info.lifetime = lifetime;
+        info.key = key;
+    }
+    Ok(())
 }
 
 /// Join one `RESOURCE_STATE` value onto its entry (ignored when none); an
@@ -1138,7 +1283,7 @@ pub(super) fn decode_session_snapshot(
     let hosts = decode_host_inventory(dec)?;
     decode_session_facets(dec, &mut sessions)?;
     let listeners = decode_listeners(dec)?;
-    let journal_head = decode_snapshot_extension(dec, &mut resources)?;
+    let journal_head = decode_snapshot_extension(dec, &mut sessions, &mut resources)?;
     let mut snapshot = SessionSnapshot {
         sessions,
         windows,

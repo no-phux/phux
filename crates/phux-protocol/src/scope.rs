@@ -14,12 +14,64 @@
 //! approval (ADR-0128); a hold is server-local and never in the canonical
 //! image.
 //!
+//! The scope schema is versioned ([`ScopeSchema`]). Schema v2 adds
+//! `ORGANIZE` and `TERMINATE`; a v1 grant decodes with `SIGNAL` implying
+//! `TERMINATE` and `CREATE` implying `ORGANIZE`, so no stored grant loses
+//! the authority it had and none gains a legacy operation.
+//!
 //! Nothing here consults server state: the server passes a containment
 //! predicate to [`EffectiveScopeSet::admits`].
 
 use std::fmt;
 
 pub use crate::kinds::{Verb, Verbs};
+
+/// The scope schema this build writes (workload-auth §5).
+pub const SCOPE_SCHEMA_VERSION: u8 = ScopeSchema::CURRENT.version();
+
+/// One version of the closed scope schema (workload-auth §5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ScopeSchema {
+    /// Six verbs, `0x01`..=`0x20`; bits `0xC0` are refused. Decoded grants
+    /// gain the v2 implications ([`Verbs::with_v1_implications`]).
+    V1,
+    /// Eight verbs: v1's six, `ORGANIZE = 0x40`, and `TERMINATE = 0x80`.
+    V2,
+}
+
+impl ScopeSchema {
+    /// The schema this build writes.
+    pub const CURRENT: Self = Self::V2;
+
+    /// The schema's version number.
+    #[must_use]
+    pub const fn version(self) -> u8 {
+        match self {
+            Self::V1 => 1,
+            Self::V2 => 2,
+        }
+    }
+
+    /// The schema numbered `version`, or `None` for one this build does not
+    /// know (a reader refuses it rather than guessing).
+    #[must_use]
+    pub const fn from_version(version: u8) -> Option<Self> {
+        match version {
+            1 => Some(Self::V1),
+            2 => Some(Self::V2),
+            _ => None,
+        }
+    }
+
+    /// The verb bits a grant may carry under this schema.
+    #[must_use]
+    pub const fn known_bits(self) -> u8 {
+        match self {
+            Self::V1 => Verbs::V1_KNOWN_BITS,
+            Self::V2 => Verbs::KNOWN_BITS,
+        }
+    }
+}
 
 /// Most grants a [`TerminalScopeSet`] may hold (§5).
 pub const MAX_GRANTS: usize = 64;
@@ -42,16 +94,18 @@ const SUB_LOCAL: u8 = 0x00;
 const SUB_SATELLITE: u8 = 0x01;
 
 /// The registry spelling of every verb, in bit order.
-const VERB_NAMES: [(&str, Verb); 6] = [
+const VERB_NAMES: [(&str, Verb); 8] = [
     ("inventory", Verb::Inventory),
     ("observe", Verb::Observe),
     ("create", Verb::Create),
     ("bind", Verb::Bind),
     ("input", Verb::Input),
     ("signal", Verb::Signal),
+    ("organize", Verb::Organize),
+    ("terminate", Verb::Terminate),
 ];
 
-/// The wildcard verb: all six, and only on its own.
+/// The wildcard verb: every verb of the schema, and only on its own.
 const ALL_VERBS: &str = "*";
 
 /// The prefix that marks a verb as held for approval (ADR-0128).
@@ -90,7 +144,7 @@ pub enum ScopeError {
     /// A grant or clause with no verb.
     #[error("scope verbs must be nonzero")]
     ZeroVerbs,
-    /// A verb bit outside the six v1 verbs (`0xC0`).
+    /// A verb bit the image's schema does not know: `0xC0` in a v1 image.
     #[error("scope verbs carry an unknown bit")]
     UnknownVerbBits,
     /// Grants or clauses out of canonical order.
@@ -118,8 +172,11 @@ pub enum ScopeGrammarError {
     /// Not of the form `<verbs>@<selector>`.
     #[error("a scope must have the form <verb>[,<verb>...]@<selector>")]
     Shape,
-    /// A verb outside the closed set.
-    #[error("a scope names a verb outside inventory|observe|create|bind|input|signal|?signal|*")]
+    /// A verb outside the closed set of the record's schema (v1 has no
+    /// `organize` or `terminate`).
+    #[error(
+        "a scope names a verb outside inventory|observe|create|bind|input|signal|?signal|organize|terminate|*"
+    )]
     UnknownVerb,
     /// `?` on a verb other than `signal`: only `SIGNAL` actions are held.
     #[error("a scope may hold only `?signal`")]
@@ -144,10 +201,16 @@ pub enum ScopeGrammarError {
 // Verbs.
 // -----------------------------------------------------------------------------
 
-/// The verbs whose bits are set in `bits`, or `None` when `bits` carries an
-/// unknown bit.
+/// The verbs whose bits are set in `bits`, or `None` when `bits` carries a
+/// bit outside the current schema.
 const fn verbs_from_bits(bits: u8) -> Option<Verbs> {
-    if bits & !Verbs::KNOWN_BITS != 0 {
+    verbs_from_schema_bits(bits, ScopeSchema::CURRENT)
+}
+
+/// The verbs whose bits are set in `bits`, or `None` when `bits` carries a
+/// bit `schema` does not know.
+const fn verbs_from_schema_bits(bits: u8, schema: ScopeSchema) -> Option<Verbs> {
+    if bits & !schema.known_bits() != 0 {
         return None;
     }
     let mut verbs = Verbs::EMPTY;
@@ -167,10 +230,19 @@ fn intersect_verbs(a: Verbs, b: Verbs) -> Verbs {
     verbs_from_bits(a.bits() & b.bits()).unwrap_or(Verbs::EMPTY)
 }
 
-/// All six verbs.
+/// Every verb of the current schema (all eight).
 #[must_use]
 pub const fn all_verbs() -> Verbs {
     Verbs::of(&Verb::ALL)
+}
+
+/// Every verb of `schema`.
+#[must_use]
+pub const fn schema_verbs(schema: ScopeSchema) -> Verbs {
+    match verbs_from_schema_bits(schema.known_bits(), schema) {
+        Some(verbs) => verbs,
+        None => Verbs::EMPTY,
+    }
 }
 
 /// The registry name of `verb`, e.g. `"observe"`.
@@ -183,24 +255,49 @@ pub const fn verb_name(verb: Verb) -> &'static str {
         Verb::Bind => "bind",
         Verb::Input => "input",
         Verb::Signal => "signal",
+        Verb::Organize => "organize",
+        Verb::Terminate => "terminate",
     }
 }
 
-/// Validate a verb set read from a canonical image.
-const fn checked_verbs(bits: u8) -> Result<Verbs, ScopeError> {
+/// Validate a verb set read from a canonical image of `schema`.
+const fn checked_verbs(bits: u8, schema: ScopeSchema) -> Result<Verbs, ScopeError> {
     if bits == 0 {
         return Err(ScopeError::ZeroVerbs);
     }
-    match verbs_from_bits(bits) {
+    match verbs_from_schema_bits(bits, schema) {
         Some(verbs) => Ok(verbs),
         None => Err(ScopeError::UnknownVerbBits),
     }
 }
 
-/// The verbs a grant's verb list names, and which of them are held.
-fn parse_verbs(text: &str) -> Result<(Verbs, Verbs), ScopeGrammarError> {
+/// A grant's verbs and holds as the current schema reads a `schema` grant:
+/// a v1 grant gains `ORGANIZE` with `CREATE`, and `TERMINATE` with an
+/// un-held `SIGNAL`. A held `?signal` implies nothing, so a hold never
+/// turns into an un-held terminating authority.
+const fn upgraded(verbs: Verbs, held: Verbs, schema: ScopeSchema) -> Verbs {
+    match schema {
+        ScopeSchema::V2 => verbs,
+        ScopeSchema::V1 if held.contains(Verb::Signal) => {
+            if verbs.contains(Verb::Create) {
+                verbs.union(Verbs::of(&[Verb::Organize]))
+            } else {
+                verbs
+            }
+        }
+        ScopeSchema::V1 => verbs.with_v1_implications(),
+    }
+}
+
+/// The verbs a grant's verb list names under `schema`, and which of them
+/// are held. A v1 list may name only the six v1 verbs, and its `*` is those
+/// six.
+fn parse_schema_verbs(
+    text: &str,
+    schema: ScopeSchema,
+) -> Result<(Verbs, Verbs), ScopeGrammarError> {
     if text == ALL_VERBS {
-        return Ok((all_verbs(), Verbs::EMPTY));
+        return Ok((schema_verbs(schema), Verbs::EMPTY));
     }
     let mut verbs = Verbs::EMPTY;
     let mut held = Verbs::EMPTY;
@@ -209,6 +306,9 @@ fn parse_verbs(text: &str) -> Result<(Verbs, Verbs), ScopeGrammarError> {
             .strip_prefix(HELD_PREFIX)
             .map_or((token, false), |name| (name, true));
         let verb = parse_verb_name(name)?;
+        if verb.bit() & !schema.known_bits() != 0 {
+            return Err(ScopeGrammarError::UnknownVerb);
+        }
         if verbs.contains(verb) {
             return Err(ScopeGrammarError::RedundantVerb);
         }
@@ -521,10 +621,22 @@ impl ScopeGrant {
     ///
     /// The first [`ScopeGrammarError`] rule the string breaks.
     pub fn parse(text: &str) -> Result<Self, ScopeGrammarError> {
+        Self::parse_versioned(text, ScopeSchema::CURRENT)
+    }
+
+    /// Parse one registry scope string written under `schema`, read as the
+    /// current schema reads it: a v1 string may name only the six v1 verbs,
+    /// and gains the v2 implications (`SIGNAL` implies `TERMINATE` unless
+    /// held, `CREATE` implies `ORGANIZE`).
+    ///
+    /// # Errors
+    ///
+    /// The first [`ScopeGrammarError`] rule the string breaks.
+    pub fn parse_versioned(text: &str, schema: ScopeSchema) -> Result<Self, ScopeGrammarError> {
         let (verbs, selector) = text.split_once('@').ok_or(ScopeGrammarError::Shape)?;
-        let (verbs, held) = parse_verbs(verbs)?;
+        let (verbs, held) = parse_schema_verbs(verbs, schema)?;
         Ok(Self {
-            verbs,
+            verbs: upgraded(verbs, held, schema),
             selector: Selector::parse(selector)?,
             held,
         })
@@ -587,14 +699,30 @@ impl TerminalScopeSet {
     pub fn parse_all<S: AsRef<str>>(
         scopes: &[S],
     ) -> Result<Self, (usize, Option<ScopeGrammarError>)> {
+        Self::parse_all_versioned(scopes, ScopeSchema::CURRENT)
+    }
+
+    /// [`Self::parse_all`] for a record written under `schema`; see
+    /// [`ScopeGrant::parse_versioned`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::parse_all`].
+    pub fn parse_all_versioned<S: AsRef<str>>(
+        scopes: &[S],
+        schema: ScopeSchema,
+    ) -> Result<Self, (usize, Option<ScopeGrammarError>)> {
         let mut grants = Vec::with_capacity(scopes.len());
         for (index, scope) in scopes.iter().enumerate() {
-            grants.push(ScopeGrant::parse(scope.as_ref()).map_err(|rule| (index, Some(rule)))?);
+            grants.push(
+                ScopeGrant::parse_versioned(scope.as_ref(), schema)
+                    .map_err(|rule| (index, Some(rule)))?,
+            );
         }
         Self::from_grants(grants).map_err(|_| (scopes.len(), None))
     }
 
-    /// The single grant of all six verbs on [`Selector::Global`].
+    /// The single grant of every verb on [`Selector::Global`].
     #[must_use]
     pub fn all_global() -> Self {
         Self {
@@ -632,12 +760,23 @@ impl TerminalScopeSet {
     ///
     /// A [`ScopeError`] naming the first rule the image breaks.
     pub fn decode(bytes: &[u8]) -> Result<Self, ScopeError> {
+        Self::decode_versioned(bytes, ScopeSchema::CURRENT)
+    }
+
+    /// Decode a canonical image written under `schema`, read as the current
+    /// schema reads it: a v1 image refuses bits `0xC0`, and each decoded
+    /// grant gains the v2 implications ([`Verbs::with_v1_implications`]).
+    ///
+    /// # Errors
+    ///
+    /// A [`ScopeError`] naming the first rule the image breaks.
+    pub fn decode_versioned(bytes: &[u8], schema: ScopeSchema) -> Result<Self, ScopeError> {
         let mut reader = Reader::new(bytes);
         let count = reader.count(MAX_GRANTS, ScopeError::TooManyGrants)?;
         let mut grants = Vec::with_capacity(count);
         let mut previous: Option<Vec<u8>> = None;
         for _ in 0..count {
-            let (grant, key) = read_grant(&mut reader, previous.as_deref())?;
+            let (grant, key) = read_grant(&mut reader, previous.as_deref(), schema)?;
             grants.push(grant);
             previous = Some(key);
         }
@@ -651,12 +790,16 @@ impl TerminalScopeSet {
 fn read_grant(
     reader: &mut Reader<'_>,
     previous: Option<&[u8]>,
+    schema: ScopeSchema,
 ) -> Result<(ScopeGrant, Vec<u8>), ScopeError> {
     let raw = reader.selector_bytes()?;
     check_order(previous, &raw)?;
     let selector = Selector::decode(&raw)?;
-    let verbs = checked_verbs(reader.u8()?)?;
-    Ok((ScopeGrant::new(verbs, selector), raw))
+    let verbs = checked_verbs(reader.u8()?, schema)?;
+    Ok((
+        ScopeGrant::new(upgraded(verbs, Verbs::EMPTY, schema), selector),
+        raw,
+    ))
 }
 
 fn merge_grant(keyed: &mut Vec<(Vec<u8>, ScopeGrant)>, grant: ScopeGrant) {
@@ -878,7 +1021,7 @@ fn read_clause(
     let clause = EffectiveClause {
         requested: Selector::decode(&requested_raw)?,
         ceiling: Selector::decode(&ceiling_raw)?,
-        verbs: checked_verbs(reader.u8()?)?,
+        verbs: checked_verbs(reader.u8()?, ScopeSchema::CURRENT)?,
         held: Verbs::EMPTY,
     };
     Ok((clause, key))

@@ -520,11 +520,23 @@ pub(in crate::wire) fn encode_spawn_result(result: &SpawnResult, enc: &mut Encod
 }
 
 /// Write an [`ActorRef`] positionally: `client: u32 || credential_id:
-/// optional<str> || client_name: optional<str>` (ADR-0123).
+/// optional<str> || client_name: optional<str>` (ADR-0123), then, only when
+/// either is present, `principal: optional<bytes16> || on_behalf_of:
+/// optional<bytes16>`. The value always ends its container, so the trailing
+/// pair is read only when bytes remain.
 pub(in crate::wire) fn encode_actor_ref(actor: &ActorRef, enc: &mut Encoder<'_>) {
     enc.write_u32_be(actor.client.get());
     encode_option_str(actor.credential_id.as_deref(), enc);
     encode_option_str(actor.client_name.as_deref(), enc);
+    if actor.principal().is_some() || actor.on_behalf_of().is_some() {
+        for principal in [actor.principal(), actor.on_behalf_of()] {
+            enc.write_option(principal, |e, id| {
+                for byte in id.as_bytes() {
+                    e.write_u8(*byte);
+                }
+            });
+        }
+    }
 }
 
 /// Read an [`ActorRef`] written by [`encode_actor_ref`].
@@ -532,9 +544,29 @@ pub(in crate::wire) fn decode_actor_ref(dec: &mut Decoder<'_>) -> Result<ActorRe
     let client = crate::ids::ClientId::new(dec.read_u32_be()?);
     let credential_id = decode_option_str(dec)?.map(str::to_owned);
     let client_name = decode_option_str(dec)?.map(str::to_owned);
-    Ok(ActorRef::new(client)
+    let mut actor = ActorRef::new(client)
         .with_credential_id(credential_id)
-        .with_client_name(client_name))
+        .with_client_name(client_name);
+    if !dec.at_body_end() {
+        let principal = decode_optional_principal(dec)?;
+        let on_behalf_of = decode_optional_principal(dec)?;
+        actor = actor
+            .with_principal(principal)
+            .with_on_behalf_of(on_behalf_of);
+    }
+    Ok(actor)
+}
+
+fn decode_optional_principal(
+    dec: &mut Decoder<'_>,
+) -> Result<Option<crate::ids::PrincipalId>, DecodeError> {
+    dec.read_option("Option<PrincipalId> tag", |d| {
+        let mut bytes = [0; 16];
+        for byte in &mut bytes {
+            *byte = d.read_u8()?;
+        }
+        crate::ids::PrincipalId::new(bytes).ok_or(DecodeError::InvalidOrganizationKey)
+    })
 }
 
 /// Read an [`IdempotencyKey`](crate::ids::IdempotencyKey) from a field value
