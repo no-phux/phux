@@ -1,0 +1,590 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Domain contracts</title>
+<style>
+
+:root{--bg:#101317;--panel:#191e24;--text:#e9edf2;--muted:#a9b3c0;--line:#333e4c;--accent:#88dac4;--code:#11171e}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.7 system-ui,-apple-system,sans-serif}
+a{color:var(--accent)}button{font:inherit;color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:.5rem .8rem;cursor:pointer}button:hover{border-color:var(--accent)}a:focus-visible,button:focus-visible,textarea:focus-visible{outline:3px solid var(--accent);outline-offset:3px}
+.top{padding:1.2rem 2rem;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:1rem}.brand{font-weight:750;letter-spacing:.06em}.badge{color:var(--accent);font-size:.85rem;margin-left:.7rem}.actions{display:flex;flex-wrap:wrap;gap:.6rem}
+.shell{display:grid;grid-template-columns:260px minmax(0,1fr);max-width:1510px;margin:auto}nav{position:sticky;top:0;align-self:start;max-height:100vh;overflow:auto;padding:2rem 1.5rem;font-size:.85rem}nav ul{list-style:none;padding:0}nav li{margin:.6rem 0}nav a{text-decoration:none;color:var(--muted)}nav a:hover{color:var(--accent)}nav .toc>ul>li>a{display:none}nav .toc ul ul{padding:0}nav .toc ul ul ul{display:none}
+main{max-width:1120px;padding:2rem 3rem 6rem;min-width:0}h1{font-size:clamp(2rem,4vw,3.4rem);line-height:1.12;letter-spacing:-.04em;margin:1rem 0 2rem;max-width:900px}h2{font-size:1.65rem;line-height:1.3;margin:4rem 0 1.3rem;padding-top:1.2rem;border-top:1px solid var(--line);scroll-margin-top:1rem}h3{font-size:1.15rem;margin:2rem 0 .7rem;color:var(--accent)}p{margin:1rem 0}li{margin:.4rem 0}strong{font-weight:700}code{font-size:.87em;background:var(--code);padding:.15rem .35rem;border-radius:4px}pre{background:var(--code);border:1px solid var(--line);border-radius:9px;overflow:auto;padding:1.3rem;font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;tab-size:4}pre code{padding:0;background:none;font:inherit}
+.table-wrap{overflow:auto;margin:1.5rem 0}table{border-collapse:collapse;width:100%;font-size:.91rem}th,td{border:1px solid var(--line);padding:.65rem .8rem;text-align:left;vertical-align:top}th{background:var(--panel);font-weight:650}tbody tr:nth-child(even){background:var(--panel)}blockquote{border-left:3px solid var(--accent);margin:1.5rem 0;padding:.2rem 1.2rem;color:var(--muted)}
+.intro{color:var(--muted);font-size:.9rem}.review-note{margin:2rem 0;padding:1rem 1.2rem;background:var(--panel);border:1px solid var(--line);border-radius:9px}.review-note label{display:block;color:var(--accent);font-size:.85rem;font-weight:600;margin-bottom:.6rem}textarea{width:100%;min-height:110px;resize:vertical;padding:.8rem;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:5px;font:inherit;line-height:1.5}.note-status{font-size:.8rem;color:var(--muted);margin-top:.5rem}.footer{color:var(--muted);font-size:.8rem;border-top:1px solid var(--line);padding-top:1rem}.footer code{overflow-wrap:anywhere}
+@media(max-width:900px){.shell{grid-template-columns:1fr}nav{position:static;max-height:320px;border-bottom:1px solid var(--line)}main{padding:1.5rem 1rem 4rem}.top{padding:1rem;align-items:flex-start;flex-direction:column}}
+@media print{body{background:white;color:black;font-size:10pt}nav,.top,.intro{display:none}.shell{display:block}main{max-width:none;padding:0}h2{break-before:page}pre{background:#f5f5f5;border-color:#bbb;font-size:8pt;white-space:pre-wrap}table{font-size:9pt}th,td{border-color:#bbb}th,tbody tr:nth-child(even){background:#f5f5f5}.review-note{background:#fafafa;border-color:#bbb}textarea{background:white;color:black;border:0;min-height:0}.review-note.empty{display:none}.note-status{display:none}a{color:inherit}.footer{color:#444}}
+.orphans{margin:1.5rem 0;padding:1rem 1.2rem;border:1px dashed var(--accent);border-radius:9px}.orphans h2{border:0;margin:0 0 .6rem;padding:0;font-size:1.05rem}.orphans pre{white-space:pre-wrap}
+
+</style>
+</head>
+<body>
+<header class="top"><div><span class="brand">PHUX / CONTRACTS</span><span class="badge">PROPOSAL · DRAFT 2 · 12 OCTOBER 2026</span></div><div class="actions"><a href="DESIGN.html">Overview</a><button id="export" type="button">Export notes as Markdown</button><button id="print" type="button">Print / PDF</button><a href="CONTRACTS.md">Markdown source</a></div></header>
+<div class="shell"><nav aria-label="Sections"><p><a href="FULL-DESIGN.html">Domain Model</a> · <strong>Contracts</strong> · <a href="PLAN.html">Build Plan</a> · <a href="MIGRATION.html">Migration</a> · <a href="BROWSER-KIND.html">Browser Kind</a></p><div class="toc">
+<div class="toc">
+<ul>
+<li><a href="#domain-contracts">Domain contracts</a><ul>
+<li><a href="#01-identifiers">01. Identifiers</a></li>
+<li><a href="#02-records">02. Records</a></li>
+<li><a href="#03-access">03. Access</a></li>
+<li><a href="#04-commands">04. Commands</a></li>
+<li><a href="#05-results">05. Results</a></li>
+<li><a href="#06-retries">06. Retries</a></li>
+<li><a href="#07-events">07. Events</a></li>
+<li><a href="#08-organization-store">08. Organization store</a></li>
+<li><a href="#09-wire-surface">09. Wire surface</a></li>
+<li><a href="#10-module-seams">10. Module seams</a></li>
+<li><a href="#11-connection-and-onboarding">11. Connection and onboarding</a></li>
+</ul>
+</li>
+</ul>
+</div>
+
+</div></nav>
+<main>
+<h1 id="domain-contracts">Domain contracts</h1>
+<p><strong>TL;DR.</strong> The implementable surface of the <a href="FULL-DESIGN.html">domain model</a>: identifiers, records, grants, commands, results, events, the organization store, the wire capability, and which crate owns what. Written against today's tree; every "today" claim cites the code it replaces. Exact byte layouts land in <code>docs/spec/</code> with the wire PR, not here.</p>
+<h2 id="01-identifiers">01. Identifiers</h2>
+<p>Two families: persistent <strong>keys</strong> name records forever; live <strong>handles</strong> name current execution and die with the server instance.</p>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Scope</th>
+<th>Allocation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>AuthorityId</code></td>
+<td>16 bytes</td>
+<td>Global</td>
+<td>Random, minted when the org store is first created; never changes.</td>
+</tr>
+<tr>
+<td><code>SessionKey</code></td>
+<td>16 bytes</td>
+<td>Per authority</td>
+<td>Random at create.</td>
+</tr>
+<tr>
+<td><code>ResourceKey</code></td>
+<td>16 bytes</td>
+<td>Per authority</td>
+<td>Random at create.</td>
+</tr>
+<tr>
+<td><code>WorkspaceKey</code></td>
+<td>16 bytes</td>
+<td>Per authority</td>
+<td>Random at create.</td>
+</tr>
+<tr>
+<td><code>ArrangementKey</code></td>
+<td>16 bytes</td>
+<td>Per authority</td>
+<td>Random at create.</td>
+</tr>
+<tr>
+<td><code>ActivationId</code></td>
+<td>u64</td>
+<td>Per resource</td>
+<td>Monotonic from 1 per resource; persisted.</td>
+</tr>
+<tr>
+<td><code>LeaseEpoch</code></td>
+<td>u64</td>
+<td>Per resource</td>
+<td>Monotonic; bumps on every input-lease change.</td>
+</tr>
+<tr>
+<td><code>OperationId</code></td>
+<td>16 bytes</td>
+<td>Per caller</td>
+<td>Caller-generated. Same shape as ADR-0053's <code>APPLY_INPUT</code> id.</td>
+</tr>
+<tr>
+<td><code>Revision</code></td>
+<td>u64</td>
+<td>Per record</td>
+<td>Bumps on every committed change to that record.</td>
+</tr>
+</tbody>
+</table>
+<p>Live handles stay as they are: wire <code>SessionId</code>/<code>ResourceId</code> are <code>u32</code> per server instance, never reused, minted by <code>IdBridge</code> (<code>crates/phux-protocol/src/ids.rs:34-50</code>, <code>crates/phux-server/src/id_bridge.rs:9-12</code>); <code>ServerInstance([u8;16])</code> scopes them (ADR-0109, <code>ids.rs:289-297</code>). A live target is therefore:</p>
+<pre><code class="language-rust">struct LiveTarget { resource: wire::ResourceId, instance: ServerInstance, activation: ActivationId }
+</code></pre>
+<p>Keys never appear in terminal I/O frames; handles never appear in the organization store. <code>GetOrganization</code> returns both so a client can go from one to the other.</p>
+<p>Refs across machines prefix the authority: <code>SessionRef = (AuthorityId, SessionKey)</code>, and likewise for resources and workspaces. Text form, for CLI output and logs: lowercase base32 of the 16 bytes, shortened to the shortest unique prefix of at least 6 characters for display, always accepted in full.</p>
+<h2 id="02-records">02. Records</h2>
+<p>These live in <code>phux-core</code> and are IO-free. Field lists are complete for stage 1; new kinds add facets, never new top-level fields.</p>
+<pre><code class="language-rust">struct Session {
+    key: SessionKey,
+    name: String,              // unique among live sessions on this authority
+    lifetime: SessionLifetime, // Persistent | Ephemeral
+    members: Vec&lt;ResourceKey&gt;, // order = creation order; presentation order lives in arrangements
+    arrangement: Option&lt;ArrangementKey&gt;,
+    attrs: Attrs,              // project, directory, host label: descriptive only
+    created: Stamp,
+    revision: Revision,
+}
+
+enum SessionLifetime {
+    Persistent, // survives empty (the default for named sessions)
+    Ephemeral,  // deleted in the same transaction that removes its last resource
+}
+
+struct Resource {
+    key: ResourceKey,
+    session: SessionKey,
+    name: Option&lt;String&gt;,
+    kind: ResourceKind,        // non_exhaustive: Terminal | AgentConversation | Browser | Unknown(String)
+    provenance: Provenance,    // created_by: Actor, opener/parent: Option&lt;ResourceKey&gt;
+    launch: Option&lt;LaunchSpec&gt;,// kind-specific; how a relaunch starts
+    on_exit: ExitPolicy,       // Remove | Retain
+    activation: Option&lt;Activation&gt;, // current or most recent
+    revision: Revision,
+}
+
+struct Activation {
+    id: ActivationId,
+    instance: ServerInstance,  // which server run started it
+    state: ExecState,          // Starting | Running | Stopping | Completed | Failed | Lost | Abandoned
+    started: Stamp,
+    ended: Option&lt;Stamp&gt;,
+    outcome: Option&lt;Outcome&gt;,  // exit status, signal, kind result, or Unobserved
+    host_proc: Option&lt;ProcIdentity&gt;, // Terminal: pid, pgid, process start time
+}
+
+struct Arrangement {
+    key: ArrangementKey,
+    owner: ArrangementOwner,   // Session(SessionKey) | Workspace(WorkspaceKey)
+    groups: Vec&lt;Group&gt;,        // today's tabs; each holds one split tree
+    revision: Revision,
+}
+struct Group { id: [u8; 16], name: Option&lt;String&gt;, tree: LayoutNode&lt;EntryRef&gt; }
+struct EntryRef { entry: [u8; 16], resource: ResourceRef }
+
+struct Workspace {
+    key: WorkspaceKey,
+    name: String,
+    links: Vec&lt;SessionRef&gt;,
+    arrangement: ArrangementKey,
+    revision: Revision,
+}
+
+struct Actor {
+    principal: PrincipalId,    // owner human, or an owner-registered credential
+    client: Option&lt;ClientName&gt;,// from today's ActorRef.client_name
+    on_behalf_of: Option&lt;PrincipalId&gt;,
+}
+</code></pre>
+<p><code>LayoutNode</code> moves out of <code>crates/phux-core/src/window.rs:40-56</code> into <code>arrangement.rs</code> and becomes generic over its leaf. Today's <code>Window</code> (<code>window.rs:21-32</code>) and <code>Session.windows</code>/<code>active</code> (<code>session.rs:57-71</code>) are deleted, not renamed.</p>
+<p><code>ExitPolicy</code> defaults: an interactive shell started by <code>new</code>, <code>spawn</code>, or a split is <code>Remove</code>, so exiting a shell closes it, as in tmux. Anything started by <code>launch</code>, an agent, or with <code>--keep</code> is <code>Retain</code>, which absorbs ADR-0124's exited-pane retention. Respawning the session's last shell on exit (<code>crates/phux-server/src/state/sessions.rs:98-110</code>) is deleted: no implicit launch.</p>
+<h2 id="03-access">03. Access</h2>
+<p>The five grant categories map onto the existing closed scope matrix (ADR-0098, <code>crates/phux-protocol/src/kinds.rs:55-68</code>). Two verbs are new.</p>
+<table>
+<thead>
+<tr>
+<th>Category</th>
+<th>Scope verbs</th>
+<th>Covers</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Observe</td>
+<td><code>Inventory</code>, <code>Observe</code></td>
+<td>Read records, mount read-only views, read evidence.</td>
+</tr>
+<tr>
+<td>Interact</td>
+<td><code>Input</code>, <code>Signal</code> (non-terminating signals)</td>
+<td>Typed input, paste, resize requests, kind actions.</td>
+</tr>
+<tr>
+<td>Organize</td>
+<td><strong><code>Organize</code></strong> (new)</td>
+<td>Rename, move membership, edit arrangements, link and unlink.</td>
+</tr>
+<tr>
+<td>Create</td>
+<td><code>Create</code>, <code>Bind</code></td>
+<td>Create records and launch execution.</td>
+</tr>
+<tr>
+<td>Terminate</td>
+<td><strong><code>Terminate</code></strong> (new)</td>
+<td>Terminate, remove, delete, terminating signals.</td>
+</tr>
+</tbody>
+</table>
+<p>Selectors keep their shape (<code>scope.rs:303-316</code>). <code>Group(u32)</code> already means a session (<code>policy/enforce.rs:6-7</code>); it is redefined to resolve by current membership, so moving a resource out of a session drops access that came from the session in the same transaction (§07).</p>
+<p>Principals:</p>
+<ul>
+<li>The owner principal is the serving user (ADR-0106). It holds every verb on its authority.</li>
+<li>Agent and automation principals are owner-registered credentials with a scope set, as workload clients are today. <code>phux agent start</code> and launches inside a session mint a delegated credential scoped to <strong>Observe + Interact on its own session</strong>, <code>on_behalf_of</code> the launching human. Delegation can only narrow.</li>
+<li>Agent metadata (<code>phux.agent/v1</code>, ADR-0040) is descriptive. It never grants anything.</li>
+</ul>
+<p>Input lease (<code>crates/phux-server/src/state/lease_table.rs:135-164</code>) gains one rule: a lease held by a human principal cannot be taken by a non-human principal. <code>DELIBERATE</code> takeover by a human always succeeds and emits <code>LeaseChanged</code> with the new epoch.</p>
+<h2 id="04-commands">04. Commands</h2>
+<p>All ride the existing <code>COMMAND</code> envelope (<code>crates/phux-protocol/src/wire/frame/command.rs:183-430</code>) behind the <code>Organization</code> capability (§09). Every command carries an <code>OperationId</code>; every command that edits a record carries <code>expected: Revision</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Arguments</th>
+<th>Grant</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GetOrganization</code></td>
+<td>optional session or workspace filter</td>
+<td>Observe</td>
+<td>Snapshot: records the caller may see, revisions, live handles, journal cursor.</td>
+</tr>
+<tr>
+<td><code>SessionCreate</code></td>
+<td>name, lifetime, attrs, optional <code>launch</code></td>
+<td>Create (+Create for launch)</td>
+<td>Session, plus resource and launch intent when <code>launch</code> is set, in one transaction. <code>Ephemeral</code> requires <code>launch</code>; an ephemeral session is never empty.</td>
+</tr>
+<tr>
+<td><code>SessionRename</code></td>
+<td>session, expected, name</td>
+<td>Organize</td>
+<td>Label only.</td>
+</tr>
+<tr>
+<td><code>SessionSetLifetime</code></td>
+<td>session, expected, lifetime</td>
+<td>Organize</td>
+<td>Persistent and Ephemeral; Ephemeral on an empty session deletes it.</td>
+</tr>
+<tr>
+<td><code>SessionDelete</code></td>
+<td>session, expected</td>
+<td>Terminate</td>
+<td>Only when <code>members</code> is empty; else <code>NotEmpty</code>.</td>
+</tr>
+<tr>
+<td><code>ResourceCreate</code></td>
+<td>session, kind, launch, name, on_exit</td>
+<td>Create</td>
+<td>Record, membership, and launch intent in one transaction.</td>
+</tr>
+<tr>
+<td><code>ResourceMove</code></td>
+<td>resource, from (expected), to (expected)</td>
+<td>Organize on both</td>
+<td>Membership only. Replaces <code>MoveResource</code> 0x2A semantics; the frame stays as a compat alias.</td>
+</tr>
+<tr>
+<td><code>ResourceRename</code></td>
+<td>resource, expected, name</td>
+<td>Organize</td>
+<td>Label only.</td>
+</tr>
+<tr>
+<td><code>ResourceTerminate</code></td>
+<td>live target, mode (graceful or force)</td>
+<td>Terminate</td>
+<td>Delegated to the executor; result is accepted, then events report the outcome.</td>
+</tr>
+<tr>
+<td><code>ResourceRemove</code></td>
+<td>resource, expected</td>
+<td>Terminate</td>
+<td>Only when execution is proven inactive; writes a tombstone.</td>
+</tr>
+<tr>
+<td><code>ResourceRelaunch</code></td>
+<td>resource, expected</td>
+<td>Create</td>
+<td>New activation from <code>launch</code>; refused while one is current or Lost.</td>
+</tr>
+<tr>
+<td><code>ResourceAbandon</code></td>
+<td>resource, expected, activation</td>
+<td>Terminate (owner only)</td>
+<td>Lost to Abandoned: releases management, records the unresolved activation.</td>
+</tr>
+<tr>
+<td><code>ArrangementGet</code></td>
+<td>arrangement</td>
+<td>Observe</td>
+<td>Document and revision.</td>
+</tr>
+<tr>
+<td><code>ArrangementReplace</code></td>
+<td>arrangement, expected, document</td>
+<td>Organize</td>
+<td>Validated: session arrangements may reference only members.</td>
+</tr>
+<tr>
+<td><code>WorkspaceCreate</code>, <code>Rename</code>, <code>Delete</code></td>
+<td>as for sessions</td>
+<td>Organize, Create, Terminate</td>
+<td>Stage 6.</td>
+</tr>
+<tr>
+<td><code>WorkspaceLink</code>, <code>Unlink</code></td>
+<td>workspace, expected, SessionRef</td>
+<td>Organize</td>
+<td>Idempotent.</td>
+</tr>
+<tr>
+<td><code>WorkspaceTransfer</code></td>
+<td>workspace, target authority</td>
+<td>Organize on both</td>
+<td>Stage 6. Export, import with provenance, forwarding tombstone.</td>
+</tr>
+</tbody>
+</table>
+<p>Kind operations keep their existing commands (<code>AcquireInput</code>, <code>SignalTerminal</code>, <code>ApplyInput</code>, and so on), now addressed by <code>LiveTarget</code>. A stale activation fails <code>Stale</code> before any effect.</p>
+<p>"Kill a session" is a client workflow, not a command: snapshot members and their live targets, <code>ResourceTerminate</code> each, <code>ResourceRemove</code> each once inactive, then <code>SessionDelete</code> with the revision seen at the start. Work added in the meantime survives and makes the final delete fail <code>NotEmpty</code>. <code>phux kill &lt;session&gt;</code> keeps its meaning by running this workflow.</p>
+<h2 id="05-results">05. Results</h2>
+<pre><code class="language-rust">enum CommandResult&lt;T&gt; {
+    Ok { value: T, revision: Option&lt;Revision&gt;, operation: OperationId },
+    Accepted { operation: OperationId },  // execution effects follow as events
+    Refused(Refusal),
+}
+enum Refusal {
+    Unauthorized { verb: ScopeVerb },
+    NotFound,
+    Conflict { current: Revision },  // expected revision mismatch
+    Stale { current: Option&lt;ActivationId&gt; },
+    NotEmpty { members: u32 },
+    Unsupported { capability: String },
+    InvalidArgument { field: &amp;'static str, reason: String },
+    NameTaken,
+    ExecutionUncertain,              // Lost activation blocks remove or relaunch
+    LeaseHeld { holder: Actor },
+    DuplicateOperation,              // same OperationId, different payload
+}
+</code></pre>
+<p>Network-level timeouts are not results. A client that loses a reply retries with the same <code>OperationId</code> (§06), or reports <strong>outcome unknown</strong>.</p>
+<h2 id="06-retries">06. Retries</h2>
+<ul>
+<li>The server keeps a receipt per <code>OperationId</code> for 24 hours or 10,000 receipts, whichever comes first, in the org store.</li>
+<li>A retry with the same id and identical payload returns the original result without repeating effects. Dedup is checked before revision and staleness checks.</li>
+<li>Same id with a different payload: <code>DuplicateOperation</code>.</li>
+<li>Authorization is rechecked before a stored receipt is returned.</li>
+<li>Past the horizon, the runtime never resubmits on its own; it reconciles from <code>GetOrganization</code> and tells the caller the outcome is unknown.</li>
+<li>Records keep the <code>OperationId</code> that created them, so a late retry can still be matched against a resource that exists.</li>
+</ul>
+<h2 id="07-events">07. Events</h2>
+<p>Organization events join the existing journal (ADR-0123; <code>SUBSCRIBE_EVENTS</code> 0x41, <code>EVENT</code> 0xB3) as new <code>AgentEvent</code> variants, carrying today's <code>EventStamp{seq, ts_ms, actor, operation_id}</code> (<code>crates/phux-protocol/src/wire/frame/payload.rs:55-64</code>). <code>ActorRef</code> gains <code>principal</code> and <code>on_behalf_of</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Event</th>
+<th>Payload</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>SessionCreated</code>, <code>SessionRenamed</code>, <code>SessionDeleted</code></td>
+<td>key, name, revision</td>
+</tr>
+<tr>
+<td><code>MembershipChanged</code></td>
+<td>resource, from, to, revisions</td>
+</tr>
+<tr>
+<td><code>ResourceCreated</code>, <code>ResourceRemoved</code></td>
+<td>key, session, kind</td>
+</tr>
+<tr>
+<td><code>ActivationChanged</code></td>
+<td>resource, activation, state, outcome</td>
+</tr>
+<tr>
+<td><code>ArrangementChanged</code></td>
+<td>key, revision</td>
+</tr>
+<tr>
+<td><code>LeaseChanged</code></td>
+<td>resource, epoch, holder</td>
+</tr>
+<tr>
+<td><code>WorkspaceChanged</code></td>
+<td>key, revision (stage 6)</td>
+</tr>
+</tbody>
+</table>
+<p>A gap or an expired cursor (<code>JournalGap</code>) means: refetch <code>GetOrganization</code>. Order is per authority only. Terminal bytes stay on their own streams and bootstrap (ADR-0013, ADR-0070).</p>
+<p>Intercepted metadata broadcasts (<code>phux.session.created/v1</code>, and the rest) keep flowing for old clients until stage 4 retires them.</p>
+<h2 id="08-organization-store">08. Organization store</h2>
+<p><strong>Format.</strong> One JSON document, <code>&lt;state_dir&gt;/org/v1.json</code> (<code>state_dir</code> is <code>$XDG_STATE_HOME/phux</code>), written by atomic rename with fsync of the file and the directory. The schema version is in the document. No new dependency: the organization data is small (hundreds of records), and the write pattern is one writer at human or agent command rates. If profiling shows write cost matters, SQLite replaces the file behind the same <code>OrgStore</code> trait, with a migration.</p>
+<p><strong>Contents.</strong> <code>AuthorityId</code>, sessions, resources with activations, arrangements, workspaces, tombstones (kept 30 days), receipts (§06), and the last journal sequence number.</p>
+<p><strong>Write discipline.</strong> The server commits a transition by writing the store, then applies it in memory, then acknowledges, then publishes events. If the write fails, the command is refused and memory is unchanged. Activation state changes (started, ended) are written too; they are what makes restart reconciliation possible.</p>
+<p><strong>Startup reconciliation.</strong> For each activation recorded <code>Starting</code>, <code>Running</code>, or <code>Stopping</code> under a previous <code>ServerInstance</code>:</p>
+<ol>
+<li>If a live-upgrade handover (ADR-0032 <code>StateBlob</code>) vouches for it, rebind it: same activation, new handle.</li>
+<li>Otherwise, check <code>ProcIdentity</code>. If the pid exists <strong>and</strong> its start time matches, the process outlived us: mark <code>Lost</code>. The owner can terminate the orphan by pgid after rechecking start time, or abandon it.</li>
+<li>If the pid is gone or its start time differs, mark <code>Completed</code> with outcome <code>Unobserved</code>.</li>
+<li>Never relaunch anything automatically. <code>ExitPolicy::Remove</code> resources ended by the crash are kept as records so the user sees what was there, flagged ended-by-restart; one <code>phux restore</code> relaunches them (<a href="MIGRATION.html#04-cli">MIGRATION.md §04</a>).</li>
+</ol>
+<p>Native agent restore (ADR-0068, ADR-0151) becomes part of the Terminal <code>LaunchSpec</code>: relaunching a terminal that hosted an agent resumes that agent's conversation.</p>
+<p><strong>Server lifetime.</strong> The server stays alive while any activation is live or any client is connected; otherwise it may exit. Records survive in the store either way. This replaces the "no sessions left" exit (<code>crates/phux-server/src/state/bindings.rs:192-196</code>).</p>
+<p><strong>Export.</strong> <code>phux archive export</code> writes a portable copy without live handles, credentials, or receipts. Import onto another authority mints new keys and records provenance.</p>
+<h2 id="09-wire-surface">09. Wire surface</h2>
+<ul>
+<li>New capability bit <code>ServerFeatureExt::Organization</code> (<code>crates/phux-protocol/src/caps.rs:1058-1068</code>). A server sets it only when it enforces everything in this document for stage 3.</li>
+<li>New commands are <code>Command</code> variants under the existing envelope. No frame tag is reused or reinterpreted.</li>
+<li>Keys on the wire are 16 raw bytes. Names are UTF-8, at most 256 bytes. Arrangement documents are bounded at 64 KiB.</li>
+<li>Compatibility: while old clients exist, the server keeps translating the intercepted keys (<code>phux.session.create/v1</code>, <code>phux.session.name/v1</code>, <code>phux.session.keep_empty/v1</code>; <code>crates/phux-server/src/runtime/client.rs:4848-4859</code>) into the new commands, attributed to the sending client. <code>keep_empty</code> maps to <code>lifetime</code>. The TUI layout key <code>phux.tui.layout/v1/&lt;session-id&gt;</code> is translated to and from the session's arrangement.</li>
+<li>A client that sees no <code>Organization</code> bit treats organization as read-only and says so.</li>
+</ul>
+<h2 id="10-module-seams">10. Module seams</h2>
+<table>
+<thead>
+<tr>
+<th>Crate</th>
+<th>Owns after the change</th>
+<th>Never owns</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>phux-core</code></td>
+<td>Records, invariants, <code>apply(state, command, actor) -&gt; Result&lt;(Transition, Vec&lt;Effect&gt;), Refusal&gt;</code>. Pure; the clock is passed in.</td>
+<td>IO, wire bytes, PTYs.</td>
+</tr>
+<tr>
+<td><code>phux-protocol</code></td>
+<td>Command, result, and event encodings; the capability bit; scope verbs.</td>
+<td>Domain rules.</td>
+</tr>
+<tr>
+<td><code>phux-server</code></td>
+<td>Authentication, grants, admission, <code>OrgStore</code>, committing transitions, dispatching effects to executors, reconciliation.</td>
+<td>Client focus, presentation.</td>
+</tr>
+<tr>
+<td>Resource executors (<code>phux-server/src/resource/*</code>)</td>
+<td>Execution, <code>ProcIdentity</code>, outcomes, streams.</td>
+<td>Membership.</td>
+</tr>
+<tr>
+<td><code>phux-client-runtime</code></td>
+<td>Snapshot plus journal reconciliation, operation correlation, retries, one connection stack.</td>
+<td>Its own idea of what exists.</td>
+</tr>
+<tr>
+<td><code>phux-client-ffi</code></td>
+<td>Lossless projection of every record and state above.</td>
+<td>Dropping fields. Today it drops <code>keep_empty</code>, windows, agent sessions, and dims (<code>crates/phux-client-ffi/src/projection/topology.rs:14-89</code>).</td>
+</tr>
+<tr>
+<td>Clients (<code>phux-tui</code>, desktop, Cockpit, web, mobile)</td>
+<td>Views, local arrangement adaptation, focus, controls.</td>
+<td>Lifecycle rules, kill-on-close.</td>
+</tr>
+<tr>
+<td><code>phux-client-core</code></td>
+<td>Layout tree editing for arrangements, without tokio or ratatui.</td>
+<td>Session membership.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="11-connection-and-onboarding">11. Connection and onboarding</h2>
+<p>Unchanged by this design, except: connection setup produces an authenticated principal and grant before any inventory is shown; discovery returns candidates, never inventory; progress names the real stage (finding host, checking trust, authenticating, loading work, mounting view). Target: on an already trusted, provisioned host, picking a saved session reaches an interactive view in under five seconds, measured, not asserted.</p>
+<p class="footer">Generated from CONTRACTS.md by build.py. No external scripts, fonts, analytics, or network requests. Source SHA-256: <code>4b86448af576053c62fcf3255f469298cad9a7669f6f56b353e7d6cd5cec27c4</code>.</p>
+</main></div>
+<script>
+
+const storageKey = "phux-domain-review-contracts";
+const sourceLabel = "CONTRACTS.md, Draft 2 \u00b7 12 October 2026, sha256 4b86448af576053c62fcf3255f469298cad9a7669f6f56b353e7d6cd5cec27c4";
+let notes = {};
+let storageAvailable = true;
+try { notes = JSON.parse(localStorage.getItem(storageKey) || '{}'); }
+catch { storageAvailable = false; }
+if (!notes || typeof notes !== 'object' || Array.isArray(notes)) notes = {};
+
+function saveNotes(status) {
+  try { localStorage.setItem(storageKey, JSON.stringify(notes)); status.textContent = 'Saved locally in this browser. Export for a portable copy.'; }
+  catch { status.textContent = 'Local saving unavailable. Export your notes before closing this page.'; }
+}
+function notePanel(heading) {
+  const panel = document.createElement('section');
+  panel.className = 'review-note empty';
+  const label = document.createElement('label');
+  label.textContent = 'Your notes · ' + heading.textContent;
+  const field = document.createElement('textarea');
+  field.id = 'note-' + heading.id;
+  label.htmlFor = field.id;
+  field.placeholder = 'What should change? Reference a decision or paragraph here…';
+  field.value = typeof notes[heading.id] === 'string' ? notes[heading.id] : '';
+  panel.classList.toggle('empty', !field.value.trim());
+  const status = document.createElement('div');
+  status.className = 'note-status';
+  status.setAttribute('role', 'status');
+  status.textContent = storageAvailable ? 'Notes save locally. Export to share them.' : 'Local saving unavailable. Export before closing.';
+  field.addEventListener('input', () => {
+    notes[heading.id] = field.value;
+    panel.classList.toggle('empty', !field.value.trim());
+    saveNotes(status);
+  });
+  panel.append(label, field, status);
+  return panel;
+}
+const headings = [...document.querySelectorAll('main h2')];
+const headingIds = new Set(headings.map(h => h.id));
+for (let index = 0; index < headings.length; index += 1) {
+  const panel = notePanel(headings[index]);
+  const next = headings[index + 1];
+  const before = next || document.querySelector('.footer');
+  before.before(panel);
+}
+// Notes written against an earlier draft whose section no longer exists.
+const orphans = Object.entries(notes).filter(([id, text]) => !headingIds.has(id) && typeof text === 'string' && text.trim());
+if (orphans.length) {
+  const box = document.createElement('section');
+  box.className = 'orphans';
+  const title = document.createElement('h2');
+  title.textContent = 'Notes from an earlier draft';
+  box.append(title);
+  for (const [id, text] of orphans) {
+    const label = document.createElement('p');
+    label.textContent = '§ ' + id;
+    const body = document.createElement('pre');
+    body.textContent = text;
+    box.append(label, body);
+  }
+  document.querySelector('main h1').after(box);
+}
+for (const table of document.querySelectorAll('main table')) {
+  const wrap = document.createElement('div');
+  wrap.className = 'table-wrap';
+  table.before(wrap);
+  wrap.append(table);
+}
+function exportNotes() {
+  const parts = ['# ' + document.title + ' — review notes', '', 'Source: ' + sourceLabel, ''];
+  for (const heading of headings) {
+    const field = document.getElementById('note-' + heading.id);
+    if (field.value.trim()) parts.push('## ' + heading.textContent, '', field.value.trim(), '');
+  }
+  for (const [id, text] of orphans) parts.push('## (earlier draft) ' + id, '', text.trim(), '');
+  const blob = new Blob([parts.join('\n')], {type:'text/markdown;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'phux-domain-review-notes.md';
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+document.getElementById('export').addEventListener('click', exportNotes);
+document.getElementById('print').addEventListener('click', () => window.print());
+
+</script>
+</body></html>
