@@ -14,6 +14,7 @@ had a client" and "last client left" are covered. No wire change.
 
 Status: Accepted
 Date: 2026-07-27
+Superseded in part by [ADR-0162](./0162-organization-records-persist-and-activations-reconcile.md): the last-pane self-exit becomes exit once no activation is live and no client is connected.
 
 ## Context
 

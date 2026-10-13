@@ -23,6 +23,7 @@ by a newer one, the newer line is the operative reading.
 
 ## Identity and kinds
 
+- [0160](./0160-sessions-own-resources-and-window-is-retired.md) A resource belongs to exactly one session; sessions are persistent or ephemeral records chosen at create, Window is gone, tabs are arrangement groups, and each server designates a persistent Inbox session.
 - [0145](./0145-the-tui-sizes-panes-and-casts-no-viewport-vote.md) The TUI casts no `window-size` vote and sizes each pane with `RESIZE_TERMINAL`, which carries an optional cell pixel size.
 - [0126](./0126-idempotent-create.md) A spawn may carry a client key; a retry with the same key and payload returns the original resource, and a different payload is refused.
 - [0125](./0125-kind-catalog-is-generated-metadata.md) One compiled table in `phux_protocol::kinds` is both the per-kind method catalog and the workload-auth classifier; no catalog frame, no string-invoked methods, and discovery grants nothing.
@@ -39,6 +40,7 @@ by a newer one, the newer line is the operative reading.
 
 ## Wire and codecs
 
+- [0161](./0161-organization-is-typed-commands-behind-a-feature-bit.md) Organization edits are typed `COMMAND` variants behind `ORGANIZATION`, with operation ids, expected revisions, and typed refusals; the intercepted session keys and the TUI layout key are translated for old clients.
 - [0142](./0142-host-path-query-is-separate-from-directory-listing.md) Host path browse and fuzzy search use a new feature-gated L3 frame pair; directory listings do not change.
 
 - [0137](./0137-server-feature-word-extends.md) The `ServerFeature` u32 is closed; the next capability is a trailing `features_ext` word that old clients ignore.
@@ -57,10 +59,9 @@ by a newer one, the newer line is the operative reading.
 
 ## Server process and actor model
 
+- [0162](./0162-organization-records-persist-and-activations-reconcile.md) Organization records commit to a SQLite store before memory; activations record process identity, reconcile to lost or unobserved after a crash, never relaunch, and follow an explicit exit policy.
 - [0150](./0150-the-server-keeps-the-restore-archive-current.md) `--restore` runs `phux server --autosave`: the server restores the archive on a cold start and rewrites it atomically after each change, so a crash restores the latest layout.
 - [0130](./0130-on-disk-pty-journal-is-not-built.md) The server keeps no durable PTY output and ships no `--recover` mode; a crash loses scrollback and clients reattach to a fresh server.
-- [0131](./0131-last-shell-exit-keeps-a-terminal.md) Natural exit of a session's last shell respawns a default shell in that Terminal; kill and Close Tab still close.
-- [0105](./0105-sessions-can-outlive-their-last-window.md) A keep-empty session survives Close Tab of its last window until an explicit kill; default sessions still cascade on kill.
 - [0114](./0114-cockpit-closes-terminals-and-detaches-windows.md) Cockpit Close Pane/Tab ends work; Close Window/Quit detaches Phux views. Cockpit-created sessions opt into keep-empty; their last terminal leaves Empty session, whose closure retains the session.
 - [0096](./0096-always-on-performance-telemetry.md) Performance telemetry is always on, in-process, and read back through `GET_PERF`.
 - [0088](./0088-adopting-a-live-server-into-supervision.md) `install --adopt` arms a unit rather than loading it; the incumbent keeps its panes.
@@ -120,6 +121,7 @@ by a newer one, the newer line is the operative reading.
 
 ## Auth and trust
 
+- [0163](./0163-actors-and-delegated-agent-grants.md) Every change names its principal and on-behalf-of human; `ORGANIZE` and `TERMINATE` join the scope verbs under schema 2; agents act through delegated grants, and a human's takeover always wins the lease.
 - [0154](./0154-devices-enroll-with-a-ticket-over-their-own-alpn.md) A device without ssh enrolls a key it keeps with a single-use `phux pair --enroll` ticket over the QUIC listener's `phux-enroll/1` ALPN; relays and WebTransport carry the identity in an end-to-end TLS session inside their stream.
 - [0153](./0153-clients-pin-the-workload-ca.md) The workload CA issues the server certificate; clients pin the CA at pairing (or learn it on the first leaf-pinned connection), refuse a changed CA by name, and `phux workload authority --rotate` re-pairs everything.
 - [0116](./0116-workload-auth-is-mtls.md) Workload authentication is mTLS client certificates on QUIC/wss (kernel-uid on owner UDS, bearer token as outer admission only); 0098's proof handshake is retired unshipped.

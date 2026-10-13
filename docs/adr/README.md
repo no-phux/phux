@@ -64,7 +64,7 @@ column is the base status word plus at most one relationship clause, about
 | [0030](./0030-engine-delegated-wire-and-projection-consumers.md) | Engine-delegated wire and projection consumers | Superseded by [0102](./0102-resources-the-server-serves-kinds.md) |
 | [0031](./0031-remote-consumer-auth-and-encryption.md) | Remote-consumer authentication and encryption (no SSH tunnel) | Proposed |
 | [0032](./0032-graceful-server-upgrade.md) | Graceful server upgrade (sessions survive a binary update) | Accepted |
-| [0033](./0033-input-authority-and-process-signals.md) | Input authority leases and process signals ("take the wheel + kill") | Accepted |
+| [0033](./0033-input-authority-and-process-signals.md) | Input authority leases and process signals ("take the wheel + kill") | Accepted (superseded in part by [0163](./0163-actors-and-delegated-agent-grants.md)) |
 | [0034](./0034-kitty-graphics-image-passthrough.md) | Kitty graphics / image passthrough through the cell renderer | Proposed |
 | [0035](./0035-agent-asked-event.md) | Agent-asked event: a pending human-answerable question on the wire | Accepted |
 | [0036](./0036-agent-asked-detection.md) | Agent-asked detection sources | Accepted |
@@ -81,20 +81,20 @@ column is the base status word plus at most one relationship clause, about
 | [0047](./0047-ci-metrics-branch.md) | CI metrics recorded to an orphan `ci-metrics` branch | Superseded by [0082](./0082-retire-the-ci-metrics-store.md) |
 | [0048](./0048-drag-to-resize-and-default-mouse-capture.md) | Drag-to-resize panes and default outer-terminal mouse capture | Accepted |
 | [0049](./0049-client-local-focus-and-advisory-attention.md) | Client-local focus and advisory agent attention | Accepted (builds on [0019](./0019-tui-multi-pane-rendering.md)) |
-| [0050](./0050-explicit-spawn-ownership.md) | Explicit spawn ownership, client-owned placement | Accepted |
+| [0050](./0050-explicit-spawn-ownership.md) | Explicit spawn ownership, client-owned placement | Accepted (superseded in part by [0161](./0161-organization-is-typed-commands-behind-a-feature-bit.md)) |
 | [0051](./0051-outbound-dial-out-connector-transport.md) | Outbound dial-out (connector) transport mode | Accepted (builds on [0037](./0037-overlay-network-reachability.md)) |
 | [0052](./0052-connector-route-identity-and-config.md) | Connector route identity, registration, and config surface | Accepted (builds on [0051](./0051-outbound-dial-out-connector-transport.md)) |
 | [0053](./0053-acknowledged-idempotent-input.md) | Acknowledged idempotent input batches | Accepted (builds on [0021](./0021-control-plane-commands.md), [0024](./0024-wire-owns-input-atoms.md), and [0044](./0044-dedicated-input-lane.md)) |
 | [0054](./0054-worktree-bound-sessions.md) | Worktree-bound sessions by name convention | Accepted |
 | [0055](./0055-always-on-server-and-ssh-bootstrapped-enrollment.md) | Always-on server and ssh-bootstrapped enrollment | Accepted (superseded in part by [0080](./0080-socket-lifecycle-and-instance-isolation.md), [0096](./0096-always-on-performance-telemetry.md); amended by [0120](./0120-ssh-bootstrap-opens-a-listener-per-attach.md), [0150](./0150-the-server-keeps-the-restore-archive-current.md)) |
-| [0056](./0056-cross-session-terminal-move.md) | Cross-session Terminal move | Accepted (builds on [0050](./0050-explicit-spawn-ownership.md)) |
+| [0056](./0056-cross-session-terminal-move.md) | Cross-session Terminal move | Accepted (superseded in part by [0161](./0161-organization-is-typed-commands-behind-a-feature-bit.md); builds on [0050](./0050-explicit-spawn-ownership.md)) |
 | [0057](./0057-minimal-reference-relay.md) | A minimal reference relay in-tree | Accepted (builds on [0051](./0051-outbound-dial-out-connector-transport.md), [0052](./0052-connector-route-identity-and-config.md)) |
 | [0058](./0058-right-click-context-menus.md) | Right-click context menus for panes, windows, and sessions | Accepted |
 | [0059](./0059-sandboxed-chunked-file-upload.md) | Sandboxed chunked file upload | Accepted (builds on [0007](./0007-mosh-class-transport-and-satellites.md), [0021](./0021-control-plane-commands.md), and [0031](./0031-remote-consumer-auth-and-encryption.md)) |
 | [0060](./0060-self-contained-session-recording.md) | Self-contained session recording | Accepted (builds on [0013](./0013-libghostty-bytes-on-wire.md)) |
 | [0061](./0061-capabilities-add-versions-break.md) | Capabilities add, versions break | Accepted (builds on [0060](./0060-self-contained-session-recording.md)) |
 | [0062](./0062-headless-resize-and-window-size-policy.md) | Headless resize and the window-size policy | Accepted (builds on [0027](./0027-terminal-references-and-l3-links.md)) |
-| [0063](./0063-ephemeral-server-lifetime.md) | Ephemeral server lifetime | Accepted (builds on [0003](./0003-server-process-model.md)) |
+| [0063](./0063-ephemeral-server-lifetime.md) | Ephemeral server lifetime | Accepted (superseded in part by [0162](./0162-organization-records-persist-and-activations-reconcile.md); builds on [0003](./0003-server-process-model.md)) |
 | [0064](./0064-playback-as-a-pane.md) | Playback as a pane | Accepted (supersedes in part [0060](./0060-self-contained-session-recording.md)) |
 | [0065](./0065-one-cli-grammar.md) | One CLI grammar | Accepted |
 | [0066](./0066-host-namespace.md) | One `phux host` namespace over the split machine registries | Accepted |
@@ -136,7 +136,7 @@ column is the base status word plus at most one relationship clause, about
 | [0102](./0102-resources-the-server-serves-kinds.md) | Resources: the server serves kinds; Terminal is the first | Accepted (supersedes [0016](./0016-terminal-id-as-wire-primary.md), [0030](./0030-engine-delegated-wire-and-projection-consumers.md)) |
 | [0103](./0103-agent-session-resource-and-producer-fed-streams.md) | Agent session resource and producer-fed streams | Accepted (amends [0040](./0040-agent-identity-metadata.md)) |
 | [0104](./0104-parent-bindings-are-l1-lifecycle.md) | Parent bindings are L1 lifecycle | Accepted (builds on [0102](./0102-resources-the-server-serves-kinds.md)) |
-| [0105](./0105-sessions-can-outlive-their-last-window.md) | Sessions can outlive their last window | Accepted (amends [0063](./0063-ephemeral-server-lifetime.md)) |
+| [0105](./0105-sessions-can-outlive-their-last-window.md) | Sessions can outlive their last window | Superseded by [0160](./0160-sessions-own-resources-and-window-is-retired.md) |
 | [0106](./0106-identity-is-the-serving-user.md) | Identity is the serving user; whoami reports it | Accepted (builds on [0003](./0003-server-process-model.md)) |
 | [0107](./0107-satellite-sessions-are-listed-never-adopted.md) | Satellite sessions are listed, never adopted | Accepted (builds on [0066](./0066-host-namespace.md)) |
 | [0108](./0108-a-hub-relays-host-queries-per-request.md) | A hub relays host queries to satellites per request | Accepted (builds on [0107](./0107-satellite-sessions-are-listed-never-adopted.md)) |
@@ -145,7 +145,7 @@ column is the base status word plus at most one relationship clause, about
 | [0111](./0111-how-a-front-restore-is-judged.md) | How a front restore is judged | Accepted (amends [0110](./0110-a-showing-peer-is-re-shown-at-launch-only-in-front.md)) |
 | [0112](./0112-stable-split-sidebar-navigation.md) | Sidebar navigation stays put while status changes | Accepted (amends [0089](./0089-three-zone-attention-sidebar.md)) |
 | [0113](./0113-next-release-channel.md) | Opt-in next channel from green main | Accepted (builds on [0074](./0074-self-update-trust-boundary.md)) |
-| [0114](./0114-cockpit-closes-terminals-and-detaches-windows.md) | Cockpit closes terminals and detaches windows | Accepted (builds on [0105](./0105-sessions-can-outlive-their-last-window.md), [0107](./0107-satellite-sessions-are-listed-never-adopted.md)) |
+| [0114](./0114-cockpit-closes-terminals-and-detaches-windows.md) | Cockpit closes terminals and detaches windows | Accepted (superseded in part by [0160](./0160-sessions-own-resources-and-window-is-retired.md); builds on [0105](./0105-sessions-can-outlive-their-last-window.md), [0107](./0107-satellite-sessions-are-listed-never-adopted.md)) |
 | [0115](./0115-quic-stream-per-terminal.md) | QUIC carries one control stream plus one bidi stream per attached Terminal | Accepted (builds on [0007](./0007-mosh-class-transport-and-satellites.md) and [0070](./0070-native-engine-state-bootstrap.md)) |
 | [0116](./0116-workload-auth-is-mtls.md) | Workload authentication is mTLS; the bespoke proof protocol is retired unshipped | Accepted (supersedes in part [0098](./0098-workload-proof-and-closed-scope-authority.md)) |
 | [0117](./0117-wire-codec-stays-tlv.md) | The wire codec stays hand-rolled TLV; protobuf considered and rejected | Accepted |
@@ -155,14 +155,14 @@ column is the base status word plus at most one relationship clause, about
 | [0121](./0121-cli-parser-is-usage-rs.md) | The CLI parser is usage-rs | Accepted (amends [0065](./0065-one-cli-grammar.md), [0069](./0069-generated-reference-docs.md)) |
 | [0122](./0122-host-add-is-the-front-door.md) | `phux host add HOST` is the front door to a machine | Accepted (supersedes in part [0066](./0066-host-namespace.md); amends [0093](./0093-remote-target-as-a-resolution-ladder.md)) |
 | [0123](./0123-events-are-journaled.md) | Events are journaled, resumable, and never dropped silently | Accepted (builds on [0033](./0033-input-authority-and-process-signals.md), [0053](./0053-acknowledged-idempotent-input.md); amends [0071](./0071-what-phux-1-0-commits-to.md)) |
-| [0124](./0124-retain-on-exit.md) | Retain on exit: exit is a facet, close is a purge | Accepted (builds on [0104](./0104-parent-bindings-are-l1-lifecycle.md); amends [0071](./0071-what-phux-1-0-commits-to.md)) |
+| [0124](./0124-retain-on-exit.md) | Retain on exit: exit is a facet, close is a purge | Accepted (superseded in part by [0162](./0162-organization-records-persist-and-activations-reconcile.md); builds on [0104](./0104-parent-bindings-are-l1-lifecycle.md); amends [0071](./0071-what-phux-1-0-commits-to.md)) |
 | [0125](./0125-kind-catalog-is-generated-metadata.md) | The kind catalog is generated metadata, not wire | Accepted (builds on [0098](./0098-workload-proof-and-closed-scope-authority.md), [0102](./0102-resources-the-server-serves-kinds.md)) |
 | [0126](./0126-idempotent-create.md) | Creates are idempotent under a client key | Accepted (builds on [0053](./0053-acknowledged-idempotent-input.md); amends [0071](./0071-what-phux-1-0-commits-to.md)) |
 | [0127](./0127-attach-roles-are-lease-intent.md) | Attach roles are intent on the input lease | Accepted (builds on [0033](./0033-input-authority-and-process-signals.md); amends [0071](./0071-what-phux-1-0-commits-to.md)) |
 | [0128](./0128-approvals-are-held-actions.md) | Approvals are held actions | Accepted (builds on [0116](./0116-workload-auth-is-mtls.md); amends [0035](./0035-agent-asked-event.md), [0071](./0071-what-phux-1-0-commits-to.md)) |
 | [0129](./0129-projections-are-named-by-key.md) | Named projections are a metadata-key convention, not a resource | Accepted |
 | [0130](./0130-on-disk-pty-journal-is-not-built.md) | The on-disk PTY output journal is not built | Accepted |
-| [0131](./0131-last-shell-exit-keeps-a-terminal.md) | Last-shell exit keeps a terminal | Accepted (amends [0105](./0105-sessions-can-outlive-their-last-window.md), [0063](./0063-ephemeral-server-lifetime.md)) |
+| [0131](./0131-last-shell-exit-keeps-a-terminal.md) | Last-shell exit keeps a terminal | Superseded by [0162](./0162-organization-records-persist-and-activations-reconcile.md) |
 | [0132](./0132-swarm-members-are-coordinator-clients.md) | Swarm members are coordinator clients | Proposed (amends [0009](./0009-phux-vs-mux-positioning.md), [0092](./0092-durable-work-coordinator-authority.md)) |
 | [0133](./0133-one-client-runtime-below-every-binding.md) | One client runtime below every binding | Accepted (builds on [0020](./0020-layered-render.md), [0100](./0100-the-tui-is-its-own-crate.md)) |
 | [0134](./0134-connected-lanes-refine-the-binding-boundary.md) | Connected lanes refine the binding boundary | Accepted (amends [0133](./0133-one-client-runtime-below-every-binding.md); superseded in part by [0135](./0135-one-binding-crate.md)) |
@@ -181,7 +181,7 @@ column is the base status word plus at most one relationship clause, about
 | [0147](./0147-plugin-overlay-panes-float-outside-the-layout.md) | Plugin overlay panes float outside the layout | Accepted (builds on [0017](./0017-tui-not-protocol-privileged.md)) |
 | [0148](./0148-plugin-sidebar-sections-are-fixed-bands-of-pane-rows.md) | Plugin sidebar sections are fixed bands of pane rows | Accepted (builds on [0112](./0112-stable-split-sidebar-navigation.md)) |
 | [0149](./0149-relay-routes-ride-the-tls-server-name-everywhere.md) | Relay routes ride the TLS server name everywhere | Accepted (builds on [0052](./0052-connector-route-identity-and-config.md), [0057](./0057-minimal-reference-relay.md)) |
-| [0150](./0150-the-server-keeps-the-restore-archive-current.md) | The server keeps the restore archive current | Accepted (amends [0055](./0055-always-on-server-and-ssh-bootstrapped-enrollment.md)) |
+| [0150](./0150-the-server-keeps-the-restore-archive-current.md) | The server keeps the restore archive current | Accepted (superseded in part by [0162](./0162-organization-records-persist-and-activations-reconcile.md); amends [0055](./0055-always-on-server-and-ssh-bootstrapped-enrollment.md)) |
 | [0151](./0151-live-agent-sessions-bridge-into-native-restore.md) | Live agent sessions bridge into native restore | Accepted (builds on [0068](./0068-native-agent-session-restore.md), [0103](./0103-agent-session-resource-and-producer-fed-streams.md)) |
 | [0152](./0152-project-recipes-run-only-approved-bytes.md) | Project recipes run only approved bytes | Accepted (builds on [0054](./0054-worktree-bound-sessions.md), [0129](./0129-projections-are-named-by-key.md)) |
 | [0153](./0153-clients-pin-the-workload-ca.md) | Clients pin the workload CA, which issues the server certificate | Accepted (amends [0116](./0116-workload-auth-is-mtls.md)) |
@@ -191,6 +191,10 @@ column is the base status word plus at most one relationship clause, about
 | [0157](./0157-themes-are-colors-toml-files-every-client-reads.md) | Themes are Omarchy-schema `colors.toml` files in one catalog, read natively by every client | Proposed |
 | [0158](./0158-pane-clipboard-writes-are-client-policy.md) | Pane clipboard writes are a client-side, policy-gated effect | Accepted |
 | [0159](./0159-agent-streams-resume-from-committed-records.md) | Agent streams resume from committed records, with explicit replacement on eviction | Accepted (builds on [0103](./0103-agent-session-resource-and-producer-fed-streams.md), [0061](./0061-capabilities-add-versions-break.md)) |
+| [0160](./0160-sessions-own-resources-and-window-is-retired.md) | Sessions own resources; Window is retired | Accepted (supersedes [0105](./0105-sessions-can-outlive-their-last-window.md)) |
+| [0161](./0161-organization-is-typed-commands-behind-a-feature-bit.md) | Organization is typed commands behind a feature bit | Accepted (builds on [0137](./0137-server-feature-word-extends.md)) |
+| [0162](./0162-organization-records-persist-and-activations-reconcile.md) | Organization records persist; activations reconcile | Accepted (supersedes [0131](./0131-last-shell-exit-keeps-a-terminal.md)) |
+| [0163](./0163-actors-and-delegated-agent-grants.md) | Actors and delegated agent grants | Accepted (builds on [0098](./0098-workload-proof-and-closed-scope-authority.md)) |
 
 ## When to write an ADR
 

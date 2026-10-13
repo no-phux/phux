@@ -10,8 +10,9 @@ last-reviewed: 2026-09-19
 a default shell in that same Terminal. Clients keep the id, layout slot,
 and attach. Explicit kill and Close Tab still close the pane.
 
-Status: Accepted
+Status: Superseded by ADR-0162
 Date: 2026-09-19
+Superseded by [ADR-0162](./0162-organization-records-persist-and-activations-reconcile.md): a resource's exit policy decides what its exit does, and nothing respawns implicitly.
 
 ## Context
 

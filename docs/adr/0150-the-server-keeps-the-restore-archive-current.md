@@ -14,6 +14,7 @@ restores the latest layout. The wrapper keeps its save on stop.
 
 Status: Accepted
 Date: 2026-10-06
+Superseded in part by [ADR-0162](./0162-organization-records-persist-and-activations-reconcile.md): the server no longer restores the archive on a cold start; `--autosave` is an export schedule.
 
 ## Context
 

@@ -15,6 +15,7 @@ shared projections as durable resources" with the smallest honest answer.
 
 Status: Accepted
 Date: 2026-09-14
+See [ADR-0161](./0161-organization-is-typed-commands-behind-a-feature-bit.md) for translating the default `phux.tui.layout/v1` key to the typed arrangement.
 
 ## Context
 
