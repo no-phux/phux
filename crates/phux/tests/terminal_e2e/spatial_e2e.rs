@@ -537,6 +537,16 @@ fn run_in_pane(server: &ServerGuard, pane: &ResourceId, command: &str) -> serde_
     ])
 }
 
+/// `layout` is one group showing only `pane`. The group's identity is
+/// minted by whoever created it, so it is taken from `layout` itself.
+fn assert_single_pane_layout(layout: &ArrangementDoc, pane: &ResourceId) {
+    let mut expected = ArrangementDoc::single(pane.clone());
+    if let (Some(seeded), Some(group)) = (layout.groups.first(), expected.groups.first_mut()) {
+        group.id = seeded.id;
+    }
+    assert_eq!(layout, &expected);
+}
+
 #[test]
 #[ignore = "spawns a real server and PTY-backed shells; run in the e2e lane"]
 fn json_created_sessions_are_immediately_layout_ready_for_cross_session_move() {
@@ -544,17 +554,17 @@ fn json_created_sessions_are_immediately_layout_ready_for_cross_session_move() {
     let source = json_created_pane(&server, "headless-source");
     let destination = json_created_pane(&server, "headless-destination");
 
-    assert_eq!(
-        server
+    assert_single_pane_layout(
+        &server
             .read_layout_for("headless-source")
             .expect("source layout seeded"),
-        ArrangementDoc::single(source.clone())
+        &source,
     );
-    assert_eq!(
-        server
+    assert_single_pane_layout(
+        &server
             .read_layout_for("headless-destination")
             .expect("destination layout seeded"),
-        ArrangementDoc::single(destination.clone())
+        &destination,
     );
 
     let before = run_in_pane(&server, &source, "printf 'ALF7_BEFORE:%s\\n' \"$$\"");
