@@ -353,14 +353,16 @@ def main():
         executable = shutil.which(binary)
         if executable:
             env.setdefault(variable, executable)
-    env.setdefault("CARGO_BUILD_JOBS", "2")
     env["CARGO_TARGET_DIR"] = str(Path(env.get("CARGO_TARGET_DIR", ROOT / "target/web-native")).resolve())
+    # One Cargo schedule for the demo server and the phux binary. Split
+    # invocations on 2 jobs were 5m 55s then 3m 41s (run 38451988979); the
+    # browser tests after that were about 12s. Cargo's default job count is
+    # the machine's CPU count, which is 4 on the hosted x64 runner.
     try:
         with (logs / "build.log").open("w") as log:
-            run(["cargo", "build", "--locked", "-p", "phux-server", "--example", "ws_demo_server"],
-                cwd=ROOT, env=env, timeout=1200, log=log)
-        with (logs / "build.log").open("a") as log:
-            run(["cargo", "build", "--locked", "-p", "phux", "--bin", "phux"],
+            run(["cargo", "build", "--locked",
+                 "-p", "phux-server", "--example", "ws_demo_server",
+                 "-p", "phux", "--bin", "phux"],
                 cwd=ROOT, env=env, timeout=1200, log=log)
         with tempfile.TemporaryDirectory(prefix="phux-browser-") as scratch:
             env["TMPDIR"] = scratch
