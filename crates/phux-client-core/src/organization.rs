@@ -167,51 +167,11 @@ pub fn organization_lines(sessions: &[OrganizedSession]) -> Vec<String> {
         .collect()
 }
 
-/// JSON body for `phux.session.create/v1`.
-///
-/// A directory starts a seed pane there and does not set `empty`. No
-/// directory creates an empty keep-empty session, which is today's create.
-#[must_use]
-pub fn session_create_document(name: &str, directory: Option<&str>) -> String {
-    directory
-        .filter(|directory| !directory.is_empty())
-        .map_or_else(
-            || {
-                format!(
-                    "{{\"empty\":true,\"keep_empty\":true,\"name\":{}}}",
-                    json_string(name),
-                )
-            },
-            |directory| {
-                format!(
-                    "{{\"cwd\":{},\"keep_empty\":true,\"name\":{}}}",
-                    json_string(directory),
-                    json_string(name),
-                )
-            },
-        )
-}
-
-fn json_string(value: &str) -> String {
-    let mut out = String::from("\"");
-    for ch in value.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            other => out.push(other),
-        }
-    }
-    out.push('"');
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         OrganizedSession, Place, PlaceSource, SessionLine, adjacent_name, group_by_project,
-        last_name, organization_lines, place_for, session_create_document,
+        last_name, organization_lines, place_for,
     };
 
     fn focused() -> Place {
@@ -326,18 +286,6 @@ mod tests {
                 "alpha host=edge directory=/a project=api".to_owned(),
                 "zeta host=local directory=/z project=-".to_owned(),
             ]
-        );
-    }
-
-    #[test]
-    fn session_create_document_keeps_an_explicit_directory() {
-        assert_eq!(
-            session_create_document("work", Some("/src/api")),
-            "{\"cwd\":\"/src/api\",\"keep_empty\":true,\"name\":\"work\"}"
-        );
-        assert_eq!(
-            session_create_document("work", None),
-            "{\"empty\":true,\"keep_empty\":true,\"name\":\"work\"}"
         );
     }
 }

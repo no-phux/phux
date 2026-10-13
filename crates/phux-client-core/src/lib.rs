@@ -18,6 +18,8 @@
 //!   `DividerCell`s to VT).
 //! - [`predict`] — Mosh-class predictive local echo over the pane mirror.
 //! - [`input_replay`] — acknowledged input ordering and reconnect policy.
+//! - [`org_ops`] — the organization operation retry journal and the
+//!   kill-session planner.
 //! - [`ask`] — the ADR-0035 ask-sentinel reader every answer path guards
 //!   with.
 //!
@@ -43,6 +45,7 @@ pub mod input_replay;
 pub mod keys;
 pub mod layout;
 pub mod multi_pane;
+pub mod org_ops;
 pub mod organization;
 pub mod perf;
 pub mod predict;

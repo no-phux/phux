@@ -1,46 +1,48 @@
-use sha2::{Digest, Sha256};
+//! Group and entry identities: random 16-byte ids, minted by whoever creates
+//! the group or entry and stable while it exists.
+//!
+//! Identities are never derived from live resource handles: a handle is
+//! reused after a server restart, so a derived identity would collide across
+//! restarts. The bytes come from the standard library's per-process random
+//! hasher keys mixed with a process-wide counter, which keeps this crate free
+//! of an RNG dependency on every target.
 
-use super::{Group, LayoutDecodeError, LayoutNode, LayoutState, ResourceId, leaves};
+use std::collections::hash_map::RandomState;
+use std::hash::{BuildHasher, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-pub(super) fn terminal_id(terminal: &ResourceId) -> [u8; 16] {
-    let mut hash = Sha256::new();
-    hash.update(b"phux.layout.window-id/v1\0");
-    match terminal {
-        ResourceId::Local { id } => {
-            hash.update([0]);
-            hash.update(id.to_be_bytes());
+use super::{Group, LayoutDecodeError};
+
+static MINTED: AtomicU64 = AtomicU64::new(0);
+
+/// A fresh non-zero random 16-byte identity for a group or an arrangement
+/// entry.
+#[must_use]
+pub fn fresh_id() -> [u8; 16] {
+    loop {
+        let n = MINTED.fetch_add(1, Ordering::Relaxed);
+        let state = RandomState::new();
+        let mut id = [0_u8; 16];
+        for (half, chunk) in id.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+            let mut hasher = state.build_hasher();
+            hasher.write_u64(n);
+            hasher.write_usize(half);
+            chunk.copy_from_slice(&hasher.finish().to_be_bytes());
         }
-        ResourceId::Satellite { host, id } => {
-            hash.update([1]);
-            hash.update(host.as_str().as_bytes());
-            hash.update([0]);
-            hash.update(id.to_be_bytes());
+        if id != [0; 16] {
+            return id;
         }
     }
-    let digest = hash.finalize();
-    let mut id = [0; 16];
-    id.copy_from_slice(&digest[..16]);
-    id
 }
 
-pub(super) fn tree_id(tree: &LayoutNode) -> [u8; 16] {
-    leaves(tree).first().map_or([0; 16], terminal_id)
-}
-
-pub(super) fn seed_id(state: &LayoutState) -> [u8; 16] {
-    state.tree.as_ref().map_or([0; 16], tree_id)
-}
-
-/// Reusing a removed seed must not reuse the surviving group's identity.
-pub(super) fn fresh_id(seed: &ResourceId, groups: &[Group]) -> [u8; 16] {
-    let mut id = terminal_id(seed);
-    while id == [0; 16] || groups.iter().any(|group| group.id == id) {
-        let mut hash = Sha256::new();
-        hash.update(b"phux.layout.window-id/collision/v1\0");
-        hash.update(id);
-        id.copy_from_slice(&hash.finalize()[..16]);
+/// A fresh identity no group in `groups` already holds.
+pub(super) fn unused_id(groups: &[Group]) -> [u8; 16] {
+    loop {
+        let id = fresh_id();
+        if groups.iter().all(|group| group.id != id) {
+            return id;
+        }
     }
-    id
 }
 
 pub(super) fn validate(groups: &[Group]) -> Result<(), LayoutDecodeError> {
@@ -60,7 +62,8 @@ pub(super) fn validate(groups: &[Group]) -> Result<(), LayoutDecodeError> {
 mod tests {
     use super::*;
     use crate::layout::legacy::serialize::CborWorkspaceEnvelope;
-    use crate::layout::{self, ArrangementDoc, SplitDir};
+    use crate::layout::{self, ArrangementDoc, LayoutState, SplitDir};
+    use phux_protocol::ResourceId;
 
     fn split() -> ArrangementDoc {
         let mut ws = ArrangementDoc::single(ResourceId::local(1));
@@ -104,6 +107,19 @@ mod tests {
         );
     }
 
+    /// The same seed pane does not yield the same identity: ids are random,
+    /// so a handle reused after a restart cannot collide with a group that
+    /// outlived it.
+    #[test]
+    fn identities_are_random_not_derived_from_the_seed_handle() {
+        let a = ArrangementDoc::single(ResourceId::local(1));
+        let b = ArrangementDoc::single(ResourceId::local(1));
+        assert_ne!(a.groups[0].id, b.groups[0].id);
+        let ids: std::collections::HashSet<[u8; 16]> = (0..256).map(|_| fresh_id()).collect();
+        assert_eq!(ids.len(), 256);
+        assert!(!ids.contains(&[0; 16]));
+    }
+
     #[test]
     fn zero_duplicate_and_missing_ids_are_refused() {
         let mut ws = split();
@@ -139,18 +155,6 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("id")
-        );
-    }
-
-    #[test]
-    fn satellite_and_local_seed_domains_are_distinct() {
-        assert_ne!(
-            terminal_id(&ResourceId::local(1)),
-            terminal_id(&ResourceId::satellite("peer", 1))
-        );
-        assert_ne!(
-            terminal_id(&ResourceId::satellite("peer", 1)),
-            terminal_id(&ResourceId::satellite("other", 1))
         );
     }
 }

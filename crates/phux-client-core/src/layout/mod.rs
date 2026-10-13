@@ -152,7 +152,8 @@ impl LayoutState {
 /// its pane layout.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Group {
-    /// Durable layout identity, distinct from the server registry's window ID.
+    /// Random 16-byte identity, minted when the group is created and kept
+    /// for as long as it exists, whatever its tree holds.
     pub id: [u8; 16],
     /// Display name, shown in the tab bar.
     pub name: String,
@@ -161,11 +162,16 @@ pub struct Group {
 }
 
 impl Group {
-    /// Seed an identity once from the first durable terminal. Keep it when the
-    /// tree changes, including when that original terminal is removed.
+    /// A new group under a freshly minted random identity.
     #[must_use]
     pub fn new(name: String, state: LayoutState) -> Self {
-        let id = identity::seed_id(&state);
+        Self::with_id(identity::fresh_id(), name, state)
+    }
+
+    /// A group under an identity it already has (decoded, or read from the
+    /// server's arrangement).
+    #[must_use]
+    pub const fn with_id(id: [u8; 16], name: String, state: LayoutState) -> Self {
         Self { id, name, state }
     }
 }
@@ -173,6 +179,9 @@ impl Group {
 mod identity;
 pub mod legacy;
 mod projection;
+pub mod wire;
+
+pub use identity::fresh_id;
 
 pub use legacy::{LayoutDecodeError, LayoutEncodeError};
 
@@ -206,11 +215,7 @@ impl ArrangementDoc {
     #[must_use]
     pub fn single(pane: ResourceId) -> Self {
         Self {
-            groups: vec![Group {
-                id: identity::terminal_id(&pane),
-                name: "1".to_owned(),
-                state: LayoutState::single(pane),
-            }],
+            groups: vec![Group::new("1".to_owned(), LayoutState::single(pane))],
             active: 0,
         }
     }
@@ -245,11 +250,9 @@ impl ArrangementDoc {
     /// Append a new group named `name` holding a single `seed` pane and
     /// make it active.
     pub fn add_group(&mut self, name: String, seed: ResourceId) {
-        self.groups.push(Group {
-            id: identity::fresh_id(&seed, &self.groups),
-            name,
-            state: LayoutState::single(seed),
-        });
+        let id = identity::unused_id(&self.groups);
+        self.groups
+            .push(Group::with_id(id, name, LayoutState::single(seed)));
         self.active = self.groups.len() - 1;
     }
 

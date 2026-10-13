@@ -1,11 +1,20 @@
 //! One session-rename policy for every frontend.
 //!
-//! A rename is a `SET_METADATA` of `phux.session.name/v1` (`current\0new`).
-//! The server applies it and broadcasts nothing when it refuses, and
-//! `SET_METADATA` has no reply. Every client therefore does the same three
-//! steps: judge the request against the session list it already trusts, send
-//! the write only when that list allows it, then read `GET_STATE` as an
-//! ordering barrier whose snapshot is the outcome.
+//! Against a server that advertises `ORGANIZATION`, a rename is one
+//! `SESSION_RENAME` naming the session's key and the revision the client
+//! saw ([`org_rename_command`]); its `COMMITTED` or `REFUSED` reply is the
+//! outcome ([`org_rename_verdict`]), and a resend after a lost reply reuses
+//! the operation id.
+//!
+//! Against an older server, a rename is a `SET_METADATA` of
+//! `phux.session.name/v1` (`current\0new`). The server applies it and
+//! broadcasts nothing when it refuses, and `SET_METADATA` has no reply. Every
+//! client therefore does the same three steps: judge the request against the
+//! session list it already trusts, send the write only when that list allows
+//! it, then read `GET_STATE` as an ordering barrier whose snapshot is the
+//! outcome.
+//!
+//! Either way the request is judged first with [`plan_rename`].
 //!
 //! This module is synchronous on purpose. `phux_client::session::rename_checked`
 //! performs the round trip for the CLI and MCP, on a connection that can
@@ -14,9 +23,10 @@
 //! these functions and correlate the barrier themselves. `phux-client`
 //! re-exports this module as `phux_client::rename`.
 
-use phux_protocol::ids::SessionId;
+use phux_protocol::ids::{OperationId, Revision, SessionId, SessionKey};
 use phux_protocol::wire::frame::{
-    Command, FrameKind, SESSION_NAME_KEY, Scope, StateScope, encode_session_rename,
+    Command, CommandResult, CommandValue, FrameKind, Refusal, SESSION_NAME_KEY, Scope, StateScope,
+    encode_session_rename,
 };
 
 /// A session the rename policy can see: its stable id and its current name.
@@ -192,6 +202,41 @@ pub fn write_frame(request_id: u32, current: &str, new_name: &str) -> FrameKind 
         scope: Scope::Global,
         key: SESSION_NAME_KEY.to_owned(),
         value: encode_session_rename(current, new_name),
+    }
+}
+
+/// The `SESSION_RENAME` for a [`RenamePlan::Send`] against a server that
+/// advertises `ORGANIZATION`: the session's key, the revision the client saw,
+/// and a caller-minted operation id that a resend reuses.
+#[must_use]
+pub fn org_rename_command(
+    operation: OperationId,
+    session: SessionKey,
+    expected: Revision,
+    new_name: &str,
+) -> Command {
+    Command::SessionRename {
+        operation,
+        session,
+        expected,
+        name: new_name.to_owned(),
+    }
+}
+
+/// What a `SESSION_RENAME` reply says, as a [`BarrierVerdict`] plus the
+/// refusal when there was one: `COMMITTED` applied; `NOT_FOUND` is gone;
+/// any other refusal (a taken name, a conflicting revision) did not apply.
+#[must_use]
+pub fn org_rename_verdict(result: &CommandResult) -> (BarrierVerdict, Option<Refusal>) {
+    match result {
+        CommandResult::OkWith(CommandValue::Committed(_)) | CommandResult::Ok => {
+            (BarrierVerdict::Applied, None)
+        }
+        CommandResult::Refused(Refusal::NotFound) => {
+            (BarrierVerdict::Gone, Some(Refusal::NotFound))
+        }
+        CommandResult::Refused(refusal) => (BarrierVerdict::NotApplied, Some(refusal.clone())),
+        _ => (BarrierVerdict::NotApplied, None),
     }
 }
 
@@ -372,6 +417,36 @@ mod tests {
                     scope: StateScope::Server,
                 },
             }
+        );
+    }
+
+    #[test]
+    fn org_rename_names_the_key_and_revision_and_reads_the_reply() {
+        let operation = OperationId::new([1; 16]).unwrap();
+        let session = SessionKey::new([2; 16]).unwrap();
+        assert_eq!(
+            org_rename_command(operation, session, Revision::new(4), "notes"),
+            Command::SessionRename {
+                operation,
+                session,
+                expected: Revision::new(4),
+                name: "notes".to_owned(),
+            }
+        );
+        let committed = CommandResult::OkWith(CommandValue::Committed(Box::new(
+            phux_protocol::wire::frame::Committed::new(operation, Revision::new(5)),
+        )));
+        assert_eq!(
+            org_rename_verdict(&committed),
+            (BarrierVerdict::Applied, None)
+        );
+        assert_eq!(
+            org_rename_verdict(&CommandResult::Refused(Refusal::NameTaken)),
+            (BarrierVerdict::NotApplied, Some(Refusal::NameTaken))
+        );
+        assert_eq!(
+            org_rename_verdict(&CommandResult::Refused(Refusal::NotFound)).0,
+            BarrierVerdict::Gone
         );
     }
 
