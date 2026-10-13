@@ -12,9 +12,11 @@ reading; the server only starts, stops, and serves that reading. This
 page is the target. No collector is built.
 
 [ADR-0160](../adr/0160-usage-collection-is-a-supervised-child.md) is the
-decision. This page is the contract an implementer can build without
-reopening it. Nothing in the tree spawns a collector, reads a usage
-snapshot, or defines `[usage]`.
+decision, and it is still Proposed. This page is the contract an
+implementer can build without reopening it. Nothing in the tree spawns
+a collector, reads a usage snapshot, or defines `[usage]`. Three
+choices are still open for Patrick; they are the Open decisions
+section of that ADR. The answers below are the draft.
 
 ## Ownership
 
@@ -54,12 +56,19 @@ When the flag is true:
 3. On server shutdown the server signals the child, waits, then kills
    it. The wait is 2 seconds. That limit is a hunch.
 4. If the server process disappears without running that stop, the
-   child still exits. Parent-death is part of the contract; the
-   mechanism is the implementer's.
+   child still exits. On Linux the child calls
+   `prctl(PR_SET_PDEATHSIG, SIGTERM)` and, if the parent has already
+   gone, exits itself. On macOS the parent holds the write end of a
+   pipe and the child exits when a read on that pipe returns EOF. A
+   kqueue `NOTE_EXIT` watch on the parent pid is the acceptable
+   substitute on macOS.
 5. If the child exits while the flag is still enabled, the server
    restarts it. Backoff starts at 1 second and doubles, capped at 30
    seconds. After five consecutive exits the server leaves it down
-   until the next server start. Those numbers are hunches.
+   until the next server start. Those numbers are hunches. What the
+   user sees is fixed: the usage reading is `unavailable`, and
+   `phux doctor` prints one line that the collector stopped after five
+   restarts and stays down until the next server start.
 6. The supervisor waits asynchronously. It does not run on a PTY actor,
    and a collector failure does not tear down the server.
 
@@ -122,7 +131,7 @@ as Token Tach's burn default.
 | status | When | Totals |
 |---|---|---|
 | `disabled` | The flag was false at server start | Omitted. The server does not read a snapshot |
-| `unavailable` | Enabled, and no snapshot exists, or the child is down and left none | Omitted |
+| `unavailable` | Enabled, and no snapshot exists, or the supervisor has stopped restarting the child | Omitted |
 | `stale` | A snapshot exists and `updated_at_ms` is older than 90 seconds | Last published numbers |
 | `ok` | A snapshot exists and `updated_at_ms` is within 90 seconds | That snapshot |
 
@@ -130,7 +139,29 @@ The 90 second window is a hunch: three missed 30 second heartbeats.
 While healthy, the child rewrites the snapshot at least every 30
 seconds even when totals are unchanged, and at most once every 2
 seconds when events arrive. Clients must not treat `stale` or
-`unavailable` as a live zero.
+`unavailable` as a live zero. A supervisor that has stopped
+restarting reports `unavailable` and omits totals even when an older
+snapshot file is still on disk.
+
+## Who can see the reading
+
+The collector writes a file on the server machine. A client sees a
+number only by sending the usage command to the server that collected
+it.
+
+In this draft any direct client of that server can request the
+reading, local or remote, and the answer includes estimated cost.
+Remote means a client attached on the transports in
+[transport.md](./transport.md). Mobile is that kind of client: the
+phone does not tail files, and it sees a reading only by asking a
+server. Whether remote and mobile clients should see cost is open
+for Patrick
+([ADR-0160](../adr/0160-usage-collection-is-a-supervised-child.md)).
+
+A federation hub does not collect and does not mirror the snapshot.
+This slice does not relay the usage command to a satellite, so a
+client attached only to a hub cannot see a satellite's reading. That
+holds either way Patrick decides the remote-cost question.
 
 ## First source and scope
 
@@ -139,8 +170,28 @@ each discovered `projects` directory, including
 `subagents/agent-*.jsonl`. Root discovery matches Token Tach's Claude
 tailer: comma-separated `CLAUDE_CONFIG_DIR`, then `~/.config/claude`,
 then `~/.claude`, keeping directories that exist. Reads are read-only.
-The server user's files count, including sessions launched outside
-phux.
+
+The collector counts Claude sessions phux did not launch. A Claude
+Code process the user started outside phux still lands in these files,
+and this draft adds those tokens to the same totals. That default is
+open for Patrick
+([ADR-0160](../adr/0160-usage-collection-is-a-supervised-child.md)).
+
+This tail is a different record from
+[ADR-0156](../adr/0156-agent-transcript-records.md). The Pi and Claude
+integrations phux ships append what the pane shows onto the
+AgentSession as `provider_raw` records in the `phux.transcript/v1`
+convention. `PHUX_AGENT_TRANSCRIPT=full` adds tool output;
+`PHUX_AGENT_TRANSCRIPT=0` turns those records off. The collector does
+not read that stream and does not consult the variable. Turning
+transcripts off leaves collection running, and enabling collection
+leaves the transcript setting alone. The collector keeps usage fields
+only: token counts, model, message id, and request id.
+
+The collector makes no network calls. It does not fetch a price table,
+does not perform Token Tach's OAuth allowance exchange, does not dial
+the phux server, and does not upload telemetry. The snapshot file is
+the only output.
 
 Counted lines are assistant messages with usage objects. Dedup key is
 `message.id` plus `requestId`, or `message.id` alone when `requestId`
@@ -170,15 +221,73 @@ the offsets. Lines appended while the collector was stopped are counted
 once on resume. A crash while enabled resumes from the last durable
 offsets and dedup keys, also without double-counting.
 
+A line is counted only once it is complete. Bytes after the last
+newline stay in a per-file carry and are not parsed. The durable
+offset sits on a line boundary: the raw read position minus the carry.
+A crash therefore resumes at the start of an unfinished line, and a
+finished line is not applied twice.
+
+The carry is capped at 1 MiB. Token Tach releases a finished carry
+buffer above that size (`carry_shrink_threshold`) and still parses the
+line. This contract discards a line that reaches 1 MiB with no
+newline, so one transcript line cannot pin the child. The carry is
+cleared, the offset advances past the discarded span, and bytes up to
+the next newline are skipped. That line is not counted.
+
+If the file's size is below the stored offset, it was truncated or
+rotated. The offset resets to 0 and the carry is dropped. If the
+path's device and inode differ from the pair stored with the offset,
+the path was replaced. The offset resets to 0 and the carry is dropped
+even when the new file is longer than the old offset. Dedup keys
+survive either reset, so a message already counted stays counted.
+
+A dedup key is `message.id` and `requestId` joined by `:`, or
+`message.id` alone. Each stored key is at most 512 bytes. A longer id
+is still counted and the offset still advances, and the key itself is
+not stored. The persisted set holds at most 65536 keys. Inserting past
+that cap drops the oldest key. A later reset that re-reads a file can
+count an evicted key again. Those two caps are the growth limits.
+
 The ledger is the collector's state: epoch, rollups, the burn window,
 dedup keys, and file offsets. It is not Token Tach's minute, hour, and
 day history, and it is not a query API. Writes are atomic in the same
 way as the snapshot.
 
+## Price table
+
+Estimated cost comes from a pruned snapshot of the LiteLLM pricing
+database, `model_prices_and_context_window.json`. The bytes are Token
+Tach's `src/core/fixtures/pricing/model_prices.json` at the commit
+pinned below. That prune keeps the claude, gpt, o-series, and codex
+families; this slice prices Claude models from it. The collector does
+not download the table.
+
+A phux release refreshes the table by replacing the embedded snapshot
+and shipping the new binary. There is no runtime refresh. Until that
+release, a model the table does not name stays unpriced.
+
+Resolution follows Token Tach. Look up the exact key, then the segment
+after the last `/`, then the longest table key that is a substring of
+the model id, so a dated id can match its undated row. A model that
+still does not resolve adds nothing to `estimated_cost_usd` and
+increments `unpriced_events`. The reading shows that count. It does
+not show the missing price as zero dollars. `estimated_cost_usd` is
+null when every counted event in that total was unpriced, which is
+the rule already stated under Delivery.
+
 ## What is reused from Token Tach
 
-Read from `phall1/token-tach` at 2026-10-13. Port means the behavior and
-the fixtures, into the Rust collector. The Zig sources are not linked.
+The source pin is [`phall1/token-tach`](https://github.com/phall1/token-tach)
+commit `c4986109698d53a4857fe51321f3668ba9cf32bc` (release 0.10.0,
+2026-09-12, the tree read on 2026-10-13). Port means the behavior and
+the fixtures from that commit, into the Rust collector. The Zig
+sources are not linked. A later Token Tach commit is a pin bump
+recorded next to the notice below.
+
+Token Tach is MIT, copyright 2026 phall. The collector keeps that
+copyright and permission notice beside the ported parser and the price
+snapshot, in a `NOTICE` file in the crate that holds them. The MIT
+terms require the notice in every substantial copy.
 
 | Piece | Disposition |
 |---|---|
@@ -215,13 +324,49 @@ Hunches, until the measurement recorded as phux-0ivk.6:
 
 [docs/performance.md](../performance.md) records phux PTY-byte echo
 medians of 1934 µs and 278 µs on two runs of one loaded host. A fixed
-microsecond budget would be tighter than that spread. The measurement
-compares an enabled server with a disabled server on the same host. If
-enabled echo or input latency falls outside the disabled run's own
-spread, further sources wait.
+microsecond budget would be tighter than that spread. phux-0ivk.6
+compares an enabled server with a disabled server on the same host.
+If enabled echo or input latency falls outside the disabled run's own
+spread, the collector code does not merge. Further sources wait on
+that same result.
 
 Catch-up stays inside the child and yields. It does not run to
 completion on one tick of the server.
+
+## Testing
+
+These tests gate the code that implements this page. They are not
+required of this design document. phux-0ivk.6 is a merge gate for that
+code.
+
+- **Fixtures.** Port Token Tach's Claude fixtures at the pinned
+  commit: `src/core/fixtures/claude/session1.jsonl`,
+  `agent-sub1.jsonl`, and `garbage.jsonl`, and the parse, dedup, and
+  skip-synthetic cases in `src/core/claude.zig` that feed them. The
+  Rust parser matches those results.
+- **Resume.** One test runs the child, disables it, appends lines,
+  enables it again, and crashes it mid-tail. Lines already counted
+  stay counted once across disable, enable, and crash. Lines appended
+  while it was stopped are counted once. The restarted child reads
+  the durable line-boundary offsets and dedup keys.
+- **Partial lines.** A chunk with no newline adds nothing to the
+  totals. The chunk that supplies the newline counts that line once.
+  A line that hits the 1 MiB cap is skipped.
+- **Truncate and inode.** Shrinking a file below the stored offset
+  resets the offset and re-reads. Replacing the file so the device
+  and inode change does the same, including when the new file is
+  longer than the old offset. Messages still in the dedup set are
+  not counted again.
+- **Server stays up.** With the flag false, and with the child
+  crashed, including after the supervisor has stopped restarting,
+  attach, input, and PTY traffic still work. The usage command
+  returns `disabled` or `unavailable` and does not block those paths.
+  After the restart cap, `phux doctor` prints the one line described
+  under Lifecycle.
+- **Latency gate.** phux-0ivk.6, as specified under Budgets, is a
+  merge gate for the collector code. A run whose enabled echo or
+  input latency falls outside the disabled run's own spread does not
+  merge.
 
 ## Status
 

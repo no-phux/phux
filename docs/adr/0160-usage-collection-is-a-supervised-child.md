@@ -12,7 +12,7 @@ is the server user's Claude Code tokens and an estimated cost since
 enable, pulled on demand. Token Tach's parser and prices are reused;
 its history store and UI are not.
 
-Status: Accepted (forward-compat)
+Status: Proposed
 Date: 2026-10-13
 
 ## Context
@@ -58,10 +58,13 @@ not a proven recovery path.
 3. **First source.** Claude Code local JSONL only, for the server user
    on that machine, including sessions phux did not launch. Exact
    assistant token counts; estimated cost from a bundled price table.
-   No allowance, OAuth, other harnesses, system telemetry, or pane
-   attribution. Platforms match the server install matrix (macOS and
-   Linux; not Windows). Cockpit's direct-local PTY is out of scope.
-   Collection follows the server, including a remote one.
+   No allowance, OAuth, other harnesses, system telemetry, pane
+   attribution, or network calls. This tail is separate from the
+   `PHUX_AGENT_TRANSCRIPT` stream
+   ([ADR-0156](./0156-agent-transcript-records.md)). Platforms match
+   the server install matrix (macOS and Linux; not Windows).
+   Cockpit's direct-local PTY is out of scope. Collection follows
+   the server, including a remote one.
 4. **Accounting starts at first enable.** The epoch is that instant.
    Older lines are not counted. Token Tach's `history/` and
    `tailers.json` are not read. Disable stops the process and keeps the
@@ -77,8 +80,8 @@ not a proven recovery path.
    separate fields.
 6. **Budgets.** Disabled and the terminal hot path have hard bounds.
    Idle CPU, RSS, staleness, and restart timing in the contract are
-   hunches until measured. The contract, reuse list, and budget table
-   are in [usage-collector.md](../architecture/usage-collector.md).
+   hunches until measured. The contract, tests, reuse list, and budget
+   table are in [usage-collector.md](../architecture/usage-collector.md).
 
 No code in this tree implements the child, the flag, or the command.
 
@@ -110,7 +113,7 @@ dedup) instead of a second fast-forward mode.
   Claude tree, with separate ledgers. That matches profile isolation
   ([ADR-0080](./0080-socket-lifecycle-and-instance-isolation.md)).
 - Idle CPU, RSS, the 90s stale window, and the restart cap are hunches.
-  A measurement that misses the hot-path bound blocks adding sources.
+  phux-0ivk.6 is a merge gate for the collector code.
 
 ## Alternatives
 
@@ -131,3 +134,16 @@ dedup) instead of a second fast-forward mode.
 - **Fold readings into `GET_PERF`.** Rejected. Performance telemetry
   stays always-on and in-process. Usage stays optional and out of
   process.
+
+## Open decisions
+
+Patrick has not ratified this draft. It stays Proposed until he does.
+
+1. **Sessions outside phux.** This draft counts every Claude Code
+   session on the server user's machine, including ones phux did not
+   launch. The alternative is sessions phux launched, only.
+2. **Remote and mobile cost.** This draft serves tokens and estimated
+   cost to any direct client, including a remote or mobile one. The
+   alternative is local clients only. Federation sees no reading here.
+3. **Status.** Proposed until those two are settled. Accepted
+   (forward-compat) is the status once Patrick ratifies them.
