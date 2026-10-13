@@ -39,6 +39,9 @@ pub mod explain;
 // `SHUTDOWN` / `KILL_RESOURCES` / `KILL_RESOURCE` (`phux kill`).
 pub mod kill;
 pub mod layout_ops;
+// Organization commands behind `ORGANIZATION` (`rm`, `relaunch`, `restore`,
+// `mv`, bulk move, undo, Inbox resolve).
+pub mod org;
 pub mod pane_move;
 pub mod perf;
 pub mod record;
@@ -72,6 +75,6 @@ pub mod vcs;
 pub mod wait;
 pub mod watch;
 
-pub use phux_client_core::{layout, multi_pane, predict, rename};
+pub use phux_client_core::{layout, multi_pane, org_ops, predict, rename};
 // The `phux.transcript/v1` entry inside `provider_raw` records (ADR-0156).
 pub use phux_client_core::session::agent_transcript;

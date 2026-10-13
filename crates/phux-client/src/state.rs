@@ -12,7 +12,10 @@ use phux_protocol::wire::info::SessionSnapshot;
 use crate::agent_meta::{RESOURCE_AGENT_KEY, parse_agent_record};
 use crate::attach::AttachError;
 use crate::attach::connection::{Answer, Connection};
-use crate::selector::{self, AgentIndex, AgentResolveError, AgentTarget, Selector, TagIndex};
+use crate::selector::{
+    self, AgentIndex, AgentResolveError, AgentTarget, Arrangements, ResolveContext, Selector,
+    TagIndex,
+};
 
 /// How much of the fleet a `GET_STATE` answer could not see: one hub
 /// diagnostic per unreachable satellite, empty when complete. Branch on
@@ -70,6 +73,9 @@ pub struct StateView {
     /// The features the answering server advertised, when negotiated: an
     /// empty `hosts` list is authoritative only under `HostSessions`.
     server_features: Option<ServerFeatureSet>,
+    /// The organization records read alongside, when the server advertises
+    /// `ORGANIZATION` and the reader asked for them.
+    organization: Option<Box<crate::org::OrgInventory>>,
 }
 
 impl StateView {
@@ -79,7 +85,20 @@ impl StateView {
             snapshot,
             degradation,
             server_features: None,
+            organization: None,
         }
+    }
+
+    /// Attach the organization records read alongside the snapshot.
+    pub fn with_organization(mut self, organization: Option<crate::org::OrgInventory>) -> Self {
+        self.organization = organization.map(Box::new);
+        self
+    }
+
+    /// The organization records read alongside the snapshot, when any.
+    #[must_use]
+    pub fn organization(&self) -> Option<&crate::org::OrgInventory> {
+        self.organization.as_deref()
     }
 
     /// Record the feature set the answering server negotiated.
@@ -461,14 +480,16 @@ fn resolve_agent_in(
 }
 
 /// Resolve a selector to the Terminals it names, over a fresh connection
-/// only when the form needs metadata.
+/// only when the form needs more than the snapshot.
 ///
 /// `#tag` fetches L3 tags (a failed lookup is a miss). `%name` is singular
 /// (ADR-0075 point 3): exactly the one named Terminal, or a typed refusal —
 /// never the empty miss a set-valued verb would misreport as "no such
-/// target". Every other form is pure snapshot resolution. Input verbs that
-/// need the point 5 write guard resolve `%name` through
-/// [`resolve_agent_target`] with `for_input` instead.
+/// target". `name:N` and `name:N.M` read the session's arrangement from a
+/// server that advertises `ORGANIZATION` (else the legacy windows), and
+/// `^key` reads the organization records. Every other form is pure snapshot
+/// resolution. Input verbs that need the point 5 write guard resolve
+/// `%name` through [`resolve_agent_target`] with `for_input` instead.
 ///
 /// # Errors
 ///
@@ -484,15 +505,81 @@ pub async fn resolve_targets(
                 .await?
                 .terminal,
         ]),
-        Selector::Tag(_) => {
-            let tags = match Connection::connect(socket).await {
-                Ok(mut conn) => fetch_tag_index(&mut conn, snapshot).await,
-                Err(_) => TagIndex::new(),
-            };
-            Ok(selector::resolve_with_tags(selector, snapshot, &tags))
+        Selector::Tag(_) | Selector::Group(..) | Selector::Pane(..) | Selector::Key(_) => {
+            match Connection::connect(socket).await {
+                Ok(mut conn) => Ok(resolve_with_reads(&mut conn, selector, snapshot).await),
+                Err(_) => Ok(selector::resolve(selector, snapshot)),
+            }
         }
         _ => Ok(selector::resolve(selector, snapshot)),
     }
+}
+
+/// Resolve a form that needs reads beyond the snapshot, doing those reads
+/// on `conn`; a failed read resolves as if its input were absent.
+async fn resolve_with_reads(
+    conn: &mut Connection,
+    selector: &Selector,
+    snapshot: &SessionSnapshot,
+) -> Vec<ResourceId> {
+    match selector {
+        Selector::Tag(_) => {
+            let tags = fetch_tag_index(conn, snapshot).await;
+            selector::resolve_with_tags(selector, snapshot, &tags)
+        }
+        Selector::Group(name, _) | Selector::Pane(name, _, _) => {
+            let arrangements = fetch_arrangement(conn, snapshot, name).await;
+            selector::resolve_in(
+                selector,
+                snapshot,
+                &ResolveContext {
+                    arrangements: Some(&arrangements),
+                    ..ResolveContext::default()
+                },
+            )
+        }
+        Selector::Key(_) => {
+            let organization = if crate::org::supported(conn) {
+                crate::org::fetch(conn, phux_protocol::wire::frame::OrgFilter::All, 0x5200)
+                    .await
+                    .ok()
+            } else {
+                None
+            };
+            selector::resolve_in(
+                selector,
+                snapshot,
+                &ResolveContext {
+                    organization: organization.as_ref(),
+                    ..ResolveContext::default()
+                },
+            )
+        }
+        _ => selector::resolve(selector, snapshot),
+    }
+}
+
+/// The arrangement of the session named `name`, when the server advertises
+/// `ORGANIZATION` and the session has one this connection can read.
+pub async fn fetch_arrangement(
+    conn: &mut Connection,
+    snapshot: &SessionSnapshot,
+    name: &str,
+) -> Arrangements {
+    let mut arrangements = Arrangements::new();
+    if !crate::org::supported(conn) {
+        return arrangements;
+    }
+    let Some(session) = snapshot.sessions.iter().find(|s| s.name == name) else {
+        return arrangements;
+    };
+    if let Ok(document) = crate::layout_ops::LayoutOps::new(conn, session.id, 0x5100)
+        .read()
+        .await
+    {
+        arrangements.insert(session.id, document);
+    }
+    arrangements
 }
 
 /// [`resolve_targets`] on an open connection, for verbs that act on the same
@@ -512,9 +599,8 @@ pub async fn resolve_targets_on(
                 .await?
                 .terminal,
         ]),
-        Selector::Tag(_) => {
-            let tags = fetch_tag_index(conn, snapshot).await;
-            Ok(selector::resolve_with_tags(selector, snapshot, &tags))
+        Selector::Tag(_) | Selector::Group(..) | Selector::Pane(..) | Selector::Key(_) => {
+            Ok(resolve_with_reads(conn, selector, snapshot).await)
         }
         _ => Ok(selector::resolve(selector, snapshot)),
     }

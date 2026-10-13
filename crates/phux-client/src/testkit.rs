@@ -38,6 +38,10 @@ use tokio::net::{UnixListener, UnixStream};
 
 use phux_protocol::wire::framing::{self, LENGTH_PREFIX_LEN as LENGTH_PREFIX};
 
+mod org;
+
+pub use org::OrgFixture;
+
 const FIXTURE_STREAM_ID: StreamId =
     StreamId::new(1).expect("fixture stream identifier is non-zero");
 const FIXTURE_BOOTSTRAP_ID: BootstrapId =
@@ -137,6 +141,9 @@ pub struct ScriptSpec {
     keyed_script: Vec<(Scope, String, Vec<FrameKind>)>,
     /// What to do after the script.
     end: EndOfScript,
+    /// The organization every organization command is answered from; see
+    /// [`ScriptSpec::organization`].
+    organization: Option<OrgFixture>,
 }
 
 impl fmt::Debug for ScriptSpec {
@@ -505,6 +512,16 @@ impl ScriptSpec {
         self
     }
 
+    /// Answer every organization command (`docs/spec/L1.md` §5.7) from
+    /// `fixture`, and `GET_STATE` too when no snapshot payload is set.
+    /// Advertise `features_ext.ORGANIZATION` with
+    /// [`Self::server_features_ext`] for a client to send them.
+    #[must_use]
+    pub fn organization(mut self, fixture: OrgFixture) -> Self {
+        self.organization = Some(fixture);
+        self
+    }
+
     /// What the server does once the script is played.
     #[must_use]
     pub const fn end(mut self, end: EndOfScript) -> Self {
@@ -831,8 +848,21 @@ fn command_reply(request_id: u32, command: &Command, spec: &mut ScriptSpec) -> V
                 result: CommandResult::Ok,
             });
         }
+        // The organization commands: `COMMITTED`, `ACCEPTED`, a value, or
+        // `REFUSED`, from the scripted organization.
+        command if command.is_organization() && spec.organization.is_some() => {
+            let result = spec
+                .organization
+                .as_mut()
+                .map_or(CommandResult::Ok, |org| org.answer(command));
+            out.push(FrameKind::CommandResult { request_id, result });
+        }
         Command::GetState { .. } => {
-            let snapshot = spec.states.pop_front().or_else(|| spec.state.clone());
+            let snapshot = spec
+                .states
+                .pop_front()
+                .or_else(|| spec.state.clone())
+                .or_else(|| spec.organization.as_ref().map(OrgFixture::snapshot));
             let result = match (&spec.state_error, snapshot) {
                 (Some((code, message)), _) => CommandResult::Error {
                     code: *code,

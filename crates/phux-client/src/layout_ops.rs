@@ -1,21 +1,35 @@
-//! Headless read-modify-write of a session's persisted TUI layout
-//! (`phux.tui.layout/v1/<session>`, a v3 [`ArrangementDoc`] envelope) over L3
-//! metadata, for the CLI and MCP.
+//! Headless read-modify-write of a session's shared arrangement, for the CLI
+//! and MCP.
 //!
-//! There is deliberately no headless focus mutation (ADR-0049). Writes are
+//! Against a server that advertises `ORGANIZATION`, the arrangement is the
+//! session's record: [`LayoutOps`] reads it with `ARRANGEMENT_GET`,
+//! translates its keys to live handles ([`crate::layout::wire`]), applies the
+//! pure [`apply_mutation`], and writes it back with `ARRANGEMENT_REPLACE`
+//! naming the revision it read: a real compare-and-swap, retried on
+//! `CONFLICT` against a fresh read. A session with no arrangement yet is
+//! seeded through the legacy key, which the server translates into one.
+//!
+//! Against an older server, and always for a named projection key
+//! (ADR-0129), the layout is the v3 [`ArrangementDoc`] envelope under L3
+//! metadata (`phux.tui.layout/v1/<session>`). Writes there are
 //! last-write-wins; a trailing `GET_METADATA` flushes the fire-and-forget SET
-//! and confirms it. Use a dedicated, unsubscribed connection.
+//! and confirms it.
+//!
+//! There is deliberately no headless focus mutation (ADR-0049). Use a
+//! dedicated, unsubscribed connection.
 
-use phux_protocol::ids::{GroupId, ResourceId, SessionId};
-use phux_protocol::wire::frame::{FrameKind, Scope};
+use phux_protocol::ids::{ArrangementKey, GroupId, ResourceId, Revision, SessionId};
+use phux_protocol::wire::frame::{Command, FrameKind, OrgFilter, Refusal, Scope};
 use thiserror::Error;
 
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
+use crate::layout::wire::{EntryBinding, HandleMap, WireError};
 use crate::layout::{
     ArrangementDoc, LayoutDecodeError, LayoutEncodeError, LayoutError, LayoutNode, SplitDir,
     kill_pane, leaves, repair_focus, split_at,
 };
+use crate::org::{self, OrgError, OrgOutcome};
 
 pub use crate::layout::{LAYOUT_KEY, layout_key};
 
@@ -155,6 +169,15 @@ pub enum LayoutOpsError {
         "projection key {0:?} must be `<prefix>.layout/v1/<session-id>` naming the addressed session"
     )]
     InvalidProjectionKey(String),
+    /// An organization request failed.
+    #[error(transparent)]
+    Org(#[from] OrgError),
+    /// The document names a pane that is not a member record of this server.
+    #[error(transparent)]
+    Wire(#[from] WireError),
+    /// Every compare-and-swap attempt lost to a concurrent writer.
+    #[error("the arrangement kept changing underneath this edit; retry")]
+    Conflict,
     /// The confirming read found other bytes than those just written.
     #[error(
         "layout write was not confirmed: the read-back value did not match what was written \
@@ -164,13 +187,32 @@ pub enum LayoutOpsError {
     NotConfirmed,
 }
 
-/// Layout metadata client over a dedicated [`Connection`], allocating
-/// request ids from `first_request_id`.
+/// A session arrangement as read from the server, with what writing it back
+/// needs.
+#[derive(Debug, Clone)]
+pub struct ReadArrangement {
+    /// The handle-space document.
+    pub document: ArrangementDoc,
+    /// The arrangement's key.
+    pub key: ArrangementKey,
+    /// The revision `document` was read at.
+    pub revision: Revision,
+    /// Key-to-handle translation for the session's members.
+    pub handles: HandleMap,
+    /// Entry ids and unplaceable entries, for the write-back.
+    pub binding: EntryBinding,
+}
+
+/// Layout client over a dedicated [`Connection`], allocating request ids from
+/// `first_request_id`. See the module docs for the two paths.
 #[derive(Debug)]
 pub struct LayoutOps<'a> {
     conn: &'a mut Connection,
+    session: SessionId,
     group: GroupId,
     key: String,
+    /// A named projection never maps to the session arrangement (R17).
+    projection: bool,
     next_request_id: u32,
 }
 
@@ -191,8 +233,10 @@ impl<'a> LayoutOps<'a> {
     ) -> Self {
         Self {
             conn,
+            session,
             group,
             key: layout_key(session),
+            projection: false,
             next_request_id: first_request_id,
         }
     }
@@ -213,22 +257,141 @@ impl<'a> LayoutOps<'a> {
         validate_projection_key(&key, session)?;
         Ok(Self {
             conn,
+            session,
             group: DEFAULT_LAYOUT_GROUP_ID,
             key,
+            projection: true,
             next_request_id: first_request_id,
         })
     }
 
-    /// Read and decode this session's current v3 layout. Earlier schemas refuse.
+    /// Whether this client edits the session's arrangement record rather
+    /// than legacy layout metadata.
+    #[must_use]
+    pub fn uses_arrangement(&self) -> bool {
+        !self.projection && org::supported(self.conn)
+    }
+
+    /// Read this session's current layout: its arrangement record, or the v3
+    /// envelope from an older server (earlier schemas refuse).
     ///
     /// # Errors
     ///
-    /// Returns [`LayoutOpsError::MissingLayout`] when the key is absent, plus
-    /// transport, refusal, or envelope decode errors.
+    /// Returns [`LayoutOpsError::MissingLayout`] when the session has none,
+    /// plus transport, refusal, or decode errors.
     pub async fn read(&mut self) -> Result<ArrangementDoc, LayoutOpsError> {
+        if self.uses_arrangement() {
+            return self.read_arrangement().await.map(|read| read.document);
+        }
         let value = self.get_value().await?;
         let bytes = value.ok_or(LayoutOpsError::MissingLayout)?;
         ArrangementDoc::decode_cbor(&bytes).map_err(Into::into)
+    }
+
+    /// Read this session's arrangement record with its key, revision, and
+    /// key translation.
+    ///
+    /// # Errors
+    ///
+    /// [`LayoutOpsError::MissingLayout`] when the session has no arrangement
+    /// (or is not listed), [`LayoutOpsError::Org`] for a failed request.
+    pub async fn read_arrangement(&mut self) -> Result<ReadArrangement, LayoutOpsError> {
+        let request_id = self.allocate_request_id();
+        let inventory = org::fetch(self.conn, OrgFilter::All, request_id).await?;
+        self.next_request_id = self.next_request_id.wrapping_add(64);
+        let session = inventory
+            .session_by_live(self.session)
+            .ok_or(LayoutOpsError::MissingLayout)?;
+        let key = session.arrangement.ok_or(LayoutOpsError::MissingLayout)?;
+        let handles = HandleMap::from_pairs(
+            inventory
+                .members(&session.key)
+                .map(|record| (record.key, record.live.clone())),
+        );
+        let request_id = self.allocate_request_id();
+        let value = match org::arrangement(self.conn, request_id, key).await {
+            Ok(value) => value,
+            Err(OrgError::Refused(Refusal::NotFound)) => return Err(LayoutOpsError::MissingLayout),
+            Err(err) => return Err(err.into()),
+        };
+        let (document, binding) = crate::layout::wire::from_protocol(&value.document, &handles);
+        Ok(ReadArrangement {
+            document,
+            key,
+            revision: value.revision,
+            handles,
+            binding,
+        })
+    }
+
+    /// Replace the arrangement `read` came from with `document`, naming the
+    /// revision it was read at. `Ok(None)` when another writer committed
+    /// first (`CONFLICT`): read again and redo the edit.
+    async fn replace(
+        &mut self,
+        read: &ReadArrangement,
+        document: &ArrangementDoc,
+    ) -> Result<Option<ArrangementDoc>, LayoutOpsError> {
+        let wire = crate::layout::wire::to_protocol(document, &read.handles, &read.binding)?;
+        let command = Command::ArrangementReplace {
+            operation: org::mint_operation(),
+            arrangement: read.key,
+            expected: read.revision,
+            document: wire,
+        };
+        let request_id = self.allocate_request_id();
+        match org::request(self.conn, request_id, command).await?.0 {
+            OrgOutcome::Committed(_) => Ok(Some(document.clone())),
+            OrgOutcome::Refused(Refusal::Conflict { .. }) => Ok(None),
+            OrgOutcome::Refused(refusal) => Err(LayoutOpsError::Refused(
+                crate::org::refusal_sentence(&refusal),
+            )),
+            OrgOutcome::Error { message, .. } => Err(LayoutOpsError::Refused(message)),
+            other => Err(LayoutOpsError::Refused(format!(
+                "unexpected reply: {other:?}"
+            ))),
+        }
+    }
+
+    /// Edit the arrangement with `edit`, compare-and-swap, retrying on
+    /// conflict against a fresh read.
+    async fn edit_arrangement(
+        &mut self,
+        mut edit: impl FnMut(&mut ArrangementDoc) -> Result<(), LayoutOpsError>,
+    ) -> Result<ArrangementDoc, LayoutOpsError> {
+        for _ in 0..org::MAX_CAS_ATTEMPTS {
+            let read = self.read_arrangement().await?;
+            let mut document = read.document.clone();
+            edit(&mut document)?;
+            if let Some(written) = self.replace(&read, &document).await? {
+                return Ok(written);
+            }
+        }
+        Err(LayoutOpsError::Conflict)
+    }
+
+    /// Seed a session that has no arrangement record yet through the legacy
+    /// key (the server translates it into the session's arrangement), then
+    /// read the record back.
+    async fn seed_arrangement(
+        &mut self,
+        fallback: &ArrangementDoc,
+    ) -> Result<ArrangementDoc, LayoutOpsError> {
+        let bytes = fallback.encode_cbor()?;
+        let set_request_id = self.allocate_request_id();
+        self.conn
+            .send(&FrameKind::SetMetadata {
+                request_id: set_request_id,
+                scope: Scope::Group(self.group),
+                key: self.key.clone(),
+                value: bytes,
+            })
+            .await?;
+        match self.read_arrangement().await {
+            Ok(read) => Ok(read.document),
+            Err(LayoutOpsError::MissingLayout) => Ok(fallback.clone()),
+            Err(err) => Err(err),
+        }
     }
 
     /// Read this session's layout, writing and confirming `fallback` only
@@ -241,6 +404,13 @@ impl<'a> LayoutOps<'a> {
         &mut self,
         fallback: ArrangementDoc,
     ) -> Result<ArrangementDoc, LayoutOpsError> {
+        if self.uses_arrangement() {
+            return match self.read().await {
+                Ok(document) => Ok(document),
+                Err(LayoutOpsError::MissingLayout) => self.seed_arrangement(&fallback).await,
+                Err(err) => Err(err),
+            };
+        }
         match self.read().await {
             Ok(workspace) => Ok(workspace),
             Err(LayoutOpsError::MissingLayout) => self.write_and_confirm(&fallback).await,
@@ -258,6 +428,11 @@ impl<'a> LayoutOps<'a> {
         &mut self,
         mutation: LayoutMutation,
     ) -> Result<ArrangementDoc, LayoutOpsError> {
+        if self.uses_arrangement() {
+            return self
+                .edit_arrangement(|document| apply_mutation(document, &mutation))
+                .await;
+        }
         let mut workspace = self.read().await?;
         apply_mutation(&mut workspace, &mutation)?;
         self.write_and_confirm(&workspace).await
@@ -274,6 +449,18 @@ impl<'a> LayoutOps<'a> {
         fallback: ArrangementDoc,
         mutation: LayoutMutation,
     ) -> Result<ArrangementDoc, LayoutOpsError> {
+        if self.uses_arrangement() {
+            match self.read_arrangement().await {
+                Ok(_) => {}
+                Err(LayoutOpsError::MissingLayout) => {
+                    self.seed_arrangement(&fallback).await?;
+                }
+                Err(err) => return Err(err),
+            }
+            return self
+                .edit_arrangement(|document| apply_mutation(document, &mutation))
+                .await;
+        }
         let mut workspace = match self.read().await {
             Ok(workspace) => workspace,
             Err(LayoutOpsError::MissingLayout) => fallback,
@@ -307,6 +494,19 @@ impl<'a> LayoutOps<'a> {
         &mut self,
         workspace: &ArrangementDoc,
     ) -> Result<ArrangementDoc, LayoutOpsError> {
+        if self.uses_arrangement() {
+            return match self.read_arrangement().await {
+                Ok(_) => {
+                    self.edit_arrangement(|document| {
+                        document.clone_from(workspace);
+                        Ok(())
+                    })
+                    .await
+                }
+                Err(LayoutOpsError::MissingLayout) => self.seed_arrangement(workspace).await,
+                Err(err) => Err(err),
+            };
+        }
         let bytes = workspace.encode_cbor()?;
         let set_request_id = self.allocate_request_id();
         self.conn
@@ -1030,5 +1230,153 @@ mod tests {
             seen.as_slice(),
             [FrameKind::GetMetadata { request_id: 20, .. }]
         ));
+    }
+
+    mod organization {
+        use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExtSet};
+        use phux_protocol::ids::{ResourceKey, SessionKey};
+        use phux_protocol::wire::frame::{
+            ArrangementDoc as WireDoc, ArrangementGroup, ArrangementNode, Command, EntryRef,
+            EntryTarget, SessionLifetime,
+        };
+
+        use super::*;
+        use crate::testkit::{OrgFixture, serve_one};
+
+        fn member(key: ResourceKey, n: u8) -> ArrangementNode {
+            ArrangementNode::Leaf(EntryRef {
+                entry: [n; 16],
+                target: EntryTarget::Member(key),
+            })
+        }
+
+        /// A session with two shells, `a` arranged alone in one group.
+        fn arranged() -> (OrgFixture, SessionKey, ResourceKey, ResourceKey) {
+            let mut fixture = OrgFixture::new();
+            let work = fixture.session("work", SessionLifetime::Persistent);
+            let a = fixture.shell(work);
+            let b = fixture.shell(work);
+            fixture.arrangement(
+                work,
+                WireDoc {
+                    groups: vec![ArrangementGroup {
+                        id: [7; 16],
+                        name: Some("main".to_owned()),
+                        tree: member(a, 1),
+                    }],
+                },
+            );
+            (fixture, work, a, b)
+        }
+
+        async fn connect(
+            fixture: OrgFixture,
+        ) -> (
+            Connection,
+            tokio::task::JoinHandle<Vec<FrameKind>>,
+            tempfile::TempDir,
+        ) {
+            let dir = tempfile::tempdir().unwrap();
+            let spec = ScriptSpec::new()
+                .server_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]))
+                .organization(fixture);
+            let (socket, server) = serve_one(dir.path(), spec);
+            (Connection::connect(&socket).await.unwrap(), server, dir)
+        }
+
+        fn replaces(seen: &[FrameKind]) -> Vec<WireDoc> {
+            seen.iter()
+                .filter_map(|frame| match frame {
+                    FrameKind::Command {
+                        command: Command::ArrangementReplace { document, .. },
+                        ..
+                    } => Some(document.clone()),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        /// The read translates keys to live handles; the edit is a
+        /// compare-and-swap retried after a conflict, keeping the entry id
+        /// and group identity it read.
+        #[tokio::test]
+        async fn mutate_is_a_compare_and_swap_retried_on_conflict() {
+            let (fixture, work, a, b) = arranged();
+            let session = fixture.live_session(&work).unwrap();
+            let (pane_a, pane_b) = (fixture.live(&a).unwrap(), fixture.live(&b).unwrap());
+            let (mut conn, server, _dir) = connect(fixture.inject_conflicts(1)).await;
+            let mut ops = LayoutOps::new(&mut conn, session, 10);
+            assert!(ops.uses_arrangement());
+            let read = ops.read().await.unwrap();
+            assert_eq!(read.groups[0].id, [7; 16]);
+            assert_eq!(read.groups[0].name, "main");
+            assert_eq!(
+                leaves(read.groups[0].state.tree.as_ref().unwrap()),
+                vec![pane_a.clone()]
+            );
+            let written = ops
+                .mutate(LayoutMutation::Split {
+                    target: pane_a.clone(),
+                    new_pane: pane_b.clone(),
+                    dir: SplitDir::Horizontal,
+                    ratio: 0.5,
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                leaves(written.groups[0].state.tree.as_ref().unwrap()),
+                vec![pane_a, pane_b]
+            );
+            drop(ops);
+            drop(conn);
+            let seen = server.await.unwrap();
+            let replaces = replaces(&seen);
+            assert_eq!(replaces.len(), 2, "one conflict, then the commit");
+            let entries = crate::layout::wire::wire_leaves(&replaces[1].groups[0].tree);
+            assert_eq!(entries[0].entry, [1; 16], "the read entry id survives");
+            assert_eq!(entries[1].target, EntryTarget::Member(b));
+            assert!(
+                !seen
+                    .iter()
+                    .any(|frame| matches!(frame, FrameKind::SetMetadata { .. })),
+                "no legacy metadata write: {seen:?}"
+            );
+        }
+
+        /// A session without an arrangement is seeded through the legacy key
+        /// (the server translates it); a projection key never touches the
+        /// arrangement.
+        #[tokio::test]
+        async fn a_missing_arrangement_seeds_through_the_legacy_key() {
+            let mut fixture = OrgFixture::new();
+            let work = fixture.session("work", SessionLifetime::Persistent);
+            let a = fixture.shell(work);
+            let session = fixture.live_session(&work).unwrap();
+            let pane = fixture.live(&a).unwrap();
+            let (mut conn, server, _dir) = connect(fixture).await;
+            let seeded = LayoutOps::new(&mut conn, session, 10)
+                .read_or_seed(ArrangementDoc::single(pane.clone()))
+                .await
+                .unwrap();
+            assert_eq!(
+                leaves(seeded.groups[0].state.tree.as_ref().unwrap()),
+                vec![pane]
+            );
+            let projection = LayoutOps::with_key(
+                &mut conn,
+                session,
+                format!("myapp.layout/v1/{}", session.get()),
+                40,
+            )
+            .unwrap();
+            assert!(!projection.uses_arrangement());
+            drop(projection);
+            drop(conn);
+            let seen = server.await.unwrap();
+            assert!(seen.iter().any(|frame| matches!(
+                frame,
+                FrameKind::SetMetadata { key, .. } if *key == layout_key(session)
+            )));
+        }
     }
 }

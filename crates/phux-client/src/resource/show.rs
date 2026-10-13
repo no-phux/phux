@@ -111,11 +111,11 @@ pub async fn show(socket: &Path, resource: &ResourceId) -> Result<ResourceDetail
 }
 
 fn session_name(snapshot: &SessionSnapshot, info: &ResourceInfo) -> Option<String> {
-    let window = snapshot.windows.iter().find(|w| w.id == info.window_id)?;
+    let session = crate::resource::session_of(snapshot, &info.id)?;
     snapshot
         .sessions
         .iter()
-        .find(|s| s.id == window.session_id)
+        .find(|s| s.id == session)
         .map(|s| s.name.clone())
 }
 

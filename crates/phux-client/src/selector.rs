@@ -1,21 +1,29 @@
 //! Client-side selector parsing and resolution (ADR-0021).
 //!
-//! The CLI's `TARGET` grammar names sessions, windows, and panes, none of
-//! which are wire concepts, so selectors resolve client-side against a
-//! `GET_STATE` snapshot to concrete [`ResourceId`]s.
+//! The CLI's `TARGET` grammar names sessions, arrangement groups, and panes,
+//! so selectors resolve client-side against a `GET_STATE` snapshot, plus the
+//! session's arrangement for group forms and the organization records for
+//! key prefixes ([`ResolveContext`]), to concrete [`ResourceId`]s.
 //!
 //! | Form        | Meaning                                             |
 //! |-------------|-----------------------------------------------------|
 //! | `.`         | the focused session (snapshot's `focused_session`)  |
 //! | `=`         | unsupported for headless clients (no focus history) |
 //! | `name`      | a session by name                                   |
-//! | `name:N`    | window index `N` of session `name`                  |
-//! | `name:tag`  | window whose name is `tag` in session `name`        |
-//! | `name:N.M`  | pane index `M` of window `N` of session `name`      |
+//! | `name:N`    | group `N` (0-based) of session `name`'s arrangement |
+//! | `name:tag`  | the group named `tag` in session `name`             |
+//! | `name:N.M`  | leaf `M` (depth-first, 0-based) of group `N`        |
 //! | `@N`        | an opaque local Terminal id (`ResourceId::local(N)`) |
 //! | `host/@N`   | an opaque satellite Terminal id owned by `host`      |
 //! | `#tag`      | every Terminal carrying L3 tag `tag` (`phux.tags/v1`) |
 //! | `%name`     | the one agent named `name` (ADR-0075); see [`resolve_agent`] |
+//! | `^ab12cd`   | the session or resource whose key starts with `ab12cd` |
+//!
+//! Group forms read the session's arrangement when the caller supplies it;
+//! without one (an older server, or a session never arranged) they fall back
+//! to the legacy windows the snapshot lists. A key prefix needs the
+//! organization records; it names a record even when nothing executes, but
+//! resolves to Terminals only for what executes here.
 //!
 //! `host` is an opaque token (any UTF-8, even `/@` or empty); parsing splits
 //! at the final `/@` so the canonical formatter round-trips. `@N` and
@@ -23,10 +31,14 @@
 //! Terminal-kind resources only, so an `AgentSession` never shifts a pane
 //! index (ADR-0102).
 
-use phux_protocol::ids::ResourceId;
+use std::collections::HashMap;
+
+use phux_protocol::ids::{KEY_MIN_PREFIX, KEY_TEXT_LEN, ResourceId, SessionId};
 use phux_protocol::wire::info::SessionSnapshot;
 
 use crate::agent_meta::{AgentMetaState, AgentRecord};
+use crate::layout::ArrangementDoc;
+use crate::org::{KeyMatch, OrgInventory};
 
 /// A parsed selector. Resolution happens later against a snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,10 +47,10 @@ pub enum Selector {
     Current,
     /// `name` — a whole session.
     Session(String),
-    /// `name:N` or `name:tag` — one window of a session.
-    Window(String, WindowRef),
-    /// `name:N.M` or `name:tag.M` — one pane of one window.
-    Pane(String, WindowRef, u16),
+    /// `name:N` or `name:tag` — one arrangement group of a session.
+    Group(String, GroupRef),
+    /// `name:N.M` or `name:tag.M` — one leaf of one group.
+    Pane(String, GroupRef, u16),
     /// `@N` — a Terminal addressed directly by its local wire id.
     ResourceId(u32),
     /// `host/@N` — a Terminal addressed by its hub-qualified wire id.
@@ -54,6 +66,10 @@ pub enum Selector {
     /// `%name` — one agent (ADR-0075), resolved only by [`resolve_agent`];
     /// the set-valued [`resolve_with_tags`] yields nothing for it.
     Agent(String),
+    /// `^ab12cd` — the session or resource whose key starts with this
+    /// prefix (lowercase base32, at least six digits); see
+    /// [`OrgInventory::resolve_key_prefix`].
+    Key(String),
 }
 
 impl Selector {
@@ -78,17 +94,18 @@ impl std::fmt::Display for Selector {
         match self {
             Self::Current => f.write_str("."),
             Self::Session(name) => f.write_str(name),
-            Self::Window(name, window) => write!(f, "{name}:{window}"),
+            Self::Group(name, group) => write!(f, "{name}:{group}"),
             Self::Pane(name, window, pane) => write!(f, "{name}:{window}.{pane}"),
             Self::ResourceId(id) => write!(f, "@{id}"),
             Self::SatelliteResourceId { host, id } => write!(f, "{host}/@{id}"),
             Self::Tag(tag) => write!(f, "#{tag}"),
             Self::Agent(name) => write!(f, "%{name}"),
+            Self::Key(prefix) => write!(f, "^{prefix}"),
         }
     }
 }
 
-impl std::fmt::Display for WindowRef {
+impl std::fmt::Display for GroupRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Index(index) => write!(f, "{index}"),
@@ -97,12 +114,12 @@ impl std::fmt::Display for WindowRef {
     }
 }
 
-/// How a window is addressed within a session: by numeric index or by name.
+/// How a group is addressed within a session: by position or by name.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WindowRef {
-    /// `N` — position in the session's windows list.
+pub enum GroupRef {
+    /// `N` — 0-based position in the session's arrangement.
     Index(u16),
-    /// `tag` — the window's name.
+    /// `tag` — the group's name.
     Tag(String),
 }
 
@@ -123,6 +140,8 @@ pub enum ParseError {
     BadAgentName(String),
     /// `=` requires an attached client's local focus history.
     LastUnsupported,
+    /// `^` carried something other than 6 to 26 base32 digits.
+    BadKeyPrefix(String),
 }
 
 impl std::fmt::Display for ParseError {
@@ -142,6 +161,11 @@ impl std::fmt::Display for ParseError {
             Self::LastUnsupported => write!(
                 f,
                 "'=' requires attached-TUI focus history; use '.' or an explicit target"
+            ),
+            Self::BadKeyPrefix(s) => write!(
+                f,
+                "'^{s}' is not a key prefix ({KEY_MIN_PREFIX} to {KEY_TEXT_LEN} base32 digits, \
+                 a-z and 2-7)"
             ),
         }
     }
@@ -193,6 +217,16 @@ pub fn parse(raw: &str) -> Result<Selector, ParseError> {
             .map_err(|_| ParseError::BadResourceId(rest.to_owned()))?;
         return Ok(Selector::ResourceId(id));
     }
+    if let Some(prefix) = raw.strip_prefix('^') {
+        let valid = (KEY_MIN_PREFIX..=KEY_TEXT_LEN).contains(&prefix.len())
+            && prefix
+                .bytes()
+                .all(|b| b.is_ascii_alphabetic() || (b'2'..=b'7').contains(&b));
+        if !valid {
+            return Err(ParseError::BadKeyPrefix(prefix.to_owned()));
+        }
+        return Ok(Selector::Key(prefix.to_ascii_lowercase()));
+    }
     if let Some(tag) = raw.strip_prefix('#') {
         if tag.is_empty() {
             return Err(ParseError::EmptyTag);
@@ -200,29 +234,29 @@ pub fn parse(raw: &str) -> Result<Selector, ParseError> {
         return Ok(Selector::Tag(tag.to_owned()));
     }
 
-    // `name`, `name:window`, or `name:window.pane`.
+    // `name`, `name:group`, or `name:group.pane`.
     let Some((name, locus)) = raw.split_once(':') else {
         return Ok(Selector::Session(raw.to_owned()));
     };
     let name = name.to_owned();
 
-    // The first `.` separates the window locus from an optional pane index.
-    if let Some((window_part, pane_part)) = locus.split_once('.') {
-        let window = parse_window_ref(window_part);
+    // The first `.` separates the group locus from an optional pane index.
+    if let Some((group_part, pane_part)) = locus.split_once('.') {
+        let group = parse_group_ref(group_part);
         let pane = pane_part
             .parse::<u16>()
             .map_err(|_| ParseError::BadPaneIndex(pane_part.to_owned()))?;
-        Ok(Selector::Pane(name, window, pane))
+        Ok(Selector::Pane(name, group, pane))
     } else {
-        Ok(Selector::Window(name, parse_window_ref(locus)))
+        Ok(Selector::Group(name, parse_group_ref(locus)))
     }
 }
 
-/// A window locus is an [`WindowRef::Index`] when fully numeric, else a
-/// [`WindowRef::Tag`].
-fn parse_window_ref(part: &str) -> WindowRef {
+/// A group locus is a [`GroupRef::Index`] when fully numeric, else a
+/// [`GroupRef::Tag`].
+fn parse_group_ref(part: &str) -> GroupRef {
     part.parse::<u16>()
-        .map_or_else(|_| WindowRef::Tag(part.to_owned()), WindowRef::Index)
+        .map_or_else(|_| GroupRef::Tag(part.to_owned()), GroupRef::Index)
 }
 
 /// Longest agent name `%` can address (ADR-0075 point 4:
@@ -254,6 +288,21 @@ pub fn resolve(selector: &Selector, snapshot: &SessionSnapshot) -> Vec<ResourceI
 /// A map from `ResourceId` to its L3 tags (`phux.tags/v1`).
 pub type TagIndex = std::collections::HashMap<ResourceId, Vec<String>>;
 
+/// Session arrangements in handle space, by live session id.
+pub type Arrangements = HashMap<SessionId, ArrangementDoc>;
+
+/// What a selector may need beyond the snapshot: tags for `#tag`,
+/// arrangements for group forms, organization records for `^key`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ResolveContext<'a> {
+    /// Tags for `#tag`.
+    pub tags: Option<&'a TagIndex>,
+    /// Arrangements for `name:N` and `name:N.M`.
+    pub arrangements: Option<&'a Arrangements>,
+    /// Organization records for `^key`.
+    pub organization: Option<&'a OrgInventory>,
+}
+
 /// Like [`resolve`], but a `#tag` yields every Terminal carrying the tag in
 /// `tags`, in snapshot order (ADR-0027).
 ///
@@ -266,13 +315,34 @@ pub fn resolve_with_tags(
     snapshot: &SessionSnapshot,
     tags: &TagIndex,
 ) -> Vec<ResourceId> {
+    resolve_in(
+        selector,
+        snapshot,
+        &ResolveContext {
+            tags: Some(tags),
+            ..ResolveContext::default()
+        },
+    )
+}
+
+/// Resolve `selector` with everything `context` supplies.
+///
+/// `#tag` resolves against its tags, group forms against its arrangements,
+/// `^key` against its organization records. A form whose input is missing
+/// falls back (group forms to legacy windows) or misses (`#tag`, `^key`).
+#[must_use]
+pub fn resolve_in(
+    selector: &Selector,
+    snapshot: &SessionSnapshot,
+    context: &ResolveContext<'_>,
+) -> Vec<ResourceId> {
     match selector {
         Selector::Current => terminals_in_session(snapshot, snapshot.focused_session),
         Selector::Session(name) => session_id_by_name(snapshot, name)
             .map_or_else(Vec::new, |sid| terminals_in_session(snapshot, sid)),
-        Selector::Window(name, window) => resolve_window(snapshot, name, window),
-        Selector::Pane(name, window, pane_index) => {
-            let panes = resolve_window(snapshot, name, window);
+        Selector::Group(name, group) => resolve_group(snapshot, context, name, group),
+        Selector::Pane(name, group, pane_index) => {
+            let panes = resolve_group(snapshot, context, name, group);
             panes
                 .into_iter()
                 .nth(*pane_index as usize)
@@ -283,11 +353,40 @@ pub fn resolve_with_tags(
         Selector::SatelliteResourceId { host, id } => {
             resolve_wire_id(snapshot, ResourceId::satellite(host.as_str(), *id))
         }
-        Selector::Tag(tag) => crate::resource::terminals(snapshot)
-            .map(|p| p.id.clone())
-            .filter(|id| tags.get(id).is_some_and(|ts| ts.iter().any(|t| t == tag)))
-            .collect(),
+        Selector::Tag(tag) => {
+            let Some(tags) = context.tags else {
+                return Vec::new();
+            };
+            crate::resource::terminals(snapshot)
+                .map(|p| p.id.clone())
+                .filter(|id| tags.get(id).is_some_and(|ts| ts.iter().any(|t| t == tag)))
+                .collect()
+        }
         Selector::Agent(_) => Vec::new(),
+        Selector::Key(prefix) => resolve_key(snapshot, context.organization, prefix),
+    }
+}
+
+/// The live Terminals a key prefix names: a session's, or one resource's
+/// when it executes here.
+fn resolve_key(
+    snapshot: &SessionSnapshot,
+    organization: Option<&OrgInventory>,
+    prefix: &str,
+) -> Vec<ResourceId> {
+    let Some(organization) = organization else {
+        return Vec::new();
+    };
+    match organization.resolve_key_prefix(prefix) {
+        Ok(KeyMatch::Session(session)) => session
+            .live
+            .map_or_else(Vec::new, |live| terminals_in_session(snapshot, live)),
+        Ok(KeyMatch::Resource(resource)) => resource
+            .live
+            .filter(|id| crate::resource::find(snapshot, id).is_some())
+            .into_iter()
+            .collect(),
+        Err(_) => Vec::new(),
     }
 }
 
@@ -654,12 +753,13 @@ pub fn whole_session_name(selector: &Selector, snapshot: &SessionSnapshot) -> Op
     let session_id = match selector {
         Selector::Current => snapshot.focused_session,
         Selector::Session(name) => session_id_by_name(snapshot, name)?,
-        Selector::Window(..)
+        Selector::Group(..)
         | Selector::Pane(..)
         | Selector::ResourceId(_)
         | Selector::SatelliteResourceId { .. }
         | Selector::Tag(_)
-        | Selector::Agent(_) => return None,
+        | Selector::Agent(_)
+        | Selector::Key(_) => return None,
     };
     snapshot
         .sessions
@@ -700,48 +800,57 @@ fn resolve_wire_id(snapshot: &SessionSnapshot, wanted: ResourceId) -> Vec<Resour
 }
 
 /// All Terminal-kind resources in `session`, in snapshot order.
-fn terminals_in_session(
-    snapshot: &SessionSnapshot,
-    session: phux_protocol::ids::SessionId,
-) -> Vec<ResourceId> {
-    let window_ids: Vec<_> = snapshot
-        .windows
-        .iter()
-        .filter(|w| w.session_id == session)
-        .map(|w| w.id)
-        .collect();
-    crate::resource::terminals(snapshot)
-        .filter(|p| window_ids.contains(&p.window_id))
+fn terminals_in_session(snapshot: &SessionSnapshot, session: SessionId) -> Vec<ResourceId> {
+    crate::resource::terminals_in(snapshot, session)
         .map(|p| p.id.clone())
         .collect()
 }
 
-/// Terminals in the window `name`/`window` names, in snapshot order.
-fn resolve_window(snapshot: &SessionSnapshot, name: &str, window: &WindowRef) -> Vec<ResourceId> {
+/// Terminals in the group `name`/`group` names: the group's leaves in
+/// depth-first order when the session's arrangement is known, else the
+/// legacy window's Terminals in snapshot order.
+fn resolve_group(
+    snapshot: &SessionSnapshot,
+    context: &ResolveContext<'_>,
+    name: &str,
+    group: &GroupRef,
+) -> Vec<ResourceId> {
     let Some(sid) = session_id_by_name(snapshot, name) else {
         return Vec::new();
     };
+    if let Some(arrangement) = context.arrangements.and_then(|all| all.get(&sid)) {
+        let found = match group {
+            GroupRef::Index(n) => arrangement.groups.get(usize::from(*n)),
+            GroupRef::Tag(tag) => arrangement.groups.iter().find(|g| g.name == *tag),
+        };
+        return found
+            .and_then(|g| g.state.tree.as_ref())
+            .map(crate::layout::leaves)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|id| {
+                crate::resource::find(snapshot, id).is_some_and(crate::resource::is_terminal)
+            })
+            .collect();
+    }
     let window_id = snapshot
         .windows
         .iter()
         .filter(|w| w.session_id == sid)
-        .find(|w| match window {
-            WindowRef::Index(n) => w.index == *n,
-            WindowRef::Tag(tag) => w.name == *tag,
+        .find(|w| match group {
+            GroupRef::Index(n) => w.index == *n,
+            GroupRef::Tag(tag) => w.name == *tag,
         })
         .map(|w| w.id);
     window_id.map_or_else(Vec::new, |wid| {
-        crate::resource::terminals(snapshot)
+        crate::resource::terminals_in(snapshot, sid)
             .filter(|p| p.window_id == wid)
             .map(|p| p.id.clone())
             .collect()
     })
 }
 
-fn session_id_by_name(
-    snapshot: &SessionSnapshot,
-    name: &str,
-) -> Option<phux_protocol::ids::SessionId> {
+fn session_id_by_name(snapshot: &SessionSnapshot, name: &str) -> Option<SessionId> {
     snapshot
         .sessions
         .iter()
@@ -802,6 +911,8 @@ mod tests {
             "a:1.2",
             "devbox/@7",
             "/@1",
+            "^abcdef",
+            "^",
         ];
         for name in names {
             let addressable =
@@ -835,15 +946,15 @@ mod tests {
             ("work", Selector::Session(session("work"))),
             (
                 "work:1",
-                Selector::Window(session("work"), WindowRef::Index(1)),
+                Selector::Group(session("work"), GroupRef::Index(1)),
             ),
             (
                 "work:editor",
-                Selector::Window(session("work"), WindowRef::Tag(session("editor"))),
+                Selector::Group(session("work"), GroupRef::Tag(session("editor"))),
             ),
             (
                 "work:1.2",
-                Selector::Pane(session("work"), WindowRef::Index(1), 2),
+                Selector::Pane(session("work"), GroupRef::Index(1), 2),
             ),
             ("@42", Selector::ResourceId(42)),
             (
@@ -863,6 +974,7 @@ mod tests {
             ("#build", Selector::Tag(session("build"))),
             ("%build", Selector::Agent(session("build"))),
             ("%r2-d2_9", Selector::Agent(session("r2-d2_9"))),
+            ("^AB23cd", Selector::Key(session("ab23cd"))),
         ] {
             assert_eq!(parse(raw).unwrap(), expected, "{raw}");
         }
@@ -883,6 +995,17 @@ mod tests {
         assert_eq!(parse("#"), Err(ParseError::EmptyTag));
         assert_eq!(parse("="), Err(ParseError::LastUnsupported));
         assert_eq!(parse("%"), Err(ParseError::EmptyAgentName));
+        for bad in ["^", "^abc", "^ab1cde", &"a".repeat(30)] {
+            let raw = if bad.starts_with('^') {
+                bad.to_owned()
+            } else {
+                format!("^{bad}")
+            };
+            assert!(
+                matches!(parse(&raw), Err(ParseError::BadKeyPrefix(_))),
+                "{raw}"
+            );
+        }
         // Hub-local: `%a/@1` is a bad agent name, never a satellite id.
         let longest = "a".repeat(AGENT_NAME_MAX_LEN);
         assert_eq!(
@@ -1420,5 +1543,98 @@ mod tests {
             }
         );
         assert_eq!(err.exit_code(), 2);
+    }
+
+    /// `name:N` and `name:N.M` resolve against the arrangement when it is
+    /// known: group N by position or name, leaf M in depth-first order.
+    #[test]
+    fn group_forms_resolve_against_the_arrangement() {
+        use crate::layout::{Group, LayoutNode, LayoutState, SplitDir};
+        let snap = fixture();
+        let leaf = |id| LayoutNode::Leaf(ResourceId::local(id));
+        let arrangement = ArrangementDoc {
+            groups: vec![
+                Group::new(
+                    "shell".to_owned(),
+                    LayoutState::single(ResourceId::local(100)),
+                ),
+                Group::new(
+                    "editor".to_owned(),
+                    LayoutState {
+                        tree: Some(LayoutNode::Split {
+                            dir: SplitDir::Horizontal,
+                            ratio: 0.5,
+                            left: Box::new(leaf(102)),
+                            right: Box::new(LayoutNode::Split {
+                                dir: SplitDir::Vertical,
+                                ratio: 0.5,
+                                left: Box::new(leaf(101)),
+                                right: Box::new(leaf(999)),
+                            }),
+                        }),
+                        focus: None,
+                    },
+                ),
+            ],
+            active: 0,
+        };
+        let arrangements = Arrangements::from([(SessionId::new(1), arrangement)]);
+        let context = ResolveContext {
+            arrangements: Some(&arrangements),
+            ..ResolveContext::default()
+        };
+        for (raw, expected) in [
+            ("work:1", ids(&[102, 101])),
+            ("work:editor", ids(&[102, 101])),
+            ("work:1.0", ids(&[102])),
+            ("work:1.1", ids(&[101])),
+            ("work:0.0", ids(&[100])),
+            ("work:2", vec![]),
+            // A session without a known arrangement keeps its legacy windows.
+            ("play:0", ids(&[200])),
+        ] {
+            assert_eq!(
+                resolve_in(&parse(raw).unwrap(), &snap, &context),
+                expected,
+                "{raw}"
+            );
+        }
+    }
+
+    /// `^key` names a session's or a resource's record, through the
+    /// organization records; without them it misses.
+    #[test]
+    fn key_prefixes_resolve_through_the_organization_records() {
+        use crate::testkit::OrgFixture;
+        use phux_protocol::wire::frame::SessionLifetime;
+        let mut fixture = OrgFixture::new();
+        let work = fixture.session("work", SessionLifetime::Persistent);
+        let shell = fixture.shell(work);
+        let other = fixture.shell(work);
+        let snap = fixture.snapshot();
+        let inventory = crate::org::OrgInventory {
+            authority: phux_protocol::ids::AuthorityId::new([1; 16]).unwrap(),
+            inbox: None,
+            sessions: fixture.sessions().to_vec(),
+            resources: fixture.resources().to_vec(),
+            snapshot_revision: phux_protocol::ids::Revision::new(1),
+            journal_seq: 0,
+            total_intake: 0,
+            degradation: crate::state::Degradation::default(),
+        };
+        let context = ResolveContext {
+            organization: Some(&inventory),
+            ..ResolveContext::default()
+        };
+        let key = |text: String| parse(&format!("^{}", &text[..8])).unwrap();
+        assert_eq!(
+            resolve_in(&key(shell.to_string()), &snap, &context),
+            vec![fixture.live(&shell).unwrap()]
+        );
+        assert_eq!(
+            resolve_in(&key(work.to_string()), &snap, &context),
+            vec![fixture.live(&shell).unwrap(), fixture.live(&other).unwrap()]
+        );
+        assert!(resolve(&key(work.to_string()), &snap).is_empty());
     }
 }

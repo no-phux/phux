@@ -11,6 +11,7 @@
 use std::path::Path;
 
 use phux_protocol::ResourceId;
+use phux_protocol::ids::SessionId;
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{AttachTarget, Command, CommandResult, CommandValue, StateScope};
@@ -121,25 +122,60 @@ fn is_named_spec(arg: &str) -> bool {
         || strip_prefix_ci(arg, "m-").is_some()
 }
 
-/// Resolve `target` to its focused pane: the session's `active_window`, then
-/// that window's `active_resource`; [`AttachTarget::Last`] is the server-wide
-/// `focused_resource`.
-fn resolve_focused_pane(snapshot: &SessionSnapshot, target: &AttachTarget) -> Option<ResourceId> {
-    let session = match target {
-        AttachTarget::Last => return Some(snapshot.focused_resource.clone()),
-        AttachTarget::ByName(name) | AttachTarget::CreateIfMissing { name, .. } => {
-            snapshot.sessions.iter().find(|s| &s.name == name)?
-        }
-        AttachTarget::ById(id) => snapshot.sessions.iter().find(|s| s.id == *id)?,
+/// The session `target` names, or `None` for [`AttachTarget::Last`].
+fn target_session<'a>(
+    snapshot: &'a SessionSnapshot,
+    target: &AttachTarget,
+) -> Result<Option<&'a phux_protocol::wire::info::SessionInfo>, ()> {
+    match target {
+        AttachTarget::Last => Ok(None),
+        AttachTarget::ByName(name) | AttachTarget::CreateIfMissing { name, .. } => snapshot
+            .sessions
+            .iter()
+            .find(|s| &s.name == name)
+            .map(Some)
+            .ok_or(()),
+        AttachTarget::ById(id) => snapshot
+            .sessions
+            .iter()
+            .find(|s| s.id == *id)
+            .map(Some)
+            .ok_or(()),
         // `#[non_exhaustive]`: a newer target is not resolvable here.
-        _ => return None,
+        _ => Err(()),
+    }
+}
+
+/// The pane a session's input goes to without an explicit target (R14): the
+/// session's most recent input target, which the server reports as its
+/// legacy window's active resource, else `first_leaf` (the first leaf of the
+/// session's first arrangement group), else its first Terminal.
+/// [`AttachTarget::Last`] is the server-wide `focused_resource`.
+fn resolve_focused_pane(
+    snapshot: &SessionSnapshot,
+    target: &AttachTarget,
+    first_leaf: Option<&ResourceId>,
+) -> Option<ResourceId> {
+    let Some(session) = target_session(snapshot, target).ok()? else {
+        return Some(snapshot.focused_resource.clone());
     };
-    let active_window = session.active_window?;
-    snapshot
-        .windows
-        .iter()
-        .find(|w| w.id == active_window)
+    let live = |id: &ResourceId| {
+        crate::resource::find(snapshot, id).is_some_and(crate::resource::is_terminal)
+            && crate::resource::session_of(snapshot, id) == Some(session.id)
+    };
+    let recent = session
+        .active_window
+        .and_then(|window| snapshot.windows.iter().find(|w| w.id == window))
+        .or_else(|| snapshot.windows.iter().find(|w| w.session_id == session.id))
         .and_then(|w| w.active_resource.clone())
+        .filter(|id| live(id));
+    recent
+        .or_else(|| first_leaf.filter(|id| live(id)).cloned())
+        .or_else(|| {
+            crate::resource::terminals_in(snapshot, session.id)
+                .next()
+                .map(|info| info.id.clone())
+        })
 }
 
 /// Send `keys` to the focused pane of `target` without attaching, returning
@@ -184,9 +220,29 @@ pub(crate) async fn focused_pane(
             )));
         }
     };
-    resolve_focused_pane(&snapshot, target).ok_or_else(|| {
+    let first_leaf = match target_session(&snapshot, target) {
+        Ok(Some(session)) if crate::org::supported(conn) => {
+            first_arranged_leaf(conn, session.id).await
+        }
+        _ => None,
+    };
+    resolve_focused_pane(&snapshot, target, first_leaf.as_ref()).ok_or_else(|| {
         AttachError::Refused("no such session, or it has no focused pane".to_owned())
     })
+}
+
+/// The first leaf of `session`'s first arrangement group, when the session
+/// has an arrangement this connection can read.
+async fn first_arranged_leaf(conn: &mut Connection, session: SessionId) -> Option<ResourceId> {
+    let arrangement = crate::layout_ops::LayoutOps::new(conn, session, 0x5300)
+        .read()
+        .await
+        .ok()?;
+    arrangement
+        .groups
+        .iter()
+        .find_map(|group| group.state.tree.as_ref())
+        .and_then(|tree| crate::layout::leaves(tree).into_iter().next())
 }
 
 /// Send `keys` to a pre-resolved `pane` via `ROUTE_INPUT`.
@@ -310,6 +366,48 @@ mod tests {
             events
                 .iter()
                 .all(|event| matches!(event, InputEvent::Key(_)))
+        );
+    }
+
+    /// R14: a session's input goes to its most recent input target, else the
+    /// first leaf of its first group, else its first Terminal.
+    #[test]
+    fn the_default_pane_is_recent_then_first_leaf_then_first_terminal() {
+        use phux_protocol::ids::WindowId;
+        use phux_protocol::wire::info::{ResourceInfo, SessionInfo, WindowInfo};
+        let session = SessionId::new(1);
+        let window = WindowId::new(1);
+        let resources = vec![
+            ResourceInfo::new(ResourceId::local(1), window, 80, 24).with_session(Some(session)),
+            ResourceInfo::new(ResourceId::local(2), window, 80, 24).with_session(Some(session)),
+        ];
+        let target = AttachTarget::ByName("work".to_owned());
+        let with_recent = SessionSnapshot::new(session, window, ResourceId::local(1))
+            .with_sessions(vec![SessionInfo::new(session, "work")])
+            .with_windows(vec![
+                WindowInfo::new(window, session, "window-0")
+                    .with_active_resource(Some(ResourceId::local(2))),
+            ])
+            .with_resources(resources.clone());
+        assert_eq!(
+            resolve_focused_pane(&with_recent, &target, Some(&ResourceId::local(1))),
+            Some(ResourceId::local(2))
+        );
+        let without = SessionSnapshot::new(session, window, ResourceId::local(1))
+            .with_sessions(vec![SessionInfo::new(session, "work")])
+            .with_resources(resources);
+        assert_eq!(
+            resolve_focused_pane(&without, &target, Some(&ResourceId::local(2))),
+            Some(ResourceId::local(2))
+        );
+        assert_eq!(
+            resolve_focused_pane(&without, &target, None),
+            Some(ResourceId::local(1))
+        );
+        assert_eq!(
+            resolve_focused_pane(&without, &target, Some(&ResourceId::local(9))),
+            Some(ResourceId::local(1)),
+            "a leaf that is not a live Terminal of the session is skipped"
         );
     }
 }

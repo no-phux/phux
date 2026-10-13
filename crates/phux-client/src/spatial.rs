@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use phux_protocol::ids::{ResourceId, SessionId, WindowId};
+use phux_protocol::ids::{ResourceId, SessionId};
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, StateScope};
 use phux_protocol::wire::info::SessionSnapshot;
 use serde_json::{Value, json};
@@ -340,7 +340,7 @@ fn move_refusal(error: &PaneMoveError) -> SpatialRefusal {
             "run `phux ls` to see live sessions and panes",
             1,
         ),
-        PaneMoveError::MoveRefused(_) => (
+        PaneMoveError::MoveRefused(_) | PaneMoveError::Org(_) => (
             codes::MOVE_REFUSED,
             "run `phux ls` to re-check both panes, then retry",
             1,
@@ -779,20 +779,7 @@ fn same_session(
 }
 
 fn session_for(snapshot: &SessionSnapshot, terminal: &ResourceId) -> Option<SessionId> {
-    let window = window_for(snapshot, terminal)?;
-    snapshot
-        .windows
-        .iter()
-        .find(|candidate| candidate.id == window)
-        .map(|candidate| candidate.session_id)
-}
-
-fn window_for(snapshot: &SessionSnapshot, terminal: &ResourceId) -> Option<WindowId> {
-    snapshot
-        .resources
-        .iter()
-        .find(|pane| &pane.id == terminal)
-        .map(|pane| pane.window_id)
+    crate::resource::session_of(snapshot, terminal)
 }
 
 fn local_id(terminal: &ResourceId) -> u32 {
@@ -808,7 +795,7 @@ fn local_id(terminal: &ResourceId) -> u32 {
 )]
 mod tests {
     use super::*;
-    use phux_protocol::ids::SatelliteHost;
+    use phux_protocol::ids::{SatelliteHost, WindowId};
     use phux_protocol::wire::info::{ResourceInfo, SessionInfo, WindowInfo};
 
     fn snapshot() -> SessionSnapshot {

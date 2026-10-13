@@ -68,8 +68,9 @@ pub enum SessionNameError {
     /// `.` (the focused pane) or `=` (the previous pane).
     #[error("{0:?} is a reserved selector")]
     Reserved(String),
-    /// Starts with `@` (a pane id), `#` (a tag), or `%` (an agent).
-    #[error("a session name cannot start with `{0}`, which marks a pane id, tag, or agent")]
+    /// Starts with `@` (a pane id), `#` (a tag), `%` (an agent), or `^` (a
+    /// record key).
+    #[error("a session name cannot start with `{0}`, which marks a pane id, tag, agent, or key")]
     LeadingSigil(char),
     /// Contains `:`, which separates the session from a window.
     #[error("a session name cannot contain `:`, which separates the session from a window")]
@@ -91,7 +92,11 @@ pub fn check_session_name(name: &str) -> Result<(), SessionNameError> {
     if name == "." || name == "=" {
         return Err(SessionNameError::Reserved(name.to_owned()));
     }
-    if let Some(sigil) = name.chars().next().filter(|c| matches!(c, '@' | '#' | '%')) {
+    if let Some(sigil) = name
+        .chars()
+        .next()
+        .filter(|c| matches!(c, '@' | '#' | '%' | '^'))
+    {
         return Err(SessionNameError::LeadingSigil(sigil));
     }
     if name.contains(':') {
@@ -106,7 +111,7 @@ pub fn check_session_name(name: &str) -> Result<(), SessionNameError> {
 /// Rewrite a generated name into one [`check_session_name`] accepts.
 ///
 /// For a template render or a directory basename: each `:` becomes `_`,
-/// `/@` becomes `/_`, a leading `@`, `#`, or `%` becomes `_`, and a bare `.`
+/// `/@` becomes `/_`, a leading `@`, `#`, `%`, or `^` becomes `_`, and a bare `.`
 /// or `=` becomes `_`. A blank name stays blank so the caller picks its
 /// fallback. An explicit name is refused, never rewritten: only a name
 /// nobody typed may be changed behind the user's back.
@@ -116,7 +121,7 @@ pub fn addressable_session_name(name: &str) -> String {
         return name.to_owned();
     }
     let mut out = name.replace(':', "_").replace("/@", "/_");
-    if out == "." || out == "=" || out.starts_with(['@', '#', '%']) {
+    if out == "." || out == "=" || out.starts_with(['@', '#', '%', '^']) {
         out.replace_range(..1, "_");
     }
     out
@@ -332,6 +337,7 @@ mod tests {
             ("@proj", "_proj"),
             ("#tag", "_tag"),
             ("%agent", "_agent"),
+            ("^key", "_key"),
             ("a:b", "a_b"),
             ("work:x:y", "work_x_y"),
             ("devbox/@7", "devbox/_7"),
@@ -361,6 +367,7 @@ mod tests {
             ("@3", SessionNameError::LeadingSigil('@')),
             ("#tag", SessionNameError::LeadingSigil('#')),
             ("%agent", SessionNameError::LeadingSigil('%')),
+            ("^abcdef", SessionNameError::LeadingSigil('^')),
             ("x:y", SessionNameError::Colon),
             ("devbox/@7", SessionNameError::SatelliteId),
         ] {

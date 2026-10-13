@@ -2,15 +2,17 @@
 //! L1 §3.1), plus the ownership-verify + `KILL_RESOURCE` rollback dance
 //! behind explicit placement.
 //!
-//! Explicit placement addresses an exact owning window and splices the new
-//! leaf into that window's shared layout ([`crate::layout_ops`]). Selector
+//! Explicit placement addresses an exact owning session and splices the new
+//! leaf into that session's shared arrangement ([`crate::layout_ops`]).
+//! Ownership is session membership: both panes must belong to the owner's
+//! session after the spawn. Selector
 //! resolution (which pane `--target` names) stays client-side (ADR-0021) and
 //! is the caller's job; this module starts from an already-resolved owner.
 
 use std::path::Path;
 
 use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
-use phux_protocol::ids::{IdempotencyKey, ResourceId, SessionId, WindowId};
+use phux_protocol::ids::{IdempotencyKey, ResourceId, SessionId};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, FrameKind, SpawnError, SpawnResult, StateScope,
 };
@@ -169,24 +171,14 @@ pub fn spawn_error_message(err: &SpawnError) -> String {
     }
 }
 
-/// The window/session a Terminal belongs to, read out of a `GET_STATE`
-/// snapshot.
+/// The session a Terminal belongs to, read out of a `GET_STATE` snapshot
+/// ([`crate::resource::session_of`]).
 #[must_use]
 pub fn ownership_for_terminal(
     snapshot: &SessionSnapshot,
     terminal: &ResourceId,
-) -> Option<(WindowId, SessionId)> {
-    let window = snapshot
-        .resources
-        .iter()
-        .find(|pane| &pane.id == terminal)?
-        .window_id;
-    let session = snapshot
-        .windows
-        .iter()
-        .find(|candidate| candidate.id == window)?
-        .session_id;
-    Some((window, session))
+) -> Option<SessionId> {
+    crate::resource::session_of(snapshot, terminal)
 }
 
 /// An explicit spawn placement, already resolved by the caller: the
@@ -196,8 +188,6 @@ pub fn ownership_for_terminal(
 pub struct Placement {
     /// The Terminal the new pane was placed beside.
     pub owner: ResourceId,
-    /// `owner`'s window, from the caller's pre-spawn snapshot.
-    pub owner_window: WindowId,
     /// `owner`'s session, from the caller's pre-spawn snapshot.
     pub owner_session: SessionId,
     /// The Terminal the spawn just created.
@@ -229,7 +219,7 @@ pub enum RollbackOutcome {
 /// Verify explicit ownership after a spawn, then publish the layout.
 ///
 /// An older server may ignore `owner_terminal`, so both panes must still
-/// resolve to the owner's window and session in a fresh `GET_STATE` before
+/// belong to the owner's session in a fresh `GET_STATE` before
 /// `new_pane` is spliced beside `owner` (into `projection`'s key when given,
 /// ADR-0129). Any failure, transport included, rolls the spawn back with
 /// `KILL_RESOURCE` and is reported in the outcome. Degradation notices are
@@ -298,8 +288,8 @@ async fn request_fresh(
     Ok((result, notices))
 }
 
-/// Why both placed panes do not still resolve to the owner's window and
-/// session, if they do not; a transport failure counts as unconfirmed.
+/// Why both placed panes do not still belong to the owner's session, if they
+/// do not; a transport failure counts as unconfirmed.
 async fn verify_ownership(
     socket_path: &Path,
     placement: &Placement,
@@ -314,7 +304,7 @@ async fn verify_ownership(
             );
         }
     };
-    let expected = Some((placement.owner_window, placement.owner_session));
+    let expected = Some(placement.owner_session);
     let reason = match result {
         CommandResult::OkWith(CommandValue::State(state)) => {
             let owner_after = ownership_for_terminal(&state, &placement.owner);
@@ -465,8 +455,8 @@ mod tests {
     }
 
     #[test]
-    fn ownership_for_terminal_reads_window_then_session() {
-        use phux_protocol::ids::SessionId;
+    fn ownership_for_terminal_reads_the_owning_session() {
+        use phux_protocol::ids::{SessionId, WindowId};
         use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot, WindowInfo};
 
         let session = SessionId::new(1);
@@ -475,10 +465,7 @@ mod tests {
         let snapshot = SessionSnapshot::new(session, window, pane.clone())
             .with_windows(vec![WindowInfo::new(window, session, "one")])
             .with_resources(vec![ResourceInfo::new(pane.clone(), window, 80, 24)]);
-        assert_eq!(
-            ownership_for_terminal(&snapshot, &pane),
-            Some((window, session))
-        );
+        assert_eq!(ownership_for_terminal(&snapshot, &pane), Some(session));
         assert_eq!(
             ownership_for_terminal(&snapshot, &ResourceId::local(99)),
             None

@@ -1,14 +1,18 @@
-//! The `phux ls --json` document (`SessionListJson`, `schema_version` 3),
-//! built from one `GET_STATE` view.
+//! The `phux ls --json` document (`SessionListJson`, `schema_version` 4),
+//! built from one `GET_STATE` view and, from a server that advertises
+//! `ORGANIZATION`, the organization records read beside it.
 //!
 //! One builder for both surfaces: `phux ls --json` serializes it to stdout
 //! and the MCP `phux_ls` tool returns it in-process, so the two cannot
 //! drift (ADR-0022 §5).
 
+use phux_core::activation::{ExecState as CoreExecState, SessionLifetime as CoreLifetime};
 use phux_core::session_list::{
-    HostJson, HostSessionJson, ResourceExitJson, ResourceJson, SessionJson, SessionListJson,
+    ExecCounts, HostJson, HostSessionJson, ResourceExitJson, ResourceJson, SessionJson,
+    SessionListJson,
 };
 use phux_protocol::SessionId;
+use phux_protocol::wire::frame::{ExecState, OrgFilter, ResourceLifecycle, SessionLifetime};
 use phux_protocol::wire::info::{
     ExitFacet, HostInventory, HostSessionInfo, SessionInfo, SessionSnapshot,
 };
@@ -16,21 +20,35 @@ use phux_protocol::wire::info::{
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
 use crate::layout_ops::{LayoutOps, LayoutOpsError};
+use crate::org::{OrgError, OrgInventory};
 use crate::resource;
 use crate::selector::format_terminal_id;
 use crate::state::{Degradation, StateView};
 
 /// The `GET_STATE` view a session listing (`phux ls`, `phux status`, MCP
-/// `phux_ls`) is built from, with window counts as a TUI shows them
-/// ([`count_layout_windows`]).
+/// `phux_ls`) is built from.
+///
+/// It carries window counts as a TUI shows them ([`count_layout_windows`])
+/// and, when the server advertises `ORGANIZATION`, the organization records
+/// ([`StateView::organization`]).
 ///
 /// # Errors
 ///
 /// [`crate::state::get_state_on`]'s errors, or a transport failure while
-/// reading layouts.
+/// reading layouts or records.
 pub async fn listing_view(conn: &mut Connection) -> Result<StateView, AttachError> {
     let mut view = crate::state::get_state_on(conn).await?;
     count_layout_windows(conn, &mut view).await?;
+    if crate::org::supported(conn) {
+        match crate::org::fetch(conn, OrgFilter::All, LAYOUT_READ_FIRST_REQUEST_ID - 0x100).await {
+            Ok(inventory) => view = view.with_organization(Some(inventory)),
+            Err(OrgError::Attach(err)) => return Err(err),
+            Err(OrgError::OutcomeUnknown { .. }) => return Err(AttachError::Disconnected),
+            // A refused read (no INVENTORY grant) keeps the snapshot-only
+            // listing.
+            Err(_) => {}
+        }
+    }
     Ok(view)
 }
 
@@ -40,13 +58,13 @@ const LAYOUT_READ_FIRST_REQUEST_ID: u32 = 0x4c00;
 
 /// Count each local session's windows the way a TUI or Cockpit shows them.
 ///
-/// Windows are consumer vocabulary (ADR-0017): the tabs live in the
-/// session's `phux.tui.layout/v1/<id>` envelope, while the server's own
-/// `window_count` stays at one per session however many tabs exist. Each
-/// session with a stored envelope takes that envelope's window count; a
-/// session never laid out (created headless and not yet attached), or
-/// whose layout this connection may not read, keeps the server's count.
-/// Use a dedicated, unsubscribed connection.
+/// Windows are consumer vocabulary (ADR-0017): the tabs are the groups of
+/// the session's arrangement, while the server's own `window_count` stays at
+/// one per non-empty session however many groups exist. Each session with an
+/// arrangement takes its group count; a session never laid out (created
+/// headless and not yet attached), or whose arrangement this connection may
+/// not read, keeps the server's count. Use a dedicated, unsubscribed
+/// connection.
 ///
 /// # Errors
 ///
@@ -59,12 +77,14 @@ pub async fn count_layout_windows(
     let mut request_id = LAYOUT_READ_FIRST_REQUEST_ID;
     for session in &mut view.snapshot_mut().sessions {
         let read = LayoutOps::new(conn, session.id, request_id).read().await;
-        request_id = request_id.wrapping_add(1);
+        request_id = request_id.wrapping_add(0x100);
         match read {
             Ok(workspace) => {
                 session.window_count = u16::try_from(workspace.groups.len()).unwrap_or(u16::MAX);
             }
-            Err(LayoutOpsError::Transport(err)) => return Err(err),
+            Err(LayoutOpsError::Transport(err) | LayoutOpsError::Org(OrgError::Attach(err))) => {
+                return Err(err);
+            }
             Err(_) => {}
         }
     }
@@ -81,15 +101,22 @@ pub async fn count_layout_windows(
 /// `hosts_complete` is whether the server advertised `HOST_SESSIONS`: only
 /// then is the `hosts` grouping the whole fleet. Without it the document
 /// carries this host's group alone and says so (`"hosts_complete": false`).
+///
+/// `organization` supplies each session's lifetime, member count, and
+/// execution counts; without it they are derived from the snapshot.
 #[must_use]
 pub fn document(
     snapshot: &SessionSnapshot,
+    organization: Option<&OrgInventory>,
     degradation: &Degradation,
     hosts_complete: bool,
 ) -> SessionListJson {
     let mut sessions: Vec<_> = snapshot.sessions.iter().collect();
     sessions.sort_by(|a, b| a.name.cmp(&b.name));
-    let entries = sessions.into_iter().map(session_json).collect();
+    let entries = sessions
+        .into_iter()
+        .map(|s| session_json(snapshot, organization, s))
+        .collect();
     // `terminals` stays the Terminal-kind inventory — the ids a Terminal-facet
     // verb accepts — so a consumer that iterates it and calls `snapshot` on
     // each keeps working; every resource, with its kind and parent, is the
@@ -117,16 +144,76 @@ pub fn document(
 }
 
 /// One session's [`SessionJson`] row. `keep_empty` and `empty` (ADR-0105)
-/// are additive keys; `empty` is exactly `windows == 0`.
+/// stay for older consumers: `keep_empty` is `lifetime == persistent` and
+/// `empty` is `members == 0` (`windows == 0` from a server without lifetime).
+///
+/// With the session's organization record, `lifetime`, `members`, and
+/// `exec` come from it; otherwise from the snapshot: its reported lifetime,
+/// the resources it lists in the session, and their lifecycles (a retained
+/// exited process counts as completed).
 #[must_use]
-pub fn session_json(s: &SessionInfo) -> SessionJson {
+pub fn session_json(
+    snapshot: &SessionSnapshot,
+    organization: Option<&OrgInventory>,
+    s: &SessionInfo,
+) -> SessionJson {
+    let record = organization.and_then(|org| {
+        s.key
+            .and_then(|key| org.session(&key))
+            .or_else(|| org.session_by_live(s.id))
+    });
+    let mut exec = ExecCounts::default();
+    let (lifetime, members) = if let (Some(record), Some(org)) = (record, organization) {
+        for member in org.members(&record.key) {
+            exec.add(member.activation.map(|a| core_exec_state(a.state)));
+        }
+        (Some(record.lifetime), record.members)
+    } else {
+        let mut members = 0_u32;
+        for info in resource::in_session(snapshot, s.id) {
+            members = members.saturating_add(1);
+            exec.add(Some(match info.lifecycle {
+                ResourceLifecycle::Exited => CoreExecState::Completed,
+                _ => CoreExecState::Running,
+            }));
+        }
+        (s.lifetime, members)
+    };
+    let keep_empty = lifetime.map_or(s.keep_empty, |l| l == SessionLifetime::Persistent);
+    let empty = if lifetime.is_some() {
+        members == 0
+    } else {
+        s.is_empty()
+    };
     SessionJson {
         name: s.name.clone(),
         windows: s.window_count,
         attached: s.attached_client_count > 0,
         attached_clients: s.attached_client_count,
-        keep_empty: s.keep_empty,
-        empty: s.is_empty(),
+        keep_empty,
+        empty,
+        lifetime: lifetime.map(core_lifetime),
+        members,
+        exec,
+    }
+}
+
+const fn core_lifetime(lifetime: SessionLifetime) -> CoreLifetime {
+    match lifetime {
+        SessionLifetime::Persistent => CoreLifetime::Persistent,
+        SessionLifetime::Ephemeral => CoreLifetime::Ephemeral,
+    }
+}
+
+const fn core_exec_state(state: ExecState) -> CoreExecState {
+    match state {
+        ExecState::Starting => CoreExecState::Starting,
+        ExecState::Running => CoreExecState::Running,
+        ExecState::Stopping => CoreExecState::Stopping,
+        ExecState::Completed => CoreExecState::Completed,
+        ExecState::Failed => CoreExecState::Failed,
+        ExecState::Lost => CoreExecState::Lost,
+        ExecState::Abandoned => CoreExecState::Abandoned,
     }
 }
 
@@ -183,30 +270,22 @@ fn local_host_session(snapshot: &SessionSnapshot, s: &SessionInfo) -> HostSessio
     }
 }
 
-/// Terminal-kind resources across one local session's windows.
+/// Terminal-kind resources in one local session.
 fn local_pane_count(snapshot: &SessionSnapshot, session: SessionId) -> u16 {
-    let panes = resource::terminals(snapshot)
-        .filter(|pane| {
-            snapshot
-                .windows
-                .iter()
-                .any(|w| w.id == pane.window_id && w.session_id == session)
-        })
-        .count();
-    u16::try_from(panes).unwrap_or(u16::MAX)
+    u16::try_from(resource::terminals_in(snapshot, session).count()).unwrap_or(u16::MAX)
 }
 
-/// A local session's remembered focused pane as a canonical selector: the
-/// active window's active resource, falling back to the session's first
-/// window and then to that window's first Terminal.
+/// A local session's most recent input target as a canonical selector: its
+/// legacy window's active resource, falling back to its first Terminal.
 fn local_active_terminal(snapshot: &SessionSnapshot, s: &SessionInfo) -> Option<String> {
-    let window = s
+    let recent = s
         .active_window
         .and_then(|id| snapshot.windows.iter().find(|w| w.id == id))
-        .or_else(|| snapshot.windows.iter().find(|w| w.session_id == s.id))?;
-    let id = window.active_resource.clone().or_else(|| {
-        resource::terminals(snapshot)
-            .find(|pane| pane.window_id == window.id)
+        .or_else(|| snapshot.windows.iter().find(|w| w.session_id == s.id))
+        .and_then(|window| window.active_resource.clone());
+    let id = recent.or_else(|| {
+        resource::terminals_in(snapshot, s.id)
+            .next()
             .map(|pane| pane.id.clone())
     })?;
     Some(format_terminal_id(&id))
@@ -244,6 +323,7 @@ mod tests {
     use phux_protocol::{ResourceId, SessionId, WindowId};
 
     use super::*;
+    use phux_protocol::wire::frame::SessionLifetime;
 
     fn session(name: &str, windows: u16, clients: u16) -> SessionInfo {
         SessionInfo::new(SessionId::new(1), name)
@@ -334,20 +414,82 @@ mod tests {
             ])
     }
 
-    /// `--json` carries `keep_empty` and `empty` as added keys.
+    fn empty_snapshot() -> SessionSnapshot {
+        SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+    }
+
+    /// From a server without lifetimes, `keep_empty` and `empty` are what it
+    /// reported, and `lifetime` is `null`.
     #[test]
-    fn json_rows_carry_keep_empty_and_empty() {
-        let parked =
-            serde_json::to_value(session_json(&session("parked", 0, 0).with_keep_empty(true)))
-                .expect("serialize");
+    fn json_rows_carry_keep_empty_and_empty_from_an_older_server() {
+        let snapshot = empty_snapshot();
+        let parked = serde_json::to_value(session_json(
+            &snapshot,
+            None,
+            &session("parked", 0, 0).with_keep_empty(true),
+        ))
+        .expect("serialize");
         assert_eq!(parked["keep_empty"], true);
         assert_eq!(parked["empty"], true);
         assert_eq!(parked["windows"], 0);
+        assert_eq!(parked["lifetime"], serde_json::Value::Null);
 
-        let work = serde_json::to_value(session_json(&session("work", 2, 1))).expect("serialize");
+        let work = serde_json::to_value(session_json(&snapshot, None, &session("work", 2, 1)))
+            .expect("serialize");
         assert_eq!(work["keep_empty"], false);
         assert_eq!(work["empty"], false);
         assert_eq!(work["attached_clients"], 1);
+    }
+
+    /// Schema 4: lifetime, member count, and execution counts, from the
+    /// organization records when present and from the snapshot otherwise.
+    #[test]
+    fn json_rows_carry_lifetime_members_and_exec_counts() {
+        use crate::testkit::OrgFixture;
+        use phux_protocol::wire::frame::ExecState;
+
+        let mut fixture = OrgFixture::new();
+        let work = fixture.session("work", SessionLifetime::Persistent);
+        fixture.resource(work, Some(ExecState::Running));
+        fixture.resource(work, Some(ExecState::Completed));
+        fixture.resource(work, Some(ExecState::Lost));
+        fixture.resource(work, None);
+        fixture.session("parked", SessionLifetime::Persistent);
+        let snapshot = fixture.snapshot();
+        let inventory = crate::org::OrgInventory {
+            authority: phux_protocol::ids::AuthorityId::new([1; 16]).expect("non-zero"),
+            inbox: None,
+            sessions: fixture.sessions().to_vec(),
+            resources: fixture.resources().to_vec(),
+            snapshot_revision: phux_protocol::ids::Revision::new(1),
+            journal_seq: 0,
+            total_intake: 0,
+            degradation: Degradation::default(),
+        };
+        let doc = document(&snapshot, Some(&inventory), &Degradation::default(), false);
+        let json = serde_json::to_value(&doc).expect("serialize");
+        assert_eq!(json["schema_version"], 4);
+        let rows = json["sessions"].as_array().expect("sessions");
+        let parked = &rows[0];
+        assert_eq!(parked["name"], "parked");
+        assert_eq!(parked["lifetime"], "persistent");
+        assert_eq!(parked["members"], 0);
+        assert_eq!(parked["empty"], true);
+        assert_eq!(parked["keep_empty"], true);
+        let work = &rows[1];
+        assert_eq!(work["members"], 4);
+        assert_eq!(work["exec"]["running"], 1);
+        assert_eq!(work["exec"]["completed"], 1);
+        assert_eq!(work["exec"]["lost"], 1);
+        assert_eq!(work["exec"]["dormant"], 1);
+
+        // Without the records: the one executing member the snapshot lists.
+        let doc = document(&snapshot, None, &Degradation::default(), false);
+        let json = serde_json::to_value(&doc).expect("serialize");
+        let work = &json["sessions"][1];
+        assert_eq!(work["lifetime"], "persistent");
+        assert_eq!(work["members"], 1);
+        assert_eq!(work["exec"]["running"], 1);
     }
 
     /// `--json` gains `hosts` beside `sessions`; `sessions` still lists this
@@ -380,7 +522,7 @@ mod tests {
             "the hub's diagnostic rides with the degraded host"
         );
 
-        let doc = document(&snapshot, &Degradation::default(), true);
+        let doc = document(&snapshot, None, &Degradation::default(), true);
         let sessions: Vec<String> = serde_json::to_value(&doc).expect("serialize")["sessions"]
             .as_array()
             .expect("sessions")
