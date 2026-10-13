@@ -6,24 +6,22 @@
 # the same everywhere they run.
 #
 # Steps, in order:
-#   1. Drop unused preinstalled toolchains from the ephemeral hosted runner.
+#   1. Drop unused preinstalled toolchains only when the disk is actually tight.
 #   2. Nix + Cachix: the pinned devshell (rustc, zig, nextest, deny, mbx).
-#   3. mbx (jdx/mr-boxington) for the check and icount lanes, the same pinned
-#      build cache local shells use (docs/SETUP.md#build-cache-mbx). It
-#      content-keys every compilation, build-script run, and native (mold)
-#      link. The GitHub `objects` payload carries only what that lane's builds
-#      used or produced; saves are restricted to pushes to main so PR writes
-#      cannot thrash the shared 10 GB LRU. The primary key excludes the
-#      commit: an exact hit skips the post-step export. The key changes with
-#      flake.lock, Cargo.lock, or the UTC day, and ci.yml's prune-build-cache
-#      keeps the newest check and icount entry.
-#      The test lane does not restore or save that payload. Run 38442503688
-#      saved a 5.5 GB archive (5940645663 bytes) and the repo's other caches,
-#      including Cockpit's ~4.8 GB zig entry, already fill the 10 GB cap, so
-#      the archive was gone before the next job. Importing it takes about as
-#      long as the cold compile, and packaging the export takes about eleven
-#      minutes. PHUX_CI_MBX still wraps Cargo, so unit tests and e2e share one
-#      disk store inside the job.
+#   3. mbx (jdx/mr-boxington), the same pinned build cache local shells use
+#      (docs/SETUP.md#build-cache-mbx). It content-keys every compilation,
+#      build-script run, and native (mold) link. The GitHub `objects` payload
+#      carries only what that lane's builds used or produced; saves are
+#      restricted to pushes to main so PR writes cannot thrash the shared
+#      10 GB LRU. The primary key excludes the commit: an exact hit skips the
+#      post-step export. The key changes with flake.lock, Cargo.lock, or the
+#      UTC day, and ci.yml's prune-build-cache keeps the newest entry per lane.
+#      A cold test build records "not looked up": mbx learns the key while
+#      compiling, then the save makes the next job a hit. Run 38451988937
+#      compiled the test profile in 10m 24s with 0 hits and stored a 2.3 GB
+#      archive (2339429694 bytes). That is the entry to restore. The earlier
+#      5.5 GB / 11 min export was a store whose action results had been
+#      deleted before the build.
 #      Objects mode leaves GC off during the build. A cap under the restored
 #      working set deletes the action results the next build needs. Collect
 #      only above that working set, and only before any build records its
@@ -42,10 +40,7 @@ inputs:
     description: Cachix auth token (secrets are not implicitly visible to composite actions).
     required: true
   cache-lane:
-    description: >
-      Build-cache series. `check` and `icount` each keep their own GitHub
-      objects entry. `test` skips that cache: its archive does not fit in the
-      shared 10 GB budget.
+    description: Build-cache series; one GitHub objects entry per cargo profile (check, test, icount).
     required: true
 
 outputs:
@@ -60,8 +55,14 @@ runs:
       shell: bash
       run: |
         df -h / | tail -1
-        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
-        df -h / | tail -1
+        avail_kb=$(df -Pk / | awk 'NR==2 {print $4}')
+        # The x64 image spends about 2.5 minutes deleting preinstalled
+        # toolchains when the disk is already mostly empty (run 38442503688
+        # icount: 86G free). Pay that only when a build could fill the disk.
+        if [ "${avail_kb}" -lt $((40 * 1024 * 1024)) ]; then
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
+          df -h / | tail -1
+        fi
 
     - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
 
@@ -117,13 +118,8 @@ runs:
           echo "restore_key=${platform}-mbx-${generation}-"
         } >> "$GITHUB_OUTPUT"
 
-    # The test profile's objects archive is ~5.5 GB compressed. It cannot
-    # stay resident next to Cockpit's zig cache, and the restore costs about
-    # as much as recompiling. check and icount archives are ~1.5 GiB logical
-    # and save in seconds.
     - uses: jdx/mr-boxington-action@d0825fbaf3cc36ca2609aa38e71046265a1f1e37 # v1.7.1
       id: mbx
-      if: inputs.cache-lane != 'test'
       with:
         backend: github
         github-cache-mode: objects
@@ -135,7 +131,6 @@ runs:
         restore-keys: ${{ steps.mbx-env.outputs.restore_key }}
 
     - name: bound restored objects before recording builds
-      if: inputs.cache-lane != 'test'
       shell: bash
       run: |
         set -euo pipefail

@@ -101,21 +101,13 @@ jobs:
         run: ./scripts/cockpit-node-test.sh
 
       # rust-cache is the dependency archive for a miss. The fat-LTO link is
-      # the exact-input artifact above; sccache does not cache that link.
-      # Save only from main — the Actions cache is a hard 10 GB LRU.
-      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      # the exact-input artifact above. sccache's GitHub backend stores one
+      # small object per compilation; those shards stay newer than the zig
+      # cache and the test-lane mbx archive and LRU-evict both. Cargo
+      # incremental is off so the rust-cache target dir stays shareable.
+      - name: compile without cargo incremental
         if: steps.rust-restore.outputs.ffi_restored != 'true' || steps.rust-restore.outputs.cli_restored != 'true'
-      - name: enable sccache
-        if: steps.rust-restore.outputs.ffi_restored != 'true' || steps.rust-restore.outputs.cli_restored != 'true'
-        env:
-          SCCACHE_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
-        run: |
-          {
-            echo "RUSTC_WRAPPER=sccache"
-            echo "SCCACHE_GHA_ENABLED=true"
-            echo "SCCACHE_GHA_RW_MODE=${SCCACHE_RW_MODE}"
-            echo "CARGO_INCREMENTAL=0"
-          } >> "$GITHUB_ENV"
+        run: echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: steps.rust-restore.outputs.ffi_restored != 'true' || steps.rust-restore.outputs.cli_restored != 'true'
         with:
