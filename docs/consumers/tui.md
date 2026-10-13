@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-10-09
+last-reviewed: 2026-10-13
 ---
 
 # The phux reference TUI
@@ -25,9 +25,9 @@ For headless commands, see the [CLI reference](../reference/cli.md) and
 separate guides.
 
 The TUI has no protocol-level standing
-([ADR-0017](../adr/0017-tui-not-protocol-privileged.md)). Sessions,
-windows, splits, the status bar, and keybindings are this client's
-vocabulary, not the wire's.
+([ADR-0017](../adr/0017-tui-not-protocol-privileged.md)). Sessions and
+their tabs are server records every client shares; panes as drawn, the
+status bar, and keybindings are this client's vocabulary, not the wire's.
 
 ## First minutes
 
@@ -63,14 +63,29 @@ and `phux wait`.
 
 ## User model
 
-The TUI uses three familiar multiplexer terms:
+The TUI uses three familiar multiplexer terms over the server's model
+([concepts](../CONCEPTS.md#sessions-resources-and-views)):
 
-- **Session** — named container. Persists across detach. Lives until you
-  kill it or the server exits. A session marked keep-empty can outlive
-  its last window; the TUI stays attached and paints an empty state.
-- **Window** — tab within a session. Numbered from 0; optionally named.
-- **Pane** — leaf in a window's layout. One PTY, one terminal grid, one
-  shell or command.
+- **Session** — a named group of resources on the server. A session
+  started with `phux new NAME` is persistent: it stays, empty if need be,
+  until you delete it. The session bare `phux` starts is ephemeral and
+  ends with its last terminal. The session picker shows which is which.
+- **Window** — a tab: one group in the session's shared arrangement.
+  Numbered from 0; optionally named. Every client attached to the session
+  sees the same tabs.
+- **Pane** — a view of one terminal resource in a window's split tree.
+  One PTY, one terminal grid, one shell or command. The view is this
+  client's; the terminal belongs to the session.
+
+**Close and kill.** Closing a view removes it from the arrangement and
+ends nothing: the terminal keeps running and stays listed in the session,
+and the session picker can show it again. Killing a pane or a window
+terminates the work. `kill-window` first asks, naming how many terminals
+it will end and any that are also shown in another tab. Exiting a shell
+removes its terminal, as in tmux. The TUI detaches only when you detach
+or the session is deleted: if closing views leaves no tab while
+terminals still run, it paints "N running, not arranged" with an action
+to show them again.
 
 A **client** is an attached frontend. Clients are transient. Focus,
 copy-mode, the sidebar toggle, and attention navigation are this client's,
@@ -184,7 +199,7 @@ Default prefix `C-a`. Override it in one line of config.
 |---|---|
 | `C-a "` | `split-pane` horizontal (stacked) |
 | `C-a %` | `split-pane` vertical (side-by-side) |
-| `C-a x` / `C-a X` | `kill-pane` / `kill-window` |
+| `C-a x` / `C-a X` | `kill-pane` / `kill-window` (asks first) |
 | `C-a h/j/k/l` | `focus-direction` left/down/up/right |
 | `C-a o` / `C-a ;` | `next-pane` / `previous-pane` |
 | `C-a =` | `last-pane` (jump back; repeat to toggle) |
@@ -211,6 +226,9 @@ Default prefix `C-a`. Override it in one line of config.
 | `C-a :` / `C-a ?` | `command-palette` / `show-help` (one overlay) |
 | `C-a d` | `detach` |
 
+`close-view` is unbound by default; it is in the pane context menu and the
+command palette.
+
 ### Which-key
 
 Pause after the prefix to see a panel of live continuations, grouped under
@@ -231,6 +249,10 @@ which-key-delay-ms = 400  # default
 A window's layout is a **binary split tree**: each interior node is a
 horizontal or vertical split with a ratio in `(0, 1)` and exactly two
 children; leaves are panes. Three-way splits are nested binary splits.
+The tree is one group of the session's shared arrangement, stored on the
+server with a revision. When another client changes the same tabs first,
+the TUI reloads them and reapplies its edit instead of overwriting.
+Focus, zoom, and the sidebar stay local to this client.
 
 Panes share dividers, so each split costs one cell rather than two adjacent
 borders. A 2×2 window has one `│` column and one `─` row crossing at `┼`.
@@ -347,15 +369,14 @@ unavailable (pruned, tombstoned, or over the history limit) raises a
 `scrollback unavailable` notice and keeps a `no-scrollback` token in the
 supervisory badge while focused, until a fresh bootstrap restores history.
 Scrollback this client already holds still scrolls.
-When the last pane of a default session is killed, the TUI tears down and prints one
-cooked-terminal line naming the exit. Natural `exit` of that last shell is
-replaced in place by the server, so the attach stays on a fresh prompt.
-A keep-empty session stays attached and paints `Empty session` with the
-`new-window` chord after Close Tab of its last pane.
+When an ephemeral session loses its last terminal, by kill or by `exit`,
+the session is deleted, and the TUI tears down and prints one
+cooked-terminal line naming the exit. A persistent session stays attached
+and paints `Empty session` with the `new-window` chord.
 
-**Retained panes.** A pane spawned with retention (`--retain` or
-`defaults.retain-on-exit`, ADR-0124) keeps its place and last screen after its
-process exits. The sidebar and tabs mark it with a dim `x` plus status (`x3`,
+**Retained panes.** A pane whose terminal is retained on exit (a launched
+command or agent, or a spawn that asks for retention; ADR-0162) keeps its
+place and last screen after its process exits. The sidebar and tabs mark it with a dim `x` plus status (`x3`,
 `xsig9`), and the bar shows `[ exited N ]` while focused. Input is dropped;
 scrollback and copy-mode still work. It closes when the server purges it or
 you kill it.
@@ -737,7 +758,8 @@ this client's mouse handling while that pane is focused; a click on it
 still focuses it, which is the path back in.
 
 Right-click opens a menu for the pane, the window, or the session,
-listing the actions that apply. The session menu includes sessions, fleet,
+listing the actions that apply. The pane menu lists **Close view** and
+**Kill** as separate rows. The session menu includes sessions, fleet,
 settings, and commands. Each row commits the same action a
 keybinding would. An inner program with mouse tracking on keeps every
 button, so no menu opens over it; bind `context-menu` for the keyboard
@@ -766,6 +788,18 @@ The TUI plays no sounds and posts no desktop notifications; a server-side
 hook on `agent-state-changed` is the notifier edge. Hooks are
 [`../CONFIG.md`](../CONFIG.md) and
 [`../reference/hooks.md`](../reference/hooks.md).
+
+## Status
+
+<!-- impl-status: spec-only; probe: close-view -->
+> **Status: spec-only.** The reference TUI still reads tabs from the
+> `phux.tui.layout/v1` metadata key, has no `close-view` action, kills a
+> window without a confirm, and keeps a session's lifetime as the legacy
+> keep-empty mark.
+
+| Gap | Today | Owner | Tracked |
+|---|---|---|---|
+| Close view, kill confirm, and arrangement groups | Tabs come from the layout metadata key; the context menu's close kills; there is no "not arranged" state. | [ADR-0160](../adr/0160-sessions-own-resources-and-window-is-retired.md), [ADR-0161](../adr/0161-organization-is-typed-commands-behind-a-feature-bit.md) | phux-3q58 |
 
 ## Where to go next
 
