@@ -758,6 +758,7 @@ enum CommandTag {
     ArrangementReplace = 0x2e,
     DelegateAgent = 0x35,
     RevokeDelegation = 0x36,
+    SessionKill = 0x37,
 }
 
 // `Command` tags (SPEC §5.1). `0x00`, `0x04`, and `0x06` are reserved catalog
@@ -871,6 +872,13 @@ wire_tags! { Command;
 pub(crate) const COMMAND_TAG_DELEGATE_AGENT: u8 = CommandTag::DelegateAgent as u8;
 /// Wire tag for [`Command::RevokeDelegation`].
 pub(crate) const COMMAND_TAG_REVOKE_DELEGATION: u8 = CommandTag::RevokeDelegation as u8;
+}
+
+// `SESSION_KILL` (`docs/spec/L1.md` §5.7), an organization command gated on
+// `features_ext.SESSION_KILL`, after the delegation pair.
+wire_tags! { Command;
+/// Wire tag for [`Command::SessionKill`].
+pub(crate) const COMMAND_TAG_SESSION_KILL: u8 = CommandTag::SessionKill as u8;
 }
 
 // `InputEvent` tags (`ROUTE_INPUT`), mirroring the `INPUT_*` frame atoms.

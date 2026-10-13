@@ -1572,7 +1572,7 @@ PhuxClientResult phux_client_queue_close_resources(PhuxClient *client, uint32_t 
  * Otherwise the wire command is CLOSE_TAB_RESOURCES (L1 §5.2.2): a
  * full-coverage batch leaves a persistent session empty instead of reaping
  * it. Ending a whole session is phux_client_kill_session (organization
- * section) against an ORGANIZATION server, else queue_close_resources. */
+ * section) against a SESSION_KILL server, else queue_close_resources. */
 PhuxClientResult phux_client_queue_close_tab_resources(PhuxClient *client, uint32_t request_id, const PhuxResourceId *terminal_ids, size_t count);
 /** *out_supported: HELLO_OK advertised CLOSE_TAB_RESOURCES. */
 PhuxClientResult phux_client_close_tab_resources_supported(const PhuxClient *client, bool *out_supported);
@@ -1903,9 +1903,8 @@ typedef enum PhuxOrgRefusal {
     PHUX_ORG_REFUSAL_OTHER = 255
 } PhuxOrgRefusal;
 
-/* KEPT: a member could not be removed, so the session delete was not sent.
- * TIMED_OUT: it did not stop in time. NO_LIVE_TARGET: it executes on
- * another server and cannot be terminated from here. */
+/* ALREADY_GONE, TIMED_OUT, NO_LIVE_TARGET, and KEPT belonged to the
+ * client-side kill workflow and are no longer produced. */
 typedef enum PhuxOrgTargetStatus {
     PHUX_ORG_TARGET_PENDING = 1,
     PHUX_ORG_TARGET_DONE = 2,
@@ -1975,14 +1974,12 @@ PhuxClientResult phux_client_org_inbox_resolve(PhuxClient *client, uint32_t requ
  * the records moved on; never reverses execution. Undo before releasing the
  * original result. */
 PhuxClientResult phux_client_org_undo(PhuxClient *client, uint32_t request_id, uint32_t original_request_id);
-/** Kill a whole session: terminate each executing member, wait until each is
- * inactive (forcing after half the wait), remove each, then delete the
- * session at the revision the workflow last committed against. The member
- * set is fixed now: work that arrives meanwhile survives and the delete
- * reports NOT_EMPTY. COMMITTED when the session went away, PARTIAL when some
- * members were removed and it stayed. */
+/** Kill a whole session with one SESSION_KILL: the server ends every member,
+ * work that arrived meanwhile included, and deletes the session. COMMITTED
+ * when the session went away; one target, the session. INVALID_STATE when
+ * the server does not advertise SESSION_KILL. */
 PhuxClientResult phux_client_kill_session(PhuxClient *client, uint32_t request_id, const uint8_t *session);
-/** Resolve operations past their retry horizon and time out kill workflows.
+/** Resolve operations past their retry horizon.
  * The connected lane does this itself; an embedded host calls it while a
  * result is PENDING, at the latest after *out_next_ms milliseconds
  * (UINT64_MAX when nothing is due; out_next_ms may be NULL). */

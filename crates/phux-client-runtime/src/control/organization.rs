@@ -72,25 +72,6 @@ pub enum ReplicaAction {
     RefetchArrangement(ArrangementKey),
 }
 
-/// What changed in the records, for the consumer's own bookkeeping (a kill
-/// workflow, an Inbox view).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RecordChange {
-    /// A resource's execution state changed.
-    Activation {
-        /// The resource.
-        resource: ResourceKey,
-        /// Its new activation.
-        activation: ActivationInfo,
-    },
-    /// A resource record was removed.
-    ResourceRemoved(ResourceKey),
-    /// A session record was deleted.
-    SessionDeleted(SessionKey),
-    /// Any other change.
-    Other,
-}
-
 /// The Inbox as this owner sees it: the designated Inbox session and every
 /// session awaiting organization, with their members.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -339,7 +320,7 @@ impl OrganizationReplica {
         let buffered = std::mem::take(&mut self.buffered);
         for (seq, event) in buffered {
             // A reseed requested while replaying wins; the rest is moot.
-            if matches!(self.apply_event(seq, &event).0, ReplicaAction::Reseed) {
+            if matches!(self.apply_event(seq, &event), ReplicaAction::Reseed) {
                 return ReplicaAction::Reseed;
             }
         }
@@ -399,41 +380,37 @@ impl OrganizationReplica {
     }
 
     /// Apply one journal event, stamped `seq` when the server journals
-    /// events. Returns what the control plane must do, and what changed.
+    /// events. Returns what the control plane must do.
     #[allow(
         clippy::too_many_lines,
         reason = "one arm per organization event, each a few record updates"
     )]
-    pub fn apply_event(
-        &mut self,
-        seq: Option<u64>,
-        event: &AgentEvent,
-    ) -> (ReplicaAction, RecordChange) {
+    pub fn apply_event(&mut self, seq: Option<u64>, event: &AgentEvent) -> ReplicaAction {
         if matches!(event, AgentEvent::JournalGap { .. }) {
             if self.state != ReplicaState::Empty {
                 self.state = ReplicaState::Stale;
-                return (ReplicaAction::Reseed, RecordChange::Other);
+                return ReplicaAction::Reseed;
             }
-            return (ReplicaAction::None, RecordChange::Other);
+            return ReplicaAction::None;
         }
         if !is_organization_event(event) {
-            return (ReplicaAction::None, RecordChange::Other);
+            return ReplicaAction::None;
         }
         if self.seed.is_some() {
             if self.buffered.len() >= MAX_BUFFERED_EVENTS {
                 self.buffered.clear();
-                return (ReplicaAction::Reseed, RecordChange::Other);
+                return ReplicaAction::Reseed;
             }
             self.buffered.push((seq, event.clone()));
-            return (ReplicaAction::None, RecordChange::Other);
+            return ReplicaAction::None;
         }
         if self.state != ReplicaState::Live {
-            return (ReplicaAction::None, RecordChange::Other);
+            return ReplicaAction::None;
         }
         if let Some(seq) = seq {
             if seq <= self.journal_seq {
                 // Already part of the seed's cut.
-                return (ReplicaAction::None, RecordChange::Other);
+                return ReplicaAction::None;
             }
             self.journal_seq = seq;
         }
@@ -451,7 +428,7 @@ impl OrganizationReplica {
                     );
                 }
                 // The live handle arrives with the records.
-                (ReplicaAction::RefetchSession(*session), RecordChange::Other)
+                ReplicaAction::RefetchSession(*session)
             }
             AgentEvent::SessionRenamed {
                 session,
@@ -462,7 +439,7 @@ impl OrganizationReplica {
                     s.name.clone_from(name);
                     s.revision = *revision;
                 });
-                (ReplicaAction::Changed, RecordChange::Other)
+                ReplicaAction::Changed
             }
             AgentEvent::SessionDeleted { session, .. } => {
                 if let Some(arrangement) = self.session(session).and_then(|s| s.arrangement) {
@@ -470,10 +447,7 @@ impl OrganizationReplica {
                 }
                 self.sessions.retain(|s| s.key != *session);
                 self.forget_members(*session);
-                (
-                    ReplicaAction::Changed,
-                    RecordChange::SessionDeleted(*session),
-                )
+                ReplicaAction::Changed
             }
             AgentEvent::SessionLifetimeChanged {
                 session,
@@ -484,7 +458,7 @@ impl OrganizationReplica {
                     s.lifetime = *lifetime;
                     s.revision = *revision;
                 });
-                (ReplicaAction::Changed, RecordChange::Other)
+                ReplicaAction::Changed
             }
             AgentEvent::IntakeChanged {
                 session,
@@ -495,7 +469,7 @@ impl OrganizationReplica {
                     s.awaiting_organization = *awaiting_organization;
                     s.revision = *revision;
                 });
-                (ReplicaAction::Changed, RecordChange::Other)
+                ReplicaAction::Changed
             }
             AgentEvent::MembershipChanged {
                 resource,
@@ -516,9 +490,9 @@ impl OrganizationReplica {
                     s.members = s.members.saturating_add(1);
                 });
                 if self.resource(resource).is_none() {
-                    return (ReplicaAction::RefetchSession(*to), RecordChange::Other);
+                    return ReplicaAction::RefetchSession(*to);
                 }
-                (ReplicaAction::Changed, RecordChange::Other)
+                ReplicaAction::Changed
             }
             AgentEvent::ResourceCreated {
                 resource,
@@ -534,7 +508,7 @@ impl OrganizationReplica {
                 }
                 // Its revision, launch, and live handle arrive with the
                 // records.
-                (ReplicaAction::RefetchSession(*session), RecordChange::Other)
+                ReplicaAction::RefetchSession(*session)
             }
             AgentEvent::ResourceRemoved {
                 resource, session, ..
@@ -545,10 +519,7 @@ impl OrganizationReplica {
                 if existed {
                     self.with_session(session, |s| s.members = s.members.saturating_sub(1));
                 }
-                (
-                    ReplicaAction::Changed,
-                    RecordChange::ResourceRemoved(*resource),
-                )
+                ReplicaAction::Changed
             }
             AgentEvent::ActivationChanged {
                 resource,
@@ -557,7 +528,7 @@ impl OrganizationReplica {
                 outcome,
             } => {
                 let Some(record) = self.resources.iter_mut().find(|r| r.key == *resource) else {
-                    return (ReplicaAction::None, RecordChange::Other);
+                    return ReplicaAction::None;
                 };
                 let instance = record.activation.map(|a| a.instance);
                 let fresh = record.activation.is_none_or(|a| a.id != *activation);
@@ -569,16 +540,12 @@ impl OrganizationReplica {
                 .with_outcome(*outcome);
                 record.activation = Some(info);
                 let session = record.session;
-                let change = RecordChange::Activation {
-                    resource: *resource,
-                    activation: info,
-                };
                 // A new activation runs under a new live handle and maybe a
                 // new server instance: read them.
                 if (fresh && !is_inactive(Some(*state))) || instance.is_none() {
-                    return (ReplicaAction::RefetchSession(session), change);
+                    return ReplicaAction::RefetchSession(session);
                 }
-                (ReplicaAction::Changed, change)
+                ReplicaAction::Changed
             }
             AgentEvent::ResourceRenamed {
                 resource,
@@ -589,7 +556,7 @@ impl OrganizationReplica {
                     record.name.clone_from(name);
                     record.revision = *revision;
                 }
-                (ReplicaAction::Changed, RecordChange::Other)
+                ReplicaAction::Changed
             }
             AgentEvent::ArrangementChanged {
                 arrangement,
@@ -597,7 +564,7 @@ impl OrganizationReplica {
                 revision,
             } => {
                 let ArrangementOwner::Session(owner) = *owner else {
-                    return (ReplicaAction::None, RecordChange::Other);
+                    return ReplicaAction::None;
                 };
                 match revision {
                     None => {
@@ -607,7 +574,7 @@ impl OrganizationReplica {
                                 s.arrangement = None;
                             }
                         });
-                        (ReplicaAction::Changed, RecordChange::Other)
+                        ReplicaAction::Changed
                     }
                     Some(revision) => {
                         self.with_session(&owner, |s| s.arrangement = Some(*arrangement));
@@ -616,17 +583,14 @@ impl OrganizationReplica {
                             .get(arrangement)
                             .is_some_and(|held| held.revision < *revision);
                         if stale {
-                            (
-                                ReplicaAction::RefetchArrangement(*arrangement),
-                                RecordChange::Other,
-                            )
+                            ReplicaAction::RefetchArrangement(*arrangement)
                         } else {
-                            (ReplicaAction::Changed, RecordChange::Other)
+                            ReplicaAction::Changed
                         }
                     }
                 }
             }
-            _ => (ReplicaAction::None, RecordChange::Other),
+            _ => ReplicaAction::None,
         }
     }
 
@@ -757,13 +721,13 @@ mod tests {
             revision: Revision::new(revision),
         };
         assert_eq!(
-            replica.apply_event(Some(4), &rename("old", 1)).0,
+            replica.apply_event(Some(4), &rename("old", 1)),
             ReplicaAction::None,
             "before the cut"
         );
         assert_eq!(replica.session(&skey(1)).unwrap().name, "work");
         assert_eq!(
-            replica.apply_event(Some(6), &rename("notes", 3)).0,
+            replica.apply_event(Some(6), &rename("notes", 3)),
             ReplicaAction::Changed
         );
         assert_eq!(replica.session(&skey(1)).unwrap().name, "notes");
@@ -786,7 +750,7 @@ mod tests {
                 .state,
             ExecState::Completed
         );
-        let (_, change) = replica.apply_event(
+        replica.apply_event(
             Some(8),
             &AgentEvent::ResourceRemoved {
                 resource: rkey(1),
@@ -794,7 +758,6 @@ mod tests {
                 kind: ResourceKind::Terminal,
             },
         );
-        assert_eq!(change, RecordChange::ResourceRemoved(rkey(1)));
         assert!(replica.handles().is_empty());
         assert_eq!(replica.session(&skey(1)).unwrap().members, 0);
     }
@@ -821,7 +784,7 @@ mod tests {
     #[test]
     fn a_journal_gap_asks_for_a_reseed() {
         let mut replica = seeded();
-        let (action, _) = replica.apply_event(
+        let action = replica.apply_event(
             None,
             &AgentEvent::JournalGap {
                 first_missing: 6,
@@ -839,7 +802,7 @@ mod tests {
     #[test]
     fn incomplete_events_ask_for_a_session_refetch() {
         let mut replica = seeded();
-        let (action, _) = replica.apply_event(
+        let action = replica.apply_event(
             Some(6),
             &AgentEvent::ResourceCreated {
                 resource: rkey(2),

@@ -111,7 +111,7 @@ the result. Merely opening an observer view does not resize the application.
 | Close window or quit | Save local presentation and detach; daemon-owned work continues. |
 | Close one of two views | Preserve the sibling view, its state, and the shared attachment. |
 | Terminate Terminal | Explicitly request server termination; all views reflect the terminal's closure. |
-| Kill Session | After confirmation, end every member and delete the session; report each member that did not end. |
+| Kill Session | After confirmation, end every member and delete the session in one server command; report how many ended, or why it was refused. |
 | App crash or UI update | Reattach to the same resources if their daemon incarnation still exists. |
 | Transport interruption | Show reconnecting/stale state; runtime recovery owns retries. |
 | Daemon crash/restart | Mark old resources missing; processes and volatile scrollback are lost. |

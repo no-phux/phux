@@ -494,15 +494,12 @@ imported archive's dormant pane); it exits 2 when any was refused.
 
 ### `kill`
 
-A whole-session kill prints one summary line (`killed 12 terminals in work`)
-and one line for each member that was not removed (`^ab23cd  refused: ...`);
-`-v` prints every member and the session (`session ^ef45gh  deleted`). The
-text is for people; over MCP, `phux_kill` returns
-the same as `report`: `{ session, session_result, session_detail, targets:
-[{ key, result, detail }] }`, where `result` is `removed`, `already_gone`,
-`refused`, `unknown`, `timed_out`, or `no_live_target`, and `session_result`
-is `deleted`, `already_gone`, `kept`, `refused`, or `unknown`. A kill that
-does not delete the session is an error carrying the same report.
+A whole-session kill is one server command that ends every member and
+deletes the session; it prints one line (`killed 12 terminals in work`, or
+`deleted empty session parked`). Over MCP, `phux_kill` returns
+`{ schema_version, killed: true, target, members }`, where `members` is how
+many terminals the session kill ended (absent for a pane kill or a server
+without `SESSION_KILL`). A refused kill is an error naming the reason.
 
 ### `spawn` / `launch` / spatial
 

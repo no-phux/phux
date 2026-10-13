@@ -207,31 +207,4 @@ mod tests {
             assert!(call(name, &args).await.is_err(), "{name} accepted {args}");
         }
     }
-
-    #[test]
-    fn report_keys_render_as_their_shortest_unique_prefix() {
-        use phux_client::org::{KillReport, SessionOutcome, TargetOutcome};
-        use phux_protocol::ids::{ResourceKey, SessionKey};
-        let mut near = [7; 16];
-        near[15] = 8;
-        let a = ResourceKey::new([7; 16]).expect("non-zero");
-        let b = ResourceKey::new(near).expect("non-zero");
-        let session = SessionKey::new([200; 16]).expect("non-zero");
-        let report = KillReport {
-            session,
-            targets: vec![(a, TargetOutcome::Removed), (b, TargetOutcome::Removed)],
-            session_outcome: SessionOutcome::Deleted,
-        };
-        let document = crate::tools::kill_report_document(&report);
-        let shown = |value: &Value| value.as_str().expect("key text").to_owned();
-        let (ka, kb) = (
-            shown(&document["targets"][0]["key"]),
-            shown(&document["targets"][1]["key"]),
-        );
-        assert_ne!(ka, kb, "two keys that share six digits must still differ");
-        assert!(ka.len() > 1 + 6 && kb.len() > 1 + 6, "{ka} {kb}");
-        assert!(a.to_string().starts_with(&ka[1..]), "{ka}");
-        assert!(b.to_string().starts_with(&kb[1..]), "{kb}");
-        assert_eq!(shown(&document["session"]).len(), 1 + 6);
-    }
 }

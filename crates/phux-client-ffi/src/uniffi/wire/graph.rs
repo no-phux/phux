@@ -225,8 +225,7 @@ impl From<topology::SessionGraph> for SessionTopology {
     }
 }
 
-/// One target of a kill-session workflow: the session first, then each
-/// member in membership order.
+/// One target of an organization result.
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
 pub struct OrgTargetResult {
     pub key: String,

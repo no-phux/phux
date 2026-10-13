@@ -914,7 +914,7 @@ pub const Engine = struct {
         // itself.
         for (self.model.peers.items) |entry| if (entry.provider) |peer| peer.refreshStandby();
         // Organization operations settle on this timer too: a result past its
-        // retry horizon resolves, and a kill workflow times out.
+        // retry horizon resolves.
         if (self.model.phux()) |remote| remote.expireOperations();
         for (self.model.peers.items) |entry| if (entry.provider) |peer| peer.expireOperations();
         const now = std.Io.Clock.awake.now(self.model.provider.io);

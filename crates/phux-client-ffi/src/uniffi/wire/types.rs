@@ -437,10 +437,10 @@ pub enum WireEvent {
         message: String,
         undoable: bool,
     },
-    /// A kill-session workflow ended. `workflow` is the id `kill_session`
-    /// returned. `status` is `committed` when the session went away,
-    /// `partial` when some members were removed and the session stayed,
-    /// else `refused` or `unknown`.
+    /// A `kill_session` resolved. `workflow` is the id `kill_session`
+    /// returned. `status` is `committed` when the session went away, else
+    /// `refused`, `error`, `unknown`, or `not_sent`. `targets` is always
+    /// empty: the server kills the session as one command.
     KillFinished {
         workflow: u64,
         status: String,

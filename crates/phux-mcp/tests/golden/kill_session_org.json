@@ -1,22 +1,6 @@
 {
   "killed": true,
-  "report": {
-    "session": "^aaaaaak",
-    "session_detail": null,
-    "session_result": "deleted",
-    "targets": [
-      {
-        "detail": null,
-        "key": "^aaaaaa2",
-        "result": "already_gone"
-      },
-      {
-        "detail": null,
-        "key": "^aaaaab",
-        "result": "removed"
-      }
-    ]
-  },
+  "members": 2,
   "schema_version": 1,
   "target": "work"
 }

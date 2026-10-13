@@ -1,5 +1,5 @@
-//! The organization surface of [`RemoteClient`]: the Inbox, the typed
-//! organization commands, and the kill-session workflow.
+//! The organization surface of [`RemoteClient`]: the Inbox and the typed
+//! organization commands.
 //!
 //! Keys cross as full base32 text and operation ids as 32 hex digits. Each
 //! command returns its operation id; the outcome arrives later as
@@ -77,6 +77,7 @@ fn submit_error(error: SubmitError) -> WireError {
         SubmitError::NotAnOperation => "unknown_record",
         SubmitError::DuplicateOperation => "duplicate_operation",
         SubmitError::Full => "operation_journal_full",
+        SubmitError::Unsupported => "organization_unavailable",
     })
 }
 
@@ -153,29 +154,28 @@ pub(super) fn lower(event: &Event) -> Option<WireEvent> {
                 undoable: matches!(outcome, OrgOutcome::Committed(_)),
             })
         }
-        Event::KillFinished { workflow, report } => {
-            let read = organization::kill_result(report);
-            Some(WireEvent::KillFinished {
-                workflow: *workflow,
-                status: read.status.word().to_owned(),
-                message: read.message,
-                targets: read.targets.into_iter().map(Into::into).collect(),
-            })
-        }
         _ => None,
     }
 }
 
 impl RemoteClient {
     /// Lower an organization outcome, keeping a committed receipt for
-    /// `undo`.
+    /// `undo`. A `kill_session` outcome lowers as
+    /// [`WireEvent::KillFinished`] under the id that call returned.
     pub(super) fn organization_event(&self, event: Event) -> Option<WireEvent> {
-        if let Event::OrganizationOperation {
-            outcome: OrgOutcome::Committed(committed),
-            ..
-        } = &event
-        {
-            remember(&mut self.receipts.lock().unwrap(), committed);
+        if let Event::OrganizationOperation { operation, outcome } = &event {
+            if let Some(workflow) = self.kills.lock().unwrap().remove(operation) {
+                let read = organization::resolution(outcome);
+                return Some(WireEvent::KillFinished {
+                    workflow,
+                    status: read.status.word().to_owned(),
+                    message: read.message,
+                    targets: Vec::new(),
+                });
+            }
+            if let OrgOutcome::Committed(committed) = outcome {
+                remember(&mut self.receipts.lock().unwrap(), committed);
+            }
         }
         lower(&event)
     }
@@ -372,24 +372,27 @@ impl RemoteClient {
         submitted(self.connected()?.undo(&receipt))
     }
 
-    /// Kill a whole session: terminate each member, remove each once it has
-    /// stopped, then delete the session. Returns the workflow id
-    /// [`WireEvent::KillFinished`] reports with a per-target result.
+    /// Kill a whole session with one `SESSION_KILL`: the server ends every
+    /// member and deletes the session. Returns the id
+    /// [`WireEvent::KillFinished`] reports the outcome under.
     ///
     /// # Errors
-    /// See the module docs.
+    /// See the module docs; `organization_unavailable` when the server does
+    /// not advertise `SESSION_KILL`.
     pub fn kill_session(&self, session_key_text: String) -> Result<u64, WireError> {
         let key = session_key(&session_key_text)?;
-        self.connected()?
-            .kill_session(key)
-            .ok_or_else(|| reason("organization_unavailable"))
+        let operation = self.connected()?.kill_session(key).map_err(submit_error)?;
+        let workflow = 1 + self
+            .last_kill
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.kills.lock().unwrap().insert(operation, workflow);
+        Ok(workflow)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phux_client_core::org_ops::{KillReport, SessionOutcome, TargetOutcome};
     use phux_protocol::ids::Revision;
     use phux_protocol::wire::frame::Refusal;
 
@@ -444,34 +447,6 @@ mod tests {
 
     fn lowered_message(refusal: &Refusal) -> String {
         phux_client_core::org_ops::refusal_sentence(refusal)
-    }
-
-    #[test]
-    fn kill_reports_lower_per_target() {
-        let session = SessionKey::new([2; 16]).unwrap();
-        let member = ResourceKey::new([3; 16]).unwrap();
-        let Some(WireEvent::KillFinished {
-            workflow,
-            status,
-            targets,
-            ..
-        }) = lower(&Event::KillFinished {
-            workflow: 9,
-            report: Box::new(KillReport {
-                session,
-                targets: vec![(member, TargetOutcome::Removed)],
-                session_outcome: SessionOutcome::Deleted,
-            }),
-        })
-        else {
-            panic!("not lowered");
-        };
-        assert_eq!((workflow, status.as_str()), (9, "committed"));
-        assert_eq!(targets.len(), 2);
-        assert_eq!(targets[0].key, session.to_string());
-        assert!(targets[0].is_session);
-        assert_eq!(targets[1].key, member.to_string());
-        assert_eq!(targets[1].status, "done");
     }
 
     #[test]

@@ -265,13 +265,14 @@ mod tests {
     }
 
     /// The dangerous methods, pinned by name (ADR-0128).
-    const DANGEROUS: [&str; 14] = [
+    const DANGEROUS: [&str; 15] = [
         "KILL_RESOURCE",
         "KILL_RESOURCE_IF",
         "KILL_RESOURCES",
         "RESOURCE_TERMINATE",
         "RESOURCE_REMOVE",
         "SESSION_DELETE",
+        "SESSION_KILL",
         "CLOSE_TAB_RESOURCES",
         "SIGNAL_TERMINAL",
         "DETACH_CLIENTS",
@@ -283,10 +284,11 @@ mod tests {
     ];
 
     /// Each dangerous method and the CLI verb that asks before sending it.
-    const CLI_GATES: [(&str, &str); 9] = [
+    const CLI_GATES: [(&str, &str); 10] = [
         ("KILL_RESOURCE", "kill"),
         ("KILL_RESOURCE_IF", "kill"),
         ("KILL_RESOURCES", "kill"),
+        ("SESSION_KILL", "kill"),
         ("RESOURCE_TERMINATE", "kill"),
         ("RESOURCE_REMOVE", "rm"),
         ("SESSION_DELETE", "rm"),

@@ -571,52 +571,13 @@ async fn phux_kill(args: &Value) -> Result<Value, ToolError> {
     match result {
         Ok(done) => {
             let mut document = json!({ "schema_version": 1, "killed": true, "target": target });
-            if let Some(report) = &done.report {
-                document["report"] = kill_report_document(report);
+            if let Some(members) = done.killed {
+                document["members"] = json!(members);
             }
             Ok(document)
         }
         Err(err) => Err(kill_error(err)),
     }
-}
-
-/// A session kill workflow's per-target result: each member's key and
-/// outcome, then the session's own.
-pub(crate) fn kill_report_document(report: &phux_client::org::KillReport) -> Value {
-    use phux_client::org::{SessionOutcome, TargetOutcome};
-    let names = phux_client::kill::report_key_names(report);
-    let targets: Vec<Value> = report
-        .targets
-        .iter()
-        .map(|(member, outcome)| {
-            let (result, detail) = match outcome {
-                TargetOutcome::Removed => ("removed", None),
-                TargetOutcome::AlreadyGone => ("already_gone", None),
-                TargetOutcome::Refused(refusal) => {
-                    ("refused", Some(phux_client::org::refusal_sentence(refusal)))
-                }
-                TargetOutcome::Unknown(reason) => ("unknown", Some(reason.clone())),
-                TargetOutcome::TimedOut => ("timed_out", None),
-                TargetOutcome::NoLiveTarget => ("no_live_target", None),
-            };
-            json!({ "key": names.display(*member.as_bytes()), "result": result, "detail": detail })
-        })
-        .collect();
-    let (session, detail) = match &report.session_outcome {
-        SessionOutcome::Deleted => ("deleted", None),
-        SessionOutcome::AlreadyGone => ("already_gone", None),
-        SessionOutcome::Kept => ("kept", None),
-        SessionOutcome::Refused(refusal) => {
-            ("refused", Some(phux_client::org::refusal_sentence(refusal)))
-        }
-        SessionOutcome::Unknown(reason) => ("unknown", Some(reason.clone())),
-    };
-    json!({
-        "session": names.display(*report.session.as_bytes()),
-        "session_result": session,
-        "session_detail": detail,
-        "targets": targets,
-    })
 }
 
 /// Print the CLI's partial-fleet-view warning on stderr, the adapter's
@@ -636,12 +597,6 @@ fn kill_error(err: phux_client::kill::KillError) -> ToolError {
             degradation,
         } => incomplete_view_miss(&format!("'{target}'"), degradation.notices()),
         KillError::Agent(err) => agent_resolve_error(&err),
-        KillError::Workflow { report, .. } => {
-            let document = kill_report_document(&report);
-            ToolError::new(format!(
-                "the kill did not complete; per-target results: {document}"
-            ))
-        }
         other => ToolError::new(other.to_string()),
     }
 }

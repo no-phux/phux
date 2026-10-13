@@ -2835,6 +2835,7 @@ async fn negotiate_hello(
                 ServerFeatureExt::AgentStreamResume,
                 // ADR-0161: every organization command commits and is enforced.
                 ServerFeatureExt::Organization,
+                ServerFeatureExt::SessionKill,
             ]))
             .with_compression(compression),
         server_id: state.with(|server| server.server_incarnation().as_bytes().to_vec()),

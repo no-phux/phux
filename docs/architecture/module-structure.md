@@ -163,9 +163,9 @@ src/
 ```
 
 `resource::session_of` is the one join from a resource to its session;
-no client goes through a window. `kill.rs` runs the kill-session workflow
-(terminate, remove, then delete with the revision read at the start) and
-reports one result per target. `layout_ops.rs` edits the session
+no client goes through a window. `kill.rs` kills a whole session with one
+`SESSION_KILL` (the server ends every member and deletes the session), or
+one `KILL_RESOURCES` against a server without it. `layout_ops.rs` edits the session
 arrangement with a compare-and-swap that retries on conflict.
 
 `agent_record.rs` (`phux.agent/v1`), `agent_session_record.rs`
@@ -277,7 +277,7 @@ features: `dhat-heap` here, `tokio-console` via `phux-server`.
   phux-mobile consumes. The projection is lossless: keys, revisions,
   lifetime, members, arrangements, and execution state all cross.
   `c/arrangement/` wraps the shared arrangement and `c/organization.rs`
-  the organization commands and the kill-session workflow. Packaging lives in `scripts/build-*ffi*.sh`
+  the organization commands. Packaging lives in `scripts/build-*ffi*.sh`
   ([`../RELEASING.md`](../RELEASING.md)).
 - **`phux-relay`** — the reference relay (ADR-0051, ADR-0052); never parses
   phux frames.

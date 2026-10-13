@@ -62,8 +62,8 @@ A verb named **close** removes presentation. Closing a view, a tab, or a
 whole client leaves the resource running and listed in its session; you
 can show it again. A verb named **kill** ends execution, explicitly, and
 asks first when it would end more than one thing. Killing a session
-terminates and removes each of its resources, then deletes the session; a
-resource added while that runs survives, and the session stays.
+ends and removes every one of its resources, including one added a moment
+before, and deletes the session, in one step on the server.
 
 Exiting a shell removes that terminal, as in tmux. A launched command or
 agent stays listed after it exits, with its outcome, until you remove it.

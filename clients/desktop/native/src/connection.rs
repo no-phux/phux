@@ -320,15 +320,15 @@ impl Connection {
             .map_err(|error| error.to_string())
     }
 
-    /// Start the kill-session workflow. The result is
-    /// [`Event::KillFinished`] for the returned id; `None` while the
-    /// organization records are not loaded or do not list the session.
+    /// Kill `session` with one `SESSION_KILL`. The result is
+    /// [`Event::OrganizationOperation`] for the returned operation; `None`
+    /// when the server does not take the command.
     #[must_use]
-    pub fn kill_session(&self, session: SessionKey) -> Option<u64> {
+    pub fn kill_session(&self, session: SessionKey) -> Option<OperationId> {
         if self.closed {
             return None;
         }
-        self.client.kill_session(session)
+        self.client.kill_session(session).ok()
     }
 
     /// Ask the runtime to drop the socket and redial. A terminal client cannot reopen.

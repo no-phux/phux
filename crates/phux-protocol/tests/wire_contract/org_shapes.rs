@@ -231,6 +231,8 @@ fn org_command() -> impl Strategy<Value = Command> {
         }),
         (op(), session_key())
             .prop_map(|(operation, session)| { Command::SessionDelete { operation, session } }),
+        (op(), session_key())
+            .prop_map(|(operation, session)| { Command::SessionKill { operation, session } }),
         (
             op(),
             session_key(),
@@ -485,17 +487,21 @@ fn org_result() -> impl Strategy<Value = CommandResult> {
         proptest::option::of(live_target()),
         proptest::collection::vec(pin(), 0..3),
         proptest::option::of(any::<bool>()),
+        proptest::option::of(any::<u32>()),
     )
-        .prop_map(|(operation, r, session, resource, target, pins, prior)| {
-            CommandResult::OkWith(CommandValue::Committed(Box::new(
-                Committed::new(operation, r)
-                    .with_session(session)
-                    .with_resource(resource)
-                    .with_target(target)
-                    .with_revisions(pins)
-                    .with_prior_awaiting(prior),
-            )))
-        });
+        .prop_map(
+            |(operation, r, session, resource, target, pins, prior, members)| {
+                CommandResult::OkWith(CommandValue::Committed(Box::new(
+                    Committed::new(operation, r)
+                        .with_session(session)
+                        .with_resource(resource)
+                        .with_target(target)
+                        .with_revisions(pins)
+                        .with_prior_awaiting(prior)
+                        .with_members(members),
+                )))
+            },
+        );
     let arrangement = (arrangement_key(), owner(), rev(), document()).prop_map(|(k, o, r, d)| {
         CommandResult::OkWith(CommandValue::Arrangement(Box::new(ArrangementValue::new(
             k, o, r, d,
@@ -803,8 +809,8 @@ fn malformed_organization_events_are_opaque() {
 }
 
 /// An older client still sends `expected` (field 4) on a remove, a delete,
-/// and the label edits; a decoder accepts and drops it. A relaunch body is the old remove
-/// body, field for field, so retagging it is that old frame.
+/// and the label edits; a decoder accepts and drops it. A relaunch body is
+/// the old remove body, field for field, so retagging it is that old frame.
 #[test]
 fn an_ignored_expected_revision_still_decodes() {
     let operation = IdempotencyKey::new([3; 16]).unwrap();

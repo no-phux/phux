@@ -671,11 +671,10 @@ pub const Host = struct {
         return host.attached_session_id;
     }
 
-    /// Resolve organization operations past their retry horizon and time out
-    /// kill workflows (phux_client_expire_operations). The connected lane's
-    /// runtime does this itself; the embedded lane relies on this call, which
-    /// the engine makes on its workspace timer. A forced terminate a kill
-    /// workflow queues is staged here.
+    /// Resolve organization operations past their retry horizon
+    /// (phux_client_expire_operations). The connected lane's runtime does
+    /// this itself; the embedded lane relies on this call, which the engine
+    /// makes on its workspace timer.
     pub fn expireOperations(host: *Host) void {
         if (host.disconnected) return;
         if (c.phux_client_expire_operations(host.client, null) != c.PHUX_CLIENT_OK) return;

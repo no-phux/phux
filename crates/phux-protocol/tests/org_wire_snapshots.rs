@@ -189,6 +189,13 @@ fn command_fixtures() -> Vec<(&'static str, FrameKind)> {
             }),
         ),
         (
+            "snap_org_session_kill",
+            command(Command::SessionKill {
+                operation: op(),
+                session: session(),
+            }),
+        ),
+        (
             "snap_org_resource_create",
             command(Command::ResourceCreate {
                 operation: op(),
@@ -417,6 +424,12 @@ fn result_fixtures() -> Vec<(&'static str, FrameKind)> {
                         key: *session().as_bytes(),
                         revision: rev(5),
                     }]),
+            )))),
+        ),
+        (
+            "snap_org_result_committed_kill",
+            result(CommandResult::OkWith(CommandValue::Committed(Box::new(
+                Committed::new(op(), rev(0)).with_members(Some(3)),
             )))),
         ),
         (

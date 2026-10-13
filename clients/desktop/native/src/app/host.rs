@@ -96,7 +96,7 @@ pub fn rename_session(phux: &Path, socket: &Path, current: &str, next: &str) -> 
     .err()
 }
 
-/// `phux kill` for a server without `ORGANIZATION`, which has no kill workflow.
+/// `phux kill` for a server without `SESSION_KILL`.
 pub fn kill_session(phux: &Path, socket: &Path, name: &str) -> Option<String> {
     if name.trim().is_empty() {
         return Some("Kill needs a session name.".into());

@@ -1,10 +1,10 @@
-//! The organization surface of the C ABI: records, typed operations, and
-//! the kill-session workflow, over the runtime's organization replica and
-//! operation journal (`docs/spec/L1.md` §5.7, CONTRACTS §04-§06).
+//! The organization surface of the C ABI: records and typed operations,
+//! over the runtime's organization replica and operation journal
+//! (`docs/spec/L1.md` §5.7, CONTRACTS §04-§06).
 //!
-//! The runtime owns the replica, the journal (one `OperationId` per action,
-//! resent with the same id after a reconnect inside the retry horizon), and
-//! the kill workflow. This module only correlates host request ids with the
+//! The runtime owns the replica and the journal (one `OperationId` per
+//! action, resent with the same id after a reconnect inside the retry
+//! horizon). This module only correlates host request ids with the
 //! operations they submitted, and keeps the borrowed views the C records
 //! point into. The client seeds the replica once per connection that
 //! advertises `ORGANIZATION` (its control plane runs with
@@ -17,7 +17,7 @@
 use std::collections::BTreeMap;
 use std::mem;
 
-use phux_client_core::org_ops::{KillReport, OrgOutcome, SubmitError};
+use phux_client_core::org_ops::{OrgOutcome, SubmitError};
 use phux_client_runtime::control::{ControlPlane, Event, ReplicaState};
 use phux_protocol::ResourceId;
 use phux_protocol::ids::{ArrangementKey, OperationId, ResourceKey, SessionKey};
@@ -29,9 +29,7 @@ use crate::c::client::Client;
 use crate::c::error::{BridgeError, check_struct};
 use crate::c::types::{PhuxBytes, PhuxResourceId, bytes_out};
 use crate::c::{PhuxClient, PhuxClientResult, with_client_mut, with_client_ref};
-use crate::projection::organization::{
-    self as projected, KillResult, Resolution, Status, TargetResult,
-};
+use crate::projection::organization::{self as projected, Resolution, Status, TargetResult};
 
 /// Most resources one `phux_client_org_move_many` names.
 pub const MAX_MOVE_MANY: usize = 1024;
@@ -212,8 +210,6 @@ struct Part {
 struct Request {
     kind: Kind,
     parts: Vec<Part>,
-    kill: Option<u64>,
-    kill_result: Option<KillResult>,
     view: ResultView,
 }
 
@@ -254,48 +250,18 @@ impl Request {
         Self {
             kind,
             parts: Vec::new(),
-            kill: None,
-            kill_result: None,
             view: ResultView::default(),
         }
     }
 
     fn pending(&self) -> bool {
-        match self.kill {
-            Some(_) => self.kill_result.is_none(),
-            None => self
-                .parts
-                .iter()
-                .any(|part| part.resolution.status == Status::Pending),
-        }
+        self.parts
+            .iter()
+            .any(|part| part.resolution.status == Status::Pending)
     }
 
     /// Recompute the borrowed result view from the parts.
     fn refresh_view(&mut self) {
-        if let Some(kill) = &self.kill_result {
-            self.view = ResultView {
-                status: kill.status.code(),
-                refusal: kill
-                    .targets
-                    .iter()
-                    .map(|target| target.refusal)
-                    .find(|refusal| *refusal != 0)
-                    .unwrap_or(0),
-                undoable: false,
-                revision: 0,
-                conflict_revision: 0,
-                message: kill.message.as_bytes().to_vec(),
-                targets: kill.targets.iter().map(TargetView::from_result).collect(),
-            };
-            return;
-        }
-        if self.kill.is_some() {
-            self.view = ResultView {
-                status: Status::Pending.code(),
-                ..ResultView::default()
-            };
-            return;
-        }
         let statuses: Vec<Status> = self
             .parts
             .iter()
@@ -437,10 +403,6 @@ pub(crate) fn on_event(client: &mut Client, event: Event) -> Option<Event> {
             resolved(client, operation, &outcome);
             None
         }
-        Event::KillFinished { workflow, report } => {
-            kill_finished(client, workflow, &report);
-            None
-        }
         other => Some(other),
     }
 }
@@ -569,16 +531,6 @@ fn resolved(client: &mut Client, operation: OperationId, outcome: &OrgOutcome) {
         };
         request.refresh_view();
         return;
-    }
-}
-
-fn kill_finished(client: &mut Client, workflow: u64, report: &KillReport) {
-    for request in client.org.requests.values_mut() {
-        if request.kill == Some(workflow) {
-            request.kill_result = Some(projected::kill_result(report));
-            request.refresh_view();
-            return;
-        }
     }
 }
 
@@ -1251,11 +1203,9 @@ pub unsafe extern "C" fn phux_client_org_undo(
     })
 }
 
-/// Kill a whole session, with a result that names every target.
-///
-/// Terminate each executing member, wait until each is inactive, remove
-/// each, then delete the session at the revision the workflow last
-/// committed against.
+/// Kill a whole session with one `SESSION_KILL`: the server ends every
+/// member and deletes the session. Refused `INVALID_STATE` unless the server
+/// advertises `SESSION_KILL`.
 ///
 /// # Safety
 /// Client is live and exclusively accessed; `session` is 16 readable bytes.
@@ -1268,25 +1218,21 @@ pub unsafe extern "C" fn phux_client_kill_session(
     with_client_mut(client, |client| {
         // SAFETY: caller supplies 16 readable bytes.
         let session = unsafe { session_key_in(session) }?;
-        ensure_live(client)?;
-        ensure_capacity(client, request_id)?;
-        let workflow = client.control().kill_session(session).ok_or_else(|| {
-            BridgeError::state("the organization replica does not hold that session")
-        })?;
-        client.operations.consume_request_id(request_id);
-        let mut request = Request::new(Kind::KillSession);
-        request.kill = Some(workflow);
-        request.refresh_view();
-        client.org.requests.insert(request_id, request);
-        client.process_runtime_events()?;
-        Ok(())
+        submit(
+            client,
+            request_id,
+            Kind::KillSession,
+            vec![vec![*session.as_bytes()]],
+            true,
+            |control| control.kill_session(session).map(|op| vec![op]),
+        )
     })
 }
 
-/// Resolve operations past their retry horizon and time out kill workflows.
+/// Resolve operations past their retry horizon.
 ///
-/// The connected lane's driver does this itself; an embedded host calls it on a timer while a kill or an
-/// organization operation is pending. `out_next_ms` receives the
+/// The connected lane's driver does this itself; an embedded host calls it
+/// on a timer while an organization operation is pending. `out_next_ms` receives the
 /// milliseconds until the next deadline, or `UINT64_MAX` when none is due.
 ///
 /// # Safety

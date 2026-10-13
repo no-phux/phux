@@ -8,8 +8,8 @@ last-reviewed: 2026-10-13
 
 **TL;DR.** Session, resource, arrangement, and Inbox edits are typed
 commands on the existing `COMMAND` envelope, advertised by the
-`ORGANIZATION` bit in `features_ext`. Each edit carries an operation id and an
-expected revision, answers `Ok`, `Accepted`, or a typed refusal, and is
+`ORGANIZATION` bit in `features_ext`. Each edit carries an operation id, moves
+and arrangement replaces carry an expected revision, and each answers `Ok`, `Accepted`, or a typed refusal, and is
 journaled with its actor. The intercepted session keys and the TUI layout
 key become a translation layer for old clients.
 
@@ -39,7 +39,8 @@ surface.
    `ResourceCreate`, `ResourceMove`, `ResourceMoveMany`, `InboxResolve`,
    `OrganizationUndo`, `ResourceRename`, `ResourceTerminate`,
    `ResourceRemove`, `ResourceRelaunch`, `ArrangementGet`, and
-   `ArrangementReplace`. (`ResourceAbandon`, tag `0x2a`, was retired
+   `ArrangementReplace`, plus `SessionKill` behind its own `SESSION_KILL`
+   bit (amendment below). (`ResourceAbandon`, tag `0x2a`, was retired
    unshipped and its tag stays reserved.) Workspace commands are
    reserved for the workspace stage. No frame tag is reused or
    reinterpreted. Byte layouts live in `docs/spec/L1.md` §5.7.
@@ -50,9 +51,11 @@ surface.
    ([ADR-0126](./0126-idempotent-create.md)). A retry with the same id and
    payload returns the original result without repeating effects; the
    same id with a different payload is refused as a duplicate.
-3. **Every edit carries an expected `Revision`.** A mismatch is refused as
-   a conflict naming the current revision. `ArrangementReplace` is a real
-   compare-and-swap; session arrangements may reference members only.
+3. **Structural edits carry an expected `Revision`.** Moves, relaunch,
+   Inbox resolve, and `ArrangementReplace` are compare-and-swap: a mismatch
+   is refused as a conflict naming the current revision. Session
+   arrangements may reference members only. Renames, lifetime changes,
+   removes, and deletes carry none (amendment below).
 4. **Results.** A command answers `Ok` with value and revision,
    `Accepted` when execution effects follow as events, or `Refused` with a
    typed reason: unauthorized, not found, conflict, stale, not empty,
@@ -112,6 +115,20 @@ release.
   new clients get conflict refusals.
 - `GetOrganization` and the event stream are a second read path beside
   `GET_STATE` for as long as legacy clients exist.
+
+## Amendment: server-side kill, fewer revisions (2026-10-13)
+
+Killing a session was a client workflow: terminate each member, poll until
+each was inactive, remove each, then delete the session at a tracked
+revision. Every client carried that state machine and its timeouts, and
+work that joined meanwhile made the delete refuse. `SessionKill` (tag
+`0x37`, gated on `features_ext.SESSION_KILL`) does it on the server in one
+step under the legacy kill's committed teardown, work that joined
+included, and answers with the member count. Renames, lifetime changes,
+removes, and deletes dropped their expected revision: a label is last
+writer wins, and a remove or delete is guarded by its own condition
+(inactive execution, no members), so the revision only cost a round trip.
+A server ignores the field when an older client sends it.
 
 ## Alternatives
 

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use phux_client_core::history::HistoryStatus;
-use phux_client_core::org_ops::{KillReport, OrgOutcome};
+use phux_client_core::org_ops::OrgOutcome;
 use phux_client_core::session::AgentStreamInfo;
 pub use phux_client_core::session::agent_stream::{AgentPublication, AgentRecordMode};
 use phux_client_core::session::{HistoryUnavailableReason, KernelSend};
@@ -95,13 +95,6 @@ pub enum Event {
         operation: OperationId,
         /// How it ended.
         outcome: OrgOutcome,
-    },
-    /// A kill-session workflow ended; the report names each target.
-    KillFinished {
-        /// The workflow id `kill_session` returned.
-        workflow: u64,
-        /// The per-target result.
-        report: Box<KillReport>,
     },
     /// The complete wire snapshot behind a topology change.
     ///
@@ -457,7 +450,6 @@ impl Event {
                 | Self::TerminalKilled { .. }
                 | Self::TerminalsClosed { .. }
                 | Self::OrganizationOperation { .. }
-                | Self::KillFinished { .. }
                 | Self::InputDelivery { .. }
                 | Self::CommandResult { .. }
                 | Self::InputHolderChanged { .. }

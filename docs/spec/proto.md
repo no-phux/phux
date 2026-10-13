@@ -441,6 +441,8 @@ ServerFeatureExt = bitset (u32) {
     RESIZE_CELL_PX = 0x00000002, // RESIZE_TERMINAL cell size (L1 §3.1)
     COMMITTED_TEARDOWN = 0x00000004, // a kill's reply follows its whole visible
                                      //   teardown (L1 §5.2)
+    // 0x00000008 AGENT_STREAM_RESUME and 0x00000010 ORGANIZATION: below.
+    SESSION_KILL   = 0x00000020, // SESSION_KILL, one-step session kill (L1 §5.7)
 }
 
 EngineFeatureSet = bitset (u32) {
@@ -545,6 +547,9 @@ idempotent operations, typed refusals, and the organization events. A
 client MUST see it before sending an organization command, because an older
 server answers an unknown command tag with an error, and a client that does
 not see it treats organization as read-only.
+`features_ext.SESSION_KILL = 0x00000020` ([L1.md](./L1.md) §5.7) says the
+server accepts `SESSION_KILL`; it is advertised only beside `ORGANIZATION`. A
+client that does not see it kills a session's panes with `KILL_RESOURCES`.
 `ACKNOWLEDGED_INPUT = 0x10`, `FILE_UPLOAD = 0x20`,
 `MOVE_RESOURCE = 0x40`, `TERMINAL_REPLY = 0x80`, `SHUTDOWN = 0x100`,
 `SPAWN_INITIAL_SIZE = 0x200`, `REPORT_AGENT_STATE = 0x400`,
