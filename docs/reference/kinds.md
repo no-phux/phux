@@ -60,6 +60,8 @@ Addressed to the server or the connection rather than to one resource.
 | `ORGANIZATION_UNDO` | command `0x2c` | ORGANIZE | yes | `organization` (features_ext) | shipped |
 | `ARRANGEMENT_GET` | command `0x2d` | INVENTORY | no | `organization` (features_ext) | shipped |
 | `ARRANGEMENT_REPLACE` | command `0x2e` | ORGANIZE | yes | `organization` (features_ext) | shipped |
+| `DELEGATE_AGENT` | command `0x35` | TERMINATE (owner socket only) | yes | none | shipped |
+| `REVOKE_DELEGATION` | command `0x36` | TERMINATE (owner socket only) | yes | none | shipped |
 
 ## Server events
 
@@ -68,18 +70,18 @@ Addressed to the server or the connection rather than to one resource.
 | `journal_gap` | `0x0b` |
 | `approval_requested` | `0x0d` |
 | `approval_decided` | `0x0e` |
-| `session_created` | `0x0f` |
-| `session_renamed` | `0x10` |
-| `session_deleted` | `0x11` |
-| `session_lifetime_changed` | `0x12` |
-| `membership_changed` | `0x13` |
-| `resource_created` | `0x14` |
-| `resource_removed` | `0x15` |
-| `activation_changed` | `0x16` |
-| `arrangement_changed` | `0x17` |
-| `lease_changed` | `0x18` |
-| `intake_changed` | `0x19` |
-| `resource_renamed` | `0x1a` |
+| `session_created` | `0x10` |
+| `session_renamed` | `0x11` |
+| `session_deleted` | `0x12` |
+| `session_lifetime_changed` | `0x13` |
+| `membership_changed` | `0x14` |
+| `resource_created` | `0x15` |
+| `resource_removed` | `0x16` |
+| `activation_changed` | `0x17` |
+| `arrangement_changed` | `0x18` |
+| `lease_changed` | `0x19` |
+| `intake_changed` | `0x1a` |
+| `resource_renamed` | `0x1b` |
 
 ## Substrate methods
 
@@ -280,4 +282,5 @@ Every command nested in `COMMAND` lands on exactly one row; the envelope alone g
 | `ORGANIZATION_UNDO` | ORGANIZE | `UndoneOperation` |
 | `ARRANGEMENT_GET` | INVENTORY | `ArrangementOwner` |
 | `ARRANGEMENT_REPLACE` | ORGANIZE | `ArrangementOwner` |
+| `DELEGATE_AGENT`, `REVOKE_DELEGATION` | TERMINATE + owner-UDS transport | `Global { owner_uds_only: true }` |
 | Unknown, retired, or otherwise unclassified command tag | deny | `None` |
