@@ -53,3 +53,4 @@ worker/.dev.vars
 .beads-credential-key
 .beads/proxieddb/
 .motion-check/
+.home-check/
