@@ -8,9 +8,59 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::activation::{ExecState, SessionLifetime};
+
 /// Stable JSON contract version for [`SessionListJson`], independent of
-/// [`crate::screen::SCHEMA_VERSION`].
-pub const LS_SCHEMA_VERSION: u32 = 3;
+/// [`crate::screen::SCHEMA_VERSION`]. Version 4 adds `lifetime`, `members`,
+/// and `exec` to each session.
+pub const LS_SCHEMA_VERSION: u32 = 4;
+
+/// How many of a session's members are in each execution state, in
+/// [`SessionJson::exec`]. `dormant` counts members that never launched.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecCounts {
+    /// No activation.
+    #[serde(default)]
+    pub dormant: u32,
+    /// [`ExecState::Starting`].
+    #[serde(default)]
+    pub starting: u32,
+    /// [`ExecState::Running`].
+    #[serde(default)]
+    pub running: u32,
+    /// [`ExecState::Stopping`].
+    #[serde(default)]
+    pub stopping: u32,
+    /// [`ExecState::Completed`].
+    #[serde(default)]
+    pub completed: u32,
+    /// [`ExecState::Failed`].
+    #[serde(default)]
+    pub failed: u32,
+    /// [`ExecState::Lost`].
+    #[serde(default)]
+    pub lost: u32,
+    /// [`ExecState::Abandoned`].
+    #[serde(default)]
+    pub abandoned: u32,
+}
+
+impl ExecCounts {
+    /// Count one member in `state`, or as dormant for `None`.
+    pub const fn add(&mut self, state: Option<ExecState>) {
+        let slot = match state {
+            None => &mut self.dormant,
+            Some(ExecState::Starting) => &mut self.starting,
+            Some(ExecState::Running) => &mut self.running,
+            Some(ExecState::Stopping) => &mut self.stopping,
+            Some(ExecState::Completed) => &mut self.completed,
+            Some(ExecState::Failed) => &mut self.failed,
+            Some(ExecState::Lost) => &mut self.lost,
+            Some(ExecState::Abandoned) => &mut self.abandoned,
+        };
+        *slot = slot.saturating_add(1);
+    }
+}
 
 /// One session's entry in the [`SessionListJson`] output.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,6 +81,16 @@ pub struct SessionJson {
     /// Whether the session holds no windows right now (`windows == 0`).
     #[serde(default)]
     pub empty: bool,
+    /// Whether the session survives empty; `null` from a server that does
+    /// not report it.
+    #[serde(default)]
+    pub lifetime: Option<SessionLifetime>,
+    /// Number of member resources.
+    #[serde(default)]
+    pub members: u32,
+    /// Members per execution state.
+    #[serde(default)]
+    pub exec: ExecCounts,
 }
 
 /// One resource's row in [`SessionListJson::resources`]: canonical selector,
@@ -206,6 +266,10 @@ mod tests {
     /// Pins the whole `phux ls --json` shape: every key, `null` rather than
     /// omitted optionals, and empty-but-present `unreachable`.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one literal per side of the contract"
+    )]
     fn serializes_to_the_stable_json_shape() {
         let list = SessionListJson::new(vec![SessionJson {
             name: "work".to_owned(),
@@ -214,6 +278,13 @@ mod tests {
             attached_clients: 2,
             keep_empty: false,
             empty: false,
+            lifetime: Some(SessionLifetime::Persistent),
+            members: 4,
+            exec: ExecCounts {
+                running: 3,
+                completed: 1,
+                ..ExecCounts::default()
+            },
         }])
         .with_terminals(vec!["@7".to_owned(), "@9".to_owned()])
         .with_resources(vec![
@@ -267,10 +338,15 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&list).expect("serialize"),
             json!({
-                "schema_version": 3,
+                "schema_version": 4,
                 "sessions": [{
                     "name": "work", "windows": 3, "attached": true,
-                    "attached_clients": 2, "keep_empty": false, "empty": false
+                    "attached_clients": 2, "keep_empty": false, "empty": false,
+                    "lifetime": "persistent", "members": 4,
+                    "exec": {
+                        "dormant": 0, "starting": 0, "running": 3, "stopping": 0,
+                        "completed": 1, "failed": 0, "lost": 0, "abandoned": 0
+                    }
                 }],
                 "terminals": ["@7", "@9"],
                 "unreachable": [],
@@ -315,6 +391,9 @@ mod tests {
         }))
         .expect("older payloads remain deserializable");
         assert_eq!(old.sessions[0].attached_clients, 0);
+        assert_eq!(old.sessions[0].lifetime, None);
+        assert_eq!(old.sessions[0].members, 0);
+        assert_eq!(old.sessions[0].exec, ExecCounts::default());
         assert!(old.terminals.is_empty() && old.unreachable.is_empty());
         assert!(old.resources.is_empty() && old.hosts.is_empty());
         assert!(!old.hosts_complete);
