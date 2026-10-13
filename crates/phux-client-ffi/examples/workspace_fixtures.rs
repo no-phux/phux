@@ -4,7 +4,9 @@
 //! independent-session add/close cases, on the legacy layout-metadata
 //! backend a server without `ORGANIZATION` serves. An absent value
 //! (`workspace_initial`) now reads as an unarranged session with no groups;
-//! nothing is synthesized from the catalog. Pass output bytes through the ordinary
+//! nothing is synthesized from the catalog. `workspace_arranged` answers the
+//! same initial read for a session whose stored layout already shows terminal 7
+//! in one group. Pass output bytes through the ordinary
 //! FFI frame feeder; no emulator allocation is needed for listings.
 
 use phux_client_core::layout::{self, ArrangementDoc};
@@ -100,7 +102,7 @@ fn write_pair(
     )
 }
 
-fn cutover_fixtures(directory: &Path) -> Result<(), Box<dyn Error>> {
+fn cutover_fixtures(directory: &Path, seed: &ArrangementDoc) -> Result<(), Box<dyn Error>> {
     // Complete previous schema with an empty window array. It is present data,
     // not permission to generate fallback or to replace the server's bytes.
     write_pair(
@@ -111,13 +113,15 @@ fn cutover_fixtures(directory: &Path) -> Result<(), Box<dyn Error>> {
         snapshot(false),
         Some(b"\xa3\x67version\x02\x67windows\x80\x74focused_window_index\x00".to_vec()),
     )?;
-    let mut topology = ArrangementDoc::single(ResourceId::local(7));
+    let mut topology = seed.clone();
     topology.add_group(String::new(), ResourceId::local(8));
     pair(directory, "workspace_add", 13, 14, true, Some(&topology))
 }
 
 fn sibling_session_fixtures(directory: &Path) -> Result<(), Box<dyn Error>> {
     let session = SessionId::new(2);
+    // Group ids are random: every reply about one group reuses its document.
+    let sibling = ArrangementDoc::single(ResourceId::local(7));
     let snapshot = SessionSnapshot::new(session, WindowId::new(1), ResourceId::local(7))
         .with_sessions(vec![SessionInfo::new(session, "sibling")])
         .with_windows(vec![WindowInfo::new(WindowId::new(1), session, "sibling")])
@@ -133,7 +137,7 @@ fn sibling_session_fixtures(directory: &Path) -> Result<(), Box<dyn Error>> {
         0,
         1,
         snapshot.clone(),
-        Some(ArrangementDoc::single(ResourceId::local(7)).encode_topology_cbor()?),
+        Some(sibling.encode_topology_cbor()?),
     )?;
     let mut added_snapshot = snapshot.clone();
     added_snapshot
@@ -145,7 +149,7 @@ fn sibling_session_fixtures(directory: &Path) -> Result<(), Box<dyn Error>> {
         80,
         24,
     ));
-    let mut added = ArrangementDoc::single(ResourceId::local(7));
+    let mut added = sibling.clone();
     added.add_group(String::new(), ResourceId::local(8));
     write_pair(
         directory,
@@ -171,8 +175,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         .ok_or("output directory required")?;
     let directory = Path::new(&directory);
     std::fs::create_dir_all(directory)?;
-    let mut topology = ArrangementDoc::single(ResourceId::local(7));
+    // Group ids are random: every reply about terminal 7's group reuses this
+    // document, so the group keeps one identity across them.
+    let seed = ArrangementDoc::single(ResourceId::local(7));
+    let mut topology = seed.clone();
     pair(directory, "workspace_initial", 0, 1, false, None)?;
+    pair(directory, "workspace_arranged", 0, 1, false, Some(&topology))?;
     pair(directory, "workspace_refresh", 2, 3, true, Some(&topology))?;
     topology.groups[0].name = "renamed".into();
     pair(directory, "workspace_rename", 4, 5, true, Some(&topology))?;
@@ -192,7 +200,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         *ratio = 0.7;
     }
     pair(directory, "workspace_resize", 10, 11, true, Some(&topology))?;
-    cutover_fixtures(directory)?;
+    cutover_fixtures(directory, &seed)?;
     sibling_session_fixtures(directory)?;
     Ok(())
 }
