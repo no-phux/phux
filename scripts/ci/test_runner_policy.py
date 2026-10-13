@@ -72,12 +72,12 @@ class RunnerPolicyTests(unittest.TestCase):
             self.assertNotIn("mr-boxington-action", body)
 
     def test_main_prunes_superseded_build_cache_entries(self):
-        """A new mbx key (day, lockfile, or flake) saves one multi-GB entry per lane.
+        """check and icount keep their newest mbx entry. The test lane keeps none.
 
-        Restores take only the newest, so ci.yml deletes the older ones after
-        a main run instead of letting them evict other workflows' caches.
-        The primary key must not be the commit: an exact hit skips the
-        objects export, and a per-commit key repackaged it on every push.
+        Restores take only the newest, so ci.yml deletes older check and
+        icount entries after a main run. The test lane's archive is about
+        5.5 GB and does not fit in the shared 10 GB, so every leftover test
+        entry is deleted rather than kept.
         """
         ci = (WORKFLOWS / "ci.yml").read_text()
         prune = ci.split("\n  prune-build-cache:\n", 1)[1]
@@ -86,6 +86,8 @@ class RunnerPolicyTests(unittest.TestCase):
         self.assertIn("actions: write", prune)
         self.assertIn("check:linux-arm64", prune)
         self.assertIn("icount:linux-x64", prune)
+        self.assertNotIn("test:linux-arm64", prune)
+        self.assertIn("key=linux-arm64-mbx-phux-test-", prune)
         self.assertIn("key=${arch}-mbx-phux-${lane}-", prune)
         self.assertIn("tail -n +2", prune)
 
@@ -105,6 +107,20 @@ class RunnerPolicyTests(unittest.TestCase):
         self.assertIn("date -u +%Y%m%d", lane)
         self.assertIn("linux-arm64", lane)
         self.assertIn("linux-x64", lane)
+
+    def test_test_lane_does_not_upload_an_objects_archive(self):
+        """The test-profile objects archive cannot share the 10 GB budget.
+
+        Run 38442503688 saved 5940645663 bytes at 18:23. Cockpit's zig cache
+        is about 4.8 GB, and by 19:03 the repository had no mbx key left.
+        Importing that archive takes about five minutes, against about seven
+        of cold compile, and the export takes about eleven. check and icount
+        stay on the GitHub cache; their exports are ~1.5 GiB logical.
+        """
+        lane = (ROOT / ".github/actions/setup-rust-lane/action.yml").read_text()
+        self.assertEqual(lane.count("inputs.cache-lane != 'test'"), 2)
+        self.assertIn("uses: jdx/mr-boxington-action@", lane)
+        self.assertIn("PHUX_CI_MBX=1", lane)
 
     def test_export_cleanup_preserves_pending_cache_and_cargo_tools(self):
         """Download cleanup must not evict the current build's export closure."""

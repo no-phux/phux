@@ -1,7 +1,8 @@
 # Root validation: compile-free guards, independently routed Node integrations,
 # and two Rust lanes. All compile/run phases retain their own target directory:
-# check shares Clippy/rustdoc artifacts; test shares unit/e2e artifacts. Native
-# compilations, build scripts, and links restore from setup-rust-lane's mbx cache.
+# check shares Clippy/rustdoc artifacts; test shares unit/e2e artifacts. The
+# check and icount lanes restore compilations from setup-rust-lane's mbx cache.
+# The test lane does not: its objects archive cannot share the 10 GB budget.
 # The required `ci` aggregate owns the explicit skip/failure policy.
 name: ci
 
@@ -170,6 +171,7 @@ jobs:
     if: needs.changes.outputs.phux_needed == 'true' && needs.changes.outputs.validated != 'true' && (github.event_name == 'push' || needs.changes.outputs.unit_mode != 'skip' || needs.changes.outputs.e2e_needed == 'true')
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # cache-lane test skips the GitHub objects cache. See setup-rust-lane.
       - uses: ./.github/actions/setup-rust-lane
         id: setup
         with:
@@ -299,13 +301,12 @@ jobs:
           workflow: .github/workflows/ci.yml
           coverage: phux=${{ needs.changes.outputs.phux_needed }},integrations=${{ needs.changes.outputs.integrations_needed }}
 
-  # setup-rust-lane saves an mbx objects entry when its key changes (UTC day,
+  # check and icount save an mbx objects entry when the key changes (UTC day,
   # Cargo.lock, or flake.lock), not on every commit. An exact hit skips the
-  # export. Restores take only the newest, so a new key's predecessor would
-  # sit until LRU eviction pushed other workflows' caches out of the shared
-  # 10 GB. Keep the newest entry per lane and delete the rest once the rust
-  # lanes have finished saving.
-  # check and test are arm64; perf-icount is x86_64, so its key prefix differs.
+  # export. Restores take only the newest, so keep one entry for each of those
+  # lanes. The test lane does not save; delete every leftover test entry so a
+  # multi-GB archive cannot evict the caches that fit.
+  # check is arm64; perf-icount is x86_64, so its key prefix differs.
   prune-build-cache:
     name: prune superseded mbx cache entries
     needs: [check, test, perf-icount]
@@ -315,12 +316,18 @@ jobs:
     permissions:
       actions: write
     steps:
-      - name: keep the newest entry per lane
+      - name: prune rust-lane mbx entries
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          for spec in check:linux-arm64 test:linux-arm64 icount:linux-x64; do
+          delete_cache() {
+            echo "deleting ${1} entry ${2}"
+            # A 404 means another main run already pruned it.
+            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/${2}" --silent || true
+            sleep 1
+          }
+          for spec in check:linux-arm64 icount:linux-x64; do
             lane="${spec%%:*}"
             arch="${spec#*:}"
             mapfile -t stale < <(gh api --paginate \
@@ -328,9 +335,13 @@ jobs:
               --jq '.actions_caches[].id' | tail -n +2)
             for id in "${stale[@]:-}"; do
               [ -n "${id}" ] || continue
-              echo "deleting superseded ${lane} entry ${id}"
-              # A 404 means another main run already pruned it.
-              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/${id}" --silent || true
-              sleep 1
+              delete_cache "$lane" "$id"
             done
+          done
+          mapfile -t stale < <(gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/actions/caches?ref=refs/heads/main&key=linux-arm64-mbx-phux-test-&sort=created_at&direction=desc&per_page=100" \
+            --jq '.actions_caches[].id')
+          for id in "${stale[@]:-}"; do
+            [ -n "${id}" ] || continue
+            delete_cache "test" "$id"
           done
