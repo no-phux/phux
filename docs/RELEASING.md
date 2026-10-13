@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-27
+last-reviewed: 2026-10-13
 ---
 
 # Releasing
@@ -106,19 +106,24 @@ Workflows use only `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-24.04-arm`, and
 The Actions cache is capped at 10 GB per repository with LRU eviction, and a
 cache saved on `refs/pull/N/merge` is only restorable from that PR. So the
 Linux Rust lanes' mbx cache (`.github/actions/setup-rust-lane`, one `objects`
-entry per lane per `main` push, older ones pruned by ci.yml's
-`prune-build-cache`) saves on `main` pushes only, as do the other
-lanes' `rust-cache` entries, and Cockpit's sccache runs
+entry per lane) saves on `main` pushes only, as do the other lanes'
+`rust-cache` entries, and Cockpit's sccache runs
 `SCCACHE_GHA_RW_MODE=READ_ONLY` off `main`; any new PR-lane cache needs the
-same treatment. The account allows
-20 concurrent standard jobs, only 5 of them macOS. `pr-janitor` cancels a
-closed PR's live runs and deletes its merge-ref caches. Concurrency groups use
-the `mini-v1-` namespace.
+same treatment. The mbx primary key is the lane, `flake.lock`, `Cargo.lock`,
+and the UTC day. It does not include the commit: an exact hit skips the
+objects export, and keying on the commit repackaged the test lane's
+multi-gigabyte store on every push. A new day or lockfile still restores the
+previous entry by prefix, then saves once. `prune-build-cache` keeps the
+newest entry per lane. The account allows 20 concurrent standard jobs, only
+5 of them macOS. `pr-janitor` cancels a closed PR's live runs and deletes
+its merge-ref caches. Concurrency groups use the `mini-v1-` namespace.
 
 The Linux Rust lanes collect the restored mbx store before compiling, never
 between a build and its objects export. Pending export groups reference action
-results that GC can evict. Post-build headroom cleanup removes Cargo downloads
-only; it leaves those action results and their objects intact.
+results that GC can evict. The cap has to sit above the lane's working set:
+an 8 GiB cap deleted the test lane's restored action results and the build
+recorded no hits. Post-build headroom cleanup removes Cargo downloads only;
+it leaves those action results and their objects intact.
 
 Root release targets:
 

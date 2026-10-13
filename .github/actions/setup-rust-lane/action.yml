@@ -15,11 +15,17 @@
 #      binaries restore instead of relinking. The GitHub `objects` payload
 #      carries only what this lane's builds used or produced; saves are
 #      restricted to pushes to main so PR writes cannot thrash the shared
-#      10 GB LRU and evict the warm base every lane restores from. Each main
-#      push saves a new entry; ci.yml's prune-build-cache keeps the newest.
-#      Objects mode leaves GC off during the build. Collect the restored store
-#      before any build records its export group; after the lane, release Cargo
-#      downloads without evicting the group's pending action results.
+#      10 GB LRU and evict the warm base every lane restores from. The primary
+#      key excludes the commit: an exact hit skips the post-step export, and a
+#      per-commit key repackaged the test lane's ~4 GB archive (~11 min) on
+#      every main push. The key changes with flake.lock, Cargo.lock, or the
+#      UTC day, and ci.yml's prune-build-cache keeps the newest entry.
+#      Objects mode leaves GC off during the build. A cap under the restored
+#      working set deletes the action results the next build needs (the test
+#      lane restored ~19 GiB logical and then recorded 0 hits). Collect only
+#      above that working set, and only before any build records its export
+#      group; after the lane, release Cargo downloads without evicting the
+#      group's pending action results.
 #
 # No CPU fingerprint: libghostty-vt-sys builds Zig for `-Dcpu=baseline` unless
 # LIBGHOSTTY_VT_SYS_CPU says otherwise (and its build script declares that
@@ -70,7 +76,9 @@ runs:
     # PHUX_CI_MBX opts this CI shell into the flake's mbx `cargo` wrapper.
     # The generation folds in flake.lock: mbx keys on rustc, but not on the
     # Zig or mold a nixpkgs bump can change underneath an unchanged rustc,
-    # which is the same invalidation the old rust-cache key carried.
+    # which is the same invalidation the old rust-cache key carried. The
+    # GitHub entry uses cache_key from this step, not the action's generated
+    # rustc-and-commit key. flake.lock already pins that compiler.
     - name: expose the devshell's mbx and rustc
       id: mbx-env
       shell: bash
@@ -82,7 +90,26 @@ runs:
         nix develop -c bash -c 'dirname "$(command -v mbx)" > "$1"; dirname "$(command -v rustc)" >> "$1"' _ "$RUNNER_TEMP/mbx-path"
         cat "$RUNNER_TEMP/mbx-path" >> "$GITHUB_PATH"
         echo "PHUX_CI_MBX=1" >> "$GITHUB_ENV"
-        echo "generation=phux-${CACHE_LANE}-$(sha256sum flake.lock | cut -c1-12)" >> "$GITHUB_OUTPUT"
+        flake="$(sha256sum flake.lock | cut -c1-12)"
+        lock="$(sha256sum Cargo.lock | cut -c1-12)"
+        # UTC day, not the commit. mr-boxington-action skips the objects
+        # export on an exact primary-key hit; a per-commit key never hits
+        # and repackages the whole store after every green main push.
+        day="$(date -u +%Y%m%d)"
+        case "$(uname -m)" in
+          aarch64|arm64) platform=linux-arm64 ;;
+          x86_64) platform=linux-x64 ;;
+          *) platform="linux-$(uname -m)" ;;
+        esac
+        generation="phux-${CACHE_LANE}-${flake}"
+        {
+          echo "generation=${generation}"
+          echo "cache_key=${platform}-mbx-${generation}-${lock}-${day}"
+          # Prefix of the previous per-commit keys (`…-${flake}-dir-rust-…`)
+          # as well as today's key, so the first run of a new day or lockfile
+          # still restores the newest compatible store.
+          echo "restore_key=${platform}-mbx-${generation}-"
+        } >> "$GITHUB_OUTPUT"
 
     - uses: jdx/mr-boxington-action@d0825fbaf3cc36ca2609aa38e71046265a1f1e37 # v1.7.1
       id: mbx
@@ -93,7 +120,17 @@ runs:
         # isolated store, because mbx marks its shared OUT_DIR copies
         # read-only (EACCES), and that failure skips the save.
         cache-generation: ${{ steps.mbx-env.outputs.generation }}
+        cache-key: ${{ steps.mbx-env.outputs.cache_key }}
+        restore-keys: ${{ steps.mbx-env.outputs.restore_key }}
 
     - name: bound restored objects before recording builds
       shell: bash
-      run: mbx gc --max-size 8GiB
+      run: |
+        set -euo pipefail
+        # --max-size caps the action store only. A cap of 8 GiB sat under the
+        # test lane's restored store (~19 GiB logical) and deleted every
+        # action result before the build, which then recorded 0 hits. 48 GiB
+        # is above that working set on the 145 GB hosted disk and still
+        # bounds a runaway store. Collection after the first build would
+        # drop the export group, so this stays in front of it.
+        mbx gc --max-size 48GiB
