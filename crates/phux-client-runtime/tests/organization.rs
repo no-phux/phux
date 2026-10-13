@@ -383,7 +383,6 @@ fn without_organization_nothing_is_read_and_submissions_are_not_sent() {
         .submit_organization(Command::SessionDelete {
             operation: OperationId::new([5; 16]).unwrap(),
             session: skey(1),
-            expected: Revision::new(1),
         })
         .unwrap();
     assert!(commands(&mut plane).is_empty());

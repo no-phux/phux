@@ -237,50 +237,23 @@ fn session_rename_and_lifetime() {
 }
 
 #[test]
-fn session_delete_refuses_members_before_revisions_and_never_deletes_inbox() {
+fn session_delete_refuses_members_and_never_deletes_inbox() {
     let mut h = Harness::new();
     let s = h.create_session("work", SessionLifetime::Persistent);
-    let seen = h.session(s).revision;
     let t = h.create_resource(s, job());
     assert_eq!(
-        h.run(Op::SessionDelete {
-            session: s,
-            expected: seen,
-        })
-        .err(),
+        h.run(Op::SessionDelete { session: s }).err(),
         Some(Refusal::NotEmpty { members: 1 }),
         "work added after the caller looked survives"
     );
     h.report(ended(t, exited())).expect("ended");
-    let rt = h.resource(t).revision;
-    h.run(Op::ResourceRemove {
-        resource: t,
-        expected: rt,
-    })
-    .expect("remove");
-    let now = h.session(s).revision;
-    assert_eq!(
-        h.run(Op::SessionDelete {
-            session: s,
-            expected: seen,
-        })
-        .err(),
-        Some(Refusal::Conflict { current: now })
-    );
-    h.run(Op::SessionDelete {
-        session: s,
-        expected: now,
-    })
-    .expect("delete");
+    h.run(Op::ResourceRemove { resource: t }).expect("remove");
+    h.run(Op::SessionDelete { session: s }).expect("delete");
     assert!(h.reg.org().session(&s).is_none());
 
     let inbox = h.inbox();
-    let ri = h.session(inbox).revision;
     assert!(matches!(
-        h.run(Op::SessionDelete {
-            session: inbox,
-            expected: ri,
-        }),
+        h.run(Op::SessionDelete { session: inbox }),
         Err(Refusal::InvalidArgument { .. })
     ));
 }
@@ -551,10 +524,7 @@ fn remove_and_relaunch_refuse_current_and_lost_execution() {
     let r = h.create_resource(h.inbox(), job());
     let rev = h.resource(r).revision;
     for op in [
-        Op::ResourceRemove {
-            resource: r,
-            expected: rev,
-        },
+        Op::ResourceRemove { resource: r },
         Op::ResourceRelaunch {
             resource: r,
             expected: rev,
@@ -576,11 +546,7 @@ fn remove_and_relaunch_refuse_current_and_lost_execution() {
     .expect("lost");
     let rev = h.resource(r).revision;
     assert_eq!(
-        h.run(Op::ResourceRemove {
-            resource: r,
-            expected: rev,
-        })
-        .err(),
+        h.run(Op::ResourceRemove { resource: r }).err(),
         Some(Refusal::ExecutionUncertain)
     );
     assert_eq!(

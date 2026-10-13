@@ -796,17 +796,15 @@ impl ControlPlane {
         })
     }
 
-    /// Delete an empty session.
+    /// Delete an empty session; refused `NOT_EMPTY` while it has members.
     ///
     /// # Errors
     ///
-    /// As [`Self::rename_session`].
+    /// [`Self::submit_organization`]'s errors.
     pub fn delete_session(&mut self, session: SessionKey) -> Result<OperationId, SubmitError> {
-        let expected = self.session_record(&session)?.revision;
         self.submit_organization(Command::SessionDelete {
             operation: mint_operation(),
             session,
-            expected,
         })
     }
 
@@ -931,21 +929,15 @@ impl ControlPlane {
         })
     }
 
-    /// Remove an inactive resource record.
+    /// Remove an inactive resource record; refused while it runs.
     ///
     /// # Errors
     ///
-    /// As [`Self::rename_session`].
+    /// [`Self::submit_organization`]'s errors.
     pub fn remove_resource(&mut self, resource: ResourceKey) -> Result<OperationId, SubmitError> {
-        let expected = self
-            .organization
-            .resource(&resource)
-            .ok_or(SubmitError::NotAnOperation)?
-            .revision;
         self.submit_organization(Command::ResourceRemove {
             operation: mint_operation(),
             resource,
-            expected,
         })
     }
 

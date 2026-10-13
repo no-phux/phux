@@ -1585,12 +1585,11 @@ pub(in crate::wire) fn encode_org_command(command: &Command, enc: &mut Encoder<'
             write_u64(enc, field::org::EXPECTED, expected.get());
             write_u8(enc, field::org::LIFETIME, lifetime.to_u8());
         }
-        Command::SessionDelete {
-            operation,
-            session,
-            expected,
+        Command::SessionDelete { operation, session } => {
+            write_operation(enc, operation);
+            write_session(enc, field::org::SESSION, session);
         }
-        | Command::InboxResolve {
+        Command::InboxResolve {
             operation,
             session,
             expected,
@@ -1675,9 +1674,11 @@ pub(in crate::wire) fn encode_org_command(command: &Command, enc: &mut Encoder<'
         Command::ResourceRemove {
             operation,
             resource,
-            expected,
+        } => {
+            write_operation(enc, operation);
+            write_resource(enc, resource);
         }
-        | Command::ResourceRelaunch {
+        Command::ResourceRelaunch {
             operation,
             resource,
             expected,
@@ -1788,7 +1789,6 @@ pub(in crate::wire) fn decode_org_command(
         COMMAND_TAG_SESSION_DELETE => Command::SessionDelete {
             operation: f.operation()?,
             session: f.session()?,
-            expected: f.expected()?,
         },
         COMMAND_TAG_RESOURCE_CREATE => Command::ResourceCreate {
             operation: f.operation()?,
@@ -1827,7 +1827,6 @@ pub(in crate::wire) fn decode_org_command(
         COMMAND_TAG_RESOURCE_REMOVE => Command::ResourceRemove {
             operation: f.operation()?,
             resource: f.resource()?,
-            expected: f.expected()?,
         },
         COMMAND_TAG_RESOURCE_RELAUNCH => Command::ResourceRelaunch {
             operation: f.operation()?,

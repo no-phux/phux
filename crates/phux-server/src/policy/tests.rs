@@ -557,7 +557,6 @@ fn organization_samples(world: &World, t: &WireResourceId) -> Vec<FrameKind> {
         command(Command::SessionDelete {
             operation: op,
             session: k.session,
-            expected: rev,
         }),
         command(Command::ResourceCreate {
             operation: op,
@@ -604,7 +603,6 @@ fn organization_samples(world: &World, t: &WireResourceId) -> Vec<FrameKind> {
         command(Command::ResourceRemove {
             operation: op,
             resource: k.resource,
-            expected: rev,
         }),
         command(Command::ResourceRelaunch {
             operation: op,

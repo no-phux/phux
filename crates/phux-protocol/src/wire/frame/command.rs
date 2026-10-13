@@ -497,8 +497,6 @@ pub enum Command {
         operation: OperationId,
         /// The session.
         session: SessionKey,
-        /// Its expected revision.
-        expected: Revision,
     },
     /// Create a resource record in a session, with its membership and launch
     /// intent, in one transaction.
@@ -574,8 +572,6 @@ pub enum Command {
         operation: OperationId,
         /// The resource.
         resource: ResourceKey,
-        /// Its expected revision.
-        expected: Revision,
     },
     /// Start a new activation from the resource's launch; refused while one
     /// is current or lost.

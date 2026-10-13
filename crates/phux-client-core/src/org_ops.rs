@@ -645,12 +645,11 @@ impl KillWorkflow {
                     self.issued.insert(operation, Issued::Terminate(member.key));
                     Some((operation, command))
                 }
-                Step::Remove { expected, retries } => {
+                Step::Remove { retries, .. } => {
                     let operation = mint();
                     let command = Command::ResourceRemove {
                         operation,
                         resource: member.key,
-                        expected: *expected,
                     };
                     member.step = Step::Removing { retries: *retries };
                     self.issued.insert(operation, Issued::Remove(member.key));
@@ -660,14 +659,13 @@ impl KillWorkflow {
             };
             out.extend(command);
         }
-        if let DeleteStep::Ready { expected, retries } = self.delete {
+        if let DeleteStep::Ready { retries, .. } = self.delete {
             let operation = mint();
             out.push((
                 operation,
                 Command::SessionDelete {
                     operation,
                     session: self.session,
-                    expected,
                 },
             ));
             self.delete = DeleteStep::Deleting { retries };
@@ -1136,10 +1134,10 @@ mod tests {
 
         workflow.on_activation(&rkey(1), ExecState::Completed);
         let remove = workflow.next_commands(&mut mint);
-        let Command::ResourceRemove { expected, .. } = remove[0].1 else {
-            panic!("remove")
-        };
-        assert_eq!(expected, Revision::new(0), "learned from the conflict");
+        assert!(
+            matches!(remove[0].1, Command::ResourceRemove { .. }),
+            "remove"
+        );
         workflow.on_result(
             &remove[0].0,
             &OrgOutcome::Refused(Refusal::Conflict {
@@ -1147,19 +1145,13 @@ mod tests {
             }),
         );
         let retry = workflow.next_commands(&mut mint);
-        assert!(matches!(
-            retry[0].1,
-            Command::ResourceRemove { expected, .. } if expected == Revision::new(5)
-        ));
+        assert!(matches!(retry[0].1, Command::ResourceRemove { .. }));
         workflow.on_result(
             &retry[0].0,
             &OrgOutcome::Committed(Box::new(Committed::new(retry[0].0, Revision::new(6)))),
         );
         let delete = workflow.next_commands(&mut mint);
-        assert!(matches!(
-            delete[0].1,
-            Command::SessionDelete { expected, .. } if expected == Revision::new(8)
-        ));
+        assert!(matches!(delete[0].1, Command::SessionDelete { .. }));
         workflow.on_result(
             &delete[0].0,
             &OrgOutcome::Committed(Box::new(Committed::new(delete[0].0, Revision::new(9)))),
@@ -1242,10 +1234,11 @@ mod tests {
                 ..
             }
         )));
-        assert!(commands.iter().any(|(_, c)| matches!(
-            c,
-            Command::ResourceRemove { expected, .. } if *expected == Revision::new(2)
-        )));
+        assert!(
+            commands
+                .iter()
+                .any(|(_, c)| matches!(c, Command::ResourceRemove { .. }))
+        );
         workflow.time_out();
         for (operation, _) in commands {
             workflow.on_result(
@@ -1265,9 +1258,6 @@ mod tests {
         let mut workflow = KillWorkflow::plan(&session(), &[]);
         let mut mint = minting();
         let commands = workflow.next_commands(&mut mint);
-        assert!(matches!(
-            commands[..],
-            [(_, Command::SessionDelete { expected, .. })] if expected == Revision::new(7)
-        ));
+        assert!(matches!(commands[..], [(_, Command::SessionDelete { .. })]));
     }
 }

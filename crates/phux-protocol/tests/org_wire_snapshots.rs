@@ -188,7 +188,6 @@ fn command_fixtures() -> Vec<(&'static str, FrameKind)> {
             command(Command::SessionDelete {
                 operation: op(),
                 session: session(),
-                expected: rev(4),
             }),
         ),
         (
@@ -261,7 +260,6 @@ fn command_fixtures() -> Vec<(&'static str, FrameKind)> {
             command(Command::ResourceRemove {
                 operation: op(),
                 resource: resource(),
-                expected: rev(2),
             }),
         ),
         (

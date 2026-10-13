@@ -252,15 +252,9 @@ impl ServerState {
             if !record.members.is_empty() || record.key == self.org().authority().inbox_session {
                 continue;
             }
-            let (key, expected, name) = (record.key, record.revision, record.name.clone());
+            let (key, name) = (record.key, record.name.clone());
             if self
-                .commit(
-                    Op::SessionDelete {
-                        session: key,
-                        expected,
-                    },
-                    actor,
-                )
+                .commit(Op::SessionDelete { session: key }, actor)
                 .is_ok()
             {
                 names.push(name);
