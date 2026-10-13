@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-10-09
+last-reviewed: 2026-10-13
 ---
 
 # Desktop
@@ -13,16 +13,16 @@ views across panes and windows. Closing a view preserves execution.
 Apple-silicon macOS is the first target.
 
 <!-- impl-status: partial; probe: GridFrame -->
-> **Status: partial.** The Solid shell runs daily on Apple silicon: tabs,
-> split trees, independent views, the command palette, agent attention,
-> themes and restore are implemented. Release evidence (accessibility,
-> packaging, native CI) is still open; the final Status table tracks each gap.
+> **Status: partial.** Tabs, split trees, independent views, the command
+> palette, agent attention, themes, and restore are the implemented product.
+> The host is now GPUI; a presented-frame qualification is still required.
+> Accessibility, notarization, and Linux are open. The Status table tracks each gap.
 
-The architecture choice is [ADR-0139](../adr/0139-solid-desktop-over-native-runtime-views.md).
+The host seams are [desktop architecture](../architecture/desktop.md). [ADR-0164](../adr/0164-gpui-desktop-replaces-the-solid-host.md) replaces the Solid host in [ADR-0139](../adr/0139-solid-desktop-over-native-runtime-views.md).
 [Cockpit](./cockpit.md) remains a separate client. The first release requires
 independent same-terminal views; Linux follows, Intel macOS is not required.
 
-[Install the Desktop alpha](../INSTALL.md#gpuix-desktop-alpha-native-macos)
+[Install the Desktop alpha](../INSTALL.md#gpui-desktop-alpha-native-macos)
 from the first-party installer on an Apple-silicon Mac running macOS 27 or
 later. It downloads a published `Phux.app`; Cockpit remains a separate app.
 
@@ -146,18 +146,19 @@ never become implicit command execution.
 
 ## Status
 
-All target rows below are governed by [ADR-0139](../adr/0139-solid-desktop-over-native-runtime-views.md).
-The tracking IDs name remaining work, not delivered features.
+The host is a GPUI application. Tracking IDs below name remaining product work,
+not delivered features. Projects/worktree grouping, remote hosts, approvals,
+notarization, accessibility journeys, and Linux are not shipped.
 
 | Target | Current evidence and gap | Tracked work |
 |---|---|---|
-| Native Solid desktop | Matched host, painter and input run the shell; pane-fit geometry is native. Feasibility and presentation gates stay the acceptance record. | phux-d4x9.1–.6, phux-d4x9.20 |
-| Terminal-first projects and workspace | Tabs, split trees (drag, zoom, directional focus), restore by server identity, Open Folder. Projects/worktree grouping is not built. | phux-d4x9.7–.9 |
-| Independent same-terminal views | Open Another View, sole-or-last-focused size owner, per-view find. Regression coverage still required. | phux-d4x9.17, phux-d4x9.18 |
-| Connections, settings, and agents | One local socket per window; `Phux.app` attaches the `default` session through the installed CLI; settings and Ghostty-config import (font, palette, keybinds, quick terminal); agent badges, urgency list, toasts. Remote hosts and approvals are not built. | phux-d4x9.10–.12 |
+| Native GPUI desktop | The executable and packaged smoke are the acceptance record. A presented frame is required; this page does not claim that run. | phux-6hr7 |
+| Terminal-first projects and workspace | Tabs, split trees, restore by server identity, Open Folder. Projects/worktree grouping is not built. | phux-d4x9.7–.9 |
+| Independent same-terminal views | Open Another View, sole-or-last-focused size owner, per-view find. GPU evidence still required. | phux-d4x9.17, phux-d4x9.18 |
+| Connections, settings, and agents | One local socket per window; `Phux.app` attaches `default` through the installed CLI; settings and Ghostty-config import; agent badges and toasts. Remote hosts and approvals are not built. | phux-d4x9.10–.12 |
 | Native accessibility and delivery safety | Required journeys and teardown/input proofs are not yet qualified. | phux-d4x9.13, phux-d4x9.14 |
-| Apple-silicon release | `just desktop-install-app` builds an ad-hoc-signed local bundle. Native regression gates, notarization and updates remain required. | phux-d4x9.15, phux-d4x9.16 |
-| Linux | Subsequent platform qualification; no support claim from framework compatibility alone. | phux-d4x9.19 |
+| Apple-silicon release | `just desktop-install-app` builds an ad-hoc-signed local bundle with no NAPI addon. Notarization and updates remain required. | phux-d4x9.15, phux-d4x9.16 |
+| Linux | Subsequent platform qualification. macOS evidence does not establish it. | phux-d4x9.19 |
 
 ## Where to go next
 

@@ -1,105 +1,67 @@
 /**
- * Build `Phux.app`: the shell and its launcher compiled into one Bun
- * executable (Contents/MacOS/phux-desktop), the release native addon beside it,
- * an icon rendered from packaging/AppIcon.svg, and an ad-hoc signature.
+ * Build `Phux.app`: the release GPUI executable, embedded-font license and
+ * font files, an icon rendered from packaging/AppIcon.svg, and an ad-hoc
+ * signature. The executable is the Rust binary. There is no JS bundle and
+ * no native addon.
  *
- * Usage: bun scripts/package-app.ts [--install]   (--install copies to /Applications)
+ * Usage: bun scripts/package-app.ts [--install]
  */
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import solidPlugin from "@gpuix/solid/bun-plugin";
-import { desktopFrameworkPlugin, prepareDesktopFramework } from "./desktop-bundle";
+import { desktopBinary, desktopRoot, repoRoot } from "./host.ts";
 
-const root = resolve(import.meta.dir, "..");
-const repo = resolve(root, "../..");
+const root = desktopRoot;
+const repo = repoRoot;
 const app = resolve(root, "dist/app/Phux.app");
 const contents = join(app, "Contents");
-const addon = resolve(root, ".cache/host/phux-desktop-native.darwin-arm64.node");
+const binary = process.env.PHUX_DESKTOP_BIN ?? desktopBinary("release");
+const fonts = resolve(root, "native/assets/fonts");
 
-if (!existsSync(addon))
-  throw new Error(`Build the native host first (just desktop-native-build): ${addon}`);
-
-rmSync(app, { recursive: true, force: true });
-mkdirSync(join(contents, "MacOS"), { recursive: true });
-mkdirSync(join(contents, "Resources"), { recursive: true });
-
-prepareDesktopFramework();
-const built = await Bun.build({
-  entrypoints: [resolve(root, "scripts/app-main.ts")],
-  target: "bun",
-  minify: true,
-  plugins: [desktopFrameworkPlugin, solidPlugin],
-  compile: {
-    target: "bun-darwin-arm64",
-    outfile: join(contents, "MacOS/phux-desktop"),
-    // A stray .env or bunfig.toml in the launch directory must not reconfigure the app.
-    autoloadDotenv: false,
-    autoloadBunfig: false,
-  },
-});
-if (!built.success) throw new AggregateError(built.logs, "Desktop app compile failed");
-
-cpSync(addon, join(contents, "Resources/phux-desktop-native.darwin-arm64.node"));
-cpSync(
-  join(root, "native/assets/fonts/PaperMono-OFL.txt"),
-  join(contents, "Resources/PaperMono-OFL.txt"),
-);
-renderIcon(join(contents, "Resources/AppIcon.icns"));
-
-const metadata: unknown = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-const version =
-  metadata && typeof metadata === "object" && "version" in metadata ? metadata.version : undefined;
-if (typeof version !== "string" || !/^\d+\.\d+\.\d+(?:-alpha\.\d+)?$/.test(version))
-  throw new Error("Desktop package.json must contain a release version");
-const sha = run(["git", "-C", repo, "rev-parse", "HEAD"]).trim();
-writeFileSync(join(contents, "Info.plist"), infoPlist(version, sha));
-writeFileSync(join(contents, "PkgInfo"), "APPL????");
-run(["codesign", "--force", "--deep", "--sign", "-", app]);
-run(["codesign", "--verify", "--deep", "--strict", app]);
-console.log(`Built ${app} (${version}, ${sha})`);
-
-if (process.argv.includes("--install")) {
-  const target = "/Applications/Phux.app";
-  rmSync(target, { recursive: true, force: true });
-  cpSync(app, target, { recursive: true });
-  run(["/usr/bin/touch", target]);
-  console.log(`Installed ${target}`);
-}
-
-function renderIcon(output: string): void {
-  const work = join(tmpdir(), `phux-icon-${process.pid}`);
-  const iconset = join(work, "AppIcon.iconset");
-  mkdirSync(iconset, { recursive: true });
-  run(["qlmanage", "-t", "-s", "1024", "-o", work, resolve(root, "packaging/AppIcon.svg")]);
-  const master = join(work, "AppIcon.svg.png");
-  for (const size of [16, 32, 128, 256, 512]) {
-    run([
-      "sips",
-      "-z",
-      `${size}`,
-      `${size}`,
-      master,
-      "--out",
-      join(iconset, `icon_${size}x${size}.png`),
-    ]);
-    const double = size * 2;
-    run([
-      "sips",
-      "-z",
-      `${double}`,
-      `${double}`,
-      master,
-      "--out",
-      join(iconset, `icon_${size}x${size}@2x.png`),
-    ]);
+if (import.meta.main) {
+  if (!existsSync(binary)) {
+    throw new Error(`Build the native host first (just desktop-native-build): ${binary}`);
   }
-  run(["iconutil", "-c", "icns", iconset, "-o", output]);
-  rmSync(work, { recursive: true, force: true });
+  rmSync(app, { recursive: true, force: true });
+  mkdirSync(join(contents, "MacOS"), { recursive: true });
+  mkdirSync(join(contents, "Resources/fonts"), { recursive: true });
+  cpSync(binary, join(contents, "MacOS/phux-desktop"));
+  run(["chmod", "755", join(contents, "MacOS/phux-desktop")]);
+  for (const name of ["PaperMono-Regular.ttf", "PaperMono-Medium.ttf", "PaperMono-Bold.ttf", "PaperMono-OFL.txt"]) {
+    cpSync(join(fonts, name), join(contents, "Resources/fonts", name));
+  }
+  renderIcon(join(contents, "Resources/AppIcon.icns"));
+  const version = packageVersion(readFileSync(join(root, "package.json"), "utf8"));
+  const sha = run(["git", "-C", repo, "rev-parse", "HEAD"]).trim();
+  writeFileSync(join(contents, "Info.plist"), infoPlist(version, sha));
+  writeFileSync(join(contents, "PkgInfo"), "APPL????");
+  if (existsSync(join(contents, "Resources/phux-desktop-native.darwin-arm64.node"))) {
+    throw new Error("Phux.app must not ship a NAPI addon");
+  }
+  run(["codesign", "--force", "--deep", "--sign", "-", app]);
+  run(["codesign", "--verify", "--deep", "--strict", app]);
+  console.log(`Built ${app} (${version}, ${sha})`);
+  if (process.argv.includes("--install")) {
+    const target = "/Applications/Phux.app";
+    rmSync(target, { recursive: true, force: true });
+    cpSync(app, target, { recursive: true });
+    run(["/usr/bin/touch", target]);
+    console.log(`Installed ${target}`);
+  }
 }
 
-function infoPlist(version: string, sha: string): string {
-  const numericVersion = version.split("-")[0];
+export function packageVersion(text: string): string {
+  const metadata: unknown = JSON.parse(text);
+  const version =
+    metadata && typeof metadata === "object" && "version" in metadata ? metadata.version : undefined;
+  if (typeof version !== "string" || !/^\d+\.\d+\.\d+(?:-alpha\.\d+)?$/.test(version)) {
+    throw new Error("Desktop package.json must contain a release version");
+  }
+  return version;
+}
+
+export function infoPlist(version: string, sha: string): string {
+  const numericVersion = version.split("-")[0] ?? version;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -115,6 +77,7 @@ function infoPlist(version: string, sha: string): string {
   <key>CFBundleShortVersionString</key><string>${numericVersion}</string>
   <key>CFBundleVersion</key><string>${numericVersion}</string>
   <key>PhuxDesktopVersion</key><string>${version}</string>
+  <key>PhuxDesktopHost</key><string>gpui</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
   <key>LSMinimumSystemVersion</key><string>27.0</string>
   <key>NSHighResolutionCapable</key><true/>
@@ -123,6 +86,21 @@ function infoPlist(version: string, sha: string): string {
 </dict>
 </plist>
 `;
+}
+
+function renderIcon(output: string): void {
+  const work = join(tmpdir(), `phux-icon-${process.pid}`);
+  const iconset = join(work, "AppIcon.iconset");
+  mkdirSync(iconset, { recursive: true });
+  run(["qlmanage", "-t", "-s", "1024", "-o", work, resolve(root, "packaging/AppIcon.svg")]);
+  const master = join(work, "AppIcon.svg.png");
+  for (const size of [16, 32, 128, 256, 512]) {
+    run(["sips", "-z", `${size}`, `${size}`, master, "--out", join(iconset, `icon_${size}x${size}.png`)]);
+    const double = size * 2;
+    run(["sips", "-z", `${double}`, `${double}`, master, "--out", join(iconset, `icon_${size}x${size}@2x.png`)]);
+  }
+  run(["iconutil", "-c", "icns", iconset, "-o", output]);
+  rmSync(work, { recursive: true, force: true });
 }
 
 function run(command: string[]): string {

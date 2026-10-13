@@ -12,8 +12,9 @@ loaded native host shares the client registry between the binding and painter.
 Apple-silicon macOS is the first release target. Cockpit remains an independent
 Native SDK experiment.
 
-Status: Accepted
+Status: Superseded by ADR-0164
 Date: 2026-09-23
+Superseded by [ADR-0164](./0164-gpui-desktop-replaces-the-solid-host.md): the Solid/GPUIX host; GPUI replaces it.
 
 ## Context
 

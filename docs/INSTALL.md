@@ -100,9 +100,9 @@ To pin a specific release, pass any tag from the
 curl -fsSL https://phux.sh/install | sh -s -- --version vX.Y.Z
 ```
 
-## GPUIX desktop alpha (native macOS)
+## GPUI desktop alpha (native macOS)
 
-The GPUIX desktop is a separate app and release train from Cockpit. With the
+The GPUI desktop is a separate app and release train from Cockpit. With the
 phux CLI installed, install the Apple-silicon macOS 27-or-later alpha:
 
 ```sh

@@ -6,22 +6,15 @@
   "scripts": {
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
-    "lint": "oxlint -c oxlint.config.ts --type-aware --deny-warnings --report-unused-disable-directives-severity error --ignore-pattern 'tests/tooling/negative/**' --ignore-pattern 'tests/native/**' .",
+    "lint": "oxlint -c oxlint.config.ts --type-aware --deny-warnings --report-unused-disable-directives-severity error --ignore-pattern 'tests/tooling/negative/**' --ignore-pattern 'tests/native/**' --ignore-pattern 'src/**' --ignore-pattern 'native/**' .",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test:tooling": "bun test tests/tooling/tooling.test.ts tests/framework/process.test.ts",
+    "test:tooling": "bun test tests/tooling/tooling.test.ts tests/tooling/qualification.test.ts tests/framework/process.test.ts tests/desktop-demo.test.ts",
     "test:rules": "node tools/oxlint/anti-slop/rules/no-chained-type-assertions.test.ts && node tools/oxlint/anti-slop/rules/no-module-mocking.test.ts && node tools/oxlint/anti-slop/rules/require-safety-comment-for-type-assertion.test.ts",
-    "check:tooling": "bun run format:check && bun run typecheck && bun run lint && bun run test:rules && bun run test:model && bun run test:tooling",
-    "test:model": "bun test tests/model"
-  },
-  "dependencies": {
-    "@gpuix/native": "0.10.0",
-    "@gpuix/solid": "0.10.0",
-    "solid-js": "1.9.15"
+    "check:tooling": "bun run format:check && bun run typecheck && bun run lint && bun run test:rules && bun run test:tooling"
   },
   "devDependencies": {
     "@oxlint/plugins": "1.87.0",
     "@types/bun": "1.4.2",
-    "eslint-plugin-solid": "0.18.1",
     "oxfmt": "0.72.0",
     "oxlint": "1.87.0",
     "oxlint-tsgolint": "7.0.2003",

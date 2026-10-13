@@ -102,8 +102,9 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$app"
           codesign -dv --verbose=4 "$app" 2>&1 | grep -F 'Signature=adhoc'
           PHUX_MACOS_MIN_MAX=27.0 bash ../harness/scripts/check-binary-portability.sh \
-            "$app/Contents/MacOS/phux-desktop" \
-            "$app/Contents/Resources/phux-desktop-native.darwin-arm64.node"
+            "$app/Contents/MacOS/phux-desktop"
+          test ! -e "$app/Contents/Resources/phux-desktop-native.darwin-arm64.node"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :PhuxDesktopHost' "$app/Contents/Info.plist")" = gpui
           mkdir -p "$RUNNER_TEMP/desktop-release"
           ditto -c -k --norsrc --keepParent "$app" "$RUNNER_TEMP/desktop-release/$ARCHIVE"
           cd "$RUNNER_TEMP/desktop-release"
