@@ -13,7 +13,7 @@ bundle, or NAPI addon. Independent views, focused-writable geometry, and
 close-detaches remain the product contract.
 
 The [product contract](../consumers/desktop.md) owns terminology and
-interaction. [ADR-0164](../adr/0164-gpui-desktop-replaces-the-solid-host.md)
+interaction. [ADR-0165](../adr/0165-gpui-desktop-replaces-the-solid-host.md)
 is the host decision. This page owns the seams. It does not record a completed
 GPU qualification.
 

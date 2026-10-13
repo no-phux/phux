@@ -11,7 +11,7 @@ same-checkout server, and evidence written by that running app. A missing PNG,
 an unpresented layout, or a harness-written ok flag is a failure. Headless
 models cannot prove GPU, IME, or accessibility behavior.
 
-[ADR-0164](../adr/0164-gpui-desktop-replaces-the-solid-host.md) is the host
+[ADR-0165](../adr/0165-gpui-desktop-replaces-the-solid-host.md) is the host
 decision. [Desktop architecture](./desktop.md) owns the seams. The
 [consumer contract](../consumers/desktop.md) owns user-visible behavior. This
 page is the verification contract, not a record of passing tests.
