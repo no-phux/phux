@@ -127,6 +127,9 @@ async function scenario(dpr: number) {
   });
   try {
     await page.goto("https://phux.sh/");
+    // Dynamic React hydration can outlive window.load on a cold production page.
+    // Wait for the interactive hero, rather than following its no-JS fallback.
+    await page.locator('astro-island:not([ssr]) .hero-term').waitFor();
     await page.getByRole("link", { name: "Open terminal demo", exact: true }).click();
     await page.locator('.pterm[data-status="live"]').waitFor({ timeout: 30_000 });
     assert.ok(await page.locator("canvas").evaluate((canvas) => canvas.parentElement!.contains(document.activeElement)), "ready canvas receives focus");
