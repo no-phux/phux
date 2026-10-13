@@ -479,3 +479,64 @@ fn a_qr_mints_only_when_it_can_carry_a_dialable_link() {
     assert!(expiry > chrono::Utc::now() + chrono::Duration::minutes(14));
     assert_eq!(credential_count(&state, &tokens), 2);
 }
+
+/// The QR is the default only on a terminal: piped output keeps the link as
+/// text, a default mint with no link is not refused the way `--qr` is, and
+/// `--no-qr` neither combines with `--qr` nor with a lifecycle action.
+#[test]
+fn the_qr_defaults_on_only_for_a_terminal() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    let tokens = dir.path().join("custom-credentials");
+    let server = Server::start(&state, Some(&tokens));
+
+    // No link (loopback bind) and no `--qr`: the mint goes ahead, QR-less.
+    let plain = phux(&state, Some(&tokens), &["pair"]);
+    let stdout = String::from_utf8_lossy(&plain.stdout);
+    assert!(
+        plain.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&plain.stderr)
+    );
+    assert!(!stdout.contains("Scan to pair:"), "stdout={stdout}");
+
+    // A link printed into a pipe stays text; `--no-qr` says so explicitly.
+    let host = format!("wss://{}", server.wss_addr);
+    for args in [
+        ["pair", "--host", host.as_str()].as_slice(),
+        ["pair", "--no-qr", "--host", host.as_str()].as_slice(),
+    ] {
+        let out = phux(&state, Some(&tokens), args);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "`phux {}`", args.join(" "));
+        assert!(
+            stdout.contains(&format!("https://phux.sh/connect?url={host}&"))
+                && !stdout.contains("Scan to pair:"),
+            "`phux {}`: stdout={stdout}",
+            args.join(" ")
+        );
+    }
+    assert_eq!(credential_count(&state, &tokens), 3);
+
+    for (args, needle) in [
+        (["pair", "--qr", "--no-qr"].as_slice(), "--no-qr"),
+        (
+            ["pair", "--no-qr", "ls"].as_slice(),
+            "--no-qr belongs to minting",
+        ),
+    ] {
+        let out = phux(&state, Some(&tokens), args);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "`phux {}`", args.join(" "));
+        assert!(
+            stderr.contains(needle),
+            "`phux {}`: {stderr}",
+            args.join(" ")
+        );
+    }
+    assert_eq!(
+        credential_count(&state, &tokens),
+        3,
+        "usage errors mint nothing"
+    );
+}

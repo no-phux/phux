@@ -210,7 +210,9 @@ Without SSH access, run `phux pair` on the host and pass its one-tap link:
 phux --remote mini --code 'https://phux.sh/connect?url=wss://100.64.0.2:8787&quic=quic://100.64.0.2:8788&fp=...&token=...'
 ```
 
-`phux pair --qr` renders the same link for phones. When the live QUIC listener
+On a terminal `phux pair` also renders the same link as a QR for phones
+(`--no-qr` leaves it out; `phux pair --qr` shows the QR alone, for filming).
+When the live QUIC listener
 is reachable from a device, the link adds `quic=quic://HOST:PORT`; `url=` stays
 as the WSS fallback for old app builds and is what the CLI currently registers.
 The mobile app prefers `quic` when present. `--code` also accepts
@@ -477,6 +479,8 @@ For a phone or tablet `phux pair` also prints a one-tap
 `https://phux.sh/connect?url=…&quic=…&fp=…[&ca=…][&enroll=…]&token=…` Universal Link (an https
 link so only the app owning the domain receives the bearer token) and a
 `phux://connect?…` spelling for older app builds. Treat both like the token.
+On a terminal the link is followed by a scannable QR of it; `--no-qr` leaves
+the QR out, and piped output never carries one.
 `phux pair --qr` is the form to film: it scales a terminal QR to the window,
 prints whether the credential expires, and does not print the bearer or the
 link (both exist only inside the QR). `--expires 15m` (also `24h`, `7d`, up
@@ -488,8 +492,15 @@ the bearer for `phux host add` and cannot combine with `--qr` or
 `--secret-file`. `url` names the
 address the server's WSS listener is bound to (the overlay address for a
 `0.0.0.0`/`::` bind), or `--host HOST:PORT` (or a full `ws://`/`wss://` URL)
-when the device reaches the server some other way, such as a MagicDNS name or
-a port forward; it remains present for deployed apps. When the running server
+when the device reaches the server some other way, such as a port forward; it
+remains present for deployed apps. On a Tailscale tailnet with MagicDNS
+enabled, an endpoint on one of the host's own tailnet addresses is written with
+the host's MagicDNS name instead (`wss://studio.tail9a8b.ts.net:8787`,
+`quic://studio.tail9a8b.ts.net:8788`), so a reassigned tailnet address does not
+force a re-pair. The device must resolve MagicDNS; `PHUX_OVERLAY_ADDRS` or
+`--host` keeps the link on addresses. Devices verify the server by its pinned
+fingerprint, never its name, so a certificate that does not list the name
+still pairs ([ADR-0164](adr/0164-pair-links-name-the-magicdns-host.md)). When the running server
 also reports a device-dialable QUIC listener, `quic` names that live endpoint
 and current mobile apps prefer it. An unspecified QUIC bind uses a detected
 overlay address; a loopback bind, or an unspecified bind without an overlay,
@@ -505,8 +516,8 @@ The ticket expires in ten minutes and enrolls one key; `phux --remote NAME
 --code LINK` enrolls with it too.
 
 `--host` still needs a bound WSS listener behind it. A WSS listener bound only
-to loopback, or none at all, gives no link, and `--qr` then refuses before
-minting. `--name` labels the server in the device's list.
+to loopback, or none at all, gives no link: the default QR is then skipped,
+and an explicit `--qr` refuses before minting. `--name` labels the server in the device's list.
 
 A relay link from `phux pair --relay-route ROUTE`
 ([Path D](#path-d-via-a-reference-relay)) has a different shape:
