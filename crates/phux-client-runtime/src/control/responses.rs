@@ -7,7 +7,7 @@ use super::{
     AttachTarget, BootstrapLimits, BootstrapProfile, Command, CommandResult, ControlError,
     ControlPlane, DetachReason, EngineConfig, EngineEvent, EngineHandle, ErrorCode, Event,
     FrameKind, HashSet, Pending, ResourceId, ResourceKind, ServerFeature, ServerInfo,
-    SessionSnapshot, SpawnResult, StateScope, Status, Topology, topology, validate_hello_ok,
+    SessionSnapshot, SpawnResult, StateScope, Status, topology, validate_hello_ok,
 };
 use crate::control::topology::View;
 
@@ -45,11 +45,11 @@ impl ControlPlane {
         // PTYs (a restarted server reseeds `@1`), and a replica kept under a
         // reused id would go on publishing the old terminal's screen while
         // the new one's stream is never bootstrapped into it.
-        if self
+        let new_incarnation = self
             .server
             .as_ref()
-            .is_some_and(|previous| previous.id != server_id)
-        {
+            .is_some_and(|previous| previous.id != server_id);
+        if new_incarnation {
             if let Some(engine) = &self.engine {
                 engine.reset_connection();
             }
@@ -86,6 +86,7 @@ impl ControlPlane {
                 self.replay_preserving_subscriptions();
             }
         }
+        self.org_connection_negotiated(new_incarnation);
         self.queue_durable_frames();
         self.queue_next_upload();
         Ok(())
@@ -237,7 +238,7 @@ impl ControlPlane {
         self.attach_terminals = seen;
         self.attached_session = Some(snapshot.focused_session.get());
         self.selected_session = self.attached_session;
-        self.topology = Some(Topology::from_snapshot(snapshot));
+        self.topology = Some(self.project_topology(snapshot));
         self.error = None;
         self.apply_engine(EngineEvent::AttachStarted {
             attach_id,
@@ -499,6 +500,10 @@ impl ControlPlane {
             self.queue_durable_frames();
             return Ok(());
         }
+        if self.owns_org_request(request_id) {
+            self.resolve_org_request(request_id, &result);
+            return Ok(());
+        }
         self.resolve_pending(request_id, result)
     }
 
@@ -548,6 +553,9 @@ impl ControlPlane {
             }
             pending @ (Pending::PutFile(_) | Pending::Transcribe(_)) => {
                 self.resolve_extension_result(&pending, request_id, result);
+            }
+            pending @ (Pending::OrgPage(_) | Pending::OrgArrangement(_)) => {
+                self.resolve_org_read(&pending, result);
             }
         }
         self.queue_durable_frames();
@@ -633,7 +641,7 @@ impl ControlPlane {
     ) -> Result<(), ControlError> {
         let closed = self.listings.relist(View::Inventory, snapshot);
         self.close_proven(closed)?;
-        let mut topology = Topology::from_snapshot(snapshot);
+        let mut topology = self.project_topology(snapshot);
         if let Some(engine) = &self.engine {
             topology
                 .panes
@@ -666,14 +674,8 @@ fn attached_terminals(
     // Only the focused session's Terminal-kind resources take part in the
     // attach barrier: the server bootstraps only that session, and an
     // AgentSession paints nothing.
-    let focused_windows: HashSet<_> = snapshot
-        .windows
-        .iter()
-        .filter(|window| window.session_id == snapshot.focused_session)
-        .map(|window| window.id)
-        .collect();
     let terminals: Vec<ResourceId> = topology::terminal_resources(snapshot)
-        .filter(|pane| focused_windows.contains(&pane.window_id))
+        .filter(|pane| topology::session_of(snapshot, pane) == Some(snapshot.focused_session))
         .map(|pane| pane.id.clone())
         .collect();
     let mut seen = HashSet::new();

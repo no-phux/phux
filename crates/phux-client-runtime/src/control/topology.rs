@@ -1,44 +1,52 @@
-//! The session graph, projected from an `ATTACHED` or `GET_STATE` snapshot.
+//! The session graph, projected from an `ATTACHED` or `GET_STATE` snapshot
+//! and, from a server that advertises `ORGANIZATION`, enriched with the
+//! organization replica's keys, revisions, lifetimes, members, arrangements,
+//! and execution states ([`Topology::with_organization`]).
 
 use std::collections::HashSet;
 
-use phux_protocol::ids::{ResourceId, ResourceKind};
+use phux_client_core::layout::wire::HandleMap;
+use phux_protocol::ids::{
+    ActivationId, ArrangementKey, AuthorityId, ResourceId, ResourceKey, ResourceKind, Revision,
+    SessionId, SessionKey,
+};
+use phux_protocol::wire::frame::{ExecState, SessionLifetime};
 use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
+
+use super::organization::OrganizationReplica;
 
 /// One session in the server's graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionDescriptor {
-    /// The session id.
+    /// The session id (live handle).
     pub id: u32,
     /// The session name.
     pub name: String,
-    /// Windows in the session.
+    /// Legacy windows the server lists for the session (one per non-empty
+    /// session); arrangement groups are the tabs.
     pub window_count: u16,
     /// Clients attached to the session.
     pub attached_client_count: u16,
-    /// The session survives its last window (ADR-0105).
+    /// The session survives its last member (`lifetime == persistent`).
     pub keep_empty: bool,
     /// Creation time, seconds since the Unix epoch.
     pub created_at_unix_secs: i64,
+    /// The persistent key, when the server reports it.
+    pub key: Option<SessionKey>,
+    /// Whether it outlives its last member, when the server reports it.
+    pub lifetime: Option<SessionLifetime>,
+    /// The record's revision, from the organization replica.
+    pub revision: Option<Revision>,
+    /// Member resources: the replica's count, else those the snapshot lists.
+    pub members: u32,
+    /// Its arrangement, from the organization replica.
+    pub arrangement: Option<ArrangementKey>,
+    /// Whether it is imported work awaiting organization (the Inbox).
+    pub awaiting_organization: bool,
 }
 
-/// One window in the server's graph.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WindowDescriptor {
-    /// The window id.
-    pub id: u32,
-    /// The session the window belongs to.
-    pub session_id: u32,
-    /// The window's index within its session.
-    pub index: u16,
-    /// The window name.
-    pub name: String,
-    /// The window's active resource, if any.
-    pub active_resource: Option<ResourceId>,
-}
-
-/// One Terminal-kind resource, denormalized with its window and session so
-/// a consumer needs no joins.
+/// One Terminal-kind resource, denormalized with its session so a consumer
+/// needs no joins.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneDescriptor {
     /// The terminal.
@@ -47,12 +55,6 @@ pub struct PaneDescriptor {
     pub session_id: u32,
     /// That session's name.
     pub session_name: String,
-    /// The window it belongs to.
-    pub window_id: u32,
-    /// That window's index.
-    pub window_index: u16,
-    /// That window's name.
-    pub window_name: String,
     /// The terminal's grid width.
     pub cols: u16,
     /// The terminal's grid height.
@@ -63,6 +65,16 @@ pub struct PaneDescriptor {
     pub cwd: Option<String>,
     /// Whether this is the attaching client's initial focus.
     pub is_focused: bool,
+    /// The persistent key, from the organization replica.
+    pub key: Option<ResourceKey>,
+    /// The record's revision, from the organization replica.
+    pub revision: Option<Revision>,
+    /// The record's display name, from the organization replica.
+    pub name: Option<String>,
+    /// The current activation, from the organization replica.
+    pub activation: Option<ActivationId>,
+    /// The current activation's state, from the organization replica.
+    pub exec: Option<ExecState>,
 }
 
 /// One `AgentSession` resource: a record stream bound to a Terminal.
@@ -80,13 +92,11 @@ pub struct AgentSessionDescriptor {
     pub state: Option<String>,
 }
 
-/// The session/window/pane graph.
+/// The session/pane graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Topology {
     /// Every session the server listed.
     pub sessions: Vec<SessionDescriptor>,
-    /// Every window the server listed.
-    pub windows: Vec<WindowDescriptor>,
     /// Every Terminal-kind resource, in the server's order.
     pub panes: Vec<PaneDescriptor>,
     /// Every `AgentSession` resource.
@@ -95,6 +105,12 @@ pub struct Topology {
     pub focused_session: u32,
     /// The focused terminal.
     pub focused_pane: ResourceId,
+    /// The authority the records belong to, from the organization replica.
+    pub authority: Option<AuthorityId>,
+    /// The designated Inbox session, from the organization replica.
+    pub inbox: Option<SessionKey>,
+    /// Resource keys to live handles, from the organization replica.
+    pub handles: HandleMap,
 }
 
 impl Topology {
@@ -111,42 +127,42 @@ impl Topology {
                 attached_client_count: session.attached_client_count,
                 keep_empty: session.keep_empty,
                 created_at_unix_secs: session.created_at_unix_secs,
-            })
-            .collect();
-        let windows = snapshot
-            .windows
-            .iter()
-            .map(|window| WindowDescriptor {
-                id: window.id.get(),
-                session_id: window.session_id.get(),
-                index: window.index,
-                name: window.name.clone(),
-                active_resource: window.active_resource.clone(),
+                key: session.key,
+                lifetime: session.lifetime,
+                revision: None,
+                members: u32::try_from(
+                    snapshot
+                        .resources
+                        .iter()
+                        .filter(|info| session_of(snapshot, info) == Some(session.id))
+                        .count(),
+                )
+                .unwrap_or(u32::MAX),
+                arrangement: None,
+                awaiting_organization: false,
             })
             .collect();
         let panes = terminal_resources(snapshot)
             .map(|pane| {
-                let window = snapshot
-                    .windows
-                    .iter()
-                    .find(|window| window.id == pane.window_id);
-                let session_id = window.map(|window| window.session_id);
+                let session_id = session_of(snapshot, pane);
                 let session = snapshot
                     .sessions
                     .iter()
                     .find(|session| Some(session.id) == session_id);
                 PaneDescriptor {
                     terminal_id: pane.id.clone(),
-                    session_id: session_id.map_or(0, phux_protocol::SessionId::get),
+                    session_id: session_id.map_or(0, SessionId::get),
                     session_name: session.map_or_else(String::new, |s| s.name.clone()),
-                    window_id: pane.window_id.get(),
-                    window_index: window.map_or(0, |w| w.index),
-                    window_name: window.map_or_else(String::new, |w| w.name.clone()),
                     cols: pane.cols,
                     rows: pane.rows,
                     title: pane.title.clone(),
                     cwd: pane.cwd.clone(),
                     is_focused: pane.id == snapshot.focused_resource,
+                    key: None,
+                    revision: None,
+                    name: None,
+                    activation: None,
+                    exec: None,
                 }
             })
             .collect();
@@ -167,12 +183,52 @@ impl Topology {
             .collect();
         Self {
             sessions,
-            windows,
             panes,
             agent_sessions,
             focused_session: snapshot.focused_session.get(),
             focused_pane: snapshot.focused_resource.clone(),
+            authority: None,
+            inbox: None,
+            handles: HandleMap::new(),
         }
+    }
+
+    /// Enrich with the organization replica: keys, revisions, lifetimes,
+    /// member counts, arrangements, intake, and execution states. A replica
+    /// that is not live leaves the snapshot projection as it is.
+    #[must_use]
+    pub fn with_organization(mut self, replica: &OrganizationReplica) -> Self {
+        if replica.authority().is_none() {
+            return self;
+        }
+        self.authority = replica.authority();
+        self.inbox = replica.inbox();
+        self.handles = replica.handles().clone();
+        for session in &mut self.sessions {
+            let record = session
+                .key
+                .and_then(|key| replica.session(&key))
+                .or_else(|| replica.session_by_live(SessionId::new(session.id)));
+            if let Some(record) = record {
+                session.key = Some(record.key);
+                session.lifetime = Some(record.lifetime);
+                session.keep_empty = record.lifetime == SessionLifetime::Persistent;
+                session.revision = Some(record.revision);
+                session.members = record.members;
+                session.arrangement = record.arrangement;
+                session.awaiting_organization = record.awaiting_organization;
+            }
+        }
+        for pane in &mut self.panes {
+            if let Some(record) = replica.resource_by_live(&pane.terminal_id) {
+                pane.key = Some(record.key);
+                pane.revision = Some(record.revision);
+                pane.name.clone_from(&record.name);
+                pane.activation = record.activation.map(|a| a.id);
+                pane.exec = record.activation.map(|a| a.state);
+            }
+        }
+        self
     }
 
     /// The pane entry for `terminal_id`.
@@ -195,6 +251,14 @@ impl Topology {
         self.sessions.iter().find(|session| session.name == name)
     }
 
+    /// The session entry keyed `key`.
+    #[must_use]
+    pub fn session_keyed(&self, key: &SessionKey) -> Option<&SessionDescriptor> {
+        self.sessions
+            .iter()
+            .find(|session| session.key == Some(*key))
+    }
+
     /// The first live pane of session `session_id`, in the server's order.
     #[must_use]
     pub fn first_pane_of(&self, session_id: u32) -> Option<&ResourceId> {
@@ -203,6 +267,18 @@ impl Topology {
             .find(|pane| pane.session_id == session_id)
             .map(|pane| &pane.terminal_id)
     }
+}
+
+/// The session a snapshot resource belongs to: its `session` facet, or from
+/// a server that predates it, the session of its legacy window.
+pub(super) fn session_of(snapshot: &SessionSnapshot, info: &ResourceInfo) -> Option<SessionId> {
+    info.session.or_else(|| {
+        snapshot
+            .windows
+            .iter()
+            .find(|window| window.id == info.window_id)
+            .map(|window| window.session_id)
+    })
 }
 
 /// Which answer a snapshot is. Each is a view filtered by its own grant verb

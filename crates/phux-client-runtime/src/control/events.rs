@@ -3,11 +3,13 @@
 use std::sync::Arc;
 
 use phux_client_core::history::HistoryStatus;
+use phux_client_core::org_ops::{KillReport, OrgOutcome};
 use phux_client_core::session::AgentStreamInfo;
 pub use phux_client_core::session::agent_stream::{AgentPublication, AgentRecordMode};
 use phux_client_core::session::{HistoryUnavailableReason, KernelSend};
 use phux_protocol::ClientId;
 use phux_protocol::ResourceId;
+use phux_protocol::ids::OperationId;
 use phux_protocol::wire::frame::{
     CloseReason, CommandResult, ControlAction, DetachReason, ErrorCode, FrameKind, TombstoneReason,
 };
@@ -77,6 +79,30 @@ pub enum Event {
     /// The session graph changed (a fresh `ATTACHED`, a `GET_STATE`
     /// refresh, or a close); re-read the topology.
     TopologyChanged,
+    /// The organization replica changed (a seed, a journal event, a
+    /// refetch); re-read `organization()` and the topology.
+    OrganizationChanged,
+    /// The organization records could not be read.
+    OrganizationUnavailable {
+        /// What the server answered.
+        message: String,
+    },
+    /// A submitted organization operation resolved. A resend after a
+    /// reconnect reused its id; [`OrgOutcome::Unknown`] means reconcile from
+    /// the replica before acting again.
+    OrganizationOperation {
+        /// The operation.
+        operation: OperationId,
+        /// How it ended.
+        outcome: OrgOutcome,
+    },
+    /// A kill-session workflow ended; the report names each target.
+    KillFinished {
+        /// The workflow id `kill_session` returned.
+        workflow: u64,
+        /// The per-target result.
+        report: Box<KillReport>,
+    },
     /// The complete wire snapshot behind a topology change.
     ///
     /// Runtime-owned extensions use the facets not carried by the public
@@ -430,6 +456,8 @@ impl Event {
                 | Self::TerminalDetached { .. }
                 | Self::TerminalKilled { .. }
                 | Self::TerminalsClosed { .. }
+                | Self::OrganizationOperation { .. }
+                | Self::KillFinished { .. }
                 | Self::InputDelivery { .. }
                 | Self::CommandResult { .. }
                 | Self::InputHolderChanged { .. }
