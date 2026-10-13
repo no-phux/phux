@@ -148,13 +148,12 @@ jobs:
           bash scripts/check-release-version.sh "$RELEASE_TAG"
           gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
 
-      # Three cross targets share one Cargo.lock; the shared key keeps this
-      # cache disjoint from the Cockpit and Linux lanes' profiles. Preserve a
-      # partial cold build if the first hosted run times out or fails later.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          shared-key: mini-v1-ffi-xcframework
-          cache-on-failure: true
+      # No rust-cache for this job. Two dep archives, 978198846 and
+      # 968319491 bytes, landed fifteen minutes apart on 2026-10-13 (runs
+      # 38450850133 and 38450787572). Both compiles were already cold — the
+      # key suffix changed — and next to the 4.9 GB Cockpit zig cache they
+      # LRU-evicted the 2.3 GB test-lane archive. The zig package cache
+      # below is tens of MB and stays.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/zig

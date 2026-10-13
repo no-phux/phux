@@ -124,8 +124,13 @@ the save is what the next job hits. Run 38451988937 spent 10m 24s compiling
 the test profile with 0 hits and left a 2.3 GB archive (2339429694 bytes).
 The earlier 5.5 GB archive was a store whose action results had already been
 deleted; that export took about eleven minutes and did not fit beside the
-other caches. With one copy of each large archive and no sccache shards, the
-2.3 GB test entry and the zig cache both fit in the 10 GB cap.
+other caches. The Cockpit zig cache is 4.9 GB (4947386319 bytes). Two
+xcframework dep archives, 978198846 and 968319491 bytes, then filled the
+rest of the 10 GB cap and the test archive was evicted before the next rust
+push could restore it. `ffi-xcframework.yml` does not save that dep cache.
+`prune-build-cache` deletes any leftover `v0-rust-mini-v1-ffi-xcframework-`
+entry and keeps one copy of the remaining prefixes. One test archive plus
+one zig archive fits; a second ~1 GB dep archive does not.
 
 The check and icount lanes collect the restored mbx store before compiling,
 never between a build and its objects export. Pending export groups reference
