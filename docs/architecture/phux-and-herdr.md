@@ -86,8 +86,9 @@ rendering consumer maintains its own libghostty replica. Structured key, mouse,
 focus, and paste events travel back to the server. Lifecycle, output, events,
 and metadata use the same framed protocol on every transport.
 
-Sessions, windows, panes, splits, and focus are a TUI convention expressed with
-metadata and client logic, not protocol-privileged server entities. An
+Sessions and their arrangements are typed server records that every client
+reads the same way; panes, splits as drawn, and focus are each client's
+presentation. An
 AgentSession is a second resource kind bound to its Terminal parent. A harness
 can append lifecycle records directly; process and screen detection remain a
 compatibility path when a harness does not emit.

@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-30
+last-reviewed: 2026-10-13
 ---
 
 # Module structure
@@ -21,10 +21,13 @@ Crates appear roughly in dependency order. For rendering ownership, see
 ```
 src/
   lib.rs          — re-exports, PROTOCOL_VERSION
-  ids.rs          — SessionId, WindowId, ResourceId (Local / Satellite), ClientId
-  caps.rs         — HELLO/HELLO_OK features, bootstrap profiles and codecs
+  ids.rs          — live handles (SessionId, ResourceId Local / Satellite,
+                    ClientId, the legacy WindowId) and 16-byte record keys
+  caps.rs         — HELLO/HELLO_OK features (ORGANIZATION in features_ext),
+                    bootstrap profiles and codecs
   kinds.rs        — kind catalog and verb classification of every frame (ADR-0125)
-  scope.rs        — workload scope grants and their canonical bytes
+  scope.rs        — workload scope grants and their canonical bytes, including
+                    the ORGANIZE and TERMINATE verbs (ADR-0163)
   policy.rs, sgr.rs, kitty_replay.rs
   input/          — INPUT_* event types (docs/spec/input.md)
   wire/           — TLV codec and framing (docs/spec/proto.md Appendix A)
@@ -33,16 +36,32 @@ src/
 `input` and `wire` sit behind the `server` feature so the no-feature build
 compiles without `libghostty-vt`. `wire/frame/`, `wire/decode.rs`, and
 `wire/info.rs` reference each other deliberately: one recursive vocabulary
-and its parser, not separable layers.
+and its parser, not separable layers. The organization commands, their
+`Accepted` and `Refused` results, and the organization events are
+`wire/frame/` variants under the existing `COMMAND` and `EVENT` envelopes
+(`docs/spec/L1.md` §5.7); the crate encodes them and enforces no domain
+rule.
 
 ## `phux-core`
 
 ```
 src/
-  ids.rs          — typed slotmap keys
-  registry.rs     — Registry: SlotMaps, the only constructor, cascading deletes
-  session.rs, window.rs (slots + binary split-tree LayoutNode)
-  resource.rs     — ResourceKind, ResourceDescriptor, AgentFacet
+  ids.rs          — typed slotmap keys: the live handles
+  keys.rs         — 16-byte record keys (AuthorityId, SessionKey, ResourceKey,
+                    ArrangementKey, WorkspaceKey, OperationId, InstanceId),
+                    ActivationId, Revision, LeaseEpoch
+  registry.rs     — Registry: SlotMaps plus key-to-handle indices, the only
+                    constructor, cascading deletes
+  session.rs      — Session: key, name, lifetime, members, arrangement
+  resource.rs     — ResourceKind, the resource record, AgentFacet
+  activation.rs   — Activation, ExecState, Outcome, ExitPolicy,
+                    SessionLifetime, Stamp, ProcIdentity
+  arrangement.rs  — LayoutNode<L> split tree, Arrangement, Group, EntryRef,
+                    validation against members
+  org.rs          — Org snapshot, Command, Refusal, Transition, Effect,
+                    Authority (with its Inbox session), Receipt
+  apply.rs        — apply(org, command, actor, now, fresh): the organization
+                    rules, returning a transition and effects or a refusal
   terminal.rs     — TerminalFacet (dims/cwd/title; no PTY, no libghostty)
   screen.rs, session_list.rs, process.rs
                   — the GET_SCREEN, `phux ls --json`, and GET_TERMINAL_STATE
@@ -51,7 +70,11 @@ src/
 
 One descriptor serves every kind; `kind` decides which facet is populated.
 `Registry::new_agent_session` refuses any parent that is not a live
-Terminal. Selector resolution is client-side (`phux-client::selector`).
+Terminal. `apply` is the one implementation of the organization rules and
+does no I/O: keys arrive minted by the server, and the clock is passed in.
+The crate does not depend on `phux-protocol` (ADR-0011). Selector
+resolution is client-side (`phux-client::selector`).
+[`data-model.md`](./data-model.md) describes the records and invariants.
 
 ## `phux-agent-rules`
 
@@ -71,10 +94,17 @@ src/
   runtime/        — accept loops, per-client tasks, command dispatch, attach,
                     upgrade, approvals, keyed/idempotent operations,
                     revocation watcher; input_lane/ (ADR-0044, ADR-0053)
-  state/          — ServerState, one module per concern: sessions, the
+  state/          — ServerState, one module per concern: org (`commit`, the
+                    only organization mutation path), sessions, the
                     ResourceTable, resolve, bindings, clients, metadata,
                     leases, hub, agent tracking, event journal (ADR-0123),
-                    retained exits (ADR-0124), approvals (ADR-0128), roles
+                    retained exits (ADR-0124), approvals (ADR-0128), roles,
+                    legacy_snapshot (the synthesized one-window GET_STATE)
+  org_store.rs    — OrgStore trait; SqliteOrgStore at
+                    <state_dir>/org/v1.sqlite3 and MemOrgStore; schema
+                    migrations, receipt and tombstone pruning (ADR-0162)
+  reconcile.rs    — startup reconciliation of recorded activations against
+                    ProcIdentity: a pure decision function plus a syscall shim
   resource/       — ResourceCore, ResourceHandle and its facets, event sink
     agent_session/  — record ring, append validation, derived state (ADR-0103)
     terminal/       — TerminalActor: libghostty Terminal, PTY threads,
@@ -103,6 +133,14 @@ keyed on a live resource and never looks inside a facet.
 local, satellite, or unknown. PTY I/O runs on two `std::thread`s inside
 `resource/terminal/`, bridged to the actor over `mpsc`.
 
+Every organization change, whether a typed command, a translated legacy
+metadata write, or a resource exit, goes through `ServerState::commit`:
+`phux-core::apply`, then one org-store transaction, then the in-memory
+mirror, the reply, and the journal events. Resource executors report
+activation facts back through the same path and never edit membership.
+Startup opens the store, imports a pre-store registry once, resumes from
+an upgrade blob, reconciles, and only then seeds.
+
 ## `phux-client`
 
 The headless client library (ADR-0100): no `ratatui`, no controlling
@@ -122,6 +160,12 @@ src/
   resource.rs, resource/ — `phux resource show|wait|methods` and cursors
   testkit.rs      — the scripted server client-side tests speak to
 ```
+
+`resource::session_of` is the one join from a resource to its session;
+no client goes through a window. `kill.rs` runs the kill-session workflow
+(terminate, remove, then delete with the revision read at the start) and
+reports one result per target. `layout_ops.rs` edits the session
+arrangement with a compare-and-swap that retries on conflict.
 
 `agent_record.rs` (`phux.agent/v1`), `agent_session_record.rs`
 (`phux.agent-session/v1` provenance), and `agent_session.rs` (the
@@ -143,8 +187,14 @@ src/
     pane_state.rs, fleet.rs, focus.rs, copy.rs, directory_picker.rs, ...
   render/         — ratatui chrome
     chrome/       — status bar, sidebar, dividers
-    overlay/      — copy mode, menus, prompts, settings page, toasts, which-key
+    overlay/      — copy mode, menus, prompts, kill confirm, settings page,
+                    toasts, which-key
 ```
+
+The TUI's tabs are the session arrangement's groups, read and replaced
+through the runtime rather than the layout metadata key. `close-view`
+folds a leaf out of the arrangement and ends nothing; `kill-window` opens
+the kill confirm and terminates only on commit.
 
 ## `phux-client-core`
 
@@ -158,8 +208,11 @@ src/
   grid.rs, grid/  — the one POD cell layout and the GridProjector
   session.rs, session/ — the synchronous session kernel
   handshake.rs, rename.rs, history.rs, perf.rs
-  layout/         — the split tree (`LayoutNode`, never on the wire), split
-                    math, persisted L3 CBOR envelope
+  layout/         — ArrangementDoc (the client edit model of a session
+                    arrangement: groups of split trees), split math;
+                    layout::legacy holds the phux.tui.layout/v1 CBOR codec
+  org_ops.rs      — sans-IO organization operation journal and the
+                    kill-workflow planner
   multi_pane/     — layout tree to pane rectangles and divider cells
   predict/        — predictive local echo
 ```
@@ -210,12 +263,20 @@ features: `dhat-heap` here, `tokio-console` via `phux-server`.
   [`client-runtime.md`](./client-runtime.md)): registry target resolution,
   dial plans, the reconnect `Ladder`, the relay tunnel, the sans-IO
   `ControlPlane`, the engine owner thread, grid publication, and
-  `Runtime::connect`. Rust API only.
+  `Runtime::connect`. Rust API only. `control/organization.rs` is the
+  organization replica: seeded by paged `GetOrganization`, advanced by
+  journal events in sequence, refetched on a gap; it retries pending
+  operations with the same operation id after reconnect, reports the
+  outcome as unknown past the receipt horizon, maps keys to handles, and
+  projects the owner-local Inbox.
 - **`phux-client-ffi`** — the one binding crate (ADR-0135). `projection/`
   derives the product vocabulary from the runtime once; `c/` (feature
   `c-abi`, default) is the C ABI in `include/phux/client.h` that Cockpit
   links; `uniffi/` (feature `uniffi`) is the Swift/Kotlin surface
-  phux-mobile consumes. Packaging lives in `scripts/build-*ffi*.sh`
+  phux-mobile consumes. The projection is lossless: keys, revisions,
+  lifetime, members, arrangements, and execution state all cross.
+  `c/arrangement/` wraps the shared arrangement and `c/organization.rs`
+  the organization commands and the kill-session workflow. Packaging lives in `scripts/build-*ffi*.sh`
   ([`../RELEASING.md`](../RELEASING.md)).
 - **`phux-relay`** — the reference relay (ADR-0051, ADR-0052); never parses
   phux frames.
