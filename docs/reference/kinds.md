@@ -43,6 +43,23 @@ Addressed to the server or the connection rather than to one resource.
 | `phux.config.reload/v1` | metadata key | SIGNAL | yes | none | shipped |
 | `phux.approval.decide/v1/` | metadata key | SIGNAL | yes | `approvals` | shipped |
 | `phux.whoami/v1` | metadata key | exempt: self | no | `whoami` | shipped |
+| `GET_ORGANIZATION` | command `0x1e` | INVENTORY | no | `organization` (features_ext) | shipped |
+| `SESSION_CREATE` | command `0x1f` | CREATE | yes | `organization` (features_ext) | shipped |
+| `SESSION_RENAME` | command `0x20` | ORGANIZE | yes | `organization` (features_ext) | shipped |
+| `SESSION_SET_LIFETIME` | command `0x21` | ORGANIZE | yes | `organization` (features_ext) | shipped |
+| `SESSION_DELETE` | command `0x22` | TERMINATE | yes | `organization` (features_ext) | shipped |
+| `RESOURCE_CREATE` | command `0x23` | CREATE | yes | `organization` (features_ext) | shipped |
+| `RESOURCE_MOVE` | command `0x24` | ORGANIZE | yes | `organization` (features_ext) | shipped |
+| `RESOURCE_MOVE_MANY` | command `0x25` | ORGANIZE | yes | `organization` (features_ext) | shipped |
+| `RESOURCE_RENAME` | command `0x26` | ORGANIZE | yes | `organization` (features_ext) | shipped |
+| `RESOURCE_TERMINATE` | command `0x27` | TERMINATE | yes | `organization` (features_ext) | shipped |
+| `RESOURCE_REMOVE` | command `0x28` | TERMINATE | yes | `organization` (features_ext) | shipped |
+| `RESOURCE_RELAUNCH` | command `0x29` | CREATE | yes | `organization` (features_ext) | shipped |
+| `RESOURCE_ABANDON` | command `0x2a` | TERMINATE (owner socket only) | yes | `organization` (features_ext) | shipped |
+| `INBOX_RESOLVE` | command `0x2b` | ORGANIZE | yes | `organization` (features_ext) | shipped |
+| `ORGANIZATION_UNDO` | command `0x2c` | ORGANIZE | yes | `organization` (features_ext) | shipped |
+| `ARRANGEMENT_GET` | command `0x2d` | INVENTORY | no | `organization` (features_ext) | shipped |
+| `ARRANGEMENT_REPLACE` | command `0x2e` | ORGANIZE | yes | `organization` (features_ext) | shipped |
 
 ## Server events
 
@@ -51,6 +68,18 @@ Addressed to the server or the connection rather than to one resource.
 | `journal_gap` | `0x0b` |
 | `approval_requested` | `0x0d` |
 | `approval_decided` | `0x0e` |
+| `session_created` | `0x0f` |
+| `session_renamed` | `0x10` |
+| `session_deleted` | `0x11` |
+| `session_lifetime_changed` | `0x12` |
+| `membership_changed` | `0x13` |
+| `resource_created` | `0x14` |
+| `resource_removed` | `0x15` |
+| `activation_changed` | `0x16` |
+| `arrangement_changed` | `0x17` |
+| `lease_changed` | `0x18` |
+| `intake_changed` | `0x19` |
+| `resource_renamed` | `0x1a` |
 
 ## Substrate methods
 
@@ -237,4 +266,18 @@ Every command nested in `COMMAND` lands on exactly one row; the envelope alone g
 | `GET_PERF { reset: false }` | OBSERVE | `Global { owner_uds_only: false }` |
 | `GET_PERF { reset: true }` | OBSERVE+BIND | `Global { owner_uds_only: false }` |
 | `APPEND_RESOURCE_OUTPUT` | BIND+INPUT | `ParentOfNamed` |
+| `GET_ORGANIZATION` | INVENTORY | `OrganizationView` |
+| `SESSION_CREATE` | CREATE | `Global { owner_uds_only: false }` |
+| `SESSION_RENAME`, `SESSION_SET_LIFETIME`, `INBOX_RESOLVE` | ORGANIZE | `KeyedSession` |
+| `SESSION_DELETE` | TERMINATE | `KeyedSession` |
+| `RESOURCE_CREATE` | CREATE | `KeyedSession` |
+| `RESOURCE_MOVE`, `RESOURCE_MOVE_MANY` | ORGANIZE | `MoveSessions` |
+| `RESOURCE_RENAME` | ORGANIZE | `KeyedResource` |
+| `RESOURCE_TERMINATE` | TERMINATE | `NamedTerminal` |
+| `RESOURCE_REMOVE` | TERMINATE | `KeyedResource` |
+| `RESOURCE_RELAUNCH` | CREATE | `KeyedResource` |
+| `RESOURCE_ABANDON` | TERMINATE + owner-UDS transport | `Global { owner_uds_only: true }` |
+| `ORGANIZATION_UNDO` | ORGANIZE | `UndoneOperation` |
+| `ARRANGEMENT_GET` | INVENTORY | `ArrangementOwner` |
+| `ARRANGEMENT_REPLACE` | ORGANIZE | `ArrangementOwner` |
 | Unknown, retired, or otherwise unclassified command tag | deny | `None` |

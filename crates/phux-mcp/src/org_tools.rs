@@ -132,12 +132,6 @@ fn document(verb: &str, target: &str, key: &str, committed: &Committed) -> Value
         "verb": verb,
         "target": target,
         "key": key,
-        "operation": committed
-            .operation
-            .as_bytes()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>(),
         "revision": committed.revision.get(),
         "terminal_id": committed
             .target

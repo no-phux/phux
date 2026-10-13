@@ -224,7 +224,7 @@ pub(crate) const TOOLS: &[Row] = &[
     ),
     cli(
         "phux_move_pane",
-        "move-pane",
+        "mv",
         Touches::Wire(&[RESOLVE, "GET_METADATA", METADATA_WRITE, "MOVE_RESOURCE"]),
     ),
     cli(
@@ -440,6 +440,11 @@ pub(crate) const CLI_ONLY: &[(&str, &str)] = &[
         "`phux_approve` decides both ways: `decision: deny` is `phux deny` (ADR-0128)",
     ),
     ("resize", "not exposed over MCP yet; a known parity gap"),
+    (
+        "restore",
+        "an operator's after-restart sweep; an agent relaunches the one pane it means with \
+         `phux_relaunch`",
+    ),
     (
         "rec",
         "not exposed over MCP yet; a recording is written to a file on the adapter's host",

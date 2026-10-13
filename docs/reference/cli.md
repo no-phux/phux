@@ -32,8 +32,11 @@ Sessions:
   ls            List sessions [aliases: list]
   kill          Kill a session, window, pane, or the server
   detach        Detach clients from a session
-  rename        Rename a session
+  rename        Rename a session or a pane
   project       Open a project session from a trusted recipe [aliases: p]
+  rm            Remove a stopped pane, or delete an empty session
+  relaunch      Start a stopped pane again
+  restore       Relaunch every pane a server restart ended
 
 Panes:
   spawn         Create a pane without attaching
@@ -46,7 +49,7 @@ Panes:
   resize        Set a pane's grid size
   tag           Read and write pane tags (address them with #tag)
   insert-pane   Insert an existing pane into a layout
-  move-pane     Move a pane beside another, across sessions too
+  mv            Move a pane into another session, or beside another pane
   swap-pane     Swap two panes in a layout
   resource      Inspect a resource or wait for its process to exit
 
@@ -87,7 +90,7 @@ More:
   perf          Show the server's performance telemetry
   whoami        Report who this connection is to the server
   runtime-info  Inspect this binary's protocol and capabilities
-  workspace     Inspect a git workspace and its worktrees
+  archive       Export sessions to an archive file, or import one
   worktree      Manage git worktrees and their bound sessions
   cockpit       Open the native macOS Cockpit app
   mcp           Run the bundled MCP stdio adapter
@@ -756,6 +759,77 @@ Arguments:
 
 Flags:
       --yes            Approve without asking.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux archive`
+
+```text
+Export sessions to an archive file, or import one
+
+`export` writes the running server's sessions, windows, split trees,
+directories, and resumable agent sessions as JSON. `import` recreates an
+archive's missing sessions, empty and persistent, without starting any process.
+
+Usage: phux archive <SUBCOMMAND>
+
+Commands:
+  export  Write the running server's sessions as a JSON archive.
+  import  Recreate an archive's missing sessions without starting them.
+  help    Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux archive export`
+
+```text
+Write the running server's sessions as a JSON archive.
+
+Usage: phux archive export [-o --output <PATH>] [--projection <PREFIX>]
+
+Flags:
+  -o, --output <PATH>        Write the archive to a path instead of stdout.
+      --projection <PREFIX>  Read each session's split tree from this projection
+                             key PREFIX (`<PREFIX>.layout/v1`) instead of the
+                             shared default, appending `/<session-id>` itself
+                             for each session archived. Unlike every other
+                             `--projection` flag, this one takes a bare prefix,
+                             not a full key: a full `<prefix>.layout/v1/<id>`
+                             key is refused. A session with nothing stored under
+                             its own key falls back to its bare pane list; when
+                             this flag is given, that absence is also reported
+                             on stderr.
+  -h, --help                 Print help
+
+Global flags:
+      --socket <PATH>        Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux archive import`
+
+```text
+Recreate an archive's missing sessions without starting them.
+
+Each missing session becomes an empty, persistent session with its archived
+host, project, and directory; nothing is launched. A session of the same name
+already on the server is skipped.
+
+Usage: phux archive import [--plan] <ARCHIVE>
+
+Arguments:
+  <ARCHIVE>  JSON archive path, or '-' to read from stdin.
+
+Flags:
+      --plan           Print the archive's session, host, and directory
+                       organization and do not dial a server.
   -h, --help           Print help
 
 Global flags:
@@ -1654,6 +1728,10 @@ Kill a session, window, pane, or the server
 a server-state snapshot to a set of Terminals; the server is then asked to kill
 each.
 
+Killing a whole session terminates every member, removes each once it has
+stopped, then deletes the session, and prints one result line per member. Work
+added to the session meanwhile survives, and the session is then kept.
+
 `--server` stops the server process instead, ending every session on it. Local
 socket only: the server accepts that stop on its local socket alone, so
 `--server` cannot combine with `--remote`.
@@ -1852,37 +1930,35 @@ Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
-## `phux move-pane`
+## `phux mv`
 
 ```text
-Move a pane beside another, across sessions too
+Move a pane into another session, or beside another pane
 
-SOURCE is collapsed out of its current tree position and inserted beside TARGET.
-Both selectors must resolve to exactly one local pane. When TARGET lives in a
-different session the pane is re-parented on the server first — its process,
-scrollback, and id survive the move.
+When DEST names a session (`work`, or a session key `^ab23cd`), SOURCE becomes a
+member of it and nothing else changes: its process, scrollback, and id survive,
+and it is not placed in the destination's layout. Otherwise DEST is a pane:
+SOURCE is collapsed out of its tree position and inserted beside it, re-parented
+across sessions first when needed.
 
-Usage: phux move-pane [FLAGS] <SOURCE> <TARGET>
+Usage: phux mv [FLAGS] <SOURCE> <DEST>
 
 Arguments:
-  <SOURCE>  Pane to relocate.
-  <TARGET>  Existing destination pane.
+  <SOURCE>  Pane to move.
+  <DEST>    Destination session, or the pane to place SOURCE beside.
 
 Flags:
-      --split <SPLIT>     Destination split axis: `horizontal` stacks the panes,
-                          `vertical` places them side-by-side.
+      --split <SPLIT>     Split axis beside a destination pane: `horizontal`
+                          stacks the panes, `vertical` places them side-by-side.
                           [possible values: horizontal, h, vertical, v]
                           (default: horizontal)
-      --ratio <RATIO>     Fraction assigned to TARGET; must be strictly between
-                          0 and 1.
+      --ratio <RATIO>     Fraction assigned to a destination pane; must be
+                          strictly between 0 and 1.
                           (default: 0.5)
       --projection <KEY>  Named projection(s) to edit instead of the shared
-                          default. A same-session move takes at most one KEY. A
-                          cross-session move touches two distinct envelopes —
-                          each key embeds its own session id — so pass this flag
-                          twice (source and destination, either order) or not at
-                          all; passing it exactly once for a cross-session move
-                          is refused (exit 2).
+                          default, for a move beside a pane. A same-session move
+                          takes at most one KEY; a cross-session move takes two
+                          (source and destination) or none.
       --json              Emit a schema-versioned JSON result or error.
   -h, --help              Print help
 
@@ -1899,6 +1975,11 @@ Creates the named session if it does not already exist, then attaches.
 Auto-starts a server if none is running. A name already in use is an error; omit
 the name to take the configured `session-name-template`, disambiguated with
 fresh `${random-name}` picks when the template draws one, then a numeric suffix.
+
+A session you name is persistent: it stays, empty, after its last process exits,
+until `phux rm` or `phux kill` deletes it. A session whose name was generated,
+like the one bare `phux` starts, is ephemeral: it ends with its last process.
+`--ephemeral` makes a named session ephemeral too.
 
 With `--json`, creates the session *without* attaching and prints the seed
 pane's id as JSON instead. This neither attaches nor resizes, and the create is
@@ -1943,12 +2024,13 @@ Flags:
                                   instead, naming the remedies). PORT
                                   defaults to 8788. Cannot combine with
                                   `--socket`.
-      --empty                     Create the session with no terminal. An empty
-                                  session is keep-empty: it survives its last
-                                  window and only `phux kill` removes it.
-                                  Without `--json` the new session is attached
-                                  and shows an empty state; open a window from
-                                  there.
+      --empty                     Create the session with no process. It is
+                                  persistent, so it stays until `phux rm` or
+                                  `phux kill` deletes it. Without `--json` the
+                                  new session is attached and shows an empty
+                                  state; open a window from there.
+      --ephemeral                 Make the session ephemeral: it ends when its
+                                  last process exits, even though you named it.
   -h, --help                      Print help
 
 Global flags:
@@ -2531,6 +2613,7 @@ Usage: phux project <SUBCOMMAND>
 
 Commands:
   init     Write a starter `.phux/project.toml` into a checkout.
+  inspect  Map a git repository and its checked-out worktrees.
   list     List the `[[projects]]` catalog and whether each session is open.
            [aliases: ls]
   open     Attach to a project's session, building it from its recipe if absent.
@@ -2561,6 +2644,29 @@ Arguments:
   [TARGET]  Project name or directory (default: the current one).
 
 Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux project inspect`
+
+```text
+Map a git repository and its checked-out worktrees.
+
+A local repo operation: it never contacts a phux server and never creates or
+deletes a worktree. Agents use it to map checkouts to sessions before spawning
+or attaching work.
+
+Usage: phux project inspect [--json] [PATH]
+
+Arguments:
+  [PATH]  Path inside the repository or worktree to inspect.
+          (default: .)
+
+Flags:
+      --json           Emit a stable JSON document instead of human text.
   -h, --help           Print help
 
 Global flags:
@@ -2715,6 +2821,29 @@ Global flags:
       --socket <PATH>      Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux relaunch`
+
+```text
+Start a stopped pane again
+
+Starts a new run of `TARGET` (a pane selector or key `^ab23cd`) with the
+command, directory, and environment it was launched with, in the same session.
+Refused while it still runs, or while a run that a server restart lost track of
+may still be running.
+
+Usage: phux relaunch [--json] <TARGET>
+
+Arguments:
+  <TARGET>  The pane to start again.
+
+Flags:
+      --json           Emit a schema-versioned JSON result or error.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux relay`
 
 ```text
@@ -2804,17 +2933,19 @@ Global flags:
 ## `phux rename`
 
 ```text
-Rename a session
+Rename a session or a pane
 
-Reassigns `SESSION`'s human-readable name to `NEW_NAME` in one round-trip. The
-server is authoritative; attached clients pick up the new name on their next
-snapshot. An unknown `SESSION` or a `NEW_NAME` already in use is an error.
+Reassigns `TARGET`'s human-readable name to `NEW_NAME` in one round-trip.
+`TARGET` is a session name, or a pane selector (`@N`, `name:N.M`, a key
+`^ab23cd`) whose label to set. The server is authoritative; attached clients
+pick up the new name on their next snapshot. An unknown `TARGET`, or a session
+`NEW_NAME` already in use, is an error.
 
-Usage: phux rename [--remote <[USER@]HOST[:PORT]>] <SESSION> <NEW_NAME>
+Usage: phux rename [--remote <[USER@]HOST[:PORT]>] <TARGET> <NEW_NAME>
 
 Arguments:
-  <SESSION>   Current session name.
-  <NEW_NAME>  New session name.
+  <TARGET>    Current session name, or a pane selector.
+  <NEW_NAME>  New name.
 
 Flags:
       --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
@@ -3054,6 +3185,54 @@ Global flags:
       --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux restore`
+
+```text
+Relaunch every pane a server restart ended
+
+Starts each pane whose process ended because the server stopped while it ran, in
+its session, with its directory and agent resume. With `SESSION`, only that
+session's panes. Prints one result line per pane.
+
+Usage: phux restore [--json] [SESSION]
+
+Arguments:
+  [SESSION]  Only this session's panes.
+
+Flags:
+      --json           Emit a schema-versioned JSON result or error.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux rm`
+
+```text
+Remove a stopped pane, or delete an empty session
+
+`TARGET` is a pane selector (`@N`, `name:N.M`, a key `^ab23cd`) whose process
+has ended, or a session name with no members. A pane that still runs, or a
+session that still has members, is refused: stop it with `phux kill` first.
+
+Usage: phux rm [--yes] [--json] <TARGET>
+
+Arguments:
+  <TARGET>  The pane or session to remove.
+
+Flags:
+      --yes            Remove without asking.
+
+                       Without it, `phux rm` asks on a terminal, and when stdin
+                       is not one it refuses with exit 2 having sent nothing.
+      --json           Emit a schema-versioned JSON result or error.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux run`
 
 ```text
@@ -3242,18 +3421,17 @@ Flags:
                                   Without this flag the server keeps the
                                   multiplexer contract and lives until its last
                                   pane is gone.
-      --autosave <PATH>           Keep a crash-safe workspace archive at PATH,
-                                  as `phux service install --restore` runs it.
-                                  On a fresh start the server restores PATH
-                                  (session names, layout, cwd, native agent
-                                  sessions) once it is listening; from then on
-                                  it rewrites PATH atomically (temp file, fsync,
-                                  rename) a few seconds after a session, window,
-                                  pane, name, cwd, layout, or agent-session
-                                  change, and at least once a minute, so a
-                                  crash, SIGKILL, or power loss restores the
-                                  latest workspace. A hot upgrade keeps saving
-                                  without restoring again. A development build
+      --autosave <PATH>           Deprecated: the server now keeps its sessions
+                                  across a restart itself, and `phux restore`
+                                  relaunches what a restart ended. The flag
+                                  still works, as an export schedule: the server
+                                  keeps the archive `phux archive export` writes
+                                  at PATH, rewriting it atomically (temp file,
+                                  fsync, rename) a few seconds after a change
+                                  and at least once a minute. On a fresh start
+                                  it imports the sessions PATH has and the
+                                  server lacks, starting none of them, as `phux
+                                  archive import` does. A development build
                                   refuses a production path.
   -h, --help                      Print help
 
@@ -3309,14 +3487,13 @@ Flags:
                             `--listen` where UDP is open.
       --listen <HOST:PORT>  Accept WebSocket clients on this `HOST:PORT`. The
                             fallback for networks that block UDP.
-      --restore             Keep the workspace archive and restore it on start.
-                            The server runs with `--autosave`, rewriting the
-                            archive atomically a few seconds after the workspace
-                            changes, and the unit saves once more on stop, so a
-                            crash or power loss restores the latest layout. Off
-                            by default: a session list repopulated with fresh
-                            shells is a surprise unless asked for. Restores
-                            names, layout, and cwd — never running processes.
+      --restore             Keep a session archive beside the server. The server
+                            runs with `--autosave`, exporting the archive
+                            atomically a few seconds after its sessions change,
+                            and the unit exports once more on stop. The server
+                            keeps its sessions across a restart either way;
+                            after one, `phux restore` relaunches the processes
+                            it ended.
       --hub                 Run the supervised server as a federation hub. The
                             service loads enabled `[[satellites]]` entries and
                             keeps their links connected across login, logout,
@@ -4348,93 +4525,6 @@ Flags:
 Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
       --json           Emit the result as JSON on stdout.
-```
-
-## `phux workspace`
-
-```text
-Inspect a git workspace and its worktrees
-
-This is a local repo operation: it never contacts a running phux server and
-never creates or deletes worktrees. Agents use it to map code checkouts to phux
-sessions/panes before spawning or attaching work.
-
-Usage: phux workspace <SUBCOMMAND>
-
-Commands:
-  inspect  Inspect the git repository and its checked-out worktrees.
-  restore  Restore missing sessions from a workspace archive.
-  save     Save the running phux workspace as a JSON archive.
-  help     Print this message or the help of the given subcommand(s)
-
-Flags:
-  -h, --help           Print help
-
-Global flags:
-      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
-```
-
-## `phux workspace inspect`
-
-```text
-Inspect the git repository and its checked-out worktrees.
-
-Usage: phux workspace inspect [--json] [PATH]
-
-Arguments:
-  [PATH]  Path inside the repository or worktree to inspect.
-          (default: .)
-
-Flags:
-      --json           Emit a stable JSON document instead of human text.
-  -h, --help           Print help
-
-Global flags:
-      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
-```
-
-## `phux workspace restore`
-
-```text
-Restore missing sessions from a workspace archive.
-
-Usage: phux workspace restore [--plan] <ARCHIVE>
-
-Arguments:
-  <ARCHIVE>  JSON archive path, or '-' to read from stdin.
-
-Flags:
-      --plan           Print the archive's session, host, and directory
-                       organization and do not dial a server.
-  -h, --help           Print help
-
-Global flags:
-      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
-```
-
-## `phux workspace save`
-
-```text
-Save the running phux workspace as a JSON archive.
-
-Usage: phux workspace save [-o --output <PATH>] [--projection <PREFIX>]
-
-Flags:
-  -o, --output <PATH>        Write the archive to a path instead of stdout.
-      --projection <PREFIX>  Read each session's split tree from this projection
-                             key PREFIX (`<PREFIX>.layout/v1`) instead of the
-                             shared default, appending `/<session-id>` itself
-                             for each session archived. Unlike every other
-                             `--projection` flag, this one takes a bare prefix,
-                             not a full key: a full `<prefix>.layout/v1/<id>`
-                             key is refused. A session with nothing stored under
-                             its own key falls back to its bare pane list; when
-                             this flag is given, that absence is also reported
-                             on stderr.
-  -h, --help                 Print help
-
-Global flags:
-      --socket <PATH>        Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux worktree`

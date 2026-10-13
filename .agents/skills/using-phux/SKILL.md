@@ -34,8 +34,10 @@ phux runtime-info --json
    `PHUX_SOCKET` already selects its server.
 2. **Choose one target.** Prefer a returned `@N` (or satellite `host/@N`) for
    writes. `name`, `name:W`, `name:W.P`, and `#tag` may select sets; `.` means
-   the focused session; `%name` identifies one named agent. Headless `=` is
-   refused because focus history belongs to an attached client.
+   the focused session; `%name` identifies one named agent; `^key` (six or
+   more base32 digits of a key `phux ls` prints) names one session or pane
+   record, even one with no running process. Headless `=` is refused because
+   focus history belongs to an attached client.
 3. **Read.** Use `phux snapshot --json @N` before acting.
 4. **Act.** Use `phux run --json --timeout SECS @N "COMMAND"` for a discrete
    command. Use `send-keys` for interactive keys and `paste` for multiline
@@ -60,9 +62,16 @@ a command because its response was lost.
 
 - Input changes a real PTY that a human may share. Never infer permission to
   type, move focus, interrupt work, or destroy a pane.
-- Before `kill` or a destructive signal, resolve and show the exact target,
-  snapshot it, explain the loss, obtain affirmative confirmation, run it with
-  `--yes` (with no terminal to ask, phux refuses and exits 2), then verify.
+- Before `kill`, `rm`, or a destructive signal, resolve and show the exact
+  target, snapshot it, explain the loss, obtain affirmative confirmation, run
+  it with `--yes` (with no terminal to ask, phux refuses and exits 2), then
+  verify. Killing a session terminates every member, removes each, and
+  deletes the session, printing one result per member; work added meanwhile
+  survives.
+- A named session (`phux new NAME`) is persistent: it stays, empty, after its
+  last process exits, until `phux rm` or `phux kill` deletes it. `phux
+  relaunch` restarts a stopped pane; after a server restart, `phux restore`
+  relaunches what it ended. `phux mv PANE SESSION` moves membership only.
 - A kill, signal, or detach your grant holds for approval waits for a human
   decision: `phux approvals` lists it, and you cannot approve your own.
 - Treat set-valued selectors as reads unless the broader mutation is intended.

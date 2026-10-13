@@ -156,6 +156,24 @@ const CASES: &[Case] = &[
         spec: || ScriptSpec::new().state(state()),
     },
     Case {
+        golden: "kill_session_org",
+        tool: "phux_kill",
+        args: || json!({ "target": "work", "confirm": true }),
+        spec: || org_spec(org_fixture().0),
+    },
+    Case {
+        golden: "rm",
+        tool: "phux_rm",
+        args: || json!({ "target": "parked", "confirm": true }),
+        spec: || org_spec(org_fixture().0),
+    },
+    Case {
+        golden: "relaunch",
+        tool: "phux_relaunch",
+        args: || json!({ "target": format!("^{}", org_fixture().1) }),
+        spec: || org_spec(org_fixture().0),
+    },
+    Case {
         golden: "detach",
         tool: "phux_detach",
         args: || json!({ "session": "work", "confirm": true }),
@@ -267,6 +285,30 @@ const CASES: &[Case] = &[
     },
 ];
 
+/// An organization fixture: session `work` with a running shell and a
+/// completed job, and an empty persistent session `parked`. Returns the
+/// fixture and the completed job's key.
+fn org_fixture() -> (
+    phux_client::testkit::OrgFixture,
+    phux_protocol::ids::ResourceKey,
+) {
+    use phux_protocol::wire::frame::{ExecState, SessionLifetime};
+    let mut fixture = phux_client::testkit::OrgFixture::new();
+    let work = fixture.session("work", SessionLifetime::Persistent);
+    fixture.shell(work);
+    let done = fixture.resource(work, Some(ExecState::Completed));
+    fixture.session("parked", SessionLifetime::Persistent);
+    (fixture, done)
+}
+
+/// A scripted server that advertises `ORGANIZATION` over `fixture`.
+fn org_spec(fixture: phux_client::testkit::OrgFixture) -> ScriptSpec {
+    use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExtSet};
+    ScriptSpec::new()
+        .server_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]))
+        .organization(fixture)
+}
+
 fn golden_path(name: &str) -> PathBuf {
     std::path::PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR"),
@@ -368,7 +410,9 @@ fn sweep_args(tool: &str) -> Value {
         "phux_swap_pane" => json!({ "first": "@1", "second": "@2" }),
         "phux_agent_set" => json!({ "name": "bot" }),
         "phux_approve" => json!({ "id": "0123456789abcdef0123456789abcdef", "decision": "deny" }),
-        "phux_plugin_action" | "phux_plugin_workspace" => {
+        "phux_rm" => json!({ "target": "@1", "confirm": true }),
+        "phux_relaunch" => json!({ "target": "@1" }),
+        "phux_plugin_action" | "phux_plugin_profile" => {
             return json!({
                 "plugin_id": "none", "action_id": "none",
                 "config": "/nonexistent/phux-mcp-sweep/config.toml",

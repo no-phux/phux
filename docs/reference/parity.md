@@ -26,6 +26,8 @@ Every tool the MCP adapter (`phux mcp`) serves, the `phux` verb it mirrors, and 
 | `phux_wait` | `phux wait` | in-process | yes | no |
 | `phux_new` | `phux new` | CLI | no | no |
 | `phux_kill` | `phux kill` | in-process | no | yes |
+| `phux_rm` | `phux rm` | in-process | no | yes |
+| `phux_relaunch` | `phux relaunch` | in-process | no | no |
 | `phux_detach` | `phux detach` | in-process | no | yes |
 | `phux_watch` | `phux watch` | in-process | yes | no |
 | `phux_ask` | `phux ask` | in-process | no | no |
@@ -35,11 +37,12 @@ Every tool the MCP adapter (`phux mcp`) serves, the `phux` verb it mirrors, and 
 | `phux_tag` | `phux tag` | in-process | no | no |
 | `phux_rename` | `phux rename` | in-process | no | no |
 | `phux_insert_pane` | `phux insert-pane` | in-process | no | no |
-| `phux_move_pane` | `phux move-pane` | in-process | no | no |
+| `phux_move_pane` | `phux mv` | in-process | no | no |
 | `phux_swap_pane` | `phux swap-pane` | in-process | no | no |
-| `phux_workspace` | `phux workspace` | CLI | no | no |
+| `phux_archive` | `phux archive` | CLI | no | no |
+| `phux_project_inspect` | `phux project inspect` | CLI | yes | no |
 | `phux_plugin_action` | `phux config run` | in-process | no | yes |
-| `phux_plugin_workspace` | none (automation only) | in-process | yes | no |
+| `phux_plugin_profile` | none (automation only) | in-process | yes | no |
 | `phux_agent_list` | `phux agent list` | CLI | yes | no |
 | `phux_agent_show` | `phux agent show` | CLI | yes | no |
 | `phux_agent_explain` | `phux agent explain` | CLI | yes | no |
@@ -70,7 +73,8 @@ These tools still run the `phux` binary as a subprocess, bounded in time and out
 - `phux_run`: the sentinel bracketing, the child's mirrored exit code, and the run deadline are the CLI command's, and a failing command must still return its RunResult.
 - `phux_new`: `phux new` auto-starts a local server when none is listening, which runs the phux binary; `phux_client::session` has the create, but not that server lifecycle.
 - `phux_launch`: integration resolution (enabled plugins, manifests, argv templates, native-session restore) lives in the CLI command.
-- `phux_workspace`: git worktree inspection and the session archive save/restore live in the CLI command.
+- `phux_archive`: the archive capture, its agent-session bridge, and the import live in the CLI command.
+- `phux_project_inspect`: git worktree inspection runs `git` from the CLI command; phux-client has no git.
 - `phux_agent_list`: the detector projection (manifest replay over the pane's screen, plus `[[plugins]]` agent declarations) is built in the phux binary, not phux-client.
 - `phux_agent_show`: the detector projection (manifest replay over the pane's screen, plus `[[plugins]]` agent declarations) is built in the phux binary, not phux-client.
 - `phux_agent_explain`: the detector projection (manifest replay over the pane's screen, plus `[[plugins]]` agent declarations) is built in the phux binary, not phux-client.
@@ -89,7 +93,7 @@ These tools still run the `phux` binary as a subprocess, bounded in time and out
 
 ## Automation-only tools
 
-- `phux_plugin_workspace`: lists the workspace profiles configured plugin manifests declare; `phux plugin list` and `phux config plugins` list the manifests, not their workspace profiles.
+- `phux_plugin_profile`: lists the profiles configured plugin manifests declare; `phux plugin list` and `phux config plugins` list the manifests, not their profiles.
 
 ## CLI verbs without a tool
 
@@ -103,6 +107,7 @@ Agent-facing verbs in the JSON index of `docs/consumers/agents.md` that have no 
 - `phux mcp`: launches this adapter itself.
 - `phux deny`: `phux_approve` decides both ways: `decision: deny` is `phux deny` (ADR-0128).
 - `phux resize`: not exposed over MCP yet; a known parity gap.
+- `phux restore`: an operator's after-restart sweep; an agent relaunches the one pane it means with `phux_relaunch`.
 - `phux rec`: not exposed over MCP yet; a recording is written to a file on the adapter's host.
 - `phux play`: not exposed over MCP yet; playback replays a file from the adapter's host.
 
