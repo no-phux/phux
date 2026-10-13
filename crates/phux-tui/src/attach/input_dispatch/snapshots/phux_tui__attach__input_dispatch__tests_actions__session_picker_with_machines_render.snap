@@ -26,7 +26,7 @@ expression: text
                          │ down - unreachable: link is down               │
                          │ mini - 2 sessions                              │
                          │   build                     on mini, 2 windows │
-                         │   phall on mini, 3 members, persistent, 1 att… │
+                         │   phall on mini, 1 need you, 2 running, 1 att… │
                          │ spare - connected, no sessions                 │
                          │ xps - unreachable: timed out                   │
                          │ + New session…                          create │

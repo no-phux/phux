@@ -229,33 +229,56 @@ pub(super) fn foreign_session_window_rows(
         .collect()
 }
 
-/// Session picker rows: `focused` first and marked current (committing it is
-/// a silent no-op), each committing `switch-session { name }`.
+/// Per-session counts a session picker row reads.
+#[derive(Debug, Default)]
+pub(super) struct SessionCounts {
+    /// Terminals each session holds in the cached graph.
+    pub terminals: std::collections::HashMap<phux_protocol::ids::SessionId, usize>,
+    /// Panes of each session that want a person.
+    pub needs_you: std::collections::HashMap<phux_protocol::ids::SessionId, usize>,
+}
+
+/// Session picker rows, read at a glance (`docs/consumers/attention.md`):
+/// `focused` first and marked current (committing it is a silent no-op),
+/// then the sessions with panes that need you, then the rest by name. Each
+/// commits `switch-session { name }`. A session's lifetime shows only when
+/// it is ephemeral.
 pub(super) fn session_picker_items(
     sessions: &[phux_protocol::wire::info::SessionInfo],
     focused: Option<phux_protocol::ids::SessionId>,
-    terminals: &std::collections::HashMap<phux_protocol::ids::SessionId, usize>,
+    counts: &SessionCounts,
 ) -> Vec<SelectItem> {
+    let needs = |id| counts.needs_you.get(&id).copied().unwrap_or(0);
     let mut ordered: Vec<_> = sessions.iter().collect();
     ordered.sort_by(|a, b| {
         let a_current = Some(a.id) == focused;
         let b_current = Some(b.id) == focused;
-        b_current.cmp(&a_current).then_with(|| a.name.cmp(&b.name))
+        b_current
+            .cmp(&a_current)
+            .then_with(|| (needs(a.id) == 0).cmp(&(needs(b.id) == 0)))
+            .then_with(|| a.name.cmp(&b.name))
     });
 
     ordered
         .into_iter()
         .map(|s| {
             let mut details = Vec::new();
-            if let Some(&count) = terminals.get(&s.id) {
+            let waiting = needs(s.id);
+            if waiting > 0 {
+                details.push(format!("{waiting} need you"));
+            }
+            if let Some(&count) = counts.terminals.get(&s.id) {
                 details.push(count_label(
                     u16::try_from(count).unwrap_or(u16::MAX),
                     "terminal",
                     "terminals",
                 ));
             }
-            details
-                .push(lifetime_word(crate::attach::session_mirror::session_lifetime(s)).to_owned());
+            if crate::attach::session_mirror::session_lifetime(s)
+                == phux_protocol::wire::frame::SessionLifetime::Ephemeral
+            {
+                details.push("ephemeral".to_owned());
+            }
             if Some(s.id) == focused {
                 details.push("current".to_owned());
             }
@@ -300,7 +323,10 @@ pub(in crate::attach) fn session_picker_rows(
     let mut items = host_grouped_session_items(
         peers.sessions,
         peers.focused_session,
-        &peers.terminal_counts(),
+        &SessionCounts {
+            terminals: peers.terminal_counts(),
+            needs_you: crate::attach::sidebar_zones::peer_needs_you(peers),
+        },
         here,
         peers.hosts,
         &peers.other_machines(),
@@ -362,13 +388,13 @@ fn session_switch_row(session: &phux_protocol::wire::info::SessionInfo) -> Selec
 pub(super) fn host_grouped_session_items(
     sessions: &[phux_protocol::wire::info::SessionInfo],
     focused: Option<phux_protocol::ids::SessionId>,
-    terminals: &std::collections::HashMap<phux_protocol::ids::SessionId, usize>,
+    counts: &SessionCounts,
     here: &str,
     satellites: &[phux_protocol::wire::info::HostInventory],
     machines: &[&HostJson],
     workspace: &ArrangementDoc,
 ) -> Vec<SelectItem> {
-    let local = session_picker_items(sessions, focused, terminals);
+    let local = session_picker_items(sessions, focused, counts);
     if satellites.is_empty() && machines.is_empty() {
         return local;
     }
@@ -405,22 +431,25 @@ fn machine_items(host: &HostJson) -> Vec<SelectItem> {
     let mut items = vec![SelectItem::header(format!("{} - {status}", host.label))];
     items.extend(host.sessions.iter().map(|session| {
         let mut details = vec![format!("on {}", host.label)];
-        // A server that reports lifetimes counts members; an older one
-        // counts its windows.
+        // A server that reports lifetimes counts what runs and what needs
+        // you; an older one counts its windows.
         match session.lifetime {
             Some(lifetime) => {
-                details.push(count_label(
-                    u16::try_from(session.members).unwrap_or(u16::MAX),
-                    "member",
-                    "members",
-                ));
-                details.push(
-                    match lifetime {
-                        phux_core::SessionLifetime::Persistent => "persistent",
-                        phux_core::SessionLifetime::Ephemeral => "ephemeral",
-                    }
-                    .to_owned(),
-                );
+                let exec = &session.exec;
+                let needs = exec.failed.saturating_add(exec.lost);
+                if needs > 0 {
+                    details.push(format!("{needs} need you"));
+                }
+                let running = exec
+                    .running
+                    .saturating_add(exec.starting)
+                    .saturating_add(exec.stopping);
+                if running > 0 {
+                    details.push(format!("{running} running"));
+                }
+                if lifetime == phux_core::SessionLifetime::Ephemeral {
+                    details.push("ephemeral".to_owned());
+                }
             }
             None => details.push(count_label(session.windows, "window", "windows")),
         }
@@ -523,13 +552,6 @@ pub(super) fn window_holding(
 }
 
 /// How the session picker names a session's lifetime.
-const fn lifetime_word(lifetime: phux_protocol::wire::frame::SessionLifetime) -> &'static str {
-    match lifetime {
-        phux_protocol::wire::frame::SessionLifetime::Persistent => "persistent",
-        phux_protocol::wire::frame::SessionLifetime::Ephemeral => "ephemeral",
-    }
-}
-
 fn count_label(n: u16, one: &str, many: &str) -> String {
     if n == 1 {
         format!("1 {one}")

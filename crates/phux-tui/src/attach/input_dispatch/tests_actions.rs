@@ -1389,17 +1389,21 @@ fn session_picker_items_include_focused_first_and_commit_switch_session() {
     // Terminal counts come from the resource graph; a session the graph does
     // not list shows none.
     let terminals = HashMap::from([(SessionId::new(1), 1), (SessionId::new(3), 2)]);
-    let items = session_picker_items(&sessions, Some(SessionId::new(1)), &terminals);
+    let items = session_picker_items(
+        &sessions,
+        Some(SessionId::new(1)),
+        &SessionCounts {
+            terminals,
+            needs_you: HashMap::new(),
+        },
+    );
     let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
     assert_eq!(labels, ["work", "logs", "scratch"]);
     assert_eq!(
         items[0].secondary.as_deref(),
         Some("1 terminal, ephemeral, current")
     );
-    assert_eq!(
-        items[1].secondary.as_deref(),
-        Some("2 terminals, persistent")
-    );
+    assert_eq!(items[1].secondary.as_deref(), Some("2 terminals"));
     assert_eq!(items[2].secondary.as_deref(), Some("ephemeral"));
     assert_eq!(items[0].action.action, "switch-session");
     assert_eq!(
@@ -1413,6 +1417,21 @@ fn session_picker_items_include_focused_first_and_commit_switch_session() {
         effects.reattach,
         existing("scratch", Some(2), None, None, None)
     );
+}
+
+/// At a glance, a session with panes that need you sorts right after the
+/// current one and says how many; quiet sessions keep name order.
+#[test]
+fn session_picker_puts_sessions_that_need_you_first() {
+    let sessions = [sinfo(1, "work"), sinfo(2, "alpha"), sinfo(3, "zeta")];
+    let counts = SessionCounts {
+        terminals: HashMap::new(),
+        needs_you: HashMap::from([(SessionId::new(3), 2)]),
+    };
+    let items = session_picker_items(&sessions, Some(SessionId::new(1)), &counts);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert_eq!(labels, ["work", "zeta", "alpha"]);
+    assert_eq!(items[1].secondary.as_deref(), Some("2 need you, ephemeral"));
 }
 
 /// The session picker always opens (its "+ New session" row is never a dead
@@ -1730,7 +1749,7 @@ fn session_picker_groups_rows_by_host() {
     let items = host_grouped_session_items(
         &sessions,
         Some(SessionId::new(1)),
-        &HashMap::new(),
+        &SessionCounts::default(),
         LOCAL_HOST_HEADER,
         &host_fixture(),
         &[],
@@ -1773,7 +1792,7 @@ fn session_picker_groups_rows_by_host() {
     let items = host_grouped_session_items(
         &[],
         None,
-        &HashMap::new(),
+        &SessionCounts::default(),
         LOCAL_HOST_HEADER,
         &host_fixture(),
         &[],
@@ -1793,7 +1812,7 @@ fn session_picker_groups_rows_by_host() {
     let grouped = host_grouped_session_items(
         &sessions,
         Some(SessionId::new(1)),
-        &HashMap::new(),
+        &SessionCounts::default(),
         LOCAL_HOST_HEADER,
         &[],
         &[],
@@ -1801,7 +1820,12 @@ fn session_picker_groups_rows_by_host() {
     );
     assert_eq!(
         grouped.len(),
-        session_picker_items(&sessions, Some(SessionId::new(1)), &HashMap::new()).len()
+        session_picker_items(
+            &sessions,
+            Some(SessionId::new(1)),
+            &SessionCounts::default()
+        )
+        .len()
     );
     assert!(grouped.iter().all(|item| !item.is_header()));
 }
@@ -1843,10 +1867,13 @@ fn machine_fixture() -> Vec<phux_core::host_list::HostJson> {
             "mini",
             HostKind::Remote,
             vec![session("build", 2, 0), {
-                // A machine whose server reports lifetimes counts members.
+                // A machine whose server reports lifetimes counts what runs
+                // and what needs you.
                 let mut keyed = session("phall", 1, 1);
                 keyed.lifetime = Some(phux_core::SessionLifetime::Persistent);
                 keyed.members = 3;
+                keyed.exec.running = 2;
+                keyed.exec.failed = 1;
                 keyed
             }],
         ),
@@ -1871,7 +1898,7 @@ fn session_picker_lists_other_machines() {
     let items = host_grouped_session_items(
         &sessions,
         Some(SessionId::new(1)),
-        &HashMap::new(),
+        &SessionCounts::default(),
         LOCAL_HOST_HEADER,
         &[],
         &crate::attach::hosts::other_hosts(&hosts, &AttachOrigin::Local),
@@ -1911,7 +1938,7 @@ fn session_picker_lists_other_machines() {
     );
     assert_eq!(
         items[4].secondary.as_deref(),
-        Some("on mini, 3 members, persistent, 1 attached")
+        Some("on mini, 1 need you, 2 running, 1 attached")
     );
 
     // Attached to `mini`: its group is the attach stream's, headed by its
@@ -1919,7 +1946,7 @@ fn session_picker_lists_other_machines() {
     let items = host_grouped_session_items(
         &sessions,
         Some(SessionId::new(1)),
-        &HashMap::new(),
+        &SessionCounts::default(),
         "mini",
         &[],
         &crate::attach::hosts::other_hosts(&hosts, &AttachOrigin::Remote("mini".to_owned())),
@@ -1951,7 +1978,7 @@ fn a_machine_row_commits_switch_host() {
     let items = host_grouped_session_items(
         &[],
         None,
-        &HashMap::new(),
+        &SessionCounts::default(),
         LOCAL_HOST_HEADER,
         &[],
         &crate::attach::hosts::other_hosts(&hosts, &crate::attach::hosts::AttachOrigin::Local),
@@ -1977,7 +2004,7 @@ fn session_picker_filter_spans_machines() {
     let items = host_grouped_session_items(
         &[sinfo(1, "work"), sinfo(2, "notes")],
         Some(SessionId::new(1)),
-        &HashMap::new(),
+        &SessionCounts::default(),
         LOCAL_HOST_HEADER,
         &host_fixture(),
         &crate::attach::hosts::other_hosts(&hosts, &crate::attach::hosts::AttachOrigin::Local),
@@ -2022,7 +2049,10 @@ fn session_picker_with_machines_render() {
     let mut items = host_grouped_session_items(
         &[sinfo(1, "work"), sinfo(2, "notes")],
         Some(SessionId::new(1)),
-        &HashMap::from([(SessionId::new(1), 1), (SessionId::new(2), 2)]),
+        &SessionCounts {
+            terminals: HashMap::from([(SessionId::new(1), 1), (SessionId::new(2), 2)]),
+            needs_you: HashMap::new(),
+        },
         LOCAL_HOST_HEADER,
         &host_fixture(),
         &crate::attach::hosts::other_hosts(&hosts, &crate::attach::hosts::AttachOrigin::Local),

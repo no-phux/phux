@@ -355,6 +355,22 @@ pub(super) fn session_roster(
     out
 }
 
+/// How many panes of each peer session want a person (the roster's top
+/// rung: blocked, or asking), for the sessions with any. The focused
+/// session's panes are local state, so it is never counted here.
+pub(super) fn peer_needs_you(peers: &PeerInputs<'_>) -> HashMap<SessionId, usize> {
+    peers
+        .sessions
+        .iter()
+        .filter(|session| Some(session.id) != peers.focused_session)
+        .filter_map(|session| {
+            let mut entry = SessionRosterEntry::default();
+            count_peer_leaves(&mut entry, &peer_leaves(peers, session), peers);
+            (entry.blocked > 0).then_some((session.id, entry.blocked))
+        })
+        .collect()
+}
+
 /// ADR-0140: one segment per other machine, in provider order. A session
 /// row commits `switch-host`, which re-attaches this terminal there; an
 /// unreachable machine keeps its segment with an unselectable placeholder
