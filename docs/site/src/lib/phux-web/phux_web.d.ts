@@ -13,10 +13,11 @@ export class HostedClient {
      */
     close(): void;
     /**
-     * Close the focused terminal without closing its siblings.
+     * Close the focused pane's view. Presentation only: the terminal keeps
+     * running in its session, and the remaining panes take its space.
      *
      * # Errors
-     * Refuses the last pane; use the host's Release Session control instead.
+     * Refuses the last view; use the host's Release Session control instead.
      */
     close_pane(): void;
     /**
@@ -26,6 +27,14 @@ export class HostedClient {
      * Fails when the connection has no usable terminal.
      */
     focus_next_pane(): void;
+    /**
+     * Kill the focused terminal, ending its process, without closing its
+     * siblings.
+     *
+     * # Errors
+     * Refuses the last pane; use the host's Release Session control instead.
+     */
+    kill_pane(): void;
     /**
      * Resize the terminal to `cols`x`rows` cells (for example after the
      * host element changes size). The canvas follows the server's new
@@ -96,6 +105,7 @@ export interface InitOutput {
     readonly hostedclient_close: (a: number) => void;
     readonly hostedclient_close_pane: (a: number) => [number, number];
     readonly hostedclient_focus_next_pane: (a: number) => [number, number];
+    readonly hostedclient_kill_pane: (a: number) => [number, number];
     readonly hostedclient_resize: (a: number, b: number, c: number) => void;
     readonly hostedclient_send_key: (a: number, b: number, c: number) => [number, number];
     readonly hostedclient_set_ctrl_latch: (a: number, b: number) => void;
@@ -108,9 +118,9 @@ export interface InitOutput {
     readonly wasm_bindgen_c41d5cbf289b5539___convert__closures_____invoke___u32__u32______true_: (a: number, b: number, c: number, d: number) => void;
     readonly wasm_bindgen_c41d5cbf289b5539___convert__closures_____invoke___wasm_bindgen_c41d5cbf289b5539___JsValue__core_608f92abc48d28da___result__Result_____wasm_bindgen_c41d5cbf289b5539___JsError___true_: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen_c41d5cbf289b5539___convert__closures_____invoke___wasm_bindgen_c41d5cbf289b5539___sys__Undefined__core_608f92abc48d28da___result__Result_____wasm_bindgen_c41d5cbf289b5539___JsError___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_c41d5cbf289b5539___convert__closures_____invoke___wasm_bindgen_c41d5cbf289b5539___sys__Undefined__core_608f92abc48d28da___result__Result_____wasm_bindgen_c41d5cbf289b5539___JsError___true__15: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_c41d5cbf289b5539___convert__closures_____invoke___wasm_bindgen_c41d5cbf289b5539___sys__Undefined__core_608f92abc48d28da___result__Result_____wasm_bindgen_c41d5cbf289b5539___JsError___true__16: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen_c41d5cbf289b5539___convert__closures_____invoke___web_sys_3ca46e9073013fcd___features__gen_MessageEvent__MessageEvent______true_: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen_c41d5cbf289b5539___convert__closures_____invoke___web_sys_3ca46e9073013fcd___features__gen_MessageEvent__MessageEvent______true__13: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_c41d5cbf289b5539___convert__closures_____invoke___web_sys_3ca46e9073013fcd___features__gen_MessageEvent__MessageEvent______true__14: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen_c41d5cbf289b5539___convert__closures_____invoke_______true_: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
