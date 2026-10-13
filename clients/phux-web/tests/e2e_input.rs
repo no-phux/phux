@@ -1014,7 +1014,9 @@ async fn attach_with_cells(cell_px: (u16, u16)) -> web_sys::WebSocket {
         Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |event: web_sys::MessageEvent| {
             let bytes = js_sys::Uint8Array::new(&event.data()).to_vec();
             match FrameKind::decode(&bytes) {
-                Ok((frame @ FrameKind::HelloOk { .. }, _)) => {
+                // HELLO_OK opens discovery and its reply carries the ATTACH,
+                // so both go through the connection.
+                Ok((frame @ (FrameKind::HelloOk { .. } | FrameKind::CommandResult { .. }), _)) => {
                     send(session.borrow_mut().on_frame(frame).send);
                 }
                 Ok((FrameKind::Attached { .. }, _)) => attached.set(true),
