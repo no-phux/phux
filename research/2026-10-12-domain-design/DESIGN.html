@@ -1,1133 +1,133 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark light">
-<title>Phux — Resource / Session / Workspace design</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Phux — The whole model, in one picture</title>
 <style>
-:root{--bg:#101317;--panel:#191e24;--text:#e9edf2;--muted:#a9b3c0;--line:#333e4c;--accent:#88dac4;--code:#11171e}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.7 system-ui,-apple-system,sans-serif}
-a{color:var(--accent)}button{font:inherit;color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:.5rem .8rem;cursor:pointer}button:hover{border-color:var(--accent)}a:focus-visible,button:focus-visible,textarea:focus-visible{outline:3px solid var(--accent);outline-offset:3px}
-.top{padding:1.2rem 2rem;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:1rem}.brand{font-weight:750;letter-spacing:.06em}.badge{color:var(--accent);font-size:.85rem;margin-left:.7rem}.actions{display:flex;flex-wrap:wrap;gap:.6rem}
-.shell{display:grid;grid-template-columns:260px minmax(0,1fr);max-width:1510px;margin:auto}nav{position:sticky;top:0;align-self:start;max-height:100vh;overflow:auto;padding:2rem 1.5rem;font-size:.85rem}nav ul{list-style:none;padding:0}nav li{margin:.6rem 0}nav a{text-decoration:none;color:var(--muted)}nav a:hover{color:var(--accent)}nav .toc>ul>li>a{display:none}nav .toc ul ul{padding:0}nav .toc ul ul ul{display:none}
-main{max-width:1120px;padding:2rem 3rem 6rem;min-width:0}h1{font-size:clamp(2rem,4vw,3.4rem);line-height:1.12;letter-spacing:-.04em;margin:1rem 0 2rem;max-width:900px}h2{font-size:1.65rem;line-height:1.3;margin:4rem 0 1.3rem;padding-top:1.2rem;border-top:1px solid var(--line);scroll-margin-top:1rem}h3{font-size:1.15rem;margin:2rem 0 .7rem;color:var(--accent)}p{margin:1rem 0}li{margin:.4rem 0}strong{font-weight:700}code{font-size:.87em;background:var(--code);padding:.15rem .35rem;border-radius:4px}pre{background:var(--code);border:1px solid var(--line);border-radius:9px;overflow:auto;padding:1.3rem;font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;tab-size:4}pre code{padding:0;background:none;font:inherit}
-.table-wrap{overflow:auto;margin:1.5rem 0}table{border-collapse:collapse;width:100%;font-size:.91rem}th,td{border:1px solid var(--line);padding:.65rem .8rem;text-align:left;vertical-align:top}th{background:var(--panel);font-weight:650}tbody tr:nth-child(even){background:var(--panel)}blockquote{border-left:3px solid var(--accent);margin:1.5rem 0;padding:.2rem 1.2rem;color:var(--muted)}
-.intro{color:var(--muted);font-size:.9rem}.review-note{margin:2rem 0;padding:1rem 1.2rem;background:var(--panel);border:1px solid var(--line);border-radius:9px}.review-note label{display:block;color:var(--accent);font-size:.85rem;font-weight:600;margin-bottom:.6rem}textarea{width:100%;min-height:110px;resize:vertical;padding:.8rem;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:5px;font:inherit;line-height:1.5}.note-status{font-size:.8rem;color:var(--muted);margin-top:.5rem}.footer{color:var(--muted);font-size:.8rem;border-top:1px solid var(--line);padding-top:1rem}.footer code{overflow-wrap:anywhere}
-@media(max-width:900px){.shell{grid-template-columns:1fr}nav{position:static;max-height:320px;border-bottom:1px solid var(--line)}main{padding:1.5rem 1rem 4rem}.top{padding:1rem;align-items:flex-start;flex-direction:column}}
-@media print{body{background:white;color:black;font-size:10pt}nav,.top,.intro{display:none}.shell{display:block}main{max-width:none;padding:0}h2{break-before:page}pre{background:#f5f5f5;border-color:#bbb;font-size:8pt;white-space:pre-wrap}table{font-size:9pt}th,td{border-color:#bbb}th,tbody tr:nth-child(even){background:#f5f5f5}.review-note{background:#fafafa;border-color:#bbb}textarea{background:white;color:black;border:0;min-height:0}.review-note.empty{display:none}.note-status{display:none}a{color:inherit}.footer{color:#444}}
+:root{--bg:#101317;--panel:#191e24;--ink:#e9edf2;--muted:#a9b3c0;--line:#354352;--mint:#88dac4;--blue:#a6c6ff;--violet:#c9b3ff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,sans-serif}main{max-width:1120px;margin:auto;padding:24px 28px 40px}header{display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:12px;letter-spacing:.08em;color:var(--muted)}header a,a{color:var(--mint)}h1{font-size:clamp(26px,4vw,42px);line-height:1.15;letter-spacing:-.035em;margin:22px 0 10px}.lede{margin:0 0 18px;color:var(--muted);font-size:17px}.diagram{width:100%;display:block}svg text{font-family:system-ui,-apple-system,sans-serif}.diagram-label{font-size:13px;letter-spacing:1.5px;font-weight:700}.diagram-title{font-size:22px;font-weight:650}.diagram-small{font-size:14px}.resource-name{font-size:17px;font-weight:600}.caption{color:var(--muted);font-size:13px;margin:5px 0 20px;text-align:center}.rules{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:0 0 18px}.rule{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}.rule strong{font-size:15px;display:block}.rule p{font-size:13px;margin:5px 0 0;color:var(--muted)}details{border-top:1px solid var(--line);padding:13px 0}summary{cursor:pointer;font-weight:600;font-size:14px}details p,details li{font-size:14px;color:var(--muted)}details ul{padding-left:22px}details a{display:inline-block;margin-top:10px}.notes{padding:12px 0}label{display:block;font-size:14px;font-weight:600;margin-bottom:8px}textarea{width:100%;min-height:100px;padding:12px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:8px;font:inherit;resize:vertical}.actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:8px}button{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:8px 12px;font:inherit;font-size:13px;cursor:pointer}.status{font-size:12px;color:var(--muted)}a:focus-visible,button:focus-visible,summary:focus-visible,textarea:focus-visible{outline:3px solid var(--mint);outline-offset:3px}.narrow{display:none}
+@media(max-width:650px){main{padding:18px 16px}.wide{display:none}.narrow{display:block}.rules{grid-template-columns:1fr;gap:8px}.rule{padding:10px 12px}.lede{font-size:15px}h1{font-size:28px}.caption{text-align:left}}
+@media print{body{background:white;color:black}main{padding:0}.notes,.actions,header a{display:none}.rule{background:white;color:black;border-color:#aaa}.rule p,.caption,.lede{color:#444}svg{print-color-adjust:exact;-webkit-print-color-adjust:exact}details{display:none}}
 </style>
 </head>
 <body>
-<header class="top"><div><span class="brand">PHUX / DOMAIN DESIGN</span><span class="badge">PROPOSAL · DRAFT 1</span></div><div class="actions"><button id="export" type="button">Export notes as Markdown</button><button id="print" type="button">Print / PDF</button><a href="DESIGN.md">Markdown source</a></div></header>
-<div class="shell"><nav aria-label="Design sections"><div class="toc">
-<ul>
-<li><a href="#phux-from-first-principles-resources-sessions-and-workspaces">Phux from first principles: resources, sessions, and workspaces</a><ul>
-<li><a href="#01-product-model">01. Product model</a></li>
-<li><a href="#02-vocabulary-and-relationships">02. Vocabulary and relationships</a><ul>
-<li><a href="#domain-glossary">Domain glossary</a></li>
-<li><a href="#cardinality-and-containment">Cardinality and containment</a></li>
-</ul>
-</li>
-<li><a href="#03-identity-and-authority">03. Identity and authority</a></li>
-<li><a href="#04-resource-kinds-and-capabilities">04. Resource kinds and capabilities</a><ul>
-<li><a href="#common-contract">Common contract</a></li>
-<li><a href="#initial-kinds">Initial kinds</a></li>
-<li><a href="#capability-based-presentation">Capability-based presentation</a></li>
-</ul>
-</li>
-<li><a href="#05-session-lifecycle">05. Session lifecycle</a></li>
-<li><a href="#06-workspace-lifecycle-and-federation">06. Workspace lifecycle and federation</a></li>
-<li><a href="#07-views-arrangements-and-client-behavior">07. Views, arrangements, and client behavior</a><ul>
-<li><a href="#a-view-is-not-execution">A view is not execution</a></li>
-<li><a href="#arrangements">Arrangements</a></li>
-<li><a href="#every-client-follows-this-interaction-contract">Every client follows this interaction contract</a></li>
-</ul>
-</li>
-<li><a href="#08-execution-retention-and-recovery">08. Execution, retention, and recovery</a><ul>
-<li><a href="#persistence-promises">Persistence promises</a></li>
-</ul>
-</li>
-<li><a href="#09-commands-concurrency-and-events">09. Commands, concurrency, and events</a><ul>
-<li><a href="#command-envelope">Command envelope</a></li>
-</ul>
-</li>
-<li><a href="#10-connections-access-and-onboarding">10. Connections, access, and onboarding</a></li>
-<li><a href="#11-persistence-and-protocol">11. Persistence and protocol</a><ul>
-<li><a href="#persisted-organization">Persisted organization</a></li>
-<li><a href="#protocol-shape">Protocol shape</a></li>
-</ul>
-</li>
-<li><a href="#12-core-architecture-and-client-adapters">12. Core architecture and client adapters</a><ul>
-<li><a href="#modules-and-interfaces">Modules and interfaces</a></li>
-</ul>
-</li>
-<li><a href="#13-scenarios-and-acceptance-contract">13. Scenarios and acceptance contract</a></li>
-<li><a href="#14-migration-and-terminology-removal">14. Migration and terminology removal</a><ul>
-<li><a href="#terminology-map">Terminology map</a></li>
-<li><a href="#conversion-rules">Conversion rules</a></li>
-<li><a href="#evidence-from-the-current-tree">Evidence from the current tree</a></li>
-</ul>
-</li>
-<li><a href="#15-design-choices-for-review">15. Design choices for review</a><ul>
-<li><a href="#things-to-challenge-in-your-notes">Things to challenge in your notes</a></li>
-</ul>
-</li>
-</ul>
-</li>
-</ul>
-</div>
-</nav><main>
-<p class="intro">A complete ground-up proposal, not a description of shipped behavior. Add notes below each section. Notes stay in this browser when local storage is available; export them before moving the file or switching browsers.</p>
-<h1 id="phux-from-first-principles-resources-sessions-and-workspaces">Phux from first principles: resources, sessions, and workspaces</h1>
-<p><strong>TL;DR.</strong> Phux organizes typed resources into sessions and links sessions into cross-machine workspaces. Execution ownership, presentation, and access are separate; every client consumes the same authoritative model. This is a complete proposed design for annotation, not approved architecture or shipped behavior.</p>
-<p><strong>Review draft 1 · 12 October 2026.</strong> The design deliberately starts from the desired product, not from today's structs. All defaults below are proposals. Existing protocol guarantees remain authoritative until a reviewed migration changes them. Numbered sections and decision IDs are stable places to attach comments.</p>
-<p>Read sections 01–02 for the picture; 05–08 for what happens to your work; 12 for the core architecture; 15 for the choices worth challenging. The HTML companion is generated from this Markdown, which is the editable source.</p>
-<h2 id="01-product-model">01. Product model</h2>
-<p>Phux is a place to organize, access, and operate work that can keep existing when you leave its interface. A terminal is one kind of work resource, not the definition of the product.</p>
-<p>There are three primary product nouns:</p>
-<pre><code class="language-text">RESOURCE                  SESSION                  WORKSPACE
-A thing to work with      A group of resources     Linked sessions
-Terminal, browser, …      One owning authority     Across authorities/machines
-</code></pre>
-<p>Sessions are the highest level of resource organization on an owning authority. Workspaces organize the relationship between sessions, not another copy of their resources.</p>
-<pre><code class="language-text">Workspace: Ship the product                         persisted on Laptop
-│
-├── Session: Frontend ──────────────────────────── owned by Laptop / me
-│   ├── Resource: Dev shell                         Terminal
-│   ├── Resource: Preview                           Browser
-│   └── Resource: Build output                      Terminal, completed
-│
-└── Session: Backend ───────────────────────────── owned by Mini / me
-    ├── Resource: API shell                         Terminal
-    └── Resource: Integration tests                 Terminal
-</code></pre>
-<p>Opening the workspace produces one navigable surface. It does not imply that both machines are online, that their processes migrated, or that the workspace owns those processes. Ownership and status remain visible without making the user administer a fleet dashboard.</p>
-<p>The primary interface is a board of resource views. A session can be shown alone. A workspace can show linked sessions together, with small session/host labels. Tabs, stacks, splits, and full-screen presentation are ways to arrange views, not required steps in a containment hierarchy.</p>
-<pre><code class="language-text">┌─ Ship the product ──────────────────────────────────────────────┐
-│ Frontend · Laptop                 Backend · Mini                │
-│ ┌───────────────────────┐         ┌───────────────────────────┐ │
-│ │ Preview · Browser     │         │ API shell · Terminal      │ │
-│ │                       │         │                           │ │
-│ └───────────────────────┘         └───────────────────────────┘ │
-│ ┌───────────────────────┐         ┌───────────────────────────┐ │
-│ │ Dev shell · Terminal  │         │ Tests · Completed          │ │
-│ └───────────────────────┘         └───────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────┘
-</code></pre>
-<p><strong>Product promise:</strong> the same resource and session mean the same thing in desktop, TUI, phone, web, CLI, and agent tools. Presentation can differ; identity, operations, and lifecycle cannot.</p>
-<p><strong>Not part of this redesign:</strong> migrating running processes between hosts, a distributed consensus system, arbitrary Objective/Run orchestration, an identical layout on every screen, or implementing every possible resource kind. The model must allow those concerns to integrate without pretending they already exist.</p>
-<h2 id="02-vocabulary-and-relationships">02. Vocabulary and relationships</h2>
-<h3 id="domain-glossary">Domain glossary</h3>
-<table>
-<thead>
-<tr>
-<th>Term</th>
-<th>Definition</th>
-<th>Not this</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Resource</td>
-<td>An independently identified thing with a kind, lifecycle, and capabilities.</td>
-<td>A rectangle, tab index, PID, or network connection.</td>
-</tr>
-<tr>
-<td>Session</td>
-<td>An authoritative named group of resources. Membership is independent of their arrangement.</td>
-<td>A browser cookie session, agent conversation, or transport lifetime.</td>
-</tr>
-<tr>
-<td>Workspace</td>
-<td>An authoritative named set of links to sessions, potentially across machines.</td>
-<td>A duplicate owner of those sessions or an OS window.</td>
-</tr>
-<tr>
-<td>View</td>
-<td>A presentation of one resource, with client-local interaction and viewport state.</td>
-<td>The resource itself.</td>
-</tr>
-<tr>
-<td>Arrangement</td>
-<td>A saved organization of views: grid, split tree, stack, or tabbed presentation.</td>
-<td>Resource membership or execution ownership.</td>
-</tr>
-<tr>
-<td>Host</td>
-<td>A machine reachable through one or more network routes.</td>
-<td>An IP address or an authenticated principal.</td>
-</tr>
-<tr>
-<td>Authority</td>
-<td>The persistent identity of a per-user Phux owner responsible for a set of records and commands.</td>
-<td>The machine name or the current server process.</td>
-</tr>
-<tr>
-<td>Server instance</td>
-<td>One running incarnation of an authority's Phux server.</td>
-<td>A durable owner identity.</td>
-</tr>
-<tr>
-<td>Connection</td>
-<td>A temporary authenticated communication channel.</td>
-<td>A session.</td>
-</tr>
-<tr>
-<td>Attachment</td>
-<td>A client's subscription/access relationship to a resource or session.</td>
-<td>Exclusive ownership, permission to destroy work, or focus.</td>
-</tr>
-<tr>
-<td>Activation</td>
-<td>One concrete execution of a resource on its owner.</td>
-<td>The persistent resource record.</td>
-</tr>
-</tbody>
-</table>
-<p>Views and arrangements are real implementation concepts, but they are not new levels the user must create before doing work. The user works with resources, sessions, and workspaces.</p>
-<h3 id="cardinality-and-containment">Cardinality and containment</h3>
-<pre><code class="language-text">Authority 1 ── owns ── * Session
-Session   1 ── groups ─ * Resource
-Authority 1 ── owns ── * Workspace
-Workspace * ── links ── * Session
-Resource  1 ── shown by * View
-Client    1 ── owns ── * View
-</code></pre>
-<ul>
-<li>Every published resource belongs to exactly one session on its owning authority. Zero views is valid. A nonvisual resource can still be a session member.</li>
-<li>Every session belongs to exactly one authority and may be linked from zero or many workspaces.</li>
-<li>A workspace may link any authorized sessions, including several on the same authority. It may be empty.</li>
-<li>Moving a resource between sessions on the same authority is a membership transaction, not an execution restart.</li>
-<li>Cross-authority movement is not a membership edit. To work elsewhere, explicitly create a new resource there. There is no pretend process migration.</li>
-<li>A native app window may show several sessions. A session may be shown in several native windows. Neither relationship changes ownership.</li>
-<li>A project, directory, host label, or repository is descriptive context, not another required organization level.</li>
-</ul>
-<p><strong>Proposal D01:</strong> single session membership for each resource. If the product needs overlapping resource collections later, add saved filters or references; do not make destructive ownership ambiguous.</p>
-<h2 id="03-identity-and-authority">03. Identity and authority</h2>
-<p>Names are labels. All commands, arrangements, links, and saved references resolve through IDs.</p>
-<pre><code class="language-text">SessionRef  = (authority_id, session_id)
-ResourceRef = (authority_id, resource_id)
-WorkspaceRef = (authority_id, workspace_id)
+<main>
+<header><span>PHUX / PROPOSED DOMAIN MODEL</span><a href="DESIGN.md">Markdown</a></header>
+<h1>Resource → Session → Workspace</h1>
+<p class="lede">Resources are things. Sessions group them. Workspaces link sessions across machines.</p>
 
-LiveTarget = (ResourceRef, activation_id, server_instance_id)
-</code></pre>
-<p>Authority and domain IDs are persisted opaque identifiers, unique within their documented scopes. Activation and instance IDs identify live execution and are never inferred from names. The byte encoding and allocation scheme belong in the implementation specification, not in this glossary.</p>
-<table>
-<thead>
-<tr>
-<th>Change</th>
-<th>Identity outcome</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Rename a session/resource</td>
-<td>Same domain ID.</td>
-</tr>
-<tr>
-<td>Change IP address or route</td>
-<td>Same authority and domain IDs, after authenticated resolution.</td>
-</tr>
-<tr>
-<td>Move a resource between sessions on its owner</td>
-<td>Same resource and activation IDs.</td>
-</tr>
-<tr>
-<td>Reopen or duplicate a view</td>
-<td>Same resource; new local view identity.</td>
-</tr>
-<tr>
-<td>Relaunch a completed/lost resource</td>
-<td>Same resource record; new activation ID.</td>
-</tr>
-<tr>
-<td>Server restart</td>
-<td>Same persisted authority and records; new instance ID.</td>
-</tr>
-<tr>
-<td>Restore/import a copy onto another authority</td>
-<td>New identities, with explicit provenance to the source.</td>
-</tr>
-<tr>
-<td>Reinstall without recovering owner identity</td>
-<td>New authority; no silent adoption of old links.</td>
-</tr>
-</tbody>
-</table>
-<p>A fingerprint proves an authority/credential under the trust policy; it is not a resource name. An address is a route; it is not trust. A host label can be edited without rebinding anything.</p>
-<p><strong>Command fencing:</strong> inputs and execution mutations target the exact activation and instance the client observed. If that execution has been replaced, the command fails as stale. A stored view never types into a different process just because a numeric handle was reused.</p>
-<p>Organizational edits target stable IDs and expected revisions. The owning authority serializes edits. Another client can observe and request changes, but cannot invent authoritative records in its own cache.</p>
-<p><strong>Proposal D02:</strong> one writer per authority, no multi-master editing. Cross-machine workspaces are session links plus federated observation, not a distributed database of process ownership.</p>
-<p>Recovering an authority from backup is an exclusive owner-restoration operation: stop the old owner, revoke/replace its admission credentials as appropriate, and re-establish trust through an approved recovery channel. A concurrently usable copy gets a new authority ID. Copying a database or private key is not sufficient to establish exclusive ownership. A local process lock prevents accidental double-start on one machine; it cannot prevent an independently booted clone on another machine. If exclusive restoration cannot be established, clone rather than claim recovery. This design does not promise partition-safe failover or consensus between duplicated authorities.</p>
-<h2 id="04-resource-kinds-and-capabilities">04. Resource kinds and capabilities</h2>
-<h3 id="common-contract">Common contract</h3>
-<p>Every resource has:</p>
-<ul>
-<li>stable identity, owning authority, session membership, name, kind, and revision;</li>
-<li>creation provenance and an optional explicit relationship to other resources;</li>
-<li>lifecycle state and activation history when the kind executes;</li>
-<li>a capability descriptor and supported presentation codecs;</li>
-<li>ordered events, bounded retained evidence, and a deletion policy;</li>
-<li>explicit operation results, including refusal, unsupported operation, and stale target.</li>
-</ul>
-<p>A resource is not required to have a PTY, text grid, input stream, process ID, current directory, or visible surface. Those are kind-specific facts.</p>
-<h3 id="initial-kinds">Initial kinds</h3>
-<table>
-<thead>
-<tr>
-<th>Kind</th>
-<th>Owned thing</th>
-<th>Typical view</th>
-<th>Example capabilities</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Terminal</td>
-<td>PTY execution plus terminal engine state.</td>
-<td>Terminal grid.</td>
-<td>Typed input, paste, resize, signals, text/history reads.</td>
-</tr>
-<tr>
-<td>Browser</td>
-<td>One owner-managed browser page with explicit lifecycle and access policy.</td>
-<td>Page view, screenshot, or supported interactive stream.</td>
-<td>Navigate, inspect, interact, screenshot; subject to grants.</td>
-</tr>
-<tr>
-<td>Agent conversation</td>
-<td>Harness conversation/event resource.</td>
-<td>Transcript, activity, or compact status.</td>
-<td>Read events, inspect provenance, supported harness actions.</td>
-</tr>
-<tr>
-<td>Unknown kind</td>
-<td>An identified opaque resource.</td>
-<td>Name, status, supported fallback, or “renderer unavailable.”</td>
-<td>Only negotiated common capabilities.</td>
-</tr>
-</tbody>
-</table>
-<p>Browser is a first-class design case, not a terminal workaround. One Browser resource represents one page; profiles and browser contexts are execution configuration, not additional organization levels. A permitted popup creates a related Browser resource in the same session, with recorded provenance; otherwise policy refuses it. Browser termination closes that resource's page, not other pages sharing its profile. Relaunch creates a new page activation using its explicit launch URL and profile policy, not an implied return to the previous document. Persistent profile reuse must be declared; temporary profiles do not imply cookie survival.</p>
-<p>For the shared browser kind, execution happens on its owner; a client cannot silently substitute a local browser and claim to be showing the same state. Browser rendering codecs and supported interaction are negotiated. If only screenshots are supported, the client presents that limitation instead of fabricating an interactive surface. Each navigation/document generation has an identity; document-sensitive input carries that fence, so a delayed click cannot act on a replacement page after navigation. Authentication cookies and profiles remain on the browser owner unless an explicit authorized export says otherwise.</p>
-<p>Browser grants separately govern observation, interaction/navigation, privileged inspection, file transfer, permission approval, and profile export. Observation of authenticated pages can itself expose secrets and requires an explicit grant. Ordinary inspection excludes profile credentials/cookies; authenticated page content remains subject to observation policy. Owner policy controls permitted destinations, including access to owner-local/private services, uploads/downloads, and device permissions. A page, popup, or fetched document cannot grant authority. Renderer clients never bypass those checks through an automation fallback.</p>
-<p>Profile sharing is an explicit security relationship, not just launch configuration: cookies/storage can couple otherwise separate resources. Reuse requires owner authorization for the profile's authenticated state. Moving a page between sessions does not transfer profile rights. If destination access is incompatible, the move is refused or replaced by an explicitly authorized new resource with an isolated profile; it never silently copies cookies or changes the original identity. Two authorized pages sharing a profile explicitly share that state; they are not advertised as isolated.</p>
-<p>An embedded local webpage can also be a client-only view. It becomes a shared Browser resource only when a Phux owner manages it under this contract. The UI must distinguish client-only content from shared work.</p>
-<p>For AgentSession, the existing wire name/tag remains a compatibility spelling. Its domain meaning is a harness conversation/event resource, not the session that groups work. Harness-native conversation identity remains distinct. Existing parent/cascade contracts cannot be changed merely by renaming a type; an adapter must expose their supported semantics honestly. This proposal does not silently redesign agent persistence or import the separate work coordinator into session grouping.</p>
-<h3 id="capability-based-presentation">Capability-based presentation</h3>
-<pre><code class="language-text">Resource kind + negotiated capabilities
-                    │
-           choose available renderer
-                    │
-          live view / read-only / fallback
-</code></pre>
-<p>Resource-specific commands have typed schemas and authorization checks. Arbitrary unvalidated payloads are not a universal escape hatch. A TUI can show a browser's status and offer a supported navigation command without having a graphical browser renderer. Unknown kinds remain listed; clients must not treat them as terminals or drop them from membership.</p>
-<p><strong>Proposal D03:</strong> no default “terminal” fields in the generic Resource interface. New kinds supply their own facts and operations through versioned kind contracts.</p>
-<h2 id="05-session-lifecycle">05. Session lifecycle</h2>
-<p>A session is a persistent organization record, not evidence that a program is running.</p>
-<pre><code class="language-text">Create session ──► Open, empty
-                      │ add resources
-                      ▼
-                  Open, populated
-                      │ last resource removed
-                      ▼
-                  Open, empty
+<svg class="diagram wide" viewBox="0 0 1060 370" role="img" aria-labelledby="wide-title wide-desc">
+<title id="wide-title">One workspace links sessions on a laptop and a Mac mini; each session groups resources.</title>
+<desc id="wide-desc">Workspace Ship the product contains links to Frontend on Laptop and Backend on Mac mini. Frontend has Terminal and Browser resources. Backend has Terminal and Other resources. Squares show resources without owning their execution.</desc>
+<rect x="2" y="2" width="1056" height="365" rx="18" fill="#141b20" stroke="#88dac4" stroke-width="2"/>
+<text x="28" y="32" fill="#88dac4" class="diagram-label">WORKSPACE</text>
+<text x="28" y="64" fill="#e9edf2" class="diagram-title">Ship the product</text>
+<text x="1030" y="46" text-anchor="end" fill="#a9b3c0" class="diagram-small">Sessions linked, not copied</text>
+<path d="M530 78 V99 M270 99 H790 M270 99 V115 M790 99 V115" stroke="#88dac4" stroke-width="2" fill="none"/>
+<rect x="28" y="116" width="486" height="223" rx="12" fill="#191e24" stroke="#a6c6ff" stroke-width="1.5"/>
+<rect x="546" y="116" width="486" height="223" rx="12" fill="#191e24" stroke="#c9b3ff" stroke-width="1.5"/>
+<text x="48" y="146" fill="#a6c6ff" class="diagram-label">SESSION</text>
+<text x="48" y="178" fill="#e9edf2" class="diagram-title">Frontend</text>
+<text x="492" y="151" text-anchor="end" fill="#a9b3c0" class="diagram-small">Laptop</text>
+<text x="566" y="146" fill="#c9b3ff" class="diagram-label">SESSION</text>
+<text x="566" y="178" fill="#e9edf2" class="diagram-title">Backend</text>
+<text x="1012" y="151" text-anchor="end" fill="#a9b3c0" class="diagram-small">Mac mini</text>
+<rect x="48" y="199" width="212" height="119" rx="9" fill="#101317" stroke="#354352"/>
+<rect x="280" y="199" width="212" height="119" rx="9" fill="#101317" stroke="#354352"/>
+<rect x="566" y="199" width="212" height="119" rx="9" fill="#101317" stroke="#354352"/>
+<rect x="798" y="199" width="212" height="119" rx="9" fill="#101317" stroke="#354352"/>
+<text x="64" y="226" fill="#a9b3c0" class="diagram-label">RESOURCE</text>
+<text x="296" y="226" fill="#a9b3c0" class="diagram-label">RESOURCE</text>
+<text x="582" y="226" fill="#a9b3c0" class="diagram-label">RESOURCE</text>
+<text x="814" y="226" fill="#a9b3c0" class="diagram-label">RESOURCE</text>
+<text x="64" y="266" fill="#e9edf2" class="resource-name">Terminal</text>
+<text x="296" y="266" fill="#e9edf2" class="resource-name">Browser</text>
+<text x="582" y="266" fill="#e9edf2" class="resource-name">Terminal</text>
+<text x="814" y="266" fill="#e9edf2" class="resource-name">Other kind</text>
+<text x="64" y="292" fill="#a9b3c0" class="diagram-small">Dev shell</text>
+<text x="296" y="292" fill="#a9b3c0" class="diagram-small">Preview page</text>
+<text x="582" y="292" fill="#a9b3c0" class="diagram-small">API shell</text>
+<text x="814" y="292" fill="#a9b3c0" class="diagram-small">Not terminal-shaped</text>
+</svg>
 
-Open ── explicit archive ──► Archived ── reopen ──► Open
-Empty or Archived-empty ── explicit delete ──► Deleted tombstone
-</code></pre>
-<p>Empty/populated are derived membership facts, not competing persistence modes. Archived sessions remain addressable and visible in history. While archived, create, launch/relaunch, and moves into the session are refused. Observation, rename, terminate, remove, and moves out remain available under their grants. Reopening is explicit. Archiving never terminates existing resources; active work stays observable and is clearly marked. Archive is organization, not suspension.</p>
-<table>
-<thead>
-<tr>
-<th>Action</th>
-<th>Defined result</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Create session</td>
-<td>Creates an empty named record. Create-and-launch atomically creates the session, resource membership, and launch intent; actual execution starts asynchronously. Launch failure leaves the records with an explicit failed outcome.</td>
-</tr>
-<tr>
-<td>Rename</td>
-<td>Changes label, not identity, links, grants, or views.</td>
-</tr>
-<tr>
-<td>Open session</td>
-<td>Opens/subscribes to its records and supported views; does not launch replacement work.</td>
-</tr>
-<tr>
-<td>Add resource</td>
-<td>Creates a resource on this owner and binds membership in one transaction.</td>
-</tr>
-<tr>
-<td>Move resource</td>
-<td>Changes session membership on the same owner; execution survives.</td>
-</tr>
-<tr>
-<td>Close last view</td>
-<td>No membership or execution change.</td>
-</tr>
-<tr>
-<td>Last execution ends</td>
-<td>Resource records remain with their outcomes; session remains.</td>
-</tr>
-<tr>
-<td>Remove last resource</td>
-<td>Session becomes empty and stays.</td>
-</tr>
-<tr>
-<td>Delete session</td>
-<td>Requires no resource records. Nonempty deletion is refused with explicit alternatives.</td>
-</tr>
-</tbody>
-</table>
-<p>The UI can offer <strong>Move resources and delete</strong> or <strong>Terminate resources, remove records, and delete</strong> as separate confirmed operations. It must not hide destructive behavior inside a generic Delete button. Move-and-delete is an authority-local atomic membership transaction with source/destination revision checks and authorization on both sessions.</p>
-<p>Terminate/remove/delete is an explicitly non-atomic execution workflow. Confirmation captures the ResourceRefs, activation fences, and session revision; retries never expand that target set. A membership change invalidates confirmation before admission, or leaves final deletion refused if it happens after admission. Newly added work is not implicitly terminated. Successful per-target outcomes remain committed and are reported even if the whole workflow cannot finish. Termination is not instantly complete; deletion waits for confirmed inactive execution and record removal. No shell is spawned just to make an empty session attachable.</p>
-<p>Labels are unique among nondeleted sessions within an authority for convenient human lookup. References always retain IDs. Qualified selectors resolve duplicate labels across authorities; ambiguous short names refuse to guess.</p>
-<p><strong>Proposal D04:</strong> sessions persist by default, including empty sessions. The existing keep-empty flag is retired as a product distinction after compatibility migration. A disposable test/demo profile may have bounded cleanup, but a client's presentation preference cannot change session lifetime.</p>
-<h2 id="06-workspace-lifecycle-and-federation">06. Workspace lifecycle and federation</h2>
-<p>A workspace owns an ordered list of <strong>session links</strong>, descriptive context, and shared arrangement references. It owns neither remote execution nor the referenced session's lifecycle.</p>
-<pre><code class="language-text">Workspace owner: Laptop
-  Link A ──► Laptop / Frontend
-  Link B ──► Mini   / Backend
-  Link C ──► Linux  / Measurements
+<svg class="diagram narrow" viewBox="0 0 400 560" role="img" aria-labelledby="narrow-title narrow-desc">
+<title id="narrow-title">A workspace links two sessions across machines, each grouping resources.</title>
+<desc id="narrow-desc">Ship the product links Frontend on Laptop, with Terminal and Browser resources, to Backend on Mac mini, with Terminal and Other resources.</desc>
+<rect x="2" y="2" width="396" height="555" rx="14" fill="#141b20" stroke="#88dac4" stroke-width="2"/>
+<text x="22" y="30" fill="#88dac4" class="diagram-label">WORKSPACE</text>
+<text x="22" y="61" fill="#e9edf2" class="diagram-title">Ship the product</text>
+<text x="22" y="87" fill="#a9b3c0" class="diagram-small">Sessions linked across machines</text>
+<rect x="20" y="108" width="360" height="196" rx="10" fill="#191e24" stroke="#a6c6ff" stroke-width="1.5"/>
+<text x="36" y="135" fill="#a6c6ff" class="diagram-label">SESSION</text>
+<text x="36" y="164" fill="#e9edf2" class="diagram-title">Frontend</text>
+<text x="364" y="136" text-anchor="end" fill="#a9b3c0" class="diagram-small">Laptop</text>
+<rect x="36" y="182" width="156" height="102" rx="8" fill="#101317" stroke="#354352"/>
+<rect x="208" y="182" width="156" height="102" rx="8" fill="#101317" stroke="#354352"/>
+<text x="48" y="205" fill="#a9b3c0" class="diagram-label">RESOURCE</text>
+<text x="220" y="205" fill="#a9b3c0" class="diagram-label">RESOURCE</text>
+<text x="48" y="239" fill="#e9edf2" class="resource-name">Terminal</text>
+<text x="220" y="239" fill="#e9edf2" class="resource-name">Browser</text>
+<text x="48" y="265" fill="#a9b3c0" class="diagram-small">Dev shell</text>
+<text x="220" y="265" fill="#a9b3c0" class="diagram-small">Preview page</text>
+<path d="M200 305 V330" stroke="#88dac4" stroke-width="2"/>
+<rect x="20" y="330" width="360" height="196" rx="10" fill="#191e24" stroke="#c9b3ff" stroke-width="1.5"/>
+<text x="36" y="357" fill="#c9b3ff" class="diagram-label">SESSION</text>
+<text x="36" y="386" fill="#e9edf2" class="diagram-title">Backend</text>
+<text x="364" y="358" text-anchor="end" fill="#a9b3c0" class="diagram-small">Mac mini</text>
+<rect x="36" y="404" width="156" height="102" rx="8" fill="#101317" stroke="#354352"/>
+<rect x="208" y="404" width="156" height="102" rx="8" fill="#101317" stroke="#354352"/>
+<text x="48" y="427" fill="#a9b3c0" class="diagram-label">RESOURCE</text>
+<text x="220" y="427" fill="#a9b3c0" class="diagram-label">RESOURCE</text>
+<text x="48" y="461" fill="#e9edf2" class="resource-name">Terminal</text>
+<text x="220" y="461" fill="#e9edf2" class="resource-name">Other kind</text>
+<text x="48" y="487" fill="#a9b3c0" class="diagram-small">API shell</text>
+<text x="220" y="487" fill="#a9b3c0" class="diagram-small">Anything supported</text>
+</svg>
 
-Each link: SessionRef + last observed name/revision + access/reachability status
-</code></pre>
-<p>Workspace records have one owning authority. Any authorized client can access that authority and see the same workspace. The owner's machine is not necessarily the machine owning the linked work.</p>
-<table>
-<thead>
-<tr>
-<th>Action</th>
-<th>Defined result</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Create</td>
-<td>Creates an empty persistent workspace record.</td>
-</tr>
-<tr>
-<td>Link session</td>
-<td>Adds a validated stable SessionRef; repeated links are idempotent.</td>
-</tr>
-<tr>
-<td>Unlink session</td>
-<td>Removes only the link and affected arrangement entries.</td>
-</tr>
-<tr>
-<td>Delete workspace</td>
-<td>Removes workspace record/arrangements; sessions and resources are untouched.</td>
-</tr>
-<tr>
-<td>Open</td>
-<td>Observes accessible linked sessions concurrently and restores views.</td>
-</tr>
-<tr>
-<td>Owner offline</td>
-<td>Cached workspace is readable with age/status; authoritative edits wait for owner.</td>
-</tr>
-<tr>
-<td>Linked host offline</td>
-<td>Other sessions work; disconnected views retain last-known identity and evidence.</td>
-</tr>
-<tr>
-<td>Access revoked</td>
-<td>Link becomes inaccessible; credentials are not shared by possession of the link.</td>
-</tr>
-<tr>
-<td>Referenced session deleted</td>
-<td>Shows a deleted-link state; does not bind to a new session with the same name.</td>
-</tr>
-</tbody>
-</table>
-<p>Workspace observation can be mediated by the owner or performed directly by authorized clients. The route is an implementation choice; remote owners remain authoritative, and all observations carry source identity and revision. The model does not depend on every resource owner having a reciprocal registration of every other host.</p>
-<p>Cross-owner actions are fan-out operations with one result per owner/target. There is no cross-host atomic kill, transaction, or total event order. A result can be partial or unknown and must say which part. A timeout is not proof that a mutation failed.</p>
-<p><strong>Proposal D05:</strong> one authority owns each workspace; offline edits are not silently queued or merged. Export or clone can move organization deliberately, with new identity and preserved source references. Offline mutation queues/CRDTs are excluded from this design.</p>
-<h2 id="07-views-arrangements-and-client-behavior">07. Views, arrangements, and client behavior</h2>
-<h3 id="a-view-is-not-execution">A view is not execution</h3>
-<pre><code class="language-text">                         Resource: Dev shell
-                         Owner: Laptop / me
-                          /             \
-                 Desktop view         Phone view
-                 wide viewport        narrow viewport
-                 local focus          local focus
-</code></pre>
-<p>Each view has a local view ID, a ResourceRef, kind-specific viewport state, and an attachment state. A resource may have no views or many views, even within the same client. Views carry no implicit kill authority. The resource owner arbitrates contested execution input and geometry; a second view is not a second PTY or browser context.</p>
-<p>For a terminal, view viewport and authoritative PTY dimensions are separate. A client requests geometry under the owner's sizing/control policy. Observer views cannot resize someone else's job by mounting. Browser contexts follow an explicit negotiated viewport policy rather than pretending every client can independently change one shared page's execution geometry.</p>
-<h3 id="arrangements">Arrangements</h3>
-<p>An arrangement is a presentation document with stable entry IDs referring to resources, plus layout structure. It may be associated with a SessionRef or WorkspaceRef. Session arrangements refer only to members of that session; workspace arrangements refer to resources in linked sessions.</p>
-<ul>
-<li>Shared arrangements are stored by the owning session/workspace authority.</li>
-<li>Personal arrangements are stored in client preferences and cannot change membership.</li>
-<li>Shared edits use revisions; conflicting edits are refused/reloaded, not silently overwritten.</li>
-<li>Focus, selection, scroll, zoom, disclosure, device-specific adaptation, and native window geometry are client-local.</li>
-<li>Clients may adapt a shared arrangement to their device without publishing those adaptations back as edits.</li>
-<li>A resource removed from membership invalidates its arrangement references; stable IDs prevent index-based rebinding.</li>
-<li>Unknown renderers produce informative placeholders, not absent resources.</li>
-</ul>
-<p>There is no authoritative execution-owning Window or Tab entity. Clients can expose tabs and splits. A saved shared “logical window” migrates to an arrangement group with stable identity; it is not permission to destroy its contents.</p>
-<p>Session arrangement validity is enforced transactionally by its authority. Workspace arrangement validity is observational across owners: an entry can become unresolved when a remote resource moves or access changes. Views revalidate membership/access; stale entries become placeholders and never authorize attachment. The workspace owner reconciles invalid entries when it observes the source change. Membership movement alone does not close an independently mounted authorized view; access revocation does. No distributed arrangement transaction is implied.</p>
-<h3 id="every-client-follows-this-interaction-contract">Every client follows this interaction contract</h3>
-<table>
-<thead>
-<tr>
-<th>Intent</th>
-<th>Desktop / Cockpit</th>
-<th>TUI</th>
-<th>Mobile / web</th>
-<th>CLI / agents</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Inspect session</td>
-<td>Board/list</td>
-<td>List + supported views</td>
-<td>Cards/list</td>
-<td>Structured membership</td>
-</tr>
-<tr>
-<td>Open resource</td>
-<td>Mount view</td>
-<td>Mount supported view or fallback</td>
-<td>Mount supported view</td>
-<td>Subscribe/inspect</td>
-</tr>
-<tr>
-<td>Close view</td>
-<td>Remove presentation</td>
-<td>Leave presentation</td>
-<td>Remove presentation</td>
-<td>Detach subscription</td>
-</tr>
-<tr>
-<td>Terminate resource</td>
-<td>Explicit execution action</td>
-<td>Explicit execution action</td>
-<td>Explicit execution action</td>
-<td>Typed terminate command</td>
-</tr>
-<tr>
-<td>Resource unsupported</td>
-<td>Named placeholder</td>
-<td>Named fallback</td>
-<td>Named placeholder</td>
-<td>Kind + capabilities</td>
-</tr>
-<tr>
-<td>Host unreachable</td>
-<td>Last-known, disabled writes</td>
-<td>Last-known, disabled writes</td>
-<td>Last-known, disabled writes</td>
-<td>Reachability + freshness</td>
-</tr>
-</tbody>
-</table>
-<p>An ephemeral client-local PTY may honestly have a different lifetime, but it must be marked <strong>local-only / ends when closed</strong>. It is not passed off as a shared resource. Publishing it requires an explicit owner-managed transition, not a fabricated reference.</p>
-<p><strong>Proposal D06:</strong> shared arrangement with device-local adaptation is the default for named sessions/workspaces; personal arrangements are an explicit option. Neither path shares focus or grants input.</p>
-<h2 id="08-execution-retention-and-recovery">08. Execution, retention, and recovery</h2>
-<p>Resource existence, execution, accessibility, and presentation are independent axes.</p>
-<table>
-<thead>
-<tr>
-<th>Axis</th>
-<th>Example states</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Record</td>
-<td>Present, deleted tombstone.</td>
-</tr>
-<tr>
-<td>Execution</td>
-<td>Dormant, starting, running, stopping, completed, failed, lost.</td>
-</tr>
-<tr>
-<td>Reachability/access</td>
-<td>Online, reconnecting, offline, unauthorized, unsupported.</td>
-</tr>
-<tr>
-<td>Presentation</td>
-<td>Visible, hidden, unmounted.</td>
-</tr>
-</tbody>
-</table>
-<p>Lifecycle transitions are kind-defined but exposed through this common vocabulary where applicable. A kind with no running execution reports that explicitly rather than filling invented process fields. Failed means an observed failure with evidence; lost means the owner cannot prove continued execution after an interruption. Offline is an observation failure, not an execution outcome.</p>
-<pre><code class="language-text">Dormant ── launch ──► Starting ── accepted execution ──► Running
-                         │                                │
-                         └─ failure ──► Failed            ├─ finishes ──► Completed
-                                                          ├─ terminate ─► Stopping ─► Completed
-                                                          └─ unrecovered owner loss ─► Lost
+<p class="caption">Square = a view of a resource. Same work, different layouts on desktop and phone.</p>
+<section class="rules" aria-label="Three essential rules">
+<div class="rule"><strong>Close square → work keeps running</strong><p>Terminate is a separate action.</p></div>
+<div class="rule"><strong>Empty session → session stays</strong><p>Organization outlives a process.</p></div>
+<div class="rule"><strong>Delete workspace → sessions stay</strong><p>It owns links, not their execution.</p></div>
+</section>
 
-Completed / Failed / Lost ── proven inactive + explicit relaunch ──► new activation
-</code></pre>
-<p>Completion records carry the actual outcome: exit status, signal, supported kind-specific result, and evidence availability. Force termination is an outcome, not successful completion of the user's task. Starting has an operation identity so retries do not spawn duplicates. A resource may have at most one current activation unless its kind explicitly defines another execution contract.</p>
-<p><strong>Lost is not stopped.</strong> An orphaned process or browser may still be executing after its handle is lost. Ordinary removal and relaunch require executor-confirmed inactivity; if it cannot be proven, they are refused. An advanced, explicitly authorized abandonment retains an audited unresolved-activation record under its retention policy and releases management without claiming execution ended. The browser/terminal may continue externally. A deliberate replacement creates a separate ResourceRef and warns about possible duplicate execution. There is no silent relaunch over an unresolved activation.</p>
-<h3 id="persistence-promises">Persistence promises</h3>
-<table>
-<thead>
-<tr>
-<th>Event</th>
-<th>Organization</th>
-<th>Execution</th>
-<th>Evidence</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Close client</td>
-<td>Survives.</td>
-<td>Owner-managed execution continues.</td>
-<td>Retained under owner policy.</td>
-</tr>
-<tr>
-<td>Network disconnect</td>
-<td>Survives.</td>
-<td>May continue; reported last-known until revalidated.</td>
-<td>Cached copies show age and gaps.</td>
-</tr>
-<tr>
-<td>Graceful server upgrade</td>
-<td>Survives.</td>
-<td>Only survives if that owner's verified handover supports it.</td>
-<td>Explicit continuity result.</td>
-</tr>
-<tr>
-<td>Server crash/reboot</td>
-<td>Persisted records survive.</td>
-<td>Not promised to survive. New instance reconciles as recovered or lost.</td>
-<td>Only committed durable evidence survives.</td>
-</tr>
-<tr>
-<td>Resource relaunch</td>
-<td>Same resource record.</td>
-<td>New activation, explicit action.</td>
-<td>Previous activation outcomes stay distinct.</td>
-</tr>
-<tr>
-<td>Export/import</td>
-<td>Organization copy survives.</td>
-<td>Fresh execution only on explicit launch.</td>
-<td>Exported evidence identified as a copy.</td>
-</tr>
-</tbody>
-</table>
-<p>On startup the authority reconciles recorded running activations with actual executor handles. It either proves recovery under the executor contract or marks them lost. It must not automatically rerun arbitrary commands or claim a new process is the old one.</p>
-<p>Record retention and content retention are separate. Resource/session identity can remain while output is expired. A view says <strong>history expired</strong> rather than displaying an empty buffer as if nothing happened. Terminal byte history, browser captures, and conversation logs each have explicit storage limits and access policy. The model does not require retaining every byte forever.</p>
-<p><strong>Proposal D07:</strong> persistent records, bounded durable outcomes, no promise of crash-surviving processes or automatic relaunch. On-disk terminal journals are a separately specified evidence capability, not an implication of persistent sessions.</p>
-<h2 id="09-commands-concurrency-and-events">09. Commands, concurrency, and events</h2>
-<p>Core owns a small command vocabulary that all adapters expose. Commands are not metadata writes disguised as lifecycle operations.</p>
-<pre><code class="language-text">Sessions:    create · rename · archive · reopen · delete
-Resources:   create · launch · inspect · move · terminate · remove
-Workspaces:  create · rename · link · unlink · delete
-Arrangement: read · replace(expected_revision)
-Access:      attach · detach · acquire/release control
-Kinds:       negotiated typed operations
-</code></pre>
-<p>Resource removal is allowed only when the executor confirms no current execution; otherwise refuse and offer termination or the explicit unresolved-activation policy in §08. Removal writes a tombstone and releases membership. History retention policy determines what evidence remains, not whether a deleted record can be silently revived. Relaunch and create are distinct operations.</p>
-<h3 id="command-envelope">Command envelope</h3>
-<table>
-<thead>
-<tr>
-<th>Field</th>
-<th>Purpose</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>operation_id</td>
-<td>Stable caller-generated identity for retries.</td>
-</tr>
-<tr>
-<td>target reference</td>
-<td>Exact authority/domain ID, not a display name.</td>
-</tr>
-<tr>
-<td>expected_revision</td>
-<td>Optimistic concurrency for organization/configuration edits.</td>
-</tr>
-<tr>
-<td>live target, when applicable</td>
-<td>Activation/instance fence for execution mutations.</td>
-</tr>
-<tr>
-<td>typed arguments</td>
-<td>Validated by command and resource kind.</td>
-</tr>
-</tbody>
-</table>
-<p>The authority returns a typed accepted/refused/conflict/unsupported/stale result. Long-running operations return an operation handle and publish progress/final outcome. Retry deduplication and result lookup have a documented durable retention horizon. Beyond that horizon, callers reconcile current state instead of blindly repeating a mutation. Duplicate IDs with different command payloads are refused.</p>
-<p>Within the advertised receipt horizon, an accepted retry returns the original admission/result without repeating effects. Current authorization is checked before sensitive receipts are disclosed, then deduplication precedes expected-revision/live-target checks for an already accepted matching command. Creation and activation records preserve originating operation identity for their retained lifetime. After all correlation evidence expires, the runtime reports <strong>outcome unknown</strong> and never automatically resubmits a non-idempotent command under a new identity. Human-authorized new work is a new operation, not an allegedly safe retry.</p>
-<p>Organization changes commit atomically within one authority. Execution is external: launch/terminate is recorded as intent, delegated to the executor, then reconciled. Recording acceptance is not proof the process started or stopped. Executors need operation correlation and durable recovery logic; no magical database transaction spans SQLite and an OS process.</p>
-<p>An ordered authority-local event sequence publishes accepted state changes: session created/renamed, membership changed, activation started/finished/lost, workspace link changed, and arrangement updated. Each event names source authority, object revision, operation correlation, and sequence. Replay cursors are authority-scoped. Gaps/expired cursors cause snapshot refresh. There is no fleet-wide ordering guarantee.</p>
-<p>Output streams have their own kind-defined sequence and bootstrap contracts. Resource inventory events and terminal bytes are not forced into a single giant event log.</p>
-<p>Batch organization commands are atomic only on their owner. Cross-owner commands carry explicit per-target results. Unknown results remain unknown until reconciliation.</p>
-<h2 id="10-connections-access-and-onboarding">10. Connections, access, and onboarding</h2>
-<p>Network setup is an operation on an authority connection, not session creation. The same connection machinery serves every client.</p>
-<pre><code class="language-text">Pick host
-   │
-   ▼
-Resolve authority ─► verify trust ─► authenticate ─► load inventory ─► open views
-   │                      │                │              │
-named progress       explicit trust    scoped grant   actual IDs/state
-</code></pre>
-<p>Already-connected machines should reuse routes and grants. New authority setup can use existing SSH trust or a signed pairing handoff, but the UI must show what it is authorizing. Sharing a workspace link does not silently share credentials. Discovery returns candidates, not trusted identities. No unauthenticated resource inventory leaks through host discovery.</p>
-<p><strong>Fast-path target:</strong> on already-networked, provisioned, authorized hosts, selecting a saved host/session should reach a usable supported resource in five seconds. This is a measured product acceptance target, not a universal latency guarantee. Missing installation, network policy, approval, or unsupported capabilities get a named failure rather than a fake success checkmark.</p>
-<p>Progress reports the actual stages and outcomes: finding host, checking trust, authenticating, loading work, mounting resource. A session record is not a successful terminal connection. Completion means the chosen view has a valid bootstrap and is ready for its supported interactions. Retry resumes from valid saved state without discarding credentials or inventing a new session.</p>
-<table>
-<thead>
-<tr>
-<th>Permission</th>
-<th>Meaning</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Observe</td>
-<td>Read authorized inventory/evidence and mount supported read-only views.</td>
-</tr>
-<tr>
-<td>Interact</td>
-<td>Perform granted kind-specific input/actions.</td>
-</tr>
-<tr>
-<td>Organize</td>
-<td>Rename, move membership, edit links/arrangements within granted scope.</td>
-</tr>
-<tr>
-<td>Create/launch</td>
-<td>Create records and start authorized execution.</td>
-</tr>
-<tr>
-<td>Terminate/remove</td>
-<td>Stop execution or remove records under explicit grants.</td>
-</tr>
-</tbody>
-</table>
-<p>These are conceptual permission categories; the existing scope matrix must be mapped rather than silently replaced. Input control is separately leased/arbitrated by the resource owner. A focused pane does not automatically win control. The connection manager handles routes, reconnect/backoff, authentication, enrollment/renewal, and capability negotiation; UI adapters do not maintain their own bootstrap scripts.</p>
-<p>Session-scoped grants follow current membership; an explicitly resource-scoped grant follows that ResourceRef. Effective permission is the intersection of the caller's grant and owner policy. Moving membership or editing grants re-evaluates existing subscriptions/control leases and refuses or cancels unauthorized pending mutations before effect dispatch. Resource moves across differently authorized sessions cannot accidentally retain old session access. Workspace and arrangement projections disclose only references/names authorized for that caller, with a generic inaccessible-link placeholder where appropriate. Holding a layout reference grants nothing. Membership-based authorization takes effect in the same owner transaction as the move.</p>
-<p>Credentials remain in approved credential storage, separate from workspace/session documents. Remote access revocation invalidates live authority as required by the trust contract. Cached sensitive content follows an explicit purge/retention policy; denial is not a reason to keep issuing mutations.</p>
-<h2 id="11-persistence-and-protocol">11. Persistence and protocol</h2>
-<h3 id="persisted-organization">Persisted organization</h3>
-<p>Each authority persists its identity, sessions, resource records/activations, workspace links, shared arrangements, object revisions, tombstones, bounded operation receipts, and ordered domain events. Client preferences hold personal arrangements and local presentation state. Credentials and resource output use their respective security/storage policies.</p>
-<p>Use one transactional local store for organization; SQLite is the proposed native implementation, not a second distributed coordinator. Resource execution drivers remain separate from organization transactions. Server restart recovery reads committed state and reconciles outstanding operations before claiming execution is ready. Backups/export must exclude live handles and credentials by default.</p>
-<p>Workspace/session membership is an explicit typed relation. Paths, project labels, and names are attributes. Terminal geometry and browser viewport policy are kind facts. A saved layout is not the only place a resource's membership can be discovered.</p>
-<h3 id="protocol-shape">Protocol shape</h3>
-<p>The domain model belongs in core independently of byte encoding. Clients receive lossless typed snapshots, command results, and events through shared runtime/projection interfaces. FFI encoders may change representation, not omit lifecycle or identity semantics.</p>
-<p>The proposed organization interface has explicit Session, Workspace, membership, and arrangement operations. It is a versioned extension negotiated independently from resource presentation codecs. This is an intentional replacement for authoritative session lifecycle hidden behind magic metadata keys. It supersedes the current blanket claim that session semantics are only client convention; an ADR must state that change before implementation.</p>
-<p>Resource synchronization retains its proven kind/output/input/bootstrap contracts. No existing frame tag is reinterpreted. The wire proposal must choose an explicit negotiated organization capability or separate versioned organization endpoint, with bounded typed encoding and authorization. This draft proposes the <strong>capability-negotiated organization surface on the existing authenticated runtime</strong>, not a new daemon or reuse of the separate work-coordinator vocabulary. Exact discriminants/encoding belong to the follow-up wire specification.</p>
-<p>Older peers can continue supported terminal operations. They cannot correctly edit the new organization model without a compatibility adapter. A server must not advertise a capability whose semantics the handler cannot enforce. Missing organizational support is surfaced as read-only/unsupported, not emulated by client-local records pretending to be shared state.</p>
-<p><strong>Proposal D08:</strong> introduce honest typed organization semantics; stop pretending intercepted session commands are ordinary opaque metadata. Keep resource streaming and organization conceptually separate even when they share a connection.</p>
-<h2 id="12-core-architecture-and-client-adapters">12. Core architecture and client adapters</h2>
-<pre><code class="language-text">Desktop   Cockpit   TUI   Web   Mobile   CLI/agents
-   │         │       │    │      │          │
-   └─────────┴───────┴────┴──────┴──────────┘
-                     │
-       Shared client runtime + lossless projections
-       connection, operations, reconcile, subscriptions
-                     │
-         Versioned authenticated organization interface
-                     │
-       Owner server: command admission + transactions
-                     │
-       CORE DOMAIN MODEL             RESOURCE EXECUTORS
-       identity / membership         Terminal / Browser / Harness
-       lifecycle / validation        kind-specific lifecycle + streams
-       command results               actual OS/harness evidence
-                     │
-       Persistent organization + bounded event/receipt store
-</code></pre>
-<h3 id="modules-and-interfaces">Modules and interfaces</h3>
-<table>
-<thead>
-<tr>
-<th>Module</th>
-<th>Owns</th>
-<th>Must not own</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Core domain</td>
-<td>Entity definitions, invariants, state transitions, command validation, typed outcomes.</td>
-<td>Networking, native windows, PTY implementation, browser paint.</td>
-</tr>
-<tr>
-<td>Owner server</td>
-<td>Authentication, authorization, serialized mutation, persistence, executor coordination.</td>
-<td>Client focus or device-specific arrangements.</td>
-</tr>
-<tr>
-<td>Resource executors</td>
-<td>Actual kind-specific execution, evidence, streams, activation recovery capability.</td>
-<td>Workspace ownership or client-local view lifetime.</td>
-</tr>
-<tr>
-<td>Shared client runtime</td>
-<td>Resolve/connect, submit operations, correlate results, reconcile snapshots/events, subscribe, negotiate capabilities.</td>
-<td>Inventing owner state or client-specific resource lifetime.</td>
-</tr>
-<tr>
-<td>Shared projection/FFI</td>
-<td>Lossless domain facts and resource references in usable language-native forms.</td>
-<td>New lifecycle rules or omission of inconvenient states.</td>
-</tr>
-<tr>
-<td>Client presentation adapters</td>
-<td>Views, arrangement adaptation, controls, accessibility, local preferences.</td>
-<td>Alternate session models, hidden kill-on-close, private pairing implementations.</td>
-</tr>
-</tbody>
-</table>
-<p>Core stays independent of IO. Its implementation accepts current state/commands and produces validated transitions and required effects; the server transaction layer commits those transitions. Executor completion comes back as authoritative facts, not optimistic UI guesses. One implementation of organization rules serves every adapter.</p>
-<p>Placement/rendering remains an actual client seam: terminal renderers, browser viewers, and nonvisual cards differ. A small presentation interface selects a supported renderer for a ResourceRef and negotiated capability set. Unknown-kind fallback is mandatory. It does not need a universal renderer framework beyond what real kinds require.</p>
-<p>The existing durable work coordinator remains separate. Objectives, Runs, Actors, Artifacts, and WorkSessions are not renamed into this model or required for a basic terminal session. Future coordination can reference ResourceRef and SessionRef without taking execution authority away from owners.</p>
-<p><strong>Core-first means rules-first, not every feature in one crate.</strong> Networking belongs in runtime, persistence in the owner, rendering in clients. Shared behavior crosses a small interface instead of duplicating state machines across those places.</p>
-<h2 id="13-scenarios-and-acceptance-contract">13. Scenarios and acceptance contract</h2>
-<p>These are design acceptance cases, not claims about tests already passing.</p>
-<table>
-<thead>
-<tr>
-<th>Scenario</th>
-<th>Required behavior</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Create an empty session in CLI; open in desktop</td>
-<td>Same stable session appears, with no surprise shell.</td>
-</tr>
-<tr>
-<td>Rename a session from mobile while desktop shows it</td>
-<td>Label updates; views and workspace links keep their identity.</td>
-</tr>
-<tr>
-<td>Close every desktop view of a running test</td>
-<td>Test continues; session and resource remain discoverable.</td>
-</tr>
-<tr>
-<td>Mount the same terminal twice</td>
-<td>Two views, one activation, explicit control/geometry arbitration.</td>
-</tr>
-<tr>
-<td>Open browser resource in TUI</td>
-<td>Kind/status/fallback shown; no terminal commands sent to it.</td>
-</tr>
-<tr>
-<td>Mini drops off the network</td>
-<td>Mini work marked last-known; laptop work remains usable.</td>
-</tr>
-<tr>
-<td>Terminate workspace-selected resources on two hosts; one times out</td>
-<td>Per-target accepted/refused/unknown results; no claim of atomic success.</td>
-</tr>
-<tr>
-<td>Server restarts and wire IDs are reused</td>
-<td>Old inputs refused; saved views cannot retarget to unrelated work.</td>
-</tr>
-<tr>
-<td>Server loses executor handle but the original program is still alive</td>
-<td>Activation is uncertain; ordinary removal/relaunch refused until inactivity is proven.</td>
-</tr>
-<tr>
-<td>Another client adds work during confirmed session termination</td>
-<td>Original target set stays fixed; new work survives and final session deletion refuses.</td>
-</tr>
-<tr>
-<td>Browser navigates before delayed input arrives</td>
-<td>Old document-fenced interaction refused.</td>
-</tr>
-<tr>
-<td>Browser client requests files or owner-local service access without grants</td>
-<td>Owner refuses; no renderer or automation fallback bypasses policy.</td>
-</tr>
-<tr>
-<td>Browser pages in differently authorized sessions request the same authenticated profile</td>
-<td>Profile-level reuse is checked; incompatible move/reuse refused or explicitly replaced with isolated execution.</td>
-</tr>
-<tr>
-<td>Resource moves out of a session granting the caller access</td>
-<td>Membership-based input/subscriptions revoked; unauthorized contents no longer projected.</td>
-</tr>
-<tr>
-<td>Receipt and all correlation evidence expire before reconciliation</td>
-<td>Outcome unknown; runtime does not automatically create a fresh operation.</td>
-</tr>
-<tr>
-<td>Relaunch completed tests</td>
-<td>New activation; prior exit and history remain a separate outcome.</td>
-</tr>
-<tr>
-<td>Remove session from workspace</td>
-<td>Session and all resources continue unchanged.</td>
-</tr>
-<tr>
-<td>Delete nonempty session</td>
-<td>Refused; move/terminate/remove choices presented explicitly.</td>
-</tr>
-<tr>
-<td>Two clients edit shared arrangement at once</td>
-<td>One accepted revision, one conflict with reload/reapply; no silent overwrite.</td>
-</tr>
-<tr>
-<td>Phone changes focus/scroll</td>
-<td>Other clients' focus/scroll are unchanged.</td>
-</tr>
-<tr>
-<td>Workspace owner offline</td>
-<td>Cached read-only document labeled stale; no imaginary committed edits.</td>
-</tr>
-<tr>
-<td>Resource output expires</td>
-<td>Identity/outcome remain; view reports evidence expiry.</td>
-</tr>
-<tr>
-<td>Connection loses reply after launching resource</td>
-<td>Same operation ID reconciles outcome; no duplicate execution.</td>
-</tr>
-<tr>
-<td>Remote session is deleted and recreated with the same name</td>
-<td>Old link shows deletion; does not attach to the new session.</td>
-</tr>
-<tr>
-<td>User has CLI and daemon on mini but no browser driver</td>
-<td>Browser create returns unsupported; terminals still work.</td>
-</tr>
-<tr>
-<td>User has trusted, provisioned mini connection</td>
-<td>Measured fast path reaches a usable supported view within the five-second target.</td>
-</tr>
-<tr>
-<td>A read-only grant opens shared workspace</td>
-<td>Only authorized links/resources are visible; layout possession grants no input.</td>
-</tr>
-</tbody>
-</table>
-<p>The contract suite must test the core transitions, real owner persistence/restart, executor correlation, protocol dispatch, runtime reconciliation, and every shipped adapter's operations. Browser claims require a real supported browser execution/view path, not a terminal test with a different icon. UI assertions must exercise close versus terminate independently.</p>
-<p>Performance checks measure time to actual interaction-ready views, bounded inventory loading, reconnect correctness, and mixed-host partial failure. They do not equate command acceptance or a rendered button with successful setup.</p>
-<h2 id="14-migration-and-terminology-removal">14. Migration and terminology removal</h2>
-<p>This is a coordinated domain migration, not a mass text replacement. The goal is the complete architecture above; staging exists to keep work and compatibility safe, not to perpetuate multiple models.</p>
-<h3 id="terminology-map">Terminology map</h3>
-<table>
-<thead>
-<tr>
-<th>Existing use</th>
-<th>Destination</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Session as named server grouping</td>
-<td>Session, with persistent ID and explicit membership.</td>
-</tr>
-<tr>
-<td>Session as connection/runtime object</td>
-<td>Connection or connection driver.</td>
-</tr>
-<tr>
-<td>SessionKernel as engine synchronization state</td>
-<td>Resource synchronization kernel, preserving its actual responsibility.</td>
-</tr>
-<tr>
-<td>AgentSession as harness resource</td>
-<td>Agent conversation domain meaning; compatible wire spelling retained until versioned change.</td>
-</tr>
-<tr>
-<td>Core Window as execution-owning pane container</td>
-<td>Session membership plus arrangement group; no destruction authority from layout.</td>
-</tr>
-<tr>
-<td>Pane as PTY identity</td>
-<td>ResourceRef of Terminal kind.</td>
-</tr>
-<tr>
-<td>Pane as on-screen slot</td>
-<td>View/placement.</td>
-</tr>
-<tr>
-<td>Tab as shared entity</td>
-<td>Arrangement group when shared; presentation control when local.</td>
-</tr>
-<tr>
-<td>Native window</td>
-<td>Native window, client-only.</td>
-</tr>
-<tr>
-<td>Mobile workspace as host folder</td>
-<td>Host group/filter, distinct from linked-session Workspace.</td>
-</tr>
-<tr>
-<td>Mobile SessionCollection containing terminals</td>
-<td>Saved resource filter; no fake session membership.</td>
-</tr>
-<tr>
-<td>Workspace archive</td>
-<td>Export/archive document, not a live workspace authority.</td>
-</tr>
-<tr>
-<td>Future work-coordinator WorkSession</td>
-<td>Remains distinct; never silently aliases a grouped Session.</td>
-</tr>
-</tbody>
-</table>
-<h3 id="conversion-rules">Conversion rules</h3>
-<ol>
-<li>Inventory existing IDs, commands, metadata conventions, saved files, clients, and protocol guarantees. Establish recovery/export before changing ownership or lifetime.</li>
-<li>Adopt the reviewed glossary and authority rules in core and an ADR. Publish one schema/behavior contract with generated binding projections.</li>
-<li>Add authoritative persistent session/resource/workspace records and migration receipts. Existing session membership is imported from the owner registry; existing logical windows become arrangement groups. Names do not become identity keys.</li>
-<li>A preexisting live resource gets a stable record bound to its current activation only through a verified owner migration. If adoption cannot be proven, require explicit restart; never hand-deploy into the installed server or promise continuity.</li>
-<li>Old saved IDs are resolved only against their recorded owner/incarnation. Unqualified stale references become unresolved placeholders requiring user confirmation; they do not guess by name, position, or reused handle.</li>
-<li>Legacy lifecycle commands are routed through the new domain operations where semantics are compatible. Destructive legacy close behaviors remain explicitly labeled until adapters change; wire tags are never repurposed to mean a safer but different operation silently.</li>
-<li>Migrate all shipped adapters: CLI/TUI, desktop, Cockpit, web, iOS, Android, MCP/agent interfaces, FFI, and serializers. Client presentation differences remain; alternate authoritative models are removed.</li>
-<li>Reconcile concepts, specs, architecture docs, help, generated references, and old ADR status. Replace authoritative lifecycle metadata tricks with compatibility adapters, not a second permanent control path.</li>
-<li>Remove obsolete keep-empty bifurcation, execution-owning layout containers, identity-by-name joins, dropped FFI facts, terminal-only generic fields, and duplicate client connection/setup logic once compatibility coverage passes.</li>
-</ol>
-<p>Every saved-state conversion is versioned, backed up, idempotent, and preserves provenance. Rollback uses the backup and documented compatible binaries; it does not load new state through an old decoder and hope. Resources keep execution on their owning hosts throughout any supported migration.</p>
-<h3 id="evidence-from-the-current-tree">Evidence from the current tree</h3>
-<p>These references identify what the design changes; they do not constrain the proposal to today's abstractions:</p>
-<ul>
-<li><a href="../../docs/CONCEPTS.md">Current concepts</a> and <a href="../../docs/spec/L2.md">L2</a> describe grouping as client convention, while <a href="../../docs/spec/L3.md">L3</a> describes intercepted creation/rename and server session lifecycle.</li>
-<li><a href="../../crates/phux-core/src/session.rs">Core Session</a> and <a href="../../crates/phux-core/src/window.rs">Window</a> encode the current containment tree; <a href="../../crates/phux-core/src/resource.rs">resource</a> associates Terminal membership with Window.</li>
-<li><a href="../../crates/phux-client-runtime/src/control/topology.rs">Runtime topology</a> carries more lifecycle facts than <a href="../../crates/phux-client-ffi/src/projection/topology.rs">FFI topology</a> exposes.</li>
-<li><a href="../../clients/desktop/src/workspace/layout.ts">Desktop placements</a> distinguish resource presentation from execution; <a href="../../clients/phux-web/src/session.rs">web session</a> still mixes connection and presentation vocabulary.</li>
-<li><a href="../../docs/adr/0105-sessions-can-outlive-their-last-window.md">Keep-empty ADR</a> records the current lifecycle split. <a href="../../docs/adr/0049-client-local-focus-and-advisory-attention.md">Focus ADR</a> already preserves client-local focus.</li>
-<li><a href="../../docs/adr/0092-durable-work-coordinator-authority.md">Work coordinator ADR</a> describes a distinct work model; this proposal does not merge it into session organization.</li>
-</ul>
-<p>The mobile repositories are separate consumers and require their own verified migration. Current iOS host groups and saved terminal collections must not be relabeled as cross-machine workspaces without converting their meaning.</p>
-<h2 id="15-design-choices-for-review">15. Design choices for review</h2>
-<p>The document specifies the proposed product behavior, including failure and recovery defaults. Exact wire bytes, resource codec specifications, storage schema, and release gates are implementation specifications that follow approval; they are not silently claimed complete here. These are the highest-impact architectural choices to annotate, not piecemeal decisions delegated back to you.</p>
-<table>
-<thead>
-<tr>
-<th>ID</th>
-<th>Proposed choice</th>
-<th>What choosing differently changes</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>D01</td>
-<td>Resource belongs to one session; workspace can link many sessions.</td>
-<td>Multi-session resource membership requires explicit non-owning links and more deletion semantics.</td>
-</tr>
-<tr>
-<td>D02</td>
-<td>One writer per authority; stable domain IDs plus live execution fencing.</td>
-<td>Multi-master owners require a conflict/consensus model beyond this design.</td>
-</tr>
-<tr>
-<td>D03</td>
-<td>Generic Resource has no terminal assumptions; kinds define capabilities.</td>
-<td>Terminal-shaped generalization blocks genuine browser/nonvisual resources.</td>
-</tr>
-<tr>
-<td>D04</td>
-<td>Sessions remain when empty; create does not implicitly launch.</td>
-<td>Automatic disappearance makes organization depend on process/client behavior again.</td>
-</tr>
-<tr>
-<td>D05</td>
-<td>Workspace is owner-persisted links; cached offline reads, no queued edits.</td>
-<td>Offline editing needs reconciliation, conflict presentation, and credential-aware replay.</td>
-</tr>
-<tr>
-<td>D06</td>
-<td>Shared arrangements adapt locally; personal arrangements optional; focus always local.</td>
-<td>Private-only defaults reduce shared continuity; shared focus creates interference.</td>
-</tr>
-<tr>
-<td>D07</td>
-<td>Records/outcomes persist; process crash survival and automatic restart are not promised.</td>
-<td>Restartable execution requires kind-specific explicit policy and real recovery evidence.</td>
-</tr>
-<tr>
-<td>D08</td>
-<td>Typed authoritative organization operations replace magic lifecycle metadata.</td>
-<td>Keeping opaque-metadata claims while intercepting lifecycle leaves the conceptual contradiction.</td>
-</tr>
-</tbody>
-</table>
-<h3 id="things-to-challenge-in-your-notes">Things to challenge in your notes</h3>
-<ul>
-<li>Is the board of resources the right primary surface, or should sessions open into tabs by default?</li>
-<li>Should a workspace owner be visibly selectable, or default to this machine until advanced settings?</li>
-<li>Is persistent empty organization the right default for both human and automation workflows?</li>
-<li>Does the browser kind mean one owner-host page as proposed, or do you want a context containing several pages as one resource?</li>
-<li>Are shared arrangements the expected default, or should every client start with personal presentation?</li>
-<li>Should archive be visible in the first product, or remain an operation behind history/search?</li>
-</ul>
-<p><strong>Review format:</strong> reference a section or decision, then state the change. For example: “D06: personal layout by default” or “§05: deleting a session should offer moving resources first.” The Markdown is the source; the HTML copy is for reading and portable note export.</p>
-<p class="footer">Generated from DESIGN.md. No external scripts, fonts, analytics, or network requests. Source SHA-256: <code>b7c3bd766d1ee6b579765c7a01ca2bcd39a9b4dc6029adae572ff3b7a4451f8d</code>.</p>
-</main></div>
+<details><summary>Who owns what?</summary>
+<ul><li><strong>Core:</strong> one model for identity, membership, and lifecycle.</li><li><strong>Owning server:</strong> records, execution, and access.</li><li><strong>Clients:</strong> views, layout, and focus. No alternative session rules.</li></ul>
+</details>
+<details><summary>The constraints that keep this honest</summary>
+<ul><li>One resource → one session → one owner.</li><li>A session can be linked into several workspaces.</li><li>Names and IP addresses are not identity.</li><li>Offline does not mean dead.</li><li>Saved organization does not mean processes survive reboot.</li><li>Browsers and other kinds have their own capabilities—not fake terminal fields.</li></ul>
+</details>
+<details><summary>Full technical design — only when you need it</summary>
+<p>Identity, permissions, lifecycle, recovery, browser behavior, protocols, core/client interfaces, acceptance cases, and migration.</p>
+<a href="FULL-DESIGN.html">Read the full design with section notes</a> · <a href="FULL-DESIGN.md">Full Markdown</a>
+</details>
+<details id="review"><summary>Make a note</summary>
+<section class="notes"><label for="note">What should change?</label><textarea id="note" placeholder="Point at the picture or a rule. Tell me what to change."></textarea><div class="actions"><button id="export" type="button">Export note</button><span id="status" class="status" role="status">Saved locally when this browser supports it. Export to share.</span></div></section>
+</details>
+</main>
 <script>
-const storageKey = 'phux-domain-review-2026-10-12-v1';
-let notes = {};
-let storageAvailable = true;
-try { notes = JSON.parse(localStorage.getItem(storageKey) || '{}'); }
-catch { storageAvailable = false; }
-if (!notes || typeof notes !== 'object' || Array.isArray(notes)) notes = {};
-
-function saveNotes(status) {
-  try { localStorage.setItem(storageKey, JSON.stringify(notes)); status.textContent = 'Saved locally in this browser. Export for a portable copy.'; }
-  catch { status.textContent = 'Local saving unavailable. Export your notes before closing this page.'; }
-}
-function notePanel(heading) {
-  const panel = document.createElement('section');
-  panel.className = 'review-note empty';
-  const label = document.createElement('label');
-  label.textContent = 'Your notes · ' + heading.textContent;
-  const field = document.createElement('textarea');
-  field.id = 'note-' + heading.id;
-  label.htmlFor = field.id;
-  field.placeholder = 'What should change? Reference a decision or paragraph here…';
-  field.value = typeof notes[heading.id] === 'string' ? notes[heading.id] : '';
-  panel.classList.toggle('empty', !field.value.trim());
-  const status = document.createElement('div');
-  status.className = 'note-status';
-  status.setAttribute('role', 'status');
-  status.textContent = storageAvailable ? 'Notes save locally. Export to share them.' : 'Local saving unavailable. Export before closing.';
-  field.addEventListener('input', () => {
-    notes[heading.id] = field.value;
-    panel.classList.toggle('empty', !field.value.trim());
-    saveNotes(status);
-  });
-  panel.append(label, field, status);
-  return panel;
-}
-const headings = [...document.querySelectorAll('main h2')];
-for (let index = 0; index < headings.length; index += 1) {
-  const panel = notePanel(headings[index]);
-  const next = headings[index + 1];
-  const before = next || document.querySelector('.footer');
-  before.before(panel);
-}
-for (const table of document.querySelectorAll('main table')) {
-  const wrap = document.createElement('div');
-  wrap.className = 'table-wrap';
-  table.before(wrap);
-  wrap.append(table);
-}
-function exportNotes() {
-  const parts = ['# Phux domain design — review notes', '', 'Source: draft 1, 12 October 2026', 'Source SHA-256: b7c3bd766d1ee6b579765c7a01ca2bcd39a9b4dc6029adae572ff3b7a4451f8d', ''];
-  for (const heading of headings) {
-    const field = document.getElementById('note-' + heading.id);
-    if (field.value.trim()) parts.push('## ' + heading.textContent, '', field.value.trim(), '');
-  }
-  const blob = new Blob([parts.join('\n')], {type:'text/markdown;charset=utf-8'});
+const key = 'phux-domain-visual-review-2026-10-12';
+const note = document.getElementById('note');
+const status = document.getElementById('status');
+try { note.value = localStorage.getItem(key) || ''; }
+catch { status.textContent = 'Local saving unavailable. Export before closing.'; }
+note.addEventListener('input', () => {
+  try { localStorage.setItem(key, note.value); status.textContent = 'Saved locally. Export to share.'; }
+  catch { status.textContent = 'Local saving unavailable. Export before closing.'; }
+});
+document.getElementById('export').addEventListener('click', () => {
+  const blob = new Blob(['# Phux visual model — review note\n\n' + note.value + '\n'], {type:'text/markdown;charset=utf-8'});
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
-  link.download = 'phux-domain-review-notes.md';
+  link.download = 'phux-visual-review.md';
   document.body.append(link);
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-document.getElementById('export').addEventListener('click', exportNotes);
-document.getElementById('print').addEventListener('click', () => window.print());
+});
 </script>
-</body></html>
+</body>
+</html>
