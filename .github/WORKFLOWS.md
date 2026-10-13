@@ -53,15 +53,19 @@ Pushes to `main` are deliberately **not** latest-wins in `ci` and
 them, and `release-please` refuses to build a tag until it finds a
 successful run at that exact SHA.
 
-Three workflows do not follow that rule and cancel each other on
-consecutive `main` pushes: `web-check`, `native-setup` and `site-deploy`.
-For the site deploy that is correct. For the other two it means a fast
-sequence of merges can leave a commit unvalidated.
+`web-check` and `native-setup` use the same SHA-keyed pattern as `ci` on
+`main`, so consecutive merges do not cancel each other's validation.
+`site-deploy` uses a single global group with `cancel-in-progress: false`
+(matching the Worker deploy lane) so a mid-wrangler deploy is never killed;
+new pushes queue instead.
 
 Publishing lanes set `cancel-in-progress: false` so an upload is never
-interrupted, with one exception: `next-release` coalesces by design.
-`publish-crate` declares no concurrency at all; its reviewer-gated
-environment is what serializes it.
+interrupted. `publish-crate` also declares an explicit per-tag concurrency
+group; the `crates-io` environment reviewer is not enough on its own.
+`site-deploy` still lists `release: [published]`, but GitHub suppresses
+events raised by `GITHUB_TOKEN`, so badge refresh after a release currently
+depends on the Monday cron or a manual dispatch (see private
+`no-phux/ops` `build-ops/known-problems.md` §5).
 
 The three worker workflows share one group on purpose, so a deploy, a
 rollback and the kill switch can never mutate the Worker at the same time.
