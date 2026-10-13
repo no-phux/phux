@@ -1404,7 +1404,7 @@ fn install_effect_hooks(
             if let Some(text) = clipboard_text(&write) {
                 pending.clipboard.replace(Some(text));
             }
-            Ok(())
+            write.reply(Ok(()), false);
         }
     })?;
     Ok(())
