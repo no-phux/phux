@@ -324,7 +324,8 @@ fn reassemble_unchanged_tree(
     state
         .with(|s| {
             let current = s.assemble_upgrade_blob(listener_fd, &UpgradeHandoffs::default());
-            (current == *tree_identity).then(|| s.assemble_upgrade_blob(inherited_fd, handoffs))
+            (current == *tree_identity)
+                .then(|| s.with_upgrade_metadata(s.assemble_upgrade_blob(inherited_fd, handoffs)))
         })
         .ok_or(UpgradeError::TreeChanged)
 }

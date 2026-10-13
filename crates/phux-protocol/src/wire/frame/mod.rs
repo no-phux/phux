@@ -677,6 +677,11 @@ pub(crate) const EVENT_TAG_APPROVAL_REQUESTED: u8 = 0x0d;
 /// Wire tag for [`AgentEvent::ApprovalDecided`] (ADR-0128): a held action
 /// was approved, denied, expired, or withdrawn.
 pub(crate) const EVENT_TAG_APPROVAL_DECIDED: u8 = 0x0e;
+/// Wire tag for [`AgentEvent::InputActivity`]. A live, unjournaled notice
+/// that someone just sent input to the scoped Terminal. The body is one
+/// positional length-prefixed origin label. No stamp, so no credential id
+/// crosses, and an older decoder skips the tag by its length prefix.
+pub(crate) const EVENT_TAG_INPUT_ACTIVITY: u8 = 0x0f;
 }
 
 /// Wire tag for one [`Command`] variant inside the `COMMAND` envelope (SPEC

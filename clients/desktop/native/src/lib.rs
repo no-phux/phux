@@ -1,5 +1,5 @@
 //! The phux desktop: a native GPUI + GPUI Kit application over the shared
-//! client runtime (ADR-0164).
+//! client runtime (ADR-0165).
 //!
 //! Layers, outermost first:
 //!

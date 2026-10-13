@@ -49,6 +49,16 @@ describe("path classification", () => {
 });
 
 describe("host routing", () => {
+  test("direct Markdown pages follow the same host split as HTML", () => {
+    for (const path of ["/overview.md", "/quickstart.md", "/consumers/getting-started.md", "/wire/l1.md"]) {
+      expect(routeRequest(SITE_HOST, urlOn(SITE_HOST, `${path}?from=agent`))).toEqual({
+        kind: "redirect", location: `https://${DOCS_HOST}${path}?from=agent`, status: 301,
+      });
+      expect(routeRequest(DOCS_HOST, urlOn(DOCS_HOST, path))).toEqual({ kind: "asset" });
+    }
+    expect(routeRequest(SITE_HOST, urlOn(SITE_HOST, "/.well-known/agent-skills/using-phux/SKILL.md"))).toEqual({ kind: "asset" });
+  });
+
   test("docs.phux.sh/ becomes /overview", () => {
     expect(routeRequest(DOCS_HOST, urlOn(DOCS_HOST, "/"))).toEqual({
       kind: "redirect",

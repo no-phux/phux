@@ -5,6 +5,7 @@
 //! [`super::render`]).
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use libghostty_vt::Terminal as GhosttyTerminal;
 use libghostty_vt::terminal::Mode;
@@ -130,6 +131,22 @@ pub(super) struct PaneSlot {
     /// ADR-0147: `Some(title)` for the floating plugin overlay pane, which is
     /// in no layout window and paints in a box over the pane area.
     pub floating: Option<String>,
+    /// Unjournaled `input_activity`: who last sent input, and when the badge
+    /// started, so the rail can fade it.
+    pub(super) input_origin: Option<InputOrigin>,
+}
+
+/// How long a fresh origin badge stays at full emphasis before it dims.
+pub(super) const INPUT_ORIGIN_BRIGHT: Duration = Duration::from_millis(800);
+/// How long the badge stays on the rail, including the dim tail.
+pub(super) const INPUT_ORIGIN_LIFE: Duration = Duration::from_millis(1_600);
+
+/// One transient origin badge.
+pub(super) struct InputOrigin {
+    /// The label from the event (`client_name`, or `client:<id>`).
+    pub(super) label: String,
+    /// When this badge started. A newer event replaces it and restarts the fade.
+    pub(super) since: Instant,
 }
 
 impl std::fmt::Debug for PaneSlot {
@@ -179,7 +196,26 @@ impl PaneSlot {
             satellite_down: false,
             history_degraded: false,
             floating: None,
+            input_origin: None,
         })
+    }
+
+    /// Start (or restart) the origin badge.
+    pub(super) fn note_input_origin(&mut self, label: String, now: Instant) {
+        self.input_origin = Some(InputOrigin { label, since: now });
+    }
+
+    /// Delay until the next fade boundary, if the badge is still showing.
+    pub(super) fn input_origin_delay(&self, now: Instant) -> Option<Duration> {
+        let since = self.input_origin.as_ref()?.since;
+        let age = now.saturating_duration_since(since);
+        if age < INPUT_ORIGIN_BRIGHT {
+            Some(INPUT_ORIGIN_BRIGHT.saturating_sub(age))
+        } else if age < INPUT_ORIGIN_LIFE {
+            Some(INPUT_ORIGIN_LIFE.saturating_sub(age))
+        } else {
+            None
+        }
     }
 
     /// A slot at a placeholder size; prefer [`Self::new_with_size`].
@@ -231,6 +267,23 @@ pub(super) fn pane_label<'a>(
         // `panes`, the same lifetime as the title.
         host: key.host().map(phux_protocol::ids::SatelliteHost::as_str),
         unreachable: slot.satellite_down,
+        origin: origin_badge(slot, Instant::now()),
+    })
+}
+
+/// The origin badge still inside its lifetime, dim after the bright interval.
+fn origin_badge(
+    slot: &PaneSlot,
+    now: Instant,
+) -> Option<crate::render::chrome::dividers::OriginBadge<'_>> {
+    let mark = slot.input_origin.as_ref()?;
+    let age = now.saturating_duration_since(mark.since);
+    if mark.label.is_empty() || age >= INPUT_ORIGIN_LIFE {
+        return None;
+    }
+    Some(crate::render::chrome::dividers::OriginBadge {
+        text: mark.label.as_str(),
+        dim: age >= INPUT_ORIGIN_BRIGHT,
     })
 }
 
@@ -566,6 +619,27 @@ mod tests {
             replay.contains("\x1b_Ga=T,f=32,s=1,v=1,i=77,q=2,c=1,r=1,m=0;/wAA/w==\x1b\\"),
             "initial live render must replay classic Kitty placement; got {replay:?}"
         );
+    }
+
+    #[test]
+    fn a_fresh_input_origin_badges_the_label_until_it_expires() {
+        let id = ResourceId::local(1);
+        let mut slot = PaneSlot::new().expect("slot");
+        slot.last_title = "shell".to_owned();
+        let started = Instant::now();
+        slot.note_input_origin("ada".to_owned(), started);
+        let mut panes = HashMap::from([(id.clone(), slot)]);
+        let label = pane_label(&panes, &id).expect("label");
+        let origin = label.origin.expect("badge");
+        assert_eq!(origin.text, "ada");
+        assert!(!origin.dim);
+        panes.get_mut(&id).expect("slot").input_origin = Some(InputOrigin {
+            label: "ada".to_owned(),
+            since: Instant::now()
+                .checked_sub(INPUT_ORIGIN_LIFE)
+                .expect("test clock"),
+        });
+        assert!(pane_label(&panes, &id).expect("label").origin.is_none());
     }
 
     /// A republish at unchanged geometry must serve fresh rows through an

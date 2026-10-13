@@ -44,6 +44,13 @@ skills only; the same allowlist is mirrored to `no-phux/skills` for
 `auth.md`, Content Signals + `Agentmap` in `robots.txt`, and RFC 8288 `Link`
 headers on HTML responses.
 
+Documentation pages also publish a static `.md` URL from the same Astro content
+collection (`src/pages/[...slug].md.ts`); `public/_headers` serves these files as
+`text/markdown`. The hosted MCP prefers that source representation for docs.
+After building, run `bun run verify:docs` for discovery and browser acceptance.
+For WebKit clipboard coverage without pre-granted permissions, install the
+Playwright WebKit browser and run `bun run verify:docs --webkit`.
+
 Two DNS facts are NOT managed by this repo: DNSSEC is enabled (registrar is
 Cloudflare, so the DS record is published automatically), and the DNS-AID
 records `_mcp._agents` (SVCB+HTTPS, pointing at the hosted MCP endpoint) and

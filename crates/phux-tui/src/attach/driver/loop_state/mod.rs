@@ -55,6 +55,7 @@ pub(super) use crate::attach::plugin_actions::{self, PluginRunResult};
 pub(super) use crate::attach::repaint::{PaintPacer, RepaintAccumulator, RepaintLevel};
 pub(super) use crate::attach::server_frame::{
     FrameEnv, FrameOutcome, ProjectTagFrame, attach_participants, handle_server_frame,
+    session_terminals,
 };
 pub(super) use crate::attach::session_mirror::SessionMirror;
 pub(super) use crate::attach::tty_input::TtyInput;

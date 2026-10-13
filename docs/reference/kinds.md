@@ -127,6 +127,7 @@ The kind's facet.
 | `terminal_control` | `0x08` |
 | `asked` | `0x09` |
 | `cwd_changed` | `0x0a` |
+| `input_activity` | `0x0f` |
 
 ### Resource metadata keys
 

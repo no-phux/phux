@@ -2229,6 +2229,7 @@ fn arb_agent_event() -> impl Strategy<Value = AgentEvent> {
         proptest::option::of(any::<i32>())
             .prop_map(|exit_code| AgentEvent::CommandFinished { exit_code }),
         ".{0,128}".prop_map(|title| AgentEvent::TitleChanged { title }),
+        ".{0,64}".prop_map(|origin| AgentEvent::InputActivity { origin }),
         Just(AgentEvent::Bell),
         (arb_resource_kind(), proptest::option::of(arb_terminal_id()))
             .prop_map(|(kind, parent)| AgentEvent::ResourceSpawned { kind, parent }),
@@ -2308,6 +2309,12 @@ fn event_fixture_variants_round_trip() {
             },
         ),
         (
+            Some(ResourceId::local(4)),
+            AgentEvent::InputActivity {
+                origin: "ada".to_string(),
+            },
+        ),
+        (
             None,
             AgentEvent::Unknown {
                 tag: 0x55,
@@ -2328,7 +2335,7 @@ fn event_fixture_variants_round_trip() {
 /// `AgentEvent::Unknown` with its body verbatim instead of failing the frame.
 #[test]
 fn event_unknown_tag_decodes_as_unknown_and_skips() {
-    for tag in [0x0fu8, 0x7F] {
+    for tag in [0x10u8, 0x7F] {
         let body = [0xDEu8, 0xAD, 0xBE, 0xEF];
         let mut agent_event = vec![tag];
         agent_event.extend_from_slice(&u32::try_from(body.len()).unwrap().to_be_bytes());

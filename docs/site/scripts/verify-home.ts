@@ -39,6 +39,7 @@ try {
   assert.equal(await page.locator("main form, #how-it-works").count(), 0, "no homepage signup or explainer");
   assert.equal(await page.locator(".hero-term").count(), 1, "one product demo");
   assert.equal(await page.locator("main .features h2").count(), 3);
+  assert.equal(await page.getByRole("link", { name: /Let agents work/ }).getAttribute("href"), "https://docs.phux.sh/consumers/getting-started");
   await page.getByRole("button", { name: "Copy install command" }).click();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "curl -fsSL https://phux.sh/install | sh");
   assert.equal(await page.getByRole("status").innerText(), "Install command copied.");
@@ -55,6 +56,7 @@ try {
   assert.equal(await page.locator("dialog[open]").count(), 0);
   assert.ok(await page.getByRole("link", { name: /Try it in your browser/ }).evaluate((link) => link === document.activeElement), "closing restores focus");
   await page.goto(`${base}/more`);
+  assert.equal(await page.getByRole("link", { name: /Built for automation/ }).getAttribute("href"), "https://docs.phux.sh/consumers/getting-started");
   assert.ok(await page.locator("#testflight form").isVisible(), "iPhone signup is preserved");
   assert.ok(await page.locator("#beta form").isVisible(), "release signup is preserved");
   assert.equal(await page.locator("[data-copy]").count(), 3, "alternate installers preserved");

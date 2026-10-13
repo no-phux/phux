@@ -1962,9 +1962,10 @@ Global flags:
 Mint, rotate, revoke, list, or prune remote credentials
 
 With no subcommand, mint one credential into the server's store and print its
-stable ID, one-time bearer secret, and certificate fingerprint. `--qr` is the
-camera form: a large terminal QR and a clear expiry line, with the bearer and
-connect link omitted from the text (they exist only inside the QR).
+stable ID, one-time bearer secret, and certificate fingerprint. On a terminal
+the connect link is followed by a scannable QR of it (`--no-qr` leaves it out).
+`--qr` is the camera form: a large terminal QR and a clear expiry line, with the
+bearer and connect link omitted from the text (they exist only inside the QR).
 `--secret-file PATH` is the off-camera pre-pair: the bearer is written to a new
 mode-0600 file and is not printed. `--json` still prints the bearer for `phux
 host add` and cannot combine with `--qr` or `--secret-file`. `ls` lists ids with
@@ -1976,9 +1977,10 @@ directly and take effect without restarting the server.
 Minting first asks the running server (`--socket`) which remote listeners it has
 bound, and mints nothing when none would accept the credential: no server, no
 bound listener, `--host` with no wss listener, or `--qr` with no address a
-device can dial. `--relay-route` mints for a relay route instead, which needs
-the server to answer but no bound listener. `ls`, `prune`, `rotate`, and
-`revoke` only edit the store and need no server.
+device can dial. On a tailnet with `MagicDNS` the link names the host's
+`MagicDNS` name rather than its tailnet address. `--relay-route` mints for a
+relay route instead, which needs the server to answer but no bound listener.
+`ls`, `prune`, `rotate`, and `revoke` only edit the store and need no server.
 
 Usage: phux pair [FLAGS] [SUBCOMMAND]
 
@@ -2016,6 +2018,9 @@ Flags:
                              credential does not expire. The human output always
                              states which of those is true. Admission fails
                              after the instant; revocation still works.
+      --no-qr                Do not render the QR a terminal mint prints beneath
+                             the connect link by default. The link is still
+                             printed as text.
       --host <HOST:PORT>     Server address (`host:port`, or a full
                              `ws://`/`wss://` URL) to embed in the connect link
                              so it is fully self-contained; the running server

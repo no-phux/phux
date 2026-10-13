@@ -7,7 +7,7 @@ last-reviewed: 2026-10-13
 # phux-desktop (native crate)
 
 **TL;DR.** One Rust crate, one executable: `phux-desktop`, a GPUI + GPUI Kit
-application over the shared client runtime (ADR-0164). It has its own Cargo
+application over the shared client runtime (ADR-0165). It has its own Cargo
 workspace and lock so the GPUI graph never enters other phux consumers.
 `just desktop-source` once, then `just desktop-test` and `just desktop-app`.
 

@@ -24,6 +24,7 @@ on:
     paths:
       - ".agents/skills/using-phux/**"
       - ".agents/skills/using-phux-mcp/**"
+      - ".agents/skills/using-phux-tools/**"
       - "scripts/product-skills"
       - "scripts/export-product-skills.sh"
       - "scripts/skills-package/**"

@@ -13,6 +13,7 @@ Install one skill:
 ```sh
 npx skills add no-phux/skills --skill using-phux
 npx skills add no-phux/skills --skill using-phux-mcp
+npx skills add no-phux/skills --skill using-phux-tools
 ```
 
 From the well-known index on phux.sh:
@@ -32,6 +33,15 @@ one-shot shell for independent commands.
 through the phux MCP server. Use when phux MCP tools are available for
 interactive programs, durable shell state, bounded observation, or agent
 supervision; use using-phux for direct CLI work.
+
+**using-phux-tools.** Uses the native `phux_*` tools registered by OpenCode,
+OMP, and Pi. Prefer these when available: they provide harness-local targets,
+finite deadlines, cancellation, and bounded results.
+
+Skills are operating instructions, not tool registration. Start with the
+[agent setup guide](https://docs.phux.sh/consumers/getting-started) to connect
+your host. The [hosted docs MCP](https://phux.sh/mcp) is a separate read-only
+documentation service; it cannot control your terminals.
 
 ## Source of truth
 

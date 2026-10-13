@@ -12,7 +12,7 @@ mod outcome;
 #[cfg(test)]
 mod tests;
 
-pub(super) use engine_route::attach_participants;
+pub(super) use engine_route::{attach_participants, session_terminals};
 pub(super) use handler::pane_is_referenced;
 pub(super) use handler::{FrameEnv, handle_server_frame};
 // The composited output frame, shared with the driver's frame

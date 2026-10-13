@@ -82,12 +82,6 @@ not supported. For the native macOS Cockpit:
 curl -fsSL https://phux.sh/install-cockpit | sh
 ```
 
-For agents:
-
-```sh
-npx skills add no-phux/skills
-```
-
 Run `phux` to start. Prefix is `Ctrl-A`; `Ctrl-A d` detaches. Other channels
 and source builds: [Install](./docs/INSTALL.md).
 
@@ -108,6 +102,28 @@ phux snapshot default      # read the current grid without attaching a UI
 [agent control](./docs/consumers/agents.md) ·
 [harness emit contract](./docs/consumers/harness.md) ·
 [build a client](./docs/consumers/build-a-client.md)
+
+## Get your agent started
+
+Give this to your coding agent:
+
+```text
+Read https://docs.phux.sh/llms.txt and help me get started with phux.
+Choose the setup for my agent host and verify a read before sending input.
+Ask before interrupting or destroying existing work.
+```
+
+Install the operating skills, then [connect your agent host](./docs/consumers/getting-started.md):
+
+```sh
+npx skills add no-phux/skills
+```
+
+Skills teach operation; your host's native tools, the local MCP adapter, or
+the CLI control your running terminals. The separate
+[hosted docs MCP](./docs/consumers/getting-started.md#let-your-agent-read-the-docs)
+only searches documentation and releases. The docs home has a copyable agent
+prompt, and every documentation page has a direct Markdown URL.
 
 ## License
 

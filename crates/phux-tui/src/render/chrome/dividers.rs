@@ -56,6 +56,18 @@ pub struct PaneLabel<'a> {
     /// The satellite link is down: title and badge draw in the recessive
     /// divider tone, and the pane's frame is not the focus colour.
     pub unreachable: bool,
+    /// Transient origin of the latest input (`input_activity`), drawn as
+    /// `[name]` and dimmed once the fade has started.
+    pub origin: Option<OriginBadge<'a>>,
+}
+
+/// A fading `[origin]` mark inset into the pane's title rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OriginBadge<'a> {
+    /// The origin label. Empty draws nothing.
+    pub text: &'a str,
+    /// `true` once the badge has left its bright interval.
+    pub dim: bool,
 }
 
 impl PaneLabel<'_> {
@@ -428,7 +440,8 @@ fn draw_one_title(
 ) {
     let text = label.text.trim();
     let host = label.host.map(str::trim).filter(|host| !host.is_empty());
-    if text.is_empty() && host.is_none() {
+    let mut origin = label.origin.filter(|origin| !origin.text.trim().is_empty());
+    if text.is_empty() && host.is_none() && origin.is_none() {
         return;
     }
     let badge = label.badge(theme);
@@ -443,6 +456,15 @@ fn draw_one_title(
         return;
     }
     budget -= badge_cells + host_cells;
+    // `[origin]` plus the space before the title. Drop it when it will not fit.
+    if let Some(mark) = origin {
+        let need = text_columns(mark.text.trim()) + 3;
+        if budget <= need {
+            origin = None;
+        } else {
+            budget -= need;
+        }
+    }
 
     let muted = label.unreachable;
     let title_style = if muted {
@@ -471,6 +493,17 @@ fn draw_one_title(
     }
     if let Some(host) = host {
         x = put_clipped(cells, x, y, host, text_columns(host), host_style);
+        x = put_measured(cells, x, y, " ", pad);
+    }
+    if let Some(mark) = origin {
+        let mark_text = mark.text.trim();
+        let mut style = Style::default().fg(if mark.dim { theme.dim } else { theme.chord });
+        if !mark.dim {
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        x = put_measured(cells, x, y, "[", style);
+        x = put_clipped(cells, x, y, mark_text, text_columns(mark_text), style);
+        x = put_measured(cells, x, y, "]", style);
         x = put_measured(cells, x, y, " ", pad);
     }
     if !text.is_empty() {
@@ -658,6 +691,7 @@ mod tests {
             seen: true,
             host: None,
             unreachable: false,
+            origin: None,
         }
     }
 
@@ -1010,6 +1044,51 @@ mod tests {
             .unwrap();
             assert_eq!(badge, agent_badge(&th, state, false, true));
         }
+    }
+
+    /// Demo of the transient origin badge: `[ada]` sits ahead of the title.
+    /// The glyphs stay put when it dims; only the colour and weight change.
+    #[test]
+    fn input_origin_badge_snapshot() {
+        let content = railed(48, 8);
+        let layout = lone_layout(content);
+        let paint = |dim| {
+            render_label(
+                &layout,
+                content,
+                Some(PaneLabel {
+                    origin: Some(OriginBadge { text: "ada", dim }),
+                    ..label("shell")
+                }),
+            )
+        };
+        let row = |s: &str| {
+            let y = rail_row(content).unwrap();
+            let mut cells: Vec<_> = painted_cells(s)
+                .into_iter()
+                .filter(|(_, cy, _)| *cy == y)
+                .collect();
+            cells.sort_by_key(|(x, _, _)| *x);
+            let mut glyphs = vec![' '; usize::from(content.w)];
+            for (x, _, sym) in cells {
+                if let Some(ch) = sym.chars().next()
+                    && let Some(cell) = glyphs.get_mut(usize::from(x))
+                {
+                    *cell = ch;
+                }
+            }
+            let text: String = glyphs.into_iter().collect();
+            text.trim_end().to_owned()
+        };
+        let bright = paint(false);
+        let dimmed = paint(true);
+        let bright_row = row(&bright);
+        let dim_row = row(&dimmed);
+        assert!(bright_row.contains("[ada] shell"), "{bright_row}");
+        assert_eq!(bright_row, dim_row);
+        assert!(bright.contains(&sgr_fg(theme().chord)) && bright.contains("\x1b[1m"));
+        assert!(dimmed.contains(&sgr_fg(theme().dim)) && !dimmed.contains("\x1b[1m"));
+        insta::assert_snapshot!(format!("bright {bright_row}\ndim    {dim_row}\n"));
     }
 
     /// A same-styled run costs one CUP; a wide glyph's trailing half is left

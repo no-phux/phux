@@ -2154,7 +2154,8 @@ pub(crate) enum Command {
     ///
     /// With no subcommand, mint one credential into the server's store and
     /// print its stable ID, one-time bearer secret, and certificate fingerprint.
-    /// `--qr` is the camera form: a large terminal QR and a clear expiry line,
+    /// On a terminal the connect link is followed by a scannable QR of it
+    /// (`--no-qr` leaves it out). `--qr` is the camera form: a large terminal QR and a clear expiry line,
     /// with the bearer and connect link omitted from the text (they exist only
     /// inside the QR). `--secret-file PATH` is the off-camera pre-pair: the
     /// bearer is written to a new mode-0600 file and is not printed. `--json`
@@ -2168,7 +2169,9 @@ pub(crate) enum Command {
     /// Minting first asks the running server (`--socket`) which remote
     /// listeners it has bound, and mints nothing when none would accept the
     /// credential: no server, no bound listener, `--host` with no wss
-    /// listener, or `--qr` with no address a device can dial. `--relay-route`
+    /// listener, or `--qr` with no address a device can dial. On a tailnet
+    /// with `MagicDNS` the link names the host's `MagicDNS` name rather than its
+    /// tailnet address. `--relay-route`
     /// mints for a relay route instead, which needs the server to answer but
     /// no bound listener. `ls`, `prune`, `rotate`, and `revoke` only edit the
     /// store and need no server.
@@ -2194,7 +2197,7 @@ pub(crate) enum Command {
         /// bound wss listener. Refused, with nothing minted, when neither
         /// yields an address a device can dial. Cannot combine with `--json`,
         /// which prints the bearer.
-        #[usage(long, conflicts("--json"))]
+        #[usage(long, conflicts("--json", "--no-qr"))]
         qr: bool,
 
         /// Write the bearer and connect link to PATH (mode 0600, created
@@ -2211,6 +2214,11 @@ pub(crate) enum Command {
         /// instant; revocation still works.
         #[usage(long, value_name = "DURATION")]
         expires: Option<String>,
+
+        /// Do not render the QR a terminal mint prints beneath the connect
+        /// link by default. The link is still printed as text.
+        #[usage(long)]
+        no_qr: bool,
 
         /// Server address (`host:port`, or a full `ws://`/`wss://` URL) to
         /// embed in the connect link so it is fully self-contained; the

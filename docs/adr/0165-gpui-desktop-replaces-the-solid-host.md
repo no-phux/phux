@@ -4,7 +4,7 @@ stability: stable
 last-reviewed: 2026-10-13
 ---
 
-# 0164 — GPUI desktop replaces the Solid host
+# 0165 — GPUI desktop replaces the Solid host
 
 **TL;DR.** The desktop is a Rust GPUI and GPUI Kit application that links the
 client runtime in-process. The shipping app is that executable. There is no

@@ -29,16 +29,17 @@ use super::{
     COMMAND_VALUE_TAG_RESOURCE_ID, COMMAND_VALUE_TAG_STATE, Command, CommandResult, CommandValue,
     ControlAction, EVENT_TAG_APPROVAL_DECIDED, EVENT_TAG_APPROVAL_REQUESTED, EVENT_TAG_ASKED,
     EVENT_TAG_BELL, EVENT_TAG_COMMAND_FINISHED, EVENT_TAG_COMMAND_STARTED, EVENT_TAG_CWD_CHANGED,
-    EVENT_TAG_DIRTY, EVENT_TAG_IDLE, EVENT_TAG_JOURNAL_GAP, EVENT_TAG_RESOURCE_CLOSED,
-    EVENT_TAG_RESOURCE_SPAWNED, EVENT_TAG_SOURCE_GAP, EVENT_TAG_TERMINAL_CONTROL,
-    EVENT_TAG_TITLE_CHANGED, ErrorCode, FileUploadAck, INPUT_EVENT_TAG_FOCUS, INPUT_EVENT_TAG_KEY,
-    INPUT_EVENT_TAG_MOUSE, INPUT_EVENT_TAG_PASTE, InputMode, KillConditions, KillPrecondition,
-    ListenerTransport, MAX_APPEND_BYTES, MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS,
-    MAX_FILE_UPLOAD_CHUNK, MAX_FILE_UPLOAD_SIZE, ReportedAgentState, ResourceEventType,
-    ResourceLifecycle, STATE_SCOPE_TAG_SERVER, StateScope, TerminalSignal, decode_focus_event,
-    decode_key_event, decode_mouse_event, decode_optional_u32, decode_paste_event,
-    decode_terminal_id, encode_focus_event, encode_key_event, encode_mouse_event,
-    encode_paste_event, encode_terminal_id,
+    EVENT_TAG_DIRTY, EVENT_TAG_IDLE, EVENT_TAG_INPUT_ACTIVITY, EVENT_TAG_JOURNAL_GAP,
+    EVENT_TAG_RESOURCE_CLOSED, EVENT_TAG_RESOURCE_SPAWNED, EVENT_TAG_SOURCE_GAP,
+    EVENT_TAG_TERMINAL_CONTROL, EVENT_TAG_TITLE_CHANGED, ErrorCode, FileUploadAck,
+    INPUT_EVENT_TAG_FOCUS, INPUT_EVENT_TAG_KEY, INPUT_EVENT_TAG_MOUSE, INPUT_EVENT_TAG_PASTE,
+    InputMode, KillConditions, KillPrecondition, ListenerTransport, MAX_APPEND_BYTES,
+    MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS, MAX_FILE_UPLOAD_CHUNK,
+    MAX_FILE_UPLOAD_SIZE, ReportedAgentState, ResourceEventType, ResourceLifecycle,
+    STATE_SCOPE_TAG_SERVER, StateScope, TerminalSignal, decode_focus_event, decode_key_event,
+    decode_mouse_event, decode_optional_u32, decode_paste_event, decode_terminal_id,
+    encode_focus_event, encode_key_event, encode_mouse_event, encode_paste_event,
+    encode_terminal_id,
 };
 
 // `Command` and `CommandResult`: a tag, then a positional body.
@@ -949,6 +950,10 @@ pub(in crate::wire) fn encode_agent_event(event: &AgentEvent, enc: &mut Encoder<
                 body_enc.write_u8(outcome.to_u8());
                 EVENT_TAG_APPROVAL_DECIDED
             }
+            AgentEvent::InputActivity { origin } => {
+                body_enc.write_str(origin);
+                EVENT_TAG_INPUT_ACTIVITY
+            }
             // Re-emit an unknown event's body verbatim so relays are lossless.
             AgentEvent::Unknown { tag, .. } => *tag,
         }
@@ -1055,6 +1060,9 @@ pub(in crate::wire) fn decode_agent_event(
                 body: body.to_vec(),
             })
         }
+        EVENT_TAG_INPUT_ACTIVITY => AgentEvent::InputActivity {
+            origin: body_dec.read_str()?.to_owned(),
+        },
 
         other => AgentEvent::Unknown {
             tag: other,

@@ -18,7 +18,7 @@ Apple-silicon macOS is the first target.
 > The host is now GPUI; a presented-frame qualification is still required.
 > Accessibility, notarization, and Linux are open. The Status table tracks each gap.
 
-The host seams are [desktop architecture](../architecture/desktop.md). [ADR-0164](../adr/0164-gpui-desktop-replaces-the-solid-host.md) replaces the Solid host in [ADR-0139](../adr/0139-solid-desktop-over-native-runtime-views.md).
+The host seams are [desktop architecture](../architecture/desktop.md). [ADR-0165](../adr/0165-gpui-desktop-replaces-the-solid-host.md) replaces the Solid host in [ADR-0139](../adr/0139-solid-desktop-over-native-runtime-views.md).
 [Cockpit](./cockpit.md) remains a separate client. The first release requires
 independent same-terminal views; Linux follows, Intel macOS is not required.
 
