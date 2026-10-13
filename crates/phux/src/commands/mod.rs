@@ -5,6 +5,7 @@ use pair::PairAction;
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::Connection;
 use phux_protocol::wire::frame::{Command as WireCommand, CommandResult, TerminalSignal};
+use rec::RecAction;
 use report::ReportAction;
 use usage::{Args, Subcommands, ValueEnum};
 
@@ -1924,34 +1925,52 @@ pub(crate) enum Command {
     #[usage(
         help = "Record a pane to a cast, GIF, or APNG",
         long_help = "Record a pane and export it as an asciinema cast, an animated GIF, or an APNG.\n\n\
-            TARGET is a selector (default: the focused pane). Recording is a pure observer: \
-            it does not attach the session and never resizes the pane, so it is safe to run \
-            against a live session someone is using.\n\n\
+            TARGET is a selector (default: the focused pane). Recording one pane is a pure \
+            observer: it does not attach the session and never resizes the pane, so it is safe \
+            to run against a live session someone is using.\n\n\
+            --composited records the whole session the way `phux --rec` does (tiled panes, \
+            dividers, status bar, sidebar) into a virtual viewport. It attaches with a zero \
+            size vote, so real panes keep their size. --size is pixels of the recording face \
+            (Spleen 8x16); 1920x1080 is 240x67 cells and is the default.\n\n\
             The format follows the output extension (.cast, .gif, .png, .apng); pass --format \
             to override. Use --from to re-render an existing recording without capturing \
-            anything.\n\n\
+            anything. --speed-marked and --marker-labels apply when rendering a GIF or APNG; \
+            the .cast keeps original timing and asciicast `m` markers.\n\n\
+            `phux rec mark LABEL` posts a marker to every recording in progress (the same \
+            event as C-a M during `phux --rec`).\n\n\
             Examples:\n  \
             phux rec -o demo.gif\n  \
             phux rec work:1.0 -o demo.cast --duration 30\n  \
-            phux rec --from demo.cast -o demo.gif --fps 20"
+            phux rec --composited work --size 1920x1080 -o demo.cast\n  \
+            phux rec --from demo.cast -o demo.gif --speed-marked 2 --marker-labels\n  \
+            phux rec mark \"label\""
     )]
     #[usage(help_heading = "More", display_order = 60)]
     Rec {
-        /// Pane selector. Defaults to the focused pane.
+        #[usage(subcommand)]
+        action: Option<RecAction>,
+
+        /// Pane selector, or the session to composite. Defaults to the
+        /// focused pane, or the attached session with --composited.
         #[usage(value_name = "TARGET")]
         target: Option<String>,
 
         /// Output path. The extension picks the format unless --format is
-        /// given; a path with no extension gets `.gif`.
+        /// given; a path with no extension gets `.gif`. Required to capture
+        /// or re-render; `phux rec mark` does not take it.
         #[usage(short = 'o', long = "out", value_name = "PATH")]
-        out: std::path::PathBuf,
+        out: Option<std::path::PathBuf>,
 
         /// Output format, overriding the extension.
         #[usage(long, value_enum, value_name = "FMT")]
         format: Option<RecFormat>,
 
         /// Re-render an existing .cast instead of capturing a live pane.
-        #[usage(long, value_name = "FILE", conflicts("--target", "--duration"))]
+        #[usage(
+            long,
+            value_name = "FILE",
+            conflicts("--target", "--duration", "--composited")
+        )]
         from: Option<std::path::PathBuf>,
 
         /// Stop after SECS of recording (default: until Ctrl-C or the pane
@@ -1994,6 +2013,25 @@ pub(crate) enum Command {
             validate_error = "must be 2 or 3"
         )]
         cast_version: u8,
+
+        /// Record the session composite at a virtual viewport. Attaches with
+        /// a zero size vote and never resizes real panes.
+        #[usage(long, conflicts("--from"))]
+        composited: bool,
+
+        /// Pixel size of the virtual viewport, `WIDTHxHEIGHT`. `1920x1080` is
+        /// the default. The cast grid is that size floored to an 8x16 cell.
+        #[usage(long, value_name = "WIDTHxHEIGHT", requires("--composited"))]
+        size: Option<String>,
+
+        /// Play each marked span this many times faster when rendering a GIF
+        /// or APNG. Greater than 1 and at most 100. The .cast is unchanged.
+        #[usage(long = "speed-marked", value_name = "FACTOR")]
+        speed_marked: Option<f64>,
+
+        /// Draw the opening marker's label on rendered GIF/APNG frames.
+        #[usage(long = "marker-labels")]
+        marker_labels: bool,
 
         #[usage(flatten)]
         json: JsonOpt,

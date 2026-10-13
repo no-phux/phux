@@ -15,6 +15,11 @@ use phux_core::screen::{CellColor, CellStyle, RenderedCell, RenderedFrame};
 
 use crate::font::{BitmapFont, SPLEEN_8X16, bold_row, boxdraw};
 
+/// Foreground of a marker-label bar. Fixed so the GIF survey can reserve it.
+pub(crate) const MARKER_LABEL_FG: [u8; 3] = [0xff, 0xdc, 0x50];
+/// Background of a marker-label bar.
+pub(crate) const MARKER_LABEL_BG: [u8; 3] = [0x20, 0x18, 0x00];
+
 /// The resolved colour table an export is drawn against.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Theme {
@@ -172,6 +177,41 @@ impl Rasterizer {
                 self.draw_glyph(surface, slot, cell, paint.fg);
                 decorate(surface, slot, &cell.style, paint.fg);
             }
+        }
+    }
+
+    /// Paint `label` on a one-cell bar along the bottom of `surface`.
+    ///
+    /// An empty label paints nothing. Glyphs the face lacks become tofu,
+    /// the same fallback the grid uses.
+    pub(crate) fn overlay_label(&self, surface: &mut Surface, label: &str) {
+        if label.is_empty() || surface.width == 0 || surface.height == 0 {
+            return;
+        }
+        let (cell_w, cell_h) = self.cell_size();
+        let bar_h = cell_h.min(surface.height);
+        let y0 = surface.height.saturating_sub(bar_h);
+        fill_rect(surface, 0, y0, surface.width, bar_h, MARKER_LABEL_BG);
+        let max_cols = surface.width / cell_w.max(1);
+        let mut col = 1_u32;
+        for ch in label.chars() {
+            if col.saturating_add(1) >= max_cols || ch.is_control() {
+                if ch.is_control() {
+                    continue;
+                }
+                break;
+            }
+            let slot = Slot {
+                x: col.saturating_mul(cell_w),
+                y: y0,
+                w: cell_w,
+                h: bar_h,
+            };
+            match self.font.glyph(ch) {
+                Some(bitmap) => draw_bitmap(surface, slot, 0, bitmap, false, MARKER_LABEL_FG),
+                None => draw_tofu(surface, slot, MARKER_LABEL_FG),
+            }
+            col = col.saturating_add(1);
         }
     }
 
@@ -737,5 +777,22 @@ mod tests {
             );
         }
         assert!(matches!(raster.glyph_of("\u{6f22}"), Glyph::Tofu));
+    }
+
+    #[test]
+    fn a_marker_label_paints_a_bar_along_the_bottom() {
+        let raster = Rasterizer::new(Theme::default());
+        let mut surface = raster.surface_for(20, 4);
+        raster.overlay_label(&mut surface, "intro");
+        let bottom = surface.height - 1;
+        assert_eq!(px(&surface, 0, bottom), MARKER_LABEL_BG);
+        // The first glyph column is padding; 'i' starts one cell in.
+        assert!(
+            surface.pixels.contains(&MARKER_LABEL_FG),
+            "the label must paint foreground pixels"
+        );
+        raster.overlay_label(&mut surface, "");
+        // An empty label leaves the previous bar alone rather than clearing it.
+        assert_eq!(px(&surface, 0, bottom), MARKER_LABEL_BG);
     }
 }

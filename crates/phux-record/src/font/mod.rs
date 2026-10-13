@@ -80,6 +80,12 @@ mod tests {
     }
 
     #[test]
+    fn the_face_matches_the_published_cell_size() {
+        assert_eq!(SPLEEN_8X16.cell_w, crate::FACE_CELL_WIDTH_PX);
+        assert_eq!(SPLEEN_8X16.cell_h, crate::FACE_CELL_HEIGHT_PX);
+    }
+
+    #[test]
     fn ranges_are_sorted_and_non_overlapping() {
         // `glyph` binary-searches.
         let mut prev_end = None;

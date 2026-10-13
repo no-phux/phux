@@ -217,6 +217,7 @@ Default prefix `C-a`. Override it in one line of config.
 | `C-a A` | `agent-fleet` |
 | `C-a S` | `settings` |
 | `C-a B` | `report-bug` (local bug-report bundle) |
+| `C-a M` | `rec-mark` (asciicast marker while `phux --rec` is capturing) |
 | `C-a q` / `C-a Q` | `next-attention` / `return-from-attention` |
 | `C-a C` | `new-session` (focused pane's host and directory, or `cwd` / `host`) |
 | `C-a N` / `C-a P` | `next-session` / `previous-session` |

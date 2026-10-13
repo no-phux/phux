@@ -1,7 +1,9 @@
 //! `phux rec` — capture a pane and export it as a cast, a GIF, or an APNG
 //! (ADR-0060). [`run_rec`] is the headless verb (a pure observer via
-//! `phux_client::record`); [`finalize`] is the tail of the interactive `--rec`
-//! path, whose cast is already on disk. Both go through [`spec::plan`].
+//! `phux_client::record`, or a zero-vote composited attach); [`finalize`] is
+//! the tail of the interactive `--rec` path, whose cast is already on disk.
+//! Both go through [`spec::plan`]. [`run_mark`] posts an asciicast `m` event
+//! to every recording in progress.
 //!
 //! stdout carries only the completion line (or one JSON object under
 //! `--json`); diagnostics go to stderr, and only on the headless path, since
@@ -9,7 +11,7 @@
 
 pub(crate) mod spec;
 
-use std::io::{BufReader, BufWriter, Write as _};
+use std::io::{self, BufReader, BufWriter, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -20,6 +22,7 @@ use phux_record::error::RecordError;
 use phux_record::render::{OutputFormat, RenderOptions, render_cast};
 use phux_record::timeline::clamp_idle;
 use phux_server::runtime::default_socket_path;
+use usage::Subcommands;
 
 use crate::commands::{RecFormat, cli_runtime, json_err, parse_selector, resolve_target};
 
@@ -27,6 +30,25 @@ pub(crate) use spec::RecordSpec;
 
 /// How often the headless capture repaints its stderr progress line.
 const PROGRESS_PERIOD: Duration = Duration::from_millis(250);
+
+/// Pixel size of a composited capture when `--size` is omitted: 1080p.
+const DEFAULT_COMPOSITE_WIDTH_PX: u32 = 1920;
+const DEFAULT_COMPOSITE_HEIGHT_PX: u32 = 1080;
+
+/// Longest marker label `phux rec mark` accepts.
+const MARK_LABEL_MAX_CHARS: usize = 256;
+
+/// Subcommands of `phux rec`. Absent, the verb captures or re-renders.
+#[derive(Debug, Subcommands)]
+pub(crate) enum RecAction {
+    /// Post an asciicast marker to every recording in progress.
+    Mark {
+        /// Label stored on the marker. At most 256 characters; empty is allowed.
+        label: String,
+        #[usage(flatten)]
+        json: super::JsonOpt,
+    },
+}
 
 /// Everything `phux rec` was asked to do.
 #[derive(Debug)]
@@ -54,12 +76,24 @@ pub(crate) struct RecArgs<'a> {
     pub(crate) json: bool,
     /// Override the UDS path.
     pub(crate) socket: Option<PathBuf>,
+    /// Capture the session composite at a virtual viewport.
+    pub(crate) composited: bool,
+    /// `WIDTHxHEIGHT` pixels for [`Self::composited`]. `None` is `1920x1080`.
+    pub(crate) size: Option<&'a str>,
+    /// Render-time factor for marker spans. The archival cast is unchanged.
+    pub(crate) speed_marked: Option<f64>,
+    /// Draw opening-marker labels while rendering GIF/APNG.
+    pub(crate) marker_labels: bool,
 }
 
 /// Run `phux rec`. Capture subscribes with `ATTACH_RESOURCE` and never
 /// attaches or resizes, so it is safe on a live session. Ctrl-C is success: what
 /// was captured is written and exported.
 pub(crate) fn run_rec(args: RecArgs<'_>) -> ExitCode {
+    let speed_marked = match checked_speed(args.speed_marked, args.json) {
+        Ok(speed) => speed,
+        Err(code) => return code,
+    };
     let spec = match spec::plan(args.out, args.format) {
         Ok(spec) => spec,
         Err(code) => return code,
@@ -67,19 +101,33 @@ pub(crate) fn run_rec(args: RecArgs<'_>) -> ExitCode {
     let version = cast_version(args.cast_version);
     let idle_limit = idle_limit(args.idle_limit);
 
-    // Source the timeline: either an existing cast (`--from`, no server in
-    // the picture at all) or a live capture.
-    let (header, mut events) = match args.from {
-        Some(from) => match read_cast_file(from) {
+    // Source the timeline: an existing cast (`--from`, no server), a
+    // composited session (`--composited`, zero viewport), or one pane.
+    let (mut header, mut events) = if let Some(from) = args.from {
+        match read_cast_file(from) {
             Ok(pair) => pair,
             Err(err) => {
                 eprintln!("phux: rec: cannot read {}: {err}", from.display());
                 return ExitCode::FAILURE;
             }
-        },
+        }
+    } else if args.composited {
+        match capture_composited(
+            args.target,
+            args.socket,
+            &spec.cast_path,
+            args.size,
+            version,
+            args.duration.map(Duration::from_secs),
+            args.json,
+        ) {
+            Ok(pair) => pair,
+            Err(code) => return code,
+        }
+    } else {
         // `args.socket` moves in here, which is the whole reason this takes
         // the args by value: the capture owns the path it dials.
-        None => match capture(
+        match capture(
             args.target,
             args.socket,
             args.duration.map(Duration::from_secs),
@@ -88,12 +136,19 @@ pub(crate) fn run_rec(args: RecArgs<'_>) -> ExitCode {
         ) {
             Ok(pair) => pair,
             Err(code) => return code,
-        },
+        }
     };
+
+    // A fresh capture records the clamp it applied. `--from` keeps the
+    // limit the source cast already declares.
+    if args.from.is_none() {
+        header.idle_time_limit = idle_limit;
+    }
 
     // Clamped once, on the shared list, before both the cast write and the
     // render — so the archival `.cast` and the GIF derived from it can never
-    // disagree about how long a pause was.
+    // disagree about how long a pause was. Marker speed is render-only and
+    // is applied inside `render_cast`, so this file stays re-renderable.
     clamp_idle(&mut events, idle_limit);
 
     if let Err(err) = write_cast_file(&spec.cast_path, &header, &events, version) {
@@ -104,10 +159,24 @@ pub(crate) fn run_rec(args: RecArgs<'_>) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    if !args.json
+        && spec.format == OutputFormat::Cast
+        && (speed_marked.is_some() || args.marker_labels)
+    {
+        eprintln!(
+            "phux: rec: --speed-marked and --marker-labels apply when rendering a GIF or APNG; \
+             {path} keeps the original timing and marker events. Re-render with \
+             `phux rec --from {path} -o demo.gif --speed-marked 2`",
+            path = spec.cast_path.display(),
+        );
+    }
+
     let opts = RenderOptions {
         fps: args.fps,
         idle_limit,
         max_bytes: args.max_bytes,
+        speed_marked,
+        marker_labels: args.marker_labels,
         ..RenderOptions::default()
     };
     match export(&spec, &header, &events, &opts) {
@@ -208,6 +277,280 @@ fn capture(
                 Err(ExitCode::FAILURE)
             }
         }
+    })
+}
+
+/// Record the session composite into `cast_path` at a virtual cell grid.
+///
+/// The attach votes a zero viewport, so the server resizes no pane. The
+/// grid comes from `--size` pixels (default `1920x1080`) floored to the
+/// recording face.
+fn capture_composited(
+    target: Option<&str>,
+    socket: Option<PathBuf>,
+    cast_path: &Path,
+    size: Option<&str>,
+    version: CastVersion,
+    max_duration: Option<Duration>,
+    json: bool,
+) -> Result<(CastHeader, Vec<CastEvent>), ExitCode> {
+    let (cols, rows) = composite_cells(size, json)?;
+    let socket_path = socket.unwrap_or_else(default_socket_path);
+    let rt = cli_runtime()?;
+    let cast_path = cast_path.to_path_buf();
+
+    rt.block_on(async move {
+        let attach_target = composited_attach_target(target, &socket_path, json).await?;
+
+        let live_progress = !json && std::io::IsTerminal::is_terminal(&std::io::stderr());
+        let mut last_tick = None::<Duration>;
+        let progress = |elapsed: Duration, events: u64| {
+            if !live_progress {
+                return;
+            }
+            if last_tick.is_some_and(|last| elapsed.saturating_sub(last) < PROGRESS_PERIOD) {
+                return;
+            }
+            last_tick = Some(elapsed);
+            eprint!(
+                "\rrecording... {}s ({events} events, {cols}x{rows})",
+                elapsed.as_secs()
+            );
+            let _ = std::io::stderr().flush();
+        };
+
+        let recorded = phux_tui::attach::record_composited(
+            &socket_path,
+            attach_target,
+            phux_tui::attach::CompositedCapture {
+                cast_path: &cast_path,
+                cols,
+                rows,
+                version,
+                max_duration,
+            },
+            progress,
+        )
+        .await;
+        if live_progress {
+            eprintln!();
+        }
+
+        match recorded {
+            Ok(()) => read_cast_file(&cast_path).map_err(|err| {
+                eprintln!("phux: rec: cannot read back {}: {err}", cast_path.display());
+                ExitCode::FAILURE
+            }),
+            Err(err @ (AttachError::Io(_) | AttachError::Disconnected))
+                if !cast_has_bytes(&cast_path) && dial_failure(&err) =>
+            {
+                Err(json_err::report_no_server(json, &err, &socket_path, "rec"))
+            }
+            Err(err) => {
+                eprintln!("phux: rec failed: {err}");
+                if cast_has_bytes(&cast_path) {
+                    eprintln!("      a partial capture is at {}", cast_path.display());
+                }
+                Err(ExitCode::FAILURE)
+            }
+        }
+    })
+}
+
+/// Whether `path` already holds a cast header, so a later error is a
+/// partial recording and the dial failure is a missing server.
+fn cast_has_bytes(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|meta| meta.len() > 0)
+}
+
+/// Connect failures the pane recorder also reports as "no server".
+fn dial_failure(err: &AttachError) -> bool {
+    match err {
+        AttachError::Disconnected => true,
+        AttachError::Io(err) => matches!(
+            err.kind(),
+            io::ErrorKind::ConnectionRefused
+                | io::ErrorKind::ConnectionReset
+                | io::ErrorKind::ConnectionAborted
+                | io::ErrorKind::NotFound
+                | io::ErrorKind::TimedOut
+                | io::ErrorKind::AddrNotAvailable
+                | io::ErrorKind::NetworkUnreachable
+        ),
+        _ => false,
+    }
+}
+
+/// Cell grid for `--size`, or 240x67 when the flag is omitted.
+fn composite_cells(size: Option<&str>, json: bool) -> Result<(u16, u16), ExitCode> {
+    let (width, height) = match size {
+        None => (DEFAULT_COMPOSITE_WIDTH_PX, DEFAULT_COMPOSITE_HEIGHT_PX),
+        Some(text) => phux_record::parse_pixel_size(text).ok_or_else(|| {
+            json_err::emit(
+                json,
+                &json_err::CliError::new(
+                    json_err::codes::IO,
+                    format!("--size {text:?} is not WIDTHxHEIGHT pixels"),
+                    "pass a size such as 1920x1080; both numbers must be greater than 0",
+                ),
+                2,
+            )
+        })?,
+    };
+    Ok(phux_record::cells_for_pixels(width, height))
+}
+
+/// The session a composited recording attaches to. A bare session name (or
+/// no TARGET) attaches as written; any other selector resolves to its pane
+/// first and attaches that pane's session.
+async fn composited_attach_target(
+    session: Option<&str>,
+    socket_path: &Path,
+    json: bool,
+) -> Result<phux_protocol::wire::frame::AttachTarget, ExitCode> {
+    use phux_client::selector::Selector;
+    use phux_protocol::wire::frame::AttachTarget;
+    let Some(raw) = session else {
+        return Ok(AttachTarget::Last);
+    };
+    let selector = parse_selector(Some(raw))?;
+    if let Selector::Session(name) = selector {
+        return Ok(AttachTarget::ByName(name));
+    }
+    let pane = resolve_target(socket_path, &selector, "rec", json).await?;
+    let snapshot = phux_client::state::get_state(socket_path)
+        .await
+        .map_err(|err| json_err::report_no_server(json, &err, socket_path, "rec"))?
+        .into_snapshot_ignoring_degradation();
+    let Some(name) = session_name_of_pane(&snapshot, &pane) else {
+        return Err(json_err::emit(
+            json,
+            &json_err::CliError::new(
+                json_err::codes::NO_SUCH_TARGET,
+                format!("{raw} is not in a local session that can be recorded"),
+                "pass a session name, or a pane selector in a local session",
+            ),
+            1,
+        ));
+    };
+    Ok(AttachTarget::ByName(name))
+}
+
+/// The name of the session that holds `pane`.
+fn session_name_of_pane(
+    snapshot: &phux_protocol::wire::info::SessionSnapshot,
+    pane: &phux_protocol::ids::ResourceId,
+) -> Option<String> {
+    let session = phux_client::spawn::ownership_for_terminal(snapshot, pane)?;
+    snapshot
+        .sessions
+        .iter()
+        .find(|candidate| candidate.id == session)
+        .map(|session| session.name.clone())
+}
+
+/// `phux rec` without `--out`. `phux rec mark` never reaches here.
+pub(crate) fn missing_out(json: bool) -> ExitCode {
+    json_err::emit(
+        json,
+        &json_err::CliError::new(
+            json_err::codes::IO,
+            "rec needs --out PATH to capture or re-render",
+            "`phux rec -o demo.cast` records; `phux rec mark LABEL` posts a marker and writes no file",
+        ),
+        2,
+    )
+}
+
+/// `phux rec mark LABEL`: append one asciicast marker to every live inbox.
+pub(crate) fn run_mark(label: &str, json: bool) -> ExitCode {
+    if label.chars().count() > MARK_LABEL_MAX_CHARS {
+        return json_err::emit(
+            json,
+            &json_err::CliError::new(
+                json_err::codes::IO,
+                format!("marker label is longer than {MARK_LABEL_MAX_CHARS} characters"),
+                "shorten the label; an empty label is a legal marker",
+            ),
+            2,
+        );
+    }
+    if label.contains(['\n', '\r']) {
+        return json_err::emit(
+            json,
+            &json_err::CliError::new(
+                json_err::codes::IO,
+                "a marker label cannot contain a newline",
+                "pass a single-line label",
+            ),
+            2,
+        );
+    }
+    match phux_record::post_mark(label) {
+        Ok(0) => json_err::emit(
+            json,
+            &json_err::CliError::new(
+                json_err::codes::IO,
+                "no live recording to mark",
+                "start a recording with `phux rec` or `phux --rec`, then run `phux rec mark` again",
+            ),
+            1,
+        ),
+        Ok(recordings) => {
+            if json {
+                outln!("{}", mark_json(label, recordings));
+            } else {
+                let noun = if recordings == 1 {
+                    "recording"
+                } else {
+                    "recordings"
+                };
+                if label.is_empty() {
+                    outln!("phux: marked {recordings} {noun}");
+                } else {
+                    outln!("phux: marked {recordings} {noun} ({label})");
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(err) => json_err::emit(
+            json,
+            &json_err::CliError::new(
+                json_err::codes::IO,
+                format!("could not post a marker: {err}"),
+                "check that the mark directory is writable (`PHUX_REC_MARK_DIR` or $XDG_RUNTIME_DIR/phux-rec-marks)",
+            ),
+            1,
+        ),
+    }
+}
+
+/// `--speed-marked` must sit in `(1, 100]`. `None` leaves timing alone.
+fn checked_speed(speed: Option<f64>, json: bool) -> Result<Option<f64>, ExitCode> {
+    let Some(speed) = speed else {
+        return Ok(None);
+    };
+    if speed.is_finite() && speed > 1.0 && speed <= 100.0 {
+        return Ok(Some(speed));
+    }
+    Err(json_err::emit(
+        json,
+        &json_err::CliError::new(
+            json_err::codes::IO,
+            format!("--speed-marked must be greater than 1 and at most 100 (got {speed})"),
+            "pass a factor such as 2, or omit the flag to keep original timing",
+        ),
+        2,
+    ))
+}
+
+/// The `phux rec mark --json` result. `recordings` is how many inboxes
+/// accepted the label.
+fn mark_json(label: &str, recordings: usize) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "label": label,
+        "recordings": recordings,
     })
 }
 
@@ -464,8 +807,8 @@ fn idle_limit(secs: f64) -> Option<f64> {
 )]
 mod tests {
     use super::{
-        RecOutcome, cast_version, human_bytes, human_duration, idle_limit, into_timeline,
-        parse_resize, rec_json,
+        RecOutcome, cast_version, checked_speed, composite_cells, human_bytes, human_duration,
+        idle_limit, into_timeline, mark_json, parse_resize, rec_json,
     };
     use phux_client::record::HeadlessRecording;
     use phux_record::cast::{CastEvent, CastVersion, EventCode};
@@ -575,5 +918,36 @@ mod tests {
     fn human_duration_reads_in_seconds() {
         assert_eq!(human_duration(42_130), "42.1s");
         assert_eq!(human_duration(0), "0.0s");
+    }
+
+    #[test]
+    fn mark_json_pins_label_and_recording_count() {
+        let doc = mark_json("intro", 2);
+        assert_eq!(doc["schema_version"], 1);
+        assert_eq!(doc["label"], "intro");
+        assert_eq!(doc["recordings"], 2);
+        assert_eq!(doc.as_object().map(serde_json::Map::len), Some(3));
+    }
+
+    #[test]
+    fn speed_marked_accepts_an_integer_factor_above_one() {
+        assert_eq!(checked_speed(None, false).expect("absent"), None);
+        assert_eq!(checked_speed(Some(2.0), false).expect("2x"), Some(2.0));
+        assert_eq!(checked_speed(Some(100.0), false).expect("cap"), Some(100.0));
+        assert!(checked_speed(Some(1.0), false).is_err());
+        assert!(checked_speed(Some(0.5), false).is_err());
+        assert!(checked_speed(Some(101.0), false).is_err());
+        assert!(checked_speed(Some(f64::NAN), false).is_err());
+    }
+
+    #[test]
+    fn composite_size_defaults_to_1080p_cells() {
+        assert_eq!(composite_cells(None, false).expect("default"), (240, 67));
+        assert_eq!(
+            composite_cells(Some("1920x1080"), false).expect("explicit"),
+            (240, 67)
+        );
+        assert!(composite_cells(Some("0x1080"), false).is_err());
+        assert!(composite_cells(Some("wide"), false).is_err());
     }
 }

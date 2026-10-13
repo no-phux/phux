@@ -39,5 +39,5 @@ pub use entry::{
     connect_for_attach, run_recorded_connection, run_recorded_dial, run_with_predict_connection,
     run_with_predict_dial, run_with_stdout,
 };
-pub use headless::run_headless_rendered;
+pub use headless::{CompositedCapture, record_composited, run_headless_rendered};
 pub use terminal::write_terminal_reset;

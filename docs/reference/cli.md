@@ -2788,51 +2788,100 @@ Global flags:
 ```text
 Record a pane and export it as an asciinema cast, an animated GIF, or an APNG.
 
-TARGET is a selector (default: the focused pane). Recording is a pure observer:
-it does not attach the session and never resizes the pane, so it is safe to run
-against a live session someone is using.
+TARGET is a selector (default: the focused pane). Recording one pane is a pure
+observer: it does not attach the session and never resizes the pane, so it is
+safe to run against a live session someone is using.
+
+--composited records the whole session the way `phux --rec` does (tiled panes,
+dividers, status bar, sidebar) into a virtual viewport. It attaches with a zero
+size vote, so real panes keep their size. --size is pixels of the recording face
+(Spleen 8x16); 1920x1080 is 240x67 cells and is the default.
 
 The format follows the output extension (.cast, .gif, .png, .apng); pass
 --format to override. Use --from to re-render an existing recording without
-capturing anything.
+capturing anything. --speed-marked and --marker-labels apply when rendering a
+GIF or APNG; the .cast keeps original timing and asciicast `m` markers.
+
+`phux rec mark LABEL` posts a marker to every recording in progress (the same
+event as C-a M during `phux --rec`).
 
 Examples:
 phux rec -o demo.gif
 phux rec work:1.0 -o demo.cast --duration 30
-phux rec --from demo.cast -o demo.gif --fps 20
+phux rec --composited work --size 1920x1080 -o demo.cast
+phux rec --from demo.cast -o demo.gif --speed-marked 2 --marker-labels
+phux rec mark "label"
 
-Usage: phux rec <FLAGS> [TARGET]
+Usage: phux rec [FLAGS] [TARGET] [SUBCOMMAND]
+
+Commands:
+  mark  Post an asciicast marker to every recording in progress.
+  help  Print this message or the help of the given subcommand(s)
 
 Arguments:
-  [TARGET]  Pane selector. Defaults to the focused pane.
+  [TARGET]  Pane selector, or the session to composite. Defaults to the focused
+            pane, or the attached session with --composited.
 
 Flags:
-  -o, --out <PATH>         Output path. The extension picks the format unless
-                           --format is given; a path with no extension gets
-                           `.gif`.
-      --format <FMT>       Output format, overriding the extension.
-                           [possible values: cast, gif, apng]
-      --from <FILE>        Re-render an existing .cast instead of capturing a
-                           live pane.
-      --duration <SECS>    Stop after SECS of recording (default: until Ctrl-C
-                           or the pane exits).
-      --fps <FPS>          Animation sample rate for GIF/APNG output.
-                           (default: 10)
-      --idle-limit <SECS>  Collapse any pause longer than SECS down to SECS. 0
-                           disables.
-                           (default: 2.0)
-      --max-bytes <BYTES>  Stop encoding and warn once the output reaches BYTES.
-                           (default: 8388608)
-      --cast-version <N>   asciicast format version to write (2 is the
-                           interoperable default).
-                           (default: 2)
-      --json               Emit stable, versioned JSON on stdout instead of the
-                           human view. On failure, stdout stays empty and stderr
-                           carries one JSON error object.
-  -h, --help               Print help
+  -o, --out <PATH>             Output path. The extension picks the format
+                               unless --format is given; a path with no
+                               extension gets `.gif`. Required to capture or
+                               re-render; `phux rec mark` does not take it.
+      --format <FMT>           Output format, overriding the extension.
+                               [possible values: cast, gif, apng]
+      --from <FILE>            Re-render an existing .cast instead of capturing
+                               a live pane.
+      --duration <SECS>        Stop after SECS of recording (default: until
+                               Ctrl-C or the pane exits).
+      --fps <FPS>              Animation sample rate for GIF/APNG output.
+                               (default: 10)
+      --idle-limit <SECS>      Collapse any pause longer than SECS down to SECS.
+                               0 disables.
+                               (default: 2.0)
+      --max-bytes <BYTES>      Stop encoding and warn once the output reaches
+                               BYTES.
+                               (default: 8388608)
+      --cast-version <N>       asciicast format version to write (2 is the
+                               interoperable default).
+                               (default: 2)
+      --composited             Record the session composite at a virtual
+                               viewport. Attaches with a zero size vote and
+                               never resizes real panes.
+      --size <WIDTHxHEIGHT>    Pixel size of the virtual viewport,
+                               `WIDTHxHEIGHT`. `1920x1080` is the default. The
+                               cast grid is that size floored to an 8x16 cell.
+      --speed-marked <FACTOR>  Play each marked span this many times faster when
+                               rendering a GIF or APNG. Greater than 1 and at
+                               most 100. The .cast is unchanged.
+      --marker-labels          Draw the opening marker's label on rendered
+                               GIF/APNG frames.
+      --json                   Emit stable, versioned JSON on stdout instead of
+                               the human view. On failure, stdout stays empty
+                               and stderr carries one JSON error object.
+  -h, --help                   Print help
 
 Global flags:
-      --socket <PATH>      Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>          Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux rec mark`
+
+```text
+Post an asciicast marker to every recording in progress.
+
+Usage: phux rec mark [--json] <LABEL>
+
+Arguments:
+  <LABEL>  Label stored on the marker. At most 256 characters; empty is allowed.
+
+Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux relaunch`

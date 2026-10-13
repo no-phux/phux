@@ -70,6 +70,7 @@ The **Palette** column is the command-palette section the action is offered unde
 | `reload-config` | View |  | Reload the config file (keybindings, theme, status bar) |
 | `settings` | View |  | Settings: browse, search, and edit every option in place |
 | `report-bug` | View | `note?` (optional free-text description) | Write a local bug report (session, logs, screen) and copy its path |
+| `rec-mark` | View | `label?` (bare chord writes an empty marker) | Drop an asciicast marker into the recording in progress |
 
 Why the dash rows have no palette entry:
 

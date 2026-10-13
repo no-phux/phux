@@ -778,11 +778,14 @@ question, suggestions, elapsed_seconds }` after the server accepts.
 
 `rec --json`: `{ schema_version, path, format, bytes, duration_ms,
 frames, cols, rows, truncated }`. `format` is `cast`, `gif`, or `apng`.
-`duration_ms` is the recording's timeline after the idle clamp, not wall
-time. `frames` is encoded animation frames; for `cast` it is the event
-count. `truncated` is true when encoding stopped at `--max-bytes`: the
-file is still a complete playable container. A failed *export* is exit
-1 but keeps the captured `.cast`. Full surface in
+`duration_ms` is the exported timeline after the idle clamp. For GIF and
+APNG it is also after `--speed-marked` shortens marker spans; a `.cast`
+keeps the original `m` times. `frames` is encoded animation frames; for
+`cast` it is the event count. `truncated` is true when encoding stopped
+at `--max-bytes`: the file is still a complete playable container. A
+failed *export* is exit 1 but keeps the captured `.cast`.
+`rec mark --json` returns `{ schema_version, label, recordings }` and
+writes no file; exit 1 when nothing is recording. Full surface in
 [the recording guide](./recording.md).
 
 `play --json`: `{ schema_version, terminal_id, path, cols, rows, events,

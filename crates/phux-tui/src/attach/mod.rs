@@ -23,6 +23,7 @@ mod exec_widgets;
 mod fleet;
 mod floating;
 mod focus;
+mod frame_vt;
 pub mod hosts;
 mod paste_safety;
 mod path_picker;
@@ -66,8 +67,9 @@ pub use phux_client::attach::{
 };
 
 pub use driver::{
-    connect_for_attach, run_headless_rendered, run_recorded_connection, run_recorded_dial,
-    run_with_predict_connection, run_with_predict_dial, run_with_stdout, write_terminal_reset,
+    CompositedCapture, connect_for_attach, record_composited, run_headless_rendered,
+    run_recorded_connection, run_recorded_dial, run_with_predict_connection, run_with_predict_dial,
+    run_with_stdout, write_terminal_reset,
 };
 
 // ADR-0127: the CLI declares `--viewer` / `--take` once, before it dials.
