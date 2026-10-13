@@ -383,8 +383,9 @@ fn session_switch_row(session: &phux_protocol::wire::info::SessionInfo) -> Selec
 /// [`session_picker_items`]; otherwise the attached server's sessions under
 /// `here`, then each hub satellite and each other machine under its own
 /// header (kept, marked unreachable, when it could not be listed). A
-/// satellite row commits `switch-session { name, host }`; a machine row
-/// commits `switch-host { host, name }` (ADR-0140).
+/// satellite row commits `switch-session { name, host, id }` (`id` is the
+/// satellite-local session id); a machine row commits `switch-host { host, name }`
+/// (ADR-0140).
 pub(super) fn host_grouped_session_items(
     sessions: &[phux_protocol::wire::info::SessionInfo],
     focused: Option<phux_protocol::ids::SessionId>,
@@ -525,6 +526,12 @@ fn satellite_session_item(
     args.insert(
         "host".to_owned(),
         toml::Value::String(host.host.to_string()),
+    );
+    // Satellite-local id. The row still opens by name + host; the id is
+    // what keeps the picker selection on this session across a rename.
+    args.insert(
+        "id".to_owned(),
+        toml::Value::Integer(i64::from(session.id.get())),
     );
     SelectItem::new(
         session.name.clone(),

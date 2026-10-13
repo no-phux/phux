@@ -1434,6 +1434,71 @@ fn session_picker_puts_sessions_that_need_you_first() {
     assert_eq!(items[1].secondary.as_deref(), Some("2 need you, ephemeral"));
 }
 
+/// phux-kmlrz: a live rename reorders the name-sorted picker. Selection
+/// stays on the renamed session's host-qualified id, not the neighbor that
+/// slid into the old index and not a same-numbered session on another host.
+#[test]
+fn session_picker_keeps_selection_across_a_live_rename() {
+    use crate::render::overlay::{OverlayCommand, RenderOverlay, SelectList};
+    use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
+
+    let before = session_picker_items(
+        &[sinfo(1, "alpha"), sinfo(2, "beta"), sinfo(3, "gamma")],
+        None,
+        &SessionCounts::default(),
+    );
+    let mut renamed = session_picker_items(
+        &[sinfo(1, "alpha"), sinfo(2, "zzz"), sinfo(3, "gamma")],
+        None,
+        &SessionCounts::default(),
+    );
+    let logs = host_grouped_session_items(
+        &[],
+        None,
+        &SessionCounts::default(),
+        LOCAL_HOST_HEADER,
+        &host_fixture(),
+        &[],
+        &ArrangementDoc::single(tid(1)),
+    )
+    .into_iter()
+    .find(|item| item.label == "logs")
+    .expect("satellite logs row");
+    assert_eq!(logs.action.args.get("id"), Some(&Value::Integer(2)));
+    assert_eq!(
+        logs.action.args.get("host"),
+        Some(&Value::String("edge".to_owned()))
+    );
+    renamed.insert(0, logs);
+
+    let press = |key| KeyEvent {
+        action: KeyAction::Press,
+        key,
+        mods: ModSet::empty(),
+        consumed_mods: ModSet::empty(),
+        composing: false,
+        text: None,
+        unshifted_codepoint: None,
+    };
+    let mut picker = SelectList::new("Sessions", before, &Theme::default())
+        .with_live_key(SESSION_PICKER_LIVE_KEY);
+    assert_eq!(
+        picker.handle_key(&press(PhysicalKey::ArrowDown)),
+        OverlayCommand::Stay
+    );
+    assert!(picker.refresh_items(SESSION_PICKER_LIVE_KEY, &renamed));
+    let OverlayCommand::Commit(resolved) = picker.handle_key(&press(PhysicalKey::Enter)) else {
+        panic!("the renamed session should still be the highlighted row");
+    };
+    assert_eq!(resolved.action, "switch-session");
+    assert_eq!(
+        resolved.args.get("name"),
+        Some(&Value::String("zzz".to_owned()))
+    );
+    assert_eq!(resolved.args.get("id"), Some(&Value::Integer(2)));
+    assert!(!resolved.args.contains_key("host"));
+}
+
 /// The session picker always opens (its "+ New session" row is never a dead
 /// end) and asks the driver for a fresh host inventory.
 #[test]
@@ -1741,7 +1806,7 @@ fn host_fixture() -> Vec<HostInventory> {
 }
 
 /// The picker groups under a header per host, keeps an unreachable host
-/// visible, commits `switch-session { name, host }` for a satellite, and
+/// visible, commits `switch-session { name, host, id }` for a satellite, and
 /// marks a satellite session already open here. No inventory: ungrouped.
 #[test]
 fn session_picker_groups_rows_by_host() {
