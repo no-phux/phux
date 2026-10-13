@@ -407,81 +407,6 @@ impl From<outcome::PathResult> for WirePathAnswer {
     }
 }
 
-/// One session visible in the server's ATTACHED snapshot.
-#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
-pub struct SessionDescriptor {
-    pub id: u32,
-    pub name: String,
-    pub window_count: u16,
-    pub attached_client_count: u16,
-}
-
-impl From<topology::Session> for SessionDescriptor {
-    fn from(value: topology::Session) -> Self {
-        Self {
-            id: value.id,
-            name: value.name,
-            window_count: value.window_count,
-            attached_client_count: value.attached_client_count,
-        }
-    }
-}
-
-/// One pane (terminal) visible in the server's ATTACHED snapshot,
-/// denormalized with its window/session context so Swift needs no joins.
-#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
-pub struct PaneDescriptor {
-    /// Stable string form of the wire `ResourceId` (e.g. "local:7"); the key
-    /// Swift hands back to target this pane.
-    pub terminal_id: String,
-    pub session_id: u32,
-    pub session_name: String,
-    pub window_id: u32,
-    pub window_index: u16,
-    pub window_name: String,
-    pub title: Option<String>,
-    pub cwd: Option<String>,
-    /// Whether this pane is the attaching client's initial focus.
-    pub is_focused: bool,
-}
-
-impl From<topology::Pane> for PaneDescriptor {
-    fn from(value: topology::Pane) -> Self {
-        Self {
-            terminal_id: value.terminal_id,
-            session_id: value.session_id,
-            session_name: value.session_name,
-            window_id: value.window_id,
-            window_index: value.window_index,
-            window_name: value.window_name,
-            title: value.title,
-            cwd: value.cwd,
-            is_focused: value.is_focused,
-        }
-    }
-}
-
-/// The session/window/pane graph from the ATTACHED frame, projected for the
-/// home screen. One connection sees exactly one session (SPEC §13), so the
-/// sessions list is the attached session (plus any the server adds later).
-#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
-pub struct SessionTopology {
-    pub sessions: Vec<SessionDescriptor>,
-    pub panes: Vec<PaneDescriptor>,
-    /// String form of the attaching client's initial focused pane.
-    pub focused_pane: String,
-}
-
-impl From<topology::SessionGraph> for SessionTopology {
-    fn from(value: topology::SessionGraph) -> Self {
-        Self {
-            sessions: value.sessions.into_iter().map(Into::into).collect(),
-            panes: value.panes.into_iter().map(Into::into).collect(),
-            focused_pane: value.focused_pane,
-        }
-    }
-}
-
 /// A state change pushed by the server, drained by Swift via `take_events()`
 /// on the poll cadence. Wire-faithful naming: `OutputStarted`/`OutputSettled`
 /// mirror the server's coalesced `Dirty`/`Idle` burst events — Swift maps
@@ -491,6 +416,37 @@ pub enum WireEvent {
     /// The session graph changed (a fresh ATTACHED arrived) — re-read
     /// `topology()`.
     TopologyChanged,
+    /// The organization replica changed (a seed, a journal event, a
+    /// refetch) — re-read `topology()` and `inbox()`.
+    OrganizationChanged,
+    /// The organization records could not be read.
+    OrganizationUnavailable { message: String },
+    /// A submitted organization operation resolved. `operation` is the id
+    /// the submitting call returned (32 hex digits). `status` is
+    /// `committed`, `accepted`, `refused`, `error`, `unknown`, or
+    /// `not_sent`; `unknown` means reconcile before acting again.
+    /// `refusal` is the refusal code (`0` unless refused). `undoable` says
+    /// the committed receipt is retained for `undo`.
+    OrganizationOperation {
+        operation: String,
+        status: String,
+        refusal: u32,
+        refusal_word: String,
+        conflict_revision: Option<u64>,
+        revision: Option<u64>,
+        message: String,
+        undoable: bool,
+    },
+    /// A kill-session workflow ended. `workflow` is the id `kill_session`
+    /// returned. `status` is `committed` when the session went away,
+    /// `partial` when some members were removed and the session stayed,
+    /// else `refused` or `unknown`.
+    KillFinished {
+        workflow: u64,
+        status: String,
+        message: String,
+        targets: Vec<OrgTargetResult>,
+    },
     /// A new pane appeared mid-session. The server pumps output only to the
     /// spawning client; when the spawner is someone else, the bridge has
     /// already sent `ATTACH_TERMINAL` for the pane on the live socket
