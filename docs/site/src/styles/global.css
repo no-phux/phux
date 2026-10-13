@@ -1300,6 +1300,23 @@ html:has(.docs-navigation-dialog[open]) {
   gap: 2.75rem;
   margin: 0 0 2rem;
 }
+.overview-pitch p {
+  margin: 0;
+  max-width: 68ch;
+  font-size: 1.0625rem;
+  line-height: 1.65;
+}
+.overview-pitch .overview-ios {
+  margin-top: 0.75rem;
+  color: var(--color-muted);
+  font-size: 0.9375rem;
+}
+.overview-pitch a {
+  color: var(--color-accent);
+}
+.overview-pitch a:hover {
+  text-decoration: underline;
+}
 .overview-actions {
   display: flex;
   flex-wrap: wrap;

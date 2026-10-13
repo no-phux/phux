@@ -1,7 +1,7 @@
 <!--
 audience: humans, contributors, agents
 stability: stable
-last-reviewed: 2026-09-20
+last-reviewed: 2026-10-13
 -->
 
 <p align="center">
@@ -15,6 +15,24 @@ part of [no-phux](https://github.com/orgs/no-phux/repositories)
 [Docs](https://docs.phux.sh/overview) · [Discord](https://discord.gg/dUv5rzdHp)
 [![CI](https://github.com/no-phux/phux/actions/workflows/ci.yml/badge.svg)](https://github.com/no-phux/phux/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
+
+## terminals as objects on a wire
+
+phux keeps each shell running on a server, so a terminal is an object you can
+split, leave, and attach to again. People running pi or Claude Code can put
+the agent in one pane and point it at another: the pi extension and the
+Claude Code plugin can read that pane and type a command into the live
+shell, and the shell is still there after you detach. Walk through a pi
+session in [pi + phux in 60 seconds](./docs/consumers/pi-in-60-seconds.md).
+
+<!--
+TODO: iOS availability wording. Patrick has not chosen between a TestFlight
+link and "coming soon". Keep the next line neutral. Do not add a TestFlight
+URL or a coming-soon claim until that choice is made.
+-->
+
+The [iOS client page](./docs/consumers/ios.md) lists integration requirements
+and does not establish release availability.
 
 phux is a programmable terminal runtime. A background server keeps shells
 running; public control and event interfaces let people, scripts, and coding

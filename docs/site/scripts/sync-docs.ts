@@ -571,10 +571,22 @@ async function writeOverviewPage(versions: {
   protocolVersion: string;
   projectVersion: string;
 }): Promise<number> {
-  const { title, summary } = OVERVIEW;
+  const { title, summary, pitch } = OVERVIEW;
   const body = `# ${title}
 
 ${summary}
+
+## ${pitch.headline}
+
+${pitch.text}[${pitch.linkLabel}](${pitch.linkHref}).
+
+<!--
+TODO: iOS availability wording. Patrick has not chosen between a TestFlight
+link and "coming soon". Keep the next line neutral. Do not add a TestFlight
+URL or a coming-soon claim until that choice is made.
+-->
+
+${pitch.iosBefore}[${pitch.iosLabel}](${pitch.iosHref})${pitch.iosAfter}
 
 ## Guides
 
