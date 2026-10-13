@@ -1024,6 +1024,16 @@ pub(crate) async fn handle_command(
             input_lane,
             root_token,
         ),
+        Command::DelegateAgent {
+            operation,
+            session,
+            ttl_secs,
+        } => super::delegation::handle_delegate_agent(
+            state, client_id, operation, &session, ttl_secs, input_lane, root_token,
+        ),
+        Command::RevokeDelegation { credential_id, .. } => {
+            super::delegation::handle_revoke_delegation(state, &credential_id)
+        }
         Command::GetTerminalState {
             terminal_id,
             include_scrollback,

@@ -18,10 +18,10 @@ use phux_protocol::ids::{
 use phux_protocol::kinds::Verb;
 use phux_protocol::wire::frame::{
     ActivationInfo, ActorRef, AgentEvent, ArrangementDoc, ArrangementGroup, ArrangementNode,
-    ArrangementOwner, ArrangementValue, Command, CommandResult, CommandValue, Committed, EntryRef,
-    EntryTarget, EventStamp, ExecState, ExitPolicy, FrameKind, LaunchSpec, LiveTarget, MoveItem,
-    OrgFilter, OrganizationPage, Outcome, RecordRevision, Refusal, ResourceRecord, SessionLifetime,
-    SessionRecord, SplitDirection, TerminateMode,
+    ArrangementOwner, ArrangementValue, Command, CommandResult, CommandValue, Committed,
+    Delegation, EntryRef, EntryTarget, EventStamp, ExecState, ExitPolicy, FrameKind, LaunchSpec,
+    LiveTarget, MoveItem, OrgFilter, OrganizationPage, Outcome, RecordRevision, Refusal,
+    ResourceRecord, SessionLifetime, SessionRecord, SplitDirection, TerminateMode,
 };
 use phux_protocol::wire::info::{
     ResourceInfo, SessionInfo, SessionSnapshot, TUI_LAYOUT_KEY_PREFIX, tui_layout_key,
@@ -370,6 +370,26 @@ fn org_command() -> impl Strategy<Value = Command> {
     ]
 }
 
+/// The delegation commands (ADR-0163): field-tagged like the organization
+/// commands, but not organization commands.
+fn delegation_command() -> impl Strategy<Value = Command> {
+    prop_oneof![
+        (op(), session_key(), any::<u32>()).prop_map(|(operation, session, ttl_secs)| {
+            Command::DelegateAgent {
+                operation,
+                session,
+                ttl_secs,
+            }
+        }),
+        (op(), "[a-z0-9:]{1,64}").prop_map(|(operation, credential_id)| {
+            Command::RevokeDelegation {
+                operation,
+                credential_id,
+            }
+        }),
+    ]
+}
+
 fn refusal() -> impl Strategy<Value = Refusal> {
     prop_oneof![
         proptest::sample::select(Verb::ALL.to_vec())
@@ -489,12 +509,24 @@ fn org_result() -> impl Strategy<Value = CommandResult> {
             k, o, r, d,
         ))))
     });
+    let delegation = (
+        session_key(),
+        "[a-z0-9:]{1,64}",
+        "/[a-z0-9/._-]{0,80}",
+        any::<u64>(),
+    )
+        .prop_map(|(session, id, path, expires)| {
+            CommandResult::OkWith(CommandValue::Delegation(Box::new(Delegation::new(
+                id, session, path, expires,
+            ))))
+        });
     prop_oneof![
         refusal().prop_map(CommandResult::Refused),
         op().prop_map(|operation| CommandResult::Accepted { operation }),
         page,
         committed,
         arrangement,
+        delegation,
     ]
 }
 
@@ -606,6 +638,12 @@ proptest! {
         if !matches!(command, Command::GetOrganization { .. } | Command::ArrangementGet { .. }) {
             prop_assert!(command.idempotency_key().is_some());
         }
+        assert_round_trip(&FrameKind::Command { request_id, command });
+    }
+
+    #[test]
+    fn delegation_commands_round_trip(request_id in any::<u32>(), command in delegation_command()) {
+        prop_assert!(!command.is_organization());
         assert_round_trip(&FrameKind::Command { request_id, command });
     }
 

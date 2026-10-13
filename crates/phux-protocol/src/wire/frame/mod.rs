@@ -756,6 +756,8 @@ enum CommandTag {
     OrganizationUndo = 0x2c,
     ArrangementGet = 0x2d,
     ArrangementReplace = 0x2e,
+    DelegateAgent = 0x35,
+    RevokeDelegation = 0x36,
 }
 
 // `Command` tags (SPEC §5.1). `0x00`, `0x04`, and `0x06` are reserved catalog
@@ -863,6 +865,16 @@ pub(crate) const COMMAND_TAG_ARRANGEMENT_GET: u8 = CommandTag::ArrangementGet as
 pub(crate) const COMMAND_TAG_ARRANGEMENT_REPLACE: u8 = CommandTag::ArrangementReplace as u8;
 }
 
+// Delegated agent credentials (`docs/spec/L1.md` §5.7.5, ADR-0163), after the
+// reserved workspace block. Not organization commands: they are served
+// whatever `ORGANIZATION` says, and answer with ordinary results.
+wire_tags! { Command;
+/// Wire tag for [`Command::DelegateAgent`].
+pub(crate) const COMMAND_TAG_DELEGATE_AGENT: u8 = CommandTag::DelegateAgent as u8;
+/// Wire tag for [`Command::RevokeDelegation`].
+pub(crate) const COMMAND_TAG_REVOKE_DELEGATION: u8 = CommandTag::RevokeDelegation as u8;
+}
+
 // `InputEvent` tags (`ROUTE_INPUT`), mirroring the `INPUT_*` frame atoms.
 wire_tags! { InputEvent;
 /// Wire tag for [`InputEvent::Key`].
@@ -918,6 +930,8 @@ pub(crate) const COMMAND_VALUE_TAG_ORGANIZATION_PAGE: u8 = 0x06;
 pub(crate) const COMMAND_VALUE_TAG_ARRANGEMENT: u8 = 0x07;
 /// Wire tag for [`CommandValue::Committed`].
 pub(crate) const COMMAND_VALUE_TAG_COMMITTED: u8 = 0x08;
+/// Wire tag for [`CommandValue::Delegation`].
+pub(crate) const COMMAND_VALUE_TAG_DELEGATION: u8 = 0x09;
 }
 
 // Wire tags for the `AttachTarget` tagged union (SPEC §13).
@@ -957,11 +971,12 @@ pub use directory::{
 pub use kind::FrameKind;
 pub use org::{
     ActivationInfo, ArrangementDoc, ArrangementGroup, ArrangementNode, ArrangementOwner,
-    ArrangementValue, Committed, EntryRef, EntryTarget, ExecState, ExitPolicy, LaunchSpec,
-    LiveTarget, MAX_ARRANGEMENT_BYTES, MAX_ARRANGEMENT_DEPTH, MAX_LAUNCH_LIST,
-    MAX_LAUNCH_RESTORE_BYTES, MAX_ORG_ATTRS, MAX_ORG_BATCH, MAX_ORG_CURSOR_BYTES,
-    MAX_ORG_NAME_BYTES, MoveItem, OrgFilter, OrganizationPage, Outcome, RecordRevision, Refusal,
-    ResourceRecord, SessionLifetime, SessionRecord, SplitDirection, TerminateMode,
+    ArrangementValue, Committed, Delegation, EntryRef, EntryTarget, ExecState, ExitPolicy,
+    LaunchSpec, LiveTarget, MAX_ARRANGEMENT_BYTES, MAX_ARRANGEMENT_DEPTH, MAX_CREDENTIAL_ID_BYTES,
+    MAX_LAUNCH_LIST, MAX_LAUNCH_RESTORE_BYTES, MAX_ORG_ATTRS, MAX_ORG_BATCH, MAX_ORG_CURSOR_BYTES,
+    MAX_ORG_NAME_BYTES, MAX_SOCKET_PATH_BYTES, MoveItem, OrgFilter, OrganizationPage, Outcome,
+    RecordRevision, Refusal, ResourceRecord, SessionLifetime, SessionRecord, SplitDirection,
+    TerminateMode,
 };
 pub use path::{
     MAX_PATH_RESULTS, PathErrorCode, PathKind, PathQueryError, PathQueryResult, PathResults,

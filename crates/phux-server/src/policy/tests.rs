@@ -502,7 +502,24 @@ fn samples(world: &World) -> Vec<FrameKind> {
     ]
     .into_iter()
     .chain(organization_samples(world, &t))
+    .chain(delegation_samples(world))
     .collect()
+}
+
+/// `DELEGATE_AGENT` on `alpha`, then `REVOKE_DELEGATION` (ADR-0163).
+fn delegation_samples(world: &World) -> Vec<FrameKind> {
+    let op = phux_protocol::ids::OperationId::new([6; 16]).unwrap();
+    vec![
+        command(Command::DelegateAgent {
+            operation: op,
+            session: world.org.session,
+            ttl_secs: 0,
+        }),
+        command(Command::RevokeDelegation {
+            operation: op,
+            credential_id: "delegated:00".to_owned(),
+        }),
+    ]
 }
 
 /// One sample per organization command, naming `alpha`'s records.
@@ -1272,6 +1289,9 @@ fn rows(world: &mut World) -> Vec<Row> {
         command(Command::ReleaseInput { terminal_id: t }),
         "bind",
     ));
+    // Owner-socket only, like `RESOURCE_ABANDON`: no scoped grant mints or
+    // withdraws a delegation.
+    rows.extend(delegation_samples(world).into_iter().map(denied));
     rows
 }
 

@@ -82,10 +82,12 @@ const fn command_variant(command: &Command) -> usize {
         Command::OrganizationUndo { .. } => 39,
         Command::ArrangementGet { .. } => 40,
         Command::ArrangementReplace { .. } => 41,
+        Command::DelegateAgent { .. } => 42,
+        Command::RevokeDelegation { .. } => 43,
     }
 }
 
-const COMMAND_VARIANTS: usize = 42;
+const COMMAND_VARIANTS: usize = 44;
 
 fn operation() -> IdempotencyKey {
     IdempotencyKey::new([3; 16]).unwrap()
@@ -262,6 +264,21 @@ fn org_command_samples() -> Vec<(Command, &'static Rule)> {
                 document: ArrangementDoc::default(),
             },
             &C_ARRANGEMENT_REPLACE,
+        ),
+        (
+            Command::DelegateAgent {
+                operation: operation(),
+                session: session_key(),
+                ttl_secs: 0,
+            },
+            &C_DELEGATION,
+        ),
+        (
+            Command::RevokeDelegation {
+                operation: operation(),
+                credential_id: "delegated:00".to_owned(),
+            },
+            &C_DELEGATION,
         ),
     ]
 }
@@ -1129,16 +1146,23 @@ fn dangerous_methods_are_exactly_the_adr_0128_list() {
     assert_eq!(dangerous, golden);
 }
 
-/// R07: the v2 verbs gate only the organization commands. Every legacy
-/// command and frame keeps exactly the verbs it needed before, so no stored
-/// grant loses an operation, and every organization method is gated on
+/// R07: the v2 verbs gate only the organization commands and the
+/// delegation commands that came with them (ADR-0163). Every legacy command
+/// and frame keeps exactly the verbs it needed before, so no stored grant
+/// loses an operation, and every organization method is gated on
 /// `features_ext.ORGANIZATION`.
 #[test]
 fn only_organization_commands_need_the_v2_verbs() {
     let v2 = Verbs::of(&[Verb::Organize, Verb::Terminate]);
     for (command, rule) in command_samples() {
         let needs_v2 = rule.verb_set().bits() & v2.bits() != 0;
-        if command.is_organization() {
+        if matches!(
+            command,
+            Command::DelegateAgent { .. } | Command::RevokeDelegation { .. }
+        ) {
+            assert_eq!(rule.verb_set(), Verbs::of(&[Verb::Terminate]));
+            assert!(rule.subject.requires_owner_uds(), "{command:?}");
+        } else if command.is_organization() {
             let method = command_method(encoded_command_tag(&command)).unwrap();
             assert_eq!(
                 method.gate,

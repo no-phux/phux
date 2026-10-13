@@ -273,9 +273,11 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
         | Command::InboxResolve { .. }
         | Command::OrganizationUndo { .. }
         | Command::ArrangementGet { .. }
-        | Command::ArrangementReplace { .. }) => {
+        | Command::ArrangementReplace { .. }
+        | Command::DelegateAgent { .. }
+        | Command::RevokeDelegation { .. }) => {
             let written = super::org::encode_org_command(org, enc);
-            debug_assert!(written, "every organization command has a tag");
+            debug_assert!(written, "every field-tagged command has a tag");
         }
     }
 }
@@ -872,6 +874,10 @@ fn encode_command_value(value: &CommandValue, enc: &mut Encoder<'_>) {
             enc.write_u8(super::COMMAND_VALUE_TAG_COMMITTED);
             super::org::encode_committed(committed, enc);
         }
+        CommandValue::Delegation(delegation) => {
+            enc.write_u8(super::COMMAND_VALUE_TAG_DELEGATION);
+            super::org::encode_delegation(delegation, enc);
+        }
     }
 }
 
@@ -903,6 +909,9 @@ fn decode_command_value(dec: &mut Decoder<'_>) -> Result<CommandValue, DecodeErr
         ))),
         super::COMMAND_VALUE_TAG_COMMITTED => Ok(CommandValue::Committed(Box::new(
             super::org::decode_committed(dec)?,
+        ))),
+        super::COMMAND_VALUE_TAG_DELEGATION => Ok(CommandValue::Delegation(Box::new(
+            super::org::decode_delegation(dec)?,
         ))),
         other => Err(DecodeError::unknown_enum("CommandValue", other)),
     }

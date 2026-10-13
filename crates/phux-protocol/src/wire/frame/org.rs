@@ -659,6 +659,46 @@ pub struct Committed {
     pub prior_awaiting: Option<bool>,
 }
 
+/// The longest delegated credential id a decoder accepts.
+pub const MAX_CREDENTIAL_ID_BYTES: usize = 256;
+
+/// The longest delegated-credential socket path a decoder accepts.
+pub const MAX_SOCKET_PATH_BYTES: usize = 4096;
+
+/// A minted delegated agent credential (the reply to `DELEGATE_AGENT`,
+/// ADR-0163 §5): an agent dials [`Self::socket_path`] and acts as
+/// [`Self::credential_id`] on [`Self::session`] until [`Self::expires_at_ms`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Delegation {
+    /// The credential id; `REVOKE_DELEGATION` names it.
+    pub credential_id: String,
+    /// The session the credential is scoped to.
+    pub session: SessionKey,
+    /// The owner-only socket every connection of the agent arrives on.
+    pub socket_path: String,
+    /// When the credential stops admitting anything, Unix milliseconds.
+    pub expires_at_ms: u64,
+}
+
+impl Delegation {
+    /// A minted credential.
+    #[must_use]
+    pub const fn new(
+        credential_id: String,
+        session: SessionKey,
+        socket_path: String,
+        expires_at_ms: u64,
+    ) -> Self {
+        Self {
+            credential_id,
+            session,
+            socket_path,
+            expires_at_ms,
+        }
+    }
+}
+
 impl Committed {
     /// A receipt with only the operation and the primary revision.
     #[must_use]
@@ -1262,6 +1302,10 @@ struct Fields {
     instance: Option<ServerInstance>,
     members: Option<u32>,
     workspace: Option<WorkspaceKey>,
+    ttl_secs: Option<u32>,
+    credential: Option<String>,
+    socket_path: Option<String>,
+    expires_at: Option<u64>,
 }
 
 impl Fields {
@@ -1340,6 +1384,14 @@ impl Fields {
                 field::org::WORKSPACE => {
                     out.workspace = Some(read_key(value, WorkspaceKey::new)?);
                 }
+                field::org::TTL_SECS => out.ttl_secs = Some(read_u32(value)?),
+                field::org::CREDENTIAL => {
+                    out.credential = Some(bounded_str(value, MAX_CREDENTIAL_ID_BYTES)?);
+                }
+                field::org::SOCKET_PATH => {
+                    out.socket_path = Some(bounded_str(value, MAX_SOCKET_PATH_BYTES)?);
+                }
+                field::org::EXPIRES_AT => out.expires_at = Some(read_u64(value)?),
                 _ => {}
             }
         }
@@ -1438,6 +1490,8 @@ const fn org_command_tag(command: &Command) -> Option<u8> {
         Command::OrganizationUndo { .. } => COMMAND_TAG_ORGANIZATION_UNDO,
         Command::ArrangementGet { .. } => COMMAND_TAG_ARRANGEMENT_GET,
         Command::ArrangementReplace { .. } => COMMAND_TAG_ARRANGEMENT_REPLACE,
+        Command::DelegateAgent { .. } => super::COMMAND_TAG_DELEGATE_AGENT,
+        Command::RevokeDelegation { .. } => super::COMMAND_TAG_REVOKE_DELEGATION,
         _ => return None,
     })
 }
@@ -1638,6 +1692,22 @@ pub(in crate::wire) fn encode_org_command(command: &Command, enc: &mut Encoder<'
             write_key(enc, field::org::ARRANGEMENT, arrangement.as_bytes());
             write_document(enc, document);
         }
+        Command::DelegateAgent {
+            operation,
+            session,
+            ttl_secs,
+        } => {
+            write_operation(enc, operation);
+            write_session(enc, field::org::SESSION, session);
+            write_u32(enc, field::org::TTL_SECS, *ttl_secs);
+        }
+        Command::RevokeDelegation {
+            operation,
+            credential_id,
+        } => {
+            write_operation(enc, operation);
+            enc.write_field(field::org::CREDENTIAL, credential_id.as_bytes());
+        }
         _ => return false,
     }
     true
@@ -1661,7 +1731,13 @@ pub(in crate::wire) fn decode_org_command(
         COMMAND_TAG_RESOURCE_TERMINATE, COMMAND_TAG_SESSION_CREATE, COMMAND_TAG_SESSION_DELETE,
         COMMAND_TAG_SESSION_RENAME, COMMAND_TAG_SESSION_SET_LIFETIME,
     };
-    if !(COMMAND_TAG_GET_ORGANIZATION..=COMMAND_TAG_ARRANGEMENT_REPLACE).contains(&tag) {
+    let delegation = [
+        super::COMMAND_TAG_DELEGATE_AGENT,
+        super::COMMAND_TAG_REVOKE_DELEGATION,
+    ];
+    if !(COMMAND_TAG_GET_ORGANIZATION..=COMMAND_TAG_ARRANGEMENT_REPLACE).contains(&tag)
+        && !delegation.contains(&tag)
+    {
         return Ok(None);
     }
     let f = Fields::read_from(dec)?;
@@ -1762,6 +1838,15 @@ pub(in crate::wire) fn decode_org_command(
             arrangement: req(f.arrangement)?,
             expected: f.expected()?,
             document: req(f.document)?,
+        },
+        super::COMMAND_TAG_DELEGATE_AGENT => Command::DelegateAgent {
+            operation: f.operation()?,
+            session: f.session()?,
+            ttl_secs: f.ttl_secs.unwrap_or(0),
+        },
+        super::COMMAND_TAG_REVOKE_DELEGATION => Command::RevokeDelegation {
+            operation: f.operation()?,
+            credential_id: req(f.credential)?,
         },
         _ => return Ok(None),
     };
@@ -2117,6 +2202,31 @@ pub(in crate::wire) fn decode_committed(dec: &mut Decoder<'_>) -> Result<Committ
         target: f.target,
         revisions: f.pins,
         prior_awaiting: f.awaiting,
+    })
+}
+
+/// Write a `DELEGATION` value body: `u32`-length-prefixed `field::org`
+/// fields.
+pub(in crate::wire) fn encode_delegation(delegation: &Delegation, enc: &mut Encoder<'_>) {
+    let mut body = BytesMut::new();
+    {
+        let mut e = Encoder::new(&mut body);
+        e.write_field(field::org::CREDENTIAL, delegation.credential_id.as_bytes());
+        write_session(&mut e, field::org::SESSION, &delegation.session);
+        e.write_field(field::org::SOCKET_PATH, delegation.socket_path.as_bytes());
+        write_u64(&mut e, field::org::EXPIRES_AT, delegation.expires_at_ms);
+    }
+    enc.write_bytes(&body);
+}
+
+/// Read a `DELEGATION` value body.
+pub(in crate::wire) fn decode_delegation(dec: &mut Decoder<'_>) -> Result<Delegation, DecodeError> {
+    let f = Fields::read(dec.read_bytes()?)?;
+    Ok(Delegation {
+        session: f.session()?,
+        credential_id: req(f.credential)?,
+        socket_path: req(f.socket_path)?,
+        expires_at_ms: req(f.expires_at)?,
     })
 }
 

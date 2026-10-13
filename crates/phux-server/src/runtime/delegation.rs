@@ -22,7 +22,9 @@ use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use phux_core::ids::SessionId;
+use phux_protocol::ids::{OperationId, SessionKey as WireSessionKey};
 use phux_protocol::policy::{PeerIdentity, TransportType};
+use phux_protocol::wire::frame::{CommandResult, CommandValue, Delegation, ErrorCode};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
@@ -74,7 +76,9 @@ pub fn delegate_agent(
         }
     };
     let close = root_token.child_token();
-    if !state.with_mut(|s| s.attach_delegation_listener(&credential.id, close.clone())) {
+    if !state.with_mut(|s| {
+        s.attach_delegation_listener(&credential.id, socket_path.clone(), close.clone())
+    }) {
         remove_socket_file(&socket_path);
         return Err(DelegationError::NoLauncherGrant);
     }
@@ -95,6 +99,106 @@ pub fn delegate_agent(
         credential,
         socket_path,
     })
+}
+
+/// Handle `DELEGATE_AGENT` (`docs/spec/L1.md` §5.7.5) for `client_id`,
+/// which the dispatch guard admitted only on the owner socket. A repeat of
+/// `operation` answers the live credential it minted.
+pub(super) fn handle_delegate_agent(
+    state: &SharedState,
+    client_id: ClientId,
+    operation: OperationId,
+    session: &WireSessionKey,
+    ttl_secs: u32,
+    input_lane: Option<&InputLaneHandle>,
+    root_token: &CancellationToken,
+) -> CommandResult {
+    let key = crate::org_wire::core_session_key(session);
+    let prior = state.with(|s| {
+        let credential = s.delegation_minted_by(operation.as_bytes(), Utc::now())?;
+        let path = s.delegation_socket(&credential.id)?.to_path_buf();
+        let same_session = s.registry().session_key(credential.session) == Some(key);
+        Some((credential.clone(), path, same_session))
+    });
+    if let Some((credential, socket_path, same_session)) = prior {
+        if !same_session {
+            return error(
+                ErrorCode::InvalidCommand,
+                "DELEGATE_AGENT: this operation already minted a credential for another session",
+            );
+        }
+        return delegation_value(
+            *session,
+            &DelegatedAgent {
+                credential,
+                socket_path,
+            },
+        );
+    }
+    let Some(core_session) = state.with(|s| s.registry().session_id(&key)) else {
+        return error(
+            ErrorCode::SessionNotFound,
+            "DELEGATE_AGENT: no such session",
+        );
+    };
+    let request = DelegationRequest {
+        lifetime: if ttl_secs == 0 {
+            crate::delegation::DEFAULT_LIFETIME
+        } else {
+            std::time::Duration::from_secs(u64::from(ttl_secs))
+        },
+        ..DelegationRequest::default()
+    };
+    match delegate_agent(
+        state,
+        client_id,
+        core_session,
+        request,
+        input_lane.cloned(),
+        root_token,
+    ) {
+        Ok(agent) => {
+            state.with_mut(|s| {
+                s.note_delegation_operation(*operation.as_bytes(), &agent.credential.id);
+            });
+            delegation_value(*session, &agent)
+        }
+        Err(refusal) => {
+            let code = match refusal {
+                DelegationError::NoSession => ErrorCode::SessionNotFound,
+                DelegationError::NoLauncherGrant
+                | DelegationError::Widens(_)
+                | DelegationError::LauncherLacks(_) => ErrorCode::PermissionDenied,
+                DelegationError::NoVerbs | DelegationError::Lifetime => ErrorCode::InvalidCommand,
+                DelegationError::Random(_) | DelegationError::Socket(_) => ErrorCode::InternalError,
+            };
+            warn!(error = %refusal, "DELEGATE_AGENT refused");
+            error(code, &format!("DELEGATE_AGENT: {refusal}"))
+        }
+    }
+}
+
+/// Handle `REVOKE_DELEGATION` (`docs/spec/L1.md` §5.7.5): idempotent, so a
+/// credential already gone answers `Ok` too.
+pub(super) fn handle_revoke_delegation(state: &SharedState, credential_id: &str) -> CommandResult {
+    revoke_delegated_agent(state, credential_id);
+    CommandResult::Ok
+}
+
+fn delegation_value(session: WireSessionKey, agent: &DelegatedAgent) -> CommandResult {
+    CommandResult::OkWith(CommandValue::Delegation(Box::new(Delegation::new(
+        agent.credential.id.clone(),
+        session,
+        agent.socket_path.to_string_lossy().into_owned(),
+        u64::try_from(agent.credential.expires_at.timestamp_millis()).unwrap_or(0),
+    ))))
+}
+
+fn error(code: ErrorCode, message: &str) -> CommandResult {
+    CommandResult::Error {
+        code,
+        message: message.to_owned(),
+    }
 }
 
 /// Withdraw delegated credential `id`: close its socket and revoke every

@@ -634,6 +634,30 @@ pub enum Command {
         /// [`MAX_ARRANGEMENT_BYTES`](super::MAX_ARRANGEMENT_BYTES) encoded.
         document: ArrangementDoc,
     },
+    /// Mint a delegated agent credential on `session` (ADR-0163 §5):
+    /// `INVENTORY`, `OBSERVE`, and `INPUT` on that session only, on behalf
+    /// of the sender, through an owner-only socket of its own. Owner socket
+    /// only; answered `OkWith(Delegation)`. A repeat of `operation` answers
+    /// the credential it minted.
+    DelegateAgent {
+        /// Caller-generated operation id.
+        operation: OperationId,
+        /// The session the agent may act on.
+        session: SessionKey,
+        /// Requested lifetime in seconds; `0` asks for the server default.
+        /// The server clamps it to its maximum.
+        ttl_secs: u32,
+    },
+    /// Withdraw a delegated agent credential: its socket closes and every
+    /// connection acting as it is revoked. Owner socket only; answered `Ok`,
+    /// also when the credential is already gone.
+    RevokeDelegation {
+        /// Caller-generated operation id.
+        operation: OperationId,
+        /// The credential, as [`Delegation::credential_id`](super::Delegation::credential_id)
+        /// named it; at most 256 bytes.
+        credential_id: String,
+    },
 }
 
 impl Command {
@@ -884,6 +908,8 @@ pub enum CommandValue {
     /// A committed organization edit and its receipt (reply to a mutating
     /// organization command).
     Committed(Box<Committed>),
+    /// A minted delegated agent credential (reply to `DELEGATE_AGENT`).
+    Delegation(Box<super::Delegation>),
 }
 
 /// The outcome of a [`Command`], carried by

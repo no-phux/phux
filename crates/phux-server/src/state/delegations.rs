@@ -115,9 +115,33 @@ impl ServerState {
     pub(crate) fn attach_delegation_listener(
         &mut self,
         id: &str,
+        path: std::path::PathBuf,
         close: tokio_util::sync::CancellationToken,
     ) -> bool {
-        self.delegations.attach_listener(id, close)
+        self.delegations.attach_listener(id, path, close)
+    }
+
+    /// The socket delegated credential `id`'s connections arrive on.
+    #[must_use]
+    pub fn delegation_socket(&self, id: &str) -> Option<&std::path::Path> {
+        self.delegations.socket_path(id)
+    }
+
+    /// Remember that `operation` minted delegated credential `id`, so a
+    /// retry answers it.
+    pub(crate) fn note_delegation_operation(&mut self, operation: [u8; 16], id: &str) {
+        self.delegations.note_operation(operation, id);
+    }
+
+    /// The live delegated credential `operation` minted, if any.
+    #[must_use]
+    pub fn delegation_minted_by(
+        &self,
+        operation: &[u8; 16],
+        now: DateTime<Utc>,
+    ) -> Option<&DelegatedCredential> {
+        let id = self.delegations.minted_by(operation)?;
+        self.delegations.live(id, now)
     }
 
     /// Every live delegated credential scoped to `session`.

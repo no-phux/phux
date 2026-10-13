@@ -473,6 +473,101 @@ async fn an_agent_cannot_seize_a_human_held_lease() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn delegate_agent_over_the_wire_mints_once_per_operation_and_revokes() {
+    local(async {
+        let fx = Fixture::new();
+        let dir = tempfile::tempdir().unwrap();
+        fx.state
+            .with_mut(|s| s.set_server_socket_path(dir.path().join("phux.sock")));
+        let session = fx
+            .state
+            .with(|s| s.registry().session_key(fx.alpha_session))
+            .and_then(crate::org_wire::session_key)
+            .unwrap();
+        let operation = phux_protocol::ids::OperationId::new([7; 16]).unwrap();
+        let delegate = Command::DelegateAgent {
+            operation,
+            session,
+            ttl_secs: 600,
+        };
+        let human = fx.human().await;
+
+        let CommandResult::OkWith(phux_protocol::wire::frame::CommandValue::Delegation(minted)) =
+            human.command(1, delegate.clone()).await
+        else {
+            panic!("DELEGATE_AGENT did not answer a delegation");
+        };
+        assert_eq!(minted.session, session);
+        assert!(std::path::Path::new(&minted.socket_path).exists());
+        let lifetime_ms = minted
+            .expires_at_ms
+            .saturating_sub(u64::try_from(Utc::now().timestamp_millis()).unwrap());
+        assert!(lifetime_ms <= 600_000, "{lifetime_ms}");
+        assert_eq!(
+            human.command(2, delegate).await,
+            CommandResult::OkWith(phux_protocol::wire::frame::CommandValue::Delegation(
+                minted.clone()
+            )),
+            "a retried operation answers the credential it minted"
+        );
+
+        // An agent cannot mint or withdraw delegations, its own included.
+        let (agent, _) = fx.delegated_agent(&human).await;
+        for (request_id, command) in [
+            (
+                1,
+                Command::DelegateAgent {
+                    operation: phux_protocol::ids::OperationId::new([8; 16]).unwrap(),
+                    session,
+                    ttl_secs: 0,
+                },
+            ),
+            (
+                2,
+                Command::RevokeDelegation {
+                    operation: phux_protocol::ids::OperationId::new([9; 16]).unwrap(),
+                    credential_id: minted.credential_id.clone(),
+                },
+            ),
+        ] {
+            let refused = agent.command(request_id, command).await;
+            assert!(
+                matches!(
+                    refused,
+                    CommandResult::Error {
+                        code: ErrorCode::PermissionDenied,
+                        ..
+                    }
+                ),
+                "{refused:?}"
+            );
+        }
+
+        let revoke = Command::RevokeDelegation {
+            operation: phux_protocol::ids::OperationId::new([10; 16]).unwrap(),
+            credential_id: minted.credential_id.clone(),
+        };
+        assert_eq!(human.command(3, revoke.clone()).await, CommandResult::Ok);
+        let deadline = Instant::now() + PATIENCE;
+        while std::path::Path::new(&minted.socket_path).exists() {
+            assert!(
+                Instant::now() < deadline,
+                "the socket file was never removed"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            human.command(4, revoke).await,
+            CommandResult::Ok,
+            "withdrawal is idempotent"
+        );
+        agent.finish().await;
+        human.finish().await;
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn a_minted_credentials_socket_admits_connections_as_it_until_withdrawn() {
     local(async {
         let fx = Fixture::new();

@@ -519,6 +519,7 @@ point before any handler or satellite branch:
 | `ORGANIZATION_UNDO` | `ORGANIZE` | every session and resource the undone operation's recorded inverse touches, under current membership |
 | `ARRANGEMENT_GET` | `INVENTORY` | the session that owns the arrangement |
 | `ARRANGEMENT_REPLACE` | `ORGANIZE` | the session that owns the arrangement |
+| `DELEGATE_AGENT`, `REVOKE_DELEGATION` | `TERMINATE` plus transport predicate | Global, and the authenticated transport MUST be the owner UDS; only the owner mints or withdraws a delegated agent credential |
 | Unknown, retired, or otherwise unclassified command tag | default-deny | none |
 
 <!-- impl-status: shipped; probe: ResourceKind,COMMAND_TAG_APPEND_RESOURCE_OUTPUT -->

@@ -109,18 +109,23 @@ their own one-byte tag inside it. Allocated tags:
 | `0x2d` | `ARRANGEMENT_GET`           | [L1.md §5.7](./L1.md) | partial |
 | `0x2e` | `ARRANGEMENT_REPLACE`       | [L1.md §5.7](./L1.md) | partial |
 | `0x2f`..=`0x34` | workspace commands (create, rename, delete, link, unlink, transfer) | [L2.md](./L2.md) | reserved |
+| `0x35` | `DELEGATE_AGENT`            | [L1.md §5.7.5](./L1.md) | shipped |
+| `0x36` | `REVOKE_DELEGATION`         | [L1.md §5.7.5](./L1.md) | shipped |
 
 The organization commands are contiguous from `0x1e`, and `0x2f..=0x34` are
 reserved for the six workspace commands of the workspace stage
 ([ADR-0161](../adr/0161-organization-is-typed-commands-behind-a-feature-bit.md)).
 A decoder refuses a reserved tag as an unknown command until it is
-allocated. `0x35` is the next open tag.
+allocated. The delegated-agent commands of
+[ADR-0163](../adr/0163-actors-and-delegated-agent-grants.md) follow the
+reserved block at `0x35..=0x36`. `0x37` is the next open tag.
 
 `AgentEvent` tags ([L1.md §7.1](./L1.md)) allocate sequentially:
 `0x10..=0x1b` are the organization events of [L1.md §5.7.4](./L1.md).
 `CommandResult` allocates `0x03 REFUSED` and `0x04 ACCEPTED`, sent only in
 reply to an organization command; `CommandValue` allocates
-`0x06 ORGANIZATION_PAGE`, `0x07 ARRANGEMENT`, and `0x08 COMMITTED`.
+`0x06 ORGANIZATION_PAGE`, `0x07 ARRANGEMENT`, `0x08 COMMITTED`, and
+`0x09 DELEGATION` (the reply to `DELEGATE_AGENT`).
 `Refusal` tags allocate sequentially from `0x00`; `0x00..=0x0a` are taken
 ([L1.md §5.7.3](./L1.md)), and a decoder keeps an unknown one as opaque.
 

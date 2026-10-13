@@ -18,10 +18,10 @@ use phux_protocol::ids::{
 use phux_protocol::kinds::Verb;
 use phux_protocol::wire::frame::{
     ActivationInfo, ActorRef, AgentEvent, ArrangementDoc, ArrangementGroup, ArrangementNode,
-    ArrangementOwner, ArrangementValue, Command, CommandResult, CommandValue, Committed, EntryRef,
-    EntryTarget, ExecState, ExitPolicy, FrameKind, LaunchSpec, LiveTarget, MoveItem, OrgFilter,
-    OrganizationPage, Outcome, RecordRevision, Refusal, ResourceRecord, SessionLifetime,
-    SessionRecord, SplitDirection, TerminateMode,
+    ArrangementOwner, ArrangementValue, Command, CommandResult, CommandValue, Committed,
+    Delegation, EntryRef, EntryTarget, ExecState, ExitPolicy, FrameKind, LaunchSpec, LiveTarget,
+    MoveItem, OrgFilter, OrganizationPage, Outcome, RecordRevision, Refusal, ResourceRecord,
+    SessionLifetime, SessionRecord, SplitDirection, TerminateMode,
 };
 
 /// `xxd`-style dump, the same rendering `frame_wire_snapshots.rs` uses.
@@ -302,6 +302,21 @@ fn command_fixtures() -> Vec<(&'static str, FrameKind)> {
                 document: document(),
             }),
         ),
+        (
+            "snap_org_delegate_agent",
+            command(Command::DelegateAgent {
+                operation: op(),
+                session: session(),
+                ttl_secs: 3600,
+            }),
+        ),
+        (
+            "snap_org_revoke_delegation",
+            command(Command::RevokeDelegation {
+                operation: op(),
+                credential_id: "delegated:0f0f".to_owned(),
+            }),
+        ),
     ]
 }
 
@@ -407,6 +422,17 @@ fn result_fixtures() -> Vec<(&'static str, FrameKind)> {
                     ArrangementOwner::Session(session()),
                     rev(1),
                     document(),
+                ),
+            )))),
+        ),
+        (
+            "snap_org_result_delegation",
+            result(CommandResult::OkWith(CommandValue::Delegation(Box::new(
+                Delegation::new(
+                    "delegated:0f0f".to_owned(),
+                    session(),
+                    "/run/phux/agent-0f0f.sock".to_owned(),
+                    1_700_000_000_000,
                 ),
             )))),
         ),

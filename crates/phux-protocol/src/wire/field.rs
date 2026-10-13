@@ -719,6 +719,15 @@ pub mod org {
     pub const MEMBERS: u32 = 35;
     /// `WorkspaceKey` (16 bytes).
     pub const WORKSPACE: u32 = 36;
+    /// Requested delegated-credential lifetime in seconds (`u32`); `0` asks
+    /// for the server default.
+    pub const TTL_SECS: u32 = 37;
+    /// Delegated credential id (`str`, at most 256 bytes).
+    pub const CREDENTIAL: u32 = 38;
+    /// Path of a delegated credential's socket (`str`, at most 4 KiB).
+    pub const SOCKET_PATH: u32 = 39;
+    /// When a delegated credential expires, Unix milliseconds (`u64`).
+    pub const EXPIRES_AT: u32 = 40;
 }
 
 /// Fields of a `LaunchSpec` value (`docs/spec/L1.md` §5.7).

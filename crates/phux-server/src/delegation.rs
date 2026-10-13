@@ -13,6 +13,7 @@
 //! a workload-registry record and is never written to disk.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -127,8 +128,12 @@ impl DelegatedCredential {
 #[derive(Debug, Default)]
 pub struct DelegationTable {
     live: HashMap<String, DelegatedCredential>,
-    /// The cancellation of each credential's own socket, once opened.
-    listeners: HashMap<String, tokio_util::sync::CancellationToken>,
+    /// Each credential's own socket, once opened: its path and the
+    /// cancellation that closes it.
+    listeners: HashMap<String, (PathBuf, tokio_util::sync::CancellationToken)>,
+    /// The credential each `DELEGATE_AGENT` operation minted, so a retry
+    /// answers it instead of minting another.
+    operations: HashMap<[u8; 16], String>,
 }
 
 impl DelegationTable {
@@ -145,26 +150,46 @@ impl DelegationTable {
             .filter(|credential| credential.expires_at > now)
     }
 
-    /// Record the cancellation that closes `id`'s socket. `false` when `id`
-    /// was withdrawn meanwhile, so the caller closes it at once.
+    /// Record `id`'s socket at `path` and the cancellation that closes it.
+    /// `false` when `id` was withdrawn meanwhile, so the caller closes it at
+    /// once.
     pub(crate) fn attach_listener(
         &mut self,
         id: &str,
+        path: PathBuf,
         close: tokio_util::sync::CancellationToken,
     ) -> bool {
         if !self.live.contains_key(id) {
             return false;
         }
-        self.listeners.insert(id.to_owned(), close);
+        self.listeners.insert(id.to_owned(), (path, close));
         true
+    }
+
+    /// The socket `id`'s connections arrive on, once opened.
+    #[must_use]
+    pub fn socket_path(&self, id: &str) -> Option<&Path> {
+        self.listeners.get(id).map(|(path, _)| path.as_path())
+    }
+
+    /// Remember that `operation` minted `id`.
+    pub(crate) fn note_operation(&mut self, operation: [u8; 16], id: &str) {
+        self.operations.insert(operation, id.to_owned());
+    }
+
+    /// The credential `operation` minted, if it is still on file.
+    #[must_use]
+    pub fn minted_by(&self, operation: &[u8; 16]) -> Option<&str> {
+        self.operations.get(operation).map(String::as_str)
     }
 
     /// Withdraw `id`, closing its socket; the credential it named, if it
     /// was live.
     pub(crate) fn remove(&mut self, id: &str) -> Option<DelegatedCredential> {
-        if let Some(close) = self.listeners.remove(id) {
+        if let Some((_, close)) = self.listeners.remove(id) {
             close.cancel();
         }
+        self.operations.retain(|_, minted| minted != id);
         self.live.remove(id)
     }
 
