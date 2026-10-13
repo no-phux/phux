@@ -441,6 +441,12 @@ impl<'a> LayoutOps<'a> {
     /// Mutate the stored workspace, or seed it from `fallback` when this
     /// session has no layout metadata yet.
     ///
+    /// Against an arrangement record, each `fallback` group none of whose
+    /// panes is arranged yet is appended before the mutation applies: an
+    /// empty arrangement takes `fallback` whole, and a member that is not
+    /// arranged (a seed never placed, or a closed view) gets a new group
+    /// rather than failing the edit.
+    ///
     /// # Errors
     ///
     /// Returns transport/envelope errors or a mutation-specific rejection.
@@ -458,7 +464,10 @@ impl<'a> LayoutOps<'a> {
                 Err(err) => return Err(err),
             }
             return self
-                .edit_arrangement(|document| apply_mutation(document, &mutation))
+                .edit_arrangement(|document| {
+                    adopt_unarranged_groups(document, &fallback);
+                    apply_mutation(document, &mutation)
+                })
                 .await;
         }
         let mut workspace = match self.read().await {
@@ -734,6 +743,28 @@ fn move_across_windows(
     Ok(())
 }
 
+/// Append each group of `fallback` none of whose panes `workspace` arranges
+/// yet. Leaves `active` alone unless `workspace` had no groups.
+fn adopt_unarranged_groups(workspace: &mut ArrangementDoc, fallback: &ArrangementDoc) {
+    let was_empty = workspace.groups.is_empty();
+    for group in &fallback.groups {
+        let Some(tree) = group.state.tree.as_ref() else {
+            continue;
+        };
+        if leaves(tree)
+            .iter()
+            .all(|pane| find_window(workspace, pane).is_none())
+        {
+            workspace.groups.push(group.clone());
+        }
+    }
+    if was_empty {
+        workspace.active = fallback
+            .active
+            .min(workspace.groups.len().saturating_sub(1));
+    }
+}
+
 fn find_window(workspace: &ArrangementDoc, target: &ResourceId) -> Option<usize> {
     workspace.groups.iter().position(|window| {
         window
@@ -841,6 +872,37 @@ mod tests {
             ],
             active: 0,
         }
+    }
+
+    /// An empty arrangement takes the fallback whole, so a placed spawn
+    /// beside an unarranged seed creates the first group instead of failing.
+    #[test]
+    fn placement_into_an_empty_arrangement_creates_a_group() {
+        let mut document = ArrangementDoc::new();
+        adopt_unarranged_groups(&mut document, &ArrangementDoc::single(tid(1)));
+        let mutation = LayoutMutation::SplitPreservingFocus {
+            target: tid(1),
+            new_pane: tid(2),
+            dir: SplitDir::Vertical,
+            ratio: 0.5,
+        };
+        apply_mutation(&mut document, &mutation).expect("placement succeeds");
+        assert_eq!(document.groups.len(), 1);
+        assert_eq!(document.active, 0);
+        let tree = document.groups[0].state.tree.as_ref().expect("tree");
+        assert_eq!(leaves(tree), vec![tid(1), tid(2)]);
+    }
+
+    /// A fallback group is appended only when none of its panes is arranged:
+    /// an arranged owner keeps its place, an unarranged one gets a new group.
+    #[test]
+    fn adopt_unarranged_groups_skips_arranged_panes() {
+        let mut document = two_window_workspace();
+        adopt_unarranged_groups(&mut document, &ArrangementDoc::single(tid(3)));
+        assert_eq!(document.groups.len(), 2);
+        adopt_unarranged_groups(&mut document, &ArrangementDoc::single(tid(9)));
+        assert_eq!(document.groups.len(), 3);
+        assert_eq!(document.active, 0, "an existing active group is kept");
     }
 
     // Fixed bytes from the pre-window v1 encoder, kept literal so an encoder
