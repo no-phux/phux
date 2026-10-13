@@ -2133,6 +2133,7 @@ pub const Engine = struct {
         // A picked empty session New Tab showed: its first tab, on this peer.
         changed = empty_session.pump(self, slot) or changed;
         changed = self.settleEmptyAttachment(peer, slot, catalog_listed) or changed;
+        changed = self.peer_edits.arrangeUnarranged(model, slot) or changed;
         // A terminal spawned for a new tab or split is not placed yet; it
         // must not be detached as unused before its placement lands.
         if (published.status != .pending and self.peer_edits.pendingCreations(slot) == 0) state.releaseUnused(model);

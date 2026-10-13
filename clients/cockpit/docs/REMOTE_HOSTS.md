@@ -410,8 +410,11 @@ session, and an older server's sessions read unknown. Its switcher row reads
 
 A session's arrangement can also show none of its terminals: a fresh session
 publishes no groups and its first shell is unarranged. Cockpit places an
-unarranged terminal of its attached session in a group of its own when the
-arrangement has no groups, so the window shows a tab rather than nothing.
+unarranged terminal of a session it shows in a group of its own when the
+arrangement has no groups, so the window shows a tab rather than nothing. The
+active coordinator's attachment and each showing peer place their own: one add
+at a time on that coordinator, never while one of its creations or edits is in
+flight, asked once per connection, session, and revision.
 
 Cockpit shows such a session as an Empty session state with New Tab
 (`src/cockpit/native/empty_session.zig`), never as a broken session. A window
