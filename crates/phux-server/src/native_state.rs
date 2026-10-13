@@ -105,7 +105,9 @@ impl From<GhosttyError> for NativeStateError {
             },
             GhosttyError::LimitExceeded => Self::LimitExceeded,
             GhosttyError::IoError => Self::Corruption,
-            GhosttyError::InvalidValue => Self::UnsupportedFeature,
+            // `InvalidValue`, and result codes libghostty adds later
+            // (`Error` is non-exhaustive), such as `Rejected`.
+            _ => Self::UnsupportedFeature,
         }
     }
 }
