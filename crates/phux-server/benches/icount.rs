@@ -11,6 +11,9 @@
 //!   stand-in engine so the count is the kernel rather than a second
 //!   libghostty.
 //! - PTY batch handoff: the burst copy the actor performs for one wakeup.
+//! - Organization commit: one `ResourceMove` through `ServerState` into a
+//!   SQLite store holding 5,000 resources in 200 sessions and a receipt
+//!   window at its cap (CONTRACTS §08).
 
 #![allow(
     clippy::expect_used,
@@ -37,6 +40,7 @@ use phux_protocol::caps::{
 use phux_protocol::wire::frame::FrameKind;
 use phux_protocol::wire::framing;
 use phux_protocol::{BootstrapId, ResourceId, StreamId};
+use phux_server::org_scale::{ScaleOrg, ScaleSpec};
 use phux_server::resource::agent_session::{self, AgentSessionActor};
 use phux_server::resource::terminal::icount_join_pty_burst;
 
@@ -305,6 +309,48 @@ fn setup_pty() -> Vec<Bytes> {
         .collect()
 }
 
+struct OrgReady {
+    _dir: tempfile::TempDir,
+    org: ScaleOrg,
+    command: phux_core::Command,
+}
+
+fn org_move(org: &ScaleOrg, operation: u8) -> phux_core::Command {
+    let (from, to) = (org.sessions[0], org.sessions[1]);
+    let state = &org.state;
+    let rev = |key| state.org().session(&key).expect("session").revision;
+    phux_core::Command {
+        operation: phux_core::OperationId::from_bytes([operation; 16]),
+        op: phux_core::Op::ResourceMove {
+            resource: phux_server::org_scale::members(state, from)[0],
+            from,
+            from_expected: rev(from),
+            to,
+            to_expected: rev(to),
+        },
+    }
+}
+
+fn setup_org() -> OrgReady {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let now = phux_server::state::now_stamp();
+    let mut org =
+        phux_server::org_scale::seed(&dir.path().join("v1.sqlite3"), ScaleSpec::CONTRACT, now)
+            .expect("seed");
+    // One warm commit: prunes the expired receipts, fills the statement
+    // cache, and leaves the receipt window at its cap.
+    let warm = org_move(&org, 0xa1);
+    org.state
+        .commit_command(&warm, &phux_core::Actor::owner())
+        .expect("warm commit");
+    let command = org_move(&org, 0xa2);
+    OrgReady {
+        _dir: dir,
+        org,
+        command,
+    }
+}
+
 #[library_benchmark]
 #[bench::apply(setup = setup_vt)]
 fn vt_apply(mut ready: VtReady) -> usize {
@@ -418,9 +464,22 @@ fn pty_batch_handoff(chunks: Vec<Bytes>) -> usize {
     black_box(icount_join_pty_burst(black_box(chunks)).len())
 }
 
+#[library_benchmark]
+#[bench::commit(setup = setup_org)]
+fn org_commit(mut ready: OrgReady) -> OrgReady {
+    let commit = ready
+        .org
+        .state
+        .commit_command(black_box(&ready.command), &phux_core::Actor::owner())
+        .expect("commit");
+    black_box(commit);
+    // Returned, so tearing down the seeded state is not counted.
+    ready
+}
+
 library_benchmark_group!(
     name = hot_path;
-    benchmarks = vt_apply, frame_encode, frame_decode, agent_append_replay, history_slice, history_resync, pty_batch_handoff
+    benchmarks = vt_apply, frame_encode, frame_decode, agent_append_replay, history_slice, history_resync, pty_batch_handoff, org_commit
 );
 
 main!(library_benchmark_groups = hot_path);

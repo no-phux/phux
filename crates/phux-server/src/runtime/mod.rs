@@ -64,6 +64,8 @@ mod approval_matrix;
 mod approvals;
 mod dispatch_guard;
 #[cfg(test)]
+mod org_scale_tests;
+#[cfg(test)]
 mod scope_matrix;
 #[cfg(test)]
 mod test_support;

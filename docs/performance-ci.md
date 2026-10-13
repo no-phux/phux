@@ -7,8 +7,9 @@ last-reviewed: 2026-10-13
 # Performance CI
 
 **TL;DR.** The required perf-icount job counts instructions on a fixed set of
-hot paths and fails when a count rises more than five percent. A 16 MiB flood
-test bounds server counters. Nightly wall-time scripts upload artifacts and do
+hot paths, one organization commit at automation scale among them, and fails
+when a count rises more than five percent. A 16 MiB flood test bounds server
+counters. An org-store scale test bounds pages, batches, writes, and receipts. Nightly wall-time scripts upload artifacts and do
 not gate merges. Update a baseline only with just perf-icount --update plus
 the Perf-Baseline: update trailer or the perf-baseline label.
 
@@ -30,6 +31,12 @@ load are outside the number. The scenarios are:
 - agent-stream append and ring replay
 - client-kernel history slice and resync, with a stand-in engine
 - the PTY batch copy one actor burst performs
+- one organization commit (`org_commit/commit`): a `ResourceMove` through
+  `ServerState::commit` into a real SQLite store seeded at the scale contract
+  (5,000 resources in 200 sessions, 500 in the Inbox, receipts at the
+  10,000 cap), so the count covers apply, the store transaction with its
+  receipt pruning, the in-memory mirror, and journaling. Syscalls, including
+  the `fsync`, are outside the count
 
 `just perf-icount` is the same command locally. Run it inside `nix develop`
 on x86_64. The script takes valgrind from the flake's nixpkgs so the tool's
@@ -99,6 +106,27 @@ read (`pty.burst.bytes` samples over `pty.read.bytes`), plus `pump.gap_resync`,
 `pump.lagged`, and `pty.reader.blocked`. The ceilings are counts, not time,
 and they sit above a quiet run of current main so a loaded runner does not
 flake. The test runs in the existing server integration lane.
+
+## Organization store scale
+
+`the_org_store_holds_the_scale_contract` in
+`crates/phux-server/src/runtime/org_scale_tests.rs` seeds the same shape as
+the `org_commit` scenario ([`org_scale`](../crates/phux-server/src/org_scale.rs))
+and runs with the unit tests. It pages the whole inventory and the Inbox
+intake, makes 200 single moves, a 256-resource `ResourceMoveMany` and its
+undo, then 1,500 renames past the receipt cap, with three event observers
+attached. It asserts:
+
+- every `GET_ORGANIZATION` page carries at most `page_size` session and
+  resource records together, and the pages hold every record exactly once;
+- a batch over 256 resources is refused;
+- a single-record commit appends at most 32 WAL pages and the batch at most
+  128 (measured 19 and 63; a full rewrite is thousands);
+- receipts stay at exactly 10,000 in memory and in the store;
+- every observer receives every journaled event, in order.
+
+It prints p50 and p99 commit latency for triage and does not gate on wall
+time; the instruction count is the gate.
 
 ## Nightly wall time
 
