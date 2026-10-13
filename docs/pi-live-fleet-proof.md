@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors
 stability: stable
-last-reviewed: 2026-07-15
+last-reviewed: 2026-10-13
 ---
 # Pi live-fleet proof
 
@@ -32,6 +32,19 @@ before declaring success. The recording redacts only the operator name, email,
 and hostname exposed by agent startup UI; orchestration output is unchanged.
 Its SHA-256 is
 `d8efab7ea38857d908377a4dbfa57041e64ff2c50e93355e0e29be82a15f008b`.
+
+## Stage shot 1
+
+[`scripts/demo-pi-setup.sh`](../scripts/demo-pi-setup.sh) is the one command
+that reaches the opening frame on a machine that already has this checkout.
+It checks that the installed `@phux/pi` equals
+[`integrations/pi/package.json`](../integrations/pi/package.json) and that
+`phux --version` equals this checkout, seeds `~/phux-pi-demo` with a git repo
+whose test fails on purpose, creates session `work` in the split below, runs
+that failing test in the seed pane, and prints the runbook.
+
+The split is the one this recording uses: a vertical split at ratio 0.55
+beside the seed, then a horizontal split at ratio 0.5 of that new pane.
 
 ## Reproduce it
 

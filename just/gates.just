@@ -110,6 +110,7 @@ workflow-check: shellcheck
     python3 clients/cockpit/scripts/check-build-contracts.py
     python3 scripts/mutation/test_recipes.py
     bash scripts/test-dev-setup.sh
+    bash scripts/test-demo-pi-setup.sh
     node --test scripts/test-vt-wasm.mjs
     node --test scripts/test-npm-audit-gate.mjs
     bash scripts/ci/check-classify-changes.sh
