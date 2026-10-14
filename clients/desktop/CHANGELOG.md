@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/no-phux/phux/compare/desktop-v0.8.6...desktop-v0.9.0) (2026-10-14)
+
+
+### Features
+
+* **desktop:** switch the active host in place and place spawned panes sooner ([#1379](https://github.com/no-phux/phux/issues/1379)) ([dd1d231](https://github.com/no-phux/phux/commit/dd1d23164f2e857c673b42ea9e6fe158bbcfb733))
+
 ## [0.8.6](https://github.com/no-phux/phux/compare/desktop-v0.8.5...desktop-v0.8.6) (2026-10-14)
 
 
