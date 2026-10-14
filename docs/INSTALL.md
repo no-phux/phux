@@ -39,6 +39,17 @@ the background and installs a verified update with one click. Releases are ad-ho
 Apple-notarized: the installer checks the checksum and signature, then clears
 quarantine. See the [desktop guide](./consumers/desktop.md).
 
+The desktop has its own canary on the same moving `next` prerelease:
+
+```sh
+curl -fsSL https://phux.sh/install-desktop | sh -s -- --channel next
+```
+
+It installs a verified green-`main` build and records the channel in the app;
+**Settings > Updates** switches back to Stable at any time. The desktop canary
+and the CLI canary are independent, so the app can follow `next` while the
+coordinator stays on numbered releases.
+
 ## Homebrew
 
 ```sh
