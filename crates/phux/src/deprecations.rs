@@ -88,29 +88,4 @@ impl Deprecation {
 }
 
 /// Every deprecated spelling the binary currently accepts.
-pub(crate) const DEPRECATED: &[Deprecation] = &[
-    Deprecation {
-        surface: DeprecatedSurface::Verb,
-        old: "phux workspace",
-        new: "phux archive export / import, phux project inspect",
-        note: "phux: `phux workspace` is deprecated and will be removed; use `phux archive \
-               export / import, phux project inspect`",
-        setup_argv: &[],
-        // A local repo read: no server, and the audit runs inside the repo.
-        example_argv: &["workspace", "inspect", "."],
-        needs_server: false,
-        deprecated_in: "v0.57.0",
-        removed_in: "v0.59.0",
-    },
-    Deprecation {
-        surface: DeprecatedSurface::Verb,
-        old: "phux move-pane",
-        new: "phux mv",
-        note: "phux: `phux move-pane` is deprecated and will be removed; use `phux mv`",
-        setup_argv: &[],
-        example_argv: &["move-pane", "@1", "@2"],
-        needs_server: true,
-        deprecated_in: "v0.57.0",
-        removed_in: "v0.59.0",
-    },
-];
+pub(crate) const DEPRECATED: &[Deprecation] = &[];

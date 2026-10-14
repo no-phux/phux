@@ -34,7 +34,7 @@ pub(crate) enum SignalArg {
 }
 
 /// Split axis for explicit pane placement — the one `--split` vocabulary
-/// shared by `spawn`, `launch`, `play`, `insert-pane`, and `move-pane`
+/// shared by `spawn`, `launch`, `play`, `insert-pane`, and `mv`
 /// (ADR-0065 §6). `h` / `v` are accepted shorthands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum SpawnSplit {
@@ -356,10 +356,6 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
             config_action::ConfigAction::Agents { .. } | config_action::ConfigAction::Reload => {
                 None
             }
-        },
-        Command::Workspace { action } => match action {
-            WorkspaceAction::Inspect { .. } => Some("workspace inspect"),
-            WorkspaceAction::Save { .. } | WorkspaceAction::Restore { .. } => None,
         },
         Command::Archive { action } => match action {
             ArchiveAction::Import { plan: true, .. } => Some("archive import --plan"),
@@ -1172,39 +1168,6 @@ pub(crate) enum Command {
         /// Named projection(s) to edit instead of the shared default, for a
         /// move beside a pane. A same-session move takes at most one KEY; a
         /// cross-session move takes two (source and destination) or none.
-        #[usage(long, value_name = "KEY")]
-        projection: Vec<String>,
-        /// Emit a schema-versioned JSON result or error.
-        #[usage(long)]
-        json: bool,
-    },
-
-    /// Move a pane beside another (deprecated: use `phux mv`)
-    #[usage(name = "move-pane", hide)]
-    MovePane {
-        /// Pane to relocate.
-        source: String,
-        /// Existing destination pane.
-        target: String,
-        /// Destination split axis: `horizontal` stacks the panes,
-        /// `vertical` places them side-by-side.
-        #[usage(long, value_enum, default = "horizontal")]
-        split: SpawnSplit,
-        /// Fraction assigned to TARGET; must be strictly between 0 and 1.
-        #[usage(
-            long,
-            default = "0.5",
-            default_value_t = 0.5,
-            validate = "float(value) > 0 && float(value) < 1",
-            validate_error = "ratio must be finite and strictly between 0 and 1"
-        )]
-        ratio: f32,
-        /// Named projection(s) to edit instead of the shared default.
-        /// A same-session move takes at most one KEY. A
-        /// cross-session move touches two distinct envelopes — each key
-        /// embeds its own session id — so pass this flag twice (source and
-        /// destination, either order) or not at all; passing it exactly
-        /// once for a cross-session move is refused (exit 2).
         #[usage(long, value_name = "KEY")]
         projection: Vec<String>,
         /// Emit a schema-versioned JSON result or error.
@@ -2297,13 +2260,6 @@ Upload dials configured remote transports headlessly; it never pairs over SSH. T
         action: ArchiveAction,
     },
 
-    /// Deprecated spelling of `phux archive` and `phux project inspect`
-    #[usage(hide)]
-    Workspace {
-        #[usage(subcommand)]
-        action: WorkspaceAction,
-    },
-
     /// Read and write pane tags (address them with #tag)
     ///
     /// Tags are freeform strings attached to panes. Once a pane is tagged,
@@ -3358,50 +3314,6 @@ pub(crate) enum ArchiveAction {
     /// record in its arrangement; nothing is launched until `phux restore`.
     /// A session of the same name already on the server is skipped.
     Import {
-        /// JSON archive path, or '-' to read from stdin.
-        archive: std::path::PathBuf,
-        /// Print the archive's session, host, and directory organization
-        /// and do not dial a server.
-        #[usage(long)]
-        plan: bool,
-    },
-}
-
-/// `phux workspace <action>` — the deprecated spelling of `phux archive
-/// export` / `import` and `phux project inspect`.
-#[derive(Debug, Subcommands)]
-pub(crate) enum WorkspaceAction {
-    /// Inspect the git repository and its checked-out worktrees.
-    Inspect {
-        /// Path inside the repository or worktree to inspect.
-        #[usage(default = ".")]
-        path: std::path::PathBuf,
-
-        /// Emit a stable JSON document instead of human text.
-        #[usage(long)]
-        json: bool,
-    },
-
-    /// Save the running server's sessions as a JSON archive.
-    Save {
-        /// Write the archive to a path instead of stdout.
-        #[usage(long, short = 'o', value_name = "PATH")]
-        output: Option<std::path::PathBuf>,
-
-        /// Read each session's split tree from this projection key PREFIX
-        /// (`<PREFIX>.layout/v1`) instead of the shared default, appending
-        /// `/<session-id>` itself for each session archived. Unlike every
-        /// other `--projection` flag, this one takes a bare prefix, not a
-        /// full key: a full `<prefix>.layout/v1/<id>` key is refused. A
-        /// session with nothing stored under its own key falls back to its
-        /// bare pane list; when this flag is given, that absence is also
-        /// reported on stderr.
-        #[usage(long, value_name = "PREFIX")]
-        projection: Option<String>,
-    },
-
-    /// Recreate an archive's missing sessions without starting them.
-    Restore {
         /// JSON archive path, or '-' to read from stdin.
         archive: std::path::PathBuf,
         /// Print the archive's session, host, and directory organization

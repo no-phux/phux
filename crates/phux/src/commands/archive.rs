@@ -29,7 +29,7 @@ use phux_client::agent_session_record::{AgentSessionRecord, fetch_record_index};
 
 use crate::commands::agent::{PreparedAgentSession, prepare};
 use crate::commands::new::create_session_via_metadata;
-use crate::commands::{ArchiveAction, WorkspaceAction, cli_runtime, partial, report_no_server};
+use crate::commands::{ArchiveAction, cli_runtime, partial, report_no_server};
 use phux_client::agent_session_record::spawn_with_agent_session_on;
 
 mod bridge;
@@ -50,28 +50,6 @@ pub(crate) fn run_archive(action: &ArchiveAction, socket: Option<PathBuf>) -> Ex
             plan: true,
         } => print_plan(archive),
         ArchiveAction::Import {
-            archive,
-            plan: false,
-        } => run_import(archive, socket),
-    }
-}
-
-/// The deprecated `phux workspace <action>`, run through its replacement:
-/// `inspect` is `phux project inspect`, `save` is `phux archive export`, and
-/// `restore` is `phux archive import`, which starts nothing.
-pub(crate) fn run_workspace_alias(action: &WorkspaceAction, socket: Option<PathBuf>) -> ExitCode {
-    match action {
-        WorkspaceAction::Inspect { path, json } => {
-            crate::commands::project::inspect::run_inspect(path, *json)
-        }
-        WorkspaceAction::Save { output, projection } => {
-            run_export(socket, output.as_ref(), projection.as_deref())
-        }
-        WorkspaceAction::Restore {
-            archive,
-            plan: true,
-        } => print_plan(archive),
-        WorkspaceAction::Restore {
             archive,
             plan: false,
         } => run_import(archive, socket),
