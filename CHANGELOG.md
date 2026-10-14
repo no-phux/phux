@@ -9,6 +9,18 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.72.0](https://github.com/no-phux/phux/compare/v0.71.1...v0.72.0) (2026-10-14)
+
+
+### Features
+
+* **site:** hover install switcher, landing TestFlight signup, desktop canary ([#1358](https://github.com/no-phux/phux/issues/1358)) ([93db004](https://github.com/no-phux/phux/commit/93db00453d6bb3f902026f6578aa569df235ffa3))
+
+
+### Bug Fixes
+
+* **tui:** hold the sidebar split fixed and stop pane-clear strobing ([#1356](https://github.com/no-phux/phux/issues/1356)) ([49c42a4](https://github.com/no-phux/phux/commit/49c42a40643f7721d14b92ba1b4ecae6cdd53aba))
+
 ## [0.71.1](https://github.com/no-phux/phux/compare/v0.71.0...v0.71.1) (2026-10-14)
 
 
