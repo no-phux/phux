@@ -5425,6 +5425,101 @@ test "shipping Kill Pane kills the focused Phux terminal and leaves the arrangem
     try std.testing.expect(engine.model.locateTerminal(killing) != null);
 }
 
+fn expectSessionButtonIcon(model: *const core.Model, icon: []const u8) !void {
+    var built = try measureWindow(model, 0, .init(1100, 640));
+    defer built.arena.deinit();
+    const button = for (built.measured.nodes) |entry| {
+        if (entry.widget.kind == .button and std.mem.eql(u8, entry.widget.semantics.label, "Session and machine")) break entry;
+    } else return error.TestExpectedSessionButton;
+    try std.testing.expectEqualStrings(icon, button.widget.icon);
+}
+
+test "authoritative Close Tab does not paint attention and publishes without the workspace timer" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.attachSharedTabFixture();
+    try rig.settleCurrent();
+    const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+    // Tab 0 is the live replica. The refresh fixture is the publication
+    // after the second window is gone, the same document Close View of
+    // that pane confirms. Close Tab removes that window.
+    const live = engine.model.focusedTerminalRef() orelse return error.TestExpectedFocusedTerminal;
+    try std.testing.expect(!cockpit.projection.terminalNeedsAttention(engine.model, live));
+    const before_tabs = engine.model.ws().tab_count;
+    const live_tab = for (rig.app_state.model.visibleTabs) |tab| {
+        if (tab.selected) break tab;
+    } else return error.TestExpectedSelectedTab;
+    try std.testing.expect(!live_tab.attention);
+    try std.testing.expectEqualStrings("terminal", live_tab.icon);
+
+    try rig.dispatch(.{ .select_tab = 1 });
+    try rig.settleCurrent();
+    const closing = engine.model.focusedTerminalRef() orelse return error.TestExpectedFocusedTerminal;
+    try std.testing.expect(!closing.eql(live));
+    const selected = for (rig.app_state.model.visibleTabs) |tab| {
+        if (tab.selected) break tab;
+    } else return error.TestExpectedSelectedTab;
+    const target = try std.testing.allocator.dupe(u8, selected.target);
+    defer std.testing.allocator.free(target);
+
+    try rig.dispatch(.{ .close_tab_target = target });
+    // The receipt is what turns admission into accepted-and-pending. Drain it
+    // before judging the location button; the tab itself stays until the
+    // arrangement publication.
+    try rig.settleCurrent();
+    try std.testing.expectEqual(before_tabs, engine.model.ws().tab_count);
+    const pending = engine.model.shared_mutations.pending[0] orelse return error.TestExpectedSharedClose;
+    try std.testing.expectEqual(.remove_window, pending.mutation.kind);
+    try std.testing.expectEqual(.pending, remote.workspaceSnapshot().status);
+    // Accepted-and-pending is outcome 7. The location button must stay the
+    // chevron; that wait is not bell, failure, or loss.
+    try std.testing.expectEqual(@as(i64, 7), rig.app_state.model.tabCommands.outcome);
+    try std.testing.expectEqual(@as(usize, 0), rig.app_state.model.commandNotice.len);
+    try expectSessionButtonIcon(&rig.app_state.model, "chevron-down");
+    try std.testing.expect(!cockpit.projection.terminalNeedsAttention(engine.model, live));
+    try std.testing.expect(engine.close_accepted_at != null);
+    try std.testing.expect(engine.close_published_at == null);
+    try std.testing.expectEqual(@as(u32, 0), engine.close_refresh_requests);
+
+    const owner = engine.model.terminalOwner(live) orelse return error.TestExpectedReplicaOwner;
+    try std.testing.expect(remote.ringBell(owner));
+    try std.testing.expect(cockpit.projection.terminalNeedsAttention(engine.model, live));
+    var snapshot_bytes: [cockpit.snapshot.max_bytes]u8 = undefined;
+    try rig.dispatch(.{ .snapshot_loaded = try engine.snapshot(&snapshot_bytes) });
+    // The closed tab may already be a catalog row. The bell belongs to the
+    // live replica, and it must not move onto the location button.
+    const attended = for (rig.app_state.model.visibleTabs) |tab| {
+        if (!std.mem.eql(u8, tab.target, target)) break tab;
+    } else return error.TestExpectedAttentionTab;
+    try std.testing.expect(attended.attention);
+    try std.testing.expectEqualStrings("alert", attended.icon);
+    try std.testing.expectEqual(@as(usize, 0), rig.app_state.model.commandNotice.len);
+    try expectSessionButtonIcon(&rig.app_state.model, "chevron-down");
+
+    // The workspace timer is not part of this publication. Firing it would
+    // hide a regression that waits out the one-second refresh.
+    remote.bridge.outgoing.reset();
+    try stageWorkspaceReply(remote, "workspace_refresh_metadata.bin", 3, 5);
+    try stageWorkspaceReply(remote, "workspace_refresh_state.bin", 2, 4);
+    _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
+    try rig.settleCurrent();
+
+    try std.testing.expect(engine.model.ws().tab_count < before_tabs);
+    try std.testing.expect(engine.model.locateTerminal(closing) == null);
+    try std.testing.expect(engine.model.locateTerminal(live) != null);
+    try std.testing.expect(engine.close_published_at != null);
+    try std.testing.expectEqual(@as(u32, 0), engine.close_refresh_requests);
+    const accepted = engine.close_accepted_at orelse return error.TestExpectedCloseStamp;
+    const published = engine.close_published_at orelse return error.TestExpectedCloseStamp;
+    try std.testing.expect(accepted.durationTo(published).toMilliseconds() < 1000);
+    try std.testing.expectEqual(@as(usize, 0), rig.app_state.model.commandNotice.len);
+    try std.testing.expectEqual(@as(usize, 1), rig.app_state.model.commandResults.recent.len);
+    try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.commandResults.recent[0].operation);
+}
+
 test "shipping Close View confirms a shared non-last tab close and remains responsive" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();

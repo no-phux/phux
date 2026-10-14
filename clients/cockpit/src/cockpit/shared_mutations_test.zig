@@ -193,6 +193,45 @@ test "presentation removal is typed and whole-window close is one atomic request
     try testing.expectEqual(@as(usize, 2), model.remote.writes);
 }
 
+test "a window close waits out an in-flight refresh instead of refusing" {
+    var queue: mutations.Coordinator = .{};
+    var model: Model = .{};
+    _ = try model.remote.requestWorkspaceRefresh();
+    try queue.requestRemoveWindow(&model, first_id);
+    try testing.expect(!model.shared_workspace.refused);
+    try testing.expectEqual(@as(usize, 0), model.remote.writes);
+    model.remote.finish(.confirmed);
+    // Dispatched on the refresh's completion, at the revision that read published.
+    try testing.expect(!queue.pump(&model));
+    try testing.expectEqual(@as(usize, 1), model.remote.writes);
+    try testing.expectEqual(.remove_window, model.remote.sent.?.kind);
+    try testing.expectEqual(model.remote.snapshot.revision, model.remote.sent.?.expected_revision);
+    try testing.expectError(error.WorkspaceBusy, queue.requestRemoveWindow(&model, second_id));
+}
+
+test "resize still refuses while a refresh is in flight" {
+    var queue: mutations.Coordinator = .{};
+    var model: Model = .{};
+    _ = try model.remote.requestWorkspaceRefresh();
+    try testing.expectError(error.WorkspaceBusy, queue.requestResize(&model, first_id, 1, 1, 0.3));
+    try testing.expect(model.shared_workspace.refused);
+    try testing.expectEqual(@as(usize, 0), model.remote.writes);
+}
+
+test "a confirmed close whose window is still published has not landed" {
+    var queue: mutations.Coordinator = .{};
+    var model: Model = .{};
+    try queue.requestRemoveWindow(&model, first_id);
+    model.remote.finish(.confirmed);
+    try testing.expect(queue.pump(&model));
+    try testing.expect(queue.unpublishedRemovalTicket(&model) != null);
+    try testing.expect(!queue.removalLanded(&model));
+    const kept = [_]workspace.Window{.{ .id = second_id, .root = 5 }};
+    model.remote.snapshot.windows = &kept;
+    try testing.expect(queue.unpublishedRemovalTicket(&model) == null);
+    try testing.expect(queue.removalLanded(&model));
+}
+
 test "reorder preserves identity and busy direct edits are refused" {
     var queue: mutations.Coordinator = .{};
     var model: Model = .{};

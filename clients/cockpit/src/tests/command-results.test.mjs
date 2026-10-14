@@ -193,7 +193,8 @@ test('the matching eventual result clears pending admission without inventing fo
   receipt.set([1, 3, 0]);
   receipt.set(command.payload.subarray(2, 10), 3);
   [model] = step(model, { kind: 'tab_command_completed', body: receipt });
-  assert.match(new TextDecoder().decode(model.commandNotice), /accepted.*pending/);
+  assert.equal(model.tabCommands.outcome, 7);
+  assert.equal(model.commandNotice.length, 0);
   [model, command] = step(model, { kind: 'command_result_loaded', body: packet(1n, 1, 1, 2) });
   assert.equal(model.tabCommands.outcome, 7); // The original admission is still true.
   assert.equal(model.commandResults.recent[0].focus, 2);
