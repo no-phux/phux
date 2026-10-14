@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.4](https://github.com/no-phux/phux/compare/desktop-v0.8.3...desktop-v0.8.4) (2026-10-14)
+
+
+### Bug Fixes
+
+* **desktop:** improve terminal rendering and quiet the sidebar ([#1363](https://github.com/no-phux/phux/issues/1363)) ([305b1ef](https://github.com/no-phux/phux/commit/305b1efca31ac1252afe50bfbf413430cc07409f))
+
 ## [0.8.3](https://github.com/no-phux/phux/compare/desktop-v0.8.2...desktop-v0.8.3) (2026-10-14)
 
 
