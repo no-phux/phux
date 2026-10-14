@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.0](https://github.com/no-phux/phux/compare/desktop-v0.5.0...desktop-v0.6.0) (2026-10-14)
+
+
+### Features
+
+* **desktop:** give the Updates settings a real status surface ([b0992b0](https://github.com/no-phux/phux/commit/b0992b073aeb21456473790466b231c05c213f7e))
+* **desktop:** manage remote hosts from the sidebar ([393ab41](https://github.com/no-phux/phux/commit/393ab4187884b72a2b4c64884c8146e4ec793b7f))
+
 ## [0.5.0](https://github.com/no-phux/phux/compare/desktop-v0.4.1...desktop-v0.5.0) (2026-10-14)
 
 
