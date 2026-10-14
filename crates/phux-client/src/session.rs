@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use phux_protocol::ids::{IdempotencyKey, OperationId, ResourceId, SessionId};
 use phux_protocol::wire::frame::{
     Command, FrameKind, LaunchSpec, OrgFilter, Refusal, SESSION_CREATE_KEY,
-    SESSION_CREATE_RESULT_KEY, SESSION_CREATE_RESULT_KEY_PREFIX, Scope, SessionLifetime,
+    SESSION_CREATE_RESULT_KEY_PREFIX, Scope, SessionLifetime,
 };
 
 use crate::attach::AttachError;
@@ -203,77 +203,13 @@ pub enum CreateSessionError {
     Org(crate::org::OrgError),
 }
 
-/// What the atomic-agent-session-restore capability probe found: current
-/// servers reserve the nonce-result namespace, older ones store it as
-/// ordinary metadata.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AtomicPreflightOutcome {
-    /// The server reserves the namespace: `agent_session` can ride the
-    /// create transaction atomically.
-    Supported,
-    /// The probe round-tripped instead of being rejected: an older server.
-    Unsupported,
-    /// The server refused the probe outright.
-    Refused(String),
-}
-
-/// Probe whether the connected server supports atomic agent-session restore.
-///
-/// Writes a throwaway value under a fresh nonce key and reads it back: an
-/// echo is an older server (the probe is then deleted). Interleaved
-/// degradation notices are appended to `notices`.
-///
-/// # Errors
-///
-/// Transport failures from [`Connection::send`] / [`Connection::request_metadata`].
-pub async fn atomic_agent_session_preflight(
-    conn: &mut Connection,
-    notices: &mut Vec<String>,
-) -> Result<AtomicPreflightOutcome, AttachError> {
-    let probe_key = format!("{SESSION_CREATE_RESULT_KEY_PREFIX}{}", uuid::Uuid::new_v4());
-    conn.send(&FrameKind::SetMetadata {
-        request_id: 100,
-        scope: Scope::Global,
-        key: probe_key.clone(),
-        value: uuid::Uuid::new_v4().as_bytes().to_vec(),
-    })
-    .await?;
-    let (probe, interleaved) = conn
-        .request_metadata(101, Scope::Global, probe_key.clone())
-        .await?
-        .into_parts();
-    notices.extend(crate::state::degradation_notices(&interleaved));
-    match probe {
-        Ok(None) => Ok(AtomicPreflightOutcome::Supported),
-        Ok(Some(_)) => {
-            conn.send(&FrameKind::DeleteMetadata {
-                request_id: 102,
-                scope: Scope::Global,
-                key: probe_key.clone(),
-            })
-            .await?;
-            // Ordered read-back: the cleanup landed before the close.
-            let _ = conn.request_metadata(103, Scope::Global, probe_key).await?;
-            Ok(AtomicPreflightOutcome::Unsupported)
-        }
-        Err(refusal) => Ok(AtomicPreflightOutcome::Refused(refusal.to_string())),
-    }
-}
-
 /// What creating a session without attaching answered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CreateOutcome {
     /// The seed pane's Terminal id.
     Created(u64),
-    /// `agent_session` was requested but the server does not support atomic
-    /// agent-session restore (an older server would silently ignore it).
-    AtomicRestoreUnsupported,
-    /// The atomic-restore capability probe itself was refused.
-    ProbeRefused(String),
     /// The confirming read-back was refused.
     ReadRefused(String),
-    /// The legacy fallback read-back was refused.
-    LegacyReadRefused(String),
     /// No create result ever named this session.
     NotRegistered,
     /// The server refused the `SESSION_CREATE`.
@@ -298,7 +234,7 @@ pub struct CreateSessionRequest<'a> {
     /// Extra environment variables for the seed pane.
     pub env: &'a BTreeMap<String, String>,
     /// Encoded `AgentSessionRecord` provenance to restore atomically with
-    /// the create, when the server supports it.
+    /// the create.
     pub agent_session: Option<&'a [u8]>,
     /// Make the create idempotent (ADR-0126): the key becomes the request's
     /// `request_token`, so a repeat inside the server's horizon answers the
@@ -339,9 +275,8 @@ fn request_token(key: Option<IdempotencyKey>) -> String {
 /// Create a named session without attaching via the `SESSION_CREATE_KEY`
 /// write, then read the seed-pane id back from a nonce-correlated result key.
 ///
-/// Runs [`atomic_agent_session_preflight`] first unless legacy results are
-/// allowed or the caller already ran it. Duplicate-name rejection is the
-/// caller's job. Interleaved degradation notices are appended to `notices`.
+/// Duplicate-name rejection is the caller's job. Interleaved degradation
+/// notices are appended to `notices`.
 ///
 /// # Errors
 ///
@@ -350,23 +285,10 @@ fn request_token(key: Option<IdempotencyKey>) -> String {
 pub async fn create_session(
     conn: &mut Connection,
     request: &CreateSessionRequest<'_>,
-    allow_legacy_result: bool,
-    agent_session_preflighted: bool,
     notices: &mut Vec<String>,
 ) -> Result<CreateOutcome, CreateSessionError> {
     if crate::org::supported(conn) {
         return create_by_record(conn, request, notices).await;
-    }
-    if !allow_legacy_result && !agent_session_preflighted {
-        match atomic_agent_session_preflight(conn, notices).await? {
-            AtomicPreflightOutcome::Supported => {}
-            AtomicPreflightOutcome::Unsupported => {
-                return Ok(CreateOutcome::AtomicRestoreUnsupported);
-            }
-            AtomicPreflightOutcome::Refused(message) => {
-                return Ok(CreateOutcome::ProbeRefused(message));
-            }
-        }
     }
     let request_token = request_token(request.idempotency_key);
     let result_key = format!("{SESSION_CREATE_RESULT_KEY_PREFIX}{request_token}");
@@ -379,15 +301,11 @@ pub async fn create_session(
         "agent_session": request.agent_session,
     }))?;
     send_create(conn, create_bytes).await?;
-    let created = match read_result(conn, result_key, allow_legacy_result, notices).await? {
+    let created = match read_result(conn, result_key, notices).await? {
         ReadBack::Refused(message) => return Ok(CreateOutcome::ReadRefused(message)),
-        ReadBack::LegacyRefused(message) => return Ok(CreateOutcome::LegacyReadRefused(message)),
         ReadBack::Absent => return Ok(CreateOutcome::NotRegistered),
         ReadBack::Correlated(bytes) => {
-            created_session_from_result(&bytes, request.name, &request_token, true)
-        }
-        ReadBack::Legacy(bytes) => {
-            created_session_from_result(&bytes, request.name, &request_token, false)
+            created_session_from_result(&bytes, request.name, &request_token)
         }
     };
     let Some(created) = created else {
@@ -562,11 +480,9 @@ pub async fn create_empty_session(
         "request_token": request_token,
     }))?;
     send_create(conn, create_bytes).await?;
-    let outcome = match read_result(conn, result_key, false, notices).await? {
-        ReadBack::Refused(message) | ReadBack::LegacyRefused(message) => {
-            CreateEmptyOutcome::ReadRefused(message)
-        }
-        ReadBack::Absent | ReadBack::Legacy(_) => CreateEmptyOutcome::NotRegistered,
+    let outcome = match read_result(conn, result_key, notices).await? {
+        ReadBack::Refused(message) => CreateEmptyOutcome::ReadRefused(message),
+        ReadBack::Absent => CreateEmptyOutcome::NotRegistered,
         ReadBack::Correlated(bytes) => {
             if empty_session_result_matches(&bytes, name, &request_token) {
                 CreateEmptyOutcome::Created
@@ -594,22 +510,16 @@ async fn send_create(conn: &mut Connection, create_bytes: Vec<u8>) -> Result<(),
 enum ReadBack {
     /// The correlated nonce key answered with a value.
     Correlated(Vec<u8>),
-    /// The correlated key was absent but the legacy key answered.
-    Legacy(Vec<u8>),
     /// The correlated read was refused.
     Refused(String),
-    /// The legacy fallback read was refused.
-    LegacyRefused(String),
-    /// Neither key held a value (or legacy was not attempted).
+    /// The correlated key held no value.
     Absent,
 }
 
-/// Read only this request's one-shot result, falling back to the legacy
-/// uncorrelated key when `allow_legacy_result`.
+/// Read only this request's one-shot result.
 async fn read_result(
     conn: &mut Connection,
     result_key: String,
-    allow_legacy_result: bool,
     notices: &mut Vec<String>,
 ) -> Result<ReadBack, AttachError> {
     let (answer, interleaved) = conn
@@ -617,47 +527,26 @@ async fn read_result(
         .await?
         .into_parts();
     notices.extend(crate::state::degradation_notices(&interleaved));
-    let result_value = match answer {
-        Ok(value) => value,
-        Err(refusal) => return Ok(ReadBack::Refused(refusal.to_string())),
-    };
-    if let Some(bytes) = result_value {
-        return Ok(ReadBack::Correlated(bytes));
-    }
-    if !allow_legacy_result {
-        return Ok(ReadBack::Absent);
-    }
-    let (legacy_answer, legacy_interleaved) = conn
-        .request_metadata(3, Scope::Global, SESSION_CREATE_RESULT_KEY.to_owned())
-        .await?
-        .into_parts();
-    notices.extend(crate::state::degradation_notices(&legacy_interleaved));
-    match legacy_answer {
-        Ok(Some(bytes)) => Ok(ReadBack::Legacy(bytes)),
-        Ok(None) => Ok(ReadBack::Absent),
-        Err(refusal) => Ok(ReadBack::LegacyRefused(refusal.to_string())),
-    }
+    Ok(match answer {
+        Ok(Some(bytes)) => ReadBack::Correlated(bytes),
+        Ok(None) => ReadBack::Absent,
+        Err(refusal) => ReadBack::Refused(refusal.to_string()),
+    })
 }
 
 /// Read the seed pane and owning Session ids out of a create-result document,
-/// rejecting one that does not answer for this request: the name must
-/// match, and the nonce must be present on a correlated read and absent on a
-/// legacy one.
+/// rejecting one that does not answer for this request: both the name and
+/// the nonce must match.
 fn created_session_from_result(
     bytes: &[u8],
     name: &str,
     request_token: &str,
-    correlated: bool,
 ) -> Option<CreatedSession> {
     serde_json::from_slice::<serde_json::Value>(bytes)
         .ok()
         .filter(|v| v.get("name").and_then(serde_json::Value::as_str) == Some(name))
         .filter(|v| {
-            if correlated {
-                v.get("request_token").and_then(serde_json::Value::as_str) == Some(request_token)
-            } else {
-                v.get("request_token").is_none()
-            }
+            v.get("request_token").and_then(serde_json::Value::as_str) == Some(request_token)
         })
         .and_then(|v| {
             let terminal_id = u32::try_from(v.get("terminal_id")?.as_u64()?).ok()?;
@@ -718,35 +607,27 @@ mod tests {
     }
 
     /// The correlated read-back must match both the requested name and the
-    /// nonce this request minted; a legacy (uncorrelated) read must carry no
-    /// nonce at all.
+    /// nonce this request minted.
     #[test]
     fn created_session_from_result_requires_the_right_correlation() {
         let correlated = br#"{"name":"work","session_id":7,"terminal_id":3,"request_token":"tok"}"#;
         assert_eq!(
-            created_session_from_result(correlated, "work", "tok", true),
+            created_session_from_result(correlated, "work", "tok"),
             Some(CreatedSession {
                 terminal_id: 3,
                 session_id: Some(SessionId::new(7)),
             })
         );
         assert_eq!(
-            created_session_from_result(correlated, "work", "other", true),
+            created_session_from_result(correlated, "work", "other"),
             None,
             "a mismatched nonce must not confirm the create"
         );
-        let legacy = br#"{"name":"work","terminal_id":5}"#;
+        let unnonced = br#"{"name":"work","terminal_id":5}"#;
         assert_eq!(
-            created_session_from_result(legacy, "work", "tok", false),
-            Some(CreatedSession {
-                terminal_id: 5,
-                session_id: None,
-            })
-        );
-        assert_eq!(
-            created_session_from_result(correlated, "work", "tok", false),
+            created_session_from_result(unnonced, "work", "tok"),
             None,
-            "a nonce present on a legacy (uncorrelated) read must not confirm it"
+            "a result without this request's nonce must not confirm it"
         );
     }
 
@@ -941,7 +822,7 @@ mod tests {
         let env = BTreeMap::new();
         let request = work_request(&env);
         let mut notices = Vec::new();
-        let outcome = create_session(&mut conn, &request, true, false, &mut notices)
+        let outcome = create_session(&mut conn, &request, &mut notices)
             .await
             .expect("scripted server answers");
         drop(conn);
@@ -965,104 +846,6 @@ mod tests {
             )),
             "expected the correlated read-back at request_id 2; sent {seen:?}"
         );
-    }
-
-    #[tokio::test]
-    async fn create_session_falls_back_to_the_legacy_key_when_allowed() {
-        let legacy = serde_json::json!({"name": "work", "terminal_id": 5})
-            .to_string()
-            .into_bytes();
-        let session = SessionId::new(7);
-        let window = WindowId::new(9);
-        let snapshot = SessionSnapshot::new(session, window, ResourceId::local(5))
-            .with_sessions(vec![SessionInfo::new(session, "work")])
-            .with_windows(vec![WindowInfo::new(window, session, "1")])
-            .with_resources(vec![ResourceInfo::new(
-                ResourceId::local(5),
-                window,
-                80,
-                24,
-            )]);
-        let spec = ScriptSpec::new()
-            .stored_metadata(Scope::Global, SESSION_CREATE_RESULT_KEY, legacy)
-            .state(snapshot);
-        let (socket, _dir, server) = scripted(spec);
-
-        let mut conn = Connection::connect(&socket).await.expect("connect");
-        let env = BTreeMap::new();
-        let request = work_request(&env);
-        let mut notices = Vec::new();
-        let outcome = create_session(&mut conn, &request, true, false, &mut notices)
-            .await
-            .expect("scripted server answers");
-        drop(conn);
-        let seen = server.await.expect("scripted server task");
-
-        assert_eq!(outcome, CreateOutcome::Created(5));
-        assert!(
-            seen.iter().any(|frame| matches!(
-                frame,
-                FrameKind::GetMetadata { request_id: 3, scope: Scope::Global, key }
-                    if key == SESSION_CREATE_RESULT_KEY
-            )),
-            "expected the legacy fallback read at request_id 3; sent {seen:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn create_session_reports_not_registered_when_legacy_is_disallowed() {
-        let (socket, _dir, server) = scripted(ScriptSpec::new());
-
-        let mut conn = Connection::connect(&socket).await.expect("connect");
-        let env = BTreeMap::new();
-        let request = work_request(&env);
-        let mut notices = Vec::new();
-        let outcome = create_session(&mut conn, &request, false, true, &mut notices)
-            .await
-            .expect("scripted server answers");
-        drop(conn);
-        let _ = server.await.expect("scripted server task");
-
-        assert_eq!(outcome, CreateOutcome::NotRegistered);
-    }
-
-    #[tokio::test]
-    async fn atomic_preflight_reports_unsupported_and_cleans_up_an_echoed_probe() {
-        let (socket, _dir, server) = scripted(ScriptSpec::new());
-        let mut conn = Connection::connect(&socket).await.expect("connect");
-        let mut notices = Vec::new();
-        let outcome = atomic_agent_session_preflight(&mut conn, &mut notices)
-            .await
-            .expect("scripted server answers");
-        drop(conn);
-        let seen = server.await.expect("scripted server task");
-
-        assert_eq!(outcome, AtomicPreflightOutcome::Unsupported);
-        assert!(
-            seen.iter().any(|frame| matches!(
-                frame,
-                FrameKind::DeleteMetadata { request_id: 102, scope: Scope::Global, key }
-                    if key.starts_with(SESSION_CREATE_RESULT_KEY_PREFIX)
-            )),
-            "expected the probe cleanup delete at request_id 102; sent {seen:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn atomic_preflight_reports_a_refusal() {
-        use phux_protocol::wire::frame::ErrorCode;
-
-        let spec = ScriptSpec::new().refuse_metadata(ErrorCode::PermissionDenied, "no");
-        let (socket, _dir, server) = scripted(spec);
-        let mut conn = Connection::connect(&socket).await.expect("connect");
-        let mut notices = Vec::new();
-        let outcome = atomic_agent_session_preflight(&mut conn, &mut notices)
-            .await
-            .expect("scripted server answers");
-        drop(conn);
-        let _ = server.await.expect("scripted server task");
-
-        assert!(matches!(outcome, AtomicPreflightOutcome::Refused(_)));
     }
 
     #[tokio::test]
@@ -1173,11 +956,11 @@ mod tests {
         request.cwd = Some("/src");
         request.agent_session = Some(b"resume");
         let mut notices = Vec::new();
-        let outcome = create_session(&mut conn, &request, false, false, &mut notices)
+        let outcome = create_session(&mut conn, &request, &mut notices)
             .await
             .expect("create");
         assert!(matches!(outcome, CreateOutcome::Created(_)), "{outcome:?}");
-        let again = create_session(&mut conn, &request, false, false, &mut notices)
+        let again = create_session(&mut conn, &request, &mut notices)
             .await
             .expect("same-key resend");
         assert_eq!(again, outcome, "a same-id resend answers the stored result");

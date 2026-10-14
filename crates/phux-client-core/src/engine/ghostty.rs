@@ -19,7 +19,7 @@ use libghostty_vt::{
     Error as SnapshotError, Terminal as GhosttyTerminal,
     screen::{CellContentTag, CellWide, TrackedGridRef},
     selection::{FormatOptions, Selection},
-    snapshot::{CaptureEvent, CaptureOptions, Decoder, FeedDecoder, FeedIncrementalDecoder},
+    snapshot::{CaptureEvent, CaptureOptions, FeedDecoder, FeedIncrementalDecoder},
     style::{Palette, PaletteIndex, RgbColor},
     terminal::{ClipboardWrite, Point, PointCoordinate, PointSpace, ScrollViewport},
 };
@@ -299,9 +299,7 @@ impl GhosttyReplica {
                 NativeDecoderState::Ready(decoder) => {
                     decoder.terminal_mut().set_scrollback_max_bytes(max)?;
                 }
-                NativeDecoderState::LegacyCollecting(_)
-                | NativeDecoderState::Collecting(_)
-                | NativeDecoderState::Failed => {}
+                NativeDecoderState::Collecting(_) | NativeDecoderState::Failed => {}
             },
         }
         Ok(())
@@ -319,9 +317,7 @@ impl GhosttyReplica {
                 NativeDecoderState::Ready(decoder) => {
                     decoder.terminal_mut().set_scrollback_max_lines(max)?;
                 }
-                NativeDecoderState::LegacyCollecting(_)
-                | NativeDecoderState::Collecting(_)
-                | NativeDecoderState::Failed => {}
+                NativeDecoderState::Collecting(_) | NativeDecoderState::Failed => {}
             },
         }
         Ok(())
@@ -342,9 +338,7 @@ impl GhosttyReplica {
                 NativeDecoderState::Ready(decoder) => {
                     apply_terminal_theme(decoder.terminal_mut(), theme)
                 }
-                NativeDecoderState::LegacyCollecting(_)
-                | NativeDecoderState::Collecting(_)
-                | NativeDecoderState::Failed => Ok(()),
+                NativeDecoderState::Collecting(_) | NativeDecoderState::Failed => Ok(()),
             },
         }
     }
@@ -358,9 +352,7 @@ impl GhosttyReplica {
                 NativeDecoderState::Ready(decoder) => {
                     decoder.terminal_mut().scroll_viewport(scroll);
                 }
-                NativeDecoderState::LegacyCollecting(_)
-                | NativeDecoderState::Collecting(_)
-                | NativeDecoderState::Failed => {
+                NativeDecoderState::Collecting(_) | NativeDecoderState::Failed => {
                     return Err(GhosttyEngineError::LiveOutputBeforeReady);
                 }
             },
@@ -423,9 +415,7 @@ impl NativeReplica {
             NativeDecoderState::Ready(decoder) => {
                 clear_terminal_presentation(decoder.terminal_mut());
             }
-            NativeDecoderState::LegacyCollecting(_)
-            | NativeDecoderState::Collecting(_)
-            | NativeDecoderState::Failed => {
+            NativeDecoderState::Collecting(_) | NativeDecoderState::Failed => {
                 return Err(GhosttyEngineError::LiveOutputBeforeReady);
             }
         }
@@ -436,16 +426,13 @@ impl NativeReplica {
         match &self.decoder {
             NativeDecoderState::Ready(decoder) => Some(decoder.terminal()),
             NativeDecoderState::Finished(terminal) => Some(terminal),
-            NativeDecoderState::LegacyCollecting(_)
-            | NativeDecoderState::Collecting(_)
-            | NativeDecoderState::Failed => None,
+            NativeDecoderState::Collecting(_) | NativeDecoderState::Failed => None,
         }
     }
 }
 
 #[derive(Debug)]
 enum NativeDecoderState {
-    LegacyCollecting(Vec<u8>),
     Collecting(FeedDecoder<'static>),
     Ready(FeedIncrementalDecoder<'static, 'static>),
     Finished(GhosttyTerminal<'static, 'static>),
@@ -564,13 +551,6 @@ impl EngineAdapter for GhosttyAdapter {
                     protocol_finished: false,
                 })
             }
-            BootstrapStreamProfile::NativeState {
-                codec: EngineCodec::LibghosttyCheckpointV2,
-            } if self.native_available => ReplicaState::Native(NativeReplica {
-                pending: Rc::clone(&pending),
-                decoder: NativeDecoderState::LegacyCollecting(Vec::new()),
-                protocol_finished: false,
-            }),
             _ => return Err(GhosttyEngineError::UnsupportedProfile(profile)),
         };
         Ok(GhosttyReplica {
@@ -659,7 +639,6 @@ impl EngineAdapter for GhosttyAdapter {
     fn bootstrap_staging_bytes(&self, replica: &Self::Replica) -> usize {
         match &replica.state {
             ReplicaState::Native(native) => match &native.decoder {
-                NativeDecoderState::LegacyCollecting(bytes) => bytes.capacity(),
                 NativeDecoderState::Collecting(decoder) => decoder.staged_capacity_bytes(),
                 NativeDecoderState::Ready(decoder) => decoder.staged_capacity_bytes(),
                 NativeDecoderState::Finished(_) | NativeDecoderState::Failed => 0,
@@ -734,9 +713,7 @@ impl EngineAdapter for GhosttyAdapter {
             ReplicaState::Native(native) => match &mut native.decoder {
                 NativeDecoderState::Ready(decoder) => decoder.terminal_mut().vt_write(payload),
                 NativeDecoderState::Finished(terminal) => terminal.vt_write(payload),
-                NativeDecoderState::LegacyCollecting(_)
-                | NativeDecoderState::Collecting(_)
-                | NativeDecoderState::Failed => {
+                NativeDecoderState::Collecting(_) | NativeDecoderState::Failed => {
                     return Err(GhosttyEngineError::LiveOutputBeforeReady);
                 }
             },
@@ -1343,18 +1320,12 @@ fn push_native(
     if native.protocol_finished {
         return Err(GhosttyEngineError::InputAfterReady);
     }
-    if let NativeDecoderState::LegacyCollecting(bytes) = &mut native.decoder {
-        bytes.extend_from_slice(input);
-        return Ok(BootstrapProgress::Pending);
-    }
     let NativeDecoderState::Collecting(decoder) = &mut native.decoder else {
         return match native.decoder {
             NativeDecoderState::Ready(_) => Err(GhosttyEngineError::InputAfterReady),
             NativeDecoderState::Finished(_) => Err(GhosttyEngineError::InputAfterFinish),
             NativeDecoderState::Failed => Err(GhosttyEngineError::DecoderFailed),
-            NativeDecoderState::LegacyCollecting(_) | NativeDecoderState::Collecting(_) => {
-                unreachable!()
-            }
+            NativeDecoderState::Collecting(_) => unreachable!(),
         };
     };
     decoder
@@ -1428,22 +1399,13 @@ fn finish_native(native: &mut NativeReplica) -> Result<BootstrapProgress, Ghostt
         return Err(GhosttyEngineError::InputAfterFinish);
     }
     let state = std::mem::replace(&mut native.decoder, NativeDecoderState::Failed);
-    if let NativeDecoderState::LegacyCollecting(bytes) = state {
-        let mut terminal = decode_legacy_snapshot(&bytes)?;
-        attach_native_callbacks(native, &mut terminal)?;
-        native.decoder = NativeDecoderState::Finished(terminal);
-        native.protocol_finished = true;
-        return Ok(BootstrapProgress::Finished);
-    }
     let NativeDecoderState::Collecting(decoder) = state else {
         return Err(match state {
             NativeDecoderState::Ready(_) | NativeDecoderState::Finished(_) => {
                 GhosttyEngineError::InputAfterFinish
             }
             NativeDecoderState::Failed => GhosttyEngineError::DecoderFailed,
-            NativeDecoderState::LegacyCollecting(_) | NativeDecoderState::Collecting(_) => {
-                unreachable!()
-            }
+            NativeDecoderState::Collecting(_) => unreachable!(),
         });
     };
     let staged = decoder.staged_bytes();
@@ -1471,7 +1433,6 @@ fn push_history(
             NativeDecoderState::Collecting(_) | NativeDecoderState::Ready(_) => {
                 GhosttyEngineError::HistoryBeforePublication
             }
-            NativeDecoderState::LegacyCollecting(_) => GhosttyEngineError::HistoryBeforePublication,
         });
     };
     decoder
@@ -1506,22 +1467,6 @@ fn finish_history_decoder(native: &mut NativeReplica) -> HistoryApplyOutcome {
     }
 }
 
-fn decode_legacy_snapshot(
-    bytes: &[u8],
-) -> Result<GhosttyTerminal<'static, 'static>, GhosttyEngineError> {
-    let decoder =
-        Decoder::new_buf(bytes).map_err(|error| GhosttyEngineError::checkpoint(error, 0))?;
-    let mut decoder = decoder
-        .ready()
-        .map_err(|error| GhosttyEngineError::checkpoint(error, bytes.len()))?;
-    while decoder
-        .next()
-        .map_err(|error| GhosttyEngineError::checkpoint(error, bytes.len()))?
-        .is_some()
-    {}
-    Ok(decoder.into_terminal())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1534,12 +1479,6 @@ mod tests {
     fn native_profile() -> BootstrapStreamProfile {
         BootstrapStreamProfile::NativeState {
             codec: EngineCodec::LibghosttySnapshotV1,
-        }
-    }
-
-    fn legacy_native_profile() -> BootstrapStreamProfile {
-        BootstrapStreamProfile::NativeState {
-            codec: EngineCodec::LibghosttyCheckpointV2,
         }
     }
 
@@ -1873,39 +1812,6 @@ mod tests {
                 "checkpoint-title"
             );
         }
-    }
-
-    #[test]
-    fn legacy_v2_decode_remains_finish_before_publication() {
-        let captured = capture_snapshot();
-        let mut eager = captured.ready.clone();
-        for (page, _) in &captured.history {
-            eager.extend_from_slice(page);
-        }
-        eager.extend_from_slice(&captured.finish);
-        let mut adapter = native_adapter();
-        let mut replica = adapter
-            .start_replica(legacy_native_profile(), geometry())
-            .expect("legacy native replica");
-        let mut effects = EngineEffectBuffer::new();
-        adapter
-            .apply_bootstrap_chunk(&mut replica, &eager, &mut effects)
-            .expect("complete eager checkpoint");
-        assert!(replica.terminal().is_none());
-        assert_eq!(
-            adapter
-                .finish_bootstrap(&mut replica, &mut effects)
-                .expect("legacy FINISH before publication"),
-            BootstrapProgress::Finished
-        );
-        assert_eq!(
-            replica
-                .terminal()
-                .expect("published terminal")
-                .title()
-                .unwrap(),
-            "checkpoint-title"
-        );
     }
 
     #[test]

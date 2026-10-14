@@ -28,7 +28,7 @@ use phux_server::runtime::default_socket_path;
 use phux_client::agent_session_record::{AgentSessionRecord, fetch_record_index};
 
 use crate::commands::agent::{PreparedAgentSession, prepare};
-use crate::commands::new::{create_session_via_metadata, preflight_atomic_agent_session_create};
+use crate::commands::new::create_session_via_metadata;
 use crate::commands::spawn::dispatch_spawn_async;
 use crate::commands::{ArchiveAction, WorkspaceAction, cli_runtime, partial, report_no_server};
 
@@ -347,7 +347,7 @@ pub(crate) fn run_import(archive_path: &Path, socket: Option<PathBuf>) -> ExitCo
     }
 }
 
-/// Why [`import_archive`] or [`relaunch_imported`] produced no summary.
+/// Why [`import_archive`] produced no summary.
 pub(crate) enum RestoreError {
     /// The diagnostic is already on stderr; exit with this code.
     Reported(ExitCode),
@@ -490,27 +490,7 @@ pub(crate) async fn import_archive(
 /// split tree. A session whose spawned relaunch fails has every pane started
 /// for it closed again and stays imported, empty; it is reported in the
 /// summary rather than aborting the rest.
-///
-/// # Errors
-///
-/// [`RestoreError::Reported`] when the atomic agent-session preflight a
-/// deferred legacy create needs fails.
-pub(crate) async fn relaunch_imported(
-    socket_path: &Path,
-    imported: Imported,
-) -> Result<RestoreSummary, RestoreError> {
-    // A deferred legacy create carries its seed's agent session in the
-    // create itself, which only some servers do atomically.
-    if !imported.created
-        && imported
-            .sessions
-            .iter()
-            .any(|create| create.agent_session.is_some())
-    {
-        preflight_atomic_agent_session_create(socket_path)
-            .await
-            .map_err(RestoreError::Reported)?;
-    }
+pub(crate) async fn relaunch_imported(socket_path: &Path, imported: Imported) -> RestoreSummary {
     let mut restored = Vec::with_capacity(imported.sessions.len());
     let mut failed = imported.failed;
     let mut warnings = imported.warnings;
@@ -534,13 +514,13 @@ pub(crate) async fn relaunch_imported(
             Err(reason) => failed.push(model::FailedRestore { name, reason }),
         }
     }
-    Ok(RestoreSummary {
+    RestoreSummary {
         schema_version: ARCHIVE_SCHEMA_VERSION,
         restored,
         skipped_existing: imported.skipped_existing,
         failed,
         warnings,
-    })
+    }
 }
 
 /// Whether the server at `socket_path` advertises `ORGANIZATION`.
@@ -980,7 +960,6 @@ async fn relaunch_one_session(
         .map(|session| session.record.encode())
         .transpose()
         .map_err(|err| format!("could not encode agent session provenance: {err}"))?;
-    let agent_session_preflighted = seed_prepared.is_some();
 
     let seed = if created {
         let launch = LaunchSpec::new(command.unwrap_or_default())
@@ -996,7 +975,6 @@ async fn relaunch_one_session(
             cwd,
             env,
             agent_session_bytes,
-            agent_session_preflighted,
             false,
             None,
             // An archived session was named: persistent.

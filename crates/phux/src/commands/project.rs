@@ -308,7 +308,7 @@ fn create(
     // its panes, as two explicit steps.
     let built = rt.block_on(async {
         let imported = import_archive(socket_path, &archive, "project open", Legacy::Defer).await?;
-        relaunch_imported(socket_path, imported).await
+        Ok::<_, RestoreError>(relaunch_imported(socket_path, imported).await)
     });
     let summary = match built {
         Ok(summary) => summary,

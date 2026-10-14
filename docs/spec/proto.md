@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-10-06
+last-reviewed: 2026-10-13
 ---
 
 # proto — connection lifecycle, framing, and protocol meta
@@ -379,7 +379,7 @@ BootstrapProfileKind = bitset (u8) {
 }
 
 EngineCodecSet = bitset (u64) {
-    LibghosttyCheckpointV2 = 1 << 2, // legacy checkpoint-v2; decode-compatible only
+    LibghosttyCheckpointV2 = 1 << 2, // legacy checkpoint-v2; reserved, not decoded
     LibghosttySnapshotV1   = 1 << 4, // official GHOSTSNPv1 progressive feed
     // 1 << 3 is permanently retired: BLAKE3-checkpointed GHOSTSNPv1 bytes.
 }
@@ -477,9 +477,10 @@ named earlier `GHOSTSNPv1` bytes whose READY and FINISH carried BLAKE3
 digests; neither engine decodes the other's bytes, so id `3` is permanently
 retired, never advertised, and ignored on receipt, and a peer that still
 offers only id `3` falls back like any peer without a shared codec. The distinct legacy
-`LibghosttyCheckpointV2 = 2` identity remains decodable, but its decoder requires
-FINISH before publication; implementations MUST NOT infer compatibility between
-the two. A current native producer/consumer advertises only snapshot-v1. A
+`LibghosttyCheckpointV2 = 2` identity stays reserved in the registry, but the
+reference server no longer produces it and the reference native client engine
+no longer decodes it; implementations MUST NOT infer compatibility between the
+two. A current native producer/consumer advertises only snapshot-v1. A
 snapshot-v1 peer and a checkpoint-v2-only peer therefore select a shared
 synthesized profile, or fail negotiation when none was offered. No fallback
 occurs after HELLO_OK. The current native profile offer bit/tag are

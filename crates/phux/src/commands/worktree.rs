@@ -418,7 +418,6 @@ fn bind_session(req: Binding<'_>) -> ExitCode {
         Some(cwd.to_string_lossy().into_owned()),
         BTreeMap::default(),
         None,
-        false,
         json,
         None,
         // A worktree's session is named after it: persistent.
