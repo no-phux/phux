@@ -61,8 +61,8 @@ export function packageVersion(text: string): string {
     metadata && typeof metadata === "object" && "version" in metadata
       ? metadata.version
       : undefined;
-  if (typeof version !== "string" || !/^\d+\.\d+\.\d+(?:-alpha\.\d+)?$/.test(version)) {
-    throw new Error("Desktop package.json must contain a release version");
+  if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version)) {
+    throw new Error("Desktop package.json must contain a stable release version");
   }
   return version;
 }

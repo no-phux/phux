@@ -1,17 +1,17 @@
 # phux desktop
 
-Install the GPUI desktop alpha on Apple-silicon macOS 27 or later with the
+Install the GPUI desktop client on Apple-silicon macOS 27 or later with the
 [phux CLI](https://phux.sh/install) already installed:
 
 ```sh
 curl -fsSL https://phux.sh/install-desktop | sh
 ```
 
-The installer selects only published `desktop-vX.Y.Z-alpha.N` prereleases,
+The installer selects only published `desktop-vX.Y.Z` releases,
 verifies the ZIP checksum and app signature, and installs `Phux.app` plus a
 `phux-desktop` launcher. It never replaces the CLI or stops its server.
-Run it again to update; pin or roll back to a published alpha with
-`sh -s -- --version X.Y.Z-alpha.N` after the pipe. `--applications-dir` and
+Run it again to update; pin or roll back to a published version with
+`sh -s -- --version X.Y.Z` after the pipe. `--applications-dir` and
 `--bin-dir` select alternate destinations. Releases are ad-hoc signed, **not
 Apple-notarized**; after verification the installer clears quarantine.
 
@@ -29,7 +29,7 @@ instead and creates it, persistent, when it does not exist; `PHUX_PROFILE` and
 
 Closing a pane/window or quitting the app detaches; it does not terminate
 server-owned shells. A desktop crash is separate from a server crash:
-relaunching can reattach while the server remains alive, but this alpha
+relaunching can reattach while the server remains alive, but this release
 does **not** promise process survival after a server crash or machine reboot.
 Only **Terminate Terminal Process** and **Kill Session** intentionally end
 terminals.
