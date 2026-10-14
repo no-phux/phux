@@ -689,9 +689,13 @@ pub const PhuxProvider = struct {
             return err;
         };
         self.recordRemoteFailure();
-        // Poll may have consumed the wake carrying a new epoch. Schedule one
-        // more UI drain of its retained records; never redial from this layer.
-        if (self.host.poll_unsettled) connectedWake(&self.wake_context);
+        // The driver's wake is edge-triggered: take_inbound clears it before
+        // copying the queue, so frames that arrive during the poll wait for
+        // another wake. On a quiet session that wake is the one-second
+        // workspace refresh, which is what held a close's confirming read.
+        // Anything still queued (including a new connection epoch) is drained
+        // now. Never redial from this layer.
+        if (self.host.hasReadiness()) connectedWake(&self.wake_context);
         // Handle replacement and runtime redial share one retirement signal.
         if (self.host.takeConnectionRetired()) {
             self.attach_queued = false;

@@ -2959,7 +2959,10 @@ function tabCommandNotice(outcome: number): Uint8Array {
   if (outcome === 4) return asciiBytes("Command queue full. New command not sent.");
   if (outcome === 5) return asciiBytes("Command outcome unknown; queued commands canceled.");
   if (outcome === 6) return asciiBytes("Command IDs exhausted. Restart Cockpit.");
-  if (outcome === 7) return asciiBytes("Command accepted; outcome pending.");
+  // Accepted-and-pending is the close (or any other shared edit) waiting for
+  // the server publication. The location button paints commandNotice with the
+  // attention icon; a quiet wait is not a bell, failure, or loss.
+  if (outcome === 7) return NO_BYTES;
   return NO_BYTES;
 }
 
