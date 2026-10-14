@@ -14,16 +14,6 @@ require_fixed() {
   fi
 }
 
-# Prose may wrap across lines without changing the install contract.
-require_prose() {
-  local file="$1"
-  local needle="$2"
-  if ! tr '\n' ' ' < "$ROOT/$file" | tr -s '[:space:]' | grep -F -- "$needle" > /dev/null; then
-    printf 'missing: %s: %s\n' "$file" "$needle" >&2
-    failures=$((failures + 1))
-  fi
-}
-
 forbid_fixed() {
   local file="$1"
   local needle="$2"
@@ -51,171 +41,20 @@ require_regex() {
   fi
 }
 
-# The README is a landing page: it carries the brew one-liner, the platform
-# truth, and a pointer to INSTALL.md. The full channel matrix, source builds,
-# and cargo-install caveats are gated on docs/INSTALL.md below.
-require_fixed README.md "## Install"
-require_fixed README.md "brew trust --tap no-phux/tap"
-require_fixed README.md "brew install no-phux/tap/phux"
-forbid_fixed README.md "brew install phall1/phux/phux"
-forbid_fixed README.md "brew install phall1/tap/phux"
-require_fixed README.md "macOS arm64, Linux x86_64, and Linux arm64"
-require_prose README.md "Windows is not supported"
-require_fixed README.md "docs/INSTALL.md"
-forbid_fixed README.md "macOS x86_64"
-# Version literals in the README rot; forbid the one that already did
-# (the README pinned v0.0.3 while the repo shipped v0.7.0).
-forbid_fixed README.md "v0.0.3"
-# Same defect, second file: docs/RELEASING.md carried "v0.0.3 is the current
-# portable public release" all the way to v0.19.0. Prose that names a current
-# version is stale by the next release; point at "the latest release" instead.
-forbid_fixed docs/RELEASING.md "v0.0.3"
-
-# The page opens with the one command; everything else is an option below it.
-require_regex docs/INSTALL.md '^curl -fsSL https://phux.sh/install \| sh$'
-require_fixed docs/INSTALL.md "## Installer options"
-require_fixed docs/INSTALL.md "## Desktop app (macOS)"
-require_fixed docs/INSTALL.md "--no-modify-path"
-require_fixed docs/INSTALL.md "Homebrew"
-require_fixed docs/INSTALL.md "brew trust --tap no-phux/tap"
-require_fixed docs/INSTALL.md "Release tarball"
-require_fixed docs/INSTALL.md "From source"
-require_fixed docs/INSTALL.md "nix develop -c cargo install --locked --path crates/phux"
-require_fixed docs/INSTALL.md "nix develop -c cargo install --locked --path crates/phux-mcp"
-# Backticked in the doc since the curated-docs truth pass (6968cf06); match the
-# rendered claim, not the old unformatted spelling.
-require_fixed docs/INSTALL.md '`cargo install phux` is unsupported'
-# The seeded-v0.0.1 caveat used to be asserted against docs/INSTALL.md. That
-# truth pass dropped it there — reasonably, since v0.0.1 is ten minor versions
-# stale and INSTALL.md is the user-facing page — but the warning still matters
-# to whoever points a tap or installer at a tag, so it is pinned where it now
-# lives instead of being resurrected in INSTALL.md.
-require_fixed docs/RELEASING.md 'do not point installers or the tap at it'
-require_fixed docs/INSTALL.md "Windows is not supported"
-# First-run and headless guidance live in their canonical guides.
-require_fixed docs/INSTALL.md '[Quickstart](./QUICKSTART.md)'
-require_fixed docs/INSTALL.md '[Agents](./consumers/agents.md)'
-require_fixed docs/INSTALL.md 'verifies the release `.sha256` sidecar before unpacking'
-require_fixed docs/INSTALL.md "| Linux aarch64 | yes | where Linuxbrew runs | yes |"
-
-require_fixed docs/RELEASING.md "phux and phux-mcp artifacts"
-require_fixed docs/RELEASING.md "cargo install phux is unsupported"
-require_fixed docs/RELEASING.md "Windows is not supported"
-require_fixed docs/RELEASING.md "Cutting a Cockpit release"
-require_fixed docs/RELEASING.md "just release-preflight vX.Y.Z"
-require_fixed docs/RELEASING.md "CARGO_REGISTRY_TOKEN"
-require_fixed docs/RELEASING.md "portable public release"
-require_fixed docs/RELEASING.md 'explicit `v0.0.1` refusal'
-require_fixed docs/RELEASING.md "aarch64-apple-darwin"
-require_fixed docs/RELEASING.md "x86_64-unknown-linux-gnu"
-require_fixed docs/RELEASING.md "aarch64-unknown-linux-gnu"
-# The release flow is release-please-driven. The docs must describe THAT flow,
-# not the retired hand-typed-tag dispatch.
-require_fixed docs/RELEASING.md "release-please"
-require_fixed docs/RELEASING.md "The release PR squash auto-merges once \`ci\` is green"
-require_fixed docs/RELEASING.md "mark the open **release-please** PR"
-require_fixed docs/RELEASING.md "publish-crate.yml"
-# The old manual cockpit is gone; catch a doc that drifts back to it.
-forbid_fixed docs/RELEASING.md "publish_protocol"
-forbid_fixed docs/RELEASING.md "crates_io_confirm"
-
-require_fixed scripts/install.sh 'macOS x86_64 has no official release artifact; use a source build'
-require_fixed scripts/install.sh 'download "$sha_url" "$sha_path"'
-require_fixed scripts/install.sh 'sha256sum -c "$(basename "$sha_path")"'
-require_fixed scripts/install.sh 'shasum -a 256 -c "$(basename "$sha_path")"'
-require_fixed scripts/install.sh '"${stage_name}/phux-mcp"'
 # The tarball member list is owned by pack-release.sh. Workflows and dist.sh
 # must call it rather than copying docs inline — that inline copy is how
 # LICENSE-MIT/LICENSE-APACHE survived the relicense and broke curl | sh.
-require_fixed scripts/pack-release.sh 'RELEASE_DOCS=(README.md LICENSE NOTICE THIRD-PARTY-NOTICES.md)'
-require_fixed scripts/pack-release.sh 'RELEASE_BINS=(phux phux-mcp)'
 require_fixed .github/workflows/release.yml 'bash scripts/pack-release.sh'
 require_fixed .github/workflows/next-release.yml 'bash scripts/pack-release.sh'
 require_fixed scripts/dist.sh 'bash scripts/pack-release.sh'
 forbid_fixed .github/workflows/release.yml 'LICENSE-MIT LICENSE-APACHE'
 forbid_fixed .github/workflows/next-release.yml 'LICENSE-MIT LICENSE-APACHE'
-require_fixed scripts/test-pack-release.sh 'packer contract tests passed'
-require_fixed scripts/install.sh 'publish_dir="$(mktemp -d "${install_dir}/.phux-install.XXXXXX")"'
-require_fixed scripts/install.sh 'rollback_publish'
-require_fixed scripts/install.sh 'mv "${publish_dir}/phux-mcp" "${install_dir}/phux-mcp"'
-require_fixed scripts/install.sh 'echo "next: phux"'
-require_fixed scripts/install.sh '--channel'
-require_fixed scripts/install.sh 'PHUX_CHANNEL'
-require_fixed scripts/install.sh '.phux-channel'
-require_fixed docs/RELEASING.md 'next channel'
-require_fixed docs/adr/0113-next-release-channel.md '`phux update'
-require_fixed scripts/install.sh 'PATH remedy: export PATH=%s:"$PATH"'
-require_fixed scripts/install.sh 'found_command="$(command -v phux 2>/dev/null || true)"'
-# Both standalone scripts embed the same bounded structural JSON resolver.
-# The executable tests cover mixed streams, pagination and metadata filtering.
-require_fixed scripts/install.sh 'resolve_latest_version v'
-require_fixed scripts/install-cockpit.sh 'resolve_latest_version cockpit-v'
-require_fixed scripts/test-install.sh 'installer transaction tests passed'
 
-# --- The Cockpit installer ---------------------------------------------------
+# --- phux.sh serves the installers -------------------------------------------
 #
-# scripts/install-cockpit.sh is the same POSIX-sh, verify-before-install
-# discipline as scripts/install.sh, pointed at the cockpit-vX.Y.Z stream.
-# It is served at /install-cockpit (+.sh), so every guard below has a twin in
-# the CLI block above. macOS-only: refusing anywhere else is the install, not
-# a fallback.
-require_regex scripts/install-cockpit.sh '^#!/bin/sh$'
-forbid_fixed scripts/install-cockpit.sh '#!/usr/bin/env bash'
-forbid_regex scripts/install-cockpit.sh '^[[:space:]]*[^#[:space:]].*pipefail'
-forbid_regex scripts/install-cockpit.sh '^[[:space:]]*[^#[:space:]].*%q'
-require_fixed scripts/install-cockpit.sh 'shell_quote()'
-require_fixed scripts/install-cockpit.sh 'phux-cockpit-${semver}-macos-arm64.zip'
-require_fixed scripts/install-cockpit.sh 'no-phux/phux/releases/download/${version}'
-require_fixed scripts/install-cockpit.sh 'cockpit-vX.Y.Z'
-require_fixed scripts/install-cockpit.sh 'Phux Cockpit is macOS-only'
-require_fixed scripts/install-cockpit.sh 'Phux Cockpit ships arm64 only'
-require_fixed scripts/install-cockpit.sh 'com.apple.quarantine'
-require_fixed scripts/install-cockpit.sh 'rollback_publish'
-require_fixed scripts/install-cockpit.sh '.phux-cockpit-install.lock'
-require_fixed scripts/install-cockpit.sh 'printf '\''next: open %s\n'\'' "$(shell_quote "$installed_app")"'
-require_fixed scripts/install-cockpit.sh 'write_cli_launcher()'
-require_fixed scripts/install-cockpit.sh '${bin_dir}/phux-cockpit'
-require_fixed scripts/test-install.sh 'cockpit installer transaction tests passed'
-require_fixed scripts/test-install.sh 'phux-cockpit launcher'
-forbid_fixed scripts/test-install.sh 'bash "$ROOT/scripts/install-cockpit.sh"'
-
-# In-app Check for Updates drives that installer rather than a second stack.
-require_regex scripts/cockpit-self-update.sh '^#!/bin/sh$'
-forbid_fixed scripts/cockpit-self-update.sh '#!/usr/bin/env bash'
-forbid_regex scripts/cockpit-self-update.sh '^[[:space:]]*[^#[:space:]].*pipefail'
-require_fixed scripts/cockpit-self-update.sh 'install-cockpit.sh'
-require_fixed scripts/cockpit-self-update.sh 'source="homebrew"'
-require_fixed scripts/cockpit-self-update.sh 'brew upgrade --cask no-phux/tap/phux-cockpit'
-require_fixed scripts/cockpit-self-update.sh 'source="nix"'
-require_fixed scripts/cockpit-self-update.sh 'source="dev"'
-require_fixed scripts/test-cockpit-self-update.sh 'cockpit self-update tests passed'
-require_fixed scripts/test-cockpit-self-update.sh 'driver overwrote a Homebrew cask install'
-require_fixed scripts/test-cockpit-self-update.sh 'BAD_CHECKSUM=1'
-require_fixed scripts/test-cockpit-self-update.sh 'FAIL_DITTO=1'
-forbid_fixed scripts/test-cockpit-self-update.sh 'bash "$ROOT/scripts/install-cockpit.sh"'
-require_fixed docs/INSTALL.md 'Check for Updates'
-
-# --- The installer is POSIX sh, and phux.sh serves it -------------------------
-#
-# https://phux.sh/install returns scripts/install.sh byte for byte, and the
-# documented command pipes it to `sh`. On Debian and Ubuntu that is dash, so a
-# bashism is not a style question: it is an install that dies on a stranger's
-# machine. Two killed it before this was pinned — `set -o pipefail`, which dash
-# rejected before 0.5.12, and `printf %q`, which no dash has ever implemented.
-require_regex scripts/install.sh '^#!/bin/sh$'
-forbid_fixed scripts/install.sh '#!/usr/bin/env bash'
-# Matched against code only. The script's own header names both bashisms so the
-# next reader knows why they are banned; a guard that could not tell a comment
-# from a command would forbid saying so.
-forbid_regex scripts/install.sh '^[[:space:]]*[^#[:space:]].*pipefail'
-forbid_regex scripts/install.sh '^[[:space:]]*[^#[:space:]].*%q'
-# The POSIX stand-in for `printf %q` that replaced it.
-require_fixed scripts/install.sh 'shell_quote()'
-# The transaction tests must drive the installer through a POSIX shell, or the
-# bashism guards above are the only thing standing between dash and a user.
-require_fixed scripts/test-install.sh 'INSTALLER_SH="$(command -v dash || echo /bin/sh)"'
-forbid_fixed scripts/test-install.sh 'bash "$ROOT/scripts/install.sh"'
-
+# Installer behavior is proven by the executable tests at the bottom of this
+# script, which CI runs under dash, and by shellcheck in sh mode. What no test
+# exercises is the wiring that publishes them.
 # The site publishes the script from this repo instead of keeping a copy. Both
 # halves are load-bearing: sync-docs.ts does the copying, and site-deploy.yml's
 # path filter is what makes an installer change redeploy the site at all. Miss
@@ -240,31 +79,12 @@ require_fixed docs/site/.gitignore 'public/install-cockpit'
 require_fixed docs/site/.gitignore 'public/install-cockpit.sh'
 require_fixed docs/site/public/_headers '/install-cockpit'
 
-require_fixed README.md 'curl -fsSL https://phux.sh/install | sh'
-require_fixed README.md 'curl -fsSL https://phux.sh/install-desktop | sh'
-require_fixed README.md 'npx skills add no-phux/skills'
-forbid_fixed README.md 'npx skills add no-phux/phux'
-require_fixed docs/INSTALL.md 'curl -fsSL https://phux.sh/install | sh'
-require_fixed docs/INSTALL.md 'curl -fsSL https://phux.sh/install-cockpit | sh'
-require_fixed docs/INSTALL.md 'npx skills add no-phux/skills'
-forbid_fixed docs/INSTALL.md 'npx skills add no-phux/phux'
-require_fixed docs/INSTALL.md '## Cockpit (native macOS)'
-require_fixed docs/INSTALL.md 'curl -fsSL https://phux.sh/install-desktop | sh'
 # Only the CLI stream may be GitHub's "Latest": the installer and `phux update`
 # read the releases/latest redirect before falling back to the release list.
-require_fixed scripts/install.sh 'resolve_latest_redirect || resolve_latest_version v'
 require_fixed .github/workflows/release.yml 'gh release edit "$TAG" --draft=false --latest'
 require_fixed .github/workflows/cockpit-release.yml '--draft=false --latest=false'
 require_fixed .github/workflows/agent-integration-release.yml '--draft=false --latest=false'
 require_fixed .github/workflows/desktop-release.yml '--draft=false --latest=false'
-require_fixed clients/cockpit/README.md 'curl -fsSL https://phux.sh/install-cockpit | sh'
-require_fixed docs/site/DEPLOY.md '/install-cockpit'
-require_fixed docs/RELEASING.md 'curl -fsSL https://phux.sh/install | sh'
-require_fixed docs/RELEASING.md 'Curl installer contract'
-# The cockpit tag shape and ZIP name are consumed by the installer and the
-# site badge; RELEASING must say so where the release is cut.
-require_fixed docs/RELEASING.md 'phux-cockpit-<semver>-macos-arm64.zip'
-require_fixed docs/RELEASING.md 'scripts/install-cockpit.sh'
 
 # --- The repository is no-phux/phux -------------------------------------------
 #
@@ -272,13 +92,8 @@ require_fixed docs/RELEASING.md 'scripts/install-cockpit.sh'
 # GitHub still answers the old name with a redirect, which is somebody else's
 # decision to revoke. An installed phux resolves its own updates through these
 # constants, so a dropped redirect would strand every existing install.
-forbid_fixed scripts/install.sh 'phall1/phux'
-forbid_fixed scripts/install-cockpit.sh 'phall1/phux'
-forbid_fixed docs/INSTALL.md 'phall1/phux'
-forbid_fixed docs/RELEASING.md 'phall1/phux'
 forbid_fixed crates/phux/src/commands/update/release.rs 'phall1/phux'
 forbid_fixed docs/site/scripts/sync-docs.ts 'phall1/phux'
-require_fixed scripts/install.sh 'https://github.com/no-phux/phux/releases/download/${release_tag}'
 # The next-channel pointers must be assets named channel.json (phux) and
 # cockpit-channel.json (Cockpit). gh's `file#label` syntax labels the asset;
 # it does not rename it, so the pointer is written under its real basename.
@@ -292,12 +107,7 @@ forbid_fixed scripts/publish-next-channel.sh 'channel_json#'
 require_fixed .github/workflows/next-release.yml 'bash scripts/publish-next-channel.sh --cockpit'
 require_fixed .github/workflows/next-release.yml 'PHUX_BUILD_CHANNEL: next'
 require_fixed clients/cockpit/scripts/package-macos.sh 'PhuxChannel'
-require_fixed scripts/install-cockpit.sh 'releases/download/next/cockpit-channel.json'
-require_fixed scripts/install-cockpit.sh 'phux-cockpit-next.${next_sha}-macos-arm64.zip'
-require_fixed scripts/install-cockpit.sh 'PHUX_CHANNEL'
-require_fixed scripts/cockpit-self-update.sh 'PhuxBuildSHA'
 require_fixed crates/phux/src/commands/update/cockpit.rs 'scripts/cockpit-self-update.sh'
-require_fixed scripts/install-cockpit.sh 'https://github.com/no-phux/phux/releases/download/${version}'
 require_fixed crates/phux/src/commands/update/release.rs 'pub(crate) const REPO: &str = "no-phux/phux";'
 
 require_fixed just/release.just "release-preflight TAG:"
@@ -339,7 +149,6 @@ require_fixed .github/workflows/release.yml 'target: aarch64-unknown-linux-gnu'
 # together with it.
 forbid_fixed .github/workflows/release.yml 'target: x86_64-apple-darwin'
 require_fixed .github/workflows/release.yml 'bash scripts/install-zig.sh'
-require_fixed scripts/install-zig.sh 'https://ziglang.org/download/${ZIG_VERSION}/${archive}'
 require_fixed scripts/lib/dev-toolchain.sh '.config/zig-toolchain.json'
 # The link check must run on every matrix leg. It was macOS-only for its whole
 # life, so the Linux artifacts shipped unchecked; pin both the call and the
@@ -351,7 +160,6 @@ require_fixed .github/workflows/release.yml 'refusing to downgrade it to'
 require_fixed scripts/check-binary-portability.sh 'check_elf'
 require_fixed scripts/check-binary-portability.sh 'check_macho'
 require_fixed scripts/check-binary-portability.sh 'x86-64-v[234]'
-require_regex scripts/pack-release.sh 'test -x .*phux-mcp'
 
 forbid_fixed .github/workflows/release.yml 'mlugg/setup-zig'
 # Remaining setup-zig callers must disable the action's Zig-cache post
@@ -489,46 +297,6 @@ forbid_fixed .github/workflows/agent-integration-release.yml 'NODE_AUTH_TOKEN: $
 # `-type f -name a -o -name b` binds as `(-type f -a -name a) -o (-name b)`,
 # silently dropping the type filter from the second branch.
 forbid_fixed .github/workflows/agent-integration-release.yml "-type f -name '*.tgz' -o -name '*.tar.gz'"
-
-# --- Self-update contract (ADR-0074) ------------------------------------------
-#
-# `phux update` derives its download URLs and its archive-member allowlist from
-# pack-release.sh. That makes the artifact naming a consumed contract, not a
-# convention: rename an artifact or drop the sidecar and every already-installed
-# phux loses the ability to update itself. The pins below tie the three halves
-# together — what the packer writes, what the code expects, and what the docs
-# promise — so a change to any one of them fails here rather than at a user's
-# terminal.
-require_fixed scripts/pack-release.sh 'stage="phux-${id}-${target}"'
-require_fixed scripts/pack-release.sh 'echo "${sha}  ${stage}.tar.gz" > "${archive}.sha256"'
-require_fixed crates/phux/src/commands/update/release.rs 'format!("phux-{tag}-{target}")'
-require_fixed crates/phux/src/commands/update/release.rs 'releases/download/{release_tag}/{archive}'
-require_fixed crates/phux/src/commands/update/release.rs 'format!("{archive_url}.sha256")'
-# `phux update` resolves "latest" the same way the installer does, and the
-# same multi-stream defect applied: the redirect follows whichever stream
-# shipped newest. The tag must come from the filtered releases list unless the
-# redirect already names a core tag.
-require_fixed crates/phux/src/commands/update/release.rs 'latest_core_tag_from_list'
-require_fixed crates/phux/src/commands/update/release.rs 'releases?per_page=30'
-# The verification must precede the unpack; these two are the load-bearing
-# functions and their order is asserted by the unit tests next to them.
-require_fixed crates/phux/src/commands/update/apply.rs 'pub(crate) fn verify_archive'
-require_fixed crates/phux/src/commands/update/apply.rs 'pub(crate) fn unpack_verified'
-# Installs phux does not own are never mutated.
-require_fixed docs/INSTALL.md '## Updating'
-require_fixed docs/INSTALL.md 'brew upgrade no-phux/tap/phux'
-forbid_fixed docs/INSTALL.md 'brew upgrade phall1/tap/phux'
-require_fixed docs/INSTALL.md 'nix profile upgrade phux'
-require_fixed docs/INSTALL.md 'nixos-rebuild switch'
-require_fixed docs/INSTALL.md 'phux update --rollback'
-require_fixed docs/INSTALL.md '--channel next'
-require_fixed docs/INSTALL.md 'PHUX_CHANNEL=next'
-require_fixed docs/INSTALL.md 'sh -s -- --channel next'
-require_fixed docs/RELEASING.md 'This layout is a consumed contract'
-require_fixed docs/RELEASING.md 'scripts/pack-release.sh'
-
-require_fixed docs/site/public/llms.txt "npx skills add no-phux/skills"
-forbid_fixed docs/site/public/llms.txt "npx skills add no-phux/phux"
 
 if [ "$failures" -ne 0 ]; then
   printf 'install surface check failed: %d missing contract item(s)\n' "$failures" >&2

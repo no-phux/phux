@@ -65,7 +65,7 @@ recovery. `scripts/check-release-orchestration.mjs` pins this ordering.
 | Check Cockpit locally before its release PR merges | `just cockpit-test`, then `bash clients/cockpit/scripts/build-phux-artifacts.sh` and `clients/cockpit/scripts/package-macos.sh` |
 | Ask whether anything is stuck right now | `just release-drift` (needs an authenticated `gh`) |
 | Report a hand-recovered release to Linear | Dispatch **Actions -> linear-release** with a public `vX.Y.Z` or `cockpit-vX.Y.Z` tag; it synchronizes that exact version before updating its stage |
-| Check a suspected install-doc drift | `bash scripts/check-install-surface.sh` |
+| Check the installers and their release wiring | `bash scripts/check-install-surface.sh` |
 | Publish or rebuild the `next` channel | Dispatch **Actions -> next-release** (also runs after green `main` CI) |
 
 ## What runs when
@@ -650,7 +650,7 @@ silently replace a public release with different bytes.
 The `cockpit-vX.Y.Z` tag shape and the `phux-cockpit-<semver>-macos-arm64.zip`
 asset name are a consumed contract: `scripts/install-cockpit.sh` and the
 site's Cockpit version badge resolve them directly. Rename either and both
-break; `scripts/check-install-surface.sh` pins the three halves together.
+break.
 
 ## PhuxFFI xcframework
 
