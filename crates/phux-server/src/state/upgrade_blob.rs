@@ -1138,6 +1138,13 @@ fn import_tree(
             record.arrangement = Some(key);
         }
     }
+    // An old session can list windows whose panes did not survive; with no
+    // members it cannot be ephemeral, so it stays as a persistent record.
+    for session in &mut sessions {
+        if session.members.is_empty() {
+            session.lifetime = SessionLifetime::Persistent;
+        }
+    }
     let mut org = Org::restore(
         *current.authority(),
         instance,
@@ -1178,7 +1185,7 @@ fn group_tree(
                         SplitDirBlob::Horizontal => SplitDir::Horizontal,
                         SplitDirBlob::Vertical => SplitDir::Vertical,
                     },
-                    ratio: *ratio,
+                    ratio: super::layout_translation::arrangement_ratio(*ratio),
                     left: Box::new(l),
                     right: Box::new(r),
                 }),
@@ -1802,6 +1809,52 @@ mod tests {
                     state.org().check_invariants().is_ok(),
                     "the import keeps every invariant"
                 );
+            })
+            .await;
+    }
+
+    /// An old image's odd shapes still import: a session whose only window
+    /// lost its panes stays as a persistent record instead of an empty
+    /// ephemeral one, and a split banked at an edge ratio is clamped into
+    /// the open interval the arrangement holds.
+    #[tokio::test(flavor = "current_thread")]
+    async fn import_keeps_empty_sessions_and_clamps_edge_ratios() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let mut state = ServerState::new();
+                let mut empty = session(1, vec![2]);
+                empty.name = "empty".to_owned();
+                let mut split = window(5, 4, vec![6, 7]);
+                split.layout = Some(LayoutBlob::Split {
+                    dir: SplitDirBlob::Vertical,
+                    ratio: 1.0,
+                    left: Box::new(LayoutBlob::Leaf(6)),
+                    right: Box::new(LayoutBlob::Leaf(7)),
+                });
+                let handoff = blob(
+                    vec![empty, session(4, vec![5])],
+                    vec![window(2, 1, Vec::new()), split],
+                    vec![no_pty_pane(6, 5), no_pty_pane(7, 5)],
+                );
+                state
+                    .rebuild_from_blob(&handoff, |_, _| ())
+                    .expect("an old image with an emptied window imports");
+                let empty = state.session_by_name("empty").expect("empty kept");
+                assert_eq!(empty.lifetime, phux_core::SessionLifetime::Persistent);
+                let main = state.session_by_name("main").expect("main").clone();
+                let arrangement = state
+                    .org()
+                    .arrangement(&main.arrangement.expect("arranged"))
+                    .expect("arrangement");
+                match &arrangement.groups[0].tree {
+                    phux_core::LayoutNode::Split { ratio, .. } => {
+                        assert!(*ratio > 0.0 && *ratio < 1.0, "ratio {ratio}");
+                    }
+                    other @ phux_core::LayoutNode::Leaf(_) => {
+                        panic!("expected the split, got {other:?}")
+                    }
+                }
             })
             .await;
     }
