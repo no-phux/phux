@@ -7,8 +7,6 @@
 use std::io::{self, BufRead, IsTerminal};
 use std::process::ExitCode;
 
-use phux_protocol::wire::frame::TerminalSignal;
-
 /// The exit code of an unconfirmed dangerous verb: nothing was sent.
 pub(crate) const NOT_CONFIRMED: u8 = 2;
 
@@ -59,14 +57,11 @@ fn read_answer(stdin: &io::Stdin) -> Option<String> {
     (read > 0).then_some(line)
 }
 
-/// Whether delivering `signal` is dangerous: the catalog's payload rule, so
-/// `freeze` and `resume`, the reversible brake, never ask.
-pub(crate) fn signal_is_dangerous(signal: TerminalSignal) -> bool {
-    phux_client::signal::is_dangerous(signal)
-}
-
 #[cfg(test)]
 mod tests {
+    use phux_client::signal::is_dangerous;
+    use phux_protocol::wire::frame::TerminalSignal;
+
     use super::*;
 
     #[test]
@@ -91,6 +86,7 @@ mod tests {
         );
     }
 
+    /// `freeze` and `resume`, the reversible brake, never ask.
     #[test]
     fn only_the_ending_signals_ask() {
         for signal in [
@@ -98,10 +94,10 @@ mod tests {
             TerminalSignal::Terminate,
             TerminalSignal::Kill,
         ] {
-            assert!(signal_is_dangerous(signal), "{signal:?}");
+            assert!(is_dangerous(signal), "{signal:?}");
         }
         for signal in [TerminalSignal::Freeze, TerminalSignal::Resume] {
-            assert!(!signal_is_dangerous(signal), "{signal:?}");
+            assert!(!is_dangerous(signal), "{signal:?}");
         }
     }
 }

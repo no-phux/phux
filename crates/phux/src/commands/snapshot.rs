@@ -119,7 +119,8 @@ pub(crate) fn run_snapshot(
                 return ExitCode::FAILURE;
             }
         };
-        let screen = project(screen, unwrap, tail);
+        // ADR-0077's client-side projections, shared with MCP `phux_snapshot`.
+        let screen = phux_client::snapshot::project(screen, unwrap, tail);
 
         if json {
             crate::output::json(&screen)
@@ -158,13 +159,6 @@ fn print_rendered_capture(screen: &ScreenState) -> ExitCode {
 /// ([`phux_client::snapshot::history_request`]).
 const fn history_request(read: &ReadOpts) -> Option<u32> {
     phux_client::snapshot::history_request(read.scrollback, read.tail)
-}
-
-/// Apply the client-side ADR-0077 projections to a reply: the one
-/// implementation the MCP `phux_snapshot` tool also calls
-/// ([`phux_client::snapshot::project`]).
-fn project(screen: ScreenState, unwrap: bool, tail: Option<u32>) -> ScreenState {
-    phux_client::snapshot::project(screen, unwrap, tail)
 }
 
 /// `--rendered`: attach headless, compose the client's multi-pane frame, and
