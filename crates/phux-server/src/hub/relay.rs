@@ -7623,13 +7623,23 @@ mod tests {
         );
     }
 
+    /// A satellite whose link stays up but never answers is refused at the
+    /// deadline, naming the host and the path it was asked for.
     #[tokio::test(start_paused = true)]
     async fn a_listing_times_out_against_a_silent_satellite() {
         let (handle, rx) = RelayHandle::new(host());
-        let message = refusal_message(handle.list_directory("/srv".to_owned()).await);
+        let refusal = handle
+            .list_directory("/srv".to_owned())
+            .await
+            .expect_err("expected a refusal");
+        assert_eq!(refusal.code, DirectoryErrorCode::Other);
+        assert_eq!(refusal.path, "/srv");
         assert!(
-            message.contains("did not answer the listing within 10s"),
-            "{message}"
+            refusal
+                .message
+                .contains("devbox did not answer the listing within 10s"),
+            "{}",
+            refusal.message
         );
         drop(rx);
     }
