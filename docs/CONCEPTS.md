@@ -8,7 +8,7 @@ last-reviewed: 2026-10-13
 
 **TL;DR.** phux is a programmable terminal runtime that people and agents
 share. A background server owns resources, such as terminals, and groups
-each one into exactly one session. Clients show views of those resources.
+each into exactly one session. Clients show views of those resources.
 Closing a view never ends work; killing a resource does. Sessions are
 records with an explicit lifetime, and every change records who made it.
 
