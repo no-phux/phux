@@ -100,6 +100,7 @@ pub struct FindState {
 
 pub struct Desk {
     pub desktop: Entity<Desktop>,
+    pub(crate) updates: Entity<super::updates::Updater>,
     pub role: WindowRole,
     pub socket: PathBuf,
     pub session: String,
@@ -182,8 +183,9 @@ enum Drag {
 }
 
 impl Desk {
-    pub fn open(
+    pub(crate) fn open(
         desktop: Entity<Desktop>,
+        updates: Entity<super::updates::Updater>,
         phux: PathBuf,
         socket: PathBuf,
         request: OpenRequest,
@@ -218,6 +220,7 @@ impl Desk {
         let focus = cx.focus_handle();
         let mut desk = Self {
             desktop,
+            updates,
             role: request.role,
             socket,
             session: request.session.clone(),
@@ -278,6 +281,20 @@ impl Desk {
         desk.attach(request.initial_terminal, cx);
         desk.sync_bindings(cx);
         desk.apply_kit_theme(cx);
+        let updates = desk.updates.clone();
+        let mut runtime_generation = updates.read(cx).runtime_generation;
+        desk._subs.push(cx.observe(&updates, move |_, updates, cx| {
+            let generation = updates.read(cx).runtime_generation;
+            if generation != runtime_generation {
+                runtime_generation = generation;
+                cx.spawn(async move |this, cx| {
+                    smol::Timer::after(Duration::from_millis(500)).await;
+                    let _ = this.update(cx, |desk, cx| desk.redial(cx));
+                })
+                .detach();
+            }
+            cx.notify();
+        }));
         // Quit saves every window; a closed window saves through `Desktop::window_closed`.
         desk._subs.push(cx.on_app_quit(|desk, cx| {
             desk.prepare_close(cx);
@@ -1027,6 +1044,12 @@ impl Desk {
                 }
             }
         }
+        self.redial(cx);
+    }
+
+    /// Reattach after a managed handoff. The updater already performed the
+    /// process work off-thread; this path never invokes a CLI subprocess.
+    fn redial(&mut self, cx: &mut Context<Self>) {
         self.persist();
         let snapshot = self.last_saved.clone();
         let closed = self

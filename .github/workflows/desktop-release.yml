@@ -9,6 +9,14 @@ on:
         description: Existing desktop-vX.Y.Z draft to build and publish
         required: true
         type: string
+      channel:
+        description: Stable draft publication or next-channel qualification
+        default: stable
+        type: string
+      sha:
+        description: Immutable green-main SHA required for next
+        default: ""
+        type: string
 
 permissions:
   contents: write
@@ -24,6 +32,9 @@ jobs:
     timeout-minutes: 60
     env:
       RELEASE_TAG: ${{ inputs.tag }}
+      PHUX_BUILD_CHANNEL: ${{ inputs.channel }}
+      PHUX_CHANNEL: ${{ inputs.channel }}
+      PHUX_BUILD_SHA: ${{ inputs.sha }}
       GH_REPO: ${{ github.repository }}
       LIBGHOSTTY_VT_SYS_CPU: baseline
       RUSTFLAGS: -C target-cpu=apple-m1
@@ -42,13 +53,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          [[ "$RELEASE_TAG" =~ ^desktop-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
           test "$(uname -s)" = Darwin
           test "$(uname -m)" = arm64
-          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
+          if [[ "$PHUX_BUILD_CHANNEL" == next ]]; then
+            test "$RELEASE_TAG" = next
+            [[ "$PHUX_BUILD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          else
+            test "$PHUX_BUILD_CHANNEL" = stable
+            [[ "$RELEASE_TAG" =~ ^desktop-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+            test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ inputs.sha || inputs.tag }}
           path: source
           fetch-depth: 0
           persist-credentials: false
@@ -57,18 +74,27 @@ jobs:
         working-directory: source
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          if [[ "$PHUX_BUILD_CHANNEL" == next ]]; then
+            test "$(git rev-parse HEAD)" = "$PHUX_BUILD_SHA"
+          else
+            test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          fi
           git merge-base --is-ancestor HEAD origin/main
+          echo "PHUX_BUILD_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           python3 - <<'PY'
           import json, os
           from pathlib import Path
           package = json.loads(Path('clients/desktop/package.json').read_text())
           manifest = json.loads(Path('.release-please-manifest.json').read_text())
-          version = os.environ['RELEASE_TAG'].removeprefix('desktop-v')
-          assert package['version'] == manifest['clients/desktop'] == version
+          version = package['version']
+          assert manifest['clients/desktop'] == version
+          channel = os.environ['PHUX_BUILD_CHANNEL']
+          if channel == 'stable':
+              assert os.environ['RELEASE_TAG'] == f'desktop-v{version}'
+          identity = f"next.{os.environ['PHUX_BUILD_SHA']}" if channel == 'next' else version
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write(f"bun={package['engines']['bun']}\n")
-              output.write(f"archive=phux-desktop-{version}-macos-arm64.zip\n")
+              output.write(f"archive=phux-desktop-{identity}-macos-arm64.zip\n")
           PY
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
@@ -105,11 +131,27 @@ jobs:
             "$app/Contents/MacOS/phux-desktop"
           test ! -e "$app/Contents/Resources/phux-desktop-native.darwin-arm64.node"
           test "$(/usr/libexec/PlistBuddy -c 'Print :PhuxDesktopHost' "$app/Contents/Info.plist")" = gpui
+          test "$(/usr/libexec/PlistBuddy -c 'Print :PhuxBuildSHA' "$app/Contents/Info.plist")" = "$(git rev-parse HEAD)"
+          if [[ "$PHUX_BUILD_CHANNEL" == next ]]; then
+            test "$(/usr/libexec/PlistBuddy -c 'Print :PhuxDesktopChannel' "$app/Contents/Info.plist")" = next
+          fi
           mkdir -p "$RUNNER_TEMP/desktop-release"
           ditto -c -k --norsrc --keepParent "$app" "$RUNNER_TEMP/desktop-release/$ARCHIVE"
           cd "$RUNNER_TEMP/desktop-release"
-          shasum -a 256 "$ARCHIVE" > SHA256SUMS
-          shasum -a 256 -c SHA256SUMS
+          shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
+          shasum -a 256 -c "$ARCHIVE.sha256"
+          cp "$ARCHIVE.sha256" SHA256SUMS
+          SOURCE_SHA="$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)" python3 - <<'PY'
+          import datetime, hashlib, json, os
+          from pathlib import Path
+          archive = os.environ['ARCHIVE']
+          version = json.loads(Path(os.environ['GITHUB_WORKSPACE'], 'source/clients/desktop/package.json').read_text())['version']
+          metadata = dict(schema_version=1, channel=os.environ['PHUX_BUILD_CHANNEL'], product='desktop',
+                          sha=os.environ['SOURCE_SHA'], version=version, archive=archive,
+                          sha256=hashlib.sha256(Path(archive).read_bytes()).hexdigest(),
+                          minimum_macos='27.0', published_at=datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))
+          Path('desktop-channel.json').write_text(json.dumps(metadata, indent=2) + '\n')
+          PY
       - name: Qualify the archived app against an isolated same-checkout server
         env:
           ARCHIVE: ${{ steps.version.outputs.archive }}
@@ -127,22 +169,25 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: desktop-runtime-${{ inputs.tag }}
+          name: desktop-runtime-${{ inputs.sha || inputs.tag }}
           path: ${{ runner.temp }}/desktop-evidence
           if-no-files-found: warn
           retention-days: 14
       - name: Upload to draft and verify downloaded bytes
+        if: inputs.channel == 'stable'
         env:
           GH_TOKEN: ${{ github.token }}
           ARCHIVE: ${{ steps.version.outputs.archive }}
         run: |
           set -euo pipefail
-          gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/desktop-release/$ARCHIVE" "$RUNNER_TEMP/desktop-release/SHA256SUMS" --clobber
-          gh release download "$RELEASE_TAG" --pattern "$ARCHIVE" --pattern SHA256SUMS --dir "$RUNNER_TEMP/desktop-download"
+          gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/desktop-release/$ARCHIVE" "$RUNNER_TEMP/desktop-release/SHA256SUMS" "$RUNNER_TEMP/desktop-release/desktop-channel.json" --clobber
+          gh release download "$RELEASE_TAG" --pattern "$ARCHIVE" --pattern SHA256SUMS --pattern desktop-channel.json --dir "$RUNNER_TEMP/desktop-download"
           cd "$RUNNER_TEMP/desktop-download"
           cmp SHA256SUMS "$RUNNER_TEMP/desktop-release/SHA256SUMS"
+          cmp desktop-channel.json "$RUNNER_TEMP/desktop-release/desktop-channel.json"
           shasum -a 256 -c SHA256SUMS
       - name: Publish as stable, never latest
+        if: inputs.channel == 'stable'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -155,3 +200,13 @@ jobs:
           fi
           gh release edit "$RELEASE_TAG" --notes-file "$notes" \
             --draft=false --latest=false
+      - name: Retain qualified next artifacts for serialized publication
+        if: inputs.channel == 'next'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop
+          path: |
+            ${{ runner.temp }}/desktop-release/phux-desktop-next.*.zip
+            ${{ runner.temp }}/desktop-release/phux-desktop-next.*.zip.sha256
+            ${{ runner.temp }}/desktop-release/desktop-channel.json
+          if-no-files-found: error

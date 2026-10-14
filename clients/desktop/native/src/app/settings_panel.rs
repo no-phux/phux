@@ -217,6 +217,7 @@ pub(crate) fn panel(
         .page(window_page(desk, &handle))
         .page(keyboard_page(desk, &handle))
         .page(ghostty_page(desk, &handle))
+        .page(super::updates::page(&desk.updates, cx))
         .page(connection_page(desk, &handle));
     div()
         .mt(px(56.))
