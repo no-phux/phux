@@ -1876,7 +1876,9 @@ fn pane_view(
     // The terminal holds the keyboard only while no modal or find field does.
     let settings = desk.terminal_settings(placement, focused && !desk.text_field_has_keys());
     let client = desk.client();
-    let body = if let (Some(terminal), Some(view), Some(settings), Some(client)) =
+    let body = if desk.conversation_visible(&placement_id) {
+        super::conversation::render(desk, &placement_id, &colors, window, cx)
+    } else if let (Some(terminal), Some(view), Some(settings), Some(client)) =
         (terminal, view, settings, client)
     {
         let entity = desk.panes_mut().entity_for(
@@ -1962,6 +1964,9 @@ fn pane_view(
     } else {
         None
     };
+    let conversation_toggle =
+        desk.conversation_eligible(&id) && !desk.conversation_visible(&id) && !controls;
+    let conversation_id = id.clone();
     let drag_id = id.clone();
     let drop_id = id.clone();
     let exit_id = id.clone();
@@ -2051,6 +2056,19 @@ fn pane_view(
             )))
         })
         .children(controls_bar)
+        .when(conversation_toggle, |card| {
+            card.child(
+                div().absolute().top(px(8.)).right(px(10.)).child(
+                    Button::new(SharedString::from(format!("conversation-open-{id}")))
+                        .label("Conversation")
+                        .small()
+                        .ghost()
+                        .on_click(cx.listener(move |desk, _, window, cx| {
+                            desk.toggle_conversation(&conversation_id, window, cx);
+                        })),
+                ),
+            )
+        })
         .when(dropping, |card| card.child(drop_hint(&colors)))
         .children(find_bar)
         .into_any_element()
@@ -2140,6 +2158,23 @@ fn pane_controls(
             )
         })
         .child(div().w(px(2.)))
+        .when(desk.conversation_eligible(&id), |row| {
+            let conversation_id = id.clone();
+            row.child(
+                Button::new(SharedString::from(format!("pane-conversation-{id}")))
+                    .label(if desk.conversation_visible(&id) {
+                        "Terminal"
+                    } else {
+                        "Conversation"
+                    })
+                    .small()
+                    .ghost()
+                    .on_click(cx.listener(move |desk, _, window, cx| {
+                        cx.stop_propagation();
+                        desk.toggle_conversation(&conversation_id, window, cx);
+                    })),
+            )
+        })
         .child(header_button(
             &id,
             "split-right",
