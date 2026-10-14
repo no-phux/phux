@@ -1,5 +1,5 @@
 {
-  ".": "0.61.0",
+  ".": "0.62.0",
   "clients/cockpit": "0.37.3",
   "clients/desktop": "0.3.0",
   "integrations/pi": "0.5.0",
