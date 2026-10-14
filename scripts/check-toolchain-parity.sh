@@ -17,13 +17,15 @@
 # nixpkgs resolves a specific patch, and that is the intended contract, not
 # drift. Every other tool must match exactly.
 set -uo pipefail
+# shellcheck source=scripts/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 PROBE="scripts/lib/toolchain-probe.sh"
 cd "$ROOT" || exit 1
 
 skip() {
-    printf 'toolchain parity: skipped (%s)\n' "$1"
+    phux_warn "toolchain parity: skipped ($1)"
     exit 0
 }
 
@@ -57,20 +59,20 @@ while IFS=$'\t' read -r tool nix_version; do
     if [[ "$nix_version" == '-' || "$mise_version" == '-' ]]; then
         # Not every tool is meant to exist on both paths; mise.toml's
         # "deliberately absent" section says which. Report, do not fail.
-        status='note: absent on one path'
+        status='warn: absent on one path'
     elif [[ "$left" == "$right" ]]; then
         status='ok'
     else
-        status='DRIFT'
+        status='error: drift'
         failures=$((failures + 1))
     fi
     printf '%-12s %-18s %-18s %s\n' "$tool" "$nix_version" "$mise_version" "$status"
 done <<<"$nix_out"
 
 if [[ "$failures" -ne 0 ]]; then
-    printf '\ntoolchain parity: %d tool(s) differ between the Nix and Mise environments.\n' "$failures" >&2
-    printf 'Reconcile mise.toml with the flake (or bump flake.lock), then re-run.\n' >&2
+    phux_error "toolchain parity: $failures tool(s) differ between the Nix and Mise environments."
+    phux_hint "Reconcile mise.toml with the flake (or bump flake.lock), then re-run."
     exit 1
 fi
 
-printf '\ntoolchain parity: Nix and Mise agree on every shared tool.\n'
+phux_ok "toolchain parity: Nix and Mise agree on every shared tool."

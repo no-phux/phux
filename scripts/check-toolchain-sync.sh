@@ -17,7 +17,7 @@ FLAKE="$ROOT/flake.nix"
 failures=0
 
 fail() {
-    printf 'toolchain sync: %s\n' "$1" >&2
+    phux_error "toolchain sync: $1"
     failures=$((failures + 1))
 }
 
@@ -161,4 +161,4 @@ if [[ "$failures" -ne 0 ]]; then
     exit 1
 fi
 
-printf 'toolchain sync passed (Rust %s, Zig %s, Node %s, Bun %s, usage %s, mbx %s)\n' "$rust_version" "$zig_version" "$node_version" "$bun_version" "$usage_version" "$mbx_version"
+phux_ok "toolchain sync (Rust $rust_version, Zig $zig_version, Node $node_version, Bun $bun_version, usage $usage_version, mbx $mbx_version)"

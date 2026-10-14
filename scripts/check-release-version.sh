@@ -27,13 +27,15 @@
 #   1   a version mismatch, a malformed tag, or a missing tool
 
 set -euo pipefail
+# shellcheck source=scripts/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
 
 tag="${1:?usage: check-release-version.sh <tag>  e.g. v0.0.2}"
 
 case "$tag" in
   v[0-9]*.[0-9]*.[0-9]*) ;;
   *)
-    echo "error: release tag must look like vX.Y.Z, got: ${tag}" >&2
+    phux_error "release tag must look like vX.Y.Z, got: ${tag}"
     exit 1
     ;;
 esac
@@ -47,7 +49,7 @@ if ! command -v jq >/dev/null 2>&1; then
   # and preinstalled on every GitHub hosted runner image, which covers both
   # callers; a missing jq is a real environment problem, never a reason to
   # let a release through unchecked.
-  echo "error: jq not found on PATH; cannot read cargo metadata" >&2
+  phux_error "jq not found on PATH; cannot read cargo metadata"
   exit 1
 fi
 
@@ -58,7 +60,7 @@ metadata="$(cargo metadata --locked --format-version 1 --no-deps)"
 # mode as the stale hand list. Refuse it explicitly.
 count="$(printf '%s' "$metadata" | jq '.packages | length')"
 if [ "$count" -lt 1 ]; then
-  echo "error: cargo metadata reported no workspace members" >&2
+  phux_error "cargo metadata reported no workspace members"
   exit 1
 fi
 
@@ -74,8 +76,8 @@ mismatches="$(printf '%s' "$metadata" | jq -r --arg want "$version" '
 
 if [ -n "$mismatches" ]; then
   printf '%s\n' "$mismatches" >&2
-  echo "error: workspace versions disagree with release tag ${tag}" >&2
+  phux_error "workspace versions disagree with release tag ${tag}"
   exit 1
 fi
 
-echo "release version ok: ${tag} (${count} workspace crates)"
+phux_ok "release version: ${tag} (${count} workspace crates)"

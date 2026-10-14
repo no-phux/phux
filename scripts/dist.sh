@@ -9,6 +9,8 @@
 # release binaries were built by scripts/build-release-binaries.sh; it does not
 # build them, so the caller controls the host toolchain.
 set -euo pipefail
+# shellcheck source=scripts/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
 
 tag="${1:?usage: dist.sh <tag>  e.g. dist.sh v0.0.1}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -22,7 +24,8 @@ bin_dir="target/release"
 receipt="${bin_dir}/.phux-cpu-baseline"
 expected_receipt="${target} rust=$(case "$target" in x86_64-unknown-linux-gnu) echo x86-64 ;; aarch64-unknown-linux-gnu) echo generic ;; aarch64-apple-darwin) echo apple-m1 ;; *) echo unsupported ;; esac) libghostty=baseline"
 if [ ! -f "$receipt" ] || ! grep -Fxq "$expected_receipt" "$receipt"; then
-  echo "error: release CPU baseline receipt is missing or stale — run 'bash scripts/build-release-binaries.sh ${target}' first" >&2
+  phux_error "release CPU baseline receipt is missing or stale"
+  phux_hint "run 'bash scripts/build-release-binaries.sh ${target}' first"
   exit 1
 fi
 

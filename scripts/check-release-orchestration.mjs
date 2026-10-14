@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
+import { status } from "./lib/output.mjs";
 import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -105,4 +106,4 @@ execFileSync("python3", [
   "clients/phux-web/Cargo.lock", "clients/desktop/native/Cargo.lock", "docs/site/edge/Cargo.lock",
 ], { cwd: root, stdio: "inherit" });
 
-process.stdout.write("release orchestration passed\n");
+status("ok", "release orchestration passed");

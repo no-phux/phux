@@ -376,7 +376,8 @@ esac
     def test_next_pointer_selects_desktop_sha_and_checks_bundle_revision(self):
         sha = self.next_fixture()
         result = self.install(args=["--channel", "next"])
-        self.assertIn(f"installed Phux next.{sha}", result.stdout)
+        self.assertIn(f"phux: ok: installed Phux next.{sha}", result.stderr)
+        self.assertNotIn("installed Phux", result.stdout)
         self.plist["PhuxBuildSHA"] = "b" * 40
         self.pack()
         result = self.install(success=False, args=["--channel", "next"])
@@ -458,7 +459,7 @@ esac
     def test_missing_cli_is_installed_first(self):
         self.cli.unlink()
         result = self.install()
-        self.assertIn("installing it first", result.stdout)
+        self.assertIn("phux: info: phux CLI not found; installing it first", result.stderr)
         self.assertTrue(os.access(self.cli, os.X_OK))
         self.assertTrue(self.installed.is_dir())
 

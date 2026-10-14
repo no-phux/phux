@@ -94,7 +94,7 @@ precommit: fmt lint docs-gen test e2e
 [group('gates')]
 [doc('Lint harness, CI, guard, and example shell scripts at warning severity.')]
 shellcheck:
-    shellcheck --severity=warning scripts/*.sh scripts/ci/*.sh \
+    shellcheck --severity=warning scripts/*.sh scripts/lib/*.sh scripts/ci/*.sh \
       examples/agents/*.sh \
       examples/agents/orchestrate-placed-fleet examples/agents/tests/*.sh \
       examples/plugins/*/scripts/*.sh
@@ -111,6 +111,7 @@ workflow-check: shellcheck
     python3 clients/cockpit/scripts/check-build-contracts.py
     python3 scripts/mutation/test_recipes.py
     bash scripts/test-dev-setup.sh
+    python3 -B scripts/test-output.py
     bash scripts/test-demo-pi-setup.sh
     node --test scripts/test-vt-wasm.mjs
     node --test scripts/test-npm-audit-gate.mjs

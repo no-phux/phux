@@ -44,6 +44,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+from lib.output import hint, status
+
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ROOT_LOCK = ROOT / "Cargo.lock"
@@ -256,19 +258,19 @@ def main(argv: list[str]) -> int:
             changed += 1
         if changed:
             host_lock.write_text(host_text)
-            print(f"fixed {changed} entr{'y' if changed == 1 else 'ies'} in {host_lock}")
+            status("ok", f"fixed {changed} entr{'y' if changed == 1 else 'ies'} in {host_lock}")
 
     findings = compare(root_text, host_text, required)
     if not findings:
-        print(f"{host_lock} is in step with {root_lock}")
+        status("ok", f"{host_lock} is in step with {root_lock}")
         return 0
 
     for finding in findings:
-        print(f"{host_lock}: {finding.message}", file=sys.stderr)
+        status("error", f"{host_lock}: {finding.message}")
         if finding.fix is None:
-            print("  refresh the host lock: just desktop-lock-refresh", file=sys.stderr)
+            hint("refresh the host lock: just desktop-lock-refresh")
         else:
-            print("  repair with: just desktop-lock-fix", file=sys.stderr)
+            hint("repair with: just desktop-lock-fix")
     return 1
 
 

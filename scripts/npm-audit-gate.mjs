@@ -18,6 +18,7 @@
 //   node ../../scripts/npm-audit-gate.mjs --audit-level=high
 
 import { spawn } from "node:child_process";
+import { status } from "./lib/output.mjs";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -105,46 +106,48 @@ async function allowlisted(level) {
   const today = new Date().toISOString().slice(0, 10);
   const problems = unwaived(report, allow, level, today);
   if (problems.length > 0) {
-    console.error(`npm-audit-gate: not waived: ${problems.join("; ")}`);
+    status("error", `npm-audit-gate: not waived: ${problems.join("; ")}`);
     return false;
   }
-  console.error(
+  status("warn",
     "npm-audit-gate: every finding is waived by scripts/npm-audit-allow.json",
   );
   return true;
 }
 
+// Verdict handling is separate from retry scheduling; native npm output passes through.
+async function finishAttempt(result, level, attempt) {
+  if (result.code === 0) process.exit(0);
+  if (!transient.test(result.stderr)) {
+    process.stderr.write(result.stderr);
+    process.exit((await allowlisted(level)) ? 0 : (result.code ?? 1));
+  }
+  if (attempt === maxAttempts) {
+    process.stderr.write(result.stderr);
+    status("error",
+      `npm-audit-gate: registry audit endpoint still unavailable after ${maxAttempts} attempts; failing.`,
+    );
+    process.exit(result.code ?? 1);
+  }
+}
+
+function auditLevel(args) {
+  return args.find((arg) => arg.startsWith("--audit-level="))?.split("=")[1] ?? "low";
+}
+
 async function main(args) {
   if (args.length === 0) {
-    console.error("usage: npm-audit-gate.mjs <npm audit args...>");
+    status("error", "usage: npm-audit-gate.mjs <npm audit args...>");
     process.exit(2);
   }
-  const level =
-    args.find((arg) => arg.startsWith("--audit-level="))?.split("=")[1] ?? "low";
+  const level = auditLevel(args);
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const result = await run("npm", ["audit", ...args], "inherit");
-    if (result.code === 0) {
-      process.exit(0);
-    }
-
-    if (!transient.test(result.stderr)) {
-      // A real advisory finding (or an unexpected npm failure): surface it,
-      // unless the allowlist waives every finding.
-      process.stderr.write(result.stderr);
-      process.exit((await allowlisted(level)) ? 0 : (result.code ?? 1));
-    }
-
-    if (attempt === maxAttempts) {
-      process.stderr.write(result.stderr);
-      console.error(
-        `npm-audit-gate: registry audit endpoint still unavailable after ${maxAttempts} attempts; failing.`,
-      );
-      process.exit(result.code ?? 1);
-    }
+    await finishAttempt(result, level, attempt);
 
     const wait = backoffSeconds[attempt - 1] ?? 40;
-    console.error(
+    status("warn",
       `npm-audit-gate: audit endpoint unavailable (attempt ${attempt}/${maxAttempts}); retrying in ${wait}s...`,
     );
     await sleep(wait);

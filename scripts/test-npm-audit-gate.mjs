@@ -3,7 +3,11 @@
 // expires.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { unwaived } from "./npm-audit-gate.mjs";
@@ -54,6 +58,57 @@ test("a package flagged only through another carries no verdict of its own", () 
     vulnerabilities: { minimatch: { severity: "high", nodes: ["node_modules/minimatch"], via: ["brace-expansion"] } },
   };
   assert.deepEqual(unwaived(indirect, [], "high", "2026-09-30"), []);
+});
+
+function runGate(args, env = {}) {
+  return spawnSync(process.execPath, [fileURLToPath(new URL("./npm-audit-gate.mjs", import.meta.url)), ...args], {
+    encoding: "utf8", timeout: 10000,
+    env: { ...process.env, NO_COLOR: "1", ...env },
+  });
+}
+
+test("CLI usage errors use the diagnostic motif without stdout", () => {
+  const result = runGate([]);
+  assert.equal(result.status, 2);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /^phux: error: usage: npm-audit-gate/);
+});
+
+test("native audit verdicts preserve output and exit status", () => {
+  const directory = mkdtempSync(join(tmpdir(), "phux-audit-output-"));
+  try {
+    const npm = join(directory, "npm");
+    writeFileSync(npm, `#!/bin/sh
+if [ "$2" = --json ]; then
+  printf '%s\\n' "$AUDIT_TEST_REPORT"
+  exit 17
+fi
+printf 'native audit stdout\\n'
+[ "$AUDIT_TEST_CODE" = 0 ] || printf 'native audit refusal\\n' >&2
+exit "$AUDIT_TEST_CODE"
+`);
+    chmodSync(npm, 0o755);
+    const finding = JSON.stringify(report("node_modules/test", "high", "GHSA-xxxx-xxxx-xxxx"));
+    for (const [code, document, expected, label] of [
+      [0, finding, 0, null], [17, finding, 17, "error"],
+      [17, JSON.stringify({ vulnerabilities: {} }), 0, "warn"],
+    ]) {
+      const result = runGate(["--audit-level=high"], {
+        PATH: `${directory}:${process.env.PATH}`,
+        AUDIT_TEST_CODE: String(code), AUDIT_TEST_REPORT: document,
+      });
+      assert.equal(result.status, expected, result.stderr);
+      assert.equal(result.stdout, "native audit stdout\n");
+      if (label) {
+        assert.ok(result.stderr.startsWith("native audit refusal\n"));
+        assert.ok(result.stderr.includes(`phux: ${label}: npm-audit-gate:`));
+      } else {
+        assert.equal(result.stderr, "");
+      }
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("every allow entry names an advisory, a package, an ISO expiry and a reason", () => {
