@@ -34,9 +34,20 @@ try {
   const requests: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("request", (request) => requests.push(request.url()));
+  // The TestFlight form is the one homepage network write; answer it locally.
+  const beta: { payload: Record<string, string> | null } = { payload: null };
+  await page.route("**/api/beta", async (route) => {
+    beta.payload = route.request().postDataJSON() as Record<string, string>;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, status: "invited" }),
+    });
+  });
   await page.goto(base);
   assert.equal(await page.getByRole("heading", { level: 1 }).innerText(), "phux");
-  assert.equal(await page.locator("main form, #how-it-works").count(), 0, "no homepage signup or explainer");
+  assert.equal(await page.locator("#how-it-works").count(), 0, "no homepage explainer");
+  assert.ok(await page.locator("#testflight form").isVisible(), "TestFlight signup is on the landing");
   assert.equal(await page.locator(".tour").count(), 1, "one product tour");
   assert.equal(await page.locator("body > header, .tagline, .tour-bar").count(), 0, "no landing top bars or tagline");
   assert.equal(await page.locator(".tour-distant-host").count(), 3, "restrained background hosts");
@@ -74,6 +85,30 @@ try {
   await page.getByRole("button", { name: "Copy install command" }).click();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "curl -fsSL https://phux.sh/install | sh");
   assert.equal(await page.getByRole("status").innerText(), "Install command copied.");
+  // The hero switcher swaps the command on hover, focus, click, and arrows.
+  const command = page.locator("#install-command");
+  const target = (name: string) => page.locator(`#install [data-install-target="${name}"]`);
+  await target("desktop").hover();
+  assert.equal(await command.innerText(), "curl -fsSL https://phux.sh/install-desktop | sh", "hover swaps to the desktop installer");
+  await target("canary").click();
+  assert.equal(await target("canary").getAttribute("aria-pressed"), "true", "the clicked target is pressed");
+  assert.equal(await command.innerText(), "curl -fsSL https://phux.sh/install-desktop | sh -s -- --channel next", "canary selects the desktop next channel");
+  await page.getByRole("button", { name: "Copy install command" }).click();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "curl -fsSL https://phux.sh/install-desktop | sh -s -- --channel next", "copy follows the active target");
+  await target("canary").focus();
+  await page.keyboard.press("ArrowLeft");
+  assert.equal(await command.innerText(), "curl -fsSL https://phux.sh/install-desktop | sh", "arrow keys move the target");
+  await page.getByRole("button", { name: "Copy install command" }).click();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "curl -fsSL https://phux.sh/install-desktop | sh", "copy follows the keyboard target");
+  // The landing carries the same TestFlight request /more posts.
+  await page.locator("#beta-form input[name=email]").fill("iphone@example.com");
+  await page.locator("#beta-form button[type=submit]").click();
+  await page.waitForFunction(() => document.querySelector("#beta-note")?.textContent?.includes("Invite sent") ?? false);
+  assert.match(await page.locator("#beta-note").innerText(), /Invite sent/, "the landing reports the invite");
+  assert.equal(beta.payload?.email, "iphone@example.com", "landing signup posts the address");
+  assert.equal(beta.payload?.website, "", "the honeypot stays empty");
+  // Leave the longest command up for the overflow pass below.
+  await target("canary").click();
   for (const width of [320, 390, 768, 1280]) {
     await page.setViewportSize({ width, height: 1000 });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `no overflow at ${width}px`);
@@ -89,6 +124,10 @@ try {
   await page.goto(`${base}/more`);
   assert.equal(await page.getByRole("link", { name: /Built for automation/ }).getAttribute("href"), "https://docs.phux.sh/consumers/getting-started");
   assert.ok(await page.locator("#testflight form").isVisible(), "iPhone signup is preserved");
+  await page.locator("#testflight input[name=email]").fill("more@example.com");
+  await page.locator("#testflight button[type=submit]").click();
+  await page.waitForFunction(() => document.querySelector("#beta-note")?.textContent?.includes("Invite sent") ?? false);
+  assert.equal(beta.payload?.email, "more@example.com", "/more still posts the TestFlight request");
   assert.ok(await page.locator("#beta form").isVisible(), "release signup is preserved");
   assert.equal(await page.locator("[data-copy]").count(), 3, "alternate installers preserved");
   await page.goto(`${base}/privacy`);
