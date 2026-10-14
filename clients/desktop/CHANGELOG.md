@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/no-phux/phux/compare/desktop-v0.4.1...desktop-v0.5.0) (2026-10-14)
+
+
+### Features
+
+* **desktop:** open durable checkout projects ([#1332](https://github.com/no-phux/phux/issues/1332)) ([f2c14df](https://github.com/no-phux/phux/commit/f2c14df1ddec0009e408ca1bcfe4ad524a2ff884))
+
 ## [0.4.1](https://github.com/no-phux/phux/compare/desktop-v0.4.0...desktop-v0.4.1) (2026-10-14)
 
 
