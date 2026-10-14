@@ -49,7 +49,13 @@ try {
   assert.equal(await page.locator("#how-it-works").count(), 0, "no homepage explainer");
   assert.ok(await page.locator("#testflight form").isVisible(), "TestFlight signup is on the landing");
   assert.equal(await page.locator(".tour").count(), 1, "one product tour");
-  assert.equal(await page.locator("body > header, .tagline, .tour-bar").count(), 0, "no landing top bars or tagline");
+  assert.equal(await page.locator("body > header").count(), 1, "the landing carries one top bar");
+  assert.deepEqual(
+    await page.locator("body > header nav[aria-label='Primary navigation']").getByRole("link").allInnerTexts(),
+    ["phux", "Docs", "Try", "Source"],
+    "the top bar carries the wordmark and the Docs/Try/Source links",
+  );
+  assert.equal(await page.locator(".tagline, .tour-bar").count(), 0, "no landing tagline");
   assert.equal(await page.locator(".tour-distant-host").count(), 3, "restrained background hosts");
   const entry = page.getByRole("link", { name: "Open terminal demo", exact: true });
   await page.locator("astro-island:not([ssr]) .tour-entry").waitFor();
@@ -70,6 +76,13 @@ try {
   await page.keyboard.press("Tab");
   await page.waitForFunction(() => getComputedStyle(document.querySelector(".tour-invitation")!).opacity === "1");
   assert.equal(await page.locator(".tour-invitation").evaluate((node) => getComputedStyle(node).opacity), "1", "keyboard focus reveals the invitation");
+  const invitation = await page.locator(".tour-invitation").boundingBox();
+  const canvas = await page.locator(".tour-canvas").boundingBox();
+  assert.ok(
+    invitation && canvas && invitation.width >= canvas.width - 1 && Math.abs(invitation.height - canvas.height) <= 1,
+    "the invitation is a full-bleed overlay, not a chip in the corner",
+  );
+  assert.match(await page.locator(".tour-invitation").innerText(), /This one is real\.[\s\S]*Open a shell/);
   assert.equal(await page.locator("dialog[open]").count(), 0, "discovery does not launch a session");
   await entry.hover();
   assert.equal(await page.locator("dialog[open]").count(), 0, "hover only prepares the client");

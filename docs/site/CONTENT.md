@@ -121,9 +121,9 @@ methodology link. Do not hide conditions behind tooltips.
 
 ## Product landing and demo
 
-The landing at `src/pages/index.astro` stays minimal: headline, one product
-tour, three capabilities, installation, and the iPhone beta and
-release-update signups. Add a section only when it replaces one.
+The landing at `src/pages/index.astro` stays minimal: a short top bar, headline,
+one product tour, three capabilities, floating installation, and the iPhone beta
+and release-update signups. Add a section only when it replaces one.
 
 `<HeroDemo client:load>` renders the product tour and owns the hosted
 terminal dialog. The tour (`src/components/tour/`) is a scripted
@@ -140,8 +140,9 @@ walkthrough pacing. Playback runs only while visible with motion allowed and
 can be paused. Reduced motion and no-JS show each
 chapter's settled state without playback. Faint background hosts supply depth,
 not live telemetry or additional story steps. Hovering or focusing the artwork
-reveals a shell invitation and downloads only the React terminal wrapper; it
-never authenticates, downloads WASM, or allocates a session. Clicking the artwork
+fades a full-bleed overlay over the reel with a shell invitation, and downloads
+only the React terminal wrapper; it never authenticates, downloads WASM, or
+allocates a session. Clicking the artwork
 or any `[data-demo-launch]` link opens the dialog; without JavaScript the link falls through to the
 standalone shell at `/embed`. The landing downloads no
 WASM and allocates no hosted session until the visitor opens the dialog. The

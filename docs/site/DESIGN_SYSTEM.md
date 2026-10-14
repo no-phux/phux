@@ -64,16 +64,19 @@ preference before paint and Astro document swaps.
 
 ## Landing and live shell
 
-The landing has no top navigation or visible tagline. The wordmark, install
-command, release links, tour, and three feature links lead to a quiet footer
-containing Docs, Try, and Source navigation. Other marketing pages retain their
-header. The landing canvas is `#0b0b0d`, with `#ededee` text and neutral accents.
+The landing carries a short top bar: wordmark plus Docs, Try, and Source. There is
+no visible tagline. The install targets, command, and copy action float as type on
+the canvas — no card, panel, or fill behind them, and hover changes color rather
+than background. The quiet footer keeps Demos, More, Privacy, and Support instead
+of repeating the top bar. The landing canvas is `#0b0b0d`, with `#ededee` text and
+neutral accents.
 
 The hero tour shows a server, clients, and signals travelling along connections.
 It autoplays only while on screen, with pause and chapter controls; reduced motion
 shows settled chapters. Faint background hosts are decorative, hidden from
 assistive technology, and do not claim live status. Hovering or keyboard-focusing
-the scene link reveals the shell invitation; touch devices show it continuously.
+the scene link fades a full-bleed overlay over the reel with the shell invitation;
+touch devices show the invitation as a bottom chip so the story stays visible.
 Activating the scene opens the live shell. `/more` retains its opt-in, pausable,
 scrubbable explainer.
 

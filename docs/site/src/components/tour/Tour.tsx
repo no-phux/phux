@@ -405,7 +405,13 @@ export default function Tour({ prepare }: { prepare?: () => void }) {
             <Edges layout={NARROW} frame={frame} className="is-narrow" signals />
           </div>
           <a className="tour-entry" href="/embed" data-demo-launch onFocus={prepare} aria-label="Open terminal demo">
-            <span className="tour-invitation"><span className="tour-invitation-glyph" aria-hidden="true">↳</span> This one is real. <span>Open a shell <span aria-hidden="true">↗</span></span></span>
+            <span className="tour-invitation">
+              <span className="tour-invitation-copy">
+                <span className="tour-invitation-glyph" aria-hidden="true">↳</span>
+                <b>This one is real.</b>
+                <span className="tour-invitation-cta">Open a shell<span aria-hidden="true"> ↗</span></span>
+              </span>
+            </span>
           </a>
         </div>
         <div className="tour-controls">
