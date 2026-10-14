@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.73.1](https://github.com/no-phux/phux/compare/v0.73.0...v0.73.1) (2026-10-14)
+
+
+### Performance
+
+* **desktop:** use sparse damage for pane redraws ([#1372](https://github.com/no-phux/phux/issues/1372)) ([9856e15](https://github.com/no-phux/phux/commit/9856e15315a433590c81ce3127f6856701acd516))
+
 ## [0.73.0](https://github.com/no-phux/phux/compare/v0.72.1...v0.73.0) (2026-10-14)
 
 
