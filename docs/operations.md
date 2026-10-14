@@ -47,7 +47,7 @@ phux: error: no server running
 ```
 
 Diagnostics and progress go to stderr. Human reports such as `phux doctor`
-and listings stay on stdout; warnings do not change a command's exit status.
+and listings stay on stdout. Rendering does not change exit statuses.
 Help retains its fixed-width layout. Only the wordmark and severity are
 styled: bold wordmark, cyan information, green success, yellow warning, red
 error. There are no animated status lines or decorative Unicode markers.

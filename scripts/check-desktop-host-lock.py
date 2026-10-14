@@ -238,6 +238,30 @@ def block_for(text: str, crate: str) -> str:
     raise SystemExit(f"{crate} not found in host lock")
 
 
+def repair_host_lock(root_text, host_text, required, host_lock):
+    changed = 0
+    for finding in (f for f in compare(root_text, host_text, required) if f.fix is not None):
+        host_text = finding.fix(host_text)
+        changed += 1
+    if changed:
+        host_lock.write_text(host_text)
+        status("ok", f"fixed {changed} entr{'y' if changed == 1 else 'ies'} in {host_lock}")
+    return host_text
+
+
+def report_findings(findings, host_lock, root_lock):
+    if not findings:
+        status("ok", f"{host_lock} is in step with {root_lock}")
+        return 0
+    for finding in findings:
+        status("error", f"{host_lock}: {finding.message}")
+        if finding.fix is None:
+            hint("refresh the host lock: just desktop-lock-refresh")
+        else:
+            hint("repair with: just desktop-lock-fix")
+    return 1
+
+
 def main(argv: list[str]) -> int:
     fix = "--fix" in argv
     paths = [Path(arg) for arg in argv if not arg.startswith("-")]
@@ -252,26 +276,8 @@ def main(argv: list[str]) -> int:
     required = required_dependencies(root_lock.resolve().parent)
 
     if fix:
-        changed = 0
-        for finding in (f for f in compare(root_text, host_text, required) if f.fix is not None):
-            host_text = finding.fix(host_text)
-            changed += 1
-        if changed:
-            host_lock.write_text(host_text)
-            status("ok", f"fixed {changed} entr{'y' if changed == 1 else 'ies'} in {host_lock}")
-
-    findings = compare(root_text, host_text, required)
-    if not findings:
-        status("ok", f"{host_lock} is in step with {root_lock}")
-        return 0
-
-    for finding in findings:
-        status("error", f"{host_lock}: {finding.message}")
-        if finding.fix is None:
-            hint("refresh the host lock: just desktop-lock-refresh")
-        else:
-            hint("repair with: just desktop-lock-fix")
-    return 1
+        host_text = repair_host_lock(root_text, host_text, required, host_lock)
+    return report_findings(compare(root_text, host_text, required), host_lock, root_lock)
 
 
 if __name__ == "__main__":

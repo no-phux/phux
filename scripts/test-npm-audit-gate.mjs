@@ -111,6 +111,51 @@ exit "$AUDIT_TEST_CODE"
   }
 });
 
+test("transient retries recover or exhaust without changing native output", () => {
+  const directory = mkdtempSync(join(tmpdir(), "phux-audit-retries-"));
+  try {
+    const npm = join(directory, "npm");
+    writeFileSync(npm, `#!/bin/sh
+attempt=0
+[ ! -f "$AUDIT_TEST_COUNT" ] || read -r attempt < "$AUDIT_TEST_COUNT"
+attempt=$((attempt + 1))
+printf '%s\\n' "$attempt" > "$AUDIT_TEST_COUNT"
+printf 'native audit stdout\\n'
+if [ "$attempt" -le "$AUDIT_TEST_FAILS" ]; then
+  printf 'HTTP 503 audit endpoint returned an error\\n' >&2
+  exit 17
+fi
+exit 0
+`);
+    chmodSync(npm, 0o755);
+    const url = new URL("./npm-audit-gate.mjs", import.meta.url);
+    // Only shorten the test's clock; exercise the real entry point and retry loop.
+    const code = `const timer = globalThis.setTimeout;
+      globalThis.setTimeout = callback => timer(callback, 0);
+      process.argv = [process.execPath, ${JSON.stringify(fileURLToPath(url))}, "--audit-level=high"];
+      await import(${JSON.stringify(url.href)});`;
+    for (const [failures, expectedCode, attempts] of [[2, 0, 3], [5, 17, 5]]) {
+      const count = join(directory, `count-${failures}`);
+      const result = spawnSync(process.execPath, ["--input-type=module", "-e", code], {
+        encoding: "utf8", timeout: 10000,
+        env: { ...process.env, NO_COLOR: "1", PATH: `${directory}:${process.env.PATH}`,
+          AUDIT_TEST_COUNT: count, AUDIT_TEST_FAILS: String(failures) },
+      });
+      assert.equal(result.status, expectedCode, result.stderr);
+      assert.equal(Number(readFileSync(count, "utf8")), attempts);
+      assert.equal(result.stdout, "native audit stdout\n".repeat(attempts));
+      assert.equal((result.stderr.match(/phux: warn:/g) ?? []).length, attempts - 1);
+      if (expectedCode) {
+        assert.match(result.stderr, /HTTP 503 audit endpoint returned an error\nphux: error: npm-audit-gate: registry audit endpoint still unavailable after 5 attempts; failing\./);
+      } else {
+        assert.ok(!result.stderr.includes("phux: error:"));
+      }
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("every allow entry names an advisory, a package, an ISO expiry and a reason", () => {
   const allow = JSON.parse(readFileSync(new URL("./npm-audit-allow.json", import.meta.url), "utf8"));
   for (const item of allow) {
