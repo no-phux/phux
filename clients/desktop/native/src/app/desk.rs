@@ -185,6 +185,8 @@ pub struct Desk {
     pub(crate) hosts: Vec<host::RemoteHost>,
     /// A host enrollment in flight, by the target it was given.
     pub(crate) host_adding: Option<String>,
+    /// A host switch is resolving its target's home session.
+    pub(crate) host_switching: bool,
     /// The titlebar's window-drag surface, created once.
     pub(crate) drag_region: Option<Entity<crate::chrome::DragRegion>>,
     /// Titlebar and sidebar. A terminal frame does not rebuild them.
@@ -326,6 +328,7 @@ impl Desk {
             collapsed: Default::default(),
             hosts: Vec::new(),
             host_adding: None,
+            host_switching: false,
             drag_region: None,
             chrome: super::view::ChromeCache::default(),
             window_title: String::new(),
@@ -450,7 +453,14 @@ impl Desk {
             )
         };
         crate::diag::DRAIN_EVENTS.add(events.len() as u64);
-        if answers.is_empty() && paint_batch(&events) {
+        // A spawn's bootstrap can arrive as a pure paint batch. With work still
+        // pending, run the full pass so the new pane is placed the moment its
+        // replica lands, instead of waiting for the topology refresh.
+        let pending = self
+            .link
+            .as_ref()
+            .is_some_and(|link| link.workspace.pending() > 0);
+        if answers.is_empty() && paint_batch(&events) && !pending {
             // Output while the socket is down would reacquire, fail, and
             // blank the pane. The cached view keeps the last frame.
             if self.session_is_attached() {
@@ -2899,6 +2909,75 @@ impl Desk {
                 cx,
             )
         });
+    }
+
+    /// Point this window at another host in place: `None` is this machine,
+    /// `Some(name)` a registered remote. The current connection and views are
+    /// released and the target's home session and saved layout take their
+    /// place. No new window is opened.
+    pub(crate) fn switch_host(&mut self, name: Option<String>, cx: &mut Context<Self>) {
+        if self.host_switching || self.remote == name {
+            return;
+        }
+        self.host_switching = true;
+        let phux = self.phux.clone();
+        let socket = self.socket.clone();
+        let target = name.clone();
+        cx.spawn(async move |desk, cx| {
+            let probe = target.clone();
+            let resolved = smol::unblock(move || match probe.as_deref() {
+                Some(host) => crate::connection::home::open_remote_home(host),
+                None => crate::connection::home::open_home(&phux, &socket, None),
+            })
+            .await;
+            let _ = desk.update(cx, |desk, cx| {
+                desk.host_switching = false;
+                match resolved {
+                    Ok(session) => desk.adopt_host(target, session, cx),
+                    Err(error) => {
+                        desk.post(Kind::Error, "Could not switch host", Some(error));
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// The in-place half of [`Self::switch_host`], once the target's home is known.
+    fn adopt_host(&mut self, name: Option<String>, session: String, cx: &mut Context<Self>) {
+        self.persist();
+        if let Some(link) = self.link.as_mut() {
+            link.workspace.release_all(&link.connection);
+            link.connection.close();
+        }
+        self.link = None;
+        self.panes.clear();
+        self.agent_seen.clear();
+        self.feed.retain(|entry| entry.kind != Kind::Agent);
+        self.find = None;
+        self.find_input = None;
+        self.pending_project_terminal = None;
+        self.connect_error = None;
+        self.remote = name.clone();
+        self.session = session.clone();
+        self.home_key = None;
+        self.layout_key = None;
+        self.last_saved = None;
+        self.open_fresh = false;
+        let authority = name.as_ref().map_or_else(
+            || self.socket.display().to_string(),
+            |host| format!("host:{host}"),
+        );
+        let paths = crate::workspace::layout_paths(&authority, &session);
+        self.store = FileLayoutStore::new(paths.layout, None);
+        self.last_saved = persist::load_layout(&self.store.read()).initial;
+        self.attach(None, cx);
+        self.refresh_hosts(cx);
+        self.sync_bindings(cx);
+        self.apply_kit_theme(cx);
+        cx.notify();
     }
 
     /// Enroll `target` over ssh. The dialog closes at once; enrollment runs in
