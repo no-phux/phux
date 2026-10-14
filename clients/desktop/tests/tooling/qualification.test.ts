@@ -123,10 +123,11 @@ test("qualification refuses installed CLI paths and production sockets", () => {
   ).toBeUndefined();
 });
 
-test("the app plist identifies the GPUI host and a release version", () => {
-  expect(packageVersion('{"version":"0.1.0-alpha.13"}')).toBe("0.1.0-alpha.13");
+test("the app plist identifies the GPUI host and a stable release version", () => {
+  expect(packageVersion('{"version":"0.1.0"}')).toBe("0.1.0");
+  expect(() => packageVersion('{"version":"0.1.0-alpha.13"}')).toThrow(/release version/);
   expect(() => packageVersion('{"version":"latest"}')).toThrow(/release version/);
-  const plist = infoPlist("0.1.0-alpha.13", "abc");
+  const plist = infoPlist("0.1.0", "abc");
   expect(plist).toContain("<key>PhuxDesktopHost</key><string>gpui</string>");
   expect(plist).toContain("<key>CFBundleIdentifier</key><string>dev.phux.desktop</string>");
   expect(plist).not.toContain(".node");
