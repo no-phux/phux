@@ -8,8 +8,9 @@
 //! owned batch that `take_events` drains. Grid frames are acquired from the
 //! `Publication` table without touching the control plane.
 
+use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 use bytes::Bytes;
 use phux_protocol::ResourceId;
@@ -88,12 +89,10 @@ impl Runtime {
     /// status, and the events.
     pub fn connect(target: Target, options: ClientOptions) -> Result<Client, RuntimeError> {
         let (inner, shared, signals) = Self::build(Lane::Connected, options.control);
-        let weak = Arc::downgrade(&inner);
-        let wake: crate::connection::Wake = Arc::new(move || {
-            if let Some(inner) = weak.upgrade() {
-                inner.wake();
-            }
-        });
+        // The driver shares only the wake slot, never the client, so the
+        // consumer's last drop always runs on the consumer's thread.
+        let wakes = Arc::clone(&inner.wakes);
+        let wake: crate::connection::Wake = Arc::new(move || wakes.wake());
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -148,8 +147,7 @@ impl Runtime {
             nudge: nudge_tx,
             rebind: rebind_tx,
             close: close_tx,
-            listener: Mutex::new(None),
-            wake_pending: AtomicBool::new(false),
+            wakes: Arc::new(Wakes::default()),
             #[cfg(feature = "engine")]
             publication,
         });
@@ -175,12 +173,99 @@ struct Inner {
     nudge: watch::Sender<u64>,
     rebind: watch::Sender<u64>,
     close: watch::Sender<bool>,
-    listener: Mutex<Option<Arc<dyn Listener>>>,
-    /// Edge-trigger: set while a wake has been delivered and not yet
-    /// drained.
-    wake_pending: AtomicBool,
+    wakes: Arc<Wakes>,
     #[cfg(feature = "engine")]
     publication: Arc<Publication>,
+}
+
+/// The listener and its edge trigger. The driver's wake closure holds this,
+/// not the client, and no lock is held while the listener runs.
+#[derive(Default)]
+struct Wakes {
+    slot: Mutex<WakeSlot>,
+    /// Signalled when the last in-flight callback returns.
+    idle: Condvar,
+    /// Edge-trigger: set while a wake has been delivered and not yet
+    /// drained.
+    pending: AtomicBool,
+}
+
+#[derive(Default)]
+struct WakeSlot {
+    listener: Option<Arc<dyn Listener>>,
+    /// Callbacks running now, on any thread.
+    in_flight: usize,
+}
+
+thread_local! {
+    /// Callbacks running on this thread, so a client dropped from inside
+    /// its own callback does not wait for itself.
+    static CALLBACKS_HERE: Cell<usize> = const { Cell::new(0) };
+}
+
+impl Wakes {
+    fn lock(&self) -> std::sync::MutexGuard<'_, WakeSlot> {
+        self.slot.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Deliver a wake if one is not already outstanding, outside every lock.
+    fn wake(&self) {
+        let listener = {
+            let mut slot = self.lock();
+            let Some(listener) = slot.listener.clone() else {
+                return;
+            };
+            if self.pending.swap(true, Ordering::AcqRel) {
+                return;
+            }
+            slot.in_flight += 1;
+            listener
+        };
+        let _running = InFlight::new(self);
+        listener.on_activity();
+    }
+
+    fn set(&self, listener: Arc<dyn Listener>) {
+        self.lock().listener = Some(listener);
+    }
+
+    /// Deliver no further wake, and return only once every callback in
+    /// flight on another thread has returned, so the embedder may free the
+    /// listener's context. One running on this thread is the caller's own.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the condvar wait consumes the guard"
+    )]
+    fn retire(&self) {
+        let own = CALLBACKS_HERE.with(Cell::get);
+        let mut slot = self.lock();
+        slot.listener = None;
+        let _idle = self
+            .idle
+            .wait_while(slot, |slot| slot.in_flight > own)
+            .unwrap_or_else(PoisonError::into_inner);
+    }
+}
+
+/// One running callback, counted until it returns or unwinds.
+struct InFlight<'a>(&'a Wakes);
+
+impl<'a> InFlight<'a> {
+    fn new(wakes: &'a Wakes) -> Self {
+        CALLBACKS_HERE.with(|here| here.set(here.get() + 1));
+        Self(wakes)
+    }
+}
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        CALLBACKS_HERE.with(|here| here.set(here.get() - 1));
+        let mut slot = self.0.lock();
+        slot.in_flight -= 1;
+        if slot.in_flight == 0 {
+            self.0.idle.notify_all();
+        }
+    }
 }
 
 impl std::fmt::Debug for Inner {
@@ -190,20 +275,8 @@ impl std::fmt::Debug for Inner {
 }
 
 impl Inner {
-    /// Deliver a wake if one is not already outstanding, outside every lock.
     fn wake(&self) {
-        let listener = self
-            .listener
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
-        let Some(listener) = listener else {
-            return;
-        };
-        if self.wake_pending.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        listener.on_activity();
+        self.wakes.wake();
     }
 
     /// Run `f` on the control plane, then tell the driver about queued
@@ -229,20 +302,19 @@ impl Inner {
 impl Drop for Inner {
     /// Closing alone would let the driver outlive this client and call a
     /// listener whose context the consumer has already freed, so the drop
-    /// joins. The driver selects on the close signal, so the wait is one
-    /// scheduler poll, never the network.
+    /// retires the listener, waiting out a callback in flight, and joins.
+    /// The driver selects on the close signal, so the wait is one scheduler
+    /// poll, never the network.
     fn drop(&mut self) {
         self.shutdown();
+        self.wakes.retire();
         let driver = lock_driver(self).take();
         let Some(driver) = driver else {
             return;
         };
-        // The driver's wake closure upgrades a `Weak`, so for the length of
-        // one callback it holds a strong reference. If the consumer drops
-        // its last clone in that window, this drop runs on the driver's own
-        // thread, and joining there would hang. Leaving it unjoined is safe
-        // precisely then: the listener died with this `Inner`, so the thread
-        // it is running on can no longer reach the consumer.
+        // A listener that drops the client from inside its own callback
+        // runs this on the driver's thread, which cannot join itself; with
+        // the listener retired, the driver can no longer reach the consumer.
         if driver.thread().id() == std::thread::current().id() {
             return;
         }
@@ -351,7 +423,7 @@ impl Client {
     /// cannot be stranded behind its wake.
     #[must_use]
     pub fn take_inbound(&self) -> (u64, Vec<Bytes>) {
-        self.inner.wake_pending.store(false, Ordering::Release);
+        self.inner.wakes.pending.store(false, Ordering::Release);
         let batch = {
             let mut control = lock(&self.inner.control);
             (control.connection_epoch(), control.take_inbound())
@@ -422,7 +494,7 @@ impl Client {
     /// Drain every event since the last drain and re-arm the wake.
     #[must_use]
     pub fn take_events(&self) -> Vec<Event> {
-        self.inner.wake_pending.store(false, Ordering::Release);
+        self.inner.wakes.pending.store(false, Ordering::Release);
         lock(&self.inner.control).take_events()
     }
 
@@ -437,7 +509,7 @@ impl Client {
     /// loss or replacement once the next catalog and attach are ready.
     #[must_use]
     pub fn take_events_leased(&self) -> Vec<Event> {
-        self.inner.wake_pending.store(false, Ordering::Release);
+        self.inner.wakes.pending.store(false, Ordering::Release);
         lock(&self.inner.control).take_events_leased()
     }
 
@@ -447,18 +519,14 @@ impl Client {
     /// reconnect between the calls would matter.
     #[must_use]
     pub fn take_observation(&self) -> Observation {
-        self.inner.wake_pending.store(false, Ordering::Release);
+        self.inner.wakes.pending.store(false, Ordering::Release);
         lock(&self.inner.control).take_observation()
     }
 
     /// Install the wake callback; one listener, a new one replaces the old.
     /// An immediate wake covers anything that landed before registration.
     pub fn set_listener(&self, listener: Arc<dyn Listener>) {
-        *self
-            .inner
-            .listener
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(listener);
+        self.inner.wakes.set(listener);
         self.inner.wake();
     }
 
@@ -644,5 +712,108 @@ impl Client {
     #[must_use]
     pub fn engine(&self) -> Option<crate::engine::EngineHandle> {
         lock(&self.inner.control).engine().cloned()
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, reason = "tests")]
+mod wake_tests {
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use super::*;
+
+    /// Parks its first callback until released; counts every call.
+    struct Parked {
+        calls: AtomicUsize,
+        entered: Mutex<Option<mpsc::Sender<()>>>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl Listener for Parked {
+        fn on_activity(&self) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let entered = self.entered.lock().expect("entered").take();
+            if let Some(entered) = entered {
+                entered.send(()).expect("test waits");
+                self.release
+                    .lock()
+                    .expect("release")
+                    .recv()
+                    .expect("released");
+            }
+        }
+    }
+
+    /// The use-after-free behind `phux_client_free`: retiring the listener
+    /// returns only after a callback already running elsewhere returns, and
+    /// no wake reaches the listener afterwards.
+    #[test]
+    fn retire_waits_out_a_callback_in_flight_and_ends_wakes() {
+        let wakes = Arc::new(Wakes::default());
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let listener = Arc::new(Parked {
+            calls: AtomicUsize::new(0),
+            entered: Mutex::new(Some(entered_tx)),
+            release: Mutex::new(release_rx),
+        });
+        wakes.set(listener.clone());
+
+        let driver = std::thread::spawn({
+            let wakes = Arc::clone(&wakes);
+            move || wakes.wake()
+        });
+        entered_rx.recv().expect("callback running");
+
+        let (retired_tx, retired_rx) = mpsc::channel();
+        let consumer = std::thread::spawn({
+            let wakes = Arc::clone(&wakes);
+            move || {
+                wakes.retire();
+                retired_tx.send(()).expect("test waits");
+            }
+        });
+        assert!(
+            retired_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "retire returned while the callback was still running"
+        );
+        release_tx.send(()).expect("callback waits");
+        retired_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("retire returns once the callback does");
+        driver.join().expect("driver");
+        consumer.join().expect("consumer");
+
+        wakes.pending.store(false, Ordering::Release);
+        wakes.wake();
+        assert_eq!(
+            listener.calls.load(Ordering::SeqCst),
+            1,
+            "no wake after retire"
+        );
+    }
+
+    /// Retiring from inside the callback, as a client dropped by its own
+    /// listener does, cannot wait for itself.
+    #[test]
+    fn retire_from_inside_the_callback_does_not_wait_for_itself() {
+        struct Retiring(Arc<Wakes>);
+        impl Listener for Retiring {
+            fn on_activity(&self) {
+                self.0.retire();
+            }
+        }
+        let wakes = Arc::new(Wakes::default());
+        wakes.set(Arc::new(Retiring(Arc::clone(&wakes))));
+        let (done_tx, done_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            wakes.wake();
+            done_tx.send(()).expect("test waits");
+        });
+        done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a self-retiring callback returns");
     }
 }
