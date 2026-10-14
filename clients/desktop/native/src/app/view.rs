@@ -1835,7 +1835,13 @@ fn pane_view(
             window,
             cx,
         );
-        div().size_full().child(entity).into_any_element()
+        // A cached view keeps its last paint until this entity is notified.
+        // Chrome refreshes (hover, clock, sidebar) must not reacquire and
+        // reshape the terminal. GPUI requires a definite size for that cache.
+        div()
+            .size_full()
+            .child(entity.cached(gpui::StyleRefinement::default().size_full()))
+            .into_any_element()
     } else {
         div()
             .size_full()
