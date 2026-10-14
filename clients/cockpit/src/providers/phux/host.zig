@@ -237,6 +237,10 @@ const Terminal = struct {
     /// `viewport` remains the last successfully queued request, never the
     /// policy-resolved authoritative grid.
     viewport_attempt: ?provider.Viewport = null,
+    /// Integer cell last queued with the viewport. Sticky across reconnect:
+    /// the server keeps that cell until a later resize reports another.
+    reported_cell_px: ?provider.PixelSize = null,
+    attempt_cell_px: ?provider.PixelSize = null,
     /// The coordinator this replica belongs to (`Host.provider_id` when it
     /// was admitted): part of every ref and owner it publishes.
     provider_id: provider.ProviderId = .phux,
@@ -300,6 +304,7 @@ const Terminal = struct {
             .history_pages_loaded = terminal.history_pages_loaded,
             .history_unread_rows = terminal.history_unread_rows,
             .input_held_by_other = terminal.input_held_by_other,
+            .server_cell_px = terminal.reported_cell_px,
         };
     }
 };
@@ -1155,6 +1160,7 @@ pub const Host = struct {
             terminal.pending_title_set = false;
             terminal.viewport = null;
             terminal.viewport_attempt = null;
+            terminal.attempt_cell_px = null;
         }
     }
 
@@ -1257,7 +1263,10 @@ pub const Host = struct {
         // GET_METADATA/GET_STATE here, and a busy history bootstrap would
         // otherwise starve it. Consume EOF only once the queue is idle.
         try host.stageOutgoing();
-        for (host.terminals.items) |*terminal| terminal.viewport_attempt = null;
+        for (host.terminals.items) |*terminal| {
+            terminal.viewport_attempt = null;
+            terminal.attempt_cell_px = null;
+        }
         delta.workspace_changed = host.workspace_changed;
         delta.metadata_changed = host.metadata_changed or host.workspace_changed;
         host.metadata_changed = false;
@@ -1365,20 +1374,42 @@ pub const Host = struct {
 
     pub fn viewportResize(host: *Host, terminal_ref: provider.TerminalRef, viewport: provider.Viewport) !void {
         const terminal = host.findTerminal(terminal_ref) orelse return error.InvalidState;
-        if (terminal.viewport) |last| if (last.eql(viewport)) return;
-        if (terminal.viewport_attempt) |attempt| if (attempt.eql(viewport)) return error.NoValue;
+        // An unusable measurement keeps the last reported cell. Omitting the
+        // pair would leave the server where it is; pretending it returned to
+        // 8x16 would aim the pointer at the wrong grid.
+        const cell = provider.reportedCellSize(terminal.measured_cell) orelse terminal.reported_cell_px;
+        if (viewportEql(terminal.viewport, viewport) and cellEql(terminal.reported_cell_px, cell)) return;
+        if (viewportEql(terminal.viewport_attempt, viewport) and cellEql(terminal.attempt_cell_px, cell)) return error.NoValue;
         terminal.viewport_attempt = viewport;
+        terminal.attempt_cell_px = cell;
         const id = try host.currentCId(terminal.owner());
-        try resultError(c.phux_client_terminal_resize(
+        try resultError(c.phux_client_terminal_resize_with_cell_px(
             host.client,
             &id,
             viewport.cols,
             viewport.rows,
+            cell != null,
+            if (cell) |px| px.width else 0,
+            if (cell) |px| px.height else 0,
         ));
         try host.stageOutgoing();
         try host.capturePublishStage();
         const current_terminal = host.findTerminal(terminal_ref) orelse return error.InvalidState;
         current_terminal.viewport = viewport;
+        current_terminal.reported_cell_px = cell;
+    }
+
+    fn viewportEql(last: ?provider.Viewport, viewport: provider.Viewport) bool {
+        const known = last orelse return false;
+        return known.eql(viewport);
+    }
+
+    fn cellEql(last: ?provider.PixelSize, cell: ?provider.PixelSize) bool {
+        if (last) |known| {
+            const next = cell orelse return false;
+            return known.width == next.width and known.height == next.height;
+        }
+        return cell == null;
     }
 
     pub fn sendKey(host: *Host, owner_value: provider.ReplicaOwner, input: *const provider.KeyInput) !void {
@@ -2413,6 +2444,7 @@ pub const Host = struct {
             terminal.pending_title_set = false;
             terminal.viewport = null;
             terminal.viewport_attempt = null;
+            terminal.attempt_cell_px = null;
             // A boundary may be missed while detached; the cwd stays as the
             // last one known, like the title.
             terminal.command = .unknown;
@@ -4144,6 +4176,66 @@ test "not-ready resize keeps the latest request retryable after readiness" {
     try test_support.expectOutgoingCount(&bridge, 1);
     try host.viewportResize(ref, latest);
     try test_support.expectOutgoingCount(&bridge, 0);
+}
+
+// phux-hjn4: the server divides mouse pixels by its cell size, which stays
+// 8x16 until RESIZE_TERMINAL carries the painted pitch. A later pitch
+// change that leaves cols/rows alone still has to be reported.
+test "resize reports the measured cell pitch and repeats when only that pitch changes" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    try test_support.attachHost(host);
+    _ = try host.requestSpawn(null, .{ .cols = 80, .rows = 24 });
+    try test_support.stageFixture(&bridge, "spawn-local.bin");
+    try test_support.stageFixture(&bridge, "local-ready.bin");
+    _ = try host.drainReadiness();
+    const terminal_ref = host.takeOperationResult().?.terminal_ref.?;
+    const owner = host.owner(terminal_ref).?;
+    host.recordMeasuredCell(owner, .{ .width = 10.25, .height = 19.4 });
+    bridge.outgoing.reset();
+    try host.viewportResize(terminal_ref, .{ .cols = 100, .rows = 40 });
+    const frame = bridge.outgoing.take() orelse return error.MissingResize;
+    defer bridge.outgoing.release(frame);
+    try expectReportedCell(frame, 10, 19);
+    try std.testing.expect(bridge.outgoing.take() == null);
+    try host.viewportResize(terminal_ref, .{ .cols = 100, .rows = 40 });
+    try std.testing.expect(bridge.outgoing.take() == null);
+    host.recordMeasuredCell(owner, .{ .width = 11.2, .height = 19.4 });
+    try host.viewportResize(terminal_ref, .{ .cols = 100, .rows = 40 });
+    const again = bridge.outgoing.take() orelse return error.MissingResize;
+    defer bridge.outgoing.release(again);
+    try expectReportedCell(again, 11, 19);
+}
+
+// phux-hjn4: index 2.95 on a 10.25px paint is still column 2. The raw pixel
+// divided by the rounded 10px cell, or by the 8px default, is column 3.
+test "measured cell pitch maps a fractional offset onto the reported cell" {
+    const pitch: f32 = 10.25;
+    const cell = provider.reportedCellPx(pitch).?;
+    try std.testing.expectEqual(@as(u16, 10), cell);
+    try std.testing.expectEqual(@as(u16, 19), provider.reportedCellPx(19.4).?);
+    try std.testing.expect(provider.reportedCellPx(0) == null);
+    const index: f32 = 2.95;
+    const painted = index * pitch;
+    const painted_cell: u16 = @intFromFloat(@floor(index));
+    const raw_reported: u16 = @intFromFloat(@floor(painted / @as(f32, @floatFromInt(cell))));
+    const raw_default: u16 = @intFromFloat(@floor(painted / 8));
+    try std.testing.expect(painted_cell != raw_reported);
+    try std.testing.expect(painted_cell != raw_default);
+    const mapped = provider.surfacePixel(painted, pitch, cell, 80);
+    const wire_cell: u16 = @intFromFloat(@floor(mapped / @as(f64, @floatFromInt(cell))));
+    try std.testing.expectEqual(painted_cell, wire_cell);
+}
+
+fn expectReportedCell(frame: []const u8, width: u16, height: u16) !void {
+    try std.testing.expect(frame.len > 14);
+    try std.testing.expectEqual(@as(u8, 0x23), frame[4]);
+    var tail = [_]u8{ 4, 4, 2, 0, 0, 5, 4, 2, 0, 0 };
+    std.mem.writeInt(u16, tail[3..5], width, .big);
+    std.mem.writeInt(u16, tail[8..10], height, .big);
+    try std.testing.expectEqualSlices(u8, &tail, frame[frame.len - tail.len ..]);
 }
 
 test "disconnect finalizes queued operations once with their old connection epoch" {

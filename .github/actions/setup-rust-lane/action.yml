@@ -25,8 +25,10 @@
 #      Objects mode leaves GC off during the build. A cap under the restored
 #      working set deletes the action results the next build needs. Collect
 #      only above that working set, and only before any build records its
-#      export group; after the lane, release Cargo downloads without evicting
-#      the group's pending action results.
+#      export group. The post step byte-copies that store, so the cap also
+#      has to leave room for the copy beside the managed target. Headroom
+#      collapses those duplicate target bytes and skips the save when the
+#      copy still does not fit.
 #
 # No CPU fingerprint: libghostty-vt-sys builds Zig for `-Dcpu=baseline` unless
 # LIBGHOSTTY_VT_SYS_CPU says otherwise (and its build script declares that
@@ -140,7 +142,9 @@ runs:
         # --max-size caps the action store only. A cap of 8 GiB sat under a
         # restored store (~19 GiB logical, run 38442503688) and deleted every
         # action result before the build, which then recorded 0 hits. 48 GiB
-        # is above the check and icount working sets on the 145 GB hosted
-        # disk and still bounds a runaway store. Collection after the first
-        # build would drop the export group, so this stays in front of it.
-        mbx gc --max-size 48GiB
+        # then let the test lane reach 36.5 GiB of objects beside a 37.3 GiB
+        # target (run 38505694112); the export copy hit ENOSPC with 30 GiB
+        # free. 40 GiB stays above that working set on the 145 GiB disk.
+        # Collection after the first build would drop the export group, so
+        # this stays in front of it.
+        mbx gc --max-size 40GiB

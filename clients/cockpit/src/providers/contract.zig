@@ -207,6 +207,41 @@ pub const PixelSize = struct {
     height: u16,
 };
 
+/// Server cell size until a resize reports another (phux-server DEFAULT_CELL_PX).
+pub const default_server_cell_px: PixelSize = .{ .width = 8, .height = 16 };
+
+/// Integer cell the server should divide `INPUT_MOUSE` pixels by. Non-finite
+/// or non-positive pitches report nothing; the rest round and clamp to 1..=max.
+pub fn reportedCellPx(pitch: f32) ?u16 {
+    if (!std.math.isFinite(pitch) or pitch <= 0) return null;
+    const rounded = @round(pitch);
+    const max: f32 = @floatFromInt(std.math.maxInt(u16));
+    if (rounded < 1) return 1;
+    if (rounded > max) return std.math.maxInt(u16);
+    return @intFromFloat(rounded);
+}
+
+/// Both axes, or null when either pitch cannot be reported.
+pub fn reportedCellSize(cell: ?MeasuredCell) ?PixelSize {
+    const measured = cell orelse return null;
+    const width = reportedCellPx(measured.width) orelse return null;
+    const height = reportedCellPx(measured.height) orelse return null;
+    return .{ .width = width, .height = height };
+}
+
+/// One axis of an `INPUT_MOUSE` position: whole pixels of the integer cell
+/// grid `cell_px`, clamped to `count` cells. `offset` and `painted` are the
+/// pointer and the drawn cell in the same local pixels, so a fractional paint
+/// pitch still lands on the cell the server will compute.
+pub fn surfacePixel(offset: f32, painted: f32, cell_px: u16, count: u16) f64 {
+    const offset_f: f64 = @floatCast(offset);
+    const painted_f: f64 = @floatCast(painted);
+    const cells = offset_f / @max(painted_f, std.math.floatEps(f64));
+    const span = @as(f64, @floatFromInt(count)) * @as(f64, @floatFromInt(cell_px));
+    const max = @max(span - 1.0, 0);
+    return std.math.clamp(@floor(cells * @as(f64, @floatFromInt(cell_px))), 0, max);
+}
+
 pub const Viewport = struct {
     cols: u16,
     rows: u16,
@@ -311,6 +346,9 @@ pub const Presentation = struct {
     /// Another connection holds this terminal's input lease (ADR-0033):
     /// keys typed here are acked and dropped until it is taken over.
     input_held_by_other: bool = false,
+    /// Integer cell last queued on `RESIZE_TERMINAL`. Null until that report:
+    /// the server is still on `default_server_cell_px`.
+    server_cell_px: ?PixelSize = null,
 };
 
 pub fn localTerminalRef(id: LocalResourceId) TerminalRef {

@@ -1242,18 +1242,57 @@ pub unsafe extern "C" fn phux_client_terminal_resize(
     cols: u16,
     rows: u16,
 ) -> PhuxClientResult {
+    unsafe {
+        phux_client_terminal_resize_with_cell_px(client, terminal_id, cols, rows, false, 0, 0)
+    }
+}
+
+/// Same as [`phux_client_terminal_resize`]. When `has_cell_px` is set, the
+/// queued `RESIZE_TERMINAL` carries that integer cell size.
+///
+/// # Safety
+///
+/// When non-null, `client` must be a live client on its owning thread with
+/// exclusive access for the call. When non-null, `terminal_id` and any
+/// non-empty satellite host span must be readable for the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_terminal_resize_with_cell_px(
+    client: *mut PhuxClient,
+    terminal_id: *const PhuxResourceId,
+    cols: u16,
+    rows: u16,
+    has_cell_px: bool,
+    cell_width: u16,
+    cell_height: u16,
+) -> PhuxClientResult {
     use phux_client_runtime::control::TerminalResizeOutcome;
     with_client_mut(client, |client| {
         let terminal_id = unsafe { terminal_id_in(terminal_id) }?;
+        let cell_px = if has_cell_px {
+            if cell_width == 0 || cell_height == 0 {
+                return Err(BridgeError::invalid(
+                    "terminal cell geometry must be non-zero when present",
+                ));
+            }
+            Some((cell_width, cell_height))
+        } else if cell_width != 0 || cell_height != 0 {
+            return Err(BridgeError::invalid(
+                "terminal cell geometry is present without its discriminator",
+            ));
+        } else {
+            None
+        };
         if client.operations.subscription_pending(&terminal_id) {
             return Err(BridgeError::state(
                 "terminal subscription change is pending",
             ));
         }
-        let outcome =
-            client
-                .control()
-                .resize_terminal(&terminal_id, u32::from(cols), u32::from(rows));
+        let outcome = client.control().resize_terminal_with_cell(
+            &terminal_id,
+            u32::from(cols),
+            u32::from(rows),
+            cell_px,
+        );
         match outcome {
             TerminalResizeOutcome::Queued => {
                 client.drain_outbound();

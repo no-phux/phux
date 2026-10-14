@@ -96,16 +96,30 @@ fn addTsEngineModules(
         const optimize = root.optimize.?;
         const sdk_module = root.import_table.get("native_sdk") orelse
             @panic("native-sdk extension module did not expose the SDK root module");
-        root.addImport("cockpit_engine", createTsEngine(
-            b,
-            target,
-            optimize,
-            sdk_module,
-            measure,
-            phux_enabled,
-            ffi,
-        ));
+        attachCockpitEngine(b, root, target, optimize, sdk_module, measure, phux_enabled, ffi);
     }
+}
+
+/// The shipping pointer test is part of the extension module and calls the
+/// provider contract by name. That file is already this engine's
+/// `provider_contract` root; a path import would place it in both modules.
+fn attachCockpitEngine(
+    b: *std.Build,
+    root: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    sdk_module: *std.Build.Module,
+    measure: bool,
+    phux_enabled: bool,
+    ffi: ?PhuxFfi,
+) void {
+    const engine = createTsEngine(b, target, optimize, sdk_module, measure, phux_enabled, ffi);
+    root.addImport("cockpit_engine", engine);
+    root.addImport(
+        "provider_contract",
+        engine.import_table.get("provider_contract") orelse
+            @panic("cockpit engine did not expose provider_contract"),
+    );
 }
 
 /// Typecheck DisabledPhuxProvider inside the phux-enabled test graph so CI
@@ -132,15 +146,7 @@ fn addDisabledProviderCompileCheck(
     });
     check.addImport("native_sdk", sdk_module);
     check.addImport("core", core);
-    check.addImport("cockpit_engine", createTsEngine(
-        b,
-        target,
-        optimize,
-        sdk_module,
-        measure,
-        false,
-        null,
-    ));
+    attachCockpitEngine(b, check, target, optimize, sdk_module, measure, false, null);
     const compiled = b.addTest(.{
         .name = "disabled-phux-provider",
         .root_module = check,

@@ -54,7 +54,7 @@ enum Destination {
     },
 }
 
-/// A toast the shell should show. This is the only command-error toast path.
+/// A message for the window's notification feed. Workspace command errors reach the feed only through here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Notice {
     /// `info` or `error`.
@@ -143,7 +143,7 @@ impl Workspace {
         self.restored
     }
 
-    /// Take queued toasts.
+    /// Take queued notices.
     pub fn take_notices(&mut self) -> Vec<Notice> {
         std::mem::take(&mut self.notices)
     }

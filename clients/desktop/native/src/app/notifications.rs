@@ -1,0 +1,273 @@
+//! The one notification feed. Every message a window shows lands here.
+//!
+//! The list behind the titlebar bell is its home. Agent and error entries also
+//! interrupt: the newest one peeks as a single card, and is offered to the
+//! system notification center while Phux is not the frontmost app.
+
+use std::time::{Duration, Instant};
+
+use phux_protocol::ResourceId;
+
+/// Entries kept, oldest dropped first.
+const LIMIT: usize = 100;
+/// How long the peek card stays up.
+const PEEK: Duration = Duration::from_secs(10);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Info,
+    Success,
+    Error,
+    Agent,
+}
+
+impl Kind {
+    /// Agent and error entries peek, count as unread, and reach the system;
+    /// info and success wait in the list.
+    pub fn interrupts(self) -> bool {
+        matches!(self, Self::Agent | Self::Error)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Notification {
+    pub id: u64,
+    pub kind: Kind,
+    pub title: String,
+    pub body: Option<String>,
+    pub at: Instant,
+    /// The terminal a click reveals.
+    pub terminal: Option<ResourceId>,
+    /// The agent state an agent entry reports, for its colour. The entry
+    /// stands only while its agent still reports this state.
+    pub agent_state: Option<String>,
+    pub read: bool,
+}
+
+#[derive(Default)]
+pub struct Feed {
+    /// Oldest first.
+    items: Vec<Notification>,
+    next: u64,
+    peek: Option<u64>,
+    /// Interrupting entries not yet offered to the system.
+    outbound: Vec<u64>,
+}
+
+impl Feed {
+    pub fn post(&mut self, kind: Kind, title: &str, body: Option<String>) -> u64 {
+        self.push(kind, title.to_owned(), body, None, None)
+    }
+
+    /// One entry per agent: a newer state replaces the older one.
+    pub fn post_agent(
+        &mut self,
+        title: String,
+        body: String,
+        terminal: ResourceId,
+        state: String,
+    ) -> u64 {
+        self.retain(|entry| {
+            entry.kind != Kind::Agent || entry.terminal.as_ref() != Some(&terminal)
+        });
+        self.push(Kind::Agent, title, Some(body), Some(terminal), Some(state))
+    }
+
+    fn push(
+        &mut self,
+        kind: Kind,
+        title: String,
+        body: Option<String>,
+        terminal: Option<ResourceId>,
+        agent_state: Option<String>,
+    ) -> u64 {
+        self.next += 1;
+        let id = self.next;
+        self.items.push(Notification {
+            id,
+            kind,
+            title,
+            body,
+            at: Instant::now(),
+            terminal,
+            agent_state,
+            read: !kind.interrupts(),
+        });
+        if kind.interrupts() {
+            self.peek = Some(id);
+            self.outbound.push(id);
+        }
+        let excess = self.items.len().saturating_sub(LIMIT);
+        if excess > 0 {
+            self.items.drain(..excess);
+            self.settle();
+        }
+        id
+    }
+
+    /// Newest first.
+    pub fn items(&self) -> impl Iterator<Item = &Notification> {
+        self.items.iter().rev()
+    }
+
+    pub fn get(&self, id: u64) -> Option<&Notification> {
+        self.items.iter().find(|entry| entry.id == id)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    pub fn peek(&self) -> Option<&Notification> {
+        self.peek.and_then(|id| self.get(id))
+    }
+
+    /// Unread interrupting entries; the bell's count.
+    pub fn unread(&self) -> impl Iterator<Item = &Notification> {
+        self.items.iter().filter(|entry| !entry.read)
+    }
+
+    pub fn read(&mut self, id: u64) {
+        if let Some(entry) = self.items.iter_mut().find(|entry| entry.id == id) {
+            entry.read = true;
+        }
+        if self.peek == Some(id) {
+            self.peek = None;
+        }
+    }
+
+    pub fn read_all(&mut self) {
+        for entry in &mut self.items {
+            entry.read = true;
+        }
+        self.peek = None;
+    }
+
+    pub fn clear(&mut self) {
+        self.items.clear();
+        self.settle();
+    }
+
+    pub fn retain(&mut self, keep: impl Fn(&Notification) -> bool) {
+        self.items.retain(|entry| keep(entry));
+        self.settle();
+    }
+
+    /// Drop a peek older than its lifetime. True when it changed.
+    pub fn expire_peek(&mut self, now: Instant) -> bool {
+        let stale = self
+            .peek()
+            .is_some_and(|entry| now.duration_since(entry.at) >= PEEK);
+        if stale {
+            self.peek = None;
+        }
+        stale
+    }
+
+    /// Interrupting entries posted since the last take that still stand.
+    pub fn take_outbound(&mut self) -> Vec<Notification> {
+        std::mem::take(&mut self.outbound)
+            .into_iter()
+            .filter_map(|id| self.get(id).cloned())
+            .collect()
+    }
+
+    /// Forget a peek or outbound id whose entry is gone.
+    fn settle(&mut self) {
+        let items = &self.items;
+        let live = |id: &u64| items.iter().any(|entry| entry.id == *id);
+        if !self.peek.as_ref().is_some_and(live) {
+            self.peek = None;
+        }
+        self.outbound.retain(live);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_interrupting_entries_peek_and_count() {
+        let mut feed = Feed::default();
+        feed.post(Kind::Success, "Session created", None);
+        assert!(feed.peek().is_none());
+        assert_eq!(feed.unread().count(), 0);
+        let error = feed.post(Kind::Error, "Detached", Some("gone".into()));
+        assert_eq!(feed.peek().map(|entry| entry.id), Some(error));
+        assert_eq!(feed.unread().count(), 1);
+        assert_eq!(feed.items().count(), 2);
+        assert_eq!(
+            feed.take_outbound()
+                .iter()
+                .map(|entry| entry.id)
+                .collect::<Vec<_>>(),
+            vec![error]
+        );
+        assert!(feed.take_outbound().is_empty());
+    }
+
+    #[test]
+    fn a_newer_agent_state_replaces_the_older_entry() {
+        let mut feed = Feed::default();
+        let terminal = ResourceId::local(7);
+        feed.post_agent(
+            "a needs you".into(),
+            "b".into(),
+            terminal.clone(),
+            "blocked".into(),
+        );
+        let done = feed.post_agent("a finished".into(), "b".into(), terminal, "done".into());
+        assert_eq!(
+            feed.items().map(|entry| entry.id).collect::<Vec<_>>(),
+            vec![done]
+        );
+        assert_eq!(feed.take_outbound().len(), 1);
+    }
+
+    #[test]
+    fn reading_clears_the_peek_and_the_count() {
+        let mut feed = Feed::default();
+        let first = feed.post(Kind::Error, "one", None);
+        feed.post(Kind::Error, "two", None);
+        feed.read(first);
+        assert_eq!(feed.unread().count(), 1);
+        assert!(feed.peek().is_some());
+        feed.read_all();
+        assert_eq!(feed.unread().count(), 0);
+        assert!(feed.peek().is_none());
+        assert_eq!(feed.items().count(), 2);
+    }
+
+    #[test]
+    fn removed_entries_leave_no_peek_or_outbound() {
+        let mut feed = Feed::default();
+        feed.post(Kind::Error, "one", None);
+        feed.retain(|_| false);
+        assert!(feed.peek().is_none());
+        assert!(feed.take_outbound().is_empty());
+    }
+
+    #[test]
+    fn the_peek_expires_and_the_entry_stays() {
+        let mut feed = Feed::default();
+        feed.post(Kind::Error, "one", None);
+        assert!(!feed.expire_peek(Instant::now()));
+        assert!(feed.expire_peek(Instant::now() + PEEK));
+        assert!(feed.peek().is_none());
+        assert_eq!(feed.unread().count(), 1);
+    }
+
+    #[test]
+    fn the_oldest_entries_fall_off() {
+        let mut feed = Feed::default();
+        for index in 0..LIMIT + 5 {
+            feed.post(Kind::Info, &index.to_string(), None);
+        }
+        assert_eq!(feed.items().count(), LIMIT);
+        assert_eq!(
+            feed.items().last().map(|entry| entry.title.as_str()),
+            Some("5")
+        );
+    }
+}

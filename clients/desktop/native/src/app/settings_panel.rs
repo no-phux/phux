@@ -569,7 +569,7 @@ fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
         ));
     let notifications = SettingGroup::new().title("Notifications").item(
         SettingItem::new("Agent notifications", switch(handle, |prefs| prefs.notifications, |prefs, value| prefs.notifications = value))
-            .description("Toast when an agent finishes, blocks, or needs attention in a pane you are not looking at."),
+            .description("Notify when an agent finishes, blocks, or needs attention in a pane you are not looking at. Shown in the app, and in macOS Notification Center while Phux is in the background."),
     );
     SettingPage::new("Window")
         .icon(IconName::PanelLeft)

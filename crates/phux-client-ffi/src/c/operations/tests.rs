@@ -154,6 +154,68 @@ fn terminal_resize_maps_readiness_and_invalid_size_without_optimistic_geometry()
 }
 
 #[test]
+fn terminal_resize_with_cell_px_queues_the_reported_pitch() {
+    let mut h = Harness::negotiated(&[]);
+    let id = ResourceId::local(1);
+    let raw = terminal_id_out(&id);
+    test_support::queue_attach(h.ptr(), 1);
+    assert_eq!(
+        h.feed(test_support::attached_frame(
+            1,
+            test_support::single_terminal_snapshot(id.clone(), 40, 12),
+        )),
+        PhuxClientResult::Ok
+    );
+    h.bootstrap(id.clone());
+    assert_eq!(
+        h.feed(FrameKind::AttachReady { attach_id: 1 }),
+        PhuxClientResult::Ok
+    );
+    geometry_frames(&mut h);
+    // SAFETY: the harness owns the client and the identity is readable.
+    unsafe {
+        assert_eq!(
+            phux_client_terminal_resize_with_cell_px(h.ptr(), &raw const raw, 100, 30, true, 10, 0),
+            PhuxClientResult::InvalidArgument
+        );
+        assert_eq!(
+            phux_client_terminal_resize_with_cell_px(
+                h.ptr(),
+                &raw const raw,
+                100,
+                30,
+                false,
+                10,
+                19
+            ),
+            PhuxClientResult::InvalidArgument
+        );
+        assert!(geometry_frames(&mut h).is_empty());
+        assert_eq!(
+            phux_client_terminal_resize_with_cell_px(
+                h.ptr(),
+                &raw const raw,
+                100,
+                30,
+                true,
+                10,
+                19
+            ),
+            PhuxClientResult::Ok
+        );
+    }
+    assert_eq!(
+        geometry_frames(&mut h),
+        vec![FrameKind::ResizeTerminal {
+            terminal_id: id,
+            cols: 100,
+            rows: 30,
+            cell_px: Some((10, 19)),
+        }]
+    );
+}
+
+#[test]
 fn terminal_resize_waits_for_subscription_confirmation_and_respects_resource_viewer_role() {
     let mut h = Harness::attached_with(&[ServerFeature::AttachRoles]);
     let primary = ResourceId::local(9);

@@ -206,6 +206,7 @@ test "a window close waits out an in-flight refresh instead of refusing" {
     try testing.expectEqual(@as(usize, 1), model.remote.writes);
     try testing.expectEqual(.remove_window, model.remote.sent.?.kind);
     try testing.expectEqual(model.remote.snapshot.revision, model.remote.sent.?.expected_revision);
+    model.shared_workspace.revision = model.remote.snapshot.revision;
     try testing.expectError(error.WorkspaceBusy, queue.requestRemoveWindow(&model, second_id));
 }
 
@@ -221,7 +222,7 @@ test "resize still refuses while a refresh is in flight" {
 test "a confirmed close whose window is still published has not landed" {
     var queue: mutations.Coordinator = .{};
     var model: Model = .{};
-    try queue.requestRemoveWindow(&model, first_id);
+    try queue.requestRemoveWindowCorrelated(&model, first_id, 41);
     model.remote.finish(.confirmed);
     try testing.expect(queue.pump(&model));
     try testing.expect(queue.unpublishedRemovalTicket(&model) != null);

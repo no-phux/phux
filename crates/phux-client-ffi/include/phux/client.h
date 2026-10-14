@@ -1219,6 +1219,12 @@ PhuxClientResult phux_client_send_paste(PhuxClient *client, const PhuxResourceId
 /* Queue exact cells only for a live, ready, non-viewer subscription.
  * InvalidState means not ready/allowed; Ok is not an application receipt. */
 PhuxClientResult phux_client_terminal_resize(PhuxClient *client, const PhuxResourceId *terminal_id, uint16_t cols, uint16_t rows);
+/* Same queue, and when has_cell_px is true the frame also carries
+ * cell_width_px/cell_height_px: the integer cell the server divides
+ * INPUT_MOUSE pixels by. A true discriminator with a zero axis, or a false
+ * discriminator with a nonzero axis, is INVALID_ARGUMENT. Additive; it does
+ * not bump PHUX_CLIENT_ABI_VERSION. */
+PhuxClientResult phux_client_terminal_resize_with_cell_px(PhuxClient *client, const PhuxResourceId *terminal_id, uint16_t cols, uint16_t rows, bool has_cell_px, uint16_t cell_width, uint16_t cell_height);
 /* Retain desired cells/pixels through attach and reconnect. Same-size calls
  * reassert intent. The authoritative grid, not Ok, confirms applied geometry. */
 PhuxClientResult phux_client_viewport_resize(PhuxClient *client, uint16_t cols, uint16_t rows, bool has_pixel_size, uint16_t pixel_width, uint16_t pixel_height);

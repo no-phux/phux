@@ -141,8 +141,11 @@ The check and icount lanes collect the restored mbx store before compiling,
 never between a build and its objects export. Pending export groups reference
 action results that GC can evict. The cap has to sit above the lane's working
 set: an 8 GiB cap deleted a restored store's action results and the build
-recorded no hits. Post-build headroom cleanup removes Cargo downloads only;
-it leaves those action results and their objects intact.
+recorded no hits. 40 GiB stays above the measured test-lane store (36.5 GiB
+on run 38505694112) and below a size whose export copy cannot fit on the
+145 GiB runner. Post-build headroom leaves those action results intact. It
+removes Cargo downloads, collapses the managed target's duplicate bytes onto
+the object store, and skips the save when the copy still does not fit.
 
 Root release targets:
 
@@ -177,7 +180,10 @@ versions different without changing the routing contract.
 
 | Change | Product validation |
 |---|---|
-| Handwritten docs, including Cockpit README | Compile-free guards |
+| Handwritten docs, including Cockpit README | Docs guards only (`docs-check`, `install-surface-check`; no Nix) |
+| Docs that code reads: `docs/spec/**`, `docs/reference/**`, `docs/assets/**`, `docs/consumers/agents.md` | Root Rust check/test (full pool) |
+| `docs/dsr-release-fallback.md` | Cockpit |
+| `docs/site/**`, root `CHANGELOG.md` | Compile-free guards |
 | Workflow/action-only changes | Compile-free workflow/contract guards |
 | Root `justfile`, `just/perf.just`, `just/release.just`, `just/mutation.just`, `scripts/check-*`, `scripts/build-ffi-xcframework.sh`, `scripts/export-product-skills.sh`, `scripts/product-skills`, `scripts/skills-package/**`, `.agents/skills/beads/**` | Compile-free guards |
 | `just/gates.just`, `just/test.just`, `just/build.just` | Root Rust check/test |
