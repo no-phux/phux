@@ -48,10 +48,12 @@ jobs:
     name: release PR / github release
     runs-on: ubuntu-24.04
     outputs:
-      prs_created: ${{ steps.rp.outputs.prs_created }}
+      # A candidate with no code changes comes back as PR number 0; see the
+      # filter step. Anything downstream needs only real, existing PRs.
+      prs_created: ${{ steps.prs.outputs.created }}
       # `pr` contains only the first PR. Desktop releases can be separate,
       # so synchronize every returned branch, including the root release PR.
-      prs: ${{ steps.rp.outputs.prs || '[]' }}
+      prs: ${{ steps.prs.outputs.prs }}
       # Ready PRs returned to draft until sync-lockfile pushes. Empty when
       # nothing was updated, or the hold step did not run.
       held_prs: ${{ steps.hold.outputs.held_prs || '[]' }}
@@ -85,15 +87,33 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
+      # release-please returns a synthetic PR number 0 when a candidate has no
+      # code changes — a hidden-only commit, for one. It has no branch to check
+      # out and no PR to undraft, and it made the hold step's `gh pr view 0`
+      # fail the whole run. Drop it before the hold and the sync matrix see it.
+      - name: Drop change-less candidate PRs
+        id: prs
+        env:
+          PRS: ${{ steps.rp.outputs.prs }}
+        run: |
+          set -euo pipefail
+          filtered="$(printf '%s' "${PRS:-[]}" | jq -c '[.[] | select(.number > 0)]')"
+          echo "prs=$filtered" >> "$GITHUB_OUTPUT"
+          if [ "$filtered" = "[]" ]; then
+            echo "created=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "created=true" >> "$GITHUB_OUTPUT"
+          fi
+
       # Same job as the force-push, before this job exits. A later job is too
       # late: the unsynced head is mergeable for as long as a runner takes to
       # start, and main's ruleset accepts the previous head's green ci.
       - name: Hold ready release PRs until lockfiles sync
         id: hold
-        if: steps.rp.outputs.prs_created == 'true'
+        if: steps.prs.outputs.created == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          PRS: ${{ steps.rp.outputs.prs }}
+          PRS: ${{ steps.prs.outputs.prs }}
         run: |
           set -euo pipefail
           held='[]'
