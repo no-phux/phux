@@ -236,11 +236,11 @@ impl Desk {
             return;
         }
         let Some(client) = self.client() else { return };
-        match client.inbox_resolve(session) {
+        match client.intake_resolve(session) {
             Ok(operation) => self.organization.begin(operation, Edit::Resolve(name)),
             Err(error) => self.post(
                 Kind::Error,
-                "Couldn't move out of Inbox",
+                "Couldn't mark session organized",
                 Some(error.to_string()),
             ),
         }

@@ -65,7 +65,7 @@ pub struct SessionDescriptor {
     /// The arrangement key, from the organization replica.
     pub arrangement: Option<String>,
     pub awaiting_organization: bool,
-    /// Whether this is the designated Inbox session.
+    /// Whether this is the designated Intake session (legacy binding field name).
     pub inbox: bool,
     pub focused: bool,
 }
@@ -206,7 +206,7 @@ pub struct SessionTopology {
     /// String form of the attaching client's initial focused pane.
     pub focused_pane: String,
     pub authority: Option<String>,
-    /// The designated Inbox session's key.
+    /// The designated Intake session's key (legacy binding field name).
     pub inbox: Option<String>,
 }
 
@@ -256,8 +256,9 @@ impl From<organization::TargetResult> for OrgTargetResult {
     }
 }
 
-/// The owner-local Inbox: the designated Inbox session and every session
+/// The owner-local Intake: the designated Intake session and every session
 /// awaiting organization, with their member records.
+/// The legacy record and field names preserve existing generated bindings.
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
 pub struct InboxDescriptor {
     pub inbox: Option<String>,
@@ -265,3 +266,6 @@ pub struct InboxDescriptor {
     pub sessions: Vec<String>,
     pub records: Vec<ResourceRecordDescriptor>,
 }
+
+/// Preferred Rust spelling; generated bindings retain the legacy record name.
+pub type IntakeDescriptor = InboxDescriptor;

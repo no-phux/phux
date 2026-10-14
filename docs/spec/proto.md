@@ -855,7 +855,7 @@ The catalog is organized by **tier**:
   specific. Defined here.
 - **L1** — Terminal substrate. Every conforming consumer speaks L1
   (§11). Carries `ResourceId`. See [L1.md](./L1.md).
-- **L2** — organization: sessions, membership, lifetimes, the Inbox, and
+- **L2** — organization: sessions, membership, lifetimes, the Intake, and
   arrangements. No frame family of its own; its commands are `cmd`
   variants ([L1.md](./L1.md) §5.7) behind `ORGANIZATION`. See
   [L2.md](./L2.md).

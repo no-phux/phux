@@ -230,7 +230,7 @@ pub enum OrgFilter {
     Session(SessionKey),
     /// The sessions one workspace links.
     Workspace(WorkspaceKey),
-    /// The Inbox: the designated Inbox session and sessions awaiting
+    /// Intake: the designated Intake session and sessions awaiting
     /// organization, with their members.
     Intake,
 }
@@ -351,7 +351,7 @@ pub struct SessionRecord {
     pub name: String,
     /// Whether it outlives its last resource.
     pub lifetime: SessionLifetime,
-    /// Whether it is imported work awaiting organization (the Inbox).
+    /// Whether it is imported work awaiting organization (Intake).
     pub awaiting_organization: bool,
     /// Its arrangement, if it has one.
     pub arrangement: Option<ArrangementKey>,
@@ -539,7 +539,7 @@ impl ResourceRecord {
 pub struct OrganizationPage {
     /// The authority the records belong to.
     pub authority: AuthorityId,
-    /// The designated Inbox session, when the caller observes it.
+    /// The designated Intake session; legacy field name and wire tag retained.
     pub inbox: Option<SessionKey>,
     /// Session records on this page.
     pub sessions: Vec<SessionRecord>,
@@ -581,11 +581,23 @@ impl OrganizationPage {
         }
     }
 
-    /// Builder setter for [`Self::inbox`].
+    /// The designated Intake session. The `inbox` field is a legacy wire/API name.
     #[must_use]
-    pub const fn with_inbox(mut self, inbox: Option<SessionKey>) -> Self {
-        self.inbox = inbox;
+    pub const fn intake(&self) -> Option<SessionKey> {
+        self.inbox
+    }
+
+    /// Set the designated Intake session without changing its wire field tag.
+    #[must_use]
+    pub const fn with_intake(mut self, intake: Option<SessionKey>) -> Self {
+        self.inbox = intake;
         self
+    }
+
+    /// Legacy alias for [`Self::with_intake`].
+    #[must_use]
+    pub const fn with_inbox(self, inbox: Option<SessionKey>) -> Self {
+        self.with_intake(inbox)
     }
 
     /// Builder setter for [`Self::sessions`].

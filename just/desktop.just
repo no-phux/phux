@@ -85,6 +85,6 @@ desktop-package: desktop-native-build
     cd clients/desktop && bun scripts/package-app.ts
 
 [group('desktop')]
-[doc('Build Phux.app and install it to /Applications; it opens your Inbox session')]
+[doc('Build Phux.app and install it to /Applications; it opens your Intake session')]
 desktop-install-app: desktop-native-build
     cd clients/desktop && bun scripts/package-app.ts --install

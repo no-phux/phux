@@ -587,7 +587,8 @@ pub enum Command {
         expected: Revision,
     },
     /// Clear an imported session's intake mark; members and execution are
-    /// untouched.
+    /// untouched. Legacy public/serialized variant name; prefer
+    /// [`Command::intake_resolve`] when constructing this command.
     InboxResolve {
         /// Caller-generated operation id.
         operation: OperationId,
@@ -652,6 +653,20 @@ pub enum Command {
 }
 
 impl Command {
+    /// Clear an imported session's Intake mark with the existing `0x2b` wire tag.
+    #[must_use]
+    pub const fn intake_resolve(
+        operation: OperationId,
+        session: SessionKey,
+        expected: Revision,
+    ) -> Self {
+        Self::InboxResolve {
+            operation,
+            session,
+            expected,
+        }
+    }
+
     /// Subscribe to a Terminal content stream (SPEC §5.1).
     ///
     /// Carries no agent cursor. Send a non-default `role_policy` only to a

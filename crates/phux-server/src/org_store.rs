@@ -132,7 +132,7 @@ pub enum StoreError {
 /// Everything a store holds, as loaded at startup.
 #[derive(Debug, Clone)]
 pub struct StoredOrg {
-    /// The authority record and its designated Inbox.
+    /// The authority record and its designated Intake.
     pub authority: Authority,
     /// Every session record.
     pub sessions: Vec<Session>,
@@ -401,7 +401,8 @@ fn put_meta(tx: &Transaction<'_>, key: &str, value: &[u8]) -> Result<(), StoreEr
 
 fn put_authority(tx: &Transaction<'_>, authority: &Authority) -> Result<(), StoreError> {
     put_meta(tx, "authority", &authority.id.to_bytes())?;
-    put_meta(tx, "inbox_session", &authority.inbox_session.to_bytes())
+    // Retain the legacy storage key; renaming Intake does not migrate identities.
+    put_meta(tx, "inbox_session", &authority.intake_session().to_bytes())
 }
 
 fn put_session(tx: &Transaction<'_>, s: &Session) -> Result<(), StoreError> {
@@ -742,6 +743,44 @@ mod tests {
 
     fn op_id(n: u8) -> OperationId {
         OperationId::from_bytes([n; 16])
+    }
+
+    #[test]
+    fn intake_defaults_and_persisted_designation_names_keep_their_identity() {
+        for name in ["intake", "inbox", "my queue"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("v1.sqlite3");
+            let mut keys = SequentialKeys::new(*b"storetst");
+            let fresh = org(&mut keys);
+            let key = fresh.authority().intake_session();
+            assert_eq!(fresh.session(&key).unwrap().name, "intake");
+            let mut sessions: Vec<_> = fresh.sessions().cloned().collect();
+            sessions[0].name = name.to_owned();
+            let saved = Org::restore(
+                *fresh.authority(),
+                fresh.instance(),
+                sessions,
+                fresh.resources().cloned(),
+                fresh.arrangements().cloned(),
+                fresh.receipts().cloned(),
+            )
+            .unwrap();
+            let mut store = SqliteOrgStore::open(&path).unwrap();
+            store.import(&saved, None, Stamp(1_000)).unwrap();
+            drop(store);
+            let stored = SqliteOrgStore::open(&path)
+                .unwrap()
+                .load()
+                .unwrap()
+                .unwrap();
+            assert_eq!(stored.authority.intake_session(), key);
+            assert_eq!(stored.sessions[0].key, key);
+            assert_eq!(stored.sessions[0].name, name);
+            assert_eq!(
+                stored.sessions[0].revision,
+                saved.session(&key).unwrap().revision
+            );
+        }
     }
 
     #[test]

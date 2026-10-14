@@ -448,6 +448,23 @@ pub struct LayoutPaths {
 /// `$XDG_STATE_HOME/phux-desktop/<hash>/` or `~/.local/state/phux-desktop/<hash>/`.
 #[must_use]
 pub fn layout_paths(socket: &str, session: &str) -> LayoutPaths {
+    let state = layout_state_directory();
+    let directory = state.join(target_hash(socket, session));
+    paths_in(directory, &state)
+}
+
+/// Organization sessions use their immutable key, not their mutable name.
+/// The separate namespace cannot collide with an existing named-session store.
+#[must_use]
+pub fn session_layout_paths(socket: &str, key: phux_protocol::ids::SessionKey) -> LayoutPaths {
+    let state = layout_state_directory();
+    let directory = state
+        .join("sessions")
+        .join(target_hash(socket, &key.to_string()));
+    paths_in(directory, &state)
+}
+
+fn layout_state_directory() -> PathBuf {
     let state = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
@@ -456,14 +473,15 @@ pub fn layout_paths(socket: &str, session: &str) -> LayoutPaths {
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join(".local/state")
         });
-    let directory = state
-        .join("phux-desktop")
-        .join(target_hash(socket, session));
+    state.join("phux-desktop")
+}
+
+fn paths_in(directory: PathBuf, state: &Path) -> LayoutPaths {
     LayoutPaths {
         layout: directory.join("layout.json"),
         quick: directory.join("quick.json"),
-        legacy_layout: state.join("phux-desktop/layout.json"),
-        legacy_quick: state.join("phux-desktop/quick.json"),
+        legacy_layout: state.join("layout.json"),
+        legacy_quick: state.join("quick.json"),
     }
 }
 
@@ -679,6 +697,61 @@ fn sha256(message: &[u8]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_scoped_paths_are_rename_stable_and_separate_from_name_scoped_paths() {
+        let key = phux_protocol::ids::SessionKey::new([1; 16]).unwrap();
+        let keyed = session_layout_paths("private-server.sock", key);
+        assert_eq!(keyed, session_layout_paths("private-server.sock", key));
+        assert_ne!(
+            keyed.layout,
+            layout_paths("private-server.sock", "A").layout
+        );
+        assert_ne!(
+            keyed.layout,
+            layout_paths("private-server.sock", "renamed-A").layout
+        );
+        assert_ne!(
+            keyed.layout,
+            session_layout_paths("another-server.sock", key).layout
+        );
+    }
+
+    #[test]
+    fn key_store_imports_without_overwriting_old_or_conflicting_layouts() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory =
+            std::env::temp_dir().join(format!("phux-layout-key-{}-{nonce}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        let old = directory.join("name.json");
+        let keyed = directory.join("key.json");
+        let old_value = serde_json::json!({"version": 2, "serverId": "old", "tabs": []});
+        fs::write(&old, old_value.to_string()).unwrap();
+        let store = FileLayoutStore::new(&keyed, Some(old.clone()));
+        assert_eq!(store.read(), StoreValue::Present(old_value.clone()));
+        assert!(
+            !keyed.exists(),
+            "reading the fallback does not migrate destructively"
+        );
+        let layout = parse_layout(&old_value).unwrap();
+        for bytes in ["damaged", r#"{"version":99,"serverId":"other","tabs":[]}"#] {
+            fs::write(&keyed, bytes).unwrap();
+            let loaded = load_layout(&store.read());
+            assert!(loaded.blocked);
+            write_if_allowed(&loaded, &layout, |value| store.write(value)).unwrap();
+            assert_eq!(fs::read_to_string(&keyed).unwrap(), bytes);
+            assert_eq!(fs::read_to_string(&old).unwrap(), old_value.to_string());
+        }
+        let conflicting = serde_json::json!({"version": 2, "serverId": "other", "tabs": []});
+        fs::write(&keyed, conflicting.to_string()).unwrap();
+        assert_eq!(store.read(), StoreValue::Present(conflicting.clone()));
+        assert_eq!(fs::read_to_string(&keyed).unwrap(), conflicting.to_string());
+        assert_eq!(fs::read_to_string(&old).unwrap(), old_value.to_string());
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn sha256_matches_the_empty_and_abc_vectors() {

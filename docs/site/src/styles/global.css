@@ -989,7 +989,7 @@ html:has(.docs-navigation-dialog[open]) {
 }
 .overview-model-server,
 .overview-model-session,
-.overview-model-inbox {
+.overview-model-intake {
   display: flex;
   flex-direction: column;
   gap: 5px;

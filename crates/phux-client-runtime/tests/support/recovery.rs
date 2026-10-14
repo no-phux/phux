@@ -24,6 +24,44 @@ fn reconnect_target(plane: &mut ControlPlane, incarnation: u8) -> AttachTarget {
 }
 
 #[test]
+fn named_attach_reconnect_follows_a_rename_not_the_reused_name() {
+    let (mut plane, attach_id) = negotiated();
+    attach(&mut plane, attach_id, b"original");
+    let mut snapshot = two_session_snapshot(false);
+    snapshot.sessions[0].name = "renamed".to_owned();
+    snapshot.sessions[1].name = "main".to_owned();
+    refresh_to(&mut plane, snapshot);
+    assert_eq!(
+        reconnect_target(&mut plane, 0xAB),
+        AttachTarget::ById(SessionId::new(1))
+    );
+    assert_eq!(
+        reconnect_target(&mut plane, 0xCD),
+        AttachTarget::ByName("renamed".to_owned())
+    );
+}
+
+#[test]
+fn a_live_named_switch_reconnects_to_its_renamed_identity() {
+    let (mut plane, attach_id) = negotiated();
+    attach(&mut plane, attach_id, b"original");
+    refresh_to(&mut plane, two_session_snapshot(false));
+    assert!(!plane.attach_session(AttachTarget::ByName("beta".to_owned())));
+    let mut snapshot = two_session_snapshot(false);
+    snapshot.sessions[0].name = "beta".to_owned();
+    snapshot.sessions[1].name = "renamed-beta".to_owned();
+    refresh_to(&mut plane, snapshot);
+    assert_eq!(
+        reconnect_target(&mut plane, 0xAB),
+        AttachTarget::ById(SessionId::new(2))
+    );
+    assert_eq!(
+        reconnect_target(&mut plane, 0xCD),
+        AttachTarget::ByName("renamed-beta".to_owned())
+    );
+}
+
+#[test]
 fn selected_session_numbers_are_scoped_to_the_server_incarnation() {
     let (mut plane, attach_id) = negotiated();
     attach(&mut plane, attach_id, b"original");

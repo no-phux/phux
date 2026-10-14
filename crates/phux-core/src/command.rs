@@ -121,14 +121,14 @@ pub enum Op {
     /// Remove every member of a session and delete it, in one transition.
     /// A member whose activation is current or lost is terminated
     /// gracefully after the commit. A session already gone is killed:
-    /// nothing changes. Never the designated Inbox session.
+    /// nothing changes. Never the designated Intake session.
     SessionKill {
         /// Target.
         session: SessionKey,
     },
-    /// Create a resource in a session (the Inbox session when `None`).
+    /// Create a resource in a session (the Intake session when `None`).
     ResourceCreate {
-        /// Destination; `None` means the designated Inbox session.
+        /// Destination; `None` means the designated Intake session.
         session: Option<SessionKey>,
         /// The resource.
         resource: NewResource,
@@ -158,7 +158,8 @@ pub enum Op {
         /// Observed revision of `to`.
         to_expected: Revision,
     },
-    /// Clear an imported session's `awaiting_organization` marker.
+    /// Clear an imported session's Intake (`awaiting_organization`) marker.
+    /// Legacy serialized variant name; prefer [`Self::intake_resolve`].
     InboxResolve {
         /// Target.
         session: SessionKey,
@@ -241,6 +242,12 @@ pub enum Op {
 }
 
 impl Op {
+    /// Clear a session's Intake mark. The variant's legacy serialized name stays.
+    #[must_use]
+    pub const fn intake_resolve(session: SessionKey, expected: Revision) -> Self {
+        Self::InboxResolve { session, expected }
+    }
+
     /// Whether this is an executor report rather than a user command.
     #[must_use]
     pub const fn is_report(&self) -> bool {

@@ -50,22 +50,22 @@ impl ServerState {
 
     /// The session a request with no session and no touch history lands
     /// on: the oldest session with a live pane, else the oldest one other
-    /// than the Inbox. An empty Inbox is never picked: older clients know
+    /// than the Intake. Empty Intake is never picked: older clients know
     /// nothing of it.
     #[must_use]
     pub fn fallback_session(&self) -> Option<SessionId> {
-        let inbox = self.org().authority().inbox_session;
+        let intake = self.org().authority().intake_session();
         let mut sessions: Vec<(phux_core::Stamp, SessionId, bool)> = self
             .sessions
             .registry
             .sessions()
-            .map(|(id, s)| (s.created, id, s.key == inbox))
+            .map(|(id, s)| (s.created, id, s.key == intake))
             .collect();
-        sessions.sort_by_key(|(created, _, is_inbox)| (*is_inbox, *created));
+        sessions.sort_by_key(|(created, _, is_intake)| (*is_intake, *created));
         sessions
             .iter()
             .find(|(_, id, _)| !self.legacy_panes_of(*id).is_empty())
-            .or_else(|| sessions.iter().find(|(_, _, is_inbox)| !is_inbox))
+            .or_else(|| sessions.iter().find(|(_, _, is_intake)| !is_intake))
             .map(|(_, id, _)| *id)
     }
 
@@ -239,7 +239,7 @@ impl ServerState {
     }
 
     /// Delete each of `sessions` that is now empty and still exists,
-    /// attributed to `actor`; the designated Inbox is never deleted.
+    /// attributed to `actor`; the designated Intake is never deleted.
     /// Returns the deleted names. Their clients queue for `SESSION_KILLED`.
     pub fn delete_emptied_sessions(
         &mut self,
@@ -251,7 +251,7 @@ impl ServerState {
             let Some(record) = self.sessions.registry.session(*id) else {
                 continue;
             };
-            if !record.members.is_empty() || record.key == self.org().authority().inbox_session {
+            if !record.members.is_empty() || record.key == self.org().authority().intake_session() {
                 continue;
             }
             let (key, name) = (record.key, record.name.clone());

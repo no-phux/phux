@@ -1781,7 +1781,7 @@ mod tests {
                     session_names(&state),
                     vec![
                         "already-here".to_owned(),
-                        "inbox".to_owned(),
+                        "intake".to_owned(),
                         "main".to_owned()
                     ]
                 );
@@ -1905,7 +1905,7 @@ mod tests {
                 }
                 assert_eq!(
                     session_names(&state),
-                    vec!["already-here".to_owned(), "inbox".to_owned()]
+                    vec!["already-here".to_owned(), "intake".to_owned()]
                 );
             })
             .await;
@@ -2055,7 +2055,7 @@ mod tests {
                 }
                 assert_eq!(
                     session_names(&state),
-                    vec!["already-here".to_owned(), "inbox".to_owned()],
+                    vec!["already-here".to_owned(), "intake".to_owned()],
                     "a mid-rebuild actor failure must not commit the partial tree"
                 );
             })

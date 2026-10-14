@@ -1,5 +1,5 @@
 //! The organization replica: sessions, resources, arrangements, and the
-//! Inbox as one authority reports them (`docs/spec/L1.md` §5.7, CONTRACTS
+//! Intake as one authority reports them (`docs/spec/L1.md` §5.7, CONTRACTS
 //! §04-§07).
 //!
 //! [`OrganizationReplica`] is sans-IO. It is seeded from paged
@@ -72,17 +72,28 @@ pub enum ReplicaAction {
     RefetchArrangement(ArrangementKey),
 }
 
-/// The Inbox as this owner sees it: the designated Inbox session and every
+/// The Intake as this owner sees it: the designated Intake session and every
 /// session awaiting organization, with their members.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct InboxView {
-    /// The designated Inbox session, when the caller observes it.
+pub struct IntakeView {
+    /// The designated Intake session. Legacy public field name for compatibility.
     pub inbox: Option<SessionKey>,
-    /// Sessions in the Inbox: the designated one first, then those awaiting
+    /// Sessions in Intake: the designated one first, then those awaiting
     /// organization, in record order.
     pub sessions: Vec<SessionRecord>,
     /// Their members, in record order.
     pub resources: Vec<ResourceRecord>,
+}
+
+/// Legacy public spelling of [`IntakeView`].
+pub type InboxView = IntakeView;
+
+impl IntakeView {
+    /// The designated Intake session, when the caller observes it.
+    #[must_use]
+    pub const fn intake(&self) -> Option<SessionKey> {
+        self.inbox
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -98,7 +109,7 @@ struct Seed {
 pub struct OrganizationReplica {
     state: ReplicaState,
     authority: Option<AuthorityId>,
-    inbox: Option<SessionKey>,
+    intake: Option<SessionKey>,
     sessions: Vec<SessionRecord>,
     resources: Vec<ResourceRecord>,
     arrangements: HashMap<ArrangementKey, ArrangementValue>,
@@ -134,10 +145,16 @@ impl OrganizationReplica {
         self.authority
     }
 
-    /// The designated Inbox session, when the caller observes it.
+    /// Legacy alias for [`Self::intake`].
     #[must_use]
     pub const fn inbox(&self) -> Option<SessionKey> {
-        self.inbox
+        self.intake()
+    }
+
+    /// The designated Intake session, when the caller observes it.
+    #[must_use]
+    pub const fn intake(&self) -> Option<SessionKey> {
+        self.intake
     }
 
     /// The journal `seq` the records are current through.
@@ -221,23 +238,28 @@ impl OrganizationReplica {
         Some((key, value.revision, document, binding))
     }
 
-    /// The owner-local Inbox: the designated Inbox session and every
-    /// session awaiting organization, with their members.
+    /// Legacy alias for [`Self::intake_view`].
     #[must_use]
     pub fn inbox_view(&self) -> InboxView {
+        self.intake_view()
+    }
+
+    /// The owner-local Intake: designated session and imported groups with members.
+    #[must_use]
+    pub fn intake_view(&self) -> IntakeView {
         let mut sessions: Vec<SessionRecord> = Vec::new();
-        if let Some(inbox) = self.inbox.and_then(|key| self.session(&key)) {
-            sessions.push(inbox.clone());
+        if let Some(intake) = self.intake.and_then(|key| self.session(&key)) {
+            sessions.push(intake.clone());
         }
         sessions.extend(
             self.sessions
                 .iter()
-                .filter(|s| s.awaiting_organization && Some(s.key) != self.inbox)
+                .filter(|s| s.awaiting_organization && Some(s.key) != self.intake)
                 .cloned(),
         );
         let keys: HashSet<SessionKey> = sessions.iter().map(|s| s.key).collect();
-        InboxView {
-            inbox: self.inbox,
+        IntakeView {
+            inbox: self.intake,
             resources: self
                 .resources
                 .iter()
@@ -349,7 +371,7 @@ impl OrganizationReplica {
             self.forget_members(key);
             self.resources.extend(resources);
         } else {
-            self.inbox = first.inbox;
+            self.intake = first.intake();
             self.snapshot_revision = first.snapshot_revision;
             self.journal_seq = first.journal_seq;
             self.sessions = sessions;
@@ -847,7 +869,10 @@ mod tests {
             ])
             .with_resources(vec![running(1, skey(2))]);
         replica.apply_page(first);
-        let view = replica.inbox_view();
+        let view = replica.intake_view();
+        assert_eq!(view, replica.inbox_view());
+        assert_eq!(view.intake(), replica.intake());
+        assert_eq!(replica.intake(), replica.inbox());
         assert_eq!(
             view.sessions.iter().map(|s| s.key).collect::<Vec<_>>(),
             vec![skey(9), skey(2)]
@@ -871,7 +896,7 @@ mod tests {
                 revision: Revision::new(3),
             },
         );
-        let view = replica.inbox_view();
+        let view = replica.intake_view();
         assert_eq!(view.sessions.len(), 1);
         assert!(view.resources.is_empty());
         assert_eq!(replica.members(&skey(1)).count(), 1);

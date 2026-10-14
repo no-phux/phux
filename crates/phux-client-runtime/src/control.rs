@@ -82,7 +82,7 @@ pub use extensions::{
 pub use geometry::TerminalResizeOutcome;
 pub use input::mint_input_operation_id;
 pub use org_plane::{ArrangementSubmitError, mint_operation};
-pub use organization::{InboxView, OrganizationReplica, ReplicaAction, ReplicaState};
+pub use organization::{InboxView, IntakeView, OrganizationReplica, ReplicaAction, ReplicaState};
 pub use topology::{AgentSessionDescriptor, PaneDescriptor, SessionDescriptor, Topology};
 
 /// Upper bound on undrained events.
@@ -417,7 +417,8 @@ pub struct ControlPlane {
     /// The Terminals each snapshot view last listed.
     listings: topology::Listings,
     /// The target every connection attaches; a `CreateIfMissing` becomes
-    /// `ByName` once sent, so a reconnect never re-creates.
+    /// `ByName` once sent, then incarnation-scoped `ById` once confirmed,
+    /// so reconnect follows renames and never re-creates.
     attach_target: Option<AttachTarget>,
     active_attach_id: Option<u32>,
     attach_terminals: HashSet<ResourceId>,

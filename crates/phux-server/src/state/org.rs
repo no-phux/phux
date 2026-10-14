@@ -115,7 +115,7 @@ fn store_refusal(error: &StoreError) -> Refusal {
 }
 
 /// A fresh organization for a server that has no store yet: a new
-/// authority and its empty Inbox, with its empty arrangement.
+/// authority and its empty Intake, with its empty arrangement.
 #[must_use]
 pub fn fresh_org(instance: InstanceId, now: Stamp) -> Org {
     let mut keys = OsKeys;
@@ -161,7 +161,7 @@ impl ServerState {
     }
 
     /// Write the in-memory organization to a store that has never held one
-    /// (a first start): the authority, its Inbox, and any imported tree.
+    /// (a first start): the authority, its Intake, and any imported tree.
     /// A no-op once the store holds the records.
     ///
     /// # Errors

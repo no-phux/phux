@@ -21,12 +21,21 @@ There is no JavaScript bundle and no NAPI addon. Launched from the Dock or
 Spotlight, the app resolves the installed `phux` CLI
 (`~/.local/bin/phux`, `/opt/homebrew/bin/phux`, `/usr/local/bin/phux`, or
 `~/.cargo/bin/phux`) and starts or reuses the server. A shell-only `PATH` or
-`PHUX_BIN` is not enough for a Dock launch. It opens your Inbox, the session
+`PHUX_BIN` is not enough for a Dock launch. It opens your Intake, the session
 untargeted work lands in; a server without one opens its most recent session.
 The app never creates a session on its own. `PHUX_SESSION` names a session
 instead and creates it, persistent, when it does not exist; `PHUX_PROFILE` and
 `PHUX_SOCKET` pick the server. Startup problems are shown in the window and logged to
 `~/Library/Logs/phux-desktop.log`.
+
+The sidebar's **Intake sessions** group contains the designated Intake (unorganized
+work) and imported sessions awaiting organization. Select work and choose
+**Organize Selected Work…** to move it to a named session, or explicitly
+**Leave unorganized (Intake)**. Moving changes membership, never execution.
+Imported sessions can also be marked organized without moving their work.
+The bell opens **Inbox & notifications**: agent attention alerts in Inbox,
+errors and command results in Notifications. Its badge counts unread alerts,
+not sessions or messages; an agent alert opens the agent's terminal.
 
 Closing a pane/window or quitting the app detaches; it does not terminate
 server-owned shells. A desktop crash is separate from a server crash:
@@ -179,18 +188,20 @@ it opened on. **Terminate Terminal Process** (palette only) ends one process.
 then ends every terminal in the session and deletes it; a notification reports any
 terminal that did not end, and why. Closing a pane, tab or window never ends
 work. New sessions are persistent: they stay, empty, after their last
-terminal exits. Layout and display preferences persist under
-`$XDG_STATE_HOME/phux-desktop/<socket-and-session-hash>/`. Existing
-unscoped layouts are imported without overwriting their originals; terminal
-identity is still checked against the server incarnation.
+terminal exits. Organization session layouts and display preferences persist
+under `$XDG_STATE_HOME/phux-desktop/sessions/<socket-and-session-key-hash>/`,
+so renaming a session does not change its saved tabs or splits. Older servers
+retain the name-scoped directory. Existing name-scoped and unscoped layouts
+are read-only migration fallbacks; explicit `--layout` paths stay unchanged.
+Terminal identity is still checked against the server incarnation.
 Unavailable saved panes retain their split positions until they can attach;
 closing one explicitly removes it. Replacing the daemon retires its old view
 handles rather than rebinding their numeric terminal IDs. Unsupported or
 damaged layout files are preserved without automatic writes, with a notice in
 the window. Back up and remove the affected layout file to start a fresh one.
 
-Every message the window has for you lands in one notification list behind
-the titlebar bell, newest first; clicking an entry jumps to its pane. Agent
+Every message the window has for you lands behind the titlebar bell, with
+Inbox and Notifications each newest first; clicking an agent entry jumps to its pane. Agent
 alerts and errors also show briefly as a single card in the window and count
 on the bell until you open the list. While Phux is in the background they go
 to macOS Notification Center too, where a click brings the pane forward; this
@@ -217,6 +228,17 @@ just desktop-framework-check
 
 `desktop-check` is the CI gate: script typecheck, lint, qualification-guard
 tests, and the desktop host lock comparison. It does not launch GPUI.
+The opt-in GPUI journey regressions run real window close/reopen and reconnect
+lifecycles against a disposable server started by a checkout-built CLI:
+
+```sh
+cargo build -p phux
+PHUX_DESKTOP_JOURNEY_TEST_BIN="$PWD/target/debug/phux" \
+  XDG_STATE_HOME="$PWD/clients/desktop/.cache/journey-state" \
+  cargo test --locked --manifest-path clients/desktop/native/Cargo.toml \
+  --lib app::session::journey_tests -- --ignored
+```
+
 `desktop-framework-check` packages `Phux.app` and runs
 
 ```sh

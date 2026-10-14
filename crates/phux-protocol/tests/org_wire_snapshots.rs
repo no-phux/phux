@@ -65,6 +65,28 @@ fn dump_frame(frame: &FrameKind) -> String {
     hex_dump(&buf)
 }
 
+#[test]
+fn intake_api_aliases_keep_legacy_wire_bytes() {
+    let legacy = command(Command::InboxResolve {
+        operation: op(),
+        session: session(),
+        expected: rev(4),
+    });
+    let preferred = command(Command::intake_resolve(op(), session(), rev(4)));
+    assert_eq!(dump_frame(&preferred), dump_frame(&legacy));
+
+    let page = OrganizationPage::new(AuthorityId::new([0xAA; 16]).unwrap(), rev(40), 77);
+    let legacy = page.clone().with_inbox(Some(other_session()));
+    let preferred = page.with_intake(Some(other_session()));
+    assert_eq!(preferred.intake(), legacy.inbox);
+    let frame = |page| {
+        result(CommandResult::OkWith(CommandValue::OrganizationPage(
+            Box::new(page),
+        )))
+    };
+    assert_eq!(dump_frame(&frame(preferred)), dump_frame(&frame(legacy)));
+}
+
 fn op() -> IdempotencyKey {
     IdempotencyKey::new([0x0A; 16]).unwrap()
 }
@@ -276,11 +298,7 @@ fn command_fixtures() -> Vec<(&'static str, FrameKind)> {
         ),
         (
             "snap_org_inbox_resolve",
-            command(Command::InboxResolve {
-                operation: op(),
-                session: session(),
-                expected: rev(4),
-            }),
+            command(Command::intake_resolve(op(), session(), rev(4))),
         ),
         (
             "snap_org_organization_undo",
@@ -330,7 +348,7 @@ fn command_fixtures() -> Vec<(&'static str, FrameKind)> {
 fn result_fixtures() -> Vec<(&'static str, FrameKind)> {
     let refused = |refusal| result(CommandResult::Refused(refusal));
     let page = OrganizationPage::new(AuthorityId::new([0xAA; 16]).unwrap(), rev(40), 77)
-        .with_inbox(Some(other_session()))
+        .with_intake(Some(other_session()))
         .with_sessions(vec![
             SessionRecord::new(session(), "work", rev(4))
                 .with_members(1)

@@ -20,11 +20,11 @@ use crate::state::ServerState;
 /// The shape [`seed`] builds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScaleSpec {
-    /// Ordinary sessions besides the Inbox.
+    /// Ordinary sessions besides Intake.
     pub sessions: usize,
     /// Resources spread round-robin over those sessions.
     pub resources: usize,
-    /// Resources left in the Inbox, awaiting organization.
+    /// Resources left in Intake, awaiting organization (legacy fixture field name).
     pub inbox_resources: usize,
     /// Stored receipts after seeding, at least one per seeded record. The
     /// extra ones are spread over the last day, a few already past the
@@ -34,7 +34,7 @@ pub struct ScaleSpec {
 
 impl ScaleSpec {
     /// The scale the contract names: 5,000 resources in 200 sessions, 500
-    /// more in the Inbox, and a receipt window at its cap.
+    /// more in Intake, and a receipt window at its cap.
     pub const CONTRACT: Self = Self {
         sessions: 200,
         resources: 5_000,
@@ -50,7 +50,7 @@ pub struct ScaleOrg {
     pub state: ServerState,
     /// The ordinary sessions, in creation order.
     pub sessions: Vec<SessionKey>,
-    /// The designated Inbox.
+    /// The designated Intake (legacy fixture field name).
     pub inbox: SessionKey,
 }
 

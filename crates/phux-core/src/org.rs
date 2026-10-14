@@ -21,17 +21,29 @@ use crate::keys::{
 use crate::resource::{Resource, ResourceKind};
 use crate::session::{Attrs, Session};
 
-/// Name the designated Inbox session gets when [`Org::new`] creates it.
-pub const INBOX_NAME: &str = "inbox";
+/// Name the designated Intake session gets when [`Org::new`] creates it.
+pub const INTAKE_NAME: &str = "intake";
 
-/// The persistent identity of this server and its designated Inbox.
+/// Legacy public spelling of [`INTAKE_NAME`].
+pub const INBOX_NAME: &str = INTAKE_NAME;
+
+/// The persistent identity of this server and its designated Intake.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Authority {
     /// Never changes.
     pub id: AuthorityId,
     /// The persistent session unassigned work enters. It cannot be deleted
     /// or made ephemeral while designated.
+    /// The legacy field name is retained for serialized/storage compatibility.
     pub inbox_session: SessionKey,
+}
+
+impl Authority {
+    /// The persistent identity of the designated Intake session.
+    #[must_use]
+    pub const fn intake_session(&self) -> SessionKey {
+        self.inbox_session
+    }
 }
 
 /// A record a revision belongs to.
@@ -283,16 +295,17 @@ pub struct Org {
 }
 
 impl Org {
-    /// A fresh organization: the authority and its empty, persistent Inbox
-    /// session named [`INBOX_NAME`].
+    /// A fresh organization: the authority and its empty, persistent Intake
+    /// session named [`INTAKE_NAME`]. Existing stored names are preserved:
+    /// records do not distinguish an old default `inbox` from a user rename.
     #[must_use]
-    pub fn new(id: AuthorityId, inbox: SessionKey, instance: InstanceId, now: Stamp) -> Self {
+    pub fn new(id: AuthorityId, intake: SessionKey, instance: InstanceId, now: Stamp) -> Self {
         let mut sessions = BTreeMap::new();
         sessions.insert(
-            inbox,
+            intake,
             Session {
-                key: inbox,
-                name: INBOX_NAME.to_owned(),
+                key: intake,
+                name: INTAKE_NAME.to_owned(),
                 lifetime: SessionLifetime::Persistent,
                 awaiting_organization: false,
                 members: Vec::new(),
@@ -306,7 +319,7 @@ impl Org {
         Self {
             authority: Authority {
                 id,
-                inbox_session: inbox,
+                inbox_session: intake,
             },
             instance,
             sessions,
@@ -423,7 +436,7 @@ impl Org {
     }
 
     /// Give every session that has none an empty arrangement at revision 1,
-    /// with keys from `fresh`: a first start's Inbox and an imported tree,
+    /// with keys from `fresh`: a first start's Intake and an imported tree,
     /// before the records reach a store. A session [`crate::apply()`] creates
     /// already has one.
     pub fn ensure_arrangements(&mut self, fresh: &mut dyn FreshKeys) {
@@ -518,11 +531,11 @@ impl Org {
     /// The first [`InvariantViolation`] found.
     pub fn check_invariants(&self) -> Result<(), InvariantViolation> {
         let fail = |msg: String| Err(InvariantViolation(msg));
-        let inbox = self.authority.inbox_session;
-        match self.sessions.get(&inbox) {
-            None => return fail(format!("inbox session {inbox} missing")),
+        let intake = self.authority.intake_session();
+        match self.sessions.get(&intake) {
+            None => return fail(format!("intake session {intake} missing")),
             Some(s) if s.lifetime != SessionLifetime::Persistent => {
-                return fail("inbox session is ephemeral".to_owned());
+                return fail("intake session is ephemeral".to_owned());
             }
             Some(_) => {}
         }

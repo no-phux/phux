@@ -13,7 +13,7 @@ const root = desktopRoot;
 const repo = repoRoot;
 
 /**
- * Without `session` the app opens the owner's Inbox (or the most recent
+ * Without `session` the app opens the owner's Intake (or the most recent
  * session) and keys its layout to that session itself.
  */
 export function desktopArguments(options: {
@@ -75,7 +75,7 @@ if (import.meta.main) {
     ensureServer(phux, process.env.PHUX_SOCKET);
   }
   const socketPath = process.env.PHUX_SOCKET || serverSocket(phux);
-  // An explicit session is created when missing; otherwise the app opens the Inbox.
+  // An explicit session is created when missing; otherwise the app opens the Intake.
   const sessionName = process.env.PHUX_SESSION || undefined;
   if (!demo && sessionName) ensureSession(phux, socketPath, sessionName);
   const state = process.env.XDG_STATE_HOME ?? resolve(process.env.HOME ?? "", ".local/state");
