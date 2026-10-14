@@ -195,6 +195,9 @@ impl Owner {
         id: &ResourceId,
         geometry: CanonicalGeometry,
     ) {
+        if let Some(slot) = self.projectors.get_mut(id) {
+            slot.valid = false;
+        }
         self.anchors.retain(|_, (terminal, _, _)| terminal != id);
         self.presentations
             .insert(id.clone(), Presentation::new(geometry));

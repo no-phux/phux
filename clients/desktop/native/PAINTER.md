@@ -42,12 +42,18 @@ prepared and reuses it while the acquired frame is the same `Arc`, the bounds
 and scale factor are unchanged, and `Settings::paints_like` holds. A new frame
 with the same geometry, palette, and paint settings keeps the shaped rows
 whose cells still match and reshapes the rest, including a solid block
-cursor's old and new rows. A frame that is that screen scrolled by whole rows
-moves the kept rows and reshapes only the rows that entered. That search runs
-when most rows would otherwise be reshaped. The terminal is a cached GPUI
-view, so a chrome refresh reuses that paint until the terminal itself is
-notified. An ASCII run is one shaped line on the cell grid, not one paint
-call per glyph. Missing slots and a dropped client clear the canvas.
+cursor's old and new rows. The runtime reports row damage while one
+presentation remains the projector's reader, and forces full damage when
+switching between the default presentation and a view. For consecutive frame
+generations in one replica, `GridDamage::Rows` skips comparisons of clean
+rows; skipped generations and full damage compare the grid so a missed update
+cannot leave stale pixels. Predicted text rows are dirty both when overlaid
+and when restored. A whole-row scroll moves the kept rows and reshapes only
+those that entered. That search runs when most rows would otherwise be
+reshaped. The terminal is a cached GPUI view, so a chrome refresh reuses
+that paint until the terminal itself is notified. An ASCII run is one shaped
+line on the cell grid, not one paint call per glyph. Missing slots and a
+dropped client clear the canvas.
 Projection acknowledgement belongs to [PRESENTATION.md](PRESENTATION.md).
 
 ## Geometry and text
@@ -76,12 +82,13 @@ hidden cells and cursor shape.
 Cargo's default harness runs each `#[test]` on a worker thread, and GPUI's
 macOS platform panics ("Mac platform not created on main thread") unless
 `MacPlatform` is created on the process main thread. This binary's `main`
-is that thread and runs the five fixtures there on every OS. Each one
+is that thread and runs the fixtures there on every OS. Each one
 publishes a real runtime grid into `Terminal` and reads an offscreen frame
 from GPUI's headless renderer (`HeadlessAppContext` and
 `current_headless_renderer`, behind GPUI `test-support`). They check glyph
-columns, a wide character, the block cursor, selection, and theme-palette
-remap against true color. Linux needs a Vulkan adapter, hardware or
+columns, a wide character, the block cursor, selection, theme-palette
+remap against true color, and a sparse live-output repaint that leaves a
+neighboring row untouched. Linux needs a Vulkan adapter, hardware or
 lavapipe; macOS uses Metal. The on-screen smoke is still the packaged
 qualification run.
 
