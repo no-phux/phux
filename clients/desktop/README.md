@@ -106,6 +106,13 @@ The window is a sidebar (agents by urgency, then every session and its panes),
 a tab bar under the traffic lights, split panes, and a status bar. Command-key
 chords belong to the app; everything else reaches the terminal.
 
+The titlebar's host picker shows the machine this window is on — **Local**, or a
+registered remote. Picking another machine points this window at it in place: it
+releases the current views and opens that host's home session with its saved
+layout. No new window is opened. A plain click on a host in the sidebar's
+**Hosts** section does the same; its context menu's **Open Window** still opens a
+separate window for a host.
+
 | Keys             | Action                                                                      |
 | ---------------- | --------------------------------------------------------------------------- |
 | ⇧⌘P / ⌘P         | Command palette / go to a terminal, agent or tab (`>` switches to commands) |

@@ -147,6 +147,12 @@ pub struct Connection {
     fetched: HashSet<ArrangementKey>,
     closed: bool,
     known: HashSet<ResourceId>,
+    /// Terminals this window spawned, admitted before the post-spawn topology
+    /// refresh lists them. The spawn reply names the terminal and the server
+    /// pumps its replica at once, so a new pane can appear without waiting a
+    /// whole `GET_STATE` round trip (which is a full server snapshot on a
+    /// remote link). Cleared on any connection boundary or close.
+    admitted: HashSet<ResourceId>,
     identity: Option<ConnectionIdentity>,
     project_tag: Option<(String, String)>,
     path_answers: Vec<PathAnswer>,
@@ -267,6 +273,7 @@ impl Connection {
             fetched: HashSet::new(),
             closed: false,
             known: HashSet::new(),
+            admitted: HashSet::new(),
             identity: None,
             project_tag: None,
             path_answers: Vec::new(),
@@ -337,7 +344,9 @@ impl Connection {
     /// The terminal is in the latest topology and the runtime will accept input.
     #[must_use]
     pub fn ready(&self, id: &ResourceId) -> bool {
-        !self.closed && self.known.contains(id) && self.client.input_ready(id)
+        !self.closed
+            && (self.known.contains(id) || self.admitted.contains(id))
+            && self.client.input_ready(id)
     }
 
     /// Unknown delivery is outstanding for a known terminal.
@@ -468,6 +477,7 @@ impl Connection {
             return;
         }
         self.closed = true;
+        self.admitted.clear();
         self.client.close();
     }
 
@@ -587,7 +597,10 @@ impl Connection {
                 self.known.insert(pane.terminal_id.clone());
             }
         }
-        self.paint.retain(|id, _| self.known.contains(id));
+        // Once the topology lists a spawn, the admission has done its job.
+        self.admitted.retain(|id| !self.known.contains(id));
+        self.paint
+            .retain(|id, _| self.known.contains(id) || self.admitted.contains(id));
         if let Some(server) = self.client.server() {
             let next = ConnectionIdentity {
                 server_id: status::server_id(&server),
@@ -678,6 +691,8 @@ impl Connection {
                 self.project_tag = None;
                 self.projects.clear();
                 self.directories.clear();
+                // A new boundary can reuse ids; never trust an old admission.
+                self.admitted.clear();
             }
             if let Event::ServerError { message, .. } = event {
                 self.error = Some(message.clone());
@@ -691,9 +706,15 @@ impl Connection {
             if let Event::SessionProject { name, project } = event {
                 note_project(&mut self.project_tag, name, project.as_deref());
             }
+            if let Some(id) = own_spawn(event) {
+                // Our own spawn is live the moment the server answers it; the
+                // topology refresh that lists it is a later round trip.
+                self.admitted.insert(id.clone());
+            }
             if let Event::TerminalClosed { terminal_id, .. } = event {
                 self.agents.remove(terminal_id);
                 self.paint.remove(terminal_id);
+                self.admitted.remove(terminal_id);
             }
         }
         if events.iter().any(structural)
@@ -1077,9 +1098,23 @@ pub fn parse_terminal(value: &str) -> Option<ResourceId> {
     id::parse(value)
 }
 
+/// The terminal id of a spawn this window owns and may place before the
+/// post-spawn topology refresh lists it. A refused spawn names none.
+#[must_use]
+pub fn own_spawn(event: &Event) -> Option<&ResourceId> {
+    match event {
+        Event::TerminalSpawned {
+            terminal_id: Some(id),
+            error: None,
+            ..
+        } => Some(id),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod paint_wake_tests {
-    use super::{paint_wake, session_attached, structural};
+    use super::{own_spawn, paint_wake, session_attached, structural};
     use phux_client_runtime::control::{DeliveryOutcome, Event, Status};
     use phux_protocol::ResourceId;
 
@@ -1107,5 +1142,35 @@ mod paint_wake_tests {
         assert!(session_attached(&Event::StatusChanged(Status::Attached)));
         assert!(!session_attached(&Event::StatusChanged(Status::Connecting)));
         assert!(!session_attached(&Event::TopologyChanged));
+    }
+
+    #[test]
+    fn only_a_successful_spawn_is_admitted_before_the_topology_lists_it() {
+        let terminal = ResourceId::local(7);
+        assert_eq!(
+            own_spawn(&Event::TerminalSpawned {
+                request_id: 1,
+                terminal_id: Some(terminal.clone()),
+                error: None,
+            }),
+            Some(&terminal)
+        );
+        assert_eq!(
+            own_spawn(&Event::TerminalSpawned {
+                request_id: 2,
+                terminal_id: Some(terminal),
+                error: Some("refused".into()),
+            }),
+            None
+        );
+        assert_eq!(
+            own_spawn(&Event::TerminalSpawned {
+                request_id: 3,
+                terminal_id: None,
+                error: None,
+            }),
+            None
+        );
+        assert_eq!(own_spawn(&Event::TopologyChanged), None);
     }
 }
