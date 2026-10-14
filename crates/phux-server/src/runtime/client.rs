@@ -5959,7 +5959,7 @@ async fn writer_task<W: FrameWriter>(
         let write_started = std::time::Instant::now();
         let batch_len = buf.len();
         let written = revocation
-            .unless_revoked(writer.write_frames(&buf, &ends))
+            .unless_revoked(writer.write_frames(&mut buf, &ends))
             .await;
         if !step_succeeded(&mut writer, written, client_id, "write").await {
             return;
