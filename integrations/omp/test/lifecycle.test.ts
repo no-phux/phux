@@ -1,7 +1,8 @@
 import { describe, test, expect } from "bun:test";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { OmpLifecycle, registerOmpLifecycle } from "../src/lifecycle.js";
+import { OmpLifecycle, registerOmpLifecycle, type OmpLifecycleCli } from "../src/lifecycle.js";
 import type { AgentPane, AgentRecord } from "../../runtime/src/schemas.js";
+import type { TranscriptData, TranscriptMode } from "../../runtime/src/transcript.js";
 
 function fixture() {
   let next = 90;
@@ -39,13 +40,13 @@ function fixture() {
   return { cli, pane: mutable, calls, mutations: () => calls.filter(call => call.verb !== "show") };
 }
 
-function sdk(cli: ReturnType<typeof fixture>["cli"]) {
+function sdk(cli: OmpLifecycleCli, mode: TranscriptMode = "off") {
   const handlers = new Map<string, Array<(event: any, ctx: ExtensionContext) => unknown>>();
   let id = "one";
   let continuing = false;
   let idle = true;
   const api = { on(name: string, handler: any) { handlers.set(name, [...handlers.get(name) ?? [], handler]); } };
-  registerOmpLifecycle(api as ExtensionAPI, cli, "@17");
+  registerOmpLifecycle(api as ExtensionAPI, cli, "@17", mode);
   const ctx = { sessionManager: { getSessionId: () => id }, isIdle: () => idle } as ExtensionContext;
   return {
     setId(value: string) { id = value; },
@@ -367,6 +368,57 @@ describe("OMP host lifecycle", () => {
     expect(f.calls.filter(call => call.verb === "notification")).toHaveLength(3);
     expect(f.calls.filter(call => call.verb === "state")).toHaveLength(3);
     expect(f.calls.filter(call => call.verb === "close")).toHaveLength(0);
+  });
+
+  test("the aggregate finalizes a streamed reply before stop even when message_end trails it", async () => {
+    const f = fixture(); const host = sdk(f.cli, "default");
+    await host.event("session_start"); await host.event("agent_start");
+    const partial = { role: "assistant", timestamp: 42, content: [{ type: "text", text: "Hel" }] };
+    const final = { ...partial, content: [{ type: "text", text: "Hello." }] };
+    await host.event("message_update", { message: partial, assistantMessageEvent: { type: "text_delta" } });
+    await host.event("tool_execution_start", { toolCallId: "read-1", toolName: "read", args: { path: "/repo/file", content: "PRIVATE-BODY" } });
+    const toolResult = { role: "toolResult", toolCallId: "read-1", toolName: "read", isError: false, content: [{ type: "text", text: "PRIVATE-OUTPUT" }] };
+    await host.event("agent_end", { messages: [{ role: "user", timestamp: 41, content: "Say hello" }, toolResult, final] });
+    const beforeLate = f.calls.length;
+    await host.event("message_end", { message: final });
+    await host.event("tool_execution_end", { toolCallId: "read-1", toolName: "read", isError: false, result: toolResult });
+    expect(f.calls.length).toBe(beforeLate);
+    const records = f.calls.filter(call => call.verb === "provider_raw").map(call => call.data as TranscriptData);
+    expect(records.filter(data => data.entry.id === "assistant-42").map(data => [data.entry.text, data.entry.final]))
+      .toEqual([["Hel", false], ["Hello.", true]]);
+    expect(records.find(data => data.entry.role === "user")?.entry.text).toBe("Say hello");
+    expect(records.filter(data => data.entry.id === "read-1").map(data => data.entry.tool?.status)).toEqual(["running", "ok"]);
+    expect(JSON.stringify(records)).not.toContain("PRIVATE-BODY");
+    expect(JSON.stringify(records)).not.toContain("PRIVATE-OUTPUT");
+    expect(f.mutations().at(-1)?.verb).toBe("stop");
+    expect(f.calls.filter(call => call.verb === "provider_raw").every(call => call.target === "@91")).toBe(true);
+  });
+
+  test("native transcript rotation is isolated and full mode alone carries tool output", async () => {
+    const f = fixture(); const host = sdk(f.cli, "full");
+    await host.event("session_start"); await host.event("agent_start");
+    await host.event("tool_execution_end", { toolCallId: "read-1", toolName: "read", isError: true, result: { content: [{ type: "text", text: "tool detail" }] } });
+    await host.event("agent_end", { messages: [] });
+    host.setId("two"); await host.event("session_switch");
+    await host.event("agent_start");
+    await host.event("message_end", { message: { role: "assistant", timestamp: 42, content: "new session" } });
+    const records = f.calls.filter(call => call.verb === "provider_raw");
+    const tool = records[0]?.data as TranscriptData;
+    expect(tool.entry.tool).toMatchObject({ status: "error", output: "tool detail" });
+    expect(records.at(-1)?.target).toBe("@92");
+    const reply = records.at(-1)?.data as TranscriptData;
+    expect(reply.entry.text).toBe("new session");
+  });
+
+  test("an idle tree branch change replaces the stream rather than retaining abandoned replies", async () => {
+    const f = fixture(); const host = sdk(f.cli, "default");
+    await host.event("session_start");
+    await host.event("session_tree", { oldLeafId: "old", newLeafId: "new" });
+    expect(f.pane.agent_session.resource).toBe("@92");
+    expect(f.calls.filter(call => call.verb === "close").map(call => call.target)).toEqual(["@91"]);
+    await host.event("agent_start");
+    await host.event("message_end", { message: { role: "user", timestamp: 1, content: "new branch" } });
+    expect(f.calls.findLast(call => call.verb === "provider_raw")?.target).toBe("@92");
   });
 
   test("outside phux does nothing", async () => {

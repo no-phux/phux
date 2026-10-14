@@ -1,8 +1,15 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { AgentSessionEmitter, type PhuxCli, type ExecutionOptions } from "../../runtime/src/adapter.js";
 import type { AgentEventType, AgentPane, AgentRecord, AgentStateList } from "../../runtime/src/schemas.js";
+import { MessageTranscript } from "../../runtime/src/message-transcript.js";
+import type { TranscriptData, TranscriptMode } from "../../runtime/src/transcript.js";
 
-type Cli = Pick<PhuxCli, "agentShow" | "agentSet" | "agentClear" | "agentSessionOpen" | "agentEmit" | "agentSessionClose">;
+export interface OmpBindingToken {
+  readonly id: string;
+  readonly generation: number;
+}
+
+export type OmpLifecycleCli = Pick<PhuxCli, "agentShow" | "agentSet" | "agentClear" | "agentSessionOpen" | "agentEmit" | "agentSessionClose">;
 interface Binding {
   id: string;
   pane: AgentPane;
@@ -80,18 +87,22 @@ export class OmpLifecycle {
   private deadline = Infinity;
   private pending: AbortController | undefined;
 
-  constructor(private readonly cli: Cli, private readonly host?: string, private readonly timeoutMs = 250) {}
+  constructor(private readonly cli: OmpLifecycleCli, private readonly host?: string, private readonly timeoutMs = 250) {}
 
-  navigate(id: string, coldStart = false): Promise<void> {
+  navigate(id: string, coldStart = false, replaceChild = false): Promise<void> {
     if (this.stopped || this.disabled || !this.host) return this.tail;
-    if (this.id === id) return this.tail;
+    if (this.id === id && !replaceChild) return this.tail;
     const cold = coldStart && this.id === undefined && !this.declarationOnly;
     this.id = id;
     const generation = ++this.generation;
     return this.enqueue(async () => {
       if (!this.current(id, generation)) return;
-      if (this.binding?.id === id) return;
-      await this.rotateDeclaration(id);
+      if (this.binding?.id === id) {
+        if (!replaceChild) return;
+        await this.closeChild();
+      } else {
+        await this.rotateDeclaration(id);
+      }
       if (this.current(id, generation)) await this.bind(id, generation, cold);
     });
   }
@@ -113,7 +124,7 @@ export class OmpLifecycle {
     });
   }
 
-  token(): { id: string; generation: number } | undefined {
+  token(): OmpBindingToken | undefined {
     return this.id === undefined ? undefined : { id: this.id, generation: this.generation };
   }
 
@@ -208,7 +219,7 @@ export class OmpLifecycle {
       }),
       agentEmit: (target, type, options) => this.command(execution => this.cli.agentEmit(target, type, { ...options, ...execution })),
       agentSessionClose: target => this.command(execution => this.cli.agentSessionClose(target, execution)),
-    } satisfies Pick<Cli, "agentSessionOpen" | "agentEmit" | "agentSessionClose">, {
+    } satisfies Pick<OmpLifecycleCli, "agentSessionOpen" | "agentEmit" | "agentSessionClose">, {
       provider: "omp", onError: () => { this.disabled = true; },
     });
     const binding: Binding = { id, pane, child: null, emitter };
@@ -247,12 +258,14 @@ export class OmpLifecycle {
   }
 }
 
-export function registerOmpLifecycle(pi: ExtensionAPI, cli: Cli, host?: string): OmpLifecycle {
+export function registerOmpLifecycle(
+  pi: ExtensionAPI, cli: OmpLifecycleCli, host?: string, mode: TranscriptMode = "default",
+): OmpLifecycle {
   const lifecycle = new OmpLifecycle(cli, host);
-  type Token = NonNullable<ReturnType<OmpLifecycle["token"]>>;
   let phase: "idle" | "prepared" | "active" | "continuing" | "fallback" = "idle";
-  let token: Token | undefined;
+  let token: OmpBindingToken | undefined;
   let firstNavigation = true;
+  let transcript = mode === "off" ? null : new MessageTranscript("omp", undefined, mode === "full");
   const tools = new Map<string, string>();
   const endedTools = new Set<string>();
   const approvals = new Map<string, string>();
@@ -270,6 +283,13 @@ export function registerOmpLifecycle(pi: ExtensionAPI, cli: Cli, host?: string):
     if (token) return lifecycle.emit(token.id, token.generation, type, data);
   }
 
+  async function emitTranscript(records: readonly TranscriptData[], owner = token): Promise<void> {
+    if (!owner) return;
+    for (const data of records) {
+      await lifecycle.emit(owner.id, owner.generation, "provider_raw", data);
+    }
+  }
+
   /** The host's own busy flag; absent means unproven, which keeps the fallback. */
   function streaming(ctx: ExtensionContext): boolean {
     return typeof ctx.isIdle === "function" && ctx.isIdle() === false;
@@ -280,19 +300,34 @@ export function registerOmpLifecycle(pi: ExtensionAPI, cli: Cli, host?: string):
       event.toolCallId.length > 0 && event.toolName.length > 0;
   }
 
-  const navigate = async (event: { type: string }, ctx: ExtensionContext) => {
+  const navigate = async (event: { type: string; newLeafId?: string | null; oldLeafId?: string | null }, ctx: ExtensionContext) => {
     const id = ctx.sessionManager.getSessionId();
     const cold = firstNavigation && event.type === "session_start";
     firstNavigation = false;
     const sameId = lifecycle.token()?.id === id;
-    if (sameId && event.type === "session_tree") return;
+    const changedBranch = event.type === "session_tree" && event.newLeafId !== event.oldLeafId;
+    if (sameId && event.type === "session_tree" && (!changedBranch || phase !== "idle")) return;
+    const branch = mode !== "off" && typeof ctx.sessionManager.getBranch === "function"
+      ? ctx.sessionManager.getBranch().slice(-128) : [];
     if (phase !== "idle" && phase !== "fallback") await fallback();
     token = undefined;
     tools.clear();
     endedTools.clear();
     approvals.clear();
     resolvedApprovals.clear();
-    await lifecycle.navigate(id, cold);
+    await lifecycle.navigate(id, cold, changedBranch);
+    if (lifecycle.token()?.id !== id || ctx.sessionManager.getSessionId() !== id) return;
+    if (mode !== "off" && (!sameId || changedBranch)) {
+      transcript = new MessageTranscript("omp", undefined, mode === "full");
+    }
+    // Persisted branch messages only; opening the native face never asks a model.
+    const mapper = transcript;
+    const owner = lifecycle.token();
+    if (mapper) {
+      for (const entry of branch) {
+        if (entry.type === "message") await emitTranscript(mapper.messageEnd(entry.message), owner);
+      }
+    }
   };
   pi.on("session_start", navigate);
   pi.on("session_switch", navigate);
@@ -323,11 +358,25 @@ export function registerOmpLifecycle(pi: ExtensionAPI, cli: Cli, host?: string):
     phase = "active";
     if (approvals.size === 0) return emit("prompt");
   });
+  if (transcript) {
+    pi.on("message_update", event => {
+      if (!token || !transcript) return;
+      return emitTranscript(transcript.messageUpdate(event.message, event.assistantMessageEvent.type));
+    });
+    pi.on("message_end", event => {
+      if (!token || !transcript) return;
+      return emitTranscript(transcript.messageEnd(event.message));
+    });
+  }
   pi.on("tool_execution_start", event => {
     if (!token || endedTools.has(event.toolCallId) || tools.has(event.toolCallId)) return;
     tools.set(event.toolCallId, event.toolName);
     // tool_start asserts working: never clear another concurrent approval.
-    if (approvals.size === 0) return emit("tool_start", { tool_name: event.toolName, tool_use_id: event.toolCallId });
+    const typed = approvals.size === 0
+      ? emit("tool_start", { tool_name: event.toolName, tool_use_id: event.toolCallId })
+      : undefined;
+    const words = transcript ? emitTranscript(transcript.toolStart(event)) : undefined;
+    return Promise.all([typed, words]).then(() => {});
   });
   pi.on("tool_execution_end", event => {
     if (!token || endedTools.has(event.toolCallId)) return;
@@ -335,7 +384,9 @@ export function registerOmpLifecycle(pi: ExtensionAPI, cli: Cli, host?: string):
     if (name !== undefined && name !== event.toolName) return fallback();
     endedTools.add(event.toolCallId);
     tools.delete(event.toolCallId);
-    return emit("tool_end", { tool_name: event.toolName, tool_use_id: event.toolCallId, ok: !event.isError });
+    const typed = emit("tool_end", { tool_name: event.toolName, tool_use_id: event.toolCallId, ok: !event.isError });
+    const words = transcript ? emitTranscript(transcript.toolEnd(event)) : undefined;
+    return Promise.all([typed, words]).then(() => {});
   });
   pi.on("tool_approval_requested", event => {
     if (!activeApproval(event) || resolvedApprovals.has(event.toolCallId)) return;
@@ -350,9 +401,19 @@ export function registerOmpLifecycle(pi: ExtensionAPI, cli: Cli, host?: string):
     // The wrapper resumes after either approval or denial; neither is completion.
     if (approvals.size === 0) return emit("state", { state: "working" });
   });
-  pi.on("agent_end", event => {
+  pi.on("agent_end", async event => {
     if (!token) return;
     if (approvals.size > 0) return fallback();
+    // Generic message notifications can trail this aggregate. Its canonical
+    // messages finalize replies and tools before Stop and the run token retire.
+    const owner = token;
+    const mapper = transcript;
+    if (mapper) {
+      for (const message of (event.messages ?? []).slice(-128)) {
+        await emitTranscript(mapper.messageEnd(message), owner);
+      }
+    }
+    if (token !== owner) return;
     // The wrapper awaits approval delivery inline before completing its tool,
     // so approval events causally precede the end and completed approval IDs
     // can be forgotten here (also for automatic continuation).

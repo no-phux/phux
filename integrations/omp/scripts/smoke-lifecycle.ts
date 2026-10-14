@@ -319,6 +319,18 @@ if (process.argv[2] !== "--isolated") {
     await queued.session.waitForIdle();
     await waitUntil(() => show().state === "done");
     assert.equal(show().agent_session?.resource, queuedChild.resource);
+    const transcriptLog = JSON.parse(run("agent", "log", "--json", queuedChild.resource));
+    const entries = transcriptLog.records
+      .filter((record: { type: string; data?: { schema?: string } }) =>
+        record.type === "provider_raw" && record.data?.schema === "phux.transcript/v1")
+      .map((record: { data: { entry: { role: string; text: string; final: boolean } } }) => record.data.entry);
+    assert.ok(entries.some((entry: { role: string; text: string }) =>
+      entry.role === "user" && entry.text === "inert local transport; never a provider call"), "real SDK prompt must reach the retained transcript");
+    assert.ok(entries.some((entry: { role: string; text: string }) =>
+      entry.role === "user" && entry.text === "queued while busy; inert"), "absorbed follow-up must reach the same transcript");
+    assert.ok(entries.some((entry: { role: string; text: string; final: boolean }) =>
+      entry.role === "assistant" && entry.text === "inert" && entry.final), "real SDK reply must be finalized before done");
+    console.log("Retained native OMP transcript from real SDK turn and queued follow-up:", JSON.stringify(entries));
     await closeCase();
 
     // Real same-file switch disconnects listeners before abort; provide NO end.
