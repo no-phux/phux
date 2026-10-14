@@ -42,7 +42,21 @@ try {
   assert.equal(await page.locator(".tour-distant-host").count(), 3, "restrained background hosts");
   const entry = page.getByRole("link", { name: "Open terminal demo", exact: true });
   await page.locator("astro-island:not([ssr]) .tour-entry").waitFor();
+  await page.locator(".tour").scrollIntoViewIfNeeded();
+  assert.equal(await page.locator(".tour").getAttribute("data-pace"), "quick", "opens with the quick lap");
+  await page.getByRole("button", { name: "Pause tour" }).click();
+  const pausedProgress = await page.locator('.tour-chapters button[aria-pressed="true"]').getAttribute("style");
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator('.tour-chapters button[aria-pressed="true"]').getAttribute("style"), pausedProgress, "pause freezes the quick lap");
+  await page.getByRole("button", { name: "Play tour" }).click();
+  await page.locator('.tour[data-pace="walkthrough"]').waitFor({ timeout: 12_000 });
+  assert.equal(await page.locator('.tour-chapters button[aria-pressed="true"]').innerText(), "01 Attach", "quick lap restarts as an explanatory walkthrough");
+  assert.match(await page.locator(".tour-pace").innerText(), /Walkthrough/);
+  // The playback checks used the mouse. Exercise actual keyboard navigation
+  // before asserting :focus-visible, rather than relying on browser modality.
   await entry.focus();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Tab");
   await page.waitForFunction(() => getComputedStyle(document.querySelector(".tour-invitation")!).opacity === "1");
   assert.equal(await page.locator(".tour-invitation").evaluate((node) => getComputedStyle(node).opacity), "1", "keyboard focus reveals the invitation");
   assert.equal(await page.locator("dialog[open]").count(), 0, "discovery does not launch a session");
@@ -52,6 +66,7 @@ try {
   assert.equal(await chapters.count(), 4, "four tour chapters");
   await chapters.nth(2).click();
   assert.equal(await chapters.nth(2).getAttribute("aria-pressed"), "true", "chapter selection");
+  assert.equal(await page.locator(".tour").getAttribute("data-pace"), "walkthrough", "manual chapter selection uses readable pacing");
   await page.getByRole("button", { name: "Pause tour" }).click();
   assert.ok(await page.getByRole("button", { name: "Play tour" }).isVisible(), "tour pauses");
   assert.equal(await page.locator("main .features h2").count(), 3);
@@ -88,6 +103,7 @@ try {
   await stillPage.goto(base);
   await stillPage.locator("astro-island:not([ssr]) .tour").waitFor();
   assert.equal(await stillPage.locator(".tour-play").count(), 0, "reduced motion does not autoplay");
+  assert.equal(await stillPage.locator(".tour-pace").count(), 0, "reduced motion does not promise a moving quick pass");
   assert.match(await stillPage.locator(".tour-terminal").innerText(), /Finished/, "reduced motion shows the settled chapter");
   await stillContext.close();
   const staticContext = await browser.newContext({ javaScriptEnabled: false });
@@ -98,7 +114,7 @@ try {
   assert.equal(await staticPage.getByRole("link", { name: /Try it in your browser/ }).getAttribute("href"), "/embed");
   assert.match(await staticPage.locator(".tour-terminal").innerText(), /Finished/, "no-JS tour shows a settled scene");
   await staticContext.close();
-  console.log(`PASS home: copy, tour chapters/pause/reduced motion, demo open/close/focus, 320/390/768/1280px, no-JS, secondary content, idle resource budget. Screenshots: ${artifacts}`);
+  console.log(`PASS home: copy, quick lap → walkthrough, chapters/pause/reduced motion, demo open/close/focus, 320/390/768/1280px, no-JS, secondary content, idle resource budget. Screenshots: ${artifacts}`);
 } finally {
   await browser.close();
   server.stop(true);
