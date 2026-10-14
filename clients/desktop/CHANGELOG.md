@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/no-phux/phux/compare/desktop-v0.6.0...desktop-v0.6.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* **desktop:** explain a missing Next pointer instead of a curl 404 ([611c041](https://github.com/no-phux/phux/commit/611c0415a5a4686f5087b1c402c902316aaa6c9c))
+
 ## [0.6.0](https://github.com/no-phux/phux/compare/desktop-v0.5.0...desktop-v0.6.0) (2026-10-14)
 
 
