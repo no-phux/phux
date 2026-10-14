@@ -310,29 +310,38 @@ impl EngineInner {
         let mut cursor = snapshot.cursor;
         let colors = snapshot.colors.clone();
         let damage = snapshot.damage;
-        let mut buffer = GridBuffer {
-            cells: snapshot.buffer.cells.clone(),
-            utf8: snapshot.buffer.utf8.clone(),
-            ..GridBuffer::default()
-        };
-        let row_dirty = snapshot.buffer.row_dirty.clone();
         let alternate = is_alt_screen(&self.terminal);
-        self.predictor.apply(
-            cols,
-            rows,
-            alternate,
-            &mut cursor,
-            &mut buffer,
-            monotonic_ms(),
-        );
-        let GridBuffer { cells, utf8, .. } = buffer;
+        let now = monotonic_ms();
+        // Nothing pending: encode the borrowed cells. `apply` still syncs the
+        // viewport and screen, and it does not read the buffer in that case.
+        // A pending guess mutates a copy, then that copy is encoded.
+        let (cells, utf8) = if self.predictor.pending_len() == 0 {
+            let mut unused = GridBuffer::default();
+            self.predictor
+                .apply(cols, rows, alternate, &mut cursor, &mut unused, now);
+            (
+                grid::encode_cells(&snapshot.buffer.cells),
+                snapshot.buffer.utf8.clone(),
+            )
+        } else {
+            let mut buffer = GridBuffer {
+                cells: snapshot.buffer.cells.clone(),
+                utf8: snapshot.buffer.utf8.clone(),
+                ..GridBuffer::default()
+            };
+            self.predictor
+                .apply(cols, rows, alternate, &mut cursor, &mut buffer, now);
+            let GridBuffer { cells, utf8, .. } = buffer;
+            (grid::encode_cells(&cells), utf8)
+        };
+        let row_dirty = &snapshot.buffer.row_dirty;
         if damage != GridDamage::Clean {
             self.generation = self.generation.wrapping_add(1).max(1);
         }
         Ok(GridProjection {
             cols,
             rows,
-            cells: grid::encode_cells(&cells),
+            cells,
             utf8,
             cursor_col: cursor.visible.then_some(cursor.col),
             cursor_row: cursor.visible.then_some(cursor.row),

@@ -7,8 +7,9 @@
 //! its window is refreshed
 //! (`desktop.render`): it acquires and validates its frame (`desktop.acquire`,
 //! one owner round trip), prepares it (`desktop.prepare`: reusing the last
-//! scene when nothing it depends on changed, `desktop.prepare_reused`, else a
-//! cell walk with `desktop.shaped` line shapes), paints it (`desktop.paint`)
+//! scene when nothing it depends on changed, `desktop.prepare_reused`, or
+//! keeps unchanged rows and reshapes the rest, `desktop.prepare_patched`,
+//! else a cell walk with `desktop.shaped` line shapes), paints it (`desktop.paint`)
 //! and hands the painted geometry to input (`desktop.present`).
 //! `desktop.key_to_paint` runs from a key reaching a focused terminal to the
 //! first paint of that terminal's next output. Everything is a `static` from
@@ -32,6 +33,9 @@ pub static ACQUIRE_REJECTED: Counter = Counter::new();
 pub static PREPARE: Histogram = Histogram::new();
 /// Prepares that reused the element's previous scene.
 pub static PREPARE_REUSED: Counter = Counter::new();
+/// Prepares that kept the shaped rows of the previous scene and reshaped
+/// only the rows whose cells or solid cursor changed.
+pub static PREPARE_PATCHED: Counter = Counter::new();
 /// Lines shaped by prepares that built a scene (runs and lone cells).
 pub static SHAPED: Counter = Counter::new();
 /// Microseconds to submit one terminal element's quads and glyphs.
@@ -54,6 +58,7 @@ pub static TABLE: &[Metric] = &[
     Metric::counter("desktop.acquire_rejected", Unit::Count, &ACQUIRE_REJECTED),
     Metric::histogram("desktop.prepare", Unit::Micros, &PREPARE),
     Metric::counter("desktop.prepare_reused", Unit::Count, &PREPARE_REUSED),
+    Metric::counter("desktop.prepare_patched", Unit::Count, &PREPARE_PATCHED),
     Metric::counter("desktop.shaped", Unit::Count, &SHAPED),
     Metric::histogram("desktop.paint", Unit::Micros, &PAINT),
     Metric::histogram("desktop.present", Unit::Micros, &PRESENT),
@@ -139,6 +144,7 @@ mod tests {
             "desktop.key_to_paint",
             "desktop.render",
             "desktop.prepare_reused",
+            "desktop.prepare_patched",
         ] {
             assert!(json.contains(name), "{name} missing from {json}");
         }

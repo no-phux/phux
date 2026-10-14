@@ -53,8 +53,17 @@ impl Predictor {
         self.state.clear();
     }
 
+    /// Guesses still waiting for the server to echo them.
+    #[must_use]
+    pub fn pending_len(&self) -> usize {
+        self.state.pending_len()
+    }
+
     /// Reconcile pending guesses against `buffer`, then overlay the displayable
     /// ones and move `cursor` to the predicted position.
+    ///
+    /// An idle predictor returns after syncing the viewport and the screen.
+    /// It does not read the grid.
     pub fn apply(
         &mut self,
         cols: u16,
@@ -68,34 +77,35 @@ impl Predictor {
             self.set_viewport(cols, rows);
         }
         self.state.set_alt_screen(alternate);
-        let authoritative = buffer
-            .cells
-            .iter()
-            .map(|cell| cell_text(cell, &buffer.utf8))
-            .collect::<Vec<_>>();
+        if self.state.pending_len() == 0 {
+            return;
+        }
         let _ = reconcile_terminal_output_per_cell_at(
             &mut self.state,
             cursor.row,
             cursor.col,
             now_ms,
-            |row, col| {
-                authoritative
-                    .get(usize::from(row) * usize::from(cols) + usize::from(col))
-                    .cloned()
-                    .flatten()
-            },
+            |row, col| cell_text_at(buffer, cols, row, col),
         );
+        if !self.state.should_display(now_ms) {
+            return;
+        }
         let predictions = self.state.displayable(now_ms).cloned().collect::<Vec<_>>();
         for prediction in &predictions {
             overlay(prediction, cols, buffer);
         }
-        if self.state.should_display(now_ms) {
-            let (row, col) = self.state.cursor();
-            cursor.row = row;
-            cursor.col = col;
-            cursor.visible = true;
-        }
+        let (row, col) = self.state.cursor();
+        cursor.row = row;
+        cursor.col = col;
+        cursor.visible = true;
     }
+}
+
+fn cell_text_at(buffer: &GridBuffer, cols: u16, row: u16, col: u16) -> Option<String> {
+    let index = usize::from(row)
+        .checked_mul(usize::from(cols))?
+        .checked_add(usize::from(col))?;
+    cell_text(buffer.cells.get(index)?, &buffer.utf8)
 }
 
 fn prediction_event(grapheme: &str) -> Option<KeyEvent> {
@@ -165,5 +175,40 @@ mod tests {
             .filter_map(prediction_event)
             .count();
         assert_eq!(events, 2);
+    }
+
+    #[test]
+    fn an_idle_apply_syncs_the_viewport_and_does_not_read_the_grid() {
+        let mut predictor = Predictor::new(2, 2);
+        let mut cursor = Cursor {
+            row: 1,
+            col: 1,
+            visible: false,
+            ..Cursor::default()
+        };
+        let mut buffer = GridBuffer::default();
+        predictor.apply(8, 4, true, &mut cursor, &mut buffer, 10);
+        assert_eq!(predictor.viewport, (8, 4));
+        assert_eq!(predictor.pending_len(), 0);
+        assert!(!cursor.visible);
+        assert!(buffer.cells.is_empty());
+        assert!(buffer.utf8.is_empty());
+    }
+
+    #[test]
+    fn a_pending_insert_overlays_its_cell_without_a_grid_snapshot() {
+        let mut predictor = Predictor::new(4, 2);
+        predictor.predict_text("Z", (0, 0), false, 1);
+        let mut cursor = Cursor {
+            visible: true,
+            ..Cursor::default()
+        };
+        let mut buffer = GridBuffer {
+            cells: vec![Cell::default(); 8],
+            ..GridBuffer::default()
+        };
+        predictor.apply(4, 2, false, &mut cursor, &mut buffer, 1);
+        assert_eq!(buffer.cell_text(0), b"Z");
+        assert_eq!(buffer.cell_text(1), b"");
     }
 }

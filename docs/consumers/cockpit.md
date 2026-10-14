@@ -1,7 +1,7 @@
 ---
 audience: humans, consumers
 stability: evolving
-last-reviewed: 2026-10-11
+last-reviewed: 2026-10-14
 ---
 
 # Cockpit
@@ -65,6 +65,11 @@ fall back to a full replacement; a server restart clears the old incarnation.
 - Independently versioned from the CLI; install both when you want both.
 - Direct local PTY sessions in the app are ephemeral and die with it.
   Durable work uses the phux server.
+
+## Performance
+
+Performance work on Cockpit's Zig renderer is tabled. The app, its build,
+and its CI stay as they are; this note records the deferral.
 
 ## Status effects
 

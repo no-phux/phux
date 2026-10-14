@@ -117,8 +117,16 @@ fn read_row<'alloc, 'buf>(
     let mut iter = cells.update(row)?;
     while let Some(cell) = iter.next() {
         let style = cell.style()?;
-        let style_index = u32::try_from(buf.styles.len()).unwrap_or(u32::MAX);
-        buf.styles.push(style);
+        let fg = cell.fg_color()?;
+        let bg = cell.bg_color()?;
+        // Consecutive cells that share a style and colors are one run. PenKey
+        // treats the index as a run id, so a fresh index per cell used to
+        // materialise a 72-byte pen for every column.
+        let style_index = style_run_index(buf, index, &style, fg, bg).unwrap_or_else(|| {
+            let style_index = u32::try_from(buf.styles.len()).unwrap_or(u32::MAX);
+            buf.styles.push(style);
+            style_index
+        });
         // Reuse each column's UTF-8 allocation across row walks. The previous
         // row's cells are no longer borrowed when this scratch buffer is reused.
         let mut text = buf
@@ -131,8 +139,8 @@ fn read_row<'alloc, 'buf>(
         let owned = OwnedRowCell {
             text,
             style_index,
-            fg: cell.fg_color()?,
-            bg: cell.bg_color()?,
+            fg,
+            bg,
             wide: cell.raw_cell()?.wide()?,
         };
         if let Some(cell) = buf.cells.get_mut(index) {
@@ -147,6 +155,25 @@ fn read_row<'alloc, 'buf>(
         cells: &buf.cells,
         styles: &buf.styles,
     })
+}
+
+/// The current run's style index when `style`/`fg`/`bg` continue the cell
+/// before `index`, else `None` so the caller opens a new run.
+fn style_run_index(
+    buf: &RowBuf,
+    index: usize,
+    style: &Style,
+    fg: Option<RgbColor>,
+    bg: Option<RgbColor>,
+) -> Option<u32> {
+    if index == 0 {
+        return None;
+    }
+    let prev = buf.cells.get(index - 1)?;
+    if prev.fg != fg || prev.bg != bg || buf.styles.last() != Some(style) {
+        return None;
+    }
+    u32::try_from(buf.styles.len().saturating_sub(1)).ok()
 }
 
 /// The copy-mode selection the renderer reverse-videos while painting. Owned
