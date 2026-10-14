@@ -56,7 +56,6 @@ impl TerminalActor {
     #[cfg(test)]
     pub fn vt_write_for_test(&mut self, bytes: &[u8]) {
         self.terminal.borrow_mut().vt_write(bytes);
-        let _ = self.input_mode_span.observe(bytes);
         self.publish_input_snapshot();
         self.terminal_dirty_since_tick = true;
         self.agent_dirty_since_detect = true;

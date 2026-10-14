@@ -757,9 +757,8 @@ impl TerminalActor {
     /// everything derived from it (encoder snapshot, dirty bits, semantic
     /// events, native bootstrap advance). The engine answers queries itself,
     /// in byte order, through `on_pty_write`. The encoder snapshot is
-    /// recaptured only when this chunk touches an ECMA-48 sequence: a
-    /// ground-to-ground run cannot change the modes the input lane already
-    /// has.
+    /// recaptured every chunk (a handful of mode reads) and published only
+    /// when it changed.
     fn ingest_pty_payload(&mut self, payload: &Bytes) {
         // Three samples, three clock reads. Drop guards around the same
         // intervals read the clock again on the way out and fold that probe
@@ -767,9 +766,7 @@ impl TerminalActor {
         let started = std::time::Instant::now();
         self.terminal.borrow_mut().vt_write(payload);
         let parsed = std::time::Instant::now();
-        if self.input_mode_span.observe(payload) {
-            self.publish_input_snapshot();
-        }
+        self.publish_input_snapshot();
         self.terminal_dirty_since_tick = true;
         self.agent_dirty_since_detect = true;
         self.source_events();
@@ -1334,15 +1331,14 @@ mod input_snapshot_fast_path_tests {
             .await;
     }
 
-    /// Plain echo bytes must not republish the snapshot. A CSI split across
-    /// chunks still publishes on the chunk that completes it, and the next
-    /// letter goes quiet again. Only a changed snapshot is published.
+    /// Only a mode change publishes the snapshot: plain echo does not, and a
+    /// CSI split across chunks publishes on the chunk that completes it.
     #[allow(
         clippy::future_not_send,
         reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
     )]
     #[tokio::test]
-    async fn plain_echo_skips_the_snapshot_and_a_split_mode_still_publishes() {
+    async fn only_a_mode_change_publishes_the_snapshot() {
         let bundle = TerminalActor::new(80, 24).expect("actor");
         let mut actor = bundle.actor;
         let mut snapshots = bundle
@@ -1366,7 +1362,7 @@ mod input_snapshot_fast_path_tests {
         feed(&mut actor, b"a").await;
         assert!(!snapshots.has_changed().expect("publisher alive"));
 
-        // An open sequence recaptures, but publishes only a real change.
+        // An open sequence has changed nothing yet.
         feed(&mut actor, b"\x1b").await;
         assert!(!snapshots.has_changed().expect("publisher alive"));
         assert!(snapshots.borrow().bracketed_paste);

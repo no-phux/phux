@@ -109,7 +109,6 @@ impl TerminalActor {
             None,
         )?;
         bundle.actor.terminal.borrow_mut().vt_write(seed);
-        let _ = bundle.actor.input_mode_span.observe(seed);
         bundle.actor.restore_program_status();
         // The seed replays the old image's OSC title; sync it now so the
         // detector and `title_changed` start from it, not from empty.
@@ -224,7 +223,6 @@ impl TerminalActor {
             last_input_at: std::cell::Cell::new(None),
             last_output_at: std::cell::Cell::new(None),
             core,
-            input_mode_span: super::input_mode_span::InputModeSpan::default(),
             key_enc: RefCell::new(key_enc),
             mouse_enc: RefCell::new(mouse_enc),
             focus_enc: RefCell::new(PerTerminalFocusEncoder::new()),
@@ -413,7 +411,6 @@ impl TerminalActor {
     ) -> Result<TerminalActorBundle, TerminalActorError> {
         let mut bundle = Self::new(cols, rows)?;
         bundle.actor.terminal.borrow_mut().vt_write(bytes);
-        let _ = bundle.actor.input_mode_span.observe(bytes);
         bundle.actor.restore_program_status();
         bundle.actor.refresh_title();
         bundle.actor.publish_input_snapshot();
