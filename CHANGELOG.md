@@ -9,6 +9,66 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.58.0](https://github.com/no-phux/phux/compare/v0.57.0...v0.58.0) (2026-10-14)
+
+
+### Features
+
+* **cli:** keep the ls glance fast and bounded on a hub's satellites ([f2daa5d](https://github.com/no-phux/phux/commit/f2daa5dd3ca78c61504766b372e640feba80b41e))
+* **cli:** show the swarm at a glance in ls and bulk reports ([c5d5846](https://github.com/no-phux/phux/commit/c5d5846a36f9de6d5c6e99935c721f0db4c325db))
+* **desktop:** organize inbox work with atomic moves and undo ([7103ad1](https://github.com/no-phux/phux/commit/7103ad1748d744a77324fdddd08db9b14b6506cf))
+* **integrations:** publish the OpenCode, OMP and Grok integrations ([#1228](https://github.com/no-phux/phux/issues/1228)) ([c259672](https://github.com/no-phux/phux/commit/c2596722c7a6cf7ef6cedcea9632d0925b14e049))
+* **org:** kill a session server-side with SESSION_KILL ([c859088](https://github.com/no-phux/phux/commit/c859088f12b4aaf13f2c3977c510616a05957801))
+* **rec:** headless composited capture, asciicast markers, and render-time 2x for marked segments ([#1190](https://github.com/no-phux/phux/issues/1190)) ([ab99e81](https://github.com/no-phux/phux/commit/ab99e8197e3c234bd60fc71094480147d70b4ac5))
+* resources, sessions, Inbox, and actors domain model ([#1191](https://github.com/no-phux/phux/issues/1191)) ([fa80d73](https://github.com/no-phux/phux/commit/fa80d7328d315b8d57fd5c45968f9936d8cbaa10))
+* **server:** paired devices are human, and delegations end with their session ([fa14a54](https://github.com/no-phux/phux/commit/fa14a54f0365a16e0b01732bf486fb2e2369a046))
+* **tui:** order the session picker by what needs you ([70fda4d](https://github.com/no-phux/phux/commit/70fda4d70d6a35b5e1e85ac0e78b7263103cec94))
+
+
+### Bug Fixes
+
+* **cli:** retry transient upgrade refusals and recover legacy agent-session handoffs ([#1216](https://github.com/no-phux/phux/issues/1216)) ([dcd6109](https://github.com/no-phux/phux/commit/dcd6109afcd20ac8e065ef59a19730b148b6afa2))
+* **core:** undo of a move restores the source arrangement ([e15e697](https://github.com/no-phux/phux/commit/e15e6970f5fb1fe3844a0b4acd9aece0152330b7))
+* **desktop:** qualify on displays that cannot confirm presentation ([#1221](https://github.com/no-phux/phux/issues/1221)) ([2f65bc2](https://github.com/no-phux/phux/commit/2f65bc2cff91e9315f165faa62513544a43befe7))
+* **mcp:** print keys as their shortest unique prefix ([579e13d](https://github.com/no-phux/phux/commit/579e13da5e7aa8c6c7e1655b019baaa063f2b599))
+* **runtime:** bound bulk reads and reserve deferred slots ([cde4090](https://github.com/no-phux/phux/commit/cde40902b2b35f5dfb5e1e651acc6fc6173de990))
+* **runtime:** project moved resources into their current session ([104a19f](https://github.com/no-phux/phux/commit/104a19f814b19b86cc62c3931ca7004d6d73c2b5))
+* **runtime:** sequence bulk resource move chunks ([6423434](https://github.com/no-phux/phux/commit/64234346b934e23e7e13113354a4a2bb79d38a95))
+* **server:** resume organization pages after the last key ([33e3c4a](https://github.com/no-phux/phux/commit/33e3c4aed458f5629f3fca7cacce7ec3dead5d1e))
+* **server:** unbreak main's org test helpers ([#1248](https://github.com/no-phux/phux/issues/1248)) ([fadc694](https://github.com/no-phux/phux/commit/fadc694bb1133e21507ec8bd4c14d45efae9190a))
+* **server:** undo of a move needs organize on the current session ([4fe1963](https://github.com/no-phux/phux/commit/4fe196397597af3400178c870d516df9b4d7c86c))
+* **tui:** keep hosts when grouping the session picker by project ([d816133](https://github.com/no-phux/phux/commit/d816133b54963d7de982434969f4aadb98a380ef))
+* **tui:** keep session picker selection across live renames ([273094a](https://github.com/no-phux/phux/commit/273094a5059c0f3471be2d70d5248b5d2a7089fe))
+
+
+### Performance
+
+* **client:** pipeline agent-record reads and read each arrangement once ([7b62a86](https://github.com/no-phux/phux/commit/7b62a86bef8f0dbb7f168ae1e724632a203e09eb))
+* **server:** gate org store commits at automation scale ([c4b881a](https://github.com/no-phux/phux/commit/c4b881a4e67d824fb985fb82d2ec5498d97f7750))
+* **server:** inline the keystroke echo past the lane and writer ([#1206](https://github.com/no-phux/phux/issues/1206)) ([978a1c5](https://github.com/no-phux/phux/commit/978a1c56c9d53d1651227fb06263d5ffee5bec06))
+* **server:** pin the org_commit instruction baseline ([32eaa7e](https://github.com/no-phux/phux/commit/32eaa7ee2630adc024b914b3c17950c6967b5ed6))
+
+
+### Refactors
+
+* **org:** drop expected revisions on remove and delete ([b19aad7](https://github.com/no-phux/phux/commit/b19aad7975e2b662e52f521a22aff025fd25e627))
+* **org:** renames and lifetime changes are last writer wins ([d73aba7](https://github.com/no-phux/phux/commit/d73aba7e2a6181342bc505dbb3ce4d409414d3cc))
+* **protocol:** retire resource_abandon ([143d282](https://github.com/no-phux/phux/commit/143d282489ab93614a32e55c86739a5706be20f4))
+* **server:** take OSC 7501, 133 and 9;4 from the engine, not byte scanners ([#1226](https://github.com/no-phux/phux/issues/1226)) ([d0d0867](https://github.com/no-phux/phux/commit/d0d0867eb751d761880be84160bc3a7d4e24b36e))
+
+
+### Documentation
+
+* **adr:** decide optional usage collection as a supervised child ([6278b59](https://github.com/no-phux/phux/commit/6278b59c9b3cd87498ec210ee4f6a1152717d545))
+* **adr:** mark usage collection proposed and fill the contract ([003cf8d](https://github.com/no-phux/phux/commit/003cf8dbceb84d8ce7592bf33139148c79a06979))
+* **adr:** renumber usage collection to 0166 ([fd04941](https://github.com/no-phux/phux/commit/fd049417336754c149c629cc930d9d79825c9c77))
+* **consumers:** define glance, session, and detail listing depths ([2c92386](https://github.com/no-phux/phux/commit/2c92386d4921a2855b2c399df151734aa9c0c9fd))
+
+
+### Build System
+
+* **deps:** pin libghostty-rs synced with upstream on ghostty 2026-10-13 ([#1220](https://github.com/no-phux/phux/issues/1220)) ([b09248f](https://github.com/no-phux/phux/commit/b09248fdac73fb31eb062da35d2adac1e6555177))
+
 ## [0.57.0](https://github.com/no-phux/phux/compare/v0.56.2...v0.57.0) (2026-10-13)
 
 
