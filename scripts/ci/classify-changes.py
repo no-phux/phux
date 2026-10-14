@@ -26,9 +26,22 @@ RUST = {"phux", "cockpit"}
 SHARED = RUST | {"web", "native"}
 ZIG = SHARED | {"web_engine"}
 
+# Documentation that code or a guard reads as an input. Each row leaves the
+# docs-only fast path and routes like its reader: Rust tests byte-compare the
+# spec, generated reference, agent guide and recorded casts; Cockpit checks the
+# release fallback page; the full workflow gate reads the site sources and the
+# root changelog. classify-changes-test.py fails when a crate starts reading a
+# doc that is missing here.
+DOC_INPUTS = (
+    (("docs/spec/*", "docs/reference/*", "docs/assets/*",
+      "docs/consumers/agents.md"), {"phux"}),
+    (("docs/dsr-release-fallback.md",), {"cockpit"}),
+    (("docs/site/*", "CHANGELOG.md"), set()),
+)
+
 # Additive routes: a crate manifest matches its product and the native input
 # row. Keep these in one table rather than duplicating path filters in YAML.
-ROUTES = (
+ROUTES = DOC_INPUTS + (
     ((".agents/skills/using-phux/*", ".agents/skills/using-phux-mcp/*"), RUST),
     (("clients/cockpit/*",), {"cockpit"}),
     (("scripts/ci/cockpit_artifacts.py", "scripts/ci/test_cockpit_artifacts.py"), {"cockpit"}),
@@ -114,6 +127,8 @@ def is_doc(path):
     if matches(path, (".agents/skills/using-phux/*",
                       ".agents/skills/using-phux-mcp/*",
                       "integrations/*/skills/*")):
+        return False
+    if any(matches(path, patterns) for patterns, _ in DOC_INPUTS):
         return False
     return matches(path, ("docs/*", "docs/adr/*", "*.md"))
 
