@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.74.0](https://github.com/no-phux/phux/compare/v0.73.1...v0.74.0) (2026-10-14)
+
+
+### Features
+
+* **site:** float the landing hero and fade a full-bleed tour overlay ([45b5555](https://github.com/no-phux/phux/commit/45b5555a4e6f72a43c7af8a967b85ed74a73c71a))
+
 ## [0.73.1](https://github.com/no-phux/phux/compare/v0.73.0...v0.73.1) (2026-10-14)
 
 
