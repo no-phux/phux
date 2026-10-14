@@ -2695,11 +2695,36 @@ fn testWindowView(ui: *Adapter.Ui, model: *const core.Model, label: []const u8) 
     return WindowView4.build(ui, model);
 }
 
+/// Socket the TypeScript lifecycle test asks the provider to ensure.
+/// `phux server --ensure` daemonizes and survives the test process; the
+/// rig stops that server on the way out.
+const typescript_lifecycle_socket = "/tmp/phux-typescript-lifecycle-test.sock";
+
+extern "c" fn access(path: [*:0]const u8, mode: c_int) c_int;
+
+/// Same lookup as `crates/phux/tests/common/runner.rs` `phux_bin`: the
+/// build under test, never a `phux` discovered on PATH. `X_OK` is 1 on
+/// both Darwin and Linux.
+fn checkoutPhuxCli() ?[]const u8 {
+    const keys = [_][*:0]const u8{ "CARGO_BIN_EXE_phux", "NEXTEST_BIN_EXE_phux" };
+    for (keys) |key| {
+        const value = std.c.getenv(key) orelse continue;
+        const path = std.mem.span(value);
+        if (path.len == 0 or !std.fs.path.isAbsolute(path)) continue;
+        if (access(path, 1) != 0) continue;
+        return path;
+    }
+    return null;
+}
+
 const Rig = struct {
     app_state: *Adapter.App,
     decorated: native_sdk.App,
     harness: *native_sdk.TestHarness(),
     frame_index: u64 = 1,
+    /// Checkout CLI that `ensure` execs for this rig, when it starts a
+    /// coordinator. Owned by the testing allocator; `stop` frees it.
+    coordinator_cli: ?[]u8 = null,
 
     fn attachFixture(self: *Rig) !cockpit.TerminalRef {
         return self.attachFixtureWithHello(@embedFile("tests/fixtures/hello.bin"));
@@ -2786,13 +2811,27 @@ const Rig = struct {
     /// be bound before the first event, and replaySession starts the app
     /// itself, so both shapes need the unstarted Rig.
     fn create(want_phux: bool, replaying: bool, recorder: ?*native_sdk.runtime.SessionRecorder) !Rig {
+        var coordinator_cli: ?[]u8 = null;
+        errdefer if (coordinator_cli) |cli| std.testing.allocator.free(cli);
+        if (want_phux and !replaying) {
+            const resolved = checkoutPhuxCli() orelse {
+                std.debug.print(
+                    "typescript lifecycle test needs this checkout's phux (CARGO_BIN_EXE_phux or NEXTEST_BIN_EXE_phux); refusing to launch whatever phux is on PATH\n",
+                    .{},
+                );
+                return error.CheckoutPhuxMissing;
+            };
+            // Own the bytes. Other tests call setenv, which may relocate the
+            // environment and invalidate the getenv pointer.
+            coordinator_cli = try std.testing.allocator.dupe(u8, resolved);
+        }
         var core_options: Adapter.CoreOptions = .{};
         installEngine(&core_options, std.testing.allocator, std.testing.io);
         try std.testing.expect(bridge.engine != null);
         if (want_phux) {
             if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
             var config = cockpit.startup.resolvePhuxConfig(.{}, .{
-                .socket = "/tmp/phux-typescript-lifecycle-test.sock",
+                .socket = typescript_lifecycle_socket,
                 .session = "configured-session",
             });
             const remote = (try cockpit.startup.createPhuxProviderFromConfig(
@@ -2800,6 +2839,7 @@ const Rig = struct {
                 std.testing.io,
                 &config,
             )) orelse return error.TestExpectedPhuxProvider;
+            if (coordinator_cli) |cli| remote.local_cli = cli;
             cockpit.attachPhuxProvider(bridge.engine.?.model, remote);
             // Shipping createFromInitialized drops the local seed once Phux is
             // configured. The harness attaches the provider after Engine.create,
@@ -2832,10 +2872,22 @@ const Rig = struct {
         harness.runtime.options.shortcuts = @import("tests/shipping_commands.zig").shortcuts;
         harness.runtime.options.menus = @import("tests/shipping_commands.zig").menus;
         harness.runtime.options.session_recorder = recorder;
-        return .{ .app_state = app_state, .decorated = decorated, .harness = harness };
+        // The rig owns the path from here. Disarm the error free so `stop`
+        // is the only release.
+        const owned_cli = coordinator_cli;
+        coordinator_cli = null;
+        return .{
+            .app_state = app_state,
+            .decorated = decorated,
+            .harness = harness,
+            .coordinator_cli = owned_cli,
+        };
     }
 
     fn boot(self: *Rig) !void {
+        // `server --ensure` reuses a live socket and would not exec the
+        // checkout CLI. Drop a coordinator left by an earlier run first.
+        self.stopCheckoutCoordinator();
         try self.harness.start(self.decorated);
         try self.harness.runtime.dispatchPlatformEvent(self.decorated, .{ .gpu_surface_frame = .{
             .label = canvas_label,
@@ -2862,6 +2914,10 @@ const Rig = struct {
     }
 
     fn stop(self: *Rig) void {
+        // Kill after the app is gone, including when boot or an assertion
+        // fails (`defer` / `errdefer` both land here). Then free the CLI path.
+        defer self.releaseCoordinatorCli();
+        defer self.stopCheckoutCoordinator();
         bridge.retireWorkflows();
         self.app_state.destroy();
         self.harness.destroy(std.testing.allocator);
@@ -2870,6 +2926,26 @@ const Rig = struct {
         bridge.native_replay.deinit();
         if (bridge.engine) |engine| engine.destroy();
         bridge = .{};
+    }
+
+    /// `phux kill --server` is idempotent: a missing socket is success, and
+    /// it does not auto-spawn. The daemon from `server --ensure` is not this
+    /// process's child (`setsid`), so this is the stop.
+    fn stopCheckoutCoordinator(self: *const Rig) void {
+        const cli = self.coordinator_cli orelse return;
+        var child = std.process.spawn(std.testing.io, .{
+            .argv = &.{ cli, "kill", "--server", "--socket", typescript_lifecycle_socket },
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .ignore,
+        }) catch return;
+        _ = child.wait(std.testing.io) catch {};
+    }
+
+    fn releaseCoordinatorCli(self: *Rig) void {
+        const cli = self.coordinator_cli orelse return;
+        self.coordinator_cli = null;
+        std.testing.allocator.free(cli);
     }
 
     /// Drain the effects loop until the core has heard engine announcement
@@ -3035,6 +3111,14 @@ test "configured Phux attachment starts native provider lifecycle without a loca
     var rig = try Rig.startWithPhux(true);
     defer rig.stop();
     const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+
+    try std.testing.expect(remote.local_cli != null);
+    try std.testing.expect(std.fs.path.isAbsolute(remote.local_cli.?));
+    var cli_buf: [4096]u8 = undefined;
+    if (remote.localToolCli(&cli_buf)) |used| {
+        try std.testing.expectEqualStrings(remote.local_cli.?, used);
+    }
 
     try std.testing.expect(engine.model.phux() != null);
     try std.testing.expect(engine.model.pointer_state != null);
