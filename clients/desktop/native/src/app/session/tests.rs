@@ -1,4 +1,5 @@
 use super::Desktop;
+use crate::app::actions::Run;
 use gpui::prelude::*;
 use gpui::{AppContext, Context, Entity, FocusHandle, Focusable, TestAppContext, Window, div};
 use gpui_kit::component::input::{Input, InputState};
@@ -6,12 +7,17 @@ use gpui_kit::component::input::{Input, InputState};
 struct FocusFixture {
     terminal: FocusHandle,
     keys: Vec<String>,
+    commands: Vec<String>,
     inputs: [Entity<InputState>; 2],
 }
 
 impl gpui::Render for FocusFixture {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
+            .key_context("Desk")
+            .on_action(cx.listener(|this, action: &Run, _, _| {
+                this.commands.push(action.id.clone());
+            }))
             .size_full()
             .flex()
             .flex_col()
@@ -33,15 +39,16 @@ impl gpui::Render for FocusFixture {
 
 #[gpui::test]
 fn tab_keeps_terminal_input_but_navigates_text_fields(cx: &mut TestAppContext) {
-    cx.update(|cx| {
+    let desktop = cx.update(|cx| {
         gpui_kit::init(cx);
-        Desktop::install(cx);
+        Desktop::install(cx)
     });
     let (handle, fixture) = cx.update(|cx| {
         gpui_kit::open_window(Default::default(), cx, |window, cx| {
             cx.new(|cx| FocusFixture {
                 terminal: cx.focus_handle(),
                 keys: Vec::new(),
+                commands: Vec::new(),
                 inputs: std::array::from_fn(|_| cx.new(|cx| InputState::new(window, cx))),
             })
         })
@@ -87,5 +94,41 @@ fn tab_keeps_terminal_input_but_navigates_text_fields(cx: &mut TestAppContext) {
         for input in &fixture.inputs {
             assert_eq!(input.read(cx).value(), "x");
         }
+    });
+
+    // Deliberate user shortcuts win; removing them restores terminal input.
+    desktop.update(cx, |desktop, cx| {
+        desktop.install_bindings(
+            vec![
+                ("tab".into(), "next_tab".into()),
+                ("shift+tab".into(), "previous_tab".into()),
+            ],
+            &Default::default(),
+            false,
+            cx,
+        );
+    });
+    cx.update_window(handle, |_, window, cx| {
+        fixture.read(cx).terminal.clone().focus(window, cx);
+    })
+    .unwrap();
+    for key in ["tab", "shift-tab"] {
+        cx.simulate_keystrokes(handle, key);
+        cx.run_until_parked();
+    }
+    fixture.read_with(cx, |fixture, _| {
+        assert_eq!(fixture.commands, ["next_tab", "previous_tab"]);
+        assert_eq!(fixture.keys, ["tab", "tab"]);
+    });
+    desktop.update(cx, |desktop, cx| {
+        desktop.install_bindings(Vec::new(), &Default::default(), false, cx);
+    });
+    for key in ["tab", "shift-tab"] {
+        cx.simulate_keystrokes(handle, key);
+        cx.run_until_parked();
+    }
+    fixture.read_with(cx, |fixture, _| {
+        assert_eq!(fixture.commands, ["next_tab", "previous_tab"]);
+        assert_eq!(fixture.keys, ["tab", "tab", "tab", "tab"]);
     });
 }

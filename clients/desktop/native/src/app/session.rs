@@ -313,11 +313,15 @@ impl Desktop {
         let mut bindings = Vec::new();
         for old in &self.bound {
             if !strokes.iter().any(|(stroke, _)| stroke == old) {
-                bindings.push(KeyBinding::new(old, NoAction, Some("Desk")));
+                bindings.push(KeyBinding::new(old, NoAction, Some(binding_context(old))));
             }
         }
         for (stroke, id) in &strokes {
-            bindings.push(KeyBinding::new(stroke, Run::new(id.clone()), Some("Desk")));
+            bindings.push(KeyBinding::new(
+                stroke,
+                Run::new(id.clone()),
+                Some(binding_context(stroke)),
+            ));
         }
         cx.bind_keys(bindings);
         self.bound = strokes.into_iter().map(|(stroke, _)| stroke).collect();
@@ -466,6 +470,14 @@ impl Desktop {
                 }
             }
         }));
+    }
+}
+
+// Explicit Tab shortcuts must outrank the terminal's default traversal masks.
+fn binding_context(stroke: &str) -> &'static str {
+    match stroke {
+        "tab" | "shift-tab" => "Desk || PhuxTerminal",
+        _ => "Desk",
     }
 }
 
