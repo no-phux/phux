@@ -9,6 +9,14 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.74.1](https://github.com/no-phux/phux/compare/v0.74.0...v0.74.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* **ci:** align the landing install-surface pins with the Mobile hero ([#1377](https://github.com/no-phux/phux/issues/1377)) ([ec051d9](https://github.com/no-phux/phux/commit/ec051d99a128a84da61a713db47cc524577cdbcd))
+* **site:** assert the parked demo state in the native smokes ([d58cfb5](https://github.com/no-phux/phux/commit/d58cfb58b5162c2eab2415bc063313e34adea2d3))
+
 ## [0.74.0](https://github.com/no-phux/phux/compare/v0.73.1...v0.74.0) (2026-10-14)
 
 
