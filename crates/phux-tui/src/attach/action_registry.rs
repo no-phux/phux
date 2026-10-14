@@ -301,6 +301,22 @@ pub const REGISTRY: &[ActionSpec] = &[
         args: &[],
     },
     ActionSpec {
+        name: "kill-session",
+        title: "Kill session…",
+        category: Category::Session,
+        description: "Confirm ending all session work, including resources added meanwhile, and delete it",
+        params: "`id`, `name` (optional pinned session; defaults to current)",
+        args: &[],
+    },
+    ActionSpec {
+        name: "delete-empty-session",
+        title: "Delete empty session…",
+        category: Category::Session,
+        description: "Confirm deletion of an empty session; never terminates members",
+        params: "`id`, `name` (optional pinned session; defaults to current)",
+        args: &[],
+    },
+    ActionSpec {
         name: "new-session",
         title: "New session…",
         category: Category::Session,
@@ -485,6 +501,12 @@ pub const NON_PALETTE_ACTIONS: &[NonPaletteAction] = &[
         reason: "parameterized by direction; bound to `<` and `>` under the leader, \
                  offered in the window context menu, and done by dragging a tab \
                  or a sidebar window row",
+    },
+    NonPaletteAction {
+        name: "session-actions",
+        description: "Open management for the selected session row",
+        params: "`id`, `name`, `host` (pinned picker identity)",
+        reason: "opened by Tab in the session picker or right-click on a sidebar session",
     },
     NonPaletteAction {
         name: "switch-session",

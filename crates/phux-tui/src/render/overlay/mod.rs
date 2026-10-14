@@ -184,6 +184,8 @@ pub enum OverlayCommand {
     Dismiss,
     /// Close the overlay and run this action through `run_action`.
     Commit(phux_config::keybind::ResolvedAction),
+    /// Run a drill-down action above this overlay, preserving its query and cursor.
+    RunAbove(phux_config::keybind::ResolvedAction),
     /// Close the overlay and copy the selection to the host clipboard via
     /// OSC 52, resolved client-side (ADR-0030).
     Copy(CopyRequest),
@@ -418,6 +420,7 @@ impl OverlayState {
                 self.dismiss();
                 OverlayOutcome::RunAction(action)
             }
+            OverlayCommand::RunAbove(action) => OverlayOutcome::RunAction(action),
             OverlayCommand::Copy(req) => {
                 self.dismiss();
                 OverlayOutcome::Copy(req)
@@ -794,6 +797,48 @@ mod tests {
         assert_eq!(s.depth(), 1, "dismiss pops one");
         s.handle_key(&key(PhysicalKey::Escape));
         assert!(!s.is_active());
+    }
+
+    #[test]
+    fn session_management_drill_down_keeps_picker_until_explicitly_closed() {
+        let mut target = action("switch-session");
+        target
+            .args
+            .insert("id".to_owned(), toml::Value::Integer(42));
+        target
+            .args
+            .insert("name".to_owned(), toml::Value::String("build".to_owned()));
+        let list = SelectList::new(
+            "Sessions",
+            vec![SelectItem::new("build", target.clone())],
+            &Theme::default(),
+        )
+        .with_session_management();
+        let mut stack = OverlayState::new();
+        stack.push(Box::new(list));
+        let OverlayOutcome::RunAction(manage) = stack.handle_key(&key(PhysicalKey::Tab)) else {
+            panic!("management")
+        };
+        assert_eq!(manage.action, "session-actions");
+        let mut expected_args = target.args.clone();
+        expected_args.insert(
+            "switch-action".to_owned(),
+            toml::Value::String("switch-session".to_owned()),
+        );
+        assert_eq!(manage.args, expected_args);
+        assert_eq!(
+            stack.depth(),
+            1,
+            "Tab leaves the inventory below the drill-down"
+        );
+        stack.push(Box::new(Probe::esc()));
+        stack.handle_key(&key(PhysicalKey::Escape));
+        assert_eq!(stack.depth(), 1);
+        assert_eq!(
+            stack.handle_key(&key(PhysicalKey::Enter)),
+            OverlayOutcome::RunAction(target)
+        );
+        assert_eq!(stack.depth(), 0, "Enter retains normal switching semantics");
     }
 
     /// The refresh walks the whole stack, so a modal on top cannot shield a

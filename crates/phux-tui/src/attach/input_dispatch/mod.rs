@@ -14,6 +14,7 @@ mod dispatch;
 mod effects;
 mod pickers;
 mod run_action;
+mod session_management;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]

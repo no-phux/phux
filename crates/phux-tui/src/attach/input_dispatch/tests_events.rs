@@ -527,6 +527,24 @@ async fn sidebar_clicks_run_their_affordances() {
 }
 
 #[tokio::test]
+async fn sidebar_right_click_manages_the_clicked_session_without_switching() {
+    let table = targets(0, 2, 2);
+    let mut env = sidebar_env(23, table);
+    env.dispatch(vec![right_press(4, 12)]).await;
+    assert!(env.fx.switch_request.is_none());
+    let InputEvent::Key(enter) = press(PhysicalKey::Enter, None) else {
+        unreachable!()
+    };
+    let crate::render::overlay::OverlayOutcome::RunAction(action) =
+        env.fx.overlays.handle_key(&enter)
+    else {
+        panic!("session actions")
+    };
+    assert_eq!(action.action, "switch-session");
+    assert_eq!(str_arg(&action, "name").as_deref(), Some("space-0"));
+}
+
+#[tokio::test]
 async fn short_sidebar_overflow_clicks_open_both_navigation_overlays() {
     let table = targets(3, 2, 2);
     for (y, action) in [(2, "agent-fleet"), (3, "session-picker")] {

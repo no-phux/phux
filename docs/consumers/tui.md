@@ -443,6 +443,31 @@ The session picker (`C-a s`) lists the same machines, one group each after
 the attached server's sessions and any satellites; its filter matches a
 session by its name or its machine's.
 
+**Session management.** In that searchable picker, `Enter` switches as usual;
+`Tab` opens actions for the selected session while preserving the picker's
+query and cursor underneath. `Esc` returns to the picker. Right-clicking a
+sidebar session opens the same actions for the **clicked** session, without
+switching first. Satellite rows still switch through the attached server;
+other-machine rows still switch hosts.
+
+The palette and session menu also offer **Kill session…** and **Delete empty
+session…**, defaulting to the current session. Both ask for confirmation
+(`Enter` or `y`; `Esc` or `n` cancels):
+
+- **Kill session** ends **all** work in the session, **including resources
+  added meanwhile**, and deletes it. Other attached clients are affected too.
+  This requires a server advertising `SESSION_KILL`; there is no per-member
+  fallback. A missing acknowledgement is reported as an unconfirmed outcome,
+  not success.
+- **Delete empty session** deletes only an empty session and never terminates
+  work. If a resource joins before deletion commits, the server refuses it.
+
+Confirmation pins the server authority and persistent session key. A rename
+cannot retarget it, nor can a replacement session reusing the name. Operations
+use a separate control connection to the attached server (including when
+attached remotely), never the terminal-output connection. Destructive actions
+on another host's row refuse locally: attach to that host first.
+
 An enabled plugin can add **sections** with `[[sidebar]]` entries in its
 manifest. Each is a band between Agents and Sessions: a header, then
 exactly `rows` rows (default 3, at most 8), so a section filling or

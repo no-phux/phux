@@ -105,6 +105,7 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
         panes,
     ))
     .await;
+    super::session_management::apply(effects.session_management, ctx).await;
     // Hand a `reload-config` up to the driver, which owns the
     // config-derived state (resolver, theme, keybindings snapshot, status
     // bar) this batch is still borrowing.
@@ -606,6 +607,8 @@ pub(super) struct ActionEffects {
     /// A picker-confirmed existing-pane move. The async effect applier opens a
     /// dedicated control connection and runs the canonical headless operation.
     pub(super) move_pane: Option<PaneMoveIntent>,
+    /// A session management request, prepared or confirmed on a control connection.
+    pub(super) session_management: Option<phux_config::keybind::ResolvedAction>,
     /// A `go-to-directory` action built a `LIST_DIRECTORY` request. The
     /// async caller records it (id and listed host) as the pending listing,
     /// then sends it; the reply opens the directory picker.

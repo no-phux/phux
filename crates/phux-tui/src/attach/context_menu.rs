@@ -88,6 +88,13 @@ pub(super) fn session_menu(keybindings: Option<&KeybindingsCfg>, session: &str) 
         row(keybindings, "windows", "window-picker", &[]),
         row(keybindings, "sessions", "session-picker", &[]),
         row(keybindings, "rename…", "rename-session", &[]),
+        row(keybindings, "kill session…", "kill-session", &[]),
+        row(
+            keybindings,
+            "delete empty session…",
+            "delete-empty-session",
+            &[],
+        ),
         MenuRow::Separator,
         row(keybindings, "fleet", "agent-fleet", &[]),
         row(keybindings, "settings", "settings", &[]),
@@ -209,6 +216,8 @@ mod tests {
             .collect();
         for destination in [
             ("sessions", "session-picker"),
+            ("kill session…", "kill-session"),
+            ("delete empty session…", "delete-empty-session"),
             ("fleet", "agent-fleet"),
             ("settings", "settings"),
             ("commands", "show-help"),

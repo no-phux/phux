@@ -210,12 +210,23 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
                 .sidebar_left_press(strip, hit, (cell_x, cell_y))
                 .await?;
         } else if is_right_press(mouse) {
-            // A window row is selected first, then gets the window menu;
-            // anywhere else on the strip gets the session menu.
-            let window_row = hit.filter(|r| r.action == "select-window");
-            layout_changed = self
-                .open_chrome_context_menu(window_row, (cell_x, cell_y))
-                .await?;
+            // A session row manages that exact destination without switching first.
+            if let Some(mut row) = hit
+                .clone()
+                .filter(|row| matches!(row.action.as_str(), "switch-session" | "switch-host"))
+            {
+                row.args.insert(
+                    "switch-action".to_owned(),
+                    toml::Value::String(row.action.clone()),
+                );
+                "session-actions".clone_into(&mut row.action);
+                layout_changed = self.run_resolved(&row).await?;
+            } else {
+                let window_row = hit.filter(|r| r.action == "select-window");
+                layout_changed = self
+                    .open_chrome_context_menu(window_row, (cell_x, cell_y))
+                    .await?;
+            }
         }
         Ok(Some(StageOutcome::consumed(layout_changed)))
     }
