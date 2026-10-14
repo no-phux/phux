@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-10-13
+last-reviewed: 2026-10-14
 ---
 
 # Desktop architecture
@@ -98,6 +98,45 @@ terminal-wide. `acknowledge_projection` runs only from GPUI's drawable-presented
 callback, after the window is visible and the terminal bounds are unclipped.
 Paint and `on_next_frame` do not clear the fence. A late callback must not
 clear a newer fence.
+
+## Native agent conversation
+
+A terminal-started OMP remains the only running agent. When its authenticated
+`AgentSession` stream publishes, that pane gains a persistent **Conversation**
+button and a matching control in its pane capsule; starting an agent never
+changes the selected face or takes keyboard focus. **Terminal** returns to the
+same terminal view. A draft and reader position survive face switches.
+
+The connection enables the runtime's `subscribe_agent_sessions` option and
+consumes committed `AgentPublication` events on its existing event drain.
+`connection/transcript.rs` reuses the core `transcript_entry()` convention,
+replaces stable entry ids in place, and bounds each pane's native history to
+256 entries / 2 MiB. Prose, thinking, partial/final replies, truncation, tool
+summary/status/output, and a lifecycle-only activity timeline are native GPUI
+rows. `PHUX_AGENT_TRANSCRIPT=0` on the producer withholds conversation text, not
+the lifecycle timeline. Scrolling pauses follow; **Jump to latest** resumes it.
+
+The native Kit textarea accepts multiple lines: **Enter** sends, **Shift+Enter**
+adds a line. Sending uses the existing acknowledged `apply_line` operation
+(one trusted paste plus Return), addressed to the exact Terminal parent.
+The draft clears only after a delivered receipt; refusals and unknown delivery
+remain visible with the draft intact. Nothing auto-retries, changes a model,
+or starts another prompt. **Stop** / **Escape** sends Escape only while this
+agent stream reports working. An ended or closed stream remains readable and
+cannot write into the shell that replaced the agent.
+Permission/approval blocks disable sending and direct the person to **Terminal**
+to answer the existing prompt; the native face does not synthesize approval
+controls or type a message into that dialog.
+
+The composer binds serving incarnation, runtime client, terminal, and agent
+resource. Connection epoch and runtime input eligibility are checked again
+under the control lock immediately before input. A resumed publication keeps
+its stable rows; a replacement publication resets them. A new agent resource
+gets a fresh transcript/draft/scroll scope, and incarnation replacement drops
+old records. The terminal's existing unknown-delivery presentation fence is
+never cleared by conversation rendering. No WebView, RPC worker, protocol, or
+FFI ABI is added.
+
 
 ## Tooling
 

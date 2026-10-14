@@ -174,6 +174,7 @@ pub struct Desk {
     pub(crate) palette_state: Option<Entity<CommandState>>,
     pub(crate) modal_inputs: Vec<(InputSlot, Entity<InputState>, Subscription)>,
     pub(crate) find_input: Option<(Entity<InputState>, Subscription)>,
+    pub(crate) conversation_faces: HashMap<String, super::conversation::Face>,
     pub(crate) settings_controls: Option<SettingsControls>,
     /// `OpenRequest::fresh`, kept so a rebuilt link spawns the same way.
     open_fresh: bool,
@@ -320,6 +321,7 @@ impl Desk {
             palette_state: None,
             modal_inputs: Vec::new(),
             find_input: None,
+            conversation_faces: HashMap::new(),
             settings_controls: None,
             open_fresh: request.fresh,
             pending_project_terminal: None,
@@ -450,7 +452,8 @@ impl Desk {
             )
         };
         crate::diag::DRAIN_EVENTS.add(events.len() as u64);
-        if answers.is_empty() && paint_batch(&events) {
+        self.conversation_receipts(&events, cx);
+        if answers.is_empty() && paint_batch(&events) && self.conversation_faces.is_empty() {
             self.repaint_terminals(&events, cx);
             return;
         }
@@ -948,6 +951,10 @@ impl Desk {
             && !modifiers.shift
             && !modifiers.function;
         let key = event.keystroke.key.as_str();
+        if plain && key == "escape" && self.conversation_escape(cx) {
+            cx.stop_propagation();
+            return;
+        }
         if plain && key == "escape" && self.text_field_has_keys() {
             self.escape(window, cx);
             cx.stop_propagation();
@@ -1061,12 +1068,14 @@ impl Desk {
 
     /// A modal, or the focused pane's find bar, owns the keyboard.
     pub(crate) fn text_field_has_keys(&self) -> bool {
-        settings::text_field_has_keys(
-            !matches!(self.modal, Modal::None),
-            self.find.as_ref().map(|find| find.placement_id.as_str()),
-            self.focused_placement()
-                .map(|placement| placement.id.as_str()),
-        )
+        self.focused_placement()
+            .is_some_and(|placement| self.conversation_visible(&placement.id))
+            || settings::text_field_has_keys(
+                !matches!(self.modal, Modal::None),
+                self.find.as_ref().map(|find| find.placement_id.as_str()),
+                self.focused_placement()
+                    .map(|placement| placement.id.as_str()),
+            )
     }
 
     fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1959,6 +1968,13 @@ impl Desk {
             input.update(cx, |input, cx| input.focus(window, cx));
             return;
         }
+        if let Some(id) = self
+            .focused_placement()
+            .map(|placement| placement.id.clone())
+            && self.focus_conversation(&id, window, cx)
+        {
+            return;
+        }
         match self
             .focused_placement()
             .filter(|placement| placement.view_id.is_some())
@@ -2836,6 +2852,8 @@ impl Desk {
             })
             .unwrap_or_default();
         self.panes.retain(&live);
+        self.conversation_faces
+            .retain(|placement, _| live.contains(placement));
     }
 
     pub fn panes(&self) -> &Panes {

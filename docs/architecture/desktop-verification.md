@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-10-13
+last-reviewed: 2026-10-14
 ---
 
 # Desktop verification
@@ -52,9 +52,30 @@ These are not implied by the host cutover:
 | Persistence | Same-incarnation restore, changed-incarnation refusal, malformed and newer files left unwritten. |
 | Connections | Startup error stays in the window. Reconnect does not invent a second lifecycle. Remote hosts are not built. |
 | Settings and Ghostty | Effective value, font, palette, keybinds, and the quick-terminal chord. `reset`, `vt`, and `html` copy formats remain unsupported. |
-| Agents | Badges and attention where a terminal already exposes them. Approvals are not built. |
+| Agents | Badges and attention, terminal/conversation switching, same-terminal acknowledged composer delivery, once-per-working-turn Stop, and read-only ended streams. Approvals remain terminal-owned. |
 | Accessibility | A real screen-reader and IME journey. Manual observation is required; do not mark it passed from a unit test. |
 | Linux | A later platform matrix. macOS evidence does not qualify it. |
+
+### Native conversation gates
+
+The ignored native journey
+`agent_stream_enables_native_face_without_restart_and_keeps_drafts` opens a
+private server and exercises dynamic stream discovery, stable upserts, face
+switches, the Kit multiline field, acknowledged paste+Return, Stop, permission
+refusal, and stream closure. Run it with `cargo test --locked --manifest-path
+clients/desktop/native/Cargo.toml --lib agent_stream_enables_native_face -- --ignored`.
+It requires `PHUX_DESKTOP_JOURNEY_TEST_BIN` naming a checkout-built CLI and
+`XDG_STATE_HOME` under disposable temporary storage or `clients/desktop/.cache`.
+
+For an actual offscreen GPUI frame, run `cargo test --locked --manifest-path
+clients/desktop/native/Cargo.toml --features terminal-fixtures --test pixels
+app::conversation::native_face_is_rendered -- --ignored --nocapture` with the same
+environment. It renders the production Desk and native prose/thinking/tool
+rows through Metal on the main thread, using records from its private server.
+`PHUX_DESKTOP_PIXEL_EVIDENCE` optionally names the captured PNG. This does not
+need host screenshot permission or bring a window forward; it proves native
+rendering, not live display presentation, accessibility, or IME qualification.
+
 
 ## Tooling gate
 
