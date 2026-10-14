@@ -33,8 +33,9 @@ curl -fsSL https://phux.sh/install-desktop | sh
 ```
 
 Apple silicon, macOS 27 or later. This installs `Phux.app` and installs the
-CLI first if it is missing. Rerun it to update the app; it never replaces an
-existing CLI or stops a running server. Releases are ad-hoc signed, not
+CLI first if it is missing, but never replaces an existing CLI or stops a
+running server. The app then updates itself: **Settings > Updates** checks in
+the background and installs a verified update with one click. Releases are ad-hoc signed, not
 Apple-notarized: the installer checks the checksum and signature, then clears
 quarantine. See the [desktop guide](./consumers/desktop.md).
 

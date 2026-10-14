@@ -188,7 +188,7 @@ notarization, accessibility journeys, and Linux are not shipped.
 | Independent same-terminal views | Mirror Pane, sole-or-last-focused size owner, per-view find. GPU evidence still required. | phux-d4x9.17, phux-d4x9.18 |
 | Connections, settings, and agents | One local socket per window; `Phux.app` opens the owner's Inbox (else the most recent session) and never creates `default`; display settings and Ghostty-config import; agent badges and one notification feed behind the titlebar bell, whose agent and error entries peek in the window and reach macOS Notification Center while Phux is in the background. Remote hosts, approvals, the inspector, and catalogue-backed settings (effective value, default, source) are not built. | phux-d4x9.10–.12 |
 | Native accessibility and delivery safety | Required journeys and teardown/input proofs are not yet qualified. | phux-d4x9.13, phux-d4x9.14 |
-| Apple-silicon release | `just desktop-install-app` builds an ad-hoc-signed local bundle with no NAPI addon. Notarization and updates remain required. | phux-d4x9.15, phux-d4x9.16 |
+| Apple-silicon release | `just desktop-install-app` builds an ad-hoc-signed local bundle with no NAPI addon. In-app verified updates ship; notarization remains required. | phux-d4x9.15, phux-d4x9.16 |
 | Linux | Subsequent platform qualification. macOS evidence does not establish it. | phux-d4x9.19 |
 
 ## Where to go next
