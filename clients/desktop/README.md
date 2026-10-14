@@ -66,6 +66,33 @@ server behind the supervisor.
 
 ## Using it
 
+### Updates
+
+**Settings > Updates** checks releases at launch and every six hours without
+blocking terminal input. Turn automatic checks off or use **Check now** at any
+time. **Update & restart** downloads and verifies the desktop bundle, replaces
+this copy of `Phux.app` with rollback on installation failure, and reopens it.
+The titlebar shows the same button when a desktop update is available. Quitting
+the desktop detaches; it does not stop your server-owned terminals.
+
+Choose **Stable** (the latest published desktop release) or **Next** (verified
+main builds). You can switch back to Stable even from a newer Next build.
+Desktop and runtime channels are independent.
+
+**Manage phux updates** is off by default. When enabled, **Update phux & hand
+off server** uses the installed CLI's checksum-verified updater and graceful
+handoff, then reconnects the windows. It never silently closes agent sessions
+to force a handoff. Homebrew, Cargo and Nix installations show their native
+update command instead of replacing package-managed files. A refused handoff
+offers **Retry server handoff** without downloading the runtime again.
+Turning management
+off leaves the CLI and running server untouched; you regain control of updates.
+Only this Mac's runtime is managed, not remote hosts.
+
+Update preferences live in `$XDG_CONFIG_HOME/phux-desktop/updates.json` (default
+`~/.config/phux-desktop/updates.json`). Bare development executables and launches
+with explicit CLI/socket/profile overrides cannot install updates.
+
 The window is a sidebar (agents by urgency, then every session and its panes),
 a tab bar under the traffic lights, split panes, and a status bar. Command-key
 chords belong to the app; everything else reaches the terminal.

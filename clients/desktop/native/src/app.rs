@@ -17,6 +17,7 @@ mod panes;
 mod session;
 mod settings_panel;
 mod typed;
+mod updates;
 mod view;
 
 use std::path::PathBuf;

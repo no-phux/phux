@@ -284,6 +284,7 @@ desktop-v0.1.0
   phux-desktop-0.1.0-macos-arm64.zip
     Phux.app/
   SHA256SUMS
+  desktop-channel.json
 ```
 
 `publish.yml` still requires green `ci.yml` for the exact tagged commit.
@@ -317,7 +318,34 @@ transaction checks run separately. After upload, downloaded checksums and bytes
 must match before `gh release edit` publishes the draft with `--draft=false
 --latest=false`. Use this draft-aware command: the REST
 release-by-tag endpoint does not resolve unpublished drafts. This train does
-not alter the CLI `next` channel or a Homebrew cask.
+not alter the CLI stable release or a Homebrew cask.
+
+Desktop also rides the moving `next` prerelease independently of the CLI and
+Cockpit. `next-release.yml` calls the same build/signature/runtime qualification
+lane with an immutable green-main SHA and `PHUX_CHANNEL=next`. Its assets are
+`phux-desktop-next.<40-character SHA>-macos-arm64.zip` and the matching
+`.zip.sha256` sidecar. Publication uploads both before replacing
+`desktop-channel.json`; it keeps the current and previous desktop revisions
+without pruning another product's artifacts. Older pinned artifacts are also
+preserved when a failed pointer read or publication retry cannot establish the
+previous revision. A CLI-only next publish is not
+evidence that a desktop update is available: clients must read the desktop
+pointer, not `channel.json` or the moving tag's commit.
+
+Both stable and next publish `desktop-channel.json` with `schema_version: 1`,
+`product: desktop`, `channel`, full source `sha`, package `version`, archive
+basename `archive`, archive digest `sha256`, `minimum_macos`, and `published_at`.
+The signed bundle records `PhuxDesktopVersion`, `PhuxBuildSHA`, and
+`PhuxDesktopChannel`; Next freshness compares source revisions, not package
+versions (several green commits can share a version).
+
+The standalone desktop installer defaults to `--channel stable`; `latest` is
+a stable alias. `--channel next` resolves the desktop pointer once and verifies
+the signed bundle's source SHA. `--channel next --revision <SHA>` pins an
+already-published SHA-qualified artifact without reading the moving pointer;
+`--version desktop-vX.Y.Z` pins stable. All installs preserve the coordinator
+CLI and its running server. Installer tests use temporary app/launcher paths
+and mocked downloads, never a production installation.
 
 To recover a draft, dispatch **publish** with `tag=desktop-vX.Y.Z`, never the
 leaf workflow. The release drift check includes desktop drafts, a stable

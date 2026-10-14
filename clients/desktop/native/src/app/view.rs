@@ -343,6 +343,7 @@ fn titlebar(
                     cx.listener(|desk, _, window, cx| desk.execute("split-down", window, cx)),
                 ))
                 .child(bell(desk, colors, cx))
+                .child(update_button(desk, cx))
                 .child(icon_button(
                     "palette",
                     IconName::Search,
@@ -351,6 +352,25 @@ fn titlebar(
                     cx.listener(|desk, _, window, cx| desk.execute("palette", window, cx)),
                 )),
         )
+}
+
+fn update_button(desk: &Desk, cx: &mut Context<Desk>) -> AnyElement {
+    let entity = desk.updates.clone();
+    let updater = entity.read(cx);
+    if !updater.desktop_available() || updater.development {
+        return div().into_any_element();
+    }
+    let busy = updater.busy;
+    Button::new("desktop-update-ready")
+        .label(if busy {
+            "Updating…"
+        } else {
+            "Update & restart"
+        })
+        .small()
+        .disabled(busy)
+        .on_click(move |_, _, cx| entity.update(cx, |updater, cx| updater.install_desktop(cx)))
+        .into_any_element()
 }
 
 fn tab_button(

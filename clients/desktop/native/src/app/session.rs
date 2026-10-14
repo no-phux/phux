@@ -30,6 +30,7 @@ struct Opened {
 }
 
 pub struct Desktop {
+    pub(crate) updates: Entity<super::updates::Updater>,
     phux: PathBuf,
     socket: PathBuf,
     home_session: String,
@@ -64,7 +65,9 @@ impl Desktop {
             KeyBinding::new("shift-tab", NoAction, Some("PhuxTerminal")),
             KeyBinding::new("tab", OpenPathDirectory, Some("PathPicker > Input")),
         ]);
+        let updates = cx.new(|_| super::updates::Updater::new());
         let desktop = cx.new(|_| Self {
+            updates,
             phux: PathBuf::new(),
             socket: PathBuf::new(),
             home_session: String::new(),
@@ -150,6 +153,9 @@ impl Desktop {
             self.open_window(request, focus, false, cx)?
         };
         self.publish_menus(cx);
+        self.updates.update(cx, |updater, cx| {
+            updater.start(self.phux.clone(), self.socket.clone(), cx)
+        });
         Ok(handle)
     }
 
@@ -368,6 +374,7 @@ impl Desktop {
         cx: &mut Context<Self>,
     ) -> anyhow::Result<WindowHandle<Root>> {
         let desktop = cx.entity();
+        let updates = self.updates.clone();
         let phux = self.phux.clone();
         let socket = self.socket.clone();
         let bounds = if quick {
@@ -397,7 +404,9 @@ impl Desktop {
                 ..WindowOptions::default()
             },
             cx,
-            move |window, cx| cx.new(|cx| Desk::open(desktop, phux, socket, request, window, cx)),
+            move |window, cx| {
+                cx.new(|cx| Desk::open(desktop, updates, phux, socket, request, window, cx))
+            },
         )?;
         let handle = any
             .downcast::<Root>()

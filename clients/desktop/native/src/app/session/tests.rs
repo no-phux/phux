@@ -4,6 +4,34 @@ use gpui::prelude::*;
 use gpui::{AppContext, Context, Entity, FocusHandle, Focusable, TestAppContext, Window, div};
 use gpui_kit::component::input::{Input, InputState};
 
+#[gpui::test]
+fn opening_a_window_does_not_read_its_leased_desktop(cx: &mut TestAppContext) {
+    let desktop = cx.update(|cx| {
+        gpui_kit::init(cx);
+        Desktop::install(cx)
+    });
+    let path = std::env::temp_dir().join(format!("phux-update-window-{}", std::process::id()));
+    let options = crate::app::AppOptions {
+        socket: path.join("isolated.sock"),
+        session: String::new(),
+        phux: path.join("not-installed-phux"),
+        layout_path: path.join("layout.json"),
+        fresh: false,
+        initial_terminal: None,
+        quick: false,
+        startup_error: Some("Isolated window fixture".into()),
+    };
+    desktop.update(cx, |desktop, cx| {
+        desktop.launch(options, cx).unwrap();
+        assert_eq!(desktop.windows.len(), 1);
+        assert_eq!(
+            desktop.windows[0].desk.read(cx).updates.entity_id(),
+            desktop.updates.entity_id()
+        );
+        assert!(desktop.updates.read(cx).development);
+    });
+}
+
 struct FocusFixture {
     terminal: FocusHandle,
     keys: Vec<String>,
