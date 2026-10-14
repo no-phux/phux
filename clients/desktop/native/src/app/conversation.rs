@@ -171,10 +171,11 @@ impl Desk {
     }
 
     /// Receipts resolve even while the terminal face or another tab is showing.
-    pub(crate) fn conversation_receipts(&mut self, events: &[Event], _cx: &mut Context<Self>) {
+    pub(crate) fn conversation_receipts(&mut self, events: &[Event]) -> bool {
         let current_client = self
             .client()
             .map(|client| std::sync::Arc::downgrade(&client));
+        let mut changed = false;
         for event in events {
             let Event::InputDelivery {
                 delivery_id,
@@ -189,16 +190,23 @@ impl Desk {
                 if current_client
                     .as_ref()
                     .is_none_or(|client| !client.ptr_eq(&face.binding.client))
-                    || face
-                        .pending
-                        .as_ref()
-                        .is_none_or(|(id, _)| id != delivery_id)
+                {
+                    continue;
+                }
+                // A terminal-face paste can fence this same runtime even when
+                // it was not submitted by a native composer.
+                changed |= *outcome == DeliveryOutcome::Unknown && face.visible;
+                if face
+                    .pending
+                    .as_ref()
+                    .is_none_or(|(id, _)| id != delivery_id)
                 {
                     continue;
                 }
                 let Some((_, submitted)) = face.pending.take() else {
                     continue;
                 };
+                changed = true;
                 match outcome {
                     DeliveryOutcome::Delivered => {
                         face.delivered = Some(submitted);
@@ -217,6 +225,7 @@ impl Desk {
                 }
             }
         }
+        changed
     }
 
     fn conversation_write_identity(
