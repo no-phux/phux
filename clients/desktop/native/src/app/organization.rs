@@ -6,7 +6,8 @@ use phux_client_core::org_ops::OrgOutcome;
 use phux_protocol::ids::{OperationId, ResourceKey, SessionKey};
 use phux_protocol::wire::frame::{Committed, MAX_ORG_BATCH};
 
-use super::desk::{Desk, Modal, ToastKind};
+use super::desk::{Desk, Modal};
+use super::notifications::Kind;
 
 #[derive(Default)]
 pub(crate) struct Organization {
@@ -149,22 +150,14 @@ impl Desk {
             .map(|resource| resource.key)
             .collect();
         if let Err(reason) = self.organization.select(keys) {
-            self.toast(
-                ToastKind::Info,
-                "Selection unchanged",
-                Some(reason.to_owned()),
-            );
+            self.post(Kind::Info, "Selection unchanged", Some(reason.to_owned()));
         }
         cx.notify();
     }
 
     pub(crate) fn toggle_resource_selection(&mut self, key: ResourceKey, cx: &mut Context<Self>) {
         if let Err(reason) = self.organization.toggle(key) {
-            self.toast(
-                ToastKind::Info,
-                "Selection unchanged",
-                Some(reason.to_owned()),
-            );
+            self.post(Kind::Info, "Selection unchanged", Some(reason.to_owned()));
         }
         cx.notify();
     }
@@ -173,7 +166,7 @@ impl Desk {
         if self.organization.selected.is_empty() {
             let key = self.focused_pane().and_then(|pane| pane.key);
             let Some(key) = key else {
-                self.toast(ToastKind::Info, "Select work to move", None);
+                self.post(Kind::Info, "Select work to move", None);
                 return;
             };
             self.organization.selected.push(key);
@@ -195,8 +188,8 @@ impl Desk {
             return;
         }
         if keys.len() > MAX_ORG_BATCH {
-            self.toast(
-                ToastKind::Error,
+            self.post(
+                Kind::Error,
                 "Selection too large",
                 Some(format!("Move up to {MAX_ORG_BATCH} resources at a time.")),
             );
@@ -226,14 +219,10 @@ impl Desk {
                         },
                     );
                     self.close_modal(window, cx);
-                    self.toast(ToastKind::Info, "Moving work…", None);
+                    self.post(Kind::Info, "Moving work…", None);
                 }
             }
-            Err(error) => self.toast(
-                ToastKind::Error,
-                "Could not move work",
-                Some(error.to_string()),
-            ),
+            Err(error) => self.post(Kind::Error, "Could not move work", Some(error.to_string())),
         }
         self.after_command(window, cx);
     }
@@ -250,8 +239,8 @@ impl Desk {
         let Some(client) = self.client() else { return };
         match client.inbox_resolve(session) {
             Ok(operation) => self.organization.begin(operation, Edit::Resolve(name)),
-            Err(error) => self.toast(
-                ToastKind::Error,
+            Err(error) => self.post(
+                Kind::Error,
                 "Could not organize session",
                 Some(error.to_string()),
             ),
@@ -269,8 +258,8 @@ impl Desk {
         let Some(client) = self.client() else { return };
         match client.undo(receipt) {
             Ok(operation) => self.organization.begin(operation, Edit::Undo),
-            Err(error) => self.toast(
-                ToastKind::Error,
+            Err(error) => self.post(
+                Kind::Error,
                 "Could not undo organization",
                 Some(error.to_string()),
             ),
@@ -280,12 +269,8 @@ impl Desk {
 
     pub(crate) fn note_organization(&mut self, operation: OperationId, outcome: &OrgOutcome) {
         if let Some((success, sentence)) = self.organization.finish(operation, outcome) {
-            let kind = if success {
-                ToastKind::Success
-            } else {
-                ToastKind::Error
-            };
-            self.toast(
+            let kind = if success { Kind::Success } else { Kind::Error };
+            self.post(
                 kind,
                 if success {
                     &sentence

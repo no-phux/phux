@@ -31,13 +31,13 @@ use super::actions::Run;
 use super::host;
 use super::keys::{gpui_stroke, shell_chord};
 use super::motion::{self, Motion};
+use super::notifications::{Feed, Kind};
 use super::overlays::InputSlot;
 use super::panes::Panes;
 use super::session::Desktop;
 use super::settings_panel::SettingsControls;
 use super::typed::typed_keys;
 
-const TOAST_LIMIT: usize = 4;
 const SEARCH_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,32 +61,13 @@ pub struct OpenRequest {
     pub main_display: Option<DisplayPrefs>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ToastKind {
-    Info,
-    Error,
-    Agent,
-    Success,
-}
-
-#[derive(Clone, Debug)]
-pub struct Toast {
-    pub id: u64,
-    pub kind: ToastKind,
-    pub title: String,
-    pub body: Option<String>,
-    pub at: Instant,
-    pub terminal: Option<ResourceId>,
-    /// The agent state an agent toast reports, for its colour.
-    pub agent_state: Option<String>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Modal {
     None,
     Commands,
     Goto,
     Settings,
+    Notifications,
     Path,
     MoveResources,
     Rename {
@@ -135,7 +116,7 @@ pub struct Desk {
     prepared: Modal,
     pub find: Option<FindState>,
     pub picker: Option<paths::PickerState>,
-    pub toasts: Vec<Toast>,
+    pub feed: Feed,
     pub link: Option<Link>,
     pub connect_error: Option<String>,
     pub layout_blocked: bool,
@@ -145,7 +126,6 @@ pub struct Desk {
     panes: Panes,
     agent_seen: HashMap<ResourceId, String>,
     agent_epoch: Option<u64>,
-    toast_id: u64,
     drag: Option<Drag>,
     /// Split container bounds from the last prepaint, keyed by split id.
     pub(crate) split_bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
@@ -251,7 +231,7 @@ impl Desk {
             prepared: Modal::None,
             find: None,
             picker: None,
-            toasts: Vec::new(),
+            feed: Feed::default(),
             link: None,
             connect_error: None,
             layout_blocked: blocked,
@@ -261,7 +241,6 @@ impl Desk {
             panes: Panes::default(),
             agent_seen: HashMap::new(),
             agent_epoch: None,
-            toast_id: 0,
             drag: None,
             split_bounds: Rc::default(),
             tab_centers: Rc::default(),
@@ -287,15 +266,11 @@ impl Desk {
             drop_target: None,
         };
         if let Some(error) = request.startup_error {
-            desk.toast(
-                ToastKind::Error,
-                "Could not start the phux server",
-                Some(error),
-            );
+            desk.post(Kind::Error, "Could not start the phux server", Some(error));
         }
         if blocked {
-            desk.toast(
-                ToastKind::Error,
+            desk.post(
+                Kind::Error,
                 "Saved layout preserved",
                 Some("This layout is invalid or from an unsupported version. Layout and settings changes will not be saved.".into()),
             );
@@ -342,11 +317,7 @@ impl Desk {
             }
             Err(error) => {
                 self.connect_error = Some(error.to_string());
-                self.toast(
-                    ToastKind::Error,
-                    "Could not connect",
-                    Some(error.to_string()),
-                );
+                self.post(Kind::Error, "Could not connect", Some(error.to_string()));
             }
         }
         cx.notify();
@@ -384,7 +355,7 @@ impl Desk {
             || events.iter().any(crate::connection::starts_connection)
         {
             self.agent_seen.clear();
-            self.toasts.retain(|toast| toast.kind != ToastKind::Agent);
+            self.feed.retain(|entry| entry.kind != Kind::Agent);
             self.agent_epoch = Some(epoch);
         }
         for event in &events {
@@ -399,6 +370,7 @@ impl Desk {
         }
         self.take_notices();
         self.note_agents();
+        self.flush_system(cx);
         for answer in answers {
             self.accept_path(answer);
         }
@@ -424,7 +396,7 @@ impl Desk {
         self.note_operation_event(event);
         self.note_input_event(event);
         if let Event::Detached { message, .. } = event {
-            self.toast(ToastKind::Error, "Detached", Some(message.clone()));
+            self.post(Kind::Error, "Detached", Some(message.clone()));
         }
     }
 
@@ -455,11 +427,12 @@ impl Desk {
                     .or_else(|| signal.map(|code| format!("signal {code}")))
                     .unwrap_or_else(|| "closed".into());
                 let title = self.pane_title(Some(terminal_id));
-                self.toast(ToastKind::Info, &format!("{title} ended"), Some(status));
+                self.post(Kind::Info, &format!("{title} ended"), Some(status));
             }
             self.agent_seen.remove(terminal_id);
-            self.toasts
-                .retain(|toast| toast.terminal.as_ref() != Some(terminal_id));
+            self.feed.retain(|entry| {
+                entry.kind != Kind::Agent || entry.terminal.as_ref() != Some(terminal_id)
+            });
         }
     }
 
@@ -471,14 +444,14 @@ impl Desk {
                 phux_client_core::org_ops::OrgOutcome::Committed(receipt) => {
                     let ended = receipt.members.unwrap_or(0);
                     let noun = if ended == 1 { "terminal" } else { "terminals" };
-                    self.toast(
-                        ToastKind::Success,
+                    self.post(
+                        Kind::Success,
                         &format!("Killed {name}"),
                         Some(format!("{ended} {noun} ended")),
                     );
                 }
-                other => self.toast(
-                    ToastKind::Error,
+                other => self.post(
+                    Kind::Error,
                     &format!("Could not kill {name}"),
                     Some(crate::connection::org::outcome_sentence(other)),
                 ),
@@ -491,10 +464,10 @@ impl Desk {
             && let Some(name) = self.creates.remove(operation)
         {
             if outcome.succeeded() {
-                self.toast(ToastKind::Success, "Session created", Some(name));
+                self.post(Kind::Success, "Session created", Some(name));
             } else {
-                self.toast(
-                    ToastKind::Error,
+                self.post(
+                    Kind::Error,
                     "Could not create the session",
                     Some(format!(
                         "{name}: {}",
@@ -507,7 +480,7 @@ impl Desk {
 
     fn note_input_event(&mut self, event: &Event) {
         if let Some(message) = crate::connection::refused_input(event) {
-            self.toast(ToastKind::Error, "Input not delivered", Some(message));
+            self.post(Kind::Error, "Input not delivered", Some(message));
         }
         if let Event::InputDelivery {
             outcome: DeliveryOutcome::Refused,
@@ -517,11 +490,7 @@ impl Desk {
             && crate::connection::refused_input(event).is_none()
             && !message.is_empty()
         {
-            self.toast(
-                ToastKind::Error,
-                "Input not delivered",
-                Some(message.clone()),
-            );
+            self.post(Kind::Error, "Input not delivered", Some(message.clone()));
         }
     }
 
@@ -534,13 +503,14 @@ impl Desk {
             .focused()
             .and_then(|placement| placement.terminal_id.clone());
         let current = link.connection.agents.clone();
-        // An agent toast goes away with its agent's badge.
-        self.toasts.retain(|toast| {
-            toast.kind != ToastKind::Agent
-                || toast
+        // An agent entry stands while its agent still reports the state it announced.
+        self.feed.retain(|entry| {
+            entry.kind != Kind::Agent
+                || entry
                     .terminal
                     .as_ref()
-                    .is_some_and(|id| current.contains_key(id))
+                    .and_then(|id| current.get(id))
+                    .is_some_and(|info| entry.agent_state.as_ref() == Some(&info.state))
         });
         if !self.prefs.notifications {
             self.agent_seen = current
@@ -569,7 +539,8 @@ impl Desk {
                 self.pane_title(Some(id)),
                 short_path(self.pane_cwd(Some(id)))
             );
-            self.toast_agent(title, body, id.clone(), info.state.clone());
+            self.feed
+                .post_agent(title, body, id.clone(), info.state.clone());
         }
         self.agent_seen = current
             .into_iter()
@@ -583,11 +554,11 @@ impl Desk {
         };
         for notice in link.workspace.take_notices() {
             let kind = if notice.kind == "error" {
-                ToastKind::Error
+                Kind::Error
             } else {
-                ToastKind::Info
+                Kind::Info
             };
-            self.toast(kind, &notice.title, notice.body.clone());
+            self.post(kind, &notice.title, notice.body.clone());
         }
     }
 
@@ -602,6 +573,7 @@ impl Desk {
                 (Modal::Commands, "palette")
                     | (Modal::Goto, "goto")
                     | (Modal::Settings, "settings")
+                    | (Modal::Notifications, "notifications")
             );
             self.close_modal(window, cx);
             if toggle {
@@ -639,6 +611,8 @@ impl Desk {
             "palette" => self.modal = Modal::Commands,
             "goto" => self.modal = Modal::Goto,
             "settings" => self.modal = Modal::Settings,
+            "notifications" => self.modal = Modal::Notifications,
+            "clear-notifications" => self.feed.clear(),
             "new" => {
                 self.workspace_call(|link| link.workspace.new_terminal(&link.connection, None))
             }
@@ -904,6 +878,10 @@ impl Desk {
         if matches!(self.modal, Modal::Path) {
             self.picker = None;
         }
+        // Closing the list is what reads it.
+        if self.modal == Modal::Notifications {
+            self.feed.read_all();
+        }
         self.modal = Modal::None;
         self.prepared = Modal::None;
         self.modal_inputs.clear();
@@ -994,8 +972,8 @@ impl Desk {
         if let Some(saved) = &self.last_saved
             && let Err(error) = self.store.write(&persist::layout_value(saved))
         {
-            self.toast(
-                ToastKind::Error,
+            self.post(
+                Kind::Error,
                 "Could not save desktop layout",
                 Some(error.to_string()),
             );
@@ -1065,11 +1043,9 @@ impl Desk {
                     return;
                 }
                 Ok(_) => {}
-                Err(error) => self.toast(
-                    ToastKind::Error,
-                    "Could not start the phux server",
-                    Some(error),
-                ),
+                Err(error) => {
+                    self.post(Kind::Error, "Could not start the phux server", Some(error))
+                }
             }
         }
         self.persist();
@@ -1085,7 +1061,7 @@ impl Desk {
             }
             self.panes.clear();
             self.agent_seen.clear();
-            self.toasts.retain(|toast| toast.kind != ToastKind::Agent);
+            self.feed.retain(|entry| entry.kind != Kind::Agent);
             self.find = None;
             self.find_input = None;
             self.attach(None, cx);
@@ -1096,20 +1072,16 @@ impl Desk {
             link.workspace.release_all(&link.connection);
             self.panes.clear();
             self.agent_seen.clear();
-            self.toasts.retain(|toast| toast.kind != ToastKind::Agent);
+            self.feed.retain(|entry| entry.kind != Kind::Agent);
             self.find = None;
             self.find_input = None;
             link.workspace.restore(snapshot);
             if let Err(error) = link.connection.reconnect() {
-                self.toast(
-                    ToastKind::Error,
-                    "Could not reconnect",
-                    Some(error.to_string()),
-                );
+                self.post(Kind::Error, "Could not reconnect", Some(error.to_string()));
             }
         }
-        self.toast(
-            ToastKind::Info,
+        self.post(
+            Kind::Info,
             "Reconnecting",
             Some(self.socket.display().to_string()),
         );
@@ -1123,9 +1095,9 @@ impl Desk {
         self.sync_bindings(cx);
         self.apply_kit_theme(cx);
         if text.is_none() {
-            self.toast(ToastKind::Info, "No Ghostty config found", None);
+            self.post(Kind::Info, "No Ghostty config found", None);
         } else {
-            self.toast(ToastKind::Success, "Ghostty config reloaded", None);
+            self.post(Kind::Success, "Ghostty config reloaded", None);
         }
         cx.notify();
     }
@@ -1195,8 +1167,8 @@ impl Desk {
             .map(|pane| pane.session_name.clone())
             .unwrap_or_default();
         if name.trim().is_empty() {
-            self.toast(
-                ToastKind::Error,
+            self.post(
+                Kind::Error,
                 "No session",
                 Some("Focus a pane in the session you want to rename.".into()),
             );
@@ -1247,7 +1219,7 @@ impl Desk {
     }
 
     /// Create or rename a session. A refusal before anything is sent keeps
-    /// the dialog open with a toast. A create on an `ORGANIZATION` server is
+    /// the dialog open with a notification. A create on an `ORGANIZATION` server is
     /// persistent and reports its outcome when the server answers.
     pub fn apply_session(
         &mut self,
@@ -1277,11 +1249,7 @@ impl Desk {
                     self.after_command(window, cx);
                 }
                 Err(failure) => {
-                    self.toast(
-                        ToastKind::Error,
-                        "Could not create the session",
-                        Some(failure),
-                    );
+                    self.post(Kind::Error, "Could not create the session", Some(failure));
                     cx.notify();
                 }
             }
@@ -1293,8 +1261,8 @@ impl Desk {
             host::rename_session(&self.phux, &self.socket, &current, &name)
         };
         if let Some(failure) = failure {
-            self.toast(
-                ToastKind::Error,
+            self.post(
+                Kind::Error,
                 if create {
                     "Could not create the session"
                 } else {
@@ -1308,8 +1276,8 @@ impl Desk {
         if let Some(link) = self.link.as_ref() {
             let _ = link.connection.refresh_topology();
         }
-        self.toast(
-            ToastKind::Success,
+        self.post(
+            Kind::Success,
             if create {
                 "Session created"
             } else {
@@ -1328,8 +1296,8 @@ impl Desk {
             .map(|pane| (pane.session_name.clone(), pane.session_id))
             .filter(|(name, _)| !name.trim().is_empty())
         else {
-            self.toast(
-                ToastKind::Error,
+            self.post(
+                Kind::Error,
                 "No session",
                 Some("Focus a pane in the session you want to kill.".into()),
             );
@@ -1351,8 +1319,8 @@ impl Desk {
     /// `phux kill`.
     fn kill_session(&mut self, name: &str, session: u32) {
         let Some(link) = self.link.as_ref() else {
-            self.toast(
-                ToastKind::Error,
+            self.post(
+                Kind::Error,
                 "Could not kill the session",
                 Some("Not connected.".into()),
             );
@@ -1369,14 +1337,10 @@ impl Desk {
             return;
         }
         if let Some(failure) = host::kill_session(&self.phux, &self.socket, name) {
-            self.toast(
-                ToastKind::Error,
-                "Could not kill the session",
-                Some(failure),
-            );
+            self.post(Kind::Error, "Could not kill the session", Some(failure));
         } else {
             let _ = link.connection.refresh_topology();
-            self.toast(ToastKind::Success, &format!("Killed {name}"), None);
+            self.post(Kind::Success, &format!("Killed {name}"), None);
         }
     }
 
@@ -1459,7 +1423,7 @@ impl Desk {
         if let Some(pane) = panes.first() {
             self.reveal_terminal(&pane.terminal_id);
         } else {
-            self.toast(ToastKind::Info, "No agent needs attention", None);
+            self.post(Kind::Info, "No agent needs attention", None);
         }
     }
 
@@ -1546,8 +1510,8 @@ impl Desk {
                 .all(|event| control.send_key(&terminal, event))
         });
         if !sent {
-            self.toast(
-                ToastKind::Error,
+            self.post(
+                Kind::Error,
                 "Could not send keys",
                 Some("The terminal did not accept the input.".into()),
             );
@@ -1659,7 +1623,7 @@ impl Desk {
         self.paste_text_to(&terminal, text)
     }
 
-    /// Queue a bracketed paste. False, with a toast, when the terminal is not ready.
+    /// Queue a bracketed paste. False, with a notification, when the terminal is not ready.
     fn paste_text_to(&mut self, terminal: &ResourceId, text: &str) -> bool {
         let Some(client) = self.client() else {
             return false;
@@ -1674,8 +1638,8 @@ impl Desk {
         if queued {
             client.wake();
         } else {
-            self.toast(
-                ToastKind::Error,
+            self.post(
+                Kind::Error,
                 "Could not paste",
                 Some("The terminal is not ready.".into()),
             );
@@ -1700,8 +1664,8 @@ impl Desk {
             _ => region_text(&client, view, TextRegion::Screen),
         };
         if text.is_empty() {
-            self.toast(
-                ToastKind::Info,
+            self.post(
+                Kind::Info,
                 if region == "selection" {
                     "Nothing selected"
                 } else {
@@ -1719,7 +1683,7 @@ impl Desk {
         let path = match host::write_temp_file(name, &text) {
             Ok(path) => path,
             Err(error) => {
-                self.toast(ToastKind::Error, "Could not write the file", Some(error));
+                self.post(Kind::Error, "Could not write the file", Some(error));
                 return;
             }
         };
@@ -1909,8 +1873,8 @@ impl Desk {
 
     fn open_path_picker(&mut self) {
         let Some(target) = self.path_target() else {
-            self.toast(
-                ToastKind::Info,
+            self.post(
+                Kind::Info,
                 "Insert Path is unavailable",
                 Some("Not attached to a terminal.".into()),
             );
@@ -1931,11 +1895,7 @@ impl Desk {
             } else {
                 "Not attached to a terminal."
             };
-            self.toast(
-                ToastKind::Info,
-                "Insert Path is unavailable",
-                Some(body.into()),
-            );
+            self.post(Kind::Info, "Insert Path is unavailable", Some(body.into()));
             return;
         }
         let root = self
@@ -2299,43 +2259,43 @@ impl Desk {
             .and_then(|link| link.connection.agents.get(terminal))
     }
 
-    pub fn toast(&mut self, kind: ToastKind, title: &str, body: Option<String>) {
-        self.toast_id += 1;
-        self.toasts.push(Toast {
-            id: self.toast_id,
-            kind,
-            title: title.to_owned(),
-            body,
-            at: Instant::now(),
-            terminal: None,
-            agent_state: None,
-        });
-        self.toasts = self
-            .toasts
-            .split_off(self.toasts.len().saturating_sub(TOAST_LIMIT));
+    pub fn post(&mut self, kind: Kind, title: &str, body: Option<String>) {
+        self.feed.post(kind, title, body);
     }
 
-    fn toast_agent(&mut self, title: String, body: String, terminal: ResourceId, state: String) {
-        self.toast_id += 1;
-        self.toasts.push(Toast {
-            id: self.toast_id,
-            kind: ToastKind::Agent,
-            title,
-            body: Some(body),
-            at: Instant::now(),
-            terminal: Some(terminal),
-            agent_state: Some(state),
-        });
-        self.toasts = self
-            .toasts
-            .split_off(self.toasts.len().saturating_sub(TOAST_LIMIT));
+    /// Reveal a notification's terminal, if it has one, and mark it read.
+    pub fn open_notification(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let terminal = self.feed.get(id).and_then(|entry| entry.terminal.clone());
+        self.feed.read(id);
+        if self.modal == Modal::Notifications {
+            self.close_modal(window, cx);
+        }
+        if let Some(terminal) = terminal {
+            self.reveal_terminal(&terminal);
+        }
+        self.after_command(window, cx);
     }
 
-    pub fn dismiss_toast(&mut self, id: u64) {
-        self.toasts.retain(|toast| toast.id != id);
+    /// Mirror new agent and error entries to the system notification center
+    /// while no Phux window is active. A click comes back through
+    /// [`super::session::Desktop`] by the tag's desk entity and entry id.
+    pub(crate) fn flush_system(&mut self, cx: &mut Context<Self>) {
+        let outbound = self.feed.take_outbound();
+        if outbound.is_empty() || cx.active_window().is_some() {
+            return;
+        }
+        let desk = cx.entity_id().as_u64();
+        for entry in outbound {
+            cx.show_system_notification(gpui::SystemNotification {
+                tag: format!("{desk}/{}", entry.id).into(),
+                title: entry.title.into(),
+                body: entry.body.unwrap_or_default().into(),
+                actions: Vec::new(),
+            });
+        }
     }
 
-    /// Expire toasts (12 s for agent and error, 5 s otherwise) and keep agent ages
+    /// Expire the peek card and keep agent ages
     /// current. Armed from every render; the task ends when nothing needs it.
     pub(crate) fn ensure_clock(&mut self, cx: &mut Context<Self>) {
         if self._clock.is_some() || !self.clock_needed() {
@@ -2347,9 +2307,7 @@ impl Desk {
                 let keep = this
                     .update(cx, |desk, cx| {
                         let now = Instant::now();
-                        desk.toasts.retain(|toast| {
-                            now.duration_since(toast.at) < toast_lifetime(toast.kind)
-                        });
+                        desk.feed.expire_peek(now);
                         cx.notify();
                         let keep = desk.clock_needed();
                         if !keep {
@@ -2366,7 +2324,7 @@ impl Desk {
     }
 
     fn clock_needed(&self) -> bool {
-        !self.toasts.is_empty()
+        self.feed.peek().is_some()
             || self
                 .link
                 .as_ref()
@@ -2610,13 +2568,6 @@ pub(crate) fn tab_drop_index(from: usize, centers: &[f32], x: f32) -> usize {
         }
     }
     to
-}
-
-fn toast_lifetime(kind: ToastKind) -> Duration {
-    match kind {
-        ToastKind::Agent | ToastKind::Error => Duration::from_secs(12),
-        ToastKind::Info | ToastKind::Success => Duration::from_secs(5),
-    }
 }
 
 #[cfg(test)]

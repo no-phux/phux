@@ -58,9 +58,9 @@ pub struct ConnectionIdentity {
 pub struct CommandError {
     /// Stable reason token.
     pub reason: &'static str,
-    /// Toast title.
+    /// Notification title.
     pub title: &'static str,
-    /// Toast body.
+    /// Notification body.
     pub body: String,
 }
 

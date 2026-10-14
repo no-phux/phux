@@ -92,6 +92,12 @@ impl Desktop {
             });
         });
         desktop.update(cx, |desktop, _| desktop._closed = Some(closed));
+        let weak = desktop.downgrade();
+        cx.on_system_notification_response(move |response, cx| {
+            let _ = weak.update(cx, |desktop, cx| {
+                desktop.open_notification(&response.tag, cx)
+            });
+        });
         desktop
     }
 
@@ -259,6 +265,31 @@ impl Desktop {
         persist::load_layout(&store.read())
             .initial
             .map(|layout| layout.display)
+    }
+
+    /// A system notification was clicked: bring its window forward and open the
+    /// entry. The tag is `<desk entity id>/<entry id>`, as [`Desk::flush_system`] posts it.
+    fn open_notification(&mut self, tag: &str, cx: &mut Context<Self>) {
+        let Some((desk, entry)) = tag.split_once('/') else {
+            return;
+        };
+        let (Ok(desk), Ok(entry)) = (desk.parse::<u64>(), entry.parse::<u64>()) else {
+            return;
+        };
+        let Some(opened) = self
+            .windows
+            .iter()
+            .chain(self.quick.iter())
+            .find(|opened| opened.desk.entity_id().as_u64() == desk)
+        else {
+            return;
+        };
+        let target = opened.desk.clone();
+        cx.activate(true);
+        let _ = opened.handle.update(cx, |_, window, cx| {
+            window.activate_window();
+            target.update(cx, |desk, cx| desk.open_notification(entry, window, cx));
+        });
     }
 
     fn window_closed(&mut self, id: WindowId, cx: &mut Context<Self>) {
