@@ -761,11 +761,12 @@ impl TerminalActor {
     /// ground-to-ground run cannot change the modes the input lane already
     /// has.
     fn ingest_pty_payload(&mut self, payload: &Bytes) {
-        let _apply_timer = crate::perf::PTY_VT_APPLY.timer();
-        let parse_started = std::time::Instant::now();
+        // Three samples, three clock reads. Drop guards around the same
+        // intervals read the clock again on the way out and fold that probe
+        // into `pty.vt_apply`.
+        let started = std::time::Instant::now();
         self.terminal.borrow_mut().vt_write(payload);
-        crate::perf::PTY_VT_PARSE.record_elapsed(parse_started);
-        let _post_timer = crate::perf::PTY_POST_APPLY.timer();
+        let parsed = std::time::Instant::now();
         if self.input_mode_span.observe(payload) {
             self.publish_input_snapshot();
         }
@@ -774,6 +775,10 @@ impl TerminalActor {
         self.source_events();
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         self.start_next_native_bootstrap();
+        let done = std::time::Instant::now();
+        crate::perf::PTY_VT_PARSE.record_duration(parsed.saturating_duration_since(started));
+        crate::perf::PTY_POST_APPLY.record_duration(done.saturating_duration_since(parsed));
+        crate::perf::PTY_VT_APPLY.record_duration(done.saturating_duration_since(started));
     }
 
     /// Answer a bounded `SnapshotRequest` with replay bytes and their raw cut.
