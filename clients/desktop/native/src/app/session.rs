@@ -1,5 +1,8 @@
 //! Process-wide windows, native menus, and the quick-terminal hotkey.
 
+#[cfg(test)]
+mod tests;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -56,6 +59,9 @@ impl Desktop {
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.bind_keys([
             KeyBinding::new("cmd-q", Quit, None),
+            // Root's focus traversal runs before bubbling terminal input.
+            KeyBinding::new("tab", NoAction, Some("PhuxTerminal")),
+            KeyBinding::new("shift-tab", NoAction, Some("PhuxTerminal")),
             KeyBinding::new("tab", OpenPathDirectory, Some("PathPicker > Input")),
         ]);
         let desktop = cx.new(|_| Self {

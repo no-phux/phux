@@ -229,6 +229,7 @@ impl Render for Terminal {
             .size_full()
             .overflow_hidden()
             .track_focus(&self.focus)
+            .key_context("PhuxTerminal")
             .on_key_down(move |event, window, cx| {
                 // A chord the shell owns bubbles to the window untouched.
                 if !event.keystroke.modifiers.platform
