@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{
     App, Bounds, Context, CursorStyle, Entity, FocusHandle, KeyDownEvent, Pixels, Subscription,
@@ -222,6 +222,18 @@ enum Drag {
     },
 }
 
+/// Terminal damage and delivered input. Chrome, toasts, and layout stay put.
+fn paint_batch(events: &[Event]) -> bool {
+    !events.is_empty() && events.iter().all(crate::connection::paint_wake)
+}
+
+fn unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 impl Desk {
     pub(crate) fn open(
         desktop: Entity<Desktop>,
@@ -428,6 +440,10 @@ impl Desk {
             )
         };
         crate::diag::DRAIN_EVENTS.add(events.len() as u64);
+        if answers.is_empty() && paint_batch(&events) {
+            self.repaint_terminals(&events, cx);
+            return;
+        }
         self.adopt_session_layout(cx);
         self.sync_home_session(cx);
         if self.agent_epoch != Some(epoch)
@@ -477,6 +493,18 @@ impl Desk {
         self.persist_if_changed();
         self.ensure_clock(cx);
         cx.notify();
+    }
+
+    /// Output and delivered input paint the panes and leave the chrome tree in place.
+    fn repaint_terminals(&mut self, events: &[Event], cx: &mut Context<Self>) {
+        let terminals = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::TerminalChanged { terminal_id } => Some(terminal_id.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        self.panes.notify_terminals(&terminals, cx);
     }
 
     fn note_event(&mut self, event: &Event) {
@@ -2717,9 +2745,9 @@ impl Desk {
                 smol::Timer::after(Duration::from_secs(1)).await;
                 let keep = this
                     .update(cx, |desk, cx| {
-                        let now = Instant::now();
-                        desk.feed.expire_peek(now);
-                        cx.notify();
+                        if desk.tick_clock() {
+                            cx.notify();
+                        }
                         let keep = desk.clock_needed();
                         if !keep {
                             desk._clock = None;
@@ -2740,6 +2768,23 @@ impl Desk {
                 .link
                 .as_ref()
                 .is_some_and(|link| !link.connection.agents.is_empty())
+    }
+
+    /// Expire a peek and report whether the chrome labels moved.
+    fn tick_clock(&mut self) -> bool {
+        let expired = self.feed.expire_peek(Instant::now());
+        expired || self.agent_ages_moved()
+    }
+
+    fn agent_ages_moved(&self) -> bool {
+        let now = unix_ms();
+        let earlier = now.saturating_sub(1_000);
+        self.link.as_ref().is_some_and(|link| {
+            link.connection
+                .agents
+                .values()
+                .any(|info| super::view::ago_changed(info.changed_at_ms, earlier, now))
+        })
     }
 
     fn retain_panes(&mut self) {

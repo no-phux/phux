@@ -18,7 +18,8 @@ pub use phux_client_ffi::projection::agent::{AgentAttention, AgentState};
 use phux_client_ffi::projection::{agent::badge, id, status};
 use phux_client_runtime::control::ControlOptions;
 use phux_client_runtime::control::{
-    Event, PaneDescriptor, PathAnswer, ServerInfo, SpawnRequest, Status, Topology, mint_operation,
+    DeliveryOutcome, Event, PaneDescriptor, PathAnswer, ServerInfo, SpawnRequest, Status, Topology,
+    mint_operation,
 };
 use phux_client_runtime::{Client, ClientOptions, Listener, Runtime, Target};
 use phux_protocol::ResourceId;
@@ -285,7 +286,7 @@ impl Connection {
 
     /// Take events and path answers, and refresh snapshots the batch can change.
     pub fn drain(&mut self) -> Vec<Event> {
-        let observation = self.client.take_observation();
+        let observation = self.client.take_activity();
         if observation.status != self.status {
             log::info!(
                 "connection {:?} -> {:?} epoch={} error={:?}",
@@ -820,13 +821,17 @@ fn now_ms() -> u64 {
 /// An event that can change topology, status, or the server snapshot.
 #[must_use]
 pub fn structural(event: &Event) -> bool {
-    !matches!(
-        event,
-        Event::TerminalChanged { .. }
-            | Event::InputDelivery { .. }
-            | Event::AgentMetadata { .. }
-            | Event::SessionProject { .. }
-    )
+    event.changes_session_graph()
+}
+
+/// Terminal output and a delivered input. The chrome tree does not depend on it.
+#[must_use]
+pub fn paint_wake(event: &Event) -> bool {
+    match event {
+        Event::TerminalChanged { .. } => true,
+        Event::InputDelivery { outcome, .. } => *outcome != DeliveryOutcome::Refused,
+        _ => false,
+    }
 }
 
 /// The refusal text for acknowledged input, when the outcome was refused.
@@ -1064,4 +1069,34 @@ pub fn terminal_label(id: &ResourceId) -> String {
 #[must_use]
 pub fn parse_terminal(value: &str) -> Option<ResourceId> {
     id::parse(value)
+}
+
+#[cfg(test)]
+mod paint_wake_tests {
+    use super::{paint_wake, structural};
+    use phux_client_runtime::control::{DeliveryOutcome, Event};
+    use phux_protocol::ResourceId;
+
+    #[test]
+    fn output_and_delivered_input_skip_chrome() {
+        let terminal_id = ResourceId::local(1);
+        assert!(paint_wake(&Event::TerminalChanged {
+            terminal_id: terminal_id.clone(),
+        }));
+        assert!(!structural(&Event::TerminalChanged { terminal_id }));
+        assert!(paint_wake(&Event::InputDelivery {
+            delivery_id: 1,
+            outcome: DeliveryOutcome::Delivered,
+            code: None,
+            message: String::new(),
+        }));
+        assert!(!paint_wake(&Event::InputDelivery {
+            delivery_id: 1,
+            outcome: DeliveryOutcome::Refused,
+            code: None,
+            message: String::new(),
+        }));
+        assert!(structural(&Event::TopologyChanged));
+        assert!(!paint_wake(&Event::TopologyChanged));
+    }
 }
