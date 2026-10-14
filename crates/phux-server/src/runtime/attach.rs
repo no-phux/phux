@@ -287,7 +287,7 @@ impl NativeRequestFailure {
 
 /// Send the native checkpoint request `make` builds and await its reply.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-async fn request_native_checkpoint(
+pub(super) async fn request_native_checkpoint(
     terminal: &crate::terminal_actor::TerminalHandle,
     make: impl FnOnce(
         oneshot::Sender<
@@ -863,16 +863,14 @@ impl OutputPumpContext {
         bootstrap_id: BootstrapId,
     ) -> Result<Option<crate::terminal_actor::NativeBootstrapReply>, PumpFault> {
         let captured = request_native_checkpoint(&self.terminal, |reply| {
-            crate::terminal_actor::NativeBootstrapRequest {
-                owner: self.client_id.0,
-                terminal_id: self.wire_terminal_id.clone(),
-                stream_id: self.stream_id,
+            crate::terminal_actor::NativeBootstrapRequest::full_budget(
+                self.client_id.0,
+                self.wire_terminal_id.clone(),
+                self.stream_id,
                 bootstrap_id,
-                limits: self.limits,
-                max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-                max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
+                self.limits,
                 reply,
-            }
+            )
         })
         .await;
         let reply = match captured {
@@ -995,16 +993,14 @@ impl OutputPumpContext {
         if publishes_native_checkpoints(self.profile) {
             let bootstrap_id = next_bootstrap_id(generation.bootstrap_id());
             let capture = request_native_checkpoint(&self.terminal, |reply| {
-                crate::terminal_actor::NativeBootstrapRequest {
-                    owner: self.client_id.0,
-                    terminal_id: self.wire_terminal_id.clone(),
-                    stream_id: self.stream_id,
+                crate::terminal_actor::NativeBootstrapRequest::full_budget(
+                    self.client_id.0,
+                    self.wire_terminal_id.clone(),
+                    self.stream_id,
                     bootstrap_id,
-                    limits: self.limits,
-                    max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-                    max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
+                    self.limits,
                     reply,
-                }
+                )
             });
             let reply = tokio::time::timeout(CAPTURE_WAIT, capture)
                 .await
@@ -2594,16 +2590,14 @@ impl SpawnPublication<'_> {
         &self,
     ) -> Option<crate::terminal_actor::NativeBootstrapReply> {
         let captured = request_native_checkpoint(&self.terminal, |reply| {
-            crate::terminal_actor::NativeBootstrapRequest {
-                owner: self.client_id.0,
-                terminal_id: self.wire_terminal_id.clone(),
-                stream_id: self.stream_id,
-                bootstrap_id: initial_bootstrap_id(),
-                limits: self.limits,
-                max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-                max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
+            crate::terminal_actor::NativeBootstrapRequest::full_budget(
+                self.client_id.0,
+                self.wire_terminal_id.clone(),
+                self.stream_id,
+                initial_bootstrap_id(),
+                self.limits,
                 reply,
-            }
+            )
         })
         .await;
         if let Err(NativeRequestFailure::Refused(error)) = &captured {

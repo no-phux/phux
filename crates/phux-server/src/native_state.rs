@@ -33,6 +33,11 @@ const CONTINUATION_LIMIT: usize = 64 * 1024 * 1024;
 pub(crate) const MAX_NATIVE_PREFIX_CHUNKS: usize = 4_096;
 /// Greatest aggregate opaque codec payload retained before READY publication.
 pub(crate) const MAX_NATIVE_PREFIX_BYTES: usize = 64 * 1024 * 1024;
+/// Frames a native bootstrap spends beyond its chunks: one BEGIN and one READY.
+pub(crate) const NATIVE_BOOTSTRAP_FRAMING_FRAMES: usize = 2;
+/// Frame budget of a full native bootstrap: every prefix chunk plus framing.
+pub(crate) const MAX_NATIVE_BOOTSTRAP_FRAMES: usize =
+    MAX_NATIVE_PREFIX_CHUNKS + NATIVE_BOOTSTRAP_FRAMING_FRAMES;
 
 /// Failures from native capture, history, and generation management.
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]

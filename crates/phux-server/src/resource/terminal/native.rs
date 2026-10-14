@@ -58,7 +58,10 @@ impl TerminalActor {
                     == req
                         .max_bytes
                         .saturating_sub(phux_protocol::wire::frame::MAX_HISTORY_CURSOR_BYTES)
-                && pending.max_chunks == req.max_frames.saturating_sub(2)
+                && pending.max_chunks
+                    == req
+                        .max_frames
+                        .saturating_sub(crate::native_state::NATIVE_BOOTSTRAP_FRAMING_FRAMES)
                 && pending.waiters.len() < MAX_NATIVE_HISTORY_CLIENTS
             {
                 pending
@@ -88,7 +91,10 @@ impl TerminalActor {
                 return;
             }
         };
-        let Some(max_chunks) = req.max_frames.checked_sub(2) else {
+        let Some(max_chunks) = req
+            .max_frames
+            .checked_sub(crate::native_state::NATIVE_BOOTSTRAP_FRAMING_FRAMES)
+        else {
             let _ = req
                 .reply
                 .send(Err(crate::native_state::NativeStateError::LimitExceeded));
