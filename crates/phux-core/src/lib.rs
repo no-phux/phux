@@ -20,6 +20,7 @@ pub mod ids;
 pub mod keys;
 pub mod org;
 pub mod process;
+pub mod project_identity;
 pub mod registry;
 pub mod resource;
 pub mod screen;

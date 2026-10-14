@@ -261,10 +261,14 @@ pub fn attrs(a: &phux_core::Attrs) -> Vec<(String, String)> {
     if let Some(host) = &a.host_label {
         out.push(("host".to_owned(), host.clone()));
     }
+    if let Some(repository) = &a.repository {
+        out.extend(repository.to_attrs());
+    }
     out
 }
 
-/// Wire attribute pairs in core; unknown names are ignored.
+/// Wire attribute pairs in core; the `project.*` names (ADR-0167) are one
+/// typed repository identity, and unknown names are ignored.
 #[must_use]
 pub fn core_attrs(pairs: &[(String, String)]) -> phux_core::Attrs {
     let mut a = phux_core::Attrs::default();
@@ -276,6 +280,12 @@ pub fn core_attrs(pairs: &[(String, String)]) -> phux_core::Attrs {
             _ => {}
         }
     }
+    a.repository = phux_core::project_identity::SessionProject::from_attrs(
+        pairs
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str())),
+    )
+    .map(Box::new);
     a
 }
 
@@ -532,6 +542,29 @@ pub fn event(e: &phux_core::Event, org: &phux_core::Org) -> Option<frame::AgentE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR-0167: the `project.*` attribute pairs become one typed identity
+    /// on the record and come back out as the same pairs; unknown names drop.
+    #[test]
+    fn repository_attrs_round_trip_through_the_typed_record() {
+        let identity = phux_core::project_identity::SessionProject {
+            id: "github.com/no-phux/phux".to_owned(),
+            name: "phux".to_owned(),
+            checkout: "/w/phux-feat".to_owned(),
+            branch: Some("feat".to_owned()),
+            linked_worktree: true,
+            host: Some("mini".to_owned()),
+        };
+        let mut pairs = vec![("project".to_owned(), "label".to_owned())];
+        pairs.extend(identity.to_attrs());
+        pairs.push(("unknown".to_owned(), "x".to_owned()));
+        let core = core_attrs(&pairs);
+        assert_eq!(core.repository.as_deref(), Some(&identity));
+        assert_eq!(core.project.as_deref(), Some("label"));
+        let back = attrs(&core);
+        assert!(!back.iter().any(|(name, _)| name == "unknown"));
+        assert_eq!(core_attrs(&back), core);
+    }
 
     #[test]
     fn keys_and_refusals_round_trip() {

@@ -632,6 +632,8 @@ pub mod session_state {
     pub const LIFETIME: u32 = 1;
     /// `SessionKey` (16 bytes); absent = not reported.
     pub const KEY: u32 = 2;
+    /// One descriptive attribute, `str key || str value`; repeated.
+    pub const ATTR: u32 = 3;
 }
 
 /// Fields of every organization body (`docs/spec/L1.md` §5.7).

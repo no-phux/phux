@@ -104,7 +104,8 @@ impl ServerState {
                     .with_window_count(u16::from(window_wire.is_some()))
                     .with_attached_client_count(attached_counts.get(&sid).copied().unwrap_or(0))
                     .with_lifetime(Some(crate::org_wire::lifetime(record.lifetime)))
-                    .with_key(phux_protocol::ids::SessionKey::new(*record.key.as_bytes())),
+                    .with_key(phux_protocol::ids::SessionKey::new(*record.key.as_bytes()))
+                    .with_attrs(crate::org_wire::attrs(&record.attrs)),
             );
             let Some(window_wire) = window_wire else {
                 continue;
