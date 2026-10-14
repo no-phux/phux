@@ -58,8 +58,8 @@ pub fn report(uptime: core::time::Duration) -> PerfReport {
 /// from its `&self` action path; the kernel is single-threaded by
 /// construction, so a `RefCell` is the honest cell.
 ///
-/// Output frames are the flood. [`Self::open`] is zero unless a key or paste
-/// is waiting, and [`Self::observe`] returns before touching the map.
+/// Output frames are the flood. No sample is armed until a key or paste, and
+/// [`Self::observe`] returns before the map in that case.
 #[derive(Debug, Default)]
 pub struct EchoProbe {
     #[cfg(not(target_arch = "wasm32"))]
