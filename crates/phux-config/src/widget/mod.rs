@@ -197,10 +197,11 @@ pub struct WidgetCells {
 /// The advance width of `ch` in terminal cells, or `None` for a character
 /// that must never reach a VT emitter.
 ///
-/// Status-bar text (window names, cwd, `exec` output) is untrusted input on a
-/// path that writes escape sequences, so control characters are refused. Bidi
-/// formatting characters are refused too: zero-width, but they reorder
-/// everything drawn after them, and real RTL text does not need them.
+/// Chrome text (window names, pane titles set over OSC 2, cwd, `exec` output)
+/// is untrusted input on a path that writes escape sequences, so control
+/// characters are refused. Bidi formatting characters are refused too:
+/// zero-width, but they reorder everything drawn after them, so a pane could
+/// read as another's, and real RTL text does not need them.
 #[must_use]
 pub fn cell_width(ch: char) -> Option<usize> {
     if ch.is_control() || is_bidi_control(ch) {
@@ -209,8 +210,9 @@ pub fn cell_width(ch: char) -> Option<usize> {
     unicode_width::UnicodeWidthChar::width(ch)
 }
 
-/// The explicit bidi formatting characters: embeddings/overrides, isolates,
-/// and the standalone marks.
+/// The explicit bidi formatting characters: the embedding/override set
+/// (`U+202A`-`U+202E`), the isolates (`U+2066`-`U+2069`), and the
+/// standalone marks (`U+061C`, `U+200E`, `U+200F`).
 #[must_use]
 pub const fn is_bidi_control(ch: char) -> bool {
     matches!(

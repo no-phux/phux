@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type PhuxTerminal from "./PhuxTerminal";
+import Tour from "./tour/Tour";
 import { SITE, docsHref } from "../lib/site";
 import "./HeroDemo.css";
 
@@ -108,35 +109,7 @@ export default function HeroDemo({ wsUrl = "" }: { wsUrl?: string }) {
 
   return (
     <div className="hero-demo">
-      <a
-        className="hero-term terminal-surface"
-        href="/embed"
-        data-demo-launch
-        aria-label="Open terminal demo"
-      >
-        <span className="hero-term-bar">
-          <span>{SITE.name} <span className="hero-term-preview">/ preview</span></span>
-          <span className="hero-term-try">Open terminal <span aria-hidden="true">↗</span></span>
-        </span>
-        <span className="hero-term-panes">
-          <span className="hero-term-pane">
-            <span><i>$</i> cargo build --release</span>
-            <span className="dim">Compiling phux-server</span>
-            <span className="ok">Finished in 41s</span>
-            <span><i>$</i> <b className="caret" /></span>
-          </span>
-          <span className="hero-term-pane">
-            <span><i>$</i> claude</span>
-            <span className="dim">Planned the staging migration.</span>
-            <span className="ask">Apply it to staging? [y/n]</span>
-          </span>
-        </span>
-        <span className="hero-term-status">
-          <span>1 build</span>
-          <span>2 agent</span>
-          <span className="ask">1 needs input</span>
-        </span>
-      </a>
+      <Tour />
       <noscript>
         <p>
           <a href="/embed">Open the hosted shell</a> or{" "}

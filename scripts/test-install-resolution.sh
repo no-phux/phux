@@ -22,7 +22,7 @@ done
 printf '%s\n' "$url" >> "$RESOLUTION_CALLS"
 [ "${FAIL_NETWORK:-0}" = 0 ] || exit 22
 case "$url" in
-  */latest) printf '%s\n' 'https://github.com/no-phux/phux/releases/tag/cockpit-v99.0.0'; exit ;;
+  */latest) printf 'https://github.com/no-phux/phux/releases/tag/%s\n' "${LATEST_TAG:-cockpit-v99.0.0}"; exit ;;
   *'&page='*) page="${url##*&page=}" ;;
   *) page=1 ;;
 esac
@@ -37,6 +37,9 @@ EOF
 chmod 755 "$TMP/bin/curl"
 export RESOLUTION_CALLS="$TMP/calls" RESOLUTION_PAGES="$TMP/pages"
 printf '[]\n' > "$TMP/pages/empty.json"
+
+# Release-list pages fetched; the releases/latest redirect is counted apart.
+api_calls() { grep -c 'api.github.com' "$TMP/calls" || true; }
 
 resolve() {
   PATH="$TMP/bin:$PATH" "$SH" "$ROOT/scripts/$1" --dry-run --os darwin --arch arm64 "${@:2}"
@@ -53,6 +56,15 @@ expect_tag() {
 cp "$ROOT/scripts/fixtures/install-releases/mixed.json" "$TMP/pages/1.json"
 expect_tag install.sh v9.8.7
 expect_tag install-cockpit.sh cockpit-v9.8.7
+
+# The CLI takes a core tag straight from the releases/latest redirect, with no
+# API call; a redirect that names another stream falls through to the list.
+: > "$TMP/calls"
+LATEST_TAG=v9.9.9 expect_tag install.sh v9.9.9
+[[ $(api_calls) -eq 0 ]]
+grep -Fq '/releases/latest' "$TMP/calls"
+LATEST_TAG=v9.9.9/evil expect_tag install.sh v9.8.7
+LATEST_TAG=v09.9.9 expect_tag install.sh v9.8.7
 
 # A stream on a later page must be found, even after a short nonempty page.
 printf '[{"tag_name":"other-v1.0.0","draft":false,"prerelease":false}]\n' > "$TMP/pages/1.json"
@@ -75,14 +87,14 @@ for script in install.sh install-cockpit.sh; do
       "$prefix" "$first" "$prefix" "$highest" "$prefix" "$last" > "$TMP/pages/1.json"
     : > "$TMP/calls"
     expect_tag "$script" "$prefix$highest"
-    [[ $(wc -l < "$TMP/calls") -eq 2 ]]
+    [[ $(api_calls) -eq 2 ]]
   done
   printf '[{"tag_name":"%s1.0.9","draft":false,"prerelease":false}]\n' "$prefix" > "$TMP/pages/1.json"
   printf '[{"tag_name":"%s1.0.8","draft":false,"prerelease":false},{"tag_name":"%s1.0.10","draft":false,"prerelease":false},{"tag_name":"%s99.0.0","draft":true,"prerelease":false},{"tag_name":"%s99.0.0-alpha.1","draft":false,"prerelease":true},{"tag_name":"other-v999.0.0","draft":false,"prerelease":false}]\n' \
     "$prefix" "$prefix" "$prefix" "$prefix" > "$TMP/pages/2.json"
   : > "$TMP/calls"
   expect_tag "$script" "${prefix}1.0.10"
-  [[ $(wc -l < "$TMP/calls") -eq 3 ]]
+  [[ $(api_calls) -eq 3 ]]
   rm "$TMP/pages/2.json"
 done
 
@@ -141,7 +153,7 @@ for script in install.sh install-cockpit.sh; do
   done
   : > "$TMP/calls"
   expect_failure "$script" '10 pages'
-  [[ $(wc -l < "$TMP/calls") -eq 10 ]]
+  [[ $(api_calls) -eq 10 ]]
   # A match still scans the bounded window and selects the maximum on page 10.
   prefix=v
   [[ $script != install-cockpit.sh ]] || prefix=cockpit-v
@@ -150,7 +162,7 @@ for script in install.sh install-cockpit.sh; do
   printf '[{"tag_name":"%s99.0.0","draft":false,"prerelease":false}]\n' "$prefix" > "$TMP/pages/11.json"
   : > "$TMP/calls"
   expect_tag "$script" "${prefix}1.0.10"
-  [[ $(wc -l < "$TMP/calls") -eq 10 ]]
+  [[ $(api_calls) -eq 10 ]]
   rm "$TMP/pages/10.json" "$TMP/pages/11.json"
   # Size is bounded before parsing even a single huge JSON string/line.
   head -c 1048577 /dev/zero | tr '\0' ' ' > "$TMP/pages/1.json"

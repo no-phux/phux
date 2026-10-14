@@ -2,30 +2,47 @@
 //!
 //! The list behind the titlebar bell is its home. Agent and error entries also
 //! interrupt: the newest one peeks as a single card, and is offered to the
-//! system notification center while Phux is not the frontmost app.
+//! system notification center while Phux is not the frontmost app. A refusal
+//! of a command the user just ran peeks briefly and never enters the list.
 
 use std::time::{Duration, Instant};
 
 use phux_protocol::ResourceId;
 
+use crate::connection::AgentState;
+
 /// Entries kept, oldest dropped first.
 const LIMIT: usize = 100;
 /// How long the peek card stays up.
 const PEEK: Duration = Duration::from_secs(10);
+/// How long a refusal's card stays up.
+const REFUSAL_PEEK: Duration = Duration::from_secs(4);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Info,
-    Success,
+    Refusal,
     Error,
     Agent,
 }
 
 impl Kind {
     /// Agent and error entries peek, count as unread, and reach the system;
-    /// info and success wait in the list.
+    /// info waits in the list.
     pub fn interrupts(self) -> bool {
         matches!(self, Self::Agent | Self::Error)
+    }
+
+    fn peeks(self) -> bool {
+        self.interrupts() || self == Self::Refusal
+    }
+
+    fn lifetime(self) -> Duration {
+        if self == Self::Refusal {
+            REFUSAL_PEEK
+        } else {
+            PEEK
+        }
     }
 }
 
@@ -40,7 +57,7 @@ pub struct Notification {
     pub terminal: Option<ResourceId>,
     /// The agent state an agent entry reports, for its colour. The entry
     /// stands only while its agent still reports this state.
-    pub agent_state: Option<String>,
+    pub agent_state: Option<AgentState>,
     pub read: bool,
 }
 
@@ -65,7 +82,7 @@ impl Feed {
         title: String,
         body: String,
         terminal: ResourceId,
-        state: String,
+        state: AgentState,
     ) -> u64 {
         self.retain(|entry| {
             entry.kind != Kind::Agent || entry.terminal.as_ref() != Some(&terminal)
@@ -79,7 +96,7 @@ impl Feed {
         title: String,
         body: Option<String>,
         terminal: Option<ResourceId>,
-        agent_state: Option<String>,
+        agent_state: Option<AgentState>,
     ) -> u64 {
         self.next += 1;
         let id = self.next;
@@ -93,8 +110,11 @@ impl Feed {
             agent_state,
             read: !kind.interrupts(),
         });
-        if kind.interrupts() {
+        if kind.peeks() {
+            self.unpeek();
             self.peek = Some(id);
+        }
+        if kind.interrupts() {
             self.outbound.push(id);
         }
         let excess = self.items.len().saturating_sub(LIMIT);
@@ -105,9 +125,12 @@ impl Feed {
         id
     }
 
-    /// Newest first.
+    /// Newest first, without refusals.
     pub fn items(&self) -> impl Iterator<Item = &Notification> {
-        self.items.iter().rev()
+        self.items
+            .iter()
+            .rev()
+            .filter(|entry| entry.kind != Kind::Refusal)
     }
 
     pub fn get(&self, id: u64) -> Option<&Notification> {
@@ -115,7 +138,7 @@ impl Feed {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
+        self.items().next().is_none()
     }
 
     pub fn peek(&self) -> Option<&Notification> {
@@ -132,7 +155,7 @@ impl Feed {
             entry.read = true;
         }
         if self.peek == Some(id) {
-            self.peek = None;
+            self.unpeek();
         }
     }
 
@@ -140,7 +163,7 @@ impl Feed {
         for entry in &mut self.items {
             entry.read = true;
         }
-        self.peek = None;
+        self.unpeek();
     }
 
     pub fn clear(&mut self) {
@@ -157,11 +180,19 @@ impl Feed {
     pub fn expire_peek(&mut self, now: Instant) -> bool {
         let stale = self
             .peek()
-            .is_some_and(|entry| now.duration_since(entry.at) >= PEEK);
+            .is_some_and(|entry| now.duration_since(entry.at) >= entry.kind.lifetime());
         if stale {
-            self.peek = None;
+            self.unpeek();
         }
         stale
+    }
+
+    /// Take down the peek card; a refusal goes with it.
+    fn unpeek(&mut self) {
+        if let Some(id) = self.peek.take() {
+            self.items
+                .retain(|entry| entry.id != id || entry.kind != Kind::Refusal);
+        }
     }
 
     /// Interrupting entries posted since the last take that still stand.
@@ -190,7 +221,7 @@ mod tests {
     #[test]
     fn only_interrupting_entries_peek_and_count() {
         let mut feed = Feed::default();
-        feed.post(Kind::Success, "Session created", None);
+        feed.post(Kind::Info, "zsh ended", None);
         assert!(feed.peek().is_none());
         assert_eq!(feed.unread().count(), 0);
         let error = feed.post(Kind::Error, "Detached", Some("gone".into()));
@@ -215,9 +246,9 @@ mod tests {
             "a needs you".into(),
             "b".into(),
             terminal.clone(),
-            "blocked".into(),
+            AgentState::Blocked,
         );
-        let done = feed.post_agent("a finished".into(), "b".into(), terminal, "done".into());
+        let done = feed.post_agent("a finished".into(), "b".into(), terminal, AgentState::Done);
         assert_eq!(
             feed.items().map(|entry| entry.id).collect::<Vec<_>>(),
             vec![done]
@@ -256,6 +287,19 @@ mod tests {
         assert!(feed.expire_peek(Instant::now() + PEEK));
         assert!(feed.peek().is_none());
         assert_eq!(feed.unread().count(), 1);
+    }
+
+    #[test]
+    fn a_refusal_peeks_briefly_and_leaves_nothing_behind() {
+        let mut feed = Feed::default();
+        let refusal = feed.post(Kind::Refusal, "Nothing selected", None);
+        assert_eq!(feed.peek().map(|entry| entry.id), Some(refusal));
+        assert_eq!(feed.unread().count(), 0);
+        assert!(feed.is_empty());
+        assert!(feed.take_outbound().is_empty());
+        assert!(feed.expire_peek(Instant::now() + REFUSAL_PEEK));
+        assert!(feed.peek().is_none());
+        assert!(feed.get(refusal).is_none());
     }
 
     #[test]

@@ -54,7 +54,7 @@ pub(crate) struct RelayRoute {
 
 impl RelayRoute {
     /// The satellite-local wire id to stamp into the relayed frame.
-    pub(crate) fn local_wire_id(&self) -> WireResourceId {
+    pub(crate) const fn local_wire_id(&self) -> WireResourceId {
         WireResourceId::local(self.id)
     }
 }
@@ -167,7 +167,7 @@ mod tests {
         }
 
         let relays = HubRelays::default();
-        let (relay, _mailbox) = RelayHandle::new(host.clone());
+        let (relay, _mailbox) = RelayHandle::new(host);
         relays.insert(relay);
         server.set_hub_relays(relays);
         match server.resolve_resource(&satellite_id) {

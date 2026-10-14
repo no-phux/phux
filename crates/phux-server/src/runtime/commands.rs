@@ -1903,33 +1903,30 @@ impl AttachResourceSession<'_> {
         &self,
         bootstrap_id: phux_protocol::ids::BootstrapId,
     ) -> Result<crate::terminal_actor::NativeBootstrapReply, AttachResourceFailure> {
-        let (reply, reply_rx) = oneshot::channel();
-        self.terminal
-            .native_bootstrap
-            .send(crate::terminal_actor::NativeBootstrapRequest {
-                owner: self.client_id.0,
-                terminal_id: self.terminal_id.clone(),
-                stream_id: self.stream_id,
+        use crate::runtime::attach::NativeRequestFailure;
+        crate::runtime::attach::request_native_checkpoint(&self.terminal, |reply| {
+            crate::terminal_actor::NativeBootstrapRequest::full_budget(
+                self.client_id.0,
+                self.terminal_id.clone(),
+                self.stream_id,
                 bootstrap_id,
-                limits: self.bootstrap_limits,
-                max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-                max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
+                self.bootstrap_limits,
                 reply,
-            })
-            .await
-            .map_err(|_| {
+            )
+        })
+        .await
+        .map_err(|failure| match failure {
+            NativeRequestFailure::Unsent => {
                 AttachResourceFailure::internal("pane actor unavailable for native ATTACH_RESOURCE")
-            })?;
-        match reply_rx.await {
-            Ok(Ok(reply)) => Ok(reply),
-            Ok(Err(error)) => Err(AttachResourceFailure {
+            }
+            NativeRequestFailure::Dropped => {
+                AttachResourceFailure::internal("pane actor dropped native ATTACH_RESOURCE")
+            }
+            NativeRequestFailure::Refused(error) => AttachResourceFailure {
                 code: ErrorCode::CodecUnavailable,
                 message: format!("native ATTACH_RESOURCE failed: {error}"),
-            }),
-            Err(_) => Err(AttachResourceFailure::internal(
-                "pane actor dropped native ATTACH_RESOURCE",
-            )),
-        }
+            },
+        })
     }
 
     /// Publish the native checkpoint bootstrap, cross the publication fence,

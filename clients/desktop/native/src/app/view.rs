@@ -21,9 +21,9 @@ use gpui_kit::component::{IconName, Sizable};
 use phux_client_runtime::control::{PaneDescriptor, Status};
 use phux_protocol::ResourceKind;
 use phux_protocol::ids::ResourceKey;
-use phux_protocol::wire::frame::ResourceRecord;
+use phux_protocol::wire::frame::{ExecState, ResourceRecord};
 
-use crate::connection::AgentInfo;
+use crate::connection::{AgentInfo, AgentState, state_rank};
 use crate::settings::theme::Palette;
 use crate::workspace::layout::{self, Axis, DeskTab, LayoutNode, Placement};
 use crate::workspace::place::{self, SessionLine};
@@ -343,6 +343,7 @@ fn titlebar(
                     cx.listener(|desk, _, window, cx| desk.execute("split-down", window, cx)),
                 ))
                 .child(bell(desk, colors, cx))
+                .child(update_button(desk, cx))
                 .child(icon_button(
                     "palette",
                     IconName::Search,
@@ -351,6 +352,25 @@ fn titlebar(
                     cx.listener(|desk, _, window, cx| desk.execute("palette", window, cx)),
                 )),
         )
+}
+
+fn update_button(desk: &Desk, cx: &mut Context<Desk>) -> AnyElement {
+    let entity = desk.updates.clone();
+    let updater = entity.read(cx);
+    if !updater.desktop_available() || updater.development {
+        return div().into_any_element();
+    }
+    let busy = updater.busy;
+    Button::new("desktop-update-ready")
+        .label(if busy {
+            "Updating…"
+        } else {
+            "Update & restart"
+        })
+        .small()
+        .disabled(busy)
+        .on_click(move |_, _, cx| entity.update(cx, |updater, cx| updater.install_desktop(cx)))
+        .into_any_element()
 }
 
 fn tab_button(
@@ -364,12 +384,7 @@ fn tab_button(
     let selected = tab.id == active;
     let title = desk::tab_title(desk, tab);
     let agent = strongest_agent(desk, tab);
-    let panes = layout::placements(&tab.root).len();
-    let count = match (tab.zoomed_id.is_some(), panes) {
-        (true, panes) => Some(format!("⤢ {panes}")),
-        (false, 2..) => Some(panes.to_string()),
-        _ => None,
-    };
+    let count = tab.zoomed_id.is_some().then_some("⤢");
     let hover = from_hex(&colors.hover);
     let close_id = tab.id.clone();
     let drag_id = tab.id.clone();
@@ -400,7 +415,7 @@ fn tab_button(
                 .flex_shrink_0()
                 .size(px(7.))
                 .rounded_full()
-                .bg(from_hex(agent_swatch(&state)))
+                .bg(from_hex(agent_swatch(state)))
         }))
         .child(
             div()
@@ -501,7 +516,11 @@ fn sidebar_list(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl I
         .unwrap_or_default();
     let mut agent_panes: Vec<_> = panes
         .iter()
-        .filter(|pane| agents.contains_key(&pane.terminal_id))
+        .filter(|pane| {
+            agents
+                .get(&pane.terminal_id)
+                .is_some_and(AgentInfo::needs_you)
+        })
         .cloned()
         .collect();
     agent_panes.sort_by(|left, right| {
@@ -535,7 +554,7 @@ fn sidebar_list(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl I
         .gap(px(1.))
         .child(organization_bar(desk, colors, cx))
         .when(!agent_panes.is_empty(), |list| {
-            list.child(section_label("Agents", agent_panes.len(), colors))
+            list.child(section_label("Needs you", colors))
                 .children(agent_panes.iter().map(|pane| {
                     agent_row(desk, pane, agents.get(&pane.terminal_id), now, colors, cx)
                         .into_any_element()
@@ -560,10 +579,11 @@ fn organization_bar(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> An
         .link
         .as_ref()
         .is_some_and(|link| link.connection.organization());
-    if !enabled {
+    let count = desk.organization.selected.len();
+    let busy = desk.organization.busy();
+    if !enabled || (count == 0 && !busy && desk.organization.undo.is_none()) {
         return div().into_any_element();
     }
-    let count = desk.organization.selected.len();
     div()
         .flex()
         .items_center()
@@ -574,12 +594,12 @@ fn organization_bar(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> An
                 .flex_1()
                 .text_xs()
                 .text_color(from_hex(&colors.muted))
-                .child(if desk.organization.busy() {
-                    "Organizing…".to_owned()
+                .child(if busy {
+                    "Moving…".to_owned()
                 } else if count > 0 {
                     format!("{count} selected")
                 } else {
-                    "⌘ click to select work".to_owned()
+                    String::new()
                 }),
         )
         .when(count > 0, |row| {
@@ -660,11 +680,8 @@ fn session_groups(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> Vec<
             .filter_map(|pane| place::terminal_host(Some(&pane.terminal_id.to_string())))
             .collect();
         hosts.dedup();
-        match hosts.len() {
-            0 => None,
-            1 => hosts.pop(),
-            _ => Some("mixed remote".to_owned()),
-        }
+        // A session spread over several hosts belongs to none of them.
+        if hosts.len() == 1 { hosts.pop() } else { None }
     };
     let lines: Vec<SessionLine> = sessions
         .iter()
@@ -678,23 +695,24 @@ fn session_groups(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> Vec<
         !link.connection.projects.is_empty() || lines.iter().any(|line| line.host.is_some());
     let mut rows = Vec::new();
     if !intake.is_empty() {
-        rows.push(section_label("Inbox", intake.len(), colors).into_any_element());
+        rows.push(section_label("Inbox", colors).into_any_element());
         for session in intake {
             rows.push(session_block(desk, session.id, &session.name, colors, cx));
         }
     }
-    if !sessions.is_empty() {
-        rows.push(section_label("Sessions", sessions.len(), colors).into_any_element());
+    if !grouped && !sessions.is_empty() {
+        rows.push(section_label("Sessions", colors).into_any_element());
     }
     for group in place::group_by_project(&lines) {
         if grouped {
+            // Ungrouped sessions sort last; "Sessions" keeps them out of the group above.
             let title = match (&group.project, &group.host) {
                 (Some(project), Some(host)) => format!("{project} · {host}"),
                 (Some(project), None) => project.clone(),
                 (None, Some(host)) => host.clone(),
-                (None, None) => "Local sessions".to_owned(),
+                (None, None) => "Sessions".to_owned(),
             };
-            rows.push(section_label(&title, group.sessions.len(), colors).into_any_element());
+            rows.push(section_label(&title, colors).into_any_element());
         }
         for line in group.sessions {
             if let Some(session) = sessions.iter().find(|session| session.name == line.name) {
@@ -736,7 +754,7 @@ fn session_block(
         .as_ref()
         .and_then(|topology| topology.sessions.iter().find(|session| session.id == id))
         .and_then(|session| session.key);
-    let home = name == desk.session;
+    let organizing = link.connection.organization();
     let handle = cx.weak_entity();
     let menu = move |name: String| {
         let handle = handle.clone();
@@ -745,30 +763,33 @@ fn session_block(
             let kill = handle.clone();
             let select = handle.clone();
             let (rename_name, kill_name) = (name.clone(), name.clone());
-            let menu = menu
-                .item(PopupMenuItem::new("Select Work").on_click(move |_, _, cx| {
+            let menu = if organizing {
+                menu.item(PopupMenuItem::new("Select All").on_click(move |_, _, cx| {
                     let _ = select.update(cx, |desk, cx| desk.select_session_work(id, cx));
                 }))
-                .item(
-                    PopupMenuItem::new("Rename Session…").on_click(move |_, window, cx| {
-                        let current = rename_name.clone();
-                        let _ = rename.update(cx, |desk, cx| {
-                            desk.open_modal(
-                                Modal::Session {
-                                    create: false,
-                                    current,
-                                },
-                                window,
-                                cx,
-                            )
-                        });
-                    }),
-                );
+            } else {
+                menu
+            };
+            let menu = menu.item(PopupMenuItem::new("Rename Session…").on_click(
+                move |_, window, cx| {
+                    let current = rename_name.clone();
+                    let _ = rename.update(cx, |desk, cx| {
+                        desk.open_modal(
+                            Modal::Session {
+                                create: false,
+                                current,
+                            },
+                            window,
+                            cx,
+                        )
+                    });
+                },
+            ));
             if let Some(key) = intake {
                 let organized = handle.clone();
                 let intake_name = name.clone();
                 menu.item(
-                    PopupMenuItem::new("Mark Organized").on_click(move |_, _, cx| {
+                    PopupMenuItem::new("Move out of Inbox").on_click(move |_, _, cx| {
                         let name = intake_name.clone();
                         let _ = organized.update(cx, |desk, cx| desk.resolve_intake(key, name, cx));
                     }),
@@ -796,6 +817,7 @@ fn session_block(
                     .iter()
                     .filter(|resource| {
                         resource.session == key
+                            && resource.kind != ResourceKind::AgentSession
                             && !panes.iter().any(|pane| pane.key == Some(resource.key))
                     })
                     .cloned()
@@ -829,12 +851,6 @@ fn session_block(
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .child(name.to_owned()),
         )
-        .when(home, |row| {
-            row.child(pill("home", &colors.accent_wash, &colors.theme.accent))
-        })
-        .when(intake.is_some(), |row| {
-            row.child(pill("Imported", &colors.accent_wash, &colors.theme.accent))
-        })
         .child(
             div()
                 .text_xs()
@@ -909,18 +925,26 @@ fn record_row(
     let selected = desk.organization.selected.contains(&key);
     let kind = match resource.kind {
         ResourceKind::Terminal => "Terminal",
-        ResourceKind::AgentSession => "Agent conversation",
-        _ => "Resource",
+        _ => "Item",
     };
     let label = resource.name.clone().unwrap_or_else(|| kind.to_owned());
-    let state = resource
+    let state = match resource
         .activation
         .as_ref()
-        .map(|activation| format!("{:?}", activation.state))
-        .unwrap_or_else(|| "Not running".to_owned());
+        .map(|activation| activation.state)
+    {
+        Some(ExecState::Starting) => "Starting",
+        Some(ExecState::Running) => "Running",
+        Some(ExecState::Stopping) => "Stopping",
+        Some(ExecState::Completed) => "Exited",
+        Some(ExecState::Failed) => "Failed to start",
+        Some(ExecState::Lost | ExecState::Abandoned) => "Lost",
+        None => "Not running",
+    };
+    let keys = desk.organization.drag_keys(key);
     let drag = ResourceDrag {
-        keys: desk.organization.drag_keys(key),
-        label: format!("Move {label} · drop on a session"),
+        label: drag_label(&keys, &label),
+        keys,
     };
     div()
         .id(SharedString::from(format!("resource-{key}")))
@@ -955,9 +979,10 @@ fn pane_row(
     let terminal = pane.terminal_id.clone();
     let key = pane.key;
     let selected = key.is_some_and(|key| desk.organization.selected.contains(&key));
+    let title = desk.pane_title(Some(&pane.terminal_id));
     let drag = key.map(|key| {
         let keys = desk.organization.drag_keys(key);
-        let label = format!("Move {} · drop on a session", keys.len());
+        let label = drag_label(&keys, &title);
         ResourceDrag { keys, label }
     });
     let focused = desk.focused_terminal().as_ref() == Some(&terminal);
@@ -966,20 +991,13 @@ fn pane_row(
             .iter()
             .any(|placement| placement.terminal_id.as_ref() == Some(&terminal))
     });
-    let views = desk
-        .link
-        .as_ref()
-        .map(|link| link.workspace.views_of(&terminal))
-        .unwrap_or(0);
     let agent = desk.agent(&terminal).cloned();
-    let subtitle = Some(desk::short_path(pane.cwd.clone()))
-        .filter(|path| !path.is_empty())
-        .unwrap_or_else(|| terminal.to_string());
+    let subtitle = desk::short_path(pane.cwd.clone());
     let glyph = match agent.as_ref() {
         Some(info) => div()
             .size(px(8.))
             .rounded_full()
-            .bg(from_hex(agent_swatch(&info.state)))
+            .bg(from_hex(agent_swatch(info.state)))
             .into_any_element(),
         None => div()
             .text_xs()
@@ -1036,23 +1054,18 @@ fn pane_row(
                         } else {
                             &colors.subtext
                         }))
-                        .child(desk.pane_title(Some(&pane.terminal_id))),
+                        .child(title),
                 )
-                .child(
-                    div()
-                        .truncate()
-                        .text_xs()
-                        .text_color(from_hex(&colors.muted))
-                        .child(subtitle),
-                ),
+                .when(!subtitle.is_empty(), |column| {
+                    column.child(
+                        div()
+                            .truncate()
+                            .text_xs()
+                            .text_color(from_hex(&colors.muted))
+                            .child(subtitle),
+                    )
+                }),
         )
-        .when(views > 1, |row| {
-            row.child(pill(
-                &format!("{views} views"),
-                &colors.hover,
-                &colors.muted,
-            ))
-        })
         .when_some(drag, |row, drag| {
             row.on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
         })
@@ -1078,11 +1091,9 @@ fn agent_row(
 ) -> impl IntoElement {
     let terminal = pane.terminal_id.clone();
     let focused = desk.focused_terminal().as_ref() == Some(&terminal);
-    let state = agent
-        .map(|info| info.state.clone())
-        .unwrap_or_else(|| "unknown".into());
-    let tint = agent_swatch(&state);
-    let urgent = agent.is_some_and(|info| info.attention == "high");
+    let state = agent.map_or("", AgentInfo::word);
+    let tint = agent_swatch(agent.map_or(AgentState::Unknown, |info| info.state));
+    let urgent = agent.is_some_and(AgentInfo::urgent);
     let changed = agent.map(|info| info.changed_at_ms).unwrap_or(now);
     div()
         .id(SharedString::from(format!("agent-{terminal}")))
@@ -1557,7 +1568,7 @@ fn pane_view(
         .as_ref()
         .and_then(|id| desk.agent(id))
         .cloned();
-    let urgent = agent.as_ref().is_some_and(|info| info.attention == "high");
+    let urgent = agent.as_ref().is_some_and(AgentInfo::urgent);
     let fenced = placement.terminal_id.as_ref().is_some_and(|id| {
         desk.link
             .as_ref()
@@ -1578,7 +1589,7 @@ fn pane_view(
     } else if urgent {
         agent
             .as_ref()
-            .map(|info| from_hex(agent_swatch(&info.state)).opacity(0.75))
+            .map(|info| from_hex(agent_swatch(info.state)).opacity(0.75))
             .unwrap_or(glass.lit)
     } else if focused && leaves > 1 && !zoomed {
         glass.lit
@@ -1673,7 +1684,7 @@ fn pane_view(
         )
         .when(fenced && !controls, |card| {
             card.child(div().absolute().top(px(8.)).right(px(10.)).child(pill(
-                "⚡ delivery unknown",
+                "Typing may not have arrived",
                 &format!("{}22", colors.theme.warning),
                 &colors.theme.warning,
             )))
@@ -1704,11 +1715,6 @@ fn pane_controls(
         .as_ref()
         .and_then(|id| desk.agent(id))
         .cloned();
-    let views = placement
-        .terminal_id
-        .as_ref()
-        .and_then(|id| desk.link.as_ref().map(|link| link.workspace.views_of(id)))
-        .unwrap_or(0);
     let id = placement.id.clone();
     let hover_id = placement.id.clone();
     let focus_id = placement.id.clone();
@@ -1750,15 +1756,16 @@ fn pane_controls(
                 .flex_shrink_0()
                 .size(px(7.))
                 .rounded_full()
-                .bg(from_hex(agent_swatch(&info.state)))
+                .bg(from_hex(agent_swatch(info.state)))
         }))
         .child(
             div()
                 .flex_shrink_0()
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .text_color(from_hex(&colors.theme.foreground))
-                .child(match agent.as_ref() {
-                    Some(info) => format!("{} · {}", info.name, info.state),
+                .child(match agent.as_ref().map(|info| (info, info.word())) {
+                    Some((info, "")) => info.name.clone(),
+                    Some((info, word)) => format!("{} · {word}", info.name),
                     None => title,
                 }),
         )
@@ -1769,14 +1776,6 @@ fn pane_controls(
                     .truncate()
                     .text_color(from_hex(&colors.faint))
                     .child(cwd),
-            )
-        })
-        .when(views > 1, |row| {
-            row.child(
-                div()
-                    .flex_shrink_0()
-                    .text_color(from_hex(&colors.muted))
-                    .child(format!("{views} views")),
             )
         })
         .child(div().w(px(2.)))
@@ -1900,54 +1899,36 @@ fn header_button(
         }))
 }
 
+/// Exceptions only: an unhealthy connection, agents that need a person, a
+/// terminal still starting, and a pane scrolled away from live output.
 fn status_bar(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl IntoElement {
     let (label, tone) = desk.connection_label();
     let unhealthy = desk.unhealthy();
-    let error = unhealthy
-        .then(|| {
-            desk.connect_error.clone().or_else(|| {
-                desk.link
-                    .as_ref()
-                    .and_then(|link| link.connection.error.clone())
-            })
-        })
-        .flatten();
-    let frame = desk
+    let scrolled = desk
         .focused_view()
-        .and_then(|view| desk.client().and_then(|client| client.acquire_view(view)));
-    let geometry = frame
-        .as_ref()
-        .map(|frame| format!("{}×{}", frame.cols, frame.rows));
-    let scrolled = frame
-        .as_ref()
+        .and_then(|view| desk.client().and_then(|client| client.acquire_view(view)))
         .is_some_and(|frame| !frame.scrollbar.at_tail());
-    let fenced = desk.focused_terminal().is_some_and(|id| {
-        desk.link
-            .as_ref()
-            .is_some_and(|link| link.connection.fenced(&id))
-    });
     let pending = desk
         .link
         .as_ref()
         .map(|link| link.workspace.pending())
         .unwrap_or(0);
-    let mut counts: Vec<(String, usize)> = Vec::new();
-    if let Some(link) = desk.link.as_ref() {
-        for info in link.connection.agents.values() {
-            match counts.iter_mut().find(|(state, _)| *state == info.state) {
-                Some((_, count)) => *count += 1,
-                None => counts.push((info.state.clone(), 1)),
-            }
-        }
-    }
-    counts.sort_by_key(|(state, _)| agent_rank_state(state));
+    let waiting = desk
+        .link
+        .as_ref()
+        .map(|link| {
+            link.connection
+                .agents
+                .values()
+                .filter(|info| info.needs_you())
+                .count()
+        })
+        .unwrap_or(0);
     let tone_color = from_hex(match tone {
         Tone::Good => &colors.theme.success,
         Tone::Busy => &colors.theme.warning,
         Tone::Bad => &colors.theme.danger,
     });
-    let theme_name = colors.theme.name.clone();
-    let size = desk.prefs.font_size;
     let hover = from_hex(&colors.hover);
     div()
         .h(px(STATUS))
@@ -1959,63 +1940,54 @@ fn status_bar(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl Int
         .gap(px(12.))
         .text_xs()
         .text_color(from_hex(&colors.muted))
-        .child(
-            div()
-                .id("status-connection")
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .px(px(4.))
-                .rounded(px(4.))
-                .child(div().size(px(7.)).rounded_full().bg(tone_color))
-                .child(
-                    div()
-                        .text_color(if unhealthy {
-                            tone_color
-                        } else {
-                            from_hex(&colors.subtext)
-                        })
-                        .child(label),
-                )
-                .when(unhealthy, |status| {
-                    status
-                        .cursor_pointer()
-                        .hover(move |style| style.bg(hover))
-                        .on_click(
-                            cx.listener(|desk, _, window, cx| {
-                                desk.execute("reconnect", window, cx)
-                            }),
-                        )
-                }),
-        )
-        .children(error.map(|error| {
-            div()
-                .min_w_0()
-                .truncate()
-                .text_color(from_hex(&colors.theme.danger))
-                .child(error)
-        }))
-        .when(pending > 0, |bar| bar.child("starting terminal…"))
-        .when(fenced, |bar| {
+        .when(tone != Tone::Good, |bar| {
             bar.child(
                 div()
-                    .text_color(from_hex(&colors.theme.warning))
-                    .child("⚡ input waiting for presented output"),
+                    .id("status-connection")
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .px(px(4.))
+                    .rounded(px(4.))
+                    .child(div().size(px(7.)).rounded_full().bg(tone_color))
+                    .child(div().text_color(tone_color).child(label))
+                    .when(unhealthy, |status| {
+                        status
+                            .cursor_pointer()
+                            .hover(move |style| style.bg(hover))
+                            .on_click(cx.listener(|desk, _, window, cx| {
+                                desk.execute("reconnect", window, cx)
+                            }))
+                    }),
             )
         })
-        .children(counts.into_iter().map(|(state, count)| {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(4.))
-                .child(
-                    div()
-                        .size(px(6.))
-                        .rounded_full()
-                        .bg(from_hex(agent_swatch(&state))),
-                )
-                .child(format!("{count} {state}"))
-        }))
+        .when(waiting > 0, |bar| {
+            bar.child(
+                div()
+                    .id("status-agents")
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .px(px(4.))
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(hover))
+                    .child(
+                        div()
+                            .size(px(6.))
+                            .rounded_full()
+                            .bg(from_hex(agent_swatch(AgentState::Blocked))),
+                    )
+                    .child(format!(
+                        "{waiting} {} you",
+                        if waiting == 1 { "needs" } else { "need" }
+                    ))
+                    .on_click(
+                        cx.listener(|desk, _, window, cx| desk.execute("attention", window, cx)),
+                    ),
+            )
+        })
+        .when(pending > 0, |bar| bar.child("starting terminal…"))
         .child(div().flex_grow(1.))
         .when(scrolled, |bar| {
             bar.child(
@@ -2032,17 +2004,6 @@ fn status_bar(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl Int
                     ),
             )
         })
-        .children(geometry.map(|geometry| div().font_family("Menlo").child(geometry)))
-        .child(
-            div()
-                .id("status-settings")
-                .px(px(4.))
-                .rounded(px(4.))
-                .cursor_pointer()
-                .hover(move |style| style.bg(hover))
-                .child(format!("{theme_name} · {size}pt"))
-                .on_click(cx.listener(|desk, _, window, cx| desk.execute("settings", window, cx))),
-        )
 }
 
 /// The titlebar's way into the notification list, with the unread count.
@@ -2093,14 +2054,12 @@ fn bell(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl IntoEleme
 pub(super) fn notification_edge(entry: &Notification, colors: &Palette) -> String {
     match entry.kind {
         Kind::Error => colors.theme.danger.clone(),
-        Kind::Success => colors.theme.success.clone(),
         Kind::Agent => entry
             .agent_state
-            .as_deref()
             .map(agent_swatch)
             .map(str::to_owned)
             .unwrap_or_else(|| colors.theme.warning.clone()),
-        Kind::Info => colors.theme.accent.clone(),
+        Kind::Info | Kind::Refusal => colors.theme.accent.clone(),
     }
 }
 
@@ -2180,7 +2139,7 @@ fn peek_card(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> Option<im
     )
 }
 
-fn section_label(title: &str, count: usize, colors: &Palette) -> gpui::Div {
+fn section_label(title: &str, colors: &Palette) -> gpui::Div {
     div()
         .px(px(8.))
         .pt(px(8.))
@@ -2191,7 +2150,6 @@ fn section_label(title: &str, count: usize, colors: &Palette) -> gpui::Div {
         .font_weight(gpui::FontWeight::BOLD)
         .text_color(from_hex(&colors.faint))
         .child(div().flex_1().child(title.to_uppercase()))
-        .child(count.to_string())
 }
 
 fn pill(text: &str, background: &str, color: &str) -> gpui::Div {
@@ -2227,43 +2185,35 @@ fn icon_button(
     )
 }
 
+/// What a sidebar drag carries: the row's own name, or how many terminals.
+fn drag_label(keys: &[ResourceKey], name: &str) -> String {
+    match keys.len() {
+        0 | 1 => name.to_owned(),
+        count => format!("{count} terminals"),
+    }
+}
+
 fn agent_rank(agent: Option<&AgentInfo>) -> u8 {
-    agent_rank_state(agent.map(|info| info.state.as_str()).unwrap_or("unknown"))
+    state_rank(agent.map_or(AgentState::Unknown, |info| info.state))
 }
 
-fn agent_rank_state(state: &str) -> u8 {
-    match state {
-        "blocked" => 0,
-        "done" => 1,
-        "working" => 2,
-        "idle" => 3,
-        _ => 4,
-    }
-}
-
-fn strongest_agent(desk: &Desk, tab: &DeskTab) -> Option<String> {
-    let order = ["blocked", "done", "working", "idle", "unknown"];
-    let states: Vec<_> = layout::placements(&tab.root)
+/// The most pressing agent state in `tab`, only when it needs a person.
+fn strongest_agent(desk: &Desk, tab: &DeskTab) -> Option<AgentState> {
+    layout::placements(&tab.root)
         .into_iter()
-        .filter_map(|placement| {
-            placement
-                .terminal_id
-                .as_ref()
-                .and_then(|id| desk.agent(id))
-                .map(|info| info.state.clone())
-        })
-        .collect();
-    order
-        .iter()
-        .find(|state| states.iter().any(|item| item == *state))
-        .map(|state| (*state).to_owned())
+        .filter_map(|placement| placement.terminal_id.as_ref().and_then(|id| desk.agent(id)))
+        .filter(|info| info.needs_you())
+        .map(|info| info.state)
+        .min_by_key(|state| state_rank(*state))
 }
 
-pub(super) fn agent_swatch(state: &str) -> &'static str {
-    for (name, color) in crate::settings::theme::agent_colors() {
-        if name == state {
-            return color;
-        }
+/// Agent lifecycle colours stay fixed across themes.
+pub(super) fn agent_swatch(state: AgentState) -> &'static str {
+    match state {
+        AgentState::Working => "#f9e2af",
+        AgentState::Blocked => "#f38ba8",
+        AgentState::Done => "#94e2d5",
+        AgentState::Idle => "#a6e3a1",
+        AgentState::Unknown => "#7f849c",
     }
-    "#7f849c"
 }

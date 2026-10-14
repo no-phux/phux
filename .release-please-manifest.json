@@ -1,7 +1,7 @@
 {
-  ".": "0.60.2",
+  ".": "0.63.0",
   "clients/cockpit": "0.37.3",
-  "clients/desktop": "0.3.0",
+  "clients/desktop": "0.3.2",
   "integrations/pi": "0.5.0",
   "integrations/opencode-v2": "0.4.0",
   "integrations/claude": "0.5.0",

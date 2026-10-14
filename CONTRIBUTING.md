@@ -34,17 +34,18 @@ to coordinate; you do not need Beads.
 
 ## Agent entrypoints
 
-These are the files that configure coding agents in this repo. Everything
-else at the root is product source, not an agent zoo.
+These are the files that configure coding agents in this repo. Each one is
+phux-specific; personal harness settings belong in your user profile, not
+the repository.
 
 | File | Job |
 |---|---|
 | [`AGENTS.md`](./AGENTS.md) | Shell hygiene, worktrees, beads. Most coding agents load this. |
 | [`CLAUDE.md`](./CLAUDE.md) | Architecture map. Claude Code also loads this. |
-| [`.claude/settings.json`](./.claude/settings.json) | Claude Code session hooks (`bd prime`). |
-| [`.codex/hooks.json`](./.codex/hooks.json) | Codex session hooks (`bd codex-hook`). |
 | [`.claude-plugin/marketplace.json`](./.claude-plugin/marketplace.json) | The Claude Code plugin this repo ships. |
-| [`.agents/skills`](./.agents/skills) | Standard project skills: Beads workflow guidance and the canonical, versioned phux CLI/MCP guides compiled into releases. |
+| [`.grok-plugin/marketplace.json`](./.grok-plugin/marketplace.json) | The Grok plugin this repo ships. |
+| [`.pi/settings.json`](./.pi/settings.json) | Loads the in-tree pi integration when pi runs here. |
+| [`.agents/skills`](./.agents/skills) | The canonical, versioned phux CLI/MCP guides compiled into releases. |
 
 ## Bar for any change
 
@@ -117,14 +118,15 @@ Product recipes stay out of the root `justfile` so CI can route by module.
 | e2e lane coverage | `just e2e-lane-check` | same recipe |
 | Homebrew formula | `just formula-check` | same recipe |
 | toolchain pins | `just toolchain-check` | same recipe; `just toolchain-parity` additionally compares the resolved Nix and Mise environments |
-| unit tests | `NEXTEST_PROFILE=ci just test` (default features; PRs may pass `PHUX_NEXTEST_FILTERSET`) | `just test`; `just test-cargo` if nextest is unavailable |
+| unit tests | `NEXTEST_PROFILE=ci just test`, split across the `test` and `test (integration)` jobs by `PHUX_UNIT_PART=lib`/`integration` (default features; PRs may pass `PHUX_NEXTEST_FILTERSET`) | `just test` (both halves); `just test-cargo` if nextest is unavailable |
 | workflow/setup contracts | `just workflow-check` (includes `just shellcheck`) | same (includes `just setup-check`'s helper tests) |
 | agent integration packages | `bash scripts/ci/agent-integrations.sh` | `just agent-integrations-check` (same script); `just integration-check <package>` for a scoped loop |
 | Zig archive pins | `scripts/check-zig-pins.sh` | `just zig-pin-check` |
 | install surface | `scripts/check-install-surface.sh` | `just install-surface-check` |
 | build-cache portability | `just cache-portable-check` | same recipe |
 | embedded skill contract | `just skill-contract` | same |
-| fast e2e + perf gates | `just e2e` | `just e2e`, via `just ci-full` |
+| fast e2e + perf gates | `just e2e` (`e2e` job) | `just e2e`, via `just ci-full` |
+| UniFFI binding | `just binding-uniffi-test` (`uniffi` job) | same, via `just ci` |
 | instruction counts | `perf-icount` job in `ci.yml` (`just perf-icount`) | `just perf-icount` inside `nix develop` on x86_64; see [Performance CI](./docs/performance-ci.md) |
 | agent example smoke | `just agents-fleet-smoke` | same, via `just ci-full` |
 

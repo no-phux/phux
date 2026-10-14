@@ -1082,8 +1082,8 @@ impl Client {
                 detail,
                 publication.resource_id.clone(),
             );
-            effect.stream_id = batch.stream.stream_id.get();
-            effect.bootstrap_id = batch.stream.bootstrap_id.get();
+            effect.stream_id = publication.stream.stream_id.get();
+            effect.bootstrap_id = publication.stream.bootstrap_id.get();
             effect.seq = batch.seq;
             effect.bytes = batch.jsonl.into_bytes();
             self.owned_effects.push(effect);

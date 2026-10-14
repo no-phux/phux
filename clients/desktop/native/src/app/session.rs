@@ -30,6 +30,7 @@ struct Opened {
 }
 
 pub struct Desktop {
+    pub(crate) updates: Entity<super::updates::Updater>,
     phux: PathBuf,
     socket: PathBuf,
     home_session: String,
@@ -64,7 +65,9 @@ impl Desktop {
             KeyBinding::new("shift-tab", NoAction, Some("PhuxTerminal")),
             KeyBinding::new("tab", OpenPathDirectory, Some("PathPicker > Input")),
         ]);
+        let updates = cx.new(|_| super::updates::Updater::new());
         let desktop = cx.new(|_| Self {
+            updates,
             phux: PathBuf::new(),
             socket: PathBuf::new(),
             home_session: String::new(),
@@ -150,6 +153,9 @@ impl Desktop {
             self.open_window(request, focus, false, cx)?
         };
         self.publish_menus(cx);
+        self.updates.update(cx, |updater, cx| {
+            updater.start(self.phux.clone(), self.socket.clone(), cx)
+        });
         Ok(handle)
     }
 
@@ -368,6 +374,7 @@ impl Desktop {
         cx: &mut Context<Self>,
     ) -> anyhow::Result<WindowHandle<Root>> {
         let desktop = cx.entity();
+        let updates = self.updates.clone();
         let phux = self.phux.clone();
         let socket = self.socket.clone();
         let bounds = if quick {
@@ -397,7 +404,9 @@ impl Desktop {
                 ..WindowOptions::default()
             },
             cx,
-            move |window, cx| cx.new(|cx| Desk::open(desktop, phux, socket, request, window, cx)),
+            move |window, cx| {
+                cx.new(|cx| Desk::open(desktop, updates, phux, socket, request, window, cx))
+            },
         )?;
         let handle = any
             .downcast::<Root>()
@@ -411,25 +420,9 @@ impl Desktop {
         Ok(handle)
     }
 
-    /// Menu items name [`Run`] actions; the platform menu shows each one's bound chord.
+    /// Menu items name [`Run`] actions; the platform menu shows each one's bound
+    /// chord. The palette holds the rest of the catalog.
     fn publish_menus(&self, cx: &mut App) {
-        let mut items = Vec::new();
-        let mut group = "";
-        for command in crate::settings::builtin_commands() {
-            if command.group != group {
-                if !items.is_empty() {
-                    items.push(MenuItem::separator());
-                }
-                group = command.group;
-            }
-            if command.is_tab_jump() {
-                continue;
-            }
-            items.push(MenuItem::action(
-                command.title.to_owned(),
-                Run::new(command.id),
-            ));
-        }
         cx.set_menus(vec![
             Menu::new("Phux").items([
                 MenuItem::action("Settings…", Run::new("settings")),
@@ -438,10 +431,12 @@ impl Desktop {
             ]),
             Menu::new("File").items([
                 MenuItem::action("New Terminal", Run::new("new")),
+                MenuItem::action("New Session…", Run::new("new-session")),
                 MenuItem::action("New Window", Run::new("new-window")),
                 MenuItem::action("Open Folder…", Run::new("folder")),
                 MenuItem::separator(),
                 MenuItem::action("Close Pane", Run::new("close")),
+                MenuItem::action("Close Tab", Run::new("close-tab")),
             ]),
             Menu::new("Edit").items([
                 MenuItem::action("Copy", Run::new("copy")),
@@ -454,7 +449,16 @@ impl Desktop {
                 MenuItem::action("Command Palette", Run::new("palette")),
                 MenuItem::action("Toggle Quick Terminal", Run::new("quick-terminal")),
             ]),
-            Menu::new("Terminal").items(items),
+            Menu::new("Terminal").items([
+                MenuItem::action("Split Right", Run::new("split-right")),
+                MenuItem::action("Split Down", Run::new("split-down")),
+                MenuItem::action("Zoom Pane", Run::new("zoom")),
+                MenuItem::separator(),
+                MenuItem::action("Clear Screen", Run::new("clear")),
+                MenuItem::action("Jump to Agent Needing Attention", Run::new("attention")),
+                MenuItem::separator(),
+                MenuItem::action("Terminate Terminal Process…", Run::new("terminate")),
+            ]),
         ]);
     }
 

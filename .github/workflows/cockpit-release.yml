@@ -414,7 +414,8 @@ jobs:
             gh release edit "${RELEASE_TAG}" --notes-file "${notes}"
           fi
           if [[ "${WAS_DRAFT}" == "true" ]]; then
-            gh release edit "${RELEASE_TAG}" --draft=false
+            # Never "Latest": releases/latest must keep naming the CLI release.
+            gh release edit "${RELEASE_TAG}" --draft=false --latest=false
           fi
 
       - name: Remove temporary signing credentials

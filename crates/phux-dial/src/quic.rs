@@ -117,15 +117,6 @@ pub async fn dial(d: &QuicDial) -> Result<QuicConnection, DialError> {
     dial_inner(d, QUIC_ALPN, d.identity.as_ref()).await
 }
 
-/// [`dial`] with an explicit TLS identity, overriding [`QuicDial::identity`];
-/// never reads the environment.
-pub async fn dial_with_identity(
-    d: &QuicDial,
-    identity: &TlsClientIdentity,
-) -> Result<QuicConnection, DialError> {
-    dial_inner(d, QUIC_ALPN, Some(identity)).await
-}
-
 /// [`dial`] offering an explicit ALPN, for legs that negotiate a distinct
 /// protocol (the ADR-0051 connector passes [`QUIC_RELAY_ALPN`]).
 pub async fn dial_with_alpn(d: &QuicDial, alpn: &[u8]) -> Result<QuicConnection, DialError> {
@@ -515,22 +506,19 @@ mod tests {
         let (certificate, private_key) = (dir.path().join("client.pem"), dir.path().join("c.key"));
         crate::cert::ensure_self_signed(&certificate, &private_key).expect("client pair");
 
-        let dialed = dial_with_identity(
-            &QuicDial {
-                addr,
-                server_name: "localhost".to_owned(),
-                token: Some(vec![0xAB; 32]),
-                trust: CertTrust::Pinned(
-                    crate::cert::cert_fingerprint(&dir.path().join("cert.pem")).expect("pin"),
-                ),
-                identity: None,
-                inner: None,
-            },
-            &TlsClientIdentity::RequirePaired {
+        let dialed = dial(&QuicDial {
+            addr,
+            server_name: "localhost".to_owned(),
+            token: Some(vec![0xAB; 32]),
+            trust: CertTrust::Pinned(
+                crate::cert::cert_fingerprint(&dir.path().join("cert.pem")).expect("pin"),
+            ),
+            identity: Some(TlsClientIdentity::RequirePaired {
                 certificate,
                 private_key,
-            },
-        )
+            }),
+            inner: None,
+        })
         .await;
         let Err(err) = dialed else {
             panic!("a listener that did not ask for the certificate was accepted");

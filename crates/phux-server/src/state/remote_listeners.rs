@@ -18,7 +18,7 @@ impl ServerState {
 
     /// Whether any remote listener slot has been recorded yet.
     #[must_use]
-    pub fn has_remote_listener_report(&self) -> bool {
+    pub const fn has_remote_listener_report(&self) -> bool {
         !self.remote_listeners.listeners.is_empty()
     }
 }

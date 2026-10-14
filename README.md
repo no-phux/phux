@@ -65,25 +65,26 @@ with their own layouts and workflows.
 ## Install
 
 ```sh
+curl -fsSL https://phux.sh/install | sh
+```
+
+Or with Homebrew:
+
+```sh
 brew trust --tap no-phux/tap
 brew install no-phux/tap/phux
 ```
 
-Or use the verified release installer:
-
-```sh
-curl -fsSL https://phux.sh/install | sh
-```
-
 Release builds support macOS arm64, Linux x86_64, and Linux arm64. Windows is
-not supported. For the native macOS Cockpit:
+not supported. The macOS desktop app installs the CLI with it:
 
 ```sh
-curl -fsSL https://phux.sh/install-cockpit | sh
+curl -fsSL https://phux.sh/install-desktop | sh
 ```
 
-Run `phux` to start. Prefix is `Ctrl-A`; `Ctrl-A d` detaches. Other channels
-and source builds: [Install](./docs/INSTALL.md).
+Run `phux` to start. Prefix is `Ctrl-A`; `Ctrl-A d` detaches. `phux update`
+keeps it current. Options, Cockpit, and source builds:
+[Install](./docs/INSTALL.md).
 
 ## First minute
 

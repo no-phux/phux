@@ -1001,11 +1001,10 @@ pub fn colored_burst_bytes(cols: u16, rows: u16, gens: u16) -> Vec<u8> {
 /// `cat` precomputed `burst` bytes (from [`colored_burst_bytes`]), then
 /// idle so the pane stays up for teardown.
 ///
-/// The burst used to be a nested `/bin/sh` concat loop. Under CPU load
-/// that loop took longer than the converge wait, so the gate failed
-/// "colored burst never completed" without ever checking the ceiling
-/// (phux-iuxr). `cat` of precomputed bytes is the same VT shape with an
-/// emit cost that does not track host load. The gate file (same pattern
+/// `cat` of precomputed bytes emits the burst at a cost that does not track
+/// host load. A shell loop generating it under CPU load outlasts the
+/// converge wait, and the gate fails "colored burst never completed"
+/// without ever checking the ceiling (phux-iuxr). The gate file (same pattern
 /// as the lagged-resync fixtures) starts the dump only after attach, so
 /// a fast `cat` cannot land in the opening snapshot.
 #[must_use]

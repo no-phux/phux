@@ -37,7 +37,13 @@ try {
   await page.goto(base);
   assert.equal(await page.getByRole("heading", { level: 1 }).innerText(), "phux");
   assert.equal(await page.locator("main form, #how-it-works").count(), 0, "no homepage signup or explainer");
-  assert.equal(await page.locator(".hero-term").count(), 1, "one product demo");
+  assert.equal(await page.locator(".tour").count(), 1, "one product tour");
+  const chapters = page.getByRole("group", { name: "Tour chapters" }).getByRole("button");
+  assert.equal(await chapters.count(), 4, "four tour chapters");
+  await chapters.nth(2).click();
+  assert.equal(await chapters.nth(2).getAttribute("aria-pressed"), "true", "chapter selection");
+  await page.getByRole("button", { name: "Pause tour" }).click();
+  assert.ok(await page.getByRole("button", { name: "Play tour" }).isVisible(), "tour pauses");
   assert.equal(await page.locator("main .features h2").count(), 3);
   assert.equal(await page.getByRole("link", { name: /Let agents work/ }).getAttribute("href"), "https://docs.phux.sh/consumers/getting-started");
   await page.getByRole("button", { name: "Copy install command" }).click();
@@ -67,14 +73,22 @@ try {
   assert.equal(await page.getByRole("link", { name: "release mailing list" }).getAttribute("href"), "/more#beta");
   assert.deepEqual(errors, [], "no browser exceptions");
   await context.close();
+  const stillContext = await browser.newContext({ reducedMotion: "reduce" });
+  const stillPage = await stillContext.newPage();
+  await stillPage.goto(base);
+  await stillPage.locator("astro-island:not([ssr]) .tour").waitFor();
+  assert.equal(await stillPage.locator(".tour-play").count(), 0, "reduced motion does not autoplay");
+  assert.match(await stillPage.locator(".tour-terminal").innerText(), /Finished/, "reduced motion shows the settled chapter");
+  await stillContext.close();
   const staticContext = await browser.newContext({ javaScriptEnabled: false });
   const staticPage = await staticContext.newPage();
   await staticPage.goto(base);
   assert.equal(await staticPage.getByRole("heading", { level: 1 }).innerText(), "phux");
   assert.ok(await staticPage.locator("#install code").isVisible());
   assert.equal(await staticPage.getByRole("link", { name: /Try it in your browser/ }).getAttribute("href"), "/embed");
+  assert.match(await staticPage.locator(".tour-terminal").innerText(), /Finished/, "no-JS tour shows a settled scene");
   await staticContext.close();
-  console.log(`PASS home: copy, demo open/close/focus, 320/390/768/1280px, no-JS, secondary content, idle resource budget. Screenshots: ${artifacts}`);
+  console.log(`PASS home: copy, tour chapters/pause/reduced motion, demo open/close/focus, 320/390/768/1280px, no-JS, secondary content, idle resource budget. Screenshots: ${artifacts}`);
 } finally {
   await browser.close();
   server.stop(true);

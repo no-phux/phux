@@ -6,44 +6,36 @@ use std::io::{self, Write};
 
 use super::state::{PredictionKind, PredictionState};
 
-/// Stateless overlay writer.
-#[derive(Debug, Default)]
-pub struct Overlay;
-
-impl Overlay {
-    /// Paint every pending prediction in `state` onto `out` and return the
-    /// number of cells painted (flushing only when non-zero).
-    ///
-    /// Predictions are pane-local; `origin` is the pane's top-left in the
-    /// outer viewport.
-    #[allow(clippy::unused_self, reason = "stable call shape")]
-    pub fn render(
-        &self,
-        state: &PredictionState,
-        origin: (u16, u16),
-        out: &mut impl Write,
-    ) -> io::Result<usize> {
-        let (ox, oy) = origin;
-        let mut count = 0;
-        for p in state.pending() {
-            // Cursor-motion predictions paint no cell.
-            if matches!(
-                p.kind,
-                PredictionKind::Newline | PredictionKind::CursorLeft | PredictionKind::CursorRight
-            ) {
-                continue;
-            }
-            write_cup(out, p.row.saturating_add(oy), p.col.saturating_add(ox))?;
-            out.write_all(b"\x1b[0m\x1b[4m")?;
-            out.write_all(p.text.as_bytes())?;
-            out.write_all(b"\x1b[0m")?;
-            count += 1;
+/// Paint every pending prediction in `state` onto `out` and return the
+/// number of cells painted (flushing only when non-zero).
+///
+/// Predictions are pane-local; `origin` is the pane's top-left in the outer
+/// viewport.
+pub fn render_overlay(
+    state: &PredictionState,
+    origin: (u16, u16),
+    out: &mut impl Write,
+) -> io::Result<usize> {
+    let (ox, oy) = origin;
+    let mut count = 0;
+    for p in state.pending() {
+        // Cursor-motion predictions paint no cell.
+        if matches!(
+            p.kind,
+            PredictionKind::Newline | PredictionKind::CursorLeft | PredictionKind::CursorRight
+        ) {
+            continue;
         }
-        if count > 0 {
-            out.flush()?;
-        }
-        Ok(count)
+        write_cup(out, p.row.saturating_add(oy), p.col.saturating_add(ox))?;
+        out.write_all(b"\x1b[0m\x1b[4m")?;
+        out.write_all(p.text.as_bytes())?;
+        out.write_all(b"\x1b[0m")?;
+        count += 1;
     }
+    if count > 0 {
+        out.flush()?;
+    }
+    Ok(count)
 }
 
 fn write_cup(out: &mut impl Write, row: u16, col: u16) -> io::Result<()> {
@@ -75,9 +67,7 @@ mod tests {
     fn empty_queue_writes_nothing() {
         let state = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
         let mut buf = Vec::new();
-        let n = Overlay
-            .render(&state, (0, 0), &mut buf)
-            .expect("overlay render");
+        let n = render_overlay(&state, (0, 0), &mut buf).expect("overlay render");
         assert_eq!(n, 0);
         assert!(buf.is_empty());
     }
@@ -90,7 +80,7 @@ mod tests {
         state.predict_key(&key_text("a"));
         state.predict_key(&key_text("b"));
         let mut buf = Vec::new();
-        let n = Overlay.render(&state, (0, 13), &mut buf).expect("render");
+        let n = render_overlay(&state, (0, 13), &mut buf).expect("render");
         assert_eq!(n, 2);
         assert_eq!(
             String::from_utf8(buf).expect("utf8"),

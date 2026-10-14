@@ -29,4 +29,5 @@ pub mod perf;
 mod presentation;
 pub mod settings;
 pub mod terminal;
+mod updates;
 pub mod workspace;

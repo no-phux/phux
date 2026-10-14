@@ -1,7 +1,6 @@
 # phux desktop
 
-Install the GPUI desktop client on Apple-silicon macOS 27 or later with the
-[phux CLI](https://phux.sh/install) already installed:
+Install the GPUI desktop client on Apple-silicon macOS 27 or later:
 
 ```sh
 curl -fsSL https://phux.sh/install-desktop | sh
@@ -9,7 +8,9 @@ curl -fsSL https://phux.sh/install-desktop | sh
 
 The installer selects only published `desktop-vX.Y.Z` releases,
 verifies the ZIP checksum and app signature, and installs `Phux.app` plus a
-`phux-desktop` launcher. It never replaces the CLI or stops its server.
+`phux-desktop` launcher. It installs the [phux CLI](https://phux.sh/install)
+first when none is found, but never replaces an existing CLI or stops its
+server.
 Run it again to update; pin or roll back to a published version with
 `sh -s -- --version X.Y.Z` after the pipe. `--applications-dir` and
 `--bin-dir` select alternate destinations. Releases are ad-hoc signed, **not
@@ -65,6 +66,33 @@ server behind the supervisor.
 
 ## Using it
 
+### Updates
+
+**Settings > Updates** checks releases at launch and every six hours without
+blocking terminal input. Turn automatic checks off or use **Check now** at any
+time. **Update & restart** downloads and verifies the desktop bundle, replaces
+this copy of `Phux.app` with rollback on installation failure, and reopens it.
+The titlebar shows the same button when a desktop update is available. Quitting
+the desktop detaches; it does not stop your server-owned terminals.
+
+Choose **Stable** (the latest published desktop release) or **Next** (verified
+main builds). You can switch back to Stable even from a newer Next build.
+Desktop and runtime channels are independent.
+
+**Manage phux updates** is off by default. When enabled, **Update phux & hand
+off server** uses the installed CLI's checksum-verified updater and graceful
+handoff, then reconnects the windows. It never silently closes agent sessions
+to force a handoff. Homebrew, Cargo and Nix installations show their native
+update command instead of replacing package-managed files. A refused handoff
+offers **Retry server handoff** without downloading the runtime again.
+Turning management
+off leaves the CLI and running server untouched; you regain control of updates.
+Only this Mac's runtime is managed, not remote hosts.
+
+Update preferences live in `$XDG_CONFIG_HOME/phux-desktop/updates.json` (default
+`~/.config/phux-desktop/updates.json`). Bare development executables and launches
+with explicit CLI/socket/profile overrides cannot install updates.
+
 The window is a sidebar (agents by urgency, then every session and its panes),
 a tab bar under the traffic lights, split panes, and a status bar. Command-key
 chords belong to the app; everything else reaches the terminal.
@@ -116,7 +144,7 @@ OSC 133, as Ghostty's shell integration does), `select_all`, and
 chord (the selection clipboard is the pane's own selection; copies are plain
 text). `write_screen_file`, `write_scrollback_file` and `write_selection_file`
 write plain text to a private file under `$TMPDIR`, then copy or paste its
-path or open it; the palette's **Open … as a File** commands do the last. A `global:` bind to `toggle_quick_terminal` becomes a
+path or open it; the palette's **Open Scrollback as a File** does the last for scrollback. A `global:` bind to `toggle_quick_terminal` becomes a
 system-wide hotkey for a quick-terminal window that keeps its own terminal
 between toggles. If Ghostty is still running it holds that hotkey too, so quit it
 or rebind one of them. Settings > Ghostty re-applies the config, reloads it,

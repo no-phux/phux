@@ -441,6 +441,32 @@ pub struct NativeBootstrapRequest {
     pub reply: oneshot::Sender<Result<NativeBootstrapReply, crate::native_state::NativeStateError>>,
 }
 
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+impl NativeBootstrapRequest {
+    /// A request granted the whole native budget: every prefix byte and
+    /// chunk the engine may retain, plus the BEGIN and READY frames.
+    #[must_use]
+    pub(crate) const fn full_budget(
+        owner: u64,
+        terminal_id: phux_protocol::ids::ResourceId,
+        stream_id: StreamId,
+        bootstrap_id: BootstrapId,
+        limits: phux_protocol::caps::BootstrapLimits,
+        reply: oneshot::Sender<Result<NativeBootstrapReply, crate::native_state::NativeStateError>>,
+    ) -> Self {
+        Self {
+            owner,
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            limits,
+            max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
+            max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
+            reply,
+        }
+    }
+}
+
 /// Actor result paired with the caller's still-owned outbound permit.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[derive(Debug)]

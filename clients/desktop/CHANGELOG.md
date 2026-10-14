@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.3.2](https://github.com/no-phux/phux/compare/desktop-v0.3.1...desktop-v0.3.2) (2026-10-14)
+
+
+### Bug Fixes
+
+* **desktop:** cull default UI down to what needs a person ([#1307](https://github.com/no-phux/phux/issues/1307)) ([9609826](https://github.com/no-phux/phux/commit/96098266a889856eb3839e12ef64a3ef058b5206))
+* **install:** one command, PATH that works, and a Latest that names the CLI ([#1308](https://github.com/no-phux/phux/issues/1308)) ([33bfd51](https://github.com/no-phux/phux/commit/33bfd5180329846180e6341989c21dcc9a32d990))
+
+## [0.3.1](https://github.com/no-phux/phux/compare/desktop-v0.3.0...desktop-v0.3.1) (2026-10-14)
+
+
+### Performance
+
+* **clients:** cheapen idle echo, desktop paint, and TUI style runs ([#1303](https://github.com/no-phux/phux/issues/1303)) ([04b31b3](https://github.com/no-phux/phux/commit/04b31b3fd396916f567082369e778be117e9be5f))
+
 ## [0.3.0](https://github.com/no-phux/phux/compare/desktop-v0.2.0...desktop-v0.3.0) (2026-10-14)
 
 

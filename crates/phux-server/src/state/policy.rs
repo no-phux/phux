@@ -221,7 +221,7 @@ impl ServerState {
 
     /// Record the authorization posture the server started in. Set once at
     /// startup.
-    pub fn set_policy_posture(&mut self, posture: crate::policy::PolicyPosture) {
+    pub const fn set_policy_posture(&mut self, posture: crate::policy::PolicyPosture) {
         self.config.policy_posture = posture;
     }
 

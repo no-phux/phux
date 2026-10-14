@@ -7,7 +7,7 @@ import { extname, resolve } from "node:path";
 import { chromium, webkit, type Page } from "playwright-core";
 import handler from "../host/index";
 import { htmlToMarkdown } from "../host/markdown";
-import { AGENT_START } from "../src/lib/site";
+import { AGENT_START, OVERVIEW } from "../src/lib/site";
 
 const root = resolve(import.meta.dir, "../dist");
 const useWebKit = process.argv.includes("--webkit");
@@ -40,8 +40,13 @@ async function verifyPublishedContent() {
   }
   const overview = await readFile(resolve(root, "overview.md"), "utf8");
   assert.ok(overview.includes(AGENT_START.prompt));
+  for (const { label, action, detail } of OVERVIEW.firstRun) {
+    assert.ok(overview.includes(`**${label}:** \`${action}\` — ${detail}`), `overview Markdown shows ${label}`);
+  }
+  assert.ok(overview.includes("A server crash or reboot ends it"));
+  assert.ok(overview.includes("Sessions own resources. Arrangements place them. Views show them."));
   assert.ok(overview.includes("[All documentation](/docs)"));
-  assert.ok(overview.includes("cannot see or control your terminals"));
+  assert.ok(overview.includes("[Docs MCP (read-only)]"));
   const negotiated = htmlToMarkdown(await readFile(resolve(root, "overview.html"), "utf8"));
   assert.ok(negotiated.includes(AGENT_START.prompt), "negotiated Markdown retains the handoff");
   assert.ok(negotiated.includes("[All documentation](/docs)"), "negotiated Markdown retains reference links");
@@ -108,10 +113,14 @@ try {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await verifyPageCopy(page, base, "/overview");
+  assert.equal(await page.locator(".overview-first-run-steps li").count(), 3);
+  assert.ok(await page.getByRole("heading", { name: "Try it", exact: true }).isVisible());
+  assert.ok(await page.getByText("A server crash or reboot ends it", { exact: false }).isVisible());
+  assert.ok(await page.getByText("Sessions own resources. Arrangements place them. Views show them.", { exact: false }).isVisible());
   await page.getByRole("button", { name: "Copy agent prompt" }).click();
   await page.locator(".agent-prompt [role=status]").filter({ hasText: "Agent prompt copied." }).waitFor();
   assert.equal(await readClipboard(page), AGENT_START.prompt);
-  assert.ok(await page.getByRole("link", { name: "Choose your agent integration" }).isVisible());
+  assert.ok(await page.getByRole("link", { name: "Agent integrations" }).isVisible());
   for (const width of [320, 390, 768, 1280]) {
     await page.setViewportSize({ width, height: 1000 });
     // Fumadocs switches its sidebar through matchMedia after the resize.
@@ -145,6 +154,7 @@ try {
   const staticContext = await browser.newContext({ javaScriptEnabled: false });
   const staticPage = await staticContext.newPage();
   await staticPage.goto(`${base}/overview`);
+  assert.ok(await staticPage.getByRole("heading", { name: "Try it", exact: true }).isVisible());
   assert.ok(await staticPage.locator(".agent-prompt pre").isVisible());
   assert.equal(await staticPage.getByRole("link", { name: "Open Markdown" }).getAttribute("href"), "/overview.md");
   const markdown = await staticContext.request.get(`${base}/overview.md`);

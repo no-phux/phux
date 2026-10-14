@@ -19,6 +19,8 @@ Options:
                            Release channel (default: stable, or \$PHUX_CHANNEL).
                            latest is stable; next tracks green main; omit --version with it.
   --install-dir <dir>      Directory for phux and phux-mcp (default: $HOME/.local/bin).
+  --no-modify-path         Do not add the install directory to your shell profile
+                           (also $PHUX_NO_MODIFY_PATH=1).
   --os <darwin|linux>      Override OS detection.
   --arch <arm64|aarch64|x86_64|amd64>
                            Override architecture detection.
@@ -53,6 +55,8 @@ install_dir="${PHUX_INSTALL_DIR:-${HOME:-}/.local/bin}"
 os=""
 arch=""
 dry_run=0
+modify_path=1
+case "${PHUX_NO_MODIFY_PATH:-}" in ''|0) ;; *) modify_path=0 ;; esac
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -84,6 +88,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --dry-run)
       dry_run=1
+      shift
+      ;;
+    --no-modify-path)
+      modify_path=0
       shift
       ;;
     --help|-h)
@@ -383,6 +391,18 @@ resolve_next_sha() {
   printf '%s\n' "$next_sha"
 }
 
+# GitHub's releases/latest redirect names the current CLI release without the
+# API's rate limit (only the CLI stream is ever marked Latest). If it cannot be
+# read, or names another stream, fall back to the bounded release-list scan.
+resolve_latest_redirect() {
+  command -v curl >/dev/null 2>&1 || return 1
+  latest_url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' --connect-timeout 10 --max-time 30 \
+    https://github.com/no-phux/phux/releases/latest 2>/dev/null)" || return 1
+  latest_tag="${latest_url##*/}"
+  valid_release_tag "$latest_tag" v || return 1
+  printf '%s\n' "$latest_tag"
+}
+
 if [ -z "$channel" ]; then
   channel="${PHUX_CHANNEL:-stable}"
 fi
@@ -405,7 +425,7 @@ if [ "$channel" = "next" ]; then
   version="next.${next_sha}"
 else
   if [ -z "$version" ]; then
-    version="$(resolve_latest_version v)"
+    version="$(resolve_latest_redirect || resolve_latest_version v)"
   fi
   valid_release_tag "$version" v \
     || die "--version must be a release like vX.Y.Z (got ${version})"
@@ -730,9 +750,58 @@ fi
 
 if [ "$found_canonical" = "$installed_command" ]; then
   echo "next: phux"
-else
-  printf 'next: %s\n' "$(shell_quote "$installed_command")"
-  # The printed remedy must defer expansion until the user runs it.
-  # shellcheck disable=SC2016
-  printf 'PATH remedy: export PATH=%s:"$PATH"\n' "$(shell_quote "$installed_dir")"
+  exit 0
 fi
+
+# Is the install directory on PATH at all (as opposed to shadowed by an
+# earlier phux)? Only a missing entry is fixed in the shell profile.
+dir_on_path=0
+old_ifs="$IFS"
+IFS=:
+set -f
+for entry in $PATH; do
+  [ -n "$entry" ] || continue
+  if [ "$(cd "$entry" 2>/dev/null && pwd -P)" = "$installed_dir" ]; then
+    dir_on_path=1
+    break
+  fi
+done
+set +f
+IFS="$old_ifs"
+
+# Append one idempotent PATH line to the profile the user's shell reads. Never
+# fatal: an unwritable profile falls back to the printed remedy.
+add_to_profile() {
+  [ -n "${HOME:-}" ] || return 1
+  quoted_dir="$(shell_quote "$installed_dir")"
+  line="export PATH=${quoted_dir}:\"\$PATH\""
+  case "$(basename "${SHELL:-sh}")" in
+    fish)
+      profile="${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/phux.fish"
+      line="fish_add_path -g ${quoted_dir}"
+      ;;
+    zsh) profile="${ZDOTDIR:-$HOME}/.zshrc" ;;
+    bash)
+      # macOS terminals start login shells, which read .bash_profile.
+      profile="$HOME/.bashrc"
+      [ "$(uname -s)" != Darwin ] || profile="$HOME/.bash_profile"
+      ;;
+    *) profile="$HOME/.profile" ;;
+  esac
+  if [ -f "$profile" ] && grep -Fqx "$line" "$profile" 2>/dev/null; then
+    printf '%s\n' "$profile"
+    return 0
+  fi
+  mkdir -p "$(dirname "$profile")" 2>/dev/null || return 1
+  printf '\n# Added by the phux installer\n%s\n' "$line" >> "$profile" 2>/dev/null || return 1
+  printf '%s\n' "$profile"
+}
+
+printf 'next: %s\n' "$(shell_quote "$installed_command")"
+if [ "$dir_on_path" -eq 0 ] && [ "$modify_path" -eq 1 ] && profile="$(add_to_profile)"; then
+  printf 'added %s to PATH in %s; new terminals find phux\n' \
+    "$(shell_quote "$installed_dir")" "$(shell_quote "$profile")"
+fi
+# The printed remedy must defer expansion until the user runs it.
+# shellcheck disable=SC2016
+printf 'PATH remedy: export PATH=%s:"$PATH"\n' "$(shell_quote "$installed_dir")"

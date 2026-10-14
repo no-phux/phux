@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-10-13
+last-reviewed: 2026-10-14
 ---
 
 # Native terminal painter
@@ -37,11 +37,13 @@ Only the size owner proposes a PTY size, after the painted capacity has held
 still.
 
 Every render reacquires and revalidates the slot by borrowing the entity's
-`Arc<Client>`. A terminal keeps the scene it last prepared and reuses it only
-while the acquired frame is the same `Arc`, the bounds and scale factor are
-unchanged, and `Settings::paints_like` holds. Missing slots and a dropped
-client clear the canvas. Projection acknowledgement belongs to
-[PRESENTATION.md](PRESENTATION.md).
+`Arc<Client>`. A terminal keeps the scene it last prepared and reuses it while
+the acquired frame is the same `Arc`, the bounds and scale factor are
+unchanged, and `Settings::paints_like` holds. A new frame with the same
+geometry, palette, and paint settings keeps the shaped rows whose cells still
+match and reshapes the rest, including a solid block cursor's old and new
+rows. Missing slots and a dropped client clear the canvas. Projection
+acknowledgement belongs to [PRESENTATION.md](PRESENTATION.md).
 
 ## Geometry and text
 

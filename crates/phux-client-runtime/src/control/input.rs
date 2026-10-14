@@ -334,7 +334,7 @@ impl ControlPlane {
             });
             return delivery_id;
         }
-        let operation_id = new_operation_id();
+        let operation_id = mint_input_operation_id();
         let key = operation_id_hex(&operation_id);
         let now_ms = self.now_ms();
         self.input_delivery_ids
@@ -429,7 +429,9 @@ impl ControlPlane {
     }
 }
 
-fn new_operation_id() -> InputOperationId {
+/// Mint a fresh non-zero 128-bit acknowledged-input operation id.
+#[must_use]
+pub fn mint_input_operation_id() -> InputOperationId {
     loop {
         if let Some(id) = InputOperationId::new(uuid::Uuid::new_v4().into_bytes()) {
             return id;

@@ -20,7 +20,7 @@ use phux_protocol::ResourceId;
 use phux_protocol::ids::{OperationId, SatelliteHost};
 
 use crate::connection::path::{self as paths};
-use crate::connection::{AgentInfo, Connection};
+use crate::connection::{AgentInfo, AgentState, Connection};
 use crate::settings::{self, DisplayPrefs};
 use crate::terminal::{HostAction, Settings as TerminalSettings};
 use crate::workspace::layout::{Axis, Direction, Placement};
@@ -100,6 +100,7 @@ pub struct FindState {
 
 pub struct Desk {
     pub desktop: Entity<Desktop>,
+    pub(crate) updates: Entity<super::updates::Updater>,
     pub role: WindowRole,
     pub socket: PathBuf,
     pub session: String,
@@ -124,7 +125,7 @@ pub struct Desk {
     store: FileLayoutStore,
     last_saved: Option<persist::SavedLayout>,
     panes: Panes,
-    agent_seen: HashMap<ResourceId, String>,
+    agent_seen: HashMap<ResourceId, AgentState>,
     agent_epoch: Option<u64>,
     drag: Option<Drag>,
     /// Split container bounds from the last prepaint, keyed by split id.
@@ -182,8 +183,9 @@ enum Drag {
 }
 
 impl Desk {
-    pub fn open(
+    pub(crate) fn open(
         desktop: Entity<Desktop>,
+        updates: Entity<super::updates::Updater>,
         phux: PathBuf,
         socket: PathBuf,
         request: OpenRequest,
@@ -218,6 +220,7 @@ impl Desk {
         let focus = cx.focus_handle();
         let mut desk = Self {
             desktop,
+            updates,
             role: request.role,
             socket,
             session: request.session.clone(),
@@ -278,6 +281,20 @@ impl Desk {
         desk.attach(request.initial_terminal, cx);
         desk.sync_bindings(cx);
         desk.apply_kit_theme(cx);
+        let updates = desk.updates.clone();
+        let mut runtime_generation = updates.read(cx).runtime_generation;
+        desk._subs.push(cx.observe(&updates, move |_, updates, cx| {
+            let generation = updates.read(cx).runtime_generation;
+            if generation != runtime_generation {
+                runtime_generation = generation;
+                cx.spawn(async move |this, cx| {
+                    smol::Timer::after(Duration::from_millis(500)).await;
+                    let _ = this.update(cx, |desk, cx| desk.redial(cx));
+                })
+                .detach();
+            }
+            cx.notify();
+        }));
         // Quit saves every window; a closed window saves through `Desktop::window_closed`.
         desk._subs.push(cx.on_app_quit(|desk, cx| {
             desk.prepare_close(cx);
@@ -439,42 +456,29 @@ impl Desk {
     fn note_kill_event(&mut self, event: &Event) {
         if let Event::OrganizationOperation { operation, outcome } = event
             && let Some(name) = self.kills.remove(operation)
+            && !matches!(outcome, phux_client_core::org_ops::OrgOutcome::Committed(_))
         {
-            match outcome {
-                phux_client_core::org_ops::OrgOutcome::Committed(receipt) => {
-                    let ended = receipt.members.unwrap_or(0);
-                    let noun = if ended == 1 { "terminal" } else { "terminals" };
-                    self.post(
-                        Kind::Success,
-                        &format!("Killed {name}"),
-                        Some(format!("{ended} {noun} ended")),
-                    );
-                }
-                other => self.post(
-                    Kind::Error,
-                    &format!("Could not kill {name}"),
-                    Some(crate::connection::org::outcome_sentence(other)),
-                ),
-            }
+            self.post(
+                Kind::Error,
+                &format!("Could not kill {name}"),
+                Some(crate::connection::org::outcome_sentence(outcome)),
+            );
         }
     }
 
     fn note_create_event(&mut self, event: &Event) {
         if let Event::OrganizationOperation { operation, outcome } = event
             && let Some(name) = self.creates.remove(operation)
+            && !outcome.succeeded()
         {
-            if outcome.succeeded() {
-                self.post(Kind::Success, "Session created", Some(name));
-            } else {
-                self.post(
-                    Kind::Error,
-                    "Could not create the session",
-                    Some(format!(
-                        "{name}: {}",
-                        crate::connection::org::outcome_sentence(outcome)
-                    )),
-                );
-            }
+            self.post(
+                Kind::Error,
+                "Could not create the session",
+                Some(format!(
+                    "{name}: {}",
+                    crate::connection::org::outcome_sentence(outcome)
+                )),
+            );
         }
     }
 
@@ -510,7 +514,7 @@ impl Desk {
                     .terminal
                     .as_ref()
                     .and_then(|id| current.get(id))
-                    .is_some_and(|info| entry.agent_state.as_ref() == Some(&info.state))
+                    .is_some_and(|info| entry.agent_state == Some(info.state))
         });
         if !self.prefs.notifications {
             self.agent_seen = current
@@ -520,27 +524,23 @@ impl Desk {
             return;
         }
         for (id, info) in &current {
-            let previous = self.agent_seen.get(id).cloned();
-            if previous.as_deref() == Some(info.state.as_str()) || previous.is_none() {
+            let previous = self.agent_seen.get(id).copied();
+            if previous == Some(info.state) || previous.is_none() {
                 continue;
             }
-            let needs = info.state == "done" || info.state == "blocked" || info.attention == "high";
-            if !needs || focused.as_ref() == Some(id) {
+            if !info.needs_you() || focused.as_ref() == Some(id) {
                 continue;
             }
-            let verb = match info.state.as_str() {
-                "blocked" => "needs you",
-                "done" => "finished",
-                other => other,
+            let title = match info.word() {
+                "" => info.name.clone(),
+                word => format!("{} {word}", info.name),
             };
-            let title = format!("{} {verb}", info.name);
             let body = format!(
                 "{} · {}",
                 self.pane_title(Some(id)),
                 short_path(self.pane_cwd(Some(id)))
             );
-            self.feed
-                .post_agent(title, body, id.clone(), info.state.clone());
+            self.feed.post_agent(title, body, id.clone(), info.state);
         }
         self.agent_seen = current
             .into_iter()
@@ -688,10 +688,6 @@ impl Desk {
                 let size = DisplayPrefs::default().font_size;
                 self.update_prefs(|prefs| prefs.font_size = size, cx);
             }
-            "option-alt" => {
-                self.update_prefs(|prefs| prefs.option_as_alt = !prefs.option_as_alt, cx)
-            }
-            "notify" => self.update_prefs(|prefs| prefs.notifications = !prefs.notifications, cx),
             "scroll-page-up" => self.scroll_page(-1),
             "scroll-page-down" => self.scroll_page(1),
             "scroll-top" => self.scroll_top(),
@@ -703,7 +699,7 @@ impl Desk {
             "prompt-prev" => self.jump_prompt(-1),
             "prompt-next" => self.jump_prompt(1),
             "quick-terminal" => self.toggle_quick(cx),
-            "new-window" => self.modal = Modal::WindowSession,
+            "new-window" => self.new_window(window, cx),
             "fullscreen" => window.toggle_fullscreen(),
             "maximize" => window.zoom_window(),
             "reload-config" => self.reload_ghostty(cx),
@@ -1048,6 +1044,12 @@ impl Desk {
                 }
             }
         }
+        self.redial(cx);
+    }
+
+    /// Reattach after a managed handoff. The updater already performed the
+    /// process work off-thread; this path never invokes a CLI subprocess.
+    fn redial(&mut self, cx: &mut Context<Self>) {
         self.persist();
         let snapshot = self.last_saved.clone();
         let closed = self
@@ -1080,11 +1082,6 @@ impl Desk {
                 self.post(Kind::Error, "Could not reconnect", Some(error.to_string()));
             }
         }
-        self.post(
-            Kind::Info,
-            "Reconnecting",
-            Some(self.socket.display().to_string()),
-        );
         cx.notify();
     }
 
@@ -1095,9 +1092,7 @@ impl Desk {
         self.sync_bindings(cx);
         self.apply_kit_theme(cx);
         if text.is_none() {
-            self.post(Kind::Info, "No Ghostty config found", None);
-        } else {
-            self.post(Kind::Success, "Ghostty config reloaded", None);
+            self.post(Kind::Refusal, "No Ghostty config found", None);
         }
         cx.notify();
     }
@@ -1168,7 +1163,7 @@ impl Desk {
             .unwrap_or_default();
         if name.trim().is_empty() {
             self.post(
-                Kind::Error,
+                Kind::Refusal,
                 "No session",
                 Some("Focus a pane in the session you want to rename.".into()),
             );
@@ -1276,15 +1271,6 @@ impl Desk {
         if let Some(link) = self.link.as_ref() {
             let _ = link.connection.refresh_topology();
         }
-        self.post(
-            Kind::Success,
-            if create {
-                "Session created"
-            } else {
-                "Session renamed"
-            },
-            Some(name.trim().to_owned()),
-        );
         self.close_modal(window, cx);
         self.after_command(window, cx);
     }
@@ -1297,7 +1283,7 @@ impl Desk {
             .filter(|(name, _)| !name.trim().is_empty())
         else {
             self.post(
-                Kind::Error,
+                Kind::Refusal,
                 "No session",
                 Some("Focus a pane in the session you want to kill.".into()),
             );
@@ -1340,8 +1326,25 @@ impl Desk {
             self.post(Kind::Error, "Could not kill the session", Some(failure));
         } else {
             let _ = link.connection.refresh_topology();
-            self.post(Kind::Success, &format!("Killed {name}"), None);
         }
+    }
+
+    /// A window on the focused pane's session; a choice only when there is one.
+    fn new_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let sessions = self
+            .link
+            .as_ref()
+            .and_then(|link| link.connection.topology.as_ref())
+            .map_or(0, |topology| topology.sessions.len());
+        if sessions > 1 {
+            self.modal = Modal::WindowSession;
+            return;
+        }
+        let name = self
+            .focused_pane()
+            .map(|pane| pane.session_name.clone())
+            .unwrap_or_default();
+        self.open_session_window(name, window, cx);
     }
 
     pub fn open_session_window(
@@ -1383,7 +1386,8 @@ impl Desk {
         let Some(link) = self.link.as_ref() else {
             return;
         };
-        let order = ["blocked", "done", "working"];
+        let rank_of = |agent: &AgentInfo| crate::connection::state_rank(agent.state);
+        let working = crate::connection::state_rank(AgentState::Working);
         let mut panes: Vec<_> = link
             .connection
             .panes()
@@ -1392,7 +1396,7 @@ impl Desk {
                 link.connection
                     .agents
                     .get(&pane.terminal_id)
-                    .is_some_and(|agent| order.contains(&agent.state.as_str()))
+                    .is_some_and(|agent| rank_of(agent) <= working)
             })
             .cloned()
             .collect();
@@ -1401,13 +1405,7 @@ impl Desk {
                 link.connection
                     .agents
                     .get(&pane.terminal_id)
-                    .map(|agent| {
-                        order
-                            .iter()
-                            .position(|state| *state == agent.state)
-                            .unwrap_or(9)
-                    })
-                    .unwrap_or(9)
+                    .map_or(9, rank_of)
             };
             rank(left).cmp(&rank(right)).then_with(|| {
                 let changed = |pane: &phux_client_runtime::control::PaneDescriptor| {
@@ -1423,7 +1421,7 @@ impl Desk {
         if let Some(pane) = panes.first() {
             self.reveal_terminal(&pane.terminal_id);
         } else {
-            self.post(Kind::Info, "No agent needs attention", None);
+            self.post(Kind::Refusal, "No agent needs you", None);
         }
     }
 
@@ -1665,7 +1663,7 @@ impl Desk {
         };
         if text.is_empty() {
             self.post(
-                Kind::Info,
+                Kind::Refusal,
                 if region == "selection" {
                     "Nothing selected"
                 } else {
@@ -1874,7 +1872,7 @@ impl Desk {
     fn open_path_picker(&mut self) {
         let Some(target) = self.path_target() else {
             self.post(
-                Kind::Info,
+                Kind::Refusal,
                 "Insert Path is unavailable",
                 Some("Not attached to a terminal.".into()),
             );
@@ -1891,11 +1889,15 @@ impl Desk {
             .is_some_and(|link| link.connection.status == Status::Attached);
         if !paths::can_offer_path_picker(Some(features.as_slice()), attached, Some(&target)) {
             let body = if attached {
-                "This server does not offer host path search. Update phux on the host."
+                "This server can't search paths. Update phux on that machine."
             } else {
                 "Not attached to a terminal."
             };
-            self.post(Kind::Info, "Insert Path is unavailable", Some(body.into()));
+            self.post(
+                Kind::Refusal,
+                "Insert Path is unavailable",
+                Some(body.into()),
+            );
             return;
         }
         let root = self
@@ -2191,27 +2193,15 @@ impl Desk {
     /// Human connection status and its tone, for the status bar and Settings.
     pub(crate) fn connection_label(&self) -> (String, Tone) {
         let Some(link) = self.link.as_ref() else {
-            return ("connection failed · click to retry".into(), Tone::Bad);
+            return ("Not connected".into(), Tone::Bad);
         };
         match link.connection.status {
-            Status::Attached => (
-                format!(
-                    "{} · {} {}",
-                    self.session,
-                    link.connection.panes().len(),
-                    if link.connection.panes().len() == 1 {
-                        "terminal"
-                    } else {
-                        "terminals"
-                    }
-                ),
-                Tone::Good,
-            ),
+            Status::Attached => ("Connected".into(), Tone::Good),
             Status::Idle | Status::Connecting | Status::Negotiated => {
-                ("connecting…".into(), Tone::Busy)
+                ("Connecting…".into(), Tone::Busy)
             }
-            Status::Failed => ("connection failed · click to retry".into(), Tone::Bad),
-            Status::Closed => ("disconnected · click to reconnect".into(), Tone::Bad),
+            Status::Failed => ("Not connected".into(), Tone::Bad),
+            Status::Closed => ("Disconnected".into(), Tone::Bad),
         }
     }
 

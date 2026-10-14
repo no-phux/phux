@@ -121,14 +121,22 @@ methodology link. Do not hide conditions behind tooltips.
 
 ## Product landing and demo
 
-The landing at `src/pages/index.astro` stays minimal: headline, one static
-terminal picture, three capabilities, installation, and the iPhone beta and
+The landing at `src/pages/index.astro` stays minimal: headline, one product
+tour, three capabilities, installation, and the iPhone beta and
 release-update signups. Add a section only when it replaces one.
 
-`<HeroDemo client:load>` renders the terminal picture and owns the hosted
-terminal dialog. Any `[data-demo-launch]` link opens the dialog; without
-JavaScript the link falls through to the standalone shell at `/embed`. The
-picture is a still, not simulated live output, and the landing downloads no
+`<HeroDemo client:load>` renders the product tour and owns the hosted
+terminal dialog. The tour (`src/components/tour/`) is a scripted
+illustration, labelled as one: a phux server with a terminal, Phux.app, and
+an iPhone attached to the same terminals, then an agent asking for input,
+the laptop views detaching while the work continues, and a remote host over
+QUIC. Every chapter states shipped behavior; keep client names, statuses,
+transports, and commands true to the canonical docs, and label beta clients.
+The tour autoplays only while visible with motion allowed, can be paused,
+and lets viewers pick a chapter. Reduced motion and no-JS show each
+chapter's settled state without playback. Any `[data-demo-launch]` link
+opens the dialog; without JavaScript the link falls through to the
+standalone shell at `/embed`. The landing downloads no
 WASM and allocates no hosted session until the visitor opens the dialog. The
 anonymous edge tour is a curated, OS-less shell in a Durable Object; the
 optional authenticated Linux tab runs the native container. Label both

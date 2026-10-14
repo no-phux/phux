@@ -1,4 +1,3 @@
-#![allow(clippy::nursery)]
 //! Server-side state shared by the listener loop and per-client tasks.
 //!
 //! [`ServerState`] groups the session registry, attached clients, per-pane
@@ -10,6 +9,11 @@
 //! ADR-0014). `ServerState` sits behind `Arc<Mutex<_>>` because it holds
 //! `Send` handles and is used in a few sync contexts; critical sections are
 //! short and never `.await` with the lock held.
+
+#![allow(
+    clippy::redundant_pub_crate,
+    reason = "private server module shared by sibling runtime/state modules"
+)]
 
 use std::cell::Cell;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -72,6 +76,7 @@ pub use events::{
 use hub_state::HubState;
 pub use id_space::IdSpace;
 pub use journal::EventRecord;
+pub(crate) use journal::now_unix_ms;
 pub use leases::{LeaseEvidence, LeaseInterval};
 pub(crate) use retained::Retention;
 pub use retained::{RetainPolicy, close_reason_name, process_exit};
@@ -305,6 +310,10 @@ impl SharedState {
 
     /// Scoped immutable access. Reentrant on this thread for the same state:
     /// a nested [`Self::with`] reuses the guard instead of locking again.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the guard backs the borrowed-state pointer until `f` returns"
+    )]
     pub fn with<R>(&self, f: impl FnOnce(&ServerState) -> R) -> R {
         let arc = Arc::as_ptr(&self.0) as usize;
         let current = BORROWED_STATE.with(Cell::get);
@@ -729,7 +738,7 @@ mod tests {
         let mut s = ServerState::new();
         let (_sid, pid) = s.seed_session("default");
         let bundle = crate::terminal_actor::TerminalActor::new(80, 24).unwrap();
-        s.register_resource_handle(pid, bundle.handle.clone(), bundle.token.clone());
+        s.register_resource_handle(pid, bundle.handle.clone(), bundle.token);
         let big = s.new_client_id();
         let tiny = s.new_client_id();
         s.attach_default_caps(big, "default", mk_tx()).unwrap();
@@ -785,7 +794,7 @@ mod tests {
         let mut s = ServerState::new();
         let (_sid, pid) = s.seed_session("default");
         let bundle = crate::terminal_actor::TerminalActor::new(80, 24).unwrap();
-        s.register_resource_handle(pid, bundle.handle.clone(), bundle.token.clone());
+        s.register_resource_handle(pid, bundle.handle.clone(), bundle.token);
         let recent = s.new_client_id();
         let departing = s.new_client_id();
         s.attach_default_caps(recent, "default", mk_tx()).unwrap();

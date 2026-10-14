@@ -443,6 +443,31 @@ The session picker (`C-a s`) lists the same machines, one group each after
 the attached server's sessions and any satellites; its filter matches a
 session by its name or its machine's.
 
+**Session management.** In that searchable picker, `Enter` switches as usual;
+`Tab` opens actions for the selected session while preserving the picker's
+query and cursor underneath. `Esc` returns to the picker. Right-clicking a
+sidebar session opens the same actions for the **clicked** session, without
+switching first. Satellite rows still switch through the attached server;
+other-machine rows still switch hosts.
+
+The palette and session menu also offer **Kill session…** and **Delete empty
+session…**, defaulting to the current session. Both ask for confirmation
+(`Enter` or `y`; `Esc` or `n` cancels):
+
+- **Kill session** ends **all** work in the session, **including resources
+  added meanwhile**, and deletes it. Other attached clients are affected too.
+  This requires a server advertising `SESSION_KILL`; there is no per-member
+  fallback. A missing acknowledgement is reported as an unconfirmed outcome,
+  not success.
+- **Delete empty session** deletes only an empty session and never terminates
+  work. If a resource joins before deletion commits, the server refuses it.
+
+Confirmation pins the server authority and persistent session key. A rename
+cannot retarget it, nor can a replacement session reusing the name. Operations
+use a separate control connection to the attached server (including when
+attached remotely), never the terminal-output connection. Destructive actions
+on another host's row refuse locally: attach to that host first.
+
 An enabled plugin can add **sections** with `[[sidebar]]` entries in its
 manifest. Each is a band between Agents and Sessions: a header, then
 exactly `rows` rows (default 3, at most 8), so a section filling or
@@ -786,11 +811,52 @@ socket and on loopback `--quic` / `--ws`. Set `true` or `false` to
 override. The overlay is a local paint; it never reaches the wire,
 another client, or a recording.
 
+## Notifications
+
+The TUI posts a notification when an agent becomes blocked or asks for
+you, and when an agent that was working finishes (done, or idle after
+work). It reads the same agent list the sidebar's Agents zone paints, so a
+notification and the `!` badge always agree, and it covers agents in other
+sessions and on satellites as well as the attached session.
+
+- **Once per run.** "Finished" fires on the working-to-done edge, not on
+  every metadata echo. An agent already blocked when you attach does not
+  fire; one that blocks afterwards does.
+- **Not for the pane you are looking at.** With `suppress-focused` (the
+  default) the focused pane stays quiet while the terminal window has
+  focus. The TUI reads focus from the outer terminal's focus reports; a
+  terminal that never sends them counts as focused.
+- **Seen cancels.** Each edge waits one second before it posts. If the
+  agent flaps back, or you focus its pane, inside that second, nothing
+  posts. Edges that land in the same second post as one
+  ("2 agents need you"), and one pane posts the same kind at most once
+  every ten seconds.
+- **Text.** The agent's name and what happened ("needs approval", "is
+  asking for you", "finished"), then the window, the session, and the
+  host when the agent runs on a satellite.
+
+`[notifications] mode` picks the channel:
+
+| Mode | Delivery |
+|---|---|
+| `terminal` (default) | An OSC notification to the outer terminal, so it reaches your desktop over SSH. `terminal-protocol = "auto"` writes OSC 99 for kitty, OSC 777 for Ghostty, WezTerm, and foot, and OSC 9 otherwise; pin one when SSH hides your terminal. Inside tmux the sequence is wrapped for passthrough (`set -g allow-passthrough on`). |
+| `system` | The desktop notifier of the machine the TUI runs on: `osascript` on macOS, `notify-send` elsewhere. Spawned without a shell, never waited on. |
+| `bell` | The terminal bell. |
+| `off` | Nothing. |
+
+`blocked` and `done` toggle each kind; `sound` adds the bell (terminal) or
+the notifier's sound (system). Every key is live on `reload-config` and
+listed on the settings page. Agent and window names are written by agents
+and other clients, so every control character is stripped before the text
+reaches an escape sequence or an argv. Clicking a notification does not
+yet focus the pane.
+
+A server-side hook on `agent-state-changed` is still the edge for
+notifications that must fire with no TUI attached.
+
 ## Hooks
 
-The TUI plays no sounds and posts no desktop notifications; a server-side
-hook on `agent-state-changed` is the notifier edge. Hooks are
-[`../CONFIG.md`](../CONFIG.md) and
+Hooks are [`../CONFIG.md`](../CONFIG.md) and
 [`../reference/hooks.md`](../reference/hooks.md).
 
 ## Status

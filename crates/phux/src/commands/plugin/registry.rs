@@ -1,5 +1,4 @@
 use std::collections::BTreeSet;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use phux_config::loader as config_loader;
@@ -63,27 +62,8 @@ pub(super) fn write_config_document(config_path: &Path, doc: &DocumentMut) -> Re
     // The plugin registry decides what code the production server runs.
     phux_config::production::refuse_dev_on_production_state(config_path)?;
     reject_symlinked_config(config_path)?;
-    let parent = config_path
-        .parent()
-        .ok_or_else(|| format!("{} has no parent directory", config_path.display()))?;
-    std::fs::create_dir_all(parent)
-        .map_err(|err| format!("could not create {}: {err}", parent.display()))?;
-    let file_name = config_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| format!("{} has no file name", config_path.display()))?;
-    let tmp_path = parent.join(format!(
-        ".{file_name}.tmp-{}-{}",
-        std::process::id(),
-        temp_nonce()
-    ));
-    let write_result = write_temp_file(&tmp_path, doc.to_string().as_bytes())
-        .and_then(|()| std::fs::rename(&tmp_path, config_path).map_err(|err| err.to_string()));
-    if let Err(err) = write_result {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(format!("could not write {}: {err}", config_path.display()));
-    }
-    Ok(())
+    phux_config::settings::replace_atomically(config_path, &doc.to_string(), || Ok(()))
+        .map_err(|err| format!("could not write {}: {err}", config_path.display()))
 }
 
 pub(super) fn push_entry(
@@ -172,12 +152,31 @@ pub(super) fn temp_nonce() -> u128 {
         .map_or(0, |duration| duration.as_nanos())
 }
 
-fn write_temp_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|err| err.to_string())?;
-    file.write_all(bytes).map_err(|err| err.to_string())?;
-    file.sync_all().map_err(|err| err.to_string())
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    #[test]
+    fn a_registry_write_keeps_the_config_file_mode() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config = dir.path().join("config.toml");
+        std::fs::write(&config, "# mine\n").expect("seed config");
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600))
+            .expect("restrict config");
+        let mut doc = read_config_document(&config).expect("read config");
+        push_entry(&mut doc, "./plugins/demo/plugin.toml", true).expect("add entry");
+        write_config_document(&config, &doc).expect("write config");
+        let mode = std::fs::metadata(&config)
+            .expect("stat config")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let text = std::fs::read_to_string(&config).expect("reread config");
+        assert!(
+            text.contains("# mine") && text.contains("[[plugins]]"),
+            "{text}"
+        );
+    }
 }

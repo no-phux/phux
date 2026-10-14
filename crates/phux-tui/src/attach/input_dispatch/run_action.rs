@@ -82,6 +82,10 @@ pub(super) fn run_action(
         "move-window" => move_window(resolved, ctx, e),
         "rename-window" => rename_window(resolved, ctx, e),
         "rename-session" => rename_session(resolved, ctx, e),
+        "session-actions" => super::session_management::push_actions(resolved, ctx),
+        "kill-session" | "delete-empty-session" => {
+            super::session_management::queue(resolved, ctx, e);
+        }
         "focus-direction" => focus_direction(resolved, ctx, e),
         "resize-pane" => resize_pane(resolved, ctx, e),
         "reload-config" => reload_config(e),
@@ -1189,7 +1193,9 @@ fn push_session_picker(ctx: &mut DispatchCtx<'_>) {
     let items = session_picker_rows(&ctx.peers, ctx.workspace);
     *ctx.host_refresh_request = true;
     ctx.overlays.push(Box::new(
-        SelectList::new("Sessions", items, ctx.theme).with_live_key(SESSION_PICKER_LIVE_KEY),
+        SelectList::new("Sessions · Tab manage", items, ctx.theme)
+            .with_live_key(SESSION_PICKER_LIVE_KEY)
+            .with_session_management(),
     ));
 }
 

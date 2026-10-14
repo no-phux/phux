@@ -89,8 +89,6 @@ class RoutingTests(unittest.TestCase):
             (["scripts/product-skills"], set()),
             (["scripts/skills-package/README.md"], set()),
             (["scripts/skills-package/NOTICE"], set()),
-            ([".agents/skills/beads/SKILL.md"], set()),
-            ([".agents/skills/beads/agents/openai.yaml"], set()),
             (["scripts/build-ffi-xcframework.sh"], set()),
             (["scripts/build-mobile-ffi-android.sh"], set()),
             (["scripts/ci/setup-android-ndk.sh"], set()),
@@ -363,7 +361,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn("setup-rust-lane", cheap_jobs)
         self.assertIn("nix shell --inputs-from .", cheap_jobs)
         self.assertIn("if: needs.changes.outputs.integrations_needed == 'true'", cheap_jobs)
-        self.assertEqual(workflow.count("if: needs.changes.outputs.phux_needed == 'true'"), 2)
+        # check and the four test-profile lanes.
+        self.assertEqual(workflow.count("if: needs.changes.outputs.phux_needed == 'true'"), 5)
 
     def test_pr_unit_lane_uses_classifier_rdeps_filterset(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()

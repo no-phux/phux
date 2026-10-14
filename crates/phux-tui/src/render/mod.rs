@@ -67,37 +67,9 @@ pub fn clip_text(s: &str, max: usize) -> String {
     out
 }
 
-/// The advance width of `ch` in cells, or `None` for a character that must
-/// never reach a VT emitter.
-///
-/// Chrome text is untrusted (panes name themselves
-/// via OSC 2): controls would inject escapes, and zero-width bidi overrides
-/// would reorder later labels so a pane reads as another's. Real
-/// right-to-left text does not need them.
-#[must_use]
-pub fn cell_width(ch: char) -> Option<usize> {
-    if ch.is_control() || is_bidi_control(ch) {
-        return None;
-    }
-    unicode_width::UnicodeWidthChar::width(ch)
-}
-
-/// The explicit bidi formatting characters: the embedding/override set
-/// (`U+202A`-`U+202E`), the isolates (`U+2066`-`U+2069`), and the
-/// standalone marks (`U+061C`, `U+200E`, `U+200F`).
-#[must_use]
-pub const fn is_bidi_control(ch: char) -> bool {
-    matches!(
-        ch,
-        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
-    )
-}
-
-/// The width of `s` in terminal cells, ignoring anything unprintable.
-#[must_use]
-pub fn display_width(s: &str) -> usize {
-    s.chars().filter_map(cell_width).sum()
-}
+/// Chrome measures text with the status bar's rules: one definition of what
+/// is printable and how wide it is.
+pub use phux_config::widget::{cell_width, display_width, is_bidi_control};
 
 #[cfg(test)]
 mod clip_text_tests {
@@ -130,8 +102,8 @@ mod clip_text_tests {
     }
 
     /// CELLS, not chars. A CJK label clipped by `chars().count()` is
-    /// twice its budget wide, which is how the sidebar strip and a pane
-    /// title used to overrun the columns reserved for them.
+    /// twice its budget wide and overruns the columns the sidebar strip or a
+    /// pane title reserved.
     #[test]
     fn wide_text_is_counted_in_cells() {
         // Never OVER the budget, which is the property callers rely on.

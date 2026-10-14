@@ -242,18 +242,6 @@ pub fn palette(theme: &Theme) -> Palette {
     }
 }
 
-/// Agent lifecycle colours stay fixed across themes.
-#[must_use]
-pub fn agent_colors() -> [(&'static str, &'static str); 5] {
-    [
-        ("working", "#f9e2af"),
-        ("blocked", "#f38ba8"),
-        ("done", "#94e2d5"),
-        ("idle", "#a6e3a1"),
-        ("unknown", "#7f849c"),
-    ]
-}
-
 /// Linear mix of two `#rrggbb` colours. Unparseable channels are zero.
 #[must_use]
 pub fn mix(from: &str, to: &str, amount: f64) -> String {

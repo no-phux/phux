@@ -51,7 +51,7 @@ pub(super) fn peer_gone(err: &AttachError) -> bool {
 /// Send a frame, treating "the peer already hung up" as success. The read
 /// side owns the ending: the frames explaining why the session ended (say a
 /// last-pane `RESOURCE_CLOSED`) are already buffered, and failing on an ack
-/// written into the closed socket used to replace "the last pane exited 7"
+/// written into the closed socket would replace "the last pane exited 7"
 /// with "Broken pipe". Every write here is advisory or a request whose answer
 /// can no longer arrive, so nothing is lost.
 pub(super) async fn send_unless_peer_gone(

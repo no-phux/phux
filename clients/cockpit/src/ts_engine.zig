@@ -20,7 +20,6 @@ pub const machine_runtime = @import("cockpit/native/machine_runtime.zig");
 pub const machine_browse = @import("cockpit/native/machine_browse.zig");
 pub const keybindings_runtime = @import("keybindings_runtime.zig");
 pub const window_navigation = @import("cockpit/native/ts_window_navigation.zig");
-pub const window_labels = @import("cockpit/native/window_labels.zig");
 pub const local_tools = @import("cockpit/native/local_tools.zig");
 pub const local_tool_launch = @import("cockpit/native/local_tool_launch.zig");
 pub const new_session = @import("cockpit/native/new_session.zig");

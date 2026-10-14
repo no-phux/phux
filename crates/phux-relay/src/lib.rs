@@ -54,8 +54,9 @@ pub const PROTOCOL_VIOLATION_CODE: u32 = 0x04;
 pub const OVER_CAP_CODE: u32 = 0x05;
 
 /// phux's per-user state directory: `$XDG_STATE_HOME/phux`, else
-/// `$HOME/.local/state/phux`. Duplicates `phux_server::telemetry::state_dir`
-/// because the relay must not depend on the daemon (ADR-0051).
+/// `$HOME/.local/state/phux`. Profile-free on purpose, unlike
+/// `phux_config::instance::state_dir`: the relay is not a profiled instance
+/// and must not depend on the daemon (ADR-0051).
 fn state_dir() -> PathBuf {
     let base = std::env::var_os("XDG_STATE_HOME")
         .filter(|v| !v.is_empty())

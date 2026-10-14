@@ -65,7 +65,7 @@ recovery. `scripts/check-release-orchestration.mjs` pins this ordering.
 | Check Cockpit locally before its release PR merges | `just cockpit-test`, then `bash clients/cockpit/scripts/build-phux-artifacts.sh` and `clients/cockpit/scripts/package-macos.sh` |
 | Ask whether anything is stuck right now | `just release-drift` (needs an authenticated `gh`) |
 | Report a hand-recovered release to Linear | Dispatch **Actions -> linear-release** with a public `vX.Y.Z` or `cockpit-vX.Y.Z` tag; it synchronizes that exact version before updating its stage |
-| Check a suspected install-doc drift | `bash scripts/check-install-surface.sh` |
+| Check the installers and their release wiring | `bash scripts/check-install-surface.sh` |
 | Publish or rebuild the `next` channel | Dispatch **Actions -> next-release** (also runs after green `main` CI) |
 
 ## What runs when
@@ -104,11 +104,11 @@ Workflows use only `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-24.04-arm`, and
 `xcode-27` (macOS 27 with Xcode 27); no larger or self-hosted runners.
 
 The Actions cache is capped at 10 GB per repository with LRU eviction, and a
-cache saved on `refs/pull/N/merge` is only restorable from that PR. The check,
-test, and icount mbx caches (`.github/actions/setup-rust-lane`, one `objects`
-entry per lane) save on `main` pushes only, as do the other lanes'
-`rust-cache` entries; any new PR-lane cache needs the same treatment. The mbx
-primary key is the lane, `flake.lock`, `Cargo.lock`, and the UTC day. It does
+cache saved on `refs/pull/N/merge` is only restorable from that PR. The check
+and icount mbx caches (`.github/actions/setup-rust-lane`, one `objects` entry
+per lane) save on `main` pushes only, as do the test lanes' dependency-only
+`rust-cache` entries and the other lanes' `rust-cache` entries; any new
+PR-lane cache needs the same treatment. The mbx primary key is the lane, `flake.lock`, `Cargo.lock`, and the UTC day. It does
 not include the commit: an exact hit skips the objects export. A new day or
 lockfile still restores the previous entry by prefix, then saves once.
 `prune-build-cache` keeps the newest entry for each of those lanes, for the
@@ -119,30 +119,41 @@ them. The account allows 20 concurrent standard jobs, only 5 of them macOS.
 `pr-janitor` cancels a closed PR's live runs and deletes its merge-ref
 caches. Concurrency groups use the `mini-v1-` namespace.
 
-A cold test build learns mbx keys while it compiles (`not looked up`), then
-the save is what the next job hits. Run 38451988937 spent 10m 24s compiling
-the test profile with 0 hits and left a 2.3 GB archive (2339429694 bytes).
-The earlier 5.5 GB archive was a store whose action results had already been
-deleted; that export took about eleven minutes and did not fit beside the
-other caches. The Cockpit zig cache is 4.9 GB (4947386319 bytes). Two
+The test profile does not use mbx. Its objects archive grew to 6.1 GB
+compressed and 27.8 GiB restored: run 38503810705 spent 6m 28s unpacking it,
+then 7m 51s compiling the workspace crates that every code PR changes anyway,
+for a 21-minute `test` job. The four test lanes (`test`, `test (integration)`,
+`e2e`, `uniffi`) each restore a `rust-cache` entry (`build-cache: deps`) that
+holds only third-party artifacts and build-script outputs, including the
+libghostty-vt Zig build (198 s cold). Those builds set `CARGO_INCREMENTAL=0`
+and `CARGO_PROFILE_DEV_DEBUG=0`: a cold `--workspace` test build left 2.6 GB
+of `target/debug` against 9.7 GB with line tables, and compiled in 586 s
+against 649 s (run 38518949085). The workspace crates are about 1,500
+CPU-seconds of compile, so the lanes split them: `just test` with
+`PHUX_UNIT_PART=lib` builds the lib and bin harnesses, `integration` the
+`tests/` targets and examples, `just e2e` only the binaries its filtersets
+name, and the binding its own feature set. Each keeps `--workspace`, so the
+feature union and the rdeps filterset match the whole pool's. The Cockpit zig
+cache is 4.9 GB (4947386319 bytes). Two
 xcframework dep archives, 978198846 and 968319491 bytes, then filled the
 rest of the 10 GB cap and the test archive was evicted before the next rust
 push could restore it. `ffi-xcframework.yml` does not save that dep cache.
 `prune-build-cache` deletes any leftover `v0-rust-mini-v1-ffi-xcframework-`
-entry and keeps one copy of the remaining prefixes. One test archive plus
-one zig archive fits; a second ~1 GB dep archive does not.
+entry and keeps one copy of the remaining prefixes, and it deletes the
+retired `linux-arm64-mbx-phux-test-` archive.
 
-A failed main lane still exports that archive when the exact key was not
-restored. The action's post step runs only on success. Run 38457963019
-compiled the test profile in 10m 37s, failed one assertion, and saved
-nothing. Pull requests do not write this archive.
+A failed main check or icount lane still exports its archive when the exact
+key was not restored. The action's post step runs only on success. Run
+38457963019 compiled the test profile in 10m 37s, failed one assertion, and
+saved nothing. The test lanes' `rust-cache` saves with `cache-on-failure`.
+Pull requests write neither.
 
 The check and icount lanes collect the restored mbx store before compiling,
 never between a build and its objects export. Pending export groups reference
 action results that GC can evict. The cap has to sit above the lane's working
 set: an 8 GiB cap deleted a restored store's action results and the build
-recorded no hits. 40 GiB stays above the measured test-lane store (36.5 GiB
-on run 38505694112) and below a size whose export copy cannot fit on the
+recorded no hits. 40 GiB stays above the largest measured store (the retired
+test-lane store, 36.5 GiB on run 38505694112) and below a size whose export copy cannot fit on the
 145 GiB runner. Post-build headroom leaves those action results intact. It
 removes Cargo downloads, collapses the managed target's duplicate bytes onto
 the object store, and skips the save when the copy still does not fit.
@@ -171,7 +182,8 @@ diffs request every surface. On pull requests the same classifier also emits
 skip unrelated crates after the `--workspace` build. A `tests/`-only diff
 sets `unit_mode=narrow` and builds that integration test instead. Pushes to
 `main` keep the full pool. The required `ci` aggregate rejects failed or cancelled lanes and
-retains the visible `check`/`test` job names.
+retains the visible `check`/`test` job names; `test (integration)`, `e2e`,
+and `uniffi` are the test profile's other lanes.
 
 Release-metadata routing tests use disposable Git histories and fixed manifest,
 lockfile, and skill fixtures. They do not assume every component file contains
@@ -185,7 +197,7 @@ versions different without changing the routing contract.
 | `docs/dsr-release-fallback.md` | Cockpit |
 | `docs/site/**`, root `CHANGELOG.md` | Compile-free guards |
 | Workflow/action-only changes | Compile-free workflow/contract guards |
-| Root `justfile`, `just/perf.just`, `just/release.just`, `just/mutation.just`, `scripts/check-*`, `scripts/build-ffi-xcframework.sh`, `scripts/export-product-skills.sh`, `scripts/product-skills`, `scripts/skills-package/**`, `.agents/skills/beads/**` | Compile-free guards |
+| Root `justfile`, `just/perf.just`, `just/release.just`, `just/mutation.just`, `scripts/check-*`, `scripts/build-ffi-xcframework.sh`, `scripts/export-product-skills.sh`, `scripts/product-skills`, `scripts/skills-package/**` | Compile-free guards |
 | `just/gates.just`, `just/test.just`, `just/build.just` | Root Rust check/test |
 | `just/cockpit.just` | Cockpit tests + shipping app |
 | `just/setup.just`, `scripts/doctor.sh`, `scripts/setup-rust.sh`, `scripts/test-dev-setup.sh`, `scripts/native-smoke.sh` | Native setup assurance |
@@ -272,6 +284,7 @@ desktop-v0.1.0
   phux-desktop-0.1.0-macos-arm64.zip
     Phux.app/
   SHA256SUMS
+  desktop-channel.json
 ```
 
 `publish.yml` still requires green `ci.yml` for the exact tagged commit.
@@ -286,9 +299,9 @@ Homebrew Bash is required.
 The runner setup downloads Xcode's separate Metal Toolchain component and executes
 `xcrun metal --version` before compiling; Xcode alone does not provide the shader
 compiler on fresh hosted runners.
-The CLI is **not bundled**: users install it separately from
-<https://phux.sh/install>, and installing the desktop never upgrades a running
-coordinator. The app is explicitly **ad-hoc signed, not Apple-notarized**;
+The CLI is **not bundled**: the desktop installer runs
+<https://phux.sh/install> only when no CLI is found, and installing the
+desktop never upgrades an existing CLI or a running coordinator. The app is explicitly **ad-hoc signed, not Apple-notarized**;
 there are no desktop Developer ID or notarization secrets. `Phux.app` runs the
 Rust executable directly. It does not ship a JavaScript bundle or a NAPI addon.
 
@@ -305,7 +318,34 @@ transaction checks run separately. After upload, downloaded checksums and bytes
 must match before `gh release edit` publishes the draft with `--draft=false
 --latest=false`. Use this draft-aware command: the REST
 release-by-tag endpoint does not resolve unpublished drafts. This train does
-not alter the CLI `next` channel or a Homebrew cask.
+not alter the CLI stable release or a Homebrew cask.
+
+Desktop also rides the moving `next` prerelease independently of the CLI and
+Cockpit. `next-release.yml` calls the same build/signature/runtime qualification
+lane with an immutable green-main SHA and `PHUX_CHANNEL=next`. Its assets are
+`phux-desktop-next.<40-character SHA>-macos-arm64.zip` and the matching
+`.zip.sha256` sidecar. Publication uploads both before replacing
+`desktop-channel.json`; it keeps the current and previous desktop revisions
+without pruning another product's artifacts. Older pinned artifacts are also
+preserved when a failed pointer read or publication retry cannot establish the
+previous revision. A CLI-only next publish is not
+evidence that a desktop update is available: clients must read the desktop
+pointer, not `channel.json` or the moving tag's commit.
+
+Both stable and next publish `desktop-channel.json` with `schema_version: 1`,
+`product: desktop`, `channel`, full source `sha`, package `version`, archive
+basename `archive`, archive digest `sha256`, `minimum_macos`, and `published_at`.
+The signed bundle records `PhuxDesktopVersion`, `PhuxBuildSHA`, and
+`PhuxDesktopChannel`; Next freshness compares source revisions, not package
+versions (several green commits can share a version).
+
+The standalone desktop installer defaults to `--channel stable`; `latest` is
+a stable alias. `--channel next` resolves the desktop pointer once and verifies
+the signed bundle's source SHA. `--channel next --revision <SHA>` pins an
+already-published SHA-qualified artifact without reading the moving pointer;
+`--version desktop-vX.Y.Z` pins stable. All installs preserve the coordinator
+CLI and its running server. Installer tests use temporary app/launcher paths
+and mocked downloads, never a production installation.
 
 To recover a draft, dispatch **publish** with `tag=desktop-vX.Y.Z`, never the
 leaf workflow. The release drift check includes desktop drafts, a stable
@@ -567,9 +607,18 @@ the script must stay POSIX `sh`.
 
 The installer downloads the target tarball and `.sha256` sidecar, verifies the
 checksum before unpacking, and installs `phux` + `phux-mcp` into
-`${PHUX_INSTALL_DIR:-$HOME/.local/bin}`; with no `--version` it resolves the
-current GitHub release. Keep the explicit `v0.0.1` refusal as a historical
-safety guard.
+`${PHUX_INSTALL_DIR:-$HOME/.local/bin}`. When that directory is not on `PATH`,
+it appends one idempotent line to the user's shell profile unless
+`--no-modify-path` is passed. Keep the explicit `v0.0.1` refusal as a
+historical safety guard.
+
+With no `--version`, the installer and `phux update` read the
+`releases/latest` redirect, which needs no GitHub API quota. Only the CLI
+stream may be GitHub's Latest release: `release.yml` publishes with
+`--latest`, and the Cockpit, desktop, and agent-integration lanes publish with
+`--latest=false`. A redirect naming another stream, or none, falls back to
+the bounded release-list scan. If another stream is ever marked Latest by
+hand, repair it with `gh release edit vX.Y.Z --latest`.
 
 ### CPU baselines
 
@@ -629,7 +678,7 @@ silently replace a public release with different bytes.
 The `cockpit-vX.Y.Z` tag shape and the `phux-cockpit-<semver>-macos-arm64.zip`
 asset name are a consumed contract: `scripts/install-cockpit.sh` and the
 site's Cockpit version badge resolve them directly. Rename either and both
-break; `scripts/check-install-surface.sh` pins the three halves together.
+break.
 
 ## PhuxFFI xcframework
 

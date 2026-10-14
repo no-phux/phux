@@ -46,10 +46,8 @@ serde_path_to_error.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-# Inline (scoped to this crate) per phux-nz4.4 guidance: used only by the
-# `time` status-bar widget for strftime-style formatting. No workspace dep
-# yet because no other crate consumes chrono.
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# strftime-style formatting for the `time` status-bar widget.
+chrono.workspace = true
 # `production::refuse_dev_on_production_state` needs the account's home
 # directory from the password database (`getpwuid_r`), because a sandbox
 # rewrites `$HOME` while an inherited `PHUX_WS_TOKENS` still points at the

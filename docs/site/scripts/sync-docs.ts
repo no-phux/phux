@@ -578,53 +578,37 @@ ${summary}
 
 ## ${pitch.headline}
 
-${pitch.text}[${pitch.linkLabel}](${pitch.linkHref}).
+${pitch.text}
 
-<!--
-TODO: iOS availability wording. Patrick has not chosen between a TestFlight
-link and "coming soon". Keep the next line neutral. Do not add a TestFlight
-URL or a coming-soon claim until that choice is made.
--->
+[Install phux](/quickstart/install) · [Try in your browser](${SITE.url}/embed) · [Use an agent](#use-an-agent)
 
-${pitch.iosBefore}[${pitch.iosLabel}](${pitch.iosHref})${pitch.iosAfter}
+## Try it
 
-## Hand this to your agent
+${OVERVIEW.firstRun.map(({ label, action, detail }, index) => `${index + 1}. **${label}:** \`${action}\` — ${detail}`).join("\n")}
 
-Paste this into your coding agent:
+Detach leaves it running. A server crash or reboot ends it. [Continuity details](/quickstart#what-survives).
 
-\`\`\`text
-${AGENT_START.prompt}
-\`\`\`
+## The model
 
-### Control your terminals
+Server → session → resource (terminal). Inbox is the session for unorganized resources. TUI and desktop views show the terminal; an agent can read or type in it.
 
-Install the operating skills, then [choose your agent integration](/consumers/getting-started) to connect to your running phux server:
-
-\`\`\`sh
-${AGENT_START.skills}
-\`\`\`
-
-### Search the documentation
-
-The hosted docs MCP is read-only. It searches guides and releases; it cannot see or control your terminals.
-
-\`\`\`sh
-${AGENT_START.mcp}
-\`\`\`
-
-[Other MCP clients](/consumers/getting-started#let-your-agent-read-the-docs) · [Agent guide](/llms.txt) · [Skill index](https://phux.sh/.well-known/agent-skills/index.json) · [Docs MCP details](https://phux.sh/.well-known/mcp/server-card.json)
+Sessions own resources. Arrangements place them. Views show them. [Full model](/concepts).
 
 ## Guides
 
 ${OVERVIEW.paths.map(({ href, title, text }) => `- [${title}](${href}) — ${text}`).join("\n")}
 
-## Terminal model
+## Use an agent
 
-The server owns the terminals. Clients read output and send input through the same protocol. Processes keep running after a client disconnects.
+\`\`\`text
+${AGENT_START.prompt}
+\`\`\`
+
+[Agent integrations](/consumers/getting-started) · [Docs MCP (read-only)](/consumers/getting-started#let-your-agent-read-the-docs)
 
 ## Reference
 
-[Core concepts](/concepts) · [CLI and configuration](/reference) · [Protocol](/wire) · [Architecture](/architecture) · [All documentation](/docs)
+[Core concepts](/concepts) · [CLI and configuration](/reference) · [Protocol](/wire) · [Architecture](/architecture) · [Compare tools](/concepts/when-to-use) · [Troubleshooting](/troubleshooting) · [All documentation](/docs)
 
 [Performance](/performance) — measurements, boundaries, and raw evidence.
 `;

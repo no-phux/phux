@@ -47,7 +47,7 @@ impl Organization {
             return Ok(());
         }
         if self.selected.len() == MAX_ORG_BATCH {
-            return Err("This selection has reached the server's atomic move limit.");
+            return Err("Too many selected (max 256).");
         }
         self.selected.push(resource);
         Ok(())
@@ -66,7 +66,7 @@ impl Organization {
             return Err("Wait for the current move to finish.");
         }
         if keys.len() > MAX_ORG_BATCH {
-            return Err("Select a smaller group; one atomic move holds up to 256 resources.");
+            return Err("Too many selected (max 256).");
         }
         self.selected = keys;
         Ok(())
@@ -150,14 +150,14 @@ impl Desk {
             .map(|resource| resource.key)
             .collect();
         if let Err(reason) = self.organization.select(keys) {
-            self.post(Kind::Info, "Selection unchanged", Some(reason.to_owned()));
+            self.post(Kind::Refusal, reason, None);
         }
         cx.notify();
     }
 
     pub(crate) fn toggle_resource_selection(&mut self, key: ResourceKey, cx: &mut Context<Self>) {
         if let Err(reason) = self.organization.toggle(key) {
-            self.post(Kind::Info, "Selection unchanged", Some(reason.to_owned()));
+            self.post(Kind::Refusal, reason, None);
         }
         cx.notify();
     }
@@ -166,7 +166,7 @@ impl Desk {
         if self.organization.selected.is_empty() {
             let key = self.focused_pane().and_then(|pane| pane.key);
             let Some(key) = key else {
-                self.post(Kind::Info, "Select work to move", None);
+                self.post(Kind::Refusal, "Nothing selected", None);
                 return;
             };
             self.organization.selected.push(key);
@@ -189,9 +189,9 @@ impl Desk {
         }
         if keys.len() > MAX_ORG_BATCH {
             self.post(
-                Kind::Error,
-                "Selection too large",
-                Some(format!("Move up to {MAX_ORG_BATCH} resources at a time.")),
+                Kind::Refusal,
+                &format!("Too many selected (max {MAX_ORG_BATCH})"),
+                None,
             );
             return;
         }
@@ -219,10 +219,9 @@ impl Desk {
                         },
                     );
                     self.close_modal(window, cx);
-                    self.post(Kind::Info, "Moving work…", None);
                 }
             }
-            Err(error) => self.post(Kind::Error, "Could not move work", Some(error.to_string())),
+            Err(error) => self.post(Kind::Error, "Couldn't move", Some(error.to_string())),
         }
         self.after_command(window, cx);
     }
@@ -241,7 +240,7 @@ impl Desk {
             Ok(operation) => self.organization.begin(operation, Edit::Resolve(name)),
             Err(error) => self.post(
                 Kind::Error,
-                "Could not organize session",
+                "Couldn't move out of Inbox",
                 Some(error.to_string()),
             ),
         }
@@ -258,27 +257,14 @@ impl Desk {
         let Some(client) = self.client() else { return };
         match client.undo(receipt) {
             Ok(operation) => self.organization.begin(operation, Edit::Undo),
-            Err(error) => self.post(
-                Kind::Error,
-                "Could not undo organization",
-                Some(error.to_string()),
-            ),
+            Err(error) => self.post(Kind::Error, "Couldn't undo", Some(error.to_string())),
         }
         cx.notify();
     }
 
     pub(crate) fn note_organization(&mut self, operation: OperationId, outcome: &OrgOutcome) {
-        if let Some((success, sentence)) = self.organization.finish(operation, outcome) {
-            let kind = if success { Kind::Success } else { Kind::Error };
-            self.post(
-                kind,
-                if success {
-                    &sentence
-                } else {
-                    "Organization did not finish"
-                },
-                (!success).then_some(sentence.clone()),
-            );
+        if let Some((false, sentence)) = self.organization.finish(operation, outcome) {
+            self.post(Kind::Error, "Couldn't move", Some(sentence));
         }
     }
 }

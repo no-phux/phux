@@ -264,7 +264,7 @@ pub fn write_host_clipboard<W: Write>(out: &mut W, text: &str) -> io::Result<()>
 
 /// Standard padded base64 (RFC 4648), hand-rolled to avoid a dependency on a
 /// cold path.
-fn base64_encode(input: &[u8]) -> String {
+pub(in crate::attach) fn base64_encode(input: &[u8]) -> String {
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
         let b0 = chunk[0];

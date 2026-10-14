@@ -44,7 +44,7 @@ async function context(scenario = "live", authenticated = false, mobile = false)
 async function open(page: Page) {
   await page.goto(base);
   assert.equal(await page.evaluate(() => window.__terminalFixture?.starts ?? 0), 0, "idle page allocates nothing");
-  await page.getByRole("link", { name: "Open terminal demo", exact: true }).focus();
+  await page.getByRole("link", { name: /Try it in your browser/ }).focus();
   await page.keyboard.press("Enter");
   await page.locator("dialog[open]").waitFor();
 }
@@ -99,7 +99,7 @@ async function info(page: Page) {
 async function close(page: Page) {
   await page.keyboard.press("Escape");
   assert.equal(await page.locator("dialog[open]").count(), 0);
-  assert.ok(await page.getByRole("link", { name: "Open terminal demo", exact: true }).evaluate((link) => link === document.activeElement), "Escape returns focus to preview");
+  assert.ok(await page.getByRole("link", { name: /Try it in your browser/ }).evaluate((link) => link === document.activeElement), "Escape returns focus to the launch link");
 }
 async function dispose(ctx: BrowserContext) { await ctx.close(); }
 

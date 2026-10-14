@@ -7,13 +7,14 @@ last-reviewed: 2026-09-30
 # Remote hosts
 
 **TL;DR.** The window header's location trigger (`session · machine`) opens
-the Connected hosts menu: live local and remote attachments, their connection
-state, and the current window's host. Selecting one browses its sessions
-without disconnecting or retargeting another host. Machines… (`cmd+shift+O`)
-lists every saved machine, connected or not. Connect to Host (the header
-menu's Connect to Host action) points Cockpit's active Phux provider
-at a host in the phux CLI's own `[[remote]]` registry, resolved the way
-`phux --remote HOST` resolves it. phux-client-ffi's remote tunnel dials QUIC
+the location menu: the window's session and machine, any connection trouble,
+Sessions… and Machines…. Machines… (`cmd+shift+O`) is the one place that
+lists saved machines, connected or not, and connects, browses or disconnects
+them. The chrome has no other connect flow: it asks `cockpit.remote` for
+status only, and the connect, return and disconnect kinds described below
+have no UI caller. A host selected at launch (`phux-remote`, `PHUX_REMOTE`)
+is resolved the way `phux --remote HOST` resolves it in the phux CLI's own
+`[[remote]]` registry. phux-client-ffi's remote tunnel dials QUIC
 or TLS WebSocket with the pinned certificate and bearer token, then relays
 frames through a Unix-domain socket pair. The socket worker and session
 kernel are unchanged. Cockpit holds up to four coordinators at once (this
@@ -21,11 +22,9 @@ Mac and registered hosts), each on its own connection, listed as host groups
 ("This Mac" first). Every terminal identity carries the coordinator that
 minted it, so two servers' terminal 7 are two terminals. Picking a session in
 another coordinator's group shows it beside the others without disconnecting
-anything; a coordinator that fails shows why in its group. Disconnect removes
-the host named in the panel, and Disconnect All every host. The hosts
-connected through Connect to Host are remembered and come back beside this
-Mac on the next launch, listing, except that the one whose session was in
-front is shown again.
+anything; a coordinator that fails shows why in its group. Remembered hosts
+come back beside this Mac on the next launch, listing, except that the one
+whose session was in front is shown again.
 
 ## Endpoint model
 

@@ -441,28 +441,14 @@ impl CopyModeOverlay {
         let max_row = self.pane_rows.saturating_sub(1);
         let max_col = self.pane_cols.saturating_sub(1);
 
-        #[allow(clippy::cast_sign_loss)]
-        {
-            self.cursor_row = if delta_row >= 0 {
-                self.cursor_row
-                    .saturating_add(delta_row as u16)
-                    .min(max_row)
-            } else {
-                self.cursor_row
-                    .saturating_sub(delta_row.unsigned_abs())
-                    .min(max_row)
-            };
-
-            self.cursor_col = if delta_col >= 0 {
-                self.cursor_col
-                    .saturating_add(delta_col as u16)
-                    .min(max_col)
-            } else {
-                self.cursor_col
-                    .saturating_sub(delta_col.unsigned_abs())
-                    .min(max_col)
-            };
-        }
+        self.cursor_row = self
+            .cursor_row
+            .saturating_add_signed(delta_row)
+            .min(max_row);
+        self.cursor_col = self
+            .cursor_col
+            .saturating_add_signed(delta_col)
+            .min(max_col);
     }
 
     fn move_cursor_key(&mut self, delta_row: i16, delta_col: i16, extend_selection: bool) {

@@ -154,24 +154,6 @@ impl EntryBinding {
             .sum();
         self.unplaced.len() + hidden
     }
-
-    /// The keys of every stored member entry that has no live handle.
-    #[must_use]
-    pub fn unplaced_keys(&self) -> Vec<ResourceKey> {
-        let mut keys: Vec<ResourceKey> = self
-            .unplaced
-            .iter()
-            .filter_map(|unplaced| member_key(&unplaced.entry))
-            .collect();
-        for hidden in &self.hidden {
-            keys.extend(
-                wire_leaves(&hidden.group.tree)
-                    .iter()
-                    .filter_map(member_key),
-            );
-        }
-        keys
-    }
 }
 
 /// Why a client document could not be written as a stored arrangement.
@@ -441,32 +423,48 @@ fn collect_wire_leaves(node: &WireNode, out: &mut Vec<EntryRef>) {
     }
 }
 
-const fn member_key(entry: &EntryRef) -> Option<ResourceKey> {
-    match &entry.target {
-        EntryTarget::Member(key) => Some(*key),
-        _ => None,
-    }
-}
-
-/// The member keys of group `group_index` of a stored document, in
-/// depth-first leaf order: what `name:N.M` addresses.
-#[must_use]
-pub fn group_member_keys(doc: &WireDoc, group_index: usize) -> Option<Vec<EntryTarget>> {
-    let group = doc.groups.get(group_index)?;
-    Some(
-        wire_leaves(&group.tree)
-            .into_iter()
-            .map(|entry| entry.target)
-            .collect(),
-    )
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, reason = "tests")]
 mod tests {
     use super::*;
     use crate::layout::split_at;
     use phux_protocol::ids::SatelliteHost;
+
+    /// The keys of every stored member entry that has no live handle.
+    fn unplaced_keys(binding: &EntryBinding) -> Vec<ResourceKey> {
+        let mut keys: Vec<ResourceKey> = binding
+            .unplaced
+            .iter()
+            .filter_map(|unplaced| member_key(&unplaced.entry))
+            .collect();
+        for hidden in &binding.hidden {
+            keys.extend(
+                wire_leaves(&hidden.group.tree)
+                    .iter()
+                    .filter_map(member_key),
+            );
+        }
+        keys
+    }
+
+    const fn member_key(entry: &EntryRef) -> Option<ResourceKey> {
+        match &entry.target {
+            EntryTarget::Member(key) => Some(*key),
+            _ => None,
+        }
+    }
+
+    /// The member keys of group `group_index` of a stored document, in
+    /// depth-first leaf order: what `name:N.M` addresses.
+    fn group_member_keys(doc: &WireDoc, group_index: usize) -> Option<Vec<EntryTarget>> {
+        let group = doc.groups.get(group_index)?;
+        Some(
+            wire_leaves(&group.tree)
+                .into_iter()
+                .map(|entry| entry.target)
+                .collect(),
+        )
+    }
 
     fn key(n: u8) -> ResourceKey {
         ResourceKey::new([n; 16]).unwrap()
@@ -565,7 +563,7 @@ mod tests {
             vec![ResourceId::local(11), ResourceId::satellite("edge", 4)]
         );
         assert_eq!(binding.unplaced_count(), 2);
-        assert_eq!(binding.unplaced_keys(), vec![key(2), key(3)]);
+        assert_eq!(unplaced_keys(&binding), vec![key(2), key(3)]);
 
         let written = to_protocol(&client, &handles, &binding).unwrap();
         assert_eq!(written.groups.len(), 2);

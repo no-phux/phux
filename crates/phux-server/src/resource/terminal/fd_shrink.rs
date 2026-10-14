@@ -8,7 +8,7 @@
 
 use std::ffi::{CString, OsStr, OsString};
 use std::io::{self, ErrorKind};
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -164,25 +164,8 @@ fn posix_spawn_child(
     let cwd = spawn_directory(cmd)
         .map(|dir| c_os(dir.as_os_str()))
         .transpose()?;
-    let pid = spawn_with_stdio(
-        slave.as_raw_fd_pub(),
-        &trampoline,
-        &argv,
-        &envp,
-        cwd.as_deref(),
-    )?;
+    let pid = spawn_with_stdio(slave.as_raw_fd(), &trampoline, &argv, &envp, cwd.as_deref())?;
     Ok(Box::new(portable_pty_adopt::AdoptedChild::new(pid)))
-}
-
-trait AsRawFdPub {
-    fn as_raw_fd_pub(&self) -> std::os::fd::RawFd;
-}
-
-impl AsRawFdPub for OwnedFd {
-    fn as_raw_fd_pub(&self) -> std::os::fd::RawFd {
-        use std::os::fd::AsRawFd;
-        self.as_raw_fd()
-    }
 }
 
 fn open_slave(path: &Path) -> io::Result<OwnedFd> {
@@ -288,7 +271,7 @@ fn spawn_with_stdio(
             &raw mut pid,
             path.as_ptr(),
             actions.as_ptr(),
-            attr_ptr(&attr),
+            attr.ptr(),
             argv_ptrs.as_ptr(),
             env_ptrs.as_ptr(),
         )
@@ -298,10 +281,6 @@ fn spawn_with_stdio(
     } else {
         Err(io::Error::from_raw_os_error(rc))
     }
-}
-
-fn attr_ptr(#[allow(unused_variables)] attr: &impl AttrPtr) -> *const libc::posix_spawnattr_t {
-    attr.ptr()
 }
 
 trait AttrPtr {

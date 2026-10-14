@@ -99,7 +99,7 @@ function settings(dirty = false) {
 }
 
 test('each navigator destination waits for Settings rollback before opening', () => {
-  for (const kind of ['commands_open', 'sessions_open', 'machines_open', 'windows_open', 'new_session_open', 'add_machine_open']) {
+  for (const kind of ['commands_open', 'palette_open', 'machines_open', 'new_session_open', 'add_machine_open']) {
     let [model, cmd] = step(settings(true), { kind });
     assert.equal(model.settingsOpen, true, kind);
     assert.equal(model.paletteOpen, false, kind);

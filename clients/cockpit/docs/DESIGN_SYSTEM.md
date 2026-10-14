@@ -54,14 +54,14 @@ location trigger is the one exception to icon-only width: a fixed 184pt
 person can always tell where they are and where a new tab will run. It elides
 rather than grows, so a long session name never moves the chrome; attention
 swaps its trailing chevron for the leading warning icon at the same width.
-It opens the host menu, which lists real local/remote attachments, marks the
-opening window's current host, and exposes connection state. Host selection
-opens that captured attachment's sessions; Connect to Host, Machines and
-Sessions remain directly available. Workspace actions (an ellipsis, so it
-never reads as a second copy of the location chevron) groups
-session/machine/agent navigation, window/layout actions including Show all
-windows, and Commands/Settings. Side-tab mode leaves the freed header band to
-the window drag; the location trigger names the session in both modes.
+It opens the location menu: the full session and machine names, any
+connection trouble, Reconnect when there is something to reconnect, then
+Sessions… and Machines…. Machines is the only place that lists or connects
+machines. Workspace actions (an ellipsis, so it never reads as a second copy
+of the location chevron) holds New window, tab placement, Commands and
+Settings, and nothing the location menu already offers. Side-tab mode leaves
+the freed header band to the window drag; the location trigger names the
+session in both modes.
 
 Top-tab titles are direct SDK tab triggers inside the native Tabs focus group:
 Left/Right and Home/End move keyboard focus; Enter/Space activates the focused tab.
@@ -76,7 +76,7 @@ Every close action has a full-title accessible name; the selected tab also has
 a full-title close tooltip. Side tabs compose the icon, eliding title and close
 control inside one selected row, never overlaying the SDK's painted icon slot.
 
-Both tab context menus offer Rename Tab, movement, Close View and Kill Tab. Rename captures
+Both tab context menus offer Rename Tab, movement, Close Tab and Kill Tab. Rename captures
 the invoked tab, prefills its current name, and writes the shared workspace
 window name on that tab's owning attachment. It never renames the session or
 speculates local success. Confirmation comes from the durable workspace mutation;

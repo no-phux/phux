@@ -162,6 +162,8 @@ pub struct SelectList {
     live_key: Option<&'static str>,
     /// Path search uses every printable letter, including j/k, as query text.
     vi_navigation: bool,
+    /// Tab opens management for the selected session, never for host/status rows.
+    session_management: bool,
     /// First visible filtered row. Interior-mutable because the viewport
     /// height is only known at paint time and `render` takes `&self` (the
     /// bargain ratatui's `ListState::offset` makes).
@@ -219,6 +221,7 @@ impl SelectList {
             theme: *theme,
             live_key: None,
             vi_navigation: true,
+            session_management: false,
             scroll: Cell::new(0),
             page: Cell::new(0),
             breakpoints: ChromeBreakpoints::default(),
@@ -233,6 +236,13 @@ impl SelectList {
     #[must_use]
     pub const fn with_live_key(mut self, key: &'static str) -> Self {
         self.live_key = Some(key);
+        self
+    }
+
+    /// Enable Tab → management on session rows, preserving their exact identity args.
+    #[must_use]
+    pub const fn with_session_management(mut self) -> Self {
+        self.session_management = true;
         self
     }
 
@@ -545,6 +555,23 @@ impl SelectList {
     }
 }
 
+fn session_management_command(item: &SelectItem) -> OverlayCommand {
+    if !matches!(
+        item.action.action.as_str(),
+        "switch-session" | "switch-host"
+    ) || !item.action.args.contains_key("name")
+    {
+        return OverlayCommand::Stay;
+    }
+    let mut action = item.action.clone();
+    action.args.insert(
+        "switch-action".to_owned(),
+        toml::Value::String(action.action.clone()),
+    );
+    "session-actions".clone_into(&mut action.action);
+    OverlayCommand::RunAbove(action)
+}
+
 impl RenderOverlay for SelectList {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let modal_area = Self::modal_area(area, self.breakpoints);
@@ -639,6 +666,11 @@ impl RenderOverlay for SelectList {
 
         match key.key {
             PhysicalKey::Escape => OverlayCommand::Dismiss,
+            PhysicalKey::Tab if self.session_management => indices
+                .get(self.selected)
+                .map_or(OverlayCommand::Stay, |&idx| {
+                    session_management_command(&self.items[idx])
+                }),
             PhysicalKey::Enter => indices
                 .get(self.selected)
                 .map_or(OverlayCommand::Stay, |&idx| {
@@ -893,6 +925,51 @@ mod tests {
         // word-boundary hit beats a mid-word one.
         assert!(fuzzy_score("sp", "split-pane") > fuzzy_score("sp", "previous-pane"));
         assert!(fuzzy_score("p", "split-pane") > fuzzy_score("p", "copy-mode"));
+    }
+
+    #[test]
+    fn session_management_tab_preserves_filtered_target_and_ignores_status_rows() {
+        let target = ResolvedAction {
+            action: "switch-session".to_owned(),
+            args: std::collections::BTreeMap::from([
+                ("id".to_owned(), toml::Value::Integer(42)),
+                ("name".to_owned(), toml::Value::String("build".to_owned())),
+            ]),
+        };
+        let mut other = target.clone();
+        other.args.insert("id".to_owned(), toml::Value::Integer(41));
+        let mut sl = list(vec![
+            SelectItem::header("Local"),
+            SelectItem::new("build", other),
+            SelectItem::new("build", target.clone()),
+        ])
+        .with_session_management();
+        type_str(&mut sl, "build");
+        key(&mut sl, PhysicalKey::ArrowDown);
+        let selected = sl.selected;
+        let OverlayCommand::RunAbove(manage) = key(&mut sl, PhysicalKey::Tab) else {
+            panic!("management")
+        };
+        assert_eq!(manage.action, "session-actions");
+        let mut expected_args = target.args;
+        expected_args.insert(
+            "switch-action".to_owned(),
+            toml::Value::String("switch-session".to_owned()),
+        );
+        assert_eq!(manage.args, expected_args);
+        assert_eq!(sl.query, "build", "drill-down preserves search");
+        assert_eq!(sl.selected, selected, "drill-down preserves cursor");
+        sl.replace_items(vec![SelectItem::new("build", action("switch-host"))]);
+        assert_eq!(
+            key(&mut sl, PhysicalKey::Tab),
+            OverlayCommand::Stay,
+            "host availability isn't a session"
+        );
+        let mut static_list = sample();
+        assert_eq!(
+            key(&mut static_list, PhysicalKey::Tab),
+            OverlayCommand::Stay
+        );
     }
 
     #[test]

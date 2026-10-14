@@ -60,6 +60,14 @@ const SECTIONS: &[Section] = &[
                   its columns back to the panes.",
     },
     Section {
+        key: "notifications",
+        header: "[notifications]",
+        summary: "Agent notifications the TUI posts when an agent blocks \
+                  or finishes: delivery mode (terminal OSC, system, bell, \
+                  off), the OSC dialect, per-event toggles, focus \
+                  suppression, and sound.",
+    },
+    Section {
         key: "hooks",
         header: "[[hooks.<event>]]",
         summary: "Event hooks: per event name, an array of `when` \

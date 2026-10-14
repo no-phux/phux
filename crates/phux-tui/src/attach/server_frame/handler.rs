@@ -22,7 +22,7 @@ use crate::attach::pane_state::{
 };
 use crate::attach::render::ReplicaWalk;
 use crate::layout::{self, ArrangementDoc, LayoutState, Rect};
-use crate::predict::{Overlay, PredictionState, reconcile_terminal_output_per_cell_at};
+use crate::predict::{PredictionState, reconcile_terminal_output_per_cell_at, render_overlay};
 use crate::render::chrome::status_bar::{Notice, StatusBarPainter};
 use phux_client::agent_meta::{RESOURCE_AGENT_KEY, RESOURCE_ASKED_KEY};
 use phux_client::conditional_kill::BoundResource;
@@ -868,7 +868,7 @@ fn paint_focused_interior<W: crate::attach::RenderSink>(
     }
     // Paint surviving predictions, gated by the ADR-0090 display policy.
     if predict.should_display(now_ms) {
-        let _ = Overlay.render(predict, pane_origin, out);
+        let _ = render_overlay(predict, pane_origin, out);
         // The guesses now sit over the pane's cells; the front
         // buffer must not keep claiming what was there before them.
         if let Some(slot) = panes.get_mut(fid) {

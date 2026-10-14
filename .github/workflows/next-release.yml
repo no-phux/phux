@@ -5,11 +5,12 @@
 # creates a vX.Y.Z or cockpit-vX.Y.Z tag and never touches Homebrew.
 # release-please remains the sole owner of stable tags (ADR-0113).
 #
-# Two products ride the one prerelease, each with its own pointer:
+# Three products ride the one prerelease, each with its own pointer:
 # channel.json (phux + phux-mcp, three targets) and cockpit-channel.json
 # (Phux Cockpit.app, arm64 macOS, ad-hoc signed). Each rebuilds only when its
 # own inputs moved since the SHA its pointer names, and each publishes on its
 # own success.
+# desktop-channel.json names the independently qualified GPUI desktop bundle.
 #
 # Cost: at most one run in flight. A newer green SHA waits instead of
 # cancelling it, and pending runs coalesce to the newest, so a busy main still
@@ -51,6 +52,7 @@ jobs:
       sha: ${{ steps.select.outputs.sha }}
       should_build: ${{ steps.decide.outputs.should_build }}
       cockpit_build: ${{ steps.decide.outputs.cockpit_build }}
+      desktop_build: ${{ steps.decide.outputs.desktop_build }}
     steps:
       - name: Select SHA
         id: select
@@ -99,6 +101,18 @@ jobs:
             fi
             outputs="$(git diff --name-only "$prev" "$SHA" -- | python3 scripts/ci/classify-changes.py)"
             for key in "$@"; do
+              # Desktop is a standalone Rust workspace, not a root CI classifier
+              # surface. Include its packaging + embedded installer directly;
+              # shared Rust/toolchain inputs use the classifier keys below.
+              if [ "$key" = desktop_inputs ] && git diff --name-only "$prev" "$SHA" -- \
+                clients/desktop scripts/install-desktop.sh scripts/lib/install-release.sh \
+                scripts/test-install-desktop.py just/desktop.just \
+                .github/workflows/desktop-release.yml .github/workflows/next-release.yml \
+                | grep . >/dev/null; then
+                echo "  desktop inputs since ${prev}; building" >&2
+                echo true
+                return
+              fi
               if grep -qx "${key}=true" <<<"$outputs"; then
                 echo "  ${key} since ${prev}; building" >&2
                 echo true
@@ -112,9 +126,12 @@ jobs:
           phux="$(decide channel.json phux_needed native_needed)"
           echo "cockpit:" >&2
           cockpit="$(decide cockpit-channel.json cockpit_needed)"
+          echo "desktop:" >&2
+          desktop="$(decide desktop-channel.json desktop_inputs phux_needed native_needed)"
           {
             echo "should_build=${phux}"
             echo "cockpit_build=${cockpit}"
+            echo "desktop_build=${desktop}"
           } >> "$GITHUB_OUTPUT"
 
   build:
@@ -294,12 +311,22 @@ jobs:
             dist/phux-cockpit-next.*.zip.sha256
           if-no-files-found: error
 
+  desktop:
+    name: qualify Phux Desktop (macOS arm64)
+    needs: gate
+    if: needs.gate.outputs.desktop_build == 'true'
+    uses: ./.github/workflows/desktop-release.yml
+    with:
+      tag: next
+      channel: next
+      sha: ${{ needs.gate.outputs.sha }}
+
   publish:
     name: publish next channel
-    needs: [gate, build, cockpit]
+    needs: [gate, build, cockpit, desktop]
     if: >-
       !cancelled() &&
-      (needs.build.result == 'success' || needs.cockpit.result == 'success')
+      (needs.build.result == 'success' || needs.cockpit.result == 'success' || needs.desktop.result == 'success')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -323,9 +350,59 @@ jobs:
         run: bash scripts/publish-next-channel.sh "$SHA" dist
 
       - name: Publish Phux Cockpit onto the next prerelease
-        if: needs.cockpit.result == 'success'
+        if: ${{ !cancelled() && needs.cockpit.result == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           SHA: ${{ needs.gate.outputs.sha }}
         run: bash scripts/publish-next-channel.sh --cockpit "$SHA" dist
+
+      - name: Publish Phux Desktop onto the next prerelease
+        if: ${{ !cancelled() && needs.desktop.result == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ needs.gate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          archive="phux-desktop-next.${SHA}-macos-arm64.zip"
+          (cd dist && shasum -a 256 -c "$archive.sha256")
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          metadata = json.loads(Path('dist/desktop-channel.json').read_text())
+          archive = f"phux-desktop-next.{os.environ['SHA']}-macos-arm64.zip"
+          assert metadata['schema_version'] == 1 and metadata['product'] == 'desktop' and metadata['channel'] == 'next'
+          assert metadata['sha'] == os.environ['SHA'] and metadata['archive'] == archive
+          assert metadata['sha256'] == hashlib.sha256(Path('dist', archive).read_bytes()).hexdigest()
+          PY
+          previous=""
+          pointer_dir="$(mktemp -d)"
+          trap 'rm -rf "$pointer_dir"' EXIT
+          if gh release view next >/dev/null 2>&1; then
+            if gh release download next --pattern desktop-channel.json --dir "$pointer_dir"; then
+              previous="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("sha", ""))' "$pointer_dir/desktop-channel.json")"
+            fi
+            gh release upload next "dist/$archive" "dist/$archive.sha256" --clobber
+            gh api -X PATCH "repos/${GH_REPO}/git/refs/tags/next" -f sha="$SHA" -F force=true >/dev/null
+            gh release edit next --prerelease --latest=false --target "$SHA" --title next
+          else
+            gh release create next "dist/$archive" "dist/$archive.sha256" \
+              --prerelease --latest=false --target "$SHA" --title next \
+              --notes 'Moving next channel (green main). Not a stable release.'
+          fi
+          # Publish pointer last; retain current + previous desktop SHA only.
+          gh release upload next dist/desktop-channel.json --clobber
+          # Failed pointer reads and retries after publication cannot establish
+          # the previous revision. Preserve pinned downloads rather than guess.
+          if [[ ! "$previous" =~ ^[0-9a-f]{40}$ ]] || [ "$previous" = "$SHA" ]; then
+            exit 0
+          fi
+          names="$(gh release view next --json assets --jq '.assets[].name')"
+          while IFS= read -r name; do
+            case "$name" in
+              "phux-desktop-next.${SHA}-"*) continue ;;
+              "phux-desktop-next.${previous}-"*) continue ;;
+              phux-desktop-next.*) gh release delete-asset next "$name" --yes ;;
+            esac
+          done <<< "$names"

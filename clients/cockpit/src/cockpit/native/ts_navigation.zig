@@ -15,10 +15,11 @@ pub const page_size = 4;
 pub const max_label_bytes = 240;
 pub const max_detail_bytes = 160;
 pub const max_host_bytes = support.RemoteResourceId.max_host_bytes;
-pub const Scope = enum(u8) { all = 0, sessions = 1, known_hosts = 2, exact_host = 3, captured_machine = 5, connected_hosts = 6, captured_host = 7 };
+/// 0 every open tab and session, 1 sessions only, 5 one captured machine's
+/// sessions. 2, 3, 6 and 7 are retired and never reused.
+pub const Scope = enum(u8) { all = 0, sessions = 1, captured_machine = 5 };
 pub const max_bytes = 4096;
 pub const Error = error{ InvalidRequest, StaleRevision, BufferTooSmall, CatalogTooLarge, UnavailableContext };
-const connected_hosts = @import("connected_hosts.zig");
 const empty_workspace: model_module.Workspace = .{};
 
 pub const Connection = enum(u8) { local = 0, connecting = 1, connected = 2, offline = 3, workspace_unavailable = 4 };
@@ -36,14 +37,7 @@ pub fn connection(model: *const Model) Connection {
     };
 }
 
-/// Known-host rows filter the catalog; they never carry activation authority.
-/// Their target slot holds `host_filter_tag, host_len:u8, raw host` instead of
-/// a catalog target (tag 2), so no catalog decoder or TS enqueue accepts it.
-pub const host_filter_tag: u8 = 3;
-
 comptime {
-    std.debug.assert(host_filter_tag != 2);
-    std.debug.assert(2 + max_host_bytes <= targets.max_len);
     // Longest scoped request echo (13 + query + scope/host) + total/count +
     // metadata marker, then four records of the longest target and label plus
     // their metadata detail, bounded by the host limit.
@@ -89,10 +83,11 @@ fn sessionLabel(model: *const Model, id: u32, out: []u8) []const u8 {
         if (session.name.len > 0) return session.name;
         break;
     }
-    return std.fmt.bufPrint(out, "Session #{d}", .{id}) catch "Session";
+    _ = out;
+    return "Untitled session";
 }
 
-const Row = struct { entry: Entry, index: u16, is_host: bool };
+const Row = struct { entry: Entry, index: u16 };
 
 fn terminalRef(entry: *const Entry) ?*const model_module.TerminalRef {
     return switch (entry.*) {
@@ -110,7 +105,6 @@ fn entryHost(entry: *const Entry) ?[]const u8 {
 }
 
 fn selectable(model: *const Model, row: *const Row) bool {
-    if (row.is_host) return true;
     if (row.entry == .peer_session) return peerSessionListed(model, row.entry.peer_session);
     if (row.entry == .peer_unavailable) return peerRetryable(model, row.entry.peer_unavailable);
     if (row.entry != .available_terminal) return true;
@@ -120,7 +114,6 @@ fn selectable(model: *const Model, row: *const Row) bool {
 }
 
 fn rowKind(row: *const Row) u8 {
-    if (row.is_host) return 3;
     return switch (row.entry) {
         .placed_terminal => 0,
         .available_terminal => 1,
@@ -128,27 +121,20 @@ fn rowKind(row: *const Row) u8 {
     };
 }
 
-fn hostLabel(host: []const u8) []const u8 {
-    return if (host.len == 0) "Coordinator" else host;
-}
-
 /// The coordinator's own rows (empty host) name the registered remote host
-/// when the provider dials one; satellite hosts keep their own names.
+/// when the provider dials one, else This Mac; satellite hosts keep their
+/// own names.
 fn coordinatorLabel(model: *const Model, host: []const u8) []const u8 {
-    if (host.len == 0) {
-        if (remoteHost(model)) |name| return name;
-    }
-    return hostLabel(host);
+    if (host.len != 0) return host;
+    return remoteHost(model) orelse "This Mac";
 }
 
-/// The active coordinator's machine: the registered host's label, else
-/// "This Mac". A session row always names where it runs, so a person never
-/// has to infer the machine from which coordinator happens to be active. A
-/// persistent session with no members reads "Empty session" (ADR-0160).
+/// A session row names only the machine it runs on, and says Empty when the
+/// persistent session has no members (ADR-0160).
 fn sessionDetail(model: *const Model, id: u32, out: []u8) []const u8 {
-    const kind = if (activeSessionEmpty(model, id)) "Empty session" else "Phux session";
     const host = remoteHost(model) orelse "This Mac";
-    return std.fmt.bufPrint(out, "{s} · {s}", .{ kind, host }) catch kind;
+    if (!activeSessionEmpty(model, id)) return host;
+    return std.fmt.bufPrint(out, "Empty · {s}", .{host}) catch host;
 }
 
 /// The Phux session the focused window is showing: the selected tab's session
@@ -173,7 +159,6 @@ pub fn shownSession(model: *const Model) ?ShownSession {
 
 /// Whether a session row names the session the focused window is showing.
 fn currentSession(model: *const Model, row: *const Row) bool {
-    if (row.is_host) return false;
     const shown = shownSession(model) orelse return false;
     return switch (row.entry) {
         .session => |id| id == shown.id and activeCoordinator(model, shown.coordinator),
@@ -196,12 +181,13 @@ fn activeSessionEmpty(model: *const Model, id: u32) bool {
 
 fn peerSessionDetail(model: *const Model, target: model_module.PeerSession, out: []u8) []const u8 {
     const host = projection.peerHostLabel(model, target.coordinator);
-    const kind = if (@import("empty_session.zig").peerSessionEmpty(model, target.coordinator, target.id)) "Empty session" else "Phux session";
+    const empty = @import("empty_session.zig").peerSessionEmpty(model, target.coordinator, target.id);
+    const prefix = if (empty) "Empty · " else "";
     // A showing peer whose workspace could not be projected says so here,
     // since the chrome's connection state is the active coordinator's.
     if (peerProjectionRefused(model, target.coordinator))
-        return std.fmt.bufPrint(out, "{s} · {s} · workspace unavailable", .{ kind, host }) catch kind;
-    return std.fmt.bufPrint(out, "{s} · {s}", .{ kind, host }) catch kind;
+        return std.fmt.bufPrint(out, "{s}{s} · not syncing", .{ prefix, host }) catch host;
+    return std.fmt.bufPrint(out, "{s}{s}", .{ prefix, host }) catch host;
 }
 
 fn peerProjectionRefused(model: *const Model, coordinator: support.ProviderId) bool {
@@ -247,7 +233,8 @@ fn peerSessionLabel(model: *const Model, target: model_module.PeerSession, out: 
         if (session.name.len > 0) return session.name;
         break;
     }
-    return std.fmt.bufPrint(out, "Session #{d}", .{target.id}) catch "Session";
+    _ = out;
+    return "Untitled session";
 }
 
 /// A terminal's coordinator label: a satellite by its own name, else the
@@ -272,18 +259,15 @@ fn terminalDirectory(model: *const Model, ref: model_module.TerminalRef) []const
     return "";
 }
 
+/// A tab row says where it runs and in which directory; never which window
+/// or tab number holds it.
 fn rowDetail(model: *const Model, row: *const Row, out: []u8) []const u8 {
-    if (row.is_host) return "Known terminal host";
     if (row.entry == .peer_unavailable) return peerUnavailableDetail(model, row.entry.peer_unavailable, out);
-    if (!selectable(model, row)) return "Ownership unavailable";
+    if (!selectable(model, row)) return "Unavailable";
     if (row.entry == .peer_session) return peerSessionDetail(model, row.entry.peer_session, out);
     const ref = terminalRef(&row.entry) orelse return sessionDetail(model, row.entry.session, out);
-    const host = if (entryHost(&row.entry)) |value| coordinatorLabelFor(model, ref.*, value) else "Local PTY";
-    if (row.entry != .placed_terminal) return locationDetail(host, terminalDirectory(model, ref.*), out);
-    var location_buffer: [512]u8 = undefined;
-    const location = locationDetail(host, terminalDirectory(model, ref.*), &location_buffer);
-    const placed = row.entry.placed_terminal;
-    return std.fmt.bufPrint(out, "Window {d} · Tab {d} · {s}", .{ placed.window + 1, placed.tab + 1, location }) catch "Open terminal";
+    const host = if (entryHost(&row.entry)) |value| coordinatorLabelFor(model, ref.*, value) else "This Mac";
+    return locationDetail(host, terminalDirectory(model, ref.*), out);
 }
 
 fn locationDetail(host: []const u8, cwd: []const u8, out: []u8) []const u8 {
@@ -295,7 +279,7 @@ fn locationDetail(host: []const u8, cwd: []const u8, out: []u8) []const u8 {
 
 /// The registered host the Phux catalog belongs to, or null for the local
 /// coordinator. A remote host's rows name it where a local coordinator's
-/// read "Coordinator", so its terminals and sessions read as one group.
+/// read This Mac, so its terminals and sessions read as one group.
 fn remoteHost(model: *const Model) ?[]const u8 {
     if (comptime !support.phux_enabled) return null;
     const remote = model.phuxConst() orelse return null;
@@ -305,7 +289,7 @@ fn remoteHost(model: *const Model) ?[]const u8 {
 fn encodeEntry(model: *const Model, row: *const Row, out: []u8, start: usize) Error!usize {
     var full: [1024]u8 = undefined;
     var bounded: [max_label_bytes]u8 = undefined;
-    const text = if (row.is_host) coordinatorLabel(model, entryHost(&row.entry).?) else entryLabel(model, row.entry, &full);
+    const text = entryLabel(model, row.entry, &full);
     const label = displayText(text, &bounded);
     var target_buffer: [targets.max_len]u8 = undefined;
     const bytes = try rowTarget(model, row, &target_buffer);
@@ -318,19 +302,10 @@ fn encodeEntry(model: *const Model, row: *const Row, out: []u8, start: usize) Er
     return start + 5 + bytes.len + label.len;
 }
 
-/// Terminal and session rows capture provider-qualified catalog authority.
-/// Host rows carry only their raw host as a filter token.
+/// Every row captures provider-qualified catalog authority.
 fn rowTarget(model: *const Model, row: *const Row, out: *[targets.max_len]u8) Error![]const u8 {
-    if (row.is_host) return encodeHostFilter(entryHost(&row.entry).?, out);
     const target = targets.capture(model, row.entry) orelse return error.UnavailableContext;
     return target.encode(out);
-}
-
-fn encodeHostFilter(host: []const u8, out: *[targets.max_len]u8) []const u8 {
-    out[0] = host_filter_tag;
-    out[1] = @intCast(host.len);
-    @memcpy(out[2..][0..host.len], host);
-    return out[0 .. 2 + host.len];
 }
 
 fn encodeMetadata(model: *const Model, row: *const Row, out: []u8, start: usize) Error!usize {
@@ -354,7 +329,7 @@ const Request = struct { query: []const u8, scope: Scope = .all, host: []const u
 /// echo the complete request, then total:u16, count:u8, records (index:u16,
 /// label_len:u8, target_len:u16, target bytes, label), then 0x4e and count
 /// metadata records (kind:u8, selectable:u8, detail_len:u8, detail). Only a
-/// catalog target authorizes activation; a host row's target is a filter token.
+/// catalog target authorizes activation.
 fn validateRequest(revision: u64, request: []const u8) Error!Request {
     if (request.len < 13 or request[0] != 1) return error.InvalidRequest;
     if (request[1] != 3 and request[1] != 4) return error.InvalidRequest;
@@ -378,54 +353,20 @@ fn readScope(bytes: []const u8, at: usize, request: *Request) Error!void {
     request.host = bytes[at + 2 ..];
     if (request.scope == .captured_machine) {
         if (request.host.len != 12) return error.InvalidRequest;
-    } else if (request.scope == .captured_host) {
-        if (request.host.len != connected_hosts.target_len) return error.InvalidRequest;
-    } else if (request.scope != .exact_host and request.host.len != 0) return error.InvalidRequest;
+    } else if (request.host.len != 0) return error.InvalidRequest;
 }
 
-fn firstHostOccurrence(model: *const Model, host: []const u8, index: usize) bool {
-    var iterator = projection.PaletteIterator.init(model, &empty_workspace);
-    for (0..index) |_| {
-        const previous = iterator.next() orelse return true;
-        const other = entryHost(&previous) orelse continue;
-        if (std.mem.eql(u8, host, other)) return false;
-    }
-    return true;
-}
-
-fn matches(model: *const Model, entry: *const Entry, index: usize, request: Request) bool {
-    if (!scopeIncludes(model, entry.*, index, request)) return false;
-    if (request.scope == .known_hosts) {
-        const host = entryHost(entry) orelse return false;
-        return projection.containsIgnoreCase(coordinatorLabel(model, host), request.query);
-    }
+fn matches(model: *const Model, entry: *const Entry, request: Request) bool {
+    if (!scopeIncludes(model, entry.*, request)) return false;
     return projection.paletteDestinationMatches(model, entry.*, request.query);
 }
 
-fn scopeIncludes(model: *const Model, entry: Entry, index: usize, request: Request) bool {
+fn scopeIncludes(model: *const Model, entry: Entry, request: Request) bool {
     switch (request.scope) {
         .all => return true,
         // Every host group: the active coordinator's and each peer's.
         .sessions => return isSessionEntry(entry),
-        .known_hosts => {
-            const host = entryHost(&entry) orelse return false;
-            return firstHostOccurrence(model, host, index);
-        },
-        .exact_host => {
-            const host = entryHost(&entry) orelse return false;
-            return std.mem.eql(u8, host, request.host);
-        },
         .captured_machine => return capturedSessionMatches(model, entry, request.attachments),
-        .connected_hosts => return false, // Projected from held providers, not the catalog.
-        .captured_host => {
-            if (request.attachments.len != 1) return false;
-            if (request.attachments[0] != 0) return capturedSessionMatches(model, entry, request.attachments);
-            return switch (entry) {
-                .placed_terminal => |placed| placed.terminal_ref.provider_id == .local,
-                .available_terminal => |ref| ref.provider_id == .local,
-                else => false,
-            };
-        },
     }
 }
 
@@ -450,10 +391,10 @@ fn collectPage(model: *const Model, request: Request) Error!Page {
     var index: usize = 0;
     while (iterator.next()) |entry| : (index += 1) {
         if (index > std.math.maxInt(u16)) return error.CatalogTooLarge;
-        if (!matches(model, &entry, index, request)) continue;
+        if (!matches(model, &entry, request)) continue;
         if (result.total == std.math.maxInt(u16)) return error.CatalogTooLarge;
         if (result.total >= request.offset and result.count < page_size) {
-            result.rows[result.count] = .{ .entry = entry, .index = @intCast(index), .is_host = request.scope == .known_hosts };
+            result.rows[result.count] = .{ .entry = entry, .index = @intCast(index) };
             result.count += 1;
         }
         result.total += 1;
@@ -463,17 +404,8 @@ fn collectPage(model: *const Model, request: Request) Error!Page {
 }
 
 pub fn encode(model: *const Model, revision: u64, request: []const u8, out: []u8) Error![]const u8 {
-    // Agent inspection owns kind 5: upstream kind 4 now carries scoped
-    // navigation requests, so the identity-bound roster moved off it.
-    if (request.len >= 2 and request[1] == 5) return @import("ts_agents.zig").encode(model, revision, request, out);
-    var parsed = try validateRequest(revision, request);
+    const parsed = try validateRequest(revision, request);
     if (parsed.scope == .captured_machine) return error.UnavailableContext;
-    if (parsed.scope == .connected_hosts) return connected_hosts.encode(model, request, parsed.offset, out);
-    if (parsed.scope == .captured_host) {
-        const id = connected_hosts.resolve(model, parsed.host) orelse return error.UnavailableContext;
-        parsed.attachments = &.{id};
-        return encodePage(model, request, parsed, out);
-    }
     return encodePage(model, request, parsed, out);
 }
 
@@ -620,32 +552,6 @@ fn testRemoteRef(id: u32, host: []const u8) !model_module.TerminalRef {
     return .{ .provider_id = .phux, .terminal_id = .{ .phux = try support.RemoteResourceId.fromPhux(0, id, host) } };
 }
 
-test "navigation exact hosts deduplicate known terminals and omit ephemeral local PTYs" {
-    const engine_module = @import("ts_engine.zig");
-    const engine = try engine_module.Engine.create(std.testing.allocator, std.testing.io);
-    defer engine.destroy();
-    const hosts = [_][]const u8{ "worker", "worker", "worker-extra", "", "Worker", "h" ** 255 };
-    for (hosts, 0..) |host, index| engine.model.remote_inventory[index] = try testRemoteRef(@intCast(index + 1), host);
-    engine.model.remote_inventory_count = hosts.len;
-    const known = try collectPage(engine.model, .{ .scope = .known_hosts, .query = "", .offset = 0 });
-    try std.testing.expectEqual(@as(u16, 5), known.total);
-    try std.testing.expectEqual(@as(usize, 4), known.count);
-    try std.testing.expectEqual(@as(u16, 1), known.rows[0].index);
-    try std.testing.expectEqualStrings("", entryHost(&known.rows[2].entry).?);
-    const last = try collectPage(engine.model, .{ .scope = .known_hosts, .query = "", .offset = 4 });
-    try std.testing.expectEqualStrings("h" ** 255, entryHost(&last.rows[0].entry).?);
-    const exact = try collectPage(engine.model, .{ .scope = .exact_host, .host = "worker", .query = "", .offset = 0 });
-    try std.testing.expectEqual(@as(u16, 2), exact.total);
-    try std.testing.expect(!selectable(engine.model, &exact.rows[0]));
-    const coordinator = try collectPage(engine.model, .{ .scope = .exact_host, .host = "", .query = "", .offset = 0 });
-    try std.testing.expectEqual(@as(u16, 1), coordinator.total);
-    try std.testing.expect(!selectable(engine.model, &coordinator.rows[0]));
-    const independent_query = try collectPage(engine.model, .{ .scope = .exact_host, .host = "worker", .query = "worker-extra", .offset = 0 });
-    try std.testing.expectEqual(@as(u16, 0), independent_query.total);
-    const placed: Row = .{ .entry = .{ .placed_terminal = .{ .window = 0, .tab = 0, .terminal_ref = engine.model.remote_inventory[0] } }, .index = 0, .is_host = false };
-    try std.testing.expect(selectable(engine.model, &placed));
-}
-
 test "navigation searches host catalog title and directory without a presentation" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
     const engine_module = @import("ts_engine.zig");
@@ -667,48 +573,11 @@ test "navigation searches host catalog title and directory without a presentatio
         try std.testing.expect(!selectable(engine.model, &page.rows[0]));
     }
     remote.host.workspace_store.catalog[0].session_id = 42;
-    const owned = try collectPage(engine.model, .{ .query = "compile", .scope = .exact_host, .host = "build-host", .offset = 0 });
+    const owned = try collectPage(engine.model, .{ .query = "compile", .offset = 0 });
     try std.testing.expect(selectable(engine.model, &owned.rows[0]));
     var label: [1024]u8 = undefined;
     try std.testing.expectEqualStrings("Compile cockpit", entryLabel(engine.model, owned.rows[0].entry, &label));
     try std.testing.expectEqualStrings("build-host · /work/vertical-slice", rowDetail(engine.model, &owned.rows[0], &label));
-}
-
-test "navigation scoped requests preserve every raw host byte and reject malformed framing" {
-    const engine_module = @import("ts_engine.zig");
-    const engine = try engine_module.Engine.create(std.testing.allocator, std.testing.io);
-    defer engine.destroy();
-    engine.model.remote_inventory[0] = try testRemoteRef(99, "h" ** 255);
-    engine.model.remote_inventory_count = 1;
-    var buffer: [max_bytes]u8 = undefined;
-    // A known-host row carries its complete raw host as a filter token, never
-    // as catalog authority, so it needs no provider context to encode.
-    var hosts = [_]u8{0} ** 15;
-    hosts[0] = 1;
-    hosts[1] = 4;
-    hosts[2] = 7;
-    hosts[13] = 2;
-    const listed = try encode(engine.model, 7, &hosts, &buffer);
-    try std.testing.expectEqual(@as(u16, 1), std.mem.readInt(u16, listed[15..17], .little));
-    const token_len = std.mem.readInt(u16, listed[21..23], .little);
-    try std.testing.expectEqual(@as(u16, 2 + 255), token_len);
-    try std.testing.expectEqual(host_filter_tag, listed[23]);
-    try std.testing.expectEqual(@as(u8, 255), listed[24]);
-    try std.testing.expectEqualStrings("h" ** 255, listed[25..][0..255]);
-    try std.testing.expect(targets.decode(listed[23..][0..token_len]) == null);
-    var request = [_]u8{0} ** 270;
-    request[0] = 1;
-    request[1] = 4;
-    request[2] = 7;
-    request[13] = 3;
-    request[14] = 255;
-    @memcpy(request[15..], "h" ** 255);
-    try std.testing.expectError(error.InvalidRequest, encode(engine.model, 7, request[0..269], &buffer));
-    try std.testing.expectError(error.StaleRevision, encode(engine.model, 8, &request, &buffer));
-    request[13] = 4;
-    try std.testing.expectError(error.InvalidRequest, encode(engine.model, 7, &request, &buffer));
-    request[13] = 2;
-    try std.testing.expectError(error.InvalidRequest, encode(engine.model, 7, &request, &buffer));
 }
 
 test "session rows name their machine and mark the session the focused window shows" {
@@ -734,7 +603,7 @@ test "session rows name their machine and mark the session the focused window sh
     // Assert absent first: the primary window shows a local PTY, no session.
     try std.testing.expect(shownSession(engine.model) == null);
     for (sessions.rows[0..sessions.count]) |*row| try std.testing.expect(!currentSession(engine.model, row));
-    try std.testing.expectEqualStrings("Phux session · This Mac", rowDetail(engine.model, &sessions.rows[1], &detail));
+    try std.testing.expectEqualStrings("This Mac", rowDetail(engine.model, &sessions.rows[1], &detail));
 
     // Show session 42's terminal in the primary window's selected tab.
     const ref = try testRemoteRef(900, "");

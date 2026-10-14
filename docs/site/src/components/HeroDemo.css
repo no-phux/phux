@@ -1,34 +1,4 @@
 .hero-demo { min-width: 0; }
-.hero-term {
-  display: block;
-  overflow: hidden;
-  border: 1px solid var(--terminal-rule);
-  border-radius: 10px;
-  text-decoration: none;
-  font: 12px/1.9 var(--font-code);
-  cursor: pointer;
-  box-shadow: 0 8px 24px #0002;
-  transition: border-color 180ms ease, box-shadow 180ms ease;
-}
-.hero-term:hover { color: var(--terminal-fg); border-color: var(--terminal-dim); box-shadow: 0 12px 32px #0003; }
-.hero-term:active { box-shadow: 0 4px 16px #0002; }
-.hero-term:focus-visible { outline: 2px solid var(--terminal-focus); outline-offset: 4px; }
-.hero-term-bar, .hero-term-status { background: var(--terminal-surface); }
-.hero-term-try { transition: color 180ms ease; }
-.hero-term:is(:hover, :focus-visible) .hero-term-try { color: var(--terminal-fg); }
-.hero-term > span { display: flex; }
-.hero-term-bar { justify-content: space-between; align-items: center; gap: 12px; min-height: 44px; padding: 6px 16px; box-sizing: border-box; border-bottom: 1px solid var(--terminal-rule); color: var(--terminal-fg); font: 12px var(--font-reading); }
-.hero-term-preview, .hero-term-try { color: var(--terminal-dim); }
-.hero-term-panes > span + span { border-left: 1px solid var(--terminal-rule); }
-.hero-term-pane { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 150px; padding: 16px; }
-.hero-term-pane > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.hero-term i { color: var(--terminal-muted); font-style: normal; }
-.hero-term .dim { color: var(--terminal-muted); }
-.hero-term .ok { color: #9ece6a; }
-.hero-term .ask { color: var(--terminal-warning); }
-.hero-term .caret { display: inline-block; width: 7px; height: 13px; background: var(--terminal-fg); opacity: 0.6; vertical-align: -2px; }
-.hero-term-status { gap: 16px; padding: 6px 16px; border-top: 1px solid var(--terminal-rule); color: var(--terminal-muted); font: 12px/1.9 var(--font-reading); }
-.hero-term-status .ask { margin-left: auto; }
 .mux-dialog {
   width: min(872px, calc(100vw - 40px));
   max-width: none;
@@ -72,11 +42,6 @@
 @keyframes mux-backdrop { from { opacity: 0; } to { opacity: 1; } }
 @keyframes mux-open { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 @media (max-width: 600px) {
-  .hero-term { font-size: 11px; }
-  .hero-term-panes { flex-direction: column; }
-  .hero-term-panes > span + span { border-left: 0; border-top: 1px solid var(--terminal-rule); }
-  .hero-term-pane { min-height: 0; padding: 12px; }
-  .hero-term-status { gap: 12px; padding-inline: 12px; font-size: 11px; }
   .mux-dialog { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); }
   .mux-dialog-head { padding-inline: 12px 4px; gap: 8px; }
   .mux-mode-row button { padding-inline: 8px; }
@@ -85,5 +50,5 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .mux-dialog[open], .mux-dialog[open]::backdrop, .mux-loading, .mux-loading::before { animation: none; }
-  .hero-term, .hero-term-try, .mux-mode-row button, .mux-close, .mux-loading button { transition: none; }
+  .mux-mode-row button, .mux-close, .mux-loading button { transition: none; }
 }

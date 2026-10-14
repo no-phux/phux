@@ -8,7 +8,7 @@
 //! the only one that ends it: that is what makes an approval single-use.
 
 use std::collections::HashMap;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use phux_protocol::ids::{ApprovalId, ResourceId as WireResourceId};
 use phux_protocol::kinds::{self, Carrier};
@@ -117,7 +117,7 @@ impl Default for ApprovalTable {
 
 impl ServerState {
     /// Set the approval bounds (TTL, per-connection and total pending).
-    pub fn set_approval_limits(&mut self, ttl: Duration, max_pending: u32, max_total: u32) {
+    pub const fn set_approval_limits(&mut self, ttl: Duration, max_pending: u32, max_total: u32) {
         self.approvals.ttl = ttl;
         self.approvals.max_pending = max_pending;
         self.approvals.max_total = max_total;
@@ -315,7 +315,7 @@ fn approval_record(
     command: &Command,
     ttl: Duration,
 ) -> Vec<u8> {
-    let requested_at_ms = now_ms();
+    let requested_at_ms = super::now_unix_ms();
     let ttl_ms = u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX);
     let mut record = json!({
         "schema_version": 1,
@@ -395,12 +395,4 @@ const fn signal_name(signal: TerminalSignal) -> &'static str {
         TerminalSignal::Terminate => "terminate",
         TerminalSignal::Kill => "kill",
     }
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
 }
