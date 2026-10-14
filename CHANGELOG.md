@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.59.2](https://github.com/no-phux/phux/compare/v0.59.1...v0.59.2) (2026-10-14)
+
+
+### Refactors
+
+* **server:** split pane lifecycle and socket guard out of client.rs ([#1269](https://github.com/no-phux/phux/issues/1269)) ([e9b5d98](https://github.com/no-phux/phux/commit/e9b5d98353584fa26b84e71dc6f33f606096616b))
+
 ## [0.59.1](https://github.com/no-phux/phux/compare/v0.59.0...v0.59.1) (2026-10-14)
 
 
