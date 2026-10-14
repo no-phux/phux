@@ -195,5 +195,5 @@ runs:
         # rust-cache already keys on rustc, Cargo.lock, and CARGO_* settings.
         key: ${{ steps.deps-env.outputs.flake }}
         # Pull requests restore only (see docs/RELEASING.md "Cache budget").
-        save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        save-if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.head_ref == 'ci/zz-fast-test-lane-warm' }}
         cache-on-failure: "true"
