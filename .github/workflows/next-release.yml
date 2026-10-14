@@ -386,7 +386,10 @@ jobs:
               previous="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("sha", ""))' "$pointer_dir/desktop-channel.json")"
             fi
             gh release upload next "dist/$archive" "dist/$archive.sha256" --clobber
-            gh api -X PATCH "repos/${GH_REPO}/git/refs/tags/next" -f sha="$SHA" -F force=true >/dev/null
+            # Cosmetic tag move; see scripts/publish-next-channel.sh.
+            if ! gh api -X PATCH "repos/${GH_REPO}/git/refs/tags/next" -f sha="$SHA" -F force=true >/dev/null; then
+              echo "::warning::could not move the next tag to ${SHA}; publishing the pointer anyway"
+            fi
             gh release edit next --prerelease --latest=false --target "$SHA" --title next
           else
             gh release create next "dist/$archive" "dist/$archive.sha256" \
