@@ -130,6 +130,11 @@ summary/status/output, and a lifecycle-only activity timeline are native GPUI
 rows. `PHUX_AGENT_TRANSCRIPT=0` on the producer withholds conversation text, not
 the lifecycle timeline. Scrolling pauses follow; **Jump to latest** resumes it.
 
+Terminal damage notifies the affected cached terminal entities even in mixed
+terminal/agent batches. Pure VT output keeps the sidebar/titlebar caches intact
+after a conversation has been opened; transcript publications and composer
+receipts refresh the native face independently.
+
 The native Kit textarea accepts multiple lines: **Enter** sends, **Shift+Enter**
 adds a line. Sending uses the existing acknowledged `apply_line` operation
 (one trusted paste plus Return), addressed to the exact Terminal parent.

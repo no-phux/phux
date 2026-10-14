@@ -452,9 +452,11 @@ impl Desk {
             )
         };
         crate::diag::DRAIN_EVENTS.add(events.len() as u64);
-        self.conversation_receipts(&events, cx);
-        if answers.is_empty() && paint_batch(&events) && self.conversation_faces.is_empty() {
-            self.repaint_terminals(&events, cx);
+        let conversation_changed = self.conversation_receipts(&events);
+        // Cached terminal entities need their own notification even in a
+        // mixed terminal/agent batch; notifying their ancestor is insufficient.
+        self.repaint_terminals(&events, cx);
+        if answers.is_empty() && paint_batch(&events) && !conversation_changed {
             return;
         }
         self.adopt_session_layout(cx);
