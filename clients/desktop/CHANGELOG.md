@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.0](https://github.com/no-phux/phux/compare/desktop-v0.1.0-alpha.17...desktop-v0.1.0) (2026-10-14)
+
+
+### Features
+
+* **desktop:** ship the stable release channel ([#1253](https://github.com/no-phux/phux/issues/1253)) ([3ce9e2a](https://github.com/no-phux/phux/commit/3ce9e2a1936d6e99c2f14f66523f9038d087e9bf))
+
 ## [0.1.0-alpha.17](https://github.com/no-phux/phux/compare/desktop-v0.1.0-alpha.16...desktop-v0.1.0-alpha.17) (2026-10-13)
 
 
