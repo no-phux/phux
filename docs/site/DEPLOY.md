@@ -352,11 +352,21 @@ exposes only aggregate diagnostics.
 
 ### Kill switch
 
-`NATIVE_ENABLED` defaults to `true`. Run the `native-control` workflow with
-`enabled=false` to deploy a Worker version that routes all native requests to
-edge. This is intentionally not a public endpoint. Changing a Worker variable
-requires deployment, and the next normal main deployment restores the checked-in
-value; workflow history is the audit trail.
+`NATIVE_ENABLED` is parked: an unset value means `false`, so native admission
+stays off until it is deliberately turned back on and no ordinary deploy can
+silently restore it. While parked, every native request routes to the edge shell
+and the client reports "Native shells are paused."
+
+Turn it back on with the repository variable the worker deploy passes through:
+
+```sh
+gh variable set PHUX_NATIVE_ENABLED --body true    # persists across deploys
+```
+
+The `native-control` workflow overrides the value for one deploy
+(`enabled=true|false`) and prints the `gh variable set` line for persistence.
+Setting a variable or deploying a Worker version is never a public endpoint;
+workflow history is the audit trail.
 
 Use the kill switch, not a pre-auth Worker rollback, for emergency containment.
 `site-rollback-worker.yml` requires an explicit confirmation that the target version

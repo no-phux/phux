@@ -58,8 +58,13 @@ The bytes are the **real phux wire** (`phux-protocol` 0.9). EdgeSession answers
   startup-error/timeout, and non-101 requests atomically downgrade to edge.
 - The strongly consistent circuit defaults to three backend failures/60s,
   60s open, and one half-open probe. Capacity rejection does not count.
-- `NATIVE_ENABLED=false` is a deploy-time kill switch. `/healthz` reports only
-  aggregate counts and circuit state; there is no public control endpoint.
+- `NATIVE_ENABLED=false` parks native admission; it is the current default
+  (an unset value means off, so an ordinary deploy cannot re-enable it). The
+  edge fallback stays live and clients report "Native shells are paused."
+  Re-enable deliberately: `gh variable set PHUX_NATIVE_ENABLED --body true`
+  (the worker deploy passes it through), or dispatch site-native-control.yml.
+  `/healthz` reports only aggregate counts and circuit state, including
+  `nativeEnabled`; there is no public control endpoint.
 
 ## Native image pin
 

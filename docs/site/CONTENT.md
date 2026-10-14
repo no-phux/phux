@@ -149,10 +149,11 @@ standalone shell at `/embed`. The landing downloads no
 WASM and allocates no hosted session until the visitor opens the dialog. The
 anonymous edge tour is a curated, OS-less shell in a Durable Object; the
 optional authenticated Linux tab runs the native container. Label both
-runtimes and their different capabilities. The edge tour has no network or
-processes; do not imply it is a general shell. The live shell supports
-independent split panes with visible controls and keyboard shortcuts; the
-browser interaction contract lives in
+runtimes and their different capabilities, and let the client's fallback copy
+explain a paused native backend instead of pretending it is online. The edge
+tour has no network or processes; do not imply it is a general shell. The live
+shell supports independent split panes with visible controls and keyboard
+shortcuts; the browser interaction contract lives in
 [the web client guide](../consumers/web.md#in-the-page).
 
 Closing the dialog or switching runtime releases the hosted session, including

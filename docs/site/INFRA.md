@@ -102,8 +102,9 @@ purely anti-abuse:
   startup/pre-upgrade failures in 60 seconds by default. It remains open for 60
   seconds, then permits exactly one half-open probe. Capacity fallback is not a
   backend failure. A successful start resets the circuit.
-- `NATIVE_ENABLED` defaults true. False skips native allocation and serves the
-  honest edge fallback. It is a deploy-time Worker variable, not a public API.
+- `NATIVE_ENABLED` is parked (unset means off; see DEPLOY.md "Kill switch").
+  False skips native allocation and serves the honest edge fallback. It is a
+  deploy-time Worker variable, not a public API.
 
 ## The edge shell (phux-edge)
 

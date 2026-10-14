@@ -74,6 +74,9 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # Native admission is parked unless this repository variable is
+          # "true"; see infra/demo.run.ts. Unset (empty) stays parked.
+          PHUX_NATIVE_ENABLED: ${{ vars.PHUX_NATIVE_ENABLED }}
 
       - name: Wait for container rollout
         env:
