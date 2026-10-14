@@ -14,15 +14,11 @@ export function isCockpitImportBaseline({ path, version, bootstrapSha, historyTi
   );
 }
 
-export function isUnreleasedDesktop({ path, version, initialVersion }) {
-  return path === "clients/desktop" && version === "0.0.0" && initialVersion === "0.1.0-alpha.1";
-}
-
 export function desktopReleaseProblems(release) {
   if (release.draft || !release.tag.startsWith("desktop-v")) return [];
   const version = release.tag.slice("desktop-v".length);
   const problems = [];
-  if (!release.prerelease) problems.push(`${release.tag} must be marked prerelease`);
+  if (release.prerelease) problems.push(`${release.tag} must not be marked prerelease`);
   for (const asset of [`phux-desktop-${version}-macos-arm64.zip`, "SHA256SUMS"]) {
     if (!release.assetNames.includes(asset)) problems.push(`${release.tag} is missing ${asset}`);
   }

@@ -116,7 +116,7 @@ access is a blocked run, not a pass.
 | Native GPUI host | The executable, package, and smoke contract are the implementation. A real presented frame on an isolated server is still the qualification record. |
 | Independent views and geometry | Required. Headless models do not prove them. |
 | Product journeys | Tabs, splits, Ghostty import, settings, agents, and layout restore are in the product contract. Projects/worktree grouping, remote hosts, and approvals are not built. |
-| Apple-silicon alpha | Ad-hoc signed, not notarized. The CLI stays a separate install. Linux is not supported. |
+| Apple-silicon desktop | Ad-hoc signed, not notarized. The CLI stays a separate install. Linux is not supported. |
 
 [Desktop verification](./desktop-verification.md) owns the evidence required
 before calling any of that complete.

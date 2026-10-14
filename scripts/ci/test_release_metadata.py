@@ -46,14 +46,14 @@ class ReleaseMetadataTests(unittest.TestCase):
         after = before.replace("Use phux", "Use something else")
         self.assertFalse(release_metadata.skill_only(before, after))
 
-    def test_desktop_alpha_release_skips_compile_but_dependency_edits_do_not(self):
-        package = {"version": "0.1.0-alpha.1", "dependencies": {"@gpuix/native": "0.10.0"}}
-        bumped = {**package, "version": "0.1.0-alpha.2"}
+    def test_desktop_release_skips_compile_but_dependency_edits_do_not(self):
+        package = {"version": "0.1.0", "dependencies": {"@gpuix/native": "0.10.0"}}
+        bumped = {**package, "version": "0.2.0"}
         pairs = {
             "clients/desktop/package.json": (json.dumps(package), json.dumps(bumped)),
             ".release-please-manifest.json": (
-                json.dumps({"clients/desktop": "0.1.0-alpha.1"}),
-                json.dumps({"clients/desktop": "0.1.0-alpha.2"}),
+                json.dumps({"clients/desktop": "0.1.0"}),
+                json.dumps({"clients/desktop": "0.2.0"}),
             ),
         }
         self.assertTrue(release_metadata.only(list(pairs), pairs.get))
@@ -61,10 +61,13 @@ class ReleaseMetadataTests(unittest.TestCase):
         pairs["clients/desktop/package.json"] = (json.dumps(package), json.dumps(bumped))
         self.assertFalse(release_metadata.only(list(pairs), pairs.get))
 
-    def test_alpha_manifest_bootstrap_and_invalid_versions(self):
+    def test_manifest_accepts_stable_and_alpha_but_not_invalid_versions(self):
         before = json.dumps({"clients/desktop": "0.0.0"})
         self.assertTrue(release_metadata.manifest_only(
-            before, json.dumps({"clients/desktop": "0.1.0-alpha.1"})))
+            before, json.dumps({"clients/desktop": "0.1.0"})))
+        self.assertTrue(release_metadata.manifest_only(
+            json.dumps({"clients/desktop": "0.1.0-alpha.17"}),
+            json.dumps({"clients/desktop": "0.1.0"})))
         for version in ("0.1.0-alpha.01", "0.1.0-alpha.0", "not-a-version", None):
             self.assertFalse(release_metadata.manifest_only(
                 before, json.dumps({"clients/desktop": version})))

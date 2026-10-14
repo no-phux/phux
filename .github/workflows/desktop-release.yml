@@ -1,12 +1,12 @@
 # Release Please owns the immutable tag and draft; publish.yml is the only door.
-# Initial alpha: Apple silicon, ad-hoc signed, not Apple-notarized.
-name: Release Desktop Alpha
+# Stable: Apple silicon, ad-hoc signed, not Apple-notarized.
+name: Release Desktop
 
 on:
   workflow_call:
     inputs:
       tag:
-        description: Existing desktop-vX.Y.Z-alpha.N draft to build and publish
+        description: Existing desktop-vX.Y.Z draft to build and publish
         required: true
         type: string
 
@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   macos:
-    name: Qualify and publish macOS arm64 alpha
+    name: Qualify and publish macOS arm64
     runs-on: xcode-27
     timeout-minutes: 60
     env:
@@ -37,12 +37,12 @@ jobs:
           ref: main
           path: harness
           persist-credentials: false
-      - name: Require an existing alpha draft and native runner
+      - name: Require an existing desktop draft and native runner
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          [[ "$RELEASE_TAG" =~ ^desktop-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-alpha\.[1-9][0-9]*$ ]]
+          [[ "$RELEASE_TAG" =~ ^desktop-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
           test "$(uname -s)" = Darwin
           test "$(uname -m)" = arm64
           test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
@@ -92,7 +92,7 @@ jobs:
           set -euo pipefail
           cargo build --locked --release -p phux
           just desktop-package
-      - name: Verify signature and create checksummed alpha archive
+      - name: Verify signature and create checksummed release archive
         working-directory: source
         env:
           ARCHIVE: ${{ steps.version.outputs.archive }}
@@ -142,16 +142,16 @@ jobs:
           cd "$RUNNER_TEMP/desktop-download"
           cmp SHA256SUMS "$RUNNER_TEMP/desktop-release/SHA256SUMS"
           shasum -a 256 -c SHA256SUMS
-      - name: Publish as prerelease, never latest
+      - name: Publish as stable, never latest
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           notes="$RUNNER_TEMP/desktop-release-notes"
           gh release view "$RELEASE_TAG" --json body --jq '.body // ""' > "$notes"
-          marker='Desktop alpha: ad-hoc signed; not Apple-notarized.'
+          marker='Desktop: ad-hoc signed; not Apple-notarized.'
           if ! grep -Fq "$marker" "$notes"; then
             printf '\n%s\n\nApple silicon macOS 27 or later. Requires a separately installed phux CLI (https://phux.sh/install); this app does not install or upgrade your coordinator.\n' "$marker" >> "$notes"
           fi
           gh release edit "$RELEASE_TAG" --notes-file "$notes" \
-            --draft=false --prerelease --latest=false
+            --draft=false --latest=false

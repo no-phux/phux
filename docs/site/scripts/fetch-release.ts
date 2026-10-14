@@ -50,7 +50,7 @@ function latestRelease(
     if (!match) continue;
     const version = match.slice(1).map((part) => BigInt(part));
     // GitHub's release order is not semantic version order. Compare each
-    // numeric component, including the desktop alpha number, in precedence order.
+    // numeric component in precedence order.
     let newer = latestVersion === null;
     if (latestVersion) {
       for (let i = 0; i < version.length; i++) {
@@ -82,8 +82,8 @@ export function latestCockpitRelease(list: GitHubRelease[]): Release | null {
 }
 
 export function latestDesktopRelease(list: GitHubRelease[]): Release | null {
-  // Desktop alphas are intentionally published as prereleases.
-  return latestRelease(list, /^desktop-v(\d+)\.(\d+)\.(\d+)-alpha\.([1-9]\d*)$/, true);
+  // Desktop graduated out of alpha and now ships stable releases.
+  return latestRelease(list, /^desktop-v(\d+)\.(\d+)\.(\d+)$/);
 }
 
 interface StampedReleases {

@@ -22,7 +22,7 @@ The host seams are [desktop architecture](../architecture/desktop.md). [ADR-0165
 [Cockpit](./cockpit.md) remains a separate client. The first release requires
 independent same-terminal views; Linux follows, Intel macOS is not required.
 
-[Install the Desktop alpha](../INSTALL.md#gpui-desktop-alpha-native-macos)
+[Install the Desktop](../INSTALL.md#gpui-desktop-native-macos)
 from the first-party installer on an Apple-silicon Mac running macOS 27 or
 later. It downloads a published `Phux.app`; Cockpit remains a separate app.
 

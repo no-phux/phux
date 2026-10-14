@@ -39,7 +39,7 @@ establish release availability.
 | Emit lifecycle events from a harness | [Harness author guide](./harness.md) |
 | Speak the wire from a new client | [Build a client](./build-a-client.md) |
 | Use the in-tree Rust library or native bindings | [Client library guide](./sdk.md) |
-| Understand the GPUI desktop contract | [Desktop contract](./desktop.md); Apple-silicon alpha, not release-verified |
+| Understand the GPUI desktop contract | [Desktop contract](./desktop.md); Apple-silicon, not release-verified |
 | Follow mobile client availability | [iOS](./ios.md) and [Android](./android.md) status |
 
 Clients are protocol peers; the TUI has no special protocol privilege
