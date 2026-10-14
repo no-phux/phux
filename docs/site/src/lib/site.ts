@@ -23,18 +23,21 @@ export const SITE = {
 // Shared by the visible docs landing and its searchable Markdown representation.
 export const OVERVIEW = {
   title: "Get started",
-  summary: "phux keeps terminals running. People and agents can read and control the same terminals from different clients, locally or across machines.",
+  summary: "A quick map of servers, sessions, resources, and views. Then start a terminal and come back to it.",
   pitch: {
-    headline: "terminals as objects on a wire",
+    headline: "Your work stays on the server",
     text:
-      "phux keeps each shell running on a server, so a terminal is an object you can split, leave, and attach to again. People running pi or Claude Code can put the agent in one pane and point it at another: the pi extension and the Claude Code plugin can read that pane and type a command into the live shell, and the shell is still there after you detach. Walk through a pi session in ",
-    linkLabel: "pi + phux in 60 seconds",
-    linkHref: "/consumers/pi-in-60-seconds",
-    iosBefore: "The ",
-    iosLabel: "iOS client page",
-    iosHref: "/consumers/ios",
-    iosAfter: " lists integration requirements and does not establish release availability.",
+      "phux runs a background server that owns your work. A terminal keeps running when you detach; the TUI, desktop, browser, and agents can attach to it again. Start with the map below, then ",
+    linkLabel: "run the quickstart",
+    linkHref: "/quickstart",
   },
+  terms: [
+    { name: "Server", text: "The background process that owns your work." },
+    { name: "Session", text: "A named group of resources on one server. Attach to it to pick up where you left off." },
+    { name: "Resource", text: "A terminal running a shell, editor, or agent; an agent conversation can also be a resource. Each belongs to one session." },
+    { name: "View", text: "How a client shows a resource: a pane in the TUI or a tile in an app." },
+    { name: "Arrangement", text: "A session's tabs and splits. It places views of resources; it does not own the resources." },
+  ],
   paths: [
     { href: "/quickstart", title: "Quickstart", text: "Start, split, and detach." },
     { href: "/consumers/getting-started", title: "Coding agents", text: "Choose an integration and verify it." },

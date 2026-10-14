@@ -873,11 +873,6 @@ html:has(.docs-navigation-dialog[open]) {
   font-size: 1.0625rem;
   line-height: 1.65;
 }
-.overview-pitch .overview-ios {
-  margin-top: 0.75rem;
-  color: var(--color-muted);
-  font-size: 0.9375rem;
-}
 .overview-pitch a {
   color: var(--color-accent);
 }
@@ -916,54 +911,70 @@ html:has(.docs-navigation-dialog[open]) {
   border-radius: var(--radius-lg);
   background: var(--color-surface);
 }
-.overview-model-clients,
-.overview-model-connectors {
+.overview-model-sessions {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
-  text-align: center;
+  margin: 12px 0;
 }
-.overview-model-clients > div {
+.overview-model-server,
+.overview-model-sessions > div {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
   min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
 }
-.overview-model-clients strong {
+.overview-model-server strong,
+.overview-model-sessions strong {
   font-weight: 600;
 }
+.overview-model-server span,
+.overview-model-sessions span,
 .overview-model-clients span,
-.overview-model-terminal > span:last-child,
 .overview-model figcaption {
   color: var(--color-muted);
   font-size: 0.875rem;
   line-height: 1.6;
 }
-.overview-model-connectors {
-  color: var(--color-accent);
-  padding: 12px 0;
-}
-.overview-model-terminal {
+.overview-model-clients {
   display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 20px;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  padding: 12px 16px;
   border: 1px solid var(--color-accent-soft);
   border-radius: var(--radius-md);
   background: var(--color-bg);
-  text-align: center;
-}
-.overview-model-label {
-  font-weight: 600;
   color: var(--color-accent);
-}
-.overview-model-terminal code {
-  font-size: 0.8125rem;
-  white-space: normal;
 }
 .overview-model figcaption {
   margin-top: 16px;
 }
+.overview-term-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px 24px;
+}
+.overview-term-grid h3 {
+  margin: 0 0 4px;
+  color: var(--color-accent);
+  font-size: 1rem;
+}
+.overview-term-grid p,
+.overview-lifetime {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 0.9375rem;
+  line-height: 1.6;
+}
+.overview-lifetime {
+  margin-top: 20px;
+}
+.overview-lifetime strong { color: var(--color-fg); }
+.overview-lifetime a { color: var(--color-accent); text-decoration: underline; }
 .docs-overview h2 {
   margin: 0 0 1.25rem;
   font-size: 1.5rem;
@@ -1119,18 +1130,12 @@ html:has(.docs-navigation-dialog[open]) {
 @media (max-width: 560px) {
   .overview-paths,
   .agent-routes,
-  .overview-reference {
+  .overview-reference,
+  .overview-term-grid {
     grid-template-columns: 1fr;
   }
-  .overview-model-clients {
-    gap: 8px;
-    font-size: 0.875rem;
-  }
-  .overview-model-clients span {
-    font-size: 0.8125rem;
-  }
-  .overview-model-terminal {
-    padding: 16px 12px;
+  .overview-model-sessions {
+    grid-template-columns: 1fr;
   }
   .docs-foot span {
     flex-basis: 100%;

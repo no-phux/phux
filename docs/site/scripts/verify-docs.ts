@@ -7,7 +7,7 @@ import { extname, resolve } from "node:path";
 import { chromium, webkit, type Page } from "playwright-core";
 import handler from "../host/index";
 import { htmlToMarkdown } from "../host/markdown";
-import { AGENT_START } from "../src/lib/site";
+import { AGENT_START, OVERVIEW } from "../src/lib/site";
 
 const root = resolve(import.meta.dir, "../dist");
 const useWebKit = process.argv.includes("--webkit");
@@ -40,6 +40,10 @@ async function verifyPublishedContent() {
   }
   const overview = await readFile(resolve(root, "overview.md"), "utf8");
   assert.ok(overview.includes(AGENT_START.prompt));
+  for (const { name, text } of OVERVIEW.terms) {
+    assert.ok(overview.includes(`**${name}:** ${text}`), `overview Markdown explains ${name}`);
+  }
+  assert.ok(overview.includes("**Close** a view or detach"));
   assert.ok(overview.includes("[All documentation](/docs)"));
   assert.ok(overview.includes("cannot see or control your terminals"));
   const negotiated = htmlToMarkdown(await readFile(resolve(root, "overview.html"), "utf8"));
@@ -108,6 +112,10 @@ try {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await verifyPageCopy(page, base, "/overview");
+  for (const { name } of OVERVIEW.terms) {
+    assert.ok(await page.getByRole("heading", { name, exact: true }).isVisible(), `overview explains ${name}`);
+  }
+  assert.ok(await page.getByText("Close a view or detach", { exact: false }).isVisible());
   await page.getByRole("button", { name: "Copy agent prompt" }).click();
   await page.locator(".agent-prompt [role=status]").filter({ hasText: "Agent prompt copied." }).waitFor();
   assert.equal(await readClipboard(page), AGENT_START.prompt);

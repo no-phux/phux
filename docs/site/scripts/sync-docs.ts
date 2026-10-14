@@ -580,13 +580,17 @@ ${summary}
 
 ${pitch.text}[${pitch.linkLabel}](${pitch.linkHref}).
 
-<!--
-TODO: iOS availability wording. Patrick has not chosen between a TestFlight
-link and "coming soon". Keep the next line neutral. Do not add a TestFlight
-URL or a coming-soon claim until that choice is made.
--->
+## The model at a glance
 
-${pitch.iosBefore}[${pitch.iosLabel}](${pitch.iosHref})${pitch.iosAfter}
+The server owns sessions. A session groups resources, including terminals and agent conversations. The Inbox is a session for work you have not organized yet. Clients read or control resources; visual clients show them as views.
+
+### Five words to know
+
+${OVERVIEW.terms.map(({ name, text }) => `- **${name}:** ${text}`).join("\n")}
+
+**Close** a view or detach to leave work running. **Kill** a resource to end it. A session can keep its resources even when no client is attached. [Read the full model](/concepts).
+
+[Quickstart](/quickstart) · [How phux works](/concepts)
 
 ## Hand this to your agent
 
@@ -617,10 +621,6 @@ ${AGENT_START.mcp}
 ## Guides
 
 ${OVERVIEW.paths.map(({ href, title, text }) => `- [${title}](${href}) — ${text}`).join("\n")}
-
-## Terminal model
-
-The server owns the terminals. Clients read output and send input through the same protocol. Processes keep running after a client disconnects.
 
 ## Reference
 

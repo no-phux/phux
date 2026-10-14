@@ -11,38 +11,34 @@ export function OverviewBody() {
           {pitch.text}
           <a href={pitch.linkHref}>{pitch.linkLabel}</a>.
         </p>
-        {/*
-          TODO: iOS availability wording. Patrick has not chosen between a
-          TestFlight link and "coming soon". Keep the line below neutral.
-          Do not add a TestFlight URL or a coming-soon claim until that
-          choice is made.
-        */}
-        <p className="overview-ios">
-          {pitch.iosBefore}
-          <a href={pitch.iosHref}>{pitch.iosLabel}</a>
-          {pitch.iosAfter}
-        </p>
       </section>
 
       <div className="overview-actions">
         <a className="overview-primary" href="/quickstart">Quickstart <span aria-hidden="true">→</span></a>
-        <a href="#overview-agent-title">Set up your agent <span aria-hidden="true">→</span></a>
+        <a href="/concepts">How phux works <span aria-hidden="true">→</span></a>
       </div>
 
-      <figure className="overview-model" aria-labelledby="terminal-model-caption">
-        <div className="overview-model-clients">
-          <div><strong>Terminal UI</strong><span>Attach and interact</span></div>
-          <div><strong>Apps</strong><span>Display and control</span></div>
-          <div><strong>Agents</strong><span>Read, act, and wait</span></div>
+      <figure className="overview-model" aria-labelledby="overview-model-caption">
+        <div className="overview-model-server">
+          <strong>Server</strong><span>One background process owns the work.</span>
         </div>
-        <div className="overview-model-connectors" aria-hidden="true"><span>↕</span><span>↕</span><span>↕</span></div>
-        <div className="overview-model-terminal">
-          <span className="overview-model-label">One running terminal</span>
-          <code><span aria-hidden="true">$ </span>shell, editor, or long-running task</code>
-          <span>Processes keep running after a client disconnects.</span>
+        <div className="overview-model-sessions">
+          <div><strong>Session: my-project</strong><span>Terminal · Terminal · Agent conversation</span></div>
+          <div><strong>Inbox</strong><span>A session for work you have not organized yet.</span></div>
         </div>
-        <figcaption id="terminal-model-caption">The server owns the terminals. Clients read output and send input through the same protocol.</figcaption>
+        <div className="overview-model-clients">TUI · desktop · browser · agent <span>read or control the same resources</span></div>
+        <figcaption id="overview-model-caption">A session groups resources. Visual clients show them as views; closing a view leaves the resource running.</figcaption>
       </figure>
+
+      <section className="overview-terms" aria-labelledby="overview-terms-title">
+        <h2 id="overview-terms-title">Five words to know</h2>
+        <div className="overview-term-grid">
+          {OVERVIEW.terms.map(({ name, text }) => (
+            <div key={name}><h3>{name}</h3><p>{text}</p></div>
+          ))}
+        </div>
+        <p className="overview-lifetime"><strong>Close</strong> a view or detach to leave work running. <strong>Kill</strong> a resource to end it. A session can keep its resources even when no client is attached. <a href="/concepts">Read the full model →</a></p>
+      </section>
 
       <AgentStart />
 
