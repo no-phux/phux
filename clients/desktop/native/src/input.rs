@@ -119,6 +119,9 @@ pub struct TerminalInput {
     pressed: BTreeMap<PhysicalKey, KeyEvent>,
     gesture: u64,
     reported_button: Option<phux_protocol::input::mouse::MouseButton>,
+    /// The cell the last motion event already delivered. A later move inside
+    /// that cell is not a new event.
+    last_motion_cell: Option<(u16, u16)>,
     scroll_remainder: f32,
     option_as_alt: bool,
     last_error: Option<InputError>,
@@ -154,6 +157,7 @@ impl TerminalInput {
             pressed: BTreeMap::new(),
             gesture: 0,
             reported_button: None,
+            last_motion_cell: None,
             scroll_remainder: 0.0,
             option_as_alt: false,
             last_error: None,

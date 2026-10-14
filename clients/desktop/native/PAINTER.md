@@ -36,21 +36,24 @@ Give the view an explicit bounded width and height. It clips its canvas.
 Only the size owner proposes a PTY size, after the painted capacity has held
 still.
 
-Every render reacquires and revalidates the slot by borrowing the entity's
-`Arc<Client>`. A terminal keeps the scene it last prepared and reuses it while
-the acquired frame is the same `Arc`, the bounds and scale factor are
-unchanged, and `Settings::paints_like` holds. A new frame with the same
-geometry, palette, and paint settings keeps the shaped rows whose cells still
-match and reshapes the rest, including a solid block cursor's old and new
-rows. A frame that is that screen scrolled by whole rows moves the kept rows
-and reshapes only the rows that entered. That search runs when most rows
-would otherwise be reshaped. Missing slots and a dropped client clear the canvas. Projection
-acknowledgement belongs to [PRESENTATION.md](PRESENTATION.md).
+Each time this view renders, it reacquires and revalidates the slot by
+borrowing the entity's `Arc<Client>`. A terminal keeps the scene it last
+prepared and reuses it while the acquired frame is the same `Arc`, the bounds
+and scale factor are unchanged, and `Settings::paints_like` holds. A new frame
+with the same geometry, palette, and paint settings keeps the shaped rows
+whose cells still match and reshapes the rest, including a solid block
+cursor's old and new rows. A frame that is that screen scrolled by whole rows
+moves the kept rows and reshapes only the rows that entered. That search runs
+when most rows would otherwise be reshaped. The terminal is a cached GPUI
+view, so a chrome refresh reuses that paint until the terminal itself is
+notified. An ASCII run is one shaped line on the cell grid, not one paint
+call per glyph. Missing slots and a dropped client clear the canvas.
+Projection acknowledgement belongs to [PRESENTATION.md](PRESENTATION.md).
 
 ## Geometry and text
 
-GPUI shapes each cell grapheme with its bold/italic font and platform fallback;
-terminal columns, not glyph advances, set each origin. Wide heads occupy two
+GPUI shapes text with the cell's bold or italic font and platform fallback.
+Terminal columns, not glyph advances, set each origin. Wide heads occupy two
 columns and spacers paint nothing. One device-pixel-rounded cell geometry drives
 baseline, backgrounds, decorations, cursor, clipping and `Geometry::hit` /
 `cell_bounds` for input.

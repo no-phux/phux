@@ -19,6 +19,27 @@ impl InputMetrics {
 }
 
 impl TerminalInput {
+    fn repeated_motion(&mut self, position: Point<Pixels>) -> bool {
+        let cell = self.cell_at(position);
+        if repeats_cell(self.last_motion_cell, cell) {
+            return true;
+        }
+        self.last_motion_cell = cell;
+        false
+    }
+
+    /// The grid cell under `position`, or `None` when the point is outside it.
+    fn cell_at(&self, position: Point<Pixels>) -> Option<(u16, u16)> {
+        if !self.hit(position) {
+            return None;
+        }
+        let metrics = self.metrics?;
+        let (x, y) = metrics.local(position);
+        let col = (x / f64::from(f32::from(metrics.cell_width))) as u16;
+        let row = (y / f64::from(f32::from(metrics.line_height))) as u16;
+        Some((row, col))
+    }
+
     fn hit(&self, position: Point<Pixels>) -> bool {
         let Some(metrics) = self.metrics else {
             return false;
@@ -33,13 +54,7 @@ impl TerminalInput {
 
     /// The link under a Command-click, resolved against the live frame.
     pub fn link_at(&self, position: Point<Pixels>) -> Option<String> {
-        let metrics = self.metrics?;
-        if !self.hit(position) {
-            return None;
-        }
-        let (x, y) = metrics.local(position);
-        let col = (x / f64::from(f32::from(metrics.cell_width))) as u16;
-        let row = (y / f64::from(f32::from(metrics.line_height))) as u16;
+        let (row, col) = self.cell_at(position)?;
         let client = self.client().ok()?;
         let frame = client.with_control(|control| control.publication().acquire_view(self.view))?;
         super::link::link_in(&frame, row, col)
@@ -78,6 +93,11 @@ impl TerminalInput {
         window: &Window,
         cx: &App,
     ) -> Result<bool, InputError> {
+        // Cell-quantized clients send one position per cell (input spec §3.1).
+        // A move that stays in that cell must not take the control lock.
+        if self.repeated_motion(event.position) {
+            return Ok(true);
+        }
         self.current(window, cx)?;
         if self.gesture != 0 {
             self.select(1, 1, event.position, event.modifiers)?;
@@ -279,6 +299,11 @@ impl TerminalInput {
     }
 }
 
+/// A motion event the last one already covered. Leaving the grid is not a repeat.
+fn repeats_cell(last: Option<(u16, u16)>, next: Option<(u16, u16)>) -> bool {
+    next.is_some() && next == last
+}
+
 fn button(button: MouseButton) -> WireButton {
     match button {
         MouseButton::Left => WireButton::Left,
@@ -302,4 +327,18 @@ fn reporting(
         .mouse_mode(terminal)
         .map_err(engine_error)?;
     Ok(mode != MouseMode::None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::repeats_cell;
+
+    #[test]
+    fn motion_in_the_same_cell_is_one_event() {
+        assert!(!repeats_cell(None, Some((0, 0))));
+        assert!(repeats_cell(Some((0, 0)), Some((0, 0))));
+        assert!(!repeats_cell(Some((0, 0)), Some((0, 1))));
+        assert!(!repeats_cell(Some((1, 0)), Some((0, 0))));
+        assert!(!repeats_cell(Some((0, 0)), None));
+    }
 }

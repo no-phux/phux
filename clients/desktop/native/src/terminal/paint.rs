@@ -3,8 +3,8 @@ use std::{cell::RefCell, rc::Rc, sync::Arc, time::Instant};
 use super::{Settings, geometry::Geometry};
 use gpui::prelude::*;
 use gpui::{
-    Bounds, ContentMask, FontFeatures, FontId, GlyphId, Hsla, Pixels, ShapedLine, SharedString,
-    TextAlign, fill, point, px, size,
+    Bounds, ContentMask, FontFeatures, Hsla, Pixels, ShapedLine, SharedString, TextAlign, fill,
+    point, px, size,
 };
 use phux_client_core::grid::{
     CELL_BLINK, CELL_BOLD, CELL_FAINT, CELL_INVERSE, CELL_INVISIBLE, CELL_ITALIC, CELL_OVERLINE,
@@ -47,19 +47,19 @@ struct Glyph {
 }
 
 /// Consecutive cells of one row holding printable ASCII in one font and
-/// colour, shaped as one line and painted one glyph per cell. A screen of
-/// text is then a few shapes per row instead of one per cell.
+/// colour. Shaped once, with each column forced to the cell width, and
+/// painted as that single line. GPUI's per-glyph paint is the slow path.
 #[derive(Clone)]
 struct GlyphRun {
     bounds: Bounds<Pixels>,
-    color: Hsla,
-    glyphs: Vec<(FontId, GlyphId)>,
+    line: ShapedLine,
 }
 
 #[derive(Clone)]
 enum Ink {
     Glyph(Box<Glyph>),
-    Run(GlyphRun),
+    // ShapedLine carries a 32-wide decoration buffer, so the run stays boxed.
+    Run(Box<GlyphRun>),
 }
 
 /// One painted quad tagged with the row that produced it, so a later frame
@@ -980,32 +980,38 @@ impl Builder {
                 color: run.color,
                 ..Default::default()
             }],
-            None,
+            Some(geometry.cell_width),
         );
-        let Some(glyphs) = one_glyph_per_byte(&line, len) else {
+        // A ligature or emoji substitution is not one column per byte.
+        // Shape those cells alone so the grid stays one glyph per column.
+        if !glyphs_match_bytes(&line, len) {
             for (offset, byte) in text.bytes().enumerate() {
                 let style = TextStyle {
                     font: self.fonts.cell[run.style].clone(),
                     color: run.color,
                     opacity: 1.,
                 };
-                let cell = (run.row, run.start + offset as u16, 1);
+                let cell = (
+                    run.row,
+                    run.start + u16::try_from(offset).unwrap_or(u16::MAX),
+                    1,
+                );
                 self.shape_cell(cell, char::from(byte).to_string(), style, window);
             }
             return;
-        };
+        }
         for offset in 0..len {
-            let col = run.start + offset as u16;
+            let col = run.start + u16::try_from(offset).unwrap_or(u16::MAX);
             let bounds = geometry.cell_bounds(run.row, col, 1);
             self.observe(run.row, col, bounds, None, run.color);
         }
+        let width = u16::try_from(len).unwrap_or(u16::MAX);
         self.scene.inks.push(RowInk {
             row: run.row,
-            ink: Ink::Run(GlyphRun {
-                bounds: geometry.cell_bounds(run.row, run.start, len as u16),
-                color: run.color,
-                glyphs,
-            }),
+            ink: Ink::Run(Box::new(GlyphRun {
+                bounds: geometry.cell_bounds(run.row, run.start, width),
+                line,
+            })),
         });
     }
 
@@ -1280,7 +1286,6 @@ impl Prepared {
                 window.paint_quad(fill(*bounds, *color));
             }
             let geometry = scene.geometry;
-            let font_size = px(scene.settings.font_size);
             for ink in &scene.inks {
                 let result = match &ink.ink {
                     Ink::Glyph(glyph) if glyph.opacity < 1. => layers
@@ -1290,7 +1295,7 @@ impl Prepared {
                     Ink::Glyph(glyph) => {
                         paint_line(&glyph.line, glyph.bounds, geometry, window, cx)
                     }
-                    Ink::Run(run) => run.paint(geometry, font_size, window),
+                    Ink::Run(run) => run.paint(geometry, window, cx),
                 };
                 if let Err(error) = result {
                     self.report.error = Some(error);
@@ -1319,42 +1324,43 @@ impl Prepared {
 }
 
 impl GlyphRun {
-    /// Each glyph at its own cell's origin on the shared baseline, exactly
-    /// where a cell shaped alone would put it.
+    /// Paint the shaped line on the cell grid. `force_width` already put each
+    /// base glyph on its column, so this is one line paint rather than one
+    /// call per cell.
     fn paint(
         &self,
         geometry: Geometry,
-        font_size: Pixels,
         window: &mut gpui::Window,
+        cx: &mut gpui::App,
     ) -> Result<(), String> {
         let bounds = self.bounds;
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            let baseline = bounds.origin.y + geometry.baseline;
-            let mut x = bounds.origin.x;
-            for (font, glyph) in &self.glyphs {
-                window
-                    .paint_glyph(point(x, baseline), *font, *glyph, font_size, self.color)
-                    .map_err(|error| error.to_string())?;
-                x += geometry.cell_width;
-            }
-            Ok(())
+            self.line
+                .paint(
+                    bounds.origin,
+                    geometry.cell_height,
+                    TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                )
+                .map_err(|error| error.to_string())
         })
     }
 }
 
-/// The glyphs of a line shaped from `len` bytes of ASCII, when each byte
-/// became exactly one non-emoji glyph in order.
-fn one_glyph_per_byte(line: &ShapedLine, len: usize) -> Option<Vec<(FontId, GlyphId)>> {
-    let mut glyphs = Vec::with_capacity(len);
+/// True when `len` bytes of ASCII became one non-emoji glyph each, in order.
+fn glyphs_match_bytes(line: &ShapedLine, len: usize) -> bool {
+    let mut count = 0;
     for run in &line.runs {
         for glyph in &run.glyphs {
-            if glyph.is_emoji || glyph.index != glyphs.len() {
-                return None;
+            if glyph.is_emoji || glyph.index != count {
+                return false;
             }
-            glyphs.push((run.font_id, glyph.id));
+            count += 1;
         }
     }
-    (glyphs.len() == len).then_some(glyphs)
+    count == len
 }
 
 /// Where a line shaped alone puts its baseline within one cell.
