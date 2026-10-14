@@ -21,7 +21,7 @@ use gpui_kit::component::{IconName, Sizable};
 use phux_client_runtime::control::{PaneDescriptor, Status};
 use phux_protocol::ResourceKind;
 use phux_protocol::ids::ResourceKey;
-use phux_protocol::wire::frame::ResourceRecord;
+use phux_protocol::wire::frame::{ExecState, ResourceRecord};
 
 use crate::connection::AgentInfo;
 use crate::settings::theme::Palette;
@@ -501,7 +501,7 @@ fn sidebar_list(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl I
         .unwrap_or_default();
     let mut agent_panes: Vec<_> = panes
         .iter()
-        .filter(|pane| agents.contains_key(&pane.terminal_id))
+        .filter(|pane| agents.get(&pane.terminal_id).is_some_and(needs_you))
         .cloned()
         .collect();
     agent_panes.sort_by(|left, right| {
@@ -535,7 +535,7 @@ fn sidebar_list(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl I
         .gap(px(1.))
         .child(organization_bar(desk, colors, cx))
         .when(!agent_panes.is_empty(), |list| {
-            list.child(section_label("Agents", agent_panes.len(), colors))
+            list.child(section_label("Needs you", agent_panes.len(), colors))
                 .children(agent_panes.iter().map(|pane| {
                     agent_row(desk, pane, agents.get(&pane.terminal_id), now, colors, cx)
                         .into_any_element()
@@ -796,6 +796,7 @@ fn session_block(
                     .iter()
                     .filter(|resource| {
                         resource.session == key
+                            && resource.kind != ResourceKind::AgentSession
                             && !panes.iter().any(|pane| pane.key == Some(resource.key))
                     })
                     .cloned()
@@ -909,15 +910,18 @@ fn record_row(
     let selected = desk.organization.selected.contains(&key);
     let kind = match resource.kind {
         ResourceKind::Terminal => "Terminal",
-        ResourceKind::AgentSession => "Agent conversation",
-        _ => "Resource",
+        _ => "Item",
     };
     let label = resource.name.clone().unwrap_or_else(|| kind.to_owned());
-    let state = resource
-        .activation
-        .as_ref()
-        .map(|activation| format!("{:?}", activation.state))
-        .unwrap_or_else(|| "Not running".to_owned());
+    let state = match resource.activation.as_ref().map(|activation| activation.state) {
+        Some(ExecState::Starting) => "Starting",
+        Some(ExecState::Running) => "Running",
+        Some(ExecState::Stopping) => "Stopping",
+        Some(ExecState::Completed) => "Exited",
+        Some(ExecState::Failed) => "Failed to start",
+        Some(ExecState::Lost | ExecState::Abandoned) => "Lost",
+        None => "Not running",
+    };
     let drag = ResourceDrag {
         keys: desk.organization.drag_keys(key),
         label: format!("Move {label} · drop on a session"),
@@ -2225,6 +2229,12 @@ fn icon_button(
             .tooltip(tooltip)
             .on_click(click),
     )
+}
+
+/// An agent the sidebar lifts above the sessions: blocked, finished, or
+/// asking for attention. Working and idle agents stay in their session.
+fn needs_you(info: &AgentInfo) -> bool {
+    info.state == "blocked" || info.state == "done" || info.attention == "high"
 }
 
 fn agent_rank(agent: Option<&AgentInfo>) -> u8 {
