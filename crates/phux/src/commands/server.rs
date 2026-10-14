@@ -291,7 +291,7 @@ fn build_server_config(
         env: phux_server::ServerEnv::from_process(),
         // The durable organization store under the instance's state
         // directory (ADR-0162).
-        org_store: phux_server::OrgStoreLocation::default_path(),
+        org_store: phux_server::OrgStoreLocation::for_socket(socket_path),
     }
 }
 
