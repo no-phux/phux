@@ -53,4 +53,4 @@ sessions, splits, and a status bar. For another machine, use
 
 - [Concepts](./CONCEPTS.md)
 - [Agents](./consumers/agents.md)
-- [Cockpit](./INSTALL.md#cockpit-native-macos)
+- [Cockpit](./consumers/cockpit.md)

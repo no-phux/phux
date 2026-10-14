@@ -4,6 +4,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+# The installer edits a shell profile when its directory is off PATH; never
+# let a test run touch the real one.
+export HOME="$TMP/home" SHELL=/bin/zsh
+unset ZDOTDIR XDG_CONFIG_HOME PHUX_NO_MODIFY_PATH
+mkdir -p "$HOME"
 
 # The installer is served at https://phux.sh/install and users pipe it to `sh`,
 # so every case below drives it through a real POSIX shell rather than bash.
@@ -53,7 +58,7 @@ run_install() {
   local path=$2
   PATH="$FAKE_BIN:$path" INSTALL_FIXTURE="$FIXTURE" \
     "$INSTALLER_SH" "$ROOT/scripts/install.sh" --version "$VERSION" --os linux --arch x86_64 \
-      --install-dir "$install_dir"
+      --install-dir "$install_dir" "${@:3}"
 }
 
 ON_PATH="$TMP/on-path"
@@ -81,6 +86,23 @@ output="$(run_install "$OFF_PATH" "/usr/bin:/bin")"
 OFF_PATH_CANON="$(cd "$OFF_PATH" && pwd -P)"
 grep -Fq "next: $OFF_PATH_CANON/phux" <<<"$output"
 grep -Fq "PATH remedy: export PATH=$OFF_PATH_CANON:\"\$PATH\"" <<<"$output"
+grep -Fq "added $OFF_PATH_CANON to PATH in $HOME/.zshrc" <<<"$output"
+grep -Fxq "export PATH=$OFF_PATH_CANON:\"\$PATH\"" "$HOME/.zshrc"
+# A rerun leaves exactly one profile line; an on-PATH or shadowed install
+# never edits the profile at all.
+run_install "$OFF_PATH" "/usr/bin:/bin" >/dev/null
+[[ $(grep -c 'PATH=' "$HOME/.zshrc") -eq 1 ]]
+SHELL=/usr/bin/fish run_install "$OFF_PATH" "/usr/bin:/bin" >/dev/null
+grep -Fxq "fish_add_path -g $OFF_PATH_CANON" "$HOME/.config/fish/conf.d/phux.fish"
+rm -rf "$HOME/.zshrc" "$HOME/.config"
+run_install "$ON_PATH" "$ON_PATH:/usr/bin:/bin" >/dev/null
+run_install "$ON_PATH" "$SHADOW:$ON_PATH:/usr/bin:/bin" >/dev/null
+[[ ! -e $HOME/.zshrc ]] || { echo "installer edited a profile for an on-PATH directory" >&2; exit 1; }
+output="$(PHUX_NO_MODIFY_PATH=1 run_install "$OFF_PATH" "/usr/bin:/bin")"
+grep -Fq 'PATH remedy:' <<<"$output"
+output="$(run_install "$OFF_PATH" "/usr/bin:/bin" --no-modify-path)"
+grep -Fq 'PATH remedy:' <<<"$output"
+[[ ! -e $HOME/.zshrc ]] || { echo "installer edited a profile despite opting out" >&2; exit 1; }
 
 # Fail only the second publish rename. The EXIT trap must restore both old
 # binaries and remove its lock and transaction directory.

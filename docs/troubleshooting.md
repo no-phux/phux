@@ -28,9 +28,10 @@ it cannot revive the old ones.
 ## phux is not found, or the wrong version runs
 
 1. Run `command -v phux` in the failing shell. No path means an installation
-   or `PATH` problem, not a server problem. Follow your
-   [installation channel's instructions](./INSTALL.md#supported-install-channels);
-   the curl installer prints a `PATH` remedy when needed.
+   or `PATH` problem, not a server problem. Open a new terminal: the
+   installer adds `~/.local/bin` to your shell profile, which only new shells
+   read. Otherwise rerun the [installer](./INSTALL.md) and apply the `PATH`
+   remedy it prints.
 2. Run `phux --version` and compare the resolved path with your intended
    install. An old Cargo binary or version-manager shim can shadow a newer
    install. Correct `PATH` ordering; do not copy binaries over another

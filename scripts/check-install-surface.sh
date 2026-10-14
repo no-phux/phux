@@ -71,10 +71,13 @@ forbid_fixed README.md "v0.0.3"
 # version is stale by the next release; point at "the latest release" instead.
 forbid_fixed docs/RELEASING.md "v0.0.3"
 
-require_fixed docs/INSTALL.md "Supported install channels"
+# The page opens with the one command; everything else is an option below it.
+require_regex docs/INSTALL.md '^curl -fsSL https://phux.sh/install \| sh$'
+require_fixed docs/INSTALL.md "## Installer options"
+require_fixed docs/INSTALL.md "## Desktop app (macOS)"
+require_fixed docs/INSTALL.md "--no-modify-path"
 require_fixed docs/INSTALL.md "Homebrew"
 require_fixed docs/INSTALL.md "brew trust --tap no-phux/tap"
-require_fixed docs/INSTALL.md "Curl installer"
 require_fixed docs/INSTALL.md "Release tarball"
 require_fixed docs/INSTALL.md "From source"
 require_fixed docs/INSTALL.md "nix develop -c cargo install --locked --path crates/phux"
@@ -93,7 +96,7 @@ require_fixed docs/INSTALL.md "Windows is not supported"
 require_fixed docs/INSTALL.md '[Quickstart](./QUICKSTART.md)'
 require_fixed docs/INSTALL.md '[Agents](./consumers/agents.md)'
 require_fixed docs/INSTALL.md 'verifies the release `.sha256` sidecar before unpacking'
-require_fixed docs/INSTALL.md "| Linux aarch64 | Curl/tarball: yes. Homebrew: yes where Linuxbrew supports the host. Source: yes. |"
+require_fixed docs/INSTALL.md "| Linux aarch64 | yes | where Linuxbrew runs | yes |"
 
 require_fixed docs/RELEASING.md "phux and phux-mcp artifacts"
 require_fixed docs/RELEASING.md "cargo install phux is unsupported"
@@ -238,7 +241,7 @@ require_fixed docs/site/.gitignore 'public/install-cockpit.sh'
 require_fixed docs/site/public/_headers '/install-cockpit'
 
 require_fixed README.md 'curl -fsSL https://phux.sh/install | sh'
-require_fixed README.md 'curl -fsSL https://phux.sh/install-cockpit | sh'
+require_fixed README.md 'curl -fsSL https://phux.sh/install-desktop | sh'
 require_fixed README.md 'npx skills add no-phux/skills'
 forbid_fixed README.md 'npx skills add no-phux/phux'
 require_fixed docs/INSTALL.md 'curl -fsSL https://phux.sh/install | sh'
@@ -246,6 +249,14 @@ require_fixed docs/INSTALL.md 'curl -fsSL https://phux.sh/install-cockpit | sh'
 require_fixed docs/INSTALL.md 'npx skills add no-phux/skills'
 forbid_fixed docs/INSTALL.md 'npx skills add no-phux/phux'
 require_fixed docs/INSTALL.md '## Cockpit (native macOS)'
+require_fixed docs/INSTALL.md 'curl -fsSL https://phux.sh/install-desktop | sh'
+# Only the CLI stream may be GitHub's "Latest": the installer and `phux update`
+# read the releases/latest redirect before falling back to the release list.
+require_fixed scripts/install.sh 'resolve_latest_redirect || resolve_latest_version v'
+require_fixed .github/workflows/release.yml 'gh release edit "$TAG" --draft=false --latest'
+require_fixed .github/workflows/cockpit-release.yml '--draft=false --latest=false'
+require_fixed .github/workflows/agent-integration-release.yml '--draft=false --latest=false'
+require_fixed .github/workflows/desktop-release.yml '--draft=false --latest=false'
 require_fixed clients/cockpit/README.md 'curl -fsSL https://phux.sh/install-cockpit | sh'
 require_fixed docs/site/DEPLOY.md '/install-cockpit'
 require_fixed docs/RELEASING.md 'curl -fsSL https://phux.sh/install | sh'

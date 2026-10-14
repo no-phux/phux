@@ -35,13 +35,23 @@ phux cockpit
 or the Homebrew cask:
 
 ```sh
-brew trust --tap no-phux/tap
-brew tap no-phux/tap
+brew trust --tap no-phux/tap   # Homebrew 6 and later
 brew install --cask no-phux/tap/phux-cockpit
 ```
 
-Full installer notes, including pinning a `cockpit-vX.Y.Z` tag and the
-in-app Check for Updates path, live in [`../INSTALL.md`](../INSTALL.md).
+The installer verifies the release checksum before unpacking, places
+`Phux Cockpit.app` in `/Applications` (`~/Applications` when that is not
+writable), writes a `phux-cockpit` launcher beside the CLI, clears
+quarantine, and restores the previous app if placement fails. Pin a release
+with `sh -s -- --version cockpit-vX.Y.Z`, or follow green `main` with
+`sh -s -- --channel next` (also `PHUX_CHANNEL=next`).
+
+**Check for Updates…** (View menu or Settings → About) compares the version,
+or on `next` the build SHA, and reinstalls through the same installer, then
+relaunches; remote sessions stay on the server. `phux update` and
+`phux channel` also move an installer-placed Cockpit onto the CLI's channel.
+Homebrew, Nix, and development copies refuse self-update and print the
+native command.
 
 ## Authority
 

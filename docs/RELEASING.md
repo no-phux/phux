@@ -298,9 +298,9 @@ Homebrew Bash is required.
 The runner setup downloads Xcode's separate Metal Toolchain component and executes
 `xcrun metal --version` before compiling; Xcode alone does not provide the shader
 compiler on fresh hosted runners.
-The CLI is **not bundled**: users install it separately from
-<https://phux.sh/install>, and installing the desktop never upgrades a running
-coordinator. The app is explicitly **ad-hoc signed, not Apple-notarized**;
+The CLI is **not bundled**: the desktop installer runs
+<https://phux.sh/install> only when no CLI is found, and installing the
+desktop never upgrades an existing CLI or a running coordinator. The app is explicitly **ad-hoc signed, not Apple-notarized**;
 there are no desktop Developer ID or notarization secrets. `Phux.app` runs the
 Rust executable directly. It does not ship a JavaScript bundle or a NAPI addon.
 
@@ -579,9 +579,18 @@ the script must stay POSIX `sh`.
 
 The installer downloads the target tarball and `.sha256` sidecar, verifies the
 checksum before unpacking, and installs `phux` + `phux-mcp` into
-`${PHUX_INSTALL_DIR:-$HOME/.local/bin}`; with no `--version` it resolves the
-current GitHub release. Keep the explicit `v0.0.1` refusal as a historical
-safety guard.
+`${PHUX_INSTALL_DIR:-$HOME/.local/bin}`. When that directory is not on `PATH`,
+it appends one idempotent line to the user's shell profile unless
+`--no-modify-path` is passed. Keep the explicit `v0.0.1` refusal as a
+historical safety guard.
+
+With no `--version`, the installer and `phux update` read the
+`releases/latest` redirect, which needs no GitHub API quota. Only the CLI
+stream may be GitHub's Latest release: `release.yml` publishes with
+`--latest`, and the Cockpit, desktop, and agent-integration lanes publish with
+`--latest=false`. A redirect naming another stream, or none, falls back to
+the bounded release-list scan. If another stream is ever marked Latest by
+hand, repair it with `gh release edit vX.Y.Z --latest`.
 
 ### CPU baselines
 

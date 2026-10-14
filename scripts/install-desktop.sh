@@ -1,15 +1,17 @@
 #!/bin/sh
 # Served verbatim at https://phux.sh/install-desktop (POSIX sh).
-# Installs the checksummed GPUI desktop client without replacing the phux CLI
-# or stopping its server. Existing app installation rolls back on failure.
+# Installs the checksummed GPUI desktop client. Installs the phux CLI first
+# when none is found, but never replaces an existing CLI or stops its server.
+# Existing app installation rolls back on failure.
 set -eu
 
 usage() {
   cat <<'EOF'
 Usage: install-desktop.sh [--version desktop-vX.Y.Z] [options]
 
-Installs the latest stable desktop client for Apple-silicon macOS. Requires an
-installed phux CLI; never upgrades it or stops a server. Releases are ad-hoc
+Installs the latest stable desktop client for Apple-silicon macOS. Installs the
+phux CLI first if none is found; never upgrades an existing CLI or stops a
+server. Releases are ad-hoc
 signed, not Apple-notarized. The installer removes quarantine after
 checksum/signature checks.
 
@@ -425,15 +427,6 @@ if [ "$dry_run" -eq 1 ]; then
   exit 0
 fi
 
-# Dock/Spotlight cannot rediscover a one-shot PHUX_BIN or interactive PATH.
-phux_found=0
-for candidate in "${HOME}/.local/bin/phux" /opt/homebrew/bin/phux /usr/local/bin/phux "${HOME}/.cargo/bin/phux"; do
-  if [ -x "$candidate" ]; then phux_found=1; break; fi
-done
-if [ "$phux_found" -eq 0 ]; then
-  die "install the phux CLI in ~/.local/bin, ~/.cargo/bin, /opt/homebrew/bin, or /usr/local/bin first: curl -fsSL https://phux.sh/install | sh"
-fi
-
 for tool in unzip ditto xattr codesign lockf; do
   command -v "$tool" >/dev/null 2>&1 || die "$tool is required to install Phux"
 done
@@ -448,6 +441,27 @@ elif command -v wget >/dev/null 2>&1; then
   }
 else
   die "curl or wget is required to download release artifacts"
+fi
+
+# Dock/Spotlight cannot rediscover a one-shot PHUX_BIN or interactive PATH.
+find_cli() {
+  for candidate in "${HOME}/.local/bin/phux" /opt/homebrew/bin/phux /usr/local/bin/phux "${HOME}/.cargo/bin/phux"; do
+    [ -x "$candidate" ] && return 0
+  done
+  return 1
+}
+if ! find_cli; then
+  # The app needs a CLI it can find from the Dock: install the standard one
+  # into ~/.local/bin rather than refusing.
+  echo "phux CLI not found; installing it first"
+  cli_installer="$(mktemp)"
+  if ! download https://phux.sh/install "$cli_installer" \
+    || ! PHUX_INSTALL_DIR="${HOME}/.local/bin" sh "$cli_installer"; then
+    rm -f "$cli_installer"
+    die "could not install the phux CLI; run: curl -fsSL https://phux.sh/install | sh"
+  fi
+  rm -f "$cli_installer"
+  find_cli || die "the phux CLI is still missing from ~/.local/bin; run: curl -fsSL https://phux.sh/install | sh"
 fi
 
 tmp_dir="$(mktemp -d)"
