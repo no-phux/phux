@@ -345,6 +345,66 @@ fn pointer_with(
     event.default_prevented()
 }
 
+/// Whether a Ctrl hover at `cell` is a link the client would open.
+///
+/// `hover_link` runs the click's hit test (`cell_under` + `link_at`) and
+/// sets the canvas cursor only when that laid-out cell is an allowed link.
+/// A miss clears it, so the cursor after this move is the result of this
+/// probe, not a previous one.
+fn hover_sees_link(canvas: &HtmlCanvasElement, cell: (u16, u16)) -> bool {
+    pointer_with(
+        canvas,
+        "pointermove",
+        cell,
+        Pointer {
+            ctrl: true,
+            ..Pointer::default()
+        },
+    );
+    canvas.style().get_property_value("cursor").ok().as_deref() == Some("pointer")
+}
+
+/// Wait until `cell` is hit-testable as a link at the coordinates
+/// [`pointer_with`] will click. Row text can land in the replica before the
+/// animation frame publishes the canvas CSS box those coordinates name, and
+/// a plain URL is read from the grid that frame paints. The hover is that
+/// condition; it does not open the link.
+async fn wait_link_hit(canvas: &HtmlCanvasElement, cell: (u16, u16)) -> bool {
+    for _ in 0..POLLS {
+        if hover_sees_link(canvas, cell) {
+            return true;
+        }
+        sleep(POLL).await;
+    }
+    false
+}
+
+/// Newest viewport row whose trimmed text is `marker`, once a Ctrl hover at
+/// `col` hit-tests it as a link. An older copy of the marker can stay on
+/// screen after it stops hit-testing as a link; the line just printed is
+/// the last one, and it is not clickable until that hover succeeds.
+async fn wait_newest_marker_link(
+    canvas: &HtmlCanvasElement,
+    client: &phux_web::client::Client,
+    marker: &str,
+    col: u16,
+) -> Option<u16> {
+    for _ in 0..POLLS {
+        if let Some(row) = client
+            .rows_text()
+            .iter()
+            .rposition(|text| text.trim() == marker)
+        {
+            let row = row as u16;
+            if hover_sees_link(canvas, (col, row)) {
+                return Some(row);
+            }
+        }
+        sleep(POLL).await;
+    }
+    None
+}
+
 /// Type text at the terminal as one committed composition.
 fn type_text(surface: &Element, text: &str) {
     let init = CompositionEventInit::new();
@@ -749,12 +809,26 @@ async fn modifier_click_opens_http_links_in_a_new_tab_and_nothing_else() {
     assert!(keydown(&surface, "Enter", "Enter", false));
     // Settled (echo and cat's copy both in), so rows stop moving.
     assert!(wait_rows(&client, "https://example.com/plain.", 2).await);
-    let osc_row = row_of(&client, "OSCLINK");
-    let bad_row = row_of(&client, "BADLINK");
+    // The newest copy is the line this test just printed. Its text can be
+    // visible before the canvas frame maps the click onto that hyperlink.
+    let osc_row = wait_newest_marker_link(&canvas, &client, "OSCLINK", 2)
+        .await
+        .unwrap_or_else(|| {
+            panic!(
+                "OSC 8 link is hit-testable at the click: {}",
+                screen(&client)
+            )
+        });
+    let bad_row = client
+        .rows_text()
+        .iter()
+        .rposition(|text| text.trim() == "BADLINK")
+        .unwrap_or_else(|| panic!("no row BADLINK: {}", screen(&client))) as u16;
     let rows = client.rows_text();
     let (plain_row, plain_col) = rows
         .iter()
         .enumerate()
+        .rev()
         .find_map(|(row, text)| {
             text.find("https://example.com/plain")
                 .map(|col| (row as u16, col as u16))
@@ -779,6 +853,14 @@ async fn modifier_click_opens_http_links_in_a_new_tab_and_nothing_else() {
         "javascript: never opens"
     );
     pointer_with(&canvas, "pointerup", (2, bad_row), ctrl);
+    // A plain URL is the painted grid, which the same frame updates. Hover
+    // that cell before clicking it so the click cannot land on the pre-paint
+    // snapshot.
+    assert!(
+        wait_link_hit(&canvas, (plain_col + 10, plain_row)).await,
+        "plain URL is hit-testable at the click: {}",
+        screen(&client)
+    );
     pointer_with(&canvas, "pointerdown", (plain_col + 10, plain_row), ctrl);
     pointer_with(&canvas, "pointerup", (plain_col + 10, plain_row), ctrl);
 
