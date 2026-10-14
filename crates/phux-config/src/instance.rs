@@ -174,7 +174,9 @@ pub fn running_executable() -> std::io::Result<PathBuf> {
     std::env::current_exe().map(|exe| without_deleted_suffix(&exe))
 }
 
-fn without_deleted_suffix(path: &Path) -> PathBuf {
+/// `path` without the ` (deleted)` suffix Linux gives an unlinked image.
+#[must_use]
+pub fn without_deleted_suffix(path: &Path) -> PathBuf {
     use std::os::unix::ffi::OsStrExt as _;
     let bytes = path.as_os_str().as_bytes();
     let live = bytes.strip_suffix(b" (deleted)").unwrap_or(bytes);

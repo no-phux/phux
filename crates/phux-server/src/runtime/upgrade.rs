@@ -356,9 +356,11 @@ fn stage_blob_file(blob: &StateBlob) -> Result<std::fs::File, UpgradeError> {
 fn pin_validated_executable(
     inherited_source: Option<&Path>,
 ) -> Result<PinnedExecutable, UpgradeError> {
+    // An image upgraded from a pre-#1111 server inherited its
+    // `current_exe` verbatim, ` (deleted)` suffix included.
     let source_exe = inherited_source
         .map_or_else(phux_config::instance::running_executable, |path| {
-            Ok(path.to_path_buf())
+            Ok(phux_config::instance::without_deleted_suffix(path))
         })?;
     let executable = PinnedExecutable::open(&source_exe)?;
     validate_binary(&executable.path)?;
@@ -973,6 +975,17 @@ mod tests {
         std::fs::write(&path, body).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
+    }
+
+    /// A resumed image whose predecessor handed down `<path> (deleted)`
+    /// still pins the installed `<path>`.
+    #[test]
+    fn an_inherited_deleted_source_pins_the_installed_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let installed = write_stub_phux(dir.path(), "#!/bin/sh\nexit 0\n");
+        let inherited = dir.path().join("phux (deleted)");
+        let pinned = pin_validated_executable(Some(&inherited)).unwrap();
+        assert_eq!(pinned.source_path, installed);
     }
 
     /// `config check` runs before the irreversible exec: a replacement that
