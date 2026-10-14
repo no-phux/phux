@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.60.2](https://github.com/no-phux/phux/compare/v0.60.1...v0.60.2) (2026-10-14)
+
+
+### Bug Fixes
+
+* **ci:** leave disk for the mbx objects export copy ([4797e42](https://github.com/no-phux/phux/commit/4797e426be82edc0597f4056e061588d2cfed9f4))
+
 ## [0.60.1](https://github.com/no-phux/phux/compare/v0.60.0...v0.60.1) (2026-10-14)
 
 
