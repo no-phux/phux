@@ -30,8 +30,14 @@ if (import.meta.main) {
   for (const name of [
     "PaperMono-Regular.ttf",
     "PaperMono-Medium.ttf",
+    "PaperMono-SemiBold.ttf",
     "PaperMono-Bold.ttf",
     "PaperMono-OFL.txt",
+    "JetBrainsMonoNLNerdFontMono-Regular.ttf",
+    "JetBrainsMonoNLNerdFontMono-Bold.ttf",
+    "JetBrainsMonoNLNerdFontMono-Italic.ttf",
+    "JetBrainsMonoNLNerdFontMono-BoldItalic.ttf",
+    "JetBrainsMono-OFL.txt",
   ]) {
     cpSync(join(fonts, name), join(contents, "Resources/fonts", name));
   }

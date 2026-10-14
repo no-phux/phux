@@ -1,0 +1,93 @@
+diff --git a/gpui-pre-macos/src/open_type.rs b/gpui-pre-macos/src/open_type.rs
+index 4489191..dfc8eeb 100644
+--- a/gpui-pre-macos/src/open_type.rs
++++ b/gpui-pre-macos/src/open_type.rs
+@@ -27,7 +27,7 @@ use core_text::{
+         CTFontDescriptorRef, kCTFontCascadeListAttribute, kCTFontFeatureSettingsAttribute,
+     },
+ };
+-use font_kit::font::Font as FontKitFont;
++use font_kit::{family_name::FamilyName, font::Font as FontKitFont, sources::mem::MemSource};
+ use gpui::{FontFallbacks, FontFeatures};
+ use std::ptr;
+ 
+@@ -35,7 +35,25 @@ pub fn apply_features_and_fallbacks(
+     font: &mut FontKitFont,
+     features: &FontFeatures,
+     fallbacks: Option<&FontFallbacks>,
++    memory_source: &MemSource,
+ ) -> anyhow::Result<()> {
++    // A name-only descriptor may select an installed font with the same
++    // PostScript name but a different glyph table. Keep memory fallbacks tied
++    // to their actual embedded data, just like primary faces.
++    let mut native_fallbacks = Vec::new();
++    if let Some(fallbacks) = fallbacks {
++        let properties = font.properties();
++        for family in fallbacks.fallback_list() {
++            let descriptor = match memory_source.select_best_match(
++                &[FamilyName::Title(family.clone())],
++                &properties,
++            ) {
++                Ok(handle) => Some(handle.load()?.native_font().copy_descriptor()),
++                Err(_) => None,
++            };
++            native_fallbacks.push(descriptor);
++        }
++    }
+     unsafe {
+         let mut keys = vec![kCTFontFeatureSettingsAttribute];
+         let mut values = vec![generate_feature_array(features)];
+@@ -43,7 +61,7 @@ pub fn apply_features_and_fallbacks(
+             && !fallbacks.fallback_list().is_empty()
+         {
+             keys.push(kCTFontCascadeListAttribute);
+-            values.push(generate_fallback_array(fallbacks, font));
++            values.push(generate_fallback_array(fallbacks, font, &native_fallbacks));
+         }
+         let attrs = CFDictionaryCreate(
+             kCFAllocatorDefault,
+@@ -99,13 +117,22 @@ fn generate_feature_array(features: &FontFeatures) -> CFMutableArrayRef {
+     }
+ }
+ 
+-fn generate_fallback_array(fallbacks: &FontFallbacks, font: &mut FontKitFont) -> CFMutableArrayRef {
++fn generate_fallback_array(
++    fallbacks: &FontFallbacks,
++    font: &mut FontKitFont,
++    native_fallbacks: &[Option<CTFontDescriptor>],
++) -> CFMutableArrayRef {
+     unsafe {
+         let symbolic_traits = font.native_font().symbolic_traits();
+         let all_traits = font.native_font().all_traits();
+ 
+         let fallback_array = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks);
+-        for user_fallback in fallbacks.fallback_list() {
++        for (user_fallback, native) in fallbacks.fallback_list().iter().zip(native_fallbacks) {
++            if let Some(descriptor) = native {
++                // SAFETY: the array retains this live CoreText descriptor.
++                CFArrayAppendValue(fallback_array, descriptor.as_concrete_TypeRef() as _);
++                continue;
++            }
+             let name = CFString::from(user_fallback.as_str());
+ 
+             let traits_keys = [kCTFontWeightTrait, kCTFontSlantTrait];
+diff --git a/gpui-pre-macos/src/text_system.rs b/gpui-pre-macos/src/text_system.rs
+index fbc4886..b40dffa 100644
+--- a/gpui-pre-macos/src/text_system.rs
++++ b/gpui-pre-macos/src/text_system.rs
+@@ -290,7 +290,6 @@ impl MacTextSystemState {
+         for font in family.fonts() {
+             let mut font = font.load()?;
+ 
+-            apply_features_and_fallbacks(&mut font, features, fallbacks)?;
+             // This block contains a precautionary fix to guard against loading fonts
+             // that might cause panics due to `.unwrap()`s up the chain.
+             {
+@@ -347,6 +346,7 @@ impl MacTextSystemState {
+                 );
+                 continue;
+             }
++            apply_features_and_fallbacks(&mut font, features, fallbacks, &self.memory_source)?;
+ 
+             let Some(postscript_name) = font.postscript_name() else {
+                 log::warn!(

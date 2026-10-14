@@ -11,8 +11,8 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, BoxShadow, ClickEvent, Context, CursorStyle, DispatchPhase, DragMoveEvent,
-    Entity, ExternalPaths, FileDropEvent, Hsla, IntoElement, Keystroke, MouseButton,
+    AnyElement, AnyView, App, BoxShadow, ClickEvent, Context, CursorStyle, DispatchPhase,
+    DragMoveEvent, Entity, ExternalPaths, FileDropEvent, Hsla, IntoElement, Keystroke, MouseButton,
     MouseMoveEvent, MouseUpEvent, ParentElement, SharedString, StyleRefinement, Styled, WeakEntity,
     Window, canvas, div, linear_color_stop, linear_gradient, point, px, relative,
 };
@@ -20,11 +20,12 @@ use gpui_kit::base::Disableable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{IconName, Sizable};
 use phux_client_runtime::control::{PaneDescriptor, SessionDescriptor, Status};
-use phux_protocol::ResourceKind;
 use phux_protocol::ids::{ResourceKey, SessionKey};
 use phux_protocol::wire::frame::{ExecState, ResourceRecord};
+use phux_protocol::{ResourceId, ResourceKind};
 
 use crate::connection::{AgentInfo, AgentState, state_rank};
 use crate::settings::theme::Palette;
@@ -608,10 +609,6 @@ fn sidebar_list(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl I
                 .cmp(&left.map(|info| info.changed_at_ms))
         })
     });
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|since| since.as_millis() as u64)
-        .unwrap_or(0);
     let sessions = session_groups(desk, colors, cx);
     let recent_paths = &desk.recent_projects;
     let recent: Vec<_> = recent_paths
@@ -636,7 +633,7 @@ fn sidebar_list(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl I
         .when(!agent_panes.is_empty(), |list| {
             list.child(section_label("Needs you", colors))
                 .children(agent_panes.iter().map(|pane| {
-                    agent_row(desk, pane, agents.get(&pane.terminal_id), now, colors, cx)
+                    agent_row(desk, pane, agents.get(&pane.terminal_id), colors, cx)
                         .into_any_element()
                 }))
                 .child(div().h(px(8.)))
@@ -690,22 +687,6 @@ fn hosts_section(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> AnyEl
                 .text_color(from_hex(&colors.muted))
                 .child(format!("Adding {target}…")),
         );
-    } else if desk.hosts.is_empty() {
-        section = section.child(
-            div()
-                .id("host-empty")
-                .px(px(10.))
-                .py(px(6.))
-                .rounded(px(6.))
-                .cursor_pointer()
-                .hover(|style| style.bg(from_hex(&colors.hover)))
-                .text_xs()
-                .text_color(from_hex(&colors.muted))
-                .child("Add a machine you reach over ssh…")
-                .on_click(
-                    cx.listener(|desk, _, window, cx| desk.open_modal(Modal::AddHost, window, cx)),
-                ),
-        );
     }
     section.into_any_element()
 }
@@ -717,15 +698,6 @@ fn host_row(
     cx: &mut Context<Desk>,
 ) -> AnyElement {
     let name = entry.name.clone();
-    let route = entry
-        .endpoint
-        .split_once("://")
-        .map_or(entry.endpoint.as_str(), |(_, rest)| rest)
-        .to_owned();
-    let lane = entry
-        .endpoint
-        .split_once("://")
-        .map(|(scheme, _)| scheme.to_owned());
     let handle = cx.weak_entity();
     let menu = {
         let name = name.clone();
@@ -749,7 +721,7 @@ fn host_row(
     let click = name.clone();
     div()
         .id(SharedString::from(format!("host-{name}")))
-        .min_h(px(38.))
+        .min_h(px(28.))
         .pl(px(10.))
         .pr(px(6.))
         .py(px(4.))
@@ -784,20 +756,10 @@ fn host_row(
             div()
                 .flex_1()
                 .min_w_0()
-                .flex()
-                .flex_col()
-                .child(div().text_sm().truncate().child(name.clone()))
-                .child(
-                    div()
-                        .text_xs()
-                        .truncate()
-                        .text_color(from_hex(&colors.muted))
-                        .child(route),
-                ),
+                .text_sm()
+                .truncate()
+                .child(name.clone()),
         )
-        .when_some(lane, |row, lane| {
-            row.child(pill(&lane, &colors.hover, &colors.muted))
-        })
         .child(
             Button::new(SharedString::from(format!("host-menu-{name}")))
                 .icon(IconName::Ellipsis)
@@ -807,6 +769,10 @@ fn host_row(
                 .dropdown_menu(menu.clone()),
         )
         .on_click(cx.listener(move |desk, _, _, cx| desk.open_host(click.clone(), cx)))
+        .tooltip({
+            let endpoint = entry.endpoint.clone();
+            move |window, cx| Tooltip::new(endpoint.clone()).build(window, cx)
+        })
         .context_menu(menu)
         .into_any_element()
 }
@@ -946,15 +912,6 @@ fn session_groups(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> Vec<
     let mut rows = Vec::new();
     if !intake.is_empty() {
         rows.push(section_label("Intake sessions", colors).into_any_element());
-        rows.push(
-            div()
-                .px(px(10.))
-                .py(px(4.))
-                .text_xs()
-                .text_color(from_hex(&colors.muted))
-                .child("Unorganized work and imported sessions. Moving work never restarts it.")
-                .into_any_element(),
-        );
         for session in intake {
             rows.push(session_block(desk, session.id, &session.name, colors, cx));
         }
@@ -1153,6 +1110,15 @@ fn session_block(
             })
         })
         .unwrap_or_default();
+    let details = match intake_badge(designated, awaiting) {
+        Some("intake") => "Designated home for unorganized work",
+        Some(_) => "Imported session awaiting organization",
+        None => "Session",
+    };
+    let session_tip = format!(
+        "{name} · {details} · {} terminals",
+        panes.len() + extra.len()
+    );
     let header = div()
         .id(SharedString::from(format!("session-{id}")))
         .h(px(28.))
@@ -1182,19 +1148,13 @@ fn session_block(
         .when_some(intake_badge(designated, awaiting), |row, badge| {
             row.child(pill(badge, &colors.accent_wash, &colors.theme.accent))
         })
-        .child(
-            div()
-                .text_xs()
-                .text_color(from_hex(&colors.faint))
-                .child((panes.len() + extra.len()).to_string()),
-        )
         .when_some(project_path, |header, path| {
             header.child(
                 Button::new(SharedString::from(format!("project-open-{id}")))
-                    .label("Open")
+                    .icon(IconName::Folder)
                     .ghost()
                     .xsmall()
-                    .tooltip("Open project window")
+                    .tooltip(format!("Open project window: {}", path.display()))
                     .on_click(cx.listener(move |desk, _, window, cx| {
                         cx.stop_propagation();
                         desk.open_project_path(path.clone(), window, cx);
@@ -1237,21 +1197,13 @@ fn session_block(
                     );
                 }))
         })
+        .tooltip(move |window, cx| Tooltip::new(session_tip.clone()).build(window, cx))
         .context_menu(menu(name.to_owned()));
     div()
         .flex()
         .flex_col()
         .gap(px(1.))
         .child(header)
-        .when(designated, |block| {
-            block.child(
-                div()
-                    .px(px(10.))
-                    .text_xs()
-                    .text_color(from_hex(&colors.muted))
-                    .child("Designated home for unorganized work"),
-            )
-        })
         .when(!collapsed, |block| {
             block
                 .children(
@@ -1307,6 +1259,7 @@ fn record_row(
         Some(ExecState::Lost | ExecState::Abandoned) => "Lost",
         None => "Not running",
     };
+    let tooltip_label = label.clone();
     let keys = desk.organization.drag_keys(key);
     let drag = ResourceDrag {
         label: drag_label(&keys, &label),
@@ -1316,6 +1269,9 @@ fn record_row(
         .id(SharedString::from(format!("resource-{key}")))
         .px(px(10.))
         .py(px(6.))
+        .flex()
+        .items_center()
+        .gap(px(9.))
         .rounded(px(6.))
         .cursor_pointer()
         .bg(if selected {
@@ -1324,15 +1280,27 @@ fn record_row(
             gpui::transparent_black()
         })
         .hover(|style| style.bg(from_hex(&colors.hover)))
-        .child(div().text_sm().child(label))
         .child(
             div()
-                .text_xs()
-                .text_color(from_hex(&colors.muted))
-                .child(format!("{kind} · {state}")),
+                .size(px(6.))
+                .flex_shrink_0()
+                .rounded_full()
+                .bg(from_hex(&colors.muted)),
         )
+        .child(div().flex_1().min_w_0().truncate().text_sm().child(label))
+        .when(state != "Running", |row| {
+            row.child(
+                div()
+                    .text_xs()
+                    .text_color(from_hex(&colors.muted))
+                    .child(state),
+            )
+        })
         .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
         .on_click(cx.listener(move |desk, _, _, cx| desk.toggle_resource_selection(key, cx)))
+        .tooltip(move |window, cx| {
+            Tooltip::new(format!("{tooltip_label}\n{kind} · {state}\n{key}")).build(window, cx)
+        })
         .into_any_element()
 }
 
@@ -1357,13 +1325,18 @@ fn pane_row(
             .iter()
             .any(|placement| placement.terminal_id.as_ref() == Some(&terminal))
     });
-    let agent = desk.agent(&terminal).cloned();
-    let subtitle = desk::short_path(pane.cwd.clone());
-    let glyph = match agent.as_ref() {
+    let agent = desk.agent(&terminal);
+    let glyph = match agent {
         Some(info) => div()
             .size(px(8.))
             .rounded_full()
-            .bg(from_hex(agent_swatch(info.state)))
+            .bg(
+                from_hex(agent_swatch(info.state)).opacity(if info.needs_you() {
+                    1.
+                } else {
+                    0.65
+                }),
+            )
             .into_any_element(),
         None => div()
             .text_xs()
@@ -1375,9 +1348,11 @@ fn pane_row(
             .child("❯")
             .into_any_element(),
     };
+    let tooltip_terminal = terminal.clone();
+    let handle = cx.weak_entity();
     div()
         .id(SharedString::from(format!("pane-{terminal}")))
-        .min_h(px(38.))
+        .min_h(px(28.))
         .pl(px(10.))
         .pr(px(8.))
         .py(px(4.))
@@ -1401,36 +1376,22 @@ fn pane_row(
                 .child(glyph),
         )
         .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .child(
-                    div()
-                        .truncate()
-                        .text_sm()
-                        .font_weight(if focused {
-                            gpui::FontWeight::SEMIBOLD
-                        } else {
-                            gpui::FontWeight::MEDIUM
-                        })
-                        .text_color(from_hex(if focused {
-                            &colors.theme.foreground
-                        } else {
-                            &colors.subtext
-                        }))
-                        .child(title),
-                )
-                .when(!subtitle.is_empty(), |column| {
-                    column.child(
-                        div()
-                            .truncate()
-                            .text_xs()
-                            .text_color(from_hex(&colors.muted))
-                            .child(subtitle),
-                    )
-                }),
+            div().flex_1().min_w_0().child(
+                div()
+                    .truncate()
+                    .text_sm()
+                    .font_weight(if focused {
+                        gpui::FontWeight::SEMIBOLD
+                    } else {
+                        gpui::FontWeight::MEDIUM
+                    })
+                    .text_color(from_hex(if focused {
+                        &colors.theme.foreground
+                    } else {
+                        &colors.subtext
+                    }))
+                    .child(title),
+            ),
         )
         .when_some(drag, |row, drag| {
             row.on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
@@ -1445,25 +1406,32 @@ fn pane_row(
             }
             desk.after_command(window, cx);
         }))
+        .tooltip(move |window, cx| pane_tooltip(&tooltip_terminal, &handle, window, cx))
 }
 
 fn agent_row(
     desk: &Desk,
     pane: &PaneDescriptor,
     agent: Option<&AgentInfo>,
-    now: u64,
     colors: &Palette,
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
     let terminal = pane.terminal_id.clone();
     let focused = desk.focused_terminal().as_ref() == Some(&terminal);
-    let state = agent.map_or("", AgentInfo::word);
+    let state = if agent.is_some_and(AgentInfo::urgent)
+        && agent.is_none_or(|info| info.state != AgentState::Blocked)
+    {
+        "attention"
+    } else {
+        agent.map_or("", AgentInfo::word)
+    };
     let tint = agent_swatch(agent.map_or(AgentState::Unknown, |info| info.state));
     let urgent = agent.is_some_and(AgentInfo::urgent);
-    let changed = agent.map(|info| info.changed_at_ms).unwrap_or(now);
+    let tooltip_terminal = terminal.clone();
+    let handle = cx.weak_entity();
     div()
         .id(SharedString::from(format!("agent-{terminal}")))
-        .min_h(px(40.))
+        .min_h(px(28.))
         .pl(px(10.))
         .pr(px(8.))
         .py(px(4.))
@@ -1494,54 +1462,67 @@ fn agent_row(
                 .child(div().size(px(8.)).rounded_full().bg(from_hex(tint))),
         )
         .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .child(
-                    div()
-                        .truncate()
-                        .text_sm()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child(
-                            agent
-                                .map(|info| info.name.clone())
-                                .unwrap_or_else(|| "agent".into()),
-                        ),
-                )
-                .child(
-                    div()
-                        .truncate()
-                        .text_xs()
-                        .text_color(from_hex(&colors.muted))
-                        .child(desk.pane_title(Some(&pane.terminal_id))),
-                ),
+            div().flex_1().min_w_0().child(
+                div()
+                    .truncate()
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child(desk.pane_title(Some(&pane.terminal_id))),
+            ),
         )
         .child(
             div()
-                .flex()
-                .flex_col()
-                .items_end()
                 .flex_shrink_0()
-                .child(
-                    div()
-                        .text_xs()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(from_hex(tint))
-                        .child(state),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(from_hex(&colors.faint))
-                        .child(ago(changed, now)),
-                ),
+                .text_xs()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(from_hex(tint))
+                .child(state),
         )
         .on_click(cx.listener(move |desk, _, window, cx| {
             desk.reveal_terminal(&terminal);
             desk.after_command(window, cx);
         }))
+        .tooltip(move |window, cx| pane_tooltip(&tooltip_terminal, &handle, window, cx))
+}
+
+/// Detail stays available on hover without repeating it in every sidebar row.
+fn pane_tooltip(
+    terminal: &ResourceId,
+    handle: &WeakEntity<Desk>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyView {
+    let details = if let Some(desk) = handle.upgrade() {
+        let desk = desk.read(cx);
+        let mut details = desk.pane_title(Some(terminal));
+        if let Some(agent) = desk.agent(terminal) {
+            details.push_str(&format!("\n{} · {}", agent.name, agent.word()));
+            if let Some(provider) = &agent.kind {
+                details.push_str(&format!(" · {provider}"));
+            }
+            if agent.urgent() {
+                details.push_str(" · attention");
+            }
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|since| since.as_millis() as u64)
+                .unwrap_or(0);
+            details.push_str(&format!(" · {}", ago(agent.changed_at_ms, now)));
+        }
+        if let Some(pane) = desk
+            .link
+            .as_ref()
+            .and_then(|link| link.connection.pane(terminal))
+            && let Some(cwd) = &pane.cwd
+        {
+            details.push_str(&format!("\n{cwd}"));
+        }
+        details.push_str(&format!("\n{terminal}"));
+        details
+    } else {
+        terminal.to_string()
+    };
+    Tooltip::new(details).build(window, cx)
 }
 
 /// Seconds, minutes, hours or days since `then`, both in Unix milliseconds.

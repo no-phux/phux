@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-10-13
+last-reviewed: 2026-10-14
 ---
 
 # Desktop architecture
@@ -47,7 +47,7 @@ Terminate Terminal ends execution.
 | Path | Owns |
 |---|---|
 | `native/src` | GPUI application, connection, workspace, terminal, settings, platform integration. |
-| `native/assets/fonts` | Paper Mono files packaged beside the executable. |
+| `native/assets/fonts` | Paper Mono and Nerd symbol fallback faces, with their licenses. |
 | `scripts`, `packaging` | Checkout build, isolated smoke/perf, and `Phux.app` preparation. |
 | `toolchain` | Parent-managed GPUI snapshot pin and patch. |
 | `dist/app/Phux.app` | Release executable, fonts, icon, ad-hoc signature. No `.node` addon. |
@@ -85,6 +85,20 @@ only visible view, proposes whole cells that fit its painted bounds. Observer
 views crop or letterbox the authoritative grid. The desktop connects with a
 zero viewport and casts no window-size vote. Quitting leaves explicit sizes in
 place. Read back the size the server actually applied.
+
+Grid origins and shared cell edges are aligned to device pixels. Solid
+Unicode fractional blocks and quadrants cover those edges procedurally rather
+than inheriting font side bearings or line-height gaps; other graphemes retain
+normal shaping.
+
+Prepared scenes retain exactly matching rows across viewport movement, moving
+their glyphs, backgrounds, and decorations together. Changed selection,
+color provenance, and solid-cursor ink rebuild the affected rows. Retention
+never crosses terminal, stream, bootstrap, font, palette, or geometry changes.
+
+Bundled fallback descriptors retain their embedded font data in the macOS
+GPUI patch. A family-name-only CoreText cascade can otherwise choose an
+installed font with the same name but a different glyph table.
 
 ## Frames, wakes, and input
 

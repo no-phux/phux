@@ -194,6 +194,11 @@ from detector fallback and exposes gaps and stale approvals. Notifications
 are deduplicated and navigate without typing; approval buttons appear only
 with server authority.
 
+**Current macOS build:** Sidebar rows keep one title and a restrained status
+marker. Hover for directory, provider, lifecycle age, and identity. **Needs
+you** keeps explicit blocked, finished, and attention states; context menus
+and organization actions remain available.
+
 ## Connections, settings, and native behavior
 
 Local and registered remote hosts open concurrently with host-qualified
@@ -204,6 +209,17 @@ catalogue and comment-preserving writer. Native menus, Dock, dialogs, drops,
 clipboard, notifications, scale, appearance, reduced motion, high contrast,
 and screen-reader navigation are in scope; titles, links, and dropped paths
 never become implicit command execution.
+
+**Current macOS build:** Appearance puts font family, size, a live sample,
+and themes first. The searchable font chooser offers installed families and
+the bundled Nerd family, retains the current selection, and identifies a
+missing font's Paper Mono substitution. Nerd symbols fall back automatically;
+the main font does not need to change. Font assets and patch attribution are
+shipped under their [Open Font License](../../clients/desktop/native/assets/fonts/JetBrainsMono-OFL.txt).
+
+Advanced holds line height, cell width, padding, and unfocused-pane dimming.
+Display edits apply live and persist with the window's layout; font selection
+follows resets and Ghostty imports while Settings stays open.
 
 ## Status
 
