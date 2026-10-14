@@ -212,7 +212,8 @@ pub fn document(
 /// With the session's organization record, `lifetime`, `members`, and
 /// `exec` come from it; otherwise from the snapshot: its reported lifetime,
 /// the resources it lists in the session, and their lifecycles (a retained
-/// exited process counts as completed).
+/// exited process counts as completed). `project` is the identity its
+/// attributes carry (ADR-0167): the record's, else the snapshot's.
 #[must_use]
 pub fn session_json(
     snapshot: &SessionSnapshot,
@@ -257,6 +258,16 @@ pub fn session_json(
         lifetime: lifetime.map(core_lifetime),
         members,
         exec,
+        project: record
+            .and_then(|record| {
+                phux_core::project_identity::SessionProject::from_attrs(
+                    record
+                        .attrs
+                        .iter()
+                        .map(|(name, value)| (name.as_str(), value.as_str())),
+                )
+            })
+            .or_else(|| crate::project_identity::of_session(s)),
     }
 }
 
@@ -567,8 +578,36 @@ mod tests {
         let work = serde_json::to_value(session_json(&snapshot, None, &session("work", 2, 1)))
             .expect("serialize");
         assert_eq!(work["keep_empty"], false);
+        assert_eq!(work["project"], serde_json::Value::Null);
         assert_eq!(work["empty"], false);
         assert_eq!(work["attached_clients"], 1);
+    }
+
+    /// ADR-0167: a session's project identity rides additively as `project`.
+    #[test]
+    fn json_rows_carry_the_project_identity() {
+        let snapshot = empty_snapshot();
+        let identity = phux_core::project_identity::SessionProject {
+            id: "github.com/no-phux/phux".to_owned(),
+            name: "phux".to_owned(),
+            checkout: "/w/phux-feat".to_owned(),
+            branch: Some("feat".to_owned()),
+            linked_worktree: true,
+            host: Some("mini".to_owned()),
+        };
+        let info = session("feat", 1, 0).with_attrs(identity.to_attrs());
+        let row = serde_json::to_value(session_json(&snapshot, None, &info)).expect("serialize");
+        assert_eq!(
+            row["project"],
+            serde_json::json!({
+                "id": "github.com/no-phux/phux",
+                "name": "phux",
+                "checkout": "/w/phux-feat",
+                "branch": "feat",
+                "linked_worktree": true,
+                "host": "mini",
+            })
+        );
     }
 
     /// Schema 4: lifetime, member count, and execution counts, from the

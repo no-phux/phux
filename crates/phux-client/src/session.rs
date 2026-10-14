@@ -246,6 +246,10 @@ pub struct CreateSessionRequest<'a> {
     /// persistent; a bare `phux` session is ephemeral. Only a server that
     /// advertises `ORGANIZATION` honors ephemeral.
     pub lifetime: SessionLifetime,
+    /// Descriptive attributes (`docs/spec/L2.md` §2.2), such as the project
+    /// identity (ADR-0167). Only a server that advertises `ORGANIZATION`
+    /// records them.
+    pub attrs: &'a [(String, String)],
 }
 
 /// Whether the connected server honors a keyed create.
@@ -355,7 +359,7 @@ async fn create_by_record(
         operation,
         name: request.name.to_owned(),
         lifetime: request.lifetime,
-        attrs: Vec::new(),
+        attrs: request.attrs.to_vec(),
         launch: Some(Box::new(launch)),
     };
     let (outcome, degradation) = crate::org::request(conn, 1, command)
@@ -445,6 +449,7 @@ pub fn keep_empty_supported(conn: &Connection) -> bool {
 pub async fn create_empty_session(
     conn: &mut Connection,
     name: &str,
+    attrs: &[(String, String)],
     notices: &mut Vec<String>,
 ) -> Result<CreateEmptyOutcome, CreateSessionError> {
     if crate::org::supported(conn) {
@@ -452,7 +457,7 @@ pub async fn create_empty_session(
             operation: crate::org::mint_operation(),
             name: name.to_owned(),
             lifetime: SessionLifetime::Persistent,
-            attrs: Vec::new(),
+            attrs: attrs.to_vec(),
             launch: None,
         };
         let (outcome, degradation) = crate::org::request(conn, 1, command)
@@ -796,6 +801,7 @@ mod tests {
             env,
             agent_session: None,
             lifetime: SessionLifetime::Persistent,
+            attrs: &[],
         }
     }
 
@@ -853,7 +859,7 @@ mod tests {
         let (socket, _dir, server) = scripted(ScriptSpec::new());
         let mut conn = Connection::connect(&socket).await.expect("connect");
         let mut notices = Vec::new();
-        let outcome = create_empty_session(&mut conn, "parked", &mut notices)
+        let outcome = create_empty_session(&mut conn, "parked", &[], &mut notices)
             .await
             .expect("scripted server answers");
         drop(conn);
@@ -890,7 +896,7 @@ mod tests {
         let (socket, _dir, server) = scripted(spec);
         let mut conn = Connection::connect(&socket).await.expect("connect");
         let mut notices = Vec::new();
-        let outcome = create_empty_session(&mut conn, "parked", &mut notices)
+        let outcome = create_empty_session(&mut conn, "parked", &[], &mut notices)
             .await
             .expect("scripted server answers");
         drop(conn);
@@ -964,11 +970,11 @@ mod tests {
             .await
             .expect("same-key resend");
         assert_eq!(again, outcome, "a same-id resend answers the stored result");
-        let empty = create_empty_session(&mut conn, "parked", &mut notices)
+        let empty = create_empty_session(&mut conn, "parked", &[], &mut notices)
             .await
             .expect("empty");
         assert_eq!(empty, CreateEmptyOutcome::Created);
-        let taken = create_empty_session(&mut conn, "parked", &mut notices)
+        let taken = create_empty_session(&mut conn, "parked", &[], &mut notices)
             .await
             .expect("answered");
         assert_eq!(taken, CreateEmptyOutcome::Refused(Refusal::NameTaken));

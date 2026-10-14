@@ -304,10 +304,18 @@ fn create(
         tracing::debug!(error = %err, "auto-spawn failed on the project open path");
     }
     let rt = cli_runtime()?;
+    // ADR-0167: the session carries the checkout's project identity, named
+    // by the `[[projects]]` label when there is one.
+    let attrs = phux_client::project_identity::creation_attrs(
+        &project.root,
+        &super::ls::local_hostname(),
+        project.name.as_deref(),
+    );
     // R16: import the recipe's session without starting anything, then start
     // its panes, as two explicit steps.
     let built = rt.block_on(async {
-        let imported = import_archive(socket_path, &archive, "project open", Legacy::Defer).await?;
+        let imported =
+            import_archive(socket_path, &archive, "project open", Legacy::Defer, &attrs).await?;
         Ok::<_, RestoreError>(relaunch_imported(socket_path, imported).await)
     });
     let summary = match built {

@@ -91,6 +91,10 @@ pub struct SessionJson {
     /// Members per execution state.
     #[serde(default)]
     pub exec: ExecCounts,
+    /// The repository the session was created in (ADR-0167);
+    /// `null` when the session carries no project identity.
+    #[serde(default)]
+    pub project: Option<crate::project_identity::SessionProject>,
 }
 
 /// One resource's row in [`SessionListJson::resources`]: canonical selector,
@@ -285,6 +289,14 @@ mod tests {
                 completed: 1,
                 ..ExecCounts::default()
             },
+            project: Some(crate::project_identity::SessionProject {
+                id: "github.com/no-phux/phux".to_owned(),
+                name: "phux".to_owned(),
+                checkout: "/w/phux-feat".to_owned(),
+                branch: Some("feat".to_owned()),
+                linked_worktree: true,
+                host: Some("mini".to_owned()),
+            }),
         }])
         .with_terminals(vec!["@7".to_owned(), "@9".to_owned()])
         .with_resources(vec![
@@ -346,6 +358,11 @@ mod tests {
                     "exec": {
                         "dormant": 0, "starting": 0, "running": 3, "stopping": 0,
                         "completed": 1, "failed": 0, "lost": 0, "abandoned": 0
+                    },
+                    "project": {
+                        "id": "github.com/no-phux/phux", "name": "phux",
+                        "checkout": "/w/phux-feat", "branch": "feat",
+                        "linked_worktree": true, "host": "mini"
                     }
                 }],
                 "terminals": ["@7", "@9"],

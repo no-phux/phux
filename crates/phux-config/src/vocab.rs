@@ -48,6 +48,7 @@ pub const ACTION_NAMES: &[&str] = &[
     "return-from-attention",
     "switch-session",
     "switch-host",
+    "toggle-project-group",
     "new-session",
     "last-session",
     "next-session",

@@ -1692,6 +1692,69 @@ fn session_picker_groups_by_project_tag() {
     assert_eq!(items[1].action.args.get("id"), Some(&Value::Integer(1)));
 }
 
+fn identity(linked: bool) -> phux_core::project_identity::SessionProject {
+    phux_core::project_identity::SessionProject {
+        id: "github.com/no-phux/phux".to_owned(),
+        name: "phux".to_owned(),
+        checkout: "/w".to_owned(),
+        branch: None,
+        linked_worktree: linked,
+        host: Some("mini".to_owned()),
+    }
+}
+
+/// ADR-0167: a project identity groups the picker; the primary checkout
+/// leads and a linked worktree follows marked `└`, still switching by id.
+#[test]
+fn session_picker_groups_by_project_identity() {
+    let mut f = fx(ArrangementDoc::single(tid(1)));
+    f.sessions = vec![
+        sinfo(1, "phux-feat").with_attrs(identity(true).to_attrs()),
+        sinfo(2, "phux").with_attrs(identity(false).to_attrs()),
+        sinfo(3, "notes"),
+    ];
+    let ctx = f.ctx();
+    let items = session_picker_rows(&ctx.peers, ctx.workspace);
+    let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        [
+            "phux",
+            "phux",
+            "└ phux-feat",
+            "Sessions",
+            "notes",
+            "+ New session…"
+        ]
+    );
+    assert_eq!(items[2].action.args.get("id"), Some(&Value::Integer(1)));
+    assert_eq!(
+        items[2].action.args.get("name"),
+        Some(&Value::String("phux-feat".to_owned()))
+    );
+}
+
+/// ADR-0167: a group header click commits `toggle-project-group`, which the
+/// dispatcher hands to the driver; without a key it bells.
+#[test]
+fn toggle_project_group_hands_the_key_to_the_driver() {
+    let mut f = fx(ArrangementDoc::single(tid(1)));
+    let effects = f.run(&phux_config::keybind::ResolvedAction {
+        action: "toggle-project-group".to_owned(),
+        args: std::collections::BTreeMap::from([(
+            "project".to_owned(),
+            Value::String("github.com/no-phux/phux".to_owned()),
+        )]),
+    });
+    assert_eq!(
+        effects.toggle_project.as_deref(),
+        Some("github.com/no-phux/phux")
+    );
+    let bare = f.run(&bare_action("toggle-project-group"));
+    assert!(bare.bell);
+    assert!(bare.toggle_project.is_none());
+}
+
 const TAGGED_PICKER_LABELS: &str = "\
 Local
 aaa
@@ -1810,6 +1873,7 @@ fn mixed_project_picker(with_tags: bool) -> Vec<crate::render::overlay::SelectIt
         foreign_agents: &foreign_agents,
         foreign_attention: &foreign_attention,
         project_tags: &tags,
+        collapsed_projects: &std::collections::BTreeSet::new(),
         review: &review,
     };
     session_picker_rows(&peers, &workspace)
@@ -2124,6 +2188,7 @@ fn machine_fixture() -> Vec<phux_core::host_list::HostJson> {
         lifetime: None,
         members: 0,
         exec: phux_core::session_list::ExecCounts::default(),
+        project: None,
     };
     let host = |name: &str, label: &str, kind, sessions: Vec<SessionJson>| HostJson {
         name: name.to_owned(),

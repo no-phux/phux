@@ -326,6 +326,7 @@ pub(crate) fn run_import(archive_path: &Path, socket: Option<PathBuf>) -> ExitCo
         &archive,
         "archive import",
         Legacy::Refuse,
+        &[],
     )) {
         Ok(imported) => imported,
         Err(RestoreError::Reported(code)) => return code,
@@ -408,8 +409,9 @@ impl Imported {
 /// on the server at `socket_path`, without starting any process (R16): each
 /// becomes a persistent session carrying the archived host, project, and
 /// directory, with its local panes as dormant records in its arrangement
-/// ([`import_dormant_panes`]). A session that cannot be created is reported
-/// in [`Imported`] rather than aborting the rest.
+/// ([`import_dormant_panes`]). Each also carries `attrs`, such as a project
+/// identity (ADR-0167). A session that cannot be created is reported in
+/// [`Imported`] rather than aborting the rest.
 ///
 /// # Errors
 ///
@@ -421,6 +423,7 @@ pub(crate) async fn import_archive(
     archive: &model::WorkspaceArchive,
     verb: &str,
     legacy: Legacy,
+    attrs: &[(String, String)],
 ) -> Result<Imported, RestoreError> {
     let existing = fetch_existing_sessions(socket_path, verb)
         .await
@@ -451,7 +454,7 @@ pub(crate) async fn import_archive(
     let mut warnings = Vec::new();
     for create in plan.creates {
         let imported = match check_agent_ownership(&create) {
-            Ok(()) => create_imported_session(socket_path, &create).await,
+            Ok(()) => create_imported_session(socket_path, &create, attrs).await,
             Err(reason) => Err(reason),
         };
         match imported {
@@ -571,14 +574,16 @@ struct ImportOutcome {
 async fn create_imported_session(
     socket_path: &Path,
     create: &model::CreateRequest,
+    attrs: &[(String, String)],
 ) -> Result<ImportOutcome, String> {
     let mut conn = Connection::connect(socket_path)
         .await
         .map_err(|err| format!("could not reach the server: {err}"))?;
     let mut notices = Vec::new();
-    let outcome = phux_client::session::create_empty_session(&mut conn, &create.name, &mut notices)
-        .await
-        .map_err(|err| format!("could not create the session: {err}"))?;
+    let outcome =
+        phux_client::session::create_empty_session(&mut conn, &create.name, attrs, &mut notices)
+            .await
+            .map_err(|err| format!("could not create the session: {err}"))?;
     for notice in notices {
         eprintln!("phux: warning: partial results — {notice}");
     }

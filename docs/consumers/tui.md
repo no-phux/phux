@@ -99,7 +99,11 @@ its sessions; closing a session leaves the pane.
 `phux worktree` binds a git checkout to a session whose name is derived
 from the worktree path. That is a CLI composition; attaching to the
 derived name is ordinary TUI attach. See [`agents.md`](./agents.md) for
-the verbs.
+the verbs. `phux new`, `phux worktree new` and `open`, and `phux project
+open` stamp the session they create with its checkout's project identity,
+which the sidebar groups by (see Sidebar). `phux worktree new` also runs
+the `worktree-created` hooks before the session starts
+([`reference/hooks.md`](../reference/hooks.md)).
 
 `phux attach NAME` joins an existing session on a running server. An unknown
 name exits 1 and suggests `phux new NAME`. If no server is running, auto-start
@@ -467,6 +471,21 @@ cannot retarget it, nor can a replacement session reusing the name. Operations
 use a separate control connection to the attached server (including when
 attached remotely), never the terminal-output connection. Destructive actions
 on another host's row refuse locally: attach to that host first.
+
+Sessions created in a git checkout carry a project identity
+([ADR-0167](../adr/0167-project-identity-is-a-session-attribute.md)): the
+normalized `origin` URL, so one repository is one project on every machine.
+Two or more sessions of one project sit together at the top of **Sessions**
+under a `▾ NAME` header, on whichever machines they live. The primary
+checkout leads and each linked worktree follows it marked `└`; a row on
+another machine names it (`@laptop`). The header counts the panes in the
+group that are blocked on you (`●2`). Clicking it collapses the group to
+its first session, the current one, and any that needs you, and shows how
+many it hides (`+3`). The collapsed set is this client's, kept in
+`collapsed-projects.json` in the state directory. The picker groups the
+attached server's sessions the same way, worktrees marked `└`, and names
+another machine's session's project in its details. A session with no
+identity still groups by a `phux.session.project/v1` label.
 
 An enabled plugin can add **sections** with `[[sidebar]]` entries in its
 manifest. Each is a band between Agents and Sessions: a header, then

@@ -7,6 +7,7 @@ use phux_client::org::{KeyNames, OrgInventory};
 use phux_client::resource;
 use phux_client::state::{Degradation, StateView};
 use phux_core::activation::SessionLifetime;
+use phux_core::project_identity::SessionProject;
 use phux_core::session_list::{ExecCounts, SessionJson, SessionListJson};
 
 use phux_protocol::ids::{ResourceId, SatelliteHost, SessionId};
@@ -266,7 +267,7 @@ fn host_row(name: &str, label: &str, kind: HostKind, endpoint: Option<String>) -
 }
 
 /// This machine's short hostname (`mac.local` becomes `mac`), or `local`.
-fn local_hostname() -> String {
+pub(crate) fn local_hostname() -> String {
     let uname = rustix::system::uname();
     let node = uname.nodename().to_string_lossy();
     let short = node.split('.').next().unwrap_or_default();
@@ -296,8 +297,16 @@ fn host_list_lines(doc: &HostListJson) -> Vec<String> {
         if host.sessions.is_empty() {
             lines.push("  (no sessions)".to_owned());
         }
-        let rows: Vec<SessionGlance> = host.sessions.iter().map(glance_of_row).collect();
-        lines.extend(collapse(rows).into_iter().map(|line| format!("  {line}")));
+        let rows = host
+            .sessions
+            .iter()
+            .map(|row| (glance_of_row(row), row.project.clone()))
+            .collect();
+        lines.extend(
+            collapse_by_project(rows)
+                .into_iter()
+                .map(|line| format!("  {line}")),
+        );
     }
     lines
 }
@@ -401,8 +410,17 @@ fn glance_lines(sources: Sources<'_>) -> Vec<String> {
         .into_iter()
         .map(|(row, _)| row)
         .filter(|row| row.to_organize != Some(0))
+        .map(|row| {
+            let project = sources
+                .snapshot
+                .sessions
+                .iter()
+                .find(|session| session.name == row.name)
+                .and_then(phux_client::project_identity::of_session);
+            (row, project)
+        })
         .collect();
-    let local = collapse(rows);
+    let local = collapse_by_project(rows);
     let snapshot = sources.snapshot;
     if snapshot.hosts().is_empty() {
         let mut lines = local;
@@ -495,18 +513,27 @@ const GLANCE_ROWS: usize = 20;
 /// `rows` as glance lines: sessions that need you first, then the rest,
 /// each group name-sorted. Past [`GLANCE_ROWS`], one line counts what was
 /// left out; a quiet session never displaces one that needs you.
-fn collapse(mut rows: Vec<SessionGlance>) -> Vec<String> {
-    rows.sort_by(|a, b| {
+fn collapse(rows: Vec<SessionGlance>) -> Vec<String> {
+    collapse_by_project(rows.into_iter().map(|row| (row, None)).collect())
+}
+
+/// [`collapse`], then the shown rows of one project (ADR-0167) grouped
+/// under a `NAME (project)` header: the primary checkout two spaces in,
+/// its linked worktrees four. A project with one shown session stays a
+/// plain line.
+fn collapse_by_project(mut rows: Vec<(SessionGlance, Option<SessionProject>)>) -> Vec<String> {
+    rows.sort_by(|(a, _), (b, _)| {
         (a.needs_you() == 0)
             .cmp(&(b.needs_you() == 0))
             .then_with(|| a.name.cmp(&b.name))
     });
-    if rows.len() <= GLANCE_ROWS {
-        return rows.iter().map(glance_text).collect();
+    let shown_len = rows.len().min(GLANCE_ROWS);
+    let (shown, hidden) = rows.split_at(shown_len);
+    let mut lines = project_grouped_glance(shown);
+    if hidden.is_empty() {
+        return lines;
     }
-    let (shown, hidden) = rows.split_at(GLANCE_ROWS);
-    let mut lines: Vec<String> = shown.iter().map(glance_text).collect();
-    let loud = hidden.iter().filter(|row| row.needs_you() > 0).count();
+    let loud = hidden.iter().filter(|(row, _)| row.needs_you() > 0).count();
     let quiet = hidden.len() - loud;
     let sessions = |n: usize| if n == 1 { "session" } else { "sessions" };
     let mut counts = Vec::new();
@@ -520,6 +547,37 @@ fn collapse(mut rows: Vec<SessionGlance>) -> Vec<String> {
         "{}; `phux ls -l` lists every session",
         counts.join(", ")
     ));
+    lines
+}
+
+/// Glance lines for `rows` in order, each project of two or more rows under
+/// one header.
+fn project_grouped_glance(rows: &[(SessionGlance, Option<SessionProject>)]) -> Vec<String> {
+    use phux_client::project_groups::{Block, GroupRow, group_rows};
+    let group: Vec<GroupRow<'_>> = rows
+        .iter()
+        .map(|(row, project)| GroupRow {
+            project: project.as_ref(),
+            label: None,
+            needs_you: usize::try_from(row.needs_you()).unwrap_or(usize::MAX),
+        })
+        .collect();
+    let mut lines = Vec::new();
+    for block in group_rows(&group, 2) {
+        match block {
+            Block::Single(index) => lines.push(glance_text(&rows[index].0)),
+            Block::Project(project) => {
+                lines.push(match project.needs_you {
+                    0 => format!("{} (project)", project.name),
+                    n => format!("{} (project, {n} need you)", project.name),
+                });
+                for member in project.members {
+                    let indent = if member.linked { "    " } else { "  " };
+                    lines.push(format!("{indent}{}", glance_text(&rows[member.index].0)));
+                }
+            }
+        }
+    }
     lines
 }
 
@@ -1015,6 +1073,7 @@ mod tests {
                 running: 2,
                 ..ExecCounts::default()
             },
+            project: None,
         };
         let doc = HostListJson::new(vec![
             HostJson {
@@ -1129,6 +1188,7 @@ mod tests {
             lifetime,
             members,
             exec,
+            project: None,
         };
         assert_eq!(
             format_row(&row(
@@ -1434,6 +1494,50 @@ mod tests {
             })
             .collect();
         assert_eq!(super::collapse(few).len(), 3, "no count line when it fits");
+    }
+
+    /// ADR-0167: sessions of one repository glance under one header, the
+    /// primary checkout first and its linked worktrees indented beneath;
+    /// a project with one session stays a plain line.
+    #[test]
+    fn the_glance_groups_sessions_by_project() {
+        use phux_client::glance::SessionGlance;
+        use phux_core::project_identity::SessionProject;
+        let project = |linked| SessionProject {
+            id: "github.com/no-phux/phux".to_owned(),
+            name: "phux".to_owned(),
+            checkout: "/w".to_owned(),
+            branch: None,
+            linked_worktree: linked,
+            host: Some("mini".to_owned()),
+        };
+        let lone = SessionProject {
+            id: "github.com/a/other".to_owned(),
+            ..project(false)
+        };
+        let (main, feat) = (project(false), project(true));
+        let glance = |name: &str, waiting| SessionGlance {
+            name: name.to_owned(),
+            waiting,
+            running: 1,
+            ..SessionGlance::default()
+        };
+        let lines = super::collapse_by_project(vec![
+            (glance("feat-auth", 1), Some(feat)),
+            (glance("scratch", 0), None),
+            (glance("phux", 0), Some(main)),
+            (glance("other", 0), Some(lone)),
+        ]);
+        assert_eq!(
+            lines,
+            [
+                "phux (project, 1 need you)",
+                "  phux: 1 running",
+                "    feat-auth: needs you (1 agent waiting), 1 running",
+                "other: 1 running",
+                "scratch: 1 running",
+            ]
+        );
     }
 
     /// A hub's satellite glances like this host: its sessions that need

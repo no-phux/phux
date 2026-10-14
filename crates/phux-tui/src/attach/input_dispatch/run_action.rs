@@ -104,6 +104,7 @@ pub(super) fn run_action(
         "focus-pane" => focus_pane(resolved, ctx, e),
         "switch-session" => switch_session(resolved, ctx, e),
         "switch-host" => switch_host(resolved, e),
+        "toggle-project-group" => toggle_project_group(resolved, e),
         "new-session" => new_session(resolved, ctx, focused, panes, e),
         "last-session" => last_session(ctx, e),
         "next-session" => step_session(ctx, e, 1),
@@ -1362,6 +1363,20 @@ fn switch_session(
 /// a `[[remote]]` registry name, or `local` for this machine's own server.
 /// The sidebar's machine segments and the session picker's machine groups
 /// commit it.
+/// ADR-0167: `toggle-project-group { project }` — collapse or expand one
+/// project group in the sidebar. The driver owns the collapsed set.
+fn toggle_project_group(
+    resolved: &phux_config::keybind::ResolvedAction,
+    effects: &mut ActionEffects,
+) {
+    let Some(project) = str_arg(resolved, "project") else {
+        tracing::warn!(args = ?resolved.args, "toggle-project-group needs a `project` arg");
+        effects.bell = true;
+        return;
+    };
+    effects.toggle_project = Some(project);
+}
+
 fn switch_host(resolved: &phux_config::keybind::ResolvedAction, effects: &mut ActionEffects) {
     let (Some(host), Some(name)) = (str_arg(resolved, "host"), name_arg(resolved)) else {
         tracing::warn!(args = ?resolved.args, "switch-host needs `host` and `name` args");
