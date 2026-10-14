@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.68.0](https://github.com/no-phux/phux/compare/v0.67.0...v0.68.0) (2026-10-14)
+
+
+### Features
+
+* **desktop:** open durable checkout projects ([#1332](https://github.com/no-phux/phux/issues/1332)) ([f2c14df](https://github.com/no-phux/phux/commit/f2c14df1ddec0009e408ca1bcfe4ad524a2ff884))
+
 ## [0.67.0](https://github.com/no-phux/phux/compare/v0.66.0...v0.67.0) (2026-10-14)
 
 
