@@ -1,5 +1,6 @@
 const std = @import("std");
 const sdk = @import("native_sdk");
+const contract = @import("provider_contract");
 const cockpit = @import("cockpit_engine");
 const Engine = cockpit.engine.Engine;
 const NoShells = cockpit.engine.NoShells;
@@ -300,6 +301,73 @@ test "shipping remote pointer maps the canvas measured fractional cell pitch" {
     try fixture.expectSelection("OCKPIT");
 }
 
+// phux-hjn4: OpenCode's cells are painted at a fractional pitch, while the
+// server divides INPUT_MOUSE pixels by an integer cell size (8x16 until a
+// resize reports another). A point near the right edge of a cell is chosen
+// so the raw painted pixel, divided by the rounded pitch, lands on the next
+// cell. The wire position has to survive that division as the painted cell,
+// and the resize has to carry the pitch the division uses.
+test "shipping mouse maps a fractional painted cell into the reported server cell" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    const fixture = try Fixture.start();
+    defer fixture.engine.destroy();
+    const fx = NoShells{};
+    try fixture.output("\x1b[?1000h\x1b[?1006h", 1);
+    const remote = fixture.engine.model.phux().?;
+    const presentation = fixture.engine.model.remotePresentation(fixture.ref).?;
+    const pitch_x = fixture.metrics().width;
+    const pitch_y = fixture.metrics().height;
+    const cell_w: u16 = @intFromFloat(@round(pitch_x));
+    const cell_h: u16 = @intFromFloat(@round(pitch_y));
+    // The fixture's measure is 10.25px wide. An integer pitch would hide the bug.
+    try std.testing.expect(pitch_x != @as(f32, @floatFromInt(cell_w)) or pitch_y != @as(f32, @floatFromInt(cell_h)));
+    try std.testing.expect(presentation.cols > 4 and presentation.rows > 1);
+    remote.bridge.outgoing.reset();
+    try remote.viewportResize(fixture.ref, .{ .cols = presentation.cols, .rows = presentation.rows });
+    const resized = remote.bridge.outgoing.take() orelse return error.TestExpectedResize;
+    defer remote.bridge.outgoing.release(resized);
+    try expectResizeCell(resized, cell_w, cell_h);
+    try std.testing.expect(remote.bridge.outgoing.take() == null);
+
+    // event() places the pointer 0.25 cell in, so column 2.7 is index 2.95.
+    // 2.95 * 10.25 / 10 spills into cell 3; the mapped position must not.
+    const press = fixture.event(.pointer_down, 2.7, 0);
+    const local_x = press.x - fixture.frame().x;
+    const local_y = press.y - fixture.frame().y;
+    const painted_x: u16 = @intFromFloat(@floor(local_x / pitch_x));
+    const painted_y: u16 = @intFromFloat(@floor(local_y / pitch_y));
+    const raw_under_reported: u16 = @intFromFloat(@floor(local_x / @as(f32, @floatFromInt(cell_w))));
+    const raw_under_default: u16 = @intFromFloat(@floor(local_x / 8));
+    // This point is a real miss if the painted pixel is what the server divides.
+    try std.testing.expect(painted_x != raw_under_reported);
+    try std.testing.expect(painted_x != raw_under_default);
+    remote.bridge.outgoing.reset();
+    try std.testing.expectEqual(.consumed, fixture.engine.onPointer(&fx, press));
+    const bytes = remote.bridge.outgoing.take() orelse return error.TestExpectedMouse;
+    defer remote.bridge.outgoing.release(bytes);
+    const x: f64 = @bitCast(std.mem.readInt(u64, bytes[26..34], .big));
+    const y: f64 = @bitCast(std.mem.readInt(u64, bytes[34..42], .big));
+    const wire_x: u16 = @intFromFloat(@floor(x / @as(f64, @floatFromInt(cell_w))));
+    const wire_y: u16 = @intFromFloat(@floor(y / @as(f64, @floatFromInt(cell_h))));
+    try std.testing.expectEqual(painted_x, wire_x);
+    try std.testing.expectEqual(painted_y, wire_y);
+    var release = press;
+    release.kind = .pointer_up;
+    try std.testing.expectEqual(.consumed, fixture.engine.onPointer(&fx, release));
+    const released = remote.bridge.outgoing.take() orelse return error.TestExpectedMouseRelease;
+    defer remote.bridge.outgoing.release(released);
+    try std.testing.expectEqualSlices(u8, bytes[26..42], released[26..42]);
+}
+
+fn expectResizeCell(frame: []const u8, width: u16, height: u16) !void {
+    try std.testing.expect(frame.len > 14);
+    try std.testing.expectEqual(@as(u8, 0x23), frame[4]);
+    var tail = [_]u8{ 4, 4, 2, 0, 0, 5, 4, 2, 0, 0 };
+    std.mem.writeInt(u16, tail[3..5], width, .big);
+    std.mem.writeInt(u16, tail[8..10], height, .big);
+    try std.testing.expectEqualSlices(u8, &tail, frame[frame.len - tail.len ..]);
+}
+
 test "shipping mouse reports surface pixels instead of dividing cell coordinates twice" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     const fixture = try Fixture.start();
@@ -315,8 +383,17 @@ test "shipping mouse reports surface pixels instead of dividing cell coordinates
     try std.testing.expectEqual(@as(u8, 0x12), bytes[4]);
     const x: f64 = @bitCast(std.mem.readInt(u64, bytes[26..34], .big));
     const y: f64 = @bitCast(std.mem.readInt(u64, bytes[34..42], .big));
-    try std.testing.expectApproxEqAbs(@as(f64, press.x - fixture.frame().x), x, 0.01);
-    try std.testing.expectApproxEqAbs(@as(f64, press.y - fixture.frame().y), y, 0.01);
+    // No resize has reported a pitch yet, so the server is still 8x16. The
+    // wire position is that grid, which is not the painted pixel.
+    const presentation = fixture.engine.model.remotePresentation(fixture.ref).?;
+    const local_x = press.x - fixture.frame().x;
+    const local_y = press.y - fixture.frame().y;
+    const pitch = fixture.metrics();
+    const mapped_x = contract.surfacePixel(local_x, pitch.width, 8, presentation.cols);
+    const mapped_y = contract.surfacePixel(local_y, pitch.height, 16, presentation.rows);
+    try std.testing.expect(@as(u16, @intFromFloat(@floor(local_x / pitch.width))) != @as(u16, @intFromFloat(@floor(local_x / 8))));
+    try std.testing.expectApproxEqAbs(mapped_x, x, 0.01);
+    try std.testing.expectApproxEqAbs(mapped_y, y, 0.01);
     var release = press;
     release.kind = .pointer_up;
     try std.testing.expectEqual(.consumed, fixture.engine.onPointer(&fx, release));
