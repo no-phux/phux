@@ -12,6 +12,9 @@
 //! On `wasm32` there is no monotonic clock, so the two latency histograms
 //! stay empty and only the counters move; the report still serialises.
 
+#[cfg(not(target_arch = "wasm32"))]
+use std::cell::Cell;
+
 use phux_perf::{Counter, Histogram, Metric, PerfReport, Unit};
 use phux_protocol::ids::ResourceId;
 
@@ -54,10 +57,16 @@ pub fn report(uptime: core::time::Duration) -> PerfReport {
 /// One kernel owns one probe. Interior mutability because the kernel arms
 /// from its `&self` action path; the kernel is single-threaded by
 /// construction, so a `RefCell` is the honest cell.
+///
+/// Output frames are the flood. [`Self::open`] is zero unless a key or paste
+/// is waiting, and [`Self::observe`] returns before touching the map.
 #[derive(Debug, Default)]
 pub struct EchoProbe {
     #[cfg(not(target_arch = "wasm32"))]
     armed: core::cell::RefCell<std::collections::HashMap<ResourceId, std::time::Instant>>,
+    /// Terminals with an open echo sample.
+    #[cfg(not(target_arch = "wasm32"))]
+    open: Cell<usize>,
 }
 
 impl EchoProbe {
@@ -67,10 +76,13 @@ impl EchoProbe {
     pub fn arm(&self, terminal_id: &ResourceId) {
         INPUT_SENT.incr();
         #[cfg(not(target_arch = "wasm32"))]
-        self.armed
-            .borrow_mut()
-            .entry(terminal_id.clone())
-            .or_insert_with(std::time::Instant::now);
+        {
+            use std::collections::hash_map::Entry;
+            if let Entry::Vacant(slot) = self.armed.borrow_mut().entry(terminal_id.clone()) {
+                slot.insert(std::time::Instant::now());
+                self.open.set(self.open.get() + 1);
+            }
+        }
         #[cfg(target_arch = "wasm32")]
         let _ = terminal_id;
     }
@@ -78,7 +90,14 @@ impl EchoProbe {
     /// Output arrived for `terminal_id`: close any open sample.
     pub fn observe(&self, terminal_id: &ResourceId) {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(at) = self.armed.borrow_mut().remove(terminal_id) {
+        {
+            if self.open.get() == 0 {
+                return;
+            }
+            let Some(at) = self.armed.borrow_mut().remove(terminal_id) else {
+                return;
+            };
+            self.open.set(self.open.get() - 1);
             let elapsed = at.elapsed();
             if elapsed < ECHO_SAMPLE_CEILING {
                 ECHO_RTT.record_duration(elapsed);
@@ -91,7 +110,14 @@ impl EchoProbe {
     /// The terminal is gone; forget any open sample.
     pub fn forget(&self, terminal_id: &ResourceId) {
         #[cfg(not(target_arch = "wasm32"))]
-        self.armed.borrow_mut().remove(terminal_id);
+        {
+            if self.open.get() == 0 {
+                return;
+            }
+            if self.armed.borrow_mut().remove(terminal_id).is_some() {
+                self.open.set(self.open.get() - 1);
+            }
+        }
         #[cfg(target_arch = "wasm32")]
         let _ = terminal_id;
     }

@@ -2836,19 +2836,14 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 has_more,
             })
         })?;
-        replica
-            .history
-            .accept_page(
-                cursor,
-                page.page_seq,
-                next_cursor,
-                authenticated_rows,
-                outcome.retained_rows,
-                page.payload,
-            )
-            .map_err(|error| {
-                HistoryPageRejection::codec_failure(KernelError::HistoryCache(error))
-            })?;
+        replica.history.commit_checked_page(
+            cursor,
+            page.page_seq,
+            next_cursor,
+            authenticated_rows,
+            outcome.retained_rows,
+            page.payload,
+        );
         Ok(())
     }
 
