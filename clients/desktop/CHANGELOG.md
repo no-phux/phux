@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/no-phux/phux/compare/desktop-v0.3.0...desktop-v0.3.1) (2026-10-14)
+
+
+### Performance
+
+* **clients:** cheapen idle echo, desktop paint, and TUI style runs ([#1303](https://github.com/no-phux/phux/issues/1303)) ([04b31b3](https://github.com/no-phux/phux/commit/04b31b3fd396916f567082369e778be117e9be5f))
+
 ## [0.3.0](https://github.com/no-phux/phux/compare/desktop-v0.2.0...desktop-v0.3.0) (2026-10-14)
 
 
