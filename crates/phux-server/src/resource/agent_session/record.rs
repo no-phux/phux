@@ -8,6 +8,8 @@
 
 use std::fmt;
 
+use bytes::{Bytes, BytesMut};
+use serde::Serialize;
 use serde_json::{Map, Value};
 
 /// Largest single record the codec accepts, including LF (L1 §7.1).
@@ -182,23 +184,16 @@ impl ValidRecord {
     /// The canonical stamped line, with the trailing newline that makes the
     /// stream JSONL. `seq` and `ts_ms` are the server's.
     #[must_use]
-    pub fn stamp(&self, seq: u64, ts_ms: u64) -> bytes::Bytes {
-        let mut line = String::with_capacity(64);
-        line.push_str("{\"seq\":");
-        line.push_str(&seq.to_string());
-        line.push_str(",\"ts_ms\":");
-        line.push_str(&ts_ms.to_string());
-        line.push_str(",\"type\":");
-        line.push_str(&Value::String(self.record_type.clone()).to_string());
-        line.push_str(",\"data\":");
-        line.push_str(&Value::Object(self.data.clone()).to_string());
-        line.push_str("}\n");
-        bytes::Bytes::from(line)
+    pub fn stamp(&self, seq: u64, ts_ms: u64) -> Bytes {
+        let mut buf = BytesMut::with_capacity(64 + self.record_type.len());
+        self.write_stamp(seq, ts_ms, &mut buf);
+        buf.freeze()
     }
 
     /// Stamp a record and enforce the codec limit on the canonical wire
     /// shape, including its terminating newline.
-    pub(super) fn stamp_bounded(&self, seq: u64, ts_ms: u64) -> Result<bytes::Bytes, RecordError> {
+    #[cfg(test)]
+    pub(super) fn stamp_bounded(&self, seq: u64, ts_ms: u64) -> Result<Bytes, RecordError> {
         let line = self.stamp(seq, ts_ms);
         let len = line.len();
         if len > MAX_RECORD_BYTES {
@@ -206,6 +201,79 @@ impl ValidRecord {
         }
         Ok(line)
     }
+
+    /// Append the canonical line to `out`. Returns the number of bytes written.
+    pub(super) fn write_stamp(&self, seq: u64, ts_ms: u64, out: &mut BytesMut) -> usize {
+        let start = out.len();
+        out.extend_from_slice(b"{\"seq\":");
+        push_u64(out, seq);
+        out.extend_from_slice(b",\"ts_ms\":");
+        push_u64(out, ts_ms);
+        out.extend_from_slice(b",\"type\":");
+        append_json(out, &self.record_type);
+        out.extend_from_slice(b",\"data\":");
+        append_json(out, &self.data);
+        out.extend_from_slice(b"}\n");
+        out.len() - start
+    }
+}
+
+/// Stamp every record into one buffer. The caller slices each line out of
+/// the returned [`Bytes`]. Nothing is retained when any line exceeds
+/// [`MAX_RECORD_BYTES`].
+pub(super) fn stamp_batch(
+    records: &[ValidRecord],
+    first_seq: u64,
+    ts_ms: u64,
+    capacity: usize,
+) -> Result<(Bytes, Vec<std::ops::Range<usize>>), RecordError> {
+    let mut payload = BytesMut::with_capacity(capacity);
+    let mut ranges = Vec::with_capacity(records.len());
+    for (index, entry) in records.iter().enumerate() {
+        let start = payload.len();
+        let len = entry.write_stamp(first_seq + index as u64, ts_ms, &mut payload);
+        if len > MAX_RECORD_BYTES {
+            return Err(RecordError::Oversized { len });
+        }
+        ranges.push(start..start + len);
+    }
+    Ok((payload.freeze(), ranges))
+}
+
+/// Decimal `value` with no leading zeros, written straight into `out`.
+fn push_u64(out: &mut BytesMut, mut value: u64) {
+    let mut buf = [0_u8; 20];
+    let mut i = buf.len();
+    loop {
+        i -= 1;
+        let digit = u8::try_from(value % 10).unwrap_or(0);
+        buf[i] = b'0' + digit;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    out.extend_from_slice(&buf[i..]);
+}
+
+/// `BytesMut` implements [`std::fmt::Write`], not [`std::io::Write`].
+struct BufWriter<'a>(&'a mut BytesMut);
+
+impl std::io::Write for BufWriter<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Serialize `value` onto `out`. [`BufWriter`] never fails, and a string or
+/// JSON object always serializes, so a writer error is dropped.
+fn append_json(out: &mut BytesMut, value: &impl Serialize) {
+    let _ = serde_json::to_writer(BufWriter(out), value);
 }
 
 /// Validate one `APPEND_RESOURCE_OUTPUT` payload into records.
@@ -404,6 +472,29 @@ mod tests {
                 b"{\"seq\":7,\"ts_ms\":1700000000000,\"type\":\"prompt\",\"data\":{\"len\":4}}\n"
             )
         );
+    }
+
+    /// The direct writer must stay byte-identical to `Value`'s serializer,
+    /// including escape sequences and object key order.
+    #[test]
+    fn stamping_matches_the_value_serializer_including_escapes() {
+        let record = one(
+            r#"{"type":"provider_raw","data":{"text":"say \"hi\"\n","n":1,"flag":true,"empty":{}}}"#,
+        )
+        .expect("valid");
+        let seq = 3_u64;
+        let ts_ms = 9_u64;
+        let mut legacy = String::new();
+        legacy.push_str("{\"seq\":");
+        legacy.push_str(&seq.to_string());
+        legacy.push_str(",\"ts_ms\":");
+        legacy.push_str(&ts_ms.to_string());
+        legacy.push_str(",\"type\":");
+        legacy.push_str(&Value::String(record.record_type.clone()).to_string());
+        legacy.push_str(",\"data\":");
+        legacy.push_str(&Value::Object(record.data.clone()).to_string());
+        legacy.push_str("}\n");
+        assert_eq!(record.stamp(seq, ts_ms).as_ref(), legacy.as_bytes());
     }
 
     #[test]

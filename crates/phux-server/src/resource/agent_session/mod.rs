@@ -343,28 +343,27 @@ impl AgentSessionActor {
         };
         let ts_ms = record::now_ms();
         // Stamping adds server-owned fields and may expand escaped data.
-        // Validate every canonical line before consuming any sequence or
-        // publishing state: even the last record can refuse the whole batch.
-        let lines: Result<Vec<_>, _> = records
-            .iter()
-            .enumerate()
-            .map(|(index, entry)| entry.stamp_bounded(first_seq + index as u64, ts_ms))
-            .collect();
-        let lines = match lines {
-            Ok(lines) => lines,
-            Err(error) => {
-                let _ = reply.send(Err(AppendRejection::Invalid(error)));
-                return;
-            }
-        };
+        // One buffer holds the batch. Each retained line is a slice of it,
+        // so the broadcast and the ring share the bytes. An evicted line
+        // does not free that buffer until the batch's last line leaves;
+        // an append is already bounded by the command limit. Validate every
+        // canonical line before consuming any sequence or publishing state:
+        // even the last record can refuse the whole batch.
+        let (payload, ranges) =
+            match record::stamp_batch(&records, first_seq, ts_ms, bytes.len() + records.len() * 48)
+            {
+                Ok(stamped) => stamped,
+                Err(error) => {
+                    let _ = reply.send(Err(AppendRejection::Invalid(error)));
+                    return;
+                }
+            };
         let mut evidence = None;
         let mut ask = None;
-        let mut payload = Vec::with_capacity(bytes.len() + records.len() * 48);
-        for (entry, line) in records.iter().zip(lines) {
+        for (entry, range) in records.iter().zip(ranges) {
             // The entire range was checked above, before any mutation.
             let _ = self.core.next_seq();
-            payload.extend_from_slice(&line);
-            self.ring.push(line);
+            self.ring.push(payload.slice(range));
             if let Some(found) = entry.evidence() {
                 evidence = Some(found);
             }
@@ -377,7 +376,7 @@ impl AgentSessionActor {
         }
         let _ = self.core.output_tx.send(PaneOutput::Live {
             seq: last_seq,
-            bytes: Bytes::from(payload),
+            bytes: payload,
             at: std::time::Instant::now(),
         });
         let _ = reply.send(Ok(AppendAccepted {
@@ -461,6 +460,24 @@ mod tests {
             ResourceFacetHandle::Terminal(_) => panic!("built the wrong facet"),
         };
         (bundle.actor, facet, bundle.handle)
+    }
+
+    #[test]
+    fn one_batch_broadcast_is_the_concatenation_of_its_lines() {
+        let (mut actor, _facet, handle) = engine();
+        let mut subscriber = handle.output.subscribe();
+        append(&mut actor, "{\"type\":\"prompt\"}\n{\"type\":\"stop\"}").expect("accepted");
+        let super::PaneOutput::Live { bytes, .. } = subscriber.try_recv().expect("broadcast")
+        else {
+            panic!("append publishes a live batch");
+        };
+        let replay = actor.bootstrap(None);
+        let mut joined = Vec::new();
+        for record in &replay.records {
+            joined.extend_from_slice(record);
+        }
+        assert_eq!(bytes.as_ref(), joined.as_slice());
+        assert_eq!(replay.records.len(), 2);
     }
 
     #[test]
