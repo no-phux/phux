@@ -1822,7 +1822,8 @@ fn run_upgrade(name: Option<&str>, json: bool) -> ExitCode {
             .iter()
             .map(|(entry, outcome)| upgrade_json(entry, outcome))
             .collect();
-        let written = crate::output::json(&serde_json::json!({"schema_version": 1, "hosts": hosts}));
+        let written =
+            crate::output::json(&serde_json::json!({"schema_version": 1, "hosts": hosts}));
         return if failed { ExitCode::FAILURE } else { written };
     }
     if results.is_empty() {

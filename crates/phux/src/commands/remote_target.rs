@@ -393,8 +393,7 @@ fn current_entry(probed: &RemoteEntry) -> Result<RemoteEntry, String> {
         .into_iter()
         .find(|entry| entry.name == probed.name)
         .ok_or_else(|| "the entry was removed while QUIC was probed".to_owned())?;
-    if current.endpoint != probed.endpoint || current.cert_fingerprint != probed.cert_fingerprint
-    {
+    if current.endpoint != probed.endpoint || current.cert_fingerprint != probed.cert_fingerprint {
         return Err("the entry changed while QUIC was probed; run it again".to_owned());
     }
     Ok(current)
@@ -695,7 +694,11 @@ mod tests {
             "wss://mini:9787",
             "wss://mini",
         ] {
-            assert_eq!(candidate(unguessable), None, "{unguessable}: nothing to guess");
+            assert_eq!(
+                candidate(unguessable),
+                None,
+                "{unguessable}: nothing to guess"
+            );
         }
         assert_eq!(candidate("ssh://mini"), None);
 
