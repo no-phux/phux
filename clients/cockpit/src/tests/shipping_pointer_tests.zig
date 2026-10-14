@@ -1,5 +1,8 @@
 const std = @import("std");
 const sdk = @import("native_sdk");
+// This file is compiled into the extension module. The contract is already
+// the root of `provider_contract`, so it has to be named rather than imported
+// by path (Zig rejects one file in two modules).
 const contract = @import("provider_contract");
 const cockpit = @import("cockpit_engine");
 const Engine = cockpit.engine.Engine;

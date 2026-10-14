@@ -737,7 +737,8 @@ pub fn sharedCloseAndCatalogAdmission() !void {
     try testing.expect(model.locateTerminal(ref) != null);
     try testing.expect(remote.owner(ref) != null);
     try testing.expect(model.focusedTerminalRef().?.eql(ref));
-    try testing.expectEqual(@as(u32, 8), remote.host.operation_ledger.last_id);
+    // A confirmed removal whose window is still published chases one refresh.
+    try testing.expectEqual(@as(u32, 9), remote.host.operation_ledger.last_id);
 }
 
 fn moveSharedWindowToSecondary(engine: *engine_module.Engine) !void {
@@ -761,7 +762,8 @@ pub fn nativeCloseRehomesWhileBusy() !void {
     const ref = model.focusedTerminalRef().?;
     const owner = remote.owner(ref).?;
     _ = try remote.requestWorkspaceRefresh();
-    try testing.expect(!command(engine, .close_tab, 0));
+    // A removal behind that read is accepted and waits. It is not refused.
+    try testing.expect(command(engine, .close_tab, 0));
     const close = protocol.encodeIntent(.{ .kind = .close_window, .expected_revision = engine.revision, .window = 1, .argument = 0 });
     try testing.expect(engine.applyIntent(&close, &engine_module.NoShells{}));
     try testing.expect(!model.windowOpen(1));
