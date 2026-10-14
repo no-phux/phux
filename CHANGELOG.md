@@ -9,6 +9,18 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.71.0](https://github.com/no-phux/phux/compare/v0.70.0...v0.71.0) (2026-10-14)
+
+
+### Features
+
+* **desktop:** remember recent project folders ([#1350](https://github.com/no-phux/phux/issues/1350)) ([0944244](https://github.com/no-phux/phux/commit/0944244005aedbab6328c2666aaab8f94cea292d))
+
+
+### Bug Fixes
+
+* **cockpit:** stop the lifecycle test's phux server and use the in-tree CLI ([f373ee2](https://github.com/no-phux/phux/commit/f373ee2fdf88bf83640abf2e6f1331e31702a441)), closes [#1100](https://github.com/no-phux/phux/issues/1100)
+
 ## [0.70.0](https://github.com/no-phux/phux/compare/v0.69.1...v0.70.0) (2026-10-14)
 
 
