@@ -2,12 +2,17 @@
 
 use super::*;
 use crate::runtime::attach::{OutputPumpContext, OutputPumpStart, run_started_output_pump};
+use crate::runtime::handle_detach_terminal;
 use crate::terminal_actor::{PaneOutput, ResyncAudience, ResyncReason};
 use phux_protocol::caps::BootstrapStreamProfile;
+use phux_protocol::caps::{BootstrapLimits, ClientCapabilities};
 use phux_protocol::ids::BootstrapId;
+use phux_protocol::ids::StreamId;
+use phux_protocol::wire::frame::CommandResult;
 use std::future::{Future, poll_fn};
 use std::pin::Pin;
 use std::task::Poll;
+use tokio::task::JoinSet;
 
 const FINAL_SCREEN: &[u8] = b"FINAL_SCREEN";
 const GUARD: std::time::Duration = std::time::Duration::from_secs(3);
@@ -108,7 +113,7 @@ impl Fixture {
         pumps: &mut JoinSet<()>,
         future: impl Future<Output = ()> + 'static,
     ) {
-        super::super::pump::spawn_tracked(
+        crate::runtime::pump::spawn_tracked(
             &self.state,
             client,
             self.pane,
