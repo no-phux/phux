@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.69.1](https://github.com/no-phux/phux/compare/v0.69.0...v0.69.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* **release:** publish next pointers even when the tag move is refused ([49acd4d](https://github.com/no-phux/phux/commit/49acd4d824534e6e23cef4632d042841aa328565))
+
 ## [0.69.0](https://github.com/no-phux/phux/compare/v0.68.0...v0.69.0) (2026-10-14)
 
 
