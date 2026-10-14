@@ -446,16 +446,16 @@ pub fn seed_session_with_pty_and_colors(
 /// Registry ownership address for a newly spawned pane.
 #[derive(Debug)]
 pub(crate) enum SpawnOwnership {
-    /// Legacy session ownership (first window in v0.x).
+    /// Membership in this session.
     Session(phux_core::ids::SessionId),
-    /// Exact window ownership derived from an existing wire Terminal id.
+    /// Membership in the session of an existing wire Terminal.
     Terminal(phux_protocol::ids::ResourceId),
 }
 
 /// Add a PTY pane under `ownership`. `initial_size` (`SPAWN_RESOURCE`) sizes
 /// the grid, PTY, and registry dims in the transaction that creates the pane,
 /// so its first bootstrap is already at the client's geometry. `Ok(None)`
-/// means the owner has no window to host the pane.
+/// means the owner's session is gone or refused the new member.
 #[allow(
     clippy::too_many_arguments,
     reason = "every input must be true of the pane before its actor becomes visible to another client"

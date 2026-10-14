@@ -167,7 +167,7 @@ they have no attached-client focus history.
 |---|---|
 | `.` | focused session / pane |
 | `name` | session |
-| `name:N` / `name:tag` | window |
+| `name:N` / `name:tag` | group (a tab) of the session's arrangement |
 | `name:N.M` | pane |
 | `@N` | local resource id (either kind) |
 | `host/@N` | satellite resource through a hub |
@@ -182,7 +182,7 @@ child. Handed to an agent-session verb (`emit`, `log`, `session close`)
 it yields the session; handed to a Terminal-facet verb it yields the
 parent pane, so `phux agent prompt %reviewer` and
 `phux agent log %reviewer` name the same agent from two sides. Two live
-sessions sharing a name refuse. `name:N.M` and the window forms resolve
+sessions sharing a name refuse. `name:N.M` and the group forms resolve
 Terminals only.
 
 A selector that names several panes narrows to one: the focused pane if
@@ -954,14 +954,17 @@ be minted, so nothing was typed). Resource: `wrong_resource_kind`, `not_producer
 
 ## 9. Projection scoping
 
-A session's one *named shared* projection is its
-`phux.tui.layout/v1/<session-id>` L3 envelope: window order, split trees,
-pane placement ([metadata protocol](../spec/L3.md) §3.2). The spatial verbs
-mutate it; a cross-session move adds one `MOVE_RESOURCE`. Writes are
-whole-value last-write-wins, and a spatial edit against a vanished anchor
-refuses with a typed code rather than inventing placement (§7). Focus never
-rides the envelope: its focus fields are ignored on read, and
-`phux.tui.focus/v1` is per-client
+A session's one shared projection is its arrangement: group order, split
+trees, pane placement ([organization](../spec/L2.md) §2.4). The spatial
+verbs mutate it with `ARRANGEMENT_REPLACE` naming the revision they read,
+retrying on `CONFLICT`; a cross-session move adds one `MOVE_RESOURCE`.
+Against a server without `ORGANIZATION`, and for named projection keys,
+they write the `phux.tui.layout/v1/<session-id>` L3 envelope instead
+([metadata protocol](../spec/L3.md) §3.2), whole-value last-write-wins. A
+spatial edit against a vanished anchor refuses with a typed code rather
+than inventing placement (§7). Focus is never part of an arrangement: the
+envelope's focus fields are ignored on read, and `phux.tui.focus/v1` is
+per-client
 ([ADR-0049](../adr/0049-client-local-focus-and-advisory-attention.md)).
 
 A script wanting its own arrangement uses its own key prefix

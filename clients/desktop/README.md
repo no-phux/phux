@@ -16,7 +16,7 @@ Run it again to update; pin or roll back to a published version with
 `--bin-dir` select alternate destinations. Releases are ad-hoc signed, **not
 Apple-notarized**; after verification the installer clears quarantine.
 
-`Phux.app` runs `clients/desktop/native/target/release/phux-desktop` directly.
+`Phux.app` bundles the `phux-desktop` binary built from `clients/desktop/native`.
 There is no JavaScript bundle and no NAPI addon. Launched from the Dock or
 Spotlight, the app resolves the installed `phux` CLI
 (`~/.local/bin/phux`, `/opt/homebrew/bin/phux`, `/usr/local/bin/phux`, or

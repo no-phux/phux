@@ -16,7 +16,7 @@ the references cover commands, protocols, and implementation.
 |---|---|
 | Run a persistent terminal and reattach | [Quickstart](./QUICKSTART.md) |
 | Choose a supported platform and install method | [Install phux](./INSTALL.md) |
-| Understand sessions, windows, panes, and persistence | [How phux works](./CONCEPTS.md) |
+| Understand sessions, resources, the Inbox, and persistence | [How phux works](./CONCEPTS.md) |
 | Compare phux with tmux, Herdr, or cmux | [When to use phux](./when-to-use.md) |
 | Translate tmux or screen habits | [Coming from tmux or screen](./coming-from.md) |
 

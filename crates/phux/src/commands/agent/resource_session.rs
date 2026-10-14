@@ -57,7 +57,7 @@ pub(crate) enum SessionAction {
     /// `RESOURCE_KINDS` (see `phux status --json`'s `features`).
     Open {
         /// The parent pane: a selector resolving to one Terminal (`@N`,
-        /// `%name`, `session:window.pane`).
+        /// `%name`, `session:group.pane`).
         target: String,
         /// Agent provider slug, e.g. `claude`.
         #[usage(long, value_name = "P")]

@@ -23,6 +23,16 @@ use super::ServerState;
 /// (ADR-0048), the arrangement holds the open interval.
 const RATIO_FLOOR: f32 = 0.01;
 
+/// A foreign split ratio as one the arrangement accepts: clamped into the
+/// open interval, and an even split for NaN.
+pub(super) fn arrangement_ratio(ratio: f32) -> f32 {
+    if ratio.is_nan() {
+        0.5
+    } else {
+        ratio.clamp(RATIO_FLOOR, 1.0 - RATIO_FLOOR)
+    }
+}
+
 impl ServerState {
     /// The session a Group-1 `phux.tui.layout/v1/<id>` key names, if live.
     #[must_use]
@@ -124,7 +134,7 @@ impl ServerState {
                             SplitDir::Horizontal => phux_core::SplitDir::Horizontal,
                             SplitDir::Vertical => phux_core::SplitDir::Vertical,
                         },
-                        ratio: ratio.clamp(RATIO_FLOOR, 1.0 - RATIO_FLOOR),
+                        ratio: arrangement_ratio(*ratio),
                         left: Box::new(left),
                         right: Box::new(right),
                     },

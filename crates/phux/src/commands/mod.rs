@@ -1058,12 +1058,13 @@ pub(crate) enum Command {
         extra: Vec<String>,
     },
 
-    /// Kill a session, window, pane, or the server
+    /// Kill a session, group, pane, or the server
     ///
-    /// `TARGET` uses the selector grammar (see the top-level help):
-    /// `name`, `name:N`, `name:N.M`, `name:tag`, `@N`, `.`. The selector
-    /// is resolved client-side against a server-state snapshot to a set of
-    /// Terminals; the server is then asked to kill each.
+    /// `TARGET` uses the selector grammar (`phux help targets`):
+    /// `name`, `name:N`, `name:N.M`, `name:tag`, `@N`, `^key`, `#tag`, `.`.
+    /// A selector naming a whole session kills the session; any other is
+    /// resolved client-side to a set of Terminals, and the server kills
+    /// them together.
     ///
     /// Killing a whole session ends every member, work added meanwhile
     /// included, deletes the session, and prints one summary line.
@@ -1254,7 +1255,7 @@ pub(crate) enum Command {
     )]
     #[usage(help_heading = "Panes", display_order = 27)]
     Resize {
-        /// Target selector: session, session:window, session:window.pane,
+        /// Target selector: session, session:group, session:group.pane,
         /// @id, or `.` (focused). `=` is unsupported by headless commands.
         target: String,
 
@@ -1692,7 +1693,7 @@ pub(crate) enum Command {
     )]
     #[usage(help_heading = "Panes", display_order = 22)]
     SendKeys {
-        /// Target selector: session, session:window, session:window.pane,
+        /// Target selector: session, session:group, session:group.pane,
         /// @id, or `.` (focused). `=` is unsupported by headless commands.
         target: String,
 
@@ -1712,7 +1713,7 @@ Returns the authoritative path on the terminal-owning host (including satellites
 Upload dials configured remote transports headlessly; it never pairs over SSH. The timeout covers resolution, reading, and upload. Completed prints the path; --json prints the receipt for completed, refused, or unknown outcomes. Refused and unknown exit nonzero: do not blindly retry."
     )]
     Upload {
-        /// Target selector: session, session:window.pane, @id, or `.`.
+        /// Target selector: session, session:group.pane, @id, or `.`.
         target: String,
         /// File on this client's filesystem.
         file: std::path::PathBuf,
@@ -1752,7 +1753,7 @@ Upload dials configured remote transports headlessly; it never pairs over SSH. T
     )]
     #[usage(help_heading = "Panes", display_order = 23)]
     Paste {
-        /// Target selector: session, session:window, session:window.pane,
+        /// Target selector: session, session:group, session:group.pane,
         /// @id, or `.` (focused). `=` is unsupported by headless commands.
         target: String,
 
@@ -2160,7 +2161,7 @@ Upload dials configured remote transports headlessly; it never pairs over SSH. T
     )]
     #[usage(help_heading = "Agents", display_order = 32)]
     Ask {
-        /// Target selector: session, session:window, session:window.pane,
+        /// Target selector: session, session:group, session:group.pane,
         /// @id, or `.` (focused). `=` is unsupported by headless commands.
         target: String,
 
@@ -2224,7 +2225,7 @@ Upload dials configured remote transports headlessly; it never pairs over SSH. T
     )]
     #[usage(help_heading = "Panes", display_order = 24)]
     Run {
-        /// Target selector: session, session:window, session:window.pane,
+        /// Target selector: session, session:group, session:group.pane,
         /// @id, or `.` (focused). `=` is unsupported by headless commands.
         target: String,
 
@@ -2286,10 +2287,10 @@ Upload dials configured remote transports headlessly; it never pairs over SSH. T
 
     /// Export sessions to an archive file, or import one
     ///
-    /// `export` writes the running server's sessions, windows, split trees,
+    /// `export` writes the running server's sessions, split trees,
     /// directories, and resumable agent sessions as JSON. `import` recreates
-    /// an archive's missing sessions, empty and persistent, without starting
-    /// any process.
+    /// an archive's missing sessions, persistent and with their panes as
+    /// dormant records, without starting any process.
     #[usage(help_heading = "More", display_order = 65)]
     Archive {
         #[usage(subcommand)]
@@ -3085,7 +3086,7 @@ pub(crate) enum TagAction {
     /// List the tags on each pane a selector resolves to.
     #[usage(alias = "list")]
     Ls {
-        /// Target selector (session, `session:window`, `@id`, `.`, `#tag`).
+        /// Target selector (session, `session:group`, `@id`, `.`, `#tag`).
         target: String,
 
         #[usage(flatten)]
@@ -3352,9 +3353,10 @@ pub(crate) enum ArchiveAction {
 
     /// Recreate an archive's missing sessions without starting them.
     ///
-    /// Each missing session becomes an empty, persistent session with its
-    /// archived host, project, and directory; nothing is launched. A session
-    /// of the same name already on the server is skipped.
+    /// Each missing session becomes a persistent session with its archived
+    /// host, project, and directory, and each archived local pane a dormant
+    /// record in its arrangement; nothing is launched until `phux restore`.
+    /// A session of the same name already on the server is skipped.
     Import {
         /// JSON archive path, or '-' to read from stdin.
         archive: std::path::PathBuf,

@@ -163,7 +163,7 @@ pub struct ServerConfig {
     /// launching shell's (a production pane exports several).
     pub env: ServerEnv,
     /// Where the organization store lives (ADR-0162). `phux server` uses
-    /// [`crate::OrgStoreLocation::default_path`]; in-process servers default
+    /// [`crate::OrgStoreLocation::for_socket`]; in-process servers default
     /// to memory so no test opens a shared store.
     pub org_store: crate::OrgStoreLocation,
 }

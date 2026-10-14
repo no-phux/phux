@@ -175,7 +175,7 @@ the shell, Cargo, and npm commands below also work directly.
 | Handwritten docs | Git, Bash, standard Unix utilities | `bash scripts/check-docs.sh` |
 | Pure Rust domain / wire codec | Rust, native compiler/linker | `just core-check` or `just crate-check phux-protocol` |
 | Server, TUI, CLI, engine-dependent protocol helpers, FFI | Rust, Zig, platform packages | `just doctor native`, then `just crate-check phux-server` |
-| Agent integrations | Node/npm and Bun | `just integration-check pi` (or `runtime`, `opencode-v2`, `omp`, `claude`) |
+| Agent integrations | Node/npm and Bun | `just integration-check pi` (or `runtime`, `opencode-v2`, `omp`, `claude`, `grok`) |
 | Browser client | Rust WASM target, Node, WASM tools (engine binary is committed) | `just doctor web`; see [Browser client](#browser-client) |
 | Cockpit app | Apple-silicon Mac, SDK, Zig, Node, Rust FFI, Python | `just doctor cockpit`, then `just cockpit-test` |
 | GPUI desktop development | Apple-silicon Mac, Xcode with Metal, native Rust/Zig, Bun, Node, Python | `just doctor desktop`, then `just desktop-app` |
@@ -277,7 +277,7 @@ both; otherwise use the [Node installer](https://nodejs.org) and [Bun installer]
 
 ```sh
 just doctor integrations
-just integration-check pi    # or runtime, opencode-v2, omp, claude
+just integration-check pi    # or runtime, opencode-v2, omp, claude, grok
 ```
 
 The Pi and Claude gates include dependency auditing and need network.

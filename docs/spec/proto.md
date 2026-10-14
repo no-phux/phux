@@ -1435,14 +1435,15 @@ nothing beyond size limits.
 
 There is no L2 collection lifecycle tier. The `L2` bit and discriminant
 range stay reserved so the three-tier numbering is not reused, but no L2
-message is allocated and no consumer declares `L2`. Group membership and
-names are L3 metadata plus client logic; the one atomic need,
-multi-terminal teardown, is the single L1 operation `KILL_RESOURCES`
-(§7.1). See [L2.md](./L2.md) for the full statement and
-[L3.md](./L3.md) for the grouping conventions that replace it.
+message is allocated and no consumer declares `L2`. Organization (sessions,
+membership, arrangements) is server-owned state reached through typed L1
+commands gated on `ServerFeatureExt::ORGANIZATION`, not a tier; see
+[L2.md](./L2.md). Multi-terminal teardown is the single L1 operation
+`KILL_RESOURCES` (§7.1), and a whole session ends with `SESSION_KILL`.
 
-The reference TUI is therefore an L1+L3 consumer (§11.3); it builds
-sessions, windows, and panes from L3 metadata, not from a wire tier.
+The reference TUI is therefore an L1+L3 consumer (§11.3); the L3 layout key
+it writes is translated into the session's arrangement
+([L3.md](./L3.md) §3.2).
 
 ### 11.5 Out-of-tier messages
 
