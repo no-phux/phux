@@ -90,14 +90,24 @@ async fn run_from_start(
     }
 }
 
-/// Test-visible dial wrapper preserving the original unrecorded/recorded sink
-/// seam while production connection reuse enters through [`run_from_start`].
-#[cfg(test)]
+/// Dial-aware production attach (UDS or QUIC) with predictive echo config.
+/// Blocks until the session ends.
+///
+/// With `rec`, the composited output is teed into it (ADR-0060); the
+/// recorder is passed in so one cast survives reconnects.
+///
+/// The future is `!Send` (libghostty's `Terminal` lives across awaits), so
+/// drive it on a current-thread runtime (ADR-0003).
+///
+/// Connect, `HELLO`, `ATTACH`, and the `ATTACHED` wait run on the cooked
+/// terminal: a failure there returns `Err` without ever entering raw mode or
+/// the alt screen. `initial_notice` is shown once attached (the reconnect
+/// loop's "re-attached after server restart").
 #[allow(
     clippy::future_not_send,
-    reason = "test wrapper drives the same thread-local terminal engine"
+    reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
 )]
-pub(super) async fn run_buffered(
+pub async fn run_dial(
     dial: &Dial,
     target: AttachTarget,
     predict: PredictiveConfig,
@@ -116,50 +126,19 @@ pub(super) async fn run_buffered(
     .await
 }
 
-/// Dial-aware production attach (UDS or QUIC) with predictive echo config.
-/// Blocks until the session ends.
-///
-/// The future is `!Send` (libghostty's `Terminal` lives across awaits), so
-/// drive it on a current-thread runtime (ADR-0003).
-///
-/// Connect, `HELLO`, `ATTACH`, and the `ATTACHED` wait run on the cooked
-/// terminal: a failure there returns `Err` without ever entering raw mode or
-/// the alt screen. `initial_notice` is shown once attached (the reconnect
-/// loop's "re-attached after server restart").
+/// [`run_dial`] over an already connected and HELLO-negotiated transport,
+/// avoiding a second dial after a reconnect probe. `dial` is kept for
+/// auxiliary control operations.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
 )]
-pub async fn run_with_predict_dial(
-    dial: &Dial,
-    target: AttachTarget,
-    predict: PredictiveConfig,
-    initial_notice: Option<Notice>,
-    input_replay: Option<Rc<RefCell<crate::attach::input_replay::InputReplayJournal>>>,
-) -> Result<AttachEnd, AttachError> {
-    run_from_start(
-        AttachStart::Dial(dial),
-        target,
-        predict,
-        None,
-        initial_notice,
-        input_replay,
-    )
-    .await
-}
-
-/// Attach over an already connected and HELLO-negotiated transport, avoiding
-/// a second dial after a reconnect probe. `dial` is kept for auxiliary
-/// control operations.
-#[allow(
-    clippy::future_not_send,
-    reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
-)]
-pub async fn run_with_predict_connection(
+pub async fn run_connection(
     connection: Connection,
     dial: &Dial,
     target: AttachTarget,
     predict: PredictiveConfig,
+    rec: Option<Rc<RefCell<SessionRecorder>>>,
     initial_notice: Option<Notice>,
     input_replay: Option<Rc<RefCell<crate::attach::input_replay::InputReplayJournal>>>,
 ) -> Result<AttachEnd, AttachError> {
@@ -167,58 +146,7 @@ pub async fn run_with_predict_connection(
         AttachStart::Connection(Box::new(connection), dial),
         target,
         predict,
-        None,
-        initial_notice,
-        input_replay,
-    )
-    .await
-}
-
-/// As [`run_with_predict_dial`], teeing the composited output into `rec`
-/// (ADR-0060). The recorder is passed in so one cast survives reconnects.
-#[allow(
-    clippy::future_not_send,
-    reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
-)]
-pub async fn run_recorded_dial(
-    dial: &Dial,
-    target: AttachTarget,
-    predict: PredictiveConfig,
-    rec: Rc<RefCell<SessionRecorder>>,
-    initial_notice: Option<Notice>,
-    input_replay: Option<Rc<RefCell<crate::attach::input_replay::InputReplayJournal>>>,
-) -> Result<AttachEnd, AttachError> {
-    run_from_start(
-        AttachStart::Dial(dial),
-        target,
-        predict,
-        Some(rec),
-        initial_notice,
-        input_replay,
-    )
-    .await
-}
-
-/// Recorded attach over an already negotiated transport; see
-/// [`run_with_predict_connection`] and [`run_recorded_dial`].
-#[allow(
-    clippy::future_not_send,
-    reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
-)]
-pub async fn run_recorded_connection(
-    connection: Connection,
-    dial: &Dial,
-    target: AttachTarget,
-    predict: PredictiveConfig,
-    rec: Rc<RefCell<SessionRecorder>>,
-    initial_notice: Option<Notice>,
-    input_replay: Option<Rc<RefCell<crate::attach::input_replay::InputReplayJournal>>>,
-) -> Result<AttachEnd, AttachError> {
-    run_from_start(
-        AttachStart::Connection(Box::new(connection), dial),
-        target,
-        predict,
-        Some(rec),
+        rec,
         initial_notice,
         input_replay,
     )
@@ -239,27 +167,13 @@ pub async fn run_with_stdout<W: crate::attach::RenderSink>(
     target: AttachTarget,
     out: &mut W,
 ) -> Result<AttachEnd, AttachError> {
-    run_with_stdout_predict(socket, target, out, PredictiveConfig::disabled()).await
-}
-
-/// As [`run_with_stdout`], with an explicit predictive-echo config.
-#[allow(
-    clippy::future_not_send,
-    reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
-)]
-pub(super) async fn run_with_stdout_predict<W: crate::attach::RenderSink>(
-    socket: &Path,
-    target: AttachTarget,
-    out: &mut W,
-    predict: PredictiveConfig,
-) -> Result<AttachEnd, AttachError> {
     // Synchronous-sink test seam: no off-loop writer, no resync flag, and no
     // replay journal — the UDS lane never carries one.
     attach_session(
         AttachStart::Dial(&Dial::uds(socket)),
         target,
         out,
-        predict,
+        PredictiveConfig::disabled(),
         None,
         None,
         false,
@@ -301,7 +215,7 @@ async fn handshake(
 /// Establish the production TUI HELLO contract without attaching.
 ///
 /// A reconnect probe's connection can be handed to
-/// [`run_with_predict_connection`] without downgrading capabilities. Colors
+/// [`run_connection`] without downgrading capabilities. Colors
 /// are not re-probed (a second OSC 10/11 query can print on the cooked
 /// terminal).
 pub async fn connect_for_attach(dial: &Dial) -> Result<Connection, AttachError> {

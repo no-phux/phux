@@ -1,6 +1,6 @@
 //! Attach loop: the runtime behind `phux attach <session>`.
 //!
-//! The entry point is [`run_with_predict_dial`], called from a tokio
+//! The entry point is [`run_dial`], called from a tokio
 //! current-thread runtime (ADR-0003); it takes over the controlling terminal
 //! and restores it on every exit path including panic. The headless half of
 //! the vocabulary (connection, transports, stdin parser, replay journal,
@@ -67,9 +67,8 @@ pub use phux_client::attach::{
 };
 
 pub use driver::{
-    CompositedCapture, connect_for_attach, record_composited, run_headless_rendered,
-    run_recorded_connection, run_recorded_dial, run_with_predict_connection, run_with_predict_dial,
-    run_with_stdout, write_terminal_reset,
+    CompositedCapture, connect_for_attach, record_composited, run_connection, run_dial,
+    run_headless_rendered, run_with_stdout, write_terminal_reset,
 };
 
 // ADR-0127: the CLI declares `--viewer` / `--take` once, before it dials.

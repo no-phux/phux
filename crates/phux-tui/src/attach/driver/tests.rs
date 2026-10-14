@@ -646,13 +646,13 @@ fn headless_completion_drains_history_and_metadata_after_attach_ready() {
     }
 }
 
-/// ADR-0060: without a recorder, `run_buffered` fails at connect exactly as
-/// before the tee existed.
+/// ADR-0060: without a recorder, `run_dial` drives the bare sink and fails
+/// at connect like any other attach.
 #[tokio::test(flavor = "current_thread")]
-async fn run_buffered_without_a_recorder_passes_the_bare_sink() {
+async fn run_dial_without_a_recorder_passes_the_bare_sink() {
     let socket =
         std::env::temp_dir().join(format!("phux-rec-guard-{}-absent.sock", std::process::id()));
-    let err = run_buffered(
+    let err = run_dial(
         &Dial::uds(&socket),
         AttachTarget::Last,
         PredictiveConfig::disabled(),
