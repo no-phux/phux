@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- Add an explicit configured native-agent launch picker, server-owned SDK
+  conversation commands and native provider dialogs. Keep terminal-attached
+  conversations explicitly labeled, with independent draft/scroll preservation.
+- Surface SDK runtime/license setup and queued/admitted/refused/unknown outcomes
+  without silent installs, automatic approvals or terminal-key fallback.
+
 ## [0.8.6](https://github.com/no-phux/phux/compare/desktop-v0.8.5...desktop-v0.8.6) (2026-10-14)
 
 

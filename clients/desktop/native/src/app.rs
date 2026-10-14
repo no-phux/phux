@@ -11,6 +11,7 @@ mod desk;
 mod host;
 mod keys;
 mod motion;
+mod native_launch;
 mod notifications;
 mod organization;
 mod overlays;

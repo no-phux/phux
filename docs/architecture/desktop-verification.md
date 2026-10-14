@@ -52,16 +52,16 @@ These are not implied by the host cutover:
 | Persistence | Same-incarnation restore, changed-incarnation refusal, malformed and newer files left unwritten. |
 | Connections | Startup error stays in the window. Reconnect does not invent a second lifecycle. Remote hosts are not built. |
 | Settings and Ghostty | Effective value, font, palette, keybinds, and the quick-terminal chord. `reset`, `vt`, and `html` copy formats remain unsupported. |
-| Agents | Badges and attention, terminal/conversation switching, same-terminal acknowledged composer delivery, once-per-working-turn Stop, and read-only ended streams. Approvals remain terminal-owned. |
+| Agents | Attached-mode badge/conversation/composer/Stop behavior, plus native SDK launch, typed exact-session commands, structured dialogs, same provider session across viewers, honest admission receipts, and read-only disconnection/end. |
 | Accessibility | A real screen-reader and IME journey. Manual observation is required; do not mark it passed from a unit test. |
 | Linux | A later platform matrix. macOS evidence does not qualify it. |
 
 ### Native conversation gates
 
-The ignored native journey
+The ignored attached-mode journey
 `agent_stream_enables_native_face_without_restart_and_keeps_drafts` opens a
 private server and exercises dynamic stream discovery, stable upserts, face
-switches, the Kit multiline field, acknowledged paste+Return, Stop, permission
+switches, the Kit multiline field, acknowledged paste+Return, attached Stop, permission
 refusal, and stream closure. Run it with `cargo test --locked --manifest-path
 clients/desktop/native/Cargo.toml --lib agent_stream_enables_native_face -- --ignored`.
 It requires `PHUX_DESKTOP_JOURNEY_TEST_BIN` naming a checkout-built CLI and
@@ -72,9 +72,27 @@ clients/desktop/native/Cargo.toml --features terminal-fixtures --test pixels
 app::conversation::native_face_is_rendered -- --ignored --nocapture` with the same
 environment. It renders the production Desk and native prose/thinking/tool
 rows through Metal on the main thread, using records from its private server.
-`PHUX_DESKTOP_PIXEL_EVIDENCE` optionally names the captured PNG. This does not
-need host screenshot permission or bring a window forward; it proves native
-rendering, not live display presentation, accessibility, or IME qualification.
+It also renders seven actual Kit question scenes from explicit `NativeView`
+fixtures: confirm, select, input, editor, multiple questions, permission and form.
+`PHUX_DESKTOP_PIXEL_EVIDENCE` optionally names the attached PNG; SDK question PNGs
+are written beside it with `-confirm`, `-select`, `-input`, `-editor`, `-ask`,
+`-permission` and `-form` suffixes. These are rendering fixtures, not provider
+transport/admission proof. They need no screenshot permission or frontmost window;
+offscreen Metal does not qualify live presentation, accessibility or IME.
+
+Native SDK acceptance additionally requires an isolated same-checkout server and
+the genuine installed/pinned provider SDK. Launch from **New Agent** and verify the
+returned guardian/AgentSession/activation; desktop and mobile must control that
+same provider-native session. Verify multiline prompt, actual-turn interrupt,
+confirm/select/input/editor/multi-question/permission/form replies, first responder
+across viewers, request closure while editing, retained drafts/scroll, viewer
+detach and daemon reconnect. Capture queued versus provider-admitted outcomes,
+including refusal and ambiguous disconnect without resend or terminal fallback.
+Missing runtime and license setup must be actionable and must not install or
+approve anything. Repeat configured supported integrations without treating a
+terminal-attached hook as SDK evidence. Scene fixtures and unit tests cannot close
+this acceptance gate, and the root implementation remains draft until integration
+verification and shipping are recorded.
 
 
 ## Tooling gate
@@ -89,5 +107,5 @@ or presentation evidence.
 | Target | Current gap |
 |---|---|
 | Packaged smoke | The harness rejects fake evidence. A presented frame on this machine is still an execution record, not a claim in this document. |
-| Product journeys | Specified above. Projects/worktree grouping, remote hosts, approvals, notarization, and Linux are not shipped. |
+| Product journeys | Specified above. Native SDK launch/dialog implementation is not itself a real-provider, cross-view, GPU or shipping record. Notarization and Linux remain separate gates. |
 | Performance | The bench reads host histograms. A number from a loaded machine is observational until a hardware-tagged baseline exists. |

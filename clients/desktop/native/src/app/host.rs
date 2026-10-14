@@ -26,7 +26,7 @@ pub fn open_project(phux: &Path, socket: &Path, path: &Path) -> Result<OpenedPro
         .ok_or_else(|| "The selected folder has a non-UTF-8 path.".to_owned())?;
     let output = run_output(
         phux,
-        socket_args(socket, &["project", "open", "--json", path]),
+        socket_args(socket, &["project", "open", "--prefer-native", "--json", path]),
     )
     .map_err(project_error)?;
     let result: serde_json::Value = serde_json::from_slice(&output)
@@ -74,6 +74,44 @@ fn project_error(error: String) -> String {
         Some(remedy) => format!("{message}\n{remedy}"),
         None => message.to_owned(),
     }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct NativeIntegration {
+    pub integration: String,
+    pub display_name: Option<String>,
+    pub native: bool,
+    pub native_available: bool,
+    pub native_detail: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct NativeIntegrations {
+    integrations: Vec<NativeIntegration>,
+}
+
+/// The CLI owns configured profiles, executable availability, and runtime/license policy.
+pub fn native_integrations(phux: &Path, socket: &Path) -> Result<Vec<NativeIntegration>, String> {
+    if phux.as_os_str().is_empty() { return Err(MISSING_CLI.into()); }
+    let output = run_output(phux, socket_args(socket, &["launch", "--list", "--native", "--json"]))
+        .map_err(project_error)?;
+    let result: NativeIntegrations = serde_json::from_slice(&output)
+        .map_err(|_| "Native launch discovery returned an invalid response. Update the CLI and desktop together.".to_owned())?;
+    Ok(result.integrations.into_iter().filter(|item| item.native).collect())
+}
+
+#[derive(serde::Deserialize)]
+pub struct NativeLaunch {
+    pub terminal_id: u32,
+    pub agent_session_id: String,
+    pub activation: String,
+}
+
+pub fn launch_native(phux: &Path, socket: &Path, integration: &str, session: &str) -> Result<NativeLaunch, String> {
+    if phux.as_os_str().is_empty() { return Err(MISSING_CLI.into()); }
+    let output = run_output(phux, socket_args(socket, &["launch", "--native", integration, "--json", "--session", session]))
+        .map_err(project_error)?;
+    serde_json::from_slice(&output).map_err(|_| "Native launch returned an invalid identity. Refresh terminals; do not relaunch blindly.".to_owned())
 }
 
 /// Start only the server. Reconnecting must never create a missing session.

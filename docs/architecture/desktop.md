@@ -115,11 +115,22 @@ clear a newer fence.
 
 ## Native agent conversation
 
-A terminal-started OMP remains the only running agent. When its authenticated
-`AgentSession` stream publishes, that pane gains a persistent **Conversation**
-button and a matching control in its pane capsule; starting an agent never
-changes the selected face or takes keyboard focus. **Terminal** returns to the
-same terminal view. A draft and reader position survive face switches.
+**New Agent** opens the CLI's configured native integration inventory, including
+profiles whose SDK runtime or license setup is missing. Availability and actionable
+setup details come from `phux launch --list --native --json`; the app never installs
+dependencies, accepts terms, or guesses readiness from executable names. Explicit
+launch calls `phux launch --native INTEGRATION --json --session SESSION` off the UI
+thread. Its returned terminal, AgentSession and activation identify the only
+conversation that may be revealed automatically. Passive discovery never switches
+faces or keyboard focus. Project open passes `--prefer-native` to the same CLI.
+
+The SDK worker belongs to the durable server-owned guardian, not the GUI. Closing
+desktop/mobile viewers leaves that same provider session running. The terminal face
+of an SDK-owned session is diagnostics, not an interactive provider TUI. Existing
+hook/extension streams are explicitly labeled **Attached TUI**, retain their
+terminal-owned controls, and are never presented as native SDK execution.
+**Terminal** returns to the same terminal view; drafts and reader position survive
+face switches.
 
 The connection enables the runtime's `subscribe_agent_sessions` option and
 consumes committed `AgentPublication` events on its existing event drain.
@@ -136,26 +147,43 @@ without reacquiring a view. Pure VT output keeps the sidebar/titlebar caches
 intact after a conversation has been opened; transcript publications and
 composer receipts refresh the native face independently.
 
-The native Kit textarea accepts multiple lines: **Enter** sends, **Shift+Enter**
-adds a line. Sending uses the existing acknowledged `apply_line` operation
-(one trusted paste plus Return), addressed to the exact Terminal parent.
-The draft clears only after a delivered receipt; refusals and unknown delivery
-remain visible with the draft intact. Nothing auto-retries, changes a model,
-or starts another prompt. **Stop** / **Escape** sends Escape only while this
-agent stream reports working. An ended or closed stream remains readable and
-cannot write into the shell that replaced the agent.
-Permission/approval blocks disable sending and direct the person to **Terminal**
-to answer the existing prompt; the native face does not synthesize approval
-controls or type a message into that dialog.
+The Kit textarea accepts multiple lines: **Enter** sends, **Shift+Enter** adds a
+line. For SDK-owned streams, the cached core `NativeView` supplies factual
+capabilities, activation, current turn, provider session identity and questions.
+`ControlPlane::native_agent_command` submits prompt, exact-turn interrupt, and
+exact-question answer to the bound AgentSession. It never uses `apply_line`, key
+atoms, terminal titles, or inferred approval status for SDK commands.
 
-The composer binds serving incarnation, runtime client, terminal, and agent
-resource. Connection epoch and runtime input eligibility are checked again
-under the control lock immediately before input. A resumed publication keeps
-its stable rows; a replacement publication resets them. A new agent resource
-gets a fresh transcript/draft/scroll scope, and incarnation replacement drops
-old records. The terminal's existing unknown-delivery presentation fence is
-never cleared by conversation rendering. No WebView, RPC worker, protocol, or
-FFI ABI is added.
+Dedicated `NativeAgentResult` receipts distinguish queued SDK submission from
+provider admission/consumption. Only admitted/completed prompt receipts can clear
+the matching unchanged draft. Queued, refused and unknown outcomes preserve it;
+nothing retries automatically. A queued answer stays visible and disabled until
+the actual SDK closes its request. Core/server reservation chooses one responder
+across all desktop/mobile viewers. Disconnection disables writes without PTY
+fallback; readable transcript remains.
+
+`conversation/questions.rs` renders confirm, exact-ID select/permission options,
+input/editor, multiple questions and JSON Schema form properties with Kit. It
+preserves initial text and actual option labels/IDs, supports multiple selection,
+and never preselects recommendations or approvals. Provider schemas are validated
+on the executing host; unsupported field types are refused explicitly. Permission
+details remain visible with the provider request. A closed/changed question drops
+its controls and draft; a stale callback cannot answer a replacement request.
+Every request also offers explicit **Cancel request**, mapped to the provider's
+typed cancellation response rather than a default answer or terminal Escape.
+
+Attached-mode sending still uses acknowledged `apply_line` to its exact Terminal
+parent; attached Stop sends Escape only while the structured stream is working.
+Its approvals remain in Terminal. This compatibility surface is not an SDK
+implementation.
+
+The composer binds server incarnation, runtime client, terminal, agent resource
+and SDK activation. Epoch, committed stream cursor and native state are rechecked
+under the control lock immediately before submission. New agent/activation gets a
+fresh transcript/draft/scroll scope; same-session reconnect retains readable state.
+Terminal damage still notifies only affected cached entities, and native receipts
+do not clear the terminal's unknown-delivery presentation fence. No WebView or
+provider SDK process enters the GUI.
 
 
 ## Tooling
@@ -174,7 +202,7 @@ access is a blocked run, not a pass.
 |---|---|
 | Native GPUI host | The executable, package, and smoke contract are the implementation. A real presented frame on an isolated server is still the qualification record. |
 | Independent views and geometry | Required. Headless models do not prove them. |
-| Product journeys | Tabs, splits, Ghostty import, settings, agents, and layout restore are in the product contract. Projects/worktree grouping, remote hosts, and approvals are not built. |
+| Product journeys | Tabs, splits, Ghostty import, settings, agents, and layout restore are in the product contract. Native SDK launch/dialog controls require the real-provider and multi-view qualification below before shipment. |
 | Apple-silicon desktop | Ad-hoc signed, not notarized. The CLI stays a separate install. Linux is not supported. |
 
 [Desktop verification](./desktop-verification.md) owns the evidence required

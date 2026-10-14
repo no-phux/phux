@@ -812,6 +812,58 @@ fn native_conversation_face_is_rendered() {
             PathBuf::from(path).display()
         );
     }
+    // Scene fixtures exercise the actual Desk/Kit renderer, not SDK transport.
+    // Live provider control and cross-view first-responder behavior have a separate journey gate.
+    use phux_protocol::native_agent::{NativeCapabilities, NativeOption, NativeQuestion, NativeQuestionItem, NativeView};
+    let option = |id: &str, label: &str| NativeOption { id: id.into(), label: label.into(), description: None };
+    for (kind, fields, options, questions) in [
+        ("confirm", serde_json::json!({}), vec![], vec![]),
+        ("select", serde_json::json!({}), vec![option("provider/a", "First actual option"), option("provider/b", "Second actual option")], vec![]),
+        ("input", serde_json::json!({"initial_value":"An editable provider draft"}), vec![], vec![]),
+        ("editor", serde_json::json!({"initial_value":"First line\nSecond line"}), vec![], vec![]),
+        ("ask", serde_json::json!({}), vec![], vec![
+            NativeQuestionItem { id: "actual-question-1".into(), question: "Which modules?".into(), header: "Scope".into(),
+                options: vec![option("native", "Native desktop"), option("mobile", "Mobile")], multi: true, recommended: Some("native".into()) },
+            NativeQuestionItem { id: "actual-question-2".into(), question: "Why?".into(), header: "Reason".into(),
+                options: vec![], multi: false, recommended: None },
+        ]),
+        ("permission", serde_json::json!({"command":"read architecture.md","cwd":"/private/fixture","request_id":"actual-rpc-id"}),
+            vec![option("deny", "Deny"), option("allow-once", "Allow this request")], vec![]),
+        ("form", serde_json::json!({"type":"object","properties":{
+            "name":{"type":"string","title":"Your name"},
+            "access":{"oneOf":[{"const":"read_only","title":"Read only"},{"const":"write_once","title":"Write once"}]},
+            "features":{"type":"array","items":{"oneOf":[{"const":"desktop","title":"Desktop"},{"const":"mobile","title":"Mobile"}]}},
+            "remember":{"type":"boolean","title":"Remember choice"}
+        },"required":["name","access"]}), vec![], vec![]),
+    ] {
+        cx.update(|cx| desk.update(cx, |desk, cx| {
+            let conversation = desk.link.as_mut().unwrap().connection.conversations.values_mut()
+                .find(|conversation| conversation.parent == terminal).unwrap();
+            conversation.entries.clear();
+            conversation.omitted = false;
+            conversation.state.status = phux_client_core::session::agent_stream::AgentSessionStatus::Blocked;
+            conversation.native = Some(NativeView {
+                activation: "scene-fixture-activation".into(), backend: "scene-fixture".into(), connected: true,
+                provider_session_id: Some("scene-fixture-provider-session".into()), turn_id: Some("scene-fixture-turn".into()),
+                capabilities: NativeCapabilities { prompt: true, interrupt: true, questions: true, follow_up: false },
+                questions: vec![NativeQuestion { id: format!("scene-{kind}"), kind: kind.into(), title: format!("Provider {kind} request"),
+                    message: "This is structured provider content. No option is selected or approved automatically.".into(),
+                    options, questions, fields }],
+            });
+            conversation.revision += 1;
+            cx.notify();
+        }));
+        cx.run_until_parked();
+        cx.update_window(*handle, |_, window, cx| window.draw(cx).clear(cx)).unwrap();
+        let scene = cx.capture_screenshot(*handle).expect("offscreen native SDK question");
+        assert!(scene.pixels().zip(image.pixels()).any(|(sdk, attached)| sdk != attached),
+            "{kind} must paint native controls rather than the attached transcript");
+        if let Some(path) = std::env::var_os("PHUX_DESKTOP_PIXEL_EVIDENCE") {
+            let path = PathBuf::from(path);
+            let stem = path.file_stem().unwrap().to_string_lossy();
+            scene.save(path.with_file_name(format!("{stem}-{kind}.png"))).expect("native SDK question evidence");
+        }
+    }
     cx.update(|cx| desk.update(cx, |desk, cx| desk.prepare_close(cx)));
 }
 

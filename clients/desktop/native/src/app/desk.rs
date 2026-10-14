@@ -88,6 +88,7 @@ pub enum Modal {
     Goto,
     Settings,
     Notifications,
+    NativeLaunch,
     Path,
     MoveResources,
     Rename {
@@ -176,6 +177,7 @@ pub struct Desk {
     pub(crate) find_input: Option<(Entity<InputState>, Subscription)>,
     pub(crate) conversation_faces: HashMap<String, super::conversation::Face>,
     pub(crate) settings_controls: Option<SettingsControls>,
+    pub(crate) native_launch: super::native_launch::State,
     /// `OpenRequest::fresh`, kept so a rebuilt link spawns the same way.
     open_fresh: bool,
     /// A CLI-opened terminal that has not appeared in this window's topology yet.
@@ -323,6 +325,7 @@ impl Desk {
             find_input: None,
             conversation_faces: HashMap::new(),
             settings_controls: None,
+            native_launch: Default::default(),
             open_fresh: request.fresh,
             pending_project_terminal: None,
             collapsed: Default::default(),
@@ -489,6 +492,7 @@ impl Desk {
         {
             self.reveal_terminal(&terminal);
         }
+        self.reveal_pending_native(cx);
         self.take_notices();
         self.note_agents();
         self.flush_system(cx);
@@ -846,6 +850,7 @@ impl Desk {
             "rename-session" => self.open_rename_session(),
             "kill-session" => self.ask_kill_session(),
             "folder" => self.open_folder(window, cx),
+            "native-agent" => self.open_native_launch(window, cx),
             "insert-path" => self.open_path_picker(),
             "split-right" => {
                 self.workspace_call(|link| link.workspace.split(&link.connection, Axis::Row, false))

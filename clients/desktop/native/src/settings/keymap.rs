@@ -113,6 +113,7 @@ fn catalog() -> Vec<CommandSpec> {
         spec("goto", "Go to Terminal", "General", Some("cmd+p")),
         spec("settings", "Settings", "General", Some("cmd+,")),
         spec("new", "New Terminal Tab", "Terminal", Some("cmd+t")),
+        spec("native-agent", "New Native Agent…", "Terminal", None),
         spec(
             "new-session",
             "New Session…",

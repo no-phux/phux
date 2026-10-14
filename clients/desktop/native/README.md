@@ -29,6 +29,24 @@ workspace and lock so the GPUI graph never enters other phux consumers.
 test without a window. Deeper contracts: [PAINTER.md](PAINTER.md),
 [INPUT.md](INPUT.md), [PRESENTATION.md](PRESENTATION.md).
 
+## Native SDK and attached conversations
+
+**New Agent** lists CLI-configured native profiles and their factual runtime/setup
+availability. Explicit launch delegates to `phux launch --native INTEGRATION --json
+--session SESSION`; the GUI never owns a provider worker. That server-owned SDK
+session is also the session mobile controls. Native prompt/interrupt/answer use the
+shared typed control broker and dedicated admission receipts, never terminal keys.
+Confirm/select/input/editor/multi-question/permission/form requests use Kit controls
+with exact provider IDs and no automatic approval or recommendation selection.
+
+Existing extension/hook streams remain **Attached TUI**: their composer and Stop
+still operate the terminal, and approvals stay there. Passive stream discovery
+never takes focus. Missing runtime/license setup is actionable UI, not an implicit
+install. See [architecture](../../../docs/architecture/desktop.md#native-agent-conversation)
+and [verification](../../../docs/architecture/desktop-verification.md#native-conversation-gates)
+for the distinct attached-mode, scene-fixture and genuine SDK acceptance gates.
+
+
 ## Command line
 
 ```text

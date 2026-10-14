@@ -720,6 +720,9 @@ impl Connection {
                             && self.known.contains(parent)
                         {
                             let resource = &publication.resource_id;
+                            let native = self.client.with_control(|control| {
+                                control.engine().and_then(|engine| engine.native_agent_view(resource))
+                            });
                             if !self.conversations.contains_key(resource)
                                 && let Some(conversation) =
                                     transcript::Conversation::new(publication, session, epoch)
@@ -731,6 +734,7 @@ impl Connection {
                                 && &conversation.parent == parent
                             {
                                 conversation.apply(publication, session, epoch);
+                                conversation.native = native;
                             }
                             if let Some(conversation) = self.conversations.get(resource)
                                 && !conversation.closed
