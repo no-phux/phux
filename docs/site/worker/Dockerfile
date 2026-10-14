@@ -6,12 +6,12 @@ FROM --platform=linux/amd64 rust:1.99.0-bookworm@sha256:59037199c44290f2befcdd58
 # release-please extra-files rewrites the annotated version literals; its
 # sync job refreshes the immutable source/lock pins with site_source_pin.py.
 # x-release-please-start-version
-ARG PHUX_VERSION=0.62.1
+ARG PHUX_VERSION=0.63.0
 # x-release-please-end
-ARG PHUX_REVISION=ad99bb522eb13ee7466d80a1d743742a082e508c
-ARG PHUX_SOURCE_SHA256=9987312e1c7c4b5c24380065905940131baa664d017703ae353a86e24aad1244
-ARG PHUX_LOCK_SHA256=6df771715d47bf7de801596675cddb3f2b5d5e937867e573a5bedfb85993274d
-ARG PHUX_PATCHED_LOCK_SHA256=8929b986e3616ae2fb05d77be2a488642a982a177f1d5cdcb9bae625e4ec02ec
+ARG PHUX_REVISION=e4dee838019f51a7a7a58d62a09cf81f2f21ab68
+ARG PHUX_SOURCE_SHA256=bd714b0390e611595676c59305ff47ce629f0f7ac65622d63d54a0ff151325e7
+ARG PHUX_LOCK_SHA256=e8e9336c3311926ca156428b61c781d58f052fd22abed9aecc8a0e88b2a15725
+ARG PHUX_PATCHED_LOCK_SHA256=fc9cbc07c5a34374669a8383d26d678194a92211a1c92d0f3ea7daa0f598aa66
 ARG ZIG_VERSION=0.16.0
 ARG ZIG_SOURCE_SHA256=70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
 ARG LIBGHOSTTY_REVISION=863c06f79bbe6341f971067cbeeee786dcc57a8f
@@ -19,8 +19,8 @@ ARG LIBGHOSTTY_SOURCE_SHA256=9f28838ef45aa710568a94ef61c0211af61df230c1e0038d88e
 ARG GHOSTTY_REVISION=ff896fea333f954c8ba1f8932a4871aaf927a5e9
 ARG GHOSTTY_SOURCE_SHA256=5aa5167344978edd1c91e8a36d100ae33872793ccb81d48dfec77f66aa9fd013
 
-ADD --checksum=sha256:9987312e1c7c4b5c24380065905940131baa664d017703ae353a86e24aad1244 \
-    https://github.com/no-phux/phux/archive/ad99bb522eb13ee7466d80a1d743742a082e508c.tar.gz /tmp/phux.tar.gz
+ADD --checksum=sha256:bd714b0390e611595676c59305ff47ce629f0f7ac65622d63d54a0ff151325e7 \
+    https://github.com/no-phux/phux/archive/e4dee838019f51a7a7a58d62a09cf81f2f21ab68.tar.gz /tmp/phux.tar.gz
 ADD --checksum=sha256:70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00 \
     https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz /tmp/zig.tar.xz
 ADD --checksum=sha256:9f28838ef45aa710568a94ef61c0211af61df230c1e0038d88e16b4d907681a6 \
@@ -28,10 +28,10 @@ ADD --checksum=sha256:9f28838ef45aa710568a94ef61c0211af61df230c1e0038d88e16b4d90
 ADD --checksum=sha256:5aa5167344978edd1c91e8a36d100ae33872793ccb81d48dfec77f66aa9fd013 \
     https://github.com/phall1/ghostty/archive/ff896fea333f954c8ba1f8932a4871aaf927a5e9.tar.gz /tmp/ghostty.tar.gz
 # x-release-please-start-version
-RUN test "$PHUX_VERSION" = "0.62.1"
+RUN test "$PHUX_VERSION" = "0.63.0"
 # x-release-please-end
-RUN test "$PHUX_REVISION" = "ad99bb522eb13ee7466d80a1d743742a082e508c" \
-    && test "$PHUX_SOURCE_SHA256" = "9987312e1c7c4b5c24380065905940131baa664d017703ae353a86e24aad1244" \
+RUN test "$PHUX_REVISION" = "e4dee838019f51a7a7a58d62a09cf81f2f21ab68" \
+    && test "$PHUX_SOURCE_SHA256" = "bd714b0390e611595676c59305ff47ce629f0f7ac65622d63d54a0ff151325e7" \
     && test "$ZIG_VERSION" = "0.16.0" \
     && test "$ZIG_SOURCE_SHA256" = "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00" \
     && test "$LIBGHOSTTY_REVISION" = "863c06f79bbe6341f971067cbeeee786dcc57a8f" \
@@ -119,7 +119,7 @@ COPY --chmod=0644 container/bashrc /etc/phux/bashrc
 COPY --chmod=0644 container/profile /etc/profile
 
 # x-release-please-start-version
-ARG PHUX_VERSION=0.62.1
+ARG PHUX_VERSION=0.63.0
 # x-release-please-end
 RUN test "$(/usr/local/bin/phux --version)" = "phux $PHUX_VERSION" \
     && cp /usr/bin/socat /opt/internal/socat \

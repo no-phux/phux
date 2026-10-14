@@ -9,6 +9,47 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.63.0](https://github.com/no-phux/phux/compare/v0.62.1...v0.63.0) (2026-10-14)
+
+
+### Features
+
+* **site:** latest-releases popover under the homepage install command ([#1311](https://github.com/no-phux/phux/issues/1311)) ([b72b5fe](https://github.com/no-phux/phux/commit/b72b5fe0663a8660a3e523035c29854340178b42))
+
+
+### Bug Fixes
+
+* **cli:** keep config.toml's mode when plugin commands rewrite it ([c1e028b](https://github.com/no-phux/phux/commit/c1e028ba831126ec1b1f4fcf7443817342337cc8))
+* **desktop:** cull default UI down to what needs a person ([#1307](https://github.com/no-phux/phux/issues/1307)) ([9609826](https://github.com/no-phux/phux/commit/96098266a889856eb3839e12ef64a3ef058b5206))
+* **install:** one command, PATH that works, and a Latest that names the CLI ([#1308](https://github.com/no-phux/phux/issues/1308)) ([33bfd51](https://github.com/no-phux/phux/commit/33bfd5180329846180e6341989c21dcc9a32d990))
+
+
+### Refactors
+
+* **cli:** call library helpers directly instead of through forwarders ([cd2358d](https://github.com/no-phux/phux/commit/cd2358dcaddce016575eb0e15865ced41a6159c6))
+* **client:** drop the unused org_rename_verdict ([c7f9b1a](https://github.com/no-phux/phux/commit/c7f9b1a006e550ed3dc2046863f2efc0cf4279c2))
+* **client:** move test-only layout wire helpers into tests ([f860560](https://github.com/no-phux/phux/commit/f8605603bde677c734d94eaeab6d6ba8a509406f))
+* **client:** replace the stateless predict Overlay with render_overlay ([b7f1c40](https://github.com/no-phux/phux/commit/b7f1c4092d987397a8752deccd1feee37f9e481a))
+* **client:** share operation-id minters with the runtime ([9b2b32d](https://github.com/no-phux/phux/commit/9b2b32d9cd92609a7bfc0230ac5326dee68e447b))
+* **cli:** one Refusal type for an error document plus its exit status ([f08d3ad](https://github.com/no-phux/phux/commit/f08d3ad4926d891bc274c10aa04f387c0f530d6b))
+* delete public helpers nothing calls ([658a303](https://github.com/no-phux/phux/commit/658a3033444118dbb78dac2bf8263781aa4a99bf))
+* **ffi:** compile the agent-record projection only for encoders ([9c15f32](https://github.com/no-phux/phux/commit/9c15f322067063696786793f7e2fa61e84944eb6))
+* **server:** drop single-impl fd and spawnattr shims in fd_shrink ([a5c3e9c](https://github.com/no-phux/phux/commit/a5c3e9ce41ddbac03d7b06ddc7829df22b9d85cf))
+* **server:** gate test-only ServerState helpers behind cfg(test) ([9e3f64c](https://github.com/no-phux/phux/commit/9e3f64cc1ced92ea3c89b298e8a3921a25565b2b))
+* **server:** keep the relay stream-frame scope list in one place ([bd35698](https://github.com/no-phux/phux/commit/bd3569888106d2f2c195d7c9efeb831178c462b1))
+* **server:** lift the blanket nursery allow from state ([0125039](https://github.com/no-phux/phux/commit/0125039eaa0ba7b9ba3715720b264cce5e7988c1))
+* **server:** name the native bootstrap frame budget and share its request path ([df2e5eb](https://github.com/no-phux/phux/commit/df2e5eb7859f0be9a56b572a9893e99623c68601))
+* **server:** route Unix-millisecond clocks through one helper ([6fdc1c5](https://github.com/no-phux/phux/commit/6fdc1c525a4345d0cf86b71b11e955abcb743bca))
+* **tui:** drop no-op cast allows and hand-rolled saturating math ([76e1734](https://github.com/no-phux/phux/commit/76e1734d31c17eba41c17bffa25d3ba756e1d04d))
+* **tui:** measure chrome text with phux-config's width helpers ([11bc837](https://github.com/no-phux/phux/commit/11bc8371cbe71b38f911c4018a32053d568c33b0))
+* **tui:** one dial and one connection attach entry point ([f337e1a](https://github.com/no-phux/phux/commit/f337e1a973c7f0b3748e29cf4278c24bb53af7bf))
+
+
+### Documentation
+
+* **cli:** point dhat notes at lib.rs's module doc, in present tense ([09ebfba](https://github.com/no-phux/phux/commit/09ebfba8b78303c909c41361576d4b7651a712ac))
+* **tui:** state invariants, not history, in comments ([a773880](https://github.com/no-phux/phux/commit/a773880d7ba78d64ceaba585fe3624ef85d442b7))
+
 ## [0.62.1](https://github.com/no-phux/phux/compare/v0.62.0...v0.62.1) (2026-10-14)
 
 
