@@ -115,12 +115,14 @@ panes = [
 name = \"shell\"
 ";
 
-/// Compile `recipe` into a one-session archive rooted at `root`, named
-/// `session`. `None` compiles the no-recipe default: one shell at the root.
+/// Compile `recipe` into a one-session archive rooted at the canonical
+/// `root`, named `session` and labeled `project`. `None` compiles the
+/// no-recipe default: one shell at the root.
 pub(crate) fn compile(
     recipe: Option<&Recipe>,
     root: &Path,
     session: &str,
+    project: &str,
 ) -> Result<WorkspaceArchive, String> {
     let empty = Recipe {
         env: BTreeMap::new(),
@@ -184,7 +186,7 @@ pub(crate) fn compile(
             active: true,
             cwd: None,
             host: None,
-            project: None,
+            project: Some(project.to_owned()),
             command: None,
             windows,
         }],
@@ -490,7 +492,7 @@ mod tests {
     }
 
     fn compile_text(text: &str, root: &Path) -> Result<WorkspaceArchive, String> {
-        compile(Some(&parse(text)?), root, "demo")
+        compile(Some(&parse(text)?), root, "demo", "demo")
     }
 
     #[test]
@@ -506,13 +508,15 @@ mod tests {
     #[test]
     fn no_recipe_is_one_shell_at_the_root() {
         let dir = root();
-        let archive = compile(None, dir.path(), "demo").expect("default");
+        let canonical = dir.path().canonicalize().expect("canonical");
+        let archive = compile(None, &canonical, "demo", "Friendly").expect("default");
         let session = &archive.sessions[0];
         assert_eq!(session.name, "demo");
+        assert_eq!(session.cwd, None);
+        assert_eq!(session.project.as_deref(), Some("Friendly"));
         assert_eq!(session.windows.len(), 1);
         let pane = &session.windows[0].panes[0];
         assert!(pane.active && pane.command.is_none());
-        let canonical = dir.path().canonicalize().expect("canonical");
         assert_eq!(pane.cwd.as_deref(), Some(canonical.to_str().expect("utf8")));
     }
 

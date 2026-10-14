@@ -82,6 +82,18 @@ These are desktop organization terms, not new server resource kinds:
 | Terminal | The daemon-owned resource and its running process. |
 | View | An independent presentation of that terminal, with its own scroll, selection, and search state. |
 
+**Current macOS build:** **Open Folder** calls `phux project open` off the UI
+thread. One persistent Session is bound to each canonical checkout path;
+untrusted [project recipes](../CONFIG.md#project-recipes) are refused until
+approved, and a same-name checkout cannot take over another Session. The
+sidebar groups Sessions by their recorded project label (shared across Git
+worktrees), with **Open** focusing an existing project window or restoring its
+per-session layout. A new terminal in that Session starts at its recorded
+directory; reopening after the last shell exits starts a shell there without
+rerunning the recipe. This is local-only: multi-folder or cross-host project
+references, offline remote folders, recent-project inventory, and cross-server
+Workspaces are not yet implemented.
+
 **Open Folder** reuses a matching host-qualified folder or creates a project
 for it. Worktree discovery groups checkouts without merging paths; a new
 terminal starts in the selected folder, and a shell's later `cd` never moves

@@ -490,6 +490,26 @@ pub async fn fetch(
     }
 }
 
+/// Read an authority's organization records from a socket. `None` means the
+/// server predates `ORGANIZATION`; a supported server's read errors propagate.
+///
+/// # Errors
+///
+/// Connection or organization-read errors.
+pub async fn fetch_from_socket(
+    socket_path: &std::path::Path,
+) -> Result<Option<OrgInventory>, OrgError> {
+    let mut conn = Connection::connect(socket_path)
+        .await
+        .map_err(OrgError::Attach)?;
+    if !supported(&conn) {
+        return Ok(None);
+    }
+    fetch(&mut conn, OrgFilter::All, FIRST_REQUEST_ID)
+        .await
+        .map(Some)
+}
+
 /// Read one arrangement document and its revision.
 ///
 /// # Errors

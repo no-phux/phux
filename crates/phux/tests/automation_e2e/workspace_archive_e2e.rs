@@ -88,6 +88,472 @@ fn wait_for_terminal_absent(socket: &str, selector: &str) {
     panic!("{selector} was still present {budget:?} after kill");
 }
 
+/// Two Git repositories with the same checkout basename must never share a
+/// session. Organization attributes survive an archive export/import even
+/// though project open does not write the legacy singleton metadata.
+#[test]
+#[ignore = "spawns real phux servers; run explicitly when validating project sessions."]
+fn project_open_keeps_canonical_checkout_identity_and_archive_attributes() {
+    let server = start("seed");
+    let dest = start("destination");
+    let socket = server.socket_text();
+    let root = tempfile::tempdir().expect("project tempdir");
+    let checkout = |parent: &str, basename: &str| {
+        let path = root.path().join(parent).join(basename);
+        std::fs::create_dir_all(&path).expect("checkout directory");
+        let status = Command::new("git")
+            .args(["init", "-q"])
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .current_dir(&path)
+            .status()
+            .expect("git init");
+        assert!(status.success());
+        path.canonicalize().expect("canonical checkout")
+    };
+    let first = checkout("one", "same");
+    let collision = checkout("two", "same");
+    let other = checkout("three", "other");
+    let config = common::isolated_xdg().config.join("phux");
+    std::fs::create_dir_all(&config).expect("config directory");
+    std::fs::write(
+        config.join("config.toml"),
+        format!(
+            "[[projects]]\nname = \"Friendly\"\npath = {:?}\n",
+            first.display().to_string()
+        ),
+    )
+    .expect("project catalog");
+    let first_path = first.to_str().expect("utf-8 path");
+    let collision_path = collision.to_str().expect("utf-8 path");
+    let other_path = other.to_str().expect("utf-8 path");
+    let project_open = |target: &str| {
+        let (code, stdout, stderr) =
+            run(&["project", "open", target, "--json", "--socket", &socket]);
+        (code, stdout, stderr)
+    };
+    // The server's preexisting "seed" session has no directory attribute.
+    // Neither its pane cwd nor a matching basename is sufficient to adopt it.
+    let unbound = checkout("four", "seed");
+    let (code, stdout, stderr) = project_open(unbound.to_str().expect("utf-8 path"));
+    assert_ne!(code, 0, "untagged session must be refused: {stdout}");
+    assert!(stderr.contains("no checkout directory"), "{stderr}");
+
+    let (code, stdout, stderr) = project_open("Friendly");
+    assert_eq!(code, 0, "first project open: {stderr}");
+    let opened: serde_json::Value = serde_json::from_str(&stdout).expect("open JSON");
+    assert_eq!(opened["created"], true);
+    assert_eq!(opened["project"], "Friendly");
+    let attrs = session_attrs(&socket, "same");
+    assert_eq!(attr(&attrs, "directory"), Some(first_path));
+    assert_eq!(attr(&attrs, "project"), Some("same"));
+
+    let (code, stdout, stderr) = project_open(first_path);
+    assert_eq!(code, 0, "reentry: {stderr}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&stdout).expect("reentry JSON")["created"],
+        false
+    );
+    let (code, stdout, stderr) = project_open(collision_path);
+    assert_ne!(code, 0, "colliding repo must be refused: {stdout}");
+    assert!(stdout.is_empty());
+    assert!(
+        stderr.contains(first_path) && stderr.contains(collision_path),
+        "{stderr}"
+    );
+    assert_eq!(
+        attr(&session_attrs(&socket, "same"), "directory"),
+        Some(first_path)
+    );
+
+    let (code, _, stderr) = project_open(other_path);
+    assert_eq!(code, 0, "second distinct project: {stderr}");
+    assert_eq!(
+        attr(&session_attrs(&socket, "other"), "directory"),
+        Some(other_path)
+    );
+    assert_eq!(
+        attr(&session_attrs(&socket, "other"), "project"),
+        Some("other")
+    );
+    assert_project_archive_roundtrip(&root, &socket, &dest, first_path, other_path);
+}
+
+fn assert_project_archive_roundtrip(
+    root: &tempfile::TempDir,
+    socket: &str,
+    dest: &common::ServerGuard,
+    first_path: &str,
+    other_path: &str,
+) {
+    let archive = root.path().join("projects.json");
+    let (code, _, stderr) = run(&[
+        "archive",
+        "export",
+        "--socket",
+        socket,
+        "--output",
+        archive.to_str().expect("utf-8 archive"),
+    ]);
+    assert_eq!(code, 0, "archive export: {stderr}");
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&archive).expect("read archive"))
+            .expect("archive JSON");
+    for (name, path, label) in [("same", first_path, "same"), ("other", other_path, "other")] {
+        let row = saved["sessions"]
+            .as_array()
+            .expect("sessions")
+            .iter()
+            .find(|row| row["name"] == name)
+            .expect("archived session");
+        assert_eq!(row["cwd"], path);
+        assert_eq!(row["project"], label);
+    }
+    let dest_socket = dest.socket_text();
+    let (code, stdout, stderr) = run(&[
+        "archive",
+        "import",
+        archive.to_str().expect("utf-8 archive"),
+        "--socket",
+        &dest_socket,
+    ]);
+    assert_eq!(code, 0, "archive import: {stdout} {stderr}");
+    assert_eq!(
+        attr(&session_attrs(&dest_socket, "same"), "directory"),
+        Some(first_path)
+    );
+    assert_eq!(
+        attr(&session_attrs(&dest_socket, "same"), "project"),
+        Some("same")
+    );
+    assert_eq!(
+        attr(&session_attrs(&dest_socket, "other"), "directory"),
+        Some(other_path)
+    );
+    assert_eq!(
+        attr(&session_attrs(&dest_socket, "other"), "project"),
+        Some("other")
+    );
+}
+
+/// A repository recipe cannot run in JSON mode until its exact bytes have
+/// been approved, but changing it after the session exists never reruns it.
+#[test]
+#[ignore = "spawns a real phux server; run explicitly when validating project recipes."]
+fn project_open_requires_trust_only_on_first_creation() {
+    let server = start("seed");
+    let root = tempfile::tempdir().expect("project tempdir");
+    let project = root.path().join("trusted");
+    std::fs::create_dir_all(project.join(".phux")).expect("recipe directory");
+    let recipe = project.join(".phux/project.toml");
+    std::fs::write(&recipe, "[[windows]]\nname = \"shell\"\n").expect("recipe");
+    let path = project.to_str().expect("utf-8 project");
+    let socket = server.socket_text();
+    let open = || run(&["project", "open", path, "--json", "--socket", &socket]);
+    let (code, stdout, stderr) = open();
+    assert_ne!(code, 0, "untrusted recipe must refuse: {stdout}");
+    assert!(stderr.contains("not trusted"), "{stderr}");
+    let (code, _, stderr) = run(&["project", "trust", path]);
+    assert_eq!(code, 0, "trust recipe: {stderr}");
+    let (code, stdout, stderr) = open();
+    assert_eq!(code, 0, "trusted recipe open: {stderr}");
+    let first: serde_json::Value = serde_json::from_str(&stdout).expect("open JSON");
+    assert_eq!(first["created"], true);
+    let first_id = first["terminal_id"].as_u64().expect("first terminal");
+    std::fs::write(&recipe, "[[windows]]\nname = \"changed\"\n").expect("change recipe");
+    let selector = format!("@{first_id}");
+    let (code, _, stderr) = run(&["kill", "--yes", "--socket", &socket, &selector]);
+    assert_eq!(code, 0, "kill first terminal: {stderr}");
+    wait_for_terminal_absent(&socket, &selector);
+    let (code, stdout, stderr) = open();
+    assert_eq!(
+        code, 0,
+        "reentry seeds shell without rerunning recipe: {stderr}"
+    );
+    let reopened: serde_json::Value = serde_json::from_str(&stdout).expect("open JSON");
+    assert_eq!(reopened["created"], false);
+    assert_ne!(reopened["terminal_id"], first["terminal_id"]);
+    let canonical = project.canonicalize().expect("canonical project");
+    assert_eq!(
+        attr(&session_attrs(&socket, "trusted"), "directory"),
+        canonical.to_str()
+    );
+    let reopened_id = u32::try_from(reopened["terminal_id"].as_u64().expect("terminal"))
+        .expect("local terminal id");
+    assert!(
+        arranged_terminal(&socket, "trusted", reopened_id),
+        "new shell must appear in the session arrangement"
+    );
+}
+
+/// A recipe pane's working directory is independent of the session's typed
+/// checkout directory, including after an archive export/import.
+#[test]
+#[ignore = "spawns real phux servers; run explicitly when validating project recipes."]
+fn project_recipe_first_pane_cwd_survives_archive_roundtrip() {
+    let source = start("seed");
+    let dest = start("destination");
+    let root = tempfile::tempdir().expect("project tempdir");
+    let checkout = root.path().join("site");
+    std::fs::create_dir_all(checkout.join(".phux")).expect("recipe directory");
+    std::fs::create_dir(checkout.join("web")).expect("web directory");
+    std::fs::write(
+        checkout.join(".phux/project.toml"),
+        "focus = \"site.web\"\n[[windows]]\nid = \"site\"\n\
+         panes = [{ id = \"web\", cwd = \"web\" }]\n",
+    )
+    .expect("recipe");
+    let canonical = checkout.canonicalize().expect("canonical checkout");
+    let root_path = canonical.to_str().expect("utf-8 root");
+    let web_path = canonical.join("web");
+    let web_path = web_path.to_str().expect("utf-8 web");
+    let (code, _, stderr) = run(&["project", "trust", root_path]);
+    assert_eq!(code, 0, "trust recipe: {stderr}");
+    let source_socket = source.socket_text();
+    let (code, stdout, stderr) = run(&[
+        "project",
+        "open",
+        root_path,
+        "--json",
+        "--socket",
+        &source_socket,
+    ]);
+    assert_eq!(code, 0, "open recipe: {stdout} {stderr}");
+    assert_eq!(
+        attr(&session_attrs(&source_socket, "site"), "directory"),
+        Some(root_path)
+    );
+
+    let archive = root.path().join("site.json");
+    let archive_path = archive.to_str().expect("utf-8 archive");
+    let (code, _, stderr) = run(&[
+        "archive",
+        "export",
+        "--socket",
+        &source_socket,
+        "--output",
+        archive_path,
+    ]);
+    assert_eq!(code, 0, "export recipe session: {stderr}");
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&archive).expect("read archive")).expect("archive");
+    let site = saved["sessions"]
+        .as_array()
+        .expect("sessions")
+        .iter()
+        .find(|session| session["name"] == "site")
+        .expect("site archive");
+    assert_eq!(site["cwd"], root_path, "session identity is checkout root");
+    assert_eq!(
+        site["windows"][0]["panes"][0]["cwd"], web_path,
+        "pane launch cwd is web"
+    );
+
+    let dest_socket = dest.socket_text();
+    let (code, stdout, stderr) =
+        run(&["archive", "import", archive_path, "--socket", &dest_socket]);
+    assert_eq!(code, 0, "import: {stdout} {stderr}");
+    assert_eq!(
+        attr(&session_attrs(&dest_socket, "site"), "directory"),
+        Some(root_path)
+    );
+    let (code, _, stderr) = run(&["restore", "site", "--socket", &dest_socket]);
+    assert_eq!(code, 0, "restore site: {stderr}");
+    let resaved = root.path().join("resaved.json");
+    let (code, _, stderr) = run(&[
+        "archive",
+        "export",
+        "--socket",
+        &dest_socket,
+        "--output",
+        resaved.to_str().expect("utf-8 archive"),
+    ]);
+    assert_eq!(code, 0, "export restored site: {stderr}");
+    let restored: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(resaved).expect("read restored archive"))
+            .expect("archive");
+    let site = restored["sessions"]
+        .as_array()
+        .expect("sessions")
+        .iter()
+        .find(|session| session["name"] == "site")
+        .expect("restored site");
+    assert_eq!(site["cwd"], root_path);
+    assert_eq!(
+        site["windows"][0]["panes"][0]["cwd"], web_path,
+        "restored pane must launch in web"
+    );
+}
+
+/// Multiple openers share exactly one newly created pane, and exactly one
+/// reseeded pane after that session's first shell exits.
+#[test]
+#[ignore = "spawns a real phux server; run explicitly when validating project concurrency."]
+fn concurrent_project_opens_share_the_same_shell() {
+    let server = start("seed");
+    let dir = tempfile::tempdir().expect("project tempdir");
+    let project = dir.path().join("concurrent");
+    std::fs::create_dir(&project).expect("checkout directory");
+    let canonical = project.canonicalize().expect("canonical checkout");
+    let path = canonical.to_str().expect("utf-8 path");
+    let socket = server.socket_text();
+    let first = parallel_project_opens(&socket, path, 6);
+    assert_eq!(
+        first
+            .iter()
+            .filter(|value| value["created"] == true)
+            .count(),
+        1
+    );
+    let first_id = first[0]["terminal_id"].as_u64().expect("terminal id");
+    assert!(first.iter().all(|value| value["terminal_id"] == first_id));
+    assert_eq!(
+        live_terminals(&socket, "concurrent"),
+        vec![u32::try_from(first_id).expect("local id")]
+    );
+    let selector = format!("@{first_id}");
+    let (code, _, stderr) = run(&["kill", "--yes", "--socket", &socket, &selector]);
+    assert_eq!(code, 0, "kill terminal: {stderr}");
+    wait_for_terminal_absent(&socket, &selector);
+    let second = parallel_project_opens(&socket, path, 6);
+    let second_id = second[0]["terminal_id"].as_u64().expect("terminal id");
+    assert_ne!(second_id, first_id);
+    assert!(
+        second
+            .iter()
+            .all(|value| value["created"] == false && value["terminal_id"] == second_id)
+    );
+    assert_eq!(
+        live_terminals(&socket, "concurrent"),
+        vec![u32::try_from(second_id).expect("local id")]
+    );
+}
+
+fn parallel_project_opens(socket: &str, path: &str, count: usize) -> Vec<serde_json::Value> {
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(count));
+    std::thread::scope(|scope| {
+        #[allow(
+            clippy::needless_collect,
+            reason = "all threads must start before any join reaches the barrier"
+        )]
+        let handles: Vec<_> = (0..count)
+            .map(|_| {
+                let barrier = std::sync::Arc::clone(&barrier);
+                scope.spawn(move || {
+                    let state = tempfile::tempdir().expect("independent state directory");
+                    barrier.wait();
+                    let (code, stdout, stderr) = output(
+                        common::phux_cmd(crate::runner::phux_bin())
+                            .env("XDG_STATE_HOME", state.path())
+                            .args(["project", "open", path, "--json", "--socket", socket]),
+                    );
+                    assert_eq!(code, 0, "concurrent open: {stdout} {stderr}");
+                    serde_json::from_str::<serde_json::Value>(&stdout).expect("open JSON")
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("open thread"))
+            .collect()
+    })
+}
+
+fn live_terminals(socket: &str, name: &str) -> Vec<u32> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let mut conn =
+            phux_client::attach::connection::Connection::connect(std::path::Path::new(socket))
+                .await
+                .expect("connect organization");
+        let records =
+            phux_client::org::fetch(&mut conn, phux_protocol::wire::frame::OrgFilter::All, 1)
+                .await
+                .expect("organization");
+        let session = records.session_named(name).expect("session");
+        let ids = records
+            .members(&session.key)
+            .filter_map(|resource| resource.live.as_ref()?.local_id())
+            .collect();
+        drop(conn);
+        ids
+    })
+}
+
+fn session_attrs(socket: &str, name: &str) -> Vec<(String, String)> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let mut conn =
+            phux_client::attach::connection::Connection::connect(std::path::Path::new(socket))
+                .await
+                .expect("connect organization");
+        let records =
+            phux_client::org::fetch(&mut conn, phux_protocol::wire::frame::OrgFilter::All, 1)
+                .await
+                .expect("organization records");
+        let attrs = records
+            .session_named(name)
+            .expect("named organization session")
+            .attrs
+            .clone();
+        drop(conn);
+        attrs
+    })
+}
+
+fn arranged_terminal(socket: &str, name: &str, terminal_id: u32) -> bool {
+    use phux_protocol::wire::frame::{ArrangementNode, EntryTarget, OrgFilter};
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let mut conn =
+            phux_client::attach::connection::Connection::connect(std::path::Path::new(socket))
+                .await
+                .expect("connect organization");
+        let records = phux_client::org::fetch(&mut conn, OrgFilter::All, 1)
+            .await
+            .expect("organization records");
+        let session = records.session_named(name).expect("named session");
+        let resource = records
+            .members(&session.key)
+            .find(|resource| {
+                resource
+                    .live
+                    .as_ref()
+                    .and_then(phux_protocol::ids::ResourceId::local_id)
+                    == Some(terminal_id)
+            })
+            .expect("reopened resource");
+        let document = phux_client::org::arrangement(
+            &mut conn,
+            3,
+            session.arrangement.expect("session arrangement"),
+        )
+        .await
+        .expect("read arrangement")
+        .document;
+        drop(conn);
+        document.groups.iter().any(|group| {
+            matches!(&group.tree, ArrangementNode::Leaf(entry)
+                if entry.target == EntryTarget::Member(resource.key))
+        })
+    })
+}
+
+fn attr<'a>(attrs: &'a [(String, String)], key: &str) -> Option<&'a str> {
+    attrs
+        .iter()
+        .find(|(name, _)| name == key)
+        .map(|(_, value)| value.as_str())
+}
+
 /// `archive export` archives a session's real L3 split layout (not the flat
 /// fallback), and export -> import -> restore -> export keeps the same split.
 #[test]
@@ -275,6 +741,11 @@ fn import_keeps_edge_host_src_api_directory_and_phux_project() {
             .any(|name| name == "api"),
         "api must be restored: {summary}"
     );
+
+    let attrs = session_attrs(&socket, "api");
+    assert_eq!(attr(&attrs, "host"), Some("edge"));
+    assert_eq!(attr(&attrs, "directory"), Some("/src/api"));
+    assert_eq!(attr(&attrs, "project"), Some("phux"));
 
     let (code, _stdout, stderr) = run(&[
         "archive",

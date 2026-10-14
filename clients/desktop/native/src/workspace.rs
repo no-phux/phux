@@ -756,6 +756,14 @@ impl Workspace {
                 .unwrap_or_default();
             self.tabs = tabs;
             self.active_id = active;
+            // An explicit project open may have reseeded a shell since this
+            // window last saved its layout. Keep the splits, but show that
+            // shell too (or reveal its existing placement).
+            if let Some(initial) = self.options.initial_terminal.as_ref()
+                && let Some(pane) = connection.pane(initial).cloned()
+            {
+                self.open(connection, &pane);
+            }
             return;
         }
         self.open_initial(connection);

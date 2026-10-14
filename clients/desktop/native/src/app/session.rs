@@ -27,6 +27,8 @@ use super::keys::gpui_stroke;
 struct Opened {
     handle: AnyWindowHandle,
     desk: Entity<Desk>,
+    session: String,
+    role: WindowRole,
 }
 
 pub struct Desktop {
@@ -218,6 +220,44 @@ impl Desktop {
         let _ = self.open_window(request, true, false, cx);
     }
 
+    /// A folder is a durable session, not a new terminal in whichever
+    /// session happened to be focused. Reuse its open window; otherwise load
+    /// the layout scoped to this socket and session.
+    pub fn open_project(
+        &mut self,
+        session: String,
+        terminal: ResourceId,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<()> {
+        if let Some(opened) = self
+            .windows
+            .iter()
+            .find(|opened| opened.session == session && opened.role == WindowRole::Main)
+        {
+            cx.activate(true);
+            opened
+                .handle
+                .update(cx, |_, window, _| window.activate_window())?;
+            opened
+                .desk
+                .update(cx, |desk, cx| desk.show_project_terminal(terminal, cx));
+            return Ok(());
+        }
+        let paths = crate::workspace::layout_paths(&self.socket.display().to_string(), &session);
+        let request = OpenRequest {
+            role: WindowRole::Main,
+            session,
+            fresh: false,
+            initial_terminal: Some(terminal),
+            layout_path: paths.layout,
+            legacy_layout: None,
+            startup_error: None,
+            main_display: None,
+        };
+        self.open_window(request, true, false, cx)?;
+        Ok(())
+    }
+
     pub fn open_moved(&mut self, session: String, terminal: ResourceId, cx: &mut Context<Self>) {
         let request = OpenRequest {
             role: WindowRole::Fresh,
@@ -377,6 +417,8 @@ impl Desktop {
         let updates = self.updates.clone();
         let phux = self.phux.clone();
         let socket = self.socket.clone();
+        let session = request.session.clone();
+        let role = request.role;
         let bounds = if quick {
             size(px(1100.), px(460.))
         } else {
@@ -411,7 +453,12 @@ impl Desktop {
         let handle = any
             .downcast::<Root>()
             .ok_or_else(|| anyhow::anyhow!("window root was not gpui_kit::component::Root"))?;
-        let opened = Opened { handle: any, desk };
+        let opened = Opened {
+            handle: any,
+            desk,
+            session,
+            role,
+        };
         if quick {
             self.quick = Some(opened);
         } else {

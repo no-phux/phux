@@ -449,9 +449,20 @@ files, never inline. Enroll a host with the commands in
 
 A checkout can describe the session it wants in `.phux/project.toml`.
 `phux project open` (alias `phux p open`) attaches to the checkout's
-session, building it from the recipe first when it is not running; a live
-session is reopened as it is and the recipe is never rerun. Without a
-recipe, `open` starts one shell at the checkout root.
+session, building it from the recipe first when it is not running. Reopening
+never reruns the recipe; if the session persisted after its last terminal
+exited, `open` starts a fresh shell at the recorded checkout root. Without a
+recipe, the first open starts one shell at that root.
+
+The session records the canonical checkout root as its `directory` attribute
+and the Git repository name (plain-folder basename) as its `project` label.
+`[[projects]]` names are CLI aliases, not separate sidebar groups. Worktrees
+keep separate sessions and directories but share their repository label.
+Reopening checks the server's recorded directory before attaching. If another
+checkout has the same derived session name, or an existing session has no
+directory attribute, `open` refuses instead of adopting it; remove or rename
+the conflicting session. A server without organization records cannot keep
+this binding and must be upgraded before `project open` creates a session.
 
 ```toml
 env = { RUST_BACKTRACE = "1" }
@@ -497,7 +508,8 @@ recipe = "~/.config/phux/recipes/site.toml"
 ```
 
 The session name is the one `phux worktree` derives from the checkout
-path, so a project and its worktrees open as separate sessions.
+path, so a project and its worktrees normally open as separate sessions;
+same-basename checkouts cannot both be opened under that name at once.
 [ADR-0152](./adr/0152-project-recipes-run-only-approved-bytes.md) records
 the trust model.
 

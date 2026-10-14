@@ -1,4 +1,4 @@
-use super::Desktop;
+use super::{Desktop, WindowRole};
 use crate::app::actions::Run;
 use gpui::prelude::*;
 use gpui::{AppContext, Context, Entity, FocusHandle, Focusable, TestAppContext, Window, div};
@@ -29,6 +29,36 @@ fn opening_a_window_does_not_read_its_leased_desktop(cx: &mut TestAppContext) {
             desktop.updates.entity_id()
         );
         assert!(desktop.updates.read(cx).development);
+    });
+}
+
+#[gpui::test]
+fn project_open_uses_a_durable_window_even_when_a_fresh_view_exists(cx: &mut TestAppContext) {
+    let desktop = cx.update(|cx| {
+        gpui_kit::init(cx);
+        Desktop::install(cx)
+    });
+    let path = std::env::temp_dir().join(format!("phux-project-window-{}", std::process::id()));
+    let options = crate::app::AppOptions {
+        socket: path.join("isolated.sock"),
+        session: String::new(),
+        phux: path.join("not-installed-phux"),
+        layout_path: path.join("layout.json"),
+        fresh: false,
+        initial_terminal: None,
+        quick: false,
+        startup_error: Some("Isolated window fixture".into()),
+    };
+    desktop.update(cx, |desktop, cx| {
+        desktop.launch(options, cx).unwrap();
+        desktop.open_session("Cedar".into(), cx);
+        assert_eq!(desktop.windows[1].role, WindowRole::Fresh);
+        desktop
+            .open_project("Cedar".into(), phux_protocol::ResourceId::local(1), cx)
+            .unwrap();
+        assert_eq!(desktop.windows.len(), 3);
+        assert_eq!(desktop.windows[2].role, WindowRole::Main);
+        assert_eq!(desktop.windows[2].session, "Cedar");
     });
 }
 

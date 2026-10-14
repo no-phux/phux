@@ -131,8 +131,10 @@ pub struct Connection {
     pub error: Option<String>,
     /// Agent badges keyed by terminal.
     pub agents: HashMap<ResourceId, AgentInfo>,
-    /// Session id to `phux.session.project/v1` tag.
+    /// Project label from each session's typed organization attributes.
     pub projects: HashMap<u32, String>,
+    /// Canonical checkout root for new terminals in that session.
+    pub directories: HashMap<u32, String>,
     /// The arrangement group that shows each terminal, by name.
     pub groups: HashMap<ResourceId, String>,
     session: String,
@@ -198,6 +200,7 @@ impl Connection {
             error: None,
             agents: HashMap::new(),
             projects: HashMap::new(),
+            directories: HashMap::new(),
             groups: HashMap::new(),
             session,
             fetched: HashSet::new(),
@@ -520,12 +523,12 @@ impl Connection {
                 self.agents.clear();
                 self.project_tag = None;
                 self.projects.clear();
+                self.directories.clear();
             }
             self.identity = Some(next);
             self.server = Some(server);
         }
         self.topology = topology.or_else(|| self.client.topology());
-        self.rebuild_projects();
     }
 
     fn accept(&mut self, events: &[Event], epoch: u64) {
@@ -539,6 +542,7 @@ impl Connection {
                 self.agents.clear();
                 self.project_tag = None;
                 self.projects.clear();
+                self.directories.clear();
             }
             if let Event::ServerError { message, .. } = event {
                 self.error = Some(message.clone());
@@ -557,17 +561,40 @@ impl Connection {
                 self.paint.remove(terminal_id);
             }
         }
-        self.rebuild_projects();
+        if events.iter().any(structural)
+            || events
+                .iter()
+                .any(|event| matches!(event, Event::SessionProject { .. }))
+        {
+            self.rebuild_projects();
+        }
     }
 
     fn rebuild_projects(&mut self) {
         self.projects.clear();
-        let Some((name, project)) = &self.project_tag else {
-            return;
-        };
-        for session in self.topology.iter().flat_map(|topology| &topology.sessions) {
-            if &session.name == name {
-                self.projects.insert(session.id, project.clone());
+        self.directories.clear();
+        if self.organization() {
+            let replica = self.client.organization();
+            for record in replica.sessions() {
+                let Some(id) = record.live.map(phux_protocol::ids::SessionId::get) else {
+                    continue;
+                };
+                if let Some(project) = session_attr(&record.attrs, "project") {
+                    self.projects.insert(id, project.to_owned());
+                }
+                if let Some(directory) = session_attr(&record.attrs, "directory") {
+                    self.directories.insert(id, directory.to_owned());
+                }
+            }
+        }
+        // Older servers report only the single, legacy project tag.
+        if let Some((name, project)) = &self.project_tag {
+            for session in self.topology.iter().flat_map(|topology| &topology.sessions) {
+                if &session.name == name {
+                    self.projects
+                        .entry(session.id)
+                        .or_insert_with(|| project.clone());
+                }
             }
         }
     }
@@ -595,6 +622,13 @@ impl Connection {
             self.paint.insert(id, self.paint_clock);
         }
     }
+}
+
+fn session_attr<'a>(attrs: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    attrs
+        .iter()
+        .find(|(key, value)| key == name && !value.is_empty())
+        .map(|(_, value)| value.as_str())
 }
 
 fn note_project(tag: &mut Option<(String, String)>, name: &str, project: Option<&str>) {

@@ -136,6 +136,9 @@ pub(crate) struct RestorePlan {
 pub(crate) struct CreateRequest {
     pub(crate) name: String,
     pub(crate) cwd: Option<String>,
+    /// Session identity for organization records and legacy tags. Unlike
+    /// `cwd`, this never overrides an archived pane's launch directory.
+    pub(crate) directory: Option<String>,
     pub(crate) host: Option<String>,
     pub(crate) project: Option<String>,
     pub(crate) command: Option<Vec<String>>,
@@ -189,10 +192,13 @@ pub(crate) fn restore_plan(
             name: session.name.clone(),
             host: session.host.clone(),
             project: session.project.clone(),
-            cwd: session
+            directory: session
                 .cwd
                 .clone()
                 .or_else(|| pane.and_then(|pane| pane.cwd.clone())),
+            cwd: pane
+                .and_then(|pane| pane.cwd.clone())
+                .or_else(|| session.cwd.clone()),
             command: session
                 .command
                 .clone()
@@ -222,7 +228,7 @@ pub(crate) fn organization_rows(
         .map(|create| phux_client_core::organization::OrganizedSession {
             name: create.name,
             host: create.host,
-            directory: create.cwd,
+            directory: create.directory,
             project: create.project,
         })
         .collect())
@@ -406,6 +412,30 @@ mod tests {
 
         assert_eq!(plan.creates[0].cwd.as_deref(), Some("/right"));
         assert_eq!(plan.creates[0].command, Some(vec!["right".to_owned()]));
+    }
+
+    #[test]
+    fn pane_cwd_overrides_session_directory_on_restore() {
+        let archive = parse_archive(
+            r#"{
+            "schema_version": 2,
+            "sessions": [{
+                "name": "site",
+                "cwd": "/checkout",
+                "windows": [{
+                    "name": "web",
+                    "panes": [{ "active": true, "cwd": "/checkout/web" }]
+                }]
+            }]
+        }"#,
+        )
+        .expect("archive");
+        let plan = restore_plan(&archive, &[]).expect("restore plan");
+        let create = &plan.creates[0];
+        assert_eq!(create.directory.as_deref(), Some("/checkout"));
+        assert_eq!(create.cwd.as_deref(), Some("/checkout/web"));
+        let rows = organization_rows(&archive).expect("organization rows");
+        assert_eq!(rows[0].directory.as_deref(), Some("/checkout"));
     }
 
     #[test]
