@@ -89,23 +89,33 @@ impl Knob {
     }
 }
 
-/// The family list: the Ghostty face, the current face, then the built-ins, without repeats.
-fn font_families(desk: &Desk) -> Vec<SharedString> {
-    let mut families: Vec<SharedString> = Vec::new();
-    let candidates = desk
+/// Installed families, with the bundled default and current choice kept easy to find.
+fn font_families(desk: &Desk, cx: &App) -> Vec<SharedString> {
+    let installed = cx.text_system().all_font_names();
+    let ghostty = desk
         .ghostty()
         .font_family
-        .iter()
-        .cloned()
+        .as_ref()
+        .filter(|family| installed.contains(family))
+        .cloned();
+    let mut families: Vec<SharedString> = Vec::new();
+    let candidates = std::iter::once(crate::fonts::BUNDLED.to_owned())
+        .chain(std::iter::once(crate::fonts::SYMBOLS.to_owned()))
         .chain(std::iter::once(desk.prefs.font_family.clone()))
-        .chain(
-            settings::FONT_FAMILIES
-                .iter()
-                .map(|family| (*family).to_owned()),
-        );
+        .chain(ghostty);
     for family in candidates {
-        let family = family.trim().to_owned();
+        let family = family.trim();
         if !family.is_empty() && !families.iter().any(|known| known.as_ref() == family) {
+            families.push(family.to_owned().into());
+        }
+    }
+    let pinned = families.len();
+    for family in installed {
+        if !family.is_empty()
+            && !families[..pinned]
+                .iter()
+                .any(|known| known.as_ref() == family)
+        {
             families.push(family.into());
         }
     }
@@ -115,6 +125,7 @@ fn font_families(desk: &Desk) -> Vec<SharedString> {
 /// Build the controls once, then bring every value in line with the current prefs.
 pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) {
     if desk.settings_controls.is_none() {
+        let fonts = font_families(desk, cx);
         let mut subs = Vec::new();
         let mut sliders = Vec::new();
         for knob in Knob::ALL {
@@ -145,7 +156,6 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
             ));
             sliders.push((knob, slider));
         }
-        let fonts = font_families(desk);
         let selected = fonts
             .iter()
             .position(|family| family.as_ref() == desk.prefs.font_family)
@@ -172,21 +182,33 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
             _subs: subs,
         });
     }
-    let fonts = font_families(desk);
-    let current: SharedString = desk.prefs.font_family.clone().into();
+    sync_font(desk, window, cx);
+    sync_sliders(desk, window, cx);
+}
+
+/// Imports and resets update the visible selection without rebuilding the controls.
+fn sync_font(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) {
     let Some(controls) = desk.settings_controls.as_mut() else {
         return;
     };
-    if controls.fonts != fonts {
-        controls.fonts = fonts.clone();
+    if controls
+        .font
+        .read(cx)
+        .selected_value()
+        .is_some_and(|family| family.as_ref() == desk.prefs.font_family)
+    {
+        return;
+    }
+    let current: SharedString = desk.prefs.font_family.clone().into();
+    if !controls.fonts.contains(&current) {
+        controls.fonts.push(current.clone());
         controls.font.update(cx, |state, cx| {
-            state.set_items(SearchableVec::new(fonts), window, cx)
+            state.set_items(SearchableVec::new(controls.fonts.clone()), window, cx)
         });
     }
     controls.font.update(cx, |state, cx| {
         state.set_selected_value(&current, window, cx)
     });
-    sync_sliders(desk, window, cx);
 }
 
 /// A slider follows a preference changed elsewhere (a chord, a reset, a Ghostty import).
@@ -209,15 +231,17 @@ pub(crate) fn panel(
     window: &mut Window,
     cx: &mut Context<Desk>,
 ) -> AnyElement {
+    sync_font(desk, window, cx);
     sync_sliders(desk, window, cx);
     let handle = cx.weak_entity();
     let height = (window.viewport_size().height - px(112.)).max(px(320.));
     let settings = Settings::new("phux-settings")
         .sidebar_width(px(190.))
         .with_group_variant(GroupBoxVariant::Outline)
-        .page(appearance_page(desk, &handle))
+        .page(appearance_page(desk, &handle, cx))
         .page(window_page(desk, &handle))
         .page(keyboard_page(desk, &handle))
+        .page(advanced_page(desk, &handle))
         .page(ghostty_page(desk, &handle))
         .page(super::updates::page(&desk.updates, colors, cx))
         .page(connection_page(desk, &handle));
@@ -350,7 +374,7 @@ fn slider_item(
     Some(SettingItem::new(title.to_owned(), field).description(description.to_owned()))
 }
 
-fn appearance_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
+fn appearance_page(desk: &Desk, handle: &WeakEntity<Desk>, cx: &App) -> SettingPage {
     let themes = {
         let mut themes = theme::themes();
         if let Some(extra) = settings::ghostty_theme(desk.ghostty()) {
@@ -376,19 +400,43 @@ fn appearance_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
     let mut font_group = SettingGroup::new().title("Font");
     if let Some(controls) = desk.settings_controls.as_ref() {
         let font = controls.font.clone();
+        let dirty = handle.clone();
+        let reset = handle.clone();
         font_group = font_group.item(
             SettingItem::new(
-                "Family",
+                "Font family",
                 SettingField::render(move |_, _, _| {
-                    Select::new(&font).small().w(px(220.)).menu_max_h(px(280.))
-                }),
+                    Select::new(&font).small().w(px(260.)).menu_max_h(px(280.))
+                })
+                .on_reset(
+                    move |cx| {
+                        prefs_of(&dirty, cx).font_family != settings::default_display().font_family
+                    },
+                    move |_, cx| {
+                        set_prefs(&reset, cx, |prefs| {
+                            prefs.font_family = settings::default_display().font_family
+                        })
+                    },
+                ),
             )
-            .description("Your Ghostty font comes first. Search to filter."),
+            .description({
+                let mut font = gpui::font(desk.prefs.font_family.clone());
+                crate::fonts::resolve(&mut font, cx);
+                if font.family.as_ref() != desk.prefs.font_family {
+                    format!(
+                        "{} is unavailable; using Paper Mono. Choose an installed font.",
+                        desk.prefs.font_family
+                    )
+                } else {
+                    "Installed fonts and the current selection. Search to filter.".to_owned()
+                }
+            })
+            .keywords(["font", "typeface", "monospace", "nerd", "glyphs"]),
         );
     }
     font_group = font_group.item(
         SettingItem::new(
-            "Size",
+            "Font size",
             number(
                 handle,
                 (9., 28., 1.),
@@ -398,20 +446,6 @@ fn appearance_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
         )
         .description("Points. ⌘= and ⌘- step it from anywhere."),
     );
-    font_group = font_group.items(slider_item(
-        desk,
-        handle,
-        Knob::LineHeight,
-        "Line height",
-        "Space between rows, as a multiple of the font size.",
-    ));
-    font_group = font_group.items(slider_item(
-        desk,
-        handle,
-        Knob::CellWidth,
-        "Cell width",
-        "Column width, as a percent of the font's advance.",
-    ));
     let preview_handle = handle.clone();
     let preview = SettingItem::render(move |_, _, cx| {
         preview(&prefs_of(&preview_handle, cx), &preview_handle, cx)
@@ -419,14 +453,14 @@ fn appearance_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
     .keywords(["preview", "sample"]);
     SettingPage::new("Appearance")
         .icon(IconName::Palette)
+        .group(font_group)
+        .group(SettingGroup::new().title("Preview").item(preview))
         .group(
             SettingGroup::new()
                 .title("Theme")
                 .description("Ghostty's theme appears first when your config names one.")
                 .item(theme_item),
         )
-        .group(font_group)
-        .group(SettingGroup::new().title("Preview").item(preview))
 }
 
 fn theme_card(theme: &theme::Theme, selected: bool, handle: &WeakEntity<Desk>) -> AnyElement {
@@ -487,13 +521,15 @@ fn theme_card(theme: &theme::Theme, selected: bool, handle: &WeakEntity<Desk>) -
         .into_any_element()
 }
 
-/// The chosen theme, face, size, line height and cell width, painted like the terminal.
+/// A live theme and font sample; grid spacing is applied to the terminal itself.
 fn preview(prefs: &DisplayPrefs, handle: &WeakEntity<Desk>, cx: &App) -> AnyElement {
     let Some(desk) = handle.upgrade() else {
         return div().into_any_element();
     };
     let colors = desk.read(cx).palette();
     let size = prefs.font_size as f32;
+    let mut font = gpui::font(prefs.font_family.clone());
+    crate::fonts::resolve(&mut font, cx);
     let line = |text: &str, color: &str| div().text_color(from_hex(color)).child(text.to_owned());
     div()
         .w_full()
@@ -501,12 +537,16 @@ fn preview(prefs: &DisplayPrefs, handle: &WeakEntity<Desk>, cx: &App) -> AnyElem
         .px(px(prefs.padding_x.max(8.) as f32))
         .rounded(px(8.))
         .bg(from_hex(&colors.theme.background))
-        .font_family(prefs.font_family.clone())
+        .font_family(font.family)
         .text_size(px(size))
         .line_height(relative(prefs.line_height as f32))
         .child(line("~/src/phux  main  ✓", &colors.theme.accent))
         .child(line("$ cargo test --workspace", &colors.theme.foreground))
         .child(line("   Compiling phux-desktop v0.1.0", &colors.muted))
+        .child(line(
+            "Aa Bb 0123456789  [] {} ()  -> => !=",
+            &colors.theme.foreground,
+        ))
         .child(line(
             "test result: ok. 128 passed; 0 failed",
             &colors.theme.success,
@@ -532,6 +572,41 @@ fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
             )
             .description(sidebar_chord),
         )
+        .items(slider_item(
+            desk,
+            handle,
+            Knob::Glass,
+            "Background opacity",
+            "Terminal background over the blurred desktop.",
+        ));
+    let notifications = SettingGroup::new().title("Notifications").item(
+        SettingItem::new("Agent notifications", switch(handle, |prefs| prefs.notifications, |prefs, value| prefs.notifications = value))
+            .description("Notify when an agent finishes, blocks, or needs attention in another pane. Also shown in Notification Center while Phux is in the background."),
+    );
+    SettingPage::new("Window")
+        .icon(IconName::PanelLeft)
+        .group(layout)
+        .group(notifications)
+}
+
+fn advanced_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
+    let spacing = SettingGroup::new()
+        .title("Terminal spacing")
+        .description("Fine-tune the terminal grid. Defaults work with Paper Mono.")
+        .items(slider_item(
+            desk,
+            handle,
+            Knob::LineHeight,
+            "Line height",
+            "Row height as a multiple of the font size.",
+        ))
+        .items(slider_item(
+            desk,
+            handle,
+            Knob::CellWidth,
+            "Cell width",
+            "Column width as a percent of the font's advance.",
+        ))
         .item(
             SettingItem::new(
                 "Horizontal padding",
@@ -555,29 +630,17 @@ fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
                 ),
             )
             .description("Points above and below the text."),
-        )
-        .items(slider_item(
+        );
+    SettingPage::new("Advanced")
+        .icon(IconName::Frame)
+        .group(spacing)
+        .group(SettingGroup::new().title("Pane dimming").items(slider_item(
             desk,
             handle,
             Knob::Unfocused,
             "Unfocused panes",
-            "How much panes you are not typing in stay visible. 100% is no dimming.",
-        ))
-        .items(slider_item(
-            desk,
-            handle,
-            Knob::Glass,
-            "Glass",
-            "Terminal background opacity over the blurred desktop.",
-        ));
-    let notifications = SettingGroup::new().title("Notifications").item(
-        SettingItem::new("Agent notifications", switch(handle, |prefs| prefs.notifications, |prefs, value| prefs.notifications = value))
-            .description("Notify when an agent finishes, blocks, or needs attention in a pane you are not looking at. Shown in the app, and in macOS Notification Center while Phux is in the background."),
-    );
-    SettingPage::new("Window")
-        .icon(IconName::PanelLeft)
-        .group(layout)
-        .group(notifications)
+            "Visibility of panes you are not typing in. 100% disables dimming.",
+        )))
 }
 
 fn keyboard_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {

@@ -453,6 +453,139 @@ fn palette_recolors_ansi_and_keeps_true_color() {
     );
 }
 
+fn nerd_symbols_are_not_missing_glyph_boxes_in_any_face() {
+    let mut payload = String::from("\u{1b}[?25l");
+    for (row, face) in ["0", "1", "3", "1;3"].into_iter().enumerate() {
+        // U+0378 is unassigned; compare the actual rendered missing-glyph
+        // box, not merely whether an icon cell contains some ink.
+        payload.push_str(&format!(
+            "\u{1b}[{};1H\u{1b}[0;{face}m\u{f013}\u{f0206}\u{0378}",
+            row + 1
+        ));
+    }
+    let (client, view) = publish(payload.as_bytes());
+    let shot = paint(Arc::clone(&client), view, settings(false));
+    let mut explicit = settings(false);
+    explicit.font = gpui::font(phux_desktop::fonts::SYMBOLS);
+    let expected = paint(client, view, explicit);
+    for row in 0..4 {
+        let missing = cell_pixels(&shot, row, 2);
+        for col in 0..2 {
+            let icon = cell_pixels(&shot, row, col);
+            assert_ink(&icon, "Nerd Font symbol");
+            assert_ne!(
+                icon, missing,
+                "Nerd icon column {col}, SGR face row {row} resolved to the missing-glyph box"
+            );
+            assert_eq!(
+                ink_mask(&shot, row, col),
+                ink_mask(&expected, row, col),
+                "Nerd icon column {col}, SGR face row {row} must render the bundled symbol outline"
+            );
+        }
+    }
+}
+
+/// Compare the actual symbol outline, independent of primary-font cell width
+/// and baseline. A LastResort box can encode the missing codepoint, so merely
+/// differing from another missing glyph is not evidence of a rendered icon.
+fn ink_mask(shot: &Shot, row: u16, col: u16) -> (u32, u32, Vec<bool>) {
+    let geometry = shot.painted.geometry;
+    let bounds = geometry.cell_bounds(row, col, 1);
+    let (mut left, mut top) = (u32::MAX, u32::MAX);
+    let (mut right, mut bottom) = (0, 0);
+    for y in device(bounds.top(), geometry.scale)..device(bounds.bottom(), geometry.scale) {
+        for x in device(bounds.left(), geometry.scale)..device(bounds.right(), geometry.scale) {
+            if distance(shot.image.get_pixel(x, y).0, BACKGROUND) > 80 {
+                left = left.min(x);
+                top = top.min(y);
+                right = right.max(x + 1);
+                bottom = bottom.max(y + 1);
+            }
+        }
+    }
+    assert!(
+        right > left && bottom > top,
+        "symbol has no visible outline"
+    );
+    let mask = (top..bottom)
+        .flat_map(|y| {
+            (left..right).map(move |x| distance(shot.image.get_pixel(x, y).0, BACKGROUND) > 80)
+        })
+        .collect();
+    (right - left, bottom - top, mask)
+}
+
+fn solid_blocks_cover_shared_row_edges_with_extra_line_height() {
+    let (client, view) = publish(
+        concat!(
+            "\u{1b}[?25l\u{1b}[H██\u{1b}[2;1H██\u{1b}[3;1H▀▄",
+            "\u{1b}[4;1H\u{1b}[2m██",
+            "\u{1b}[1;5H\u{1b}[0;4;58;2;0;220;30m█",
+        )
+        .as_bytes(),
+    );
+    let mut config = settings(false);
+    config.line_height = 1.8;
+    let shot = paint(client, view, config);
+    let geometry = shot.painted.geometry;
+    let first = geometry.cell_bounds(0, 0, 2);
+    let second = geometry.cell_bounds(1, 0, 2);
+    let left = device(first.left(), geometry.scale);
+    let right = device(first.right(), geometry.scale);
+    let top = device(first.top(), geometry.scale);
+    let bottom = device(second.bottom(), geometry.scale);
+    for y in top..bottom {
+        for x in left..right {
+            assert!(
+                near(shot.image.get_pixel(x, y).0, FOREGROUND),
+                "solid block seam at device pixel ({x}, {y})"
+            );
+        }
+    }
+    for (col, upper) in [(0, true), (1, false)] {
+        let bounds = geometry.cell_bounds(2, col, 1);
+        let x = device(bounds.center().x, geometry.scale);
+        for (fraction, filled) in [(0.25, upper), (0.75, !upper)] {
+            let y = device(bounds.top() + bounds.size.height * fraction, geometry.scale);
+            let expected = if filled { FOREGROUND } else { BACKGROUND };
+            assert!(near(shot.image.get_pixel(x, y).0, expected));
+        }
+    }
+    let faint = geometry.cell_bounds(3, 0, 2);
+    let center = shot
+        .image
+        .get_pixel(
+            device(faint.center().x, geometry.scale),
+            device(faint.center().y, geometry.scale),
+        )
+        .0;
+    assert!(
+        !near(center, FOREGROUND) && !near(center, BACKGROUND),
+        "faint block was not dimmed"
+    );
+    let expected = [center[0], center[1], center[2]];
+    for y in device(faint.top(), geometry.scale)..device(faint.bottom(), geometry.scale) {
+        for x in device(faint.left(), geometry.scale)..device(faint.right(), geometry.scale) {
+            assert!(
+                near(shot.image.get_pixel(x, y).0, expected),
+                "translucent block seam"
+            );
+        }
+    }
+    let decorated = geometry.cell_bounds(0, 4, 1);
+    let underline_y = device(decorated.bottom(), geometry.scale) - 2;
+    assert!(
+        near(
+            shot.image
+                .get_pixel(device(decorated.center().x, geometry.scale), underline_y,)
+                .0,
+            TRUE_GREEN,
+        ),
+        "colored underline must remain above solid block ink"
+    );
+}
+
 /// Qualified the way the old `#[cfg(test)]` module reported them, so
 /// `cargo test terminal::pixels` and `--skip terminal::pixels` still select
 /// this binary's fixtures.
@@ -476,6 +609,14 @@ const FIXTURES: &[(&str, fn())] = &[
     (
         "terminal::pixels::palette_recolors_ansi_and_keeps_true_color",
         palette_recolors_ansi_and_keeps_true_color,
+    ),
+    (
+        "terminal::pixels::nerd_symbols_are_not_missing_glyph_boxes_in_any_face",
+        nerd_symbols_are_not_missing_glyph_boxes_in_any_face,
+    ),
+    (
+        "terminal::pixels::solid_blocks_cover_shared_row_edges_with_extra_line_height",
+        solid_blocks_cover_shared_row_edges_with_extra_line_height,
     ),
 ];
 
