@@ -1,5 +1,8 @@
 # The SDK pin, and the contract across the fork boundary
 
+The Zig Cockpit is frozen. This pin note stays so a resume sprint can
+rebuild the same checkout. See [FROZEN.md](../FROZEN.md).
+
 Cockpit builds against [`phall1/native`](https://github.com/phall1/native), a
 fork of `vercel-labs/native`. The fork carries Cockpit-specific commits rebased
 over each upstream release, and names the result after the upstream version it

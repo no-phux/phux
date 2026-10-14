@@ -138,8 +138,9 @@ with wall-clock ceilings a loaded laptop can miss; `just ci-full` includes it.
 ### Gates that are CI-only or local-only
 
 Native environment smoke runs in `native-setup.yml` (Linux; reproduce with
-`just native-smoke`) and `cockpit-ci.yml` (macOS). These have no local
-equivalent: the draft/docs-only `changes` routing job, caching (Cachix,
+`just native-smoke`). `cockpit-ci.yml` is manual only while the Zig Cockpit
+is frozen ([ADR-0167](./docs/adr/0167-cockpit-is-frozen.md)). The following have
+no local equivalent: the draft/docs-only `changes` routing job, caching (Cachix,
 mbx's GitHub Actions cache, rust-cache), CI step summaries (`scripts/ci/timed.sh`, ADR-0082; use
 `just dep-stats` or `just timings` locally), the post-merge/nightly `stress`
 workflow (run `just stress` locally; 2-core runners starve the current-thread

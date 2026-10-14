@@ -53,4 +53,4 @@ sessions, splits, and a status bar. For another machine, use
 
 - [Concepts](./CONCEPTS.md)
 - [Agents](./consumers/agents.md)
-- [Cockpit](./consumers/cockpit.md)
+- [Desktop](./consumers/desktop.md)

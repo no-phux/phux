@@ -198,6 +198,7 @@ column is the base status word plus at most one relationship clause, about
 | [0164](./0164-pair-links-name-the-magicdns-host.md) | Pair links name the host's MagicDNS name | Accepted (builds on [0141](./0141-pair-mints-only-against-a-live-listener.md), [0091](./0091-certificate-names-the-advertised-address.md)) |
 | [0165](./0165-gpui-desktop-replaces-the-solid-host.md) | GPUI desktop replaces the Solid host | Accepted (supersedes [0139](./0139-solid-desktop-over-native-runtime-views.md)) |
 | [0166](./0166-usage-collection-is-a-supervised-child.md) | Optional usage is a supervised collector child | Proposed |
+| [0167](./0167-cockpit-is-frozen.md) | The Zig Cockpit is frozen | Accepted |
 
 ## When to write an ADR
 

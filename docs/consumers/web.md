@@ -22,7 +22,7 @@ for your servers.
   runtime releases that disposable session. Do not enter private credentials
   or sensitive work in a demo.
 - **Use your own terminals today:** follow the [local quickstart](../QUICKSTART.md),
-  [Cockpit guide](./cockpit.md), or [remote access guide](../remote-access.md).
+  [desktop](./desktop.md), or [remote access guide](../remote-access.md).
   This page does not offer a hosted “connect my server” control.
 - **Build or embed a browser client:** start with Building and Running it
   locally below. You need a trusted checkout, the

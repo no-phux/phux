@@ -22,16 +22,13 @@ const [configText, manifestText, releasePlease, publish, release, linearWorkflow
 const config = JSON.parse(configText);
 const manifest = JSON.parse(manifestText);
 const cockpitVersion = cockpitVersionText.trim();
-const cockpit = config.packages?.["clients/cockpit"];
 
 assert.equal(config["bootstrap-sha"], undefined, "bootstrap-sha must stay removed after the first canonical release");
 assert.equal(config["force-tag-creation"], true, "draft releases require release-please-owned tags");
 assert.equal(config.draft, true, "artifact workflows require private draft releases");
-assert.equal(cockpit?.component, "cockpit");
-assert.equal(cockpit?.["include-component-in-tag"], true);
-assert.equal(cockpit?.["include-v-in-tag"], true);
-assert.equal(cockpit?.["bootstrap-sha"], undefined, "bootstrap-sha is a top-level-only option");
-assert.equal(manifest["clients/cockpit"], cockpitVersion, "Cockpit manifest and source version must agree");
+assert.equal(config.packages?.["clients/cockpit"], undefined, "Cockpit is frozen and is not a release-please package");
+assert.equal(manifest["clients/cockpit"], undefined, "Cockpit is frozen and is not in the release-please manifest");
+assert.match(cockpitVersion, /^\d+\.\d+\.\d+$/, "clients/cockpit/version.txt keeps the frozen source version");
 
 assert.doesNotMatch(releasePlease, /clients--cockpit--/, "slash-normalized release-please outputs do not exist");
 assert.doesNotMatch(releasePlease, /\bgit tag\b/, "release-please is the sole tag owner");

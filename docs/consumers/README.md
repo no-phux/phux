@@ -1,22 +1,22 @@
 ---
 audience: humans, consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-30
+last-reviewed: 2026-10-14
 ---
 
 # Ways to use phux
 
-**TL;DR.** Use the TUI or Cockpit for interactive work, a host integration or
-MCP for coding agents, and the CLI for scripts. The browser client is a demo
-and developer integration. Desktop contracts and mobile previews do not
-establish release availability.
+**TL;DR.** Use the TUI or the GPUI desktop for interactive work, a host
+integration or MCP for coding agents, and the CLI for scripts. The browser
+client is a demo and developer integration. The Zig Cockpit is frozen.
 
 ## Choose an interface
 
 | You want to | Start with |
 |---|---|
 | Work interactively in a terminal | [Terminal UI](./tui.md) or the [first-run walkthrough](../QUICKSTART.md) |
-| Use the native macOS app | [Cockpit](./cockpit.md) |
+| Use the native macOS app | [Desktop](./desktop.md) |
+| Read the frozen Zig client | [Cockpit](./cockpit.md) |
 | Connect OMP, Claude, Grok, Pi, OpenCode, or an MCP host | [Coding-agent getting started](./getting-started.md) |
 | Read and drive terminals from a script | [Agent CLI guide](./agents.md) |
 | Record a pane or an attached session | [Recording](./recording.md) |

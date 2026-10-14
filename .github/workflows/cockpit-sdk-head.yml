@@ -11,6 +11,7 @@
 #
 # A failure here means the fork moved, not that Cockpit is broken. Cockpit's own
 # PRs stay green until someone runs scripts/repoint-sdk.sh. See docs/SDK_PIN.md.
+# The client is frozen (ADR-0167). This workflow stays manual.
 name: Cockpit SDK HEAD
 
 on:

@@ -63,7 +63,7 @@ TUI entry points share a layer builder
   `--json`) — `telemetry::init_client()`. Logs to a **file only**: the
   attach loop owns the alt screen, so a stray log line corrupts the
   display.
-- **Cockpit** (the native macOS app) — one file,
+- **Cockpit** (the frozen Zig macOS app) — one file,
   `~/Library/Logs/Phux Cockpit/cockpit.log`; `PHUX_COCKPIT_LOG` names a
   different file. Launch Services gives the app no terminal, so at
   startup Cockpit points its standard error at that file and the Rust

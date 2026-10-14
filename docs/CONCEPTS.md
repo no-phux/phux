@@ -91,7 +91,8 @@ for detach, upgrade, crash, and restore boundaries.
   for keys, copying, and navigation.
 - [Run a coding agent](./consumers/getting-started.md).
 - [Connect another machine](./remote-access.md).
-- [Use Cockpit](./consumers/cockpit.md), the native macOS interface.
+- [Use the desktop](./consumers/desktop.md), the native macOS interface.
+  The Zig [Cockpit](./consumers/cockpit.md) is frozen.
 
 The remaining sections describe the model for automation and client
 implementation.

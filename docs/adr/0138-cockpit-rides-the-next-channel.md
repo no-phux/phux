@@ -16,6 +16,7 @@ cancelling it.
 
 Status: Accepted
 Date: 2026-09-23
+Superseded in part by [ADR-0167](./0167-cockpit-is-frozen.md): next-channel Cockpit builds stop while the client is frozen.
 
 ## Context
 

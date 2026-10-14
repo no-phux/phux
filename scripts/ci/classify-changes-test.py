@@ -381,7 +381,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("test_filterset:", action)
 
     def test_shared_detection_has_no_outer_path_filter(self):
-        for name in ("ci", "native-setup", "cockpit-ci", "web-check"):
+        for name in ("ci", "native-setup", "web-check"):
             workflow = (ROOT / f".github/workflows/{name}.yml").read_text()
             triggers = workflow.split("concurrency:")[0]
             with self.subTest(workflow=name):
@@ -390,6 +390,15 @@ class WorkflowTests(unittest.TestCase):
                 self.assertIn("fetch-depth: 0", workflow)
                 self.assertIn("uses: ./.github/actions/classify-changes", workflow)
                 self.assertIn("cancel-in-progress: true", workflow)
+
+    def test_cockpit_ci_is_manual_only(self):
+        workflow = (ROOT / ".github/workflows/cockpit-ci.yml").read_text()
+        triggers = workflow.split("concurrency:")[0]
+        self.assertIn("workflow_dispatch:", triggers)
+        self.assertNotIn("pull_request:", triggers)
+        self.assertNotIn("merge_group:", triggers)
+        self.assertNotIn("\n  push:", triggers)
+        self.assertNotIn("paths:", triggers)
 
     def test_aggregate_rejects_failed_and_cancelled_new_lanes(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()

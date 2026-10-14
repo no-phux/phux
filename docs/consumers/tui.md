@@ -879,5 +879,5 @@ Hooks are [`../CONFIG.md`](../CONFIG.md) and
 | Headless verbs, JSON, `%name` | [Agents](./agents.md) |
 | What `phux ls` and the pickers show first | [Glance, session, detail](./attention.md) |
 | Record a pane or attached session | [Recording](./recording.md) |
-| The native macOS client | [Cockpit](./cockpit.md) |
+| The native macOS client | [Desktop](./desktop.md) |
 | What is shipped versus a gap | [Concepts](../CONCEPTS.md) |

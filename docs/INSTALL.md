@@ -151,19 +151,20 @@ tar -xzf "phux-${tag}-${target}.tar.gz"
 Put the extracted `phux` and `phux-mcp` on `PATH`. In `~/.local/bin`,
 `phux update` maintains them like an installer install.
 
-### Cockpit (native macOS)
+### Cockpit (frozen)
 
-Cockpit is the experimental native macOS client, released separately from
-the desktop app:
+The Zig Cockpit is not maintained ([ADR-0167](adr/0167-cockpit-is-frozen.md)).
+The [desktop app](#desktop-app-macos) is the native macOS client. The last
+published Cockpit release still installs:
 
 ```sh
 curl -fsSL https://phux.sh/install-cockpit | sh
 phux cockpit
 ```
 
-Its in-app Check for Updates and `phux update` keep it current. The
-[Cockpit guide](./consumers/cockpit.md#install) covers the Homebrew cask,
-pinning, and channels.
+An already-installed copy can still check for updates. No new release is
+being cut. The [Cockpit guide](./consumers/cockpit.md#install) covers the
+Homebrew cask and pinning.
 
 ## `phux update` in detail
 

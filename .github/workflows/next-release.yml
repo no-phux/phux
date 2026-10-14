@@ -5,12 +5,12 @@
 # creates a vX.Y.Z or cockpit-vX.Y.Z tag and never touches Homebrew.
 # release-please remains the sole owner of stable tags (ADR-0113).
 #
-# Three products ride the one prerelease, each with its own pointer:
-# channel.json (phux + phux-mcp, three targets) and cockpit-channel.json
-# (Phux Cockpit.app, arm64 macOS, ad-hoc signed). Each rebuilds only when its
-# own inputs moved since the SHA its pointer names, and each publishes on its
-# own success.
-# desktop-channel.json names the independently qualified GPUI desktop bundle.
+# Two products ride the one prerelease on their own pointers: channel.json
+# (phux + phux-mcp, three targets) and desktop-channel.json (the GPUI desktop).
+# Each rebuilds only when its own inputs moved since the SHA its pointer names,
+# and each publishes on its own success. Cockpit next builds are frozen
+# (ADR-0167): cockpit_build stays false. The job below remains so a resume
+# sprint can restore the decide line in clients/cockpit/FROZEN.md.
 #
 # Cost: at most one run in flight. A newer green SHA waits instead of
 # cancelling it, and pending runs coalesce to the newest, so a busy main still
@@ -125,7 +125,8 @@ jobs:
           echo "phux:" >&2
           phux="$(decide channel.json phux_needed native_needed)"
           echo "cockpit:" >&2
-          cockpit="$(decide cockpit-channel.json cockpit_needed)"
+          echo "  frozen by ADR-0167; not building" >&2
+          cockpit=false
           echo "desktop:" >&2
           desktop="$(decide desktop-channel.json desktop_inputs phux_needed native_needed)"
           {
@@ -239,6 +240,7 @@ jobs:
             phux-*.tar.gz.sha256
           if-no-files-found: error
 
+  # Frozen (ADR-0167). The gate above keeps this job from running.
   cockpit:
     name: build Phux Cockpit (macOS arm64)
     needs: gate
