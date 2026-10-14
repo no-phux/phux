@@ -112,5 +112,5 @@ change).
 ## Future (not now)
 
 - Per-page OG images (`[...slug]/image.webp.ts`) once the site stops relying on
-  the single `public/og.png`.
+  the single generated `/og.png` (`src/pages/og.png.ts`).
 - Tag filters on search, i18n, Layout Tabs if a second doc tree ever appears.

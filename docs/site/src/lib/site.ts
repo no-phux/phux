@@ -15,6 +15,9 @@ export const SITE = {
   github: "https://github.com/no-phux/phux",
   // One switch for the visual system. Mode tokens live in global.css.
   designMode: "terminal",
+  // Names the /og.png artwork. Link previews cache by URL, so change this
+  // whenever src/pages/og.png.ts draws a different picture.
+  previewArtwork: "split-window",
   // Set when the WS demo backend is deployed. When empty the terminal island
   // renders the static poster + a "coming online" state instead of dialing out.
   demoWsUrl: import.meta.env.PUBLIC_PHUX_DEMO_WS ?? "",
