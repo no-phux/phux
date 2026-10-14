@@ -228,8 +228,8 @@ impl CommandDispatch<'_> {
 
     /// This connection's dispatch context, owned, for work that outlives
     /// the dispatch.
-    fn context(&self) -> super::approvals::HeldContext {
-        super::approvals::HeldContext {
+    fn context(&self) -> super::commands::CommandContext {
+        super::commands::CommandContext {
             state: self.state.clone(),
             client_id: self.client_id,
             out_tx: self.out_tx.clone(),
@@ -324,12 +324,12 @@ impl CommandDispatch<'_> {
 
 /// Run one admitted command through the handler.
 async fn run_handler(
-    ctx: &super::approvals::HeldContext,
+    ctx: &super::commands::CommandContext,
     request_id: u32,
     command: Command,
     started: std::time::Instant,
 ) {
-    ctx.run(request_id, command).await;
+    super::commands::handle_command(ctx, request_id, command).await;
     crate::perf::CMD_HANDLE.record_elapsed(started);
 }
 
