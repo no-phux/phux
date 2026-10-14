@@ -405,16 +405,20 @@ tile into the remaining content rect. Default `width = 20` is exact.
 changing titles never reflows work.
 
 The strip runs the full height of the terminal. The status bar yields
-its columns rather than spanning underneath. **Agents** sits on top and
-**Sessions** below it.
+its columns rather than spanning underneath. **Agents** on top and
+**Sessions** below it share the body at a **fixed** line
+([ADR-0112](../adr/0112-stable-split-sidebar-navigation.md)):
+`[sidebar] agents-share` is the Agents panel's percent of the body, half
+(50) by default, `0` drops the panel. The population never moves the line;
+only a viewport resize changes the allocation.
 
 **Agents** lists only the agents that need you: blocked or asking (`●`),
 or finished and not yet looked at (`◆`). Working and idle agents stay off
 it, and an agent already shown as a tab's badge in the current session is
-not listed again. When nothing needs you the section is gone and Sessions
-takes the whole strip; otherwise Agents takes the rows it needs, up to
-half. Rows keep session / tab / pane order; the list does not sort by
-urgency. A local row selects that tab; a peer row is a one-step
+not listed again. An empty panel keeps its header and a quiet
+`none need you` placeholder, so Sessions never shifts. Rows keep
+session / tab / pane order; the list does not
+sort by urgency. A local row selects that tab; a peer row is a one-step
 `switch-session` onto that pane. Overflow is a `+N more` row that opens
 the agents dashboard.
 

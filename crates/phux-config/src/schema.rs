@@ -438,6 +438,17 @@ pub struct SidebarCfg {
     pub width: u16,
     /// Which edge the sidebar docks to.
     pub position: SidebarPosition,
+    /// Share of the sidebar body the Agents panel keeps, as a percent
+    /// (default `50`, half). `0` drops the panel entirely.
+    ///
+    /// ADR-0112: the Agents panel on top and the Sessions panel below share
+    /// the body at a **fixed** line, whatever the agent population, so
+    /// gaining or resolving an agent never moves Sessions. An empty Agents
+    /// panel keeps its header and a quiet placeholder. Plugin sections claim
+    /// their fixed bands first, and the whole sidebar yields below
+    /// `width + chrome.min-pane-cols` columns.
+    #[serde(rename = "agents-share")]
+    pub agents_share: u8,
     /// Segment the Sessions area by machine (ADR-0140). Default `true`.
     ///
     /// The attached server's sessions are always shown live. The other
@@ -462,6 +473,7 @@ impl Default for SidebarCfg {
             enabled: true,
             width: 20,
             position: SidebarPosition::default(),
+            agents_share: 50,
             hosts: true,
             hosts_provider: Vec::new(),
             hosts_refresh_secs: 10,

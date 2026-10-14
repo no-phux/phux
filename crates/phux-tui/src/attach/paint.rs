@@ -334,6 +334,37 @@ pub(super) fn paint_full_frame<W: super::RenderSink>(
         kernel,
         focused_resource,
         chrome,
+        true,
+    );
+    seal_frame(block, painted, composed, chrome.status_bar.as_deref_mut())
+}
+
+/// Re-render every visible pane and the chrome WITHOUT the `ED2` clear: what
+/// `RepaintLevel::Panes` drains to.
+///
+/// Safe only when the tile rectangles are unchanged (the caller has proven
+/// it): the panes fully cover the content at the same cells, so no stale cell
+/// survives, and skipping the clear avoids the whole-screen flash a `Full`
+/// repaint causes on a terminal that ignores DEC 2026. Fronts are invalidated
+/// and panes repainted forced, so a pane that was hidden and now shares the
+/// grid is refreshed.
+pub(super) fn paint_panes_in_place<W: super::RenderSink>(
+    out: &mut W,
+    layout_state: &LayoutState,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    kernel: &AttachKernel,
+    focused_resource: Option<&ResourceId>,
+    chrome: &mut ChromeCtx<'_>,
+) -> StatusBarPaint {
+    let mut block = FrameBlock::begin(out);
+    let (painted, composed) = paint_full_frame_into(
+        &mut block,
+        layout_state,
+        panes,
+        kernel,
+        focused_resource,
+        chrome,
+        false,
     );
     seal_frame(block, painted, composed, chrome.status_bar.as_deref_mut())
 }
@@ -446,8 +477,10 @@ fn seal_frame<W: Write>(
     StatusBarPaint::NotPublished
 }
 
-/// [`paint_full_frame`]'s body, emitting into the frame block. Returns the
-/// bar outcome and whether the composition itself succeeded (the cursor tail
+/// [`paint_full_frame`]'s body, emitting into the frame block. `clear` is the
+/// whole-screen `ED2` (the full-frame path); [`paint_panes_in_place`] passes
+/// `false` to redraw the same-shaped view without the flash. Returns the bar
+/// outcome and whether the composition itself succeeded (the cursor tail
 /// landed); shipping is the caller's.
 fn paint_full_frame_into<W: Write>(
     out: &mut W,
@@ -456,6 +489,7 @@ fn paint_full_frame_into<W: Write>(
     kernel: &AttachKernel,
     focused_resource: Option<&ResourceId>,
     chrome: &mut ChromeCtx<'_>,
+    clear: bool,
 ) -> (StatusBarPaint, bool) {
     let viewport_dims = chrome.viewport;
     // The whole-repaint duration: the client-side render-lag signal.
@@ -463,7 +497,8 @@ fn paint_full_frame_into<W: Write>(
         "paint_full_frame",
         cols = viewport_dims.0,
         rows = viewport_dims.1,
-        panes = panes.len()
+        panes = panes.len(),
+        clear = clear,
     )
     .entered();
     let _timed = phux_client::perf::PAINT_FULL.timer();
@@ -472,10 +507,14 @@ fn paint_full_frame_into<W: Write>(
         rail,
     } = chrome.content_layout();
     let multi = super::multi_pane::compute_layout_in(layout_state, content, viewport_dims);
-    // ED2 + home, inside the frame block's transaction.
-    let _ = out.write_all(b"\x1b[2J\x1b[H");
-    // Forget every front at the clear itself, not trusting each pane's
-    // forced paint to get that far.
+    // ED2 + home, inside the frame block's transaction — skipped by the
+    // in-place path, whose panes already cover every content cell.
+    if clear {
+        let _ = out.write_all(b"\x1b[2J\x1b[H");
+    }
+    // Forget every front: on the clear path so unchanged content is re-emitted,
+    // on the in-place path so a pane that was hidden (its cells overwritten by
+    // another pane) repaints from scratch.
     super::pane_state::invalidate_all_fronts(panes);
     // Non-focused panes first, then chrome; the focused pane paints LAST so
     // it owns final cursor placement.

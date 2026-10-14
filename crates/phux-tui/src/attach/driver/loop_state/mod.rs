@@ -45,7 +45,7 @@ pub(super) use crate::attach::onboarding::{AttachClaim, AttachMoment};
 pub(super) use crate::attach::outcome::{AttachEnd, AttachError};
 pub(super) use crate::attach::paint::{
     SidebarReservation, StatusBarPaint, content_rect, paint_chrome_in_place, paint_full_frame,
-    sidebar_reservation,
+    paint_panes_in_place, sidebar_reservation,
 };
 pub(super) use crate::attach::pane_state::{
     AttentionNavigation, VcsIndex, reanchor_predict_to_pane,
@@ -655,7 +655,8 @@ impl SessionLoop {
             pending_directory: None,
             vcs: VcsIndex::default(),
             sidebar_painter: SidebarPainter::new(settings.theme)
-                .with_plugin_specs(settings.plugin_sidebar.clone()),
+                .with_plugin_specs(settings.plugin_sidebar.clone())
+                .with_agents_share(settings.sidebar.agents_share),
             plugin_tx,
             plugin_rx,
             bind_reflow_owed: false,

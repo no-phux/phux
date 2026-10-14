@@ -4,8 +4,9 @@ use super::{
     ChromeCtx, PaneScene, PluginRunResult, RepaintAccumulator, RepaintLevel, ResourceId,
     SYNC_OUTPUT_WATCHDOG, SidebarReservation, StatusBarPaint, StatusBarPainter, ToastOverlay,
     adopt_config_reload, content_rect, finish_return_onboarding_after_paint, paint_active_overlay,
-    paint_chrome_in_place, paint_full_frame, plugin_actions, push_which_key_overlay,
-    refresh_window_chrome, sidebar_reservation, sync_overlays_to_focused_pane,
+    paint_chrome_in_place, paint_full_frame, paint_panes_in_place, plugin_actions,
+    push_which_key_overlay, refresh_window_chrome, sidebar_reservation,
+    sync_overlays_to_focused_pane,
 };
 
 impl super::SessionLoop {
@@ -106,7 +107,9 @@ impl super::SessionLoop {
         }
         if let Some(painted) = self.paint_view(out, sidebar, level) {
             self.finish_paint(painted);
-            if matches!(level, RepaintLevel::Full) {
+            // A `Panes` repaint redrew every visible pane, so their delivery
+            // fences clear exactly as a `Full` repaint's do.
+            if matches!(level, RepaintLevel::Full | RepaintLevel::Panes) {
                 self.clear_visible_delivery_fences_after_paint();
             }
         }
@@ -141,6 +144,14 @@ impl super::SessionLoop {
             RepaintLevel::Chrome => {
                 paint_chrome_in_place(out, ls.as_ref(), &self.mirror.panes, focused, &mut chrome)
             }
+            RepaintLevel::Panes => paint_panes_in_place(
+                out,
+                ls.as_ref(),
+                &mut self.mirror.panes,
+                &self.mirror.engine_kernel,
+                focused,
+                &mut chrome,
+            ),
             RepaintLevel::Full => paint_full_frame(
                 out,
                 ls.as_ref(),
@@ -346,8 +357,8 @@ impl super::SessionLoop {
         if std::mem::take(&mut self.session_picker_dirty) {
             self.refresh_session_picker(out, sidebar);
         }
-        // A full repaint discharges every paint the pacer was holding.
-        if matches!(drained.level, RepaintLevel::Full) {
+        // A full or pane repaint discharges every paint the pacer was holding.
+        if matches!(drained.level, RepaintLevel::Full | RepaintLevel::Panes) {
             self.pacer.clear_pending();
         }
         self.repaint_view(out, sidebar, drained.level);

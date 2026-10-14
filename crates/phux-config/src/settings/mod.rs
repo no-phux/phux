@@ -560,6 +560,19 @@ pub const CATALOG: &[SettingSpec] = &[
         applies: Applies::NextAttach,
     },
     SettingSpec {
+        key: "sidebar.agents-share",
+        section: SettingSection::Sidebar,
+        kind: SettingKind::Integer { min: 0, max: 100 },
+        summary: "Percent of the sidebar body the Agents panel keeps",
+        detail: "50 (half) by default. The Agents panel on top and the Sessions \
+                 panel below share the body at a fixed line whatever the agent \
+                 population, so gaining or resolving an agent never moves Sessions \
+                 (ADR-0112). An empty Agents panel keeps its header and a quiet \
+                 placeholder. Set 0 to drop the panel and give Sessions the whole \
+                 strip.",
+        applies: Applies::NextAttach,
+    },
+    SettingSpec {
         key: "sidebar.hosts",
         section: SettingSection::Sidebar,
         kind: SettingKind::Bool,

@@ -5,16 +5,16 @@ expression: "strip_text(&p, rect)"
  Agents                2 │
  ● phux            codex │
  ● feat-auth      claude │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
  Sessions              2 │
  ○ development           │
    ● phux           main │
  ● feat-auth          ●1 │
-                         │
-                         │
-                         │
-                         │
-                         │
-                         │
                          │
                          │
                          │
