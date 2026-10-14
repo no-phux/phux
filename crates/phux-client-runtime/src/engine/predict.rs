@@ -233,6 +233,10 @@ mod tests {
         };
         predictor.apply(4, 2, false, &mut cursor, &mut restored, 2);
         assert_eq!(restored.cell_text(0), b"");
-        assert_eq!(restored.row_dirty, [true, false], "clear repaints the old prediction");
+        assert_eq!(
+            restored.row_dirty,
+            [true, false],
+            "clear repaints the old prediction"
+        );
     }
 }
