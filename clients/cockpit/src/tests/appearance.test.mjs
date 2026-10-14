@@ -401,7 +401,7 @@ test('Connection and About are read-only while editable groups keep Save', () =>
     assert.deepEqual([...step(status, { kind: 'settings_commit' })[1].payload], [1, 7, 0]);
     assert.deepEqual([...step(status, { kind: 'settings_close' })[1].payload], [1, 6, 0]);
   }
-  const [fromConnection, cmd] = step(connection, { kind: 'sessions_open' });
+  const [fromConnection, cmd] = step(connection, { kind: 'palette_open' });
   assert.equal(fromConnection.settingsOpen, true);
   assert.equal(fromConnection.paletteOpen, false);
   assert.deepEqual([...cmd.payload], [1, 6, 0]);

@@ -19,16 +19,13 @@ const request = (cmd, name) => effects(cmd).find(effect => effect.op === 'reques
 const sameBytes = (left, right) => left.length === right.length && left.every((byte, index) => byte === right[index]);
 
 const surfaces = [
-  { name: 'terminals', msg: { kind: 'palette_open' }, request: 'cockpit.navigation', matches: model => model.paletteOpen && model.navigatorView === 0 },
-  { name: 'sessions', msg: { kind: 'sessions_open' }, request: 'cockpit.navigation', matches: model => model.paletteOpen && model.navigatorView === 1 },
+  { name: 'sessions', msg: { kind: 'palette_open' }, request: 'cockpit.navigation', matches: model => model.paletteOpen && model.navigatorView === 0 },
   { name: 'machines', msg: { kind: 'machines_open' }, request: 'cockpit.machines', matches: model => model.paletteOpen && model.navigatorView === 2 },
-  { name: 'windows', msg: { kind: 'windows_open' }, request: 'cockpit.navigation', matches: model => model.paletteOpen && model.navigatorView === 3 },
   { name: 'commands', msg: { kind: 'commands_open' }, request: 'cockpit.keybindings', matches: model => model.paletteOpen && model.navigatorView === 4 },
   { name: 'new-session', msg: { kind: 'new_session_open' }, request: 'cockpit.new-session', matches: model => model.renameOpen && model.creatingSession },
   { name: 'add-machine', msg: { kind: 'add_machine_open' }, request: 'cockpit.local-tools', matches: model => model.hostOpen && model.toolPurpose === 1 },
   { name: 'directory', msg: { kind: 'dir_open' }, request: 'cockpit.directory', matches: model => model.dirOpen },
   { name: 'rename', msg: { kind: 'rename_open' }, request: 'cockpit.session', matches: model => model.renameOpen && !model.creatingSession },
-  { name: 'connection', msg: { kind: 'host_open' }, request: 'cockpit.remote', matches: model => model.hostOpen && model.toolPurpose === 0 },
   { name: 'settings', msg: { kind: 'settings_open' }, request: 'cockpit.appearance', matches: model => model.settingsOpen },
 ];
 
@@ -39,9 +36,9 @@ const ownerFields = prefix => [
 const everyOwnerField = ['main', 'window1', 'window2', 'window3', 'window4'].flatMap(ownerFields);
 
 function ownerField(surface, prefix = 'main') {
-  if (['terminals', 'sessions', 'machines', 'windows', 'commands'].includes(surface.name)) return `${prefix}PaletteOpen`;
+  if (['sessions', 'machines', 'commands'].includes(surface.name)) return `${prefix}PaletteOpen`;
   if (surface.name === 'settings') return `${prefix}SettingsOpen`;
-  if (['add-machine', 'connection'].includes(surface.name)) return `${prefix}HostOpen`;
+  if (surface.name === 'add-machine') return `${prefix}HostOpen`;
   if (surface.name === 'directory') return `${prefix}DirOpen`;
   return `${prefix}RenameOpen`;
 }
@@ -223,7 +220,7 @@ function failedOpenDepartureFailure() {
   const describe = requireRequest(cmd, 'cockpit.new-session', 'failed New Session open');
   assert.equal(describe.payload[1], 1);
   [model] = step(model, { kind: describe.errKind, error: bytes('describe failed') });
-  [model, cmd] = step(model, { kind: 'sessions_open' });
+  [model, cmd] = step(model, { kind: 'palette_open' });
   const unexpected = request(cmd, 'cockpit.new-session');
   const complete = model.pendingSessionAction === null && !model.renameOpen && surfaces.find(surface => surface.name === 'sessions').matches(model);
   if (complete && !unexpected) return null;

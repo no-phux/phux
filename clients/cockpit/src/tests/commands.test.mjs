@@ -35,7 +35,11 @@ test('command catalog derives exactly from shipping menu labels and shortcuts', 
   assert.equal(text(COMMAND_CATALOG.find(command => command.name === 'commands.open').shortcut), 'Cmd+Shift+P');
   assert.equal(text(COMMAND_CATALOG.find(command => command.name === 'terminal.clear').shortcut), 'Cmd+Shift+K');
   assert.equal(text(COMMAND_CATALOG.find(command => command.name === 'terminal.find-previous').shortcut), 'Cmd+Shift+G');
-  assert.equal(text(COMMAND_CATALOG.find(command => command.name === 'tabs.palette').shortcut), '');
+  assert.equal(COMMAND_CATALOG.find(command => command.name === 'tabs.palette'), undefined);
+  assert.equal(COMMAND_CATALOG.find(command => command.name === 'navigator.windows'), undefined);
+  assert.equal(text(COMMAND_CATALOG.find(command => command.name === 'terminal.close-view').label), 'Close Pane');
+  assert.equal(text(COMMAND_CATALOG.find(command => command.name === 'terminal.close-view').shortcut), 'Cmd+W');
+  assert.equal(text(COMMAND_CATALOG.find(command => command.name === 'terminal.close').shortcut), '');
   assert.equal(text(COMMAND_CATALOG.find(command => command.name === 'session.new').shortcut), 'Cmd+Shift+N');
   assert.equal(text(COMMAND_CATALOG.find(command => command.name === 'session.rename').shortcut), 'Cmd+Shift+R');
 });
@@ -54,25 +58,25 @@ test('CmdShiftP opens actions; action selection uses the same message as native 
   assert.deepEqual(action.cmds[1], native);
 });
 
-test('CmdK opens the searchable Sessions switcher', () => {
+test('CmdK opens the one searchable Sessions list', () => {
   const [model] = step(initialModel()[0], commandMsg('navigator.sessions'));
+  assert.deepEqual(commandMsg('navigator.sessions'), { kind: 'palette_open' });
   assert.equal(model.paletteOpen, true);
-  assert.equal(model.navigatorView, 1);
+  assert.equal(model.navigatorView, 0);
+  assert.equal(text(model.navigatorTitle), 'Sessions');
   assert.equal(model.paletteLoading, true);
   assert.equal(model.navigatorNoticeInResults, true);
   assert.equal(model.navigatorNoticeInFooter, false);
-  assert.equal(model.navigatorBrowse, false);
 });
 
-test('All work and Commands keep the destination strip', () => {
-  for (const name of ['tabs.palette', 'commands.open']) {
-    const [model] = step(initialModel()[0], commandMsg(name));
-    assert.equal(model.navigatorBrowse, true, name);
-  }
-  for (const name of ['navigator.machines', 'navigator.windows']) {
-    const [model] = step(initialModel()[0], commandMsg(name));
-    assert.equal(model.navigatorBrowse, false, name);
-  }
+test('every navigator view keeps the destination strip: Sessions, Machines, Commands', () => {
+  const markup = readFileSync(new URL('../windows/components/cockpit-navigator.native', import.meta.url), 'utf8');
+  const strip = markup.slice(markup.indexOf('<tabs gap="4" label="Navigator views">'), markup.indexOf('</tabs>'));
+  assert.doesNotMatch(markup.slice(0, markup.indexOf('<tabs gap="4" label="Navigator views">')), /<if test="\{navigatorBrowse\}">\s*$/);
+  assert.deepEqual([...strip.matchAll(/on-press="([a-z_]+)">([^<]+)</g)].map(match => [match[1], match[2]]),
+    [['palette_open', 'Sessions'], ['machines_open', 'Machines'], ['commands_open', 'Commands']]);
+  assert.equal(commandMsg('navigator.windows'), null);
+  assert.equal(commandMsg('tabs.palette'), null);
 });
 
 test('an empty command search keeps its notice in the results and a match keeps the key hint in the footer', () => {
@@ -106,15 +110,15 @@ test('navigator switches views directly and Machines requests real inventory', (
   assert.equal(model.navigatorView, 2);
   assert.equal(request.cmds[1].name, 'cockpit.machines');
   assert.equal(model.machines.rows.length, 0, 'the frontend never invents a This Mac or saved-host row');
-  [model, request] = step(model, { kind: 'sessions_open' });
-  assert.equal(model.navigatorView, 1);
+  [model, request] = step(model, { kind: 'palette_open' });
+  assert.equal(model.navigatorView, 0);
   assert.equal(request.cmds[1].name, 'cockpit.navigation');
 });
 
 test('Commands captures an off-strip secondary tab and refuses retargeting', () => {
   const held = new Uint8Array(22); held[0] = 1; held[21] = 7;
   const replacement = held.slice(); replacement[21] = 8;
-  const row = { id: 1, index: 8, label: bytes('Selected off strip'), state: bytes(''), mark: bytes(''), selected: true, agent: false, target: held };
+  const row = { id: 1, index: 8, label: bytes('Selected off strip'), mark: bytes(''), selected: true, target: held };
   const incoming = { ...initialModel()[0], activeWindow: 1, window1Open: true, window1RailRows: [row] };
   let [model] = step(incoming, { kind: 'commands_open' });
   assert.deepEqual(model.commandContextTarget, held);
@@ -123,11 +127,11 @@ test('Commands captures an off-strip secondary tab and refuses retargeting', () 
   const [refused, effect] = step(changed, { kind: 'palette_submit' });
   assert.equal(effect, null);
   assert.equal(refused.paletteOpen, true);
-  assert.match(text(refused.paletteNotice), /captured context/);
+  assert.match(text(refused.paletteNotice), /terminal changed/);
 });
 
-test('All work returns from every navigator view and clears the previous scope', () => {
-  for (const kind of ['sessions_open', 'machines_open', 'windows_open', 'commands_open']) {
+test('Sessions returns from every navigator view and clears the previous scope', () => {
+  for (const kind of ['machines_open', 'commands_open']) {
     const [opened] = step(initialModel()[0], { kind });
     assert.notEqual(opened.navigatorView, 0);
     const [model, request] = step(opened, { kind: 'palette_open' });
@@ -140,7 +144,7 @@ test('All work returns from every navigator view and clears the previous scope',
 });
 
 test('late command shortcuts preserve the destination navigator presentation', () => {
-  for (const kind of ['palette_open', 'sessions_open', 'machines_open', 'windows_open', 'palette_close']) {
+  for (const kind of ['palette_open', 'machines_open', 'palette_close']) {
     const [commands] = step(initialModel()[0], { kind: 'commands_open' });
     const [destination] = step(commands, { kind });
     const [loaded] = step(destination, { kind: 'keybindings_loaded', body: new Uint8Array([1, 0, 0, 0]) });

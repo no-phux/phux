@@ -265,8 +265,6 @@ export interface SecondaryWindow {
 export interface EngineSnapshot extends Invalidation {
   readonly connection: number;
   readonly currentSession: Uint8Array;
-  readonly coordinatorEndpoint: Uint8Array;
-  readonly connectionDetail: Uint8Array;
   readonly terminalStates: Uint8Array;
   readonly activeWindow: number;
   readonly tabPlacement: number;
@@ -453,26 +451,18 @@ function noExtensions(): SnapshotExtensions {
 
 interface NavigationSnapshotContext {
   readonly currentSession: Uint8Array;
-  readonly coordinatorEndpoint: Uint8Array;
-  readonly connectionDetail: Uint8Array;
 }
 
 function emptyNavigationContext(): NavigationSnapshotContext {
-  return { currentSession: new Uint8Array(0), coordinatorEndpoint: new Uint8Array(0), connectionDetail: new Uint8Array(0) };
+  return { currentSession: new Uint8Array(0) };
 }
 
+/// One length-prefixed field: the session the primary window shows.
 function readNavigationSnapshotContext(bytes: Uint8Array): NavigationSnapshotContext | null {
-  const fields: Uint8Array[] = [];
-  let at = 0;
-  for (const limit of [64, 160, 80]) {
-    if (at >= bytes.length) return null;
-    const length = bytes[at];
-    if (length > limit || at + 1 + length > bytes.length) return null;
-    fields.push(bytes.subarray(at + 1, at + 1 + length));
-    at += 1 + length;
-  }
-  if (at !== bytes.length) return null;
-  return { currentSession: fields[0], coordinatorEndpoint: fields[1], connectionDetail: fields[2] };
+  if (bytes.length < 1) return null;
+  const length = bytes[0];
+  if (length > 64 || 1 + length !== bytes.length) return null;
+  return { currentSession: bytes.subarray(1, 1 + length) };
 }
 
 function snapshotExtension(previous: SnapshotExtensions, kind: number, payload: Uint8Array): SnapshotExtensions | null {
@@ -618,8 +608,6 @@ export function snapshot(bytes: Uint8Array): EngineSnapshot | null {
   return {
     connection: bytes[23],
     currentSession: extensions.navigation.currentSession,
-    coordinatorEndpoint: extensions.navigation.coordinatorEndpoint,
-    connectionDetail: extensions.navigation.connectionDetail,
     secondary: mappedWindows(secondary.windows, extensions.contexts),
     terminalStates: secondary.terminalStates,
     themes: catalog.themes,
@@ -673,13 +661,11 @@ export interface NavigationRow {
   readonly detail: Uint8Array;
   /// Catalog kind: 0 placed terminal, 1 available terminal, 2 session.
   readonly kind: number;
-  readonly host: Uint8Array;
   readonly selectable: boolean;
   readonly current: boolean;
 }
 
-/// 0 all work, 1 sessions, 2 known terminal hosts, 3 exact raw host, 4 native windows,
-/// 5 captured machine sessions, 6 live connected hosts, 7 captured live-host sessions.
+/// 0 open tabs and sessions, 5 one captured machine's sessions.
 export type NavigationScope = number;
 
 export interface NavigationPage {
@@ -720,22 +706,14 @@ export function navigationScopedRequest(revision: WireU64, offset: number, query
 
 function validNavigationRequest(offset: number, query: Uint8Array, scope: number, host: Uint8Array): boolean {
   if (offset < 0 || offset > 65535 || offset !== Math.trunc(offset)) return false;
-  if (scope < 0 || scope > 7 || scope !== Math.trunc(scope)) return false;
+  if (scope !== 0 && scope !== 5) return false;
   if (query.length > 64 || host.length > 255) return false;
   return validNavigationFilter(scope, host.length);
 }
 
 function validNavigationFilter(scope: number, length: number): boolean {
   if (scope === 5) return length === 12;
-  if (scope === 7) return length === 34;
-  return scope === 3 || length === 0;
-}
-
-export function navigationIntent(revision: WireU64, index: number): Uint8Array {
-  const out = intent(13, revision, 0, 0);
-  out[10] = index % 256;
-  out[11] = Math.floor(index / 256);
-  return out;
+  return length === 0;
 }
 
 interface NavigationRecord {
@@ -743,21 +721,8 @@ interface NavigationRecord {
   readonly end: number;
 }
 
-/// Known-host rows carry `3, host_len, raw host` in the target slot: a filter
-/// token, never catalog authority (catalog targets begin with 2).
-const HOST_FILTER_TAG = 3;
-
-/// The raw host a known-host filter token names, or null for any other target.
-export function navigationHostFilter(target: Uint8Array): Uint8Array | null {
-  if (target.length < 2 || target[0] !== HOST_FILTER_TAG) return null;
-  return target.length === 2 + target[1] ? target.subarray(2) : null;
-}
-
+/// Every row carries catalog authority: a target that begins with 2.
 function validNavigationTarget(target: Uint8Array): boolean {
-  if (target.length === 10 && target[0] === 4) return true;
-  if (target.length === 22 && target[0] === 5) return true;
-  if (target.length === 34 && target[0] === 6) return true;
-  if (navigationHostFilter(target) !== null) return true;
   return target.length >= 38 && target.length <= 298 && target[0] === 2;
 }
 
@@ -774,7 +739,7 @@ function navigationRecord(bytes: Uint8Array, at: number, highlighted: boolean): 
   if (!validNavigationTarget(target)) return null;
   const index = Math.trunc(rawIndex);
   const row: NavigationRow = { id: index, index, target, label: bytes.subarray(labelAt, labelAt + length), highlighted,
-    detail: new Uint8Array(0), kind: 0, host: new Uint8Array(0), selectable: true, current: false };
+    detail: new Uint8Array(0), kind: 0, selectable: true, current: false };
   return { row, end: labelAt + length };
 }
 
@@ -796,20 +761,11 @@ function navigationRowMetadata(bytes: Uint8Array, at: number, row: NavigationRow
   const kind = bytes[at];
   const selectable = bytes[at + 1];
   const detailLength = bytes[at + 2];
-  if (!(kind >= 0 && kind <= 5)) return null;
+  if (!(kind >= 0 && kind <= 2)) return null;
   if (selectable > 3 || detailLength > 160) return null;
   const end = at + 3 + detailLength;
   if (end > bytes.length) return null;
-  // Exactly the host rows carry a filter token instead of catalog authority.
-  const host = navigationHostFilter(row.target);
-  if (!navigationKindMatchesTarget(kind, row.target, host !== null || (row.target.length === 34 && row.target[0] === 6))) return null;
-  return { ...row, kind: Math.trunc(kind), selectable: (selectable & 1) !== 0, current: (selectable & 2) !== 0, detail: bytes.subarray(at + 3, end), host: host ?? new Uint8Array(0) };
-}
-
-function navigationKindMatchesTarget(kind: number, target: Uint8Array, host: boolean): boolean {
-  if ((kind === 3) !== host) return false;
-  if ((kind === 4) !== (target[0] === 4)) return false;
-  return (kind === 5) === (target[0] === 5);
+  return { ...row, kind: Math.trunc(kind), selectable: (selectable & 1) !== 0, current: (selectable & 2) !== 0, detail: bytes.subarray(at + 3, end) };
 }
 
 function navigationMetadata(bytes: Uint8Array, start: number, rows: readonly NavigationRow[]): readonly NavigationRow[] | null {
@@ -826,13 +782,12 @@ function navigationMetadata(bytes: Uint8Array, start: number, rows: readonly Nav
 }
 
 function navigationHeaderValid(bytes: Uint8Array): boolean {
-  if (bytes.length < 16 || bytes.length > 8192) return false;
+  if (bytes.length < 16 || bytes.length > 4096) return false;
   if (bytes[0] !== PROTOCOL_VERSION) return false;
   if (bytes[1] !== 3 && bytes[1] !== 4) return false;
   const queryLength = bytes[12];
   return queryLength >= 0 && queryLength <= 64 && 16 + queryLength <= bytes.length;
 }
-
 
 export function navigationPage(bytes: Uint8Array): NavigationPage | null {
   if (!navigationHeaderValid(bytes)) return null;
@@ -843,9 +798,7 @@ export function navigationPage(bytes: Uint8Array): NavigationPage | null {
   const offset = bytes[10] + bytes[11] * 256;
   const total = bytes[at] + bytes[at + 1] * 256;
   const count = bytes[at + 2];
-  const capacity = context.scope === 4 ? 16 : 4;
-  if (context.scope !== 4 && bytes.length > 4096) return null;
-  if (!validNavigationCount(count, offset, total, capacity)) return null;
+  if (!validNavigationCount(count, offset, total, 4)) return null;
   const rows = navigationRows(bytes, at + 3, count);
   if (rows === null) return null;
   return { revision: readU64(bytes, 2), offset, total, query: bytes.subarray(13, 13 + queryLength), scope: context.scope, host: context.host, rows };
@@ -861,11 +814,10 @@ interface NavigationContext { readonly scope: number; readonly host: Uint8Array;
 
 function navigationContext(bytes: Uint8Array, at: number): NavigationContext | null {
   if (bytes[1] === 3) return { scope: 0, host: new Uint8Array(0), at };
-
   if (at + 2 > bytes.length) return null;
   const scope = bytes[at];
   const length = bytes[at + 1];
-  if (!(scope >= 0 && scope <= 7)) return null;
+  if (scope !== 0 && scope !== 5) return null;
   if (at + 5 + length > bytes.length) return null;
   if (!validNavigationFilter(scope, length)) return null;
   return { scope: Math.trunc(scope), host: bytes.subarray(at + 2, at + 2 + length), at: at + 2 + length };

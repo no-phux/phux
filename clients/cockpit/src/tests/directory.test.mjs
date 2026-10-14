@@ -223,8 +223,8 @@ test('opening takes the modal slot, asks the engine to start, and is scoped to t
   assert.equal(cmd.op, 'batch');
   assert.deepEqual(cmd.cmds[0], { op: 'host_bytes', name: 'cockpit.committed', payload: new Uint8Array() });
   assertDirectoryRequest(cmd, request(1, 0, 0, 0));
-  // Connect to Host takes the slot back.
-  [model] = step(model, { kind: 'host_open' });
+  // Add Machine takes the slot back.
+  [model] = step(model, { kind: 'add_machine_open' });
   assert.equal(model.dirOpen, false);
   assert.equal(model.hostOpen, true);
 

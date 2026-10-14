@@ -509,7 +509,6 @@ export function projectPresentation(lifecycle: PresentationLifecycle): Presentat
   if (!validEncodedPresentation(lifecycle)) lifecycle = initialPresentation();
   return {
     mainPaletteOpen: owns(surface, "navigator", 0), window1PaletteOpen: owns(surface, "navigator", 1), window2PaletteOpen: owns(surface, "navigator", 2), window3PaletteOpen: owns(surface, "navigator", 3), window4PaletteOpen: owns(surface, "navigator", 4),
-
     mainSettingsOpen: owns(surface, "settings", 0), window1SettingsOpen: owns(surface, "settings", 1), window2SettingsOpen: owns(surface, "settings", 2), window3SettingsOpen: owns(surface, "settings", 3), window4SettingsOpen: owns(surface, "settings", 4),
     mainHostOpen: owns(surface, "host", 0), window1HostOpen: owns(surface, "host", 1), window2HostOpen: owns(surface, "host", 2), window3HostOpen: owns(surface, "host", 3), window4HostOpen: owns(surface, "host", 4),
     mainDirOpen: owns(surface, "directory", 0), window1DirOpen: owns(surface, "directory", 1), window2DirOpen: owns(surface, "directory", 2), window3DirOpen: owns(surface, "directory", 3), window4DirOpen: owns(surface, "directory", 4),

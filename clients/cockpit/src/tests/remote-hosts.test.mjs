@@ -30,12 +30,9 @@ function assertRemoteRequest(cmd, payload) {
   assert.equal(cmd.name, 'cockpit.remote');
   assert.deepEqual(cmd.payload, payload);
 }
-function opened() {
-  return step(initialModel()[0], { kind: 'host_open' })[0];
-}
 
 test('Machines is a menu command with its own chord, not cmd+shift+G', () => {
-  assert.deepEqual(commandMsg('navigator.machines'), { kind: 'navigator_open', view: 2 });
+  assert.deepEqual(commandMsg('navigator.machines'), { kind: 'machines_open' });
   const zon = readFileSync(new URL('../../app.zon', import.meta.url), 'utf8');
   assert.match(zon, /\.label = "Machines…", \.command = "navigator\.machines", \.key = "o", \.modifiers = \.\{ "primary", "shift" \}/);
   assert.match(zon, /\.id = "navigator\.machines", \.key = "o", \.modifiers = \.\{ "primary", "shift" \}/);
@@ -44,29 +41,23 @@ test('Machines is a menu command with its own chord, not cmd+shift+G', () => {
   for (const line of shiftG) assert.match(line, /terminal\.find-previous/);
 });
 
-test('opening asks for status and takes the modal slot from the switcher', () => {
-  let [model, cmd] = step(initialModel()[0], { kind: 'palette_open' });
-  [model, cmd] = step(model, { kind: 'host_open' });
-  assert.equal(model.hostOpen, true);
-  assert.equal(model.mainHostOpen, true);
-  assert.equal(model.paletteOpen, false);
-  assert.equal(cmd.op, 'batch');
-  assert.deepEqual(cmd.cmds[0], { op: 'host_bytes', name: 'cockpit.committed', payload: new Uint8Array() });
-  assertRemoteRequest(cmd.cmds[1], new Uint8Array([1, 1, 0]));
-  [model] = step(model, { kind: 'palette_open' });
-  assert.equal(model.hostOpen, false);
-  assert.equal(model.mainHostOpen, false);
+test('Machines is the one place to connect: no Connect to Host flow remains', () => {
+  assert.equal(commandMsg('remote.connect'), null);
+  const read = path => readFileSync(new URL(path, import.meta.url), 'utf8');
+  const sheet = read('../windows/components/cockpit-host.native');
+  assert.doesNotMatch(sheet, /Connect to Host|host_local|host_disconnect|Use this Mac/);
+  const location = read('../windows/components/cockpit-connected-hosts.native');
+  assert.doesNotMatch(location, /Connect to Host|header_host_pick|Refresh hosts|Show more hosts/);
+  assert.match(location, /on-press="header_machines">Machines…<\/menu-item>/);
 });
 
-test('Connect to Host opens in whichever window invoked it, not always the main one', () => {
-  // The switcher's Connect to Host button is in every window's chrome; the
-  // snapshot's active-window byte says which one the user is in.
+test('the machine sheet opens in whichever window invoked it, not always the main one', () => {
   const secondary = snapshotBytes(2, 1);
   let [model] = step(initialModel()[0], { kind: 'snapshot_loaded', body: secondary });
   assert.equal(model.activeWindow, 1);
   assert.equal(windows(model).length, 1);
   assert.equal(text(windows(model)[0].label), 'phux-window-1');
-  [model] = step(model, { kind: 'host_open' });
+  [model] = step(model, { kind: 'add_machine_open' });
   assert.equal(model.hostOpen, true);
   assert.equal(model.mainHostOpen, false);
   assert.equal(model.window1HostOpen, true);
@@ -74,8 +65,8 @@ test('Connect to Host opens in whichever window invoked it, not always the main 
   [model] = step(model, { kind: 'host_close' });
   assert.equal(model.window1HostOpen, false);
 
-  // Every window's markup presents the shared panel through its own flag. The
-  // panel is its own template: another cockpit-window argument would push the
+  // Every window's markup presents the shared sheet through its own flag. The
+  // sheet is its own template: another cockpit-window argument would push the
   // tab loop past the live interpreter's 16-entry scope bound.
   const read = path => readFileSync(new URL(path, import.meta.url), 'utf8');
   const component = read('../windows/components/cockpit-host.native');
@@ -86,57 +77,13 @@ test('Connect to Host opens in whichever window invoked it, not always the main 
   for (const n of [1, 2, 3, 4]) assert.match(read(`../windows/phux-window-${n}.native`), use(`window${n}HostOpen`));
 });
 
-test('submit sends the typed host; a failure keeps it and the panel for a retry', () => {
-  let model = { ...opened(), hostQuery: bytes('me@mini') };
-  let cmd;
-  [model, cmd] = step(model, { kind: 'host_submit' });
-  assertRemoteRequest(cmd, new Uint8Array([1, 2, 7, ...bytes('me@mini')]));
-  assert.equal(model.hostBusy, true);
-  assert.equal(step(model, { kind: 'host_submit' })[1], null, 'one connect in flight');
-
-  const reason = 'me@mini is not a registered host; pair it once in a terminal with `phux --remote me@mini`';
-  [model, cmd] = step(model, { kind: 'remote_loaded', body: reply(3, 'me@mini', reason) });
-  assert.equal(cmd, null);
-  assert.equal(model.hostOpen, true);
-  assert.equal(model.hostBusy, false);
-  assert.equal(text(model.hostQuery), 'me@mini');
-  assert.equal(text(model.hostNotice), `Could not connect to me@mini: ${reason}`);
-  assert.equal(text(model.connectionStatus), `Could not connect to me@mini: ${reason}`);
-
-  [, cmd] = step(model, { kind: 'host_submit' });
-  assertRemoteRequest(cmd, new Uint8Array([1, 2, 7, ...bytes('me@mini')]));
-});
-
-test('an empty host is prompted for instead of sent', () => {
-  const [model, cmd] = step(opened(), { kind: 'host_submit' });
-  assert.equal(cmd, null);
-  assert.match(text(model.hostNotice), /registered host/);
-});
-
-test('connecting, then connected, closes the panel and names the host in header status', () => {
-  let model = { ...opened(), hostQuery: bytes('mini') };
-  let cmd;
-  [model] = step(model, { kind: 'host_submit' });
-  [model, cmd] = step(model, { kind: 'remote_loaded', body: reply(1, 'mini') });
-  assert.equal(cmd, null);
-  assert.equal(model.hostOpen, true);
-  assert.equal(text(model.hostNotice), 'Connecting to mini...');
-
-  // Still awaiting: the next snapshot asks again even without a change.
-  [model, cmd] = step(model, { kind: 'snapshot_loaded', body: snapshotBytes(2) });
-  assertRemoteRequest(cmd, new Uint8Array([1, 1, 0]));
-  [model, cmd] = step(model, { kind: 'remote_loaded', body: reply(2, 'mini') });
-  assert.equal(model.hostOpen, false);
-  assert.deepEqual(cmd, { op: 'host_bytes', name: 'cockpit.committed', payload: new Uint8Array() });
-  assert.equal(text(model.connectionStatus), 'Connected to mini');
-
-  [model, cmd] = step(model, { kind: 'snapshot_loaded', body: snapshotBytes(2) });
-  assert.equal(cmd, null, 'no status request while nothing moved');
-  assert.equal(text(model.connectionStatus), 'mini / Phux connected');
-});
-
-test('reconnecting and a lost connection are named for the host', () => {
+test('a connected registered host says nothing in header status; trouble names the host', () => {
   let model = initialModel()[0];
+  [model] = step(model, { kind: 'snapshot_loaded', body: snapshotBytes(2) });
+  [model] = step(model, { kind: 'remote_loaded', body: reply(2, 'mini') });
+  assert.equal(text(model.connectionStatus), '');
+  [model] = step(model, { kind: 'snapshot_loaded', body: snapshotBytes(2) });
+  assert.equal(text(model.connectionStatus), '');
   [model] = step(model, { kind: 'remote_loaded', body: reply(4, 'mini') });
   assert.equal(text(model.connectionStatus), 'Reconnecting to mini...');
   [model] = step(model, { kind: 'remote_loaded', body: reply(3, 'mini', 'the connection was lost') });
@@ -156,47 +103,8 @@ test('status is asked for when the connection moves, not once per snapshot', () 
   assertRemoteRequest(cmd, new Uint8Array([1, 1, 0]));
 });
 
-test('Use this Mac returns to the local coordinator and closes the panel', () => {
-  let [model, cmd] = step(opened(), { kind: 'host_local' });
-  assertRemoteRequest(cmd, new Uint8Array([1, 3, 0]));
-  [model, cmd] = step(model, { kind: 'remote_loaded', body: reply(0, '') });
-  assert.equal(model.hostOpen, false);
-  assert.equal(cmd.name, 'cockpit.committed');
-  assert.equal(model.hostName.length, 0);
-});
-
-test('Disconnect removes the host named in the panel, Disconnect All every host; a refusal changes nothing', () => {
-  // An empty field names no host: nothing is sent, and the panel says so.
-  let [model, cmd] = step(opened(), { kind: 'host_disconnect' });
-  assert.equal(cmd, null);
-  assert.match(text(model.hostNotice), /Disconnect All/);
-  [model, cmd] = step({ ...opened(), hostQuery: bytes('mini') }, { kind: 'host_disconnect' });
-  assertRemoteRequest(cmd, new Uint8Array([1, 4, 4, ...bytes('mini')]));
-  assert.equal(model.hostBusy, true);
-  assert.equal(step(model, { kind: 'host_disconnect' })[1], null, 'one request in flight');
-  // Refused: the panel stays and says why; the connection status is untouched.
-  const status = model.connectionStatus;
-  const phase = model.hostPhase;
-  [model, cmd] = step(model, { kind: 'remote_loaded', body: reply(5, 'mini', 'Cockpit is not connected to that host') });
-  assert.equal(cmd, null);
-  assert.equal(model.hostOpen, true);
-  assert.equal(model.hostBusy, false);
-  assert.equal(text(model.hostNotice), 'Cockpit is not connected to that host');
-  assert.deepEqual(model.connectionStatus, status);
-  assert.equal(model.hostPhase, phase);
-  // Disconnect All names no host.
-  [model, cmd] = step(model, { kind: 'host_disconnect_all' });
-  assertRemoteRequest(cmd, new Uint8Array([1, 4, 0]));
-  [model, cmd] = step(model, { kind: 'remote_loaded', body: reply(0, '') });
-  assert.equal(model.hostOpen, false);
-  assert.equal(cmd.name, 'cockpit.committed');
-  const panel = readFileSync(new URL('../windows/components/cockpit-host.native', import.meta.url), 'utf8');
-  assert.match(panel, /on-press="host_disconnect">Disconnect<\/button>/);
-  assert.match(panel, /on-press="host_disconnect_all">Disconnect All<\/button>/);
-});
-
 test('the codec refuses what it cannot frame or read', () => {
-  assert.deepEqual(remoteRequest(2, new Uint8Array(300)), new Uint8Array([1, 2, 0]));
+  assert.deepEqual(remoteRequest(1, new Uint8Array(300)), new Uint8Array([1, 1, 0]));
   assert.equal(remoteReply(new Uint8Array([2, 1, 0, 0])), null, 'version');
   assert.equal(remoteReply(new Uint8Array([1, 6, 0, 0])), null, 'phase');
   assert.equal(remoteReply(new Uint8Array([1, 5, 0, 0])).phase, 5, 'refused');

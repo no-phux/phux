@@ -32,10 +32,9 @@ function snapshotBytes({ secondary = [], connection = 2, extensions = [], sequen
   const sections = secondary.flatMap(index => [index, 0, 0, 0, 0, 168, 0]);
   return new Uint8Array([...head, 0, 255, 0, 0, secondary.length, ...sections, 0, 0, 0, 0, 0, ...extensions.flat()]);
 }
-function navigation(session, endpoint) {
+function navigation(session) {
   const s = bytes(session);
-  const e = bytes(endpoint);
-  return record(3, [s.length, ...s, e.length, ...e, 0]);
+  return record(3, [s.length, ...s]);
 }
 function contextsRecord(entries, options) {
   return record(5, [...payload(entries, options)]);
@@ -158,8 +157,8 @@ test('two windows on different machines each carry their own header and state', 
   assert.equal(text(model.mainContext.detail), 'studio');
   assert.equal(text(model.window1Context.title), 'beta');
   assert.equal(text(model.window1Context.detail), 'mini · Offline');
-  assert.equal(text(model.connectionStatus), 'Phux connected');
-  assert.equal(text(model.window1Status), 'Phux offline');
+  assert.equal(text(model.connectionStatus), '');
+  assert.equal(text(model.window1Status), 'Offline');
   // Closed windows are blank, never a copy of an open one.
   assert.equal(model.window2Context.title.length, 0);
 });
@@ -181,10 +180,10 @@ test('an open window without a record is explicitly unknown, never the primary',
 test('state words: unavailable, offline, connecting, opening and empty each reach their own window', () => {
   const cases = [
     [{ flags: 8, connection: 2 }, 'mini · Unavailable'],
-    [{ connection: 4 }, 'mini · Workspace unavailable'],
+    [{ connection: 4 }, 'mini · Not syncing'],
     [{ connection: 1 }, 'mini · Connecting...'],
     [{ flags: 5, connection: 2 }, 'mini · Opening...'],
-    [{ flags: 1, connection: 2 }, 'mini · Empty session'],
+    [{ flags: 1, connection: 2 }, 'mini'],
     [{ connection: 2 }, 'mini'],
     [{ connection: 0, host: 'This Mac' }, 'This Mac'],
   ];
@@ -198,7 +197,7 @@ test('state words: unavailable, offline, connecting, opening and empty each reac
   }
 });
 
-test('the Empty session view uses each window its own name, host, picked and opening state', () => {
+test('the Empty session view uses each window its own picked and opening state', () => {
   const model = loaded({ secondary: [1, 3], extensions: [empty(1, 0, 'legacy', 'nowhere'), contextsRecord([
     { window: 0, session: 'alpha', host: 'studio' },
     { window: 1, flags: 1 | 2, session: 'scratch', host: 'mini' },
@@ -209,12 +208,8 @@ test('the Empty session view uses each window its own name, host, picked and ope
   assert.equal(model.mainEmptyOpen, false);
   assert.equal(model.window1EmptyOpen, true);
   assert.equal(model.window3EmptyOpen, true);
-  assert.equal(text(model.window1Context.emptyName), 'scratch');
-  assert.equal(text(model.window1Context.emptyDetail), 'Empty session on mini');
   assert.equal(model.window1Context.emptyPicked, true);
   assert.equal(model.window1Context.emptyOpening, false);
-  assert.equal(text(model.window3Context.emptyName), 'other');
-  assert.equal(text(model.window3Context.emptyDetail), 'Empty session on lab');
   assert.equal(model.window3Context.emptyPicked, false);
   assert.equal(model.window3Context.emptyOpening, true);
   // The active primary is not opening, so its New Tab gate stays open.
@@ -222,19 +217,21 @@ test('the Empty session view uses each window its own name, host, picked and ope
   assert.equal(model.emptyPicked, true);
 });
 
-test('old snapshots without kind 5 keep the kind 3 and kind 4 labels', () => {
-  const model = loaded({ secondary: [1], extensions: [navigation('primary-global', 'global-host'), empty(2, 1, 'scratch', 'mini')] });
+test('old snapshots without kind 5 keep the kind 3 session and kind 4 empty state', () => {
+  const model = loaded({ secondary: [1], extensions: [navigation('primary-global'), empty(2, 1, 'scratch', 'mini')] });
   for (const context of [model.mainContext, model.window1Context]) {
     assert.equal(text(context.title), 'primary-global');
-    assert.equal(text(context.detail), 'global-host');
+    assert.equal(text(context.detail), 'This Mac');
   }
   assert.equal(model.emptyWindows, 2);
-  assert.equal(text(model.window1Context.emptyName), 'scratch');
-  assert.equal(text(model.window1Context.emptyDetail), 'Empty session on mini');
-  assert.equal(text(model.window1Status), 'Phux connected');
+  assert.equal(model.window1Context.emptyPicked, true);
+  assert.equal(text(model.window1Status), '');
+  // With no session yet the header names only the machine; never a stand-in.
   const bare = loaded();
-  assert.equal(text(bare.mainContext.title), 'Sessions');
-  assert.equal(text(bare.mainContext.detail), 'Machine not yet known');
+  assert.equal(text(bare.mainContext.title), '');
+  assert.equal(text(bare.mainContext.detail), 'This Mac');
+  assert.equal(text(bare.mainContext.location), 'This Mac');
+  assert.equal(text(initialModel()[0].mainContext.location), 'Starting…');
 });
 
 test('closing a window clears its context on the next snapshot', () => {
@@ -246,7 +243,6 @@ test('closing a window clears its context on the next snapshot', () => {
   [model] = step(model, { kind: 'snapshot_loaded', body: snapshotBytes({ extensions: [contextsRecord([{ window: 0, session: 'alpha', host: 'studio' }])] }) });
   assert.equal(model.window1Open, false);
   assert.equal(model.window1Context.title.length, 0);
-  assert.equal(model.window1Context.emptyName.length, 0);
   assert.equal(model.window1EmptyOpen, false);
   assert.equal(model.emptyWindows, 0);
 });
@@ -286,7 +282,7 @@ test('a protocol-valid snapshot cannot focus a secondary slot it does not declar
 });
 
 test('every window template binds its own context, not the ambient primary labels', () => {
-  const markup = readFileSync(new URL('../windows/components/cockpit-window.native', import.meta.url), 'utf8');
+  const markup = readFileSync(new URL('../windows/components/cockpit-connected-hosts.native', import.meta.url), 'utf8');
   const header = markup.slice(markup.indexOf('<dropdown-menu'), markup.indexOf('</dropdown-menu>'));
   assert.match(header, /\{title\}/);
   assert.match(header, /\{detail\}/);
@@ -295,7 +291,7 @@ test('every window template binds its own context, not the ambient primary label
   for (const [file, prefix] of uses) {
     const source = readFileSync(new URL(file, import.meta.url), 'utf8');
     assert.match(source, new RegExp(`title="\\{${prefix}Context\\.title\\}" detail="\\{${prefix}Context\\.detail\\}"`), file);
-    assert.match(source, new RegExp(`emptyname="\\{${prefix}Context\\.emptyName\\}" emptydetail="\\{${prefix}Context\\.emptyDetail\\}"`), file);
+    assert.doesNotMatch(source, /emptyname|emptydetail/, file);
     assert.match(source, new RegExp(`location="\\{${prefix}Context\\.location\\}"`), file);
   }
 });
@@ -303,7 +299,7 @@ test('every window template binds its own context, not the ambient primary label
 test('each window header names its own session and machine, eliding the session first', () => {
   const model = loaded({
     secondary: [1],
-    extensions: [navigation('primary', 'This Mac'), contextsRecord([
+    extensions: [navigation('primary'), contextsRecord([
       { window: 0, session: 'build', host: 'This Mac' },
       { window: 1, session: 'a-very-long-session-name-for-release', host: 'gpu-box' },
     ])],
@@ -316,12 +312,12 @@ test('each window header names its own session and machine, eliding the session 
   assert.ok(long.includes('…'), long);
   assert.ok([...long].length <= 24, long);
   // A state word travels with the machine, not in place of it.
-  const offline = loaded({ extensions: [navigation('primary', 'This Mac'), contextsRecord([
+  const offline = loaded({ extensions: [navigation('primary'), contextsRecord([
     { window: 0, connection: 3, session: 'build', host: 'mini' },
   ])] });
   assert.equal(text(offline.mainContext.location), 'build · mini · Offline');
   // Multi-byte names elide on a character boundary.
-  const wide = loaded({ extensions: [navigation('primary', 'This Mac'), contextsRecord([
+  const wide = loaded({ extensions: [navigation('primary'), contextsRecord([
     { window: 0, session: 'é'.repeat(30), host: 'This Mac' },
   ])] });
   assert.equal(validUtf8(wide.mainContext.location), true);

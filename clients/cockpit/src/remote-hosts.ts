@@ -1,27 +1,20 @@
-/// Connect to Host: the TypeScript half of Cockpit's remote-host flow.
+/// The registered host's status: the TypeScript half of `cockpit.remote`.
 ///
 /// The wire is the native half's (src/cockpit/native/remote_hosts.zig):
 ///   request  version=1, kind, target_len, target
 ///   reply    version=1, phase, host_len, host, reason_len, reason
-/// Hosts are names from the phux CLI's own registry (`phux host add`,
-/// `phux host add`, `phux --remote`); Cockpit never pairs one itself.
+/// Cockpit asks only for status (kind 1); machines are connected from the
+/// Machines view.
 import { asciiBytes } from "@native-sdk/core";
 
 export const REMOTE_KIND_STATUS = 1;
-export const REMOTE_KIND_CONNECT = 2;
-export const REMOTE_KIND_LOCAL = 3;
-/// Remove a remote host entirely: its group leaves the switcher and it is
-/// no longer reattached at launch. With a target, that host alone; with
-/// none, every host. "Use this Mac" only makes this Mac active.
-export const REMOTE_KIND_DISCONNECT = 4;
 
 export const REMOTE_PHASE_LOCAL = 0;
 export const REMOTE_PHASE_CONNECTING = 1;
 export const REMOTE_PHASE_CONNECTED = 2;
 export const REMOTE_PHASE_FAILED = 3;
 export const REMOTE_PHASE_RECONNECTING = 4;
-/// The request changed nothing; the reason says why. The connection status
-/// is not this reply's.
+/// The engine refused the request; the reason says why.
 export const REMOTE_PHASE_REFUSED = 5;
 
 export interface RemoteReply {

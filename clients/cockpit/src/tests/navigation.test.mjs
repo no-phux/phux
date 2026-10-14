@@ -45,8 +45,8 @@ function snapshotBytes(connection) {
   return out;
 }
 
-test('engine readiness never implies a connected Phux provider', () => {
-  for (const [state, label] of [[0, 'Local terminals'], [1, 'Phux connecting...'], [2, 'Phux connected'], [3, 'Phux offline']]) {
+test('engine readiness never implies a connected Phux provider, and a healthy connection says nothing', () => {
+  for (const [state, label] of [[0, ''], [1, 'Connecting...'], [2, ''], [3, 'Offline']]) {
     const [model] = step(initialModel()[0], { kind: 'snapshot_loaded', body: snapshotBytes(state) });
     assert.equal(model.engineConnected, true);
     assert.equal(text(model.status), 'READY');
@@ -58,21 +58,21 @@ test('engine readiness never implies a connected Phux provider', () => {
 test('a terminal whose wheel another client holds says so in its window status', () => {
   const body = new Uint8Array([...snapshotBytes(2), 8, 0, 0, 0, 0]);
   const [model] = step(initialModel()[0], { kind: 'snapshot_loaded', body });
-  assert.equal(text(model.connectionStatus), 'Phux connected / Another client is driving');
-  assert.equal(text(model.window1Status), 'Phux connected');
+  assert.equal(text(model.connectionStatus), 'Typing here is held by another client');
+  assert.equal(text(model.window1Status), '');
 });
 
 test('per-window terminal status survives connected and offline snapshot projection', () => {
   const body = new Uint8Array([...snapshotBytes(2), 6, 2, 3, 7, 0]);
   const [model] = step(initialModel()[0], { kind: 'snapshot_loaded', body });
-  assert.equal(text(model.connectionStatus), 'Phux connected / Loading earlier history');
-  assert.equal(text(model.window1Status), 'Phux connected / Recovering terminal: waiting for snapshot');
-  assert.equal(text(model.window2Status), 'Phux connected / Terminal frozen: waiting for recovery');
-  assert.equal(text(model.window3Status), 'Phux connected / Earlier history available');
-  assert.equal(text(model.window4Status), 'Phux connected');
+  assert.equal(text(model.connectionStatus), 'Loading earlier history');
+  assert.equal(text(model.window1Status), 'Reconnecting terminal...');
+  assert.equal(text(model.window2Status), 'Terminal frozen until it reconnects');
+  assert.equal(text(model.window3Status), 'Earlier history available');
+  assert.equal(text(model.window4Status), '');
   body[23] = 3;
   assert.equal(text(step(initialModel()[0], { kind: 'snapshot_loaded', body })[0].window1Status),
-    'Phux offline / Recovering terminal: waiting for snapshot');
+    'Offline · Reconnecting terminal...');
   assert.equal(snapshot(body.subarray(0, body.length - 1)), null);
   body[body.length - 1] = 9;
   assert.equal(snapshot(body), null);
