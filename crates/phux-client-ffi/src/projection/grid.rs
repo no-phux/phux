@@ -85,36 +85,44 @@ pub fn dirty_row_span(frame: &GridFrame) -> Option<(u16, u16)> {
 ///
 /// Bytes 18-19 and 35 are explicitly zero, matching the shared layout's
 /// pinned offsets, so a foreign decoder reads the same bytes the C lane
-/// lends by pointer.
+/// lends by pointer. Each cell is written into one zeroed 36-byte slot and
+/// copied once. A memcpy of the `Cell` slice would publish whatever the
+/// compiler left in that padding.
 #[must_use]
 pub fn encode_cells(cells: &[Cell]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(cells.len() * CELL_BYTES);
+    let mut bytes = Vec::with_capacity(cells.len().saturating_mul(CELL_BYTES));
+    let mut slot = [0_u8; CELL_BYTES];
     for cell in cells {
-        bytes.extend_from_slice(&cell.utf8_offset.to_ne_bytes());
-        bytes.extend_from_slice(&cell.utf8_len.to_ne_bytes());
-        bytes.extend_from_slice(&cell.content_tag.to_ne_bytes());
-        bytes.extend_from_slice(&cell.hyperlink_offset.to_ne_bytes());
-        bytes.extend_from_slice(&cell.hyperlink_len.to_ne_bytes());
-        bytes.push(cell.wide);
-        bytes.push(cell.semantic_content);
-        bytes.extend_from_slice(&[0, 0]);
-        bytes.extend_from_slice(&cell.flags.to_ne_bytes());
-        bytes.extend_from_slice(&[
-            cell.foreground_r,
-            cell.foreground_g,
-            cell.foreground_b,
-            cell.background_r,
-            cell.background_g,
-            cell.background_b,
-            cell.underline,
-            cell.underline_r,
-            cell.underline_g,
-            cell.underline_b,
-            cell.reserved,
-            0,
-        ]);
+        write_cell(&mut slot, cell);
+        bytes.extend_from_slice(&slot);
     }
     bytes
+}
+
+fn write_cell(slot: &mut [u8; CELL_BYTES], cell: &Cell) {
+    *slot = [0; CELL_BYTES];
+    slot[0..4].copy_from_slice(&cell.utf8_offset.to_ne_bytes());
+    slot[4..6].copy_from_slice(&cell.utf8_len.to_ne_bytes());
+    slot[6..8].copy_from_slice(&cell.content_tag.to_ne_bytes());
+    slot[8..12].copy_from_slice(&cell.hyperlink_offset.to_ne_bytes());
+    slot[12..16].copy_from_slice(&cell.hyperlink_len.to_ne_bytes());
+    slot[16] = cell.wide;
+    slot[17] = cell.semantic_content;
+    slot[20..24].copy_from_slice(&cell.flags.to_ne_bytes());
+    let colors = [
+        cell.foreground_r,
+        cell.foreground_g,
+        cell.foreground_b,
+        cell.background_r,
+        cell.background_g,
+        cell.background_b,
+        cell.underline,
+        cell.underline_r,
+        cell.underline_g,
+        cell.underline_b,
+    ];
+    slot[24..34].copy_from_slice(&colors);
+    slot[34] = cell.reserved;
 }
 
 #[cfg(test)]
@@ -140,6 +148,18 @@ mod tests {
         assert_eq!(&bytes[4..6], &5_u16.to_ne_bytes());
         assert_eq!(&bytes[18..20], &[0, 0]);
         assert_eq!(bytes[35], 0);
+        let marked = Cell {
+            flags: 0x0102_0304,
+            foreground_r: 9,
+            reserved: 7,
+            ..Cell::default()
+        };
+        let marked = encode_cells(&[marked]);
+        assert_eq!(&marked[20..24], &0x0102_0304_u32.to_ne_bytes());
+        assert_eq!(marked[24], 9);
+        assert_eq!(marked[34], 7);
+        assert_eq!(&marked[18..20], &[0, 0]);
+        assert_eq!(marked[35], 0);
     }
 
     #[test]
