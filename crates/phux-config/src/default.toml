@@ -643,6 +643,32 @@ right = [
 # compact-rows = 18
 # min-pane-cols = 40
 
+# Agent notifications (docs/consumers/tui.md, "Notifications"). The TUI
+# posts one when an agent becomes blocked or asks for you, and when an
+# agent that was working finishes. "Finished" fires once per run: looking
+# at the pane before the notification goes out cancels it, and an agent
+# in the pane you are looking at stays quiet while the terminal window
+# has focus (suppress-focused). Bursts inside a second coalesce into one.
+#
+# `mode`: "terminal" writes an OSC notification to the outer terminal,
+# so it reaches your desktop over SSH too; "system" uses the desktop
+# notifier of the machine the TUI runs on (osascript on macOS,
+# notify-send elsewhere); "bell" rings the terminal bell; "off".
+#
+# `terminal-protocol`: "auto" picks OSC 99 for kitty, OSC 777 for
+# Ghostty, WezTerm, and foot, and OSC 9 otherwise. Over SSH the
+# environment may not name your terminal, so pin "osc9", "osc777", or
+# "osc99" if auto guesses wrong. Inside tmux the sequence is wrapped for
+# passthrough (tmux needs `set -g allow-passthrough on`).
+#
+# [notifications]
+# mode = "terminal"
+# terminal-protocol = "auto"
+# blocked = true
+# done = true
+# suppress-focused = true
+# sound = false
+
 # Authorization posture (docs/spec/workload-auth.md section 8). Read once
 # at server start; a change needs a restart.
 #

@@ -29,6 +29,8 @@ pub struct Config {
     pub sidebar: SidebarCfg,
     /// Responsive-chrome breakpoints (`[chrome]`).
     pub chrome: ChromeCfg,
+    /// Agent notifications the TUI posts (`[notifications]`).
+    pub notifications: NotificationsCfg,
     /// Event hooks (`[[hooks.<event>]]`), keyed by event name.
     pub hooks: BTreeMap<String, Vec<HookEntry>>,
     /// Declarative plugin manifests composed into this config.
@@ -500,6 +502,77 @@ impl Default for ChromeCfg {
             min_pane_cols: 40,
         }
     }
+}
+
+/// `[notifications]`: how the TUI tells you an agent needs you or finished
+/// (`docs/consumers/tui.md` §"Notifications"). Read by the client, live on
+/// reload.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent TOML toggle the user writes by name"
+)]
+pub struct NotificationsCfg {
+    /// Where a notification goes.
+    pub mode: NotifyMode,
+    /// Which escape sequence `terminal` mode writes.
+    pub terminal_protocol: NotifyProtocol,
+    /// Notify when an agent becomes blocked or asks for a human.
+    pub blocked: bool,
+    /// Notify when an agent that was working finishes.
+    pub done: bool,
+    /// Stay quiet about the pane you are looking at while the terminal
+    /// window has focus.
+    pub suppress_focused: bool,
+    /// Also ring the bell (`terminal`) or play the default sound (`system`).
+    pub sound: bool,
+}
+
+impl Default for NotificationsCfg {
+    fn default() -> Self {
+        Self {
+            mode: NotifyMode::Terminal,
+            terminal_protocol: NotifyProtocol::Auto,
+            blocked: true,
+            done: true,
+            suppress_focused: true,
+            sound: false,
+        }
+    }
+}
+
+/// `[notifications] mode`: the delivery channel.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum NotifyMode {
+    /// An OSC notification to the outer terminal; survives SSH.
+    #[default]
+    Terminal,
+    /// The desktop notifier of the machine the TUI runs on (`osascript` on
+    /// macOS, `notify-send` elsewhere).
+    System,
+    /// The terminal bell only.
+    Bell,
+    /// No notifications.
+    Off,
+}
+
+/// `[notifications] terminal-protocol`: the OSC dialect `terminal` mode
+/// writes.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum NotifyProtocol {
+    /// Pick from the environment: OSC 99 for kitty, OSC 777 for Ghostty,
+    /// `WezTerm`, and foot, OSC 9 otherwise.
+    #[default]
+    Auto,
+    /// `OSC 9 ; message` (iTerm2, `WezTerm`, Ghostty, Windows Terminal).
+    Osc9,
+    /// `OSC 777 ; notify ; title ; body` (Ghostty, `WezTerm`, foot).
+    Osc777,
+    /// `OSC 99` desktop notifications (kitty).
+    Osc99,
 }
 
 /// A status-bar widget: a bare kind (`"session"`) or an inline table with

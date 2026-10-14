@@ -528,6 +528,12 @@ pub(super) struct SessionLoop {
     session_picker_dirty: bool,
     /// First-use moment for this entry; `None` on session switches.
     onboarding_claim: Option<AttachClaim>,
+    /// Agent-notification edges, coalescing, and the outer window's focus.
+    notifier: crate::attach::notify::Notifier,
+    /// What the outer terminal environment supports for notifications.
+    notify_env: crate::attach::notify::deliver::HostEnv,
+    /// Per-post id (kitty's `OSC 99` `i=`).
+    notify_seq: u32,
 }
 
 impl SessionLoop {
@@ -702,6 +708,9 @@ impl SessionLoop {
             host_switch_request: None,
             onboarding_claim,
             settings,
+            notifier: crate::attach::notify::Notifier::new(tokio::time::Instant::now()),
+            notify_env: crate::attach::notify::deliver::HostEnv::detect(),
+            notify_seq: 0,
         })
     }
 
@@ -720,6 +729,7 @@ mod bootstrap;
 mod frames;
 mod input;
 mod inventory;
+mod notify;
 mod paint;
 mod panes;
 mod peers;

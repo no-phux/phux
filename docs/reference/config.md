@@ -25,6 +25,7 @@ The configuration surface of `~/.config/phux/config.toml`. The loader layers you
 | `[status]` | Status-bar composition: widget lists for the left, center, and right slots, plus which outer-terminal row the bar reserves. |
 | `[sidebar]` | The window sidebar: enabled by default; width defaults to 20 columns, 0 adapts to 28–40; position chooses the docking edge. |
 | `[chrome]` | Responsive-chrome breakpoints: the column and row counts at which overlays go full-bleed and the sidebar yields its columns back to the panes. |
+| `[notifications]` | Agent notifications the TUI posts when an agent blocks or finishes: delivery mode (terminal OSC, system, bell, off), the OSC dialect, per-event toggles, focus suppression, and sound. |
 | `[[hooks.<event>]]` | Event hooks: per event name, an array of `when` predicates each paired with an action to run on match. |
 | `[[plugins]]` | Declarative plugin manifests composed into this config; each entry names a `phux-plugin.toml` path and an enabled flag. |
 | `[[satellites]]` | Federation satellites a hub routes to: name, endpoint, token-file path, and certificate pin (ADR-0038). |
@@ -69,6 +70,12 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `keybindings.which-key` | `true` |
 | `keybindings.which-key-delay-ms` | `400` |
 | `limits.metadata-value-bytes` | `262144` |
+| `notifications.blocked` | `true` |
+| `notifications.done` | `true` |
+| `notifications.mode` | `"terminal"` |
+| `notifications.sound` | `false` |
+| `notifications.suppress-focused` | `true` |
+| `notifications.terminal-protocol` | `"auto"` |
 | `policy.mode` | unset — transitional: every admitted connection holds the owner's full grant, and a remote listener is warned about at startup. `local` admits the owner socket only; `paired` requires an enrolled workload certificate on every TLS connection |
 | `sidebar.enabled` | `true` |
 | `sidebar.hosts` | `true` |
@@ -728,6 +735,32 @@ right = [
 # compact-cols = 64
 # compact-rows = 18
 # min-pane-cols = 40
+
+# Agent notifications (docs/consumers/tui.md, "Notifications"). The TUI
+# posts one when an agent becomes blocked or asks for you, and when an
+# agent that was working finishes. "Finished" fires once per run: looking
+# at the pane before the notification goes out cancels it, and an agent
+# in the pane you are looking at stays quiet while the terminal window
+# has focus (suppress-focused). Bursts inside a second coalesce into one.
+#
+# `mode`: "terminal" writes an OSC notification to the outer terminal,
+# so it reaches your desktop over SSH too; "system" uses the desktop
+# notifier of the machine the TUI runs on (osascript on macOS,
+# notify-send elsewhere); "bell" rings the terminal bell; "off".
+#
+# `terminal-protocol`: "auto" picks OSC 99 for kitty, OSC 777 for
+# Ghostty, WezTerm, and foot, and OSC 9 otherwise. Over SSH the
+# environment may not name your terminal, so pin "osc9", "osc777", or
+# "osc99" if auto guesses wrong. Inside tmux the sequence is wrapped for
+# passthrough (tmux needs `set -g allow-passthrough on`).
+#
+# [notifications]
+# mode = "terminal"
+# terminal-protocol = "auto"
+# blocked = true
+# done = true
+# suppress-focused = true
+# sound = false
 
 # Authorization posture (docs/spec/workload-auth.md section 8). Read once
 # at server start; a change needs a restart.

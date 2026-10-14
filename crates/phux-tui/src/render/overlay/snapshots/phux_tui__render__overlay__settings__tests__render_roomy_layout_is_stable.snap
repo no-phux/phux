@@ -14,11 +14,11 @@ expression: "render_text(&page, 100, 30)"
                │  Status bar       │   position                       left  default │
                │ ▸Sidebar        1 │   hosts                          true  default │
                │  Chrome           │   hosts-refresh-secs               10  default │
+               │  Notifications    │                                                │
                │  Theme            │                                                │
                │  Experimental     │                                                │
                │  Voice            │                                                │
                │  Limits           │                                                │
-               │                   │                                                │
                │ ────────────────────────────────────────────────────────────────── │
                │ sidebar.width  integer 0..65535                                    │
                │ Sidebar width in columns; 0 sizes it automatically                 │
