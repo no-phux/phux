@@ -29,8 +29,9 @@ already Rust.
 Replace that host with `clients/desktop/native`. The executable is
 `phux-desktop`. It imports `gpui` as `gpui-pre` 0.3.8, `gpui_platform` as
 `gpui-pre-platform` 0.3.8, and `gpui_kit` 0.7.1, the snapshot Kit is released
-against. `clients/desktop/toolchain` pins the crates.io archives of three of
-those crates and two reviewed patches: the drawable-presented callback the
+against. `clients/desktop/toolchain` pins the crates.io archives of
+`gpui-pre` and its two macOS platform crates (`gpui-pre-apple`,
+`gpui-pre-macos`) and two reviewed patches: the drawable-presented callback the
 terminal's fence recovery needs, and an offscreen capture used only by
 qualification evidence. Paint and `on_next_frame` do not clear a
 presentation fence.
