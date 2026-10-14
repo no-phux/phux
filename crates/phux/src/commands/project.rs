@@ -62,13 +62,18 @@ impl Project {
     }
 
     fn label(&self) -> String {
-        self.name.clone().unwrap_or_else(|| {
-            self.root
-                .file_name()
-                .unwrap_or(self.root.as_os_str())
-                .to_string_lossy()
-                .into_owned()
-        })
+        // Catalog names are CLI aliases. The project grouping is stable
+        // whether a checkout or any of its worktrees is opened by name/path.
+        let repository = if self.identity.file_name().is_some_and(|name| name == ".git") {
+            self.identity.parent().unwrap_or(&self.root)
+        } else {
+            &self.identity
+        };
+        repository
+            .file_name()
+            .unwrap_or(self.root.as_os_str())
+            .to_string_lossy()
+            .into_owned()
     }
 
     fn trust_key(&self) -> trust::TrustKey {
@@ -702,6 +707,8 @@ mod tests {
         assert_eq!(main.trust_key(), linked.trust_key());
         assert_eq!(main.trust_key().recipe, Path::new(RECIPE_PATH));
         assert_eq!(linked.session(), "wt");
+        assert_eq!(main.label(), "repo");
+        assert_eq!(linked.label(), "repo");
 
         let plain = resolve_path(dir.path()).expect("plain dir");
         assert_eq!(plain.identity, plain.root);

@@ -140,13 +140,12 @@ fn project_open_keeps_canonical_checkout_identity_and_archive_attributes() {
 
     let (code, stdout, stderr) = project_open("Friendly");
     assert_eq!(code, 0, "first project open: {stderr}");
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&stdout).expect("open JSON")["created"],
-        true
-    );
+    let opened: serde_json::Value = serde_json::from_str(&stdout).expect("open JSON");
+    assert_eq!(opened["created"], true);
+    assert_eq!(opened["project"], "Friendly");
     let attrs = session_attrs(&socket, "same");
     assert_eq!(attr(&attrs, "directory"), Some(first_path));
-    assert_eq!(attr(&attrs, "project"), Some("Friendly"));
+    assert_eq!(attr(&attrs, "project"), Some("same"));
 
     let (code, stdout, stderr) = project_open(first_path);
     assert_eq!(code, 0, "reentry: {stderr}");
@@ -199,10 +198,7 @@ fn assert_project_archive_roundtrip(
     let saved: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&archive).expect("read archive"))
             .expect("archive JSON");
-    for (name, path, label) in [
-        ("same", first_path, "Friendly"),
-        ("other", other_path, "other"),
-    ] {
+    for (name, path, label) in [("same", first_path, "same"), ("other", other_path, "other")] {
         let row = saved["sessions"]
             .as_array()
             .expect("sessions")
@@ -227,7 +223,7 @@ fn assert_project_archive_roundtrip(
     );
     assert_eq!(
         attr(&session_attrs(&dest_socket, "same"), "project"),
-        Some("Friendly")
+        Some("same")
     );
     assert_eq!(
         attr(&session_attrs(&dest_socket, "other"), "directory"),

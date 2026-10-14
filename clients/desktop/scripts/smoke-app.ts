@@ -155,6 +155,8 @@ for result in request.results ?? [] {
 }
 `,
 );
+const projectName = "Cedar";
+const projectSession = "Spruce";
 const marker = "PHUXSURVIVAL";
 let server: Bun.Subprocess | undefined;
 function appArgs(dir: string, smoke: boolean): string[] {
@@ -191,6 +193,10 @@ async function capture(label: string, expected = marker): Promise<Bun.Subprocess
   const text = run(["/usr/bin/swift", ocr, join(dir, "presented.png")], 120_000);
   writeFileSync(join(evidence, `${label}.ocr.txt`), text);
   assert(text.includes(expected), `${label}: terminal marker not rendered; OCR: ${text}`);
+  assert(
+    text.toLowerCase().includes(projectName.toLowerCase()),
+    `${label}: project sidebar not rendered; OCR: ${text}`,
+  );
   return app;
 }
 async function cleanup(): Promise<void> {
@@ -260,6 +266,35 @@ try {
       return true;
     },
     undefined,
+  );
+  // The session name differs from its Git project label: OCR of "Cedar"
+  // therefore proves grouping, not just that the session row rendered.
+  const repository = join(home, projectName);
+  const projectDir = join(home, projectSession);
+  run(["/usr/bin/git", "init", "-q", repository]);
+  run([
+    "/usr/bin/git",
+    "-C",
+    repository,
+    "-c",
+    "user.name=Desktop Smoke",
+    "-c",
+    "user.email=desktop-smoke@localhost",
+    "-c",
+    "core.hooksPath=/dev/null",
+    "commit",
+    "--allow-empty",
+    "-qm",
+    "seed",
+  ]);
+  run(["/usr/bin/git", "-C", repository, "worktree", "add", "-q", "-b", "spruce", projectDir]);
+  const opened: unknown = JSON.parse(cli("project", "open", "--json", projectDir));
+  assert(
+    opened &&
+      typeof opened === "object" &&
+      "session" in opened &&
+      opened.session === projectSession,
+    "Project CLI must create the checkout-bound worktree session before desktop attach",
   );
   const first = await capture("first-launch");
   await stop(first, "SIGKILL");

@@ -143,6 +143,8 @@ pub struct Desk {
     pub(crate) settings_controls: Option<SettingsControls>,
     /// `OpenRequest::fresh`, kept so a rebuilt link spawns the same way.
     open_fresh: bool,
+    /// A CLI-opened terminal that has not appeared in this window's topology yet.
+    pending_project_terminal: Option<ResourceId>,
     /// Sessions folded closed in the sidebar, by name.
     pub(crate) collapsed: std::collections::HashSet<String>,
     /// The titlebar's window-drag surface, created once.
@@ -256,6 +258,7 @@ impl Desk {
             find_input: None,
             settings_controls: None,
             open_fresh: request.fresh,
+            pending_project_terminal: None,
             collapsed: Default::default(),
             drag_region: None,
             window_title: String::new(),
@@ -384,6 +387,15 @@ impl Desk {
         if let Some(link) = self.link.as_mut() {
             link.workspace.handle(&events, &link.connection);
             link.workspace.settle(&link.connection);
+        }
+        if let Some(terminal) = self.pending_project_terminal.as_ref()
+            && self
+                .link
+                .as_ref()
+                .is_some_and(|link| link.connection.pane(terminal).is_some())
+            && let Some(terminal) = self.pending_project_terminal.take()
+        {
+            self.reveal_terminal(&terminal);
         }
         self.take_notices();
         self.note_agents();
@@ -1141,19 +1153,77 @@ impl Desk {
                 .and_then(Result::ok)
                 .flatten()
                 .unwrap_or_default();
-            if let Some(path) = paths.into_iter().next() {
-                let _ = desk.update(cx, |desk, cx| {
-                    let cwd = path.display().to_string();
-                    desk.workspace_call(|link| {
-                        link.workspace
-                            .new_terminal(&link.connection, Some(cwd.as_str()))
-                    });
-                    desk.take_notices();
-                    cx.notify();
-                });
-            }
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let _ = desk.update_in(cx, |desk, window, cx| {
+                desk.open_project_path(path, window, cx);
+            });
         })
         .detach();
+    }
+
+    /// A selected folder and a sidebar project use the same CLI/trust path.
+    pub fn open_project_path(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let desk = cx.entity().downgrade();
+        let phux = self.phux.clone();
+        let socket = self.socket.clone();
+        cx.spawn_in(window, async move |_, cx| {
+            // Validation, trust checks and recipe launches can block.
+            let result = smol::unblock(move || host::open_project(&phux, &socket, &path)).await;
+            let _ = desk.update(cx, |desk, cx| match result {
+                Ok(opened) => desk.open_project_window(opened.session, opened.terminal, cx),
+                Err(error) => {
+                    desk.post(Kind::Error, "Could not open folder", Some(error));
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn show_project_terminal(&mut self, terminal: ResourceId, cx: &mut Context<Self>) {
+        if self
+            .link
+            .as_ref()
+            .is_some_and(|link| link.connection.pane(&terminal).is_some())
+        {
+            self.pending_project_terminal = None;
+            self.reveal_terminal(&terminal);
+        } else {
+            self.pending_project_terminal = Some(terminal);
+            if let Some(link) = self.link.as_ref() {
+                let _ = link.connection.refresh_topology();
+            }
+        }
+        cx.notify();
+    }
+
+    pub fn open_project_window(
+        &mut self,
+        session: String,
+        terminal: ResourceId,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session == session {
+            self.show_project_terminal(terminal, cx);
+            return;
+        }
+        if let Err(error) = self.desktop.update(cx, |desktop, cx| {
+            desktop.open_project(session, terminal, cx)
+        }) {
+            self.post(
+                Kind::Error,
+                "Could not show project",
+                Some(error.to_string()),
+            );
+            cx.notify();
+        }
     }
 
     fn open_rename_session(&mut self) {
@@ -2524,8 +2594,13 @@ impl Desk {
         cx: &mut Context<Self>,
     ) {
         self.workspace_call(|link| {
+            let cwd = link
+                .connection
+                .directories
+                .get(&session_id)
+                .map(String::as_str);
             link.workspace
-                .new_terminal_in(&link.connection, session_id, None)
+                .new_terminal_in(&link.connection, session_id, cwd)
         });
         self.after_command(window, cx);
     }

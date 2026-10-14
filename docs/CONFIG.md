@@ -455,9 +455,11 @@ exited, `open` starts a fresh shell at the recorded checkout root. Without a
 recipe, the first open starts one shell at that root.
 
 The session records the canonical checkout root as its `directory` attribute
-and its catalog name (or checkout basename) as its `project` attribute.
+and the Git repository name (plain-folder basename) as its `project` label.
+`[[projects]]` names are CLI aliases, not separate sidebar groups. Worktrees
+keep separate sessions and directories but share their repository label.
 Reopening checks the server's recorded directory before attaching. If another
-checkout has the same derived session name, or a preexisting session has no
+checkout has the same derived session name, or an existing session has no
 directory attribute, `open` refuses instead of adopting it; remove or rename
 the conflicting session. A server without organization records cannot keep
 this binding and must be upgraded before `project open` creates a session.

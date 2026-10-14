@@ -4,6 +4,7 @@
 //! and status sit on it unframed; panes float on it as rounded cards with no
 //! header. A pane's controls appear when the pointer reaches its top edge.
 
+use std::path::PathBuf;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::prelude::*;
@@ -640,15 +641,15 @@ fn organization_bar(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> An
         .into_any_element()
 }
 
-/// Sessions, home first, grouped by project tag and remote host when either exists.
+/// Sessions, home first, grouped by typed project identity and remote host.
 fn session_groups(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> Vec<AnyElement> {
     let Some(link) = desk.link.as_ref() else {
         return Vec::new();
     };
-    let Some(topology) = link.connection.topology.clone() else {
+    let Some(topology) = link.connection.topology.as_ref() else {
         return Vec::new();
     };
-    let mut sessions = topology.sessions.clone();
+    let mut sessions: Vec<_> = topology.sessions.iter().collect();
     let intake_keys: Vec<_> = desk
         .client()
         .map(|client| {
@@ -662,11 +663,11 @@ fn session_groups(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> Vec<
         .unwrap_or_default();
     let intake: Vec<_> = sessions
         .iter()
+        .copied()
         .filter(|session| session.key.is_some_and(|key| intake_keys.contains(&key)))
-        .cloned()
         .collect();
     sessions.retain(|session| !session.key.is_some_and(|key| intake_keys.contains(&key)));
-    let home = desk.session.clone();
+    let home = desk.session.as_str();
     sessions.sort_by(|left, right| {
         (left.name != home)
             .cmp(&(right.name != home))
@@ -740,6 +741,12 @@ fn session_block(
         .filter(|pane| pane.session_id == id)
         .cloned()
         .collect();
+    let project_path = link
+        .connection
+        .projects
+        .get(&id)
+        .and_then(|_| link.connection.directories.get(&id))
+        .map(PathBuf::from);
     let collapsed = desk.collapsed.contains(name);
     let intake = link
         .connection
@@ -857,6 +864,19 @@ fn session_block(
                 .text_color(from_hex(&colors.faint))
                 .child((panes.len() + extra.len()).to_string()),
         )
+        .when_some(project_path, |header, path| {
+            header.child(
+                Button::new(SharedString::from(format!("project-open-{id}")))
+                    .label("Open")
+                    .ghost()
+                    .xsmall()
+                    .tooltip("Open project window")
+                    .on_click(cx.listener(move |desk, _, window, cx| {
+                        cx.stop_propagation();
+                        desk.open_project_path(path.clone(), window, cx);
+                    })),
+            )
+        })
         .child(
             Button::new(SharedString::from(format!("session-new-{id}")))
                 .icon(IconName::Plus)
