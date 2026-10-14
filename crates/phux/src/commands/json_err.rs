@@ -325,6 +325,33 @@ impl CliError {
     }
 }
 
+/// A verb's failure decided in one place: the error document and the status
+/// to exit with.
+#[derive(Debug)]
+pub(crate) struct Refusal {
+    pub(crate) err: CliError,
+    pub(crate) exit: u8,
+}
+
+impl Refusal {
+    pub(crate) fn new(
+        code: &'static str,
+        message: impl Into<String>,
+        remedy: impl Into<String>,
+        exit: u8,
+    ) -> Self {
+        Self {
+            err: CliError::new(code, message, remedy),
+            exit,
+        }
+    }
+
+    /// Report on the verb's own channels and return the exit code.
+    pub(crate) fn emit(&self, json: bool) -> ExitCode {
+        emit(json, &self.err, self.exit)
+    }
+}
+
 /// The last auto-start failure this process saw, and the socket it was for.
 /// A CLI process makes one auto-start attempt and then dials, and the dial's
 /// error is reported far from the attempt, so the failure is parked here.
