@@ -71,8 +71,7 @@ impl super::SessionLoop {
             focused: self.mirror.focused_resource.as_ref(),
             zoomed: self.mirror.zoomed.as_ref(),
         };
-        let mut agents = Vec::new();
-        let changed = refresh_window_chrome(
+        let (changed, agents) = refresh_window_chrome(
             &mut chrome,
             scene,
             self.own_client_id,
@@ -80,7 +79,6 @@ impl super::SessionLoop {
             &mut self.vcs,
             rows,
             self.peers.inputs(&self.review),
-            &mut agents,
         );
         self.observe_agents_for_notify(&agents);
         changed

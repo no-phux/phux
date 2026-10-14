@@ -124,11 +124,9 @@ fn no_peers() -> crate::attach::sidebar_zones::PeerInputs<'static> {
 
 /// Refresh all chrome inputs from one coherent view: window tabs, supervisory
 /// badges, agent rows and host-qualified session navigation. Returns whether
-/// any painter input changed, so unchanged metadata bursts need no paint.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the chokepoint's inputs are independent loop-owned views; agents_out hands the projected agent list to the notifier"
-)]
+/// any painter input changed, so unchanged metadata bursts need no paint, and
+/// the full agent list (local, peer, satellite) the Agents zone paints, built
+/// whether or not the sidebar shows, for the notifier.
 pub(super) fn refresh_window_chrome(
     chrome: &mut ChromeCtx<'_>,
     scene: PaneScene<'_>,
@@ -144,10 +142,7 @@ pub(super) fn refresh_window_chrome(
     agent_sessions: &AgentSessionRows,
     // The peer-wide state the sidebar zones project from.
     peers: crate::attach::sidebar_zones::PeerInputs<'_>,
-    // Receives the full agent list (local, peer, satellite) the Agents zone
-    // paints, for the notifier; filled whether or not the sidebar shows.
-    agents_out: &mut Vec<AgentEntry>,
-) -> bool {
+) -> (bool, Vec<AgentEntry>) {
     let PaneScene {
         workspace,
         panes,
@@ -178,8 +173,7 @@ pub(super) fn refresh_window_chrome(
         changed |= sidebar_painter.set_plugin_sections(sections);
         changed |= feed_sidebar(sidebar_painter, windows, &local, agents.clone(), &peers);
     }
-    *agents_out = agents;
-    changed
+    (changed, agents)
 }
 
 /// Push the window tabs and the focused pane's badges into the bar.
@@ -980,8 +974,8 @@ mod tests {
                 &mut vcs,
                 &HashMap::new(),
                 no_peers(),
-                &mut Vec::new(),
             )
+            .0
         };
         refresh(&mut sidebar_painter, &panes);
 
