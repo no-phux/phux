@@ -484,6 +484,14 @@ fn paths_in(directory: PathBuf, state: &Path) -> LayoutPaths {
         legacy_quick: state.join("quick.json"),
     }
 }
+/// A small, socket-scoped folder history. The empty session name cannot be
+/// opened, so its layout directory is free for process-wide desktop state.
+#[must_use]
+pub fn recent_projects_path(socket: &str) -> PathBuf {
+    layout_paths(socket, "")
+        .layout
+        .with_file_name("projects.json")
+}
 
 /// First 24 hex characters of SHA-256 over `JSON.stringify([socket, session])`.
 #[must_use]
@@ -596,6 +604,73 @@ fn read_json(path: &Path) -> StoreValue {
         },
         Err(error) if error.kind() == io::ErrorKind::NotFound => StoreValue::Missing,
         Err(_) => StoreValue::Damaged,
+    }
+}
+
+/// Local navigation history, never a server project or a recipe trust grant.
+pub struct RecentProjects {
+    store: FileLayoutStore,
+    entries: Vec<PathBuf>,
+}
+
+impl RecentProjects {
+    #[must_use]
+    pub fn load(socket: &str) -> Self {
+        let store = FileLayoutStore::new(recent_projects_path(socket), None);
+        Self::from_store(store)
+    }
+
+    fn from_store(store: FileLayoutStore) -> Self {
+        let entries = match store.read() {
+            StoreValue::Present(value) => serde_json::from_value::<Vec<PathBuf>>(value)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|path| path.is_absolute())
+                .take(8)
+                .collect(),
+            StoreValue::Missing | StoreValue::Damaged => Vec::new(),
+        };
+        Self { store, entries }
+    }
+
+    #[must_use]
+    pub fn entries(&self) -> &[PathBuf] {
+        &self.entries
+    }
+
+    pub fn record(&mut self, path: PathBuf) -> io::Result<()> {
+        if self.entries.first() == Some(&path) {
+            return Ok(());
+        }
+        let mut next: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|old| **old != path)
+            .take(7)
+            .cloned()
+            .collect();
+        next.insert(0, path);
+        self.save(next)
+    }
+
+    pub fn forget(&mut self, path: &Path) -> io::Result<()> {
+        if !self.entries.iter().any(|old| old == path) {
+            return Ok(());
+        }
+        self.save(
+            self.entries
+                .iter()
+                .filter(|old| *old != path)
+                .cloned()
+                .collect(),
+        )
+    }
+
+    fn save(&mut self, entries: Vec<PathBuf>) -> io::Result<()> {
+        let value = serde_json::to_value(&entries).map_err(io::Error::other)?;
+        self.store.write(&value)?;
+        self.entries = entries;
+        Ok(())
     }
 }
 
@@ -817,5 +892,38 @@ mod tests {
         assert_eq!(clean.theme_id, DisplayPrefs::default().theme_id);
         assert_eq!(clean.font_family, "Paper Mono");
         assert_eq!(clean.terminal_opacity, 0.55);
+    }
+    #[test]
+    fn recent_folders_survive_restart_reorder_and_forget_without_exceeding_limit() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("phux-recent-{}-{stamp}.json", std::process::id()));
+        let store = FileLayoutStore::new(&path, None);
+        let mut history = RecentProjects::from_store(store.clone());
+        for index in 0..10 {
+            history
+                .record(PathBuf::from(format!("/checkouts/{index}")))
+                .expect("save");
+        }
+        assert_eq!(history.entries().len(), 8);
+        assert_eq!(history.entries()[0], Path::new("/checkouts/9"));
+        assert!(!history.entries().contains(&PathBuf::from("/checkouts/0")));
+
+        history
+            .record(PathBuf::from("/checkouts/4"))
+            .expect("reorder");
+        let mut restarted = RecentProjects::from_store(store);
+        assert_eq!(restarted.entries()[0], Path::new("/checkouts/4"));
+        assert_eq!(restarted.entries().len(), 8);
+        restarted.forget(Path::new("/checkouts/4")).expect("forget");
+        assert!(
+            !RecentProjects::from_store(FileLayoutStore::new(&path, None))
+                .entries()
+                .contains(&PathBuf::from("/checkouts/4"))
+        );
+        fs::remove_file(path).expect("remove temporary history");
     }
 }

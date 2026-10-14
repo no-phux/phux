@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { assertPresentedEvidence } from "./evidence.ts";
 import { isInstalledPhux, layoutFile, productionSocketReason } from "./host.ts";
@@ -197,6 +197,10 @@ async function capture(label: string, expected = marker): Promise<Bun.Subprocess
     text.toLowerCase().includes(projectName.toLowerCase()),
     `${label}: project sidebar not rendered; OCR: ${text}`,
   );
+  assert(
+    text.toLowerCase().includes("recent folders"),
+    `${label}: persistent recent folder shortcuts not rendered; OCR: ${text}`,
+  );
   return app;
 }
 async function cleanup(): Promise<void> {
@@ -288,6 +292,11 @@ try {
     "seed",
   ]);
   run(["/usr/bin/git", "-C", repository, "worktree", "add", "-q", "-b", "spruce", projectDir]);
+  // The app's local history is scoped to this socket, independent of the
+  // server Session; rendering it survives each fresh app process below.
+  const recentFile = join(dirname(layoutFile(join(home, "state"), socket, "")), "projects.json");
+  mkdirSync(dirname(recentFile), { recursive: true });
+  writeFileSync(recentFile, JSON.stringify([projectDir]));
   const opened: unknown = JSON.parse(cli("project", "open", "--json", projectDir));
   assert(
     opened &&
