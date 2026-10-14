@@ -30,9 +30,10 @@ use crate::workspace::place::{self, SessionLine};
 
 use super::actions::{OpenPathDirectory, Run};
 use super::color::from_hex;
-use super::desk::{self, Desk, Modal, ToastKind, Tone};
+use super::desk::{self, Desk, Modal, Tone};
 use super::keys::gpui_stroke;
 use super::motion;
+use super::notifications::{Kind, Notification};
 use super::overlays;
 
 const TITLEBAR: f32 = 40.;
@@ -120,6 +121,7 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
     desk.sync_title(window);
     desk.settle_focus(window, cx);
     desk.ensure_clock(cx);
+    desk.flush_system(cx);
     if crate::diag::evidence_pending(cx) {
         let desk_handle = cx.weak_entity();
         crate::diag::arm_evidence(
@@ -340,6 +342,7 @@ fn titlebar(
                     desk.shown_chord("split-down"),
                     cx.listener(|desk, _, window, cx| desk.execute("split-down", window, cx)),
                 ))
+                .child(bell(desk, colors, cx))
                 .child(icon_button(
                     "palette",
                     IconName::Search,
@@ -1165,7 +1168,7 @@ fn agent_row(
 }
 
 /// Seconds, minutes, hours or days since `then`, both in Unix milliseconds.
-fn ago(then: u64, now: u64) -> String {
+pub(super) fn ago(then: u64, now: u64) -> String {
     let seconds = now.saturating_sub(then) / 1000;
     match seconds {
         0..5 => "now".into(),
@@ -1233,7 +1236,7 @@ fn workspace_body(
         } else {
             empty_state(desk, colors, cx).into_any_element()
         })
-        .child(toast_stack(desk, colors, cx))
+        .children(peek_card(desk, colors, cx))
 }
 
 fn empty_state(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl IntoElement {
@@ -2042,86 +2045,139 @@ fn status_bar(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl Int
         )
 }
 
-fn toast_stack(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl IntoElement {
+/// The titlebar's way into the notification list, with the unread count.
+fn bell(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl IntoElement {
+    let unread: Vec<&Notification> = desk.feed.unread().collect();
+    let badge = unread.first().map(|_| {
+        let tint = unread
+            .iter()
+            .find(|entry| entry.kind == Kind::Error)
+            .or(unread.last())
+            .map(|entry| notification_edge(entry, colors))
+            .unwrap_or_else(|| colors.theme.accent.clone());
+        let count = if unread.len() > 9 {
+            "9+".to_owned()
+        } else {
+            unread.len().to_string()
+        };
+        div()
+            .absolute()
+            .top(px(1.))
+            .right(px(0.))
+            .min_w(px(14.))
+            .h(px(14.))
+            .px(px(3.))
+            .rounded_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(from_hex(&tint))
+            .text_color(from_hex(&colors.theme.background))
+            .text_size(px(9.))
+            .font_weight(gpui::FontWeight::BOLD)
+            .child(count)
+    });
     div()
-        .absolute()
-        .bottom(px(12.))
-        .right(px(12.))
-        .w(px(340.))
-        .flex()
-        .flex_col()
-        .gap(px(8.))
-        .children(desk.toasts.iter().map(|toast| {
-            let id = toast.id;
-            let terminal = toast.terminal.clone();
-            let edge = match toast.kind {
-                ToastKind::Error => colors.theme.danger.clone(),
-                ToastKind::Success => colors.theme.success.clone(),
-                ToastKind::Agent => toast
-                    .agent_state
-                    .as_deref()
-                    .map(agent_swatch)
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| colors.theme.warning.clone()),
-                ToastKind::Info => colors.theme.accent.clone(),
-            };
-            div()
-                .id(("toast", id as usize))
-                .p(px(10.))
-                .pl(px(12.))
-                .rounded(px(12.))
-                .bg(from_hex(&colors.raised).opacity(0.94))
-                .border_1()
-                .border_l_4()
-                .border_color(from_hex(&edge))
-                .shadow_lg()
-                .occlude()
-                .when(terminal.is_some(), |card| card.cursor_pointer())
-                .flex()
-                .gap(px(8.))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.))
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .text_color(from_hex(&colors.theme.foreground))
-                                .child(toast.title.clone()),
-                        )
-                        .children(toast.body.clone().map(|body| {
+        .relative()
+        .child(icon_button(
+            "notifications",
+            IconName::Bell,
+            "Notifications",
+            desk.shown_chord("notifications"),
+            cx.listener(|desk, _, window, cx| desk.execute("notifications", window, cx)),
+        ))
+        .children(badge)
+}
+
+/// The colour a notification wears: its agent's state, or its kind.
+pub(super) fn notification_edge(entry: &Notification, colors: &Palette) -> String {
+    match entry.kind {
+        Kind::Error => colors.theme.danger.clone(),
+        Kind::Success => colors.theme.success.clone(),
+        Kind::Agent => entry
+            .agent_state
+            .as_deref()
+            .map(agent_swatch)
+            .map(str::to_owned)
+            .unwrap_or_else(|| colors.theme.warning.clone()),
+        Kind::Info => colors.theme.accent.clone(),
+    }
+}
+
+/// The newest agent or error entry, briefly, over the workspace. Everything
+/// else waits behind the bell.
+fn peek_card(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> Option<impl IntoElement> {
+    if desk.modal == Modal::Notifications {
+        return None;
+    }
+    let entry = desk.feed.peek()?;
+    let id = entry.id;
+    let more = desk.feed.unread().count().saturating_sub(1);
+    Some(
+        div()
+            .id(("notification-peek", id as usize))
+            .absolute()
+            .bottom(px(12.))
+            .right(px(12.))
+            .w(px(340.))
+            .p(px(10.))
+            .pl(px(12.))
+            .rounded(px(12.))
+            .bg(from_hex(&colors.raised).opacity(0.94))
+            .border_1()
+            .border_l_4()
+            .border_color(from_hex(&notification_edge(entry, colors)))
+            .shadow_lg()
+            .occlude()
+            .cursor_pointer()
+            .flex()
+            .gap(px(8.))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(from_hex(&colors.theme.foreground))
+                            .child(entry.title.clone()),
+                    )
+                    .children(entry.body.clone().map(|body| {
+                        div()
+                            .text_xs()
+                            .line_clamp(3)
+                            .text_color(from_hex(&colors.muted))
+                            .child(body)
+                    }))
+                    .when(more > 0, |text| {
+                        text.child(
                             div()
                                 .text_xs()
-                                .line_clamp(3)
-                                .text_color(from_hex(&colors.muted))
-                                .child(body)
-                        })),
-                )
-                .child(
-                    Button::new(("toast-dismiss", id as usize))
-                        .icon(IconName::Close)
-                        .ghost()
-                        .xsmall()
-                        .tooltip("Dismiss")
-                        .on_click(cx.listener(move |desk, _, _, cx| {
-                            cx.stop_propagation();
-                            desk.dismiss_toast(id);
-                            cx.notify();
-                        })),
-                )
-                .on_click(cx.listener(move |desk, _, window, cx| {
-                    if let Some(terminal) = terminal.clone() {
-                        desk.reveal_terminal(&terminal);
-                        desk.after_command(window, cx);
-                    }
-                    desk.dismiss_toast(id);
-                    cx.notify();
-                }))
-        }))
+                                .text_color(from_hex(&colors.subtext))
+                                .child(format!("+{more} more in Notifications")),
+                        )
+                    }),
+            )
+            .child(
+                Button::new(("notification-peek-dismiss", id as usize))
+                    .icon(IconName::Close)
+                    .ghost()
+                    .xsmall()
+                    .tooltip("Dismiss")
+                    .on_click(cx.listener(move |desk, _, _, cx| {
+                        cx.stop_propagation();
+                        desk.feed.read(id);
+                        cx.notify();
+                    })),
+            )
+            .on_click(cx.listener(move |desk, _, window, cx| {
+                desk.open_notification(id, window, cx);
+            })),
+    )
 }
 
 fn section_label(title: &str, count: usize, colors: &Palette) -> gpui::Div {
@@ -2203,7 +2259,7 @@ fn strongest_agent(desk: &Desk, tab: &DeskTab) -> Option<String> {
         .map(|state| (*state).to_owned())
 }
 
-fn agent_swatch(state: &str) -> &'static str {
+pub(super) fn agent_swatch(state: &str) -> &'static str {
     for (name, color) in crate::settings::theme::agent_colors() {
         if name == state {
             return color;

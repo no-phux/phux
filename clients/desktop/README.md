@@ -148,7 +148,7 @@ Mac's; it needs a server that advertises `PATH_QUERY`. Enter types the chosen
 path as one shell-quoted word and presses nothing else, and only into the pane
 it opened on. **Terminate Terminal Process** (palette only) ends one process.
 **Kill Session** (the palette, or a session's menu in the sidebar) asks first,
-then ends every terminal in the session and deletes it; a toast reports any
+then ends every terminal in the session and deletes it; a notification reports any
 terminal that did not end, and why. Closing a pane, tab or window never ends
 work. New sessions are persistent: they stay, empty, after their last
 terminal exits. Layout and display preferences persist under
@@ -160,6 +160,15 @@ closing one explicitly removes it. Replacing the daemon retires its old view
 handles rather than rebinding their numeric terminal IDs. Unsupported or
 damaged layout files are preserved without automatic writes, with a notice in
 the window. Back up and remove the affected layout file to start a fresh one.
+
+Every message the window has for you lands in one notification list behind
+the titlebar bell, newest first; clicking an entry jumps to its pane. Agent
+alerts and errors also show briefly as a single card in the window and count
+on the bell until you open the list. While Phux is in the background they go
+to macOS Notification Center too, where a click brings the pane forward; this
+needs the installed `Phux.app`, not a bare debug executable. Confirmations
+and other routine results go only to the list. An agent's entry lasts only
+while the agent stays in the state it announced.
 
 Agent badges and agent notifications retire when a terminal closes or its
 connection is replaced, including reconnects to the same daemon. Native events

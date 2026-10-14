@@ -211,6 +211,8 @@ fn catalog() -> Vec<CommandSpec> {
         spec("font-down", "Decrease Font Size", "View", Some("cmd+-")),
         spec("font-reset", "Reset Font Size", "View", Some("cmd+0")),
         spec("option-alt", "Toggle Option as Alt", "View", None),
+        spec("notifications", "Show Notifications", "View", None),
+        spec("clear-notifications", "Clear Notifications", "View", None),
         spec("notify", "Toggle Agent Notifications", "Agents", None),
         spec("resize-left", "Move Divider Left", "Panes", None),
         spec("resize-right", "Move Divider Right", "Panes", None),

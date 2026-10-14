@@ -10,6 +10,7 @@ mod desk;
 mod host;
 mod keys;
 mod motion;
+mod notifications;
 mod organization;
 mod overlays;
 mod panes;
@@ -26,7 +27,8 @@ use gpui_kit::component::Root;
 use phux_protocol::ResourceId;
 
 pub use actions::{Quit, Run};
-pub use desk::{Desk, Modal, Toast, ToastKind};
+pub use desk::{Desk, Modal};
+pub use notifications::{Feed, Kind, Notification};
 pub use session::Desktop;
 
 /// Options the parent binary fills in. This crate does not discover a

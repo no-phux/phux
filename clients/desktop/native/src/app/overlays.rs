@@ -90,7 +90,9 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
             }
             name.update(cx, |input, cx| input.focus(window, cx));
         }
-        Modal::KillSession { .. } | Modal::Terminate { .. } => window.focus(&desk.focus, cx),
+        Modal::KillSession { .. } | Modal::Terminate { .. } | Modal::Notifications => {
+            window.focus(&desk.focus, cx)
+        }
     }
 }
 
@@ -325,6 +327,7 @@ pub fn layer(
         }
         Modal::Path => path_panel(desk, colors, window, cx),
         Modal::Settings => super::settings_panel::panel(desk, colors, window, cx),
+        Modal::Notifications => notifications_panel(desk, colors, cx),
         Modal::Rename { .. } => rename_dialog(desk, colors, cx),
         Modal::Session { create, .. } => session_dialog(desk, create, colors, cx),
         Modal::KillSession { name, .. } => confirm(
@@ -956,6 +959,126 @@ fn path_panel(
                 .child("Insert Path — host paths only, never this Mac"),
         )
         .child(command)
+        .into_any_element()
+}
+
+/// Every notification this window has posted, newest first. Unread entries
+/// carry a dot until the list closes; a click reveals the entry's terminal.
+fn notifications_panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> AnyElement {
+    let rows: Vec<AnyElement> = desk
+        .feed
+        .items()
+        .map(|entry| {
+            let id = entry.id;
+            let edge = from_hex(&super::view::notification_edge(entry, colors));
+            let age = super::view::ago(0, entry.at.elapsed().as_millis() as u64);
+            div()
+                .id(("notification", id as usize))
+                .px(px(10.))
+                .py(px(8.))
+                .rounded(px(8.))
+                .flex()
+                .items_start()
+                .gap(px(10.))
+                .cursor_pointer()
+                .hover(|style| style.bg(from_hex(&colors.hover)))
+                .child(
+                    div()
+                        .mt(px(5.))
+                        .size(px(7.))
+                        .flex_shrink_0()
+                        .rounded_full()
+                        .when(entry.read, |dot| dot.border_1().border_color(edge))
+                        .when(!entry.read, |dot| dot.bg(edge)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .child(
+                            div()
+                                .text_sm()
+                                .when(!entry.read, |title| {
+                                    title.font_weight(gpui::FontWeight::MEDIUM)
+                                })
+                                .text_color(from_hex(&colors.theme.foreground))
+                                .child(entry.title.clone()),
+                        )
+                        .children(entry.body.clone().map(|body| {
+                            div()
+                                .text_xs()
+                                .line_clamp(2)
+                                .text_color(from_hex(&colors.muted))
+                                .child(body)
+                        })),
+                )
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .text_xs()
+                        .text_color(from_hex(&colors.subtext))
+                        .child(age),
+                )
+                .on_click(cx.listener(move |desk, _, window, cx| {
+                    desk.open_notification(id, window, cx);
+                }))
+                .into_any_element()
+        })
+        .collect();
+    let empty = rows.is_empty();
+    card(colors, 460.)
+        .mt(px(60.))
+        .p(px(8.))
+        .flex()
+        .flex_col()
+        .gap(px(4.))
+        .child(
+            div()
+                .px(px(8.))
+                .py(px(4.))
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .text_base()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(from_hex(&colors.theme.foreground))
+                        .child("Notifications"),
+                )
+                .when(!empty, |header| {
+                    header.child(
+                        Button::new("notifications-clear")
+                            .label("Clear")
+                            .ghost()
+                            .small()
+                            .on_click(cx.listener(|desk, _, window, cx| {
+                                desk.execute("clear-notifications", window, cx)
+                            })),
+                    )
+                }),
+        )
+        .child(if empty {
+            div()
+                .px(px(10.))
+                .py(px(16.))
+                .text_sm()
+                .text_color(from_hex(&colors.muted))
+                .child("Nothing yet. Agent alerts, errors, and command results land here.")
+                .into_any_element()
+        } else {
+            div()
+                .id("notification-list")
+                .max_h(px(480.))
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .children(rows)
+                .into_any_element()
+        })
         .into_any_element()
 }
 
