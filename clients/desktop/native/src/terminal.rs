@@ -111,9 +111,16 @@ impl Terminal {
         crate::fonts::install(cx);
         settings.sanitize();
         crate::fonts::resolve(&mut settings.font, cx);
-        self.input.update(cx, |state, _| {
-            state.set_option_as_alt(settings.option_as_alt);
-        });
+        if self.settings.option_as_alt != settings.option_as_alt {
+            self.input.update(cx, |state, _| {
+                state.set_option_as_alt(settings.option_as_alt);
+            });
+        }
+        // A desk refresh passes the same settings on every output frame.
+        // Notifying here would acquire and prepare the terminal again.
+        if self.settings.unchanged(&settings) {
+            return;
+        }
         self.settings = settings;
         cx.notify();
     }

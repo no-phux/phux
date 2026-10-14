@@ -433,7 +433,12 @@ pub struct Observation {
     pub status: Status,
     /// The last failure message, after the last event.
     pub last_error: Option<String>,
-    /// The session graph, after the last event.
+    /// The session graph after the last event, when this drain sampled it.
+    ///
+    /// [`crate::control::ControlPlane::take_observation`] always samples the
+    /// graph. [`crate::control::ControlPlane::take_activity`] samples it when
+    /// the batch can change the graph, and leaves it empty for terminal
+    /// damage, input delivery, agent metadata, and session project tags.
     pub topology: Option<super::Topology>,
 }
 
@@ -456,6 +461,21 @@ impl Event {
                 | Self::AgentPublication { .. }
                 | Self::AgentSessionClosed { .. }
                 | Self::ConnectionOpened { .. }
+        )
+    }
+
+    /// Whether a drain that contains this event has to sample the session graph.
+    ///
+    /// Terminal damage, input delivery, agent metadata, and a session project
+    /// tag leave the graph a caller already holds unchanged.
+    #[must_use]
+    pub const fn changes_session_graph(&self) -> bool {
+        !matches!(
+            self,
+            Self::TerminalChanged { .. }
+                | Self::InputDelivery { .. }
+                | Self::AgentMetadata { .. }
+                | Self::SessionProject { .. }
         )
     }
 }

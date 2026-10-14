@@ -69,6 +69,30 @@ impl ControlPlane {
         }
     }
 
+    /// Drain like [`Self::take_observation`], sampling the session graph only
+    /// when the batch can change it.
+    ///
+    /// A burst of terminal output otherwise copies the whole graph on the
+    /// caller's thread while the control lock is held. The caller keeps the
+    /// graph it already applied.
+    pub fn take_activity(&mut self) -> Observation {
+        let events_dropped = self.events_dropped > 0;
+        let events = self.take_events();
+        let topology = if events.iter().any(Event::changes_session_graph) {
+            self.topology.clone()
+        } else {
+            None
+        };
+        Observation {
+            events,
+            events_dropped,
+            connection_epoch: self.connection_epoch,
+            status: self.status,
+            last_error: self.error.clone(),
+            topology,
+        }
+    }
+
     // ----- the common surface --------------------------------------------
 
     /// Queue an embedder-correlated `ATTACH` on a manually driven plane.

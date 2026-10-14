@@ -42,7 +42,9 @@ the acquired frame is the same `Arc`, the bounds and scale factor are
 unchanged, and `Settings::paints_like` holds. A new frame with the same
 geometry, palette, and paint settings keeps the shaped rows whose cells still
 match and reshapes the rest, including a solid block cursor's old and new
-rows. Missing slots and a dropped client clear the canvas. Projection
+rows. A frame that is that screen scrolled by whole rows moves the kept rows
+and reshapes only the rows that entered. That search runs when most rows
+would otherwise be reshaped. Missing slots and a dropped client clear the canvas. Projection
 acknowledgement belongs to [PRESENTATION.md](PRESENTATION.md).
 
 ## Geometry and text

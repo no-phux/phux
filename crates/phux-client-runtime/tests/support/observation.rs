@@ -88,6 +88,25 @@ fn boundaries(observation: &Observation) -> Vec<u64> {
 }
 
 #[test]
+fn a_quiet_activity_omits_the_graph_and_a_bell_samples_it() {
+    let mut plane = attached();
+    let opened = plane.take_activity();
+    assert!(opened.topology.is_some());
+    let quiet = plane.take_activity();
+    assert!(quiet.events.is_empty());
+    assert!(quiet.topology.is_none());
+    assert_eq!(quiet.status, Status::Attached);
+    bell(&mut plane);
+    let rung = plane.take_activity();
+    assert!(
+        rung.events
+            .iter()
+            .any(|event| matches!(event, Event::Bell { .. }))
+    );
+    assert!(rung.topology.is_some());
+}
+
+#[test]
 fn a_reconnect_reusing_every_id_is_visible_between_two_observations() {
     let mut plane = attached();
     let before = plane.take_observation();

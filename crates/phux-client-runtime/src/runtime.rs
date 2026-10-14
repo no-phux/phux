@@ -523,6 +523,14 @@ impl Client {
         lock(&self.inner.control).take_observation()
     }
 
+    /// Drain like [`Self::take_observation`], without copying the session
+    /// graph for a batch that cannot change it. Re-arms the wake the same way.
+    #[must_use]
+    pub fn take_activity(&self) -> Observation {
+        self.inner.wakes.pending.store(false, Ordering::Release);
+        lock(&self.inner.control).take_activity()
+    }
+
     /// Install the wake callback; one listener, a new one replaces the old.
     /// An immediate wake covers anything that landed before registration.
     pub fn set_listener(&self, listener: Arc<dyn Listener>) {

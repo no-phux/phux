@@ -1484,6 +1484,11 @@ pub(super) fn ago(then: u64, now: u64) -> String {
     }
 }
 
+/// Whether the sidebar label for `then` changes between `earlier` and `now`.
+pub(super) fn ago_changed(then: u64, earlier: u64, now: u64) -> bool {
+    ago(then, earlier) != ago(then, now)
+}
+
 fn sidebar_resize(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl IntoElement {
     let active = desk.dragging_sidebar();
     let accent = from_hex(&colors.theme.accent);
@@ -2540,5 +2545,18 @@ mod intake_tests {
         for badge in [intake_badge(true, false), intake_badge(false, true)] {
             assert!(badge.unwrap().len() <= 8);
         }
+    }
+}
+
+#[cfg(test)]
+mod age_tests {
+    use super::ago_changed;
+
+    #[test]
+    fn ages_move_on_the_bucket_the_sidebar_shows() {
+        assert!(!ago_changed(0, 3_000, 4_000));
+        assert!(ago_changed(0, 4_000, 5_000));
+        assert!(ago_changed(0, 10_000, 11_000));
+        assert!(!ago_changed(0, 120_000, 121_000));
     }
 }
