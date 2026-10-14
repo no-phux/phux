@@ -20,7 +20,7 @@ use gpui::{AppContext, HeadlessAppContext, Pixels, px, size};
 use image::RgbaImage;
 use phux_client_core::grid::{CELL_SELECTED, COLOR_KIND_RGB};
 use phux_client_runtime::control::{ControlOptions, ControlPlane};
-use phux_client_runtime::publication::{CursorStyle, GridFrame};
+use phux_client_runtime::publication::{CursorStyle, GridDamage, GridFrame};
 use phux_client_runtime::{Client, Runtime, ViewId};
 use phux_desktop::terminal::{PaintedFrame, Settings, Terminal};
 use phux_protocol::{
@@ -586,6 +586,55 @@ fn solid_blocks_cover_shared_row_edges_with_extra_line_height() {
     );
 }
 
+fn sparse_output_repaints_a_row_without_disturbing_its_neighbor() {
+    let (client, view) = publish(b"hello\r\nworld");
+    let mut cx = gpu();
+    let in_view = Arc::clone(&client);
+    let window = cx
+        .open_window(size(px(480.), px(200.)), move |window, cx| {
+            cx.new(|cx| Terminal::new(in_view, view, terminal(), settings(false), window, cx))
+        })
+        .expect("offscreen window");
+    cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+        .expect("first draw");
+    let before = Shot {
+        painted: window
+            .update(&mut cx, |terminal, _, _| terminal.painted())
+            .unwrap(),
+        image: cx.capture_screenshot(window.into()).expect("first pixels"),
+    };
+    let patched = phux_desktop::perf::PREPARE_PATCHED.get();
+    client
+        .feed(FrameKind::ResourceOutput {
+            terminal_id: terminal(),
+            stream_id: StreamId::new(1).unwrap(),
+            bootstrap_id: BootstrapId::new(1).unwrap(),
+            seq: 1,
+            bytes: b"\x1b[2;1HWORLD".to_vec().into(),
+        })
+        .expect("live output");
+    window.update(&mut cx, |_, _, cx| cx.notify()).unwrap();
+    cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+        .expect("updated draw");
+    let after = Shot {
+        painted: window
+            .update(&mut cx, |terminal, _, _| terminal.painted())
+            .unwrap(),
+        image: cx
+            .capture_screenshot(window.into())
+            .expect("updated pixels"),
+    };
+    assert_eq!(phux_desktop::perf::PREPARE_PATCHED.get(), patched + 1);
+    let frame = after.painted.frame.as_ref().unwrap();
+    assert_eq!(frame.damage, GridDamage::Rows);
+    assert_eq!(frame.dirty_rows().collect::<Vec<_>>(), vec![1]);
+    assert_eq!(frame.row_text(1), "WORLD");
+    assert_eq!(cell_pixels(&before, 0, 0), cell_pixels(&after, 0, 0));
+    assert_ne!(cell_pixels(&before, 1, 0), cell_pixels(&after, 1, 0));
+    drop(cx);
+    drop(client);
+}
+
 /// Qualified the way the old `#[cfg(test)]` module reported them, so
 /// `cargo test terminal::pixels` and `--skip terminal::pixels` still select
 /// this binary's fixtures.
@@ -617,6 +666,10 @@ const FIXTURES: &[(&str, fn())] = &[
     (
         "terminal::pixels::solid_blocks_cover_shared_row_edges_with_extra_line_height",
         solid_blocks_cover_shared_row_edges_with_extra_line_height,
+    ),
+    (
+        "terminal::pixels::sparse_output_repaints_a_row_without_disturbing_its_neighbor",
+        sparse_output_repaints_a_row_without_disturbing_its_neighbor,
     ),
 ];
 
