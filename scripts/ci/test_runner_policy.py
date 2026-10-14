@@ -71,6 +71,12 @@ class RunnerPolicyTests(unittest.TestCase):
         for workflow in ("ci.yml", "stress.yml"):
             body = (WORKFLOWS / workflow).read_text()
             self.assertNotIn("mr-boxington-action", body)
+        # The dependency-only cache of the test lanes follows the same rule.
+        self.assertIn("uses: Swatinem/rust-cache@", lane)
+        self.assertIn(
+            "save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}",
+            lane,
+        )
 
     def test_main_prunes_superseded_build_cache_entries(self):
         """Keep the newest large archive. Delete sccache's per-object shards.
@@ -83,10 +89,12 @@ class RunnerPolicyTests(unittest.TestCase):
         ci = (WORKFLOWS / "ci.yml").read_text()
         prune = ci.split("\n  prune-build-cache:\n", 1)[1]
         self.assertIn("github.event_name == 'push' && github.ref == 'refs/heads/main'", prune)
-        self.assertIn("needs: [check, test, perf-icount]", prune)
+        self.assertIn("needs: [check, test, test-integration, e2e, uniffi, perf-icount]", prune)
         self.assertIn("actions: write", prune)
         self.assertIn("keep_newest check linux-arm64-mbx-phux-check-", prune)
-        self.assertIn("keep_newest test linux-arm64-mbx-phux-test-", prune)
+        self.assertIn("drop_all test-mbx linux-arm64-mbx-phux-test-", prune)
+        for lane in ("test", "test-integration", "e2e", "uniffi"):
+            self.assertIn(f"v0-rust-phux-{lane}-Linux-", prune)
         self.assertIn("keep_newest icount linux-x64-mbx-phux-icount-", prune)
         self.assertIn("keep_newest zig mini-v3-cockpit-zig-0.16.0-macOS-ARM64-", prune)
         self.assertIn("drop_all sccache sccache", prune)
@@ -120,22 +128,33 @@ class RunnerPolicyTests(unittest.TestCase):
         self.assertIn("linux-arm64", lane)
         self.assertIn("linux-x64", lane)
 
-    def test_test_lane_restores_the_objects_archive(self):
-        """The test profile's cold compile is the required check's long pole.
+    def test_test_lanes_cache_dependencies_and_split_the_build(self):
+        """The test profile's restore and compile were the required check's long pole.
 
-        Run 38451988937 finished `test` in 10m 24s with 0 hits and 515
-        compilations not looked up, then saved a 2.3 GB archive. A first fill
-        cannot hit; the next job hits only if this lane restores that entry.
-        The x64 toolchain wipe is skipped when the disk already has room.
+        Run 38503810705 spent 6m 28s unpacking a 6.1 GB mbx archive (27.8 GiB
+        on disk) and then 7m 51s compiling the workspace crates anyway. The
+        test lanes restore only third-party artifacts and split the workspace
+        compile across four runners, each keeping --workspace.
         """
         lane = (ROOT / ".github/actions/setup-rust-lane/action.yml").read_text()
-        self.assertNotIn("inputs.cache-lane != 'test'", lane)
-        self.assertIn("uses: jdx/mr-boxington-action@", lane)
-        self.assertIn("cache-key: ${{ steps.mbx-env.outputs.cache_key }}", lane)
-        self.assertIn("40 * 1024 * 1024", lane)
-        self.assertIn("PHUX_CI_MBX=1", lane)
-        self.assertIn("cache-key:", lane)
-        self.assertIn("steps.mbx-env.outputs.cache_key", lane)
+        self.assertIn("default: mbx", lane)
+        self.assertIn("CARGO_INCREMENTAL=0", lane)
+        self.assertIn("CARGO_PROFILE_DEV_DEBUG=0", lane)
+        self.assertIn("shared-key: phux-${{ inputs.cache-lane }}", lane)
+        self.assertIn('cache-on-failure: "true"', lane)
+        ci = (WORKFLOWS / "ci.yml").read_text()
+        self.assertEqual(ci.count("          build-cache: deps\n"), 4)
+        self.assertIn("PHUX_UNIT_PART: lib", ci)
+        self.assertIn("PHUX_UNIT_PART: integration", ci)
+        self.assertIn(
+            "needs: [changes, check, test, test-integration, e2e, uniffi, "
+            "workflow-gate, integrations, perf-icount]",
+            ci,
+        )
+        recipe = (ROOT / "just/test.just").read_text()
+        self.assertIn("lib) targets=(--lib --bins) ;;", recipe)
+        self.assertIn("integration) targets=(--test '*' --examples) ;;", recipe)
+        self.assertIn("--workspace ${targets[@]+", recipe)
 
     def test_failed_main_lane_saves_the_objects_archive(self):
         """A red assertion must not throw away a finished compile.
@@ -150,8 +169,9 @@ class RunnerPolicyTests(unittest.TestCase):
             "github.ref == 'refs/heads/main' && steps.setup.outputs.cache-hit != 'true' "
             "&& steps.mbx-fail-export.outputs.exported == 'true'"
         )
-        self.assertEqual(ci.count(save_if), 3)
-        self.assertEqual(ci.count("bash scripts/ci/mbx-export-failed-lane.sh"), 3)
+        # check and icount; the test lanes' rust-cache saves on failure itself.
+        self.assertEqual(ci.count(save_if), 2)
+        self.assertEqual(ci.count("bash scripts/ci/mbx-export-failed-lane.sh"), 2)
         self.assertNotIn("save-on-pull-request", ci)
         lane = (ROOT / ".github/actions/setup-rust-lane/action.yml").read_text()
         self.assertIn("value: ${{ steps.mbx-env.outputs.cache_key }}", lane)

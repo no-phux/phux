@@ -35,20 +35,24 @@
 # variable, so mbx keys on it), so a restored archive cannot SIGILL on leaner
 # hosted hardware the way the old host-native build could.
 name: setup-rust-lane
-description: Shared Linux Rust-lane setup — disk headroom, Nix + Cachix, mbx build cache.
+description: Shared Linux Rust-lane setup — disk headroom, Nix + Cachix, and an mbx or dependency-only build cache.
 
 inputs:
   cachix-auth-token:
     description: Cachix auth token (secrets are not implicitly visible to composite actions).
     required: true
   cache-lane:
-    description: Build-cache series; one GitHub objects entry per cargo profile (check, test, icount).
+    description: Build-cache series; one GitHub entry per lane (check, icount, test, e2e, uniffi).
     required: true
+  build-cache:
+    description: mbx (content-keyed objects store) or deps (third-party dependency artifacts only).
+    required: false
+    default: mbx
 
 outputs:
   cache-hit:
-    description: mbx action cache-hit output (exact key restored), for the lane signal step.
-    value: ${{ steps.mbx.outputs.cache-hit }}
+    description: Build-cache hit output (exact key restored), for the lane signal step.
+    value: ${{ steps.mbx.outputs.cache-hit || steps.deps.outputs.cache-hit }}
   cache-key:
     description: Primary objects-cache key. A failed main lane saves this same key.
     value: ${{ steps.mbx-env.outputs.cache_key }}
@@ -92,6 +96,7 @@ runs:
     # GitHub entry uses cache_key from this step, not the action's generated
     # rustc-and-commit key. flake.lock already pins that compiler.
     - name: expose the devshell's mbx and rustc
+      if: inputs.build-cache == 'mbx'
       id: mbx-env
       shell: bash
       env:
@@ -124,6 +129,7 @@ runs:
         } >> "$GITHUB_OUTPUT"
 
     - uses: jdx/mr-boxington-action@d0825fbaf3cc36ca2609aa38e71046265a1f1e37 # v1.7.1
+      if: inputs.build-cache == 'mbx'
       id: mbx
       with:
         backend: github
@@ -136,6 +142,7 @@ runs:
         restore-keys: ${{ steps.mbx-env.outputs.restore_key }}
 
     - name: bound restored objects before recording builds
+      if: inputs.build-cache == 'mbx'
       shell: bash
       run: |
         set -euo pipefail
@@ -148,3 +155,45 @@ runs:
         # Collection after the first build would drop the export group, so
         # this stays in front of it.
         mbx gc --max-size 40GiB
+
+    # Dependency-only cache for the test lanes (test, e2e, uniffi). The mbx
+    # objects entry for the test profile grew to 6.1 GB compressed / 27.8 GiB
+    # restored, and a pull request spent 6m 28s unpacking it (run
+    # 38503810705) to save about 2.5 minutes of compile: every code PR
+    # recompiles the workspace crates anyway. rust-cache keeps only
+    # third-party artifacts and build-script outputs (libghostty-vt's Zig
+    # build among them), drops workspace crates and incremental state before
+    # saving, and keys on rustc, Cargo.lock, flake.lock, and every CARGO_*
+    # variable set here.
+    #
+    # Test builds skip debuginfo and incremental state. Incremental state is
+    # never reused by a fresh CI checkout's workspace crates, and line tables
+    # serve only symbolized backtraces: panic locations come from
+    # #[track_caller], and symbol names stay in the unstripped test binaries.
+    # Both multiply the bytes compiled, linked, and cached.
+    - name: expose the devshell's rustc and the test-build settings
+      if: inputs.build-cache == 'deps'
+      id: deps-env
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Through a file: the shellHook greets on stdout.
+        nix develop -c bash -c 'dirname "$(command -v rustc)" > "$1"' _ "$RUNNER_TEMP/rustc-path"
+        cat "$RUNNER_TEMP/rustc-path" >> "$GITHUB_PATH"
+        {
+          echo "CARGO_INCREMENTAL=0"
+          echo "CARGO_PROFILE_DEV_DEBUG=0"
+        } >> "$GITHUB_ENV"
+        echo "flake=$(sha256sum flake.lock | cut -c1-12)" >> "$GITHUB_OUTPUT"
+
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      if: inputs.build-cache == 'deps'
+      id: deps
+      with:
+        shared-key: phux-${{ inputs.cache-lane }}
+        # flake.lock pins the Zig and mold a dependency build script uses;
+        # rust-cache already keys on rustc, Cargo.lock, and CARGO_* settings.
+        key: ${{ steps.deps-env.outputs.flake }}
+        # Pull requests restore only (see docs/RELEASING.md "Cache budget").
+        save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        cache-on-failure: "true"

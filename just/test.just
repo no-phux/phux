@@ -10,16 +10,33 @@ AUTO_SPAWN_BACKSTOP := "PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE=600"
 
 # Workspace unit pool via nextest. Same --workspace feature union as e2e/stress
 # (CONTRIBUTING.md). Optional profiler surfaces compile under lint/doc instead.
+#
+# PHUX_UNIT_PART splits the pool by target kind so CI can compile and run the
+# halves on two runners: `lib` is every lib and bin unit-test harness,
+# `integration` is every tests/ target plus the examples. Unset runs both in
+# one invocation. Either half keeps --workspace, so the feature union and the
+# rdeps filterset are the same as the whole pool's.
 [group('test')]
 [doc('Run the workspace unit test pool via nextest.')]
 test:
     #!/usr/bin/env bash
     set -euo pipefail
+    part="${PHUX_UNIT_PART:-all}"
+    case "$part" in
+      all) targets=() ;;
+      lib) targets=(--lib --bins) ;;
+      integration) targets=(--test '*' --examples) ;;
+      *) echo "PHUX_UNIT_PART must be lib, integration, or unset (got: $part)" >&2; exit 2 ;;
+    esac
     # Build selection stays --workspace for main and for library changes (see
     # the e2e note). A tests/-only PR sets PHUX_UNIT_MODE=narrow and builds
-    # that integration test, not the other binaries. rdeps still only filters
-    # execution after the workspace build.
+    # that integration test, not the other binaries; that belongs to the
+    # integration half. rdeps still only filters execution after the build.
     if [[ "${PHUX_UNIT_MODE:-workspace}" == "narrow" ]]; then
+      if [[ "$part" == "lib" ]]; then
+        echo "lib unit half skipped: a tests/-only diff runs in the integration half"
+        exit 0
+      fi
       IFS=',' read -ra specs <<< "${PHUX_UNIT_TARGETS:?PHUX_UNIT_TARGETS is required}"
       for spec in "${specs[@]}"; do
         pkg="${spec%%:*}"
@@ -40,7 +57,8 @@ test:
     if [[ -n "${PHUX_NEXTEST_FILTERSET:-}" ]]; then
       extra+=(-E "${PHUX_NEXTEST_FILTERSET}")
     fi
-    {{AUTO_SPAWN_BACKSTOP}} cargo nextest run --workspace "${extra[@]}"
+    # An rdeps filterset can select nothing in one half; the other still runs.
+    {{AUTO_SPAWN_BACKSTOP}} cargo nextest run --workspace ${targets[@]+"${targets[@]}"} --no-tests=warn "${extra[@]}"
 
 
 # Fast e2e + perf gates (every PR). #[ignore]d out of `just test`; serial +
@@ -48,17 +66,23 @@ test:
 # feature union matches `test` (a `-p` selection recompiles tokio). Filterset
 # names binaries; `just e2e-lane-check` fails if an ignored *_e2e.rs is in
 # no lane. Flag-stability story: CONTRIBUTING.md.
+#
+# The `--test` targets limit the build to the binaries the filtersets name, so
+# CI's e2e job does not compile the unit pool's lib-test harnesses. MCP's
+# `discovery` test is built, not run: it makes Cargo build the phux-mcp
+# executable in this same graph, and first_five_minutes_e2e copies both
+# payload binaries.
 [group('test')]
 [doc('Fast e2e + perf gates that spin a real server; every PR.')]
 e2e:
-    # MCP's discovery integration test makes Cargo build its normal executable
-    # in this same graph; first_five_minutes_e2e can copy both payload binaries.
     {{AUTO_SPAWN_BACKSTOP}} cargo nextest run --workspace --run-ignored ignored-only \
-      --test-threads=1 --retries=2 \
+      {{E2E_TARGETS}} --test-threads=1 --retries=2 \
       -E 'binary_id(phux::automation_e2e) + binary_id(phux::terminal_e2e) + binary_id(phux::recording_e2e) + binary_id(phux::lifecycle_e2e) + binary_id(phux::first_five_minutes_e2e)'
     {{AUTO_SPAWN_BACKSTOP}} cargo nextest run --workspace --run-ignored ignored-only \
-      --test-threads=1 --retries=2 \
+      {{E2E_TARGETS}} --test-threads=1 --retries=2 \
       -E 'binary_id(phux-server::perf)'
+
+E2E_TARGETS := "--test automation_e2e --test terminal_e2e --test recording_e2e --test lifecycle_e2e --test first_five_minutes_e2e --test perf --test discovery"
 
 
 # Heavy stress storms — off the PR path (post-merge + nightly stress.yml).
