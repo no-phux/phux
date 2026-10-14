@@ -436,6 +436,10 @@ pub(crate) const CLI_ONLY: &[(&str, &str)] = &[
         "operator host-registry certificate renewal, not an agent action",
     ),
     (
+        "host upgrade",
+        "operator host-registry transport upgrade, not an agent action",
+    ),
+    (
         "pair",
         "mints a pairing secret; credential handling stays outside the model-facing set",
     ),

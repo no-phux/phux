@@ -58,8 +58,8 @@ pub struct RemoteConfigEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh: Option<String>,
 
-    /// A paired `quic://` endpoint kept beside an `ssh://` one, tried first
-    /// and promoted to `endpoint` once it answers.
+    /// A paired `quic://` endpoint kept beside an `ssh://` or `wss://` one,
+    /// tried first and promoted to `endpoint` once it answers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub direct: Option<String>,
 

@@ -1422,6 +1422,7 @@ Commands:
            [aliases: remove]
   show     Show a registered machine, including its route and credential
            references.
+  upgrade  Move registered remotes from `wss://` (or ssh) onto QUIC.
   help     Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -1677,6 +1678,34 @@ Arguments:
 Flags:
       --role <ROLE>    Disambiguate a name present in both registries.
                        [possible values: remote, satellite]
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux host upgrade`
+
+```text
+Move registered remotes from `wss://` (or ssh) onto QUIC.
+
+For each remote, or just NAME, dials its QUIC route with the saved token and
+pin: a kept direct route, else (beside the default `wss://HOST:8787`, not on
+loopback) the same host on port 8788, where the server binds QUIC beside
+WebSocket with the same certificate and tokens. When it answers, the entry is
+rewritten to `quic://`; otherwise it is left as it was. An attach does the same
+automatically, with a shorter wait; this verb is the explicit, reported form.
+`phux host ls` shows each entry's transport.
+
+Usage: phux host upgrade [--json] [NAME]
+
+Arguments:
+  [NAME]  Registered remote name. Omitted: every remote.
+
+Flags:
       --json           Emit stable, versioned JSON on stdout instead of the
                        human view. On failure, stdout stays empty and stderr
                        carries one JSON error object.

@@ -852,7 +852,10 @@ through a relay route (ADR-0149). `host add` and `host renew` add an `enrollment
 beside `host`: read its `status` (`enrolled`, `kept`, `failed` with
 `error`, `skipped`), not a `null` `client_cert`, to learn whether a
 workload client certificate was enrolled; the fields are in
-[remote-access.md](../remote-access.md#client-certificates-and-renewal). `pair --json` mints only after the running server
+[remote-access.md](../remote-access.md#client-certificates-and-renewal). `host upgrade`: each host's `status` is
+`upgraded`, `already_quic`, `no_route`, `unreachable`, or `not_saved`, and
+`endpoint` is what it dials now
+([remote-access.md](../remote-access.md#moving-a-host-onto-quic)). `pair --json` mints only after the running server
 reports a bound remote listener (with `--relay-route`, only after it
 answers and a `[[connector]]` is configured), and otherwise exits 1 with
 an empty stdout and nothing minted; the token is a secret emitted once and is not
