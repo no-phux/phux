@@ -31,6 +31,9 @@ const Pending = struct {
 pub const Coordinator = struct {
     pending: [16]?Pending = @splat(null),
     next_ticket: u64 = 0,
+    /// The latest removal enqueued here. Publication timing follows this
+    /// ticket, not an older retained completion.
+    close_ticket: u64 = 0,
 
     /// Creation retains its completion until consumed, so a later operation can
     /// never overwrite a result before placement has observed it.
@@ -54,6 +57,36 @@ pub const Coordinator = struct {
             return .{ .outcome = entry.outcome, .request_id = entry.mutation_request, .reason = entry.reason };
         }
         return null;
+    }
+
+    /// A confirmed removal whose target is still in the publication. The
+    /// organization replace can commit while the confirming read still
+    /// shows the old document; that is not yet tab removal.
+    pub fn unpublishedRemovalTicket(self: *const Coordinator, model: anytype) ?u64 {
+        const remote = model.phux() orelse return null;
+        const snapshot = remote.workspaceSnapshot();
+        if (snapshot.status == .pending) return null;
+        var ticket: ?u64 = null;
+        for (self.pending) |slot| {
+            const entry = slot orelse continue;
+            if (!confirmedRemovalWaiting(snapshot, entry)) continue;
+            if (ticket == null or entry.ticket < ticket.?) ticket = entry.ticket;
+        }
+        return ticket;
+    }
+
+    /// A confirmed removal whose target the publication has dropped.
+    pub fn removalLanded(self: *const Coordinator, model: anytype) bool {
+        if (self.close_ticket == 0) return false;
+        const remote = model.phux() orelse return false;
+        const snapshot = remote.workspaceSnapshot();
+        for (self.pending) |slot| {
+            const entry = slot orelse continue;
+            if (entry.ticket != self.close_ticket) continue;
+            if (entry.stage != .complete or entry.outcome != .confirmed) continue;
+            return removalAbsent(snapshot, entry);
+        }
+        return false;
     }
 
     pub fn peekCompletion(self: *const Coordinator) ?results.Result {
@@ -260,7 +293,11 @@ pub const Coordinator = struct {
         if (self.firstPending() != null) return error.WorkspaceBusy;
         const remote = model.phux().?;
         const snapshot = remote.workspaceSnapshot();
-        if (snapshot.status == .pending) return error.WorkspaceBusy;
+        // A refresh already in flight is not a second edit. A removal waits
+        // for that read and dispatches on the next pump, instead of failing
+        // Close Tab until the one-second workspace timer asks again. Resize
+        // and reorder still refuse: their path must not be rebased.
+        if (snapshot.status == .pending and !removalKind(mutation.kind)) return error.WorkspaceBusy;
         try validateTarget(snapshot, mutation);
         const ticket = try self.enqueue(mutation, remote.connectionEpoch(), command_id != null or origin == .native, .mutation, command_id, origin);
         _ = ticket;
@@ -274,6 +311,7 @@ pub const Coordinator = struct {
             if (slot.* != null) continue;
             self.next_ticket = try std.math.add(u64, self.next_ticket, 1);
             slot.* = .{ .ticket = self.next_ticket, .epoch = epoch, .mutation = mutation, .retained = retained, .stage = stage, .refresh_creation = stage == .refresh, .command_id = if (origin == .native) self.next_ticket else command_id, .origin = origin };
+            if (removalKind(mutation.kind)) self.close_ticket = self.next_ticket;
             @memcpy(slot.*.?.name[0..mutation.name.len], mutation.name);
             slot.*.?.name_len = @intCast(mutation.name.len);
             slot.*.?.mutation.name = "";
@@ -432,11 +470,30 @@ fn beginRefresh(remote: anytype, snapshot: workspace.Snapshot, entry: *Pending) 
     entry.stage = .refreshing;
 }
 
+fn removalKind(kind: anytype) bool {
+    return kind == .remove or kind == .remove_window;
+}
+
+fn confirmedRemovalWaiting(snapshot: workspace.Snapshot, entry: Pending) bool {
+    if (entry.stage != .complete or entry.outcome != .confirmed) return false;
+    return !removalAbsent(snapshot, entry) and removalKind(entry.mutation.kind);
+}
+
+fn removalAbsent(snapshot: workspace.Snapshot, entry: Pending) bool {
+    return switch (entry.mutation.kind) {
+        .remove_window => findWindow(snapshot, entry.mutation.window_id) == null,
+        .remove => if (entry.mutation.terminal_ref) |ref| terminalWindow(snapshot, ref) == null else false,
+        else => false,
+    };
+}
+
 fn beginMutation(remote: anytype, snapshot: workspace.Snapshot, entry: *Pending) !void {
     if (snapshot.status == .pending) return;
     // Revalidate stable creation targets after refresh, but never rebase direct
-    // edits (especially paths). Dispatch now, before the next idle refresh.
-    if (entry.refresh_creation) entry.mutation.expected_revision = snapshot.revision;
+    // edits (especially paths). A removal's only expectation is the revision
+    // the window was still on, so an in-flight refresh may move that number.
+    // Dispatch now, before the next idle refresh.
+    if (entry.refresh_creation or removalKind(entry.mutation.kind)) entry.mutation.expected_revision = snapshot.revision;
     try validateTarget(snapshot, entry.mutation);
     var mutation = entry.mutation;
     mutation.name = entry.name[0..entry.name_len];

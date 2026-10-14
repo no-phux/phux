@@ -63,13 +63,6 @@ impl ExecState {
         matches!(self, Self::Starting | Self::Running | Self::Stopping)
     }
 
-    /// Whether the activation is over and blocks neither removal nor
-    /// relaunch.
-    #[must_use]
-    pub const fn is_settled(self) -> bool {
-        matches!(self, Self::Completed | Self::Failed | Self::Abandoned)
-    }
-
     /// Short lowercase name for logs and JSON.
     #[must_use]
     pub const fn as_str(self) -> &'static str {

@@ -22,7 +22,6 @@ use std::time::Duration;
 use phux_core::screen::{ROW_WINDOW_ALL, ScreenState};
 use phux_protocol::ResourceId;
 use serde::Serialize;
-use tokio::time::Instant;
 
 use crate::agent_meta::{ShellAvailability, pane_shell_availability};
 use crate::attach::AttachError;
@@ -271,7 +270,7 @@ async fn poll_for_rc(
         screen = read?;
         if let Some((idx, code)) = parse_rc(&screen.lines, nonce) {
             // Stamped before the capture read, which is not the child's time.
-            let duration_ms = duration_ms(start);
+            let duration_ms = phux_perf::duration_ms(start.elapsed());
             let (output, truncated) = capture_span(socket, &pane, nonce, deadline)
                 .await
                 .unwrap_or_else(|| extract_output(&screen.lines, idx, nonce));
@@ -339,15 +338,10 @@ fn timed_out(
 ) -> RunOutcome {
     RunOutcome::TimedOut {
         command: cmd.to_owned(),
-        duration_ms: duration_ms(deadline.started_at()),
+        duration_ms: phux_perf::duration_ms(deadline.started_at().elapsed()),
         submission,
         screen: Box::new(screen),
     }
-}
-
-/// Milliseconds elapsed since `start`, saturating into `u64`.
-fn duration_ms(start: Instant) -> u64 {
-    u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]

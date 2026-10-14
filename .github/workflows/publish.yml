@@ -2,11 +2,13 @@
 #
 # Release Please cuts the tag and the draft notes. ci.yml is the proof the
 # commit is good. Those two finish in either order, so this workflow runs
-# when either of them completes and does nothing until both are true. A
-# daily reconcile catches an event that never arrived, and dispatch is the
-# manual door. Leaf workflows (release.yml, cockpit-release.yml,
-# desktop-release.yml, the FFI builds, agent-integration-release.yml) are
-# called from here. They are not separate buttons.
+# when either of them completes and does nothing until both are true. Every
+# run sweeps all drafts whose own commit's ci is green, so a publish run
+# cancelled under push concurrency cannot strand one. A daily reconcile
+# catches an event that never arrived, and dispatch is the manual door. Leaf
+# workflows (release.yml, cockpit-release.yml, desktop-release.yml, the FFI
+# builds, agent-integration-release.yml) are called from here. They are not
+# separate buttons.
 #
 # A draft older than an already published version of the same component is
 # deleted. The tag stays, so release-please will not cut that version again.

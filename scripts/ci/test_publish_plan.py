@@ -83,10 +83,24 @@ class DecideTests(unittest.TestCase):
         self.assertEqual(plan["publish"], [])
         self.assertIn("cancelled", plan["fail"])
 
-    def test_event_ignores_a_draft_on_some_other_commit(self):
+    def test_event_sweeps_a_draft_left_by_a_cancelled_run(self):
+        # GitHub keeps one pending run per concurrency group and cancels the
+        # older one, so the publish run a draft waits on can vanish before it
+        # starts. The next event must ship that draft instead of stranding it
+        # until the daily reconcile.
         plan = decide([rel("v0.42.0", True, "other")], green, event_sha="abc")
-        self.assertEqual(plan["publish"], [])
+        self.assertEqual(plan["publish"], ["v0.42.0"])
         self.assertFalse(plan["wait"])
+        self.assertIsNone(plan["fail"])
+
+    def test_event_does_not_ship_a_straggler_whose_ci_is_not_green(self):
+        def ci_state(sha):
+            return "success" if sha == "abc" else "failure"
+
+        plan = decide([rel("v0.42.0", True, "other")], ci_state, event_sha="abc")
+        self.assertEqual(plan["publish"], [])
+        self.assertIn("v0.42.0", plan["blocked"])
+        self.assertIsNone(plan["fail"])
 
     def test_superseded_drafts_are_deleted_not_shipped(self):
         releases = [
@@ -177,9 +191,10 @@ class DecideTests(unittest.TestCase):
     def test_desktop_dispatch_requires_its_exact_commit_ci(self):
         tag = "desktop-v0.1.0"
         rows = [rel(tag, True, "desktop")]
-        self.assertEqual(decide(rows, green, event_sha="other")["publish"], [])
         self.assertEqual(decide(rows, green, dispatch_tag=tag)["publish"], [tag])
         self.assertIn("failure", decide(rows, lambda _: "failure", dispatch_tag=tag)["fail"])
+        # An event for any other commit sweeps it like every other green draft.
+        self.assertEqual(decide(rows, green, event_sha="other")["publish"], [tag])
 
 
 if __name__ == "__main__":

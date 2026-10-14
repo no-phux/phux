@@ -3664,63 +3664,6 @@ impl RelaySession {
     }
 }
 
-/// Rewrite `KILL_RESOURCE`/`KILL_RESOURCE_IF` to the satellite's `Local`
-/// id; precondition and `operation_id` cross verbatim (ADR-0109, L1 §9.1).
-fn route_kill_to_satellite(command: &Command) -> Option<(SatelliteHost, Command)> {
-    match command {
-        Command::KillResource {
-            terminal_id,
-            operation_id,
-        } => {
-            let (host, id) = satellite_route(terminal_id)?;
-            Some((
-                host,
-                Command::KillResource {
-                    terminal_id: ResourceId::local(id),
-                    operation_id: *operation_id,
-                },
-            ))
-        }
-        Command::KillResourceIf {
-            terminal_id,
-            precondition,
-            operation_id,
-        } => {
-            let (host, id) = satellite_route(terminal_id)?;
-            Some((
-                host,
-                Command::KillResourceIf {
-                    terminal_id: ResourceId::local(id),
-                    precondition: *precondition,
-                    operation_id: *operation_id,
-                },
-            ))
-        }
-        _ => None,
-    }
-}
-
-/// Rewrite `APPLY_INPUT` to the satellite's `Local` id (L1 §9.1).
-fn route_input_to_satellite(command: &Command) -> Option<(SatelliteHost, Command)> {
-    let Command::ApplyInput {
-        operation_id,
-        terminal_id,
-        events,
-    } = command
-    else {
-        return None;
-    };
-    let (host, id) = satellite_route(terminal_id)?;
-    Some((
-        host,
-        Command::ApplyInput {
-            operation_id: *operation_id,
-            terminal_id: ResourceId::local(id),
-            events: events.clone(),
-        },
-    ))
-}
-
 /// Re-tag a satellite's spawn reply: `Local { id }` becomes
 /// `Satellite { host, id }`, the instance token passes through (ADR-0109),
 /// and a `Satellite`-tagged id becomes `SpawnFailed`.
@@ -3807,187 +3750,59 @@ pub(crate) fn link_attach_command(
 /// If `command` targets one satellite-owned terminal, the host and the
 /// command rewritten to `Local` ids. `None` for local targets, hub-local
 /// commands, and mixed batches.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one mechanical rewrite arm per per-terminal Command variant; splitting hides the catalog"
-)]
 pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Command)> {
-    match command {
-        Command::AttachResource {
-            terminal_id,
-            role_policy,
-            agent_after_seq,
-        } => {
-            let (host, id) = satellite_route(terminal_id)?;
-            // The consumer's intent rides unchanged; the link command is
-            // decided at dispatch (ADR-0127).
-            Some((
-                host,
-                forwarded_attach(ResourceId::local(id), *role_policy, *agent_after_seq),
-            ))
-        }
-        Command::DetachResource { terminal_id } => {
-            let (host, id) = satellite_route(terminal_id)?;
-            Some((
-                host,
-                Command::DetachResource {
-                    terminal_id: ResourceId::local(id),
-                },
-            ))
-        }
-        Command::KillResource { .. } | Command::KillResourceIf { .. } => {
-            route_kill_to_satellite(command)
-        }
-        Command::ApplyInput { .. } => route_input_to_satellite(command),
-        Command::GetScreen {
-            terminal_id,
-            request_scrollback,
-            cells,
-            format,
-        } => {
-            let (host, id) = satellite_route(terminal_id)?;
-            Some((
-                host,
-                Command::GetScreen {
-                    terminal_id: ResourceId::local(id),
-                    request_scrollback: *request_scrollback,
-                    cells: *cells,
-                    format: *format,
-                },
-            ))
-        }
-        Command::RouteInput { terminal_id, event } => {
-            let (host, id) = satellite_route(terminal_id)?;
-            Some((
-                host,
-                Command::RouteInput {
-                    terminal_id: ResourceId::local(id),
-                    event: event.clone(),
-                },
-            ))
-        }
-        Command::GetTerminalState {
-            terminal_id,
-            include_scrollback,
-            max_scrollback_lines,
-        } => {
-            let (host, id) = satellite_route(terminal_id)?;
-            Some((
-                host,
-                Command::GetTerminalState {
-                    terminal_id: ResourceId::local(id),
-                    include_scrollback: *include_scrollback,
-                    max_scrollback_lines: *max_scrollback_lines,
-                },
-            ))
-        }
-        Command::SubscribeResourceEvents {
-            terminal_id,
-            event_types,
-        } => {
-            let (host, id) = satellite_route(terminal_id)?;
-            Some((
-                host,
-                Command::SubscribeResourceEvents {
-                    terminal_id: ResourceId::local(id),
-                    event_types: event_types.clone(),
-                },
-            ))
-        }
-        Command::AcquireInput {
-            terminal_id,
-            mode,
-            ttl_ms,
-        } => {
-            let (host, id) = satellite_route(terminal_id)?;
-            Some((
-                host,
-                Command::AcquireInput {
-                    terminal_id: ResourceId::local(id),
-                    mode: *mode,
-                    ttl_ms: *ttl_ms,
-                },
-            ))
-        }
-        Command::ReleaseInput { terminal_id } => {
-            let (host, id) = satellite_route(terminal_id)?;
-            Some((
-                host,
-                Command::ReleaseInput {
-                    terminal_id: ResourceId::local(id),
-                },
-            ))
-        }
-        Command::SignalTerminal {
-            terminal_id,
-            signal,
-            operation_id,
-        } => {
-            let (host, id) = satellite_route(terminal_id)?;
-            Some((
-                host,
-                Command::SignalTerminal {
-                    terminal_id: ResourceId::local(id),
-                    signal: *signal,
-                    operation_id: *operation_id,
-                },
-            ))
-        }
-        Command::PutFile {
-            upload_id,
-            terminal_id,
-            extension,
-            offset,
-            data,
-            final_chunk,
-            sha256,
-        } => {
-            let (host, id) = satellite_route(terminal_id)?;
-            Some((
-                host,
-                Command::PutFile {
-                    upload_id: *upload_id,
-                    terminal_id: ResourceId::local(id),
-                    extension: extension.clone(),
-                    offset: *offset,
-                    data: data.clone(),
-                    final_chunk: *final_chunk,
-                    sha256: *sha256,
-                },
-            ))
-        }
-        Command::ReportAsked {
-            terminal_id,
-            id: asked_id,
-            question,
-            suggestions,
-            elapsed_seconds,
-        } => {
-            let (host, id) = satellite_route(terminal_id)?;
-            Some((
-                host,
-                Command::ReportAsked {
-                    terminal_id: ResourceId::local(id),
-                    id: asked_id.clone(),
-                    question: question.clone(),
-                    suggestions: suggestions.clone(),
-                    elapsed_seconds: *elapsed_seconds,
-                },
-            ))
-        }
-        Command::ReportAgentState { terminal_id, state } => {
-            let (host, id) = satellite_route(terminal_id)?;
-            Some((
-                host,
-                Command::ReportAgentState {
-                    terminal_id: ResourceId::local(id),
-                    state: *state,
-                },
-            ))
-        }
-        // Hub-local, batch-partitioned, or unknown commands.
-        _ => None,
+    if let Command::AttachResource {
+        terminal_id,
+        role_policy,
+        agent_after_seq,
+    } = command
+    {
+        let (host, id) = satellite_route(terminal_id)?;
+        // The consumer's intent rides unchanged; the link command is decided
+        // at dispatch (ADR-0127).
+        return Some((
+            host,
+            forwarded_attach(ResourceId::local(id), *role_policy, *agent_after_seq),
+        ));
     }
+    let (host, id) = satellite_route(single_target(command)?)?;
+    // Everything but the target rides unchanged: a kill's precondition and
+    // every `operation_id` cross verbatim (ADR-0109, L1 §9.1).
+    let mut local = command.clone();
+    *single_target_mut(&mut local)? = ResourceId::local(id);
+    Some((host, local))
+}
+
+/// The one Terminal a command that relays verbatim addresses; `None` for
+/// hub-local, batch-partitioned, or specially relayed commands.
+macro_rules! single_target {
+    ($command:expr) => {
+        match $command {
+            Command::DetachResource { terminal_id }
+            | Command::GetScreen { terminal_id, .. }
+            | Command::RouteInput { terminal_id, .. }
+            | Command::GetTerminalState { terminal_id, .. }
+            | Command::SubscribeResourceEvents { terminal_id, .. }
+            | Command::AcquireInput { terminal_id, .. }
+            | Command::ReleaseInput { terminal_id }
+            | Command::SignalTerminal { terminal_id, .. }
+            | Command::PutFile { terminal_id, .. }
+            | Command::ReportAsked { terminal_id, .. }
+            | Command::ReportAgentState { terminal_id, .. }
+            | Command::KillResource { terminal_id, .. }
+            | Command::KillResourceIf { terminal_id, .. }
+            | Command::ApplyInput { terminal_id, .. } => Some(terminal_id),
+            _ => None,
+        }
+    };
+}
+
+const fn single_target(command: &Command) -> Option<&ResourceId> {
+    single_target!(command)
+}
+
+const fn single_target_mut(command: &mut Command) -> Option<&mut ResourceId> {
+    single_target!(command)
 }
 
 #[cfg(test)]
@@ -5682,7 +5497,7 @@ mod tests {
             instance: Some(phux_protocol::ids::ServerInstance::new([3; 16])),
             conditions: KillConditions::NONE,
         };
-        let (target, command) = route_kill_to_satellite(&Command::KillResourceIf {
+        let (target, command) = route_to_satellite(&Command::KillResourceIf {
             terminal_id: ResourceId::satellite(host(), 9),
             precondition,
             operation_id: None,
@@ -7808,13 +7623,23 @@ mod tests {
         );
     }
 
+    /// A satellite whose link stays up but never answers is refused at the
+    /// deadline, naming the host and the path it was asked for.
     #[tokio::test(start_paused = true)]
     async fn a_listing_times_out_against_a_silent_satellite() {
         let (handle, rx) = RelayHandle::new(host());
-        let message = refusal_message(handle.list_directory("/srv".to_owned()).await);
+        let refusal = handle
+            .list_directory("/srv".to_owned())
+            .await
+            .expect_err("expected a refusal");
+        assert_eq!(refusal.code, DirectoryErrorCode::Other);
+        assert_eq!(refusal.path, "/srv");
         assert!(
-            message.contains("did not answer the listing within 10s"),
-            "{message}"
+            refusal
+                .message
+                .contains("devbox did not answer the listing within 10s"),
+            "{}",
+            refusal.message
         );
         drop(rx);
     }

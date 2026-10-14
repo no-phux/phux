@@ -557,12 +557,6 @@ impl EffectBuffer {
         std::mem::take(&mut self.effects)
     }
 
-    /// Return an emptied allocation obtained from [`Self::take`] for reuse.
-    pub fn restore_allocation(&mut self, mut effects: Vec<KernelEffect>) {
-        effects.clear();
-        self.effects = effects;
-    }
-
     fn push(&mut self, effect: KernelEffect) {
         self.effects.push(effect);
     }

@@ -387,6 +387,13 @@ pub const Engine = struct {
     creation: durable_creation.Creation = .{},
     session_handoff: ?u64 = null,
     last_workspace_refresh: ?std.Io.Timestamp = null,
+    /// Close accept → the publication that drops the target. A quiet pending
+    /// close is not attention; these stamps are how a regression tells a
+    /// refresh wait from the authoritative round trip.
+    close_accepted_at: ?std.Io.Timestamp = null,
+    close_published_at: ?std.Io.Timestamp = null,
+    close_refresh_requests: u32 = 0,
+    chased_removal_ticket: u64 = 0,
     /// The publication the last unarranged placement was asked against: a
     /// refused placement is not asked again until the arrangement moves.
     arranged_against: ?struct { epoch: u64, session: u32, revision: u64 } = null,
@@ -784,6 +791,7 @@ pub const Engine = struct {
         const remote = model.phux() orelse return false;
         self.sharedContext() catch return self.projectionRefused();
         var changed = model.shared_mutations.pump(model);
+        self.chaseUnpublishedRemoval();
         changed = self.creation.pump(model) or changed;
         changed = (self.projectSharedWorkspace() catch return self.projectionRefused()) or changed;
         // Bound empty New Tab on the primary provider: queue, then settle from
@@ -798,7 +806,39 @@ pub const Engine = struct {
         // only after the winning snapshot and its placement were consumed;
         // waiting for another provider wake strands quiet queues until polling.
         changed = model.shared_mutations.pump(model) or changed;
+        self.noteSharedClosePublished();
         return changed;
+    }
+
+    /// One immediate read when a removal was confirmed but the publication
+    /// still shows its target. The organization replace can commit while
+    /// that confirming read is still the previous document; waiting for the
+    /// workspace timer is what holds the tab for about a second.
+    fn chaseUnpublishedRemoval(self: *Engine) void {
+        const ticket = self.model.shared_mutations.unpublishedRemovalTicket(self.model) orelse return;
+        if (self.chased_removal_ticket == ticket) return;
+        if (!refreshAttached(self.model.phux())) return;
+        self.chased_removal_ticket = ticket;
+        self.close_refresh_requests += 1;
+    }
+
+    fn noteSharedCloseAccepted(self: *Engine) void {
+        self.close_accepted_at = std.Io.Clock.awake.now(self.model.provider.io);
+        self.close_published_at = null;
+        self.close_refresh_requests = 0;
+        self.chased_removal_ticket = 0;
+    }
+
+    fn noteSharedClosePublished(self: *Engine) void {
+        const accepted = self.close_accepted_at orelse return;
+        if (self.close_published_at != null) return;
+        if (!self.model.shared_mutations.removalLanded(self.model)) return;
+        const now = std.Io.Clock.awake.now(self.model.provider.io);
+        self.close_published_at = now;
+        std.log.info("phux close tab published in {d} ms ({d} refresh requests while waiting)", .{
+            accepted.durationTo(now).toMilliseconds(),
+            self.close_refresh_requests,
+        });
     }
 
     /// A session's arrangement can show none of its terminals: a fresh
@@ -926,7 +966,13 @@ pub const Engine = struct {
             const peer = entry.provider orelse continue;
             if (peer.showing()) requested = refreshAttached(peer) or requested;
         }
-        if (requested) self.last_workspace_refresh = now;
+        if (requested) {
+            self.last_workspace_refresh = now;
+            // Counted only while a close is still waiting on publication, so
+            // the one-second timer cannot hide inside that interval.
+            if (self.close_accepted_at != null and self.close_published_at == null)
+                self.close_refresh_requests += 1;
+        }
     }
 
     fn refreshAttached(remote: ?*support.PhuxProvider) bool {
@@ -1319,6 +1365,7 @@ pub const Engine = struct {
     fn applySharedTabClose(self: *Engine, id: u64, workspace: *model_module.Workspace, index: u8, remote: *support.PhuxProvider, attachment: u64) ?tab_commands.Status {
         const shared_id = workspace.shared_ids[index] orelse return null;
         trySharedClose(self, id, remote, attachment, shared_id) catch return null;
+        self.noteSharedCloseAccepted();
         if (workspace.selected_tab == index) self.supersedeSelection();
         return .accepted_pending;
     }
@@ -1643,6 +1690,7 @@ pub const Engine = struct {
                 if (self.model.foreignTab(workspace, operation.argument)) return error.ForeignCoordinator;
                 const shared_id = workspace.shared_ids[operation.argument] orelse return error.StaleTarget;
                 try self.model.shared_mutations.requestRemoveWindowCorrelated(self.model, shared_id, id);
+                self.noteSharedCloseAccepted();
             },
             .native_command => try self.admitDurableNative(id, operation.argument),
             else => return error.InvalidCommand,
@@ -1655,6 +1703,7 @@ pub const Engine = struct {
                 const ref = self.model.focusedTerminalRef() orelse return error.StaleTarget;
                 if (!self.model.activeOwnsRef(ref)) return error.ForeignCoordinator;
                 try self.model.shared_mutations.requestRemoveCorrelated(self.model, ref, id);
+                self.noteSharedCloseAccepted();
             },
             4 => try self.creation.requestCorrelated(self.model, .split_right, id),
             5 => try self.creation.requestCorrelated(self.model, .split_down, id),
@@ -2786,6 +2835,7 @@ pub const Engine = struct {
             if (model.foreignTab(model.ws(), index)) return self.closePeerWindow(model.ws(), index);
             const id = model.ws().shared_ids[index] orelse return false;
             model.shared_mutations.requestRemoveWindowNative(model, id) catch return false;
+            self.noteSharedCloseAccepted();
             self.supersedeSelection();
             return true;
         }
@@ -3111,6 +3161,7 @@ pub const Engine = struct {
         // Another coordinator's pane closes on that coordinator.
         if (!self.model.activeOwnsRef(ref)) return self.closePeerPane(ref);
         self.model.shared_mutations.requestRemoveNative(self.model, ref) catch return false;
+        self.noteSharedCloseAccepted();
         self.supersedeSelection();
         return true;
     }

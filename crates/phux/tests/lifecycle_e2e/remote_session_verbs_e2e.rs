@@ -11,11 +11,13 @@ mod common;
 #[path = "../common/listeners.rs"]
 mod listeners;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
+
+use crate::hermetic::hermetic_env;
 
 /// The registry name the loopback listener is registered under.
 const REMOTE: &str = "loop";
@@ -128,19 +130,6 @@ impl Drop for LoopbackRemote {
         let _ = self.server.kill();
         let _ = self.server.wait();
     }
-}
-
-/// The environment every process in this test runs under.
-fn hermetic_env(dir: &Path) -> Vec<(&'static str, PathBuf)> {
-    vec![
-        ("XDG_CONFIG_HOME", dir.join("config")),
-        ("XDG_STATE_HOME", dir.join("state")),
-        ("XDG_RUNTIME_DIR", dir.join("run")),
-        ("PHUX_PROFILE", PathBuf::from("default")),
-        // Any ssh or overlay probe fails loudly instead of reaching out.
-        ("PHUX_SSH", dir.join("no-such-ssh")),
-        ("PHUX_TAILSCALE", dir.join("no-such-tailscale")),
-    ]
 }
 
 /// Register the loopback listener as [`REMOTE`], the way `phux host add loop

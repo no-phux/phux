@@ -48,7 +48,7 @@ use phux_protocol::wire::frame::{FrameKind, OrgFilter, Scope};
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::json_err::codes;
-use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target_for_input};
+use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target_for_input, sh_quote};
 use crate::exit_codes::{EXIT_FAILURE, EXIT_SUCCESS, EXIT_USAGE, EXIT_WAIT_TIMEOUT};
 
 /// First request id of the delegation round trips, clear of the ids the
@@ -144,24 +144,6 @@ pub(super) fn is_addressable_name(name: &str) -> bool {
     chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_')
 }
 
-/// Quote one word for a POSIX shell, unconditionally (`'` becomes `'\''`).
-/// No "looks safe" fast path: template paths and native session ids may
-/// carry spaces, `$(...)`, or `;`.
-#[must_use]
-pub(super) fn shell_quote(word: &str) -> String {
-    let mut out = String::with_capacity(word.len().saturating_add(2));
-    out.push('\'');
-    for ch in word.chars() {
-        if ch == '\'' {
-            out.push_str("'\\''");
-        } else {
-            out.push(ch);
-        }
-    }
-    out.push('\'');
-    out
-}
-
 /// Why a resolved launch cannot be typed as one shell line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ShellLineError {
@@ -222,10 +204,10 @@ pub(super) fn shell_line(
                     element: format!("{key}=<value>"),
                 });
             }
-            words.push(shell_quote(&format!("{key}={value}")));
+            words.push(sh_quote(&format!("{key}={value}")));
         }
     }
-    words.extend(argv.iter().map(|arg| shell_quote(arg)));
+    words.extend(argv.iter().map(|arg| sh_quote(arg)));
     let line = words.join(" ");
     if line.len() > MAX_SHELL_LINE {
         return Err(ShellLineError::TooLong { bytes: line.len() });
@@ -1420,21 +1402,6 @@ mod tests {
         for name in ["", "Build", "2fast", "-lead", "has space", &"x".repeat(33)] {
             assert!(!is_addressable_name(name), "{name} must be refused");
         }
-    }
-
-    /// Every word is quoted, and an embedded single quote is escaped rather
-    /// than terminating the quoting.
-    #[test]
-    fn shell_quote_is_unconditional_and_closes_over_single_quotes() {
-        assert_eq!(shell_quote("claude"), "'claude'");
-        assert_eq!(
-            shell_quote("/opt/my agent/claude"),
-            "'/opt/my agent/claude'"
-        );
-        assert_eq!(shell_quote("it's"), r"'it'\''s'");
-        // The injection this exists to stop: nothing escapes the quotes.
-        assert_eq!(shell_quote("; rm -rf /"), "'; rm -rf /'");
-        assert_eq!(shell_quote("$(whoami)"), "'$(whoami)'");
     }
 
     /// Env rides `env NAME=value` (a `VAR=v cmd` prefix is not valid fish);

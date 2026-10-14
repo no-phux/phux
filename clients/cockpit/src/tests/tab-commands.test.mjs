@@ -155,13 +155,15 @@ test('catalog admission is distinct from application and shares the tab FIFO', (
   assert.equal(decision.state.outcome, 2);
 });
 
-test('catalog pending notice is observable and a malformed admission cancels the queue', () => {
+test('catalog pending admission is not an attention notice and a malformed admission cancels the queue', () => {
   const catalog = new Uint8Array(38); catalog[0] = 2;
   let [model, command] = step({ ...initialModel()[0], paletteOpen: true }, { kind: 'palette_pick', target: catalog });
   const pending = receipt(command.cmds[1].payload); pending[1] = 3;
   [model] = step(model, { kind: 'tab_command_completed', body: pending });
   assert.equal(model.tabCommands.outcome, 7);
-  assert.match(new TextDecoder().decode(model.commandNotice), /accepted.*pending/);
+  // The location button paints any commandNotice as the warning icon.
+  // Waiting on the server is not that warning.
+  assert.equal(model.commandNotice.length, 0);
   [model, command] = step({ ...model, paletteOpen: true }, { kind: 'palette_pick', target: catalog });
   [model] = step(model, { kind: 'select_target', target: target(1) });
   const malformed = receipt(command.cmds[1].payload); malformed[1] = 3; malformed[2] = 2;

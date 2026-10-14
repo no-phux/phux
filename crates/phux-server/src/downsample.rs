@@ -9,12 +9,6 @@
 
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, ImageProtocol, KeyboardProtocol};
 
-/// Rewrite for the client's color tier only (other escapes pass through).
-#[must_use]
-pub fn rewrite_bytes(input: &[u8], support: ColorSupport) -> Vec<u8> {
-    rewrite_bytes_with_caps(input, ClientCapabilities::new().with_color_support(support))
-}
-
 /// Whether the caps need no rewriting, so the source bytes can be forwarded
 /// as-is.
 #[must_use]
@@ -625,7 +619,12 @@ mod tests {
             (b"\x1b[4:3mX", I256, b"\x1b[4:3mX"),
         ];
         for (input, tier, want) in cases {
-            assert_eq!(rewrite_bytes(input, *tier), *want, "{input:?} at {tier:?}");
+            let caps = ClientCapabilities::new().with_color_support(*tier);
+            assert_eq!(
+                rewrite_bytes_with_caps(input, caps),
+                *want,
+                "{input:?} at {tier:?}"
+            );
         }
     }
 
