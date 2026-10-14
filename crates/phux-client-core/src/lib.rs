@@ -20,6 +20,7 @@
 //! - [`input_replay`] — acknowledged input ordering and reconnect policy.
 //! - [`org_ops`] — the organization operation retry journal and the
 //!   kill-session planner.
+//! - [`agent_record`] — the one `phux.agent/v1` record reader.
 //! - [`ask`] — the ADR-0035 ask-sentinel reader every answer path guards
 //!   with.
 //!
@@ -35,6 +36,7 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::private_intra_doc_links)]
 
+pub mod agent_record;
 pub mod ask;
 pub mod engine;
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]

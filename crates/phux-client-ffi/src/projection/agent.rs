@@ -17,75 +17,11 @@
 //! producer's `"waiting_approval"` as present-but-unsupported rather than
 //! fold it into "no agent" or an all-clear.
 
+use phux_client_core::agent_record::parse_agent_record;
+pub use phux_client_core::agent_record::{
+    AgentAttention, AgentState, AttentionReading, MAX_RAW_WORD_BYTES, StateReading,
+};
 use phux_protocol::ResourceId;
-
-/// The lifecycle word a record declares.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum AgentState {
-    /// No state declared, or an unrecognized (newer) vocabulary value.
-    #[default]
-    Unknown,
-    /// Declared `idle`.
-    Idle,
-    /// Declared `working`.
-    Working,
-    /// Declared `blocked`.
-    Blocked,
-    /// Declared `done`.
-    Done,
-}
-
-/// The most bytes of an unsupported word a badge carries. A record may hold
-/// up to 4096 bytes (L3.md §3.7.1); a vocabulary word is a slug, and a
-/// consumer only displays it.
-pub const MAX_RAW_WORD_BYTES: usize = 64;
-
-/// How a badge's `state` was read from the record.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum StateReading {
-    /// No record: the key is absent or deleted, or the value is malformed
-    /// or nameless. The pane declares no agent.
-    #[default]
-    NoRecord,
-    /// A record that declared no `state`.
-    Undeclared,
-    /// A record that declared `"unknown"` explicitly.
-    Indeterminate,
-    /// A word this build recognizes; `state` is that word.
-    Recognized,
-    /// A word this build does not recognize, or a value that is not a
-    /// string: `state` is `Unknown` as L3 requires, and this is the raw
-    /// text (bounded to [`MAX_RAW_WORD_BYTES`], control characters
-    /// replaced).
-    Unsupported(String),
-}
-
-/// How a badge's effective `attention` was arrived at.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum AttentionReading {
-    /// Undeclared (or no record): derived from `state`.
-    #[default]
-    Derived,
-    /// A word this build recognizes, declared by the record.
-    Declared,
-    /// A word this build does not recognize, or a value that is not a
-    /// string: `attention` is `Normal` as L3 requires, and this is the raw
-    /// text, bounded like [`StateReading::Unsupported`].
-    Unsupported(String),
-}
-
-/// How loudly a record asks to be noticed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentAttention {
-    /// Declared `none`.
-    None,
-    /// Declared `low`, or derived from a finished or undeclared state.
-    Low,
-    /// Declared `normal`, an unrecognized word, or derived from `working`.
-    Normal,
-    /// Declared `high`, or derived from `blocked`.
-    High,
-}
 
 /// One pane's effective agent badge.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,12 +45,12 @@ pub struct AgentBadge {
 }
 
 /// Fold `bytes` — a `phux.agent/v1` value, or its absence — into a badge.
+/// The record is read by `phux_client_core::agent_record`, the one reader
+/// every client shares.
 #[must_use]
 pub fn badge(terminal_id: &ResourceId, bytes: Option<&[u8]>) -> AgentBadge {
-    let record = bytes.and_then(parse).unwrap_or_default();
-    let (attention, attention_reading) = record
-        .attention
-        .unwrap_or_else(|| (derived_attention(record.state), AttentionReading::Derived));
+    let record = bytes.and_then(parse_agent_record).unwrap_or_default();
+    let (attention, attention_reading) = record.effective_attention();
     AgentBadge {
         terminal_id: terminal_id.clone(),
         name: record.name,
@@ -124,101 +60,6 @@ pub fn badge(terminal_id: &ResourceId, bytes: Option<&[u8]>) -> AgentBadge {
         attention,
         state_reading: record.state_reading,
         attention_reading,
-    }
-}
-
-#[derive(Default)]
-struct Record {
-    name: String,
-    kind: Option<String>,
-    session: Option<String>,
-    state: AgentState,
-    state_reading: StateReading,
-    attention: Option<(AgentAttention, AttentionReading)>,
-}
-
-fn parse(bytes: &[u8]) -> Option<Record> {
-    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
-    let object = value.as_object()?;
-    let name = object.get("name")?.as_str()?;
-    if name.is_empty() {
-        return None;
-    }
-    let (state, state_reading) = object
-        .get("state")
-        .map_or((AgentState::Unknown, StateReading::Undeclared), state_from);
-    Some(Record {
-        name: name.to_owned(),
-        kind: object
-            .get("kind")
-            .and_then(|value| value.as_str())
-            .map(str::to_owned),
-        session: object
-            .get("session")
-            .and_then(|value| value.as_str())
-            .map(str::to_owned),
-        state,
-        state_reading,
-        attention: object.get("attention").map(attention_from),
-    })
-}
-
-fn state_from(value: &serde_json::Value) -> (AgentState, StateReading) {
-    let state = match value.as_str() {
-        Some("unknown") => return (AgentState::Unknown, StateReading::Indeterminate),
-        Some("idle") => AgentState::Idle,
-        Some("working") => AgentState::Working,
-        Some("blocked") => AgentState::Blocked,
-        Some("done") => AgentState::Done,
-        _ => return (AgentState::Unknown, StateReading::Unsupported(raw(value))),
-    };
-    (state, StateReading::Recognized)
-}
-
-fn attention_from(value: &serde_json::Value) -> (AgentAttention, AttentionReading) {
-    let attention = match value.as_str() {
-        Some("none") => AgentAttention::None,
-        Some("low") => AgentAttention::Low,
-        Some("normal") => AgentAttention::Normal,
-        Some("high") => AgentAttention::High,
-        _ => {
-            return (
-                AgentAttention::Normal,
-                AttentionReading::Unsupported(raw(value)),
-            );
-        }
-    };
-    (attention, AttentionReading::Declared)
-}
-
-/// The displayable text of an unsupported value: a string as written, any
-/// other JSON value as its compact encoding; control characters replaced and
-/// cut to [`MAX_RAW_WORD_BYTES`] on a character boundary.
-fn raw(value: &serde_json::Value) -> String {
-    let text = value
-        .as_str()
-        .map_or_else(|| value.to_string(), str::to_owned);
-    let mut bounded = String::new();
-    for character in text.chars() {
-        let character = if character.is_control() {
-            char::REPLACEMENT_CHARACTER
-        } else {
-            character
-        };
-        if bounded.len() + character.len_utf8() > MAX_RAW_WORD_BYTES {
-            break;
-        }
-        bounded.push(character);
-    }
-    bounded
-}
-
-const fn derived_attention(state: AgentState) -> AgentAttention {
-    match state {
-        AgentState::Blocked => AgentAttention::High,
-        AgentState::Working => AgentAttention::Normal,
-        AgentState::Done | AgentState::Unknown => AgentAttention::Low,
-        AgentState::Idle => AgentAttention::None,
     }
 }
 
@@ -296,6 +137,18 @@ mod tests {
         );
         assert!(cleared.name.is_empty());
         assert_eq!(cleared.state, AgentState::Unknown);
+        assert_eq!(cleared.state_reading, StateReading::NoRecord);
+    }
+
+    #[test]
+    fn a_whitespace_only_name_clears_the_badge() {
+        let cleared = badge(
+            &ResourceId::local(4),
+            Some(br#"{"name":"   ","state":"blocked"}"#),
+        );
+        assert!(cleared.name.is_empty());
+        assert_eq!(cleared.state, AgentState::Unknown);
+        assert_eq!(cleared.attention, AgentAttention::Low);
         assert_eq!(cleared.state_reading, StateReading::NoRecord);
     }
 
