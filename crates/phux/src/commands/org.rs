@@ -18,7 +18,7 @@ use phux_protocol::ids::{ResourceKey, SessionKey};
 use phux_protocol::wire::frame::{Committed, OrgFilter, ResourceRecord, SessionRecord};
 
 use crate::commands::confirm;
-use crate::commands::json_err::{self, CliError, codes};
+use crate::commands::json_err::{Refusal, codes};
 use crate::commands::server_target::{ServerSpec, ServerTarget};
 
 /// Schema of every result document these verbs print under `--json`.
@@ -33,26 +33,7 @@ pub(crate) enum Target {
     Resource(ResourceRecord),
 }
 
-/// Why a target did not resolve, or a verb failed, ready to print.
-#[derive(Debug)]
-pub(crate) struct Failure {
-    error: CliError,
-    exit: u8,
-}
-
-impl Failure {
-    fn new(
-        code: &'static str,
-        message: impl Into<String>,
-        remedy: impl Into<String>,
-        exit: u8,
-    ) -> Self {
-        Self {
-            error: CliError::new(code, message, remedy),
-            exit,
-        }
-    }
-
+impl Refusal {
     /// An organization request that failed: refusals exit 2, everything
     /// else 1.
     fn org(verb: &str, err: &OrgError) -> Self {
@@ -69,10 +50,6 @@ impl Failure {
             _ => "run `phux ls` to see the current state, then retry",
         };
         Self::new(err.code(), format!("{verb}: {err}"), remedy, exit)
-    }
-
-    fn emit(&self, json: bool) -> ExitCode {
-        json_err::emit(json, &self.error, self.exit)
     }
 }
 
@@ -91,13 +68,13 @@ async fn connect(server: &ServerTarget, json: bool, verb: &str) -> Result<Connec
 }
 
 /// Read every record, refusing a server without `ORGANIZATION` first.
-async fn records(conn: &mut Connection, verb: &str) -> Result<OrgInventory, Failure> {
+async fn records(conn: &mut Connection, verb: &str) -> Result<OrgInventory, Refusal> {
     if !org::supported(conn) {
-        return Err(Failure::org(verb, &OrgError::Unsupported));
+        return Err(Refusal::org(verb, &OrgError::Unsupported));
     }
     org::fetch(conn, OrgFilter::All, 1)
         .await
-        .map_err(|err| Failure::org(verb, &err))
+        .map_err(|err| Refusal::org(verb, &err))
 }
 
 /// Resolve `text` to one session or resource record (see the module docs).
@@ -106,9 +83,9 @@ pub(crate) async fn resolve(
     inventory: &OrgInventory,
     text: &str,
     verb: &str,
-) -> Result<Target, Failure> {
+) -> Result<Target, Refusal> {
     let parsed = selector::parse(text).map_err(|err| {
-        Failure::new(
+        Refusal::new(
             codes::INVALID_SELECTOR,
             format!("invalid target '{text}': {err}"),
             "run `phux help targets` for the selector grammar",
@@ -120,7 +97,7 @@ pub(crate) async fn resolve(
             return match inventory.resolve_key_prefix(prefix) {
                 Ok(KeyMatch::Session(record)) => Ok(Target::Session(record)),
                 Ok(KeyMatch::Resource(record)) => Ok(Target::Resource(record)),
-                Err(err) => Err(Failure::org(verb, &err)),
+                Err(err) => Err(Refusal::org(verb, &err)),
             };
         }
         Selector::Session(name) => {
@@ -133,7 +110,7 @@ pub(crate) async fn resolve(
     let (snapshot, _) = phux_client::state::get_state_on(conn)
         .await
         .map_err(|err| {
-            Failure::new(
+            Refusal::new(
                 codes::TRANSPORT,
                 format!("{verb}: could not read state: {err}"),
                 "run `phux doctor` for a health check",
@@ -144,7 +121,7 @@ pub(crate) async fn resolve(
     let ids = phux_client::state::resolve_targets_on(conn, &parsed, &snapshot)
         .await
         .map_err(|err| {
-            Failure::new(
+            Refusal::new(
                 codes::NO_SUCH_TARGET,
                 format!("{verb}: {err}"),
                 "run `phux ls` to see sessions and panes",
@@ -153,14 +130,14 @@ pub(crate) async fn resolve(
         })?;
     let [id] = ids.as_slice() else {
         if ids.is_empty() {
-            return Err(Failure::new(
+            return Err(Refusal::new(
                 codes::NO_SUCH_TARGET,
                 format!("no such target: {text}"),
                 "run `phux ls` to see sessions and panes",
                 1,
             ));
         }
-        return Err(Failure::new(
+        return Err(Refusal::new(
             codes::SELECTOR_NOT_SINGLE,
             format!("'{text}' names {} panes; {verb} takes one", ids.len()),
             "name one pane (`@N`, `name:N.M`, or a key `^ab23cd`)",
@@ -172,7 +149,7 @@ pub(crate) async fn resolve(
         .cloned()
         .map(Target::Resource)
         .ok_or_else(|| {
-            Failure::new(
+            Refusal::new(
                 codes::NO_SUCH_TARGET,
                 format!("{text} has no record on this server"),
                 "run `phux ls` to see sessions and panes",
@@ -260,7 +237,7 @@ pub(crate) fn run_relaunch(target: &str, json: bool, socket: Option<PathBuf>) ->
         let record = match resolve(conn, &inventory, target, "relaunch").await {
             Ok(Target::Resource(record)) => record,
             Ok(Target::Session(record)) => {
-                return Failure::new(
+                return Refusal::new(
                     codes::WRONG_RESOURCE_KIND,
                     format!(
                         "relaunch: {target} is session {:?}; relaunch takes a pane",
@@ -313,7 +290,7 @@ fn finish(
             outln!("{line}");
             ExitCode::SUCCESS
         }
-        Err(err) => Failure::org(verb, &err).emit(json),
+        Err(err) => Refusal::org(verb, &err).emit(json),
     }
 }
 
@@ -347,7 +324,7 @@ pub(crate) fn run_restore(
             Some(name) => match inventory.session_named(name) {
                 Some(record) => Some(record.key),
                 None => {
-                    return Failure::new(
+                    return Refusal::new(
                         codes::NO_SUCH_TARGET,
                         format!("no such session: {name}"),
                         "run `phux ls` to see sessions",
@@ -532,7 +509,7 @@ pub(crate) fn run_move_into_session(
         let to: SessionKey = match resolve(conn, &inventory, dest, "mv").await {
             Ok(Target::Session(record)) => record.key,
             Ok(Target::Resource(_)) => {
-                return Failure::new(
+                return Refusal::new(
                     codes::NO_SUCH_TARGET,
                     format!("mv: {dest} is not a session"),
                     "name the destination session, or a pane to place beside",
@@ -545,7 +522,7 @@ pub(crate) fn run_move_into_session(
         let record = match resolve(conn, &inventory, source, "mv").await {
             Ok(Target::Resource(record)) => record,
             Ok(Target::Session(record)) => {
-                return Failure::new(
+                return Refusal::new(
                     codes::WRONG_RESOURCE_KIND,
                     format!("mv: {source} is session {:?}; mv moves a pane", record.name),
                     "name one pane (`@N`, `name:N.M`, or a key `^ab23cd`)",

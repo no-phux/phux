@@ -47,7 +47,7 @@ use phux_protocol::input::InputEvent;
 use phux_protocol::wire::frame::{FrameKind, OrgFilter, Scope};
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::json_err::codes;
+use crate::commands::json_err::{Refusal, codes};
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target_for_input, sh_quote};
 use crate::exit_codes::{EXIT_FAILURE, EXIT_SUCCESS, EXIT_USAGE, EXIT_WAIT_TIMEOUT};
 
@@ -103,28 +103,6 @@ pub(super) struct StartRequest<'a> {
     pub(super) force: bool,
     pub(super) json: bool,
     pub(super) args: &'a [String],
-}
-
-/// A refusal: the error document plus the status to exit with.
-#[derive(Debug)]
-struct Refusal {
-    err: json_err::CliError,
-    exit: u8,
-}
-
-impl Refusal {
-    /// Build a refusal from its parts.
-    fn new(
-        code: &'static str,
-        message: impl Into<String>,
-        remedy: impl Into<String>,
-        exit: u8,
-    ) -> Self {
-        Self {
-            err: json_err::CliError::new(code, message, remedy),
-            exit,
-        }
-    }
 }
 
 /// Whether `name` is spellable under the addressable agent-name grammar
@@ -268,7 +246,7 @@ pub(super) fn start(req: &StartRequest<'_>, socket: Option<PathBuf>) -> ExitCode
     // Every cheap refusal happens locally, before the first byte is written.
     let plan = match preflight(req) {
         Ok(plan) => plan,
-        Err(refusal) => return json_err::emit(req.json, &refusal.err, refusal.exit),
+        Err(refusal) => return refusal.emit(req.json),
     };
     let selector = match parse_selector(Some(req.target)) {
         Ok(selector) => selector,
@@ -483,14 +461,14 @@ async fn drive(
     };
     let bound_bytes = bound.encode();
     if let Err(refusal) = bind_name(&mut conn, &terminal, &bound_bytes).await {
-        return emit(req.json, &refusal);
+        return refusal.emit(req.json);
     }
 
     let delegation = match delegate(&mut conn, &terminal).await {
         Ok(delegation) => delegation,
         Err(refusal) => {
             rollback_bind(&mut conn, &terminal, &bound_bytes).await;
-            return emit(req.json, &refusal);
+            return refusal.emit(req.json);
         }
     };
     let line = match delegated_line(plan, delegation.as_ref()) {
@@ -498,7 +476,7 @@ async fn drive(
         Err(refusal) => {
             revoke(&mut conn, delegation.as_ref()).await;
             rollback_bind(&mut conn, &terminal, &bound_bytes).await;
-            return emit(req.json, &refusal);
+            return refusal.emit(req.json);
         }
     };
 
@@ -508,7 +486,7 @@ async fn drive(
         if wrote_nothing {
             revoke(&mut conn, delegation.as_ref()).await;
         }
-        return emit(req.json, &refusal);
+        return refusal.emit(req.json);
     }
     if req.no_wait {
         return report_submitted(req, plan, &terminal);
@@ -534,18 +512,18 @@ async fn open_target(
     let terminal = resolve_target_for_input(socket_path, selector, "agent start", req.json).await?;
     // APPLY_INPUT is local-only and `phux.agent/v1` does not federate.
     if !matches!(terminal, ResourceId::Local { .. }) {
-        return Err(emit(req.json, &satellite_refusal(&terminal)));
+        return Err(satellite_refusal(&terminal).emit(req.json));
     }
     check_preconditions(req, plan, &terminal, socket_path)
         .await
-        .map_err(|refusal| emit(req.json, &refusal))?;
+        .map_err(|refusal| refusal.emit(req.json))?;
 
     let no_server = |err| json_err::report_no_server(req.json, &err, socket_path, "agent start");
     let mut conn = Connection::connect(socket_path).await.map_err(no_server)?;
-    acknowledged_input_available(&conn).map_err(|refusal| emit(req.json, &refusal))?;
+    acknowledged_input_available(&conn).map_err(|refusal| refusal.emit(req.json))?;
     match recheck_occupant(&mut conn, &terminal).await {
         Ok(()) => Ok((terminal, conn)),
-        Err(Ok(refusal)) => Err(emit(req.json, &refusal)),
+        Err(Ok(refusal)) => Err(refusal.emit(req.json)),
         Err(Err(err)) => Err(no_server(err)),
     }
 }
@@ -692,7 +670,7 @@ async fn await_ready(
             report_ready(req, plan, terminal, &result, latency, socket_path).await
         }
         Ok(result) => report_timeout(req, plan, terminal, &result),
-        Err(err) => emit(req.json, &wait_refusal(terminal, err)),
+        Err(err) => wait_refusal(terminal, err).emit(req.json),
     }
 }
 
@@ -742,11 +720,6 @@ async fn recheck_occupant(
         Ok(_) => Ok(()),
         Err(err) => Err(Err(err)),
     }
-}
-
-/// Emit a refusal on the verb's own channels.
-fn emit(json: bool, refusal: &Refusal) -> ExitCode {
-    json_err::emit(json, &refusal.err, refusal.exit)
 }
 
 /// The read-only preconditions: name uniqueness, pane occupancy, cwd
@@ -1216,23 +1189,21 @@ async fn report_ready(
     let observed_kind = record.and_then(|rec| rec.kind.as_deref()).unwrap_or("");
     match kind_verdict(record, &plan.kind) {
         KindVerdict::Mismatch => {
-            return emit(
-                req.json,
-                &Refusal::new(
-                    codes::AGENT_KIND_MISMATCH,
-                    format!(
-                        "{label} started '{observed_kind}', not '{}' — the kernel says a \
-                         different binary's process group owns the pane",
-                        plan.kind
-                    ),
-                    format!(
-                        "the name stays bound to the pane that is actually running; \
-                         `phux agent explain {label}` shows the evidence, `phux agent clear \
-                         {label}` releases the name"
-                    ),
-                    EXIT_FAILURE,
+            return Refusal::new(
+                codes::AGENT_KIND_MISMATCH,
+                format!(
+                    "{label} started '{observed_kind}', not '{}' — the kernel says a \
+                     different binary's process group owns the pane",
+                    plan.kind
                 ),
-            );
+                format!(
+                    "the name stays bound to the pane that is actually running; \
+                     `phux agent explain {label}` shows the evidence, `phux agent clear \
+                     {label}` releases the name"
+                ),
+                EXIT_FAILURE,
+            )
+            .emit(req.json);
         }
         KindVerdict::Unconfirmed if !req.json => {
             eprintln!(
@@ -1338,27 +1309,25 @@ fn report_timeout(
     result: &AgentWaitResult,
 ) -> ExitCode {
     let label = phux_client::selector::format_terminal_id(terminal);
-    emit(
-        req.json,
-        &Refusal::new(
-            codes::AGENT_START_TIMEOUT,
-            format!(
-                "{label} never published a derived agent state after the launch command was \
+    Refusal::new(
+        codes::AGENT_START_TIMEOUT,
+        format!(
+            "{label} never published a derived agent state after the launch command was \
                  typed (last seen '{}', {} pushes, {} polls)",
-                result.last.as_str(),
-                result.pushes,
-                result.polls
-            ),
-            format!(
-                "the command WAS typed and the name IS bound — this is a failure to observe, \
+            result.last.as_str(),
+            result.pushes,
+            result.polls
+        ),
+        format!(
+            "the command WAS typed and the name IS bound — this is a failure to observe, \
                  not proof nothing started. `phux agent explain {label}` shows what the '{}' \
                  manifest makes of the screen; raise `--timeout`, or release the name with \
                  `phux agent clear {label}`",
-                plan.kind
-            ),
-            EXIT_WAIT_TIMEOUT,
+            plan.kind
         ),
+        EXIT_WAIT_TIMEOUT,
     )
+    .emit(req.json)
 }
 
 /// Render one result document on stdout.

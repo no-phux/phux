@@ -25,41 +25,8 @@ use phux_client::attach::connection::Connection;
 use phux_protocol::ids::InputOperationId;
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::json_err::codes;
+use crate::commands::json_err::{Refusal, codes};
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target_for_input};
-
-/// A refusal: code, diagnostic, remedy, and exit status, decided together.
-#[derive(Debug)]
-struct Refusal {
-    code: &'static str,
-    message: String,
-    remedy: String,
-    exit: u8,
-}
-
-impl Refusal {
-    fn new(
-        code: &'static str,
-        message: impl Into<String>,
-        remedy: impl Into<String>,
-        exit: u8,
-    ) -> Self {
-        Self {
-            code,
-            message: message.into(),
-            remedy: remedy.into(),
-            exit,
-        }
-    }
-
-    fn emit(&self, json: bool) -> ExitCode {
-        json_err::emit(
-            json,
-            &json_err::CliError::new(self.code, self.message.clone(), self.remedy.clone()),
-            self.exit,
-        )
-    }
-}
 
 /// Confirm the pane is still asking the question `expected_id` names.
 fn live_ask(title: Option<&str>, expected_id: &str) -> Result<AskMarker, Refusal> {
@@ -490,12 +457,20 @@ mod tests {
 
         let refusal = live_ask(Some("phux-ask[migrate]:Run migrations??s=Yes|No"), "deploy")
             .expect_err("a different live question must not be answered");
-        assert_eq!(refusal.code, super::codes::ASK_STALE);
+        assert_eq!(refusal.err.code, super::codes::ASK_STALE);
         assert_eq!(refusal.exit, crate::exit_codes::EXIT_USAGE);
         // The diagnostic must name BOTH ids, or the caller cannot tell a
         // stale read from a typo.
-        assert!(refusal.message.contains("migrate"), "{}", refusal.message);
-        assert!(refusal.message.contains("deploy"), "{}", refusal.message);
+        assert!(
+            refusal.err.message.contains("migrate"),
+            "{}",
+            refusal.err.message
+        );
+        assert!(
+            refusal.err.message.contains("deploy"),
+            "{}",
+            refusal.err.message
+        );
     }
 
     /// No sentinel at all, and the degenerate "pane went away" case: both are
@@ -505,7 +480,7 @@ mod tests {
         for title in [Some("vim README.md"), Some(""), None] {
             let refusal =
                 live_ask(title, "deploy").expect_err("a pane that is not asking has no answer");
-            assert_eq!(refusal.code, super::codes::NO_ACTIVE_ASK);
+            assert_eq!(refusal.err.code, super::codes::NO_ACTIVE_ASK);
             assert_eq!(refusal.exit, crate::exit_codes::EXIT_USAGE);
         }
     }
@@ -516,7 +491,7 @@ mod tests {
     fn an_ask_with_no_id_is_refused_rather_than_matched_on_text() {
         let refusal = live_ask(Some("phux-ask:Deploy to prod??s=Yes|No"), "deploy")
             .expect_err("an anonymous ask must not be answerable");
-        assert_eq!(refusal.code, super::codes::ASK_UNIDENTIFIED);
+        assert_eq!(refusal.err.code, super::codes::ASK_UNIDENTIFIED);
     }
 
     /// `--choice N` is 1-based and sends the published string verbatim — the
@@ -538,9 +513,17 @@ mod tests {
         for index in [0, 3, 99] {
             let refusal = select_answer(&ask, Some(index), None, false)
                 .expect_err("only 1..=2 are choices here");
-            assert_eq!(refusal.code, super::codes::CHOICE_OUT_OF_RANGE);
-            assert!(refusal.message.contains("1) Yes"), "{}", refusal.message);
-            assert!(refusal.message.contains("2) No"), "{}", refusal.message);
+            assert_eq!(refusal.err.code, super::codes::CHOICE_OUT_OF_RANGE);
+            assert!(
+                refusal.err.message.contains("1) Yes"),
+                "{}",
+                refusal.err.message
+            );
+            assert!(
+                refusal.err.message.contains("2) No"),
+                "{}",
+                refusal.err.message
+            );
         }
     }
 
@@ -564,8 +547,12 @@ mod tests {
         let ask = marker("deploy", &["Yes", "No"]);
         let refusal = select_answer(&ask, None, Some("maybe later"), false)
             .expect_err("an unlisted answer to a closed set is refused by default");
-        assert_eq!(refusal.code, super::codes::UNLISTED_ANSWER);
-        assert!(refusal.message.contains("1) Yes"), "{}", refusal.message);
+        assert_eq!(refusal.err.code, super::codes::UNLISTED_ANSWER);
+        assert!(
+            refusal.err.message.contains("1) Yes"),
+            "{}",
+            refusal.err.message
+        );
 
         let (answer, source) = select_answer(&ask, None, Some("maybe later"), true)
             .expect("--allow-unlisted is the explicit override");
@@ -603,7 +590,7 @@ mod tests {
         for (ask, choice, text, code) in cases {
             let refusal = select_answer(ask, choice, text, false)
                 .expect_err("unanswerable input must be refused");
-            assert_eq!(refusal.code, code, "{choice:?} {text:?}");
+            assert_eq!(refusal.err.code, code, "{choice:?} {text:?}");
         }
     }
 
@@ -644,16 +631,16 @@ mod tests {
             });
             let refusal = super::refusal_for_verdict(verdict, "@7");
             assert_eq!(refusal.exit, exit, "{code:?}");
-            assert!(refusal.message.contains("@7"), "{code:?}");
+            assert!(refusal.err.message.contains("@7"), "{code:?}");
         }
         // The one outcome a caller must never retry says so in its remedy.
         let unknown =
             super::refusal_for_verdict(super::ApplyVerdict::Unknown("why".to_owned()), "@7");
-        assert_eq!(unknown.code, super::codes::ANSWER_DELIVERY_UNKNOWN);
+        assert_eq!(unknown.err.code, super::codes::ANSWER_DELIVERY_UNKNOWN);
         assert!(
-            unknown.remedy.contains("do NOT retry"),
+            unknown.err.remedy.contains("do NOT retry"),
             "{}",
-            unknown.remedy
+            unknown.err.remedy
         );
     }
 }
