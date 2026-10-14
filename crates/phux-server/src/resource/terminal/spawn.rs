@@ -1610,18 +1610,36 @@ mod canonical_guard_tests {
     }
 
     /// Idle panes sit on the shared poller. They must not each grow a reader thread.
+    ///
+    /// Each seat is this test's own reader. A process-global tally also moves
+    /// when another test parks a pane, and when a previous test's hot reader
+    /// drops its slot only after that thread notices cancel (phux-x5aqg).
     #[test]
     fn idle_panes_share_one_poller() {
-        let parked = super::super::park::parked_count();
-        let hot = super::super::park::hot_count();
+        use super::super::park::{ReaderPlace, reader_place};
         let mut live = Vec::new();
         for _ in 0..8 {
             let mut cmd = CommandBuilder::new("sleep");
             cmd.arg("60");
             live.push(spawn_pty(cmd, 80, 24).expect("spawn sleep"));
         }
-        assert_eq!(super::super::park::parked_count(), parked + 8);
-        assert_eq!(super::super::park::hot_count(), hot);
+        let places: Vec<_> = live
+            .iter()
+            .map(|(_, _, pty)| reader_place(&pty.reader))
+            .collect();
+        let parked = places
+            .iter()
+            .filter(|place| **place == ReaderPlace::Parked)
+            .count();
+        let hot = places
+            .iter()
+            .filter(|place| matches!(*place, ReaderPlace::Hot | ReaderPlace::Dedicated))
+            .count();
+        assert_eq!(
+            (parked, hot),
+            (8, 0),
+            "idle panes share the one poller; places {places:?}"
+        );
         for (_, _, mut pty) in live {
             let _ = pty.child.kill();
         }
