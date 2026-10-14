@@ -13,9 +13,9 @@ use std::process::ExitCode;
 
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::archive::{Legacy, RestoreError, import_archive, relaunch_imported};
+use crate::commands::archive::{ImportKind, RestoreError, import_archive, relaunch_imported};
 use crate::commands::json_err::{self, CliError, codes};
-use crate::commands::worktree::{live_session_names, seed_terminal_of, session_name_for};
+use crate::commands::worktree::{live_session_names, session_name_for};
 use crate::commands::{ProjectAction, cli_runtime};
 
 pub(crate) mod inspect;
@@ -59,6 +59,16 @@ struct Project {
 impl Project {
     fn session(&self) -> String {
         session_name_for(&self.root)
+    }
+
+    fn label(&self) -> String {
+        self.name.clone().unwrap_or_else(|| {
+            self.root
+                .file_name()
+                .unwrap_or(self.root.as_os_str())
+                .to_string_lossy()
+                .into_owned()
+        })
     }
 
     fn trust_key(&self) -> trust::TrustKey {
@@ -199,8 +209,13 @@ fn load(project: &Project) -> Result<Option<Loaded>, String> {
     let parsed =
         recipe::parse(&text).map_err(|err| format!("{}: {err}", project.recipe.display()))?;
     // Compile once now so every check runs before trust is asked or recorded.
-    recipe::compile(Some(&parsed), &project.root, &project.session())
-        .map_err(|err| format!("{}: {err}", project.recipe.display()))?;
+    recipe::compile(
+        Some(&parsed),
+        &project.root,
+        &project.session(),
+        &project.label(),
+    )
+    .map_err(|err| format!("{}: {err}", project.recipe.display()))?;
     Ok(Some(Loaded {
         sha256: trust::digest(text.as_bytes()),
         text,
@@ -236,28 +251,48 @@ fn run_open(target: Option<&str>, json: bool, socket: Option<PathBuf>) -> ExitCo
         return code;
     }
 
-    // A live session is reopened as it is; its recipe is never rerun.
+    // A live session is reopened without rereading its recipe. Creation
+    // checks for a name collision again before relaunching any panes.
     let live = live_session_names(Some(&socket_path)).is_some_and(|names| names.contains(&session));
     let created = if live {
         false
     } else {
         match create(&project, &session, &socket_path, json) {
-            Ok(()) => true,
+            Ok(created) => created,
             Err(code) => return code,
         }
     };
-
+    let rt = match cli_runtime() {
+        Ok(rt) => rt,
+        Err(code) => return code,
+    };
+    let terminal_id = match rt.block_on(phux_client::session::check_session_directory(
+        &socket_path,
+        &session,
+        &project.root,
+        true,
+    )) {
+        Ok(Some(id)) => id,
+        Ok(None) => {
+            return refuse(
+                json,
+                codes::NO_SUCH_TARGET,
+                &format!("session {session:?} has no local pane to address"),
+                "run `phux ls --json` to inspect the session",
+            );
+        }
+        Err(err) => {
+            return refuse(
+                json,
+                codes::WORKSPACE,
+                &err,
+                "choose another session name or remove the conflicting session",
+            );
+        }
+    };
     if !json {
         return super::attach::run_attach(Some(session), socket);
     }
-    let Some(terminal_id) = seed_terminal_of(&session, Some(&socket_path)) else {
-        return refuse(
-            true,
-            codes::NO_SUCH_TARGET,
-            &format!("session '{session}' reported no local pane to address"),
-            "run `phux ls --json` to see what the server holds for that session",
-        );
-    };
     crate::output::json(&serde_json::json!({
         "schema_version": SCHEMA_VERSION,
         "project": project.name,
@@ -274,7 +309,7 @@ fn create(
     session: &str,
     socket_path: &Path,
     json: bool,
-) -> Result<(), ExitCode> {
+) -> Result<bool, ExitCode> {
     let loaded = load(project).map_err(|err| {
         refuse(
             json,
@@ -290,6 +325,7 @@ fn create(
         loaded.as_ref().map(|loaded| &loaded.recipe),
         &project.root,
         session,
+        &project.label(),
     )
     .map_err(|err| {
         refuse(
@@ -307,11 +343,18 @@ fn create(
     // R16: import the recipe's session without starting anything, then start
     // its panes, as two explicit steps.
     let built = rt.block_on(async {
-        let imported = import_archive(socket_path, &archive, "project open", Legacy::Defer).await?;
-        Ok::<_, RestoreError>(relaunch_imported(socket_path, imported).await)
+        let imported =
+            import_archive(socket_path, &archive, "project open", ImportKind::Project).await?;
+        // A colliding session can appear between the first lookup and import.
+        // Check before relaunching any panes or attaching to it.
+        phux_client::session::check_session_directory(socket_path, session, &project.root, false)
+            .await
+            .map_err(RestoreError::Failed)?;
+        let created = !imported.skipped_existing(session);
+        Ok::<_, RestoreError>((relaunch_imported(socket_path, imported).await, created))
     });
-    let summary = match built {
-        Ok(summary) => summary,
+    let (summary, created) = match built {
+        Ok(result) => result,
         Err(RestoreError::Reported(code)) => return Err(code),
         Err(RestoreError::Failed(err)) => {
             return Err(refuse(
@@ -336,7 +379,7 @@ fn create(
             "every pane it started was closed again; fix the cause and retry",
         ));
     }
-    Ok(())
+    Ok(created)
 }
 
 /// Admit `loaded` for this open: config-owned, already approved, or approved

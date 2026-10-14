@@ -12,6 +12,7 @@
 //! write + read-back round trips too.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use phux_protocol::ids::{IdempotencyKey, OperationId, ResourceId, SessionId};
 use phux_protocol::wire::frame::{
@@ -433,11 +434,9 @@ pub fn keep_empty_supported(conn: &Connection) -> bool {
 
 /// Create an empty, persistent session named `name`.
 ///
-/// Against a server that advertises `ORGANIZATION` this is one
-/// `SESSION_CREATE` with no launch. Against an older one it rides the same
-/// `SESSION_CREATE_KEY` write and nonce-correlated read-back as
-/// [`create_session`] (ADR-0105), refusing before writing when the server
-/// does not advertise support (see [`keep_empty_supported`]).
+/// See [`create_empty_session_with_attrs`] for creation with organization
+/// attributes. Older servers ignore attributes because their create metadata
+/// format has no per-session attributes.
 ///
 /// # Errors
 ///
@@ -447,12 +446,33 @@ pub async fn create_empty_session(
     name: &str,
     notices: &mut Vec<String>,
 ) -> Result<CreateEmptyOutcome, CreateSessionError> {
+    create_empty_session_with_attrs(conn, name, &[], notices).await
+}
+
+/// Create an empty persistent session with attributes in its organization
+/// record, atomically with `SESSION_CREATE`.
+///
+/// Requires `ORGANIZATION` when `attrs` is nonempty; older servers cannot
+/// store attributes per session.
+///
+/// # Errors
+///
+/// Transport/decode failures, or a request document that fails to encode.
+pub async fn create_empty_session_with_attrs(
+    conn: &mut Connection,
+    name: &str,
+    attrs: &[(String, String)],
+    notices: &mut Vec<String>,
+) -> Result<CreateEmptyOutcome, CreateSessionError> {
+    if !attrs.is_empty() && !crate::org::supported(conn) {
+        return Ok(CreateEmptyOutcome::Unsupported);
+    }
     if crate::org::supported(conn) {
         let command = Command::SessionCreate {
             operation: crate::org::mint_operation(),
             name: name.to_owned(),
             lifetime: SessionLifetime::Persistent,
-            attrs: Vec::new(),
+            attrs: attrs.to_vec(),
             launch: None,
         };
         let (outcome, degradation) = crate::org::request(conn, 1, command)
@@ -492,6 +512,122 @@ pub async fn create_empty_session(
         }
     };
     Ok(outcome)
+}
+
+/// Check a session's authoritative checkout directory and return its oldest
+/// local Terminal.
+///
+/// If `seed_empty`, start and arrange one shell at that directory when no
+/// local Terminal is live; never rerun a repository recipe.
+///
+/// # Errors
+///
+/// The record is absent, has no matching directory, or its organization
+/// request, shell launch, or arrangement write fails.
+pub async fn check_session_directory(
+    socket: &Path,
+    name: &str,
+    root: &Path,
+    seed_empty: bool,
+) -> Result<Option<u32>, String> {
+    let mut conn = Connection::connect(socket)
+        .await
+        .map_err(|err| format!("could not inspect session {name:?}: {err}"))?;
+    let records = crate::org::fetch(&mut conn, OrgFilter::All, 1)
+        .await
+        .map_err(|err| format!("could not inspect session {name:?}: {err}"))?;
+    let record = records.session_named(name).ok_or_else(|| {
+        format!("session {name:?} disappeared before its directory could be checked")
+    })?;
+    let directory = record
+        .attrs
+        .iter()
+        .find(|(key, _)| key == "directory")
+        .map(|(_, value)| value.as_str());
+    let expected = root.to_string_lossy();
+    match directory {
+        Some(directory) if directory == expected => {}
+        Some(directory) => {
+            return Err(format!(
+                "session {name:?} belongs to {directory:?}, not {}",
+                root.display()
+            ));
+        }
+        None => {
+            return Err(format!(
+                "session {name:?} has no checkout directory in its organization record"
+            ));
+        }
+    }
+    let live = records
+        .members(&record.key)
+        .filter(|resource| resource.kind == phux_protocol::ids::ResourceKind::Terminal)
+        .filter_map(|resource| resource.live.as_ref()?.local_id())
+        .min();
+    if live.is_some() || !seed_empty {
+        return Ok(live);
+    }
+    let launch = phux_protocol::wire::frame::LaunchSpec::new(Vec::new())
+        .with_cwd(Some(expected.into_owned()));
+    let committed = crate::org::create_resource(
+        &mut conn,
+        record.key,
+        phux_protocol::ids::ResourceKind::Terminal,
+        Some(launch),
+        phux_protocol::wire::frame::LaunchMode::Immediate,
+    )
+    .await
+    .map_err(|err| format!("could not start a shell in session {name:?}: {err}"))?;
+    let resource = committed
+        .resource
+        .ok_or_else(|| format!("server created no shell record in session {name:?}"))?;
+    let terminal_id = committed
+        .target
+        .and_then(|target| target.resource.local_id())
+        .ok_or_else(|| format!("server started no local shell in session {name:?}"))?;
+    let arranged = async {
+        let arrangement = record.arrangement.ok_or("session has no arrangement")?;
+        let value = crate::org::arrangement(&mut conn, 3, arrangement)
+            .await
+            .map_err(|err| err.to_string())?;
+        let mut document = value.document;
+        document
+            .groups
+            .push(phux_protocol::wire::frame::ArrangementGroup {
+                id: crate::layout::fresh_id(),
+                name: None,
+                tree: phux_protocol::wire::frame::ArrangementNode::Leaf(
+                    phux_protocol::wire::frame::EntryRef {
+                        entry: crate::layout::fresh_id(),
+                        target: phux_protocol::wire::frame::EntryTarget::Member(resource),
+                    },
+                ),
+            });
+        crate::org::commit(
+            &mut conn,
+            4,
+            phux_protocol::wire::frame::Command::ArrangementReplace {
+                operation: crate::org::mint_operation(),
+                arrangement,
+                expected: value.revision,
+                document,
+            },
+        )
+        .await
+        .map_err(|err| err.to_string())?;
+        Ok::<_, String>(())
+    }
+    .await;
+    if let Err(err) = arranged {
+        // Do not leave an unplaced shell that a subsequent open mistakes for
+        // a usable pane. Resource removal also prunes its arrangement entry.
+        let _ = crate::org::remove_resource(&mut conn, resource).await;
+        return Err(format!(
+            "could not arrange the shell in session {name:?}: {err}"
+        ));
+    }
+    drop(conn);
+    Ok(Some(terminal_id))
 }
 
 /// Send the `SESSION_CREATE_KEY` write; the nonce inside correlates the
