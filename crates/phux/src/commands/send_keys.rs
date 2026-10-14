@@ -10,7 +10,7 @@ use crate::commands::{cli_runtime, parse_selector, report_no_server, resolve_tar
 /// side-effect-free `ROUTE_INPUT` route.
 ///
 /// `TARGET` is the full selector grammar (`docs/consumers/tui.md` §3):
-/// `session`, `session:window`, `session:window.pane`, `@id`, `.`. It
+/// `session`, `session:group`, `session:group.pane`, `@id`, `.`. It
 /// is resolved client-side to a single pane (the selected one — the focused
 /// pane when the selector spans several), then the events route to exactly
 /// that pane by id, so this neither attaches nor resizes the live pane

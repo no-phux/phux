@@ -119,7 +119,7 @@ struct Cli {
 const ROOT_LEARN_MORE: &str = "\
 Learn more:
   phux <command> --help    Flags and examples for one command
-  phux help targets        How TARGET names sessions, windows, panes, agents
+  phux help targets        How TARGET names sessions, groups, panes, agents
   phux help environment    Environment variables phux reads
   phux help exit-codes     Exit statuses, for scripts
 ";
@@ -134,17 +134,19 @@ TARGETS
   take, give, signal, ask) reads the same grammar:
 
   name              A session by name             phux snapshot work
-  name:W            Window W of a session         phux kill work:1
-  name:W.P          Pane P of window W            phux send-keys work:1.0 C-c
+  name:G            Group (tab) G of a session    phux kill work:1
+  name:G.P          Pane P of group G             phux send-keys work:1.0 C-c
   @N                A pane by id (`phux ls`)      phux run @7 \"cargo test\"
   host/@N           A pane on a federation peer   phux snapshot edge/@7
   #tag              Every pane carrying a tag     phux kill #build
   %agent            The pane an agent runs in     phux wait %reviewer
+  ^key              A session or pane by key      phux kill ^3f9a2c
   .                 The focused pane              phux signal . kill
 
   `=` is reserved: it means the attached view's focus history, which a
   headless caller does not have, so the verbs refuse it and say so.
-  Window and pane numbers count from zero. A name that is also a
+  Group and pane numbers count from zero; a group name works in place
+  of G. A key prefix (`phux ls -l` shows keys) needs six or more digits. A name that is also a
   registered host (`phux host ls`) dials that host from `phux attach`;
   pass `--socket` to force the local reading.
 ";

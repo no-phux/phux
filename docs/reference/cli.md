@@ -30,7 +30,7 @@ Sessions:
   attach        Attach to a session, here or on a registered host [aliases: a]
   new           Create a session and attach to it
   ls            List sessions [aliases: list]
-  kill          Kill a session, window, pane, or the server
+  kill          Kill a session, group, pane, or the server
   detach        Detach clients from a session
   rename        Rename a session or a pane
   project       Open a project session from a trusted recipe [aliases: p]
@@ -113,7 +113,7 @@ Flags:
 
 Learn more:
   phux <command> --help    Flags and examples for one command
-  phux help targets        How TARGET names sessions, windows, panes, agents
+  phux help targets        How TARGET names sessions, groups, panes, agents
   phux help environment    Environment variables phux reads
   phux help exit-codes     Exit statuses, for scripts
 ```
@@ -546,7 +546,7 @@ Usage: phux agent session open <FLAGS> <TARGET>
 
 Arguments:
   <TARGET>  The parent pane: a selector resolving to one Terminal (`@N`,
-            `%name`, `session:window.pane`).
+            `%name`, `session:group.pane`).
 
 Flags:
       --provider <P>    Agent provider slug, e.g. `claude`.
@@ -771,9 +771,10 @@ Global flags:
 ```text
 Export sessions to an archive file, or import one
 
-`export` writes the running server's sessions, windows, split trees,
-directories, and resumable agent sessions as JSON. `import` recreates an
-archive's missing sessions, empty and persistent, without starting any process.
+`export` writes the running server's sessions, split trees, directories, and
+resumable agent sessions as JSON. `import` recreates an archive's missing
+sessions, persistent and with their panes as dormant records, without starting
+any process.
 
 Usage: phux archive <SUBCOMMAND>
 
@@ -819,9 +820,10 @@ Global flags:
 ```text
 Recreate an archive's missing sessions without starting them.
 
-Each missing session becomes an empty, persistent session with its archived
-host, project, and directory; nothing is launched. A session of the same name
-already on the server is skipped.
+Each missing session becomes a persistent session with its archived host,
+project, and directory, and each archived local pane a dormant record in its
+arrangement; nothing is launched until `phux restore`. A session of the same
+name already on the server is skipped.
 
 Usage: phux archive import [--plan] <ARCHIVE>
 
@@ -854,8 +856,8 @@ phux ask @3 --json "Need approval"
 Usage: phux ask [FLAGS] <TARGET> <QUESTION>
 
 Arguments:
-  <TARGET>    Target selector: session, session:window, session:window.pane,
-              @id, or `.` (focused). `=` is unsupported by headless commands.
+  <TARGET>    Target selector: session, session:group, session:group.pane, @id,
+              or `.` (focused). `=` is unsupported by headless commands.
   <QUESTION>  Human-facing question text.
 
 Flags:
@@ -1752,12 +1754,12 @@ Global flags:
 ## `phux kill`
 
 ```text
-Kill a session, window, pane, or the server
+Kill a session, group, pane, or the server
 
-`TARGET` uses the selector grammar (see the top-level help): `name`, `name:N`,
-`name:N.M`, `name:tag`, `@N`, `.`. The selector is resolved client-side against
-a server-state snapshot to a set of Terminals; the server is then asked to kill
-each.
+`TARGET` uses the selector grammar (`phux help targets`): `name`, `name:N`,
+`name:N.M`, `name:tag`, `@N`, `^key`, `#tag`, `.`. A selector naming a whole
+session kills the session; any other is resolved client-side to a set of
+Terminals, and the server kills them together.
 
 Killing a whole session ends every member, work added meanwhile included,
 deletes the session, and prints one summary line.
@@ -2319,8 +2321,8 @@ git diff | phux paste review
 Usage: phux paste [--untrusted] <TARGET> [TEXT]
 
 Arguments:
-  <TARGET>  Target selector: session, session:window, session:window.pane, @id,
-            or `.` (focused). `=` is unsupported by headless commands.
+  <TARGET>  Target selector: session, session:group, session:group.pane, @id, or
+            `.` (focused). `=` is unsupported by headless commands.
   [TEXT]    Text to paste. Omit to read the payload from stdin.
 
 Flags:
@@ -3156,8 +3158,8 @@ phux resize @7 200x50 --json
 Usage: phux resize [--json] <TARGET> <COLSxROWS>
 
 Arguments:
-  <TARGET>     Target selector: session, session:window, session:window.pane,
-               @id, or `.` (focused). `=` is unsupported by headless commands.
+  <TARGET>     Target selector: session, session:group, session:group.pane, @id,
+               or `.` (focused). `=` is unsupported by headless commands.
   <COLSxROWS>  New grid size, e.g. 120x40. Both axes are whole numbers of cells
                and at least 1.
 
@@ -3359,8 +3361,8 @@ phux run --timeout 30 work:1.0 "cargo test"
 Usage: phux run [FLAGS] <TARGET> <COMMAND>…
 
 Arguments:
-  <TARGET>    Target selector: session, session:window, session:window.pane,
-              @id, or `.` (focused). `=` is unsupported by headless commands.
+  <TARGET>    Target selector: session, session:group, session:group.pane, @id,
+              or `.` (focused). `=` is unsupported by headless commands.
   <COMMAND>…  The command line: all trailing args, joined with spaces.
 
 Flags:
@@ -3419,8 +3421,8 @@ phux send-keys work:1.0 C-c
 Usage: phux send-keys <TARGET> <KEYS>…
 
 Arguments:
-  <TARGET>  Target selector: session, session:window, session:window.pane, @id,
-            or `.` (focused). `=` is unsupported by headless commands.
+  <TARGET>  Target selector: session, session:group, session:group.pane, @id, or
+            `.` (focused). `=` is unsupported by headless commands.
   <KEYS>…   Keys to send: named keys and/or literal strings, in order.
 
 Flags:
@@ -4009,7 +4011,7 @@ List the tags on each pane a selector resolves to.
 Usage: phux tag ls [--json] <TARGET>
 
 Arguments:
-  <TARGET>  Target selector (session, `session:window`, `@id`, `.`, `#tag`).
+  <TARGET>  Target selector (session, `session:group`, `@id`, `.`, `#tag`).
 
 Flags:
       --json           Emit stable, versioned JSON on stdout instead of the
@@ -4325,7 +4327,7 @@ and unknown exit nonzero: do not blindly retry.
 Usage: phux upload [FLAGS] <TARGET> <FILE>
 
 Arguments:
-  <TARGET>  Target selector: session, session:window.pane, @id, or `.`.
+  <TARGET>  Target selector: session, session:group.pane, @id, or `.`.
   <FILE>    File on this client's filesystem.
 
 Flags:

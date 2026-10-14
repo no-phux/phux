@@ -44,8 +44,8 @@ impl From<AttachError> for ToolError {
 }
 
 /// Shared `inputSchema` description for the `target` selector argument.
-const TARGET_DESC: &str = "Target selector: session, session:window, \
-    session:window.pane, @paneid, or `.` for the focused session. `=` is \
+const TARGET_DESC: &str = "Target selector: session, session:group, \
+    session:group.pane, @paneid, or `.` for the focused session. `=` is \
     unsupported because MCP has no attached-client focus history. Omit for \
     the focused session.";
 
@@ -60,7 +60,7 @@ pub(crate) fn catalog() -> Value {
     let mut tools = json!([
         {
             "name": "phux_ls",
-            "description": "List phux sessions on the running server (names, window counts, attached-client counts).",
+            "description": "List phux sessions on the running server (names, lifetimes, members, attached-client counts).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -174,7 +174,7 @@ pub(crate) fn catalog() -> Value {
         },
         {
             "name": "phux_kill",
-            "description": "Kill the Terminal(s) a selector resolves to (a whole session, a window, a pane, or `#tag`). A whole session is killed member by member: each is terminated, removed once stopped, and the session is deleted; the result lists each member's outcome under `report`. Work added meanwhile survives and keeps the session. Requires confirm=true.",
+            "description": "Kill what a selector resolves to: a whole session, a group, a pane, or `#tag`. Killing a whole session ends every member, work added meanwhile included, and deletes the session in one server step. Requires confirm=true.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,

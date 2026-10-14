@@ -305,7 +305,8 @@ fn help_topics_render_their_sources() {
 
     let targets = crate::help_topic("targets").expect("targets topic");
     for sigil in [
-        "name:W.P",
+        "name:G.P",
+        "^key",
         "@N",
         "#tag",
         "%agent",
