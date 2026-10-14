@@ -6,9 +6,10 @@
 //! Buckets are linear within an octave, so the widest relative bucket is
 //! the first of each octave at one eighth of its lower bound: a reported
 //! percentile (a bucket's upper bound) is at most 12.5% above the true
-//! value. Recording is a single relaxed `fetch_add`
-//! per bucket plus the running count / sum / min / max, so it is safe to
-//! call from any thread on a hot path.
+//! value. Recording is one relaxed `fetch_add` per bucket plus the running
+//! count and sum. Min and max move only when a sample extends the observed
+//! range, so a steady hop does not pay a read-modify-write on those words.
+//! It is safe to call from any thread on a hot path.
 
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::time::Instant;
@@ -98,8 +99,16 @@ impl Histogram {
         self.buckets[bucket_index(v)].fetch_add(1, Relaxed);
         self.count.fetch_add(1, Relaxed);
         self.sum.fetch_add(v, Relaxed);
-        self.min.fetch_min(v, Relaxed);
-        self.max.fetch_max(v, Relaxed);
+        // `fetch_min` / `fetch_max` are read-modify-write. After the first
+        // samples, almost every observation sits inside the range and only
+        // needs the loads. A race that moves the bound between the load and
+        // the update is resolved by the RMW.
+        if v < self.min.load(Relaxed) {
+            self.min.fetch_min(v, Relaxed);
+        }
+        if v > self.max.load(Relaxed) {
+            self.max.fetch_max(v, Relaxed);
+        }
     }
 
     /// Record a length or count held as `usize`.
@@ -378,6 +387,19 @@ mod tests {
         assert!((99..=100).contains(&p99), "p99={p99}");
         assert_eq!(s.percentile(100), 100);
         assert_eq!(s.percentile(0), 1);
+    }
+
+    #[test]
+    fn an_interior_sample_keeps_the_observed_bounds() {
+        let histogram = Histogram::new();
+        histogram.record(10);
+        histogram.record(40);
+        histogram.record(25);
+        let snapshot = histogram.snapshot();
+        assert_eq!(snapshot.min, 10);
+        assert_eq!(snapshot.max, 40);
+        assert_eq!(snapshot.count, 3);
+        assert_eq!(snapshot.sum, 75);
     }
 
     #[test]
