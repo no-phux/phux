@@ -114,8 +114,13 @@ def collapse(cache_dir: Path) -> None:
         )
         return
     before = free_bytes(cache_dir)
+    command = [hardlink, "-c", "-q"]
+    # Darwin's util-linux build has no reflink option and uses hardlinks.
+    if sys.platform != "darwin":
+        command.append("--reflink=never")
+    command.extend((str(targets), str(cas)))
     completed = subprocess.run(
-        [hardlink, "-c", "--reflink=never", "-q", str(targets), str(cas)],
+        command,
         check=False,
         text=True,
         capture_output=True,
