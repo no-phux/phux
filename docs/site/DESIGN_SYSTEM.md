@@ -47,11 +47,13 @@ saved preference before paint and Astro document swaps.
   ordinary articles do not need cards around every paragraph.
 
 Marketing keeps a flat, rule-aligned page and terminal palette, with one visual
-per idea. The hero's still terminal picture introduces the product; the
-interactive explainer below it shows persistence, agents, federation, and the
-wire. Signals have a source, path, and destination; idle diagrams stay quiet.
-Playback is opt-in, pausable, and scrubbable. Reduced motion uses still story
-steps instead. The hero and live-terminal dialog use rounded frames; terminal
+per idea. The hero's product tour introduces the product: one server, several
+clients, and signals that travel from source to destination along visible
+connections. It autoplays only while on screen, with a pause control and
+chapter buttons; reduced motion shows settled chapters instead. The interactive
+explainer on `/more` shows persistence, agents, federation, and the wire; its
+playback is opt-in, pausable, and scrubbable. Idle diagrams stay quiet. The
+hero and live-terminal dialog use rounded frames; terminal
 interiors stay undecorated. Reader tokens do not restyle marketing surfaces.
 
 ## Article structure
