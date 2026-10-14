@@ -832,7 +832,7 @@ impl SidebarPainter {
         };
         justify(
             vec![Span::styled(
-                truncate(label, usize::from(text_w)),
+                clip_text(label, usize::from(text_w)),
                 Style::default()
                     .fg(self.theme.sidebar_section)
                     .add_modifier(Modifier::BOLD),
@@ -846,7 +846,7 @@ impl SidebarPainter {
     /// nested one indent under the header, dim + italic so it reads as a
     /// quiet "nothing here yet" rather than a real, selectable row.
     fn empty_line(&self, label: &str, text_w: u16) -> Line<'static> {
-        let label = truncate(label, usize::from(text_w).saturating_sub(2));
+        let label = clip_text(label, usize::from(text_w).saturating_sub(2));
         Line::from(Span::styled(
             format!("  {label}"),
             Style::default()
@@ -869,7 +869,7 @@ impl SidebarPainter {
             .saturating_sub(4) // nested indent + glyph + space
             .saturating_sub(if w.attention { 2 } else { 0 })
             .saturating_sub(exited_w);
-        let label = truncate(&w.name, label_w);
+        let label = clip_text(&w.name, label_w);
         let style = if w.active {
             Style::default()
                 .fg(self.theme.accent)
@@ -948,7 +948,7 @@ impl SidebarPainter {
             ("", self.theme.dim)
         };
         let label_budget = usize::from(text_w).saturating_sub(display_width(tag) + 1);
-        let label = truncate(&s.host, label_budget);
+        let label = clip_text(&s.host, label_budget);
         let right = if tag.is_empty() {
             Vec::new()
         } else {
@@ -997,8 +997,8 @@ impl SidebarPainter {
         let locator = e.session.as_ref().unwrap_or(&e.window_name);
         // The destination earns at least half the row; the name gives way.
         let loc_budget = avail.saturating_sub(display_width(name) + 1).max(avail / 2);
-        let locator = truncate(locator, loc_budget);
-        let name = truncate(
+        let locator = clip_text(locator, loc_budget);
+        let name = clip_text(
             name,
             avail
                 .saturating_sub(display_width(&locator))
@@ -1037,7 +1037,7 @@ impl SidebarPainter {
         let name_budget = avail
             .saturating_sub(counts_w + usize::from(counts_w > 0))
             .max(avail / 2);
-        let name = truncate(&s.name, name_budget);
+        let name = clip_text(&s.name, name_budget);
         let style = if s.active {
             Style::default()
                 .fg(self.theme.accent)
@@ -1101,7 +1101,7 @@ impl SidebarPainter {
     /// like an empty state, because it is chrome rather than a target you
     /// aim at — though clicking it does open the fleet dashboard.
     fn overflow_line(&self, hidden: usize, text_w: u16) -> Line<'static> {
-        let label = truncate(&format!("+{hidden}"), usize::from(text_w).saturating_sub(2));
+        let label = clip_text(&format!("+{hidden}"), usize::from(text_w).saturating_sub(2));
         Line::from(Span::styled(
             format!("  {label}"),
             Style::default().fg(self.theme.dim),
@@ -1111,7 +1111,7 @@ impl SidebarPainter {
     /// A footer affordance row: the action glyph in the section register,
     /// the word in `dim`.
     fn affordance_line(&self, label: &str, text_w: u16) -> Line<'static> {
-        let label = truncate(label, usize::from(text_w));
+        let label = clip_text(label, usize::from(text_w));
         Line::from(self.affordance_spans(&label))
     }
 
@@ -1273,7 +1273,7 @@ impl SidebarPainter {
 
     /// One plugin section row: a quiet bullet, then the rendered template.
     fn plugin_row_line(&self, text: &str, text_w: u16) -> Line<'static> {
-        let label = truncate(text, usize::from(text_w).saturating_sub(ICON_COLUMNS));
+        let label = clip_text(text, usize::from(text_w).saturating_sub(ICON_COLUMNS));
         Line::from(vec![
             Span::styled("· ", Style::default().fg(self.theme.dim)),
             Span::styled(label, Style::default().fg(self.theme.text)),
@@ -1357,11 +1357,6 @@ fn justify(left: Vec<Span<'static>>, right: Vec<Span<'static>>, text_w: u16) -> 
         spans.extend(right);
     }
     Line::from(spans)
-}
-
-/// Truncate `s` to `max` cells via the crate-wide [`clip_text`].
-fn truncate(s: &str, max: usize) -> String {
-    clip_text(s, max)
 }
 
 /// Emit `buf` at `rect`'s origin with per-cell SGR deltas, repainting whole
