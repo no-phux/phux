@@ -40,7 +40,6 @@ mod effects;
 mod events;
 pub(crate) mod fast_pty;
 mod fd_shrink;
-mod input_mode_span;
 mod io;
 mod native;
 mod park;
@@ -539,9 +538,6 @@ pub struct TerminalActor {
     /// Backing-agnostic half: output sequence and broadcast, event fan-out,
     /// lifecycle, control mailbox.
     core: ResourceCore,
-    /// Open ECMA-48 sequence across PTY chunks. Plain text in `Ground` does
-    /// not republish the input snapshot.
-    input_mode_span: input_mode_span::InputModeSpan,
     key_enc: RefCell<PerTerminalKeyEncoder>,
     mouse_enc: RefCell<PerTerminalMouseEncoder>,
     focus_enc: RefCell<PerTerminalFocusEncoder>,
