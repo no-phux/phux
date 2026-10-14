@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/no-phux/phux/compare/desktop-v0.3.2...desktop-v0.4.0) (2026-10-14)
+
+
+### Features
+
+* **desktop:** add automatic stable and next updates ([#1313](https://github.com/no-phux/phux/issues/1313)) ([e850563](https://github.com/no-phux/phux/commit/e8505635fd34adc7cb4e6e1e95598ab49380acbb))
+
 ## [0.3.2](https://github.com/no-phux/phux/compare/desktop-v0.3.1...desktop-v0.3.2) (2026-10-14)
 
 
