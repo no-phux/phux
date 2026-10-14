@@ -3,6 +3,8 @@
 //! The window is one sheet of glass over the desktop blur. Titlebar, sidebar
 //! and status sit on it unframed; panes float on it as rounded cards with no
 //! header. A pane's controls appear when the pointer reaches its top edge.
+//! The titlebar and sidebar are cached views: a terminal frame marks the desk
+//! dirty as their ancestor, and they stay as painted until the desk notifies.
 
 use std::path::PathBuf;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -10,9 +12,9 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, BoxShadow, ClickEvent, Context, CursorStyle, DispatchPhase, DragMoveEvent,
-    ExternalPaths, FileDropEvent, Hsla, IntoElement, Keystroke, MouseButton, MouseMoveEvent,
-    MouseUpEvent, ParentElement, SharedString, Styled, Window, canvas, div, linear_color_stop,
-    linear_gradient, point, px, relative,
+    Entity, ExternalPaths, FileDropEvent, Hsla, IntoElement, Keystroke, MouseButton,
+    MouseMoveEvent, MouseUpEvent, ParentElement, SharedString, StyleRefinement, Styled, WeakEntity,
+    Window, canvas, div, linear_color_stop, linear_gradient, point, px, relative,
 };
 use gpui_kit::base::Disableable;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -114,6 +116,63 @@ impl gpui::Render for ResourceDrag {
     }
 }
 
+/// Titlebar and sidebar slots. Each is notified only when the desk notifies.
+#[derive(Default)]
+pub(super) struct ChromeCache {
+    titlebar: Option<Entity<CachedChrome>>,
+    sidebar: Option<Entity<CachedChrome>>,
+}
+
+struct CachedChrome {
+    desk: WeakEntity<Desk>,
+    build: fn(&mut Desk, &mut Context<Desk>) -> AnyElement,
+}
+
+impl gpui::Render for CachedChrome {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(desk) = self.desk.upgrade() else {
+            return div().into_any_element();
+        };
+        desk.update(cx, self.build)
+    }
+}
+
+fn cached_chrome(
+    build: fn(&mut Desk, &mut Context<Desk>) -> AnyElement,
+    cx: &mut Context<Desk>,
+) -> Entity<CachedChrome> {
+    let observed = cx.entity();
+    cx.new(|cx| {
+        cx.observe(&observed, |_, _, cx| cx.notify()).detach();
+        CachedChrome {
+            desk: observed.downgrade(),
+            build,
+        }
+    })
+}
+
+fn chrome_slot(
+    slot: &mut Option<Entity<CachedChrome>>,
+    build: fn(&mut Desk, &mut Context<Desk>) -> AnyElement,
+    style: StyleRefinement,
+    cx: &mut Context<Desk>,
+) -> impl IntoElement {
+    slot.get_or_insert_with(|| cached_chrome(build, cx))
+        .clone()
+        .cached(style)
+}
+
+fn build_titlebar(desk: &mut Desk, cx: &mut Context<Desk>) -> AnyElement {
+    let sidebar = desk.prefs.sidebar_visible && desk.role != desk::WindowRole::Quick;
+    let colors = chrome_palette(desk);
+    titlebar(desk, sidebar, &colors, cx).into_any_element()
+}
+
+fn build_sidebar(desk: &mut Desk, cx: &mut Context<Desk>) -> AnyElement {
+    let colors = chrome_palette(desk);
+    sidebar_column(desk, &colors, cx).into_any_element()
+}
+
 pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> impl IntoElement {
     let _frame = crate::diag::FRAME.timer();
     let colors = chrome_palette(desk);
@@ -174,13 +233,26 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
         .on_key_down(cx.listener(|desk, event: &gpui::KeyDownEvent, window, cx| {
             desk.on_key(event, window, cx);
         }))
-        .child(titlebar(desk, sidebar, &colors, cx))
+        .child(chrome_slot(
+            &mut desk.chrome.titlebar,
+            build_titlebar,
+            StyleRefinement::default().w_full().h(px(TITLEBAR)),
+            cx,
+        ))
         .child(
             div()
                 .flex_grow(1.)
                 .flex()
                 .min_h(px(0.))
-                .when(sidebar, |row| row.child(sidebar_column(desk, &colors, cx)))
+                .when(sidebar, |row| {
+                    let width = px(desk.prefs.sidebar_width as f32);
+                    row.child(chrome_slot(
+                        &mut desk.chrome.sidebar,
+                        build_sidebar,
+                        StyleRefinement::default().w(width).h_full(),
+                        cx,
+                    ))
+                })
                 .child(main_column(desk, &colors, window, cx)),
         )
         .child(overlays::layer(desk, &colors, window, cx))

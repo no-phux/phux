@@ -187,6 +187,8 @@ pub struct Desk {
     pub(crate) host_adding: Option<String>,
     /// The titlebar's window-drag surface, created once.
     pub(crate) drag_region: Option<Entity<crate::chrome::DragRegion>>,
+    /// Titlebar and sidebar. A terminal frame does not rebuild them.
+    pub(super) chrome: super::view::ChromeCache,
     /// The window title last written.
     window_title: String,
     closed: bool,
@@ -325,6 +327,7 @@ impl Desk {
             hosts: Vec::new(),
             host_adding: None,
             drag_region: None,
+            chrome: super::view::ChromeCache::default(),
             window_title: String::new(),
             closed: false,
             creates: HashMap::new(),
