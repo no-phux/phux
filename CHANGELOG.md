@@ -9,6 +9,14 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.61.0](https://github.com/no-phux/phux/compare/v0.60.3...v0.61.0) (2026-10-14)
+
+
+### Features
+
+* **site:** replace the hero still with a live-looking product tour ([6cbf631](https://github.com/no-phux/phux/commit/6cbf63194632b4f019dae4501716ca96be230b6b))
+* **tui:** add confirmed whole-session management ([34d219f](https://github.com/no-phux/phux/commit/34d219ffec69a6473d11e38c31b9bcd28ee2d73e))
+
 ## [0.60.3](https://github.com/no-phux/phux/compare/v0.60.2...v0.60.3) (2026-10-14)
 
 
