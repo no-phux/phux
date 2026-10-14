@@ -91,11 +91,6 @@ toml.workspace = true
 # set `O_NONBLOCK` on fd 0, whose open file description belongs to the parent
 # shell.
 rustix = { version = "1.1", default-features = false, features = ["std", "termios", "fs", "event", "alloc"] }
-# phux-l96p.8: pane titles are arbitrary OSC-2 strings, so the chrome clips
-# them to a CELL budget rather than a char count -- a CJK or emoji title
-# measured by `chars().count()` overruns its budget and overwrites the rule
-# that was supposed to close it.
-unicode-width.workspace = true
 # Async I/O for the attach loop (phux-9gw.3). The workspace tokio dep enables
 # `net`, `io-util`, `signal`, `macros`, `rt`; the loop also needs `io-std`
 # for `tokio::io::stdout()` -- enabled here so headless consumers of
