@@ -273,20 +273,10 @@ pub(crate) async fn run_attach_once_rec(
     initial_notice: Option<Notice>,
     input_replay: Option<ReplayHandle>,
 ) -> Result<AttachEnd, AttachError> {
-    // `run_with_predict_dial` with `predict.enabled = false` is identical to the
-    // non-predictive path, so one call covers both transports and both modes.
-    // The recorded entry point differs only in wrapping the driver's render
-    // sink with the tee, so the two branches share every other behaviour.
-    match rec {
-        Some(rec) => {
-            attach::run_recorded_dial(dial, target, predict_cfg, rec, initial_notice, input_replay)
-                .await
-        }
-        None => {
-            attach::run_with_predict_dial(dial, target, predict_cfg, initial_notice, input_replay)
-                .await
-        }
-    }
+    // `predict.enabled = false` is the non-predictive path, and `rec` only
+    // wraps the driver's render sink with the tee, so one call covers every
+    // transport and mode.
+    attach::run_dial(dial, target, predict_cfg, rec, initial_notice, input_replay).await
 }
 
 #[allow(
@@ -302,31 +292,16 @@ async fn run_attach_connection_rec(
     initial_notice: Option<Notice>,
     input_replay: Option<ReplayHandle>,
 ) -> Result<AttachEnd, AttachError> {
-    match rec {
-        Some(rec) => {
-            Box::pin(attach::run_recorded_connection(
-                connection,
-                dial,
-                target,
-                predict_cfg,
-                rec,
-                initial_notice,
-                input_replay,
-            ))
-            .await
-        }
-        None => {
-            Box::pin(attach::run_with_predict_connection(
-                connection,
-                dial,
-                target,
-                predict_cfg,
-                initial_notice,
-                input_replay,
-            ))
-            .await
-        }
-    }
+    Box::pin(attach::run_connection(
+        connection,
+        dial,
+        target,
+        predict_cfg,
+        rec,
+        initial_notice,
+        input_replay,
+    ))
+    .await
 }
 
 /// Attach to the user's default session via `Last`; if an older server
