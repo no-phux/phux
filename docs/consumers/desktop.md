@@ -22,9 +22,17 @@ The host seams are [desktop architecture](../architecture/desktop.md). [ADR-0165
 [Cockpit](./cockpit.md) remains a separate client. The first release requires
 independent same-terminal views; Linux follows, Intel macOS is not required.
 
-[Install the Desktop](../INSTALL.md#gpui-desktop-native-macos)
+[Install the Desktop](../INSTALL.md#desktop-app-macos)
 from the first-party installer on an Apple-silicon Mac running macOS 27 or
-later. It downloads a published `Phux.app`; Cockpit remains a separate app.
+later. It downloads a published `Phux.app`, installing the CLI first if it is
+missing; Cockpit remains a separate app.
+
+To build the same app from a checkout instead, install the CLI, set up the
+desktop tools from [Contributor setup](../SETUP.md), quit any running
+`Phux.app`, and run `just doctor desktop && just desktop-install-app`. That
+replaces `/Applications/Phux.app` with an ad-hoc-signed development build
+without updates; it never replaces the CLI. `PHUX_PROFILE`, `PHUX_SOCKET`,
+and `PHUX_SESSION` override the server and session it attaches.
 
 ## Start with a terminal
 

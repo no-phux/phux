@@ -164,13 +164,17 @@ done
 case "$url" in
   *SHA256SUMS) cp "$FIXTURE/SHA256SUMS" "$out" ;;
   *.zip) cp "$FIXTURE/asset.zip" "$out" ;;
+  https://phux.sh/install) cp "$FIXTURE/cli-installer.sh" "$out" ;;
   *) echo "unexpected URL: $url" >&2; exit 1 ;;
 esac
 ''')
         home = self.root / "home"
-        cli = home / ".local/bin/phux"
-        cli.parent.mkdir(parents=True)
-        cli.symlink_to("/usr/bin/true")
+        self.cli = home / ".local/bin/phux"
+        self.cli.parent.mkdir(parents=True)
+        self.cli.symlink_to("/usr/bin/true")
+        (self.fixture / "cli-installer.sh").write_text(
+            'mkdir -p "$PHUX_INSTALL_DIR" && ln -s /usr/bin/true "$PHUX_INSTALL_DIR/phux"\n'
+        )
         self.env = {**os.environ, "HOME": str(home), "PATH": f"{self.bin}:/usr/bin:/bin:/usr/sbin:/sbin", "FIXTURE": str(self.fixture)}
         self.env.pop("PHUX_BIN", None)
         self.env.pop("PHUX_DESKTOP_APPLICATIONS_DIR", None)
@@ -224,6 +228,20 @@ esac
         launcher = self.root / "launchers/phux-desktop"
         self.assertTrue(os.access(launcher, os.X_OK))
         self.assertFalse((self.root / "launchers/phux").exists())
+
+    def test_missing_cli_is_installed_first(self):
+        self.cli.unlink()
+        result = self.install()
+        self.assertIn("installing it first", result.stdout)
+        self.assertTrue(os.access(self.cli, os.X_OK))
+        self.assertTrue(self.installed.is_dir())
+
+    def test_failed_cli_install_installs_no_app(self):
+        self.cli.unlink()
+        (self.fixture / "cli-installer.sh").write_text("exit 1\n")
+        result = self.install(success=False)
+        self.assertIn("could not install the phux CLI", result.stderr)
+        self.assertFalse(self.installed.exists())
 
     def test_bad_checksum_keeps_existing_install(self):
         self.install()

@@ -65,7 +65,7 @@ recovery. `scripts/check-release-orchestration.mjs` pins this ordering.
 | Check Cockpit locally before its release PR merges | `just cockpit-test`, then `bash clients/cockpit/scripts/build-phux-artifacts.sh` and `clients/cockpit/scripts/package-macos.sh` |
 | Ask whether anything is stuck right now | `just release-drift` (needs an authenticated `gh`) |
 | Report a hand-recovered release to Linear | Dispatch **Actions -> linear-release** with a public `vX.Y.Z` or `cockpit-vX.Y.Z` tag; it synchronizes that exact version before updating its stage |
-| Check a suspected install-doc drift | `bash scripts/check-install-surface.sh` |
+| Check the installers and their release wiring | `bash scripts/check-install-surface.sh` |
 | Publish or rebuild the `next` channel | Dispatch **Actions -> next-release** (also runs after green `main` CI) |
 
 ## What runs when
@@ -298,9 +298,9 @@ Homebrew Bash is required.
 The runner setup downloads Xcode's separate Metal Toolchain component and executes
 `xcrun metal --version` before compiling; Xcode alone does not provide the shader
 compiler on fresh hosted runners.
-The CLI is **not bundled**: users install it separately from
-<https://phux.sh/install>, and installing the desktop never upgrades a running
-coordinator. The app is explicitly **ad-hoc signed, not Apple-notarized**;
+The CLI is **not bundled**: the desktop installer runs
+<https://phux.sh/install> only when no CLI is found, and installing the
+desktop never upgrades an existing CLI or a running coordinator. The app is explicitly **ad-hoc signed, not Apple-notarized**;
 there are no desktop Developer ID or notarization secrets. `Phux.app` runs the
 Rust executable directly. It does not ship a JavaScript bundle or a NAPI addon.
 
@@ -579,9 +579,18 @@ the script must stay POSIX `sh`.
 
 The installer downloads the target tarball and `.sha256` sidecar, verifies the
 checksum before unpacking, and installs `phux` + `phux-mcp` into
-`${PHUX_INSTALL_DIR:-$HOME/.local/bin}`; with no `--version` it resolves the
-current GitHub release. Keep the explicit `v0.0.1` refusal as a historical
-safety guard.
+`${PHUX_INSTALL_DIR:-$HOME/.local/bin}`. When that directory is not on `PATH`,
+it appends one idempotent line to the user's shell profile unless
+`--no-modify-path` is passed. Keep the explicit `v0.0.1` refusal as a
+historical safety guard.
+
+With no `--version`, the installer and `phux update` read the
+`releases/latest` redirect, which needs no GitHub API quota. Only the CLI
+stream may be GitHub's Latest release: `release.yml` publishes with
+`--latest`, and the Cockpit, desktop, and agent-integration lanes publish with
+`--latest=false`. A redirect naming another stream, or none, falls back to
+the bounded release-list scan. If another stream is ever marked Latest by
+hand, repair it with `gh release edit vX.Y.Z --latest`.
 
 ### CPU baselines
 
@@ -641,7 +650,7 @@ silently replace a public release with different bytes.
 The `cockpit-vX.Y.Z` tag shape and the `phux-cockpit-<semver>-macos-arm64.zip`
 asset name are a consumed contract: `scripts/install-cockpit.sh` and the
 site's Cockpit version badge resolve them directly. Rename either and both
-break; `scripts/check-install-surface.sh` pins the three halves together.
+break.
 
 ## PhuxFFI xcframework
 
