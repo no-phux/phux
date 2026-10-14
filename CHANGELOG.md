@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.72.1](https://github.com/no-phux/phux/compare/v0.72.0...v0.72.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* **desktop:** improve terminal rendering and quiet the sidebar ([#1363](https://github.com/no-phux/phux/issues/1363)) ([305b1ef](https://github.com/no-phux/phux/commit/305b1efca31ac1252afe50bfbf413430cc07409f))
+
 ## [0.72.0](https://github.com/no-phux/phux/compare/v0.71.1...v0.72.0) (2026-10-14)
 
 
