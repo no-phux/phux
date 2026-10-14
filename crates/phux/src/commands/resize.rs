@@ -77,11 +77,11 @@ pub(crate) fn run_resize(
                 return json_err::report_no_server(json, &err, &socket_path, "resize");
             }
             Err(AttachError::Refused(msg)) => {
-                eprintln!("phux: cannot resize '{target}': {msg} (try `phux ls`)");
+                error!("cannot resize '{target}': {msg} (try `phux ls`)");
                 return ExitCode::FAILURE;
             }
             Err(err) => {
-                eprintln!("phux: resize failed: {err}");
+                error!("resize failed: {err}");
                 return ExitCode::FAILURE;
             }
         };
@@ -110,8 +110,8 @@ fn report(pane: &phux_protocol::ids::ResourceId, outcome: ResizeOutcome, json: b
         return ExitCode::SUCCESS;
     }
     let (want_cols, want_rows) = outcome.requested;
-    eprintln!(
-        "phux: pane holds {cols}x{rows}, not the requested {want_cols}x{want_rows}. \
+    error!(
+        "pane holds {cols}x{rows}, not the requested {want_cols}x{want_rows}. \
          An attached client's viewport owns this Terminal's size under the \
          current `defaults.window-size` policy; set `window-size = \"manual\"` \
          to make explicit resizes authoritative."

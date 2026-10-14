@@ -313,7 +313,7 @@ fn report_failure(json: bool, err: &AttachError, socket_path: &Path) -> ExitCode
             Ok(s) => outln!("{s}"),
             // A Value of strings and numbers cannot fail to serialize; the
             // fallback keeps the failure visible rather than silent.
-            Err(_) => eprintln!("phux: no server running at {}", socket_path.display()),
+            Err(_) => error!("no server running at {}", socket_path.display()),
         }
         return ExitCode::from(1);
     }

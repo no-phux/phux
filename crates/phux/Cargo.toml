@@ -30,6 +30,9 @@ path = "src/bin/dhat_heap.rs"
 required-features = ["dhat-heap"]
 
 [dependencies]
+# Native ANSI tokens only; already locked transitively. std::io::IsTerminal
+# owns stream detection and output.rs owns policy, avoiding a styling framework.
+anstyle = "1.0"
 phux-protocol = { workspace = true, features = ["server"] }
 phux-core.workspace = true
 # `snapshot --format vt` decodes the server's base64 rendered capture to

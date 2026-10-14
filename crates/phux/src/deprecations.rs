@@ -93,7 +93,7 @@ pub(crate) const DEPRECATED: &[Deprecation] = &[
         surface: DeprecatedSurface::Verb,
         old: "phux workspace",
         new: "phux archive export / import, phux project inspect",
-        note: "phux: `phux workspace` is deprecated and will be removed; use `phux archive \
+        note: "phux: warn: `phux workspace` is deprecated and will be removed; use `phux archive \
                export / import, phux project inspect`",
         setup_argv: &[],
         // A local repo read: no server, and the audit runs inside the repo.
@@ -106,7 +106,7 @@ pub(crate) const DEPRECATED: &[Deprecation] = &[
         surface: DeprecatedSurface::Verb,
         old: "phux move-pane",
         new: "phux mv",
-        note: "phux: `phux move-pane` is deprecated and will be removed; use `phux mv`",
+        note: "phux: warn: `phux move-pane` is deprecated and will be removed; use `phux mv`",
         setup_argv: &[],
         example_argv: &["move-pane", "@1", "@2"],
         needs_server: true,

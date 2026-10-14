@@ -127,9 +127,7 @@ pub(crate) fn run(args: RemoteAttach<'_>) -> ExitCode {
     let entry = match resolve(&args.target, args.code, args.bootstrap) {
         Ok(entry) => entry,
         Err(err) => {
-            for line in err.lines() {
-                eprintln!("{line}");
-            }
+            crate::output::error_block(err.lines());
             return ExitCode::FAILURE;
         }
     };
@@ -185,8 +183,8 @@ fn attach_registered(args: &RemoteAttach<'_>, entry: RemoteEntry) -> ExitCode {
     match outcome.repair {
         attach::Repair::None => return outcome.code,
         attach::Repair::Start => {
-            eprintln!(
-                "phux: {name} is not answering at {}; starting its server over ssh ({ssh_host})...",
+            info!(
+                "{name} is not answering at {}; starting its server over ssh ({ssh_host})...",
                 entry.endpoint
             );
             match enroll::ensure_remote_server(
@@ -196,23 +194,23 @@ fn attach_registered(args: &RemoteAttach<'_>, entry: RemoteEntry) -> ExitCode {
                 enroll::ServicePolicy::Install,
             ) {
                 Ok(supervision) => {
-                    eprintln!("phux: {name}: {}", supervision.describe());
+                    crate::output::diagnostic(
+                        supervision.severity(),
+                        format_args!("{name}: {}", supervision.describe()),
+                    );
                     let again =
                         attach::run_attach_remote_outcome(&entry, args.session.clone(), args.rec);
                     if again.repair == attach::Repair::None {
                         return again.code;
                     }
-                    eprintln!(
-                        "phux: {name} still does not answer with the saved credentials; re-pairing over ssh..."
+                    info!(
+                        "{name} still does not answer with the saved credentials; re-pairing over ssh..."
                     );
                 }
                 Err(failure) => {
-                    eprintln!(
-                        "phux: {name}: could not start it over ssh: {}",
-                        failure.detail()
-                    );
-                    eprintln!(
-                        "phux: check `ssh {ssh_host}` from this machine, then `phux attach {name}` again; \
+                    error!("{name}: could not start it over ssh: {}", failure.detail());
+                    hint!(
+                        "check `ssh {ssh_host}` from this machine, then `phux attach {name}` again; \
                          or, if the server should be up, run `phux doctor` on {name}"
                     );
                     return ExitCode::FAILURE;
@@ -220,8 +218,8 @@ fn attach_registered(args: &RemoteAttach<'_>, entry: RemoteEntry) -> ExitCode {
             }
         }
         attach::Repair::RePair => {
-            eprintln!(
-                "phux: {name} refused the saved route ({}); re-pairing over ssh ({ssh_host})...",
+            info!(
+                "{name} refused the saved route ({}); re-pairing over ssh ({ssh_host})...",
                 entry.endpoint
             );
         }
@@ -229,8 +227,8 @@ fn attach_registered(args: &RemoteAttach<'_>, entry: RemoteEntry) -> ExitCode {
     let entry = match register_over_ssh(&args.target, &ssh_host, Some(&entry)) {
         Ok(entry) => entry,
         Err(err) => {
-            eprintln!("phux: {name}: {}", err.message);
-            eprintln!("phux:   {}", err.remedy);
+            error!("{name}: {}", err.message);
+            hint!("{}", err.remedy);
             return ExitCode::FAILURE;
         }
     };
@@ -255,8 +253,8 @@ fn promote_direct_route(entry: RemoteEntry) -> RemoteEntry {
     };
     match upgrade_to_quic(&entry, deadline) {
         QuicUpgrade::Upgraded { from, to } => {
-            eprintln!(
-                "phux: {}: QUIC answers; upgraded the registry entry from {from} to {to}",
+            ok!(
+                "{}: QUIC answers; upgraded the registry entry from {from} to {to}",
                 entry.name
             );
             RemoteEntry {
@@ -266,8 +264,8 @@ fn promote_direct_route(entry: RemoteEntry) -> RemoteEntry {
             }
         }
         QuicUpgrade::NotSaved { error, .. } => {
-            eprintln!(
-                "phux: {}: QUIC answers but the entry could not be rewritten ({error}); \
+            warn!(
+                "{}: QUIC answers but the entry could not be rewritten ({error}); \
                  attaching over {}",
                 entry.name, entry.endpoint
             );
@@ -434,17 +432,14 @@ pub(crate) fn resolve(
     }
     // `ssh` takes the typed `user@host` spelling as its destination.
     register_over_ssh(target, &target.registry_name(), None).map_err(|err| {
-        unregistered_message(
-            target,
-            Some(&format!("{}\nphux:   {}", err.message, err.remedy)),
-        )
+        unregistered_message(target, Some(&format!("{}\n{}", err.message, err.remedy)))
     })
 }
 
 /// Register a host from a pasted connect link and return the entry to
 /// dial.
 fn register_from_code(target: &RemoteTarget, code: &str) -> Result<RemoteEntry, String> {
-    let link = pair::parse_connect_link(code).map_err(|err| format!("phux: --code: {err}"))?;
+    let link = pair::parse_connect_link(code).map_err(|err| format!("--code: {err}"))?;
 
     let name = target.registry_name();
     let token_file = enroll::token_path(&phux_server::telemetry::state_dir(), &name);
@@ -454,7 +449,7 @@ fn register_from_code(target: &RemoteTarget, code: &str) -> Result<RemoteEntry, 
     // the attach to promote once it answers.
     let endpoint = link
         .registry_endpoint()
-        .ok_or_else(|| "phux: --code: the connect code names no endpoint".to_owned())?;
+        .ok_or_else(|| "--code: the connect code names no endpoint".to_owned())?;
     // Validate before the token lands: a rejected name or an unpinned
     // routable endpoint must not leave an orphaned bearer token on disk.
     // Same ordering `phux host add` uses, and for the same reason.
@@ -467,7 +462,7 @@ fn register_from_code(target: &RemoteTarget, code: &str) -> Result<RemoteEntry, 
     )
     .and_then(|new| new.with_tls_server_name(link.tls_server_name.as_deref()))
     .and_then(|new| new.with_direct(link.quic.as_deref()))
-    .map_err(|err| format!("phux: --code: {err}"))?;
+    .map_err(|err| format!("--code: {err}"))?;
     let identity = enroll_from_code(&name, &link);
     let new = new
         .with_client_identity(
@@ -475,10 +470,10 @@ fn register_from_code(target: &RemoteTarget, code: &str) -> Result<RemoteEntry, 
                 .as_ref()
                 .map(|files| (files.certificate.as_path(), files.private_key.as_path())),
         )
-        .map_err(|err| format!("phux: --code: {err}"))?;
+        .map_err(|err| format!("--code: {err}"))?;
 
-    enroll::write_token(&token_file, &link.token).map_err(|err| format!("phux: --code: {err}"))?;
-    remote::add_or_update(&new).map_err(|err| format!("phux: --code: {err}"))?;
+    enroll::write_token(&token_file, &link.token).map_err(|err| format!("--code: {err}"))?;
+    remote::add_or_update(&new).map_err(|err| format!("--code: {err}"))?;
     // A relay link pins the relay's leaf, and its `ca` is the server's,
     // which the end-to-end session inside the relayed stream verifies
     // (ADR-0154): keyed by the route beside the relay's leaf.
@@ -489,11 +484,8 @@ fn register_from_code(target: &RemoteTarget, code: &str) -> Result<RemoteEntry, 
         link.ca_fingerprint.as_deref(),
     );
 
-    eprintln!(
-        "phux: paired {name} -> {} (from the connect code)",
-        new.endpoint
-    );
-    eprintln!("phux: next time, `phux --remote {name}` needs no code");
+    ok!("paired {name} -> {} (from the connect code)", new.endpoint);
+    hint!("next time, `phux --remote {name}` needs no code");
 
     Ok(registered_entry(target, &new))
 }
@@ -508,9 +500,7 @@ fn enroll_from_code(name: &str, link: &pair::ConnectLink) -> Option<enroll::Clie
         .as_deref()
         .and_then(|quic| quic.strip_prefix("quic://"))
     else {
-        eprintln!(
-            "phux: warning: {name}: the link carries an enrollment ticket but no quic endpoint to enroll over"
-        );
+        warn!("{name}: the link carries an enrollment ticket but no quic endpoint to enroll over");
         return None;
     };
     let remotes_dir = phux_server::telemetry::state_dir().join("remotes");
@@ -525,15 +515,15 @@ fn enroll_from_code(name: &str, link: &pair::ConnectLink) -> Option<enroll::Clie
     };
     match enroll::enroll_with_ticket(quic, &pins, ticket, &workload) {
         Ok(files) => {
-            eprintln!(
-                "phux: {name}: enrolled a workload certificate ({})",
+            ok!(
+                "{name}: enrolled a workload certificate ({})",
                 files.credential_id.as_deref().unwrap_or("unknown id")
             );
             Some(files)
         }
         Err(err) => {
-            eprintln!(
-                "phux: warning: {name}: could not enroll a workload certificate: {err}; \
+            warn!(
+                "{name}: could not enroll a workload certificate: {err}; \
                  a server in `paired` mode refuses this host until it does (mint a new link with \
                  `phux pair --enroll` there)"
             );
@@ -569,7 +559,7 @@ fn register_over_ssh(
     existing: Option<&RemoteEntry>,
 ) -> Result<RemoteEntry, CliError> {
     let name = existing.map_or_else(|| target.registry_name(), |entry| entry.name.clone());
-    eprintln!("phux: setting {} up over ssh ({ssh_host})...", target.host);
+    info!("setting {} up over ssh ({ssh_host})...", target.host);
 
     // The target's own authority when a port was given, so an operator who
     // knows their listener is not on 8788 does not have to enroll
@@ -598,13 +588,13 @@ fn register_over_ssh(
         &req,
         existing.and_then(|entry| entry.session.as_deref()),
         &previous.held,
-        &mut |event| eprintln!("phux: {name}: {}", event.describe()),
+        &mut |event| event.report_progress(&name),
     )?;
 
-    eprintln!("phux: registered {name} -> {}", entry.endpoint);
+    ok!("registered {name} -> {}", entry.endpoint);
     if entry.endpoint.starts_with("ssh://") {
-        eprintln!(
-            "phux: no direct route answered{}; this attach rides ssh, and every attach tries the direct route first",
+        info!(
+            "no direct route answered{}; this attach rides ssh, and every attach tries the direct route first",
             if outcome.tried.is_empty() {
                 String::new()
             } else {
@@ -612,7 +602,7 @@ fn register_over_ssh(
             }
         );
     } else {
-        eprintln!("phux: later attaches dial it directly; ssh is out of the path");
+        info!("later attaches dial it directly; ssh is out of the path");
     }
     Ok(entry)
 }
@@ -623,14 +613,11 @@ fn unregistered_message(target: &RemoteTarget, ssh_error: Option<&str>) -> Strin
     use std::fmt::Write as _;
 
     let name = target.registry_name();
-    let mut message = format!("phux: {name} is not a registered host");
+    let mut message = format!("{name} is not a registered host");
     if let Some(err) = ssh_error {
         // `write!` into a String is infallible; the Result is discarded
         // rather than unwrapped so no error path exists to mishandle.
-        let _ = write!(
-            message,
-            " and setting it up over ssh failed:\nphux:   {err}"
-        );
+        let _ = write!(message, " and setting it up over ssh failed:\n{err}");
     }
     let _ = write!(message, "\n{}", unregistered_remedies(target));
     message
@@ -641,9 +628,9 @@ fn unregistered_message(target: &RemoteTarget, ssh_error: Option<&str>) -> Strin
 fn unregistered_remedies(target: &RemoteTarget) -> String {
     let name = target.registry_name();
     format!(
-        "phux: to pair without ssh, run `phux pair` on {} and paste the link:\
-         \nphux:   phux --remote {name} --code '<https://phux.sh/connect?...>'\
-         \nphux: or, with ssh access, `phux host add {name}` (starts and supervises the server there)",
+        "to pair without ssh, run `phux pair` on {} and paste the link:\
+         \nphux --remote {name} --code '<https://phux.sh/connect?...>'\
+         \nor, with ssh access, `phux host add {name}` (starts and supervises the server there)",
         target.host
     )
 }

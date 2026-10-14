@@ -178,7 +178,7 @@ pub(crate) fn run_ls_all(json: bool, socket: Option<std::path::PathBuf>) -> Exit
                 ExitCode::SUCCESS
             }
             Err(err) => {
-                eprintln!("phux: failed to serialize host list as JSON: {err}");
+                error!("failed to serialize host list as JSON: {err}");
                 ExitCode::FAILURE
             }
         };
@@ -337,7 +337,7 @@ fn render_listing(
         print_lines(glance_lines(sources));
     }
     if !hosts_complete && has_satellite_terminals(&snapshot) {
-        eprintln!("{HOST_SESSIONS_UNAVAILABLE}");
+        warn!("{HOST_SESSIONS_UNAVAILABLE}");
     }
     partial::warn_partial_view("ls", &degradation);
     ExitCode::SUCCESS
@@ -346,7 +346,7 @@ fn render_listing(
 /// The text-mode note for a hub that does not report its satellites'
 /// sessions (no `HOST_SESSIONS`): the satellite Terminals it does list are
 /// real, but which sessions they belong to cannot be known from here.
-const HOST_SESSIONS_UNAVAILABLE: &str = "phux ls: satellite sessions are unavailable from this \
+const HOST_SESSIONS_UNAVAILABLE: &str = "ls: satellite sessions are unavailable from this \
      server (it does not report HOST_SESSIONS); its satellite terminals are listed above";
 
 fn has_satellite_terminals(snapshot: &SessionSnapshot) -> bool {

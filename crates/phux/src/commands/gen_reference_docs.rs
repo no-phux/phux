@@ -24,7 +24,7 @@ const DEFAULT_OUT: &str = "docs/reference";
 pub(crate) fn run_gen_reference_docs(out: Option<PathBuf>) -> ExitCode {
     let out = out.unwrap_or_else(|| PathBuf::from(DEFAULT_OUT));
     if let Err(err) = std::fs::create_dir_all(&out) {
-        eprintln!("phux: cannot create {}: {err}", out.display());
+        error!("cannot create {}: {err}", out.display());
         return ExitCode::FAILURE;
     }
     for page in refdocs::pages() {
@@ -35,7 +35,7 @@ pub(crate) fn run_gen_reference_docs(out: Option<PathBuf>) -> ExitCode {
             continue;
         }
         if let Err(err) = std::fs::write(&path, rendered) {
-            eprintln!("phux: cannot write {}: {err}", path.display());
+            error!("cannot write {}: {err}", path.display());
             return ExitCode::FAILURE;
         }
         outln!("wrote {}", path.display());

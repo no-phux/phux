@@ -685,14 +685,14 @@ fn warn_on_uncovered_names(cert: &std::path::Path, key: &std::path::Path, advert
     if uncovered.is_empty() {
         return;
     }
-    eprintln!(
-        "phux pair: warning: this certificate does not name {} — a device that pins \
+    warn!(
+        "pair: this certificate does not name {} — a device that pins \
          the fingerprint above is unaffected, but a client that validates the server \
          name (a browser, or curl --cacert) will refuse the handshake.",
         uncovered.join(", ")
     );
-    eprintln!(
-        "phux pair: warning: widening it means a NEW certificate and a NEW fingerprint, \
+    warn!(
+        "pair: widening it means a NEW certificate and a NEW fingerprint, \
          which un-pairs every already-paired device. To do it deliberately: rm {} {} \
          && phux pair, then re-pair every device.",
         cert.display(),
@@ -758,21 +758,19 @@ pub(crate) fn run_pair(
         return run_credential_action(&tokens, action, json);
     }
     if json && (secret_file.is_some() || qr) {
-        eprintln!(
-            "phux pair: --json prints the bearer and cannot combine with --qr or --secret-file"
-        );
+        error!("pair: --json prints the bearer and cannot combine with --qr or --secret-file");
         return ExitCode::from(2);
     }
     if let Some(path) = secret_file.as_deref()
         && let Err(err) = prepare_secret_file(path)
     {
-        eprintln!("phux pair: {err}");
+        error!("pair: {err}");
         return ExitCode::FAILURE;
     }
     let expires_for = match expires.as_deref().map(parse_expires).transpose() {
         Ok(duration) => duration,
         Err(err) => {
-            eprintln!("phux pair: {err}");
+            error!("pair: {err}");
             return ExitCode::from(2);
         }
     };
@@ -787,7 +785,7 @@ pub(crate) fn run_pair(
     // words a failed mint uses, because `phux host add` answers the
     // legacy-store one by migrating.
     if let Err(err) = phux_server::auth::TokenStore::load(&tokens) {
-        eprintln!("phux pair: failed to mint token: {err}");
+        error!("pair: failed to mint token: {err}");
         return ExitCode::FAILURE;
     }
     let socket = socket.unwrap_or_else(phux_server::runtime::default_socket_path);
@@ -814,7 +812,7 @@ pub(crate) fn run_pair(
     let live = match query_live_listeners(&socket) {
         Ok(live) => live,
         Err(refusal) => {
-            eprintln!("phux pair: {refusal}");
+            error!("pair: {refusal}");
             return ExitCode::FAILURE;
         }
     };
@@ -827,7 +825,7 @@ pub(crate) fn run_pair(
     )
     .or_else(|| (enroll && addresses.live.quic.is_none()).then(|| ENROLL_NEEDS_QUIC.to_owned()));
     if let Some(refusal) = refusal {
-        eprintln!("phux pair: {refusal}");
+        error!("pair: {refusal}");
         return ExitCode::FAILURE;
     }
     provision_pairing_certificate(&certificate, &addresses.advertised);
@@ -1017,7 +1015,7 @@ fn mint_relay_link(
     }) {
         Ok(connector) => connector,
         Err(refusal) => {
-            eprintln!("phux pair: {refusal}");
+            error!("pair: {refusal}");
             return ExitCode::FAILURE;
         }
     };
@@ -1035,8 +1033,8 @@ fn mint_relay_link(
             .ok()
             .flatten();
     if enroll && authority.is_none() {
-        eprintln!(
-            "phux pair: --enroll through a relay needs the server's certificate to chain to its \
+        error!(
+            "pair: --enroll through a relay needs the server's certificate to chain to its \
              workload CA (ADR-0153); this one predates it. `phux workload authority --rotate` \
              issues one (every device then re-pairs)"
         );
@@ -1293,7 +1291,7 @@ fn provision_pairing_certificate(certificate: &CertificatePaths, advertised: &[S
         advertised,
         &phux_server::workload::WorkloadPaths::from_env(),
     ) {
-        eprintln!("phux pair: warning: could not provision certificate: {err}");
+        warn!("pair: could not provision certificate: {err}");
     }
 }
 
@@ -1313,13 +1311,13 @@ fn mint_pairing_credential(
     let minted = match minted {
         Ok(minted) => minted,
         Err(err) => {
-            eprintln!("phux pair: failed to mint token: {err}");
+            error!("pair: failed to mint token: {err}");
             return None;
         }
     };
     if !minted.is_durable() {
-        eprintln!(
-            "phux pair: warning: credential is active, but the store directory could not be synced; do not retry pairing"
+        warn!(
+            "pair: credential is active, but the store directory could not be synced; do not retry pairing"
         );
     }
     Some(minted)
@@ -1348,7 +1346,7 @@ fn read_pairing_fingerprint(cert: &std::path::Path, json: bool) -> Option<String
             Some(fingerprint)
         }
         Err(err) => {
-            eprintln!("phux pair: warning: could not read certificate fingerprint: {err}");
+            warn!("pair: could not read certificate fingerprint: {err}");
             None
         }
     }
@@ -1399,7 +1397,7 @@ fn mint_enrollment_ticket(
             Some(ticket)
         }
         Err(err) => {
-            eprintln!("phux pair: could not mint an enrollment ticket: {err}");
+            error!("pair: could not mint an enrollment ticket: {err}");
             None
         }
     }
@@ -1536,12 +1534,12 @@ fn present_human_secret(secret: &HumanSecret<'_>) -> ExitCode {
                     outln!();
                 }
                 Err(err) => {
-                    eprintln!(
-                        "phux pair: credential {} was minted but the secret file could not be written: {err}",
+                    error!(
+                        "pair: credential {} was minted but the secret file could not be written: {err}",
                         secret.credential_id
                     );
-                    eprintln!(
-                        "phux pair: the bearer was not printed. Delete {} if it exists, revoke with `phux pair revoke {}`, and retry.",
+                    hint!(
+                        "pair: the bearer was not printed. Delete {} if it exists, revoke with `phux pair revoke {}`, and retry.",
                         path.display(),
                         secret.credential_id
                     );
@@ -1554,9 +1552,7 @@ fn present_human_secret(secret: &HumanSecret<'_>) -> ExitCode {
                 Some(link) if print_camera_qr(link) => {}
                 Some(_) => failed = true,
                 None => {
-                    eprintln!(
-                        "phux pair: warning: no connect link to render; nothing scannable was printed"
-                    );
+                    warn!("pair: no connect link to render; nothing scannable was printed");
                     failed = true;
                 }
             }
@@ -1675,8 +1671,8 @@ fn print_camera_qr(link: &str) -> bool {
             if let Some(columns) = columns
                 && width > usize::from(columns)
             {
-                eprintln!(
-                    "phux pair: warning: the QR is {width} columns and the terminal is {columns}; widen the window or it will not scan"
+                warn!(
+                    "pair: the QR is {width} columns and the terminal is {columns}; widen the window or it will not scan"
                 );
             }
             outln!();
@@ -1685,7 +1681,7 @@ fn print_camera_qr(link: &str) -> bool {
             true
         }
         Err(err) => {
-            eprintln!("phux pair: warning: {err}");
+            warn!("pair: {err}");
             false
         }
     }
@@ -1736,7 +1732,7 @@ fn run_pair_ls(tokens: &std::path::Path, json: bool) -> ExitCode {
     let rows = match phux_server::auth::list_credentials(tokens) {
         Ok(rows) => rows,
         Err(error) => {
-            eprintln!("phux pair ls: {error}");
+            error!("pair ls: {error}");
             return ExitCode::FAILURE;
         }
     };
@@ -1787,20 +1783,20 @@ fn run_pair_prune(tokens: &std::path::Path, unused_for: &str, json: bool) -> Exi
     let duration = match parse_unused_for(unused_for) {
         Ok(duration) => duration,
         Err(error) => {
-            eprintln!("phux pair prune: {error}");
+            error!("pair prune: {error}");
             return ExitCode::FAILURE;
         }
     };
     let outcome = match phux_server::auth::prune_unused(tokens, duration) {
         Ok(outcome) => outcome,
         Err(error) => {
-            eprintln!("phux pair prune: {error}");
+            error!("pair prune: {error}");
             return ExitCode::FAILURE;
         }
     };
     if !outcome.is_durable() {
-        eprintln!(
-            "phux pair prune: warning: revocation is active, but the store directory could not be synced; do not retry"
+        warn!(
+            "pair prune: revocation is active, but the store directory could not be synced; do not retry"
         );
     }
     if json {
@@ -1836,13 +1832,13 @@ fn run_pair_rotate(
     let rotated = match phux_server::auth::rotate_credential(tokens, credential_id, overlap) {
         Ok(rotated) => rotated,
         Err(error) => {
-            eprintln!("phux pair rotate: {error}");
+            error!("pair rotate: {error}");
             return ExitCode::FAILURE;
         }
     };
     if !rotated.is_durable() {
-        eprintln!(
-            "phux pair rotate: warning: rotation is active, but the store directory could not be synced; do not retry"
+        warn!(
+            "pair rotate: rotation is active, but the store directory could not be synced; do not retry"
         );
     }
     if json {
@@ -1889,13 +1885,13 @@ fn run_pair_revoke(tokens: &std::path::Path, credential_id: &str, json: bool) ->
     let outcome = match phux_server::auth::revoke_credential(tokens, credential_id) {
         Ok(outcome) => outcome,
         Err(error) => {
-            eprintln!("phux pair revoke: {error}");
+            error!("pair revoke: {error}");
             return ExitCode::FAILURE;
         }
     };
     if !outcome.is_durable() {
-        eprintln!(
-            "phux pair revoke: warning: revocation is active, but the store directory could not be synced; do not retry"
+        warn!(
+            "pair revoke: revocation is active, but the store directory could not be synced; do not retry"
         );
     }
     if json {
@@ -1957,23 +1953,21 @@ fn parse_duration(raw: &str, flag: &str) -> Result<chrono::Duration, String> {
 fn migrate_legacy_credentials(tokens: &std::path::Path) -> bool {
     match phux_server::auth::migrate_legacy_store(tokens) {
         Ok(outcome) => {
-            eprintln!(
-                "phux pair: migrated {} legacy credential(s) to the versioned store",
+            ok!(
+                "pair: migrated {} legacy credential(s) to the versioned store",
                 outcome.migrated()
             );
             if !outcome.is_durable() {
                 let durable = phux_server::auth::migrate_legacy_store(tokens)
                     .is_ok_and(phux_server::auth::MigrationOutcome::is_durable);
                 if !durable {
-                    eprintln!(
-                        "phux pair: warning: migration is active, but the store directory could not be synced"
-                    );
+                    warn!("pair: migration is active, but the store directory could not be synced");
                 }
             }
             true
         }
         Err(err) => {
-            eprintln!("phux pair: failed to migrate legacy credentials: {err}");
+            error!("pair: failed to migrate legacy credentials: {err}");
             false
         }
     }

@@ -201,7 +201,7 @@ impl Report {
         match &self.payload {
             Some(payload) => {
                 for line in &self.prose {
-                    eprintln!("{line}");
+                    info!("{line}");
                 }
                 out!("{payload}");
             }

@@ -795,7 +795,7 @@ fn print_agent_states(states: &[AgentStateReport], json: bool, view: AgentView) 
                 ExitCode::SUCCESS
             }
             Err(err) => {
-                eprintln!("phux: could not render agent JSON: {err}");
+                error!("could not render agent JSON: {err}");
                 ExitCode::FAILURE
             }
         };

@@ -21,7 +21,7 @@ pub(crate) fn run(json: bool) -> ExitCode {
     if json {
         outln!("{}", document());
     } else {
-        outln!("Phux {} (runtime-info schema 1)", env!("CARGO_PKG_VERSION"));
+        outln!("phux {} (runtime-info schema 1)", env!("CARGO_PKG_VERSION"));
     }
     ExitCode::SUCCESS
 }

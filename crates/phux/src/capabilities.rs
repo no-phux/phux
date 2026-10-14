@@ -197,7 +197,7 @@ pub(crate) fn run() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(err) => {
-            eprintln!("phux: could not render capabilities: {err}");
+            error!("could not render capabilities: {err}");
             ExitCode::FAILURE
         }
     }

@@ -38,7 +38,9 @@ Every environment variable the `phux` binary reads, from the canonical in-code t
 | `PHUX_LOG` | Write logs to this file (the server tees to it; the client writes only here). |
 | `PHUX_LOG_FORMAT` | `text` (default) or `json`: the log line format. |
 | `RUST_LOG` | tracing level filter, e.g. `phux=debug`. |
-| `NO_COLOR` | Set (non-empty) to keep colour out of help output. |
-| `CLICOLOR_FORCE` | Set (not `0`) to colour help output even when piped. |
+| `NO_COLOR` | Set (non-empty) to keep human output plain, including help and diagnostics. Overrides CLICOLOR_FORCE. |
+| `CLICOLOR_FORCE` | Set (non-empty, not `0`) to colour human output even when piped. NO_COLOR and TERM=dumb still win. |
+| `CLICOLOR` | Set to `0` to disable colour in human output unless forced. Otherwise colour follows each destination stream's terminal. |
+| `TERM` | Set to `dumb` to keep human output plain, even when forced. |
 
 Run `phux server --listen 127.0.0.1:8787` to expose a port; see `phux server --help` for the remote and TLS details.

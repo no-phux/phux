@@ -25,7 +25,7 @@ use super::remote_target::{self, Bootstrap};
 /// other a network dial, and silently preferring either would run the verb
 /// against a server the operator did not mean.
 pub(crate) const SOCKET_REMOTE_CONFLICT: &str =
-    "phux: --socket dials a local UDS and cannot combine with --remote; drop one";
+    "--socket dials a local UDS and cannot combine with --remote; drop one";
 
 /// How the operator named the server, before anything is resolved.
 #[derive(Debug, Default)]
@@ -96,7 +96,7 @@ impl ServerSpec {
             ));
         };
         if self.socket.is_some() {
-            eprintln!("{SOCKET_REMOTE_CONFLICT}");
+            error!("{SOCKET_REMOTE_CONFLICT}");
             return Err(ExitCode::from(2));
         }
         resolve_remote(rt, &raw, verb, json).map(|remote| ServerTarget::Remote(Box::new(remote)))
@@ -277,9 +277,7 @@ fn ssh_only_refusal(name: &str, destination: &str, verb: &str) -> CliError {
 /// prints, or one JSON line under `json`.
 fn emit_ladder_refusal(json: bool, report: &str) -> ExitCode {
     if !json {
-        for line in report.lines() {
-            eprintln!("{line}");
-        }
+        crate::output::error_block(report.lines());
         return ExitCode::FAILURE;
     }
     json_err::emit(true, &ladder_refusal_error(report), 1)

@@ -26,7 +26,7 @@ pub(crate) use crate::exit_codes::EXIT_PARTIAL_VIEW;
 /// a no-op for a complete view.
 pub(crate) fn warn_partial_view(verb: &str, degradation: &Degradation) {
     for notice in degradation.notices() {
-        eprintln!("{}", phux_client::state::partial_view_warning(verb, notice));
+        warn!("{} saw only part of the fleet — {notice}", verb);
     }
 }
 
@@ -137,27 +137,27 @@ fn report_miss(
         // Unchanged from before this module: a complete view that contains no
         // match is a real miss, and the wording scripts already grep for.
         match target {
-            Some(target) => eprintln!("phux: no such target: {target}"),
-            None => eprintln!("phux: no such target"),
+            Some(target) => error!("no such target: {target}"),
+            None => error!("no such target"),
         }
         // The same remedy the `--json` document carries.
-        eprintln!("  run `phux ls` to see live sessions and panes");
+        hint!("run `phux ls` to see live sessions and panes");
         return ExitCode::FAILURE;
     }
     // Deliberately never the word "no such target": this client does not know
     // that, and the sentence it would print is the one a user acts on.
     match target {
-        Some(target) => eprintln!(
-            "phux: could not resolve '{target}': this server's view of the fleet is \
+        Some(target) => error!(
+            "could not resolve '{target}': this server's view of the fleet is \
              incomplete, so a miss here does not mean the target is gone"
         ),
-        None => eprintln!(
-            "phux: could not resolve the target: this server's view of the fleet is \
+        None => error!(
+            "could not resolve the target: this server's view of the fleet is \
              incomplete, so a miss here does not mean the target is gone"
         ),
     }
     for notice in degradation.notices() {
-        eprintln!("phux:   unreachable — {notice}");
+        hint!("unreachable — {notice}");
     }
     degraded_status
 }

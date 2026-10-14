@@ -33,17 +33,18 @@ pub(crate) fn consent(
         return Ok(());
     }
     if !interactive {
-        eprintln!(
-            "phux: refusing to {action} without confirmation: pass --yes \
+        error!(
+            "refusing to {action} without confirmation: pass --yes \
              (stdin is not a terminal, so there is no one to ask)"
         );
         return Err(ExitCode::from(NOT_CONFIRMED));
     }
+    // Interactive prompt deliberately has no diagnostic label or newline.
     eprint!("phux: {action}? [y/N] ");
     if answer().is_some_and(|reply| is_yes(&reply)) {
         return Ok(());
     }
-    eprintln!("phux: not confirmed; nothing was sent");
+    info!("not confirmed; nothing was sent");
     Err(ExitCode::from(NOT_CONFIRMED))
 }
 

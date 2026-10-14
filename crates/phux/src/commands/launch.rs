@@ -44,7 +44,7 @@ pub(crate) fn run_launch(
         return run_list(&config_path, json);
     }
     let Some(integration) = integration else {
-        eprintln!("phux: launch requires an INTEGRATION name (or --list)");
+        error!("launch requires an INTEGRATION name (or --list)");
         return ExitCode::FAILURE;
     };
     let workspace_cwd = match cwd {
@@ -52,7 +52,7 @@ pub(crate) fn run_launch(
         None => match std::env::current_dir() {
             Ok(dir) => dir,
             Err(err) => {
-                eprintln!("phux: launch could not read the current directory: {err}");
+                error!("launch could not read the current directory: {err}");
                 return ExitCode::FAILURE;
             }
         },
@@ -65,7 +65,7 @@ pub(crate) fn run_launch(
     let prepared = match prepare_for_launch(&resolved) {
         Ok(prepared) => prepared,
         Err(err) => {
-            eprintln!("phux: could not prepare agent session: {err}");
+            error!("could not prepare agent session: {err}");
             return ExitCode::FAILURE;
         }
     };
@@ -109,7 +109,7 @@ fn spawn_resolved(
     let agent_session = match prepared.map(|session| session.record.encode()).transpose() {
         Ok(record) => record,
         Err(err) => {
-            eprintln!("phux: could not encode agent session provenance: {err}");
+            error!("could not encode agent session provenance: {err}");
             return ExitCode::FAILURE;
         }
     };
@@ -156,8 +156,8 @@ fn spawn_resolved(
         // `SpawnResult` is `#[non_exhaustive]`: a kind with no arm here is a
         // vocabulary this client does not have, i.e. version skew.
         Ok(_) => {
-            eprintln!(
-                "phux: {}",
+            error!(
+                "{}",
                 phux_client::explain::unexpected_reply("SPAWN_RESOURCE")
             );
             ExitCode::FAILURE
@@ -259,21 +259,21 @@ const fn working_directory_slug(dir: LaunchWorkingDirectory) -> &'static str {
 fn report_launch_error(err: &LaunchError) -> ExitCode {
     match err {
         LaunchError::NotFound { name, available } if available.is_empty() => {
-            eprintln!(
-                "phux: no launchable integration named {name:?} in any enabled plugin \
+            error!(
+                "no launchable integration named {name:?} in any enabled plugin \
                  (install one, then `phux plugin enable`)"
             );
         }
         LaunchError::NotFound { name, available } => {
-            eprintln!(
-                "phux: no launchable integration named {name:?}; available: {}",
+            error!(
+                "no launchable integration named {name:?}; available: {}",
                 available.join(", ")
             );
         }
         LaunchError::NoLaunchCommand { name } => {
-            eprintln!("phux: integration {name:?} declares no `[launch]` command");
+            error!("integration {name:?} declares no `[launch]` command");
         }
-        other => eprintln!("phux: launch failed: {other}"),
+        other => error!("launch failed: {other}"),
     }
     ExitCode::FAILURE
 }

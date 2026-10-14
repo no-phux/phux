@@ -17,6 +17,7 @@ use phux_server::runtime::default_socket_path;
 
 use crate::commands::server_target::ServerTarget;
 use crate::commands::{cli_runtime, report_no_server, warn_interleaved_degradation};
+use crate::output::Severity;
 
 /// What a server said when asked to graceful-upgrade.
 ///
@@ -115,7 +116,9 @@ pub(crate) trait UpgradeEnv {
     /// Wait out one backoff step.
     fn sleep(&mut self, delay: Duration);
     /// Tell the person one line (stderr); silent for machine output.
-    fn say(&mut self, line: &str);
+    fn say(&mut self, severity: Severity, line: &str);
+    /// Give an actionable remedy; silent for machine output.
+    fn hint(&mut self, line: &str);
     /// Ask a yes/no question; `true` only on an explicit yes.
     fn confirm(&mut self, action: &str) -> bool;
 }
@@ -138,10 +141,13 @@ pub(crate) fn request_with_retry(env: &mut dyn UpgradeEnv) -> Result<UpgradeAck,
         }
         if attempt == 0 {
             let budget: Duration = TRANSIENT_BACKOFF.iter().sum();
-            env.say(&format!(
-                "server not ready to hand off ({message}); retrying for up to {}s",
-                budget.as_secs()
-            ));
+            env.say(
+                Severity::Info,
+                &format!(
+                    "server not ready to hand off ({message}); retrying for up to {}s",
+                    budget.as_secs()
+                ),
+            );
         }
         env.sleep(*delay);
         ack = env.send_upgrade()?;
@@ -175,14 +181,15 @@ pub(crate) fn drive(
     let sessions = match env.agent_sessions() {
         Ok(sessions) => sessions,
         Err(err) => {
-            env.say(&format!(
-                "could not list the server's agent sessions: {err}"
-            ));
+            env.say(
+                Severity::Warn,
+                &format!("could not list the server's agent sessions: {err}"),
+            );
             return Ok(ack);
         }
     };
     if sessions.is_empty() {
-        env.say(UNLISTED_BLOCKER);
+        env.say(Severity::Warn, UNLISTED_BLOCKER);
         return Ok(ack);
     }
 
@@ -191,12 +198,15 @@ pub(crate) fn drive(
         .map(phux_client::selector::format_terminal_id)
         .collect::<Vec<_>>();
     if consent != Consent::Granted {
-        env.say(&format!(
-            "this server predates agent-session-safe handoff and cannot upgrade while agent \
+        env.say(
+            Severity::Warn,
+            &format!(
+                "this server predates agent-session-safe handoff and cannot upgrade while agent \
              sessions exist ({})",
-            ids.join(" ")
-        ));
-        env.say(CLOSE_EFFECT);
+                ids.join(" ")
+            ),
+        );
+        env.say(Severity::Info, CLOSE_EFFECT);
     }
     let proceed = match consent {
         Consent::Granted => true,
@@ -207,7 +217,7 @@ pub(crate) fn drive(
         )),
         Consent::Advise => {
             for line in close_commands(&ids, socket) {
-                env.say(&line);
+                env.hint(&line);
             }
             false
         }
@@ -218,15 +228,18 @@ pub(crate) fn drive(
 
     for (session, id) in sessions.iter().zip(&ids) {
         match env.close_agent_session(session) {
-            Ok(()) => env.say(&format!("closed agent session {id}")),
-            Err(err) => env.say(&format!("could not close agent session {id}: {err}")),
+            Ok(()) => env.say(Severity::Ok, &format!("closed agent session {id}")),
+            Err(err) => env.say(
+                Severity::Warn,
+                &format!("could not close agent session {id}: {err}"),
+            ),
         }
     }
     let retried = request_with_retry(env)?;
     if let UpgradeAck::Refused(message) = &retried
         && classify(message) == RefusalClass::LegacyAgentSessions
     {
-        env.say(STILL_BLOCKED);
+        env.say(Severity::Warn, STILL_BLOCKED);
     }
     Ok(retried)
 }
@@ -362,9 +375,15 @@ impl UpgradeEnv for LiveUpgrade<'_> {
         std::thread::sleep(delay);
     }
 
-    fn say(&mut self, line: &str) {
+    fn say(&mut self, severity: Severity, line: &str) {
         if !self.quiet {
-            eprintln!("phux: {line}");
+            crate::output::diagnostic(severity, format_args!("{line}"));
+        }
+    }
+
+    fn hint(&mut self, line: &str) {
+        if !self.quiet {
+            hint!("{line}");
         }
     }
 
@@ -414,15 +433,15 @@ pub(crate) fn run_upgrade(socket: Option<PathBuf>, close_agent_sessions: bool) -
 
     match outcome {
         Ok(UpgradeAck::Upgrading) => {
-            eprintln!("phux: server upgrading in place; sessions preserved");
+            ok!("server upgrading in place; sessions preserved");
             ExitCode::SUCCESS
         }
         Ok(UpgradeAck::Refused(message)) => {
-            eprintln!("phux: upgrade refused: {message}");
+            error!("upgrade refused: {message}");
             ExitCode::from(2)
         }
         Ok(UpgradeAck::Unexpected(message)) => {
-            eprintln!("phux: {message}");
+            error!("{message}");
             ExitCode::from(2)
         }
         Err(err) => report_no_server(&err, &socket_path, "upgrade"),
@@ -513,7 +532,11 @@ mod tests {
             self.sleeps.push(delay);
         }
 
-        fn say(&mut self, _line: &str) {
+        fn say(&mut self, _severity: Severity, _line: &str) {
+            self.said += 1;
+        }
+
+        fn hint(&mut self, _line: &str) {
             self.said += 1;
         }
 
@@ -711,8 +734,12 @@ mod tests {
             self.sleeps.push(delay);
         }
 
-        fn say(&mut self, line: &str) {
-            self.live.say(line);
+        fn say(&mut self, severity: Severity, line: &str) {
+            self.live.say(severity, line);
+        }
+
+        fn hint(&mut self, line: &str) {
+            self.live.hint(line);
         }
 
         fn confirm(&mut self, _action: &str) -> bool {

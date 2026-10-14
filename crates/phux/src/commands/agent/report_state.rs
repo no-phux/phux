@@ -30,7 +30,7 @@ pub(super) fn run(target: &str, state: &str, socket: Option<PathBuf>) -> ExitCod
                         .contains(ServerFeature::ReportAgentState)
                 });
                 if !supported {
-                    eprintln!("phux: server does not support REPORT_AGENT_STATE; upgrade it");
+                    error!("server does not support REPORT_AGENT_STATE; upgrade it");
                     mark_refused.set(true);
                     return Ok(());
                 }
@@ -47,12 +47,12 @@ pub(super) fn run(target: &str, state: &str, socket: Option<PathBuf>) -> ExitCod
                 match reply {
                     CommandResult::Ok | CommandResult::OkWith(_) => Ok(()),
                     CommandResult::Error { code, message } => {
-                        eprintln!("phux: agent state report refused ({code:?}): {message}");
+                        error!("agent state report refused ({code:?}): {message}");
                         mark_refused.set(true);
                         Ok(())
                     }
                     _ => {
-                        eprintln!("phux: unexpected REPORT_AGENT_STATE reply");
+                        error!("unexpected REPORT_AGENT_STATE reply");
                         mark_refused.set(true);
                         Ok(())
                     }

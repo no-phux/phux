@@ -30,5 +30,5 @@ A deprecated spelling survives at least one full release cycle with the warning 
 The warning is one greppable stderr line per invocation, of the form:
 
 ```text
-phux: `phux workspace` is deprecated and will be removed; use `phux archive export / import, phux project inspect`
+phux: warn: `phux workspace` is deprecated and will be removed; use `phux archive export / import, phux project inspect`
 ```

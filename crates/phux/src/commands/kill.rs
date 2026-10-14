@@ -14,7 +14,7 @@ use phux_client::selector;
 
 /// Why `kill --server` refuses `--remote`: the server accepts `SHUTDOWN` on
 /// its local socket only, so refuse before dialing.
-const REMOTE_SHUTDOWN_REFUSAL: &str = "phux: `kill --server` is local-socket only: the server \
+const REMOTE_SHUTDOWN_REFUSAL: &str = "`kill --server` is local-socket only: the server \
      accepts SHUTDOWN on its own socket and refuses it from a remote connection.\n  \
      stop it on that host (`ssh HOST phux kill --server`), or end its sessions with \
      `phux kill --remote HOST NAME`";
@@ -45,7 +45,7 @@ pub(crate) fn run(
 /// dial (see [`REMOTE_SHUTDOWN_REFUSAL`]).
 fn run_kill_server_spec(server: ServerSpec) -> ExitCode {
     if server.remote.is_some() {
-        eprintln!("{REMOTE_SHUTDOWN_REFUSAL}");
+        crate::output::error_block(REMOTE_SHUTDOWN_REFUSAL.lines());
         return ExitCode::from(2);
     }
     run_kill_server(server.socket)
@@ -68,13 +68,13 @@ pub(crate) fn run_kill_server(socket: Option<PathBuf>) -> ExitCode {
     // the next auto-spawn does not have to.
     match phux_config::socket::probe(&socket_path) {
         phux_config::socket::SocketState::Absent => {
-            eprintln!("phux: no server running at {}", socket_path.display());
+            info!("no server running at {}", socket_path.display());
             return ExitCode::SUCCESS;
         }
         phux_config::socket::SocketState::Stale => {
             let _ = phux_config::socket::reap_stale(&socket_path);
-            eprintln!(
-                "phux: no server running at {} (reaped a stale socket)",
+            info!(
+                "no server running at {} (reaped a stale socket)",
                 socket_path.display()
             );
             return ExitCode::SUCCESS;
@@ -97,16 +97,16 @@ pub(crate) fn run_kill_server(socket: Option<PathBuf>) -> ExitCode {
             Err(AttachError::Disconnected) => {}
             Ok((ShutdownOutcome::Refused { code, message }, degradation)) => {
                 warn_interleaved_degradation(&degradation);
-                eprintln!("phux: server refused to stop ({code:?}): {message}");
+                error!("server refused to stop ({code:?}): {message}");
                 return ExitCode::from(2);
             }
             Ok((ShutdownOutcome::Unexpected(other), degradation)) => {
                 warn_interleaved_degradation(&degradation);
-                eprintln!("phux: unexpected reply to SHUTDOWN: {other:?}");
+                error!("unexpected reply to SHUTDOWN: {other:?}");
                 return ExitCode::from(2);
             }
             Err(err) => {
-                eprintln!("phux: kill --server failed: {err}");
+                error!("kill --server failed: {err}");
                 return ExitCode::FAILURE;
             }
         }
@@ -118,13 +118,13 @@ pub(crate) fn run_kill_server(socket: Option<PathBuf>) -> ExitCode {
         while std::time::Instant::now() < deadline {
             if phux_config::socket::probe(&socket_path) != phux_config::socket::SocketState::Live {
                 let _ = phux_config::socket::reap_stale(&socket_path);
-                eprintln!("phux: server stopped");
+                ok!("server stopped");
                 return ExitCode::SUCCESS;
             }
             tokio::time::sleep(SHUTDOWN_POLL).await;
         }
-        eprintln!(
-            "phux: server acknowledged the stop but is still listening on {} after {}s",
+        error!(
+            "server acknowledged the stop but is still listening on {} after {}s",
             socket_path.display(),
             SHUTDOWN_DEADLINE.as_secs()
         );
@@ -159,7 +159,7 @@ pub(crate) fn run_kill(
     let selector = match selector::parse(target) {
         Ok(sel) => sel,
         Err(err) => {
-            eprintln!("phux: invalid target '{target}': {err}");
+            error!("invalid target '{target}': {err}");
             return ExitCode::FAILURE;
         }
     };
@@ -200,15 +200,12 @@ fn report_selected(
     target: &str,
 ) -> ExitCode {
     for notice in notices {
-        eprintln!(
-            "{}",
-            phux_client::state::partial_view_warning("kill", notice)
-        );
+        warn!("{} saw only part of the fleet — {notice}", "kill");
     }
     match result {
         Ok(done) => {
             for message in done.interleaved {
-                eprintln!("phux: warning: partial results — {message}");
+                warn!("partial results — {message}");
             }
             if let Some(killed) = done.killed {
                 out!("{}", summary_line(killed, target));
@@ -217,15 +214,15 @@ fn report_selected(
         }
         Err(err) => {
             for message in err.interleaved() {
-                eprintln!("phux: warning: partial results — {message}");
+                warn!("partial results — {message}");
             }
             match err {
                 KillError::UnsupportedKeyedSignal => {
                     crate::commands::spawn::unsupported_server(false, ServerFeature::KeyedSignal)
                 }
                 KillError::NoSuchTarget { target } => {
-                    eprintln!("phux: no such target: {target}");
-                    eprintln!("  run `phux ls` to see live sessions and panes");
+                    error!("no such target: {target}");
+                    hint!("run `phux ls` to see live sessions and panes");
                     ExitCode::FAILURE
                 }
                 KillError::Unresolved {
@@ -233,26 +230,26 @@ fn report_selected(
                     degradation,
                 } => partial::report_target_miss(Some(&target), &degradation),
                 KillError::Refused { label, message, .. } => {
-                    eprintln!("phux: kill refused for {label}: {message}");
+                    error!("kill refused for {label}: {message}");
                     ExitCode::from(2)
                 }
                 KillError::Unexpected { label, message, .. } => {
-                    eprintln!("phux: {label}: {message}");
+                    error!("{label}: {message}");
                     ExitCode::from(2)
                 }
                 KillError::PaneRefusals { messages, .. } => {
                     for message in messages {
-                        eprintln!("phux: {message}");
+                        error!("{message}");
                     }
                     ExitCode::from(2)
                 }
                 KillError::EmptySessionUnsupported { .. } => {
-                    eprintln!("phux: {err}");
-                    eprintln!("  upgrade the server, or kill its panes instead");
+                    error!("{err}");
+                    hint!("upgrade the server, or kill its panes instead");
                     ExitCode::from(2)
                 }
                 KillError::Org(err) => {
-                    eprintln!("phux: kill failed: {err}");
+                    error!("kill failed: {err}");
                     ExitCode::from(2)
                 }
                 KillError::Agent(err) => {
