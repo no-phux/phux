@@ -2,12 +2,12 @@
    These tokens stay local: program output and docs themes are not recolored. */
 .terminal-surface {
   --terminal-bg: #0b0b0d;
-  --terminal-surface: #101013;
-  --terminal-raised: #19191e;
+  --terminal-surface: #141416;
+  --terminal-raised: #ffffff0c;
   --terminal-fg: #ededee;
   --terminal-muted: #aaaab1;
   --terminal-dim: #95959d;
-  --terminal-rule: #29292e;
+  --terminal-rule: #ffffff14;
   --terminal-focus: #ededee;
   --terminal-warning: #e0af68;
   color: var(--terminal-fg);

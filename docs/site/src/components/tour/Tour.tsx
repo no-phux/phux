@@ -329,7 +329,21 @@ function useReducedMotion() {
   return reduced;
 }
 
-export default function Tour() {
+// Quiet context, not extra actors in the story. These hosts never claim live status.
+function DistantHosts() {
+  return <div className="tour-distance" aria-hidden="true">
+    <svg viewBox="0 0 880 480" preserveAspectRatio="none">
+      <path d="M580 240 C750 240 580 42 770 42 M580 240 C660 240 640 440 770 440 M580 240 C480 240 560 410 470 410" />
+    </svg>
+    {["relay / iad", "runner / fra", "lab / sea"].map((host, index) => (
+      <div className={`tour-distant-host is-${index}`} key={host}>
+        <span>{host}</span><i /><i /><i />
+      </div>
+    ))}
+  </div>;
+}
+
+export default function Tour({ prepare }: { prepare?: () => void }) {
   const root = useRef<HTMLDivElement>(null);
   const reduced = useReducedMotion();
   const [visible, setVisible] = useState(false);
@@ -377,17 +391,13 @@ export default function Tour() {
 
   const frame = frameAt(position.chapter, position.time);
   const progress = Math.min(1, position.time / chapter.seconds);
-  const local = (["terminal", "desktop", "phone"] as const).filter((client) => edgeView(frame, client) === "attached").length;
 
   return (
     <div ref={root} className="tour">
       <div className="tour-frame terminal-surface">
-        <div className="tour-bar">
-          <span><b>studio</b> <i>/</i> api</span>
-          <span className="tour-bar-count">{local} {local === 1 ? "view" : "views"} on studio{frame.remote && " · 1 on devbox"}</span>
-        </div>
-        <div className="tour-canvas" aria-hidden="true">
-          <div className="tour-stage">
+        <div className="tour-canvas" onPointerEnter={prepare}>
+          <div className="tour-stage" aria-hidden="true">
+            <DistantHosts />
             <Edges layout={WIDE} frame={frame} className="is-wide" />
             <Edges layout={NARROW} frame={frame} className="is-narrow" />
             <Host frame={frame} id="server" />
@@ -398,6 +408,9 @@ export default function Tour() {
             <Edges layout={WIDE} frame={frame} className="is-wide" signals />
             <Edges layout={NARROW} frame={frame} className="is-narrow" signals />
           </div>
+          <a className="tour-entry" href="/embed" data-demo-launch onFocus={prepare} aria-label="Open terminal demo">
+            <span className="tour-invitation"><span className="tour-invitation-glyph" aria-hidden="true">↳</span> This one is real. <span>Open a shell <span aria-hidden="true">↗</span></span></span>
+          </a>
         </div>
         <div className="tour-controls">
           <div className="tour-chapters" role="group" aria-label="Tour chapters">

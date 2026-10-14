@@ -38,6 +38,16 @@ try {
   assert.equal(await page.getByRole("heading", { level: 1 }).innerText(), "phux");
   assert.equal(await page.locator("main form, #how-it-works").count(), 0, "no homepage signup or explainer");
   assert.equal(await page.locator(".tour").count(), 1, "one product tour");
+  assert.equal(await page.locator("body > header, .tagline, .tour-bar").count(), 0, "no landing top bars or tagline");
+  assert.equal(await page.locator(".tour-distant-host").count(), 3, "restrained background hosts");
+  const entry = page.getByRole("link", { name: "Open terminal demo", exact: true });
+  await page.locator("astro-island:not([ssr]) .tour-entry").waitFor();
+  await entry.focus();
+  await page.waitForFunction(() => getComputedStyle(document.querySelector(".tour-invitation")!).opacity === "1");
+  assert.equal(await page.locator(".tour-invitation").evaluate((node) => getComputedStyle(node).opacity), "1", "keyboard focus reveals the invitation");
+  assert.equal(await page.locator("dialog[open]").count(), 0, "discovery does not launch a session");
+  await entry.hover();
+  assert.equal(await page.locator("dialog[open]").count(), 0, "hover only prepares the client");
   const chapters = page.getByRole("group", { name: "Tour chapters" }).getByRole("button");
   assert.equal(await chapters.count(), 4, "four tour chapters");
   await chapters.nth(2).click();

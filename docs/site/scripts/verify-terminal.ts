@@ -44,7 +44,7 @@ async function context(scenario = "live", authenticated = false, mobile = false)
 async function open(page: Page) {
   await page.goto(base);
   assert.equal(await page.evaluate(() => window.__terminalFixture?.starts ?? 0), 0, "idle page allocates nothing");
-  await page.getByRole("link", { name: /Try it in your browser/ }).focus();
+  await page.getByRole("link", { name: "Open terminal demo", exact: true }).focus();
   await page.keyboard.press("Enter");
   await page.locator("dialog[open]").waitFor();
 }
@@ -93,13 +93,19 @@ async function info(page: Page) {
   await page.keyboard.press("Enter");
   assert.ok(await page.getByRole("complementary", { name: "Session details" }).isVisible());
   assert.ok(await page.getByRole("complementary", { name: "Terminal pane shortcuts" }).isVisible());
+  assert.ok(await page.locator(".pterm-info-body").evaluate((node) => {
+    const panel = node.getBoundingClientRect();
+    const frame = node.closest(".pterm")!.getBoundingClientRect();
+    return panel.left >= frame.left && panel.right <= frame.right && node.scrollWidth <= node.clientWidth;
+  }), "Info is a contained inspector, not a full-width extra bar");
+  await page.screenshot({ path: `${artifacts}/terminal-info.png`, fullPage: true, animations: "disabled" });
   await page.keyboard.press("Space");
   assert.equal(await page.locator(".pterm-info").getAttribute("open"), null, "keyboard closes details");
 }
 async function close(page: Page) {
   await page.keyboard.press("Escape");
   assert.equal(await page.locator("dialog[open]").count(), 0);
-  assert.ok(await page.getByRole("link", { name: /Try it in your browser/ }).evaluate((link) => link === document.activeElement), "Escape returns focus to the launch link");
+  assert.ok(await page.getByRole("link", { name: "Open terminal demo", exact: true }).evaluate((link) => link === document.activeElement), "Escape returns focus to the tour entry");
 }
 async function dispose(ctx: BrowserContext) { await ctx.close(); }
 
