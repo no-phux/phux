@@ -1,10 +1,12 @@
 //! Fixed-area Agents and Sessions sidebar painter.
 //!
-//! Agents take the upper half of the body in caller-supplied stable order;
-//! Sessions the lower half, each with a host line, the active one expanding
-//! its windows beneath it. Plugin sections (ADR-0148) sit between them at
-//! fixed heights. No area moves with its population. The last
-//! row holds New window with a collapse chevron in the corner; a rule on the
+//! Agents lists only the agents that need a human, in caller-supplied
+//! stable order, and takes at most the upper half of the body; an empty
+//! Agents list takes no rows at all. Sessions fill the rest, with a host line
+//! per machine when more than one is known, the active session expanding its
+//! tabs beneath it. Plugin sections (ADR-0148) sit between them at fixed
+//! heights. The last
+//! row holds New tab with a collapse chevron in the corner; a rule on the
 //! pane-facing column separates the strip from the panes. [`hit_test`] reads
 //! the same row model as the painter, and an unchanged repaint emits nothing.
 
@@ -20,24 +22,19 @@ use ratatui::widgets::{Paragraph, Widget};
 use crate::layout::Rect;
 use crate::render::Theme;
 use crate::render::chrome::sidebar_sections::{PluginSection, PluginSectionSpec, PluginShape};
-use crate::render::chrome::{
-    AGENT_BLOCKED_GLYPH as AGENT_BLOCKED, AGENT_DONE_GLYPH as AGENT_DONE,
-    AGENT_WORKING_GLYPH as AGENT_WORKING,
-};
+use crate::render::chrome::{AGENT_BLOCKED_GLYPH as AGENT_BLOCKED, AGENT_DONE_GLYPH as AGENT_DONE};
 use crate::render::{clip_text, display_width};
 use phux_client::agent_meta::AgentMetaState;
 use phux_protocol::ids::{ResourceId, SessionId};
 
 /// Label of the "create" affordance row (runs `new-window`).
-pub const NEW_LABEL: &str = "+ new window";
-/// Agents header. The legacy API name now refers to the full agent list.
+pub const NEW_LABEL: &str = "+ new tab";
+/// Agents header: the agents that need a human.
 pub const NEEDS_YOU_HEADER: &str = "Agents";
 /// Sessions header, including the current session.
 pub const SPACES_HEADER: &str = "Sessions";
-/// Quiet placeholders keep both fixed areas recognizable.
-pub const AGENTS_EMPTY: &str = "none";
-/// Placeholder when no sessions are available.
-pub const SESSIONS_EMPTY: &str = "none";
+/// Quiet placeholder under an empty plugin section.
+pub const PLUGIN_EMPTY: &str = "none";
 /// The collapse chevron painted in the strip's bottom corner.
 /// Clicking it runs `toggle-sidebar`.
 pub const COLLAPSE_GLYPH: &str = "‹";
@@ -89,6 +86,15 @@ pub struct AgentEntry {
     /// not yet looked at reads "look at me". Part of the cache key; the
     /// change timestamp deliberately is not (it would repaint every frame).
     pub seen: bool,
+}
+
+impl AgentEntry {
+    /// Whether this agent needs a human: blocked or asking, or finished and
+    /// not yet looked at. Only these rows reach the Agents list.
+    #[must_use]
+    pub const fn needs_human(&self) -> bool {
+        attention_rank(self.state, self.attention, self.seen) >= 3
+    }
 }
 
 /// An agent's rung on the attention ladder (higher wants a human sooner);
@@ -184,7 +190,7 @@ impl SessionRosterEntry {
 /// hit-test without rebuilding the lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SidebarCounts {
-    /// Full Agents list, in stable input order (legacy field name).
+    /// Agents that need a human, in stable input order.
     pub needs_you: usize,
     /// Windows in the focused session, nested beneath its roster entry.
     pub windows: usize,
@@ -245,8 +251,6 @@ pub enum SidebarRow {
     NeedsYou(usize),
     /// Agents overflow opens the fleet dashboard.
     NeedsYouOverflow,
-    /// Quiet placeholder beneath the Agents header.
-    AgentsEmpty,
     /// Window `i`'s name row.
     WindowName(usize),
     /// Fixed Sessions header (legacy name).
@@ -257,8 +261,6 @@ pub enum SidebarRow {
     /// (host label, and `here` for the attached machine); shares entry
     /// `j`'s target.
     RosterHost(usize),
-    /// Quiet placeholder beneath the Sessions header.
-    SessionsEmpty,
     /// Hidden sessions/windows; opens the session picker.
     RosterOverflow,
     /// Plugin section `s`'s header.
@@ -354,9 +356,9 @@ pub struct SessionRosterTarget {
     pub switch_host: Option<String>,
 }
 
-/// The row model: fixed half-height areas independent of population (the
-/// odd row goes to Sessions); name/host pairs never split. A one-row strip
-/// keeps session navigation.
+/// The row model: Agents take what they need up to half the body (none when
+/// no agent needs a human), Sessions the rest; name/host pairs never split.
+/// A one-row strip keeps session navigation.
 #[must_use]
 pub fn row_model(counts: SidebarCounts, h: u16) -> Vec<SidebarRow> {
     let h = usize::from(h);
@@ -371,7 +373,11 @@ pub fn row_model(counts: SidebarCounts, h: u16) -> Vec<SidebarRow> {
         // Agents and Sessions keep their minimum; population never decides.
         let sections = counts.plugin.fitting(body);
         let core = body - counts.plugin.height(sections);
-        let agents = core / 2;
+        let agents = if counts.needs_you == 0 {
+            0
+        } else {
+            (core / 2).min(counts.needs_you.saturating_add(1))
+        };
         push_agents(&mut rows, counts.needs_you, agents);
         rows.resize(agents, SidebarRow::Blank);
         push_plugin_sections(&mut rows, counts.plugin, sections);
@@ -392,10 +398,6 @@ fn push_agents(rows: &mut Vec<SidebarRow>, count: usize, budget: usize) {
     rows.push(SidebarRow::NeedsYouHeader);
     let room = budget - 1;
     if room == 0 {
-        return;
-    }
-    if count == 0 {
-        rows.push(SidebarRow::AgentsEmpty);
         return;
     }
     let overflow = count > room;
@@ -428,17 +430,13 @@ fn push_plugin_sections(rows: &mut Vec<SidebarRow>, shape: PluginShape, n: usize
 
 /// Append the fixed Sessions area with complete host pairs and nested windows.
 fn push_sessions(rows: &mut Vec<SidebarRow>, counts: SidebarCounts, budget: usize) {
-    if budget == 0 {
+    if budget == 0 || counts.roster == 0 {
         return;
     }
     let end = rows.len() + budget;
     rows.push(SidebarRow::SpacesHeader);
     let room = budget - 1;
     if room == 0 {
-        return;
-    }
-    if counts.roster == 0 {
-        rows.push(SidebarRow::SessionsEmpty);
         return;
     }
     let want = session_row_count(counts);
@@ -472,6 +470,7 @@ const fn opens_segment(counts: SidebarCounts, j: usize) -> bool {
 }
 
 /// The [`SidebarCounts::host_starts`] mask for `hosts`, in roster order.
+/// One machine opens no segment: a lone host header says nothing.
 fn segment_starts<'a>(hosts: impl Iterator<Item = &'a str>) -> u128 {
     let mut mask = 0u128;
     let mut previous: Option<&str> = None;
@@ -481,7 +480,7 @@ fn segment_starts<'a>(hosts: impl Iterator<Item = &'a str>) -> u128 {
         }
         previous = Some(host);
     }
-    mask
+    if mask.count_ones() < 2 { 0 } else { mask }
 }
 
 /// Limit iteration by viewport capacity, even for extremely large counts.
@@ -544,9 +543,7 @@ const fn row_hit(row: SidebarRow) -> Option<SidebarHit> {
         SidebarRow::SpacesHeader | SidebarRow::RosterOverflow => Some(SidebarHit::Sessions),
         SidebarRow::NewWindow => Some(SidebarHit::NewWindow),
         SidebarRow::PluginEntry(s, j) => Some(SidebarHit::Plugin(s, j)),
-        SidebarRow::AgentsEmpty
-        | SidebarRow::SessionsEmpty
-        | SidebarRow::Blank
+        SidebarRow::Blank
         | SidebarRow::PluginHeader(_)
         | SidebarRow::PluginEmpty(_)
         | SidebarRow::PluginOverflow(_) => None,
@@ -663,10 +660,11 @@ impl SidebarPainter {
         true
     }
 
-    /// Replace the full Agents list. The legacy name is retained for callers;
-    /// entries are never sorted or filtered here, including idle/done agents.
-    /// Same change-report contract as [`Self::set_windows`].
-    pub fn set_needs_you(&mut self, needs_you: Vec<AgentEntry>) -> bool {
+    /// Replace the Agents list, keeping only the rows that
+    /// [need a human](AgentEntry::needs_human), in input order. Same
+    /// change-report contract as [`Self::set_windows`].
+    pub fn set_needs_you(&mut self, mut needs_you: Vec<AgentEntry>) -> bool {
+        needs_you.retain(AgentEntry::needs_human);
         if self.needs_you == needs_you {
             return false;
         }
@@ -935,24 +933,18 @@ impl SidebarPainter {
 
     /// A machine segment header (ADR-0140): the host label in the chord
     /// tone, with `here` flush right on the machine this terminal is
-    /// attached to and `down` on one the provider could not reach. Host
-    /// identity comes from the projection and is never inferred here.
+    /// attached to. A machine that is down says so once, on its placeholder
+    /// row. Host identity comes from the projection and is never inferred
+    /// here.
     fn host_line(&self, s: &SessionRosterEntry, text_w: u16) -> Line<'static> {
         let here = s.switch_host.is_none() && !s.satellite;
-        let down = !s.selectable && s.name == "unreachable";
-        let (tag, tag_color) = if here {
-            ("here", self.theme.dim)
-        } else if down {
-            ("down", self.theme.agent_blocked)
-        } else {
-            ("", self.theme.dim)
-        };
+        let tag = if here { "here" } else { "" };
         let label_budget = usize::from(text_w).saturating_sub(display_width(tag) + 1);
         let label = clip_text(&s.host, label_budget);
         let right = if tag.is_empty() {
             Vec::new()
         } else {
-            vec![Span::styled(tag, Style::default().fg(tag_color))]
+            vec![Span::styled(tag, Style::default().fg(self.theme.dim))]
         };
         justify(
             vec![Span::styled(
@@ -1024,10 +1016,10 @@ impl SidebarPainter {
         justify(left, right, text_w)
     }
 
-    /// One roster line: the session's worst-rung dot, name, and a histogram
-    /// (`●1 ◐2`) in the same glyphs and colours as agent badges. A satellite
-    /// session paints dim with `?` counts: its metadata is not subscribable
-    /// here (`docs/spec/L3.md` §5), and unknown must not read as calm.
+    /// One roster line: the session's dot, name, and a histogram of the
+    /// panes that need a human (`●1 ◆2`) in the same glyphs and colours as
+    /// agent badges. A satellite session paints a dim dot and no counts: its
+    /// metadata is not subscribable here (`docs/spec/L3.md` §5).
     fn roster_line(&self, s: &SessionRosterEntry, text_w: u16) -> Line<'static> {
         let (dot, color) = self.roster_badge(s);
         let counts = self.roster_histogram(s);
@@ -1057,18 +1049,15 @@ impl SidebarPainter {
         )
     }
 
-    /// The per-rung counts, each in its own glyph and colour.
+    /// The counts of the rungs that need a human, each in its own glyph and
+    /// colour. Working and settled panes are quiet and not counted.
     fn roster_histogram(&self, s: &SessionRosterEntry) -> Vec<Span<'static>> {
         if s.satellite {
-            return vec![Span::styled(
-                format!("?{}", s.total()),
-                Style::default().fg(self.theme.dim),
-            )];
+            return Vec::new();
         }
         let rungs = [
             (AGENT_BLOCKED, s.blocked, self.theme.agent_blocked),
             (AGENT_DONE, s.done_unvisited, self.theme.agent_done),
-            (AGENT_WORKING, s.working, self.theme.agent_working),
         ];
         let mut spans = Vec::new();
         for (glyph, n, color) in rungs.into_iter().filter(|(_, n, _)| *n > 0) {
@@ -1090,18 +1079,21 @@ impl SidebarPainter {
             match s.top_rank() {
                 4 => (AGENT_BLOCKED, self.theme.agent_blocked),
                 3 => (AGENT_DONE, self.theme.agent_done),
-                2 => (AGENT_WORKING, self.theme.agent_working),
-                1 => ("○", self.theme.agent_idle),
+                // Working is quiet: the dot only lights for what needs you.
+                1 | 2 => ("○", self.theme.agent_idle),
                 _ => ("○", self.theme.dim),
             }
         }
     }
 
-    /// Render the Agents `+N more` overflow row: dim and indented
+    /// Render the `+N more` overflow row: dim and indented
     /// like an empty state, because it is chrome rather than a target you
     /// aim at — though clicking it does open the fleet dashboard.
     fn overflow_line(&self, hidden: usize, text_w: u16) -> Line<'static> {
-        let label = clip_text(&format!("+{hidden}"), usize::from(text_w).saturating_sub(2));
+        let label = clip_text(
+            &format!("+{hidden} more"),
+            usize::from(text_w).saturating_sub(2),
+        );
         Line::from(Span::styled(
             format!("  {label}"),
             Style::default().fg(self.theme.dim),
@@ -1223,10 +1215,7 @@ impl SidebarPainter {
                 self.header_line(NEEDS_YOU_HEADER, self.needs_you.len(), text_w)
             }
             SidebarRow::SpacesHeader => self.header_line(SPACES_HEADER, self.roster.len(), text_w),
-            SidebarRow::AgentsEmpty | SidebarRow::PluginEmpty(_) => {
-                self.empty_line(AGENTS_EMPTY, text_w)
-            }
-            SidebarRow::SessionsEmpty => self.empty_line(SESSIONS_EMPTY, text_w),
+            SidebarRow::PluginEmpty(_) => self.empty_line(PLUGIN_EMPTY, text_w),
             SidebarRow::WindowName(i) => self
                 .windows
                 .get(i)
@@ -1286,10 +1275,7 @@ impl SidebarPainter {
             parts.push(format!("+{} sessions", hidden.roster));
         }
         if hidden.windows > 0 {
-            parts.push(format!("+{} windows", hidden.windows));
-        }
-        if parts.is_empty() {
-            parts.push(SPACES_HEADER.to_owned());
+            parts.push(format!("+{} tabs", hidden.windows));
         }
         self.affordance_line(&parts.join(", "), text_w)
     }
@@ -1520,30 +1506,26 @@ mod tests {
             ]
         );
         let rect = r(2, 3, 32, 18);
-        assert_eq!(
-            hit_test(rect, targets.counts, 4, 12),
-            Some(SidebarHit::Roster(0))
-        );
-        assert_eq!(
-            hit_test(rect, targets.counts, 4, 13),
-            Some(SidebarHit::Roster(0))
-        );
-        assert_eq!(
-            hit_test(rect, targets.counts, 4, 14),
-            Some(SidebarHit::Roster(1))
-        );
-        assert_eq!(
-            hit_test(rect, targets.counts, 4, 15),
-            Some(SidebarHit::Roster(1))
-        );
+        let model = row_model(targets.counts, rect.h);
+        let y = |row: SidebarRow| {
+            rect.y + u16::try_from(model.iter().position(|r| *r == row).expect("row")).expect("y")
+        };
+        for (row, hit) in [
+            (SidebarRow::RosterHost(0), SidebarHit::Roster(0)),
+            (SidebarRow::RosterEntry(0), SidebarHit::Roster(0)),
+            (SidebarRow::RosterHost(1), SidebarHit::Roster(1)),
+            (SidebarRow::RosterEntry(1), SidebarHit::Roster(1)),
+        ] {
+            assert_eq!(hit_test(rect, targets.counts, 4, y(row)), Some(hit));
+        }
     }
 
     #[test]
     fn changing_agent_state_repaints_only_that_stable_row() {
         let mut p = SidebarPainter::new(Theme::default());
         p.set_roster(vec![active_roster()]);
-        let first = agent(0, "editor", "claude", AgentMetaState::Idle);
-        let second = agent(1, "runner", "codex", AgentMetaState::Working);
+        let first = agent(0, "editor", "claude", AgentMetaState::Blocked);
+        let second = agent(1, "runner", "codex", AgentMetaState::Done);
         p.set_needs_you(vec![first.clone(), second.clone()]);
         let rect = r(0, 0, 36, 18);
         paint_to_string(&mut p, rect);
@@ -1578,7 +1560,7 @@ mod tests {
         let p = SidebarPainter::new(Theme::default());
         let line = p.sessions_overflow_line(hidden, 32);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "+3 sessions, +2 windows");
+        assert_eq!(text, "+3 sessions, +2 tabs");
     }
 
     #[test]
@@ -1624,7 +1606,7 @@ mod tests {
             roster("peer", 1, 2, 0),
         ]);
         p.set_needs_you(vec![
-            agent(0, "编辑器", "claude", AgentMetaState::Working);
+            agent(0, "编辑器", "claude", AgentMetaState::Blocked);
             12
         ]);
         for w in 0..20 {
@@ -1733,14 +1715,14 @@ mod tests {
 
     /// The unreviewed-`done` row must be visually distinct from both a
     /// `working` row and a reviewed-`done` row — the glyph is what the user
-    /// scans for.
+    /// scans for. Only the unreviewed one stays on the Agents list.
     #[test]
     fn unreviewed_done_gets_its_own_glyph() {
         let mut p = SidebarPainter::new(Theme::default());
         p.set_windows(vec![win("a", true)]);
         let rect = r(0, 0, 30, 12);
 
-        // The queue is zone 1, so its only row is index 1.
+        // Agents tops the strip, so its only row is index 1.
         let mut unseen = agent(0, "a", "claude", AgentMetaState::Done);
         unseen.seen = false;
         p.set_needs_you(vec![unseen.clone()]);
@@ -1755,21 +1737,19 @@ mod tests {
             seen: true,
             ..unseen
         };
-        p.set_needs_you(vec![seen]);
-        let row = row_text(
-            &p.compose_buffer(rect, SidebarRule::Trailing, None),
-            rect,
-            1,
-        );
-        assert!(row.contains('○'), "reviewed done relaxes: {row:?}");
+        let text = |e: &AgentEntry| -> String {
+            p.agent_line(e, 28)
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect()
+        };
+        assert!(text(&seen).contains('○'), "reviewed done relaxes");
+        let working = agent(0, "a", "claude", AgentMetaState::Working);
+        assert!(text(&working).contains('◐'), "working");
 
-        p.set_needs_you(vec![agent(0, "a", "claude", AgentMetaState::Working)]);
-        let row = row_text(
-            &p.compose_buffer(rect, SidebarRule::Trailing, None),
-            rect,
-            1,
-        );
-        assert!(row.contains('◐'), "working: {row:?}");
+        p.set_needs_you(vec![seen, working]);
+        assert_eq!(p.counts().needs_you, 0, "neither needs a human");
     }
 
     /// `seen` is a real display input, so a flip must bust the paint cache —
@@ -1951,20 +1931,28 @@ mod tests {
     fn host_update_emits_only_its_row_and_invalidation_restores_every_row() {
         let mut p = SidebarPainter::new(Theme::default());
         let rect = r(7, 2, 36, 24);
+        let peer = SessionRosterEntry {
+            host: "xps".to_owned(),
+            ..roster("peer", 0, 0, 0)
+        };
         p.set_windows(vec![win("editor", true)]);
-        p.set_roster(vec![active_roster()]);
+        p.set_roster(vec![active_roster(), peer.clone()]);
         let full = paint_to_string(&mut p, rect);
-        p.set_roster(vec![SessionRosterEntry {
-            host: "devbox".to_owned(),
-            ..active_roster()
-        }]);
+        p.set_roster(vec![
+            SessionRosterEntry {
+                host: "devbox".to_owned(),
+                ..active_roster()
+            },
+            peer,
+        ]);
         let changed = paint_to_string(&mut p, rect);
         assert_eq!(
             changed.matches('H').count(),
             1,
             "one CUP for the changed host row"
         );
-        assert!(changed.starts_with("\x1b[15;8H"));
+        // Sessions tops a strip with no agents; the host line is row 1.
+        assert!(changed.starts_with("\x1b[4;8H"));
         assert!(strip_ansi(&changed).contains("devbox"));
         assert!(!changed.contains("editor"));
         assert!(
@@ -1989,22 +1977,20 @@ mod tests {
         p.set_windows(vec![win_branch("编辑器", true, "cafe\u{301}")]);
         let rect = r(0, 0, 36, 12);
         let b = p.compose_buffer(rect, SidebarRule::Trailing, None);
-        for y in [6, 7] {
+        for y in [0, 1] {
             assert_eq!(b[(0, y)].bg, p.theme.surface);
             assert_eq!(b[(34, y)].bg, p.theme.surface);
             assert_eq!(b[(35, y)].bg, p.theme.surface);
         }
-        // The active window's bed spans both gutters, never the rule.
-        assert_eq!(b[(0, 8)].bg, p.theme.selection_bg);
-        assert_eq!(b[(34, 8)].bg, p.theme.selection_bg);
-        assert_eq!(b[(35, 8)].bg, p.theme.surface);
-        // The machine header wears the chord tone, not the session's.
-        assert_eq!(b[(1, 6)].fg, p.theme.chord);
+        // The active tab's bed spans both gutters, never the rule.
+        assert_eq!(b[(0, 2)].bg, p.theme.selection_bg);
+        assert_eq!(b[(34, 2)].bg, p.theme.selection_bg);
+        assert_eq!(b[(35, 2)].bg, p.theme.surface);
         for name in ["构建工具", "cafe\u{301}", "build"] {
             let line = p.roster_line(&roster(name, 1, 2, 0), 30);
             let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
             assert_eq!(display_width(&text), 30);
-            assert!(text.ends_with("●1 ◐2"), "{text:?}");
+            assert!(text.ends_with("●1"), "working is not counted: {text:?}");
         }
     }
 
@@ -2062,13 +2048,17 @@ mod tests {
         assert!(p.set_windows(vec![win_branch("a", true, "feature")]));
         // Same contract for the agents section — a state
         // flip (idle -> working) must repaint.
-        let idle = agent(0, "a", "claude", AgentMetaState::Idle);
-        assert!(p.set_needs_you(vec![idle.clone()]));
-        assert!(!p.set_needs_you(vec![idle]));
+        let done = agent(0, "a", "claude", AgentMetaState::Done);
+        assert!(p.set_needs_you(vec![done.clone()]));
+        assert!(!p.set_needs_you(vec![done]));
+        assert!(p.set_needs_you(vec![agent(0, "a", "claude", AgentMetaState::Blocked)]));
+        // Rows that need no human never reach the list.
         assert!(p.set_needs_you(vec![agent(0, "a", "claude", AgentMetaState::Working)]));
+        assert!(!p.set_needs_you(vec![agent(0, "a", "claude", AgentMetaState::Idle)]));
     }
 
-    /// Windows expand compactly beneath the current session and its host.
+    /// Tabs expand compactly beneath the current session; one machine
+    /// paints no host line.
     #[test]
     fn windows_nest_under_active_session_without_extra_sections() {
         let mut p = SidebarPainter::new(Theme::default());
@@ -2079,15 +2069,14 @@ mod tests {
         ]);
         let rect = r(0, 0, 20, 18);
         let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
-        assert!(row_text(&buf, rect, 8).contains(SPACES_HEADER));
-        assert!(row_text(&buf, rect, 9).contains("mini"));
-        assert!(row_text(&buf, rect, 10).contains("development"));
-        assert!(row_text(&buf, rect, 11).starts_with("   ● phux"));
-        assert!(row_text(&buf, rect, 12).starts_with("   ○ scratch"));
-        // A second session on the same machine opens no second header.
-        assert!(row_text(&buf, rect, 13).contains("peer"));
-        assert!(!row_text(&buf, rect, 14).contains("mini"));
-        assert!(!strip_text(&p, rect).contains("wave2/herdr"));
+        assert!(row_text(&buf, rect, 0).contains(SPACES_HEADER));
+        assert!(row_text(&buf, rect, 1).contains("development"));
+        assert!(row_text(&buf, rect, 2).starts_with("   ● phux"));
+        assert!(row_text(&buf, rect, 3).starts_with("   ○ scratch"));
+        assert!(row_text(&buf, rect, 4).contains("peer"));
+        let text = strip_text(&p, rect);
+        assert!(!text.contains("mini"), "{text}");
+        assert!(!text.contains("wave2/herdr"));
     }
 
     /// A live window-row drag paints the insertion marker on
@@ -2142,9 +2131,10 @@ mod tests {
     fn agents_section_renders_state_and_name_rows() {
         let mut p = SidebarPainter::new(Theme::default());
         p.set_windows(vec![win("phux", true), win("scratch", false)]);
+        p.set_roster(vec![active_roster()]);
         p.set_needs_you(vec![
-            agent(0, "phux", "claude", AgentMetaState::Idle),
-            agent(1, "scratch", "merge-queue-w5", AgentMetaState::Working),
+            agent(0, "phux", "claude", AgentMetaState::Blocked),
+            agent(1, "scratch", "merge-queue-w5", AgentMetaState::Done),
         ]);
         let rect = r(0, 0, 36, 14);
         let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
@@ -2164,13 +2154,9 @@ mod tests {
             "second queue row: {worker_row:?}"
         );
         assert!(
-            row_text(&buf, rect, 3).trim().is_empty(),
-            "gap before zone 2"
-        );
-        assert!(
-            row_text(&buf, rect, 6).contains(SPACES_HEADER),
-            "Sessions remains at the fixed midpoint: {:?}",
-            row_text(&buf, rect, 6)
+            row_text(&buf, rect, 3).contains(SPACES_HEADER),
+            "Sessions follows the rows Agents needs: {:?}",
+            row_text(&buf, rect, 3)
         );
         p.set_needs_you(vec![
             agent(0, "phux", "claude", AgentMetaState::Done),
@@ -2179,7 +2165,7 @@ mod tests {
         let changed = p.compose_buffer(rect, SidebarRule::Trailing, None);
         assert!(row_text(&changed, rect, 1).contains("claude"));
         assert!(row_text(&changed, rect, 2).contains("merge-queue-w5"));
-        assert_eq!(row_text(&buf, rect, 6), row_text(&changed, rect, 6));
+        assert_eq!(row_text(&buf, rect, 3), row_text(&changed, rect, 3));
     }
 
     /// A cross-session queue row is labelled by its SESSION, not
@@ -2217,7 +2203,7 @@ mod tests {
             session: Some("reviewer".to_owned()),
             resource: Some(resource.clone()),
             host: Some("gpubox".to_owned()),
-            ..agent(0, "edit", "reviewer", AgentMetaState::Working)
+            ..agent(0, "edit", "reviewer", AgentMetaState::Blocked)
         }]);
         let rect = r(0, 0, 36, 14);
         let row = row_text(
@@ -2264,7 +2250,7 @@ mod tests {
             session_id: Some(SessionId::new(2)),
             resource: Some(ResourceId::local(10)),
             pane: None,
-            ..agent(0, "main", "reviewer", AgentMetaState::Idle)
+            ..agent(0, "main", "reviewer", AgentMetaState::Blocked)
         }]);
         assert_eq!(
             p.click_targets().needs_you,
@@ -2278,54 +2264,33 @@ mod tests {
         );
     }
 
-    /// Empty and busy populations never move the fixed headers.
+    /// A calm fleet has no Agents section: Sessions takes the whole body.
     #[test]
-    fn a_quiet_fleet_keeps_both_fixed_areas() {
+    fn a_quiet_fleet_hides_the_agents_section() {
         let mut p = SidebarPainter::new(Theme::default());
         p.set_windows(vec![win_branch("phux", true, "main")]);
-        // No agents wanting anything.
+        p.set_roster(vec![active_roster()]);
+        p.set_needs_you(vec![agent(0, "phux", "claude", AgentMetaState::Working)]);
         let rect = r(0, 0, 24, 12);
         let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
         assert!(
-            row_text(&buf, rect, 0).contains(NEEDS_YOU_HEADER),
-            "Agents tops a calm strip: {:?}",
+            row_text(&buf, rect, 0).contains(SPACES_HEADER),
+            "Sessions tops a calm strip: {:?}",
             row_text(&buf, rect, 0)
         );
-        assert!(row_text(&buf, rect, 1).contains(AGENTS_EMPTY));
-        assert!(row_text(&buf, rect, 5).contains(SPACES_HEADER));
-        assert!(row_text(&buf, rect, 6).contains(SESSIONS_EMPTY));
-        let counts = p.counts();
-        assert_eq!(counts.needs_you, 0);
-        assert!(
-            row_model(counts, rect.h)
-                .iter()
-                .any(|r| matches!(r, SidebarRow::NeedsYouHeader)),
-            "Agents header remains allocated when empty"
-        );
+        assert!(!strip_text(&p, rect).contains(NEEDS_YOU_HEADER));
+        assert_eq!(p.counts().needs_you, 0);
     }
 
-    /// Empty placeholders are inert.
+    /// With nothing to list, the strip paints no section headers at all.
     #[test]
-    fn empty_sessions_section_shows_a_placeholder() {
+    fn an_empty_strip_paints_no_headers() {
         let p = SidebarPainter::new(Theme::default());
-        // No windows, no agents, no peers.
         let rect = r(0, 0, 24, 12);
-        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
-        assert!(
-            row_text(&buf, rect, 5).contains(SPACES_HEADER),
-            "Sessions header stays at midpoint: {:?}",
-            row_text(&buf, rect, 5)
-        );
-        assert!(
-            row_text(&buf, rect, 6).contains(SESSIONS_EMPTY),
-            "empty Sessions section shows a placeholder: {:?}",
-            row_text(&buf, rect, 6)
-        );
-        assert_eq!(
-            hit_test(rect, p.counts(), 3, 6),
-            None,
-            "placeholder is inert"
-        );
+        let text = strip_text(&p, rect);
+        assert!(!text.contains(SPACES_HEADER), "{text}");
+        assert!(!text.contains(NEEDS_YOU_HEADER), "{text}");
+        assert_eq!(hit_test(rect, p.counts(), 3, 0), None);
     }
 
     /// Each session has a histogram name row and explicit host identity.
@@ -2352,18 +2317,15 @@ mod tests {
         let busy = row_text(&buf, rect, u16::try_from(first).unwrap());
         assert!(busy.contains("feat-auth"), "session name: {busy:?}");
         assert!(
-            busy.contains("●1") && busy.contains("◐2"),
-            "histogram carries how much, not just what: {busy:?}"
+            busy.contains("●1") && !busy.contains('◐'),
+            "histogram counts only what needs a human: {busy:?}"
         );
         // Each machine's header sits directly above its sessions.
         assert!(row_text(&buf, rect, u16::try_from(first - 1).unwrap()).contains("mini"));
         assert!(row_text(&buf, rect, u16::try_from(first + 1).unwrap()).contains("devbox"));
         let sat = row_text(&buf, rect, u16::try_from(first + 2).unwrap());
         assert!(sat.contains("prod-3"), "satellite name: {sat:?}");
-        assert!(
-            sat.contains("?4"),
-            "a satellite reads as unknown, never as a calm zero: {sat:?}"
-        );
+        assert!(!sat.contains('?'), "no unknown-count noise: {sat:?}");
     }
 
     fn strip_text(p: &SidebarPainter, rect: Rect) -> String {
@@ -2469,13 +2431,13 @@ mod tests {
             ..counts(0, 1, 1)
         };
         assert_eq!(
-            hit_test(rect, leading, 52, 9),
+            hit_test(rect, leading, 52, 3),
             None,
             "the rule is no row target"
         );
         assert_eq!(hit_test(rect, leading, 52, 13), Some(SidebarHit::Collapse));
         assert_eq!(
-            hit_test(rect, leading, 79, 9),
+            hit_test(rect, leading, 79, 3),
             Some(SidebarHit::Window(0)),
             "the screen-edge column is row content, not a rule"
         );
@@ -2526,32 +2488,32 @@ mod tests {
         };
         let rows = row_model(c, 9);
         assert_eq!(rows.len(), 9);
-        assert_eq!(rows[0], SidebarRow::NeedsYouHeader);
-        assert_eq!(rows[1], SidebarRow::AgentsEmpty);
-        assert_eq!(rows[4], SidebarRow::SpacesHeader);
-        assert_eq!(rows[5], SidebarRow::RosterHost(0));
-        assert_eq!(rows[6], SidebarRow::RosterEntry(0));
+        assert_eq!(rows[0], SidebarRow::SpacesHeader);
+        assert_eq!(rows[1], SidebarRow::RosterHost(0));
+        assert_eq!(rows[2], SidebarRow::RosterEntry(0));
+        assert_eq!(rows[5], SidebarRow::WindowName(2));
         assert_eq!(rows[8], SidebarRow::NewWindow);
-        // Keep hidden windows reachable even when a pair and overflow cannot fit.
-        let rows = row_model(c, 7);
-        assert_eq!(rows[3], SidebarRow::SpacesHeader);
-        assert_eq!(rows[6], SidebarRow::NewWindow);
-        // Below the minimum height there is no footer.
+        // Keep hidden tabs reachable when the pair and its tabs cannot fit.
+        let rows = row_model(c, 5);
+        assert_eq!(rows[3], SidebarRow::RosterOverflow);
+        assert_eq!(rows[4], SidebarRow::NewWindow);
+        // Below the minimum height there is no footer, and hidden tabs
+        // stay reachable through the overflow row.
         let rows = row_model(c, 3);
         assert_eq!(
             rows,
             vec![
-                SidebarRow::NeedsYouHeader,
                 SidebarRow::SpacesHeader,
                 SidebarRow::RosterOverflow,
+                SidebarRow::Blank,
             ]
         );
     }
 
-    /// Header positions depend only on viewport height.
+    /// Agents take only the rows they list; Sessions take the rest.
     #[test]
-    fn row_model_places_two_fixed_areas() {
-        // 2 queued + 1 window in 10 rows.
+    fn row_model_gives_spare_agent_rows_to_sessions() {
+        // 2 agents + 1 tab in 10 rows, no sessions.
         let rows = row_model(counts(2, 1, 0), 10);
         assert_eq!(
             rows,
@@ -2560,34 +2522,45 @@ mod tests {
                 SidebarRow::NeedsYou(0),
                 SidebarRow::NeedsYou(1),
                 SidebarRow::Blank,
-                SidebarRow::SpacesHeader,
-                SidebarRow::SessionsEmpty,
+                SidebarRow::Blank,
+                SidebarRow::Blank,
                 SidebarRow::Blank,
                 SidebarRow::Blank,
                 SidebarRow::Blank,
                 SidebarRow::NewWindow,
             ]
         );
-        // Adding sessions preserves both header positions.
-        let rows = row_model(counts(0, 1, 2), 12);
+        let rows = row_model(counts(1, 1, 2), 12);
         assert_eq!(rows[0], SidebarRow::NeedsYouHeader);
-        assert_eq!(rows[5], SidebarRow::SpacesHeader);
-        assert_eq!(rows[6], SidebarRow::RosterHost(0));
-        assert_eq!(rows[7], SidebarRow::RosterEntry(0));
-        assert_eq!(rows[8], SidebarRow::RosterHost(1));
-        assert_eq!(rows[9], SidebarRow::RosterEntry(1));
+        assert_eq!(rows[1], SidebarRow::NeedsYou(0));
+        assert_eq!(rows[2], SidebarRow::SpacesHeader);
+        // No agents: Sessions top the strip.
+        let rows = row_model(counts(0, 1, 2), 12);
+        assert_eq!(rows[0], SidebarRow::SpacesHeader);
+        assert_eq!(rows[1], SidebarRow::RosterHost(0));
+        assert_eq!(rows[2], SidebarRow::RosterEntry(0));
+        assert_eq!(rows[3], SidebarRow::RosterHost(1));
+        assert_eq!(rows[4], SidebarRow::RosterEntry(1));
         // Sessions sharing a machine share one header.
         let one_machine = SidebarCounts {
             host_starts: 1,
             ..counts(0, 1, 2)
         };
         let rows = row_model(one_machine, 12);
-        assert_eq!(rows[6], SidebarRow::RosterHost(0));
-        assert_eq!(rows[7], SidebarRow::RosterEntry(0));
-        assert_eq!(rows[8], SidebarRow::RosterEntry(1));
+        assert_eq!(rows[1], SidebarRow::RosterHost(0));
+        assert_eq!(rows[2], SidebarRow::RosterEntry(0));
+        assert_eq!(rows[3], SidebarRow::RosterEntry(1));
+        // Nothing to list: no headers at all.
         let rows = row_model(counts(0, 1, 0), 12);
-        assert_eq!(rows[5], SidebarRow::SpacesHeader);
-        assert_eq!(rows[6], SidebarRow::SessionsEmpty);
+        assert!(!rows.contains(&SidebarRow::SpacesHeader));
+        assert!(!rows.contains(&SidebarRow::NeedsYouHeader));
+    }
+
+    /// One machine opens no segment; two or more open one each.
+    #[test]
+    fn a_lone_machine_paints_no_host_line() {
+        assert_eq!(segment_starts(["mini", "mini"].into_iter()), 0);
+        assert_eq!(segment_starts(["mini", "mini", "xps"].into_iter()), 0b101);
     }
 
     /// Agents overflow at the area's capacity, not a population-based cap.
@@ -2605,7 +2578,7 @@ mod tests {
         assert!(!rows.contains(&SidebarRow::NeedsYouOverflow), "{rows:?}");
     }
 
-    /// Busy Agents never move the Sessions header or consume its capacity.
+    /// Busy Agents never take more than half the body from Sessions.
     #[test]
     fn agents_never_starve_sessions() {
         for h in MIN_FOOTER_HEIGHT..24 {
@@ -2613,8 +2586,6 @@ mod tests {
             let body = usize::from(h).saturating_sub(1);
             assert_eq!(rows[0], SidebarRow::NeedsYouHeader);
             assert_eq!(rows[body / 2], SidebarRow::SpacesHeader);
-            let quiet = row_model(counts(0, 2, 3), h);
-            assert_eq!(&rows[body / 2..], &quiet[body / 2..]);
         }
     }
 
@@ -2685,9 +2656,9 @@ mod tests {
             rule: SidebarRule::Trailing,
             ..counts(0, 2, 1)
         };
-        assert_eq!(hit_test(rect, c, 3, 0), Some(SidebarHit::Fleet));
-        assert_eq!(hit_test(rect, c, 3, 9), Some(SidebarHit::Window(0)));
-        assert_eq!(hit_test(rect, c, 3, 10), Some(SidebarHit::Window(1)));
+        assert_eq!(hit_test(rect, c, 3, 0), Some(SidebarHit::Sessions));
+        assert_eq!(hit_test(rect, c, 3, 3), Some(SidebarHit::Window(0)));
+        assert_eq!(hit_test(rect, c, 3, 4), Some(SidebarHit::Window(1)));
         // Padding rows miss.
         assert_eq!(hit_test(rect, c, 3, 5), None);
         // Footer row.
@@ -2698,22 +2669,21 @@ mod tests {
     #[test]
     fn hit_test_maps_the_new_zones() {
         let rect = r(0, 0, 20, 10);
-        // 2 queued + 1 window: rows 0 header, 1-2 queue, 3 gap, 4 `here`.
+        // 2 agents + 1 tab: rows 0 header, 1-2 agents, then blank.
         let c = counts(2, 1, 0);
         assert_eq!(hit_test(rect, c, 3, 0), Some(SidebarHit::Fleet));
         assert_eq!(hit_test(rect, c, 3, 1), Some(SidebarHit::NeedsYou(0)));
         assert_eq!(hit_test(rect, c, 3, 2), Some(SidebarHit::NeedsYou(1)));
-        assert_eq!(hit_test(rect, c, 3, 4), Some(SidebarHit::Sessions));
-        assert_eq!(hit_test(rect, c, 3, 5), None, "empty Sessions placeholder");
+        assert_eq!(hit_test(rect, c, 3, 3), None, "blank row");
 
         // Roster rows.
         let tall = Rect { h: 12, ..rect };
         let c = counts(0, 1, 2);
-        assert_eq!(hit_test(tall, c, 3, 5), Some(SidebarHit::Sessions));
-        assert_eq!(hit_test(tall, c, 3, 6), Some(SidebarHit::Roster(0)));
-        assert_eq!(hit_test(tall, c, 3, 7), Some(SidebarHit::Roster(0)));
-        assert_eq!(hit_test(tall, c, 3, 8), Some(SidebarHit::Roster(1)));
-        assert_eq!(hit_test(tall, c, 3, 9), Some(SidebarHit::Roster(1)));
+        assert_eq!(hit_test(tall, c, 3, 0), Some(SidebarHit::Sessions));
+        assert_eq!(hit_test(tall, c, 3, 1), Some(SidebarHit::Roster(0)));
+        assert_eq!(hit_test(tall, c, 3, 2), Some(SidebarHit::Roster(0)));
+        assert_eq!(hit_test(tall, c, 3, 3), Some(SidebarHit::Roster(1)));
+        assert_eq!(hit_test(tall, c, 3, 4), Some(SidebarHit::Roster(1)));
 
         // Overflow rows open the dashboard — the surface that has what the
         // strip had to drop.
@@ -2785,8 +2755,8 @@ mod tests {
             win_branch("gamma", false, "dev"),
         ];
         let agents = vec![
-            agent(1, "beta", "claude", AgentMetaState::Working),
-            agent(2, "gamma", "codex", AgentMetaState::Idle),
+            agent(1, "beta", "claude", AgentMetaState::Blocked),
+            agent(2, "gamma", "codex", AgentMetaState::Done),
         ];
         let peers = vec![roster("delta", 1, 0, 0), roster("epsilon", 0, 1, 0)];
         let sections = vec![plugin_section("Builds", 2, &["lint", "test", "docs"])];
@@ -2839,7 +2809,7 @@ mod tests {
                 SidebarRow::RosterOverflow => {
                     assert_eq!(hit, Some(SidebarHit::Sessions));
                 }
-                SidebarRow::Blank | SidebarRow::AgentsEmpty | SidebarRow::SessionsEmpty => {
+                SidebarRow::Blank => {
                     assert_eq!(hit, None);
                 }
                 SidebarRow::NewWindow => {
@@ -2919,7 +2889,7 @@ mod tests {
             .iter()
             .position(|r| *r == SidebarRow::PluginHeader(0))
             .expect("section laid");
-        assert!(header > 0 && Some(header) < empty_sessions);
+        assert!(Some(header) < empty_sessions);
         assert_eq!(model[header + 1], SidebarRow::PluginEmpty(0));
         let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
         assert!(row_text(&buf, rect, u16::try_from(header).expect("row")).contains("Builds"));
@@ -2987,8 +2957,8 @@ mod tests {
     fn headers_count_and_secondary_text_share_one_right_edge() {
         let mut p = SidebarPainter::new(Theme::default());
         p.set_needs_you(vec![
-            agent(0, "editor", "claude", AgentMetaState::Working),
-            agent(1, "build", "codex", AgentMetaState::Idle),
+            agent(0, "editor", "claude", AgentMetaState::Blocked),
+            agent(1, "build", "codex", AgentMetaState::Done),
         ]);
         p.set_roster(vec![active_roster()]);
         p.set_windows(vec![win_branch("editor", true, "main")]);

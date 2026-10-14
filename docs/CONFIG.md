@@ -121,8 +121,8 @@ prefix = "C-Space"
 ### Example 2: Switch the clock to a 12-hour format
 
 The default `right` list shows session name and clock at 65 columns or wider,
-and a `switch` chip below that. Assigning `right` replaces the whole list,
-so keep `switch` when changing the clock:
+and an `agents` chip (the `switch` widget) below that. Assigning `right`
+replaces the whole list, so keep `switch` when changing the clock:
 
 ```toml
 [status]

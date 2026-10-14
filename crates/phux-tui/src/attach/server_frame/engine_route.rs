@@ -553,7 +553,7 @@ fn collect_route_effects(route: &mut KernelRoute, effects: &KernelEffectBuffer) 
                     "history unavailable for pane"
                 );
                 route.notices.push(Notice::warn(format!(
-                    "{}: scrollback unavailable ({reason:?})",
+                    "{}: scrollback unavailable",
                     pane_label(&key.terminal_id),
                 )));
                 route.history_degraded.insert(key.terminal_id.clone(), true);

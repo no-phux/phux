@@ -73,7 +73,7 @@ impl super::SessionLoop {
             (Err(err), first) => {
                 tracing::warn!(error = %err, "arrangement read failed");
                 self.apply_notices(
-                    vec![Notice::warn(format!("arrangement not read: {err}"))],
+                    vec![Notice::warn(format!("layout not loaded: {err}"))],
                     repaint,
                 );
                 // The first read still has to release the write fence.
@@ -98,7 +98,7 @@ impl super::SessionLoop {
         };
         if let Err(err) = link.write(document).await {
             tracing::warn!(error = %err, "arrangement write failed");
-            self.show_notices([Notice::warn(format!("arrangement not saved: {err}"))]);
+            self.show_notices([Notice::warn(format!("layout not saved: {err}"))]);
         }
         true
     }

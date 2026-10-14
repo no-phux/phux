@@ -213,29 +213,31 @@ Default prefix `C-a`. Override it in one line of config.
 | `C-a G` | `go-to-directory` |
 | `C-a F` | `find-path` (browse or search paths on the focused pane's host; `insert-path` types one shell-quoted path, never Enter) |
 | `C-a w` | `window-picker` |
-| `C-a s` | `session-picker` (`C-a a` is a kept alias) |
+| `C-a s` | `session-picker` |
 | `C-a A` | `agent-fleet` |
 | `C-a S` | `settings` |
 | `C-a B` | `report-bug` (local bug-report bundle) |
-| `C-a M` | `rec-mark` (asciicast marker while `phux --rec` is capturing) |
 | `C-a q` / `C-a Q` | `next-attention` / `return-from-attention` |
 | `C-a C` | `new-session` (focused pane's host and directory, or `cwd` / `host`) |
 | `C-a N` / `C-a P` | `next-session` / `previous-session` |
 | `C-a )` | `last-session` |
 | `C-a ,` / `C-a $` | `rename-window` / `rename-session` |
 | `C-a H/J/K/L` | `resize-pane` by 5 |
-| `C-a :` / `C-a ?` | `command-palette` / `show-help` (one overlay) |
+| `C-a Space` / `C-a :` / `C-a ?` | `command-palette` |
 | `C-a d` | `detach` |
 
-`close-view` is unbound by default; it is in the pane context menu and the
-command palette.
+Tabs are the user-facing name for what the action names call a window:
+`new-window` opens a tab, `select-window` picks one. `close-view` (Hide
+pane) is unbound by default; it is in the pane context menu and the command
+palette. `rec-mark` is unbound too; the palette offers it while a recording
+is live. `show-help` remains an alias of `command-palette`.
 
 ### Which-key
 
 Pause after the prefix to see a panel of live continuations, grouped under
-Pane, Window, Session, and phux. Keys bound to the same action share a row,
-a directional family shares one (`h j k l  focus`), and numeric window jumps
-share one `0-9` row. Any continuation dismisses the panel and runs
+Pane, Tab, Session, and phux. Each row reads as the action's palette title.
+Keys bound to the same action share a row, a directional family shares one
+(`h j k l  Focus`), and numeric tab jumps share one `0-9` row. Any continuation dismisses the panel and runs
 normally. Typing before the delay prevents it from appearing. Esc dismisses
 it and cancels the pending prefix.
 
@@ -334,7 +336,7 @@ Copy); it is not in the shipped center slot. Each of its complete labels is
 a click target for the same action as its keybinding. `min-cols` /
 `max-cols` hide a widget outright. The shipped lineup uses that to change
 shape at 64 columns: session name and clock give way to a clickable
-`switch` chip that opens the fleet dashboard. A focused satellite pane
+`agents` chip (the `switch` widget) that opens the agents dashboard. A focused satellite pane
 adds its host to the supervisory badge (`devbox`, or `devbox down` while
 that satellite is unreachable).
 
@@ -403,16 +405,18 @@ tile into the remaining content rect. Default `width = 20` is exact.
 changing titles never reflows work.
 
 The strip runs the full height of the terminal. The status bar yields
-its columns rather than spanning underneath. After the footer row, the
-upper half is **Agents** and the lower half is **Sessions**. The split
-depends only on viewport height.
+its columns rather than spanning underneath. **Agents** sits on top and
+**Sessions** below it.
 
-**Agents** lists agent rows in session / window / pane order. A filled
-dot (`●`) is blocked on you; a half-filled ring (`◐`) is still working.
-When none are running, the list is a quiet em dash. Status updates
-in place; the list does not sort by urgency. A local row selects that
-window; a peer row is a one-step `switch-session` onto that pane.
-Overflow is a `+N` row that opens the fleet dashboard.
+**Agents** lists only the agents that need you: blocked or asking (`●`),
+or finished and not yet looked at (`◆`). Working and idle agents stay off
+it, and an agent already shown as a tab's badge in the current session is
+not listed again. When nothing needs you the section is gone and Sessions
+takes the whole strip; otherwise Agents takes the rows it needs, up to
+half. Rows keep session / tab / pane order; the list does not sort by
+urgency. A local row selects that tab; a peer row is a one-step
+`switch-session` onto that pane. Overflow is a `+N more` row that opens
+the agents dashboard.
 
 <!-- impl-status: shipped; probe: AgentSessionRow -->
 > **Status: shipped.** When a pane has a live agent session, the sidebar
@@ -422,14 +426,15 @@ Overflow is a `+N` row that opens the fleet dashboard.
 > `RESOURCE_KINDS` have no session stream; `phux status --json` is the
 > check. An agent session never earns a row of its own.
 
-**Sessions** is grouped by machine. Each machine gets a header row with
-its sessions beneath it. The machine this terminal is attached to comes
-first, marked `here`. The current session expands its windows. Next come
-host-qualified satellite sessions, if this server is a hub. Each satellite
-session shows a pane count and `?`, because its per-terminal metadata is
-not subscribable from here. Last come your other machines: this one, when
-you are attached somewhere else, and every host in `phux host ls`. A
-machine that did not answer is marked `down`.
+**Sessions** is grouped by machine. With more than one machine, each gets
+a header row with its sessions beneath it; one machine gets no header. The
+machine this terminal is attached to comes first, marked `here`. The
+current session expands its tabs. A session row counts only the panes that
+need you (`●2 ◆1`). Next come host-qualified satellite sessions, if this
+server is a hub; their per-terminal metadata is not subscribable from here,
+so they show no counts. Last come your other machines: this one, when you
+are attached somewhere else, and every host in `phux host ls`. A machine
+that did not answer shows a single `down` row.
 
 Clicking a session on another machine commits `switch-host`. That detaches
 and re-attaches this terminal there, the same as running
@@ -503,7 +508,7 @@ did-you-mean suggestion.
 
 Click targets commit the same actions as keys. The **Agents** and **Sessions**
 headings open their full management views; window and roster rows select their
-destination; overflow opens the matching view. The footer keeps `+ new window`
+destination; overflow opens the matching view. The footer keeps `+ new tab`
 as the create affordance. Commands and Settings stay on the palette
 (`C-a Space` / `:`) and the context menu. The collapse chevron runs
 `toggle-sidebar`. Pointer events over the strip never leak into pane routing.
@@ -634,9 +639,9 @@ Clipboard reads (`OSC 52 ; ?`) are never answered.
 
 ## Command palette, pickers, and settings
 
-`C-a :` (`command-palette`) and `C-a ?` (`show-help`) open the same Commands
+`C-a Space`, `C-a :`, and `C-a ?` (`command-palette`) open the Commands
 overlay. Actions show a short title and their live chord (nothing when
-unbound), grouped under Pane, Window, Session, and View. Typing
+unbound), grouped under Pane, Tab, Session, and phux. Typing
 fuzzy-filters titles, chords, and canonical action names (`kill-pane` finds
 "Close pane"); Enter runs the selected action.
 Navigate with arrows / `C-n` / `C-p` (`j` / `k` when the query is empty),
@@ -645,7 +650,7 @@ and hostable `[[panes]]` appear under Plugin.
 
 <!-- impl-status: shipped; probe: HostedPlacement::Overlay -->
 > **Status: shipped.** Every manifest `placement` opens a real server-side
-> Terminal: `split` beside the focused pane, `tab` in a new window,
+> Terminal: `split` beside the focused pane, `tab` in a new tab,
 > `zoomed` as a zoomed split, and `overlay` in a floating box.
 
 An **overlay** pane opens in a titled box centered over the pane area
@@ -661,28 +666,27 @@ when its process exits
 
 The **Sessions & hosts** view (`C-a s`) lists other sessions at a glance:
 the current one first, then sessions with panes that need you, with their
-count, then the rest by name; a lifetime shows only as `ephemeral`
-([glance, session, detail](./attention.md)). Choosing one re-attaches this
-client in-process. A trailing "+ New session" row
-creates one. Against a federation hub the view is grouped by host and refreshes
-in place as inventory changes. A reachable host shows its session count, an
-empty reachable host says `connected, no sessions`, and an unreachable host
-keeps its diagnostic visible. A
+count, then the rest by name. A row says nothing else at a glance
+([glance, session, detail](./attention.md)); `phux ls` has the detail.
+Choosing one re-attaches this client in-process. A trailing "+ New
+session" row creates one. Against a federation hub the view is grouped by
+host and refreshes in place as inventory changes. Each host's header is
+its name, or `host - unreachable`; `phux ls --all` shows why. A
 satellite row cannot re-attach this client to that remote session:
 `ATTACH` is not federation-routable. Choosing it opens that session's
-active pane as a window of the session you are already in. The window
+active pane as a tab of the session you are already in. The tab
 holds the satellite's real Terminal; closing it kills that pane there.
 
-The **window picker** (`C-a w`) is hierarchical: sessions as headers,
-windows nested. A window in the current session switches directly; a
-window in another session is a one-step `switch-session` that also
-selects that window.
+The **tab picker** (`C-a w`) is hierarchical: sessions as headers,
+tabs nested by name. A tab in the current session switches directly; a
+tab in another session is a one-step `switch-session` that also
+selects that tab.
 
 **Move the focused pane** is available under Pane in Commands & Help and as
 **Move beside…** in the pane context menu. It opens one fuzzy list of exact
 local destination panes from the current layout and every fully cached
-session layout. Rows show the stable `@id`, session, window index/name, and
-pane number. The focused pane, satellite panes, and sessions whose layout is
+session layout. Rows show the tab name and pane number, with the session
+beside them. The focused pane, satellite panes, and sessions whose layout is
 not cached are not offered; if nothing is eligible, the action bells without
 changing anything. Enter moves the existing Terminal beside the selected pane
 side-by-side at ratio `0.5`; Esc cancels. The process, scrollback, metadata,
@@ -786,10 +790,10 @@ capture entirely. Per-pane, `set-pane mouse off` (palette toggle) drops
 this client's mouse handling while that pane is focused; a click on it
 still focuses it, which is the path back in.
 
-Right-click opens a menu for the pane, the window, or the session,
-listing the actions that apply. The pane menu lists **Close view** and
-**Kill** as separate rows. The session menu includes sessions, fleet,
-settings, and commands. Each row commits the same action a
+Right-click opens a menu for the pane, the tab, or the session,
+listing the actions that apply. The pane menu lists **hide (keeps
+running)** and **kill** as separate rows. The session menu includes
+sessions, agents, settings, and commands. Each row commits the same action a
 keybinding would. An inner program with mouse tracking on keeps every
 button, so no menu opens over it; bind `context-menu` for the keyboard
 path. A terminal resize closes the menu; other overlays reflow.

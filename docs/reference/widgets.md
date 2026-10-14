@@ -71,7 +71,7 @@ A clickable chip that opens the agent-fleet switcher (the same overlay `prefix A
 
 Options:
 
-- `label` — string, default `"switch"` — the chip's text. Rendered with one space of padding on each side.
+- `label` — string, default `"agents"` — the chip's text. Rendered with one space of padding on each side.
 - `chip` — style table, default bold reverse-video — the chip's style. Reverse video by default so the affordance reads as a button on any palette.
 
 ## `text`

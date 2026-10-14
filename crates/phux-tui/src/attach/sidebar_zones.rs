@@ -390,7 +390,7 @@ fn machine_roster(hosts: &[&phux_core::host_list::HostJson]) -> Vec<SessionRoste
         };
         if !host.reachable {
             out.push(SessionRosterEntry {
-                name: "unreachable".to_owned(),
+                name: "down".to_owned(),
                 ..base
             });
             continue;
@@ -471,7 +471,7 @@ fn satellite_roster(hosts: &[HostInventory]) -> Vec<SessionRosterEntry> {
         };
         if !host.is_reachable() {
             out.push(SessionRosterEntry {
-                name: "unreachable".to_owned(),
+                name: "down".to_owned(),
                 ..base
             });
             continue;
@@ -660,7 +660,7 @@ mod tests {
                 ("mini", "here", None, true),
                 ("mini", "peer", None, true),
                 ("laptop", "work", Some("local"), true),
-                ("xps", "unreachable", Some("xps"), false),
+                ("xps", "down", Some("xps"), false),
             ]
         );
     }

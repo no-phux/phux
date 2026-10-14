@@ -623,7 +623,6 @@ mod tests {
 
         for (chord, action) in [
             ("s", "session-picker"),
-            ("a", "session-picker"),
             ("w", "window-picker"),
             ("q", "next-attention"),
             ("Q", "return-from-attention"),

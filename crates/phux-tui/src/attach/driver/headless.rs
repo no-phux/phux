@@ -269,7 +269,8 @@ impl HeadlessSession {
             &crate::attach::agent_rows::agent_session_rows(&mirror.engine_kernel),
             &crate::attach::review::ReviewIndex::new(),
         );
-        super::chrome::badge_windows(&mut windows, &mirror.workspace, &local, &self.theme);
+        let badged =
+            super::chrome::badge_windows(&mut windows, &mirror.workspace, &local, &self.theme);
         if let Some(sb) = self.status_bar.as_mut() {
             sb.set_windows(windows.clone());
         }
@@ -288,7 +289,7 @@ impl HeadlessSession {
         sidebar_painter.set_roster(vec![session]);
         // Local rows and the current session only: a capture must not depend
         // on what else happened to be running on the server.
-        sidebar_painter.set_needs_you(local);
+        sidebar_painter.set_needs_you(super::chrome::unbadged(local, &badged));
 
         let layout_state = mirror
             .workspace
@@ -789,12 +790,19 @@ mod sidebar_tests {
                     .collect()
             })
             .collect();
-        assert!(rows[1].contains("reviewer"), "{rows:?}");
-        assert!(rows[12].contains("this server"), "{rows:?}");
+        // The blocked agent shows once, as its tab's badge; the session row
+        // counts it and no Agents section repeats it.
         assert!(
-            rows[13].contains("work") && rows[13].contains("●1"),
+            rows[1].contains("work") && rows[1].contains("●1"),
             "{rows:?}"
         );
+        assert!(rows[2].contains("● reviewer"), "{rows:?}");
+        assert_eq!(
+            rows.iter().filter(|row| row.contains("reviewer")).count(),
+            1,
+            "{rows:?}"
+        );
+        assert!(!rows.iter().any(|row| row.contains("Agents")), "{rows:?}");
     }
 
     /// The composite's dividers paint with the configured theme, as the

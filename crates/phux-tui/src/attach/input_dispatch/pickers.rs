@@ -52,7 +52,7 @@ fn append_move_destinations(
     session_name: &str,
     workspace: &ArrangementDoc,
 ) {
-    for (window_index, window) in workspace.groups.iter().enumerate() {
+    for window in &workspace.groups {
         let Some(tree) = &window.state.tree else {
             continue;
         };
@@ -68,17 +68,13 @@ fn append_move_destinations(
             args.insert("target".to_owned(), toml::Value::Integer(i64::from(id)));
             rows.push(
                 SelectItem::new(
-                    format!("@{id}"),
+                    format!("{} · pane {}", window.name, pane_index + 1),
                     phux_config::keybind::ResolvedAction {
                         action: "move-pane".to_owned(),
                         args,
                     },
                 )
-                .secondary(format!(
-                    "{session_name} · {window_index}:{} · pane {}",
-                    window.name,
-                    pane_index + 1
-                )),
+                .secondary(session_name.to_owned()),
             );
         }
     }
@@ -107,12 +103,7 @@ pub(super) fn window_picker_items(
     let mut items = Vec::new();
     for session in ordered {
         let is_current = Some(session.id) == focused;
-        let header = if is_current {
-            format!("{} (current)", session.name)
-        } else {
-            session.name.clone()
-        };
-        items.push(SelectItem::header(header));
+        items.push(SelectItem::header(session.name.clone()));
 
         if is_current {
             items.extend(current_session_window_rows(workspace));
@@ -124,9 +115,9 @@ pub(super) fn window_picker_items(
         } else {
             // No cached layout for this foreign session; offer a switch.
             let windows = if session.window_count == 1 {
-                "1 window".to_owned()
+                "1 tab".to_owned()
             } else {
-                format!("{} windows", session.window_count)
+                format!("{} tabs", session.window_count)
             };
             let args = switch_session_args(&session.name, Some(session.id));
             items.push(
@@ -165,7 +156,7 @@ pub(super) fn current_session_window_rows(workspace: &ArrangementDoc) -> Vec<Sel
                 .tree
                 .as_ref()
                 .map_or(0, |tree| crate::layout::leaves(tree).len());
-            let label = format!("{index}:{}", window.name);
+            let label = window.name.clone();
             let secondary = if panes == 1 {
                 "1 pane".to_owned()
             } else {
@@ -205,7 +196,7 @@ pub(super) fn foreign_session_window_rows(
                 .tree
                 .as_ref()
                 .map_or(0, |tree| crate::layout::leaves(tree).len());
-            let label = format!("{index}:{}", window.name);
+            let label = window.name.clone();
             let secondary = if panes == 1 {
                 "1 pane".to_owned()
             } else {
@@ -232,17 +223,14 @@ pub(super) fn foreign_session_window_rows(
 /// Per-session counts a session picker row reads.
 #[derive(Debug, Default)]
 pub(super) struct SessionCounts {
-    /// Terminals each session holds in the cached graph.
-    pub terminals: std::collections::HashMap<phux_protocol::ids::SessionId, usize>,
     /// Panes of each session that want a person.
     pub needs_you: std::collections::HashMap<phux_protocol::ids::SessionId, usize>,
 }
 
 /// Session picker rows, read at a glance (`docs/consumers/attention.md`):
-/// `focused` first and marked current (committing it is a silent no-op),
-/// then the sessions with panes that need you, then the rest by name. Each
-/// commits `switch-session { name }`. A session's lifetime shows only when
-/// it is ephemeral.
+/// `focused` first (committing it is a silent no-op), then the sessions
+/// with panes that need you, then the rest by name. Each commits
+/// `switch-session { name }`.
 pub(super) fn session_picker_items(
     sessions: &[phux_protocol::wire::info::SessionInfo],
     focused: Option<phux_protocol::ids::SessionId>,
@@ -252,7 +240,7 @@ pub(super) fn session_picker_items(
     ordered.sort_by(|left, right| session_picker_order(focused, counts, left, right));
     ordered
         .into_iter()
-        .map(|session| attached_session_row(session, focused, counts))
+        .map(|session| attached_session_row(session, counts))
         .collect()
 }
 
@@ -273,44 +261,23 @@ fn session_picker_order(
         .then_with(|| left.name.cmp(&right.name))
 }
 
-/// One attached-host session row: panes that need you, terminal count, an
-/// ephemeral lifetime, the current marker, and attached clients.
+/// One attached-host session row: its name, and how many of its panes need
+/// you when any do.
 fn attached_session_row(
     session: &phux_protocol::wire::info::SessionInfo,
-    focused: Option<SessionId>,
     counts: &SessionCounts,
 ) -> SelectItem {
-    let mut details = Vec::new();
-    let waiting = counts.needs_you.get(&session.id).copied().unwrap_or(0);
-    if waiting > 0 {
-        details.push(format!("{waiting} need you"));
-    }
-    if let Some(&count) = counts.terminals.get(&session.id) {
-        details.push(count_label(
-            u16::try_from(count).unwrap_or(u16::MAX),
-            "terminal",
-            "terminals",
-        ));
-    }
-    if crate::attach::session_mirror::session_lifetime(session)
-        == phux_protocol::wire::frame::SessionLifetime::Ephemeral
-    {
-        details.push("ephemeral".to_owned());
-    }
-    if Some(session.id) == focused {
-        details.push("current".to_owned());
-    }
-    if session.attached_client_count != 0 {
-        details.push(format!("{} attached", session.attached_client_count));
-    }
-    SelectItem::new(
+    let item = SelectItem::new(
         session.name.clone(),
         phux_config::keybind::ResolvedAction {
             action: "switch-session".to_owned(),
             args: switch_session_args(&session.name, Some(session.id)),
         },
-    )
-    .secondary(details.join(", "))
+    );
+    match counts.needs_you.get(&session.id).copied().unwrap_or(0) {
+        0 => item,
+        waiting => item.secondary(format!("{waiting} need you")),
+    }
 }
 
 /// Header for this host's group in the host-grouped session picker.
@@ -334,7 +301,6 @@ pub(in crate::attach) fn session_picker_rows(
         Some(AttachOrigin::Local) | None => LOCAL_HOST_HEADER,
     };
     let counts = SessionCounts {
-        terminals: peers.terminal_counts(),
         needs_you: crate::attach::sidebar_zones::peer_needs_you(peers),
     };
     let machines = peers.other_machines();
@@ -396,7 +362,7 @@ fn project_grouped_session_items(
             let Some(session) = session_for_project_line(sessions, &line.name) else {
                 continue;
             };
-            items.push(attached_session_row(session, focused, counts).indented());
+            items.push(attached_session_row(session, counts).indented());
         }
     }
     items
@@ -471,48 +437,17 @@ fn assemble_host_groups(
 /// the provider's (name-sorted) order.
 fn machine_items(host: &HostJson) -> Vec<SelectItem> {
     if !host.reachable {
-        let header = host.error.as_deref().map_or_else(
-            || format!("{} - unreachable", host.label),
-            |reason| format!("{} - unreachable: {reason}", host.label),
-        );
-        return vec![SelectItem::header(header)];
+        return vec![SelectItem::header(format!("{} - unreachable", host.label))];
     }
-    let status = if host.sessions.is_empty() {
-        "connected, no sessions".to_owned()
-    } else {
-        count_label(
-            u16::try_from(host.sessions.len()).unwrap_or(u16::MAX),
-            "session",
-            "sessions",
-        )
-    };
-    let mut items = vec![SelectItem::header(format!("{} - {status}", host.label))];
+    let mut items = vec![SelectItem::header(host.label.clone())];
     items.extend(host.sessions.iter().map(|session| {
+        // The host stays on the row so it still reads once a typed query
+        // hides the headers.
         let mut details = vec![format!("on {}", host.label)];
-        // A server that reports lifetimes counts what runs and what needs
-        // you; an older one counts its windows.
-        match session.lifetime {
-            Some(lifetime) => {
-                let exec = &session.exec;
-                let needs = exec.failed.saturating_add(exec.lost);
-                if needs > 0 {
-                    details.push(format!("{needs} need you"));
-                }
-                let running = exec
-                    .running
-                    .saturating_add(exec.starting)
-                    .saturating_add(exec.stopping);
-                if running > 0 {
-                    details.push(format!("{running} running"));
-                }
-                if lifetime == phux_core::SessionLifetime::Ephemeral {
-                    details.push("ephemeral".to_owned());
-                }
-            }
-            None => details.push(count_label(session.windows, "window", "windows")),
-        }
-        if session.attached_clients != 0 {
-            details.push(format!("{} attached", session.attached_clients));
+        let exec = &session.exec;
+        let needs = exec.failed.saturating_add(exec.lost);
+        if needs > 0 {
+            details.push(format!("{needs} need you"));
         }
         SelectItem::new(
             session.name.clone(),
@@ -529,22 +464,10 @@ fn satellite_host_items(
     host: &phux_protocol::wire::info::HostInventory,
     workspace: &ArrangementDoc,
 ) -> Vec<SelectItem> {
-    if let Some(reason) = host.unreachable.as_deref() {
-        return vec![SelectItem::header(format!(
-            "{} - unreachable: {reason}",
-            host.host
-        ))];
+    if host.unreachable.is_some() {
+        return vec![SelectItem::header(format!("{} - unreachable", host.host))];
     }
-    let status = if host.sessions.is_empty() {
-        "connected, no sessions".to_owned()
-    } else {
-        count_label(
-            u16::try_from(host.sessions.len()).unwrap_or(u16::MAX),
-            "session",
-            "sessions",
-        )
-    };
-    let mut items = vec![SelectItem::header(format!("{} - {status}", host.host))];
+    let mut items = vec![SelectItem::header(host.host.to_string())];
     let mut sessions: Vec<_> = host.sessions.iter().collect();
     sessions.sort_by(|a, b| a.name.cmp(&b.name));
     items.extend(
@@ -563,20 +486,13 @@ fn satellite_session_item(
     session: &phux_protocol::wire::info::HostSessionInfo,
     workspace: &ArrangementDoc,
 ) -> SelectItem {
-    let mut details = vec![
-        format!("on {}", host.host),
-        count_label(session.window_count, "window", "windows"),
-        count_label(session.pane_count, "pane", "panes"),
-    ];
+    let mut details = vec![format!("on {}", host.host)];
     if session
         .active_resource
         .as_ref()
         .is_some_and(|id| window_holding(workspace, id).is_some())
     {
         details.push("open here".to_owned());
-    }
-    if session.attached_client_count != 0 {
-        details.push(format!("{} attached", session.attached_client_count));
     }
     let mut args = std::collections::BTreeMap::new();
     args.insert("name".to_owned(), toml::Value::String(session.name.clone()));
@@ -613,15 +529,6 @@ pub(super) fn window_holding(
             .as_ref()
             .is_some_and(|tree| crate::layout::leaves(tree).contains(id))
     })
-}
-
-/// How the session picker names a session's lifetime.
-fn count_label(n: u16, one: &str, many: &str) -> String {
-    if n == 1 {
-        format!("1 {one}")
-    } else {
-        format!("{n} {many}")
-    }
 }
 
 /// The trailing "+ New session" row (opens the name prompt).

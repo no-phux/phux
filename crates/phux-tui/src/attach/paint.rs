@@ -341,17 +341,17 @@ pub(super) fn paint_full_frame<W: super::RenderSink>(
 /// The empty state's title line.
 pub(super) const EMPTY_SESSION_TITLE: &str = "Empty session";
 /// The empty state's explanation line.
-pub(super) const EMPTY_SESSION_BODY: &str = "Open a new window to start a terminal.";
+pub(super) const EMPTY_SESSION_BODY: &str = "Open a new tab to start a terminal.";
 /// The not-arranged state's explanation line.
-pub(super) const UNARRANGED_BODY: &str = "Closed views leave their terminals running.";
+pub(super) const UNARRANGED_BODY: &str = "Hidden panes keep their terminals running.";
 
 /// The lines a persistent session with no members shows. The hint names the
 /// chord bound to `new-window`, or the command palette when no chord is
 /// bound.
 pub(super) fn empty_session_lines(new_window_chord: Option<&str>) -> [String; 3] {
     let hint = new_window_chord.map_or_else(
-        || "Run new-window from the command palette.".to_owned(),
-        |chord| format!("{chord}  new window"),
+        || "Run New tab from the command palette.".to_owned(),
+        |chord| format!("{chord}  new tab"),
     );
     [
         EMPTY_SESSION_TITLE.to_owned(),
@@ -1062,7 +1062,7 @@ mod tests {
             unarranged_lines(2, Some("C-a R")),
             [
                 "2 running, not arranged".to_owned(),
-                "Closed views leave their terminals running.".to_owned(),
+                "Hidden panes keep their terminals running.".to_owned(),
                 "C-a R  reopen views".to_owned(),
             ]
         );
@@ -1078,8 +1078,8 @@ mod tests {
             lines[..3],
             [
                 "Empty session",
-                "Open a new window to start a terminal.",
-                "C-a c  new window"
+                "Open a new tab to start a terminal.",
+                "C-a c  new tab"
             ]
         );
         assert!(empty_session_lines(None)[2].contains("command palette"));

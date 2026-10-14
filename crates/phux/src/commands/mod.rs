@@ -1925,7 +1925,7 @@ Upload dials configured remote transports headlessly; it never pairs over SSH. T
             anything. --speed-marked and --marker-labels apply when rendering a GIF or APNG; \
             the .cast keeps original timing and asciicast `m` markers.\n\n\
             `phux rec mark LABEL` posts a marker to every recording in progress (the same \
-            event as C-a M during `phux --rec`).\n\n\
+            event as the `rec-mark` action during `phux --rec`).\n\n\
             Examples:\n  \
             phux rec -o demo.gif\n  \
             phux rec work:1.0 -o demo.cast --duration 30\n  \

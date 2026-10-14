@@ -34,7 +34,7 @@ async fn rename_from_prompt(state: &mut SessionLoop, conn: &mut Connection, out:
     state
         .overlays
         .push(Box::new(crate::render::overlay::PromptOverlay::new(
-            "rename window",
+            "rename tab",
             "rename-window",
             "name",
             "renamed",
@@ -625,7 +625,7 @@ async fn peer_metadata_and_hostname_reach_visible_sidebar_at_the_burst_drain() {
     let mut repaint = RepaintAccumulator::default();
     let record = AgentRecord {
         name: "reviewer".into(),
-        state: phux_client::agent_meta::AgentMetaState::Working,
+        state: phux_client::agent_meta::AgentMetaState::Blocked,
         ..AgentRecord::default()
     };
     state
@@ -656,7 +656,8 @@ async fn peer_metadata_and_hostname_reach_visible_sidebar_at_the_burst_drain() {
     state.drain_repaint(&mut out, sidebar, &mut repaint);
     let screen = painted_sidebar_text(&out);
     assert!(screen.contains("reviewer"), "{screen}");
-    assert!(screen.contains("remote-mini"), "{screen}");
+    // One machine paints no host line; the hostname still lands.
+    assert_eq!(state.peers.serving_host.as_deref(), Some("remote-mini"));
     assert!(
         !out.windows(4).any(|s| s == b"\x1b[2J"),
         "metadata must not clear the screen"
@@ -1760,7 +1761,7 @@ async fn unvisited_peer_agent_paints_from_server_inventory() {
         peer,
         AgentRecord {
             name: "reviewer".into(),
-            state: phux_client::agent_meta::AgentMetaState::Idle,
+            state: phux_client::agent_meta::AgentMetaState::Blocked,
             ..AgentRecord::default()
         },
     );
@@ -1896,25 +1897,21 @@ fn agent_line(bytes: &[u8], name: &str) -> String {
         .to_owned()
 }
 
+/// A reviewed done needs no one: nothing on the strip keeps the unread
+/// diamond, and any row still naming `name` (its tab) quiets to a ring.
 fn assert_reviewed_row(bytes: &[u8], name: &str) {
     let screen = painted_sidebar_text(bytes);
-    let line = screen
-        .lines()
-        .find(|line| line.contains(name))
-        .unwrap_or("");
     assert!(
-        line.contains(name),
-        "missing {name} (bytes={}):\n{screen}",
+        !screen.is_empty() && !screen.contains('◆'),
+        "reviewed {name} must not keep the unread diamond (bytes={}):\n{screen}",
         bytes.len()
     );
-    assert!(
-        line.contains('○'),
-        "reviewed {name} must quiet to a ring: {line}\n{screen}"
-    );
-    assert!(
-        !line.contains('◆'),
-        "reviewed {name} must not keep the unread diamond: {line}\n{screen}"
-    );
+    for line in screen.lines().filter(|line| line.contains(name)) {
+        assert!(
+            line.contains('○'),
+            "reviewed {name} must quiet to a ring: {line}\n{screen}"
+        );
+    }
 }
 
 fn assert_unread_done_row(bytes: &[u8], name: &str) {
@@ -2179,7 +2176,8 @@ async fn stream_completion_invalidates_after_rebuild_without_retracting_on_gap()
     ));
     assert!(!session_b.review.is_seen(&pane));
     snapshot_sidebar(&mut session_b, &mut out, sidebar);
-    assert_unread_done_row(&out, "reviewer");
+    // The local agent shows once, as the badge on its `agent` tab.
+    assert_unread_done_row(&out, "agent");
 }
 
 // ---- the per-frame fold's raise matrix (phux-jx39.5) ------------------------
