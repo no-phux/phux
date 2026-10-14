@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Future workflows use free public compute and preserve native release targets."""
 
+import ctypes
 import os
 from pathlib import Path
 import re
 import stat
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -20,6 +22,98 @@ STANDARD = {"ubuntu-latest", "ubuntu-24.04", "ubuntu-24.04-arm", "xcode-27"}
 RETIRED_UBUNTU_2204 = re.compile(
     r"(?m)^[ \t]*(?:runs-on:|- os:) ubuntu-22\.04(?:-arm)?[ \t]*$"
 )
+
+# Darwin <sys/attr.h>. Extended common attributes are requested in forkattr
+# and returned only when FSOPT_ATTR_CMN_EXTENDED is set. The buffer is a
+# packed (u_int32 length, u_int64 clone id): 64-bit fields stay 4-byte aligned.
+_DARWIN_ATTR_BIT_MAP_COUNT = 5
+_DARWIN_FSOPT_ATTR_CMN_EXTENDED = 0x00000020
+_DARWIN_ATTR_CMNEXT_CLONEID = 0x00000100
+
+
+class _DarwinAttrList(ctypes.Structure):
+    _fields_ = [
+        ("bitmapcount", ctypes.c_ushort),
+        ("reserved", ctypes.c_uint16),
+        ("commonattr", ctypes.c_uint32),
+        ("volattr", ctypes.c_uint32),
+        ("dirattr", ctypes.c_uint32),
+        ("fileattr", ctypes.c_uint32),
+        ("forkattr", ctypes.c_uint32),
+    ]
+
+
+class _DarwinCloneId(ctypes.Structure):
+    _pack_ = 4
+    _fields_ = [
+        ("length", ctypes.c_uint32),
+        ("clone_id", ctypes.c_uint64),
+    ]
+
+
+def _apfs_clone_id(path: Path) -> int | None:
+    """Return the APFS data-stream id, or None when this kernel has none.
+
+    Zero is not a shared stream. ``getattrlist`` is Darwin-only; every other
+    platform returns None and the caller has to use inode identity.
+    """
+    getattrlist = None
+    for library in (None, "/usr/lib/libSystem.B.dylib"):
+        if library is not None and sys.platform != "darwin":
+            continue
+        try:
+            loaded = ctypes.CDLL(library, use_errno=True)
+            getattrlist = loaded.getattrlist
+            break
+        except (AttributeError, OSError):
+            continue
+    if getattrlist is None:
+        return None
+    query = _DarwinAttrList(
+        bitmapcount=_DARWIN_ATTR_BIT_MAP_COUNT,
+        forkattr=_DARWIN_ATTR_CMNEXT_CLONEID,
+    )
+    found = _DarwinCloneId()
+    getattrlist.argtypes = [
+        ctypes.c_char_p,
+        ctypes.POINTER(_DarwinAttrList),
+        ctypes.POINTER(_DarwinCloneId),
+        ctypes.c_size_t,
+        ctypes.c_ulong,
+    ]
+    getattrlist.restype = ctypes.c_int
+    if getattrlist(
+        os.fsencode(path),
+        ctypes.byref(query),
+        ctypes.byref(found),
+        ctypes.sizeof(found),
+        _DARWIN_FSOPT_ATTR_CMN_EXTENDED,
+    ) != 0:
+        return None
+    if found.length < ctypes.sizeof(found) or found.clone_id == 0:
+        return None
+    return int(found.clone_id)
+
+
+def _shares_stored_bytes(
+    left: os.stat_result,
+    right: os.stat_result,
+    left_clone: int | None,
+    right_clone: int | None,
+) -> bool:
+    """True when the two files are one allocated copy.
+
+    ``hardlink(1)`` on ext4 keeps a single inode. APFS ``clonefile`` keeps
+    distinct inodes on one data stream, and each clone's ``st_blocks`` still
+    reports the full size, so a shared inode is not a portable proof that the
+    duplicate stopped costing disk. A missing or zero clone id is not
+    evidence.
+    """
+    if left.st_dev != right.st_dev:
+        return False
+    if left.st_ino == right.st_ino:
+        return True
+    return bool(left_clone) and left_clone == right_clone
 
 
 class RunnerPolicyTests(unittest.TestCase):
@@ -270,12 +364,29 @@ class RunnerPolicyTests(unittest.TestCase):
             self.assertEqual(skipped.returncode, 0, skipped.stderr)
             self.assertIn("skipped", skipped.stdout)
 
-    def test_export_headroom_collapses_target_copies_without_calling_mbx(self):
-        """ext4 keeps a second copy of the store in the managed target.
+    def test_shared_storage_signal_accepts_hardlinks_and_clone_ids(self):
+        """Inode identity is the ext4 proof; a shared clone id is the APFS proof."""
+        same = os.stat_result((0o644, 1, 7, 2, 0, 0, 11, 0, 0, 0))
+        other = os.stat_result((0o644, 2, 7, 1, 0, 0, 11, 0, 0, 0))
+        other_device = os.stat_result((0o644, 1, 8, 1, 0, 0, 11, 0, 0, 0))
+        self.assertEqual(ctypes.sizeof(_DarwinCloneId), 12)
+        self.assertEqual(_DarwinCloneId.clone_id.offset, 4)
+        self.assertTrue(_shares_stored_bytes(same, same, None, None))
+        self.assertFalse(_shares_stored_bytes(same, other, None, None))
+        self.assertFalse(_shares_stored_bytes(same, other, 0, 0))
+        self.assertFalse(_shares_stored_bytes(same, other, None, 9))
+        self.assertFalse(_shares_stored_bytes(same, other, 4, 9))
+        self.assertFalse(_shares_stored_bytes(same, other_device, 9, 9))
+        self.assertTrue(_shares_stored_bytes(same, other, 9, 9))
 
-        The export records each target file's mode and mtime, so collapsing
-        identical bytes has to put that metadata back. Two target files that
-        disagree cannot share the inode.
+    def test_export_headroom_collapses_target_copies_without_calling_mbx(self):
+        """A duplicate target must stop occupying its own copy of the store.
+
+        ext4 hardlink(1) does that by sharing an inode with the object-store
+        blob. APFS clonefile keeps a distinct inode for the same data stream,
+        so st_blocks still looks like a full copy and inode equality is not
+        the portable signal. Two target files whose mode or mtime disagree
+        still cannot share an inode: the collapse puts that metadata back.
         """
         script = ROOT / "scripts/ci/mbx-export-headroom.sh"
         payload = b"same-object" * 1000
@@ -317,11 +428,28 @@ class RunnerPolicyTests(unittest.TestCase):
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertNotIn("mbx-was-called", completed.stderr)
-            self.assertNotEqual(first.stat().st_ino, second.stat().st_ino)
-            self.assertTrue(
-                first.stat().st_ino == blob.stat().st_ino
-                or second.stat().st_ino == blob.stat().st_ino
+            first_stat, second_stat = first.stat(), second.stat()
+            blob_stat, unique_stat = blob.stat(), unique.stat()
+            first_clone, second_clone = _apfs_clone_id(first), _apfs_clone_id(second)
+            blob_clone, unique_clone = _apfs_clone_id(blob), _apfs_clone_id(unique)
+            self.assertNotEqual(first_stat.st_ino, second_stat.st_ino)
+            collapsed = (
+                _shares_stored_bytes(first_stat, blob_stat, first_clone, blob_clone)
+                or _shares_stored_bytes(second_stat, blob_stat, second_clone, blob_clone)
             )
+            self.assertTrue(
+                collapsed,
+                "target copies still occupy their own storage "
+                f"(inodes {first_stat.st_ino}, {second_stat.st_ino}, "
+                f"blob {blob_stat.st_ino}; "
+                f"clone ids {first_clone}, {second_clone}, {blob_clone})",
+            )
+            self.assertFalse(
+                _shares_stored_bytes(unique_stat, blob_stat, unique_clone, blob_clone)
+            )
+            self.assertEqual(first.read_bytes(), payload)
+            self.assertEqual(second.read_bytes(), payload)
+            self.assertEqual(blob.read_bytes(), payload)
             self.assertEqual(stat.S_IMODE(first.stat().st_mode), 0o755)
             self.assertEqual(int(first.stat().st_mtime), 1_000)
             self.assertEqual(stat.S_IMODE(second.stat().st_mode), 0o640)
