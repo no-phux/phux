@@ -16,7 +16,7 @@ use phux_client_core::grid::{
     CELL_SELECTED, CELL_STRIKETHROUGH, COLOR_KIND_DEFAULT, COLOR_KIND_PALETTE,
 };
 use phux_client_runtime::publication::{
-    Cell, CellMetadata, CursorStyle, CursorWidth, GridFrame, Rgb,
+    Cell, CellMetadata, CursorStyle, CursorWidth, GridDamage, GridFrame, Rgb,
 };
 
 #[derive(Clone, Default)]
@@ -233,14 +233,24 @@ pub(super) fn prepare(
             prepared.scene = Some(scene);
         }
         Err(error) => {
-            // Nothing left to repaint: release the last frame and its scene.
-            cache.borrow_mut().take();
+            // A rejected reacquire is not a blank. The last scene stays while
+            // its bounds still match, so a reconnect does not flash the pane.
             prepared.report.error = Some(error);
+            if let Some(scene) = scene_at(cache, bounds) {
+                prepared.layers = opacity_layers(&scene, window, cx);
+                prepared.scene = Some(scene);
+            }
         }
     }
     prepared.report.prepare_micros = started.elapsed().as_micros();
     crate::perf::PREPARE.record_elapsed(started);
     prepared
+}
+
+/// The cached scene when a reacquire failed but the pane has not moved.
+fn scene_at(cache: &SceneCache, bounds: Bounds<Pixels>) -> Option<Rc<Scene>> {
+    let scene = Rc::clone(cache.borrow().as_ref()?);
+    (scene.bounds == bounds).then_some(scene)
 }
 
 /// The cached scene when it still paints these inputs, else a new one.
@@ -631,8 +641,19 @@ fn can_patch(
 fn rows_to_rebuild(previous: &GridFrame, next: &GridFrame, settings: &Settings) -> Vec<u16> {
     let old = solid_head(previous, settings);
     let new = solid_head(next, settings);
+    // Row damage describes one publication only. A painter can skip generations,
+    // so compare every row unless this is the adjacent frame of the same replica.
+    let exact_rows = next.damage == GridDamage::Rows
+        && previous.generation.checked_add(1) == Some(next.generation)
+        && previous.stream_id == next.stream_id
+        && previous.bootstrap_id == next.bootstrap_id
+        && next.buffer.row_dirty.len() == usize::from(next.rows);
     (0..next.rows)
-        .filter(|row| solid_row_changed(old, new, *row) || !row_paints_alike(previous, next, *row))
+        .filter(|row| {
+            solid_row_changed(old, new, *row)
+                || (!exact_rows || next.is_row_dirty(*row))
+                    && !row_paints_alike(previous, next, *row)
+        })
         .collect()
 }
 
@@ -1907,6 +1928,27 @@ mod tests {
             rows_to_rebuild(&block_left, &block_right, &settings),
             vec![0, 1]
         );
+    }
+
+    #[test]
+    fn sparse_damage_keeps_changed_rows_but_skipped_publications_compare_the_whole_grid() {
+        let settings = Settings::default();
+        let previous = row_grid(&["aaaa", "bbbb", "cccc"]);
+        let mut adjacent = row_grid(&["aaaa", "bBbb", "cccc"]);
+        adjacent.generation = 2;
+        adjacent.damage = GridDamage::Rows;
+        adjacent.buffer.row_dirty = vec![false, true, false];
+        assert_eq!(rows_to_rebuild(&previous, &adjacent, &settings), vec![1]);
+
+        let mut skipped = row_grid(&["zaza", "bBbb", "cccc"]);
+        skipped.generation = 3;
+        skipped.damage = GridDamage::Rows;
+        skipped.buffer.row_dirty = vec![false, true, false];
+        assert_eq!(rows_to_rebuild(&previous, &skipped, &settings), vec![0, 1]);
+
+        adjacent.damage = GridDamage::Full;
+        adjacent.buffer.cells[0].flags |= CELL_SELECTED;
+        assert_eq!(rows_to_rebuild(&previous, &adjacent, &settings), vec![0, 1]);
     }
 
     #[test]

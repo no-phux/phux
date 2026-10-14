@@ -191,8 +191,9 @@ pub struct Cursor {
     pub width: CursorWidth,
 }
 
-/// How much of the viewport changed since the previous projection, as
-/// libghostty's render state reports it (`Snapshot::dirty`).
+/// How much of the viewport changed since the previous projection, based on
+/// libghostty's render state (`Snapshot::dirty`). A published buffer may
+/// additionally mark speculative input rows as dirty.
 ///
 /// A projector's first projection is always [`GridDamage::Full`], and every
 /// row of a full projection is marked dirty, so a consumer that keys its
@@ -224,8 +225,8 @@ impl From<Dirty> for GridDamage {
 /// `cells` and `metadata` are parallel: index `row * cols + col` in each.
 /// `utf8` is the arena every cell's text and hyperlink spans address; it is
 /// valid UTF-8 as a whole because each span is appended as whole scalars.
-/// `row_dirty` has one flag per viewport row: whether libghostty reported
-/// the row changed since the previous projection of the same projector.
+/// `row_dirty` has one flag per viewport row: libghostty damage since the
+/// previous projection, plus rows where predicted text changed the display.
 #[derive(Debug, Default)]
 pub struct GridBuffer {
     /// One record per viewport cell.
@@ -234,7 +235,8 @@ pub struct GridBuffer {
     pub utf8: Vec<u8>,
     /// One provenance record per viewport cell.
     pub metadata: Vec<CellMetadata>,
-    /// One flag per viewport row: changed since the previous projection.
+    /// One flag per viewport row: changed since the previous projection,
+    /// including speculative text overlays and their removal.
     pub row_dirty: Vec<bool>,
 }
 

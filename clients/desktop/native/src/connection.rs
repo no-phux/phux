@@ -904,6 +904,12 @@ pub fn structural(event: &Event) -> bool {
     event.changes_session_graph()
 }
 
+/// The session just became attached. The desk paints every placed terminal once.
+#[must_use]
+pub fn session_attached(event: &Event) -> bool {
+    matches!(event, Event::StatusChanged(Status::Attached))
+}
+
 /// Terminal output and a delivered input. The chrome tree does not depend on it.
 #[must_use]
 pub fn paint_wake(event: &Event) -> bool {
@@ -1153,8 +1159,8 @@ pub fn parse_terminal(value: &str) -> Option<ResourceId> {
 
 #[cfg(test)]
 mod paint_wake_tests {
-    use super::{paint_wake, structural};
-    use phux_client_runtime::control::{DeliveryOutcome, Event};
+    use super::{paint_wake, session_attached, structural};
+    use phux_client_runtime::control::{DeliveryOutcome, Event, Status};
     use phux_protocol::ResourceId;
 
     #[test]
@@ -1178,5 +1184,8 @@ mod paint_wake_tests {
         }));
         assert!(structural(&Event::TopologyChanged));
         assert!(!paint_wake(&Event::TopologyChanged));
+        assert!(session_attached(&Event::StatusChanged(Status::Attached)));
+        assert!(!session_attached(&Event::StatusChanged(Status::Connecting)));
+        assert!(!session_attached(&Event::TopologyChanged));
     }
 }

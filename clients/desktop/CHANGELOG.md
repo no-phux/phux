@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.8.6](https://github.com/no-phux/phux/compare/desktop-v0.8.5...desktop-v0.8.6) (2026-10-14)
+
+
+### Performance
+
+* **desktop:** use sparse damage for pane redraws ([#1372](https://github.com/no-phux/phux/issues/1372)) ([9856e15](https://github.com/no-phux/phux/commit/9856e15315a433590c81ce3127f6856701acd516))
+
+## [0.8.5](https://github.com/no-phux/phux/compare/desktop-v0.8.4...desktop-v0.8.5) (2026-10-14)
+
+
+### Performance
+
+* **runtime:** redial a settled session before sleeping ([#1368](https://github.com/no-phux/phux/issues/1368)) ([cfd65d6](https://github.com/no-phux/phux/commit/cfd65d610cabcb81ad99f216febc775fd4a1e84a))
+
+## [0.8.4](https://github.com/no-phux/phux/compare/desktop-v0.8.3...desktop-v0.8.4) (2026-10-14)
+
+
+### Bug Fixes
+
+* **desktop:** improve terminal rendering and quiet the sidebar ([#1363](https://github.com/no-phux/phux/issues/1363)) ([305b1ef](https://github.com/no-phux/phux/commit/305b1efca31ac1252afe50bfbf413430cc07409f))
+
 ## [0.8.3](https://github.com/no-phux/phux/compare/desktop-v0.8.2...desktop-v0.8.3) (2026-10-14)
 
 

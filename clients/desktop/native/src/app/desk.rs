@@ -453,9 +453,11 @@ impl Desk {
         };
         crate::diag::DRAIN_EVENTS.add(events.len() as u64);
         let conversation_changed = self.conversation_receipts(&events);
-        // Cached terminal entities need their own notification even in a
-        // mixed terminal/agent batch; notifying their ancestor is insufficient.
-        self.repaint_terminals(&events, cx);
+        // Notify cached terminals even for mixed agent/PTY batches, but keep
+        // the last frame while disconnected instead of reacquiring a view.
+        if self.session_is_attached() {
+            self.repaint_terminals(&events, cx);
+        }
         if answers.is_empty() && paint_batch(&events) && !conversation_changed {
             return;
         }
@@ -507,6 +509,9 @@ impl Desk {
         }
         self.persist_if_changed();
         self.ensure_clock(cx);
+        if events.iter().any(crate::connection::session_attached) {
+            self.panes.notify_all(cx);
+        }
         cx.notify();
     }
 
@@ -2705,6 +2710,13 @@ impl Desk {
             Status::Failed => ("Not connected".into(), Tone::Bad),
             Status::Closed => ("Disconnected".into(), Tone::Bad),
         }
+    }
+
+    /// The session is attached, so a terminal reacquire can paint.
+    pub(crate) fn session_is_attached(&self) -> bool {
+        self.link
+            .as_ref()
+            .is_some_and(|link| link.connection.status == Status::Attached)
     }
 
     /// Whether the connection needs the user to reconnect.

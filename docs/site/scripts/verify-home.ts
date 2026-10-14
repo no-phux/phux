@@ -100,6 +100,20 @@ try {
   assert.equal(await command.innerText(), "curl -fsSL https://phux.sh/install-desktop | sh", "arrow keys move the target");
   await page.getByRole("button", { name: "Copy install command" }).click();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "curl -fsSL https://phux.sh/install-desktop | sh", "copy follows the keyboard target");
+  // Regression: a content-sized dock widened with the command and slid the
+  // targets out from under the pointer. The dock and its targets are pinned.
+  const box = (selector: string) =>
+    page.locator(selector).evaluate((el) => {
+      const rect = el.getBoundingClientRect();
+      return { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) };
+    });
+  const dock = await box("#install");
+  const cliTarget = await box('#install [data-install-target="cli"]');
+  for (const name of ["desktop", "canary", "cli"]) {
+    await target(name).hover();
+    assert.deepEqual(await box("#install"), dock, `the dock keeps its box while ${name} is previewed`);
+    assert.deepEqual(await box('#install [data-install-target="cli"]'), cliTarget, `targets stay pinned while ${name} is previewed`);
+  }
   // The landing carries the same TestFlight request /more posts.
   await page.locator("#beta-form input[name=email]").fill("iphone@example.com");
   await page.locator("#beta-form button[type=submit]").click();
