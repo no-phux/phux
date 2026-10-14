@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-10-07
+last-reviewed: 2026-10-14
 ---
 
 # Operations
@@ -208,8 +208,9 @@ The desktop host (`clients/desktop`) appends its painter rows to the same
 report, `desktopPerfJson`. Per terminal element per window draw:
 `desktop.render`, `desktop.acquire` (frame validation, one owner round trip),
 `desktop.acquire_rejected`, `desktop.prepare` (with `desktop.prepare_reused`
-for draws that reused the previous scene and `desktop.shaped` line shapes
-for those that did not), `desktop.paint` and `desktop.present`; and
+for draws that reused the previous scene, `desktop.prepare_patched` for draws
+that reshaped only the changed rows, and `desktop.shaped` line shapes for
+cells that were shaped), `desktop.paint` and `desktop.present`; and
 `desktop.key_to_paint`, from a key reaching a focused terminal to the first
 paint of that terminal's next output. Launched with
 `PHUX_DESKTOP_PERF=<absolute path>`, the desktop appends one JSON line per

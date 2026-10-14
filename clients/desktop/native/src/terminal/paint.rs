@@ -39,6 +39,7 @@ pub struct GlyphObservation {
 }
 
 /// One cell shaped alone: anything that is not opaque printable ASCII.
+#[derive(Clone)]
 struct Glyph {
     line: ShapedLine,
     bounds: Bounds<Pixels>,
@@ -48,15 +49,33 @@ struct Glyph {
 /// Consecutive cells of one row holding printable ASCII in one font and
 /// colour, shaped as one line and painted one glyph per cell. A screen of
 /// text is then a few shapes per row instead of one per cell.
+#[derive(Clone)]
 struct GlyphRun {
     bounds: Bounds<Pixels>,
     color: Hsla,
     glyphs: Vec<(FontId, GlyphId)>,
 }
 
+#[derive(Clone)]
 enum Ink {
     Glyph(Box<Glyph>),
     Run(GlyphRun),
+}
+
+/// One painted quad tagged with the row that produced it, so a later frame
+/// can drop that row and keep the rest.
+#[derive(Clone, Copy)]
+struct RowQuad {
+    row: u16,
+    bounds: Bounds<Pixels>,
+    color: Hsla,
+}
+
+/// One shaped ink tagged with its row.
+#[derive(Clone)]
+struct RowInk {
+    row: u16,
+    ink: Ink,
 }
 
 /// How one cell's text is drawn.
@@ -128,7 +147,9 @@ impl Fonts {
 /// frame, the element's bounds and scale, and the paint settings. A window
 /// refresh, resize or sibling change repaints terminals whose scene did not
 /// change; [`prepare`] then reuses it instead of walking and shaping every
-/// cell again.
+/// cell again. A new frame keeps the shaped rows whose cells still paint the
+/// same and reshapes only the rows that changed, plus a solid cursor's old
+/// and new rows.
 pub(super) struct Scene {
     frame: Arc<GridFrame>,
     bounds: Bounds<Pixels>,
@@ -136,10 +157,14 @@ pub(super) struct Scene {
     settings: Settings,
     geometry: Geometry,
     background: Hsla,
-    backgrounds: Vec<(Bounds<Pixels>, Hsla)>,
-    inks: Vec<Ink>,
-    /// Decorations, then the cursor: painted over the glyphs, in order.
-    overlays: Vec<(Bounds<Pixels>, Hsla)>,
+    backgrounds: Vec<RowQuad>,
+    inks: Vec<RowInk>,
+    /// Underlines, strike, and overline, in row order.
+    decorations: Vec<RowQuad>,
+    /// Solid block cursor, painted over cell backgrounds and under glyphs.
+    cursor_blocks: Vec<(Bounds<Pixels>, Hsla)>,
+    /// Bar, underline, and hollow cursors, painted over glyphs.
+    cursor_overlays: Vec<(Bounds<Pixels>, Hsla)>,
     glyphs: Vec<GlyphObservation>,
 }
 
@@ -226,9 +251,239 @@ fn scene(
         crate::perf::PREPARE_REUSED.incr();
         return Rc::clone(scene);
     }
+    if let Some(previous) = take_scene(cache)
+        && let Some(patched) = patch(
+            previous,
+            frame.clone(),
+            settings.clone(),
+            bounds,
+            scale,
+            window,
+        )
+    {
+        crate::perf::PREPARE_PATCHED.incr();
+        let patched = Rc::new(patched);
+        *cache.borrow_mut() = Some(Rc::clone(&patched));
+        return patched;
+    }
     let scene = Rc::new(Builder::new(frame, settings, bounds, window).build(window));
     *cache.borrow_mut() = Some(Rc::clone(&scene));
     scene
+}
+
+fn take_scene(cache: &SceneCache) -> Option<Scene> {
+    let existing = cache.borrow_mut().take()?;
+    match Rc::try_unwrap(existing) {
+        Ok(scene) => Some(scene),
+        Err(shared) => {
+            *cache.borrow_mut() = Some(shared);
+            None
+        }
+    }
+}
+
+/// Reshape `frame` from `previous` when the geometry and theme still match.
+/// `None` means the caller should build the scene from scratch. `previous`
+/// is consumed either way.
+fn patch(
+    mut previous: Scene,
+    frame: Arc<GridFrame>,
+    settings: Settings,
+    bounds: Bounds<Pixels>,
+    scale: f32,
+    window: &gpui::Window,
+) -> Option<Scene> {
+    if !can_patch(&previous, &frame, bounds, scale, &settings) {
+        return None;
+    }
+    let rebuilt = rows_to_rebuild(&previous.frame, &frame, &settings);
+    if rebuilt.len() == usize::from(frame.rows) {
+        return None;
+    }
+    if rebuilt.is_empty() {
+        let cursor_changed =
+            cursor_key(&previous.frame, &settings) != cursor_key(&frame, &settings);
+        previous.frame = frame;
+        previous.settings = settings;
+        if cursor_changed {
+            prepare_cursor(&mut previous);
+        }
+        return Some(previous);
+    }
+    let geometry = previous.geometry;
+    let kept_bounds = previous.bounds;
+    let kept_scale = previous.scale;
+    let mut builder = Builder::from_kept(frame, settings, geometry, kept_bounds, kept_scale);
+    builder.paint_rows(&rebuilt, window);
+    let fresh = builder.finish();
+    Some(assemble(previous, fresh, &rebuilt))
+}
+
+fn can_patch(
+    scene: &Scene,
+    frame: &GridFrame,
+    bounds: Bounds<Pixels>,
+    scale: f32,
+    settings: &Settings,
+) -> bool {
+    scene.bounds == bounds
+        && scene.scale == scale
+        && scene.frame.cols == frame.cols
+        && scene.frame.rows == frame.rows
+        && scene.frame.colors == frame.colors
+        && scene.settings.paints_like(settings)
+}
+
+fn rows_to_rebuild(previous: &GridFrame, next: &GridFrame, settings: &Settings) -> Vec<u16> {
+    let old = solid_head(previous, settings);
+    let new = solid_head(next, settings);
+    (0..next.rows)
+        .filter(|row| solid_row_changed(old, new, *row) || !row_paints_alike(previous, next, *row))
+        .collect()
+}
+
+fn solid_head(frame: &GridFrame, settings: &Settings) -> Option<(u16, u16)> {
+    solid_cursor(frame, settings).then(|| cursor_head(frame))
+}
+
+fn solid_row_changed(old: Option<(u16, u16)>, new: Option<(u16, u16)>, row: u16) -> bool {
+    if old == new {
+        return false;
+    }
+    old.is_some_and(|(at, _)| at == row) || new.is_some_and(|(at, _)| at == row)
+}
+
+/// Cursor placement that changes quads without changing cell glyphs: a bar,
+/// underline, or hollow cursor, or a width change on an unmoved solid head.
+fn cursor_key(frame: &GridFrame, settings: &Settings) -> Option<(u16, u16, CursorStyle, bool)> {
+    if !cursor_visible(frame, settings) {
+        return None;
+    }
+    let (row, col) = cursor_head(frame);
+    let style = if settings.focused {
+        frame.cursor.style
+    } else {
+        CursorStyle::BlockHollow
+    };
+    Some((row, col, style, frame.cursor.width.is_wide()))
+}
+
+struct RowParts<'a> {
+    prev_cells: &'a [Cell],
+    next_cells: &'a [Cell],
+    prev_meta: &'a [CellMetadata],
+    next_meta: &'a [CellMetadata],
+}
+
+fn row_paints_alike(previous: &GridFrame, next: &GridFrame, row: u16) -> bool {
+    let Some(parts) = row_slices(previous, next, row) else {
+        return false;
+    };
+    parts
+        .prev_cells
+        .iter()
+        .zip(parts.next_cells)
+        .all(|(left, right)| {
+            cell_paints_alike(left, &previous.buffer.utf8, right, &next.buffer.utf8)
+        })
+        && parts
+            .prev_meta
+            .iter()
+            .zip(parts.next_meta)
+            .all(|(left, right)| metadata_matches(left, right))
+}
+
+fn row_slices<'a>(previous: &'a GridFrame, next: &'a GridFrame, row: u16) -> Option<RowParts<'a>> {
+    if previous.cols != next.cols {
+        return None;
+    }
+    let start = usize::from(row).checked_mul(usize::from(previous.cols))?;
+    let end = start.checked_add(usize::from(previous.cols))?;
+    Some(RowParts {
+        prev_cells: previous.buffer.cells.get(start..end)?,
+        next_cells: next.buffer.cells.get(start..end)?,
+        prev_meta: previous.buffer.metadata.get(start..end)?,
+        next_meta: next.buffer.metadata.get(start..end)?,
+    })
+}
+
+fn cell_paints_alike(left: &Cell, left_utf8: &[u8], right: &Cell, right_utf8: &[u8]) -> bool {
+    paint_fields_match(left, right) && same_text(left, left_utf8, right, right_utf8)
+}
+
+fn paint_fields_match(left: &Cell, right: &Cell) -> bool {
+    left.utf8_len == right.utf8_len
+        && left.wide == right.wide
+        && left.flags == right.flags
+        && left.underline == right.underline
+        && colors_match(left, right)
+}
+
+fn colors_match(left: &Cell, right: &Cell) -> bool {
+    color_bytes(left) == color_bytes(right)
+}
+
+fn color_bytes(cell: &Cell) -> [u8; 9] {
+    [
+        cell.foreground_r,
+        cell.foreground_g,
+        cell.foreground_b,
+        cell.background_r,
+        cell.background_g,
+        cell.background_b,
+        cell.underline_r,
+        cell.underline_g,
+        cell.underline_b,
+    ]
+}
+
+fn metadata_matches(left: &CellMetadata, right: &CellMetadata) -> bool {
+    left.foreground_kind == right.foreground_kind
+        && left.foreground_palette_index == right.foreground_palette_index
+        && left.underline_color_is_default == right.underline_color_is_default
+        && left.background_color_is_default == right.background_color_is_default
+}
+
+fn same_text(left: &Cell, left_utf8: &[u8], right: &Cell, right_utf8: &[u8]) -> bool {
+    text_span(left, left_utf8) == text_span(right, right_utf8)
+}
+
+fn text_span<'a>(cell: &Cell, utf8: &'a [u8]) -> Option<&'a [u8]> {
+    let start = usize::try_from(cell.utf8_offset).ok()?;
+    let end = start.checked_add(usize::from(cell.utf8_len))?;
+    utf8.get(start..end)
+}
+
+fn assemble(mut previous: Scene, fresh: Scene, rebuilt: &[u16]) -> Scene {
+    previous.frame = fresh.frame;
+    previous.settings = fresh.settings;
+    previous.background = fresh.background;
+    previous.backgrounds = merge_rows(previous.backgrounds, fresh.backgrounds, rebuilt, |quad| {
+        quad.row
+    });
+    previous.inks = merge_rows(previous.inks, fresh.inks, rebuilt, |ink| ink.row);
+    previous.decorations = merge_rows(previous.decorations, fresh.decorations, rebuilt, |quad| {
+        quad.row
+    });
+    previous.cursor_blocks = fresh.cursor_blocks;
+    previous.cursor_overlays = fresh.cursor_overlays;
+    previous.glyphs = merge_rows(previous.glyphs, fresh.glyphs, rebuilt, |glyph| glyph.row);
+    previous
+}
+
+fn merge_rows<T>(
+    previous: Vec<T>,
+    fresh: Vec<T>,
+    rebuilt: &[u16],
+    row_of: impl Fn(&T) -> u16,
+) -> Vec<T> {
+    let mut kept: Vec<T> = previous
+        .into_iter()
+        .filter(|item| rebuilt.binary_search(&row_of(item)).is_err())
+        .collect();
+    kept.extend(fresh);
+    kept.sort_by_key(|item| row_of(item));
+    kept
 }
 
 fn opacity_layers(
@@ -239,7 +494,7 @@ fn opacity_layers(
     scene
         .inks
         .iter()
-        .filter_map(|ink| match ink {
+        .filter_map(|ink| match &ink.ink {
             Ink::Glyph(glyph) if glyph.opacity < 1. => {
                 Some(glyph.opacity_layer(scene.geometry, window, cx))
             }
@@ -269,6 +524,16 @@ impl Builder {
         window: &gpui::Window,
     ) -> Self {
         let geometry = Geometry::measure(&settings, bounds, frame.cols, frame.rows, window);
+        Self::from_kept(frame, settings, geometry, bounds, window.scale_factor())
+    }
+
+    fn from_kept(
+        frame: Arc<GridFrame>,
+        settings: Settings,
+        geometry: Geometry,
+        bounds: Bounds<Pixels>,
+        scale: f32,
+    ) -> Self {
         let defaults = defaults(&frame, &settings);
         let solid_cursor = solid_cursor(&frame, &settings).then(|| cursor_head(&frame));
         Self {
@@ -280,13 +545,15 @@ impl Builder {
             scene: Scene {
                 frame,
                 bounds,
-                scale: window.scale_factor(),
+                scale,
                 settings,
                 geometry,
                 background: defaults.1,
                 backgrounds: Vec::new(),
                 inks: Vec::new(),
-                overlays: Vec::new(),
+                decorations: Vec::new(),
+                cursor_blocks: Vec::new(),
+                cursor_overlays: Vec::new(),
                 glyphs: Vec::new(),
             },
         }
@@ -295,13 +562,28 @@ impl Builder {
     fn build(mut self, window: &gpui::Window) -> Scene {
         let frame = Arc::clone(&self.scene.frame);
         for row in 0..frame.rows {
-            for col in 0..frame.cols {
-                self.prepare_cell(&frame, row, col, window);
-            }
+            self.paint_row(&frame, row, window);
+        }
+        self.finish()
+    }
+
+    fn paint_rows(&mut self, rows: &[u16], window: &gpui::Window) {
+        let frame = Arc::clone(&self.scene.frame);
+        for row in rows {
+            self.paint_row(&frame, *row, window);
+        }
+    }
+
+    fn paint_row(&mut self, frame: &GridFrame, row: u16, window: &gpui::Window) {
+        for col in 0..frame.cols {
+            self.prepare_cell(frame, row, col, window);
         }
         self.flush_background();
         self.flush_glyph_run(window);
-        self.prepare_cursor(&frame);
+    }
+
+    fn finish(mut self) -> Scene {
+        prepare_cursor(&mut self.scene);
         self.scene
     }
 
@@ -326,7 +608,7 @@ impl Builder {
         if hidden(cell, &self.scene.settings) {
             return;
         }
-        self.prepare_decorations(cell, bounds, colors);
+        self.prepare_decorations(row, cell, bounds, colors);
         // Both spacer variants contain no glyph. The head's whole grapheme is
         // shaped in one call; force_width would incorrectly advance combining marks.
         if matches!(cell.wide, 2 | 3) {
@@ -440,11 +722,14 @@ impl Builder {
             let bounds = geometry.cell_bounds(run.row, col, 1);
             self.observe(run.row, col, bounds, None, run.color);
         }
-        self.scene.inks.push(Ink::Run(GlyphRun {
-            bounds: geometry.cell_bounds(run.row, run.start, len as u16),
-            color: run.color,
-            glyphs,
-        }));
+        self.scene.inks.push(RowInk {
+            row: run.row,
+            ink: Ink::Run(GlyphRun {
+                bounds: geometry.cell_bounds(run.row, run.start, len as u16),
+                color: run.color,
+                glyphs,
+            }),
+        });
     }
 
     /// Shape one cell's text alone. `cell` is its row, column and width.
@@ -475,11 +760,14 @@ impl Builder {
             None,
         );
         self.observe(row, col, bounds, Some(&line), foreground.opacity(opacity));
-        self.scene.inks.push(Ink::Glyph(Box::new(Glyph {
-            line,
-            bounds,
-            opacity,
-        })));
+        self.scene.inks.push(RowInk {
+            row,
+            ink: Ink::Glyph(Box::new(Glyph {
+                line,
+                bounds,
+                opacity,
+            })),
+        });
     }
 
     /// Record where a cell's glyph lands, in row-major order, for fixtures.
@@ -538,22 +826,39 @@ impl Builder {
                 .scene
                 .geometry
                 .cell_bounds(run.row, run.start, run.end - run.start);
-            self.scene.backgrounds.push((bounds, run.color));
+            self.scene.backgrounds.push(RowQuad {
+                row: run.row,
+                bounds,
+                color: run.color,
+            });
         }
     }
 
-    fn prepare_decorations(&mut self, cell: &Cell, bounds: Bounds<Pixels>, mut colors: CellColors) {
+    fn prepare_decorations(
+        &mut self,
+        row: u16,
+        cell: &Cell,
+        bounds: Bounds<Pixels>,
+        mut colors: CellColors,
+    ) {
         colors.foreground = colors.foreground.opacity(colors.opacity);
         colors.underline = colors.underline.opacity(colors.opacity);
         let thickness = px(1. / self.scene.geometry.scale);
         let bottom = bounds.bottom() - thickness * 2.;
         match cell.underline {
-            1 => self.rule(bounds, bottom, thickness, colors.underline),
+            1 => self.rule(row, bounds, bottom, thickness, colors.underline),
             2 => {
-                self.rule(bounds, bottom, thickness, colors.underline);
-                self.rule(bounds, bottom - thickness * 2., thickness, colors.underline);
+                self.rule(row, bounds, bottom, thickness, colors.underline);
+                self.rule(
+                    row,
+                    bounds,
+                    bottom - thickness * 2.,
+                    thickness,
+                    colors.underline,
+                );
             }
             3..=5 => self.patterned_underline(
+                row,
                 cell.underline,
                 bounds,
                 bottom,
@@ -564,6 +869,7 @@ impl Builder {
         }
         if cell.flags & CELL_STRIKETHROUGH != 0 {
             self.rule(
+                row,
                 bounds,
                 bounds.top() + bounds.size.height * 0.55,
                 thickness,
@@ -571,19 +877,28 @@ impl Builder {
             );
         }
         if cell.flags & CELL_OVERLINE != 0 {
-            self.rule(bounds, bounds.top(), thickness, colors.foreground);
+            self.rule(row, bounds, bounds.top(), thickness, colors.foreground);
         }
     }
 
-    fn rule(&mut self, bounds: Bounds<Pixels>, y: Pixels, thickness: Pixels, color: Hsla) {
-        self.scene.overlays.push((
-            Bounds::new(point(bounds.left(), y), size(bounds.size.width, thickness)),
+    fn rule(
+        &mut self,
+        row: u16,
+        bounds: Bounds<Pixels>,
+        y: Pixels,
+        thickness: Pixels,
+        color: Hsla,
+    ) {
+        self.scene.decorations.push(RowQuad {
+            row,
+            bounds: Bounds::new(point(bounds.left(), y), size(bounds.size.width, thickness)),
             color,
-        ));
+        });
     }
 
     fn patterned_underline(
         &mut self,
+        row: u16,
         kind: u8,
         bounds: Bounds<Pixels>,
         y: Pixels,
@@ -604,55 +919,57 @@ impl Builder {
                 0.
             };
             let width = if kind == 5 { thickness * 2. } else { thickness };
-            self.scene.overlays.push((
-                Bounds::new(
+            self.scene.decorations.push(RowQuad {
+                row,
+                bounds: Bounds::new(
                     point(bounds.left() + x, y - thickness * offset),
                     size(width.min(bounds.size.width - x), thickness),
                 ),
                 color,
-            ));
+            });
             x += thickness * step;
             index += 1;
         }
     }
+}
 
-    fn prepare_cursor(&mut self, frame: &GridFrame) {
-        let settings = &self.scene.settings;
-        if !cursor_visible(frame, settings) {
-            return;
-        }
-        let geometry = self.scene.geometry;
-        let (row, col) = cursor_head(frame);
-        let bounds =
-            geometry.cell_bounds(row, col, if frame.cursor.width.is_wide() { 2 } else { 1 });
-        let color = settings
-            .cursor
-            .or_else(|| frame.colors.cursor.map(rgb))
-            .unwrap_or(self.defaults.0);
-        let thickness = px(1. / geometry.scale);
-        let style = if settings.focused {
-            frame.cursor.style
-        } else {
-            CursorStyle::BlockHollow
-        };
-        let scene = &mut self.scene;
-        match style {
-            CursorStyle::Block => scene.backgrounds.push((bounds, color)),
-            CursorStyle::Bar => scene.overlays.push((
-                Bounds::new(bounds.origin, size(thickness * 2., bounds.size.height)),
-                color,
-            )),
-            CursorStyle::Underline => scene.overlays.push((
-                Bounds::new(
-                    point(bounds.left(), bounds.bottom() - thickness * 2.),
-                    size(bounds.size.width, thickness * 2.),
-                ),
-                color,
-            )),
-            CursorStyle::BlockHollow => scene
-                .overlays
-                .extend(outline(bounds, thickness).map(|bounds| (bounds, color))),
-        }
+fn prepare_cursor(scene: &mut Scene) {
+    scene.cursor_blocks.clear();
+    scene.cursor_overlays.clear();
+    let frame = Arc::clone(&scene.frame);
+    let settings = &scene.settings;
+    if !cursor_visible(&frame, settings) {
+        return;
+    }
+    let geometry = scene.geometry;
+    let (row, col) = cursor_head(&frame);
+    let bounds = geometry.cell_bounds(row, col, if frame.cursor.width.is_wide() { 2 } else { 1 });
+    let color = settings
+        .cursor
+        .or_else(|| frame.colors.cursor.map(rgb))
+        .unwrap_or_else(|| defaults(&frame, settings).0);
+    let thickness = px(1. / geometry.scale);
+    let style = if settings.focused {
+        frame.cursor.style
+    } else {
+        CursorStyle::BlockHollow
+    };
+    match style {
+        CursorStyle::Block => scene.cursor_blocks.push((bounds, color)),
+        CursorStyle::Bar => scene.cursor_overlays.push((
+            Bounds::new(bounds.origin, size(thickness * 2., bounds.size.height)),
+            color,
+        )),
+        CursorStyle::Underline => scene.cursor_overlays.push((
+            Bounds::new(
+                point(bounds.left(), bounds.bottom() - thickness * 2.),
+                size(bounds.size.width, thickness * 2.),
+            ),
+            color,
+        )),
+        CursorStyle::BlockHollow => scene
+            .cursor_overlays
+            .extend(outline(bounds, thickness).map(|bounds| (bounds, color))),
     }
 }
 
@@ -679,13 +996,16 @@ impl Prepared {
             if !hosted {
                 window.paint_quad(fill(bounds, scene.background));
             }
-            for (bounds, color) in &scene.backgrounds {
+            for quad in &scene.backgrounds {
+                window.paint_quad(fill(quad.bounds, quad.color));
+            }
+            for (bounds, color) in &scene.cursor_blocks {
                 window.paint_quad(fill(*bounds, *color));
             }
             let geometry = scene.geometry;
             let font_size = px(scene.settings.font_size);
             for ink in &scene.inks {
-                let result = match ink {
+                let result = match &ink.ink {
                     Ink::Glyph(glyph) if glyph.opacity < 1. => layers
                         .next()
                         .ok_or_else(|| "opacity layer missing".to_owned())
@@ -699,7 +1019,10 @@ impl Prepared {
                     self.report.error = Some(error);
                 }
             }
-            for (bounds, color) in &scene.overlays {
+            for quad in &scene.decorations {
+                window.paint_quad(fill(quad.bounds, quad.color));
+            }
+            for (bounds, color) in &scene.cursor_overlays {
                 window.paint_quad(fill(*bounds, *color));
             }
         });
@@ -1037,7 +1360,9 @@ mod tests {
                 background: defaults.1,
                 backgrounds: Vec::new(),
                 inks: Vec::new(),
-                overlays: Vec::new(),
+                decorations: Vec::new(),
+                cursor_blocks: Vec::new(),
+                cursor_overlays: Vec::new(),
                 glyphs: Vec::new(),
             },
         }
@@ -1065,7 +1390,14 @@ mod tests {
             .scene
             .backgrounds
             .iter()
-            .map(|(bounds, color)| (bounds.origin.x, bounds.origin.y, bounds.size.width, *color))
+            .map(|quad| {
+                (
+                    quad.bounds.origin.x,
+                    quad.bounds.origin.y,
+                    quad.bounds.size.width,
+                    quad.color,
+                )
+            })
             .collect();
         assert_eq!(
             quads,
@@ -1114,6 +1446,91 @@ mod tests {
             let mut changed = settings.clone();
             change(&mut changed);
             assert!(!scene.reusable(&same, bounds, 1., &changed));
+        }
+    }
+
+    #[test]
+    fn a_row_matches_across_arena_offsets_until_flags_or_the_solid_cursor_change() {
+        let settings = Settings::default();
+        let mut left_utf8 = Vec::new();
+        let mut right_utf8 = b"pad".to_vec();
+        let left_cell = text_cell(&mut left_utf8, b"A");
+        let right_cell = text_cell(&mut right_utf8, b"A");
+        let blank = Cell::default();
+        let left = painted_frame(vec![left_cell, blank, blank, blank], left_utf8);
+        let mut right = painted_frame(vec![right_cell, blank, blank, blank], right_utf8);
+        assert!(row_paints_alike(&left, &right, 0));
+        assert!(rows_to_rebuild(&left, &right, &settings).is_empty());
+
+        right.buffer.cells[0].flags |= CELL_SELECTED;
+        assert_eq!(rows_to_rebuild(&left, &right, &settings), vec![0]);
+        right.buffer.cells[0].flags = 0;
+
+        let bar_left = cursor_at(left, CursorStyle::Bar, 0, 0);
+        let bar_right = cursor_at(right, CursorStyle::Bar, 1, 3);
+        assert!(rows_to_rebuild(&bar_left, &bar_right, &settings).is_empty());
+        assert_ne!(
+            cursor_key(&bar_left, &settings),
+            cursor_key(&bar_right, &settings)
+        );
+
+        let block_left = cursor_at(bar_left, CursorStyle::Block, 0, 0);
+        let block_right = cursor_at(bar_right, CursorStyle::Block, 1, 0);
+        assert_eq!(
+            rows_to_rebuild(&block_left, &block_right, &settings),
+            vec![0, 1]
+        );
+    }
+
+    fn cursor_at(mut frame: GridFrame, style: CursorStyle, row: u16, col: u16) -> GridFrame {
+        frame.cursor.visible = true;
+        frame.cursor.blinking = false;
+        frame.cursor.style = style;
+        frame.cursor.row = row;
+        frame.cursor.col = col;
+        frame
+    }
+
+    #[test]
+    fn merging_rows_drops_the_rebuilt_row_and_keeps_order() {
+        let quad = |row, color: Hsla| RowQuad {
+            row,
+            bounds: Bounds::default(),
+            color,
+        };
+        let fresh = quad(1, gpui::red());
+        let merged = merge_rows(
+            vec![
+                quad(0, gpui::black()),
+                quad(1, gpui::black()),
+                quad(2, gpui::black()),
+            ],
+            vec![fresh],
+            &[1],
+            |item| item.row,
+        );
+        let rows: Vec<_> = merged.iter().map(|item| item.row).collect();
+        assert_eq!(rows, vec![0, 1, 2]);
+        assert_eq!(merged[1].color, fresh.color);
+    }
+
+    fn painted_frame(cells: Vec<Cell>, utf8: Vec<u8>) -> GridFrame {
+        let mut frame = frame();
+        frame.cols = 2;
+        frame.rows = 2;
+        frame.buffer.metadata = vec![CellMetadata::default(); cells.len()];
+        frame.buffer.cells = cells;
+        frame.buffer.utf8 = utf8;
+        frame
+    }
+
+    fn text_cell(utf8: &mut Vec<u8>, text: &[u8]) -> Cell {
+        let offset = u32::try_from(utf8.len()).unwrap_or(0);
+        utf8.extend_from_slice(text);
+        Cell {
+            utf8_offset: offset,
+            utf8_len: u16::try_from(text.len()).unwrap_or(0),
+            ..Cell::default()
         }
     }
 
