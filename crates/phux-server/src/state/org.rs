@@ -115,14 +115,14 @@ pub(crate) fn ensure_arrangements(org: &mut Org) {
 impl ServerState {
     /// The organization records.
     #[must_use]
-    pub fn org(&self) -> &Org {
+    pub const fn org(&self) -> &Org {
         self.sessions.registry.org()
     }
 
     /// The server run this state stamps on new activations: the bytes of
     /// the wire instance token (ADR-0109), so both name the same run.
     #[must_use]
-    pub fn instance_id(&self) -> InstanceId {
+    pub const fn instance_id(&self) -> InstanceId {
         InstanceId::from_bytes(*self.idspace.instance().as_bytes())
     }
 
@@ -161,13 +161,13 @@ impl ServerState {
 
     /// Mark that shutdown has begun; later teardown keeps records as they
     /// are for the next start to reconcile.
-    pub fn begin_shutdown(&mut self) {
+    pub const fn begin_shutdown(&mut self) {
         self.org.shutting_down = true;
     }
 
     /// Whether shutdown has begun.
     #[must_use]
-    pub fn shutting_down(&self) -> bool {
+    pub const fn shutting_down(&self) -> bool {
         self.org.shutting_down
     }
 

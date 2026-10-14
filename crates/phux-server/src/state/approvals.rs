@@ -117,7 +117,7 @@ impl Default for ApprovalTable {
 
 impl ServerState {
     /// Set the approval bounds (TTL, per-connection and total pending).
-    pub fn set_approval_limits(&mut self, ttl: Duration, max_pending: u32, max_total: u32) {
+    pub const fn set_approval_limits(&mut self, ttl: Duration, max_pending: u32, max_total: u32) {
         self.approvals.ttl = ttl;
         self.approvals.max_pending = max_pending;
         self.approvals.max_total = max_total;

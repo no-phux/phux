@@ -93,6 +93,10 @@ impl ServerState {
     /// asking each pane actor for its PTY descriptors and replay snapshot.
     /// Runs inside the actors' `LocalSet`; an unreachable pane is recorded
     /// without a handoff.
+    #[allow(
+        clippy::future_not_send,
+        reason = "ADR-0014: the server runs on a LocalSet; pane actors are reached through !Send local futures"
+    )]
     pub async fn build_upgrade_blob(&mut self, listener_fd: RawFd) -> StateBlob {
         self.intern_upgrade_wires();
         let mut handoffs = UpgradeHandoffs::default();
@@ -423,6 +427,10 @@ impl ServerState {
 
     /// Ask one pane's actor for its upgrade handoff. `None` when the pane has
     /// no registered handle or the actor has gone away.
+    #[allow(
+        clippy::future_not_send,
+        reason = "ADR-0014: the server runs on a LocalSet; pane actors are reached through !Send local futures"
+    )]
     async fn request_pane_handoff(&self, tid: ResourceId) -> Option<PaneUpgradeHandle> {
         let handle = self.resource_handle(tid)?;
         let (reply, rx) = oneshot::channel();
@@ -845,7 +853,7 @@ impl ServerState {
     }
 
     /// Restore the allocators above every restored id.
-    fn restore_counters(&mut self, blob: &StateBlob) {
+    const fn restore_counters(&mut self, blob: &StateBlob) {
         self.idspace
             .set_next_session_wire(blob.counters.next_session_wire_id);
         self.idspace
@@ -1530,6 +1538,10 @@ mod tests {
     /// One pane whose actor saw `seed`, with `user_title` on its registry
     /// entry, carried through blob -> rebuild -> a second blob (a second
     /// upgrade). Returns the twice-upgraded state.
+    #[allow(
+        clippy::future_not_send,
+        reason = "test helper driving pane actors on the current-thread LocalSet"
+    )]
     async fn upgrade_twice(user_title: Option<&str>, seed: &[u8]) -> ServerState {
         let mut state = ServerState::new();
         let (sid, tid) = state.seed_session("main");
@@ -1570,6 +1582,10 @@ mod tests {
     }
 
     /// `GET_SCREEN`'s `title` for the state's only pane: the engine's OSC title.
+    #[allow(
+        clippy::future_not_send,
+        reason = "test helper driving pane actors on the current-thread LocalSet"
+    )]
     async fn get_screen_title(state: &ServerState) -> Option<String> {
         let handles = state.upgrade_handles();
         assert_eq!(handles.len(), 1);

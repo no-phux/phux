@@ -77,7 +77,7 @@ impl Lifecycle {
 
     /// Record an accepted connection; disarms the idle clock (idle means
     /// unattended, not silent).
-    pub(super) fn note_connection_opened(&mut self) {
+    pub(super) const fn note_connection_opened(&mut self) {
         self.live_connections = self.live_connections.saturating_add(1);
         self.idle_since = None;
     }

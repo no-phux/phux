@@ -99,7 +99,7 @@ impl ServerState {
 
 /// `UNATTACHED_SINCE_SPAWN` without an instance token cannot be
 /// established.
-fn lacks_required_instance(precondition: &KillPrecondition) -> bool {
+const fn lacks_required_instance(precondition: &KillPrecondition) -> bool {
     precondition
         .conditions
         .contains(KillConditions::UNATTACHED_SINCE_SPAWN)

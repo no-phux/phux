@@ -198,16 +198,20 @@ impl ServerState {
         let members = self.legacy_panes_of(focus_session);
         let focus_pane = self.legacy_active_pane(focus_session, &members);
         // An empty session carries the `0` sentinels.
-        let (focused_window_wire, focused_pane_wire) = match focus_pane {
-            Some(pane) => (
-                self.intern_window_wire(focus_session),
-                self.intern_terminal_wire(pane),
-            ),
-            None => (
-                phux_protocol::ids::WindowId::new(0),
-                phux_protocol::ids::ResourceId::local(0),
-            ),
-        };
+        let (focused_window_wire, focused_pane_wire) = focus_pane.map_or_else(
+            || {
+                (
+                    phux_protocol::ids::WindowId::new(0),
+                    phux_protocol::ids::ResourceId::local(0),
+                )
+            },
+            |pane| {
+                (
+                    self.intern_window_wire(focus_session),
+                    self.intern_terminal_wire(pane),
+                )
+            },
+        );
 
         let mut snapshot =
             SessionSnapshot::new(focused_session_wire, focused_window_wire, focused_pane_wire)
