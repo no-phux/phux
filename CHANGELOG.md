@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.62.1](https://github.com/no-phux/phux/compare/v0.62.0...v0.62.1) (2026-10-14)
+
+
+### Performance
+
+* **clients:** cheapen idle echo, desktop paint, and TUI style runs ([#1303](https://github.com/no-phux/phux/issues/1303)) ([04b31b3](https://github.com/no-phux/phux/commit/04b31b3fd396916f567082369e778be117e9be5f))
+
 ## [0.62.0](https://github.com/no-phux/phux/compare/v0.61.0...v0.62.0) (2026-10-14)
 
 
