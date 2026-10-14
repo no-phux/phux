@@ -14,6 +14,7 @@ pub use path::{
     shell_quote_path, start_query,
 };
 
+pub use phux_client_ffi::projection::agent::{AgentAttention, AgentState};
 use phux_client_ffi::projection::{agent::badge, id, status};
 use phux_client_runtime::control::ControlOptions;
 use phux_client_runtime::control::{
@@ -36,12 +37,56 @@ pub struct AgentInfo {
     pub name: String,
     /// Provider slug, when declared.
     pub kind: Option<String>,
-    /// Lowercase lifecycle word.
-    pub state: String,
-    /// Lowercase attention word.
-    pub attention: String,
+    /// Declared lifecycle.
+    pub state: AgentState,
+    /// Effective attention level.
+    pub attention: AgentAttention,
     /// Milliseconds since the Unix epoch when state or attention last changed.
     pub changed_at_ms: u64,
+}
+
+impl AgentInfo {
+    /// Blocked, finished, or asking loudly: the agents a person should look at.
+    #[must_use]
+    pub fn needs_you(&self) -> bool {
+        matches!(self.state, AgentState::Blocked | AgentState::Done) || self.urgent()
+    }
+
+    /// The agent asks to be noticed above everything else.
+    #[must_use]
+    pub fn urgent(&self) -> bool {
+        self.attention == AgentAttention::High
+    }
+
+    /// What a person reads for the state.
+    #[must_use]
+    pub fn word(&self) -> &'static str {
+        state_word(self.state)
+    }
+}
+
+/// What a person reads for an agent state. An undeclared state reads as nothing.
+#[must_use]
+pub fn state_word(state: AgentState) -> &'static str {
+    match state {
+        AgentState::Blocked => "needs you",
+        AgentState::Done => "finished",
+        AgentState::Working => "working",
+        AgentState::Idle => "idle",
+        AgentState::Unknown => "",
+    }
+}
+
+/// Most pressing first: blocked, finished, working, idle, undeclared.
+#[must_use]
+pub fn state_rank(state: AgentState) -> u8 {
+    match state {
+        AgentState::Blocked => 0,
+        AgentState::Done => 1,
+        AgentState::Working => 2,
+        AgentState::Idle => 3,
+        AgentState::Unknown => 4,
+    }
 }
 
 /// Identity a mutation must still match. The hex server id is the NAPI spelling.
@@ -571,19 +616,14 @@ fn note_agent(
         agents.remove(terminal);
         return;
     }
-    let state = format!("{:?}", folded.state).to_lowercase();
-    let attention = format!("{:?}", folded.attention).to_lowercase();
-    let previous = agents.get(terminal).map(|info| {
-        (
-            info.state.clone(),
-            info.attention.clone(),
-            info.changed_at_ms,
-        )
-    });
+    let (state, attention) = (folded.state, folded.attention);
+    let previous = agents
+        .get(terminal)
+        .map(|info| (info.state, info.attention, info.changed_at_ms));
     let changed = previous
         .as_ref()
         .is_none_or(|(previous_state, previous_attention, _)| {
-            previous_state != &state || previous_attention != &attention
+            *previous_state != state || *previous_attention != attention
         });
     let changed_at_ms = if changed {
         now

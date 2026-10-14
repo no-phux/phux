@@ -116,7 +116,7 @@ OSC 133, as Ghostty's shell integration does), `select_all`, and
 chord (the selection clipboard is the pane's own selection; copies are plain
 text). `write_screen_file`, `write_scrollback_file` and `write_selection_file`
 write plain text to a private file under `$TMPDIR`, then copy or paste its
-path or open it; the palette's **Open … as a File** commands do the last. A `global:` bind to `toggle_quick_terminal` becomes a
+path or open it; the palette's **Open Scrollback as a File** does the last for scrollback. A `global:` bind to `toggle_quick_terminal` becomes a
 system-wide hotkey for a quick-terminal window that keeps its own terminal
 between toggles. If Ghostty is still running it holds that hotkey too, so quit it
 or rebind one of them. Settings > Ghostty re-applies the config, reloads it,

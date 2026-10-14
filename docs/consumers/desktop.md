@@ -39,11 +39,11 @@ surface.
 
 Untargeted startup opens the owner's Inbox. The sidebar puts that Session and
 imported Sessions awaiting organization under **Inbox**, preserving their
-existing grouping. **Mark Organized** in an imported Session's menu removes
+existing grouping. **Move out of Inbox** in an imported Session's menu removes
 it from intake without moving or restarting its work.
 
 - Command-click live work to toggle selection; stopped and non-Terminal
-  records remain selectable in the same sidebar. **Select Work** selects a
+  records remain selectable in the same sidebar. **Select All** selects a
   Session's members.
 - Drag a resource (or its selected group) onto a Session, or use **Move…** /
   `Cmd-Shift-M` and choose a destination. **Clear** cancels selection.
@@ -90,7 +90,7 @@ closing that destination before the reply cannot insert it into whichever pane
 happens to be focused later.
 
 **Reveal Existing** finds an existing placement and focuses its window.
-**Open Another View** creates a new view of the same terminal in a chosen
+**Mirror Pane** creates a new view of the same terminal in a chosen
 split, tab, or window. Both are available in the first release. Scrolling,
 selecting, or searching in one view leaves the others unchanged; all show the
 same process output. Focus and input belong to the selected view, subject to
@@ -177,7 +177,7 @@ notarization, accessibility journeys, and Linux are not shipped.
 |---|---|---|
 | Native GPUI desktop | The executable and packaged smoke are the acceptance record. A presented frame is required; this page does not claim that run. | phux-6hr7 |
 | Terminal-first projects and workspace | Tabs, split trees, restore by server identity, Open Folder. Projects/worktree grouping is not built. | phux-d4x9.7–.9 |
-| Independent same-terminal views | Open Another View, sole-or-last-focused size owner, per-view find. GPU evidence still required. | phux-d4x9.17, phux-d4x9.18 |
+| Independent same-terminal views | Mirror Pane, sole-or-last-focused size owner, per-view find. GPU evidence still required. | phux-d4x9.17, phux-d4x9.18 |
 | Connections, settings, and agents | One local socket per window; `Phux.app` opens the owner's Inbox (else the most recent session) and never creates `default`; settings and Ghostty-config import; agent badges and one notification feed behind the titlebar bell, whose agent and error entries peek in the window and reach macOS Notification Center while Phux is in the background. Remote hosts and approvals are not built. | phux-d4x9.10–.12 |
 | Native accessibility and delivery safety | Required journeys and teardown/input proofs are not yet qualified. | phux-d4x9.13, phux-d4x9.14 |
 | Apple-silicon release | `just desktop-install-app` builds an ad-hoc-signed local bundle with no NAPI addon. Notarization and updates remain required. | phux-d4x9.15, phux-d4x9.16 |

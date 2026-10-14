@@ -641,6 +641,7 @@ fn keyboard_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
 fn ghostty_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
     let found = desk.ghostty_found;
     let font = desk.ghostty().font_family.clone();
+    let ignored = desk.ghostty().unmapped.len();
     let apply = handle.clone();
     let reload = handle.clone();
     let status = SettingItem::render(move |_, _, cx| {
@@ -650,14 +651,28 @@ fn ghostty_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
             .flex_col()
             .gap(px(4.))
             .text_sm()
-            .child(if found { "Ghostty config found." } else { "No Ghostty config found." })
-            .child(
+            .child(if found {
+                "Ghostty config found."
+            } else {
+                "No Ghostty config found."
+            })
+            .children(font.clone().map(|font| {
                 div()
                     .text_xs()
                     .text_color(muted)
-                    .child("Phux reads $XDG_CONFIG_HOME/ghostty/config (or config.ghostty), then ~/Library/Application Support/com.mitchellh.ghostty/config, with config-file includes and theme =."),
-            )
-            .children(font.clone().map(|font| div().text_xs().text_color(muted).child(format!("Font: {font}"))))
+                    .child(format!("Font: {font}"))
+            }))
+            .when(ignored > 0, |status| {
+                status.child(div().text_xs().text_color(muted).child(format!(
+                    "{ignored} {} no phux equivalent and {} ignored.",
+                    if ignored == 1 {
+                        "line has"
+                    } else {
+                        "lines have"
+                    },
+                    if ignored == 1 { "is" } else { "are" },
+                )))
+            })
             .into_any_element()
     });
     let actions = SettingItem::render(move |_, _, _| {
@@ -686,72 +701,28 @@ fn ghostty_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
             )
             .into_any_element()
     });
-    let mut page = SettingPage::new("Ghostty").icon(IconName::Frame).group(
+    SettingPage::new("Ghostty").icon(IconName::Frame).group(
         SettingGroup::new()
             .title("Config")
             .description("Use Ghostty look copies its theme, font, size, cell size and padding into these settings.")
             .item(status)
             .item(actions),
-    );
-    let unmapped = desk.ghostty().unmapped.clone();
-    if !unmapped.is_empty() {
-        let mono = cx_mono();
-        page = page.group(
-            SettingGroup::new()
-                .title("Not supported here")
-                .description("These lines are read but have no phux equivalent yet.")
-                .item(SettingItem::render(move |_, _, cx| {
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.))
-                        .font_family(mono.clone())
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .children(unmapped.iter().map(|line| div().child(line.clone())))
-                        .into_any_element()
-                })),
-        );
-    }
-    page
-}
-
-fn cx_mono() -> SharedString {
-    "Menlo".into()
+    )
 }
 
 fn connection_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
-    let link = desk.link.as_ref();
     let (status, _) = desk.connection_label();
-    let server = link
-        .and_then(|link| link.connection.server_id())
-        .unwrap_or_else(|| "—".into());
-    let protocol = link
-        .and_then(|link| link.connection.server.as_ref())
-        .map(phux_client_ffi::projection::status::protocol_version)
-        .unwrap_or_else(|| "—".into());
-    let epoch = link
-        .map(|link| link.connection.connection_epoch().to_string())
-        .unwrap_or_else(|| "—".into());
-    let features = link
-        .map(|link| link.connection.features().join(", "))
-        .filter(|text| !text.is_empty())
-        .unwrap_or_else(|| "—".into());
     let fact = |title: &str, value: String| {
         SettingItem::new(
             title.to_owned(),
-            SettingField::render(move |_, _, _| {
-                div()
-                    .max_w(px(360.))
-                    .text_sm()
-                    .font_family(cx_mono())
-                    .truncate()
-                    .child(value.clone())
-            }),
+            SettingField::render(move |_, _, _| div().text_sm().child(value.clone())),
         )
     };
     let reconnect = handle.clone();
-    let attached = link.is_some_and(|link| link.connection.status == Status::Attached);
+    let attached = desk
+        .link
+        .as_ref()
+        .is_some_and(|link| link.connection.status == Status::Attached);
     let action = SettingItem::new(
         "Reconnect",
         SettingField::render(move |_, _, _| {
@@ -765,19 +736,12 @@ fn connection_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
                 })
         }),
     )
-    .description("Release every view, re-dial the socket, and restore this window's layout.");
+    .description("Reconnect and restore this window.");
     SettingPage::new("Connection")
         .icon(IconName::Network)
         .group(
             SettingGroup::new()
-                .title("Server")
                 .item(fact("Status", status))
-                .item(fact("Socket", desk.socket.display().to_string()))
-                .item(fact("Home session", desk.session.clone()))
-                .item(fact("Server id", server))
-                .item(fact("Protocol", protocol))
-                .item(fact("Connection epoch", epoch))
-                .item(fact("Capabilities", features))
                 .item(action),
         )
 }
