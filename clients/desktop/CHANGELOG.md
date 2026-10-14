@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/no-phux/phux/compare/desktop-v0.6.1...desktop-v0.7.0) (2026-10-14)
+
+
+### Features
+
+* **organization:** distinguish Intake from the attention Inbox ([#1344](https://github.com/no-phux/phux/issues/1344)) ([d18a547](https://github.com/no-phux/phux/commit/d18a547fb709ea08c4b6a56772bb4d0c21e3185c))
+
 ## [0.6.1](https://github.com/no-phux/phux/compare/desktop-v0.6.0...desktop-v0.6.1) (2026-10-14)
 
 
