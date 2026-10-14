@@ -149,7 +149,8 @@ impl Fonts {
 /// change; [`prepare`] then reuses it instead of walking and shaping every
 /// cell again. A new frame keeps the shaped rows whose cells still paint the
 /// same and reshapes only the rows that changed, plus a solid cursor's old
-/// and new rows.
+/// and new rows. A scrolled frame moves the kept rows instead of shaping them
+/// again.
 pub(super) struct Scene {
     frame: Arc<GridFrame>,
     bounds: Bounds<Pixels>,
@@ -297,9 +298,38 @@ fn patch(
         return None;
     }
     let rebuilt = rows_to_rebuild(&previous.frame, &frame, &settings);
+    // Hashing both grids costs a full read. Do it only when the in-place
+    // diff would reshape most of the screen, which is what a line of output
+    // does. A few dirty rows are cheaper to repaint than to hash.
+    if worth_scroll_search(rebuilt.len(), frame.rows)
+        && let Some(scroll) = scroll_of(&previous.frame, &frame)
+    {
+        let scrolled = rows_after_scroll(&previous.frame, &frame, &settings, scroll);
+        if scrolled.len() < rebuilt.len() {
+            shift_scene(&mut previous, scroll);
+            return finish_patch(previous, frame, settings, &scrolled, window);
+        }
+    }
     if rebuilt.len() == usize::from(frame.rows) {
         return None;
     }
+    finish_patch(previous, frame, settings, &rebuilt, window)
+}
+
+/// True when so many rows changed that a scroll shift can beat reshaping them.
+fn worth_scroll_search(rebuilt: usize, rows: u16) -> bool {
+    let height = usize::from(rows);
+    let slack = height / 8;
+    height >= 2 && rebuilt >= height.saturating_sub(slack).max(2)
+}
+
+fn finish_patch(
+    mut previous: Scene,
+    frame: Arc<GridFrame>,
+    settings: Settings,
+    rebuilt: &[u16],
+    window: &gpui::Window,
+) -> Option<Scene> {
     if rebuilt.is_empty() {
         let cursor_changed =
             cursor_key(&previous.frame, &settings) != cursor_key(&frame, &settings);
@@ -314,9 +344,240 @@ fn patch(
     let kept_bounds = previous.bounds;
     let kept_scale = previous.scale;
     let mut builder = Builder::from_kept(frame, settings, geometry, kept_bounds, kept_scale);
-    builder.paint_rows(&rebuilt, window);
+    builder.paint_rows(rebuilt, window);
     let fresh = builder.finish();
-    Some(assemble(previous, fresh, &rebuilt))
+    Some(assemble(previous, fresh, rebuilt))
+}
+
+/// Whole rows the new frame shares with the previous one, moved up or down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Scroll {
+    /// Content moved toward row 0. The new rows are at the bottom.
+    Up(u16),
+    /// Content moved toward the last row. The new rows are at the top.
+    Down(u16),
+}
+
+impl Scroll {
+    fn rows(self) -> u16 {
+        match self {
+            Self::Up(rows) | Self::Down(rows) => rows,
+        }
+    }
+}
+
+fn scroll_of(previous: &GridFrame, next: &GridFrame) -> Option<Scroll> {
+    if previous.cols != next.cols || previous.rows != next.rows || next.rows < 2 {
+        return None;
+    }
+    let prev = row_fingerprints(previous);
+    let next_rows = row_fingerprints(next);
+    if let Some(shift) = matching_shift(&prev, &next_rows) {
+        let scroll = Scroll::Up(shift);
+        if scroll_holds(previous, next, scroll) {
+            return Some(scroll);
+        }
+    }
+    if let Some(shift) = matching_shift(&next_rows, &prev) {
+        let scroll = Scroll::Down(shift);
+        if scroll_holds(previous, next, scroll) {
+            return Some(scroll);
+        }
+    }
+    None
+}
+
+fn matching_shift(source: &[u64], moved: &[u64]) -> Option<u16> {
+    (1..source.len())
+        .find(|shift| rows_aligned(source, moved, *shift))
+        .and_then(|shift| u16::try_from(shift).ok())
+}
+
+fn rows_aligned(source: &[u64], moved: &[u64], shift: usize) -> bool {
+    let Some(source) = source.get(shift..) else {
+        return false;
+    };
+    let kept = moved.len().saturating_sub(shift);
+    moved[..kept]
+        .iter()
+        .zip(source)
+        .all(|(left, right)| left == right)
+}
+
+fn scroll_holds(previous: &GridFrame, next: &GridFrame, scroll: Scroll) -> bool {
+    let shift = usize::from(scroll.rows());
+    let kept = usize::from(next.rows).saturating_sub(shift);
+    (0..kept).all(|row| {
+        let (prev_row, next_row) = scrolled_pair(scroll, row);
+        rows_paint_alike(previous, next, prev_row, next_row)
+    })
+}
+
+fn scrolled_pair(scroll: Scroll, row: usize) -> (u16, u16) {
+    let shift = usize::from(scroll.rows());
+    let (prev, next) = match scroll {
+        Scroll::Up(_) => (row + shift, row),
+        Scroll::Down(_) => (row, row + shift),
+    };
+    (
+        u16::try_from(prev).unwrap_or(u16::MAX),
+        u16::try_from(next).unwrap_or(u16::MAX),
+    )
+}
+
+fn rows_after_scroll(
+    previous: &GridFrame,
+    next: &GridFrame,
+    settings: &Settings,
+    scroll: Scroll,
+) -> Vec<u16> {
+    let mut rows = entered_rows(next.rows, scroll);
+    if let Some(row) = landed_cursor(previous, settings, scroll) {
+        rows.push(row);
+    }
+    if let Some((row, _)) = solid_head(next, settings) {
+        rows.push(row);
+    }
+    rows.sort_unstable();
+    rows.dedup();
+    rows
+}
+
+fn entered_rows(height: u16, scroll: Scroll) -> Vec<u16> {
+    let shift = scroll.rows().min(height);
+    match scroll {
+        Scroll::Up(_) => (height - shift..height).collect(),
+        Scroll::Down(_) => (0..shift).collect(),
+    }
+}
+
+fn landed_cursor(previous: &GridFrame, settings: &Settings, scroll: Scroll) -> Option<u16> {
+    let (row, _) = solid_head(previous, settings)?;
+    destination_row(scroll, previous.rows, row)
+}
+
+fn destination_row(scroll: Scroll, height: u16, row: u16) -> Option<u16> {
+    match scroll {
+        Scroll::Up(by) if row >= by => Some(row - by),
+        Scroll::Down(by) if row.checked_add(by).is_some_and(|next| next < height) => Some(row + by),
+        _ => None,
+    }
+}
+
+fn shift_scene(scene: &mut Scene, scroll: Scroll) {
+    let height = scene.frame.rows;
+    let distance = scene.geometry.cell_height * f32::from(scroll.rows());
+    let dy = match scroll {
+        Scroll::Up(_) => px(0.) - distance,
+        Scroll::Down(_) => distance,
+    };
+    shift_quads(&mut scene.backgrounds, scroll, height, dy);
+    shift_quads(&mut scene.decorations, scroll, height, dy);
+    shift_inks(&mut scene.inks, scroll, height, dy);
+    shift_glyphs(&mut scene.glyphs, scroll, height, dy);
+}
+
+fn shift_quads(quads: &mut Vec<RowQuad>, scroll: Scroll, height: u16, dy: Pixels) {
+    quads.retain_mut(|quad| shift_row(&mut quad.row, &mut quad.bounds, scroll, height, dy));
+}
+
+fn shift_inks(inks: &mut Vec<RowInk>, scroll: Scroll, height: u16, dy: Pixels) {
+    inks.retain_mut(|ink| {
+        let Some(next) = destination_row(scroll, height, ink.row) else {
+            return false;
+        };
+        ink.row = next;
+        ink_bounds(&mut ink.ink).origin.y += dy;
+        true
+    });
+}
+
+fn shift_glyphs(glyphs: &mut Vec<GlyphObservation>, scroll: Scroll, height: u16, dy: Pixels) {
+    glyphs.retain_mut(|glyph| {
+        let kept = shift_row(&mut glyph.row, &mut glyph.bounds, scroll, height, dy);
+        if kept {
+            glyph.origin.y += dy;
+            glyph.baseline += dy;
+        }
+        kept
+    });
+}
+
+fn shift_row(
+    row: &mut u16,
+    bounds: &mut Bounds<Pixels>,
+    scroll: Scroll,
+    height: u16,
+    dy: Pixels,
+) -> bool {
+    let Some(next) = destination_row(scroll, height, *row) else {
+        return false;
+    };
+    *row = next;
+    bounds.origin.y += dy;
+    true
+}
+
+fn ink_bounds(ink: &mut Ink) -> &mut Bounds<Pixels> {
+    match ink {
+        Ink::Glyph(glyph) => &mut glyph.bounds,
+        Ink::Run(run) => &mut run.bounds,
+    }
+}
+
+fn row_fingerprints(frame: &GridFrame) -> Vec<u64> {
+    (0..frame.rows)
+        .map(|row| row_fingerprint(frame, row))
+        .collect()
+}
+
+fn row_fingerprint(frame: &GridFrame, row: u16) -> u64 {
+    let cols = usize::from(frame.cols);
+    let Some(start) = usize::from(row).checked_mul(cols) else {
+        return 0;
+    };
+    let mut hash = 0xcbf29ce484222325_u64;
+    for index in start..start + cols {
+        hash = mix_cell(hash, frame, index);
+    }
+    hash
+}
+
+fn mix_cell(mut hash: u64, frame: &GridFrame, index: usize) -> u64 {
+    let Some(cell) = frame.buffer.cells.get(index) else {
+        return mix(hash, 0xffff);
+    };
+    hash = mix(hash, u64::from(cell.utf8_len));
+    hash = mix(hash, u64::from(cell.wide));
+    hash = mix(hash, u64::from(cell.flags));
+    hash = mix(hash, u64::from(cell.underline));
+    for byte in color_bytes(cell) {
+        hash = mix(hash, u64::from(byte));
+    }
+    hash = mix_metadata(hash, frame.buffer.metadata.get(index).copied());
+    match text_span(cell, &frame.buffer.utf8) {
+        Some(text) => {
+            for byte in text {
+                hash = mix(hash, u64::from(*byte));
+            }
+            hash
+        }
+        None => mix(hash, 0xff),
+    }
+}
+
+fn mix_metadata(mut hash: u64, metadata: Option<CellMetadata>) -> u64 {
+    let Some(metadata) = metadata else {
+        return mix(hash, 0);
+    };
+    hash = mix(hash, u64::from(metadata.foreground_kind));
+    hash = mix(hash, u64::from(metadata.foreground_palette_index));
+    hash = mix(hash, u64::from(metadata.underline_color_is_default));
+    mix(hash, u64::from(metadata.background_color_is_default))
+}
+
+fn mix(hash: u64, value: u64) -> u64 {
+    hash.wrapping_mul(0x517cc1b727220a95).wrapping_add(value)
 }
 
 fn can_patch(
@@ -376,7 +637,11 @@ struct RowParts<'a> {
 }
 
 fn row_paints_alike(previous: &GridFrame, next: &GridFrame, row: u16) -> bool {
-    let Some(parts) = row_slices(previous, next, row) else {
+    rows_paint_alike(previous, next, row, row)
+}
+
+fn rows_paint_alike(previous: &GridFrame, next: &GridFrame, prev_row: u16, next_row: u16) -> bool {
+    let Some(parts) = row_slices(previous, next, prev_row, next_row) else {
         return false;
     };
     parts
@@ -393,18 +658,30 @@ fn row_paints_alike(previous: &GridFrame, next: &GridFrame, row: u16) -> bool {
             .all(|(left, right)| metadata_matches(left, right))
 }
 
-fn row_slices<'a>(previous: &'a GridFrame, next: &'a GridFrame, row: u16) -> Option<RowParts<'a>> {
+fn row_slices<'a>(
+    previous: &'a GridFrame,
+    next: &'a GridFrame,
+    prev_row: u16,
+    next_row: u16,
+) -> Option<RowParts<'a>> {
     if previous.cols != next.cols {
         return None;
     }
-    let start = usize::from(row).checked_mul(usize::from(previous.cols))?;
-    let end = start.checked_add(usize::from(previous.cols))?;
+    let cols = usize::from(previous.cols);
+    let prev = row_range(prev_row, cols)?;
+    let next_span = row_range(next_row, cols)?;
     Some(RowParts {
-        prev_cells: previous.buffer.cells.get(start..end)?,
-        next_cells: next.buffer.cells.get(start..end)?,
-        prev_meta: previous.buffer.metadata.get(start..end)?,
-        next_meta: next.buffer.metadata.get(start..end)?,
+        prev_cells: previous.buffer.cells.get(prev.clone())?,
+        next_cells: next.buffer.cells.get(next_span.clone())?,
+        prev_meta: previous.buffer.metadata.get(prev)?,
+        next_meta: next.buffer.metadata.get(next_span)?,
     })
+}
+
+fn row_range(row: u16, cols: usize) -> Option<std::ops::Range<usize>> {
+    let start = usize::from(row).checked_mul(cols)?;
+    let end = start.checked_add(cols)?;
+    Some(start..end)
 }
 
 fn cell_paints_alike(left: &Cell, left_utf8: &[u8], right: &Cell, right_utf8: &[u8]) -> bool {
@@ -1480,6 +1757,92 @@ mod tests {
             rows_to_rebuild(&block_left, &block_right, &settings),
             vec![0, 1]
         );
+    }
+
+    #[test]
+    fn a_scrolled_screen_keeps_the_rows_that_moved() {
+        let settings = Settings::default();
+        let previous = row_grid(&["aaa", "bbb", "ccc"]);
+        let next = row_grid(&["bbb", "ccc", "ddd"]);
+        assert_eq!(scroll_of(&previous, &next), Some(Scroll::Up(1)));
+        assert_eq!(
+            rows_after_scroll(&previous, &next, &settings, Scroll::Up(1)),
+            vec![2]
+        );
+
+        let previous = cursor_at(previous, CursorStyle::Block, 2, 0);
+        let next = cursor_at(next, CursorStyle::Block, 2, 0);
+        assert_eq!(
+            rows_after_scroll(&previous, &next, &settings, Scroll::Up(1)),
+            vec![1, 2]
+        );
+
+        let back = row_grid(&["aaa", "bbb", "ccc"]);
+        let forward = row_grid(&["zzz", "aaa", "bbb"]);
+        assert_eq!(scroll_of(&back, &forward), Some(Scroll::Down(1)));
+        assert_eq!(
+            rows_after_scroll(&back, &forward, &settings, Scroll::Down(1)),
+            vec![0]
+        );
+        assert!(scroll_of(&back, &row_grid(&["axa", "bbb", "ccc"])).is_none());
+    }
+
+    #[test]
+    fn scroll_search_runs_only_when_most_rows_changed() {
+        assert!(!worth_scroll_search(1, 40));
+        assert!(!worth_scroll_search(34, 40));
+        assert!(worth_scroll_search(35, 40));
+        assert!(worth_scroll_search(40, 40));
+        assert!(worth_scroll_search(3, 3));
+        assert!(!worth_scroll_search(2, 3));
+        assert!(!worth_scroll_search(0, 1));
+    }
+
+    #[test]
+    fn shifting_a_scene_moves_the_kept_row() {
+        let geometry = Geometry {
+            cell_width: px(8.),
+            cell_height: px(10.),
+            cols: 3,
+            rows: 3,
+            ..Default::default()
+        };
+        let mut scene = builder(
+            row_grid(&["aaa", "bbb", "ccc"]),
+            Settings::default(),
+            geometry,
+        )
+        .scene;
+        let origin = geometry.cell_bounds(2, 0, 1);
+        scene.backgrounds.push(RowQuad {
+            row: 2,
+            bounds: origin,
+            color: gpui::red(),
+        });
+        shift_scene(&mut scene, Scroll::Up(1));
+        assert_eq!(scene.backgrounds.len(), 1);
+        assert_eq!(scene.backgrounds[0].row, 1);
+        assert_eq!(
+            scene.backgrounds[0].bounds.origin.y,
+            geometry.cell_bounds(1, 0, 1).origin.y
+        );
+    }
+
+    fn row_grid(lines: &[&str]) -> GridFrame {
+        let mut utf8 = Vec::new();
+        let mut cells = Vec::new();
+        for line in lines {
+            for byte in line.as_bytes() {
+                cells.push(text_cell(&mut utf8, &[*byte]));
+            }
+        }
+        let mut frame = frame();
+        frame.cols = u16::try_from(lines.first().map_or(0, |line| line.len())).unwrap_or(0);
+        frame.rows = u16::try_from(lines.len()).unwrap_or(0);
+        frame.buffer.metadata = vec![CellMetadata::default(); cells.len()];
+        frame.buffer.cells = cells;
+        frame.buffer.utf8 = utf8;
+        frame
     }
 
     fn cursor_at(mut frame: GridFrame, style: CursorStyle, row: u16, col: u16) -> GridFrame {
