@@ -42,7 +42,7 @@ moves, not a whole-file rewrite per change.
    so two servers never share records. `ServerConfig` names its location as a
    path or memory; in-process tests use memory and every test server gets
    its own `XDG_STATE_HOME`. It holds the `AuthorityId`, the designated
-   Inbox session, sessions and intake marks, resources with activations,
+   Intake session, sessions and intake marks, resources with activations,
    arrangements, tombstones (30 days), operation receipts (24 hours or
    10,000, whichever comes first), migration receipts, and the last
    journal sequence. Terminal output is not stored here
@@ -56,7 +56,7 @@ moves, not a whole-file rewrite per change.
    versioned, transactional, and backed up first; an unsupported store
    version is refused, not guessed at.
 3. **First start.** The server mints an `AuthorityId`, imports the live
-   registry with each window as a group, designates a persistent Inbox
+   registry with each window as a group, designates a persistent Intake
    session, and marks imported sessions awaiting organization. The import
    runs only for a live-upgrade handoff that carries no records, and it
    writes an `import-live-registry/v1` migration receipt. A session's

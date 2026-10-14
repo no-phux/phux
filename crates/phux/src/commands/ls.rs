@@ -394,7 +394,7 @@ fn session_lines(snapshot: &SessionSnapshot, organization: Option<&OrgInventory>
 
 /// The default `phux ls` body: one glance line per session, sessions that
 /// need you first, collapsed past [`GLANCE_ROWS`] ([`collapse`]), grouped
-/// by host like [`session_lines`]. The Inbox is left out while it holds
+/// by host like [`session_lines`]. Intake is left out while it holds
 /// nothing.
 fn glance_lines(sources: Sources<'_>) -> Vec<String> {
     let rows = glance::sessions(sources)
@@ -528,6 +528,29 @@ fn collapse(mut rows: Vec<SessionGlance>) -> Vec<String> {
 ///
 /// `api: needs you (1 agent waiting, 1 failed), 5 running`
 fn glance_text(row: &SessionGlance) -> String {
+    let needs = attention_parts(row);
+    let mut parts = Vec::new();
+    if !needs.is_empty() {
+        parts.push(format!("needs you ({})", needs.join(", ")));
+    }
+    match row.to_organize {
+        Some(0) => parts.push("Intake".to_owned()),
+        Some(n) => parts.push(format!("{n} in Intake")),
+        None => {}
+    }
+    parts.extend(execution_parts(row));
+    if row.ephemeral {
+        parts.push("ephemeral".to_owned());
+    }
+    format!(
+        "{}: {}{}",
+        row.name,
+        parts.join(", "),
+        attached_note(row.attached_clients)
+    )
+}
+
+fn attention_parts(row: &SessionGlance) -> Vec<String> {
     let mut needs = Vec::new();
     if row.waiting > 0 {
         let agents = plural32(row.waiting, "agent", "agents");
@@ -539,34 +562,24 @@ fn glance_text(row: &SessionGlance) -> String {
     if row.lost > 0 {
         needs.push(format!("{} lost", row.lost));
     }
-    if let Some(n) = row.to_organize.filter(|n| *n > 0) {
-        needs.push(format!("{n} to organize"));
-    }
+    needs
+}
+
+fn execution_parts(row: &SessionGlance) -> Vec<String> {
     let mut parts = Vec::new();
-    if !needs.is_empty() {
-        parts.push(format!("needs you ({})", needs.join(", ")));
-    }
     if row.running > 0 {
         parts.push(format!("{} running", row.running));
     }
     if row.not_started > 0 {
         parts.push(format!("{} not started", row.not_started));
     }
-    if parts.is_empty() && row.done > 0 {
+    if parts.is_empty() && row.done > 0 && row.needs_you() == 0 {
         parts.push(format!("{} done", row.done));
     }
     if row.is_empty() {
         parts.push("empty".to_owned());
     }
-    if row.ephemeral {
-        parts.push("ephemeral".to_owned());
-    }
-    format!(
-        "{}: {}{}",
-        row.name,
-        parts.join(", "),
-        attached_note(row.attached_clients)
-    )
+    parts
 }
 
 /// A [`SessionJson`] row as a glance: what its execution counts tell
@@ -1398,7 +1411,23 @@ mod tests {
                 to_organize: Some(2),
                 ..row("inbox")
             }),
-            "inbox: needs you (2 to organize), 2 not started"
+            "inbox: 2 in Intake, 2 not started"
+        );
+        assert_eq!(
+            super::glance_text(&SessionGlance {
+                waiting: 1,
+                running: 1,
+                to_organize: Some(2),
+                ..row("my queue")
+            }),
+            "my queue: needs you (1 agent waiting), 2 in Intake, 1 running"
+        );
+        assert_eq!(
+            super::glance_text(&SessionGlance {
+                to_organize: Some(0),
+                ..row("inbox")
+            }),
+            "inbox: Intake, empty"
         );
     }
 

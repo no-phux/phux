@@ -165,12 +165,12 @@ fn session_kill(
             let Some(record) = s.org().session(&key) else {
                 return (None, Err(Refusal::NotFound));
             };
-            if key == s.org().authority().inbox_session {
+            if key == s.org().authority().intake_session() {
                 return (
                     None,
                     Err(Refusal::InvalidArgument {
                         field: "session",
-                        reason: "the designated inbox session cannot be deleted".to_owned(),
+                        reason: "the designated intake session cannot be deleted".to_owned(),
                     }),
                 );
             }
@@ -813,7 +813,7 @@ fn arrangement_get(s: &ServerState, key: &phux_protocol::ids::ArrangementKey) ->
 /// caller may inventory, in session-key order, each followed by its members
 /// in resource-key order. `cursor` is the key of the last record the previous
 /// page emitted; this page resumes strictly after that key. Totals count
-/// every matching record the caller may inventory; the Inbox designation
+/// every matching record the caller may inventory; the Intake designation
 /// needs Global.
 fn organization_page(
     s: &mut ServerState,
@@ -822,14 +822,14 @@ fn organization_page(
     page_size: u32,
     cursor: Option<&[u8]>,
 ) -> CommandResult {
-    let inbox = s.org().authority().inbox_session;
+    let intake = s.org().authority().intake_session();
     let selected: Vec<phux_core::SessionKey> = match filter {
         OrgFilter::All => s.org().sessions().map(|r| r.key).collect(),
         OrgFilter::Session(key) => vec![ow::core_session_key(&key)],
         OrgFilter::Intake => s
             .org()
             .sessions()
-            .filter(|r| r.key == inbox || r.awaiting_organization)
+            .filter(|r| r.key == intake || r.awaiting_organization)
             .map(|r| r.key)
             .collect(),
         _ => {
@@ -937,9 +937,9 @@ fn organization_page(
     };
     let head = s.journal_head();
     let page = OrganizationPage::new(authority, phux_protocol::ids::Revision::new(head), head)
-        .with_inbox(
+        .with_intake(
             crate::policy::filter::admits_global(s, client, Verb::Inventory)
-                .then(|| ow::session_key(inbox))
+                .then(|| ow::session_key(intake))
                 .flatten(),
         )
         .with_sessions(sessions)

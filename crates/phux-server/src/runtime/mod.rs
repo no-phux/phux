@@ -3502,7 +3502,7 @@ mod tests {
             );
             assert!(
                 server
-                    .session_by_name("inbox")
+                    .session_by_name(phux_core::INTAKE_NAME)
                     .unwrap()
                     .arrangement
                     .is_some()

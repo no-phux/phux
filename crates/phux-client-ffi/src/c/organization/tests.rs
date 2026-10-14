@@ -360,7 +360,8 @@ fn negotiation_seeds_the_replica_and_records_reach_the_abi() {
     assert_ne!(work_record.flags & PHUX_SESSION_RECORD_FOCUSED, 0);
     assert_eq!(work_record.flags & PHUX_SESSION_RECORD_INBOX, 0);
     let inbox_record = session_record(&h, 1);
-    assert_ne!(inbox_record.flags & PHUX_SESSION_RECORD_INBOX, 0);
+    assert_ne!(inbox_record.flags & PHUX_SESSION_RECORD_INTAKE, 0);
+    assert_eq!(PHUX_SESSION_RECORD_INTAKE, PHUX_SESSION_RECORD_INBOX);
     assert_ne!(
         inbox_record.flags & PHUX_SESSION_RECORD_AWAITING_ORGANIZATION,
         0

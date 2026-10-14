@@ -7,7 +7,7 @@
 //!   points back at its session;
 //! * no ephemeral session is empty after commit: removing or moving out its
 //!   last member deletes it in the same transition;
-//! * the designated Inbox session is never ephemeral and never deleted;
+//! * the designated Intake session is never ephemeral and never deleted;
 //! * a session arrangement names only that session's members: entries for
 //!   a resource that leaves are pruned in the same transition;
 //! * every record touched by a transition bumps its revision exactly once.
@@ -166,7 +166,7 @@ fn dispatch(tx: &mut Tx<'_>, op: &Op, fresh: &mut dyn FreshKeys) -> Result<Out, 
             to,
             to_expected,
         } => resource_move_many(tx, resources, sources, *to, *to_expected),
-        Op::InboxResolve { session, expected } => inbox_resolve(tx, *session, *expected),
+        Op::InboxResolve { session, expected } => intake_resolve(tx, *session, *expected),
         Op::OrganizationUndo { original, expected } => organization_undo(tx, *original, expected),
         Op::ResourceRename { resource, name } => resource_rename(tx, *resource, name.as_deref()),
         Op::ResourceTerminate {
@@ -755,10 +755,10 @@ fn session_set_lifetime(
     if current.lifetime == lifetime {
         return Ok(Out::ok(Some(current.revision)));
     }
-    if key == tx.org.authority().inbox_session && lifetime == SessionLifetime::Ephemeral {
+    if key == tx.org.authority().intake_session() && lifetime == SessionLifetime::Ephemeral {
         return Err(Refusal::invalid(
             "lifetime",
-            "the designated inbox session is persistent",
+            "the designated intake session is persistent",
         ));
     }
     let s = tx.session_mut(key).ok_or(Refusal::NotFound)?;
@@ -780,10 +780,10 @@ fn session_set_lifetime(
 /// caller looked refuses [`Refusal::NotEmpty`].
 fn session_delete(tx: &mut Tx<'_>, key: SessionKey) -> Result<Out, Refusal> {
     let s = tx.session(key).ok_or(Refusal::NotFound)?;
-    if key == tx.org.authority().inbox_session {
+    if key == tx.org.authority().intake_session() {
         return Err(Refusal::invalid(
             "session",
-            "the designated inbox session cannot be deleted",
+            "the designated intake session cannot be deleted",
         ));
     }
     if !s.members.is_empty() {
@@ -801,10 +801,10 @@ fn session_kill(tx: &mut Tx<'_>, key: SessionKey) -> Result<Out, Refusal> {
     let Some(session) = tx.session(key) else {
         return Ok(Out::ok(None));
     };
-    if key == tx.org.authority().inbox_session {
+    if key == tx.org.authority().intake_session() {
         return Err(Refusal::invalid(
             "session",
-            "the designated inbox session cannot be deleted",
+            "the designated intake session cannot be deleted",
         ));
     }
     for member in session.members.clone() {
@@ -827,7 +827,7 @@ fn session_kill(tx: &mut Tx<'_>, key: SessionKey) -> Result<Out, Refusal> {
     Ok(Out::ok(None))
 }
 
-fn inbox_resolve(tx: &mut Tx<'_>, key: SessionKey, expected: Revision) -> Result<Out, Refusal> {
+fn intake_resolve(tx: &mut Tx<'_>, key: SessionKey, expected: Revision) -> Result<Out, Refusal> {
     let current = tx.checked_session(key, expected)?;
     if !current.awaiting_organization {
         return Ok(Out::ok(Some(current.revision)));
@@ -863,7 +863,7 @@ fn resource_create(
     session: Option<SessionKey>,
     spec: &NewResource,
 ) -> Result<Out, Refusal> {
-    let session = session.unwrap_or_else(|| tx.org.authority().inbox_session);
+    let session = session.unwrap_or_else(|| tx.org.authority().intake_session());
     if tx.session(session).is_none() {
         return Err(Refusal::NotFound);
     }

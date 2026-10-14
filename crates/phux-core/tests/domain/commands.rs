@@ -136,7 +136,7 @@ fn session_create_refusals() {
         Some(Refusal::NameTaken)
     );
     assert_eq!(
-        h.run(create("inbox", SessionLifetime::Persistent, None))
+        h.run(create("intake", SessionLifetime::Persistent, None))
             .err(),
         Some(Refusal::NameTaken)
     );

@@ -33,7 +33,7 @@ load are outside the number. The scenarios are:
 - the PTY batch copy one actor burst performs
 - one organization commit (`org_commit/commit`): a `ResourceMove` through
   `ServerState::commit` into a real SQLite store seeded at the scale contract
-  (5,000 resources in 200 sessions, 500 in the Inbox, receipts at the
+  (5,000 resources in 200 sessions, 500 in Intake, receipts at the
   10,000 cap), so the count covers apply, the store transaction with its
   receipt pruning, the in-memory mirror, and journaling. Syscalls, including
   the `fsync`, are outside the count. The pinned baseline is about 278,000
@@ -113,8 +113,8 @@ flake. The test runs in the existing server integration lane.
 `the_org_store_holds_the_scale_contract` in
 `crates/phux-server/src/runtime/org_scale_tests.rs` seeds the same shape as
 the `org_commit` scenario ([`org_scale`](../crates/phux-server/src/org_scale.rs))
-and runs with the unit tests. It pages the whole inventory and the Inbox
-intake, makes 200 single moves, a 256-resource `ResourceMoveMany` and its
+and runs with the unit tests. It pages the whole inventory and the Intake
+projection, makes 200 single moves, a 256-resource `ResourceMoveMany` and its
 undo, then 1,500 renames past the receipt cap, with three event observers
 attached. It asserts:
 

@@ -46,8 +46,8 @@ pub use keys::{
     OperationId, ResourceKey, Revision, SequentialKeys, SessionKey, WorkspaceKey,
 };
 pub use org::{
-    Authority, Delta, Event, InvariantViolation, InverseEdit, Org, Receipt, RecordRef, RevisionPin,
-    Transition, Undo,
+    Authority, Delta, Event, INBOX_NAME, INTAKE_NAME, InvariantViolation, InverseEdit, Org,
+    Receipt, RecordRef, RevisionPin, Transition, Undo,
 };
 pub use process::{ExitOutcome, TerminalProcessState};
 pub use registry::{Committed, Registry};

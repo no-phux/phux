@@ -41,8 +41,8 @@ Use a private target directory per worktree for concurrent builds.
   advertises `ORGANIZATION` (extended feature `0x10`). A fresh client answers
   it with a `GET_ORGANIZATION` seed; `organization_page.bin` is that seed's
   one-page answer, correlated to the request id the C ABI sends first:
-  authority sixteen `0xa0` bytes, Inbox `inbox` (session 2, sixteen `0x1b`
-  bytes, empty), and `fixture` (session 1) holding terminal 7 running (key
+  authority sixteen `0xa0` bytes, Intake (legacy name `inbox`, session 2,
+  sixteen `0x1b` bytes, empty), and `fixture` (session 1) holding terminal 7 running (key
   sixteen `0x77` bytes) and a completed, retained shell that exited 3 (key
   sixteen `0x78` bytes, no live handle). The generator checks the records,
   `PhuxSessionRecord`, and the keyed `PhuxResourceInfo` after `attached.bin`.

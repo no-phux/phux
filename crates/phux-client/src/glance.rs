@@ -98,20 +98,19 @@ pub struct SessionGlance {
     pub done: u32,
     /// Whether the session is deleted with its last terminal.
     pub ephemeral: bool,
-    /// Imported terminals awaiting organization, when this is the Inbox.
+    /// Terminals awaiting organization in Intake (independent of agent attention).
     pub to_organize: Option<u32>,
     /// Clients attached right now.
     pub attached_clients: u16,
 }
 
 impl SessionGlance {
-    /// How many terminals need a person, the Inbox's work included.
+    /// How many terminals need attention; Intake organization is counted separately.
     #[must_use]
-    pub fn needs_you(&self) -> u32 {
+    pub const fn needs_you(&self) -> u32 {
         self.waiting
             .saturating_add(self.failed)
             .saturating_add(self.lost)
-            .saturating_add(self.to_organize.unwrap_or(0))
     }
 
     /// Whether the session holds nothing.
@@ -175,10 +174,11 @@ pub fn session_glance(sources: Sources<'_>, session: &SessionInfo) -> SessionGla
     let record = record_of(sources.organization, session);
     let lifetime = record.map(|r| r.lifetime).or(session.lifetime);
     glance.ephemeral = lifetime == Some(SessionLifetime::Ephemeral);
-    let is_inbox = record.is_some_and(|r| {
-        r.awaiting_organization || sources.organization.and_then(|o| o.inbox) == Some(r.key)
+    let is_intake = record.is_some_and(|r| {
+        r.awaiting_organization
+            || sources.organization.and_then(OrgInventory::intake) == Some(r.key)
     });
-    if is_inbox {
+    if is_intake {
         glance.to_organize = Some(u32::try_from(members.len()).unwrap_or(u32::MAX));
     }
     glance
@@ -398,6 +398,21 @@ fn outcome_words(outcome: Outcome) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn intake_organization_is_separate_from_attention() {
+        let mut glance = SessionGlance {
+            to_organize: Some(7),
+            running: 7,
+            ..SessionGlance::default()
+        };
+        assert_eq!(glance.needs_you(), 0);
+        glance.waiting = 2;
+        glance.failed = 1;
+        assert_eq!(glance.needs_you(), 3);
+        glance.lost = u32::MAX;
+        assert_eq!(glance.needs_you(), u32::MAX);
+    }
 
     #[test]
     fn exceptions_sort_before_quiet_work() {

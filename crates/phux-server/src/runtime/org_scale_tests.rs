@@ -1,5 +1,5 @@
 //! The organization store at automation scale (CONTRACTS §08): 5,000
-//! resources in 200 sessions plus 500 in the Inbox, a full receipt window,
+//! resources in 200 sessions plus 500 in Intake, a full receipt window,
 //! a real SQLite file. Pages and batches stay bounded, a commit writes only
 //! the pages it touches, nothing is dropped, and receipt churn stays at the
 //! cap while observers follow every event.
@@ -210,7 +210,7 @@ fn the_org_store_holds_the_scale_contract() {
     assert_eq!(first.total_sessions as usize, spec.sessions + 1);
     assert_eq!(first.total_resources as usize, records);
 
-    // Inbox intake at the largest page.
+    // Intake at the largest page.
     let intake = all_pages(
         &state,
         OrgFilter::Intake,
@@ -256,7 +256,7 @@ fn the_org_store_holds_the_scale_contract() {
     });
     probe.report("move", PAGES_PER_COMMIT);
 
-    // A bounded batch out of the Inbox, then its undo.
+    // A bounded batch out of Intake, then its undo.
     let batch = phux_core::command::MAX_MOVE_BATCH;
     let move_many = fresh();
     state.with_mut(|s| {

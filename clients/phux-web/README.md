@@ -29,7 +29,7 @@ WebTransport stream is length-prefixed frames reassembled by
 
 After `HELLO_OK` the client picks a session before it attaches. A server
 advertising `ORGANIZATION` is asked for its organization page and the client
-opens the owner's Inbox session; any other server is asked for its state and
+opens the owner's Intake session; any other server is asked for its state and
 the client opens its most recent session. Only a server with no sessions at all
 gets a `default` session created.
 

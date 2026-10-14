@@ -43,7 +43,7 @@ pub mod glance;
 pub mod kill;
 pub mod layout_ops;
 // Organization commands behind `ORGANIZATION` (`rm`, `relaunch`, `restore`,
-// `mv`, bulk move, undo, Inbox resolve).
+// `mv`, bulk move, undo, Intake resolve).
 pub mod org;
 pub mod pane_move;
 pub mod perf;

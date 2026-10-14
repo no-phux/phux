@@ -129,7 +129,10 @@ impl ControlPlane {
             }
             return false;
         };
-        self.attach_target = Some(target);
+        // Once resolved, follow this identity even when the lookup name changes.
+        self.attach_target = Some(AttachTarget::ById(phux_protocol::ids::SessionId::new(
+            session_id,
+        )));
         if self.selected_session == Some(session_id) {
             return false;
         }

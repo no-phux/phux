@@ -47,8 +47,10 @@ pub const LIFETIME_EPHEMERAL: u32 = 2;
 pub const PHUX_SESSION_RECORD_FOCUSED: u32 = 0x1;
 /// `PHUX_SESSION_RECORD_AWAITING_ORGANIZATION`.
 pub const PHUX_SESSION_RECORD_AWAITING_ORGANIZATION: u32 = 0x2;
-/// `PHUX_SESSION_RECORD_INBOX`.
-pub const PHUX_SESSION_RECORD_INBOX: u32 = 0x4;
+/// The designated Intake session, with the existing ABI flag value.
+pub const PHUX_SESSION_RECORD_INTAKE: u32 = 0x4;
+/// Legacy ABI spelling of [`PHUX_SESSION_RECORD_INTAKE`].
+pub const PHUX_SESSION_RECORD_INBOX: u32 = PHUX_SESSION_RECORD_INTAKE;
 /// `PHUX_SESSION_RECORD_ORGANIZED`: the replica holds the record, so
 /// `revision`, `arrangement_key`, and the state counts are its values.
 pub const PHUX_SESSION_RECORD_ORGANIZED: u32 = 0x8;
@@ -65,7 +67,7 @@ pub(crate) enum Kind {
     Relaunch = 5,
     DeleteSession = 6,
     SetLifetime = 7,
-    InboxResolve = 8,
+    IntakeResolve = 8,
     Undo = 9,
     KillSession = 10,
 }
@@ -73,7 +75,7 @@ pub(crate) enum Kind {
 impl Kind {
     /// Whether the server keeps an inverse for this edit (CONTRACTS §06).
     const fn undoable(self) -> bool {
-        matches!(self, Self::Move | Self::MoveMany | Self::InboxResolve)
+        matches!(self, Self::Move | Self::MoveMany | Self::IntakeResolve)
     }
 }
 
@@ -419,7 +421,7 @@ pub(crate) fn changed(client: &mut Client) {
         if replica.authority().is_none() {
             return;
         }
-        let inbox = replica.inbox();
+        let intake = replica.intake();
         let live_of = |key: &SessionKey| -> u32 {
             replica
                 .session(key)
@@ -450,7 +452,7 @@ pub(crate) fn changed(client: &mut Client) {
                 members: record.members,
                 arrangement: record.arrangement,
                 awaiting_organization: record.awaiting_organization,
-                inbox: Some(record.key) == inbox,
+                inbox: Some(record.key) == intake,
                 ..SessionOrg::default()
             };
             for member in replica.members(&record.key) {
@@ -651,7 +653,7 @@ pub unsafe extern "C" fn phux_client_organization_supported(
     })
 }
 
-/// The replica's state, authority, Inbox, and change counter.
+/// The replica's state, authority, Intake, and change counter.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct PhuxOrganizationInfo {
@@ -705,7 +707,7 @@ pub unsafe extern "C" fn phux_client_organization_info(
             (
                 state,
                 replica.authority().map_or([0; 16], |key| *key.as_bytes()),
-                replica.inbox().map_or([0; 16], |key| *key.as_bytes()),
+                replica.intake().map_or([0; 16], |key| *key.as_bytes()),
             )
         };
         *out = PhuxOrganizationInfo {
@@ -804,7 +806,7 @@ pub unsafe extern "C" fn phux_client_session_record_get(
             flags |= PHUX_SESSION_RECORD_AWAITING_ORGANIZATION;
         }
         if org.inbox {
-            flags |= PHUX_SESSION_RECORD_INBOX;
+            flags |= PHUX_SESSION_RECORD_INTAKE;
         }
         if org.known {
             flags |= PHUX_SESSION_RECORD_ORGANIZED;
@@ -1128,12 +1130,26 @@ pub unsafe extern "C" fn phux_client_org_set_lifetime(
     })
 }
 
-/// Clear an imported session's Inbox intake mark; its members stay.
+/// Legacy ABI name for clearing an imported session's Intake mark; members stay.
 ///
 /// # Safety
 /// Client is live and exclusively accessed; `session` is 16 readable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_org_inbox_resolve(
+    client: *mut PhuxClient,
+    request_id: u32,
+    session: *const u8,
+) -> PhuxClientResult {
+    // SAFETY: the legacy entry point has the same caller requirements.
+    unsafe { phux_client_org_intake_resolve(client, request_id, session) }
+}
+
+/// Clear an imported session's Intake mark; its members and execution stay.
+///
+/// # Safety
+/// Client is live and exclusively accessed; `session` is 16 readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_org_intake_resolve(
     client: *mut PhuxClient,
     request_id: u32,
     session: *const u8,
@@ -1144,10 +1160,10 @@ pub unsafe extern "C" fn phux_client_org_inbox_resolve(
         submit(
             client,
             request_id,
-            Kind::InboxResolve,
+            Kind::IntakeResolve,
             vec![vec![*session.as_bytes()]],
             true,
-            |control| control.inbox_resolve(session).map(|op| vec![op]),
+            |control| control.intake_resolve(session).map(|op| vec![op]),
         )
     })
 }

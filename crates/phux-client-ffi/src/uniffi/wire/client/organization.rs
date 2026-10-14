@@ -1,4 +1,4 @@
-//! The organization surface of [`RemoteClient`]: the Inbox and the typed
+//! The organization surface of [`RemoteClient`]: Intake and the typed
 //! organization commands.
 //!
 //! Keys cross as full base32 text and operation ids as 32 hex digits. Each
@@ -208,9 +208,14 @@ impl RemoteClient {
         Ok(arrangement.and_then(|arrangement| client.fetch_arrangement(arrangement)))
     }
 
-    /// The owner-local Inbox: the designated Inbox session and every session
+    /// The owner-local Intake: the designated Intake session and every session
     /// awaiting organization, with their member records.
     pub fn inbox(&self) -> InboxDescriptor {
+        self.intake()
+    }
+
+    /// Preferred Intake API; descriptor field names retain binding compatibility.
+    pub fn intake(&self) -> IntakeDescriptor {
         let Some(client) = self.runtime_client() else {
             return InboxDescriptor {
                 inbox: None,
@@ -219,7 +224,7 @@ impl RemoteClient {
             };
         };
         let replica = client.organization();
-        let view = replica.inbox_view();
+        let view = replica.intake_view();
         let sessions: Vec<String> = view.sessions.iter().map(|s| s.key.to_string()).collect();
         let records = client
             .topology()
@@ -287,13 +292,21 @@ impl RemoteClient {
         submitted(self.connected()?.delete_session(key))
     }
 
-    /// Clear a session's Inbox intake mark; its work is untouched.
+    /// Clear a session's Intake mark; legacy binding name retained.
     ///
     /// # Errors
     /// See the module docs.
     pub fn inbox_resolve(&self, session_key_text: String) -> Result<String, WireError> {
+        self.intake_resolve(session_key_text)
+    }
+
+    /// Clear a session's Intake mark; its work is untouched.
+    ///
+    /// # Errors
+    /// See the module docs.
+    pub fn intake_resolve(&self, session_key_text: String) -> Result<String, WireError> {
         let key = session_key(&session_key_text)?;
-        submitted(self.connected()?.inbox_resolve(key))
+        submitted(self.connected()?.intake_resolve(key))
     }
 
     /// Move resources into a session (membership only; they keep running).
