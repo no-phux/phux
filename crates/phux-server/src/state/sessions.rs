@@ -140,6 +140,7 @@ impl ServerState {
 
     /// Commit an empty persistent session named `name` (the owner's
     /// `--empty`). `None` when the name is taken or the write is refused.
+    #[cfg(test)]
     pub fn seed_empty_session(&mut self, name: &str) -> Option<SessionId> {
         self.create_empty_session(name, SessionLifetime::Persistent, &Actor::owner())
             .ok()
@@ -147,6 +148,7 @@ impl ServerState {
 
     /// Commit a Terminal record in `session` whose actor the caller starts.
     /// `None` if `session` is unknown or the write is refused.
+    #[cfg(test)]
     #[must_use]
     pub fn add_pane_to_session(&mut self, session: SessionId) -> Option<ResourceId> {
         self.create_terminal(
