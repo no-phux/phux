@@ -111,6 +111,9 @@ cp "$fixture" "$out"
                 env = {
                     **os.environ, "FIXTURE": str(root), "TMPDIR": str(index_temp),
                     "PATH": f"{root}:{os.environ['PATH']}",
+                    # The Next qualification job exports PHUX_CHANNEL=next;
+                    # this fixture specifically exercises the stable default.
+                    "PHUX_CHANNEL": "",
                 }
                 result = run(
                     SHELL, str(INSTALLER), "--dry-run",
