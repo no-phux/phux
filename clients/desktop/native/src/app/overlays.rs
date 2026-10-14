@@ -494,7 +494,7 @@ fn palette(desk: &mut Desk, colors: &Palette, cx: &mut Context<Desk>) -> AnyElem
             goto_sections(desk),
         ),
         Modal::WindowSession => ("Open a window on a session…", session_sections(desk)),
-        Modal::MoveResources => ("Move selected work to a session…", move_sections(desk)),
+        Modal::MoveResources => ("Move to…", move_sections(desk)),
         _ => ("Run a command…", command_sections(desk)),
     };
     let sections = rank_sections(sections, &query);
@@ -592,11 +592,15 @@ fn row_item(row: Row) -> CommandItem {
     item
 }
 
-fn command_sections(_desk: &Desk) -> Vec<Section> {
+fn command_sections(desk: &Desk) -> Vec<Section> {
+    let organizing = desk
+        .link
+        .as_ref()
+        .is_some_and(|link| link.connection.organization());
     let mut sections: Vec<Section> = Vec::new();
     for command in crate::settings::builtin_commands()
         .iter()
-        .filter(|command| !command.is_tab_jump())
+        .filter(|command| command.is_listed() && (organizing || !command.needs_organization()))
     {
         let row = Row {
             title: command.title.to_owned(),
@@ -635,11 +639,11 @@ fn goto_sections(desk: &Desk) -> Vec<Section> {
                 .map(|info| format!("{} — {title}", info.name))
                 .unwrap_or(title),
             keywords: agent
-                .map(|info| format!("{detail} {}", info.state))
+                .map(|info| format!("{detail} {}", info.word()))
                 .unwrap_or_else(|| detail.clone()),
-            detail: Some(match agent {
-                Some(info) => format!("{} · {detail}", info.state),
-                None => detail,
+            detail: Some(match agent.map(|info| info.word()) {
+                Some(word) if !word.is_empty() => format!("{word} · {detail}"),
+                _ => detail,
             }),
             target: Target::Pane(pane.terminal_id.clone()),
             command: None,
@@ -650,25 +654,25 @@ fn goto_sections(desk: &Desk) -> Vec<Section> {
             terminals.push(row)
         }
     }
+    // A one-pane tab is already listed as its terminal.
     let tabs = link
         .workspace
         .tabs
         .iter()
         .enumerate()
-        .map(|(index, tab)| {
+        .filter_map(|(index, tab)| {
             let panes = crate::workspace::layout::placements(&tab.root).len();
-            let detail = format!(
-                "Tab {} · {panes} {}",
-                index + 1,
-                if panes == 1 { "pane" } else { "panes" }
-            );
-            Row {
+            if panes < 2 {
+                return None;
+            }
+            let detail = format!("Tab {} · {panes} panes", index + 1);
+            Some(Row {
                 title: desk::tab_title(desk, tab),
                 keywords: detail.clone(),
                 detail: Some(detail),
                 target: Target::Tab(tab.id.clone()),
                 command: None,
-            }
+            })
         })
         .collect::<Vec<_>>();
     [("Agents", agents), ("Terminals", terminals), ("Tabs", tabs)]
@@ -698,13 +702,8 @@ fn session_sections(desk: &Desk) -> Vec<Section> {
                 .iter()
                 .filter(|pane| pane.session_id == session.id)
                 .count();
-            let home = if session.name == desk.session {
-                "home · "
-            } else {
-                ""
-            };
             let detail = format!(
-                "{home}{panes} {}",
+                "{panes} {}",
                 if panes == 1 { "terminal" } else { "terminals" }
             );
             Row {
@@ -740,19 +739,13 @@ fn move_sections(desk: &Desk) -> Vec<Section> {
         })
         .map(|session| Row {
             title: session.name.clone(),
-            detail: Some(format!(
-                "Move {} selected · execution stays running",
-                selected.len()
-            )),
+            detail: None,
             keywords: session.name.clone(),
             target: Target::Move(session.key, session.name.clone()),
             command: None,
         })
         .collect();
-    vec![Section {
-        label: Some("Destination session"),
-        rows,
-    }]
+    vec![Section { label: None, rows }]
 }
 
 /// Rank every row against `query` as one flat list; an empty query keeps the sections.
@@ -916,11 +909,7 @@ fn path_panel(
                 .text_center()
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
-                .child(if pending {
-                    "Searching host paths…"
-                } else {
-                    "No paths."
-                })
+                .child(if pending { "Searching…" } else { "No paths." })
         })
         .footer(move |_, _, _| {
             div()
@@ -950,14 +939,6 @@ fn path_panel(
         .mt(px(72.))
         .overflow_hidden()
         .key_context("PathPicker")
-        .child(
-            div()
-                .px(px(12.))
-                .pt(px(10.))
-                .text_xs()
-                .text_color(muted)
-                .child("Insert Path — host paths only, never this Mac"),
-        )
         .child(command)
         .into_any_element()
 }

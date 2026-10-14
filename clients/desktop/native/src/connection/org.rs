@@ -36,9 +36,9 @@ pub fn outcome_sentence(outcome: &OrgOutcome) -> String {
         OrgOutcome::Refused(refusal) => refusal_sentence(refusal),
         OrgOutcome::Error { message, .. } => message.clone(),
         OrgOutcome::Unknown { reason } => {
-            format!("the outcome is unknown ({reason}); check the sidebar before retrying")
+            format!("{reason}. It may have finished; check the sidebar before retrying.")
         }
-        OrgOutcome::NotSent { reason } => format!("not sent: {reason}"),
+        OrgOutcome::NotSent { reason } => reason.clone(),
         _ => "it took effect".to_owned(),
     }
 }

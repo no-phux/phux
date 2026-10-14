@@ -32,7 +32,29 @@ impl CommandSpec {
             .strip_prefix("tab-")
             .is_some_and(|rest| rest.parse::<u8>().is_ok())
     }
+
+    /// Listed in the palette. Tab jumps, find steps and undo stay on their
+    /// chords and controls.
+    #[must_use]
+    pub fn is_listed(&self) -> bool {
+        !self.is_tab_jump() && !CHORD_ONLY.contains(&self.id)
+    }
+
+    /// Needs a server that organizes work into sessions.
+    #[must_use]
+    pub fn needs_organization(&self) -> bool {
+        self.group == "Organization"
+    }
 }
+
+/// Commands reached by chord or an on-screen control, never by the palette.
+const CHORD_ONLY: &[&str] = &[
+    "find-next",
+    "find-prev",
+    "find-selection",
+    "find-close",
+    "undo-organization",
+];
 
 /// Modifiers as the window reports them.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,13 +122,13 @@ fn catalog() -> Vec<CommandSpec> {
         spec("rename-session", "Rename Session…", "Terminal", None),
         spec(
             "select-session-work",
-            "Select Work in Current Session",
+            "Select All in Session",
             "Organization",
             None,
         ),
         spec(
             "move-resources",
-            "Move Selected Work to Session…",
+            "Move to Session…",
             "Organization",
             Some("cmd+shift+m"),
         ),
@@ -134,12 +156,7 @@ fn catalog() -> Vec<CommandSpec> {
         spec("split-down", "Split Down", "Panes", Some("cmd+shift+d")),
         spec("split-left", "Split Left", "Panes", None),
         spec("split-up", "Split Up", "Panes", None),
-        spec(
-            "view",
-            "Open Another View of This Terminal",
-            "Panes",
-            Some("cmd+alt+d"),
-        ),
+        spec("view", "Mirror Pane", "Panes", Some("cmd+alt+d")),
         spec("close", "Close Pane", "Panes", Some("cmd+w")),
         spec("close-tab", "Close Tab", "Tabs", Some("cmd+shift+w")),
         spec("zoom", "Zoom Pane", "Panes", Some("cmd+shift+enter")),
@@ -210,10 +227,8 @@ fn catalog() -> Vec<CommandSpec> {
         },
         spec("font-down", "Decrease Font Size", "View", Some("cmd+-")),
         spec("font-reset", "Reset Font Size", "View", Some("cmd+0")),
-        spec("option-alt", "Toggle Option as Alt", "View", None),
         spec("notifications", "Show Notifications", "View", None),
         spec("clear-notifications", "Clear Notifications", "View", None),
-        spec("notify", "Toggle Agent Notifications", "Agents", None),
         spec("resize-left", "Move Divider Left", "Panes", None),
         spec("resize-right", "Move Divider Right", "Panes", None),
         spec("resize-up", "Move Divider Up", "Panes", None),
@@ -255,56 +270,8 @@ fn catalog() -> Vec<CommandSpec> {
             Some("cmd+down"),
         ),
         spec(
-            "write-file:screen:copy",
-            "Copy Screen and Scrollback as a File",
-            "Terminal",
-            None,
-        ),
-        spec(
-            "write-file:screen:paste",
-            "Paste Screen and Scrollback as a File",
-            "Terminal",
-            None,
-        ),
-        spec(
-            "write-file:screen:open",
-            "Open Screen and Scrollback as a File",
-            "Terminal",
-            None,
-        ),
-        spec(
-            "write-file:scrollback:copy",
-            "Copy Scrollback as a File",
-            "Terminal",
-            None,
-        ),
-        spec(
-            "write-file:scrollback:paste",
-            "Paste Scrollback as a File",
-            "Terminal",
-            None,
-        ),
-        spec(
             "write-file:scrollback:open",
             "Open Scrollback as a File",
-            "Terminal",
-            None,
-        ),
-        spec(
-            "write-file:selection:copy",
-            "Copy Selection as a File",
-            "Terminal",
-            None,
-        ),
-        spec(
-            "write-file:selection:paste",
-            "Paste Selection as a File",
-            "Terminal",
-            None,
-        ),
-        spec(
-            "write-file:selection:open",
-            "Open Selection as a File",
             "Terminal",
             None,
         ),
@@ -316,7 +283,7 @@ fn catalog() -> Vec<CommandSpec> {
             "View",
             Some("cmd+ctrl+f"),
         ),
-        spec("maximize", "Zoom Window", "View", None),
+        spec("maximize", "Maximize Window", "View", None),
         spec(
             "reload-config",
             "Reload Ghostty Config",
