@@ -14,6 +14,7 @@ use crate::c::error::{BridgeError, bytes_in, check_struct};
 use crate::c::types::{PhuxBytes, bytes_out};
 use crate::c::{PhuxClient, PhuxClientResult, with_client_mut, with_client_ref};
 use phux_client_core::org_ops::OrgOutcome;
+use phux_client_core::rename::check_session_name;
 use phux_protocol::ids::{OperationId, SessionKey};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, FrameKind, LaunchSpec, SESSION_CREATE_KEY,
@@ -219,18 +220,12 @@ fn receive_state(
     Ok(())
 }
 
+/// A name to create: UTF-8 that `check_session_name` accepts.
 fn valid_name(name: &[u8]) -> Result<&str, BridgeError> {
-    if name.is_empty() || name.len() > 240 {
-        return Err(BridgeError::invalid(
-            "session name must contain 1 to 240 bytes",
-        ));
-    }
-    if name.iter().any(|byte| *byte < 0x20 || *byte == 0x7f) {
-        return Err(BridgeError::invalid(
-            "session name contains control characters",
-        ));
-    }
-    std::str::from_utf8(name).map_err(|_| BridgeError::invalid("session name must be UTF-8"))
+    let name = std::str::from_utf8(name)
+        .map_err(|_| BridgeError::invalid("session name must be UTF-8"))?;
+    check_session_name(name).map_err(|invalid| BridgeError::invalid(invalid.to_string()))?;
+    Ok(name)
 }
 
 fn create_value(name: &str, directory: Option<&str>, token: &str) -> Result<Vec<u8>, BridgeError> {
@@ -801,6 +796,25 @@ mod tests {
             PhuxClientResult::Ok,
             "refusals do not consume request ID"
         );
+    }
+
+    /// Create judges the name by core's one rule, before any write.
+    #[test]
+    fn a_name_is_judged_by_cores_session_name_rule() {
+        use phux_client_core::rename::MAX_SESSION_NAME_BYTES;
+        let mut client = client();
+        let too_long = "a".repeat(MAX_SESSION_NAME_BYTES + 1);
+        for bad in ["x:y", too_long.as_str(), "a\tb", "a\u{7f}b", "@3", ""] {
+            assert_eq!(
+                create(&mut client, 1, bad),
+                PhuxClientResult::InvalidArgument,
+                "{bad:?}"
+            );
+        }
+        assert!(client.inner.outgoing.is_empty());
+        let at_limit = "a".repeat(MAX_SESSION_NAME_BYTES);
+        assert_eq!(create(&mut client, 1, &at_limit), PhuxClientResult::Ok);
+        assert_eq!(create(&mut client, 2, "work"), PhuxClientResult::Ok);
     }
 
     #[test]

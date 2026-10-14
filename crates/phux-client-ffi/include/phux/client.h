@@ -1629,7 +1629,10 @@ PhuxClientResult phux_client_keep_empty_supported(const PhuxClient *client, bool
  * whoever asked, and bumps sessions_revision: reread phux_client_session_get
  * when it moves. request_id shares the strictly increasing host request
  * space and is consumed by every accepted call, a refused one included. Both
- * names are UTF-8 without NUL, 1..4096 bytes (INVALID_ARGUMENT otherwise).
+ * names are UTF-8, non-blank, at most 256 bytes, without control characters
+ * (INVALID_ARGUMENT otherwise). A new name the session selector grammar
+ * cannot address (leading @ # % ^, a ':', '/@', or a bare '.' or '=')
+ * settles REFUSED with the reason.
  * One rename may be PENDING (INVALID_STATE otherwise).
  *
  * Against a server that advertised ORGANIZATION whose records this client
@@ -1668,7 +1671,9 @@ PhuxClientResult phux_client_session_rename_info(const PhuxClient *client, PhuxS
  * PhuxSessionLifetime (PERSISTENT or EPHEMERAL; anything else is
  * INVALID_ARGUMENT). No ATTACH is sent and the current session remains
  * selected. request_id shares the monotonic operation namespace. Names are
- * UTF-8, 1..240 bytes, no controls.
+ * UTF-8, non-blank, at most 256 bytes, without control characters, and
+ * addressable by a session selector (no leading @ # % ^, no ':' or '/@', not
+ * a bare '.' or '='); INVALID_ARGUMENT otherwise.
  *
  * Against a server that advertised ORGANIZATION whose records this client
  * holds: one typed SESSION_CREATE through the runtime's operation journal. A

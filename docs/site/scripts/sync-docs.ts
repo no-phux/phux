@@ -662,7 +662,7 @@ const TASK_GROUPS = [
   },
   {
     folder: "(use)", title: `Use ${SITE.name}`,
-    pages: ["../consumers/index", "../consumers/tui", "../quickstart/config", "../consumers/cockpit", "../consumers/recording", "../consumers/web", "../consumers/ios"],
+    pages: ["../consumers/index", "../consumers/tui", "../quickstart/config", "../consumers/desktop", "../consumers/recording", "../consumers/web", "../consumers/ios"],
   },
   {
     folder: "(agents)", title: "Run coding agents",
@@ -682,7 +682,7 @@ const TASK_GROUPS = [
   },
   {
     folder: "(contribute)", title: "Build & contribute",
-    pages: ["../consumers/build-a-client", "../consumers/sdk", "../consumers/harness", "../consumers/desktop", "../architecture", "../decisions", "../concepts/vision", "../docs"],
+    pages: ["../consumers/build-a-client", "../consumers/sdk", "../consumers/harness", "../consumers/cockpit", "../architecture", "../decisions", "../concepts/vision", "../docs"],
   },
 ];
 
@@ -722,6 +722,7 @@ const REFERENCE_PAGES = [
 const GUIDE_PAGES = [
   "index",
   "tui",
+  "desktop",
   "cockpit",
   "agents",
   "opencode",

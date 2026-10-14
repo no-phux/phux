@@ -1,5 +1,9 @@
 # Phux Cockpit
 
+**Frozen.** This client is not maintained. The GPUI desktop is the native
+app. The source stays here so it can be resumed; see [FROZEN.md](FROZEN.md)
+and [ADR-0167](../../docs/adr/0167-cockpit-is-frozen.md).
+
 Phux Cockpit is a native macOS spatial runtime for terminal, web, and future
 control-plane surfaces. Native Phux terminals use the same bounded tabs and
 split-pane substrate as local terminal processes.

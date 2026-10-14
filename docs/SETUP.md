@@ -32,7 +32,8 @@ nix develop             # the fully provisioned shell
 Then the same commands in either environment:
 
 ```sh
-just doctor             # default scope: native; also core / docs / integrations / web / cockpit / ci
+just doctor             # default scope: native; also core / docs / integrations / web / ci
+                        # cockpit remains a local scope; it is frozen (ADR-0167)
 just ci                 # deterministic/unit bar
 just ci-full            # that plus real-server e2e and agent smoke; the PR bar
 ```
@@ -177,7 +178,7 @@ the shell, Cargo, and npm commands below also work directly.
 | Server, TUI, CLI, engine-dependent protocol helpers, FFI | Rust, Zig, platform packages | `just doctor native`, then `just crate-check phux-server` |
 | Agent integrations | Node/npm and Bun | `just integration-check pi` (or `runtime`, `opencode-v2`, `omp`, `claude`, `grok`) |
 | Browser client | Rust WASM target, Node, WASM tools (engine binary is committed) | `just doctor web`; see [Browser client](#browser-client) |
-| Cockpit app | Apple-silicon Mac, SDK, Zig, Node, Rust FFI, Python | `just doctor cockpit`, then `just cockpit-test` |
+| Cockpit app (frozen) | Apple-silicon Mac, SDK, Zig, Node, Rust FFI, Python | `just doctor cockpit`, then `just cockpit-test`; not a CI gate |
 | GPUI desktop development | Apple-silicon Mac, Xcode with Metal, native Rust/Zig, Bun, Node, Python | `just doctor desktop`, then `just desktop-app` |
 | Full root validation | Native prerequisites plus gate tools | `just doctor ci`, then `just ci-full` |
 
@@ -356,6 +357,10 @@ desktop build reuses the repository's Apple-toolchain environment helper, so it
 can select host Xcode/Metal without mixing in Nix's linker wrappers.
 
 ## Cockpit
+
+Frozen ([ADR-0167](adr/0167-cockpit-is-frozen.md)). These recipes are a
+local resume path, not a CI gate. See
+[FROZEN.md](../clients/cockpit/FROZEN.md).
 
 Apple-silicon Mac, native Rust/Zig/Xcode, Node 24, Python 3:
 

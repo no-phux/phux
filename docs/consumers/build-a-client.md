@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors
 stability: evolving
-last-reviewed: 2026-09-13
+last-reviewed: 2026-10-14
 ---
 
 # Build a client against the wire
@@ -20,7 +20,8 @@ Choose an interface:
 | A coding agent or script | CLI / MCP | [`agents.md`](./agents.md), [`mcp.md`](./mcp.md) |
 | A harness that can emit lifecycle | AgentSession producer | [`harness.md`](./harness.md) |
 | A new graphical or headless client | Speak L1, carry an engine | [`../spec/L1.md`](../spec/L1.md), [`web.md`](./web.md) |
-| A native app | `phux-client-ffi` C ABI | [`cockpit.md`](./cockpit.md) |
+| A native app | GPUI desktop, in process | [`desktop.md`](./desktop.md) |
+| A frozen C ABI embedder | `phux-client-ffi` | [`cockpit.md`](./cockpit.md) |
 
 `phux-protocol` is the publishable codec (`publish = true`).
 `phux-client` is workspace-internal (`publish = false`), not a downstream

@@ -2,7 +2,9 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import { docsHref } from "../../lib/site";
 import {
   CHAPTERS,
+  advanceTour,
   frameAt,
+  type Playback,
   type ClientId,
   type Frame,
   type NodeId,
@@ -349,17 +351,17 @@ export default function Tour({ prepare }: { prepare?: () => void }) {
   const [visible, setVisible] = useState(false);
   const [playing, setPlaying] = useState(true);
   // Server render and reduced motion show each chapter's settled state.
-  const [position, setPosition] = useState({ chapter: 0, time: Infinity });
+  const [position, setPosition] = useState<Playback>({ chapter: 0, time: Infinity, pace: "quick" });
   const clock = useRef(position);
   const chapter = CHAPTERS[position.chapter]!;
 
-  function show(next: { chapter: number; time: number }) {
+  function show(next: Playback) {
     clock.current = next;
     setPosition(next);
   }
 
   useEffect(() => {
-    show({ chapter: clock.current.chapter, time: reduced ? Infinity : 0 });
+    show({ ...clock.current, time: reduced ? Infinity : 0 });
   }, [reduced]);
 
   useEffect(() => {
@@ -376,13 +378,7 @@ export default function Tour({ prepare }: { prepare?: () => void }) {
       // Hidden-tab time is not story time; resume where the viewer left off.
       const delta = Math.min((now - previous) / 1000, 0.1);
       previous = now;
-      if (!document.hidden) {
-        const { chapter, time } = clock.current;
-        const next = time + delta;
-        show(next < CHAPTERS[chapter]!.seconds
-          ? { chapter, time: next }
-          : { chapter: (chapter + 1) % CHAPTERS.length, time: 0 });
-      }
+      if (!document.hidden) show(advanceTour(clock.current, delta));
       frame = requestAnimationFrame(tick);
     };
     frame = requestAnimationFrame(tick);
@@ -393,7 +389,7 @@ export default function Tour({ prepare }: { prepare?: () => void }) {
   const progress = Math.min(1, position.time / chapter.seconds);
 
   return (
-    <div ref={root} className="tour">
+    <div ref={root} className="tour" data-pace={position.pace}>
       <div className="tour-frame terminal-surface">
         <div className="tour-canvas" onPointerEnter={prepare}>
           <div className="tour-stage" aria-hidden="true">
@@ -421,7 +417,7 @@ export default function Tour({ prepare }: { prepare?: () => void }) {
                 aria-pressed={index === position.chapter}
                 style={{ "--progress": index === position.chapter ? progress : 0 } as CSSProperties}
                 onClick={() => {
-                  show({ chapter: index, time: reduced ? Infinity : 0 });
+                  show({ chapter: index, time: reduced ? Infinity : 0, pace: "walkthrough" });
                   setPlaying(true);
                 }}
               >
@@ -447,7 +443,10 @@ export default function Tour({ prepare }: { prepare?: () => void }) {
         <strong>{chapter.title}</strong> {chapter.text}{" "}
         <a href={docsHref(chapter.href)}>Learn more<span className="tour-sr"> about {chapter.label.toLowerCase()}</span></a>
       </p>
-      <p className="tour-note">Scripted illustration, not a live session. The iPhone app is in TestFlight beta.</p>
+      <p className="tour-note">
+        {!reduced && <span className="tour-pace">{position.pace === "quick" ? "Quick pass · walkthrough next. " : "Walkthrough · select a chapter to replay. "}</span>}
+        Scripted illustration, not a live session. The iPhone app is in TestFlight beta.
+      </p>
     </div>
   );
 }

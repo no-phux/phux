@@ -147,9 +147,8 @@ fn long_help_has_one_complete_grouped_inventory() {
 /// bound leaves no room for a reference-style epilogue to creep back in.
 ///
 /// The bound rose from 93 to 97 with the organization verbs (`rm`,
-/// `relaunch`, `restore`, `mv`) and `archive`, while `move-pane` and
-/// `workspace` became hidden aliases: four lines of discoverable lifecycle
-/// verbs are worth more than hiding them (R20).
+/// `relaunch`, `restore`, `mv`) and `archive`: four lines of discoverable
+/// lifecycle verbs are worth more than hiding them (R20).
 #[test]
 fn root_long_help_fits_eighty_columns_and_stays_short() {
     let long = root_long_help();

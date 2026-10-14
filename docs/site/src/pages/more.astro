@@ -68,10 +68,11 @@ const FEATURES = [
         <code tabindex="0">{cliInstall}</code>
         <button type="button" data-copy={cliInstall}>Copy</button>
       </div>
-      <div class="install-cmd">
-        <span>Cockpit for macOS · Experimental {release.cockpit?.tag && <em>{release.cockpit.tag}</em>}</span>
+      <div class="install-cmd cockpit-install">
+        <span>Cockpit for macOS · Frozen {release.cockpit?.tag && <em>{release.cockpit.tag}</em>}</span>
         <code tabindex="0">{cockpitInstall}</code>
         <button type="button" data-copy={cockpitInstall}>Copy</button>
+        <p>Not maintained. The last published release still installs. Use Desktop.</p>
       </div>
     </div>
     <p class="install-more">
@@ -390,7 +391,7 @@ const FEATURES = [
   .desktop-install {
     grid-column: 1 / -1;
   }
-  .desktop-install p {
+  .desktop-install p, .cockpit-install p {
     grid-column: 1 / -1;
     margin: 0;
     color: var(--color-dim);

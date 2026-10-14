@@ -141,7 +141,7 @@ A live update handoff and a fresh server start are not the same operation.
 - **The server is still alive:** attach to the existing session. Do not restore
   a workspace merely because one client disconnected.
 - **The server died and you have a workspace archive:** start a healthy server,
-  then use `phux workspace restore ARCHIVE` with your saved archive path.
+  then use `phux archive import ARCHIVE` with your saved archive path.
   Inspect the command result and inventory; a partial restore names the failed
   sessions and exits non-zero.
 - **No archive exists:** create new sessions and recover work through the

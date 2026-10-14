@@ -17,18 +17,18 @@ expression: text
                          ╭ Sessions ──────────────────────────────────────╮
                          │ >                                              │
                          │ Local                                          │
-                         │   work          1 terminal, ephemeral, current │
-                         │   notes                 2 terminals, ephemeral │
-                         │ edge - 2 sessions                              │
-                         │   build            on edge, 2 windows, 3 panes │
-                         │   logs               on edge, 1 window, 1 pane │
-                         │ idle - connected, no sessions                  │
-                         │ down - unreachable: link is down               │
-                         │ mini - 2 sessions                              │
-                         │   build                     on mini, 2 windows │
-                         │   phall on mini, 1 need you, 2 running, 1 att… │
-                         │ spare - connected, no sessions                 │
-                         │ xps - unreachable: timed out                   │
+                         │   work                                         │
+                         │   notes                                        │
+                         │ edge                                           │
+                         │   build                                on edge │
+                         │   logs                                 on edge │
+                         │ idle                                           │
+                         │ down - unreachable                             │
+                         │ mini                                           │
+                         │   build                                on mini │
+                         │   phall                    on mini, 1 need you │
+                         │ spare                                          │
+                         │ xps - unreachable                              │
                          │ + New session…                          create │
                          │                                                │
                          │                                                │

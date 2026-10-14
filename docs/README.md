@@ -24,7 +24,8 @@ the references cover commands, protocols, and implementation.
 
 - [Terminal UI](./consumers/tui.md): navigate, split, copy, and search.
 - [Configuration](./CONFIG.md): make a small change, validate it, and apply it.
-- [Cockpit](./consumers/cockpit.md): use the native macOS interface.
+- [Desktop](./consumers/desktop.md): use the native macOS interface.
+- [Cockpit](./consumers/cockpit.md): the frozen Zig client.
 - [Recording](./consumers/recording.md): capture and replay terminal work.
 - [All interfaces](./consumers/README.md): distinguish available clients from previews.
 

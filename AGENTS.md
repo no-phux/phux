@@ -17,6 +17,9 @@ actual validation. Project architecture lives in CLAUDE.md; setup is one guide.
   `nix develop`, then `just doctor <area>` and the smallest relevant gate.
   Expand validation for shared APIs, protocol/FFI, Cargo inputs, or build
   scripts. Report exact checks; a scoped pass is not a full CI pass.
+- The Zig Cockpit (`clients/cockpit`) is frozen
+  ([ADR-0167](./docs/adr/0167-cockpit-is-frozen.md)). Do not put it back on
+  automatic CI. `just doctor cockpit` is a local resume path only.
 - Beads is maintainer/agent task tracking, not a contributor gate; outside
   contributors can use a GitHub issue/PR.
 - Use non-interactive shell commands (`-f` / `-y` where appropriate).

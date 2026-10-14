@@ -78,8 +78,7 @@ pub(crate) fn run_move_pane(
     )
 }
 
-/// `phux mv SOURCE DEST` (and its deprecated spelling `phux move-pane`): a
-/// membership move when DEST names a session
+/// `phux mv SOURCE DEST`: a membership move when DEST names a session
 /// ([`crate::commands::org::run_move_into_session`]), else a placement
 /// beside the pane DEST names ([`run_move_pane`]).
 pub(crate) fn run_mv(

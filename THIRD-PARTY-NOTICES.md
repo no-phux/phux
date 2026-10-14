@@ -70,6 +70,6 @@ this tree.
 
 ## Cockpit
 
-The native macOS client at clients/cockpit/ ships its own
+The frozen Zig client at clients/cockpit/ ships its own
 THIRD_PARTY_NOTICES.md for the app bundle (fonts, SDK, FFI provenance).
 That file is the notices surface for Cockpit releases.

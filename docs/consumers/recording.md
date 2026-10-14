@@ -61,8 +61,11 @@ phux rec --composited -o demo.gif --duration 20
 
 An asciicast `m` event marks a moment in the recording. Two ways write one:
 
-- During `phux --rec`, `C-a M` (`rec-mark`) posts a marker. A bare chord
-  writes an empty label; the command palette can pass `label`.
+- During `phux --rec`, the command palette's **Mark recording** row
+  (`rec-mark`) posts a marker; the row shows only while a recording is
+  live. `rec-mark` is unbound by default; bind it (for example
+  `"M" = "rec-mark"`) to mark from the keyboard. A bare binding writes an
+  empty label; `{ action = "rec-mark", label = "intro" }` names it.
 - From another process, `phux rec mark "label"` posts the same event to
   every recording in progress, including `phux rec --composited`.
 

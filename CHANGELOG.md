@@ -9,6 +9,34 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.67.0](https://github.com/no-phux/phux/compare/v0.66.0...v0.67.0) (2026-10-14)
+
+
+### Features
+
+* **site:** open the tour with a quick pass before the walkthrough ([#1327](https://github.com/no-phux/phux/issues/1327)) ([cd12cda](https://github.com/no-phux/phux/commit/cd12cdad40fdc8194a1336ef4cc5c3e777b7bdb6))
+
+## [0.66.0](https://github.com/no-phux/phux/compare/v0.65.0...v0.66.0) (2026-10-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** `phux workspace` and `phux move-pane` no longer parse. Use `phux archive export` / `phux archive import` (was `workspace save` / `restore`), `phux project inspect` (was `workspace inspect`), and `phux mv` (was `move-pane`).
+
+### Features
+
+* **cli:** remove the deprecated workspace and move-pane aliases ([d4d8562](https://github.com/no-phux/phux/commit/d4d8562297b6e095c166c091ccefda5d0a8870e9))
+
+
+### Bug Fixes
+
+* **client-core:** read phux.agent/v1 records with one parser ([c49cab7](https://github.com/no-phux/phux/commit/c49cab7b9d4639f63d3f990a8f352c5b70be1cee))
+* **client:** use core's APPLY_INPUT batch-size rule for prompt prechecks ([a0d2c10](https://github.com/no-phux/phux/commit/a0d2c1055f64ebb589b9194a7df89849bbbccc0e))
+* **cli:** keep suffixed session names within the byte limit and name the rules ([e3e1ce9](https://github.com/no-phux/phux/commit/e3e1ce99c1d032bb29b44458a389ede128fe1db7))
+* **ffi:** validate session names with core's rule in every binding ([7f9882d](https://github.com/no-phux/phux/commit/7f9882dabf12067db1789b538223c4c5bb8a5f7e))
+* **tui:** cull duplicate and internal chrome from the default ui ([#1325](https://github.com/no-phux/phux/issues/1325)) ([164dd86](https://github.com/no-phux/phux/commit/164dd860ba6f804e7217918d7fa468d1792e3d71))
+* **tui:** read the satellite-unreachable host with one parser ([a51a1bb](https://github.com/no-phux/phux/commit/a51a1bbb0af5be7ca585bf97b49c285e9cab9cc7))
+
 ## [0.65.0](https://github.com/no-phux/phux/compare/v0.64.0...v0.65.0) (2026-10-14)
 
 

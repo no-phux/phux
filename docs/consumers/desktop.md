@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-10-13
+last-reviewed: 2026-10-14
 ---
 
 # Desktop
@@ -19,13 +19,14 @@ Apple-silicon macOS is the first target.
 > Accessibility, notarization, and Linux are open. The Status table tracks each gap.
 
 The host seams are [desktop architecture](../architecture/desktop.md). [ADR-0165](../adr/0165-gpui-desktop-replaces-the-solid-host.md) replaces the Solid host in [ADR-0139](../adr/0139-solid-desktop-over-native-runtime-views.md).
-[Cockpit](./cockpit.md) remains a separate client. The first release requires
+This is the maintained native client. The Zig [Cockpit](./cockpit.md) is
+frozen ([ADR-0167](../adr/0167-cockpit-is-frozen.md)). The first release requires
 independent same-terminal views; Linux follows, Intel macOS is not required.
 
 [Install the Desktop](../INSTALL.md#desktop-app-macos)
 from the first-party installer on an Apple-silicon Mac running macOS 27 or
 later. It downloads a published `Phux.app`, installing the CLI first if it is
-missing; Cockpit remains a separate app.
+missing.
 
 To build the same app from a checkout instead, install the CLI, set up the
 desktop tools from [Contributor setup](../SETUP.md), quit any running

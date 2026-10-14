@@ -319,19 +319,34 @@ impl AgentRecord {
 }
 
 /// Decode a `phux.agent/v1` value; anything but a JSON object with a
-/// non-empty `name` is "no declared agent".
+/// non-blank `name` is "no declared agent". The record is read by
+/// `phux_client_core::agent_record`, the one reader every client shares.
 #[must_use]
 pub fn parse_agent_record(bytes: &[u8]) -> Option<AgentRecord> {
-    // Via `Value`: serde would fill struct fields positionally from an array.
-    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
-    if !value.is_object() {
-        return None;
-    }
-    let record: AgentRecord = serde_json::from_value(value).ok()?;
-    if record.name.trim().is_empty() {
-        return None;
-    }
-    Some(record)
+    use phux_client_core::agent_record as core;
+
+    let record = core::parse_agent_record(bytes)?;
+    let state = match record.state {
+        core::AgentState::Unknown => AgentMetaState::Unknown,
+        core::AgentState::Idle => AgentMetaState::Idle,
+        core::AgentState::Working => AgentMetaState::Working,
+        core::AgentState::Blocked => AgentMetaState::Blocked,
+        core::AgentState::Done => AgentMetaState::Done,
+    };
+    // An unsupported word already reads as `Normal` (L3 §3.7).
+    let attention = record.attention.map(|(level, _)| match level {
+        core::AgentAttention::None => AgentAttention::None,
+        core::AgentAttention::Low => AgentAttention::Low,
+        core::AgentAttention::Normal => AgentAttention::Normal,
+        core::AgentAttention::High => AgentAttention::High,
+    });
+    Some(AgentRecord {
+        name: record.name,
+        kind: record.kind,
+        state,
+        attention,
+        session: record.session,
+    })
 }
 
 #[cfg(test)]

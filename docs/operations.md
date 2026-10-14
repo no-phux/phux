@@ -113,7 +113,7 @@ TUI entry points share a layer builder
   `--json`) — `telemetry::init_client()`. Logs to a **file only**: the
   attach loop owns the alt screen, so a stray log line corrupts the
   display.
-- **Cockpit** (the native macOS app) — one file,
+- **Cockpit** (the frozen Zig macOS app) — one file,
   `~/Library/Logs/Phux Cockpit/cockpit.log`; `PHUX_COCKPIT_LOG` names a
   different file. Launch Services gives the app no terminal, so at
   startup Cockpit points its standard error at that file and the Rust
@@ -742,9 +742,8 @@ guarantees:
   `phux restore` relaunches the terminals the crash ended, in their
   sessions and working directories
   ([ADR-0162](./adr/0162-organization-records-persist-and-activations-reconcile.md)).
-- **Restart restore:** `phux archive export` (the old `phux workspace
-  save` spelling remains a hidden alias) writes a typed JSON archive of the
-  running server's sessions, reading each session's split tree from its
+- **Restart restore:** `phux archive export` writes a typed JSON archive of
+  the running server's sessions, reading each session's split tree from its
   shared layout (or `export --projection PREFIX`); a session with none
   falls back to its bare pane list. `phux archive import ARCHIVE` recreates
   the missing sessions on a running server, persistent, with each archived

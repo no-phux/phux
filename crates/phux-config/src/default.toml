@@ -165,10 +165,10 @@ which-key-delay-ms = 400
 "-" = { action = "split-pane", direction = "horizontal" }
 
 # Kill: x terminates the focused pane's terminal; X (Shift-x) terminates
-# every terminal in the window after a confirm naming how many. Soft-kill
+# every terminal in the tab after a confirm naming how many. Soft-kill
 # via shell exit; see phux-4li.12. close-view (unbound; context menu and
-# palette) removes a view and ends nothing; reopen-views shows terminals
-# that run with no view again.
+# palette) hides a pane and ends nothing; reopen-views shows hidden
+# terminals again.
 "x" = "kill-pane"
 "X" = "kill-window"
 
@@ -178,31 +178,31 @@ which-key-delay-ms = 400
 "k" = { action = "focus-direction", direction = "up" }
 "l" = { action = "focus-direction", direction = "right" }
 
-# Cycle through panes in DFS order. tmux uses n/p for *windows*, so the
+# Cycle through panes in DFS order. n/p cycle tabs, so the
 # pane-cycle bindings live on o / ; (phux-4li.16).
 "o" = "next-pane"
 ";" = "previous-pane"
 # One-entry, client-local MRU jump-back (repeat to toggle between two panes).
 "=" = "last-pane"
 
-# Zoom: toggle the focused pane to fill the whole window (tmux prefix-z).
+# Zoom: toggle the focused pane to fill the whole tab (tmux prefix-z).
 "z" = "toggle-zoom"
 
-# Sidebar: show/hide the window-list strip (mnemonic: VS Code's Ctrl-B).
+# Sidebar: show/hide the sessions-and-tabs strip (mnemonic: VS Code's Ctrl-B).
 "b" = "toggle-sidebar"
 
 # Copy-mode: enter text selection mode. Arrow keys adjust selection,
 # Enter copies to clipboard, Escape cancels. (phux-wave-a-copy-mode)
 "[" = "copy-mode"
 
-# Windows ("tabs"), tmux-style (phux-4li.15/.16). c opens a new window;
-# n/p cycle windows; X kills the active window (see kill bindings above);
-# 0-9 jump to a window by the position shown in the status bar; w opens the
-# grouped window picker (below).
+# Tabs, tmux-style (phux-4li.15/.16). The action names keep tmux's
+# `window` spelling. c opens a new tab; n/p cycle tabs; X kills the active
+# tab (see kill bindings above); 0-9 jump to a tab by the position shown in
+# the status bar; w opens the tab picker (below).
 "c" = "new-window"
 "n" = "next-window"
 "p" = "previous-window"
-# Tab hops to the next window too, matching tabbed-UI muscle memory.
+# The Tab key hops to the next tab too, matching tabbed-UI muscle memory.
 "Tab" = "next-window"
 "0" = { action = "select-window", index = 0 }
 "1" = { action = "select-window", index = 1 }
@@ -214,26 +214,26 @@ which-key-delay-ms = 400
 "7" = { action = "select-window", index = 7 }
 "8" = { action = "select-window", index = 8 }
 "9" = { action = "select-window", index = 9 }
-# < and > move the active window one slot left or right in the order the
-# status bar and sidebar show. Dragging a tab or a sidebar window row does
+# < and > move the active tab one slot left or right in the order the
+# status bar and sidebar show. Dragging a tab or a sidebar tab row does
 # the same with the mouse.
 "<" = { action = "move-window", delta = -1 }
 ">" = { action = "move-window", delta = 1 }
 
 # Directory picker: browse directories on the attached server's host and
-# open a new window in the one you pick. G for "go" (the Go-to-Folder
+# open a new tab in the one you pick. G for "go" (the Go-to-Folder
 # chord's Shift-G); lowercase g is give-input (supervisory control below).
 "G" = "go-to-directory"
 "F" = "find-path"
 
-# Rename the active window. With an explicit name it renames immediately,
+# Rename the active tab. With an explicit name it renames immediately,
 # e.g. "," = { action = "rename-window", name = "build" }. The bare
 # binding opens an interactive type-a-name prompt pre-filled with the
 # current name (phux-ahv.1).
 "," = "rename-window"
 
 # Rename the current session (tmux convention: $ renames the session, ,
-# renames the window). With an explicit name it renames immediately, e.g.
+# renames the tab). With an explicit name it renames immediately, e.g.
 # "$" = { action = "rename-session", name = "notes" }. The bare binding
 # opens an interactive type-a-name prompt pre-filled with the current
 # session name; on commit the client sends the RENAME_SESSION command and
@@ -249,18 +249,19 @@ which-key-delay-ms = 400
 # Space is the primary spelling — prefix-Space is one relaxed two-key
 # motion and needs no Shift, which is what you want from the chord you
 # reach for when you have forgotten every other chord. `:` stays bound as
-# the vim-flavored alias.
+# the vim-flavored alias, and `?` as the help-shaped one.
 "Space" = "command-palette"
 ":" = "command-palette"
+"?" = "command-palette"
 
-# Navigation, mnemonic s/w (sessions / windows):
+# Navigation, mnemonic s/w (sessions / tabs):
 #
-#   w — grouped window picker (`window-picker`, phux-4li.19). A filterable,
-#       hierarchical list: every session is a header with its windows
-#       nested beneath. Picking a window in the CURRENT session switches to
+#   w — tab picker (`window-picker`, phux-4li.19). A filterable,
+#       hierarchical list: every session is a header with its tabs
+#       nested beneath. Picking a tab in the CURRENT session switches to
 #       it via `select-window { index }`; picking another session switches
 #       to that session. A session whose layout is already cached lists its
-#       windows in the same step; one that is not cached offers a switch.
+#       tabs in the same step; one that is not cached offers a switch.
 #
 #   s — session picker (`session-picker`, phux-4li.20). A filterable list
 #       of all server sessions, built from the ATTACHED snapshot. The current
@@ -270,12 +271,8 @@ which-key-delay-ms = 400
 #       same connection (phux-eb0): the client detaches from the current
 #       session, re-runs the ATTACH handshake against the target, rebuilds all
 #       session-scoped state, and repaints — no reconnect, no flicker.
-#
-#   a — alias for the session picker, kept for muscle memory (the original
-#       binding before s/w landed). Same action as `s`.
 "w" = "window-picker"
 "s" = "session-picker"
-"a" = "session-picker"
 
 #   A — agent-fleet dashboard (`agent-fleet`, phux-foz.7). One filterable
 #       overlay over the whole fleet: every pane of the attached session
@@ -294,14 +291,14 @@ which-key-delay-ms = 400
 # sidebar.
 "B" = "report-bug"
 
-# Recording marker: while `phux --rec` (or `phux rec --composited`) is
-# capturing, drop an asciicast `m` event. M for Mark. A bare chord writes
-# an empty label; `{ action = "rec-mark", label = "intro" }` names it.
+# Recording marker (unbound): while `phux --rec` (or `phux rec --composited`)
+# is capturing, `rec-mark` drops an asciicast `m` event, and the command
+# palette offers it. Bind it to mark from the keyboard, e.g. "M" = "rec-mark";
+# `{ action = "rec-mark", label = "intro" }` names the marker.
 # `phux rec mark` posts the same event from another process.
-"M" = "rec-mark"
 
 # Attention navigation (phux-oih5.16, ADR-0049). q jumps to the next pane
-# with a pending AgentEvent::Asked, cycling by window order then DFS leaf
+# with a pending AgentEvent::Asked, cycling by tab order then DFS leaf
 # order; Q returns to the pane where that excursion began. These unoccupied
 # lowercase/uppercase mnemonic keys are client-local and never write layout
 # metadata or shared focus. The fleet dashboard above remains unchanged.
@@ -310,8 +307,8 @@ which-key-delay-ms = 400
 
 # New session: C (Shift-c) creates a fresh session and switches this
 # client to it in-process. With no name it opens a prompt; the session
-# picker (s, alias a) also offers a "+ New session" row. (Lowercase c is
-# new-window; capital is the session-level peer.)
+# picker (s) also offers a "+ New session" row. (Lowercase c is
+# a new tab; capital is the session-level peer.)
 "C" = "new-session"
 # Session motion. Prefix-L stays resize-pane; last-session is `)`.
 "N" = "next-session"
@@ -337,9 +334,6 @@ which-key-delay-ms = 400
 "J" = { action = "resize-pane", direction = "down",  amount = 5 }
 "K" = { action = "resize-pane", direction = "up",    amount = 5 }
 "L" = { action = "resize-pane", direction = "right", amount = 5 }
-
-# Open the same fuzzy commands-and-help finder as `command-palette`.
-"?" = "show-help"
 
 # Live config reload (phux-foz.5): re-reads this file (full layered
 # load, `extends` included) and applies keybindings, theme, and status
@@ -529,8 +523,9 @@ center = []
 # Narrower than that, those columns are worth more as an affordance: the
 # sidebar is hidden, the tab strip has collapsed to the active tab, and
 # nothing on screen says other work exists. So the clock and the session
-# name step aside for a `switch` chip — click it (or press prefix-A) for
-# the fleet, which on a small terminal opens full-screen.
+# name step aside for an `agents` chip (the `switch` widget) — click it (or
+# press prefix-A) for every agent, which on a small terminal opens
+# full-screen.
 right = [
   { kind = "session-name", min-cols = 65, style = { fg = "#9aa4b2" } },
   { kind = "time", format = " %a %H:%M ", min-cols = 65, style = { fg = "#9aa4b2" } },
@@ -583,18 +578,20 @@ right = [
 # then lime focus plus BOLD. Retinting one slot is fine; dropping a
 # rung below the floor makes chrome that some people cannot see at all.
 
-# The sidebar (prefix-b toggles it): two fixed panels, ON by default.
+# The sidebar (prefix-b toggles it), ON by default.
 #
-#   Agents      cross-session agents in stable session/window/pane order.
-#               State changes update badges without reordering rows.
-#   Sessions    session names and serving hosts, with the current session's
-#               windows nested below. Each panel keeps half the body height.
+#   Agents      only the agents that need you: blocked or asking, or
+#               finished and not yet looked at, in stable order. Hidden
+#               when nothing needs you; never more than half the strip.
+#   Sessions    session names, with the current session's tabs nested
+#               below and a host line per machine when there is more
+#               than one.
 #
-# Clicking an agent row navigates to its window, switching sessions if needed.
+# Clicking an agent row navigates to its tab, switching sessions if needed.
 # Session names and host rows switch to that session with its host qualifier.
 # The Agents and Sessions headings open their full management views. Agents
-# overflow opens the fleet dashboard; Sessions overflow opens the picker.
-# The footer keeps a single New window row; Commands and Settings live on
+# overflow opens the agents dashboard; Sessions overflow opens the picker.
+# The footer keeps a single New tab row; Commands and Settings live on
 # the palette and the context menu.
 #
 # Width 20 (the default) fits a badge, a name, and a right-hand tag and
@@ -610,7 +607,7 @@ right = [
 # whole viewport back, because a strip that leaves 30 columns of actual
 # work is costing you the very panes it exists to help you move between.
 # At those widths `prefix-b` rings the bell instead of toggling nothing,
-# and the fleet switcher (`prefix A`, or the status bar's `switch` chip)
+# and the agents dashboard (`prefix A`, or the status bar's `agents` chip)
 # is the navigation surface — it opens full-screen there.
 #
 # [sidebar]

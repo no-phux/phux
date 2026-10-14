@@ -974,7 +974,7 @@ fn json_usage_errors_are_one_unstyled_line_even_when_color_is_forced() {
 }
 
 #[test]
-fn human_warning_info_success_and_doctor_share_labels() {
+fn human_info_success_and_doctor_share_labels() {
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("absent.sock");
     let stopped = phux()
@@ -987,18 +987,8 @@ fn human_warning_info_success_and_doctor_share_labels() {
         String::from_utf8_lossy(&stopped.stderr).starts_with("phux: info: no server running at ")
     );
 
-    let warned = phux()
-        .args(["move-pane", "@1", "@2", "--socket"])
-        .arg(&socket)
-        .output()
-        .unwrap();
-    assert!(!warned.status.success());
-    assert!(
-        String::from_utf8_lossy(&warned.stderr)
-            .starts_with("phux: warn: `phux move-pane` is deprecated"),
-        "{}",
-        String::from_utf8_lossy(&warned.stderr)
-    );
+    // Warning labels are covered by the real partial-fleet fixture. There
+    // are no deprecated CLI spellings to exercise after their retirement.
 
     let doctor = phux()
         .args(["doctor", "--socket"])

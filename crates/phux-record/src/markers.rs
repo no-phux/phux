@@ -132,6 +132,16 @@ pub fn post_mark_in(dir: &Path, label: &str) -> io::Result<usize> {
     Ok(notified)
 }
 
+/// Whether any recording has a live inbox, so a marker would land.
+#[must_use]
+pub fn recording_live() -> bool {
+    fs::read_dir(mark_dir()).is_ok_and(|entries| {
+        entries
+            .flatten()
+            .any(|entry| inbox_pid(&entry.path()).is_some_and(process_alive))
+    })
+}
+
 /// Pid encoded in `{pid}.marks`, if this path is an inbox.
 fn inbox_pid(path: &Path) -> Option<u32> {
     if path.extension().and_then(|ext| ext.to_str()) != Some("marks") {

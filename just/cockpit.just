@@ -1,4 +1,5 @@
-# Native macOS Cockpit. Changing this file routes cockpit-ci only.
+# Native macOS Cockpit. Frozen (ADR-0167): these recipes are local only.
+# Changing this file does not start Cockpit CI. Resume: clients/cockpit/FROZEN.md.
 
 
 # Build the stable C ABI and the native macOS Cockpit from this checkout.

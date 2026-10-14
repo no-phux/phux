@@ -47,7 +47,7 @@ phux-server = { path = "../phux-server", default-features = false, features = ["
 # ticks; depending on it here keeps that path off `phux-server`.
 phux-agent-rules.workspace = true
 phux-client.workspace = true
-# `workspace restore --plan` prints the shared host/directory/project lines.
+# `archive import --plan` prints the shared host/directory/project lines.
 phux-client-core.workspace = true
 # ADR-0133: the attach loop's reconnect cadence is the client runtime's
 # ladder (interactive for the remote lanes, the flat local-upgrade poll for

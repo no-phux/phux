@@ -580,6 +580,10 @@ fn json_output_requested() -> bool {
 /// Print `old`'s deprecation note (its [`deprecations::DEPRECATED`] row) on
 /// stderr, once, unless the caller asked for `--json`: stdout then carries
 /// only the document, and stderr only the one-line error contract.
+#[allow(
+    dead_code,
+    reason = "called by the dispatch arm of the next hidden alias added to DEPRECATED"
+)]
 fn warn_deprecated(old: &str, json: bool) {
     if json {
         return;
@@ -1281,25 +1285,6 @@ fn dispatch(
             json,
             socket,
         ),
-        Some(Command::MovePane {
-            source,
-            target,
-            split,
-            ratio,
-            projection,
-            json,
-        }) => {
-            warn_deprecated("phux move-pane", json);
-            commands::spatial::run_mv(
-                &source,
-                &target,
-                split.into(),
-                ratio,
-                projection,
-                json,
-                socket,
-            )
-        }
         Some(Command::Rm { target, yes, json }) => {
             commands::org::run_rm(&target, yes, json, socket)
         }
@@ -1544,14 +1529,6 @@ fn dispatch(
         Some(Command::Plugin { action }) => commands::plugin::run_plugin(&action),
         Some(Command::Theme { action }) => commands::theme::run_theme(&action, socket),
         Some(Command::Archive { action }) => commands::archive::run_archive(&action, socket),
-        Some(Command::Workspace { action }) => {
-            let json = matches!(
-                action,
-                commands::WorkspaceAction::Inspect { json: true, .. }
-            );
-            warn_deprecated("phux workspace", json);
-            commands::archive::run_workspace_alias(&action, socket)
-        }
         Some(Command::Tag { action }) => commands::tag::run_tag(&action, socket),
         Some(Command::StdioBridge {}) => commands::stdio_bridge::run_stdio_bridge(socket),
         Some(Command::Bootstrap {
@@ -2682,7 +2659,7 @@ mod tests {
     /// errors, not runtime failures.
     #[test]
     fn spatial_ratio_validates_at_parse_time() {
-        for verb in ["insert-pane", "move-pane"] {
+        for verb in ["insert-pane", "mv"] {
             for bad in ["1.5", "0", "1", "-0.2", "NaN", "bogus"] {
                 assert!(
                     crate::parse_cli(["phux", verb, "@1", "@2", "--ratio", bad]).is_err(),

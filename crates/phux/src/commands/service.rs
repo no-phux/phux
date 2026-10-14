@@ -397,22 +397,22 @@ pub(crate) fn render_wrapper_script(plan: &ServicePlan) -> String {
     )
 }
 
-/// The deprecated export spelling a wrapper written before `phux archive`
+/// The removed export spelling a wrapper written before `phux archive`
 /// calls, and its replacement.
 const OLD_WRAPPER_SAVE: &str = "\"$phux\" workspace save";
 const WRAPPER_EXPORT: &str = "\"$phux\" archive export";
 
 /// Rewrite an installed restore wrapper's `workspace save` call to `archive
-/// export`; `None` when it has none. The old spelling keeps working through
-/// the hidden alias until this runs.
+/// export`; `None` when it has none. The binary no longer parses the old
+/// spelling, so an unpatched wrapper's save fails until this runs.
 pub(crate) fn modernize_wrapper(body: &str) -> Option<String> {
     body.contains(OLD_WRAPPER_SAVE)
         .then(|| body.replace(OLD_WRAPPER_SAVE, WRAPPER_EXPORT))
 }
 
 /// Patch the installed restore wrapper, if there is one, to the current
-/// export spelling; says so unless `quiet`. Never fatal: the old spelling
-/// still works.
+/// export spelling; says so unless `quiet`. Never fatal: a wrapper it cannot
+/// patch keeps running its server, only its save step fails.
 fn reconcile_wrapper(quiet: bool) {
     let wrapper = phux_server::telemetry::state_dir().join("service-wrapper.sh");
     let Ok(body) = std::fs::read_to_string(&wrapper) else {
@@ -2699,8 +2699,8 @@ WantedBy=default.target
     }
 
     /// A wrapper an older install wrote still calls `workspace save`, which
-    /// keeps working through the hidden alias; reconcile rewrites it, and
-    /// leaves a current wrapper alone.
+    /// the binary no longer parses; reconcile rewrites it, and leaves a
+    /// current wrapper alone.
     #[test]
     fn reconcile_moves_an_installed_wrapper_to_archive_export() {
         let old = "save() {\n    \"$phux\" workspace save --output \"$archive\"\n}\n";

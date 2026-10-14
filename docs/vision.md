@@ -60,8 +60,9 @@ routing from the remaining federation work:
   federation default, and richer joins beyond Terminal-scoped relay.
 - **Web.** The browser client ships as a carry-your-own-engine consumer
   ([`consumers/web.md`](./consumers/web.md)).
-- **Cockpit.** The independently versioned native macOS client ships
-  ([`consumers/cockpit.md`](./consumers/cockpit.md)).
+- **Desktop.** The GPUI native macOS client is the maintained app
+  ([`consumers/desktop.md`](./consumers/desktop.md)). The Zig Cockpit is
+  frozen ([ADR-0167](adr/0167-cockpit-is-frozen.md)).
 
 ## Self-hosted federation networking
 

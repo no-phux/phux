@@ -63,7 +63,7 @@ fn format_supervisory_badge(
         if Some(holder) == own_client_id {
             "wheel".to_owned()
         } else {
-            format!("wheel:c{}", holder.get())
+            "wheel:other".to_owned()
         }
     });
     let history = history_degraded.then(|| "no-scrollback".to_owned());
@@ -155,7 +155,7 @@ pub(super) fn refresh_window_chrome(
         .sidebar_painter
         .as_deref()
         .map_or(chrome.theme, SidebarPainter::theme);
-    badge_windows(&mut windows, workspace, &local, badge_theme);
+    let badged = badge_windows(&mut windows, workspace, &local, badge_theme);
     let agents = agent_queue(local.clone(), workspace, &peers);
     let mut changed = false;
     if let Some(sb) = chrome.status_bar.as_deref_mut() {
@@ -171,7 +171,10 @@ pub(super) fn refresh_window_chrome(
             &agent_meta.records,
         );
         changed |= sidebar_painter.set_plugin_sections(sections);
-        changed |= feed_sidebar(sidebar_painter, windows, &local, agents.clone(), &peers);
+        // A tab row already shows its focused agent's badge, so the Agents
+        // list leaves that row out: no agent appears twice.
+        let listed = agent_queue(unbadged(local.clone(), &badged), workspace, &peers);
+        changed |= feed_sidebar(sidebar_painter, windows, &local, listed, &peers);
     }
     (changed, agents)
 }
@@ -194,8 +197,8 @@ fn feed_status_bar(
     changed
 }
 
-/// Push the window rows, the session roster, and the needs-you queue into
-/// the sidebar strip.
+/// Push the tab rows, the session roster, and the Agents list into the
+/// sidebar strip.
 fn feed_sidebar(
     sidebar_painter: &mut SidebarPainter,
     windows: Vec<phux_config::widget::WindowInfo>,
@@ -231,15 +234,26 @@ pub(super) fn agent_queue(
     agents
 }
 
+/// `local` without the rows at the `badged` indexes.
+pub(super) fn unbadged(local: Vec<AgentEntry>, badged: &[usize]) -> Vec<AgentEntry> {
+    local
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| !badged.contains(i))
+        .map(|(_, entry)| entry)
+        .collect()
+}
+
 /// Give each window the badge of the agent in its focused pane, from the
 /// same [`agent_entries`] rows the sidebar paints, so tab, row, and title
-/// agree.
+/// agree. Returns the indexes of the `agents` rows used as badges.
 pub(super) fn badge_windows(
     windows: &mut [phux_config::widget::WindowInfo],
     workspace: &ArrangementDoc,
     agents: &[AgentEntry],
     theme: &crate::render::Theme,
-) {
+) -> Vec<usize> {
+    let mut badged = Vec::new();
     for (i, (info, window)) in windows.iter_mut().zip(&workspace.groups).enumerate() {
         let focused_leaf = window.state.focus.as_ref().and_then(|focus| {
             window
@@ -249,12 +263,14 @@ pub(super) fn badge_windows(
                 .map(crate::layout::leaves)
                 .and_then(|leaves| leaves.iter().position(|id| id == focus))
         });
-        let Some(entry) = agents
+        let Some((index, entry)) = agents
             .iter()
-            .find(|e| e.window == i && e.pane.is_some() && e.pane == focused_leaf)
+            .enumerate()
+            .find(|(_, e)| e.window == i && e.pane.is_some() && e.pane == focused_leaf)
         else {
             continue;
         };
+        badged.push(index);
         let badge =
             crate::render::chrome::agent_badge(theme, entry.state, entry.attention, entry.seen);
         info.badge = Some(phux_config::widget::WindowBadge {
@@ -266,6 +282,7 @@ pub(super) fn badge_windows(
             },
         });
     }
+    badged
 }
 
 /// The window widget's input. Labels prefer a user-given name, then the
@@ -612,16 +629,16 @@ mod tests {
         );
         assert_eq!(
             format_supervisory_badge(false, Some(other), Some(me), None, false).as_deref(),
-            Some(" wheel:c9 ")
+            Some(" wheel:other ")
         );
         assert_eq!(
             format_supervisory_badge(true, Some(other), Some(me), None, false).as_deref(),
-            Some(" frozen wheel:c9 ")
+            Some(" frozen wheel:other ")
         );
-        // No own id yet (pre-ATTACHED): a holder still renders by id, never "you".
+        // No own id yet (pre-ATTACHED): a holder is someone else, never "you".
         assert_eq!(
             format_supervisory_badge(false, Some(me), None, None, false).as_deref(),
-            Some(" wheel:c7 ")
+            Some(" wheel:other ")
         );
         // A satellite pane badges its host on the status bar,
         // beside any lease or brake already shown.

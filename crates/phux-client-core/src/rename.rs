@@ -54,9 +54,15 @@ pub enum RenameRefusal {
     InvalidName(#[from] SessionNameError),
 }
 
+/// Longest session name, in UTF-8 bytes: the `name` bound of the
+/// organization commands (`docs/spec/L1.md`) and of a session record
+/// (`docs/spec/L2.md` "Session").
+pub const MAX_SESSION_NAME_BYTES: usize = 256;
+
 /// Why a session name cannot be used.
 ///
-/// The selector grammar every CLI verb, hook, and keybinding resolves
+/// The server would refuse it (too long, or a control character), or the
+/// selector grammar every CLI verb, hook, and keybinding resolves
 /// (`docs/consumers/tui.md` "Selectors") would read it as something other
 /// than this session, or as nothing.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -64,6 +70,12 @@ pub enum SessionNameError {
     /// Empty or only whitespace.
     #[error("a session name cannot be empty")]
     Empty,
+    /// Longer than [`MAX_SESSION_NAME_BYTES`].
+    #[error("a session name cannot be longer than {MAX_SESSION_NAME_BYTES} bytes")]
+    TooLong,
+    /// Contains a control character (`char::is_control`), NUL included.
+    #[error("a session name cannot contain a control character")]
+    ControlCharacter,
     /// `.` (the focused pane) or `=` (the previous pane).
     #[error("{0:?} is a reserved selector")]
     Reserved(String),
@@ -79,15 +91,42 @@ pub enum SessionNameError {
     SatelliteId,
 }
 
-/// Accept `name` only when the selector `name` would address this session.
+/// Accept `name` only when the server would store it as given: non-blank, at
+/// most [`MAX_SESSION_NAME_BYTES`], and free of control characters.
+///
+/// This is the part of [`check_session_name`] that does not depend on the
+/// selector grammar. Use it for a name that already exists, such as the
+/// current name of a session being renamed or a name the server reported;
+/// use [`check_session_name`] for a name about to be created or assigned.
+///
+/// # Errors
+///
+/// The first [`SessionNameError`] the name trips.
+pub fn check_session_name_text(name: &str) -> Result<(), SessionNameError> {
+    if name.trim().is_empty() {
+        return Err(SessionNameError::Empty);
+    }
+    if name.len() > MAX_SESSION_NAME_BYTES {
+        return Err(SessionNameError::TooLong);
+    }
+    if name.chars().any(char::is_control) {
+        return Err(SessionNameError::ControlCharacter);
+    }
+    Ok(())
+}
+
+/// Accept `name` only when the server would store it as given
+/// ([`check_session_name_text`]) and the selector `name` would address this
+/// session.
+///
+/// Every frontend that creates or renames a session (CLI, TUI, MCP, and the
+/// C and uniffi bindings) judges the new name here.
 ///
 /// # Errors
 ///
 /// The first [`SessionNameError`] the name trips.
 pub fn check_session_name(name: &str) -> Result<(), SessionNameError> {
-    if name.trim().is_empty() {
-        return Err(SessionNameError::Empty);
-    }
+    check_session_name_text(name)?;
     if name == "." || name == "=" {
         return Err(SessionNameError::Reserved(name.to_owned()));
     }
@@ -109,19 +148,31 @@ pub fn check_session_name(name: &str) -> Result<(), SessionNameError> {
 
 /// Rewrite a generated name into one [`check_session_name`] accepts.
 ///
-/// For a template render or a directory basename: each `:` becomes `_`,
-/// `/@` becomes `/_`, a leading `@`, `#`, `%`, or `^` becomes `_`, and a bare `.`
-/// or `=` becomes `_`. A blank name stays blank so the caller picks its
-/// fallback. An explicit name is refused, never rewritten: only a name
+/// For a template render or a directory basename: each control character
+/// and each `:` becomes `_`, `/@` becomes `/_`, a leading `@`, `#`, `%`, or
+/// `^` becomes `_`, a bare `.` or `=` becomes `_`, and the result is cut to
+/// [`MAX_SESSION_NAME_BYTES`] on a character boundary. A blank name stays
+/// blank so the caller picks its fallback. An explicit name is refused, never rewritten: only a name
 /// nobody typed may be changed behind the user's back.
 #[must_use]
 pub fn addressable_session_name(name: &str) -> String {
     if name.trim().is_empty() {
         return name.to_owned();
     }
-    let mut out = name.replace(':', "_").replace("/@", "/_");
+    let mut out: String = name
+        .chars()
+        .map(|c| if c == ':' || c.is_control() { '_' } else { c })
+        .collect();
+    out = out.replace("/@", "/_");
     if out == "." || out == "=" || out.starts_with(['@', '#', '%', '^']) {
         out.replace_range(..1, "_");
+    }
+    if out.len() > MAX_SESSION_NAME_BYTES {
+        let mut end = MAX_SESSION_NAME_BYTES;
+        while !out.is_char_boundary(end) {
+            end -= 1;
+        }
+        out.truncate(end);
     }
     out
 }
@@ -328,6 +379,10 @@ mod tests {
             assert_eq!(got, addressable, "{generated:?}");
             assert_eq!(check_session_name(&got), Ok(()), "{generated:?} -> {got:?}");
         }
+        assert_eq!(addressable_session_name("a\tb\u{7f}"), "a_b_");
+        let long = addressable_session_name(&"\u{20ac}".repeat(100));
+        assert!(long.len() <= MAX_SESSION_NAME_BYTES);
+        assert_eq!(check_session_name(&long), Ok(()));
         assert_eq!(addressable_session_name(""), "");
         assert_eq!(addressable_session_name("  "), "  ");
     }
@@ -346,6 +401,10 @@ mod tests {
             ("^abcdef", SessionNameError::LeadingSigil('^')),
             ("x:y", SessionNameError::Colon),
             ("devbox/@7", SessionNameError::SatelliteId),
+            ("a\nb", SessionNameError::ControlCharacter),
+            ("a\0b", SessionNameError::ControlCharacter),
+            ("a\u{7f}", SessionNameError::ControlCharacter),
+            ("a\u{85}", SessionNameError::ControlCharacter),
         ] {
             assert_eq!(
                 plan_rename(&sessions, "work", new_name),
@@ -360,6 +419,18 @@ mod tests {
         for fine in [".config", "a.b", "a/b", "a b", "work-2", "x@y", "a=b"] {
             assert_eq!(check_session_name(fine), Ok(()), "{fine:?}");
         }
+        let at_limit = "a".repeat(MAX_SESSION_NAME_BYTES);
+        assert_eq!(check_session_name(&at_limit), Ok(()));
+        assert_eq!(
+            plan_rename(&sessions, "work", &format!("{at_limit}a")),
+            RenamePlan::Refused(RenameRefusal::InvalidName(SessionNameError::TooLong))
+        );
+        // An existing name is judged by the text rule only.
+        assert_eq!(check_session_name_text("x:y"), Ok(()));
+        assert_eq!(
+            check_session_name_text("a\tb"),
+            Err(SessionNameError::ControlCharacter)
+        );
     }
 
     #[test]

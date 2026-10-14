@@ -184,12 +184,12 @@ pub(super) const fn frame_kind_label(frame: &FrameKind) -> &'static str {
     }
 }
 
-/// Text for the focused pane's input-authority notice (same `c<N>` spelling
-/// as the ADR-0033 badge).
+/// Text for the focused pane's input-authority notice; the status badge
+/// says whose wheel it is (ADR-0033).
 pub(super) fn input_authority_notice(holder: Option<ClientId>) -> String {
     holder.map_or_else(
         || "input: wheel released".to_owned(),
-        |id| format!("input: c{} took the wheel", id.get()),
+        |_| "input: wheel taken".to_owned(),
     )
 }
 

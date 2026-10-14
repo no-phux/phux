@@ -327,10 +327,10 @@ fn strip(h: u16) -> Rect {
 /// blank rows and the separator commit nothing.
 #[test]
 fn sidebar_click_action_maps_rows_to_registry_actions() {
-    // 22 body rows: Agents at 0, Sessions at 11, footer at 22.
+    // 22 body rows, no agents: Sessions at 0, its tabs at 3-4, footer at 22.
     let quiet = targets(0, 2, 1);
     let hit = |x, y| sidebar_click_action(strip(23), &quiet, x, y);
-    let window = hit(4, 15).expect("window row");
+    let window = hit(4, 4).expect("window row");
     assert_eq!(
         (window.action.as_str(), index_arg(&window)),
         ("select-window", Some(1))
@@ -338,8 +338,7 @@ fn sidebar_click_action_maps_rows_to_registry_actions() {
     for (x, y, action) in [
         (4, 22, "new-window"),
         (27, 22, "toggle-sidebar"),
-        (4, 0, "agent-fleet"),
-        (4, 11, "session-picker"),
+        (4, 0, "session-picker"),
     ] {
         let resolved = hit(x, y).expect(action);
         assert_eq!(resolved.action, action);
@@ -371,21 +370,18 @@ fn sidebar_plugin_rows_commit_focus_pane() {
     let mut t = targets(0, 1, 1);
     t.counts.plugin = PluginShape::of(std::slice::from_ref(&section));
     t.plugin = vec![vec![(0, 0), (1, 2)]];
-    // 22 body rows: the 4-row band leaves 18, so Agents 0-8, band 9-12.
-    let click = sidebar_click_action(strip(23), &t, 4, 11).expect("plugin row");
+    // No agents: the 4-row band tops the strip at rows 0-3.
+    let click = sidebar_click_action(strip(23), &t, 4, 2).expect("plugin row");
     assert_eq!(click.action, "focus-pane");
     assert_eq!(
         (usize_arg(&click, "window"), usize_arg(&click, "pane")),
         (Some(1), Some(2))
     );
     assert!(
-        sidebar_click_action(strip(23), &t, 4, 9).is_none(),
+        sidebar_click_action(strip(23), &t, 4, 0).is_none(),
         "header"
     );
-    assert!(
-        sidebar_click_action(strip(23), &t, 4, 12).is_none(),
-        "blank"
-    );
+    assert!(sidebar_click_action(strip(23), &t, 4, 3).is_none(), "blank");
 }
 
 /// A queue row commits a LOCAL focus or a CROSS-SESSION re-attach (a
@@ -426,16 +422,16 @@ fn sidebar_queue_and_roster_rows_commit_their_own_actions() {
     );
 
     let mut t = targets(0, 2, 2);
-    let space = sidebar_click_action(strip(23), &t, 4, 12).expect("roster row");
+    let space = sidebar_click_action(strip(23), &t, 4, 1).expect("roster row");
     assert_eq!(space.action, "switch-session");
     assert_eq!(str_arg(&space, "name").as_deref(), Some("space-0"));
     assert!(!space.args.contains_key("pane"));
     t.roster[0].as_mut().expect("row").host = Some("devbox".to_owned());
-    let host = sidebar_click_action(strip(23), &t, 4, 13).expect("host row");
+    let host = sidebar_click_action(strip(23), &t, 4, 2).expect("host row");
     assert_eq!(str_arg(&host, "host").as_deref(), Some("devbox"));
     t.roster[0] = None;
     assert!(
-        sidebar_click_action(strip(23), &t, 4, 13).is_none(),
+        sidebar_click_action(strip(23), &t, 4, 2).is_none(),
         "unreachable host is inert"
     );
 
@@ -471,7 +467,7 @@ fn sidebar_click_actions_are_dispatched_names() {
 }
 
 /// A left-docked 20-column sidebar over an 80-column viewport and a
-/// two-window workspace ("1", "two"); window rows sit at 14 and 15.
+/// two-tab workspace ("1", "two"); with no agents, tab rows sit at 3 and 4.
 fn sidebar_env(
     height: u16,
     sidebar_targets: crate::render::chrome::sidebar::SidebarTargets,
@@ -512,10 +508,10 @@ fn drop_at(env: &Env<'_>) -> Option<usize> {
 #[tokio::test]
 async fn sidebar_clicks_run_their_affordances() {
     for (event, active, overlay, pending) in [
-        (left(MouseAction::Press, 3, 15), 1, false, 0),
+        (left(MouseAction::Press, 3, 4), 1, false, 0),
         (left(MouseAction::Press, 3, 23), 0, false, 1),
         (left(MouseAction::Press, 3, 10), 0, false, 0),
-        (right_press(3, 15), 1, true, 0),
+        (right_press(3, 4), 1, true, 0),
         (right_press(3, 10), 0, true, 0),
     ] {
         let mut env = sidebar_env(24, targets(0, 2, 1));
@@ -530,7 +526,7 @@ async fn sidebar_clicks_run_their_affordances() {
 async fn sidebar_right_click_manages_the_clicked_session_without_switching() {
     let table = targets(0, 2, 2);
     let mut env = sidebar_env(23, table);
-    env.dispatch(vec![right_press(4, 12)]).await;
+    env.dispatch(vec![right_press(4, 1)]).await;
     assert!(env.fx.switch_request.is_none());
     let InputEvent::Key(enter) = press(PhysicalKey::Enter, None) else {
         unreachable!()
@@ -591,7 +587,7 @@ async fn dragging_the_sidebar_edge_resizes_the_strip() {
                 left(MouseAction::Motion, 25, 5),
                 InputEvent::Focus(FocusEvent::Lost),
                 // The next press acts: it selects (and picks up) its row.
-                left(MouseAction::Press, 3, 15),
+                left(MouseAction::Press, 3, 4),
             ],
             26,
             true,
@@ -657,33 +653,29 @@ fn dragged_sidebar_width_tracks_the_pointer_within_both_floors() {
 /// over another row marks the drop slot; release or focus loss clears it.
 #[tokio::test]
 async fn dragging_a_sidebar_window_row_reorders_windows() {
-    let grab = left(MouseAction::Press, 3, 14);
-    let over = left(MouseAction::Motion, 3, 15);
+    let grab = left(MouseAction::Press, 3, 3);
+    let over = left(MouseAction::Motion, 3, 4);
     let cases = [
         (
-            vec![
-                grab.clone(),
-                over.clone(),
-                left(MouseAction::Release, 3, 15),
-            ],
+            vec![grab.clone(), over.clone(), left(MouseAction::Release, 3, 4)],
             ["two", "1"],
             None,
             false,
         ),
         (
-            vec![grab.clone(), left(MouseAction::Release, 3, 14)],
+            vec![grab.clone(), left(MouseAction::Release, 3, 3)],
             ["1", "two"],
             None,
             false,
         ),
         (
-            vec![grab.clone(), left(MouseAction::Release, 3, 5)],
+            vec![grab.clone(), left(MouseAction::Release, 3, 10)],
             ["1", "two"],
             None,
             false,
         ),
         (
-            vec![grab.clone(), left(MouseAction::Release, 50, 15)],
+            vec![grab.clone(), left(MouseAction::Release, 50, 4)],
             ["1", "two"],
             None,
             false,

@@ -132,8 +132,12 @@ an iPhone attached to the same terminals, then an agent asking for input,
 the laptop views detaching while the work continues, and a remote host over
 QUIC. Every chapter states shipped behavior; keep client names, statuses,
 transports, and commands true to the canonical docs, and label beta clients.
-The tour autoplays only while visible with motion allowed, can be paused,
-and lets viewers pick a chapter. Reduced motion and no-JS show each
+The tour opens with one roughly six-second quick lap, then repeats a
+roughly eighteen-second walkthrough. Commands and connection signals stay
+brisk; each chapter holds its settled result for reading. These are illustrative
+timings, not latency or benchmark claims. Selecting a chapter skips straight to
+walkthrough pacing. Playback runs only while visible with motion allowed and
+can be paused. Reduced motion and no-JS show each
 chapter's settled state without playback. Faint background hosts supply depth,
 not live telemetry or additional story steps. Hovering or focusing the artwork
 reveals a shell invitation and downloads only the React terminal wrapper; it
