@@ -80,6 +80,7 @@ pub use extensions::{
     TranscribeOutcome, TranscribeReceipt,
 };
 pub use geometry::TerminalResizeOutcome;
+pub use input::mint_input_operation_id;
 pub use org_plane::{ArrangementSubmitError, mint_operation};
 pub use organization::{InboxView, OrganizationReplica, ReplicaAction, ReplicaState};
 pub use topology::{AgentSessionDescriptor, PaneDescriptor, SessionDescriptor, Topology};
