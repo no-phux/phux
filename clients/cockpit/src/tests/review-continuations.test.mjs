@@ -277,33 +277,6 @@ test('uncorrelated modal providers replace their single-flight key on reopen', (
   assert.equal(host.hostOpen, true, 'an old settled connection cannot close a reopened status-only host panel');
 });
 
-test('leaving Agents for Sessions or Commands retires the inspector surface', () => {
-  for (const destination of [{ kind: 'sessions_open' }, { kind: 'commands_open' }]) {
-    let [model] = step(initialModel()[0], { kind: 'agents_open' });
-    assert.equal(model.agentsMode, true);
-    assert.equal(model.mainAgentsOpen, true);
-    [model] = step(model, destination);
-    assert.equal(model.agentsMode, false, destination.kind);
-    assert.equal(model.mainAgentsOpen, false, destination.kind);
-    assert.equal(model.mainPaletteOpen, true, destination.kind);
-    assert.equal(model.navigatorView, destination.kind === 'sessions_open' ? 1 : 4, destination.kind);
-  }
-});
-
-test('the shipping Sessions command retires an open Agents inspector', () => {
-  let [model] = step(initialModel()[0], { kind: 'agents_open' });
-  assert.equal(model.agentsMode, true);
-  assert.equal(model.mainAgentsOpen, true);
-  const message = commandMsg('navigator.sessions');
-  assert.deepEqual(message, { kind: 'navigator_open', view: 1 });
-  [model] = step(model, message);
-  assert.equal(model.agentsMode, false);
-  assert.equal(model.mainAgentsOpen, false);
-  assert.equal(model.mainPaletteOpen, true);
-  assert.equal(model.navigatorView, 1);
-  assert.equal(model.paletteOpen, true);
-});
-
 test('New Window and window closure retire the Settings transaction first', () => {
   for (const msg of [{ kind: 'new_window' }, { kind: 'window_closed', window: 1 }]) {
     const [waiting, cmd] = step(settings(), msg);
@@ -344,22 +317,22 @@ test('an invalid or closed active window cannot acquire a projected surface', ()
   for (const activeWindow of [-1, 1, 1.5, 5]) {
     const [observed] = step(initialModel()[0], snapshotMessage());
     const base = { ...observed, activeWindow };
-    const [model] = step(base, { kind: 'agents_open' });
+    const [model] = step(base, { kind: 'palette_open' });
     assert.equal(model.presentation.phase, 3, String(activeWindow));
-    assert.equal(model.mainAgentsOpen, false, String(activeWindow));
-    assert.equal(model.window1AgentsOpen, false, String(activeWindow));
-    assert.equal(model.window2AgentsOpen, false, String(activeWindow));
-    assert.equal(model.window3AgentsOpen, false, String(activeWindow));
-    assert.equal(model.window4AgentsOpen, false, String(activeWindow));
+    assert.equal(model.mainPaletteOpen, false, String(activeWindow));
+    assert.equal(model.window1PaletteOpen, false, String(activeWindow));
+    assert.equal(model.window2PaletteOpen, false, String(activeWindow));
+    assert.equal(model.window3PaletteOpen, false, String(activeWindow));
+    assert.equal(model.window4PaletteOpen, false, String(activeWindow));
   }
 });
 
 test('a pre-snapshot secondary owner without an open window fails closed', () => {
   const malformed = { ...initialModel()[0], activeWindow: 1 };
-  const [model] = step(malformed, { kind: 'agents_open' });
+  const [model] = step(malformed, { kind: 'palette_open' });
   assert.equal(model.presentation.phase, 3);
-  assert.equal(model.mainAgentsOpen, false);
-  assert.equal(model.window1AgentsOpen, false);
+  assert.equal(model.mainPaletteOpen, false);
+  assert.equal(model.window1PaletteOpen, false);
   assert.equal(windows(model).length, 0);
 });
 
@@ -373,7 +346,7 @@ test('malformed presentation records fail closed at exported update and windows 
     { ...valid.presentation, retiredWindows: 2, absentRetiredWindows: 4 },
     { ...valid.presentation, snapshotObserved: false, snapshotActiveWindow: 1 },
     { ...valid.presentation, kind: 2, continuation: 1, navigatorView: 1 },
-    { ...valid.presentation, kind: 1, continuation: 1, navigatorView: 1, inspector: true },
+    { ...valid.presentation, kind: 1, continuation: 1, navigatorView: 5 },
   ];
   for (const presentation of malformed) {
     const corrupt = { ...valid, presentation, window1Open: true, mainSettingsOpen: true, window1SettingsOpen: true };

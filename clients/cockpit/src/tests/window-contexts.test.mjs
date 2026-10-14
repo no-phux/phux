@@ -280,9 +280,9 @@ test('a protocol-valid snapshot cannot focus a secondary slot it does not declar
   const [model] = step(initialModel()[0], { kind: 'snapshot_loaded', body });
   assert.equal(text(model.status), 'BAD SNAPSHOT');
   assert.equal(model.activeWindow, 0);
-  const [opened] = step(model, { kind: 'agents_open' });
-  assert.equal(opened.mainAgentsOpen, true, 'the inconsistent secondary never acquires authority');
-  assert.equal(opened.window1AgentsOpen, false);
+  const [opened] = step(model, { kind: 'palette_open' });
+  assert.equal(opened.mainPaletteOpen, true, 'the inconsistent secondary never acquires authority');
+  assert.equal(opened.window1PaletteOpen, false);
 });
 
 test('every window template binds its own context, not the ambient primary labels', () => {

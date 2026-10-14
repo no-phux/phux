@@ -19,12 +19,11 @@ const request = (cmd, name) => effects(cmd).find(effect => effect.op === 'reques
 const sameBytes = (left, right) => left.length === right.length && left.every((byte, index) => byte === right[index]);
 
 const surfaces = [
-  { name: 'terminals', msg: { kind: 'palette_open' }, request: 'cockpit.navigation', matches: model => model.paletteOpen && !model.agentsMode && model.navigatorView === 0 },
-  { name: 'agents', msg: { kind: 'agents_open' }, request: 'cockpit.navigation', matches: model => model.paletteOpen && model.agentsMode },
-  { name: 'sessions', msg: { kind: 'sessions_open' }, request: 'cockpit.navigation', matches: model => model.paletteOpen && !model.agentsMode && model.navigatorView === 1 },
-  { name: 'machines', msg: { kind: 'machines_open' }, request: 'cockpit.machines', matches: model => model.paletteOpen && !model.agentsMode && model.navigatorView === 2 },
-  { name: 'windows', msg: { kind: 'windows_open' }, request: 'cockpit.navigation', matches: model => model.paletteOpen && !model.agentsMode && model.navigatorView === 3 },
-  { name: 'commands', msg: { kind: 'commands_open' }, request: 'cockpit.keybindings', matches: model => model.paletteOpen && !model.agentsMode && model.navigatorView === 4 },
+  { name: 'terminals', msg: { kind: 'palette_open' }, request: 'cockpit.navigation', matches: model => model.paletteOpen && model.navigatorView === 0 },
+  { name: 'sessions', msg: { kind: 'sessions_open' }, request: 'cockpit.navigation', matches: model => model.paletteOpen && model.navigatorView === 1 },
+  { name: 'machines', msg: { kind: 'machines_open' }, request: 'cockpit.machines', matches: model => model.paletteOpen && model.navigatorView === 2 },
+  { name: 'windows', msg: { kind: 'windows_open' }, request: 'cockpit.navigation', matches: model => model.paletteOpen && model.navigatorView === 3 },
+  { name: 'commands', msg: { kind: 'commands_open' }, request: 'cockpit.keybindings', matches: model => model.paletteOpen && model.navigatorView === 4 },
   { name: 'new-session', msg: { kind: 'new_session_open' }, request: 'cockpit.new-session', matches: model => model.renameOpen && model.creatingSession },
   { name: 'add-machine', msg: { kind: 'add_machine_open' }, request: 'cockpit.local-tools', matches: model => model.hostOpen && model.toolPurpose === 1 },
   { name: 'directory', msg: { kind: 'dir_open' }, request: 'cockpit.directory', matches: model => model.dirOpen },
@@ -34,13 +33,12 @@ const surfaces = [
 ];
 
 const ownerFields = prefix => [
-  `${prefix}PaletteOpen`, `${prefix}AgentsOpen`, `${prefix}SettingsOpen`, `${prefix}HostOpen`,
+  `${prefix}PaletteOpen`, `${prefix}SettingsOpen`, `${prefix}HostOpen`,
   `${prefix}DirOpen`, `${prefix}RenameOpen`, `${prefix}EmptyOpen`,
 ];
 const everyOwnerField = ['main', 'window1', 'window2', 'window3', 'window4'].flatMap(ownerFields);
 
 function ownerField(surface, prefix = 'main') {
-  if (surface.name === 'agents') return `${prefix}AgentsOpen`;
   if (['terminals', 'sessions', 'machines', 'windows', 'commands'].includes(surface.name)) return `${prefix}PaletteOpen`;
   if (surface.name === 'settings') return `${prefix}SettingsOpen`;
   if (['add-machine', 'connection'].includes(surface.name)) return `${prefix}HostOpen`;
@@ -109,7 +107,7 @@ function visibleSurfaces(model) {
 
 function presentationSignature(model) {
   const openOwners = everyOwnerField.filter(field => model[field]);
-  return `visible=[${visibleSurfaces(model).join(',')}];palette=${+model.paletteOpen};agents=${+model.agentsMode};` +
+  return `visible=[${visibleSurfaces(model).join(',')}];palette=${+model.paletteOpen};` +
     `view=${model.navigatorView};settings=${+model.settingsOpen};host=${+model.hostOpen};purpose=${model.toolPurpose};` +
     `dir=${+model.dirOpen};rename=${+model.renameOpen};creating=${+model.creatingSession};ownerFields=[${openOwners.join(',')}]`;
 }
@@ -227,7 +225,7 @@ function failedOpenDepartureFailure() {
   [model] = step(model, { kind: describe.errKind, error: bytes('describe failed') });
   [model, cmd] = step(model, { kind: 'sessions_open' });
   const unexpected = request(cmd, 'cockpit.new-session');
-  const complete = model.pendingSessionAction === null && !model.renameOpen && surfaces[2].matches(model);
+  const complete = model.pendingSessionAction === null && !model.renameOpen && surfaces.find(surface => surface.name === 'sessions').matches(model);
   if (complete && !unexpected) return null;
   return `cancelRequest=${unexpected ? unexpected.payload[1] : 'none'};pending=${model.pendingSessionAction ? model.pendingSessionAction.code : 'none'};${presentationSignature(model)}`;
 }

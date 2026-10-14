@@ -144,69 +144,24 @@ click_named() {
     (cd "$DEV_HOME" && "$NATIVE" automate widget-click "$view" "$id" >/dev/null)
 }
 
-(cd "$DEV_HOME" && "$NATIVE" automate assert --absent 'name="Agent inspection details"' >/dev/null)
-click_named button 'Workspace actions'
-click_named menuitem 'Inspect agents'
-(cd "$DEV_HOME" && "$NATIVE" automate assert --timeout-ms 5000 'name="Agent inspection details"' >/dev/null)
-printf '  ok: Agents opens the inspector\n'
+(cd "$DEV_HOME" && "$NATIVE" automate assert --absent 'name="Search navigator"' >/dev/null)
+sessions_target="$(widget button 'Workspace actions')"
+read -r sessions_view _ <<<"$sessions_target"
+(cd "$DEV_HOME" && "$NATIVE" automate native-command navigator.sessions "$sessions_view" >/dev/null)
+(cd "$DEV_HOME" && "$NATIVE" automate assert --timeout-ms 5000 'name="Search navigator"' >/dev/null)
 
 # A horizontal drag finishes with the automation pointer parked over the
-# shipping scroll surface. Hovered state proves only that the pointer reached
+# shipping results surface. Hovered state proves only that the pointer reached
 # the real control; rendered rest/hover fill equality is the deterministic
 # semantic_theme Zig recipe contract named by cockpit-state-inventory.mjs.
 passive_snapshot="${WORK}/passive-hover.snapshot"
-passive_target="$(widget group 'Agent inspection details')"
+passive_target="$(widget group 'Navigator results')"
 read -r passive_view passive_id <<<"$passive_target"
 (cd "$DEV_HOME" && "$NATIVE" automate widget-drag "$passive_view" "$passive_id" 0.25 0.75 0.5 0.5 >/dev/null)
 app_instance_snapshot >"$passive_snapshot"
 node "${ROOT}/scripts/cockpit-state-inventory.mjs" --check-pointer-target "$passive_snapshot" \
-    --target-role group --target-name 'Agent inspection details'
-
-# Negative control: the navigator search is not present while Agents owns the
-# slot. Invoke the shipping menu command rather than clicking the toolbar button
-# behind the modal sheet: pointer hit-testing correctly gives that click to the
-# sheet's light-dismiss layer, so it cannot prove a Sessions transition.
-(cd "$DEV_HOME" && "$NATIVE" automate assert --absent 'name="Search navigator"' >/dev/null)
-(cd "$DEV_HOME" && "$NATIVE" automate native-command navigator.sessions "$passive_view" >/dev/null)
-if (cd "$DEV_HOME" && "$NATIVE" automate assert --timeout-ms 5000 \
-    'name="Search navigator"' >/dev/null); then
-    :
-else
-    (cd "$DEV_HOME" && "$NATIVE" automate assert --timeout-ms 5000 \
-        'name="Agent inspection details"' >/dev/null)
-fi
-snapshot="$(app_instance_snapshot)"
-
-transition_red=0
-if grep -q 'name="Search navigator"' <<<"$snapshot" \
-    && ! grep -q 'name="Agent inspection details"' <<<"$snapshot"; then
-    :
-elif grep -q 'name="Agent inspection details"' <<<"$snapshot" \
-    && ! grep -q 'name="Search navigator"' <<<"$snapshot"; then
-    transition_red=1
-else
-    printf 'FAILED: Agents -> Sessions reached neither the accepted nor known-red presentation.\n' >&2
-    printf 'Expected exactly one of Search navigator and Agent inspection details.\n' >&2
-    exit 1
-fi
-
-if [[ "$EXPECT_KNOWN_RED" == 1 ]]; then
-    if [[ "$transition_red" == 1 ]]; then
-        printf 'EXPECTED FAILURE: Sessions retained the Agents inspector and projected no navigator.\n'
-        printf 'Strict gate: %s\n' "$0"
-        exit 0
-    fi
-    printf 'UNEXPECTED PASS: Agents -> Sessions now replaces inspector.\n' >&2
-    printf 'Remove --expect-known-red and promote the strict integration gate.\n' >&2
-    exit 1
-fi
-
-if [[ "$transition_red" == 1 ]]; then
-    printf 'FAILED: Agents -> Sessions did not replace inspector in pid %s.\n' "$APP_PID" >&2
-    printf 'Expected Search navigator present and Agent inspection details absent.\n' >&2
-fi
-(( transition_red == 0 ))
-printf 'PASS: live Agents -> Sessions replacement holds in pid %s\n' "$APP_PID"
+    --target-role group --target-name 'Navigator results'
+printf 'PASS: Sessions opens from the shipping command in pid %s\n' "$APP_PID"
 
 # ---------------------------------------------------------------- navigation
 # Where am I, what is open, and where are my machines: each step asserts the

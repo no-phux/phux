@@ -37,8 +37,8 @@ export const shippingStateInventory = Object.freeze([
     pattern: 'Empty session', evidence: 'compiled inline empty-session terminal-space fixture' }),
   Object.freeze({ state: 'failed', file: 'windows/components/cockpit-navigator.native',
     pattern: '<if test="{machines.failed}">', evidence: 'shipping machine failure surface' }),
-  Object.freeze({ state: 'passive-hover', file: 'windows/components/cockpit-agents.native',
-    pattern: '<template name="cockpit-agents"', evidence: 'compiled inspector sheet stays hit-testable; rendered fill is a Zig contract' }),
+  Object.freeze({ state: 'passive-hover', file: 'windows/components/cockpit-host.native',
+    pattern: '<template name="cockpit-host"', evidence: 'compiled machine sheet stays hit-testable; rendered fill is a Zig contract' }),
 ]);
 
 const requiredPassiveHoverZigTest = 'semantic_theme test "passive panel hover is visually stable without disabling hit testing"';

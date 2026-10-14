@@ -8,7 +8,6 @@
             <row cross="center" gap="8">
               <icon name="folder-open" width="16" height="16" />
               <text grow="1" size="heading">{navigatorTitle}</text>
-              <if test="{navigatorBrowse}"><button size="sm" variant="ghost" on-press="agents_open">Agents</button></if>
               <button size="sm" variant="ghost" icon="x" label="Close navigator" on-press="palette_close" />
 
             </row>

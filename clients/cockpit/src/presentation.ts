@@ -17,7 +17,7 @@ interface OwnedPresentation {
 /// its contract-safe encoding below; invalid wire-shaped records decode to
 /// `none`, so reducers and projections never handle an impossible variant.
 interface NoPresentation { readonly kind: "none"; }
-interface NavigatorPresentation extends OwnedPresentation { readonly kind: "navigator"; readonly view: number; readonly inspector: boolean; }
+interface NavigatorPresentation extends OwnedPresentation { readonly kind: "navigator"; readonly view: number; }
 interface SettingsPresentation extends OwnedPresentation { readonly kind: "settings"; }
 interface HostPresentation extends OwnedPresentation { readonly kind: "host"; }
 interface DirectoryPresentation extends OwnedPresentation { readonly kind: "directory"; }
@@ -28,7 +28,7 @@ export type PresentationSurface = NoPresentation | NavigatorPresentation | Setti
 
 export type PresentationIntent =
   | { readonly kind: "none" }
-  | { readonly kind: "navigator"; readonly view: number; readonly inspector: boolean; readonly phase: PresentationPhase }
+  | { readonly kind: "navigator"; readonly view: number; readonly phase: PresentationPhase }
   | { readonly kind: "settings"; readonly phase: PresentationPhase }
   | { readonly kind: "host"; readonly phase: PresentationPhase }
   | { readonly kind: "directory"; readonly phase: PresentationPhase }
@@ -45,7 +45,6 @@ export interface PresentationLifecycle {
   readonly focusReturnWindow: number;
   readonly focusReturnView: number;
   readonly navigatorView: number;
-  readonly inspector: boolean;
   readonly creation: boolean;
   readonly continuation: number;
   readonly retiredWindows: number;
@@ -79,7 +78,6 @@ export interface PresentationSnapshotObservation extends PresentationAuthority {
 
 export interface PresentationProjection {
   readonly mainPaletteOpen: boolean; readonly window1PaletteOpen: boolean; readonly window2PaletteOpen: boolean; readonly window3PaletteOpen: boolean; readonly window4PaletteOpen: boolean;
-  readonly mainAgentsOpen: boolean; readonly window1AgentsOpen: boolean; readonly window2AgentsOpen: boolean; readonly window3AgentsOpen: boolean; readonly window4AgentsOpen: boolean;
   readonly mainSettingsOpen: boolean; readonly window1SettingsOpen: boolean; readonly window2SettingsOpen: boolean; readonly window3SettingsOpen: boolean; readonly window4SettingsOpen: boolean;
   readonly mainHostOpen: boolean; readonly window1HostOpen: boolean; readonly window2HostOpen: boolean; readonly window3HostOpen: boolean; readonly window4HostOpen: boolean;
   readonly mainDirOpen: boolean; readonly window1DirOpen: boolean; readonly window2DirOpen: boolean; readonly window3DirOpen: boolean; readonly window4DirOpen: boolean;
@@ -89,7 +87,7 @@ export interface PresentationProjection {
 
 export function initialPresentation(): PresentationLifecycle {
   return { kind: 0, owner: 0, phase: 0, focusReturnKind: 0, focusReturnWindow: 0, focusReturnView: 0,
-    navigatorView: 0, inspector: false, creation: false, continuation: 0,
+    navigatorView: 0, creation: false, continuation: 0,
     retiredWindows: 0, absentRetiredWindows: 0, emptyWindows: 0, snapshotObserved: false,
     snapshotActiveWindow: 0,
     retirementSequenceHi: 0, retirementSequenceLo: 0, retirementRevisionHi: 0, retirementRevisionLo: 0,
@@ -126,7 +124,7 @@ function owned(lifecycle: PresentationLifecycle) {
 
 function navigatorSurface(lifecycle: PresentationLifecycle): NavigatorPresentation {
   const base = owned(lifecycle);
-  return { ...base, kind: "navigator", view: lifecycle.navigatorView, inspector: lifecycle.inspector };
+  return { ...base, kind: "navigator", view: lifecycle.navigatorView };
 }
 
 function settingsSurface(lifecycle: PresentationLifecycle): SettingsPresentation {
@@ -191,7 +189,6 @@ function validPresentationMetadata(lifecycle: PresentationLifecycle): boolean {
   if (!validPresentationPhase(lifecycle.phase)) return false;
   if (!validWindowMasks(lifecycle)) return false;
   if (!validSnapshotMetadata(lifecycle)) return false;
-  if (lifecycle.inspector !== true && lifecycle.inspector !== false) return false;
   if (lifecycle.creation !== true && lifecycle.creation !== false) return false;
   if (!wholeBetween(lifecycle.nextContinuation, 1, 9007199254740991)) return false;
   if (!validAuthority(lifecycle)) return false;
@@ -201,7 +198,7 @@ function validPresentationMetadata(lifecycle: PresentationLifecycle): boolean {
 function canonicalNone(lifecycle: PresentationLifecycle): boolean {
   if (lifecycle.owner !== 0 || lifecycle.phase !== 0 || lifecycle.focusReturnWindow !== 0) return false;
   if (lifecycle.focusReturnView !== 0 || lifecycle.navigatorView !== 0) return false;
-  if (lifecycle.inspector || lifecycle.creation) return false;
+  if (lifecycle.creation) return false;
   return lifecycle.continuation === 0;
 }
 
@@ -215,10 +212,9 @@ function canonicalOwned(lifecycle: PresentationLifecycle): boolean {
 function canonicalKindFields(lifecycle: PresentationLifecycle): boolean {
   if (lifecycle.kind === 1) {
     if (!wholeBetween(lifecycle.navigatorView, 0, 4)) return false;
-    if (lifecycle.inspector && lifecycle.navigatorView !== 0) return false;
     return !lifecycle.creation;
   }
-  if (lifecycle.navigatorView !== 0 || lifecycle.inspector) return false;
+  if (lifecycle.navigatorView !== 0) return false;
   if (lifecycle.kind === 5) return true;
   return !lifecycle.creation;
 }
@@ -275,7 +271,7 @@ function phaseCode(phase: PresentationPhase): number {
 
 function noneEncoding(lifecycle: PresentationLifecycle): PresentationLifecycle {
   return { ...lifecycle, kind: 0, owner: 0, phase: 0, focusReturnKind: 0, focusReturnWindow: 0,
-    focusReturnView: 0, navigatorView: 0, inspector: false, creation: false, continuation: 0 };
+    focusReturnView: 0, navigatorView: 0, creation: false, continuation: 0 };
 }
 
 interface OwnedEncoding {
@@ -292,29 +288,29 @@ function ownedEncoding(owner: WindowSlot, continuation: number, requested: Prese
   return { owner: encodedOwner, phase, continuation: encodedContinuation };
 }
 
-function encodedLifecycle(lifecycle: PresentationLifecycle, owned: OwnedEncoding, kindValue: number, viewValue: number, inspector: boolean, creation: boolean): PresentationLifecycle {
+function encodedLifecycle(lifecycle: PresentationLifecycle, owned: OwnedEncoding, kindValue: number, viewValue: number, creation: boolean): PresentationLifecycle {
   const kind = kindValue >= 1 && kindValue <= 5 ? Math.trunc(kindValue) : 1;
   const owner = owned.owner >= 0 && owned.owner <= 4 ? Math.trunc(owned.owner) : 0;
   const phase = owned.phase >= 0 && owned.phase <= 3 ? Math.trunc(owned.phase) : 0;
   const continuation = owned.continuation >= 1 && owned.continuation <= 9007199254740991 ? Math.trunc(owned.continuation) : 1;
   const navigatorView = viewValue >= 0 && viewValue <= 4 ? Math.trunc(viewValue) : 0;
   return { ...lifecycle, kind, owner, phase, focusReturnKind: 0, focusReturnWindow: owner, focusReturnView: 0,
-    navigatorView, inspector, creation, continuation };
+    navigatorView, creation, continuation };
 }
 
 function encodeIntent(lifecycle: PresentationLifecycle, intent: PresentationIntent, owner: WindowSlot, continuation: number): PresentationLifecycle {
   if (intent.kind === "none") return noneEncoding(lifecycle);
   const encoded = ownedEncoding(owner, continuation, intentPhase(intent));
-  if (intent.kind === "navigator") return encodedLifecycle(lifecycle, encoded, 1, intent.view, intent.inspector, false);
-  if (intent.kind === "settings") return encodedLifecycle(lifecycle, encoded, 2, 0, false, false);
-  if (intent.kind === "host") return encodedLifecycle(lifecycle, encoded, 3, 0, false, false);
-  if (intent.kind === "directory") return encodedLifecycle(lifecycle, encoded, 4, 0, false, false);
-  return encodedLifecycle(lifecycle, encoded, 5, 0, false, intent.creation);
+  if (intent.kind === "navigator") return encodedLifecycle(lifecycle, encoded, 1, intent.view, false);
+  if (intent.kind === "settings") return encodedLifecycle(lifecycle, encoded, 2, 0, false);
+  if (intent.kind === "host") return encodedLifecycle(lifecycle, encoded, 3, 0, false);
+  if (intent.kind === "directory") return encodedLifecycle(lifecycle, encoded, 4, 0, false);
+  return encodedLifecycle(lifecycle, encoded, 5, 0, intent.creation);
 }
 
 function sameSurface(surface: PresentationSurface, intent: PresentationIntent): boolean {
   if (surface.kind !== intent.kind) return false;
-  if (surface.kind === "navigator" && intent.kind === "navigator") return surface.inspector === intent.inspector && surface.view === intent.view;
+  if (surface.kind === "navigator" && intent.kind === "navigator") return surface.view === intent.view;
   if (surface.kind === "rename" && intent.kind === "rename") return surface.creation === intent.creation;
   return true;
 }
@@ -500,10 +496,6 @@ function owns(surface: PresentationSurface, kind: PresentationSurface["kind"], w
   return surface.kind === kind;
 }
 
-function ownsNavigator(surface: PresentationSurface, inspector: boolean, window: number): boolean {
-  if (!owns(surface, "navigator", window)) return false;
-  return surface.kind === "navigator" && surface.inspector === inspector;
-}
 
 function showsEmpty(lifecycle: PresentationLifecycle, surface: PresentationSurface, window: number): boolean {
   if (visibleOwner(surface) !== -1) return false;
@@ -516,8 +508,8 @@ export function projectPresentation(lifecycle: PresentationLifecycle): Presentat
   const surface = presentationSurface(lifecycle);
   if (!validEncodedPresentation(lifecycle)) lifecycle = initialPresentation();
   return {
-    mainPaletteOpen: ownsNavigator(surface, false, 0), window1PaletteOpen: ownsNavigator(surface, false, 1), window2PaletteOpen: ownsNavigator(surface, false, 2), window3PaletteOpen: ownsNavigator(surface, false, 3), window4PaletteOpen: ownsNavigator(surface, false, 4),
-    mainAgentsOpen: ownsNavigator(surface, true, 0), window1AgentsOpen: ownsNavigator(surface, true, 1), window2AgentsOpen: ownsNavigator(surface, true, 2), window3AgentsOpen: ownsNavigator(surface, true, 3), window4AgentsOpen: ownsNavigator(surface, true, 4),
+    mainPaletteOpen: owns(surface, "navigator", 0), window1PaletteOpen: owns(surface, "navigator", 1), window2PaletteOpen: owns(surface, "navigator", 2), window3PaletteOpen: owns(surface, "navigator", 3), window4PaletteOpen: owns(surface, "navigator", 4),
+
     mainSettingsOpen: owns(surface, "settings", 0), window1SettingsOpen: owns(surface, "settings", 1), window2SettingsOpen: owns(surface, "settings", 2), window3SettingsOpen: owns(surface, "settings", 3), window4SettingsOpen: owns(surface, "settings", 4),
     mainHostOpen: owns(surface, "host", 0), window1HostOpen: owns(surface, "host", 1), window2HostOpen: owns(surface, "host", 2), window3HostOpen: owns(surface, "host", 3), window4HostOpen: owns(surface, "host", 4),
     mainDirOpen: owns(surface, "directory", 0), window1DirOpen: owns(surface, "directory", 1), window2DirOpen: owns(surface, "directory", 2), window3DirOpen: owns(surface, "directory", 3), window4DirOpen: owns(surface, "directory", 4),

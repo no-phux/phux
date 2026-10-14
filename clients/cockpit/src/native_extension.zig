@@ -623,9 +623,9 @@ const Bridge = struct {
             self.posts_unroutable += 1;
             return;
         };
-        // Encode at the normal snapshot capacity first: agent rows use the
-        // remaining room for a drawn prefix, so a smaller buffer could silently
-        // publish less state instead of reporting BufferTooSmall.
+        // Encode at the normal snapshot capacity first, so a smaller buffer
+        // can never silently publish less state instead of BufferTooSmall.
+
         const encoded: ?[]const u8 = engine.snapshot(&self.event_buffer) catch null;
         const bytes = if (encoded != null and encoded.?.len <= native_sdk.max_effect_channel_bytes) encoded.? else fallback: {
             const invalidated = engine.invalidation();
@@ -1824,17 +1824,17 @@ fn terminalInteraction(ui: *Adapter.Ui, engine: *Engine, window_index: usize) Ad
     });
 }
 
-fn overlayOpen(palette: bool, agents: bool, settings: bool, host: bool, dir: bool, rename: bool) bool {
-    return palette or agents or settings or host or dir or rename;
+fn overlayOpen(palette: bool, settings: bool, host: bool, dir: bool, rename: bool) bool {
+    return palette or settings or host or dir or rename;
 }
 
 fn windowOwnsOverlay(model: *const core.Model, window_index: usize) bool {
     return switch (window_index) {
-        0 => overlayOpen(model.mainPaletteOpen, model.mainAgentsOpen, model.mainSettingsOpen, model.mainHostOpen, model.mainDirOpen, model.mainRenameOpen),
-        1 => overlayOpen(model.window1PaletteOpen, model.window1AgentsOpen, model.window1SettingsOpen, model.window1HostOpen, model.window1DirOpen, model.window1RenameOpen),
-        2 => overlayOpen(model.window2PaletteOpen, model.window2AgentsOpen, model.window2SettingsOpen, model.window2HostOpen, model.window2DirOpen, model.window2RenameOpen),
-        3 => overlayOpen(model.window3PaletteOpen, model.window3AgentsOpen, model.window3SettingsOpen, model.window3HostOpen, model.window3DirOpen, model.window3RenameOpen),
-        4 => overlayOpen(model.window4PaletteOpen, model.window4AgentsOpen, model.window4SettingsOpen, model.window4HostOpen, model.window4DirOpen, model.window4RenameOpen),
+        0 => overlayOpen(model.mainPaletteOpen, model.mainSettingsOpen, model.mainHostOpen, model.mainDirOpen, model.mainRenameOpen),
+        1 => overlayOpen(model.window1PaletteOpen, model.window1SettingsOpen, model.window1HostOpen, model.window1DirOpen, model.window1RenameOpen),
+        2 => overlayOpen(model.window2PaletteOpen, model.window2SettingsOpen, model.window2HostOpen, model.window2DirOpen, model.window2RenameOpen),
+        3 => overlayOpen(model.window3PaletteOpen, model.window3SettingsOpen, model.window3HostOpen, model.window3DirOpen, model.window3RenameOpen),
+        4 => overlayOpen(model.window4PaletteOpen, model.window4SettingsOpen, model.window4HostOpen, model.window4DirOpen, model.window4RenameOpen),
         else => false,
     };
 }
@@ -2735,7 +2735,6 @@ const window_sources = [_]canvas.ui_markup.SourceFile{
     .{ .path = "components/cockpit-connected-hosts.native", .source = @embedFile("windows/components/cockpit-connected-hosts.native") },
     .{ .path = "components/cockpit-directory.native", .source = @embedFile("windows/components/cockpit-directory.native") },
     .{ .path = "components/cockpit-rename.native", .source = @embedFile("windows/components/cockpit-rename.native") },
-    .{ .path = "components/cockpit-agents.native", .source = @embedFile("windows/components/cockpit-agents.native") },
     .{ .path = "phux-window-1.native", .source = @embedFile("windows/phux-window-1.native") },
     .{ .path = "phux-window-2.native", .source = @embedFile("windows/phux-window-2.native") },
     .{ .path = "phux-window-3.native", .source = @embedFile("windows/phux-window-3.native") },
@@ -3216,40 +3215,6 @@ test "tab opening and closing publish the confirmed model in one channel drain" 
     try std.testing.expectEqual(@as(usize, 1), rig.app_state.model.tabs.len);
     try std.testing.expectEqual(@as(i64, 2), rig.app_state.model.engineSequence.lo);
     try std.testing.expectEqualStrings("READY", rig.app_state.model.status);
-}
-
-test "oversized channel snapshots fall back without shortening the visible agent inventory" {
-    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
-    var rig = try Rig.start();
-    defer rig.stop();
-    try rig.settle(0, "READY");
-    const parent = try rig.attachFixture();
-    const engine = bridge.engine.?;
-    try rig.settle(@intCast(engine.sequence), "READY");
-    const remote = engine.model.phux().?;
-    const fixture = @TypeOf(remote.*).test_support;
-    var agents: [24]fixture.AgentSessionFixture = undefined;
-    for (&agents, 0..) |*agent, index| agent.* = .{
-        .id = @intCast(9001 + index),
-        .host = "h" ** 200,
-        .parent = parent.terminal_id.phux.id,
-        .provider_name = "claude",
-        .state = "working",
-    };
-    try fixture.adoptAgentSessions(remote.host, &agents);
-    var bytes: [cockpit.snapshot.max_bytes]u8 = undefined;
-    const full = try engine.snapshot(&bytes);
-    try std.testing.expect(full.len > native_sdk.max_effect_channel_bytes);
-
-    try rig.dispatch(.toggle_tab_placement);
-    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
-    // The oversized publication is an invalidation, not a silently truncated
-    // snapshot. Its full host reply arrives on the next completion drain.
-    try std.testing.expect(!rig.app_state.model.engineConnected);
-    try rig.settle(@intCast(engine.sequence), "READY");
-    const rows = rig.app_state.model.tabs[0].agents;
-    try std.testing.expectEqual(@as(usize, 24), rows.len);
-    try std.testing.expect(std.mem.indexOf(u8, rows[23].resource, "h" ** 200) != null);
 }
 
 test "native menu commands split and close the focused pane through the engine seam" {
@@ -6928,40 +6893,6 @@ test "shipping focused palette editor dismisses and moves by keyboard" {
     try std.testing.expect(!rig.app_state.model.paletteOpen);
 }
 
-test "shipping agent inspector arrows and Enter navigate the exact parent" {
-    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
-    var rig = try Rig.start();
-    defer rig.stop();
-    try rig.settle(0, "READY");
-    const engine = bridge.engine.?;
-    const local = engine.model.focusedTerminalRef().?;
-    const parent = try rig.attachFixture();
-    const tree = engine.model.ws().selectedTree().?;
-    _ = try tree.split(tree.focus, .horizontal, local);
-    const remote = engine.model.phux().?;
-    try @TypeOf(remote.*).test_support.adoptAgentSessions(remote.host, &.{
-        .{ .id = 9001, .parent = 9999, .provider_name = "claude", .state = "blocked" },
-        .{ .id = 9002, .parent = parent.terminal_id.phux.id, .provider_name = "claude", .state = "blocked" },
-    });
-    try rig.settle(@intCast(engine.sequence), "READY");
-    try rig.dispatch(.agents_open);
-    try rig.settleNavigation();
-    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
-    try std.testing.expectEqual(@as(i64, 65535), rig.app_state.model.paletteRows[0].index);
-    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas enter");
-    try std.testing.expect(rig.app_state.model.paletteOpen);
-    try std.testing.expect(local.eql(engine.model.focusedTerminalRef().?));
-    // Parent-unavailable autofocus is Refresh; Enter retries rather than jumping.
-    try rig.settleNavigation();
-    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas arrowdown");
-    try rig.settleNavigation();
-    try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.paletteOffset);
-    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
-    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas enter");
-    try std.testing.expect(!rig.app_state.model.paletteOpen);
-    try std.testing.expect(parent.eql(engine.model.focusedTerminalRef().?));
-}
-
 test "clicking the selected tab returns Enter to its focused split pane in strip and rail" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -7215,7 +7146,6 @@ const main_sources = [_]canvas.ui_markup.SourceFile{
     .{ .path = "windows/components/cockpit-connected-hosts.native", .source = @embedFile("windows/components/cockpit-connected-hosts.native") },
     .{ .path = "windows/components/cockpit-directory.native", .source = @embedFile("windows/components/cockpit-directory.native") },
     .{ .path = "windows/components/cockpit-rename.native", .source = @embedFile("windows/components/cockpit-rename.native") },
-    .{ .path = "windows/components/cockpit-agents.native", .source = @embedFile("windows/components/cockpit-agents.native") },
 };
 const CompiledChrome = canvas.CompiledMarkupImports(core.Model, core.Msg, "app.native", &main_sources);
 const compiled_fragments = [_]canvas.MarkupFragment{
@@ -7770,87 +7700,6 @@ test "titlebar chrome is a window-drag surface in every window and placement" {
     try rig.reach(.{ .label = "full strip", .tabs = 16 });
     try expectTitlebarWindowDrag(&rig.app_state.model, 0, size);
     try expectTitlebarWindowDrag(&rig.app_state.model, 1, size);
-}
-
-fn auditInspectorEveryWindow(model: core.Model, state: []const u8, loaded: bool) !void {
-    const fields = .{ "mainAgentsOpen", "window1AgentsOpen", "window2AgentsOpen", "window3AgentsOpen", "window4AgentsOpen" };
-    inline for (fields, 0..) |field, window| {
-        var scoped = model;
-        inline for (fields) |other| @field(scoped, other) = false;
-        @field(scoped, field) = true;
-        try std.testing.expect(try compiledViewHasLabel(&scoped, window, "Close agent inspector"));
-        if (loaded) {
-            const row = scoped.paletteRows[0];
-            for ([_][]const u8{ row.resource, row.parent, row.nativeId, row.evidence }) |value| {
-                if (value.len != 0) try std.testing.expect(try compiledViewHasLabel(&scoped, window, value));
-            }
-        }
-        for (parity_sizes) |size| {
-            for ([_]canvas.Density{ .compact, .regular, .spacious }) |density| {
-                try std.testing.expectEqual(@as(usize, 0), try auditWindowChromeAt(&scoped, size, density, state, window));
-            }
-        }
-    }
-}
-
-test "shipping agent inspection markup handles paging and catalog states in all windows" {
-    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
-    var rig = try Rig.start();
-    defer rig.stop();
-    try rig.settle(0, "READY");
-    const parent = try rig.attachFixture();
-    const engine = bridge.engine.?;
-    const remote = engine.model.phux().?;
-    const fixture = @TypeOf(remote.*).test_support;
-    // 256 UTF-8 bytes is the actual native-id bound, not an ASCII-only proxy.
-    const native_id = "é" ** 128;
-    try fixture.adoptAgentSessions(remote.host, &.{
-        .{ .id = 9001, .parent = parent.terminal_id.phux.id, .provider_name = "claude", .native_id = native_id, .state = "working" },
-        .{ .id = 9002, .parent = parent.terminal_id.phux.id, .provider_name = "codex", .native_id = native_id, .state = "blocked" },
-        .{ .id = 9003, .parent = 9999, .provider_name = "claude", .native_id = native_id, .state = "done" },
-    });
-    try rig.settle(@intCast(engine.sequence), "READY");
-    var snapshot_bytes: [cockpit.snapshot.max_bytes]u8 = undefined;
-    try rig.dispatch(.{ .snapshot_loaded = try engine.snapshot(&snapshot_bytes) });
-    try rig.dispatch(.toggle_tab_placement);
-    try rig.settle(@intCast(engine.sequence), "READY");
-    var agent_rows: usize = 0;
-    for (rig.app_state.model.railRows) |row| {
-        if (row.agent) agent_rows += 1;
-    }
-    try std.testing.expectEqual(@as(usize, 2), agent_rows);
-    for (parity_sizes) |size| {
-        try rig.resize(size);
-        for ([_]canvas.Density{ .compact, .regular, .spacious }) |density| {
-            try std.testing.expectEqual(@as(usize, 0), try auditChromeAt(&rig.app_state.model, size, density, "populated agent rail"));
-        }
-    }
-    try rig.dispatch(.toggle_tab_placement);
-    try rig.settle(@intCast(engine.sequence), "READY");
-    try rig.dispatch(.agents_open);
-    try auditInspectorEveryWindow(rig.app_state.model, "agents loading", false);
-    try rig.settleNavigation();
-    try auditInspectorEveryWindow(rig.app_state.model, "agents first page", true);
-    var boundary = rig.app_state.model;
-    var boundary_row = boundary.paletteRows[0].*;
-    boundary_row.resource = "phux:1:4294967295@" ++ "s" ** 253;
-    boundary_row.parent = "phux:1:4294967294@" ++ "s" ** 253;
-    const boundary_rows = [_]*const core.SwitcherRow{&boundary_row};
-    boundary.paletteRows = &boundary_rows;
-    try auditInspectorEveryWindow(boundary, "maximum satellite identities", true);
-    try rig.dispatch(.palette_next);
-    try rig.settleNavigation();
-    try auditInspectorEveryWindow(rig.app_state.model, "agents middle page", true);
-    try rig.dispatch(.palette_next);
-    try rig.settleNavigation();
-    try auditInspectorEveryWindow(rig.app_state.model, "agents absent parent last page", true);
-    try std.testing.expectEqual(@as(i64, 65535), rig.app_state.model.paletteRows[0].index);
-    try rig.dispatch(.{ .navigation_failed = "fixture unavailable" });
-    try auditInspectorEveryWindow(rig.app_state.model, "agents unavailable", false);
-    try fixture.adoptAgentSessions(remote.host, &.{});
-    try rig.dispatch(.palette_retry);
-    try rig.settleNavigation();
-    try auditInspectorEveryWindow(rig.app_state.model, "agents empty", false);
 }
 
 fn expectParentAttentionChrome(rig: *Rig, label: []const u8, shown: bool) !void {
@@ -10009,47 +9858,11 @@ test "shipping overlays use SDK dialog and sheet shells with owner geometry" {
     try rig.dispatch(.settings_close);
     try rig.settleAppearance();
     try std.testing.expect(!rig.app_state.model.settingsOpen);
-
-    try rig.dispatch(.agents_open);
-    try expectSingleOverlay(&rig.app_state.model, 0, .dialog, .palette_close, "Refresh");
-    try std.testing.expect(engineInputSuspended());
-    try rig.dispatch(.palette_close);
 }
 
 fn engineInputSuspended() bool {
     const engine = bridge.engine orelse return false;
     return engine.input_suspended;
-}
-
-test "agentsessionreplace shipping Sessions command retires the Agents inspector" {
-    var rig = try Rig.start();
-    defer rig.stop();
-    try rig.settle(0, "READY");
-    try rig.dispatch(.agents_open);
-    try std.testing.expect(rig.app_state.model.agentsMode);
-    try std.testing.expect(rig.app_state.model.mainAgentsOpen);
-    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "Agent inspection details"));
-    try std.testing.expect(!try compiledViewHasLabel(&rig.app_state.model, 0, "Search navigator"));
-
-    const painted = bridge.engine.?.model.wsAtConst(0).?.window_id;
-    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .native_command = .{
-        .name = "navigator.sessions",
-        .window_id = if (painted == 0) 1 else painted,
-        .view_label = canvas_label,
-    } });
-
-    try std.testing.expect(!rig.app_state.model.agentsMode);
-    try std.testing.expect(!rig.app_state.model.mainAgentsOpen);
-    try std.testing.expect(rig.app_state.model.mainPaletteOpen);
-    try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.navigatorView);
-    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "Search navigator"));
-    try std.testing.expect(!try compiledViewHasLabel(&rig.app_state.model, 0, "Agent inspection details"));
-    try std.testing.expect(!rig.app_state.model.navigatorBrowse);
-    try std.testing.expect(!try compiledViewHasLabel(&rig.app_state.model, 0, "Navigator views"));
-
-    try rig.dispatch(.palette_open);
-    try std.testing.expect(rig.app_state.model.navigatorBrowse);
-    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "Navigator views"));
 }
 
 test "shipping empty session stays inline in terminal space without modal semantics" {

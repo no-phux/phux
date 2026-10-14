@@ -34,23 +34,15 @@ pub const Error = error{BufferTooSmall};
 /// state, written only when one does. `window_contexts` (window_contexts.zig):
 /// each open window's own machine, session, connection and Empty session
 /// state; decoders that know it prefer it over kinds 3 and 4 for headers.
-/// `parent_agent_rows` (ts_agents.zig): identity-bound inspection rows. Kind 5
-/// is already window_contexts, so identity rows take the next free value.
 /// `paste_confirmation`: the paste held for the user's answer
-/// (paste_safety.zig), written only while one is.
-pub const ExtensionKind = enum(u8) { agent_rows = 1, tab_contexts = 2, navigation_context = 3, empty_session = 4, window_contexts = 5, parent_agent_rows = 6, paste_confirmation = 7 };
+/// (paste_safety.zig), written only while one is. Kinds 1 and 6 are retired
+/// and never reused.
+pub const ExtensionKind = enum(u8) { tab_contexts = 2, navigation_context = 3, empty_session = 4, window_contexts = 5, paste_confirmation = 7 };
 pub const max_session_bytes: usize = 64;
 pub const max_endpoint_bytes: usize = 160;
 pub const max_connection_detail_bytes: usize = 80;
 const navigation_context_bytes = 6 + max_session_bytes + max_endpoint_bytes + max_connection_detail_bytes;
 
-/// Provider slug and per-snapshot ceiling for the agent rows. The ceiling is
-/// what keeps the record inside `max_bytes` beside a full workspace; the
-/// comptime assert below is the proof, not this comment.
-pub const max_provider_bytes: usize = 12;
-pub const max_agent_rows: usize = 24;
-const agent_row_bytes: usize = 5 + max_provider_bytes;
-const agent_record_bytes: usize = 4 + max_agent_rows * agent_row_bytes;
 
 /// Window, receiver, `u32` line count, then the receiving terminal's name.
 pub const max_paste_title_bytes: usize = 64;
@@ -75,7 +67,7 @@ pub const max_config_path_bytes: usize = 200;
 comptime {
     var theme_bytes: usize = 0;
     for (theme_module.builtins) |theme| theme_bytes += 1 + @min(theme.name.len, 32);
-    const fixed = header_len + 4 + theme_bytes + max_config_path_bytes + 1 + model_module.max_secondary_windows * 7 + model_module.max_windows + agent_record_bytes + 3 + tab_commands.context_len + navigation_context_bytes + @import("empty_session.zig").record_bytes + @import("window_contexts.zig").record_bytes + paste_record_bytes;
+    const fixed = header_len + 4 + theme_bytes + max_config_path_bytes + 1 + model_module.max_secondary_windows * 7 + model_module.max_windows + 3 + tab_commands.context_len + navigation_context_bytes + @import("empty_session.zig").record_bytes + @import("window_contexts.zig").record_bytes + paste_record_bytes;
     const tabs = model_module.max_windows * model_module.max_tabs * (7 + max_title_bytes + max_cwd_bytes);
     std.debug.assert(fixed + tabs <= max_bytes);
 }
@@ -115,12 +107,10 @@ pub fn encode(model: *const Model, sequence: u64, revision: u64, runs: WindowRun
     for (0..model_module.max_windows) |window| out[written + window] = @intFromEnum(signals.windowState(model, window));
     written += model_module.max_windows;
     written = try encodeTargetContexts(model, out, written);
-    written = try encodeAgentRows(model, out, written);
     written = try encodeNavigationContext(model, out, written);
     written = try @import("empty_session.zig").encode(model, @intFromEnum(ExtensionKind.empty_session), out, written);
     written = try @import("window_contexts.zig").encode(model, @intFromEnum(ExtensionKind.window_contexts), out, written);
     written = try encodePasteConfirmation(model, out, written);
-    written = @import("ts_agents.zig").snapshot(model, out[0..@min(out.len, max_bytes)], written) catch return error.BufferTooSmall;
     return out[0..written];
 }
 
@@ -200,51 +190,6 @@ fn encodeNavigationContext(model: *const Model, out: []u8, start: usize) Error!u
     return at;
 }
 
-/// The agent sessions running under each window's tabs, as one extension
-/// record: `[window][tab][state][flags][provider len][provider]` per row.
-/// The row is addressed by the tab it hangs under, never by the session's own
-/// identity -- an agent session addresses no surface (ADR-0103), and the core
-/// draws it as a child of a terminal it already has.
-///
-/// A workspace with no agent sessions writes NO record at all, so a snapshot
-/// that carries none is byte-identical to one from before this kind existed.
-fn encodeAgentRows(model: *const Model, out: []u8, start: usize) Error!usize {
-    var written = start;
-    var emitted: usize = 0;
-    for (0..model_module.max_windows) |window| {
-        const workspace = model.wsAtConst(window) orelse continue;
-        for (0..workspace.tab_count) |index| {
-            const room = max_agent_rows - emitted;
-            if (room == 0) break;
-            var rows: [max_agent_rows]projection.AgentRow = undefined;
-            const count = projection.tabAgentRows(model, workspace, index, rows[0..room]);
-            for (rows[0..count]) |row| {
-                var provider_display: [max_provider_bytes]u8 = undefined;
-                const provider = navigation.displayText(row.provider_name, &provider_display);
-                // The record's own header is claimed by the first row, so a
-                // quiet workspace pays nothing -- not even four bytes.
-                if (emitted == 0) {
-                    if (start + 4 > out.len) return error.BufferTooSmall;
-                    out[start] = @intFromEnum(ExtensionKind.agent_rows);
-                    written = start + 4;
-                }
-                if (written + 5 + provider.len > out.len) return error.BufferTooSmall;
-                out[written] = @intCast(window);
-                out[written + 1] = @intCast(index);
-                out[written + 2] = @intFromEnum(row.state);
-                out[written + 3] = if (row.needsAttention()) 1 else 0;
-                out[written + 4] = @intCast(provider.len);
-                @memcpy(out[written + 5 ..][0..provider.len], provider);
-                written += 5 + provider.len;
-                emitted += 1;
-            }
-        }
-    }
-    if (emitted == 0) return start;
-    out[start + 3] = @intCast(emitted);
-    std.mem.writeInt(u16, out[start + 1 ..][0..2], @intCast(written - (start + 3)), .little);
-    return written;
-}
 
 fn encodeTargetContexts(model: *const Model, out: []u8, start: usize) Error!usize {
     if (start + 3 + tab_commands.context_len > out.len) return error.BufferTooSmall;

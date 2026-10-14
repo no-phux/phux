@@ -6,5 +6,4 @@
   <use template="cockpit-host" hostopen="{mainHostOpen}" />
   <use template="cockpit-directory" diropen="{mainDirOpen}" />
   <use template="cockpit-rename" renameopen="{mainRenameOpen}" />
-  <use template="cockpit-agents" open="{mainAgentsOpen}" rows="{paletteRows}" notice="{paletteNotice}" previous="{palettePrevious}" next="{paletteNext}" status="{connectionStatus}" />
 </stack>
