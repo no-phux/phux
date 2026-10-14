@@ -331,6 +331,8 @@ fn run_new(req: NewRequest<'_>) -> ExitCode {
     if !json {
         outln!("worktree {} {branch}", dest.display());
     }
+    let socket_path = socket.clone().unwrap_or_else(default_socket_path);
+    fire_worktree_created(&dest, branch, &root, &name, &socket_path);
 
     bind_session(Binding {
         name: &name,
@@ -341,6 +343,32 @@ fn run_new(req: NewRequest<'_>) -> ExitCode {
         attach,
         json,
     })
+}
+
+/// Run the `worktree-created` hooks (ADR-0167): config `[[hooks.worktree-created]]`
+/// and enabled plugins' `[[events]]` on it, here in the CLI because the
+/// server never sees a worktree made. Each runs to completion or its
+/// timeout before the session starts, so a plugin can prepare the checkout.
+/// An unreadable config runs nothing; the session path reports it.
+fn fire_worktree_created(worktree: &Path, branch: &str, repo: &Path, session: &str, socket: &Path) {
+    let Ok(config) = phux_config::loader::load() else {
+        return;
+    };
+    let catalog =
+        phux_server::hooks::HookCatalog::from_config(&config, &phux_config::loader::config_path());
+    if catalog.is_empty() {
+        return;
+    }
+    let Ok(rt) = cli_runtime() else {
+        return;
+    };
+    let event = phux_server::hooks::HookEvent::worktree_created(worktree, branch, repo, session);
+    rt.block_on(phux_server::hooks::run_to_completion(
+        &catalog,
+        &event,
+        Some(socket),
+        Some(phux_plugin::run_log::default_path()),
+    ));
 }
 
 /// Everything [`bind_session`] needs. Headless by default; `--attach` opts

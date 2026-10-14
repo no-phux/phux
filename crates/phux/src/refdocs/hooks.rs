@@ -37,7 +37,8 @@ pub(crate) fn page() -> Page {
          client-side. `phux config check` flags unknown event names, \
          `when` keys outside an event's context, and actions that can \
          never execute.\n\n\
-         The table lists every event the server fires. Context keys are \
+         The table lists every event phux fires; all but \
+         `worktree-created` come from the server. Context keys are \
          what `when` clauses can match; each key also rides into the hook \
          child as the environment variable shown beside it. Keys marked \
          with a trailing `?` may be absent on a given firing — a `when` \
@@ -176,6 +177,12 @@ mod tests {
             HookEvent::client_attached(client, "work"),
             HookEvent::client_detached(client, None),
             HookEvent::agent_state_changed(&terminal, "claude", "", None, "idle"),
+            HookEvent::worktree_created(
+                std::path::Path::new("/w/phux-feat"),
+                "feat",
+                std::path::Path::new("/w/phux"),
+                "phux-feat",
+            ),
         ];
         assert_eq!(
             minimal.len(),

@@ -28,7 +28,7 @@ action = { kind = "run", command = "say 'pane exited'" }
 
 The matching rules are deliberately tiny. Every `when` clause must hold (AND); `"*"` matches unconditionally, even when the key is absent; a key ending in `-startswith` prefix-matches the base context key; anything else is an exact string match (non-string TOML scalars compare via their canonical rendering, so `exit-code = 0` matches the context value `"0"`). **First match wins** per event: a matching entry consumes the event whether or not its action runs. Only a `run` action with a usable `command` (a non-blank string, executed via `/bin/sh -c`, or a non-empty argv array, executed directly) executes server-side; `noop` is the deliberate match-and-do-nothing sentinel, and other action kinds (e.g. `message`) are client-side. `phux config check` flags unknown event names, `when` keys outside an event's context, and actions that can never execute.
 
-The table lists every event the server fires. Context keys are what `when` clauses can match; each key also rides into the hook child as the environment variable shown beside it. Keys marked with a trailing `?` may be absent on a given firing — a `when` clause naming an absent key simply does not match (except `"*"`).
+The table lists every event phux fires; all but `worktree-created` come from the server. Context keys are what `when` clauses can match; each key also rides into the hook child as the environment variable shown beside it. Keys marked with a trailing `?` may be absent on a given firing — a `when` clause naming an absent key simply does not match (except `"*"`).
 
 | Event | Context key | Environment | Fires when |
 |---|---|---|---|
@@ -47,6 +47,10 @@ The table lists every event the server fires. Context keys are what `when` claus
 |  | `from`? | `PHUX_FROM` |  |
 |  | `terminal-id` | `PHUX_TERMINAL_ID` |  |
 |  | `to` | `PHUX_TO` |  |
+| `worktree-created` | `branch` | `PHUX_BRANCH` | `phux worktree new` created a checkout, before its session starts (ADR-0167). The CLI fires it, not the server, and waits for each hook; `repo` is the primary checkout. |
+|  | `repo` | `PHUX_REPO` |  |
+|  | `session` | `PHUX_SESSION` |  |
+|  | `worktree` | `PHUX_WORKTREE` |  |
 
 Every hook child additionally receives `PHUX_EVENT` (the event name) and `PHUX_SOCKET` (the UDS path the firing server listens on, so a bare `phux` invocation inside a hook script targets that server). Plugin `[[events]]` hooks — every enabled plugin hook whose `on` names the event fires; first-match-wins applies to config entries only — also receive `PHUX_PLUGIN_ID`, `PHUX_PLUGIN_EVENT_ID`, and `PHUX_PLUGIN_ROOT`, and run with the plugin root as their working directory.
 
