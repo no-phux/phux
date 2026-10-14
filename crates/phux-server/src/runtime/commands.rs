@@ -789,44 +789,94 @@ async fn send_result(
         .await;
 }
 
+/// One connection's negotiated dispatch context: everything a command needs
+/// to run as that connection's, now or later (a held command, ADR-0128).
+pub(super) struct CommandContext {
+    pub(super) state: SharedState,
+    pub(super) client_id: ClientId,
+    pub(super) out_tx: tokio::sync::mpsc::Sender<Outbound>,
+    pub(super) client_caps: ClientCapabilities,
+    pub(super) profile: BootstrapProfile,
+    pub(super) limits: BootstrapLimits,
+    pub(super) input_lane: Option<InputLaneHandle>,
+    /// This connection's cancellation.
+    pub(super) token: CancellationToken,
+    pub(super) root_token: CancellationToken,
+    /// QUIC multi-stream (proto.md §4.2): subscribe now, bootstrap when the
+    /// client binds a stream (`STREAM_BIND`).
+    pub(super) defer_subscription: bool,
+}
+
+#[cfg(test)]
+impl CommandContext {
+    /// `client_id`'s context on a fresh Unix-socket connection.
+    pub(super) fn for_test(
+        state: &SharedState,
+        client_id: ClientId,
+        out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    ) -> Self {
+        Self {
+            state: state.clone(),
+            client_id,
+            out_tx: out_tx.clone(),
+            client_caps: ClientCapabilities::default(),
+            profile: BootstrapProfile::SynthesizedVtRaw,
+            limits: BootstrapLimits::default(),
+            input_lane: None,
+            token: CancellationToken::new(),
+            root_token: CancellationToken::new(),
+            defer_subscription: false,
+        }
+    }
+}
+
 /// Dispatch a `COMMAND` and reply with its correlated `COMMAND_RESULT`
 /// (SPEC §5). The result may follow frames the command triggered.
 #[tracing::instrument(
     level = "info",
     name = "handle_command",
     skip_all,
-    fields(?client_id, request_id, kind = command_kind(&command)),
+    fields(client_id = ?ctx.client_id, request_id, kind = command_kind(&command)),
 )]
-#[allow(
-    clippy::too_many_arguments,
-    clippy::too_many_lines,
-    reason = "one flat dispatch arm per wire command keeps the catalog and negotiated connection context auditable"
-)]
-pub(crate) async fn handle_command(
-    state: &SharedState,
-    client_id: ClientId,
+pub(super) async fn handle_command(ctx: &CommandContext, request_id: u32, command: Command) {
+    let Some((command, claim)) = route_command(ctx, request_id, command).await else {
+        return;
+    };
+    let result = dispatch_local(ctx, command, claim.as_ref()).await;
+    super::keyed_ops::settle(claim, &result);
+    debug!(
+        client_id = ?ctx.client_id,
+        request_id, "COMMAND dispatched; sending COMMAND_RESULT"
+    );
+    send_result(&ctx.out_tx, request_id, result).await;
+}
+
+/// Everything that answers a command before local dispatch: the
+/// process-level verbs, organization commands, refusals, satellite routing,
+/// and keyed-command admission. `None` when the command has been answered;
+/// otherwise the command to run here and its keyed claim, if any.
+async fn route_command(
+    ctx: &CommandContext,
     request_id: u32,
     command: Command,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
-    client_caps: ClientCapabilities,
-    bootstrap_profile: BootstrapProfile,
-    bootstrap_limits: BootstrapLimits,
-    input_lane: Option<&InputLaneHandle>,
-    connection_token: &CancellationToken,
-    root_token: &CancellationToken,
-    // QUIC multi-stream (proto.md §4.2): subscribe now, bootstrap when the
-    // client binds a stream (`STREAM_BIND`).
-    defer_subscription: bool,
-) {
+) -> Option<(Command, Option<super::operation_dedupe::OperationClaim>)> {
+    let CommandContext {
+        state,
+        client_id,
+        out_tx,
+        root_token,
+        ..
+    } = ctx;
+    let client_id = *client_id;
     // UPGRADE and SHUTDOWN ack the client themselves and then re-exec or end
     // the process, so neither reaches the shared result send below.
     if matches!(command, Command::Upgrade) {
         handle_upgrade(state, request_id, out_tx).await;
-        return;
+        return None;
     }
     if matches!(command, Command::Shutdown) {
         handle_shutdown(state, client_id, request_id, out_tx, root_token).await;
-        return;
+        return None;
     }
     // ADR-0161: organization commands commit through the org store and
     // answer with their own result shapes; they never route to a satellite
@@ -834,7 +884,7 @@ pub(crate) async fn handle_command(
     if command.is_organization() {
         let result = super::organization::handle(state, client_id, command, root_token);
         send_result(out_tx, request_id, result).await;
-        return;
+        return None;
     }
 
     // PUT_FILE chunks may carry 8 MiB: rewrite a satellite id in place rather
@@ -844,26 +894,15 @@ pub(crate) async fn handle_command(
         && let Some((sat_host, local_id)) = crate::hub::relay::satellite_route(terminal_id)
     {
         *terminal_id = phux_protocol::ids::ResourceId::local(local_id);
-        handle_satellite_command(
-            state,
-            client_id,
-            request_id,
-            &sat_host,
-            command,
-            out_tx,
-            bootstrap_profile,
-            bootstrap_limits,
-            connection_token,
-        )
-        .await;
-        return;
+        handle_satellite_command(ctx, request_id, &sat_host, command).await;
+        return None;
     }
 
     // ADR-0127: `{ VIEWER, DELIBERATE }` is refused before anything is
     // subscribed or relayed.
     if let Some(result) = refuse_invalid_role_policy(&command) {
         send_result(out_tx, request_id, result).await;
-        return;
+        return None;
     }
     if let Command::AttachResource {
         terminal_id,
@@ -877,7 +916,7 @@ pub(crate) async fn handle_command(
         })
     {
         send_result(out_tx, request_id, invalid_agent_cursor()).await;
-        return;
+        return None;
     }
 
     // ADR-0109: a verb that drives or reads a resource another connection
@@ -886,19 +925,8 @@ pub(crate) async fn handle_command(
 
     // ADR-0007 §4: a satellite-owned target never touches local dispatch.
     if let Some((sat_host, local_command)) = crate::hub::relay::route_to_satellite(&command) {
-        handle_satellite_command(
-            state,
-            client_id,
-            request_id,
-            &sat_host,
-            local_command,
-            out_tx,
-            bootstrap_profile,
-            bootstrap_limits,
-            connection_token,
-        )
-        .await;
-        return;
+        handle_satellite_command(ctx, request_id, &sat_host, local_command).await;
+        return None;
     }
 
     // L1 §5.1.1: keyed commands are admitted after routing; a satellite owns
@@ -908,11 +936,33 @@ pub(crate) async fn handle_command(
         super::keyed_ops::KeyedAdmission::Owner(claim) => Some(claim),
         super::keyed_ops::KeyedAdmission::Answer(result) => {
             send_result(out_tx, request_id, result).await;
-            return;
+            return None;
         }
     };
+    Some((command, claim))
+}
 
-    let result = match command {
+/// Run a routed command on this server and return its result.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one flat dispatch arm per wire command keeps the catalog auditable"
+)]
+async fn dispatch_local(
+    ctx: &CommandContext,
+    command: Command,
+    claim: Option<&super::operation_dedupe::OperationClaim>,
+) -> CommandResult {
+    let CommandContext {
+        state,
+        client_id,
+        out_tx,
+        root_token,
+        ..
+    } = ctx;
+    let client_id = *client_id;
+    let input_lane = ctx.input_lane.as_ref();
+
+    match command {
         Command::AttachResource {
             terminal_id,
             role_policy,
@@ -926,23 +976,11 @@ pub(crate) async fn handle_command(
                     .and_then(|core| s.resource_handle(core))
                     .is_some_and(|handle| handle.kind == crate::resource::ResourceKind::Terminal)
             });
-            if defer_subscription && is_terminal {
+            if ctx.defer_subscription && is_terminal {
                 // Content starts at STREAM_BIND on the stream's mailbox.
                 subscribe_deferred_attach(state, client_id, &terminal_id, out_tx, role).await
             } else {
-                handle_attach_terminal(
-                    state,
-                    client_id,
-                    &terminal_id,
-                    out_tx,
-                    client_caps,
-                    bootstrap_profile,
-                    bootstrap_limits,
-                    connection_token,
-                    role,
-                    agent_after_seq,
-                )
-                .await
+                handle_attach_terminal(ctx, &terminal_id, role, agent_after_seq).await
             }
         }
         Command::DetachResource { terminal_id } => {
@@ -1071,15 +1109,8 @@ pub(crate) async fn handle_command(
             signal,
             operation_id,
         } => {
-            handle_signal_terminal(
-                state,
-                client_id,
-                &terminal_id,
-                signal,
-                operation_id,
-                claim.as_ref(),
-            )
-            .await
+            handle_signal_terminal(state, client_id, &terminal_id, signal, operation_id, claim)
+                .await
         }
         Command::PutFile {
             upload_id,
@@ -1137,13 +1168,7 @@ pub(crate) async fn handle_command(
             code: ErrorCode::InvalidCommand,
             message: "command not supported by this server".to_owned(),
         },
-    };
-    super::keyed_ops::settle(claim, &result);
-    debug!(
-        ?client_id,
-        request_id, "COMMAND dispatched; sending COMMAND_RESULT"
-    );
-    send_result(out_tx, request_id, result).await;
+    }
 }
 
 /// The attribution a kill stamps on the `pane_closed` of everything it
@@ -1235,17 +1260,18 @@ fn kill_if_refusal(
     reason = "negotiated connection context threaded from dispatch"
 )]
 async fn handle_attach_terminal(
-    state: &SharedState,
-    client_id: ClientId,
+    ctx: &CommandContext,
     terminal_id: &phux_protocol::ids::ResourceId,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
-    client_caps: ClientCapabilities,
-    bootstrap_profile: BootstrapProfile,
-    bootstrap_limits: BootstrapLimits,
-    connection_token: &CancellationToken,
     role: RolePolicy,
     agent_after_seq: Option<u64>,
 ) -> CommandResult {
+    let CommandContext {
+        state,
+        client_id,
+        out_tx,
+        ..
+    } = ctx;
+    let client_id = *client_id;
     let subscription =
         match subscribe_attach_terminal(state, client_id, terminal_id, out_tx, Some(role)) {
             Ok(subscription) => subscription,
@@ -1269,10 +1295,10 @@ async fn handle_attach_terminal(
         &handle,
         out_tx,
         stream_id,
-        client_caps,
-        bootstrap_profile,
-        bootstrap_limits,
-        connection_token,
+        ctx.client_caps,
+        ctx.profile,
+        ctx.limits,
+        &ctx.token,
         agent_after_seq,
     )
     .await
@@ -2220,16 +2246,18 @@ async fn handle_upgrade(
     reason = "caller identity, routed command, mailbox, and negotiated bootstrap context"
 )]
 async fn handle_satellite_command(
-    state: &SharedState,
-    client_id: ClientId,
+    ctx: &CommandContext,
     request_id: u32,
     host: &phux_protocol::ids::SatelliteHost,
     command: Command,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
-    bootstrap_profile: BootstrapProfile,
-    bootstrap_limits: BootstrapLimits,
-    connection_token: &CancellationToken,
 ) {
+    let CommandContext {
+        state,
+        client_id,
+        out_tx,
+        ..
+    } = ctx;
+    let client_id = *client_id;
     note_satellite_use(state, host, client_id, &command);
     let result = match state.with(|s| s.hub_relay(host)) {
         None => CommandResult::Error {
@@ -2246,13 +2274,11 @@ async fn handle_satellite_command(
                 ..
             } => {
                 relay_satellite_attach(
+                    ctx,
                     &SatelliteLeaseTarget::new(state, host, client_id, terminal_id),
                     &relay,
                     &command,
                     role_policy.unwrap_or_default(),
-                    out_tx,
-                    bootstrap_profile,
-                    bootstrap_limits,
                 )
                 .await
             }
@@ -2260,14 +2286,10 @@ async fn handle_satellite_command(
                 let change =
                     register_satellite_event_filter(state, client_id, host, &command, out_tx);
                 let result = relay_stream_establishing(
+                    ctx,
                     &relay,
                     &unfiltered_for_link(&command),
                     terminal_id,
-                    client_id,
-                    out_tx,
-                    bootstrap_profile,
-                    bootstrap_limits,
-                    state.with(|server| server.client_connection_cancellation(client_id)),
                     None,
                 )
                 .await;
@@ -2313,17 +2335,7 @@ async fn handle_satellite_command(
             _ => relay.command_from(command.clone(), client_id).await,
         },
     };
-    reply_satellite_command(
-        state,
-        client_id,
-        request_id,
-        host,
-        &command,
-        out_tx,
-        result,
-        connection_token,
-    )
-    .await;
+    reply_satellite_command(ctx, request_id, host, &command, result).await;
 }
 
 /// ADR-0109 (L1 §5.2.1): the resource `command` attaches, drives, or reads,
@@ -2423,25 +2435,19 @@ fn hub_vouches_for_kill(
 
 /// Record the hub-side proxy attach a successful `ATTACH_RESOURCE` just
 /// established, then send the relayed reply to the caller.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "routing, command, and cancellation context"
-)]
 async fn reply_satellite_command(
-    state: &SharedState,
-    client_id: ClientId,
+    ctx: &CommandContext,
     request_id: u32,
     host: &phux_protocol::ids::SatelliteHost,
     command: &Command,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     result: CommandResult,
-    connection_token: &CancellationToken,
 ) {
+    let client_id = ctx.client_id;
     if !matches!(result, CommandResult::Error { .. })
         && let Command::AttachResource { terminal_id, .. } = command
         && let Some(id) = terminal_id.local_id()
     {
-        state.with_mut(|s| {
+        ctx.state.with_mut(|s| {
             s.register_satellite_proxy_attach(client_id, host.clone(), id);
         });
     }
@@ -2453,31 +2459,26 @@ async fn reply_satellite_command(
     );
     tokio::select! {
         biased;
-        () = connection_token.cancelled() => {}
-        _ = out_tx.send(Outbound::Frame(FrameKind::CommandResult { request_id, result })) => {}
+        () = ctx.token.cancelled() => {}
+        _ = ctx.out_tx.send(Outbound::Frame(FrameKind::CommandResult { request_id, result })) => {}
     }
 }
 
 /// Relay a stream-establishing command and register the caller's mailbox as
 /// a hub-side proxy subscriber atomically with it.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "consumer identity, mailbox, cancellation, and negotiated bootstrap"
-)]
 async fn relay_stream_establishing(
+    ctx: &CommandContext,
     relay: &crate::hub::relay::RelayHandle,
     command: &Command,
     terminal_id: &phux_protocol::ids::ResourceId,
-    client_id: ClientId,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
-    bootstrap_profile: BootstrapProfile,
-    bootstrap_limits: BootstrapLimits,
-    consumer_cancel: Option<CancellationToken>,
     resource_kind: Option<phux_protocol::ids::ResourceKind>,
 ) -> CommandResult {
     let Some(terminal) = terminal_id.local_id() else {
         return relay.command(command.clone()).await;
     };
+    let consumer_cancel = ctx
+        .state
+        .with(|s| s.client_connection_cancellation(ctx.client_id));
     let Some(consumer_cancel) = consumer_cancel else {
         return CommandResult::Error {
             code: ErrorCode::InternalError,
@@ -2491,15 +2492,15 @@ async fn relay_stream_establishing(
             command.clone(),
             crate::hub::relay::ProxySubscription {
                 terminal,
-                client: client_id,
-                out_tx: out_tx.clone(),
+                client: ctx.client_id,
+                out_tx: ctx.out_tx.clone(),
                 consumer_cancel,
                 // Stamped by `command_subscribing` at enqueue.
                 seq: 0,
                 awaits_snapshot: content,
                 resource_kind,
-                bootstrap_profile: content.then_some(bootstrap_profile),
-                bootstrap_limits: content.then_some(bootstrap_limits),
+                bootstrap_profile: content.then_some(ctx.profile),
+                bootstrap_limits: content.then_some(ctx.limits),
             },
         )
         .await
@@ -2694,20 +2695,15 @@ fn settle_satellite_seize(
 /// satellite-tagged id, and a takeover as a hub-ledger seize. A satellite
 /// without `ATTACH_ROLES` gets a plain attach then a relayed seize; if that
 /// seize fails, the attach stands and its refusal is the reply.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "lease target, relay, command, role, and negotiated bootstrap context"
-)]
 async fn relay_satellite_attach(
+    ctx: &CommandContext,
     target: &SatelliteLeaseTarget<'_>,
     relay: &crate::hub::relay::RelayHandle,
     command: &Command,
     role: RolePolicy,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
-    bootstrap_profile: BootstrapProfile,
-    bootstrap_limits: BootstrapLimits,
 ) -> CommandResult {
     let state = target.state;
+    let out_tx = &ctx.out_tx;
     let local = phux_protocol::ids::ResourceId::local(target.terminal);
     let wire = phux_protocol::ids::ResourceId::satellite(target.host.clone(), target.terminal);
     // Known kinds avoid inventory work. Unknown full attaches need kind only
@@ -2720,7 +2716,7 @@ async fn relay_satellite_attach(
         }
     );
     let mut kind = relay.known_resource_kind(target.terminal);
-    if kind.is_none() && (cursor || relay.needs_kind_for_profile(bootstrap_profile)) {
+    if kind.is_none() && (cursor || relay.needs_kind_for_profile(ctx.profile)) {
         kind = Some(match relay.resource_kind(target.terminal).await {
             Ok(kind) => kind,
             Err(refusal) => return refusal,
@@ -2746,18 +2742,7 @@ async fn relay_satellite_attach(
             s.mark_satellite_lease_acquire_pending(target.host.clone(), target.terminal);
         });
     }
-    let attached = relay_stream_establishing(
-        relay,
-        command,
-        &local,
-        target.client_id,
-        out_tx,
-        bootstrap_profile,
-        bootstrap_limits,
-        state.with(|s| s.client_connection_cancellation(target.client_id)),
-        kind,
-    )
-    .await;
+    let attached = relay_stream_establishing(ctx, relay, command, &local, kind).await;
     if matches!(attached, CommandResult::Error { .. }) {
         // A refused first narrowing must not leave a viewer tombstone.
         if role.is_viewer() && !was_viewer && !was_attached {
@@ -4933,22 +4918,20 @@ mod hub_detach_fence_tests {
             .await
             .expect("fill consumer mailbox");
         let retained_sender = out_tx.clone();
-        let token = CancellationToken::new();
+        let ctx = CommandContext::for_test(&state, ClientId(17), &out_tx);
+        let token = ctx.token.clone();
         let command = Command::DetachResource {
             terminal_id: phux_protocol::ids::ResourceId::local(7),
         };
         let reply = reply_satellite_command(
-            &state,
-            ClientId(17),
+            &ctx,
             9,
             &host,
             &command,
-            &out_tx,
             CommandResult::Error {
                 code: ErrorCode::SatelliteUnreachable,
                 message: "offline".to_owned(),
             },
-            &token,
         );
         tokio::pin!(reply);
         assert!(futures_util::poll!(&mut reply).is_pending());
@@ -5004,19 +4987,14 @@ mod hub_detach_fence_tests {
                 })
                 .unwrap();
         }
-        let connection_token = CancellationToken::new();
+        let ctx = CommandContext::for_test(&state, ClientId(1), &out_tx);
         let detach = handle_satellite_command(
-            &state,
-            ClientId(1),
+            &ctx,
             42,
             &host,
             Command::DetachResource {
                 terminal_id: ResourceId::local(7),
             },
-            &out_tx,
-            BootstrapProfile::SynthesizedVtRaw,
-            BootstrapLimits::default(),
-            &connection_token,
         );
         tokio::pin!(detach);
         assert!(futures_util::poll!(&mut detach).is_pending());
@@ -5071,19 +5049,14 @@ mod hub_detach_fence_tests {
         relays.insert(handle);
         state.with_mut(|s| s.set_hub_relays(relays));
         let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(8);
-        let connection_token = CancellationToken::new();
+        let ctx = CommandContext::for_test(&state, ClientId(1), &out_tx);
         let detach = handle_satellite_command(
-            &state,
-            ClientId(1),
+            &ctx,
             42,
             &host,
             Command::DetachResource {
                 terminal_id: phux_protocol::ids::ResourceId::local(7),
             },
-            &out_tx,
-            BootstrapProfile::SynthesizedVtRaw,
-            BootstrapLimits::default(),
-            &connection_token,
         );
         tokio::pin!(detach);
         assert!(
@@ -5204,15 +5177,8 @@ mod relay_satellite_attach_role_tests {
             let local = ResourceId::local(terminal);
             let command = Command::attach_terminal(local.clone(), Some(role));
             let target = SatelliteLeaseTarget::new(&self.state, &self.host, self.client_id, &local);
-            let attach = relay_satellite_attach(
-                &target,
-                &self.handle,
-                &command,
-                role,
-                &self.out_tx,
-                BootstrapProfile::SynthesizedVtRaw,
-                BootstrapLimits::default(),
-            );
+            let ctx = CommandContext::for_test(&self.state, self.client_id, &self.out_tx);
+            let attach = relay_satellite_attach(&ctx, &target, &self.handle, &command, role);
             tokio::pin!(attach);
             assert!(
                 futures_util::poll!(&mut attach).is_pending(),

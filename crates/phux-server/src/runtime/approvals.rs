@@ -10,7 +10,6 @@
 
 use std::time::Duration;
 
-use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities};
 use phux_protocol::ids::ApprovalId;
 use phux_protocol::wire::frame::{
     APPROVAL_APPROVE, APPROVAL_DECIDE_KEY_PREFIX, APPROVAL_DENY, ApprovalOutcome, Command,
@@ -18,46 +17,9 @@ use phux_protocol::wire::frame::{
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
-use tokio_util::sync::CancellationToken;
 
-use super::input_lane::InputLaneHandle;
+use super::commands::CommandContext;
 use crate::state::{ClientId, Decision, HoldRefusal, OpenedApproval, Outbound, SharedState};
-
-/// Everything a held command needs to run later as the requester's own
-/// dispatch would have run it.
-pub(super) struct HeldContext {
-    pub(super) state: SharedState,
-    pub(super) client_id: ClientId,
-    pub(super) out_tx: mpsc::Sender<Outbound>,
-    pub(super) client_caps: ClientCapabilities,
-    pub(super) profile: BootstrapProfile,
-    pub(super) limits: BootstrapLimits,
-    pub(super) input_lane: Option<InputLaneHandle>,
-    pub(super) token: CancellationToken,
-    pub(super) root_token: CancellationToken,
-    pub(super) defer_subscription: bool,
-}
-
-impl HeldContext {
-    /// Run `command` through the handler as this connection's dispatch.
-    pub(super) async fn run(&self, request_id: u32, command: Command) {
-        super::commands::handle_command(
-            &self.state,
-            self.client_id,
-            request_id,
-            command,
-            &self.out_tx,
-            self.client_caps,
-            self.profile,
-            self.limits,
-            self.input_lane.as_ref(),
-            &self.token,
-            &self.root_token,
-            self.defer_subscription,
-        )
-        .await;
-    }
-}
 
 /// How a held command's wait ended.
 enum Ending {
@@ -71,7 +33,7 @@ enum Ending {
 /// Hold `command`: open its approval and spawn the waiter that ends it. The
 /// `COMMAND_RESULT` is deferred; a refusal to hold answers at once.
 pub(super) async fn hold_command(
-    ctx: HeldContext,
+    ctx: CommandContext,
     waiters: &mut JoinSet<()>,
     request_id: u32,
     command: Command,
@@ -132,7 +94,7 @@ const fn refusal_reply(refusal: HoldRefusal) -> (ErrorCode, &'static str) {
 }
 
 async fn wait_for_decision(
-    ctx: HeldContext,
+    ctx: CommandContext,
     request_id: u32,
     command: Command,
     opened: OpenedApproval,
@@ -156,7 +118,7 @@ async fn wait_for_decision(
 /// A request that joined a pending hold: it waits for the same decision,
 /// and the hold's own waiter owns the expiry and the withdrawal.
 async fn wait_joined(
-    ctx: HeldContext,
+    ctx: CommandContext,
     request_id: u32,
     command: Command,
     mut decision: oneshot::Receiver<Decision>,
@@ -178,7 +140,7 @@ async fn wait_joined(
 /// Answer the requester as the ending says: run the approved command, or
 /// refuse it with the reason. A keyed command that two waiters approved
 /// runs once; L20's dedupe answers the other.
-async fn finish(ctx: &HeldContext, request_id: u32, command: Command, ending: Ending) {
+async fn finish(ctx: &CommandContext, request_id: u32, command: Command, ending: Ending) {
     let refusal = match ending {
         Ending::Decided(Decision::Approve) => return run_approved(ctx, request_id, command).await,
         Ending::Gone => return,
@@ -196,7 +158,7 @@ async fn finish(ctx: &HeldContext, request_id: u32, command: Command, ending: En
 }
 
 async fn await_ending(
-    ctx: &HeldContext,
+    ctx: &CommandContext,
     id: ApprovalId,
     ttl: Duration,
     decision: &mut oneshot::Receiver<Decision>,
@@ -231,7 +193,7 @@ async fn expire_or_take(
 /// Run an approved command once, as the requester, after classifying it
 /// again under the requester's current grant and topology. A Terminal that
 /// moved out of the grant since, or a grant revoked since, is refused.
-async fn run_approved(ctx: &HeldContext, request_id: u32, command: Command) {
+async fn run_approved(ctx: &CommandContext, request_id: u32, command: Command) {
     let admitted = ctx
         .state
         .with(|s| crate::policy::authorize_command(s, ctx.client_id, &command))
@@ -253,7 +215,7 @@ async fn run_approved(ctx: &HeldContext, request_id: u32, command: Command) {
         super::client::route(&command, ctx.input_lane.is_some()),
         super::client::Route::Handler
     );
-    ctx.run(request_id, command).await;
+    super::commands::handle_command(ctx, request_id, command).await;
 }
 
 /// The deferred result waits for mailbox capacity rather than being
