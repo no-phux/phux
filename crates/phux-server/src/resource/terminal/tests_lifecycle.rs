@@ -1223,7 +1223,7 @@ async fn progressive_native_ready_stays_within_one_seed_window() {
                     )
                     .expect("wide negotiated bootstrap bound"),
                     max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-                    max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
+                    max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
                     reply,
                 })
                 .await
@@ -1276,7 +1276,7 @@ async fn every_terminal_reader_degrades_while_a_capture_holds_it() {
         bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id"),
         limits: phux_protocol::caps::BootstrapLimits::default(),
         max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-        max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
+        max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
         reply,
     });
     assert!(
@@ -1337,7 +1337,7 @@ async fn teardown_drain_survives_an_in_flight_native_capture() {
         bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id"),
         limits: phux_protocol::caps::BootstrapLimits::default(),
         max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-        max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
+        max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
         reply,
     });
     assert!(
@@ -1389,7 +1389,7 @@ async fn native_bootstrap_capture_lifetime_retires_staged_state() {
         bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id"),
         limits: phux_protocol::caps::BootstrapLimits::default(),
         max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-        max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
+        max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
         reply,
     });
     actor
@@ -1450,7 +1450,7 @@ async fn frame_ack_waits_until_progressive_prefix_returns_the_terminal() {
                 bootstrap_id,
                 limits: phux_protocol::caps::BootstrapLimits::default(),
                 max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-                max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
+                max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
                 reply: capture_reply,
             });
             handle
@@ -1642,7 +1642,7 @@ async fn run_native_server_kernel_flow(
             bootstrap_id,
             limits,
             max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-            max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
+            max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
             reply,
         })
         .await
@@ -1989,7 +1989,7 @@ async fn native_request_runs_after_one_bounded_pty_turn_and_preserves_raw_bytes(
                     )
                     .expect("wide negotiated bootstrap bound"),
                     max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-                    max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
+                    max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
                     reply,
                 })
                 .await
@@ -2322,7 +2322,7 @@ fn capture_native_for_pump(
         bootstrap_id,
         limits: phux_protocol::caps::BootstrapLimits::default(),
         max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-        max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
+        max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
         reply,
     });
     for _ in 0..64 {
@@ -2455,7 +2455,7 @@ async fn eof_returns_a_loan_before_final_output_and_resumes_queued_capture() {
                     bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap"),
                     limits: phux_protocol::caps::BootstrapLimits::default(),
                     max_bytes,
-                    max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
+                    max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
                     reply,
                 });
             }
@@ -2684,7 +2684,7 @@ async fn two_same_client_pumps_can_share_one_pending_capture() {
         bootstrap_id,
         limits: phux_protocol::caps::BootstrapLimits::default(),
         max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-        max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
+        max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
         reply,
     };
     let (reply_a, mut response_a) = oneshot::channel();
@@ -2765,7 +2765,7 @@ async fn capture_host_allocation_failures_release_state_and_history_still_pages(
                             .expect("bootstrap id"),
                         limits: phux_protocol::caps::BootstrapLimits::default(),
                         max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-                        max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
+                        max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
                         reply,
                     })
                     .await

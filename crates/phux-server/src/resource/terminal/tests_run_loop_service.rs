@@ -261,7 +261,7 @@ async fn service_rotation_keeps_snapshot_gated_during_native_capture() {
         bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap"),
         limits: phux_protocol::caps::BootstrapLimits::default(),
         max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-        max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
+        max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
         reply,
     });
     assert!(
