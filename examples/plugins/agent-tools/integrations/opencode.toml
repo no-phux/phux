@@ -35,3 +35,12 @@ kind = "opencode"
 command = ["sh", "${PHUX_PLUGIN_ROOT}/scripts/phux-agent-wrap.sh", "--name", "opencode", "--kind", "opencode", "--", "opencode"]
 required_executables = ["opencode"]
 working_directory = "workspace"
+
+# @opencode/client/service adds serve --service for a privately owned service.
+# https://unpkg.com/@opencode/client@2.0.26/dist/promise/service.js
+[native]
+backend = "node"
+provider = "opencode"
+command = ["opencode"]
+required_executables = ["opencode"]
+working_directory = "workspace"

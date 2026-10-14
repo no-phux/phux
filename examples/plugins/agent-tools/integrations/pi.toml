@@ -38,3 +38,12 @@ kind = "pi"
 command = ["sh", "${PHUX_PLUGIN_ROOT}/scripts/phux-agent-wrap.sh", "--name", "pi", "--kind", "pi", "--", "pi"]
 required_executables = ["pi"]
 working_directory = "workspace"
+
+# createAgentSession runs in the isolated Node SDK runtime, not a PATH pi CLI.
+# The native launcher validates that runtime; this argv does not spawn pi.
+[native]
+backend = "node"
+provider = "pi"
+command = ["node"]
+required_executables = []
+working_directory = "workspace"

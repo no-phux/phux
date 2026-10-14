@@ -34,3 +34,11 @@ kind = "grok"
 command = ["sh", "${PHUX_PLUGIN_ROOT}/scripts/phux-grok-wrap.sh"]
 required_executables = ["grok"]
 working_directory = "workspace"
+
+# Grok Build's ACP stdio server, not the interactive TUI or output parsing.
+[native]
+backend = "acp"
+provider = "grok"
+command = ["grok", "agent", "stdio"]
+required_executables = ["grok"]
+working_directory = "workspace"

@@ -45,3 +45,12 @@ kind = "codex"
 [launch]
 command = ["sh", "${PHUX_PLUGIN_ROOT}/scripts/phux-agent-wrap.sh", "--name", "codex", "--kind", "codex", "--", "codex"]
 working_directory = "workspace"
+
+# The version-matched app-server bridge adds its protocol arguments.
+# https://github.com/openai/codex/tree/main/codex-rs/app-server
+[native]
+backend = "node"
+provider = "codex"
+command = ["codex"]
+required_executables = ["codex"]
+working_directory = "workspace"

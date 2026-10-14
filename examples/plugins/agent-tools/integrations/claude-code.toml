@@ -43,3 +43,12 @@ kind = "claude"
 [launch]
 command = ["sh", "${PHUX_PLUGIN_ROOT}/scripts/phux-agent-wrap.sh", "--name", "claude", "--kind", "claude", "--", "claude"]
 working_directory = "workspace"
+
+# The official Agent SDK adds its protocol arguments to this executable.
+# https://code.claude.com/docs/en/agent-sdk/typescript
+[native]
+backend = "node"
+provider = "claude"
+command = ["claude"]
+required_executables = ["claude"]
+working_directory = "workspace"

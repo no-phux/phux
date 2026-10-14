@@ -43,3 +43,11 @@ kind = "gemini"
 [launch]
 command = ["sh", "${PHUX_PLUGIN_ROOT}/scripts/phux-agent-wrap.sh", "--name", "gemini", "--kind", "gemini", "--", "gemini"]
 working_directory = "workspace"
+
+# https://geminicli.com/docs/cli/acp-mode.md
+[native]
+backend = "acp"
+provider = "gemini"
+command = ["gemini", "--acp"]
+required_executables = ["gemini"]
+working_directory = "workspace"

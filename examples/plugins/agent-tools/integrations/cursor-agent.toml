@@ -1,0 +1,35 @@
+schema_version = 1
+id = "cursor-agent"
+display_name = "Cursor Agent"
+kind = "terminal-agent"
+description = "Cursor Agent with an interactive terminal or explicit ACP session."
+package_version = "0.1.0"
+package_status = "public"
+first_party = true
+capabilities = ["terminal-control", "code-editing", "human-question"]
+
+[detect]
+mode = "opt-in"
+command = "agent"
+env = "PHUX_AGENT_TOOLS_DETECT"
+
+[link]
+mode = "state-file"
+default_session = "agent-bench-cursor-agent"
+
+[agent_identity]
+name = "cursor-agent"
+kind = "cursor-agent"
+
+[launch]
+command = ["sh", "${PHUX_PLUGIN_ROOT}/scripts/phux-agent-wrap.sh", "--name", "cursor-agent", "--kind", "cursor-agent", "--", "agent"]
+required_executables = ["agent"]
+working_directory = "workspace"
+
+# https://cursor.com/docs/cli/acp.md specifies the agent executable explicitly.
+[native]
+backend = "acp"
+provider = "cursor-agent"
+command = ["agent", "acp"]
+required_executables = ["agent"]
+working_directory = "workspace"

@@ -1,0 +1,38 @@
+schema_version = 1
+id = "amp"
+display_name = "Amp"
+kind = "terminal-agent"
+description = "Amp with an interactive terminal or the official managed Node SDK."
+package_version = "0.1.0"
+package_status = "public"
+first_party = true
+capabilities = ["terminal-control", "code-editing", "human-question"]
+
+[detect]
+mode = "opt-in"
+command = "amp"
+env = "PHUX_AGENT_TOOLS_DETECT"
+
+[link]
+mode = "state-file"
+default_session = "agent-bench-amp"
+
+[agent_identity]
+name = "amp"
+kind = "amp"
+
+[launch]
+command = ["sh", "${PHUX_PLUGIN_ROOT}/scripts/phux-agent-wrap.sh", "--name", "amp", "--kind", "amp", "--", "amp"]
+required_executables = ["amp"]
+working_directory = "workspace"
+
+# @ampcode/sdk owns its pinned runtime-local CLI, not a PATH amp executable.
+# The native launcher validates the isolated runtime and its reviewed assets.
+# The SDK has no live approval callback or interrupt-and-continue operation;
+# actual native capabilities come from the bridge, never these TUI capabilities.
+[native]
+backend = "node"
+provider = "amp"
+command = ["node"]
+required_executables = []
+working_directory = "workspace"
