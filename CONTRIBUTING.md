@@ -34,17 +34,18 @@ to coordinate; you do not need Beads.
 
 ## Agent entrypoints
 
-These are the files that configure coding agents in this repo. Everything
-else at the root is product source, not an agent zoo.
+These are the files that configure coding agents in this repo. Each one is
+phux-specific; personal harness settings belong in your user profile, not
+the repository.
 
 | File | Job |
 |---|---|
 | [`AGENTS.md`](./AGENTS.md) | Shell hygiene, worktrees, beads. Most coding agents load this. |
 | [`CLAUDE.md`](./CLAUDE.md) | Architecture map. Claude Code also loads this. |
-| [`.claude/settings.json`](./.claude/settings.json) | Claude Code session hooks (`bd prime`). |
-| [`.codex/hooks.json`](./.codex/hooks.json) | Codex session hooks (`bd codex-hook`). |
 | [`.claude-plugin/marketplace.json`](./.claude-plugin/marketplace.json) | The Claude Code plugin this repo ships. |
-| [`.agents/skills`](./.agents/skills) | Standard project skills: Beads workflow guidance and the canonical, versioned phux CLI/MCP guides compiled into releases. |
+| [`.grok-plugin/marketplace.json`](./.grok-plugin/marketplace.json) | The Grok plugin this repo ships. |
+| [`.pi/settings.json`](./.pi/settings.json) | Loads the in-tree pi integration when pi runs here. |
+| [`.agents/skills`](./.agents/skills) | The canonical, versioned phux CLI/MCP guides compiled into releases. |
 
 ## Bar for any change
 

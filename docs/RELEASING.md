@@ -197,7 +197,7 @@ versions different without changing the routing contract.
 | `docs/dsr-release-fallback.md` | Cockpit |
 | `docs/site/**`, root `CHANGELOG.md` | Compile-free guards |
 | Workflow/action-only changes | Compile-free workflow/contract guards |
-| Root `justfile`, `just/perf.just`, `just/release.just`, `just/mutation.just`, `scripts/check-*`, `scripts/build-ffi-xcframework.sh`, `scripts/export-product-skills.sh`, `scripts/product-skills`, `scripts/skills-package/**`, `.agents/skills/beads/**` | Compile-free guards |
+| Root `justfile`, `just/perf.just`, `just/release.just`, `just/mutation.just`, `scripts/check-*`, `scripts/build-ffi-xcframework.sh`, `scripts/export-product-skills.sh`, `scripts/product-skills`, `scripts/skills-package/**` | Compile-free guards |
 | `just/gates.just`, `just/test.just`, `just/build.just` | Root Rust check/test |
 | `just/cockpit.just` | Cockpit tests + shipping app |
 | `just/setup.just`, `scripts/doctor.sh`, `scripts/setup-rust.sh`, `scripts/test-dev-setup.sh`, `scripts/native-smoke.sh` | Native setup assurance |

@@ -89,8 +89,6 @@ class RoutingTests(unittest.TestCase):
             (["scripts/product-skills"], set()),
             (["scripts/skills-package/README.md"], set()),
             (["scripts/skills-package/NOTICE"], set()),
-            ([".agents/skills/beads/SKILL.md"], set()),
-            ([".agents/skills/beads/agents/openai.yaml"], set()),
             (["scripts/build-ffi-xcframework.sh"], set()),
             (["scripts/build-mobile-ffi-android.sh"], set()),
             (["scripts/ci/setup-android-ndk.sh"], set()),
