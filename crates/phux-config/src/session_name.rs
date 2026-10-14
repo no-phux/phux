@@ -102,16 +102,10 @@ pub fn template_has_random_name(template: &str) -> bool {
 ///
 /// `${cwd-basename}` becomes the last component of `cwd` with `:` replaced by
 /// `_` (`:` is the selector's session/window delimiter); `${random-name}` a
-/// fresh generated name. Unknown placeholders pass through. May return an
-/// empty string (`/` has no basename); the caller picks the fallback.
-#[must_use]
-pub fn render_session_name_template(template: &str, cwd: &Path) -> String {
-    render_session_name_template_with(template, cwd, &mut NameRng::from_entropy())
-}
-
-/// [`render_session_name_template`] with a caller-supplied generator. Every
-/// `${random-name}` in one render is the same pick, expanded before
-/// `${cwd-basename}` so a directory name is never re-expanded.
+/// name drawn from `rng`. Every `${random-name}` in one render is the same
+/// pick, expanded before `${cwd-basename}` so a directory name is never
+/// re-expanded. Unknown placeholders pass through. May return an empty
+/// string (`/` has no basename); the caller picks the fallback.
 #[must_use]
 pub fn render_session_name_template_with(template: &str, cwd: &Path, rng: &mut NameRng) -> String {
     let basename = cwd
