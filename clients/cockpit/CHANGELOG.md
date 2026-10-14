@@ -25,6 +25,13 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   or server restart without restarting the app; recover the selected session
   by its confirmed name when a replacement server reuses numeric IDs.
 
+## [0.37.1](https://github.com/no-phux/phux/compare/cockpit-v0.37.0...cockpit-v0.37.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* **cockpit:** stop a pending tab close from showing attention ([#1275](https://github.com/no-phux/phux/issues/1275)) ([72919b5](https://github.com/no-phux/phux/commit/72919b50e76fa78f0f840e510a2a9e76535ff127))
+
 ## [0.37.0](https://github.com/no-phux/phux/compare/cockpit-v0.36.0...cockpit-v0.37.0) (2026-10-14)
 
 
