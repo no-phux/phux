@@ -23,7 +23,7 @@ use crate::attach::pane_state::{
     reanchor_predict_to_pane,
 };
 use crate::layout::ArrangementDoc;
-use crate::predict::{Overlay, PredictionState};
+use crate::predict::{PredictionState, render_overlay};
 use crate::render::chrome::sidebar::{SidebarHit, hit_test};
 use crate::render::overlay::{
     ContextMenu, CopySearchRequest, CopySearchResult, OverlayOutcome, OverlayState,
@@ -660,7 +660,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         let origin = focused
             .and_then(|fid| self.panes.get(fid))
             .map_or((0, 0), |s| s.renderer.last_origin());
-        let _ = Overlay.render(self.predict, origin, self.out);
+        let _ = render_overlay(self.predict, origin, self.out);
         // The guesses now sit over the focused pane's cells; its
         // front buffer must not keep claiming what was there before them.
         if let Some(slot) = focused.and_then(|fid| self.panes.get_mut(fid)) {

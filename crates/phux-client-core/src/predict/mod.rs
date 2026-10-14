@@ -12,7 +12,7 @@
 //!   sent upstream without a local echo.
 //! - [`reconcile_terminal_output_per_cell`] confirms, keeps, or drops the
 //!   queue (a contradiction drops the whole suffix).
-//! - [`Overlay`] writes the displayable guesses as VT.
+//! - [`render_overlay`] writes the displayable guesses as VT.
 //!
 //! On the alternate screen display is confirmation-gated (ADR-0090):
 //! nothing shows until a non-blank insert is confirmed, so apps that never
@@ -25,7 +25,7 @@ mod overlay;
 mod reconcile;
 mod state;
 
-pub use overlay::Overlay;
+pub use overlay::render_overlay;
 pub use reconcile::{
     ReconcileStats, reconcile_terminal_output_per_cell, reconcile_terminal_output_per_cell_at,
 };
