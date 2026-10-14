@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.2](https://github.com/no-phux/phux/compare/desktop-v0.8.1...desktop-v0.8.2) (2026-10-14)
+
+
+### Performance
+
+* **desktop:** cache pane views and paint ASCII as lines ([#1357](https://github.com/no-phux/phux/issues/1357)) ([ea2b689](https://github.com/no-phux/phux/commit/ea2b68925e98ebbd1776e836b8b13f0d2b803480))
+
 ## [0.8.1](https://github.com/no-phux/phux/compare/desktop-v0.8.0...desktop-v0.8.1) (2026-10-14)
 
 
