@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.3](https://github.com/no-phux/phux/compare/desktop-v0.8.2...desktop-v0.8.3) (2026-10-14)
+
+
+### Performance
+
+* **desktop:** keep the sidebar and titlebar across terminal frames ([#1361](https://github.com/no-phux/phux/issues/1361)) ([e0d0780](https://github.com/no-phux/phux/commit/e0d07800ff49c972cf4556411fd424a1d47692a3))
+
 ## [0.8.2](https://github.com/no-phux/phux/compare/desktop-v0.8.1...desktop-v0.8.2) (2026-10-14)
 
 
