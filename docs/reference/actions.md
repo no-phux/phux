@@ -30,6 +30,9 @@ The **Palette** column is the command-palette section the action is offered unde
 | `find-path` | Pane | `path?` (directory to browse; defaults to the focused pane's directory) | Browse or fuzzy-search host paths and insert a literal path into the focused pane |
 | `insert-path` | Pane | `path` (selected absolute path) | Insert a selected host path without running the command |
 | `kill-window` | Window | `terminals?` (selectors the confirm committed; omitted opens the confirm) | Kill the active window's terminals… |
+| `kill-session` | Session | `id`, `name` (optional pinned session; defaults to current) | Confirm ending all session work, including resources added meanwhile, and delete it |
+| `delete-empty-session` | Session | `id`, `name` (optional pinned session; defaults to current) | Confirm deletion of an empty session; never terminates members |
+| `session-actions` | — | `id`, `name`, `host` (pinned picker identity) | Open management for the selected session row |
 | `next-window` | Window |  | Switch to the next window |
 | `previous-window` | Window |  | Switch to the previous window |
 | `select-window` | — | `index` (0-based window position) | Focus the window at a given index |
@@ -78,6 +81,7 @@ Why the dash rows have no palette entry:
 - `show-help` — it is an entry alias for the same finder as `command-palette`, so listing it would duplicate that surface.
 - `select-window` — parameterized by `index`, which the palette has no UI to collect; the window picker is the surface for "jump to window N".
 - `move-window` — parameterized by direction; bound to `<` and `>` under the leader, offered in the window context menu, and done by dragging a tab or a sidebar window row.
+- `session-actions` — opened by Tab in the session picker or right-click on a sidebar session.
 - `switch-session` — requires a `name` arg supplied by the session picker (or the fleet's foreign rows), so a bare palette row would have no target to act on.
 - `switch-host` — requires `host` and `name` args supplied by the sidebar's machine segments or the session picker's machine groups, so a bare palette row would have no target to act on.
 - `copy-mode` — a modal input surface entered from its keybinding, not a one-shot command the palette can commit.
