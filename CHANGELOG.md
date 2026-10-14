@@ -9,6 +9,18 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.59.3](https://github.com/no-phux/phux/compare/v0.59.2...v0.59.3) (2026-10-14)
+
+
+### Bug Fixes
+
+* **client-runtime:** never call a listener after the client is freed ([#1272](https://github.com/no-phux/phux/issues/1272)) ([b07b329](https://github.com/no-phux/phux/commit/b07b3293fff45b729cc7dafe35e646c9fe79bc09))
+
+
+### Performance
+
+* **server:** drop the input-mode scanner and recapture every chunk ([#1277](https://github.com/no-phux/phux/issues/1277)) ([73f1b3d](https://github.com/no-phux/phux/commit/73f1b3d43f6b173316604f72653b8678db0d7069))
+
 ## [0.59.2](https://github.com/no-phux/phux/compare/v0.59.1...v0.59.2) (2026-10-14)
 
 
