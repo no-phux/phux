@@ -4,6 +4,7 @@
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import tempfile
 import textwrap
@@ -105,11 +106,13 @@ class RunnerPolicyTests(unittest.TestCase):
 
         Run 38442503688 restored ~19 GiB logical, evicted every action result,
         compiled with 0 hits, then spent ~11 minutes exporting that cold
-        rebuild because the generated key included the commit.
+        rebuild because the generated key included the commit. 48 GiB kept
+        those hits and then outgrew the export copy (run 38505694112).
         """
         lane = (ROOT / ".github/actions/setup-rust-lane/action.yml").read_text()
         self.assertNotIn("mbx gc --max-size 8GiB", lane)
-        self.assertIn("mbx gc --max-size 48GiB", lane)
+        self.assertNotIn("mbx gc --max-size 48GiB", lane)
+        self.assertIn("mbx gc --max-size 40GiB", lane)
         self.assertIn("cache-key: ${{ steps.mbx-env.outputs.cache_key }}", lane)
         self.assertIn("restore-keys: ${{ steps.mbx-env.outputs.restore_key }}", lane)
         self.assertNotIn("github.sha", lane)
@@ -246,6 +249,130 @@ class RunnerPolicyTests(unittest.TestCase):
             )
             self.assertEqual(skipped.returncode, 0, skipped.stderr)
             self.assertIn("skipped", skipped.stdout)
+
+    def test_export_headroom_collapses_target_copies_without_calling_mbx(self):
+        """ext4 keeps a second copy of the store in the managed target.
+
+        The export records each target file's mode and mtime, so collapsing
+        identical bytes has to put that metadata back. Two target files that
+        disagree cannot share the inode.
+        """
+        script = ROOT / "scripts/ci/mbx-export-headroom.sh"
+        payload = b"same-object" * 1000
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            target = home / ".cache" / "mbx" / "targets" / "view"
+            cas = home / ".cache" / "mbx" / "actions" / "cas" / "v1" / "blake3" / "ab"
+            target.mkdir(parents=True)
+            cas.mkdir(parents=True)
+            first = target / "libfirst.rlib"
+            second = target / "libsecond.rlib"
+            blob = cas / "blob"
+            unique = target / "only-here"
+            for path in (first, second, blob):
+                path.write_bytes(payload)
+            unique.write_bytes(b"not-in-the-store")
+            os.chmod(first, 0o755)
+            os.chmod(second, 0o640)
+            os.chmod(blob, 0o444)
+            os.utime(first, (1_000, 1_000))
+            os.utime(second, (2_000, 2_000))
+            os.utime(blob, (3_000, 3_000))
+            bindir = root / "bin"
+            bindir.mkdir()
+            mbx = bindir / "mbx"
+            mbx.write_text("#!/bin/sh\necho mbx-was-called >&2\nexit 1\n")
+            mbx.chmod(0o755)
+            completed = subprocess.run(
+                ["bash", str(script)],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}",
+                    "HOME": str(home),
+                    "PHUX_MBX_EXPORT_HEADROOM": "1",
+                },
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertNotIn("mbx-was-called", completed.stderr)
+            self.assertNotEqual(first.stat().st_ino, second.stat().st_ino)
+            self.assertTrue(
+                first.stat().st_ino == blob.stat().st_ino
+                or second.stat().st_ino == blob.stat().st_ino
+            )
+            self.assertEqual(stat.S_IMODE(first.stat().st_mode), 0o755)
+            self.assertEqual(int(first.stat().st_mtime), 1_000)
+            self.assertEqual(stat.S_IMODE(second.stat().st_mode), 0o640)
+            self.assertEqual(int(second.stat().st_mtime), 2_000)
+            self.assertEqual(unique.read_bytes(), b"not-in-the-store")
+            self.assertIn("collapsed duplicate target files", completed.stdout)
+
+    def test_export_headroom_skips_the_save_when_the_copy_cannot_fit(self):
+        """A store larger than the free disk must not fail the green job.
+
+        Retiring the pending receipts makes the post step report an empty
+        export. The object bytes stay, and so does a file outside the group.
+        """
+        script = ROOT / "scripts/ci/mbx-export-headroom.sh"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            store = home / ".cache" / "mbx" / "actions"
+            receipt = store / "build-receipts" / "v1" / "groups" / "abc" / "1.json"
+            kept = store / "cas" / "v1" / "blake3" / "ab" / "blob"
+            receipt.parent.mkdir(parents=True)
+            kept.parent.mkdir(parents=True)
+            receipt.write_text('{"group":"keep-until-the-disk-says-no"}')
+            kept.write_text("object")
+            bindir = root / "bin"
+            bindir.mkdir()
+            (bindir / "df").write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1\" = \"-h\" ]; then\n"
+                "  echo 'Filesystem Size Used Avail Use% Mounted on'\n"
+                "  echo '/dev/root 145G 145G 1M 100% /'\n"
+                "  exit 0\n"
+                "fi\n"
+                "echo 'Filesystem 1024-blocks Used Available Capacity Mounted on'\n"
+                "echo '/dev/root 100000000 99999000 1000 100% /'\n"
+            )
+            (bindir / "du").write_text("#!/bin/sh\necho '8000000\t'$2\n")
+            for name in ("df", "du"):
+                (bindir / name).chmod(0o755)
+            completed = subprocess.run(
+                ["bash", str(script)],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    "PATH": f"{bindir}{os.pathsep}/usr/bin:/bin",
+                    "HOME": str(home),
+                    "PHUX_MBX_EXPORT_HEADROOM": "1",
+                },
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn("not saving this store", completed.stderr)
+            self.assertFalse(receipt.exists())
+            self.assertEqual(kept.read_text(), "object")
+
+            receipt.parent.mkdir(parents=True, exist_ok=True)
+            receipt.write_text("still-pending")
+            kept_run = subprocess.run(
+                ["bash", str(script)],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    "PATH": "/usr/bin:/bin",
+                    "HOME": str(home),
+                    "PHUX_MBX_EXPORT_HEADROOM": "1",
+                },
+            )
+            self.assertEqual(kept_run.returncode, 0, kept_run.stderr)
+            self.assertNotIn("not saving this store", kept_run.stderr)
+            self.assertEqual(receipt.read_text(), "still-pending")
 
     def test_linux_release_keeps_glibc_2204_userspace_without_retired_runners(self):
         for name, body in (("release.yml", RELEASE), ("next-release.yml", NEXT_RELEASE)):
