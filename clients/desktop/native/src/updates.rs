@@ -178,9 +178,10 @@ pub fn stable_releases(value: &Value) -> anyhow::Result<Vec<Release>> {
 
 pub fn latest(channel: Channel) -> anyhow::Result<Release> {
     if channel == Channel::Next {
-        return next_release(&fetch(
-            "https://github.com/no-phux/phux/releases/download/next/desktop-channel.json",
-        )?);
+        let pointer =
+            fetch("https://github.com/no-phux/phux/releases/download/next/desktop-channel.json")
+                .map_err(next_fetch_error)?;
+        return next_release(&pointer);
     }
     let mut releases = Vec::new();
     for page in 1..=10 {
@@ -196,6 +197,18 @@ pub fn latest(channel: Channel) -> anyhow::Result<Release> {
         .into_iter()
         .max_by_key(|release| stable_version(&format!("desktop-v{}", release.version)))
         .context("No published Stable desktop release")
+}
+
+/// The Next pointer is absent until a desktop build first qualifies; say so
+/// instead of surfacing curl's HTTP status line.
+fn next_fetch_error(error: anyhow::Error) -> anyhow::Error {
+    if error.to_string().contains("returned error: 404") {
+        anyhow::anyhow!(
+            "No Desktop Next build is published yet. Stay on Stable or check again later."
+        )
+    } else {
+        error
+    }
 }
 
 pub fn next_release(value: &Value) -> anyhow::Result<Release> {
@@ -557,6 +570,19 @@ mod tests {
         invalid = pointer;
         invalid["version"] = json!("bad");
         assert!(next_release(&invalid).is_err());
+    }
+
+    #[test]
+    fn missing_next_pointer_reads_as_unpublished() {
+        let missing = next_fetch_error(anyhow::anyhow!(
+            "curl: (56) The requested URL returned error: 404"
+        ));
+        assert_eq!(
+            missing.to_string(),
+            "No Desktop Next build is published yet. Stay on Stable or check again later."
+        );
+        let offline = next_fetch_error(anyhow::anyhow!("curl: (6) Could not resolve host"));
+        assert_eq!(offline.to_string(), "curl: (6) Could not resolve host");
     }
 
     #[test]
