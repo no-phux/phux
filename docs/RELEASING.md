@@ -104,11 +104,11 @@ Workflows use only `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-24.04-arm`, and
 `xcode-27` (macOS 27 with Xcode 27); no larger or self-hosted runners.
 
 The Actions cache is capped at 10 GB per repository with LRU eviction, and a
-cache saved on `refs/pull/N/merge` is only restorable from that PR. The check,
-test, and icount mbx caches (`.github/actions/setup-rust-lane`, one `objects`
-entry per lane) save on `main` pushes only, as do the other lanes'
-`rust-cache` entries; any new PR-lane cache needs the same treatment. The mbx
-primary key is the lane, `flake.lock`, `Cargo.lock`, and the UTC day. It does
+cache saved on `refs/pull/N/merge` is only restorable from that PR. The check
+and icount mbx caches (`.github/actions/setup-rust-lane`, one `objects` entry
+per lane) save on `main` pushes only, as do the test lanes' dependency-only
+`rust-cache` entries and the other lanes' `rust-cache` entries; any new
+PR-lane cache needs the same treatment. The mbx primary key is the lane, `flake.lock`, `Cargo.lock`, and the UTC day. It does
 not include the commit: an exact hit skips the objects export. A new day or
 lockfile still restores the previous entry by prefix, then saves once.
 `prune-build-cache` keeps the newest entry for each of those lanes, for the
@@ -119,30 +119,41 @@ them. The account allows 20 concurrent standard jobs, only 5 of them macOS.
 `pr-janitor` cancels a closed PR's live runs and deletes its merge-ref
 caches. Concurrency groups use the `mini-v1-` namespace.
 
-A cold test build learns mbx keys while it compiles (`not looked up`), then
-the save is what the next job hits. Run 38451988937 spent 10m 24s compiling
-the test profile with 0 hits and left a 2.3 GB archive (2339429694 bytes).
-The earlier 5.5 GB archive was a store whose action results had already been
-deleted; that export took about eleven minutes and did not fit beside the
-other caches. The Cockpit zig cache is 4.9 GB (4947386319 bytes). Two
+The test profile does not use mbx. Its objects archive grew to 6.1 GB
+compressed and 27.8 GiB restored: run 38503810705 spent 6m 28s unpacking it,
+then 7m 51s compiling the workspace crates that every code PR changes anyway,
+for a 21-minute `test` job. The four test lanes (`test`, `test (integration)`,
+`e2e`, `uniffi`) each restore a `rust-cache` entry (`build-cache: deps`) that
+holds only third-party artifacts and build-script outputs, including the
+libghostty-vt Zig build (198 s cold). Those builds set `CARGO_INCREMENTAL=0`
+and `CARGO_PROFILE_DEV_DEBUG=0`: a cold `--workspace` test build left 2.6 GB
+of `target/debug` against 9.7 GB with line tables, and compiled in 586 s
+against 649 s (run 38518949085). The workspace crates are about 1,500
+CPU-seconds of compile, so the lanes split them: `just test` with
+`PHUX_UNIT_PART=lib` builds the lib and bin harnesses, `integration` the
+`tests/` targets and examples, `just e2e` only the binaries its filtersets
+name, and the binding its own feature set. Each keeps `--workspace`, so the
+feature union and the rdeps filterset match the whole pool's. The Cockpit zig
+cache is 4.9 GB (4947386319 bytes). Two
 xcframework dep archives, 978198846 and 968319491 bytes, then filled the
 rest of the 10 GB cap and the test archive was evicted before the next rust
 push could restore it. `ffi-xcframework.yml` does not save that dep cache.
 `prune-build-cache` deletes any leftover `v0-rust-mini-v1-ffi-xcframework-`
-entry and keeps one copy of the remaining prefixes. One test archive plus
-one zig archive fits; a second ~1 GB dep archive does not.
+entry and keeps one copy of the remaining prefixes, and it deletes the
+retired `linux-arm64-mbx-phux-test-` archive.
 
-A failed main lane still exports that archive when the exact key was not
-restored. The action's post step runs only on success. Run 38457963019
-compiled the test profile in 10m 37s, failed one assertion, and saved
-nothing. Pull requests do not write this archive.
+A failed main check or icount lane still exports its archive when the exact
+key was not restored. The action's post step runs only on success. Run
+38457963019 compiled the test profile in 10m 37s, failed one assertion, and
+saved nothing. The test lanes' `rust-cache` saves with `cache-on-failure`.
+Pull requests write neither.
 
 The check and icount lanes collect the restored mbx store before compiling,
 never between a build and its objects export. Pending export groups reference
 action results that GC can evict. The cap has to sit above the lane's working
 set: an 8 GiB cap deleted a restored store's action results and the build
-recorded no hits. 40 GiB stays above the measured test-lane store (36.5 GiB
-on run 38505694112) and below a size whose export copy cannot fit on the
+recorded no hits. 40 GiB stays above the largest measured store (the retired
+test-lane store, 36.5 GiB on run 38505694112) and below a size whose export copy cannot fit on the
 145 GiB runner. Post-build headroom leaves those action results intact. It
 removes Cargo downloads, collapses the managed target's duplicate bytes onto
 the object store, and skips the save when the copy still does not fit.
@@ -171,7 +182,8 @@ diffs request every surface. On pull requests the same classifier also emits
 skip unrelated crates after the `--workspace` build. A `tests/`-only diff
 sets `unit_mode=narrow` and builds that integration test instead. Pushes to
 `main` keep the full pool. The required `ci` aggregate rejects failed or cancelled lanes and
-retains the visible `check`/`test` job names.
+retains the visible `check`/`test` job names; `test (integration)`, `e2e`,
+and `uniffi` are the test profile's other lanes.
 
 Release-metadata routing tests use disposable Git histories and fixed manifest,
 lockfile, and skill fixtures. They do not assume every component file contains

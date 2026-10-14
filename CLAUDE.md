@@ -30,8 +30,8 @@ just test           # cargo nextest run --workspace
 ```
 
 **`just ci-full` is the full root PR bar; scoped gates are the inner loop.**
-CI's `test` job also runs `just e2e` and `just agents-fleet-smoke`, which
-`just ci` omits, so `just ci` green can still fail a required check. See
+CI's `e2e` job and workflow gate also run `just e2e` and
+`just agents-fleet-smoke`, which `just ci` omits, so `just ci` green can still fail a required check. See
 CONTRIBUTING.md §"Bar for any change" for the gate-by-gate map. `commitlint`
 lints every commit in the PR, not just the title.
 

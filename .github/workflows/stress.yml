@@ -14,9 +14,9 @@
 # favor of opt-in lanes.)
 #
 # Build+run stay on one runner (matching ci.yml). Cachix persists the
-# devshell, and this lane restores ci.yml's `test` objects cache. It does
-# not save (dispatch and label runs are restore-only). Do not give stress
-# its own objects entry. Pull requests can read the public Cachix cache but
+# devshell, and this lane restores ci.yml's `test-integration` dependency
+# cache. It does not save (dispatch and label runs are restore-only). Do not
+# give stress its own cache entry. Pull requests can read the public Cachix cache but
 # cannot push because GitHub withholds repository secrets from forks.
 
 name: stress
@@ -48,13 +48,15 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # Shared lane setup. This builds the nextest test profile, so it
-      # restores ci.yml's `test` objects cache instead of a third copy.
+      # Shared lane setup. This builds integration tests in the test
+      # profile, so it restores ci.yml's `test-integration` dependency cache
+      # instead of writing another copy.
       - uses: ./.github/actions/setup-rust-lane
         id: setup
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          cache-lane: test
+          cache-lane: test-integration
+          build-cache: deps
       # Timed + junit-instrumented like ci.yml's lanes (ADR-0082): the storms
       # are exactly where per-test wall times matter, since CPU starvation on
       # the 2-core runner is this suite's known failure mode.
