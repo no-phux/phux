@@ -9,6 +9,14 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.60.1](https://github.com/no-phux/phux/compare/v0.60.0...v0.60.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* **cockpit:** report measured cell pitch so mouse hits the painted cell ([#1280](https://github.com/no-phux/phux/issues/1280)) ([f6c8cd4](https://github.com/no-phux/phux/commit/f6c8cd4b9fd2482779f7afbe2ee9250181a780bb))
+* **upgrade:** strip " (deleted)" from an inherited source exe ([#1281](https://github.com/no-phux/phux/issues/1281)) ([bafce8c](https://github.com/no-phux/phux/commit/bafce8c8591055020c11a77ae28c36f54cc7f991))
+
 ## [0.60.0](https://github.com/no-phux/phux/compare/v0.59.3...v0.60.0) (2026-10-14)
 
 
