@@ -543,6 +543,10 @@ impl HistoryCache {
     }
 
     /// Insert one engine-accepted response in exact cursor-local sequence.
+    ///
+    /// Unit tests drive the cache without an engine. The kernel commits
+    /// through [`Self::commit_checked_page`] after its own check.
+    #[cfg(test)]
     pub(crate) fn accept_page(
         &mut self,
         cursor: &HistoryCursor,
@@ -561,6 +565,63 @@ impl HistoryCache {
         )? {
             return Ok(id);
         }
+        Ok(self.commit_new_page(
+            cursor,
+            page_seq,
+            next_cursor,
+            declared_rows,
+            materialized_rows,
+            payload,
+        ))
+    }
+
+    /// Record a page [`Self::check_page`] just accepted as new.
+    ///
+    /// The kernel checks, asks the engine to apply, then commits. The apply
+    /// borrows only the replica engine, so the cache is unchanged and the
+    /// check is not repeated. Debug builds assert that precondition.
+    pub(crate) fn commit_checked_page(
+        &mut self,
+        cursor: &HistoryCursor,
+        page_seq: u64,
+        next_cursor: Option<HistoryCursor>,
+        declared_rows: u32,
+        materialized_rows: usize,
+        payload: &[u8],
+    ) -> HistoryPageId {
+        debug_assert!(
+            matches!(
+                self.check_page(
+                    cursor,
+                    page_seq,
+                    next_cursor.as_ref(),
+                    declared_rows,
+                    payload,
+                ),
+                Ok(HistoryPageCheck::New)
+            ),
+            "commit_checked_page requires a page check_page just accepted"
+        );
+        self.commit_new_page(
+            cursor,
+            page_seq,
+            next_cursor,
+            declared_rows,
+            materialized_rows,
+            payload,
+        )
+    }
+
+    /// Insert a page already known to be the next new page.
+    fn commit_new_page(
+        &mut self,
+        cursor: &HistoryCursor,
+        page_seq: u64,
+        next_cursor: Option<HistoryCursor>,
+        declared_rows: u32,
+        materialized_rows: usize,
+        payload: &[u8],
+    ) -> HistoryPageId {
         let id = HistoryPageId {
             cursor: cursor.clone(),
             page_seq,
@@ -618,7 +679,7 @@ impl HistoryCache {
         };
         self.busy_retries = 0;
         self.evict_to_budget();
-        Ok(id)
+        id
     }
 
     /// Remaining bounded engine-anchor registrations.
