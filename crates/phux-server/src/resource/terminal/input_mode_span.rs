@@ -3,6 +3,10 @@
 //! Encoder modes change only inside one of these sequences. A chunk of plain
 //! text that starts and ends in [`InputModeSpan::Ground`] cannot change them,
 //! so the actor keeps the input snapshot the lane already has.
+//!
+//! Like libghostty's stream, ground state decodes UTF-8 and only `ESC` opens
+//! a sequence: a byte in `0x80..=0x9F` there is part of a character (`┐` is
+//! `E2 94 90`), never an 8-bit C1 introducer.
 
 /// Where the next PTY byte sits in an ECMA-48 control sequence.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -10,7 +14,7 @@ pub(super) enum InputModeSpan {
     /// No sequence is open.
     #[default]
     Ground,
-    /// Saw `ESC` (or a C1 introducer that still needs its next byte).
+    /// Saw `ESC`.
     Escape,
     /// Inside CSI, waiting for a final byte.
     Csi,
@@ -30,25 +34,29 @@ impl InputModeSpan {
     /// `true` when a sequence was already open or this chunk entered one,
     /// including a sequence that completed here. A later plain-text chunk
     /// returns `false` again.
-    pub(super) fn observe(&mut self, bytes: &[u8]) -> bool {
-        let mut affects_modes = !matches!(self, Self::Ground);
-        for &byte in bytes {
-            let before = *self;
-            self.step(byte);
-            if !matches!(before, Self::Ground) || !matches!(self, Self::Ground) {
+    pub(super) fn observe(&mut self, mut bytes: &[u8]) -> bool {
+        let mut affects_modes = *self != Self::Ground;
+        loop {
+            if *self == Self::Ground {
+                // Text: skip straight to the next sequence, if any.
+                let Some(escape) = memchr::memchr(0x1b, bytes) else {
+                    return affects_modes;
+                };
                 affects_modes = true;
+                bytes = &bytes[escape..];
             }
+            let Some((&byte, rest)) = bytes.split_first() else {
+                return affects_modes;
+            };
+            self.step(byte);
+            bytes = rest;
         }
-        affects_modes
     }
 
     const fn step(&mut self, byte: u8) {
         *self = match *self {
             Self::Ground => match byte {
                 0x1b => Self::Escape,
-                0x9b => Self::Csi,
-                0x9d => Self::Osc,
-                0x90 | 0x98 | 0x9e | 0x9f => Self::String,
                 _ => Self::Ground,
             },
             Self::Escape => match byte {
@@ -133,9 +141,18 @@ mod tests {
     }
 
     #[test]
-    fn c1_csi_and_osc_are_sequences() {
-        let (flags, span) = affects(&[b"\x9b?2004h", b"a", b"\x9d0;title\x07", b"b"]);
-        assert_eq!(flags, vec![true, false, true, false]);
+    fn utf8_continuation_bytes_in_the_c1_range_are_text() {
+        // `┐` E2 94 90, `┘` E2 94 98, `❯` E2 9D AF, and an emoji F0 9F 98 80
+        // carry the bytes of DCS, SOS, OSC, and APC introducers.
+        let (flags, span) = affects(&["┐┘", "❯ ", "\u{1f600}"].map(str::as_bytes));
+        assert_eq!(flags, vec![false, false, false]);
+        assert_eq!(span, InputModeSpan::Ground);
+    }
+
+    #[test]
+    fn a_sequence_after_wide_text_is_still_seen() {
+        let (flags, span) = affects(&["┐\x1b[?2004h┘".as_bytes(), b"a"]);
+        assert_eq!(flags, vec![true, false]);
         assert_eq!(span, InputModeSpan::Ground);
     }
 

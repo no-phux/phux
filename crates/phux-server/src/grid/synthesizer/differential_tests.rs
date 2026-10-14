@@ -314,9 +314,8 @@ fn run(seed: u64, (cols, rows): (u16, u16)) -> (usize, usize) {
             }
             5 => pair.join(rng.chance(50)),
             // The actor's other readers of `a`, between ticks: the
-            // metadata reader shares the pool, the rest walk fresh states.
-            6..=7 => drop(pair.synth_a.metadata_snapshot(&pair.a).expect("metadata")),
-            8 => drop(pair.synth_a.screen_state(&pair.a, 0).expect("screen_state")),
+            // projection shares the pool, a full synthesis walks a fresh state.
+            6..=8 => drop(pair.synth_a.screen_state(&pair.a, 0).expect("screen_state")),
             9 => drop(pair.synth_a.synthesize(&pair.a).expect("synthesize")),
             _ => {
                 let bytes = random_vt(&mut rng, cur_cols, cur_rows);

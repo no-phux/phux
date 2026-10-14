@@ -95,7 +95,11 @@ impl TerminalActor {
         };
         match InputEncoderSnapshot::capture(terminal, self.cell_px) {
             Ok(snapshot) => {
-                self.input_snapshot_tx.send_replace(snapshot);
+                self.input_snapshot_tx.send_if_modified(|current| {
+                    let changed = *current != snapshot;
+                    *current = snapshot;
+                    changed
+                });
             }
             Err(err) => warn!(error = %err, "input encoder snapshot capture failed"),
         }

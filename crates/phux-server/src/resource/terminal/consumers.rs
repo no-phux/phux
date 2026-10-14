@@ -4,9 +4,8 @@
 
 use super::{
     ClientId, ConsumerAttachError, ConsumerAttachOutcome, ConsumerAttachRequest, ConsumerReference,
-    ConsumerSyncState, DEFAULT_TICK_INTERVAL, GhosttyTerminal, LastAckedCursorMode, Outbound,
-    RenderState, RttEstimator, StateSyncBootstrap, TICK_RESET_DEADBAND, TerminalActor, mpsc, trace,
-    warn, watch,
+    ConsumerSyncState, DEFAULT_TICK_INTERVAL, Outbound, RttEstimator, StateSyncBootstrap,
+    TICK_RESET_DEADBAND, TerminalActor, mpsc, trace, warn, watch,
 };
 
 impl TerminalActor {
@@ -33,29 +32,17 @@ impl TerminalActor {
         // never read the reference, so only tick-managed ones pay.
         // `needs_initial_emit` would prime a raw one if it were ever ticked.
         let tick_managed = wants_state_sync || self.consumer_tick_emits;
-        let (last_cursor_mode, reference) = if tick_managed {
+        let mut reference = ConsumerReference::new();
+        if tick_managed {
             let canonical = self.terminal.borrow();
             let Some(terminal) = canonical.try_terminal() else {
                 return Err(crate::grid::SynthesisError::TerminalUnavailable.into());
             };
-            // A one-shot render state, so priming below can borrow the
-            // shared synthesizer. It drains the terminal's dirty bits, so the
-            // tick's pool must rebuild.
-            let last_cursor_mode = {
-                self.synth.borrow().note_foreign_walk();
-                let mut render_state = RenderState::new()?;
-                let snapshot = render_state.update(terminal)?;
-                LastAckedCursorMode::capture(terminal, &snapshot)
-            };
             // Prime so the first diff reports only changes from now.
-            let mut reference = ConsumerReference::new();
             self.synth
                 .borrow_mut()
                 .prime_reference(terminal, &mut reference)?;
-            (last_cursor_mode, reference)
-        } else {
-            (LastAckedCursorMode::unprimed(), ConsumerReference::new())
-        };
+        }
         self.consumer_states.insert(
             client_id,
             ConsumerSyncState {
@@ -68,7 +55,6 @@ impl TerminalActor {
                 // The bootstrap and this sequence share one cut.
                 next_seq,
                 last_acked_seq: 0,
-                last_cursor_mode,
                 // Walk once on the next tick even on a clean terminal.
                 needs_initial_emit: true,
                 behind: false,
@@ -284,20 +270,6 @@ impl TerminalActor {
             Self::advance_acked_reference(consumer, seq);
         }
         let sampled = Self::fold_rtt_sample(client_id, consumer, seq);
-        // Capture through the tick renderer: a second render state would
-        // consume dirty bits without refreshing the tick's row cache.
-        let canonical = self.terminal.borrow();
-        if let Some(terminal) = canonical.try_terminal()
-            && let Some(cm) = Self::capture_acked_cursor_mode(
-                &mut self.synth.borrow_mut(),
-                terminal,
-                client_id,
-                seq,
-            )
-        {
-            consumer.last_cursor_mode = cm;
-        }
-        drop(canonical);
 
         trace!(
             ?client_id,
@@ -393,28 +365,6 @@ impl TerminalActor {
             "FRAME_ACK: RTT sample folded into EMA",
         );
         true
-    }
-
-    /// Capture the cursor/mode state to pair with an ack; `None` (keep the
-    /// prior capture) if the render state fails.
-    fn capture_acked_cursor_mode(
-        synth: &mut crate::grid::SnapshotSynthesizer<'static>,
-        terminal: &GhosttyTerminal<'static, '_>,
-        client_id: ClientId,
-        seq: u64,
-    ) -> Option<LastAckedCursorMode> {
-        match synth.metadata_snapshot(terminal) {
-            Ok(snapshot) => Some(LastAckedCursorMode::capture(terminal, &snapshot)),
-            Err(err) => {
-                warn!(
-                    ?client_id,
-                    seq,
-                    error = %err,
-                    "FRAME_ACK: cursor/mode capture update failed; keeping prior capture",
-                );
-                None
-            }
-        }
     }
 
     /// The shared tick interval: the minimum desired interval over all

@@ -39,8 +39,8 @@ fn register_unregister_consumer_drives_lifecycle_map() {
     assert_eq!(actor.consumer_count(), 0, "both removed");
 }
 
-/// A fresh registration has no acks and a cursor/mode capture primed from
-/// the live terminal.
+/// A fresh registration has no acks and a reference primed from the live
+/// terminal.
 #[test]
 fn register_consumer_initial_state_matches_terminal() {
     let bundle = TerminalActor::new_with_seed(20, 5, b"hello").expect("new_with_seed");
@@ -48,7 +48,7 @@ fn register_consumer_initial_state_matches_terminal() {
     let client = ClientId(7);
     let (tx, _rx) = dummy_outbound();
     // A tick-managed (state-sync) consumer: priming runs, so the
-    // capture must reflect the live terminal.
+    // reference must reflect the live terminal.
     actor
         .register_consumer(client, tx, 11, true)
         .expect("register");
@@ -61,8 +61,8 @@ fn register_consumer_initial_state_matches_terminal() {
         "wire id stored on the per-consumer entry"
     );
     // Seeded "hello" puts the cursor at (5, 0).
-    assert_eq!(state.last_cursor_mode.cursor_x, Some(5));
-    assert_eq!(state.last_cursor_mode.cursor_y, Some(0));
+    assert_eq!(state.reference.cursor_mode.cursor_x, Some(5));
+    assert_eq!(state.reference.cursor_mode.cursor_y, Some(0));
 }
 
 #[test]
@@ -110,8 +110,8 @@ fn aggregate_live_gate_preserves_first_delta_until_activation() {
     assert!(!bytes.is_empty());
 }
 
-/// A raw consumer registers with the `unprimed` placeholder, skipping the
-/// priming renders.
+/// A raw consumer registers with an empty reference, skipping the priming
+/// renders.
 #[test]
 fn register_raw_consumer_skips_priming() {
     let bundle = TerminalActor::new_with_seed(20, 5, b"hello").expect("new_with_seed");
@@ -123,9 +123,9 @@ fn register_raw_consumer_skips_priming() {
         .expect("register");
 
     let state = actor.consumer_state(client).expect("state present");
-    // Not primed: the placeholder capture, not the seeded cursor at (5, 0).
-    assert_eq!(state.last_cursor_mode.cursor_x, None);
-    assert_eq!(state.last_cursor_mode.cursor_y, None);
+    // Not primed: no geometry, not the seeded cursor at (5, 0).
+    assert_eq!((state.reference.cols, state.reference.rows), (0, 0));
+    assert_eq!(state.reference.cursor_mode.cursor_x, None);
 }
 
 /// Attach then detach over the actor's channels on its `LocalSet`.
@@ -376,48 +376,6 @@ fn ack_between_pty_mutation_and_tick_preserves_pending_row_changes() {
             .windows(6)
             .any(|bytes| bytes == b"SECOND")
     );
-}
-
-#[test]
-fn ack_render_reuse_preserves_independent_consumers_across_resize_and_modes() {
-    let mut actor = TerminalActor::new_with_seed(20, 5, b"hello").unwrap().actor;
-    let (tx, _rx) = dummy_outbound();
-    for client in [ClientId(1), ClientId(2)] {
-        actor
-            .register_consumer(client, tx.clone(), 11, true)
-            .unwrap();
-    }
-    actor.vt_write_for_test(b"\x1b[2;4H\x1b[?2004h");
-    actor.tick_emit();
-    assert!(actor.on_frame_ack(ClientId(1), 1));
-    let first = actor.consumer_state(ClientId(1)).unwrap().last_cursor_mode;
-    assert_eq!((first.cursor_x, first.cursor_y), (Some(3), Some(1)));
-    assert!(first.bracketed_paste);
-
-    actor.terminal.borrow_mut().resize(30, 8, 8, 16).unwrap();
-    actor.vt_write_for_test(b"\x1b[?1049h\x1b[3;7H\x1b[?2004l\x1b[?25l");
-    actor.tick_emit();
-    assert!(actor.on_frame_ack(ClientId(2), 2));
-    let second = actor.consumer_state(ClientId(2)).unwrap().last_cursor_mode;
-    assert_eq!((second.cursor_x, second.cursor_y), (Some(6), Some(2)));
-    assert!(!second.bracketed_paste);
-    assert!(!second.cursor_visible);
-    assert!(second.alt_screen_save);
-    // The shared scratch must not alias either consumer's informational value.
-    let still_first = actor.consumer_state(ClientId(1)).unwrap().last_cursor_mode;
-    assert_eq!(
-        (still_first.cursor_x, still_first.cursor_y),
-        (Some(3), Some(1))
-    );
-    assert!(still_first.bracketed_paste);
-
-    actor.vt_write_for_test(b"\x1b[?1049l\x1b[?25h\x1b[4;5H");
-    actor.tick_emit();
-    assert!(actor.on_frame_ack(ClientId(1), 3));
-    let restored = actor.consumer_state(ClientId(1)).unwrap().last_cursor_mode;
-    assert_eq!((restored.cursor_x, restored.cursor_y), (Some(4), Some(3)));
-    assert!(restored.cursor_visible);
-    assert!(!restored.alt_screen_save);
 }
 
 /// With the emission gate off, `tick_emit` ships nothing to a raw consumer,
