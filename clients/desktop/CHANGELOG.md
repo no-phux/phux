@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/no-phux/phux/compare/desktop-v0.7.0...desktop-v0.8.0) (2026-10-14)
+
+
+### Features
+
+* **desktop:** remember recent project folders ([#1350](https://github.com/no-phux/phux/issues/1350)) ([0944244](https://github.com/no-phux/phux/commit/0944244005aedbab6328c2666aaab8f94cea292d))
+
 ## [0.7.0](https://github.com/no-phux/phux/compare/desktop-v0.6.1...desktop-v0.7.0) (2026-10-14)
 
 
