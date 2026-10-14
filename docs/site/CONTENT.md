@@ -134,8 +134,11 @@ QUIC. Every chapter states shipped behavior; keep client names, statuses,
 transports, and commands true to the canonical docs, and label beta clients.
 The tour autoplays only while visible with motion allowed, can be paused,
 and lets viewers pick a chapter. Reduced motion and no-JS show each
-chapter's settled state without playback. Any `[data-demo-launch]` link
-opens the dialog; without JavaScript the link falls through to the
+chapter's settled state without playback. Faint background hosts supply depth,
+not live telemetry or additional story steps. Hovering or focusing the artwork
+reveals a shell invitation and downloads only the React terminal wrapper; it
+never authenticates, downloads WASM, or allocates a session. Clicking the artwork
+or any `[data-demo-launch]` link opens the dialog; without JavaScript the link falls through to the
 standalone shell at `/embed`. The landing downloads no
 WASM and allocates no hosted session until the visitor opens the dialog. The
 anonymous edge tour is a curated, OS-less shell in a Durable Object; the

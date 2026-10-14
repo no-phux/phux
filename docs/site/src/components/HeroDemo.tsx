@@ -109,7 +109,7 @@ export default function HeroDemo({ wsUrl = "" }: { wsUrl?: string }) {
 
   return (
     <div className="hero-demo">
-      <Tour />
+      <Tour prepare={loadTerminal} />
       <noscript>
         <p>
           <a href="/embed">Open the hosted shell</a> or{" "}

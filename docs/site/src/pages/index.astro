@@ -38,7 +38,6 @@ const features = [
   <div class="home">
     <section class="hero" aria-labelledby="product-name">
       <h1 id="product-name">{SITE.name}</h1>
-      <p class="tagline">{SITE.tagline}</p>
       <div class="install" id="install" aria-label="Install phux CLI">
         <span aria-hidden="true">$</span>
         <code>{cliInstall}</code>
@@ -133,7 +132,7 @@ const features = [
   .home { width: min(100%, 920px); margin: auto; padding-inline: 24px; box-sizing: border-box; }
   .hero { text-align: center; padding-top: clamp(48px, 8vw, 88px); }
   h1 { margin: 0; font-size: clamp(80px, 15vw, 144px); line-height: 1; font-weight: 700; letter-spacing: -0.085em; }
-  .tagline { margin: 24px 0 30px; font-size: clamp(19px, 3vw, 25px); line-height: 1.4; letter-spacing: -0.025em; }
+  .hero .install { margin-top: 32px; border-radius: 10px; background: #ffffff03; border-color: #ffffff12; }
   .install { display: flex; align-items: center; gap: 12px; width: fit-content; max-width: 100%; margin: auto; padding: 8px 8px 8px 16px; border: 1px solid var(--color-rule); background: var(--color-surface); box-sizing: border-box; text-align: left; }
   .install > span { color: var(--color-dim); font-family: var(--font-code); }
   .install code { min-width: 0; overflow-x: auto; white-space: nowrap; font-size: 13px; }

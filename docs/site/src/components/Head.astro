@@ -28,19 +28,6 @@ const ogImage = new URL(`/og.png?v=${previewIdentity}`, SITE.url).href;
 
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<link rel="preconnect" href="https://fonts.bunny.net" crossorigin />
-<link
-  media="print"
-  onload="this.media='all'"
-  rel="stylesheet"
-  href="https://fonts.bunny.net/css?family=ibm-plex-sans:400,500,600,700|ibm-plex-mono:400,500&display=swap"
-/>
-<noscript>
-  <link
-    rel="stylesheet"
-    href="https://fonts.bunny.net/css?family=ibm-plex-sans:400,500,600,700|ibm-plex-mono:400,500&display=swap"
-  />
-</noscript>
 <!-- Warm DNS/TLS for the live demo origin; the terminal island dials it on click. -->
 {origin !== SITE.docsUrl && <link rel="preconnect" href="https://shell.phux.sh" crossorigin />}
 <title>{title}</title>
@@ -61,8 +48,8 @@ const ogImage = new URL(`/og.png?v=${previewIdentity}`, SITE.url).href;
 <meta name="twitter:image" content={ogImage} />
 {origin === SITE.docsUrl ? (
   <>
-    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
-    <meta name="theme-color" content="#10151d" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#faf9f6" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#111110" media="(prefers-color-scheme: dark)" />
   </>
 ) : <meta name="theme-color" content="#07080b" />}
 <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
