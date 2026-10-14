@@ -952,6 +952,9 @@ fn invalid_invocations_have_motif_without_coloring_message() {
 fn json_usage_errors_are_one_unstyled_line_even_when_color_is_forced() {
     for args in [
         vec!["ls", "--json", "--not-a-flag"],
+        vec!["ls", "--json=true", "--not-a-flag"],
+        vec!["ls", "--json=false", "--not-a-flag"],
+        vec!["ls", "--json=", "--not-a-flag"],
         vec!["--capabilities", "--json", "extra"],
         vec!["server", "--json"],
     ] {
@@ -1045,40 +1048,49 @@ fn json_legacy_errors_remain_unstyled_when_color_is_forced() {
     let config = dir.path().join("phux");
     std::fs::create_dir(&config).unwrap();
     std::fs::write(config.join("config.toml"), "[defaults\n").unwrap();
-    for (args, status, message) in [
-        (
-            vec!["pair", "--json", "--expires", "nonsense"],
-            2,
-            "phux: error: pair: invalid --expires duration: \"nonsense\"\n",
-        ),
-        (
-            vec!["config", "show", "--layers", "--json"],
-            1,
-            "phux: error: ",
-        ),
+    // Attached values are presence flags in usage-rs, not boolean setters.
+    for json_flag in [
+        "--json",
+        "--json=true",
+        "--json=false",
+        "--json=",
+        "--json=other",
     ] {
-        let out = phux()
-            .env("CLICOLOR_FORCE", "1")
-            .env_remove("NO_COLOR")
-            .env("TERM", "xterm")
-            .env("XDG_CONFIG_HOME", dir.path())
-            .args(&args)
-            .output()
-            .unwrap();
-        assert_eq!(out.status.code(), Some(status), "{args:?}");
-        assert!(out.stdout.is_empty(), "{args:?}");
-        assert!(!out.stderr.contains(&0x1b), "{args:?}");
-        let text = String::from_utf8(out.stderr).unwrap();
-        if args[0] == "pair" {
-            assert_eq!(text, message);
-        } else {
-            assert_eq!(
-                text,
-                format!(
-                    "{message}{}: 1:10: unclosed table, expected `]`\n",
-                    config.join("config.toml").display()
-                )
-            );
+        for (args, status, message) in [
+            (
+                vec!["pair", json_flag, "--expires", "nonsense"],
+                2,
+                "phux: error: pair: invalid --expires duration: \"nonsense\"\n",
+            ),
+            (
+                vec!["config", "show", "--layers", json_flag],
+                1,
+                "phux: error: ",
+            ),
+        ] {
+            let out = phux()
+                .env("CLICOLOR_FORCE", "1")
+                .env_remove("NO_COLOR")
+                .env("TERM", "xterm")
+                .env("XDG_CONFIG_HOME", dir.path())
+                .args(&args)
+                .output()
+                .unwrap();
+            assert_eq!(out.status.code(), Some(status), "{args:?}");
+            assert!(out.stdout.is_empty(), "{args:?}");
+            assert!(!out.stderr.contains(&0x1b), "{args:?}");
+            let text = String::from_utf8(out.stderr).unwrap();
+            if args[0] == "pair" {
+                assert_eq!(text, message);
+            } else {
+                assert_eq!(
+                    text,
+                    format!(
+                        "{message}{}: 1:10: unclosed table, expected `]`\n",
+                        config.join("config.toml").display()
+                    )
+                );
+            }
         }
     }
 }

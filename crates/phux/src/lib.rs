@@ -574,7 +574,12 @@ const fn is_interactive_client(cli: &Cli) -> bool {
 }
 
 fn json_output_requested() -> bool {
-    std::env::args_os().any(|arg| arg == "--json")
+    // usage-rs treats attached values as the same presence flag, even false
+    // or an empty value. Match that grammar before parser/preflight errors.
+    std::env::args_os().any(|arg| {
+        let bytes = arg.as_encoded_bytes();
+        bytes == b"--json" || bytes.starts_with(b"--json=")
+    })
 }
 
 /// Print `old`'s deprecation note (its [`deprecations::DEPRECATED`] row) on
