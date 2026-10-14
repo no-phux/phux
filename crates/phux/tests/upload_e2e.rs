@@ -1,4 +1,5 @@
-//! Upload consumers exercised as real CLI processes on disposable servers.
+//! Upload consumers exercised as real CLI and MCP processes on disposable
+//! servers. The `#[ignore]`d cases run in `just e2e`.
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,
@@ -13,6 +14,21 @@ mod runner;
 
 use common::ServerGuard;
 use serde_json::Value;
+
+/// The `phux-mcp` binary: `$PHUX_TEST_MCP_BIN`, else the one a workspace
+/// build put beside `phux`.
+fn mcp_bin() -> std::path::PathBuf {
+    if let Some(path) = std::env::var_os("PHUX_TEST_MCP_BIN") {
+        return path.into();
+    }
+    let built = std::path::Path::new(runner::phux_bin()).with_file_name("phux-mcp");
+    assert!(
+        built.exists(),
+        "{} is missing: build the workspace (`cargo nextest run --workspace`) or set PHUX_TEST_MCP_BIN",
+        built.display()
+    );
+    built
+}
 
 #[test]
 fn upload_help_and_malformed_arguments_do_not_connect_or_read() {
@@ -86,7 +102,7 @@ fn upload_help_and_malformed_arguments_do_not_connect_or_read() {
 }
 
 #[test]
-#[ignore = "spawns a real private server; run explicitly with two test threads"]
+#[ignore = "spawns a real private server; runs in the e2e lane"]
 fn upload_retains_multichunk_and_empty_files_without_attaching() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("uploads");
@@ -131,7 +147,7 @@ fn upload_retains_multichunk_and_empty_files_without_attaching() {
 }
 
 #[test]
-#[ignore = "spawns real private servers; run explicitly with two test threads"]
+#[ignore = "spawns real private servers; runs in the e2e lane"]
 fn upload_refused_and_unknown_keep_receipts_and_do_not_retry() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("local.bin");
@@ -173,11 +189,11 @@ fn upload_refused_and_unknown_keep_receipts_and_do_not_retry() {
 }
 
 #[test]
-#[ignore = "real MCP tools/call; build phux-mcp and set PHUX_TEST_MCP_BIN to its checkout binary"]
+#[ignore = "real MCP tools/call on a private server; runs in the e2e lane"]
 fn mcp_upload_calls_keep_completed_refused_and_unknown_receipts() {
     use std::io::{BufRead, BufReader, Write};
     use std::process::Stdio;
-    let mcp = std::env::var("PHUX_TEST_MCP_BIN").expect("explicit checkout MCP binary");
+    let mcp = mcp_bin();
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("local.bin");
     let data = vec![0x33; phux_protocol::wire::frame::MAX_FILE_UPLOAD_CHUNK + 11];
@@ -263,7 +279,7 @@ fn mcp_upload_calls_keep_completed_refused_and_unknown_receipts() {
 }
 
 #[test]
-#[ignore = "two private servers and real MCP; build phux-mcp and set PHUX_TEST_MCP_BIN"]
+#[ignore = "two private servers and real MCP; runs in the e2e lane"]
 fn cli_and_mcp_upload_to_satellite_retain_only_on_owner_without_terminal_mutations() {
     let dir = tempfile::tempdir().unwrap();
     let leaf_root = dir.path().join("leaf-uploads");
@@ -473,7 +489,7 @@ fn assert_owner_upload(
 fn satellite_mcp_upload(server: &ServerGuard, target: &str, source: &std::path::Path) -> Value {
     use std::io::{BufRead, BufReader, Write};
     use std::process::Stdio;
-    let mcp = std::env::var("PHUX_TEST_MCP_BIN").expect("explicit checkout MCP binary");
+    let mcp = mcp_bin();
     let mut cmd = common::phux_cmd(mcp);
     server.xdg.apply(&mut cmd);
     let mut child = cmd
