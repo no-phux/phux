@@ -1,8 +1,9 @@
 const std = @import("std");
 const sdk = @import("native_sdk");
-// The shipping extension graph does not name `provider_contract`. This file
-// is part of that module, so the contract is the source file itself.
-const contract = @import("../providers/contract.zig");
+// This file is compiled into the extension module. The contract is already
+// the root of `provider_contract`, so it has to be named rather than imported
+// by path (Zig rejects one file in two modules).
+const contract = @import("provider_contract");
 const cockpit = @import("cockpit_engine");
 const Engine = cockpit.engine.Engine;
 const NoShells = cockpit.engine.NoShells;
