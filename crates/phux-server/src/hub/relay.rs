@@ -1063,20 +1063,33 @@ fn charge_bytes(
         .ok_or_else(|| format!("satellite {host} exceeded the {budget}"))
 }
 
+/// The one list of return-leg stream frames and where each keeps its terminal
+/// scope; `$as` is `as_ref` or `as_mut` to match the borrow of `$frame`.
+macro_rules! stream_frame_scope_of {
+    ($frame:expr, $as:ident) => {
+        match $frame {
+            FrameKind::Event { terminal, .. } => terminal.$as(),
+            FrameKind::ResourceOutput { terminal_id, .. }
+            | FrameKind::BootstrapBegin { terminal_id, .. }
+            | FrameKind::BootstrapChunk { terminal_id, .. }
+            | FrameKind::BootstrapReady { terminal_id, .. }
+            | FrameKind::HistoryPage { terminal_id, .. }
+            | FrameKind::BootstrapTombstone { terminal_id, .. }
+            | FrameKind::HistoryTombstone { terminal_id, .. }
+            | FrameKind::HistoryRejected { terminal_id, .. } => Some(terminal_id),
+            _ => None,
+        }
+    };
+}
+
 /// The terminal scope a return-leg stream frame carries, if it has one.
 const fn stream_frame_scope(frame: &FrameKind) -> Option<&ResourceId> {
-    match frame {
-        FrameKind::Event { terminal, .. } => terminal.as_ref(),
-        FrameKind::ResourceOutput { terminal_id, .. }
-        | FrameKind::BootstrapBegin { terminal_id, .. }
-        | FrameKind::BootstrapChunk { terminal_id, .. }
-        | FrameKind::BootstrapReady { terminal_id, .. }
-        | FrameKind::HistoryPage { terminal_id, .. }
-        | FrameKind::BootstrapTombstone { terminal_id, .. }
-        | FrameKind::HistoryTombstone { terminal_id, .. }
-        | FrameKind::HistoryRejected { terminal_id, .. } => Some(terminal_id),
-        _ => None,
-    }
+    stream_frame_scope_of!(frame, as_ref)
+}
+
+/// [`stream_frame_scope`], borrowed for rewriting.
+const fn stream_frame_scope_mut(frame: &mut FrameKind) -> Option<&mut ResourceId> {
+    stream_frame_scope_of!(frame, as_mut)
 }
 /// A relayed `LIST_DIRECTORY` awaiting its `DIRECTORY_LISTING`.
 #[derive(Debug)]
@@ -2313,20 +2326,11 @@ impl RelaySession {
     }
 
     /// Re-tag a stream frame's scope `Local { id }` -> `Satellite { host,
-    /// id }`, leaving every other field verbatim (ADR-0007).
+    /// id }`, leaving every other field verbatim (ADR-0007). Only frames
+    /// [`stream_frame_scope`] scoped reach here, so the scope slot exists.
     fn retag_stream_frame(&self, mut frame: FrameKind, id: u32) -> FrameKind {
-        let scope = ResourceId::satellite(self.host.clone(), id);
-        match &mut frame {
-            FrameKind::Event { terminal, .. } => *terminal = Some(scope),
-            FrameKind::ResourceOutput { terminal_id, .. }
-            | FrameKind::BootstrapBegin { terminal_id, .. }
-            | FrameKind::BootstrapChunk { terminal_id, .. }
-            | FrameKind::BootstrapReady { terminal_id, .. }
-            | FrameKind::HistoryPage { terminal_id, .. }
-            | FrameKind::BootstrapTombstone { terminal_id, .. }
-            | FrameKind::HistoryTombstone { terminal_id, .. }
-            | FrameKind::HistoryRejected { terminal_id, .. } => *terminal_id = scope,
-            _ => {}
+        if let Some(scope) = stream_frame_scope_mut(&mut frame) {
+            *scope = ResourceId::satellite(self.host.clone(), id);
         }
         frame
     }
