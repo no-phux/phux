@@ -68,6 +68,25 @@ pub fn is_fatal_refusal(error: &DialError) -> bool {
     }
 }
 
+/// A Unix socket left on the interactive default polls like a local upgrade.
+/// Callers that picked a ladder, including the agent-verb one, keep it.
+#[must_use]
+pub(crate) fn ladder_for(local_socket: bool, ladder: Ladder) -> Ladder {
+    if local_socket && ladder == Ladder::INTERACTIVE {
+        Ladder::LOCAL_UPGRADE
+    } else {
+        ladder
+    }
+}
+
+/// One immediate redial after a session that was up long enough to be real.
+/// A flap that dies inside a second still pays the floor, so a crash loop
+/// cannot dial with no delay forever.
+#[must_use]
+pub(crate) fn earned_immediate(was_attached: bool, elapsed: Duration) -> bool {
+    was_attached && elapsed >= Duration::from_secs(1)
+}
+
 /// The phrase a consumer uses when it flattens [`DialError::AuthRefused`]
 /// into its own vocabulary; [`is_fatal_refusal_detail`] reads it back.
 pub const TOKEN_REFUSED: &str = "pairing token refused";
@@ -235,5 +254,27 @@ mod tests {
         assert!(!is_fatal_refusal_detail(
             "did not answer (connection refused)"
         ));
+    }
+
+    #[test]
+    fn a_local_socket_on_the_default_ladder_polls_like_an_upgrade() {
+        assert_eq!(ladder_for(true, Ladder::INTERACTIVE), Ladder::LOCAL_UPGRADE);
+        assert_eq!(ladder_for(true, Ladder::AGENT_VERB), Ladder::AGENT_VERB);
+        assert_eq!(
+            ladder_for(true, Ladder::LOCAL_UPGRADE),
+            Ladder::LOCAL_UPGRADE
+        );
+        assert_eq!(ladder_for(false, Ladder::INTERACTIVE), Ladder::INTERACTIVE);
+        let flat = Ladder::flat(Duration::from_millis(7));
+        assert_eq!(ladder_for(true, flat), flat);
+    }
+
+    #[test]
+    fn a_settled_session_redials_before_sleeping() {
+        assert!(earned_immediate(true, Duration::from_secs(1)));
+        assert!(earned_immediate(true, Duration::from_secs(30)));
+        assert!(!earned_immediate(true, Duration::from_millis(999)));
+        assert!(!earned_immediate(false, Duration::from_secs(30)));
+        assert!(!earned_immediate(false, Duration::ZERO));
     }
 }

@@ -7,7 +7,8 @@ use bytes::Bytes;
 use tokio::sync::watch;
 
 use super::io::{Io, dial};
-use super::{ConnectOptions, ConnectionEnd, Shared, Signals, Target, Wake, lock};
+use super::{ConnectOptions, ConnectionEnd, Shared, Signals, Target, Transport, Wake, lock};
+use crate::reconnect::{earned_immediate, ladder_for};
 use phux_protocol::wire::frame::{FrameKind, TYPE_PING};
 use phux_protocol::wire::framing::LENGTH_PREFIX_LEN;
 
@@ -19,6 +20,29 @@ enum Decision {
     RetryBackoff,
 }
 
+struct Attempt {
+    end: ConnectionEnd,
+    was_attached: bool,
+    elapsed: Duration,
+}
+
+fn attempt(end: ConnectionEnd, was_attached: bool, started: std::time::Instant) -> Attempt {
+    Attempt {
+        end,
+        was_attached,
+        elapsed: started.elapsed(),
+    }
+}
+
+/// A local socket inherits the upgrade poll unless the caller chose a ladder.
+fn options_for(target: &Target, options: ConnectOptions) -> ConnectOptions {
+    let local_socket = matches!(target.transport, Transport::Uds(_));
+    ConnectOptions {
+        ladder: ladder_for(local_socket, options.ladder),
+        ..options
+    }
+}
+
 /// Run one session to its end: connect, then reconnect with backoff on
 /// drops, until the consumer closes it or a refusal ends it.
 pub async fn run_session(
@@ -28,6 +52,7 @@ pub async fn run_session(
     mut signals: Signals,
     wake: Wake,
 ) {
+    let options = options_for(&target, options);
     let mut backoff = options.ladder.floor;
     let mut attempts: u32 = 0;
     // The never-attached deadline: armed from the first dial, moot once a
@@ -36,7 +61,7 @@ pub async fn run_session(
     let ladder_deadline = tokio::time::Instant::now() + options.initial_budget;
     loop {
         attempts += 1;
-        let Some((end, was_attached)) = run_attempt(
+        let Some(tried) = run_attempt(
             &target,
             options,
             &shared,
@@ -51,15 +76,20 @@ pub async fn run_session(
         };
         // Attached at the moment the connection ended means it was
         // healthy until the drop: the next ladder starts from the floor.
-        if was_attached {
+        if tried.was_attached {
             backoff = options.ladder.floor;
         }
-        match finish_attempt(&shared, end, attempts, options.initial_attempts) {
+        match finish_attempt(&shared, tried.end, attempts, options.initial_attempts) {
             Decision::Stop => {
                 wake();
                 return;
             }
             Decision::RetryNow => wake(),
+            // A settled session redials before sleeping. The floor still
+            // applies when that redial never attaches.
+            Decision::RetryBackoff if earned_immediate(tried.was_attached, tried.elapsed) => {
+                wake();
+            }
             Decision::RetryBackoff => {
                 wake();
                 if wait_to_retry(backoff, &shared, &mut signals, &wake).await {
@@ -118,7 +148,7 @@ async fn run_attempt(
     signals: &mut Signals,
     wake: &Wake,
     ladder_deadline: tokio::time::Instant,
-) -> Option<(ConnectionEnd, bool)> {
+) -> Option<Attempt> {
     let connection = run_connection(target, options, shared, signals, wake);
     if lock(shared).attached_once() {
         return Some(connection.await);
@@ -201,14 +231,14 @@ async fn closed(rx: &mut watch::Receiver<bool>) {
 }
 
 /// One connection: dial, handshake, then pump frames until it ends.
-/// Returns how it ended and whether it was attached at that moment.
+/// Returns how it ended, whether it was attached, and how long it lasted.
 async fn run_connection(
     target: &Target,
     options: ConnectOptions,
     shared: &Shared,
     signals: &mut Signals,
     wake: &Wake,
-) -> (ConnectionEnd, bool) {
+) -> Attempt {
     let name = target.name.as_str();
     let started = std::time::Instant::now();
     tracing::info!(host = name, transport = target.transport.label(), "dialing");
@@ -219,11 +249,11 @@ async fn run_connection(
     let mut io = tokio::select! {
         dialed = dial(target, options) => match dialed {
             Ok(io) => io,
-            Err(end) => return (end, false),
+            Err(end) => return attempt(end, false, started),
         },
         () = closed(&mut signals.close) => {
             lock(shared).close();
-            return (ConnectionEnd::Closed, false);
+            return attempt(ConnectionEnd::Closed, false, started);
         }
     };
     tracing::info!(
@@ -237,7 +267,7 @@ async fn run_connection(
         .await;
     let was_attached = lock(shared).status() == Status::Attached;
     io.close();
-    (end, was_attached)
+    attempt(end, was_attached, started)
 }
 
 struct Pump<'a> {
@@ -443,13 +473,10 @@ impl<'a> Pump<'a> {
     }
 
     async fn write_all(&mut self, frames: Vec<Vec<u8>>) -> Result<(), ConnectionEnd> {
-        for frame in frames {
-            self.io
-                .write_frame(self.name, &frame)
-                .await
-                .map_err(|error| ConnectionEnd::Dropped(Some(error)))?;
-        }
-        Ok(())
+        self.io
+            .write_frames(self.name, &frames)
+            .await
+            .map_err(|error| ConnectionEnd::Dropped(Some(error)))
     }
 }
 
