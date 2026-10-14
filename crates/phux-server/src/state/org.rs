@@ -40,13 +40,7 @@ impl FreshKeys for OsKeys {
 /// Wall-clock now as a [`Stamp`]; `0` for a clock before the epoch.
 #[must_use]
 pub fn now_stamp() -> Stamp {
-    Stamp(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()
-            .and_then(|since| u64::try_from(since.as_millis()).ok())
-            .unwrap_or(0),
-    )
+    Stamp(super::now_unix_ms())
 }
 
 /// The store behind [`ServerState::commit`] and whether the server is

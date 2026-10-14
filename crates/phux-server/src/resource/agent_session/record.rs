@@ -337,15 +337,6 @@ fn parse_record(line: &str) -> Result<ValidRecord, RecordError> {
     })
 }
 
-/// Wall-clock milliseconds since the Unix epoch, saturating at `0` on a
-/// clock set before it.
-#[must_use]
-pub fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

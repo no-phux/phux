@@ -6,8 +6,6 @@
 //! foreground process group are ever queried, and only the foreground's
 //! argv0 basename leaves the server.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use phux_core::process::{
     ExitOutcome, ForegroundProcess, ProcessExit, ProcessIdentity, TerminalProcessState,
 };
@@ -119,6 +117,5 @@ impl TerminalActor {
 
 /// Wall-clock now in Unix ms; `None` for a clock before the epoch.
 fn unix_now_ms() -> Option<u64> {
-    let since_epoch = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
-    u64::try_from(since_epoch.as_millis()).ok()
+    Some(crate::state::now_unix_ms()).filter(|&ms| ms > 0)
 }

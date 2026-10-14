@@ -341,7 +341,7 @@ impl AgentSessionActor {
             )));
             return;
         };
-        let ts_ms = record::now_ms();
+        let ts_ms = crate::state::now_unix_ms();
         // Stamping adds server-owned fields and may expand escaped data.
         // One buffer holds the batch. Each retained line is a slice of it,
         // so the broadcast and the ring share the bytes. An evicted line
