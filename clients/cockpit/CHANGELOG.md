@@ -25,6 +25,13 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   or server restart without restarting the app; recover the selected session
   by its confirmed name when a replacement server reuses numeric IDs.
 
+## [0.37.3](https://github.com/no-phux/phux/compare/cockpit-v0.37.2...cockpit-v0.37.3) (2026-10-14)
+
+
+### Bug Fixes
+
+* **cockpit:** resolve the cell-pitch test import in the extension graph ([#1289](https://github.com/no-phux/phux/issues/1289)) ([5186219](https://github.com/no-phux/phux/commit/51862198c51263f855d617cc27c10546baa50b8a))
+
 ## [0.37.2](https://github.com/no-phux/phux/compare/cockpit-v0.37.1...cockpit-v0.37.2) (2026-10-14)
 
 
