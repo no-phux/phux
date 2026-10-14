@@ -9,6 +9,33 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.59.0](https://github.com/no-phux/phux/compare/v0.58.0...v0.59.0) (2026-10-14)
+
+
+### Features
+
+* **client:** add bounded headless file upload helper ([e58af4e](https://github.com/no-phux/phux/commit/e58af4e02f459e50e1b3f17638a7e4fbe84fda54))
+* **cli:** move wss remotes onto QUIC when it answers ([#1247](https://github.com/no-phux/phux/issues/1247)) ([ece3b25](https://github.com/no-phux/phux/commit/ece3b2538e058325b60ba98cdbcf801195407a69))
+* **site:** polish compact terminal controls and interactions ([#1258](https://github.com/no-phux/phux/issues/1258)) ([fbe9928](https://github.com/no-phux/phux/commit/fbe99280e8c17352470220cb9a92f41ae608891c))
+* **upload:** expose managed file uploads through CLI and MCP ([23a48f9](https://github.com/no-phux/phux/commit/23a48f94e7546c010de6940679be321be1fe3ec6))
+
+
+### Bug Fixes
+
+* **upload:** bound MCP shutdown and clarify remote help ([dc2a58c](https://github.com/no-phux/phux/commit/dc2a58cb64dea39c34b95e27bd83d6329a67c095))
+
+
+### Performance
+
+* **server:** hand WebSocket frames to the sink without copying ([#1265](https://github.com/no-phux/phux/issues/1265)) ([ef02cd6](https://github.com/no-phux/phux/commit/ef02cd6ad37f0bfec62dd10a365978bc639c25bc))
+* **server:** stop rescanning PTY text and drop dead ingest work ([#1264](https://github.com/no-phux/phux/issues/1264)) ([96cdc18](https://github.com/no-phux/phux/commit/96cdc1834a89f86f26a41a257e16159617e9c59c))
+* **wire:** cheapen probes, history commit, and agent stamps ([#1251](https://github.com/no-phux/phux/issues/1251)) ([20545e6](https://github.com/no-phux/phux/commit/20545e662dc850078b8b906ffc9ae5791843e6d5))
+
+
+### Refactors
+
+* **server:** dispatch commands through one connection context ([#1262](https://github.com/no-phux/phux/issues/1262)) ([288753b](https://github.com/no-phux/phux/commit/288753bd06948f24736198b1477bfcad94baf94a))
+
 ## [0.58.0](https://github.com/no-phux/phux/compare/v0.57.0...v0.58.0) (2026-10-14)
 
 
