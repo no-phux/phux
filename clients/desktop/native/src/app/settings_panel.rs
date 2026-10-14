@@ -8,6 +8,7 @@ use gpui::{
     div, px, relative,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::group_box::GroupBoxVariant;
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectState};
 use gpui_kit::component::setting::{
@@ -213,15 +214,16 @@ pub(crate) fn panel(
     let height = (window.viewport_size().height - px(112.)).max(px(320.));
     let settings = Settings::new("phux-settings")
         .sidebar_width(px(190.))
+        .with_group_variant(GroupBoxVariant::Outline)
         .page(appearance_page(desk, &handle))
         .page(window_page(desk, &handle))
         .page(keyboard_page(desk, &handle))
         .page(ghostty_page(desk, &handle))
-        .page(super::updates::page(&desk.updates, cx))
+        .page(super::updates::page(&desk.updates, colors, cx))
         .page(connection_page(desk, &handle));
     div()
         .mt(px(56.))
-        .w(px(820.))
+        .w(px(880.))
         .h(height)
         .rounded(px(12.))
         .bg(from_hex(&colors.theme.surface))
