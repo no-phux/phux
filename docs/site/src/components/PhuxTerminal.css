@@ -13,6 +13,7 @@
   line-height: 1.5;
 }
 .pterm-head {
+  position: relative;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -26,6 +27,7 @@
 }
 .pterm-mark { color: var(--terminal-fg); font-weight: 600; }
 .pterm-head-spacer, .pterm-control-spacer { flex: 1; }
+.pterm-head:has(.mux-mode-row) { padding-block: 0; }
 .pterm-state::before {
   content: "";
   display: inline-block;
@@ -82,10 +84,13 @@
 .pterm-unlock .pterm-auth-error, .pterm-pane-status { color: var(--terminal-warning); }
 .pterm-unlock .pterm-auth-error { margin-top: 12px; }
 .pterm-standalone { display: inline-flex; align-items: center; min-height: 44px; margin-top: 8px; color: var(--terminal-dim); font-size: 12px; text-decoration: underline; }
-.pterm-pane-controls { order: 1; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; padding: 6px 12px; border-bottom: 1px solid var(--terminal-rule); background: var(--terminal-surface); }
-.pterm-pane-controls > span:first-child { margin-right: auto; color: var(--terminal-dim); font-size: 12px; }
+.pterm-pane-controls { order: 1; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; padding: 4px 12px; border-bottom: 1px solid var(--terminal-rule); background: var(--terminal-surface); }
 .pterm-pane-controls button, .pterm-controls button { border-color: transparent; font-size: 12px; }
-.pterm-pane-status { flex-basis: 100%; font-size: 12px; }
+.pterm-pane-controls button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-width: 44px; padding-inline: 0; border-radius: 6px; }
+.pterm-pane-controls .pterm-split-primary { padding-inline: 12px; margin-right: 4px; }
+.pterm-pane-icon { flex: none; }
+.pterm-pane-count { margin-left: auto; padding-left: 8px; color: var(--terminal-dim); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pterm-pane-status { flex-basis: 100%; padding: 0 4px 4px; font-size: 12px; }
 .pterm-pane-status:empty { display: none; }
 
 .pterm-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--terminal-rule); color: var(--terminal-dim); font-size: 12px; }
@@ -93,7 +98,7 @@
 .pterm-info summary::-webkit-details-marker { display: none; }
 .pterm-info summary::after { content: "+"; margin-left: 10px; }
 .pterm-info[open] summary::after { content: "−"; }
-.pterm-info-body { position: absolute; top: 52px; right: 0; left: 0; z-index: 4; max-height: min(420px, 65dvh); overflow: auto; border-block: 1px solid var(--terminal-rule); padding: 16px; background: var(--terminal-surface); box-shadow: 0 12px 24px #0006; }
+.pterm-info-body { position: absolute; top: 100%; right: 0; left: 0; z-index: 4; max-height: min(420px, 65dvh); overflow: auto; border-block: 1px solid var(--terminal-rule); padding: 16px; background: var(--terminal-surface); box-shadow: 0 12px 24px #0006; }
 .pterm-facts, .pterm-shortcuts { display: flex; flex-wrap: wrap; gap: 8px 24px; color: var(--terminal-muted); font-size: 12px; }
 .pterm-facts b { color: var(--terminal-fg); font-weight: 500; margin-right: 6px; }
 .pterm-info-note { margin: 12px 0 0; color: var(--terminal-dim); font-size: 12px; line-height: 1.65; }
@@ -117,7 +122,7 @@
   .pterm-keys button[aria-pressed="true"] { color: var(--terminal-bg); background: var(--terminal-fg); }
 }
 @media (max-width: 600px) {
-  .pterm-head { padding-inline: 8px; gap: 4px; font-size: 11px; }
+  .pterm-head { padding-inline: 8px; gap: 2px; font-size: 11px; }
   .pterm-head .pterm-mark { display: none; }
   .pterm-head:has(.mux-mode-row) .pterm-state { font-size: 0; }
   .pterm-head:has(.mux-mode-row) .pterm-state::before { margin-right: 3px; }
@@ -129,12 +134,10 @@
   .pterm-keys { grid-template-columns: repeat(4, minmax(44px, 1fr)); }
   .pterm-overlay { padding: 24px 16px; }
   .pterm-actions { grid-template-columns: 1fr; }
-  .pterm-pane-controls > span:first-child { font-size: 11px; padding-inline: 4px; }
-  .pterm-pane-controls { padding-inline: 4px; }
-  .pterm-pane-controls button { padding-inline: 8px; }
-  .pterm-pane-controls { display: grid; grid-template-columns: repeat(2, minmax(44px, 1fr)); gap: 4px; }
-  .pterm-pane-controls > span:first-child, .pterm-pane-status { grid-column: 1 / -1; }
-  .pterm-pane-controls > span:first-child { margin-right: 0; }
+  .pterm-pane-controls { gap: 2px; padding-inline: 6px; }
+  .pterm-pane-controls .pterm-split-primary { gap: 6px; padding-inline: 8px; margin-right: 2px; }
+  .pterm-pane-count { padding-left: 2px; }
+  .pterm-pane-count-label { display: none; }
 }
 @keyframes terminal-enter { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) {
@@ -149,6 +152,20 @@
 /* Runtime choices are header navigation, not competing action buttons. */
 .pterm-head .mux-mode-row button, .pterm-head .mux-close { border-color: transparent; background: transparent; color: var(--terminal-muted); }
 .pterm-head .mux-mode-row button { font-size: 12px; }
-.pterm-head .mux-mode-row button[aria-pressed="true"] { color: var(--terminal-fg); }
+.pterm-head .mux-mode-row button[aria-pressed="true"] { color: var(--terminal-fg); background: var(--terminal-raised); border-color: var(--terminal-rule); }
 .pterm-head .mux-close { font-size: 20px; }
-.pterm-head .mux-mode-row button:hover, .pterm-head .mux-close:hover { background: var(--terminal-raised); color: var(--terminal-fg); }
+.pterm-head .mux-mode-row button:not(:disabled):hover, .pterm-head .mux-close:not(:disabled):hover { background: var(--terminal-raised); color: var(--terminal-fg); }
+.pterm button:not(:disabled):active { box-shadow: inset 0 1px 3px #0003; }
+.pterm-pane-controls button:not(:disabled):active { border-color: var(--terminal-focus); }
+.pterm-info summary:hover { color: var(--terminal-fg); }
+.pterm-info-body { animation: terminal-enter 180ms ease-out both; }
+/* Indeterminate activity only: no invented progress or readiness state. */
+.pterm[data-status="checking"] .pterm-overlay > .pterm-label,
+.pterm[data-status="connecting"] .pterm-overlay > .pterm-label { display: grid; justify-items: center; gap: 16px; }
+.pterm[data-status="checking"] .pterm-overlay > .pterm-label::before,
+.pterm[data-status="connecting"] .pterm-overlay > .pterm-label::before { content: ""; width: 20px; height: 20px; border: 1.5px solid var(--terminal-rule); border-top-color: var(--terminal-muted); border-radius: 50%; animation: terminal-wait 1s linear infinite; }
+@keyframes terminal-wait { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .pterm-info-body,
+  .pterm:is([data-status="checking"], [data-status="connecting"]) .pterm-overlay > .pterm-label::before { animation: none; }
+}

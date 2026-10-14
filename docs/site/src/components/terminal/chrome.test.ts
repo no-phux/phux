@@ -48,6 +48,46 @@ describe("terminal presentation", () => {
     expect(html).toContain("Next pane");
     expect(html).toContain("Close view");
   });
+  test("compact toolbar keeps exact accessible names and decorative monoline icons", () => {
+    const html = renderToStaticMarkup(createElement(PaneControls, { panes: { count: 2, focused: "1", pending: false }, error: "", splitVertical: noop, splitHorizontal: noop, nextPane: noop, closePane: noop }));
+    expect(html).toContain('aria-label="Split pane left/right"');
+    expect(html).toContain('aria-label="Split top/bottom"');
+    expect(html).toContain('aria-label="Next pane"');
+    expect(html).toContain('aria-label="Close view"');
+    expect(html).not.toContain("Close pane");
+    expect(html.match(/<svg /g)).toHaveLength(4);
+    expect(html.match(/stroke-width="1.5"/g)).toHaveLength(4);
+    expect(html.match(/aria-hidden="true" focusable="false"/g)).toHaveLength(4);
+    expect(html).toContain("<span>Split pane</span>");
+    expect(html.indexOf("pterm-split-primary")).toBeLessThan(html.indexOf("pterm-pane-count"));
+    expect(html).toContain('class="pterm-pane-status" role="status"></span>');
+  });
+  test.each([
+    [1, false, false, true],
+    [2, false, false, false],
+    [4, false, true, false],
+    [2, true, true, true],
+  ] as const)("toolbar preserves callbacks and disabled semantics at count %i, pending %s", (count, pending, splitsDisabled, navigationDisabled) => {
+    const splitVertical = () => {};
+    const splitHorizontal = () => {};
+    const nextPane = () => {};
+    const closePane = () => {};
+    const toolbar = PaneControls({ panes: { count, focused: "1", pending }, error: "", splitVertical, splitHorizontal, nextPane, closePane });
+    const [vertical, horizontal, next, close] = toolbar.props.children;
+    expect(vertical.props.onClick).toBe(splitVertical);
+    expect(horizontal.props.onClick).toBe(splitHorizontal);
+    expect(next.props.onClick).toBe(nextPane);
+    expect(close.props.onClick).toBe(closePane);
+    expect(vertical.props.disabled).toBe(splitsDisabled);
+    expect(horizontal.props.disabled).toBe(splitsDisabled);
+    expect(next.props.disabled).toBe(navigationDisabled);
+    expect(close.props.disabled).toBe(navigationDisabled);
+  });
+  test("pane errors retain the status announcement", () => {
+    const html = renderToStaticMarkup(createElement(PaneControls, { panes: { count: 2, focused: "1", pending: true }, error: "Could not split this view.", splitVertical: noop, splitHorizontal: noop, nextPane: noop, closePane: noop }));
+    expect(html).toContain('role="status">Could not split this view.</span>');
+    expect(html).not.toContain("Updating panes…");
+  });
   test("pending attach exposes explicit cancellation without repeated footer labels", () => {
     const html = renderToStaticMarkup(createElement(SessionControls, { phase: "connecting", identity: null, release: noop, logout: noop }));
     expect(html).toContain("Cancel launch");
