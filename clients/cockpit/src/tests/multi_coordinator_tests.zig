@@ -1515,7 +1515,7 @@ test "a peer's empty session is listed as empty, and picking it attaches nothing
 
     // The switcher offers it as an empty session, not as a broken one.
     var page_out: [navigation.max_bytes]u8 = undefined;
-    try testing.expect(std.mem.indexOf(u8, try sessionsPage(engine, &page_out), "Empty session · mini") != null);
+    try testing.expect(std.mem.indexOf(u8, try sessionsPage(engine, &page_out), "Empty · mini") != null);
     // Paging the switcher refreshes a listing peer's list (GET_STATE) and the
     // active coordinator's workspace; neither is an attach.
     try testing.expectEqual(@as(usize, 0), countFrames(mini).attach);

@@ -55,8 +55,7 @@ test('an empty session renders its state, with New Tab, in the windows the snaps
   const model = withEmpty({ windows: 1, flags: 0, name: 'scratch', host: 'This Mac' });
   assert.equal(model.mainEmptyOpen, true);
   assert.equal(model.window1EmptyOpen, false);
-  assert.equal(text(model.emptyName), 'scratch');
-  assert.equal(text(model.emptyDetail), 'Empty session on This Mac');
+  assert.equal('emptyDetail' in model, false);
   assert.equal(model.emptyPicked, false);
   const secondary = withEmpty({ windows: 2, flags: 1, name: 'scratch', host: 'mini' });
   assert.equal(secondary.mainEmptyOpen, false);
@@ -70,6 +69,9 @@ test('an empty session renders its state, with New Tab, in the windows the snaps
   assert.match(markup, /label="phux-terminal-space"/);
   assert.match(markup, /<if test="\{emptyopen\}">/);
   assert.match(markup, /on-press="empty_new_tab">New Tab<\/button>/);
+  // One heading says it once; the header already names the session.
+  assert.equal((markup.match(/Empty session</g) ?? []).length, 1);
+  assert.doesNotMatch(markup, /\{emptyname\}|\{emptydetail\}/);
   for (const file of ['../app.native', '../windows/phux-window-2.native']) {
     assert.match(readFileSync(new URL(file, import.meta.url), 'utf8'), /emptyopen="\{\w+EmptyOpen\}"/);
   }

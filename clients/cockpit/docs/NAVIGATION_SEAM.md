@@ -6,12 +6,12 @@ last-reviewed: 2026-09-30
 
 # Shipping navigation seam
 
-**TL;DR.** The TypeScript core presents a four-row native catalog with
-revision-fenced page reads, optional session and host scopes, and captured
-provider-qualified selection targets. Selection and its admission receipt use
-the bounded interaction command FIFO; known-host rows carry a filter token that
-only narrows the view. Snapshot byte 23 reports provider connectivity
-independently of engine readiness.
+**TL;DR.** The TypeScript core presents one Sessions list (open tabs and
+sessions) as a four-row native catalog with revision-fenced page reads, an
+optional captured-machine scope, and captured provider-qualified selection
+targets. Selection and its admission receipt use the bounded interaction
+command FIFO. Snapshot byte 23 reports provider connectivity independently of
+engine readiness.
 
 ## Engine hook contract
 
@@ -84,37 +84,27 @@ bounded record and target layout lives in the
 The index refers to the unfiltered catalog for display bookkeeping only;
 activation echoes captured target bytes rather than reconstructing identity.
 
-Scoped requests use kind 4 and append `scope:u8, host_length:u8, raw_host` after
-the query. Scopes are all work (0), sessions (1), known terminal hosts (2), and
-exact host (3). Only exact-host requests carry a host, up to 255 bytes; empty
-host denotes the coordinator. Local ephemeral PTYs do not appear in host lists.
+Scoped requests use kind 4 and append `scope:u8, host_length:u8, token` after
+the query. The engine knows every tab and session (0), sessions only (1) and
+one captured machine's sessions (5, a 12-byte opaque Browse token). The core
+sends only 0 and 5. Scopes 2, 3, 4, 6 and 7 are retired and refused.
 `navigationRequest` retains the original three-argument TS API;
-`navigationScopedRequest` takes explicit scope and host arguments.
+`navigationScopedRequest` takes explicit scope and token arguments.
 
 Responses append marker `0x4e` after the records, followed by one metadata
 record per row: `kind:u8, selectable:u8, detail_length:u8`, then at most 160
-detail bytes. Kinds distinguish open terminals (0), available terminals (1),
-sessions (2), and hosts (3). In the flags byte, bit 0 is selectable and bit 1
+detail bytes. Kinds distinguish open terminals (0), available terminals (1)
+and sessions (2). In the flags byte, bit 0 is selectable and bit 1
 is current: the session the focused window shows (its selected tab's session
 on the coordinator that minted it, or its picked empty session). The chrome
 draws exactly the rows the engine marks; it never infers "current" itself.
 
-The native window scope (4) uses kinds 4 (window) and 5 (tab) with the same
-flags: the focused window and only the tab it shows are current. A window
-row's detail summarizes it (`session · machine · N tabs`); a tab row's detail
-places it (`Tab i of N · Window k · session · machine`) and never repeats its
-title, which is the row label, so similar titles stay distinguishable. Tab rows
-indent under their window. Secondary OS windows are titled
-`Phux Cockpit — Window N` to match.
+Every row carries a captured catalog target (tag 2), and only those enqueue a
+catalog command. A tab row's detail says where it runs and in which directory
+(`machine · cwd`), never which window or tab number holds it.
 
-Terminal and session rows carry a captured catalog target (tag 2); only those
-rows enqueue a catalog command. A known-host row instead carries the filter
-token `3, host_length:u8, raw_host` in its target slot, and kind 3 must pair
-with exactly that token. Activating it switches to the exact-host scope with
-the token's raw host. It never enters the command FIFO or sends a catalog
-activation, even when held across a replacement page.
-
-Unknown ownership makes an available row disabled. The core refuses keyboard
+Unknown ownership makes an available row disabled; its detail reads
+`Unavailable`. The core refuses keyboard
 or painted submission of a current disabled row, and the engine refuses any
 target it cannot admit. A held painted action is not revision-bound: it echoes
 its captured identity, so a replacement page that reuses its index cannot
@@ -125,7 +115,7 @@ placed pane in every open window, every unplaced remote ref of the focused
 pane's coordinator (the active coordinator's, unless a showing peer's pane is
 focused; then that peer's, of the session it shows), then every remote
 session. Display labels are the terminal title or session name. Window, tab,
-host and directory are carried in the metadata detail, and availability in the
+machine and directory are carried in the metadata detail, and availability in the
 row kind and selectable flag.
 Search uses the projection's full metadata rather than the compact strip label.
 An inventory larger than u16 is an explicit error, never a silently shortened
@@ -141,19 +131,15 @@ replace newer results. Invalidation withdraws current rows and disables keyboard
 submission; a held painted action retains its original authority for native
 validation. Refresh is always reachable, including an error or empty result.
 
-The switcher also offers Connect to Host, which hands its modal slot to the
-host panel. While the provider dials a registered remote host, the detail
-line of a coordinator row names that host's registry label where a local
-coordinator's reads `Coordinator`, the coordinator's known-host row carries
-the same label, and session rows read `Phux session · host`. With no remote
-host a session row reads `Phux session · This Mac`: every session row names
-its machine. Satellite hosts keep their own names. The host panel talks to the
-engine over its own `cockpit.remote` request and completion slot, never
-through catalog pages; see [Remote hosts](REMOTE_HOSTS.md).
+A session row's detail is its machine alone: the registered host's label while
+the provider dials one, else `This Mac`, prefixed `Empty · ` for a persistent
+session with no members. A session with no name reads `Untitled session`,
+never its number. Satellite hosts keep their own names. Machines are listed
+and connected only from the Machines view; see [Remote hosts](REMOTE_HOSTS.md).
 
 When peer coordinators are held beside the active one, each lists its
 sessions as its own host group, with this Mac's group always first. Rows
-read `Phux session · This Mac` or `Phux session · <host>`. A peer session
+read `This Mac` or `<host>`. A peer session
 row is kind 2 (session) and carries target resource tag 3 (`peer_session`)
 under that peer's own provider id, held against that peer's context and
 connection. Activating it shows the session beside the others: only that
@@ -188,9 +174,9 @@ tab record, all built-in theme names, configuration path, and framing. Full
 inventory navigation uses separate bounded pages (at most 3162 bytes:
 `19 + 64 + 255 + 4 * (8 + 298 + 240 + 160)` for the scoped request echo, page
 framing and metadata marker, then four opaque targets, display labels and
-metadata details). Snapshot extension 3 carries current attached session,
-coordinator endpoint and connection detail; it describes real provider state
-rather than startup session configuration.
+metadata details). Snapshot extension 3 carries the current attached session's
+name; it describes real provider state rather than startup session
+configuration. Endpoints never cross into the chrome.
 
 ## Focused validation
 

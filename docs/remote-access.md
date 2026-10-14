@@ -299,9 +299,9 @@ server's default directory: a path on this machine names nothing there.
 
 ### From Cockpit
 
-Cockpit's Connect to Host (`cmd+shift+O`) uses the same `[[remote]]` registry
+Cockpit's Machines view (`cmd+shift+O`) uses the same `[[remote]]` registry
 and QUIC/WSS stack. It only dials saved hosts; enrollment and repair stay in
-the terminal. An unregistered host is refused with the command to add it.
+the terminal; Add Machine… opens that terminal for a new host.
 See [Cockpit's remote hosts](../clients/cockpit/docs/REMOTE_HOSTS.md) for the
 `phux-remote` setting and relaunch behavior.
 

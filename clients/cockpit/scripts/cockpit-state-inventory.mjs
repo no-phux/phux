@@ -24,7 +24,7 @@ export const shippingStateInventory = Object.freeze([
   Object.freeze({ state: 'press', file: 'windows/components/cockpit-window.native',
     pattern: null, evidence: 'pointer press fill is a Zig renderer recipe, not a compiled overlay fixture' }),
   Object.freeze({ state: 'selected', file: 'windows/components/cockpit-navigator.native',
-    pattern: 'selected="{navigatorView == 1}"', evidence: 'compiled navigator destination in native_extension overlay shells' }),
+    pattern: 'selected="{navigatorView == 0}"', evidence: 'compiled navigator destination in native_extension overlay shells' }),
   Object.freeze({ state: 'focus', file: 'windows/components/cockpit-navigator.native',
     pattern: 'autofocus="true"', evidence: 'compiled overlay autofocus in native_extension overlay shells' }),
   Object.freeze({ state: 'disabled', file: 'windows/components/cockpit-settings.native',
@@ -37,8 +37,8 @@ export const shippingStateInventory = Object.freeze([
     pattern: 'Empty session', evidence: 'compiled inline empty-session terminal-space fixture' }),
   Object.freeze({ state: 'failed', file: 'windows/components/cockpit-navigator.native',
     pattern: '<if test="{machines.failed}">', evidence: 'shipping machine failure surface' }),
-  Object.freeze({ state: 'passive-hover', file: 'windows/components/cockpit-agents.native',
-    pattern: '<template name="cockpit-agents"', evidence: 'compiled inspector sheet stays hit-testable; rendered fill is a Zig contract' }),
+  Object.freeze({ state: 'passive-hover', file: 'windows/components/cockpit-host.native',
+    pattern: '<template name="cockpit-host"', evidence: 'compiled machine sheet stays hit-testable; rendered fill is a Zig contract' }),
 ]);
 
 const requiredPassiveHoverZigTest = 'semantic_theme test "passive panel hover is visually stable without disabling hit testing"';

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { initialModel, update } from '../core.ts';
-import { navigationScopedRequest } from '../protocol.ts';
+import { readFileSync } from 'node:fs';
 
 const step = (model, message) => {
   const result = update(model, message);
@@ -55,42 +55,6 @@ test('an existing modal prevents a second surface and command shortcuts retire t
   assert.equal(command.cmds[0].name, 'cockpit.committed');
 });
 
-const hostTarget = new Uint8Array([6, 2, ...new Array(32).fill(0)]);
-const hostsReply = model => {
-  const header = navigationScopedRequest(model.engineRevision, 0, new Uint8Array(0), 6, new Uint8Array(0));
-  const label = new TextEncoder().encode('build');
-  const detail = new TextEncoder().encode('Connected');
-  return new Uint8Array([...header, 1, 0, 1, 0, 0, label.length, 34, 0, ...hostTarget, ...label, 0x4e, 3, 3, detail.length, ...detail]);
-};
-
-test('host dropdown opens exact captured attachment sessions in its owning window', () => {
-  let [model] = step({ ...initialModel()[0], engineConnected: true, activeWindow: 2, window2Open: true }, { kind: 'header_hosts_toggle' });
-  [model] = step(model, { kind: 'navigation_loaded', body: hostsReply(model) });
-  assert.equal(model.paletteRows[0].current, true);
-  const target = model.paletteRows[0].target;
-  [model] = step(model, { kind: 'header_host_pick', target });
-  assert.equal(model.headerMenuWindow, -1);
-  assert.equal(model.window2PaletteOpen, true);
-  assert.equal(model.navigatorView, 1);
-  assert.equal(model.paletteScope, 7);
-  assert.deepEqual(model.paletteHost, target);
-});
-
-test('held host rows and late list replies cannot follow focus or a dismissed dropdown', () => {
-  let [opened] = step({ ...initialModel()[0], engineConnected: true }, { kind: 'header_hosts_toggle' });
-  [opened] = step(opened, { kind: 'navigation_loaded', body: hostsReply(opened) });
-  const target = opened.paletteRows[0].target;
-  const [changed, command] = step({ ...opened, activeWindow: 1, window1Open: true }, { kind: 'header_host_pick', target });
-  assert.equal(command, null);
-  assert.equal(changed.paletteOpen, false);
-  const [closed] = step(opened, { kind: 'header_menu_close' });
-  const [late] = step(closed, { kind: 'navigation_loaded', body: hostsReply(closed) });
-  assert.equal(late.paletteOpen, false);
-  const [reopened] = step(late, { kind: 'header_hosts_toggle' });
-  const [stale, staleCommand] = step(reopened, { kind: 'header_host_pick', target });
-  assert.equal(staleCommand, null, 'refreshing inventory refuses previously captured rows');
-  assert.equal(stale.paletteOpen, false);
-});
 
 test('header recovery cannot reconnect another window or an already recovered provider', () => {
   const intents = command => (command?.op === 'batch' ? command.cmds : [command])
@@ -107,55 +71,27 @@ test('header recovery cannot reconnect another window or an already recovered pr
   assert.equal(intents(recovered).length, 0);
 });
 
-test('workspace menu reaches the window overview and closes before opening it', () => {
-  const [opened] = step({ ...initialModel()[0], engineConnected: true }, { kind: 'header_menu_toggle' });
-  const [windows, command] = step(opened, { kind: 'header_windows' });
-  assert.equal(windows.headerMenuWindow, -1);
-  assert.equal(windows.paletteOpen, true);
-  assert.equal(windows.navigatorView, 3);
-  assert.equal(windows.paletteScope, 4);
-  assert.ok(command.cmds.some(effect => effect.name === 'cockpit.navigation'));
-  // A closed menu cannot open it from a held item.
-  const [closed] = step(initialModel()[0], { kind: 'header_windows' });
-  assert.equal(closed.paletteOpen, false);
-});
-
-test('the location trigger menu reaches Sessions as well as Machines', () => {
-  const [opened] = step({ ...initialModel()[0], engineConnected: true }, { kind: 'header_hosts_toggle' });
+test('the location trigger menu reaches Sessions as well as Machines and asks for nothing itself', () => {
+  const [opened, command] = step({ ...initialModel()[0], engineConnected: true }, { kind: 'header_hosts_toggle' });
+  assert.equal(opened.headerHosts, true);
+  assert.equal(opened.mainHeaderMenuOpen, true);
+  assert.deepEqual(command, { op: 'host_bytes', name: 'cockpit.committed', payload: new Uint8Array() });
   const [sessions] = step(opened, { kind: 'header_sessions' });
   assert.equal(sessions.headerMenuWindow, -1);
   assert.equal(sessions.paletteOpen, true);
-  assert.equal(sessions.navigatorView, 1);
+  assert.equal(sessions.navigatorView, 0);
+  const [machines] = step(opened, { kind: 'header_machines' });
+  assert.equal(machines.navigatorView, 2);
 });
 
-const windowTarget = (window, tab) => tab === undefined
-  ? new Uint8Array([4, window, 1, 0, 0, 0, 0, 0, 0, 0])
-  : new Uint8Array([5, window, 1, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, tab, 0, 0, 0]);
-
-const windowsReply = (model, rows) => {
-  const header = navigationScopedRequest(model.engineRevision, 0, new Uint8Array(0), 4, new Uint8Array(0));
-  const encoder = new TextEncoder();
-  const records = rows.flatMap((row, index) => {
-    const label = encoder.encode(row.label);
-    return [index, 0, label.length, row.target.length, 0, ...row.target, ...label];
-  });
-  const metadata = rows.flatMap(row => {
-    const detail = encoder.encode(row.detail);
-    return [row.target[0], 1 | (row.current ? 2 : 0), detail.length, ...detail];
-  });
-  return new Uint8Array([...header, rows.length, 0, rows.length, ...records, 0x4e, ...metadata]);
-};
-
-test('window overview marks exactly the rows the engine calls current, tabs included', () => {
-  let [model] = step({ ...initialModel()[0], engineConnected: true }, { kind: 'windows_open' });
-  [model] = step(model, { kind: 'navigation_loaded', body: windowsReply(model, [
-    { target: windowTarget(0), label: 'Window 1', detail: 'work · This Mac · 2 tabs', current: true },
-    { target: windowTarget(0, 11), label: 'build', detail: 'Tab 1 of 2 · Window 1 · work · This Mac', current: false },
-    { target: windowTarget(0, 12), label: 'build', detail: 'Tab 2 of 2 · Window 1 · work · This Mac', current: true },
-    { target: windowTarget(1), label: 'Window 2', detail: 'work · This Mac · 1 tab', current: false },
-  ]) });
-  assert.deepEqual(model.paletteRows.map(row => row.kind), [4, 5, 5, 4]);
-  assert.deepEqual(model.paletteRows.map(row => row.current), [true, false, true, false]);
-  // Two tabs with the same title stay distinguishable by their placement.
-  assert.notDeepEqual(model.paletteRows[1].detail, model.paletteRows[2].detail);
+test('the workspace menu holds window and app actions only; the location menu holds Sessions and Machines', () => {
+  const read = path => readFileSync(new URL(path, import.meta.url), 'utf8');
+  const window = read('../windows/components/cockpit-window.native');
+  const actions = window.slice(window.indexOf('label="Workspace actions">'), window.indexOf('</dropdown-menu>'));
+  for (const gone of ['header_sessions', 'header_machines', 'header_windows', 'header_agents', '{title}', '{detail}']) {
+    assert.doesNotMatch(actions, new RegExp(gone.replace(/[{}]/g, '\\$&')), gone);
+  }
+  const location = read('../windows/components/cockpit-connected-hosts.native');
+  assert.match(location, /on-press="header_sessions">Sessions…</);
+  assert.match(location, /on-press="header_machines">Machines…</);
 });

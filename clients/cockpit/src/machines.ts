@@ -9,6 +9,9 @@ export interface MachineRow {
   readonly state: number;
   readonly name: Uint8Array;
   readonly endpoint: Uint8Array;
+  /// What the row says under the name: the bare host a remote machine is
+  /// reached at, only when it differs from the name. Never the endpoint URL.
+  readonly place: Uint8Array;
   readonly session: Uint8Array;
   readonly message: Uint8Array;
   readonly status: Uint8Array;
@@ -53,7 +56,7 @@ export interface MachineState {
 
 const EMPTY = new Uint8Array(0);
 const EMPTY_MACHINE_ROW: MachineRow = {
-  index: 0, role: 0, route: 0, state: 0, name: EMPTY, endpoint: EMPTY, session: EMPTY,
+  index: 0, role: 0, route: 0, state: 0, name: EMPTY, endpoint: EMPTY, place: EMPTY, session: EMPTY,
   message: EMPTY, status: EMPTY, action: EMPTY, target: EMPTY, highlighted: false,
   connected: false, canDisconnect: false, height: 0, canForget: false, disabled: true,
 };
@@ -142,6 +145,29 @@ function actionLabel(state: number): Uint8Array {
   return asciiBytes("Connect");
 }
 
+/// The host part of `scheme://host[:port][/...]`, or the endpoint itself when
+/// it has no scheme.
+function bareHost(endpoint: Uint8Array): Uint8Array {
+  let start = 0;
+  for (let at = 0; at + 2 < endpoint.length; at += 1) {
+    if (endpoint[at] === 58 && endpoint[at + 1] === 47 && endpoint[at + 2] === 47) {
+      start = at + 3;
+      break;
+    }
+  }
+  let end = start;
+  while (end < endpoint.length && endpoint[end] !== 47) end += 1;
+  return endpoint.slice(start, end);
+}
+
+/// This Mac says nothing under its name; a remote machine names its host
+/// only when the name does not already say it.
+function machinePlace(role: number, name: Uint8Array, endpoint: Uint8Array): Uint8Array {
+  if (role === 0) return EMPTY;
+  const host = bareHost(endpoint);
+  return sameBytes(host, name) ? EMPTY : host;
+}
+
 interface MachineRecord { readonly row: MachineRow; readonly end: number; }
 interface MachineFields { readonly values: readonly Uint8Array[]; readonly end: number; }
 
@@ -189,7 +215,7 @@ function machineRecord(bytes: Uint8Array, at: number, generation: number): Machi
         role: role >= 0 && role <= 9007199254740991 ? Math.trunc(role) : 0,
         route: route >= 0 && route <= 9007199254740991 ? Math.trunc(route) : 0,
         state: state >= 0 && state <= 9007199254740991 ? Math.trunc(state) : 0,
-        name: fields[0], endpoint: fields[1], session: fields[2], message,
+        name: fields[0], endpoint: fields[1], place: machinePlace(role, fields[0], fields[1]), session: fields[2], message,
         target, status: statusLabel(state),
         action: route >= 3 ? asciiBytes("Edit Configuration to repair this route") : route === 2 && !connected && !busy ? SET_UP : actionLabel(state),
         highlighted: false, connected,
@@ -232,7 +258,7 @@ function copyMachine(row: MachineRow, highlighted: boolean): MachineRow {
     role: row.role >= 0 && row.role <= 9007199254740991 ? Math.trunc(row.role) : 0,
     route: row.route >= 0 && row.route <= 9007199254740991 ? Math.trunc(row.route) : 0,
     state: row.state >= 0 && row.state <= 9007199254740991 ? Math.trunc(row.state) : 0,
-    name: row.name, endpoint: row.endpoint, session: row.session, message: row.message,
+    name: row.name, endpoint: row.endpoint, place: row.place, session: row.session, message: row.message,
     status: row.status, action: row.action, target: row.target, highlighted,
     connected: row.connected, canDisconnect: row.canDisconnect,
     height: row.height >= 0 && row.height <= 9007199254740991 ? Math.trunc(row.height) : 0,
