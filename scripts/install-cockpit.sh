@@ -20,6 +20,48 @@
 # restored if placement fails.
 set -eu
 
+# BEGIN shared CLI output
+#!/bin/sh
+# Human status only. Source locally or embed in standalone installers with
+# sync-install-resolver.sh. Keep data, help, and child-tool output untouched.
+
+phux_color_enabled() {
+  [ -z "${NO_COLOR:-}" ] || return 1
+  [ "${TERM:-}" != dumb ] || return 1
+  case "${CLICOLOR_FORCE:-}" in ''|0) ;; *) return 0 ;; esac
+  [ "${CLICOLOR:-}" != 0 ] || return 1
+  [ -t 2 ]
+}
+
+# A subshell keeps rendering variables out of the caller's namespace. printf
+# always uses a fixed format: percent signs and backslashes in messages are data.
+phux_message() (
+  phux_label="$1"
+  shift
+  if phux_color_enabled; then
+    case "$phux_label" in
+      error) phux_style=31 ;;
+      warn) phux_style=33 ;;
+      ok) phux_style=32 ;;
+      *) phux_style=36 ;;
+    esac
+    printf '\033[1mphux\033[0m: \033[%sm%s\033[0m: %s\n' "$phux_style" "$phux_label" "$*" >&2
+  else
+    printf 'phux: %s: %s\n' "$phux_label" "$*" >&2
+  fi
+)
+
+phux_error() { phux_message error "$@"; }
+phux_warn() { phux_message warn "$@"; }
+phux_info() { phux_message info "$@"; }
+phux_ok() { phux_message ok "$@"; }
+phux_hint() {
+  printf '%s\n' "$*" | while IFS= read -r phux_line; do
+    printf '  hint: %s\n' "${phux_line#"${phux_line%%[![:space:]]*}"}" >&2
+  done
+}
+# END shared CLI output
+
 usage() {
   cat <<'EOF'
 Usage: scripts/install-cockpit.sh [--version <cockpit-vX.Y.Z>] [--channel stable|next] [options]
@@ -44,7 +86,7 @@ EOF
 }
 
 die() {
-  echo "error: $*" >&2
+  phux_error "$*"
   exit 1
 }
 
@@ -76,8 +118,8 @@ write_cli_launcher() {
     printf '%s\n' '# through Launch Services so Dock identity stays this copy.'
     printf 'APP=%s\n' "$(shell_quote "$app_path")"
     printf '%s\n' 'if [ ! -d "$APP" ] || [ ! -f "$APP/Contents/Info.plist" ]; then'
-    printf '%s\n' '  echo "error: Phux Cockpit is not installed at $APP" >&2'
-    printf '%s\n' '  echo "remedy: curl -fsSL https://phux.sh/install-cockpit | sh" >&2'
+    printf '%s\n' '  echo "phux: error: Phux Cockpit is not installed at $APP" >&2'
+    printf '%s\n' '  echo "  hint: curl -fsSL https://phux.sh/install-cockpit | sh" >&2'
     printf '%s\n' '  exit 1'
     printf '%s\n' 'fi'
     printf '%s\n' 'exec open "$APP"'
@@ -701,7 +743,7 @@ publish_complete=1
 # the Homebrew cask performs.
 xattr -d com.apple.quarantine "$installed_path" 2>/dev/null || true
 
-echo "installed Phux Cockpit ${version} to ${applications_dir}"
+phux_ok "installed Phux Cockpit ${version} to ${applications_dir}"
 installed_app="$(CDPATH='' cd "$applications_dir" && pwd -P)/Phux Cockpit.app"
 if write_cli_launcher "$installed_app"; then
   launcher_path="$(CDPATH='' cd "$bin_dir" && pwd -P)/phux-cockpit"

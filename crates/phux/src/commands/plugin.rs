@@ -239,6 +239,6 @@ pub(super) fn fail(json: bool, message: &str) -> ExitCode {
             1,
         );
     }
-    eprintln!("phux: {message}");
+    error!("{message}");
     ExitCode::FAILURE
 }

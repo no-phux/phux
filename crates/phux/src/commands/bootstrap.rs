@@ -45,15 +45,15 @@ pub(crate) fn run(args: &BootstrapArgs) -> ExitCode {
     let port_range = match args.port_range.as_deref().map(parse_port_range).transpose() {
         Ok(range) => range,
         Err(err) => {
-            eprintln!("phux bootstrap: --port-range: {err}");
+            error!("bootstrap: --port-range: {err}");
             return ExitCode::from(2);
         }
     };
     if let Some(theirs) = args.client_version.as_deref()
         && theirs != env!("CARGO_PKG_VERSION")
     {
-        eprintln!(
-            "phux bootstrap: note: this host runs phux {}, the attaching client is {theirs}",
+        info!(
+            "bootstrap: this host runs phux {}, the attaching client is {theirs}",
             env!("CARGO_PKG_VERSION")
         );
     }
@@ -63,8 +63,8 @@ pub(crate) fn run(args: &BootstrapArgs) -> ExitCode {
         return code;
     }
     if let Err(err) = super::server::ensure_server_for_bootstrap(&socket_path) {
-        eprintln!(
-            "phux bootstrap: could not start a phux server at {}: {err}",
+        error!(
+            "bootstrap: could not start a phux server at {}: {err}",
             socket_path.display()
         );
         return ExitCode::FAILURE;
@@ -80,7 +80,7 @@ pub(crate) fn run(args: &BootstrapArgs) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(message) => {
-            eprintln!("phux bootstrap: {message}");
+            error!("bootstrap: {message}");
             ExitCode::FAILURE
         }
     }

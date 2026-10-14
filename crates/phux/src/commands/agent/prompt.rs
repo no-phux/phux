@@ -240,8 +240,8 @@ fn report(label: &str, outcome: &PromptOutcome, elapsed_ms: u64, json: bool) -> 
         .wait
         .as_ref()
         .map_or(outcome.pre_submit_state, |wait| wait.last);
-    eprintln!(
-        "phux: prompt delivered to {label} (operation {}), but no transition into a target \
+    error!(
+        "prompt delivered to {label} (operation {}), but no transition into a target \
          state was observed before the timeout; it last held '{}'. A level read is `phux \
          agent show` — this gate requires a transition, so an agent that crashed while \
          resting at 'idle' cannot pass for one that finished. Read the pane with `phux \

@@ -107,7 +107,7 @@ pub(crate) fn run_rec(args: RecArgs<'_>) -> ExitCode {
         match read_cast_file(from) {
             Ok(pair) => pair,
             Err(err) => {
-                eprintln!("phux: rec: cannot read {}: {err}", from.display());
+                error!("rec: cannot read {}: {err}", from.display());
                 return ExitCode::FAILURE;
             }
         }
@@ -152,10 +152,7 @@ pub(crate) fn run_rec(args: RecArgs<'_>) -> ExitCode {
     clamp_idle(&mut events, idle_limit);
 
     if let Err(err) = write_cast_file(&spec.cast_path, &header, &events, version) {
-        eprintln!(
-            "phux: rec failed: writing {}: {err}",
-            spec.cast_path.display()
-        );
+        error!("rec failed: writing {}: {err}", spec.cast_path.display());
         return ExitCode::FAILURE;
     }
 
@@ -163,8 +160,8 @@ pub(crate) fn run_rec(args: RecArgs<'_>) -> ExitCode {
         && spec.format == OutputFormat::Cast
         && (speed_marked.is_some() || args.marker_labels)
     {
-        eprintln!(
-            "phux: rec: --speed-marked and --marker-labels apply when rendering a GIF or APNG; \
+        info!(
+            "rec: --speed-marked and --marker-labels apply when rendering a GIF or APNG; \
              {path} keeps the original timing and marker events. Re-render with \
              `phux rec --from {path} -o demo.gif --speed-marked 2`",
             path = spec.cast_path.display(),
@@ -197,8 +194,8 @@ pub(crate) fn finalize(spec: &RecordSpec) {
     let (header, events) = match read_cast_file(&spec.cast_path) {
         Ok(pair) => pair,
         Err(err) => {
-            eprintln!(
-                "phux: recording at {} could not be read back: {err}",
+            error!(
+                "recording at {} could not be read back: {err}",
                 spec.cast_path.display()
             );
             return;
@@ -207,7 +204,7 @@ pub(crate) fn finalize(spec: &RecordSpec) {
     if events.is_empty() {
         // No bytes at all (an attach that never got past the handshake): report,
         // don't write an empty animation.
-        eprintln!("phux: --rec captured no output; nothing was exported");
+        warn!("--rec captured no output; nothing was exported");
         if spec.cast_is_temp {
             let _ = std::fs::remove_file(&spec.cast_path);
         }
@@ -251,6 +248,7 @@ fn capture(
                 return;
             }
             last_tick = Some(elapsed);
+            // In-place recording progress is terminal control, not a diagnostic.
             eprint!("\rrecording... {}s ({events} events)", elapsed.as_secs());
             let _ = std::io::stderr().flush();
         };
@@ -266,14 +264,14 @@ fn capture(
 
         match recorded {
             Ok(recording) => into_timeline(recording, idle_limit).map_err(|message| {
-                eprintln!("phux: rec failed: {message}");
+                error!("rec failed: {message}");
                 ExitCode::FAILURE
             }),
             Err(err @ (AttachError::Io(_) | AttachError::Disconnected)) => {
                 Err(json_err::report_no_server(json, &err, &socket_path, "rec"))
             }
             Err(err) => {
-                eprintln!("phux: rec failed: {err}");
+                error!("rec failed: {err}");
                 Err(ExitCode::FAILURE)
             }
         }
@@ -312,6 +310,7 @@ fn capture_composited(
                 return;
             }
             last_tick = Some(elapsed);
+            // In-place recording progress; preserved byte-for-byte.
             eprint!(
                 "\rrecording... {}s ({events} events, {cols}x{rows})",
                 elapsed.as_secs()
@@ -338,7 +337,7 @@ fn capture_composited(
 
         match recorded {
             Ok(()) => read_cast_file(&cast_path).map_err(|err| {
-                eprintln!("phux: rec: cannot read back {}: {err}", cast_path.display());
+                error!("rec: cannot read back {}: {err}", cast_path.display());
                 ExitCode::FAILURE
             }),
             Err(err @ (AttachError::Io(_) | AttachError::Disconnected))
@@ -347,9 +346,9 @@ fn capture_composited(
                 Err(json_err::report_no_server(json, &err, &socket_path, "rec"))
             }
             Err(err) => {
-                eprintln!("phux: rec failed: {err}");
+                error!("rec failed: {err}");
                 if cast_has_bytes(&cast_path) {
-                    eprintln!("      a partial capture is at {}", cast_path.display());
+                    hint!("a partial capture is at {}", cast_path.display());
                 }
                 Err(ExitCode::FAILURE)
             }
@@ -703,10 +702,10 @@ fn export(
 
 /// Report a failed export, naming the retained capture.
 fn report_export_failure(spec: &RecordSpec, err: &RecordError) {
-    eprintln!("phux: rec failed: {err}");
+    error!("rec failed: {err}");
     if spec.cast_is_temp && spec.cast_path.exists() {
-        eprintln!(
-            "      the capture is intact at {}; re-render it with \
+        hint!(
+            "the capture is intact at {}; re-render it with \
              `phux rec --from {} -o {}`",
             spec.cast_path.display(),
             spec.cast_path.display(),
@@ -735,9 +734,7 @@ fn report(outcome: &RecOutcome, json: bool) {
         human_duration(outcome.duration_ms),
     );
     if outcome.truncated {
-        eprintln!(
-            "phux: rec: stopped at the --max-bytes limit; the artifact is complete but short"
-        );
+        warn!("rec: stopped at the --max-bytes limit; the artifact is complete but short");
     }
 }
 

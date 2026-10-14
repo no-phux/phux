@@ -6,6 +6,8 @@
 # the macOS x86_64 fallback bug survived: the old suite fed gen-formula.sh an
 # x86_64-apple-darwin checksum that no release has ever produced.)
 set -euo pipefail
+# shellcheck source=scripts/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/phux-formula-check.XXXXXX")"
@@ -23,7 +25,7 @@ assert_contains() {
   local file="$1"
   local needle="$2"
   if ! grep -Fq -- "$needle" "$file"; then
-    echo "error: expected ${file} to contain: ${needle}" >&2
+    phux_error "expected ${file} to contain: ${needle}"
     sed -n '1,160p' "$file" >&2
     exit 1
   fi
@@ -33,7 +35,7 @@ assert_absent() {
   local file="$1"
   local needle="$2"
   if grep -Fq -- "$needle" "$file"; then
-    echo "error: expected ${file} NOT to contain: ${needle}" >&2
+    phux_error "expected ${file} NOT to contain: ${needle}"
     sed -n '1,160p' "$file" >&2
     exit 1
   fi
@@ -46,12 +48,12 @@ assert_top_level_url() {
   first_url_line="$(grep -n '^  url ' "$file" | head -1 | cut -d: -f1)"
   first_block_line="$(grep -n '^  on_' "$file" | head -1 | cut -d: -f1 || true)"
   if [ -z "$first_url_line" ]; then
-    echo "error: generated formula has no top-level url" >&2
+    phux_error "generated formula has no top-level url"
     sed -n '1,160p' "$file" >&2
     exit 1
   fi
   if [ -n "$first_block_line" ] && [ "$first_url_line" -gt "$first_block_line" ]; then
-    echo "error: generated formula url is only inside a platform block" >&2
+    phux_error "generated formula url is only inside a platform block"
     sed -n '1,160p' "$file" >&2
     exit 1
   fi
@@ -138,7 +140,7 @@ assert_absent "${TMP}/phux-linux-x86-only.rb" 'aarch64-unknown-linux-gnu'
 # 5. No artifacts at all is an error, not an empty formula.
 reset_fixtures
 if bash "${ROOT}/scripts/gen-formula.sh" "$tag" "$TMP" "${TMP}/phux-empty.rb" >/dev/null 2>&1; then
-  echo "error: gen-formula.sh accepted an empty dist dir" >&2
+  phux_error "gen-formula.sh accepted an empty dist dir"
   exit 1
 fi
 
@@ -148,8 +150,8 @@ fi
 printf 'not-a-checksum  phux-%s-aarch64-apple-darwin.tar.gz\n' "$tag" \
   > "${TMP}/phux-${tag}-aarch64-apple-darwin.tar.gz.sha256"
 if bash "${ROOT}/scripts/gen-formula.sh" "$tag" "$TMP" "${TMP}/phux-invalid.rb" >/dev/null 2>&1; then
-  echo "error: gen-formula.sh accepted a malformed checksum sidecar" >&2
+  phux_error "gen-formula.sh accepted a malformed checksum sidecar"
   exit 1
 fi
 
-echo "formula generation ok"
+phux_ok "formula generation passed"

@@ -35,11 +35,11 @@ pub(crate) fn run_send_keys(target: &str, keys: &[String], socket: Option<PathBu
             Ok(()) => ExitCode::SUCCESS,
             Err(err @ AttachError::Io(_)) => report_no_server(&err, &socket_path, "send-keys"),
             Err(AttachError::Refused(msg)) => {
-                eprintln!("phux: cannot send to '{target}': {msg} (try `phux ls`)");
+                error!("cannot send to '{target}': {msg} (try `phux ls`)");
                 ExitCode::FAILURE
             }
             Err(err) => {
-                eprintln!("phux: send-keys failed: {err}");
+                error!("send-keys failed: {err}");
                 ExitCode::FAILURE
             }
         }

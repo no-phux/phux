@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
+import { status } from "./lib/output.mjs";
 import {
   COCKPIT_IMPORT_BASELINE_VERSION,
   isCockpitImportBaseline,
@@ -45,4 +46,4 @@ assert.deepEqual(desktopReleaseProblems({ ...desktop, assetNames: ["SHA256SUMS"]
 ]);
 assert.deepEqual(desktopReleaseProblems({ ...desktop, draft: true, assetNames: [] }), []);
 
-process.stdout.write("release drift policy passed\n");
+status("ok", "release drift policy passed");

@@ -32,7 +32,7 @@ pub(super) fn run_agent_set(
     socket: Option<PathBuf>,
 ) -> ExitCode {
     if name.trim().is_empty() {
-        eprintln!("phux: agent --name must not be empty");
+        error!("agent --name must not be empty");
         return ExitCode::FAILURE;
     }
     let record = AgentRecord {
@@ -53,10 +53,10 @@ pub(super) fn run_agent_set(
             warn_interleaved_degradation(&degradation);
             match answer {
                 Ok(Some(rec)) => outln!("{}", render_record(&pane, Some(&rec))),
-                Ok(None) => eprintln!("phux: agent record did not persist"),
+                Ok(None) => error!("agent record did not persist"),
                 // The server declined the read-back: the write is unknown.
                 Err(refusal) => {
-                    eprintln!("phux: agent record could not be confirmed: {refusal}");
+                    error!("agent record could not be confirmed: {refusal}");
                 }
             }
             Ok(())
@@ -75,9 +75,9 @@ pub(super) fn run_agent_clear(target: Option<&str>, socket: Option<PathBuf>) -> 
             warn_interleaved_degradation(&degradation);
             match answer {
                 Ok(None) => outln!("{}", render_record(&pane, None)),
-                Ok(Some(_)) => eprintln!("phux: agent record was not cleared"),
+                Ok(Some(_)) => error!("agent record was not cleared"),
                 Err(refusal) => {
-                    eprintln!("phux: agent clear could not be confirmed: {refusal}");
+                    error!("agent clear could not be confirmed: {refusal}");
                 }
             }
             Ok(())
@@ -164,7 +164,7 @@ pub(crate) async fn fetch_agent_index(
     let mut notices = Vec::new();
     let index = phux_client::agent_record::fetch_index(socket_path, snapshot, &mut notices).await;
     for message in &notices {
-        eprintln!("phux: warning: partial results — {message}");
+        warn!("partial results — {message}");
     }
     index
 }

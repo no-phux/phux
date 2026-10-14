@@ -2301,6 +2301,7 @@ dependencies = [
 name = "phux"
 version = "0.68.0"
 dependencies = [
+ "anstyle",
  "base64 0.23.1",
  "bytes",
  "chrono",

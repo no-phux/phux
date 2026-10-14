@@ -178,7 +178,7 @@ async fn capture_archive(
         .chain(&layout_warnings)
         .chain(&reconcile_warnings)
     {
-        eprintln!("phux: warning: {warning}");
+        warn!("{warning}");
     }
     serde_json::to_string_pretty(&archive)
         .map_err(|err| CaptureError::Failed(format!("could not render the archive: {err}")))
@@ -244,7 +244,7 @@ fn validate_save_projection_prefix(value: &str) -> Result<(), String> {
 }
 
 fn usage_error(message: &str) -> ExitCode {
-    eprintln!("phux: {message}");
+    error!("{message}");
     ExitCode::from(2)
 }
 
@@ -336,8 +336,8 @@ pub(crate) fn run_import(archive_path: &Path, socket: Option<PathBuf>) -> ExitCo
     };
     let summary = imported.summary();
     for failed in &summary.failed {
-        eprintln!(
-            "phux: archive import: session {:?} failed: {}",
+        error!(
+            "archive import: session {:?} failed: {}",
             failed.name, failed.reason
         );
     }
@@ -615,7 +615,7 @@ async fn create_imported_session(
     .await
     .map_err(|err| format!("could not create the session: {err}"))?;
     for notice in notices {
-        eprintln!("phux: warning: partial results — {notice}");
+        warn!("partial results — {notice}");
     }
     match outcome {
         phux_client::session::CreateEmptyOutcome::Created => {}
@@ -1099,7 +1099,7 @@ async fn rollback_session(socket_path: &Path, created: &[ResourceId]) {
     )
     .await
     {
-        eprintln!("phux: archive: could not roll back a failed session's panes: {err}");
+        warn!("archive: could not roll back a failed session's panes: {err}");
     }
 }
 
@@ -1504,7 +1504,7 @@ async fn fetch_existing_sessions(socket_path: &Path, verb: &str) -> Result<Vec<S
 }
 
 fn fail(message: &str) -> ExitCode {
-    eprintln!("phux: {message}");
+    error!("{message}");
     ExitCode::FAILURE
 }
 

@@ -20,6 +20,8 @@
 #          [--profile ffi-release|ffi-dev] [--out DIR] [--skip-smoke]
 
 set -euo pipefail
+# shellcheck source=scripts/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
 
 INVOKE_CWD="$PWD"
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -34,22 +36,22 @@ while [[ $# -gt 0 ]]; do
     --full) MODE=full ;;
     --dev) MODE=dev ;;
     --profile)
-        [[ $# -ge 2 ]] || { echo "--profile needs a value" >&2; exit 2; }
+        [[ $# -ge 2 ]] || { phux_error "--profile needs a value"; exit 2; }
         PROFILE="$2"; shift ;;
     --out)
-        [[ $# -ge 2 ]] || { echo "--out needs a value" >&2; exit 2; }
+        [[ $# -ge 2 ]] || { phux_error "--out needs a value"; exit 2; }
         OUT="$2"; shift ;;
     --skip-smoke) SMOKE=0 ;;
     -h | --help)
         sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'
         exit 0 ;;
-    *) echo "unknown argument: $1 (see --help)" >&2; exit 2 ;;
+    *) phux_error "unknown argument: $1 (see --help)"; exit 2 ;;
     esac
     shift
 done
 
 case "$PROFILE" in ffi-release | ffi-dev) ;; *)
-    echo "profile must be ffi-release or ffi-dev" >&2; exit 2 ;;
+    phux_error "profile must be ffi-release or ffi-dev"; exit 2 ;;
 esac
 case "$OUT" in /*) ;; *) OUT="$INVOKE_CWD/$OUT" ;; esac
 OUT_PARENT="$(dirname -- "$OUT")"
@@ -88,8 +90,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-die() { echo "build-mobile-ffi-xcframework: error: $*" >&2; exit 1; }
-step() { echo "==> $*"; }
+die() { phux_error "$*"; exit 1; }
+step() { phux_info "$*"; }
 
 # shellcheck source=scripts/lib/apple-toolchain-env.sh
 source "$ROOT/scripts/lib/apple-toolchain-env.sh"
@@ -118,7 +120,7 @@ for target in "${TARGETS[@]}"; do rustup target add "$target" >/dev/null; done
 
 step "building $CRATE ($PROFILE, $FEATURES, no default features)"
 for target in "${TARGETS[@]}"; do
-    echo "    - $target"
+    phux_info "target: $target"
     rm -f "$(slice_archive "$target")"
     cargo build --locked --profile "$PROFILE" --target "$target" \
         -p "$CRATE" --no-default-features --features "$FEATURES"
@@ -233,6 +235,6 @@ OUT="$DEST"
 GENERATED="$OUT/Generated"
 
 step "mobile xcframework complete"
-echo "    framework: $OUT/PhuxFFI.xcframework"
-echo "    bindings:  $GENERATED/PhuxFFI.swift"
-echo "    provenance: $OUT/provenance"
+phux_info "framework: $OUT/PhuxFFI.xcframework"
+phux_info "bindings:  $GENERATED/PhuxFFI.swift"
+phux_info "provenance: $OUT/provenance"

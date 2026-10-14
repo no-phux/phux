@@ -20,6 +20,8 @@ import re
 import sys
 from pathlib import Path
 
+from lib.output import status
+
 PACKAGE = re.compile(r"(?ms)^\[\[package\]\]\n.*?(?=^\[\[package\]\]|\Z)")
 NAME = re.compile(r'(?m)^name = "([^"]+)"$')
 VERSION = re.compile(r'(?m)^version = "([^"]+)"$')
@@ -60,11 +62,11 @@ def main(argv: list[str]) -> int:
         after = sync(before, versions)
         if after != before:
             if args.check:
-                print(f"{target}: path crate versions differ from {args.root_lock}", file=sys.stderr)
+                status("error", f"{target}: path crate versions differ from {args.root_lock}")
                 failed = True
             else:
                 target.write_text(after)
-                print(f"updated {target}")
+                status("ok", f"updated {target}")
     return 1 if failed else 0
 
 

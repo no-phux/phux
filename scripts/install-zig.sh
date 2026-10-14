@@ -5,17 +5,17 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/dev-toolchain.sh"
 
 if [[ $# -ne 1 || "$1" == --help ]]; then
-    echo "usage: bash scripts/install-zig.sh DIRECTORY (prints the compiler directory)" >&2
+    phux_error "usage: bash scripts/install-zig.sh DIRECTORY (prints the compiler directory)"
     exit 2
 fi
 case "$(uname -s)/$(uname -m)" in
     Darwin/arm64) target=aarch64-macos ;;
     Linux/x86_64) target=x86_64-linux ;;
     Linux/aarch64|Linux/arm64) target=aarch64-linux ;;
-    *) echo "No release-pinned Zig archive for this host. Install Zig $ZIG_VERSION manually; see docs/SETUP.md." >&2; exit 1 ;;
+    *) phux_error "No release-pinned Zig archive for this host. Install Zig $ZIG_VERSION manually; see docs/SETUP.md."; exit 1 ;;
 esac
 sha="$(zig_digest "$target")"
-[[ "$sha" =~ ^[0-9a-f]{64}$ ]] || { echo "missing Zig digest for $target" >&2; exit 1; }
+[[ "$sha" =~ ^[0-9a-f]{64}$ ]] || { phux_error "missing Zig digest for $target"; exit 1; }
 mkdir -p "$1"
 base="$(cd "$1" && pwd)"
 archive="zig-${target}-${ZIG_VERSION}.tar.xz"
@@ -23,12 +23,13 @@ dest="$base/${archive%.tar.xz}"
 if [[ -e "$dest" ]]; then
     # An existing installation is never overwritten or recursively deleted.
     [[ -x "$dest/zig" && "$("$dest/zig" version)" == "$ZIG_VERSION" ]] || {
-        echo "invalid existing Zig installation: $dest; choose a different DIRECTORY" >&2
+        phux_error "invalid existing Zig installation: $dest; choose a different DIRECTORY"
         exit 1
     }
 else
     stage="$(mktemp -d "$base/.zig-download.XXXXXX")"
     trap 'rm -rf "$stage"' EXIT
+    phux_info "installing Zig $ZIG_VERSION ($target)"
     curl -fSL --retry 3 --connect-timeout 20 --max-time 600 \
         "https://ziglang.org/download/${ZIG_VERSION}/${archive}" -o "$stage/$archive" >&2
     (

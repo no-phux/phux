@@ -13,10 +13,8 @@ fn command_for(program: &std::path::Path, args: &[OsString]) -> Command {
 /// Replace this process with `phux-mcp`, preserving stdio, signals, and status.
 pub(crate) fn run(args: &[OsString]) -> ExitCode {
     let Some(program) = crate::companion::find_live_mcp() else {
-        eprintln!(
-            "phux: could not find the bundled phux-mcp executable beside phux or on PATH\n\
-             remedy: reinstall phux so both release binaries are present"
-        );
+        error!("could not find the bundled phux-mcp executable beside phux or on PATH");
+        hint!("reinstall phux so both release binaries are present");
         return ExitCode::from(127);
     };
 
@@ -24,7 +22,7 @@ pub(crate) fn run(args: &[OsString]) -> ExitCode {
     // after discovery. In the normal path there is no intermediate process to
     // buffer stdio, intercept signals, or translate the MCP server's status.
     let err = command_for(&program, args).exec();
-    eprintln!("phux: could not exec {}: {err}", program.display());
+    error!("could not exec {}: {err}", program.display());
     ExitCode::from(126)
 }
 

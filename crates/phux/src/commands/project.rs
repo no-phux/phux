@@ -459,7 +459,7 @@ fn create(
         }
     };
     for warning in &summary.warnings {
-        eprintln!("phux: warning: {}", warning.message);
+        warn!("{}", warning.message);
     }
     if let Some(failed) = summary.failed.first() {
         return Err(refuse(
@@ -509,10 +509,11 @@ fn approve_for_open(project: &Project, loaded: &Loaded, json: bool) -> Result<()
             super::confirm::NOT_CONFIRMED,
         ));
     }
-    eprintln!(
-        "phux: {} can run commands and has not been approved on this machine:\n",
+    warn!(
+        "{} can run commands and has not been approved on this machine:\n",
         project.recipe.display()
     );
+    // Trust review prints the recipe verbatim; rewriting it would hide what runs.
     for line in loaded.text.lines() {
         eprintln!("    {line}");
     }
@@ -628,7 +629,7 @@ fn run_init(target: Option<&str>) -> ExitCode {
     // the first edit makes the file untrusted again.
     let sha256 = trust::digest(recipe::STARTER.as_bytes());
     if let Err(err) = trust::trust(&trust::default_dir(), &project.trust_key(), &sha256) {
-        eprintln!("phux: warning: could not approve the starter recipe: {err}");
+        warn!("could not approve the starter recipe: {err}");
     }
     outln!(
         "Wrote {} (approved as written). After editing it, run `phux project trust`; \
@@ -750,12 +751,13 @@ fn refuse_with(json: bool, code: &'static str, message: &str, remedy: &str, exit
     if json {
         return json_err::emit(true, &CliError::new(code, message.to_owned(), remedy), exit);
     }
-    eprintln!("phux: {message}\n      {remedy}");
+    error!("{message}");
+    hint!("{remedy}");
     ExitCode::from(exit)
 }
 
 fn fail(message: &str) -> ExitCode {
-    eprintln!("phux: {message}");
+    error!("{message}");
     ExitCode::FAILURE
 }
 

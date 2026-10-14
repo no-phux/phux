@@ -70,8 +70,8 @@ pub(crate) fn run(args: SshAttach<'_>) -> ExitCode {
         return code;
     }
     if args.destination.is_empty() || args.destination.starts_with('-') {
-        eprintln!(
-            "phux: --ssh needs an ssh destination such as me@host, got {:?}",
+        error!(
+            "--ssh needs an ssh destination such as me@host, got {:?}",
             args.destination
         );
         return ExitCode::from(2);
@@ -79,15 +79,15 @@ pub(crate) fn run(args: SshAttach<'_>) -> ExitCode {
     if let Some(ports) = args.udp_ports.as_deref()
         && let Err(err) = super::bootstrap::parse_port_range(ports)
     {
-        eprintln!("phux: --udp-ports: {err}");
+        error!("--udp-ports: {err}");
         return ExitCode::from(2);
     }
 
-    eprintln!("phux: bootstrapping {} over ssh…", args.destination);
+    info!("bootstrapping {} over ssh…", args.destination);
     let report = match bootstrap(&args) {
         Ok(report) => report,
         Err(Failure::Fatal(message)) => {
-            eprintln!("phux: {message}");
+            error!("{message}");
             return ExitCode::FAILURE;
         }
         Err(Failure::Fallback(message)) => return fall_back(&args, &message),
@@ -108,7 +108,7 @@ pub(crate) fn run(args: SshAttach<'_>) -> ExitCode {
             &format!("QUIC to {target} did not connect: {reason}"),
         );
     }
-    eprintln!("phux: attaching over QUIC to {target}; ssh is out of the path");
+    info!("attaching over QUIC to {target}; ssh is out of the path");
     attach::run_attach_quic(
         args.session,
         target,
@@ -122,13 +122,13 @@ pub(crate) fn run(args: SshAttach<'_>) -> ExitCode {
 
 /// Say why the direct path is unavailable, then attach the old way.
 fn fall_back(args: &SshAttach<'_>, why: &str) -> ExitCode {
-    eprintln!("phux: {why}");
-    eprintln!(
-        "phux: falling back to `ssh -t {} {} attach` (no roaming or local rendering)",
+    warn!("{why}");
+    warn!(
+        "falling back to `ssh -t {} {} attach` (no roaming or local rendering)",
         args.destination, args.remote_phux
     );
     if args.rec.is_some() {
-        eprintln!("phux: --rec does not carry over ssh; run `phux --rec` on the host to record");
+        warn!("--rec does not carry over ssh; run `phux --rec` on the host to record");
     }
     attach::run_attach_over_ssh(
         &args.destination,

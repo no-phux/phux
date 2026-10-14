@@ -44,11 +44,11 @@ pub(crate) fn run_ask(
                 json_err::report_no_server(json, &err, &socket_path, "ask")
             }
             Err(AttachError::Refused(msg)) => {
-                eprintln!("phux: cannot report ask for '{target}': {msg}");
+                error!("cannot report ask for '{target}': {msg}");
                 ExitCode::FAILURE
             }
             Err(err) => {
-                eprintln!("phux: ask failed: {err}");
+                error!("ask failed: {err}");
                 ExitCode::FAILURE
             }
         }
@@ -60,7 +60,7 @@ fn print_success(pane: &ResourceId, payload: &AskedPayload, json: bool) -> ExitC
         match serde_json::to_string_pretty(&success_json(pane, payload)) {
             Ok(line) => outln!("{line}"),
             Err(err) => {
-                eprintln!("phux: failed to serialize ask: {err}");
+                error!("failed to serialize ask: {err}");
                 return ExitCode::FAILURE;
             }
         }

@@ -67,7 +67,7 @@ pub(crate) fn run_run(
             Some(Ok(id)) => id,
             Some(Err(code)) => return code,
             None => {
-                eprintln!("phux: run timed out while resolving '{target}'; nothing was sent");
+                error!("run timed out while resolving '{target}'; nothing was sent");
                 return ExitCode::from(RUN_TIMEOUT_EXIT_CODE);
             }
         };
@@ -96,7 +96,7 @@ fn report_outcome(
                 match serde_json::to_string_pretty(&result) {
                     Ok(s) => outln!("{s}"),
                     Err(err) => {
-                        eprintln!("phux: failed to serialize run result: {err}");
+                        error!("failed to serialize run result: {err}");
                         return ExitCode::FAILURE;
                     }
                 }
@@ -121,7 +121,7 @@ fn report_outcome(
             submission,
             ..
         }) => {
-            eprintln!("{}", timeout_message(&command, duration_ms, submission));
+            error!("{}", timeout_message(&command, duration_ms, submission));
             // 125, not 124: `run` mirrors the child's code into 0..=255,
             // and 124 is a code real commands (notably GNU `timeout`)
             // produce. 125 is the wrapper-failure convention (env/timeout),
@@ -130,11 +130,11 @@ fn report_outcome(
         }
         Err(err @ AttachError::Io(_)) => json_err::report_no_server(json, &err, socket_path, "run"),
         Err(AttachError::Refused(msg)) => {
-            eprintln!("phux: cannot run in '{target}': {msg} (try `phux ls`)");
+            error!("cannot run in '{target}': {msg} (try `phux ls`)");
             ExitCode::FAILURE
         }
         Err(err) => {
-            eprintln!("phux: run failed: {err}");
+            error!("run failed: {err}");
             ExitCode::FAILURE
         }
     }
@@ -191,15 +191,13 @@ fn not_available_error(
 fn timeout_message(command: &str, duration_ms: u64, submission: Submission) -> String {
     match submission {
         Submission::Complete => {
-            format!("phux: '{command}' did not finish within {duration_ms}ms")
+            format!("'{command}' did not finish within {duration_ms}ms")
         }
         Submission::NotSent => {
-            format!(
-                "phux: gave up after {duration_ms}ms before sending '{command}'; nothing was sent"
-            )
+            format!("gave up after {duration_ms}ms before sending '{command}'; nothing was sent")
         }
         Submission::Partial => format!(
-            "phux: gave up after {duration_ms}ms while sending '{command}'; input may be \
+            "gave up after {duration_ms}ms while sending '{command}'; input may be \
              partially delivered, so the pane may hold an unsubmitted line (clear it before \
              the next run)"
         ),

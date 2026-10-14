@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# shellcheck source=scripts/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
 
 usage() {
   cat <<'EOF'
@@ -14,7 +16,7 @@ EOF
 }
 
 die() {
-  echo "error: $*" >&2
+  phux_error "$*"
   exit 1
 }
 
@@ -51,26 +53,25 @@ esac
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-echo "==> release version"
+phux_info "release version"
 bash scripts/check-release-version.sh "$tag"
 node scripts/check-agent-integration-versions.mjs
 
-echo "==> install surface"
+phux_info "install surface"
 bash scripts/check-install-surface.sh
 
-echo "==> Homebrew formula generator"
+phux_info "Homebrew formula generator"
 bash scripts/check-formula.sh
 
 if [ "$skip_crate_dry_run" -eq 0 ]; then
-  echo "==> phux-protocol crates.io package"
+  phux_info "phux-protocol crates.io package"
   cargo publish --locked --dry-run --allow-dirty -p phux-protocol
 else
-  echo "==> phux-protocol crates.io package skipped"
+  phux_info "phux-protocol crates.io package skipped"
 fi
 
+phux_ok "release preflight: ${tag}"
 cat <<EOF
-release preflight ok: ${tag}
-
 Next:
   1. Land this checkout on the default branch.
   2. Open Actions -> release -> Run workflow.

@@ -192,3 +192,26 @@ fn rename_still_refuses_an_unknown_session_under_a_partial_fleet() {
     assert_eq!(output.status.code(), Some(2));
     assert!(stderr_of(&output).contains("no such session"));
 }
+
+#[test]
+fn ls_without_host_sessions_warns_and_keeps_successful_listing() {
+    use phux_protocol::ids::SatelliteHost;
+
+    let snapshot = fleet().with_resources(vec![
+        ResourceInfo::new(ResourceId::local(100), WindowId::new(10), 80, 24),
+        ResourceInfo::new(
+            ResourceId::satellite(SatelliteHost::new("edge"), 9),
+            WindowId::new(10),
+            80,
+            24,
+        ),
+    ]);
+    // ScriptSpec advertises no features by default, including HOST_SESSIONS.
+    let output = run_verb(ScriptSpec::new().state(snapshot), &["ls"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(stdout_of(&output).contains("edge"));
+    assert_eq!(
+        stderr_of(&output),
+        "phux: warn: ls: satellite sessions are unavailable from this server (it does not report HOST_SESSIONS); its satellite terminals are listed above\n"
+    );
+}

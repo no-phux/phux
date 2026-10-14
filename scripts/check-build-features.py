@@ -4,6 +4,8 @@
 import subprocess
 from pathlib import Path
 
+from lib.output import status
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -38,7 +40,7 @@ def main():
         assert "ratatui-crossterm" not in graph, f"{name}: unused terminal backend"
         assert "ratatui-macros" not in graph, f"{name}: unused TUI macros"
         assert "tls12" not in graph["rustls"], f"{name}: TLS 1.2 re-enabled"
-        print(f"{name}: {len(graph)} distinct package names; feature boundaries OK")
+        status("ok", f"{name}: {len(graph)} distinct package names; feature boundaries verified")
 
 
 if __name__ == "__main__":

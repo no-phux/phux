@@ -123,7 +123,7 @@ fn detected_shell() -> String {
 }
 
 fn fail(message: &str) -> ExitCode {
-    eprintln!("phux agent: {message}");
+    error!("agent: {message}");
     ExitCode::FAILURE
 }
 

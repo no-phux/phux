@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# shellcheck source=scripts/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 tmp=$(mktemp -d)
@@ -93,4 +95,4 @@ set -e
 [ ! -s "$tmp/missing.out" ]
 grep -q 'reinstall phux' "$tmp/missing.err"
 
-echo 'skill contract: phux, phux-mcp, and phux mcp verified'
+phux_ok 'skill contract: phux, phux-mcp, and phux mcp verified'

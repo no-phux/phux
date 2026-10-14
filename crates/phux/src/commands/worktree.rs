@@ -400,9 +400,7 @@ fn bind_session(req: Binding<'_>) -> ExitCode {
         if json {
             tracing::debug!(error = %err, "auto-spawn failed on the --json worktree path");
         } else {
-            eprintln!(
-                "phux: auto-spawn skipped ({err}). Start a server manually with `phux server`."
-            );
+            warn!("auto-spawn skipped ({err}). Start a server manually with `phux server`.");
         }
     }
 

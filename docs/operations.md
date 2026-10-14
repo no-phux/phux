@@ -33,6 +33,56 @@ start and reports the config path, the loader error, and the remedy
 nulls stdio). A *missing* config starts with the shipped defaults. The server
 never silently reverts a broken config to defaults.
 
+## CLI presentation
+
+Human diagnostics and script progress use lowercase, ASCII labels. Meaning
+never depends on color:
+
+```text
+phux: info: building release binaries
+phux: ok: all checks passed
+phux: warn: a check could not run
+phux: error: no server running
+  hint: run `phux doctor` for a health check
+```
+
+Diagnostics and progress go to stderr. Human reports such as `phux doctor`
+and listings stay on stdout. Rendering does not change exit statuses.
+Help retains its fixed-width layout. Diagnostic styling is limited to the
+wordmark and severity: bold wordmark, cyan information, green success, yellow
+warning, red error. Status labels have no emoji or decorative Unicode markers.
+
+Color is chosen for the destination stream, in this order:
+
+1. Nonempty `NO_COLOR` or `TERM=dumb` disables it, even when forced.
+2. Nonempty `CLICOLOR_FORCE` other than `0` enables it, including in a pipe.
+3. `CLICOLOR=0` disables it.
+4. Otherwise, only a terminal receives color.
+
+JSON documents (including one-line JSON errors on stderr), pane IDs, terminal
+bytes, recordings, config exports, completion source, and script data are
+never routed through human styling. Installer dry-run fields, `next:`
+commands, PATH remedies, toolchain probe TSV, build receipts, and the app's
+self-update protocol keep their formats. Child-tool output and captured
+terminal transcripts are passed through rather than relabeled. The MCP
+adapter uses the same severity labels on its out-of-band stderr channel but
+keeps it uncolored even when color is forced.
+
+The Rust binary owns its presentation in `crates/phux/src/output.rs`, using
+[anstyle](https://docs.rs/anstyle/) and standard-library terminal detection.
+The existing usage-rs parser still owns help, parsing, and completions.
+Setup, build, release, and guard scripts source `scripts/lib/output.sh`;
+Python and Node checks use the equivalent native helpers in that directory.
+Rendering helpers do not exit, count failures, or execute a remedy. Keep
+structured logic in its native language instead of launching another runtime
+just to print status.
+
+The three standalone installers embed the same POSIX helper. After changing
+it, run `bash scripts/sync-install-resolver.sh --write`; the install-surface
+gate checks freshness. No installer fetches or sources a second file.
+`python3 -B scripts/test-output.py` verifies the shared stream and color rules
+in POSIX sh, Bash, Python, and Node, including real terminal destinations.
+
 ## Runtime status
 
 `phux status` reports the listening server's PID (from UDS peer credentials),

@@ -115,7 +115,7 @@ pub(crate) fn run_snapshot(
                 );
             }
             Err(err) => {
-                eprintln!("phux: snapshot failed: {err}");
+                error!("snapshot failed: {err}");
                 return ExitCode::FAILURE;
             }
         };
@@ -140,12 +140,12 @@ pub(crate) fn run_snapshot(
 /// newline added). `--json` emits the whole `ScreenState` instead.
 fn print_rendered_capture(screen: &ScreenState) -> ExitCode {
     let Some(rendered) = screen.rendered.as_ref() else {
-        eprintln!("phux: snapshot: server returned no rendered capture");
+        error!("snapshot: server returned no rendered capture");
         return ExitCode::FAILURE;
     };
     if rendered.format == phux_client::snapshot::RENDERED_FORMAT_VT {
         let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&rendered.data) else {
-            eprintln!("phux: snapshot: malformed base64 in rendered VT capture");
+            error!("snapshot: malformed base64 in rendered VT capture");
             return ExitCode::FAILURE;
         };
         crate::output::bytes(&bytes);
@@ -181,7 +181,7 @@ fn run_rendered(
                 return json_err::report_no_server(json, &err, socket_path, "snapshot");
             }
             Err(err) => {
-                eprintln!("phux: rendered snapshot failed: {err}");
+                error!("rendered snapshot failed: {err}");
                 return ExitCode::FAILURE;
             }
         };
@@ -219,7 +219,7 @@ async fn rendered_attach_target(
         .into_snapshot_ignoring_degradation();
     session_of_pane(&snapshot, &pane).map_or_else(
         || {
-            eprintln!("phux: {raw} is not in a local session that can be attached");
+            error!("{raw} is not in a local session that can be attached");
             Err(ExitCode::FAILURE)
         },
         |name| Ok(AttachTarget::ByName(name)),

@@ -60,8 +60,8 @@ pub(crate) fn plan(out: &Path, explicit: Option<RecFormat>) -> Result<RecordSpec
             // `phux --rec attach` would record into a file named `attach`; an
             // extension-less value naming a verb is refused.
             if let Some(name) = subcommand_named(out) {
-                eprintln!(
-                    "phux: --rec wants an output path, not a subcommand; \
+                error!(
+                    "--rec wants an output path, not a subcommand; \
                      try `phux --rec demo.gif` or `phux {name} --rec demo.gif`"
                 );
                 return Err(ExitCode::FAILURE);
@@ -73,8 +73,8 @@ pub(crate) fn plan(out: &Path, explicit: Option<RecFormat>) -> Result<RecordSpec
             // (phux-i0e8.7.3): `other` is the user's own file extension — a
             // string, not a wire enum — and Debug formatting here is plain
             // quoting, so `demo.mp4` reports `unknown output extension "mp4"`.
-            eprintln!(
-                "phux: rec: unknown output extension {other:?}; \
+            error!(
+                "rec: unknown output extension {other:?}; \
                  use .cast, .gif, .png, or .apng, or pass --format"
             );
             return Err(ExitCode::FAILURE);
@@ -87,8 +87,8 @@ pub(crate) fn plan(out: &Path, explicit: Option<RecFormat>) -> Result<RecordSpec
         && !parent.as_os_str().is_empty()
         && !parent.is_dir()
     {
-        eprintln!(
-            "phux: rec: cannot write {}: {} is not a directory",
+        error!(
+            "rec: cannot write {}: {} is not a directory",
             final_path.display(),
             parent.display()
         );

@@ -19,18 +19,20 @@
 # and exit 0 — this guards a release path, and it must not redden PRs that have
 # nothing to do with Zig.
 set -euo pipefail
+# shellcheck source=scripts/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MANIFEST="$ROOT/.config/zig-toolchain.json"
 INDEX_URL="https://ziglang.org/download/index.json"
 
 skip() {
-  printf 'check-zig-pins: SKIPPED (%s)\n' "$1" >&2
+  phux_warn "check-zig-pins: skipped ($1)"
   exit 0
 }
 
 test -f "$MANIFEST" || {
-  printf 'check-zig-pins: missing %s\n' "$MANIFEST" >&2
+  phux_error "check-zig-pins: missing $MANIFEST"
   exit 1
 }
 
@@ -61,7 +63,7 @@ if ! echo "$index" | jq -e --arg v "$version" 'has($v)' >/dev/null; then
   # Zig prunes old versions from the index once they stop being the latest
   # release. That is a stale pin worth knowing about, but it is not evidence
   # that the digests are wrong, so it warns rather than fails.
-  printf 'check-zig-pins: WARNING: %s is not in the download index (pruned or mistyped); digests unverified\n' "$version" >&2
+  phux_warn "check-zig-pins: $version is not in the download index (pruned or mistyped); digests unverified"
   exit 0
 fi
 
@@ -70,18 +72,19 @@ while read -r target sha; do
   [ -n "$target" ] || continue
   upstream="$(echo "$index" | jq -r --arg v "$version" --arg t "$target" '.[$v][$t].shasum // ""')"
   if [ -z "$upstream" ]; then
-    printf 'check-zig-pins: %s: no %s tarball in the index for Zig %s\n' "${MANIFEST#"$ROOT/"}" "$target" "$version" >&2
+    phux_error "check-zig-pins: ${MANIFEST#"$ROOT/"}: no $target tarball in the index for Zig $version"
     failures=$((failures + 1))
   elif [ "$upstream" != "$sha" ]; then
-    printf 'check-zig-pins: %s: %s digest is stale for Zig %s\n  pinned:   %s\n  upstream: %s\n' \
-      "${MANIFEST#"$ROOT/"}" "$target" "$version" "$sha" "$upstream" >&2
+    phux_error "check-zig-pins: ${MANIFEST#"$ROOT/"}: $target digest is stale for Zig $version"
+    phux_info "pinned: $sha"
+    phux_info "upstream: $upstream"
     failures=$((failures + 1))
   fi
 done <<<"$pins"
 
 if [ "$failures" -ne 0 ]; then
-  printf 'check-zig-pins: %d stale Zig pin(s). Re-pin from %s before releasing.\n' "$failures" "$INDEX_URL" >&2
+  phux_error "check-zig-pins: $failures stale Zig pin(s). Re-pin from $INDEX_URL before releasing."
   exit 1
 fi
 
-printf 'check-zig-pins: OK (Zig %s, %d target(s))\n' "$version" "$(echo "$pins" | grep -c .)"
+phux_ok "check-zig-pins: Zig $version, $(echo "$pins" | grep -c .) target(s)"

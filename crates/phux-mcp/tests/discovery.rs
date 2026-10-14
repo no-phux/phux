@@ -93,6 +93,34 @@ fn standalone_modes_reject_ambiguity_and_unknown_arguments() {
     );
 }
 
+#[test]
+fn out_of_band_diagnostics_use_plain_labels_even_when_color_is_forced() {
+    let output = mcp()
+        .arg("unknown")
+        .env("CLICOLOR_FORCE", "1")
+        .env_remove("NO_COLOR")
+        .env("TERM", "xterm-256color")
+        .output()
+        .expect("run invalid MCP invocation");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.starts_with("phux: error: mcp: "));
+    assert!(stderr.contains("\n  hint: Try `phux-mcp --help` for usage.\n"));
+    assert!(!output.stderr.contains(&0x1b));
+
+    let schema = run(&["--schema"]);
+    let forced = mcp()
+        .arg("--schema")
+        .env("CLICOLOR_FORCE", "1")
+        .env_remove("NO_COLOR")
+        .output()
+        .expect("run MCP catalog under forced color");
+    assert!(forced.status.success());
+    assert_eq!(forced.stdout, schema.stdout);
+    assert!(forced.stderr.is_empty());
+}
+
 /// The `phux-mcp` binary under test, from the runner's environment
 /// (`CARGO_BIN_EXE_*` under `cargo test`, `NEXTEST_BIN_EXE_*` under nextest)
 /// rather than `env!`, which would key this test to one checkout.

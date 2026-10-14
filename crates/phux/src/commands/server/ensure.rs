@@ -80,7 +80,7 @@ impl Helpers {
         if self.child.is_some()
             && let Err(err) = self.finish()
         {
-            eprintln!("phux server --ensure: {err}");
+            error!("server --ensure: {err}");
         }
     }
 }

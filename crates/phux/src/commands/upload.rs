@@ -148,8 +148,8 @@ fn print_receipt(receipt: &UploadReceipt, json: bool) -> ExitCode {
     if completed {
         ExitCode::SUCCESS
     } else {
-        eprintln!(
-            "phux: upload {:?}: {}; do not blindly retry",
+        warn!(
+            "upload {:?}: {}; do not blindly retry",
             receipt.outcome, receipt.message
         );
         ExitCode::FAILURE

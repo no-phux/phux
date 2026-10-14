@@ -1,8 +1,13 @@
 """Exercise the desktop host lock drift check against synthetic lockfiles."""
 
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
+import os
 from pathlib import Path
 import runpy
+import tempfile
 import unittest
+from unittest.mock import patch
 
 
 CHECK = runpy.run_path(str(Path(__file__).with_name("check-desktop-host-lock.py")))
@@ -118,6 +123,39 @@ class HostLockDriftTests(unittest.TestCase):
         root = lock(path_crate("0.46.0", "sha2 0.11.0", "uniffi"), registry("sha2", "0.11.0"))
         host = lock(path_crate("0.46.0", "sha2 0.11.0"), registry("sha2", "0.11.0"))
         self.assertEqual(COMPARE(root, host, {"root-path": {"sha2"}}), [])
+
+
+class HostLockOutputTests(unittest.TestCase):
+    def test_repair_writes_only_changed_lock_and_reports_on_stderr(self):
+        root = lock(path_crate("0.46.0"))
+        host = lock(path_crate("0.45.0"))
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "Cargo.lock"
+            target.write_text(host)
+            stderr, stdout = StringIO(), StringIO()
+            with patch.dict(os.environ, {"NO_COLOR": "1"}), redirect_stderr(stderr), redirect_stdout(stdout):
+                fixed = CHECK["repair_host_lock"](root, host, {}, target)
+            self.assertEqual(target.read_text(), fixed)
+            self.assertEqual(COMPARE(root, fixed), [])
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertTrue(stderr.getvalue().startswith("phux: ok: fixed 1 entry"))
+            # No drift means no write and no misleading repair receipt.
+            stderr = StringIO()
+            with redirect_stderr(stderr):
+                self.assertEqual(CHECK["repair_host_lock"](root, fixed, {}, target), fixed)
+            self.assertEqual(stderr.getvalue(), "")
+
+    def test_findings_choose_repair_or_refresh_without_stdout(self):
+        root = lock(path_crate("0.46.0", "sha2 0.11.0"), registry("sha2", "0.11.0"))
+        host = lock(path_crate("0.45.0", "sha2 0.10.9"), registry("sha2", "0.10.9"))
+        stderr, stdout = StringIO(), StringIO()
+        with patch.dict(os.environ, {"NO_COLOR": "1"}), redirect_stderr(stderr), redirect_stdout(stdout):
+            result = CHECK["report_findings"](COMPARE(root, host), Path("host.lock"), Path("root.lock"))
+        self.assertEqual(result, 1)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("phux: error: host.lock:", stderr.getvalue())
+        self.assertIn("  hint: repair with: just desktop-lock-fix", stderr.getvalue())
+        self.assertIn("  hint: refresh the host lock: just desktop-lock-refresh", stderr.getvalue())
 
 
 class RequiredDependencyTests(unittest.TestCase):
