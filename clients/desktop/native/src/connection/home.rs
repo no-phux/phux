@@ -84,8 +84,31 @@ pub fn inbox_name(client: &Client, topology: &Topology) -> Option<String> {
 /// A sentence for the window when the server cannot be read, the create is
 /// refused, or there is nothing to open.
 pub fn open_home(phux: &Path, socket: &Path, requested: Option<&str>) -> Result<String, String> {
-    let probe = Probe::connect(socket)?;
+    let probe = Probe::connect(Target::uds(socket.to_path_buf()))?;
     let result = probe.resolve(phux, socket, requested);
+    probe.client.close();
+    result
+}
+
+/// The session a window on registered host `name` opens: its Inbox, else its
+/// most recent session. Nothing is created on the remote.
+///
+/// # Errors
+///
+/// A sentence for the notification when the host is not registered, cannot
+/// be reached, or has nothing to open.
+pub fn open_remote_home(name: &str) -> Result<String, String> {
+    let target = Target::resolve(name, None)?;
+    let probe = Probe::connect(target)?;
+    let result = probe.ready().and_then(|topology| {
+        let inbox = inbox_name(&probe.client, &topology);
+        match choose(None, &topology, inbox.as_deref()) {
+            Home::Existing(name) => Ok(name),
+            Home::Missing(_) | Home::Nothing => Err(format!(
+                "{name} has no sessions yet. Run `phux attach {name}` once to start one."
+            )),
+        }
+    });
     probe.client.close();
     result
 }
@@ -105,9 +128,9 @@ struct Probe {
 }
 
 impl Probe {
-    fn connect(socket: &Path) -> Result<Self, String> {
+    fn connect(target: Target) -> Result<Self, String> {
         let client = Runtime::connect(
-            Target::uds(socket.to_path_buf()),
+            target,
             ClientOptions {
                 control: ControlOptions {
                     client_name: "phux-desktop".to_owned(),

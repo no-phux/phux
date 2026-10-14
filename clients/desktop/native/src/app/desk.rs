@@ -59,6 +59,8 @@ pub struct OpenRequest {
     pub startup_error: Option<String>,
     /// The main window's display, which a quick window borrows.
     pub main_display: Option<DisplayPrefs>,
+    /// A host from the remote registry. Absent is the local server.
+    pub remote: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -87,6 +89,12 @@ pub enum Modal {
         terminal: ResourceId,
         title: String,
     },
+    /// Register a machine over ssh with `phux host add`.
+    AddHost,
+    /// Forget a registered machine with `phux host rm`.
+    RemoveHost {
+        name: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -103,6 +111,8 @@ pub struct Desk {
     pub(crate) updates: Entity<super::updates::Updater>,
     pub role: WindowRole,
     pub socket: PathBuf,
+    /// A host from the remote registry this window attaches to instead of `socket`.
+    pub remote: Option<String>,
     pub session: String,
     pub phux: PathBuf,
     pub focus: FocusHandle,
@@ -147,6 +157,10 @@ pub struct Desk {
     pending_project_terminal: Option<ResourceId>,
     /// Sessions folded closed in the sidebar, by name.
     pub(crate) collapsed: std::collections::HashSet<String>,
+    /// The remote registry as last read, for the sidebar's Hosts section.
+    pub(crate) hosts: Vec<host::RemoteHost>,
+    /// A host enrollment in flight, by the target it was given.
+    pub(crate) host_adding: Option<String>,
     /// The titlebar's window-drag surface, created once.
     pub(crate) drag_region: Option<Entity<crate::chrome::DragRegion>>,
     /// The window title last written.
@@ -225,6 +239,7 @@ impl Desk {
             updates,
             role: request.role,
             socket,
+            remote: request.remote.clone(),
             session: request.session.clone(),
             phux,
             focus,
@@ -260,6 +275,8 @@ impl Desk {
             open_fresh: request.fresh,
             pending_project_terminal: None,
             collapsed: Default::default(),
+            hosts: Vec::new(),
+            host_adding: None,
             drag_region: None,
             window_title: String::new(),
             closed: false,
@@ -282,6 +299,7 @@ impl Desk {
             );
         }
         desk.attach(request.initial_terminal, cx);
+        desk.refresh_hosts(cx);
         desk.sync_bindings(cx);
         desk.apply_kit_theme(cx);
         let updates = desk.updates.clone();
@@ -315,7 +333,11 @@ impl Desk {
             cx.notify();
             return;
         }
-        match Connection::connect(self.socket.clone(), self.session.clone()) {
+        let connected = match self.remote.as_deref() {
+            Some(host) => Connection::connect_remote(host, self.session.clone()),
+            None => Connection::connect(self.socket.clone(), self.session.clone()),
+        };
+        match connected {
             Ok(connection) => {
                 let mut workspace = Workspace::new(
                     self.session.clone(),
@@ -773,6 +795,11 @@ impl Desk {
                     cx.stop_propagation();
                     return;
                 }
+                Modal::RemoveHost { .. } => {
+                    self.confirm_remove_host(window, cx);
+                    cx.stop_propagation();
+                    return;
+                }
                 _ => {}
             }
         }
@@ -1034,10 +1061,11 @@ impl Desk {
     }
 
     pub(crate) fn reconnect(&mut self, cx: &mut Context<Self>) {
-        if self
-            .link
-            .as_ref()
-            .is_none_or(|link| link.connection.status != Status::Attached)
+        if self.remote.is_none()
+            && self
+                .link
+                .as_ref()
+                .is_none_or(|link| link.connection.status != Status::Attached)
         {
             match host::ensure_server(&self.phux, &self.socket, &self.session) {
                 // A launch that could not name a session reopens on the one
@@ -1133,8 +1161,9 @@ impl Desk {
             link.workspace
                 .close_pane(&link.connection, Some(placement.id.as_str()))
         });
+        let remote = self.remote.clone();
         self.desktop.update(cx, |desktop, cx| {
-            desktop.open_moved(session, terminal, cx);
+            desktop.open_moved(session, terminal, remote, cx);
         });
     }
 
@@ -1170,6 +1199,11 @@ impl Desk {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(failure) = self.local_only() {
+            self.post(Kind::Refusal, "Could not open folder", Some(failure));
+            cx.notify();
+            return;
+        }
         let desk = cx.entity().downgrade();
         let phux = self.phux.clone();
         let socket = self.socket.clone();
@@ -1320,7 +1354,9 @@ impl Desk {
             }
             return;
         }
-        let failure = if create {
+        let failure = if let Some(failure) = self.local_only() {
+            Some(failure)
+        } else if create {
             host::create_session(&self.phux, &self.socket, &name, &directory)
         } else {
             host::rename_session(&self.phux, &self.socket, &current, &name)
@@ -1392,7 +1428,10 @@ impl Desk {
             self.kills.insert(operation, name.to_owned());
             return;
         }
-        if let Some(failure) = host::kill_session(&self.phux, &self.socket, name) {
+        if let Some(failure) = self
+            .local_only()
+            .or_else(|| host::kill_session(&self.phux, &self.socket, name))
+        {
             self.post(Kind::Error, "Could not kill the session", Some(failure));
         } else {
             let _ = link.connection.refresh_topology();
@@ -1429,8 +1468,9 @@ impl Desk {
         } else {
             name
         };
+        let remote = self.remote.clone();
         self.desktop
-            .update(cx, |desktop, cx| desktop.open_session(session, cx));
+            .update(cx, |desktop, cx| desktop.open_session(session, remote, cx));
         cx.notify();
     }
 
@@ -2415,12 +2455,125 @@ impl Desk {
         &mut self.panes
     }
 
-    /// `{tab} — phux`, or `phux` with no tab. Written only when it changes.
+    /// Re-read the remote registry on the background executor, which a test
+    /// scheduler drives like any other window-open work.
+    pub(crate) fn refresh_hosts(&mut self, cx: &mut Context<Self>) {
+        let phux = self.phux.clone();
+        let listed = cx
+            .background_executor()
+            .spawn(async move { host::list_hosts(&phux) });
+        cx.spawn(async move |desk, cx| {
+            let result = listed.await;
+            let _ = desk.update(cx, |desk, cx| {
+                match result {
+                    Ok(hosts) => desk.hosts = hosts,
+                    // No CLI is already explained at launch; the section just stays empty.
+                    Err(error) => log::warn!("host list: {error}"),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Open a window on registered host `name`, or raise the one already open.
+    pub(crate) fn open_host(&mut self, name: String, cx: &mut Context<Self>) {
+        let desk = cx.entity().downgrade();
+        let host = name.clone();
+        self.desktop.update(cx, |desktop, cx| {
+            desktop.open_host(
+                name,
+                move |result, cx| {
+                    if let Err(error) = result {
+                        let _ = desk.update(cx, |desk, cx| {
+                            desk.post(Kind::Error, &format!("Could not open {host}"), Some(error));
+                            cx.notify();
+                        });
+                    }
+                },
+                cx,
+            )
+        });
+    }
+
+    /// Enroll `target` over ssh. The dialog closes at once; enrollment runs in
+    /// the background and reports through a notification.
+    pub(crate) fn apply_add_host(
+        &mut self,
+        target: String,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let target = target.trim().to_owned();
+        if target.is_empty() {
+            self.post(
+                Kind::Refusal,
+                "Could not add host",
+                Some("Enter an ssh destination such as me@mini.".into()),
+            );
+            cx.notify();
+            return;
+        }
+        if self.host_adding.is_some() {
+            return;
+        }
+        self.close_modal(window, cx);
+        self.host_adding = Some(target.clone());
+        let phux = self.phux.clone();
+        cx.spawn(async move |desk, cx| {
+            let added = target.clone();
+            let result = smol::unblock(move || host::add_host(&phux, &target, &name)).await;
+            let _ = desk.update(cx, |desk, cx| {
+                desk.host_adding = None;
+                match result {
+                    Ok(()) => desk.post(Kind::Info, &format!("Added {added}"), None),
+                    Err(error) => {
+                        desk.post(Kind::Error, &format!("Could not add {added}"), Some(error))
+                    }
+                }
+                desk.refresh_hosts(cx);
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    pub(crate) fn confirm_remove_host(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Modal::RemoveHost { name } = self.modal.clone() else {
+            return;
+        };
+        self.close_modal(window, cx);
+        match host::remove_host(&self.phux, &name) {
+            Ok(()) => self.hosts.retain(|host| host.name != name),
+            Err(error) => self.post(
+                Kind::Error,
+                &format!("Could not remove {name}"),
+                Some(error),
+            ),
+        }
+        self.refresh_hosts(cx);
+    }
+
+    /// Why a CLI-backed action cannot run here: the CLI drives the local
+    /// server's socket, not a registered host.
+    fn local_only(&self) -> Option<String> {
+        self.remote.as_deref().map(|host| {
+            format!("This window is on {host}. Run it there with `phux attach {host}`.")
+        })
+    }
+
+    /// `{tab} — phux`, or `phux` with no tab, plus the host on a remote window.
+    /// Written only when it changes.
     pub(crate) fn sync_title(&mut self, window: &mut Window) {
         let title = self
             .active_tab()
             .map(|tab| format!("{} — phux", tab_title(self, tab)))
             .unwrap_or_else(|| "phux".into());
+        let title = match self.remote.as_deref() {
+            Some(host) => format!("{title} · {host}"),
+            None => title,
+        };
         if title != self.window_title {
             window.set_window_title(&title);
             self.window_title = title;

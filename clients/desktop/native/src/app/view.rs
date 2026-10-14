@@ -32,6 +32,7 @@ use crate::workspace::place::{self, SessionLine};
 use super::actions::{OpenPathDirectory, Run};
 use super::color::from_hex;
 use super::desk::{self, Desk, Modal, Tone};
+use super::host;
 use super::keys::gpui_stroke;
 use super::motion;
 use super::notifications::{Kind, Notification};
@@ -573,6 +574,158 @@ fn sidebar_list(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl I
             )
         })
         .children(sessions)
+        .child(hosts_section(desk, colors, cx))
+}
+
+/// Registered machines from `phux host ls`: open one in its own window, add
+/// one over ssh, or forget one. Always shown, so adding a host is never hidden.
+/// The filled dot marks the host this window is on.
+fn hosts_section(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> AnyElement {
+    let header = section_label("Hosts", colors).child(
+        Button::new("host-add")
+            .icon(IconName::Plus)
+            .ghost()
+            .xsmall()
+            .tooltip("Add a host over ssh")
+            .disabled(desk.host_adding.is_some())
+            .on_click(
+                cx.listener(|desk, _, window, cx| desk.open_modal(Modal::AddHost, window, cx)),
+            ),
+    );
+    let mut section = div().flex().flex_col().gap(px(1.)).pt(px(8.)).child(header);
+    for entry in &desk.hosts {
+        let here = desk.remote.as_deref() == Some(entry.name.as_str());
+
+        section = section.child(host_row(entry, here, colors, cx));
+    }
+    if let Some(target) = desk.host_adding.as_deref() {
+        section = section.child(
+            div()
+                .px(px(10.))
+                .py(px(6.))
+                .text_xs()
+                .text_color(from_hex(&colors.muted))
+                .child(format!("Adding {target}…")),
+        );
+    } else if desk.hosts.is_empty() {
+        section = section.child(
+            div()
+                .id("host-empty")
+                .px(px(10.))
+                .py(px(6.))
+                .rounded(px(6.))
+                .cursor_pointer()
+                .hover(|style| style.bg(from_hex(&colors.hover)))
+                .text_xs()
+                .text_color(from_hex(&colors.muted))
+                .child("Add a machine you reach over ssh…")
+                .on_click(
+                    cx.listener(|desk, _, window, cx| desk.open_modal(Modal::AddHost, window, cx)),
+                ),
+        );
+    }
+    section.into_any_element()
+}
+
+fn host_row(
+    entry: &host::RemoteHost,
+    here: bool,
+    colors: &Palette,
+    cx: &mut Context<Desk>,
+) -> AnyElement {
+    let name = entry.name.clone();
+    let route = entry
+        .endpoint
+        .split_once("://")
+        .map_or(entry.endpoint.as_str(), |(_, rest)| rest)
+        .to_owned();
+    let lane = entry
+        .endpoint
+        .split_once("://")
+        .map(|(scheme, _)| scheme.to_owned());
+    let handle = cx.weak_entity();
+    let menu = {
+        let name = name.clone();
+        move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
+            let (open, remove) = (handle.clone(), handle.clone());
+            let (open_name, remove_name) = (name.clone(), name.clone());
+            menu.item(PopupMenuItem::new("Open Window").on_click(move |_, _, cx| {
+                let name = open_name.clone();
+                let _ = open.update(cx, |desk, cx| desk.open_host(name, cx));
+            }))
+            .item(
+                PopupMenuItem::new("Remove Host…").on_click(move |_, window, cx| {
+                    let name = remove_name.clone();
+                    let _ = remove.update(cx, |desk, cx| {
+                        desk.open_modal(Modal::RemoveHost { name }, window, cx)
+                    });
+                }),
+            )
+        }
+    };
+    let click = name.clone();
+    div()
+        .id(SharedString::from(format!("host-{name}")))
+        .min_h(px(38.))
+        .pl(px(10.))
+        .pr(px(6.))
+        .py(px(4.))
+        .flex()
+        .items_center()
+        .gap(px(9.))
+        .rounded(px(6.))
+        .cursor_pointer()
+        .bg(if here {
+            from_hex(&colors.active)
+        } else {
+            gpui::transparent_black()
+        })
+        .hover(|style| style.bg(from_hex(&colors.hover)))
+        .child(
+            div()
+                .w(px(14.))
+                .flex()
+                .justify_center()
+                .flex_shrink_0()
+                .child(
+                    div()
+                        .size(px(8.))
+                        .rounded_full()
+                        .when(here, |dot| dot.bg(from_hex(&colors.theme.accent)))
+                        .when(!here, |dot| {
+                            dot.border_1().border_color(from_hex(&colors.faint))
+                        }),
+                ),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(div().text_sm().truncate().child(name.clone()))
+                .child(
+                    div()
+                        .text_xs()
+                        .truncate()
+                        .text_color(from_hex(&colors.muted))
+                        .child(route),
+                ),
+        )
+        .when_some(lane, |row, lane| {
+            row.child(pill(&lane, &colors.hover, &colors.muted))
+        })
+        .child(
+            Button::new(SharedString::from(format!("host-menu-{name}")))
+                .icon(IconName::Ellipsis)
+                .ghost()
+                .xsmall()
+                .tooltip("Host actions")
+                .dropdown_menu(menu.clone()),
+        )
+        .on_click(cx.listener(move |desk, _, _, cx| desk.open_host(click.clone(), cx)))
+        .context_menu(menu)
+        .into_any_element()
 }
 
 fn organization_bar(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> AnyElement {
@@ -825,6 +978,7 @@ fn session_block(
                     .filter(|resource| {
                         resource.session == key
                             && resource.kind != ResourceKind::AgentSession
+                            && running(resource)
                             && !panes.iter().any(|pane| pane.key == Some(resource.key))
                     })
                     .cloned()
@@ -933,6 +1087,19 @@ fn session_block(
                 )
         })
         .into_any_element()
+}
+
+/// A record worth a sidebar row: one whose process is coming up, up, or going
+/// down. An exited, failed, lost, or never-started record has nothing to show
+/// or attach to, so it stays out of the list.
+fn running(resource: &ResourceRecord) -> bool {
+    matches!(
+        resource
+            .activation
+            .as_ref()
+            .map(|activation| activation.state),
+        Some(ExecState::Starting | ExecState::Running | ExecState::Stopping)
+    )
 }
 
 fn record_row(
@@ -1321,7 +1488,10 @@ fn empty_state(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl In
         Some(Status::Idle | Status::Connecting | Status::Negotiated) => div()
             .text_sm()
             .text_color(muted)
-            .child(format!("Connecting to {}…", desk.socket.display())),
+            .child(match desk.remote.as_deref() {
+                Some(host) => format!("Connecting to {host}…"),
+                None => format!("Connecting to {}…", desk.socket.display()),
+            }),
         _ => div()
             .flex()
             .flex_col()

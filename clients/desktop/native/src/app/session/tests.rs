@@ -51,7 +51,7 @@ fn project_open_uses_a_durable_window_even_when_a_fresh_view_exists(cx: &mut Tes
     };
     desktop.update(cx, |desktop, cx| {
         desktop.launch(options, cx).unwrap();
-        desktop.open_session("Cedar".into(), cx);
+        desktop.open_session("Cedar".into(), None, cx);
         assert_eq!(desktop.windows[1].role, WindowRole::Fresh);
         desktop
             .open_project("Cedar".into(), phux_protocol::ResourceId::local(1), cx)
