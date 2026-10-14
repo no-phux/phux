@@ -48,9 +48,9 @@ phux: error: no server running
 
 Diagnostics and progress go to stderr. Human reports such as `phux doctor`
 and listings stay on stdout. Rendering does not change exit statuses.
-Help retains its fixed-width layout. Only the wordmark and severity are
-styled: bold wordmark, cyan information, green success, yellow warning, red
-error. There are no animated status lines or decorative Unicode markers.
+Help retains its fixed-width layout. Diagnostic styling is limited to the
+wordmark and severity: bold wordmark, cyan information, green success, yellow
+warning, red error. Status labels have no emoji or decorative Unicode markers.
 
 Color is chosen for the destination stream, in this order:
 
@@ -64,7 +64,9 @@ bytes, recordings, config exports, completion source, and script data are
 never routed through human styling. Installer dry-run fields, `next:`
 commands, PATH remedies, toolchain probe TSV, build receipts, and the app's
 self-update protocol keep their formats. Child-tool output and captured
-terminal transcripts are passed through rather than relabeled.
+terminal transcripts are passed through rather than relabeled. The MCP
+adapter uses the same severity labels on its out-of-band stderr channel but
+keeps it uncolored even when color is forced.
 
 The Rust binary owns its presentation in `crates/phux/src/output.rs`, using
 [anstyle](https://docs.rs/anstyle/) and standard-library terminal detection.

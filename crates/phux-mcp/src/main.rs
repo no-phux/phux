@@ -97,12 +97,18 @@ where
     }
 }
 
+// MCP stderr is an out-of-band channel, not a human terminal renderer. Keep
+// these diagnostics plain even under forced color; stdout stays JSON-RPC.
+fn diagnostic(level: &str, message: std::fmt::Arguments<'_>) {
+    eprintln!("phux: {level}: mcp: {message}");
+}
+
 fn write_stdout(bytes: &[u8]) -> std::process::ExitCode {
     match std::io::stdout().lock().write_all(bytes) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => std::process::ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("phux-mcp: stdout write failed: {err}");
+            diagnostic("error", format_args!("stdout write failed: {err}"));
             std::process::ExitCode::FAILURE
         }
     }
@@ -115,7 +121,10 @@ fn write_schema() -> std::process::ExitCode {
             write_stdout(&rendered)
         }
         Err(err) => {
-            eprintln!("phux-mcp: could not render the tool catalog: {err}");
+            diagnostic(
+                "error",
+                format_args!("could not render the tool catalog: {err}"),
+            );
             std::process::ExitCode::FAILURE
         }
     }
@@ -131,7 +140,8 @@ fn main() -> std::process::ExitCode {
         }
         Ok(Mode::Serve) => {}
         Err(message) => {
-            eprintln!("phux-mcp: {message}\nTry `phux-mcp --help` for usage.");
+            diagnostic("error", format_args!("{message}"));
+            eprintln!("  hint: Try `phux-mcp --help` for usage.");
             return std::process::ExitCode::from(2);
         }
     }
@@ -142,7 +152,7 @@ fn main() -> std::process::ExitCode {
     {
         Ok(rt) => rt,
         Err(err) => {
-            eprintln!("phux-mcp: failed to build runtime: {err}");
+            diagnostic("error", format_args!("failed to build runtime: {err}"));
             return std::process::ExitCode::FAILURE;
         }
     };
@@ -160,7 +170,7 @@ fn finish_serving(
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => std::process::ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("phux-mcp: fatal: {err}");
+            diagnostic("error", format_args!("fatal: {err}"));
             std::process::ExitCode::FAILURE
         }
     }

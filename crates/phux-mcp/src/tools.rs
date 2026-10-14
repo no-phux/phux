@@ -664,7 +664,10 @@ async fn phux_kill(args: &Value) -> Result<Value, ToolError> {
 /// out-of-band diagnostic channel.
 pub(crate) fn warn_partial_view(verb: &str, notices: &[String]) {
     for notice in notices {
-        eprintln!("{}", phux_client::state::partial_view_warning(verb, notice));
+        let message = phux_client::state::partial_view_warning(verb, notice);
+        // Adapt the shared warning header, keeping the fleet detail intact.
+        let payload = message.strip_prefix("phux: warning: ").unwrap_or(&message);
+        crate::diagnostic("warn", format_args!("{payload}"));
     }
 }
 
