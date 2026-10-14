@@ -923,6 +923,9 @@ and that start failed, a `no_server` or `transport` error also carries
 the additive `error.auto_start_error`: why the start failed, quoting the
 server's own bind or config error when it exited at startup. Absent
 otherwise.
+CLI parsing and root argument refusals: `usage_error` (exit 2). When
+`--json` is present, these refusals use the same one-line error document;
+stdout remains empty and styling is bypassed.
 Transport: `no_server`, `server_disconnected`, `transport`,
 `remote_unresolved`. Coordinator startup (`phux server --ensure --json`):
 `server_start_timeout`, `server_start_cancelled`, `server_start_failed`.
