@@ -9,6 +9,18 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.71.1](https://github.com/no-phux/phux/compare/v0.71.0...v0.71.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* **deps:** bump rustls to 0.23.46 for RUSTSEC-2026-0346..0349 ([#1352](https://github.com/no-phux/phux/issues/1352)) ([5b6738c](https://github.com/no-phux/phux/commit/5b6738cdeebce780213336a786906aa4d7b23d43))
+
+
+### Performance
+
+* **desktop:** stop rebuilding the window on terminal output ([#1353](https://github.com/no-phux/phux/issues/1353)) ([79eeb8d](https://github.com/no-phux/phux/commit/79eeb8d8f2597d9f4ccd61b69866b316a7a5e03e))
+
 ## [0.71.0](https://github.com/no-phux/phux/compare/v0.70.0...v0.71.0) (2026-10-14)
 
 
