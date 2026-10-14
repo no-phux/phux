@@ -9,5 +9,11 @@
   "homepage": "https://github.com/no-phux/phux/tree/main/integrations/grok",
   "repository": "https://github.com/no-phux/phux",
   "license": "MIT OR Apache-2.0",
-  "keywords": ["phux", "terminal", "mcp", "grok", "agent"]
+  "keywords": [
+    "phux",
+    "terminal",
+    "mcp",
+    "grok",
+    "agent"
+  ]
 }

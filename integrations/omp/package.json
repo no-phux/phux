@@ -9,9 +9,19 @@
     "url": "https://github.com/no-phux/phux.git",
     "directory": "integrations/omp"
   },
-  "files": ["dist", "skills", "README.md"],
-  "exports": {".": "./dist/index.js"},
-  "omp": {"extensions": ["./dist/index.js"]},
+  "files": [
+    "dist",
+    "skills",
+    "README.md"
+  ],
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "omp": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
   "scripts": {
     "build": "bun scripts/build.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -27,6 +37,11 @@
     "@types/bun": "1.4.2",
     "typescript": "7.0.2"
   },
-  "engines": {"bun": ">=1.3.14"},
-  "publishConfig": {"access": "public", "provenance": true}
+  "engines": {
+    "bun": ">=1.3.14"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
 }

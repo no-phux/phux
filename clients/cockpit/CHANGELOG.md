@@ -25,6 +25,52 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   or server restart without restarting the app; recover the selected session
   by its confirmed name when a replacement server reuses numeric IDs.
 
+## [0.37.0](https://github.com/no-phux/phux/compare/cockpit-v0.36.0...cockpit-v0.37.0) (2026-10-14)
+
+
+### Features
+
+* **agent:** resume committed streams across reconnects ([#1178](https://github.com/no-phux/phux/issues/1178)) ([78e6041](https://github.com/no-phux/phux/commit/78e6041ef94472f73b3e8576d19e5655b2c60239))
+* **clients:** session menus, directory terminals, and a folder on create ([#1115](https://github.com/no-phux/phux/issues/1115)) ([c6b2ff2](https://github.com/no-phux/phux/commit/c6b2ff20be7efb25aa9b28dd93d8434160f0d4cc))
+* **clients:** share session host, directory, and project grouping ([#1108](https://github.com/no-phux/phux/issues/1108)) ([0f0e081](https://github.com/no-phux/phux/commit/0f0e0813e39b17541236ad9f988352e522b0ac7d))
+* **cockpit:** add host Insert Path picker ([a2a36d4](https://github.com/no-phux/phux/commit/a2a36d4f06a40b272f803872aad9106e0db7dcfa))
+* **cockpit:** bundle Paper Mono as default terminal font ([#1087](https://github.com/no-phux/phux/issues/1087)) ([c496e4a](https://github.com/no-phux/phux/commit/c496e4a69d085c7ddc4aa1c547b2363feb33a6a9))
+* **cockpit:** confirm unsafe pastes and mark panes that return to their prompt ([49cfb58](https://github.com/no-phux/phux/commit/49cfb58c67aa706d2c712d81bccb05f41c1d5e7d))
+* **cockpit:** measure keystroke to echo on the coordinator path ([e927cec](https://github.com/no-phux/phux/commit/e927cec6bb4763d125675df819977f4fd3713fd9))
+* **cockpit:** park clipboard and pty results during replay ([#1133](https://github.com/no-phux/phux/issues/1133)) ([88f45bf](https://github.com/no-phux/phux/commit/88f45bf626126b4c5e246c58a9939bb4627bed74))
+* **cockpit:** place a peer session's unarranged terminal ([ee3c205](https://github.com/no-phux/phux/commit/ee3c20574bee9c12f34a78985c50c8bed8744362))
+* **cockpit:** reorder tabs by drag and close other local tabs ([#1130](https://github.com/no-phux/phux/issues/1130)) ([dd57965](https://github.com/no-phux/phux/commit/dd57965ec9f06a059d82fd20e060c1fdcb42814f))
+* **cockpit:** retain exact-source pane and tab close outcomes ([#1128](https://github.com/no-phux/phux/issues/1128)) ([53fb814](https://github.com/no-phux/phux/commit/53fb8140c65ebc7127e752a7c6800396ae45fd47))
+* **cockpit:** say when another client is driving a terminal and offer Take Over Input ([45182d3](https://github.com/no-phux/phux/commit/45182d318eb34e1f5d10bc7d635f70e6fd74ddd7))
+* **cockpit:** show where you are, every machine and every window ([715c575](https://github.com/no-phux/phux/commit/715c5751141ef7532724b5801af25dd2fdf99d0f))
+* **cockpit:** take a folder on New Session and remember sessions ([#1117](https://github.com/no-phux/phux/issues/1117)) ([e72b0c9](https://github.com/no-phux/phux/commit/e72b0c922f407161fed0a8bcf1f8868ada1e6f4c))
+* **org:** kill a session server-side with SESSION_KILL ([c859088](https://github.com/no-phux/phux/commit/c859088f12b4aaf13f2c3977c510616a05957801))
+* resources, sessions, Inbox, and actors domain model ([#1191](https://github.com/no-phux/phux/issues/1191)) ([fa80d73](https://github.com/no-phux/phux/commit/fa80d7328d315b8d57fd5c45968f9936d8cbaa10))
+
+
+### Bug Fixes
+
+* **agent:** centralize committed publication and reconnect delivery ([#1193](https://github.com/no-phux/phux/issues/1193)) ([2a65b55](https://github.com/no-phux/phux/commit/2a65b55af5850a2996e186fbe0a1e395957765ff))
+* **clients:** name the captured token file when a loopback dial fails ([#1121](https://github.com/no-phux/phux/issues/1121)) ([63bcffe](https://github.com/no-phux/phux/commit/63bcffee155e96c14601a2f4adc03875c161200e))
+* **cli:** restore a workspace session's host, directory, and project ([#1152](https://github.com/no-phux/phux/issues/1152)) ([68ee18b](https://github.com/no-phux/phux/commit/68ee18ba6d43311027e1d670b80f617fa5431d57))
+* **cockpit:** bind soak identity across exec and bound failure cleanup ([#1158](https://github.com/no-phux/phux/issues/1158)) ([c35c3de](https://github.com/no-phux/phux/commit/c35c3de2b024c6c8e9a2c434a10ebcd57bd5f800))
+* **cockpit:** focus destination pickers and dialog the agent inspector ([#1140](https://github.com/no-phux/phux/issues/1140)) ([743bde5](https://github.com/no-phux/phux/commit/743bde5189dbe0baf861a3f71f0008725d7d6b66))
+* **cockpit:** lease each worktree to one agent session ([022aee5](https://github.com/no-phux/phux/commit/022aee5254b99db1c5603c752243b37469d76d00))
+* **cockpit:** open the navigator on the current row ([#1135](https://github.com/no-phux/phux/issues/1135)) ([9be1fd3](https://github.com/no-phux/phux/commit/9be1fd3e6fb90ecd6be128385ed65483087f2851))
+* **cockpit:** pin native SDK on upstream main with scriptc 0.2.5 ([cf93781](https://github.com/no-phux/phux/commit/cf93781475da42f6fdc9325a0d04efbbc5d21bcf))
+* **cockpit:** pin native SDK with modal focus containment and scriptc 0.1.7 ([50562dd](https://github.com/no-phux/phux/commit/50562dd6a9a01fa63bd4beec47c75d20d145ca6e))
+* **cockpit:** pin native SDK with switch authority and test-stack fixes ([69237c7](https://github.com/no-phux/phux/commit/69237c7031218150e7127323176454066765d45d))
+* **cockpit:** quiet the focused split accent ([741aefb](https://github.com/no-phux/phux/commit/741aefbee117de8065e9294d01d45e590c83199e))
+* **cockpit:** run model tests on the pinned Node 24 ([#1138](https://github.com/no-phux/phux/issues/1138)) ([0c0a256](https://github.com/no-phux/phux/commit/0c0a25683c8808c8499434970d75d3b542fbe8c9))
+* **cockpit:** send remote mouse events in surface pixels ([abb0346](https://github.com/no-phux/phux/commit/abb03460693ce5fac39759bf7e6da6beec9f3209))
+* **cockpit:** show navigator status in the results viewport ([28e5a55](https://github.com/no-phux/phux/commit/28e5a559fdf2b5774d3c1da23d7a1663441e9002))
+* propagate terminal geometry consistently across clients ([#956](https://github.com/no-phux/phux/issues/956)) ([7f80b7c](https://github.com/no-phux/phux/commit/7f80b7c96fe576c3292713a92a4237e81ee5fbd9))
+
+
+### Documentation
+
+* **cockpit:** drop the retired process_restoration_supported flag from the topology doc ([fdb07d7](https://github.com/no-phux/phux/commit/fdb07d7e90d67eed64cecd1d9465448c41fcc1a8))
+
 ## [0.36.0](https://github.com/no-phux/phux/compare/cockpit-v0.35.3...cockpit-v0.36.0) (2026-10-13)
 
 
