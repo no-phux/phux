@@ -1,0 +1,41 @@
+{
+  "name": "@phux/private-native-host",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": { "node": ">=22.19.0" },
+  "scripts": {
+    "generate": "node scripts/generate.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node scripts/test.mjs"
+  },
+  "dependencies": {
+    "@ampcode/cli": "0.0.1792008042-gef0030",
+    "@ampcode/sdk": "0.1.0-20260918210405-g81edbf0",
+    "@anthropic-ai/claude-agent-sdk": "0.3.300",
+    "@anthropic-ai/sdk": "0.134.0",
+    "@earendil-works/pi-ai": "1.1.0",
+    "@earendil-works/pi-coding-agent": "1.1.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "@opencode/client": "2.0.26",
+    "ajv": "8.17.1",
+    "ajv-formats": "3.0.1",
+    "zod": "4.3.6"
+  },
+  "overrides": {
+    "@ampcode/cli": "$@ampcode/cli",
+    "@earendil-works/chord": "1.1.0",
+    "@earendil-works/pi-agent-core": "1.1.0",
+    "@earendil-works/pi-ai": "$@earendil-works/pi-ai",
+    "@earendil-works/pi-codemode": "1.1.0",
+    "@earendil-works/pi-mcp": "1.1.0",
+    "@earendil-works/pi-telemetry": "1.1.0",
+    "@earendil-works/pi-tui": "1.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.4",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2"
+  }
+}

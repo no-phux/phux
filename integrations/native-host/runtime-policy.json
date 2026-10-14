@@ -1,0 +1,82 @@
+{
+  "schema": "phux.native-sdk-runtime/v1",
+  "private": true,
+  "redistribute": ["index.js", "package.json", "package-lock.json", "runtime-policy.json"],
+  "never_redistribute": ["node_modules", "provider executables", "commercial SDK source"],
+  "node_minimum": "22.19.0",
+  "bridge_protocol": {
+    "operation_id": "canonical decimal u64 string on Node stdin/stdout; core transport retains u64",
+    "max_packet_bytes": 16384,
+    "max_buffered_output_bytes": 8388608,
+    "max_operation_ledger_entries": 4096,
+    "generation": "npm run generate",
+    "generated_format": "ESM; run generated index.js in type:module package context or cache as .mjs"
+  },
+  "install_args": ["ci", "--omit=dev", "--omit=optional", "--ignore-scripts", "--no-audit", "--no-fund"],
+  "integrity_source": { "file": "package-lock.json", "entry": "packages[node_modules/PACKAGE]", "fields": ["version", "resolved", "integrity"] },
+  "optional_policy": {
+    "default": "deny",
+    "never_install_prefixes": ["@anthropic-ai/claude-agent-sdk-"],
+    "typescript_tools": {
+      "dev_only": true,
+      "version": "7.0.2",
+      "packages": {
+        "darwin-arm64": "@typescript/typescript-darwin-arm64",
+        "darwin-x64": "@typescript/typescript-darwin-x64",
+        "linux-arm64": "@typescript/typescript-linux-arm64",
+        "linux-x64": "@typescript/typescript-linux-x64",
+        "win32-arm64": "@typescript/typescript-win32-arm64",
+        "win32-x64": "@typescript/typescript-win32-x64"
+      },
+      "install": "For contributor source verification only, extract the complete integrity-checked locked host compiler package into node_modules/PACKAGE. Do not include dev dependencies in provider runtime setup."
+    },
+    "esbuild": {
+      "version": "0.28.2",
+      "packages": {
+        "darwin-arm64": "@esbuild/darwin-arm64",
+        "darwin-x64": "@esbuild/darwin-x64",
+        "linux-arm64": "@esbuild/linux-arm64",
+        "linux-x64": "@esbuild/linux-x64",
+        "win32-arm64": "@esbuild/win32-arm64",
+        "win32-x64": "@esbuild/win32-x64"
+      },
+      "install": "Extract entire integrity-checked locked package into node_modules/PACKAGE, preserving bin/esbuild (esbuild.exe on Windows). No postinstall script or network fallback."
+    },
+    "amp_cli": {
+      "version": "0.0.1792008042-gef0030",
+      "packages": {
+        "darwin-arm64": "@ampcode/cli-darwin-arm64",
+        "darwin-x64": "@ampcode/cli-darwin-x64",
+        "linux-arm64": "@ampcode/cli-linux-arm64",
+        "linux-x64": "@ampcode/cli-linux-x64",
+        "win32-x64": "@ampcode/cli-win32-x64"
+      },
+      "source_binary": { "unix": "amp", "win32": "amp.exe" },
+      "target_binary": "node_modules/@ampcode/cli/bin/amp.exe",
+      "install": "Extract integrity-checked locked selected package; copy its actual platform binary to target_binary with mode 0755. Do not execute install.cjs or cli-wrapper.cjs and do not fall back to PATH. Linux musl unsupported by this pinned Amp CLI."
+    }
+  },
+  "preserve_assets": [
+    { "package": "@silvia-odwyer/photon-node", "version": "0.3.4", "asset": "photon_rs_bg.wasm", "license": "Apache-2.0" },
+    { "package": "quickjs-wasi", "version": "3.6.2", "asset": "entire published package including WASI assets", "license": "MIT" },
+    { "package": "esbuild", "version": "0.28.2", "asset": "entire JS package plus allowlisted host executable", "license": "MIT" },
+    { "package": "@earendil-works/pi-coding-agent", "version": "1.1.0", "asset": "entire published package including themes/images/extension workers", "license": "MIT" }
+  ],
+  "provider_compatibility": {
+    "pi": { "sdk": "@earendil-works/pi-coding-agent@1.1.0", "mode": "in-process createAgentSession", "internal_family_override": "1.1.0" },
+    "claude": { "sdk": "@anthropic-ai/claude-agent-sdk@0.3.300/core", "executable": "explicit existing absolute Claude native executable", "cli_version": "2.1.300", "bundled_cli": false },
+    "opencode": { "sdk": "@opencode/client@2.0.26", "executable": "explicit existing OpenCode2.0.26", "service": "owned non-detached private registration; never global ensure/stop" },
+    "codex": { "sdk": "official app-server generated protocol", "cli_version": "0.162.1", "revision": "092d3acd6bec3e3a14bdc7e7a2810ab628ab759d", "executable": "explicit existing absolute codex" },
+    "amp": { "sdk": "@ampcode/sdk@0.1.0-20260918210405-g81edbf0", "cli_version": "0.0.1792008042-gef0030", "interactive_permission_callbacks": false, "provider_admission_receipt": false, "provider_cancel_receipt": false }
+  },
+  "explicit_consent": [
+    { "packages": ["@anthropic-ai/claude-agent-sdk"], "license": "SEE LICENSE IN README.md", "terms": "https://www.anthropic.com/legal/commercial-terms", "evidence": "https://github.com/anthropics/claude-agent-sdk-typescript#license-and-terms", "redistribute": false },
+    { "packages": ["@ampcode/sdk", "@ampcode/cli", "@ampcode/cli-*"], "license": "Amp Commercial License / SEE LICENSE IN LICENSE.md", "terms": "https://ampcode.com/terms", "evidence": "https://unpkg.com/@ampcode/sdk@0.1.0-20260918210405-g81edbf0/LICENSE.md", "redistribute": false }
+  ],
+  "license_evidence": {
+    "transitive_metadata": "package-lock.json packages entries retain npm license fields and integrity; this metadata is evidence, not a legal redistribution grant",
+    "pi": "https://registry.npmjs.org/@earendil-works%2fpi-coding-agent/1.1.0",
+    "opencode": "https://registry.npmjs.org/@opencode%2fclient/2.0.26",
+    "codex": "https://github.com/openai/codex/tree/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d/codex-rs/app-server-protocol/schema"
+  }
+}
