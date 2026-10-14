@@ -295,7 +295,7 @@ pub enum Subject {
     HeldAction,
     /// The organization records the grant inventories, as a filtered page:
     /// a session through its Group, a resource through its session, and
-    /// authority-wide totals and the Inbox designation only with the Global
+    /// authority-wide totals and the Intake designation only with the Global
     /// selector.
     OrganizationView,
     /// The session the command's `SessionKey` names, resolved

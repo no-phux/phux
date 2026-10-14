@@ -37,7 +37,7 @@ pub struct Session {
     pub name: String,
     /// Whether the session survives empty.
     pub lifetime: SessionLifetime,
-    /// An imported group shown in Inbox until explicitly organized.
+    /// An imported group shown in Intake until explicitly organized.
     #[serde(default)]
     pub awaiting_organization: bool,
     /// Member resources in creation (or arrival) order. Each resource is a

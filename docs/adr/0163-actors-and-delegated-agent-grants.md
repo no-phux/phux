@@ -42,7 +42,7 @@ adds organization commands that each need a grant.
    `principal` and `on_behalf_of` as optional trailing fields that encode
    to zero bytes when absent, so existing encodings stay byte-identical.
 2. **Two verbs.** `ORGANIZE = 0x40` covers rename, membership moves,
-   arrangement edits, Inbox resolution, and workspace links. `TERMINATE =
+   arrangement edits, Intake resolution, and workspace links. `TERMINATE =
    0x80` covers terminate, remove, delete, abandon, and terminating
    signals. The scope schema version bumps to 2, as workload-auth §5
    requires for a new verb. `*` covers all eight verbs.
@@ -53,7 +53,7 @@ adds organization commands that each need a grant.
    nothing more.
 4. **Classification.** `GetOrganization` and `ArrangementGet` read
    records, not content, and need `INVENTORY`; creates and relaunch need `CREATE`; rename, move, bulk move,
-   Inbox resolution, and arrangement replace need `ORGANIZE` on every
+   Intake resolution, and arrangement replace need `ORGANIZE` on every
    affected session; terminate, remove, abandon, and session delete need
    `TERMINATE`. Undo needs the original operation's grants as they stand
    now. A `group:` selector resolves by current membership and is

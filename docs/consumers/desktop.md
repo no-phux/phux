@@ -44,18 +44,25 @@ appear as an empty inventory. A project navigator, tabs, splits, command
 palette, and optional inspector organize the terminal through one command
 surface.
 
-### Inbox organization
+### Intake organization
 
-Untargeted startup opens the owner's Inbox. The sidebar puts that Session and
-imported Sessions awaiting organization under **Inbox**, preserving their
-existing grouping. **Move out of Inbox** in an imported Session's menu removes
-it from intake without moving or restarting its work.
+Untargeted startup opens the owner's Intake: a real designated persistent
+Session for work created without a destination. The sidebar puts that Session
+and separate imported Sessions awaiting organization under **Intake sessions**,
+preserving their existing grouping. **Mark Organized** in an imported
+Session's menu clears only its import mark, removing it from that section
+without moving, renaming, or restarting its work. The attention **Inbox**
+lists agent attention alerts; it is not a Session or a move destination.
+The titlebar bell opens **Inbox & notifications**, separating agent alerts
+from errors and command results. Its badge counts unread alerts, not resources.
 
 - Command-click live work to toggle selection; stopped and non-Terminal
   records remain selectable in the same sidebar. **Select All** selects a
   Session's members.
 - Drag a resource (or its selected group) onto a Session, or use **Move…** /
-  `Cmd-Shift-M` and choose a destination. **Clear** cancels selection.
+  `Cmd-Shift-M` and choose a named Session or **Leave unorganized (Intake)**.
+  The designated Intake cannot be killed; terminate individual processes or
+  move them to another Session instead. **Clear** cancels selection.
 - After a committed edit, **Undo** / `Cmd-Option-Z` requests its receipt's
   inverse through the shared runtime. A conflict, changed permission, expired
   receipt, or missing original Session is a refusal, not a fabricated success.
@@ -65,6 +72,13 @@ never execution identity or process lifetime; closing a local View still only
 detaches it. Only the latest organization edit submitted by that window is
 offered for undo. Local tabs remain a View arrangement, not a shared-arrangement
 editor; Browser resources and cross-machine Workspaces are not implemented.
+
+Session names are labels, not identity. Rename dialogs keep their original
+target even if another client renames it or reuses its old name. Home and Quick
+Window follow the same session, and reconnect never recreates its old name.
+Default launches save layouts by the permanent session key, importing existing
+name-based layouts without deleting them; explicit layout paths stay unchanged.
+Unreadable or newer saved layouts remain protected from writes.
 
 ## Projects, folders, and worktrees
 
@@ -199,7 +213,7 @@ notarization, accessibility journeys, and Linux are not shipped.
 | Native GPUI desktop | The executable and packaged smoke are the acceptance record. A presented frame is required; this page does not claim that run. | phux-6hr7 |
 | Terminal-first projects and workspace | Tabs, split trees, restore by server identity, Open Folder. Projects/worktree grouping is not built. | phux-d4x9.7–.9 |
 | Independent same-terminal views | Mirror Pane, sole-or-last-focused size owner, per-view find. GPU evidence still required. | phux-d4x9.17, phux-d4x9.18 |
-| Connections, settings, and agents | One local socket per window; `Phux.app` opens the owner's Inbox (else the most recent session) and never creates `default`; display settings and Ghostty-config import; agent badges and one notification feed behind the titlebar bell, whose agent and error entries peek in the window and reach macOS Notification Center while Phux is in the background. Remote hosts, approvals, the inspector, and catalogue-backed settings (effective value, default, source) are not built. | phux-d4x9.10–.12 |
+| Connections, settings, and agents | One local socket per window; `Phux.app` opens the owner's Intake (else the most recent session) and never creates `default`; display settings and Ghostty-config import; agent badges and one notification feed behind the titlebar bell, whose agent and error entries peek in the window and reach macOS Notification Center while Phux is in the background. Remote hosts, approvals, the inspector, and catalogue-backed settings (effective value, default, source) are not built. | phux-d4x9.10–.12 |
 | Native accessibility and delivery safety | Required journeys and teardown/input proofs are not yet qualified. | phux-d4x9.13, phux-d4x9.14 |
 | Apple-silicon release | `just desktop-install-app` builds an ad-hoc-signed local bundle with no NAPI addon. In-app verified updates ship; notarization remains required. | phux-d4x9.15, phux-d4x9.16 |
 | Linux | Subsequent platform qualification. macOS evidence does not establish it. | phux-d4x9.19 |

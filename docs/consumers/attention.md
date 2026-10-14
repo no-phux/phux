@@ -42,7 +42,9 @@ scratch: empty, ephemeral
 - **Quiet facts** follow: running, not started, or done when nothing runs.
 - **Lifetime** shows only as `ephemeral`, because that session vanishes with
   its last terminal. A persistent session is the default and says nothing.
-- **The Inbox** shows only while it holds imported work, as `N to organize`.
+- **Intake** names the designated session for untargeted work. It and each
+  imported session awaiting organization show their own `N to organize` count.
+  Neither is the attention **Inbox**, which lists work needing a person.
 - **Keys, revisions, window counts, and activation ids** never appear here.
 - **Volume is bounded.** Past 20 lines, exception sessions fill the screen
   first and every other session collapses into one `+N quiet sessions`

@@ -146,7 +146,7 @@ pub struct Session {
     pub arrangement: Option<String>,
     /// Whether it is imported work awaiting organization.
     pub awaiting_organization: bool,
-    /// Whether it is the designated Inbox session.
+    /// Whether it is the designated Intake session (legacy serialized field name).
     pub inbox: bool,
     /// Whether it is the attaching client's focused session.
     pub focused: bool,
@@ -274,7 +274,7 @@ pub struct SessionGraph {
     pub focused_pane: String,
     /// The authority the records belong to, as text.
     pub authority: Option<String>,
-    /// The designated Inbox session's key, as text.
+    /// The designated Intake session's key, as text (legacy serialized field name).
     pub inbox: Option<String>,
 }
 
@@ -303,7 +303,7 @@ pub fn session_graph(
     topology: Topology,
     organization: Option<&OrganizationReplica>,
 ) -> SessionGraph {
-    let inbox = topology.inbox;
+    let intake = topology.intake();
     let focused_session = topology.focused_session;
     let arrangement_of = |key: Option<SessionKey>| -> Option<ArrangementDoc> {
         let (replica, key) = (organization?, key?);
@@ -334,7 +334,7 @@ pub fn session_graph(
             member_count: session.members,
             arrangement: session.arrangement.map(|key| key.to_string()),
             awaiting_organization: session.awaiting_organization,
-            inbox: session.key.is_some() && session.key == inbox,
+            inbox: session.key.is_some() && session.key == intake,
             focused: session.id == focused_session,
         })
         .collect();
@@ -400,7 +400,7 @@ pub fn session_graph(
         focused_session,
         focused_pane: id::encode(&topology.focused_pane),
         authority: topology.authority.map(|key| key.to_string()),
-        inbox: inbox.map(|key| key.to_string()),
+        inbox: intake.map(|key| key.to_string()),
     }
 }
 

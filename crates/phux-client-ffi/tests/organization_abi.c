@@ -72,6 +72,9 @@ int main(void) {
     assert(phux_client_org_set_lifetime(client, 1, key, PHUX_SESSION_LIFETIME_PERSISTENT) ==
            PHUX_CLIENT_INVALID_STATE);
     assert(phux_client_org_inbox_resolve(client, 1, key) == PHUX_CLIENT_INVALID_STATE);
+    assert(phux_client_org_intake_resolve(client, 1, key) == PHUX_CLIENT_INVALID_STATE);
+    assert(PHUX_ORG_INTAKE_RESOLVE == PHUX_ORG_INBOX_RESOLVE);
+    assert(PHUX_SESSION_RECORD_INTAKE == PHUX_SESSION_RECORD_INBOX);
     assert(phux_client_kill_session(client, 1, key) == PHUX_CLIENT_INVALID_STATE);
     assert(phux_client_org_undo(client, 2, 1) == PHUX_CLIENT_INVALID_ARGUMENT);
     assert(phux_client_org_move(client, 1, NULL, key) == PHUX_CLIENT_INVALID_ARGUMENT);

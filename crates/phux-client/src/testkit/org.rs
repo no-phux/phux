@@ -167,7 +167,7 @@ impl OrgFixture {
         key
     }
 
-    /// Add the designated Inbox session.
+    /// Add the designated Intake session (legacy fixture method name).
     pub fn inbox_session(&mut self, name: &str) -> SessionKey {
         let key = self.session(name, SessionLifetime::Persistent);
         self.inbox = Some(key);
@@ -635,7 +635,7 @@ impl OrgFixture {
                 if Some(*session) == self.inbox {
                     return Err(Refusal::InvalidArgument {
                         field: "session".to_owned(),
-                        reason: "the designated inbox session cannot be deleted".to_owned(),
+                        reason: "the designated intake session cannot be deleted".to_owned(),
                     });
                 }
                 if record.members > 0 {
@@ -651,7 +651,7 @@ impl OrgFixture {
                 if Some(*session) == self.inbox {
                     return Err(Refusal::InvalidArgument {
                         field: "session".to_owned(),
-                        reason: "the designated inbox session cannot be deleted".to_owned(),
+                        reason: "the designated intake session cannot be deleted".to_owned(),
                     });
                 }
                 let members: Vec<ResourceKey> = self

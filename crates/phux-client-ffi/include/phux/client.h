@@ -1722,7 +1722,7 @@ PhuxClientResult phux_client_follow_session_names(PhuxClient *client);
 
 /* ---------------------------------------------------------- organization
  *
- * Sessions, resources, and the Inbox as the server's organization records
+ * Sessions, resources, and Intake as the server's organization records
  * them (docs/spec/L1.md section 5.7), when HELLO_OK advertised
  * ORGANIZATION (features_ext 0x10). New in ABI version 3.
  *
@@ -1780,7 +1780,7 @@ typedef enum PhuxOutcomeKind {
 /** Initialize size = sizeof(struct), version = PHUX_CLIENT_ABI_VERSION.
  * state: 0 empty or unsupported, 1 reading, 2 LIVE, 3 stale (a journal gap;
  * a re-read is in flight). authority and inbox are the authority key and its
- * designated Inbox session's key. message is the last reason the records
+ * designated Intake session's key (legacy field name). message is the last reason the records
  * could not be read, empty otherwise; borrowed until the next mutable call. */
 typedef struct PhuxOrganizationInfo {
     size_t size;
@@ -1802,8 +1802,9 @@ PhuxClientResult phux_client_organization_refresh(PhuxClient *client);
 
 /* PhuxSessionRecord.flags */
 #define PHUX_SESSION_RECORD_FOCUSED 0x1u
-#define PHUX_SESSION_RECORD_AWAITING_ORGANIZATION 0x2u /* imported work in the Inbox */
-#define PHUX_SESSION_RECORD_INBOX 0x4u                 /* the designated Inbox session */
+#define PHUX_SESSION_RECORD_AWAITING_ORGANIZATION 0x2u /* imported work in Intake */
+#define PHUX_SESSION_RECORD_INTAKE 0x4u                /* the designated Intake session */
+#define PHUX_SESSION_RECORD_INBOX PHUX_SESSION_RECORD_INTAKE /* legacy ABI spelling */
 #define PHUX_SESSION_RECORD_ORGANIZED 0x8u             /* the records hold this session */
 #define PHUX_SESSION_RECORD_EMPTY 0x10u
 
@@ -1813,7 +1814,7 @@ PhuxClientResult phux_client_organization_refresh(PhuxClient *client);
  * PHUX_SESSION_RECORD_ORGANIZED (zero otherwise). member_count counts every
  * member of every kind (from the snapshot without ORGANIZED). running_count
  * covers STARTING/RUNNING/STOPPING, completed_count COMPLETED/FAILED/
- * ABANDONED, lost_count LOST. The Inbox a host shows is the INBOX session
+ * ABANDONED, lost_count LOST. Intake a host shows is the INTAKE session
  * plus every AWAITING_ORGANIZATION session, with their members. Spans are
  * borrowed until the next mutable call. */
 typedef struct PhuxSessionRecord {
@@ -1873,7 +1874,8 @@ typedef enum PhuxOrgKind {
     PHUX_ORG_RELAUNCH = 5,
     PHUX_ORG_DELETE_SESSION = 6,
     PHUX_ORG_SET_LIFETIME = 7,
-    PHUX_ORG_INBOX_RESOLVE = 8,
+    PHUX_ORG_INTAKE_RESOLVE = 8,
+    PHUX_ORG_INBOX_RESOLVE = PHUX_ORG_INTAKE_RESOLVE, /* legacy ABI spelling */
     PHUX_ORG_UNDO = 9,
     PHUX_ORG_KILL_SESSION = 10
 } PhuxOrgKind;
@@ -1931,7 +1933,7 @@ typedef enum PhuxOrgTargetStatus {
 /** Initialize size/version. kind PhuxOrgKind, status PhuxOrgStatus, refusal
  * the first failing target's PhuxOrgRefusal. revision is the primary
  * record's resulting revision for a single committed edit. undoable: a
- * committed membership or intake edit (MOVE, MOVE_MANY, INBOX_RESOLVE) whose
+ * committed membership or intake edit (MOVE, MOVE_MANY, INTAKE_RESOLVE) whose
  * receipts this client holds. message is a sentence, never parsed; borrowed
  * until the next mutable call. */
 typedef struct PhuxOrgResult {
@@ -1978,7 +1980,9 @@ PhuxClientResult phux_client_org_relaunch(PhuxClient *client, uint32_t request_i
 PhuxClientResult phux_client_org_delete_session(PhuxClient *client, uint32_t request_id, const uint8_t *session);
 /** Make a session PERSISTENT or EPHEMERAL; EPHEMERAL on an empty session deletes it. */
 PhuxClientResult phux_client_org_set_lifetime(PhuxClient *client, uint32_t request_id, const uint8_t *session, uint32_t lifetime);
-/** Clear an imported session's Inbox mark; its members and arrangement stay. */
+/** Clear an imported session's Intake mark; its members and arrangement stay. */
+PhuxClientResult phux_client_org_intake_resolve(PhuxClient *client, uint32_t request_id, const uint8_t *session);
+/** Legacy ABI alias of phux_client_org_intake_resolve. */
 PhuxClientResult phux_client_org_inbox_resolve(PhuxClient *client, uint32_t request_id, const uint8_t *session);
 /** Undo the undoable result of original_request_id by its receipts (one undo
  * per committed chunk). Refused by the server once the receipts expire or

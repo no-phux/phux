@@ -45,7 +45,7 @@ export function OverviewBody() {
                   <strong>Resource · terminal</strong><span>shell + output</span>
                 </div>
               </div>
-              <div className="overview-model-inbox"><strong>Inbox · session</strong><span>Unorganized resources</span></div>
+              <div className="overview-model-intake"><strong>Intake · session</strong><span>Work without a destination</span></div>
             </div>
           </div>
           <div className="overview-model-clients">

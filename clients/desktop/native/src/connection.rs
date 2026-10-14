@@ -138,6 +138,10 @@ pub struct Connection {
     /// The arrangement group that shows each terminal, by name.
     pub groups: HashMap<ResourceId, String>,
     session: String,
+    home_key: Option<SessionKey>,
+    key_bootstrap_pending: bool,
+    pinned_home: bool,
+    pinned_verified_epoch: Option<u64>,
     /// Arrangements asked for on this connection, so each is read once.
     fetched: HashSet<ArrangementKey>,
     closed: bool,
@@ -150,6 +154,24 @@ pub struct Connection {
     paint_clock: u64,
     every_terminal: u64,
     paint: HashMap<ResourceId, u64>,
+}
+
+pub(crate) fn sync_home_name(topology: &Topology, name: &mut String, key: &mut Option<SessionKey>) {
+    let home = match *key {
+        Some(key) => topology.session_keyed(&key),
+        None => topology.session_named(name),
+    };
+    if let Some(home) = home {
+        *key = home.key;
+        name.clone_from(&home.name);
+    }
+}
+
+fn designated_intake_session(topology: &Topology, id: u32) -> bool {
+    topology
+        .sessions
+        .iter()
+        .any(|session| session.id == id && session.key.is_some() && session.key == topology.inbox)
 }
 
 struct ActivityListener {
@@ -165,19 +187,39 @@ impl Listener for ActivityListener {
 impl Connection {
     /// Dial `socket` and attach `session`. Viewport `(0, 0)` casts no geometry vote.
     pub fn connect(socket: PathBuf, session: String) -> anyhow::Result<Self> {
+        Self::connect_with_key(socket, session, None)
+    }
+
+    pub(crate) fn connect_with_key(
+        socket: PathBuf,
+        session: String,
+        key: Option<SessionKey>,
+    ) -> anyhow::Result<Self> {
         if socket.as_os_str().is_empty() {
             anyhow::bail!("InvalidConnectOptions");
         }
-        Self::connect_target(Target::uds(socket), session)
+        Self::connect_target(Target::uds(socket), session, key)
     }
 
     /// Attach `session` on a host from the remote registry.
     pub fn connect_remote(host: &str, session: String) -> anyhow::Result<Self> {
-        let target = Target::resolve(host, None).map_err(|error| anyhow::anyhow!(error))?;
-        Self::connect_target(target, session)
+        Self::connect_remote_with_key(host, session, None)
     }
 
-    fn connect_target(target: Target, session: String) -> anyhow::Result<Self> {
+    pub(crate) fn connect_remote_with_key(
+        host: &str,
+        session: String,
+        key: Option<SessionKey>,
+    ) -> anyhow::Result<Self> {
+        let target = Target::resolve(host, None).map_err(|error| anyhow::anyhow!(error))?;
+        Self::connect_target(target, session, key)
+    }
+
+    fn connect_target(
+        target: Target,
+        session: String,
+        key: Option<SessionKey>,
+    ) -> anyhow::Result<Self> {
         if session.is_empty() || session.len() > 4096 || session.contains('\0') {
             anyhow::bail!("InvalidSessionName");
         }
@@ -187,7 +229,7 @@ impl Connection {
                 control: ControlOptions {
                     client_name: "phux-desktop".to_owned(),
                     viewport: (0, 0),
-                    attach: Some(AttachTarget::ByName(session.clone())),
+                    attach: key.is_none().then(|| AttachTarget::ByName(session.clone())),
                     attach_role: Some(RolePolicy::PRIMARY),
                     auto_attach_foreign_spawns: false,
                     ..ControlOptions::default()
@@ -195,7 +237,11 @@ impl Connection {
                 ..ClientOptions::default()
             },
         )?;
-        Ok(Self::from_client(client, session))
+        let mut connection = Self::from_client(client, session);
+        connection.home_key = key;
+        connection.key_bootstrap_pending = key.is_some();
+        connection.pinned_home = key.is_some();
+        Ok(connection)
     }
 
     fn from_client(client: Client, session: String) -> Self {
@@ -213,6 +259,10 @@ impl Connection {
             directories: HashMap::new(),
             groups: HashMap::new(),
             session,
+            home_key: None,
+            key_bootstrap_pending: false,
+            pinned_home: false,
+            pinned_verified_epoch: None,
             fetched: HashSet::new(),
             closed: false,
             known: HashSet::new(),
@@ -310,15 +360,28 @@ impl Connection {
             .unwrap_or(&[])
     }
 
-    /// Session id whose name is the attach name.
+    /// Attached home session, following its persistent identity through renames.
     #[must_use]
     pub fn home_session(&self) -> Option<u32> {
         self.topology
             .as_ref()?
             .sessions
             .iter()
-            .find(|session| session.name == self.session)
+            .find(|session| match self.home_key {
+                Some(key) => session.key == Some(key),
+                None => session.name == self.session,
+            })
             .map(|session| session.id)
+    }
+
+    pub(crate) const fn home_key(&self) -> Option<SessionKey> {
+        self.home_key
+    }
+
+    pub(crate) fn is_intake_session(&self, id: u32) -> bool {
+        self.topology
+            .as_ref()
+            .is_some_and(|topology| designated_intake_session(topology, id))
     }
 
     /// Whether the server takes typed organization commands (`ORGANIZATION`).
@@ -539,6 +602,67 @@ impl Connection {
             self.server = Some(server);
         }
         self.topology = topology.or_else(|| self.client.topology());
+        if let Some(topology) = &self.topology {
+            sync_home_name(topology, &mut self.session, &mut self.home_key);
+        }
+        self.attach_pinned_home();
+    }
+
+    /// Resolve the pinned key before asking the runtime to attach, and verify
+    /// it again after the runtime's redial before admitting the workspace.
+    fn attach_pinned_home(&mut self) {
+        if !self.pinned_home || !matches!(self.status, Status::Negotiated | Status::Attached) {
+            return;
+        }
+        if !self.client.organization().is_live() {
+            if self.status == Status::Attached {
+                self.status = Status::Negotiated;
+            }
+            return;
+        }
+        if self.key_bootstrap_pending {
+            let Some(id) = self.home_session() else {
+                self.refuse_replaced_home();
+                return;
+            };
+            self.key_bootstrap_pending = false;
+            self.client
+                .attach_session(AttachTarget::ById(phux_protocol::ids::SessionId::new(id)));
+            self.status = Status::Negotiated;
+            return;
+        }
+        self.verify_pinned_home();
+    }
+
+    fn verify_pinned_home(&mut self) {
+        let epoch = self.connection_epoch();
+        if self.status != Status::Attached || self.pinned_verified_epoch == Some(epoch) {
+            return;
+        }
+        // A browsing runtime selects a healthy live session with per-terminal
+        // subscriptions; a connection-level attach instead records its home.
+        let attached = self
+            .client
+            .attached_session()
+            .or_else(|| self.client.selected_session());
+        if attached.is_none() || attached != self.home_session() {
+            self.refuse_replaced_home();
+        } else {
+            self.pinned_verified_epoch = Some(epoch);
+        }
+    }
+
+    fn refuse_replaced_home(&mut self) {
+        self.key_bootstrap_pending = false;
+        self.error = Some(format!(
+            "The original home session no longer matches this connection; refusing a name replacement (expected live session {:?}, attached {:?}, key observed {}).",
+            self.home_session(),
+            self.client.attached_session(),
+            self.home_key
+                .is_some_and(|key| self.client.organization().session(&key).is_some())
+        ));
+        self.status = Status::Failed;
+        self.client.close();
     }
 
     fn accept(&mut self, events: &[Event], epoch: u64) {

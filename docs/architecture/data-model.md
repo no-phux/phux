@@ -67,7 +67,11 @@ A session is a record: key, name, `SessionLifetime` (`Persistent` or
 creation order, an optional arrangement, descriptive attributes, and a
 revision. Every resource is a member of exactly one session. There is no
 `Window` type; what clients show as tabs are groups in the arrangement.
-The authority record names the persistent Inbox session.
+The authority record names the persistent Intake session. Its stored
+`inbox_session` field keeps its spelling for compatibility; it is not the
+attention Inbox. Imported sessions retain their own membership and carry
+only an `awaiting_organization` mark until marked organized. Domain callers
+read the designation through `Authority::intake_session()`.
 
 `arrangement.rs` holds `LayoutNode<L>`, a binary split tree generic over
 its leaf, with `split`, `remove`, and `leaves`. A persisted arrangement is a
@@ -109,7 +113,7 @@ and freshly minted keys, and returns either a refusal or the transition to
 commit plus the effects (launch, terminate) for the server to run. It does
 no I/O. The invariants it enforces after every step are: one session per
 resource; arrangements reference members only; revisions strictly
-increase; an ephemeral session is never empty after a commit; the Inbox
+increase; an ephemeral session is never empty after a commit; the Intake
 session is never ephemeral or deleted; a session with members is never
 deleted; a resource whose activation is current or `Lost` is never removed
 or relaunched; and an exit under `ExitPolicy::Remove` yields a removal.

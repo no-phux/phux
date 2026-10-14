@@ -29,11 +29,23 @@ fn a_new_registry_indexes_the_inbox_and_handles_round_trip() {
     let inbox = h.inbox();
     let id = h.reg.session_id(&inbox).expect("inbox has a handle");
     assert_eq!(h.reg.session_key(id), Some(inbox));
-    assert_eq!(h.reg.session(id).map(|s| s.name.as_str()), Some("inbox"));
-    assert_eq!(h.reg.session_by_name("inbox"), Some(id));
+    assert_eq!(h.reg.session(id).map(|s| s.name.as_str()), Some("intake"));
+    assert_eq!(h.reg.session_by_name("intake"), Some(id));
     assert_eq!(h.reg.session_count(), 1);
     assert!(h.reg.session(SessionId::default()).is_none());
     assert!(h.reg.resource(ResourceId::default()).is_none());
+}
+
+#[test]
+fn authority_retains_legacy_serialized_designation_key() {
+    let h = Harness::new();
+    let authority = h.reg.org().authority();
+    let value = serde_json::to_value(authority).unwrap();
+    assert!(value.get("inbox_session").is_some());
+    assert!(value.get("intake_session").is_none());
+    let restored: phux_core::Authority = serde_json::from_value(value).unwrap();
+    assert_eq!(restored, *authority);
+    assert_eq!(restored.intake_session(), h.inbox());
 }
 
 #[test]

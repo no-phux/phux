@@ -590,7 +590,7 @@ Detach leaves it running. A server crash or reboot ends it. [Continuity details]
 
 ## The model
 
-Server → session → resource (terminal). Inbox is the session for unorganized resources. TUI and desktop views show the terminal; an agent can read or type in it.
+Server → session → resource (terminal). Intake is the designated persistent session for work created without a destination; imported sessions awaiting organization remain separate. The attention Inbox lists work needing a person. TUI and desktop views show the terminal; an agent can read or type in it.
 
 Sessions own resources. Arrangements place them. Views show them. [Full model](/concepts).
 

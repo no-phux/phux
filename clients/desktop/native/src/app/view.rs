@@ -19,9 +19,9 @@ use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem};
 use gpui_kit::component::{IconName, Sizable};
-use phux_client_runtime::control::{PaneDescriptor, Status};
+use phux_client_runtime::control::{PaneDescriptor, SessionDescriptor, Status};
 use phux_protocol::ResourceKind;
-use phux_protocol::ids::ResourceKey;
+use phux_protocol::ids::{ResourceKey, SessionKey};
 use phux_protocol::wire::frame::{ExecState, ResourceRecord};
 
 use crate::connection::{AgentInfo, AgentState, state_rank};
@@ -803,69 +803,71 @@ fn session_groups(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> Vec<
         return Vec::new();
     };
     let mut sessions: Vec<_> = topology.sessions.iter().collect();
-    let intake_keys: Vec<_> = desk
-        .client()
-        .map(|client| {
-            client
-                .inbox()
-                .sessions
-                .iter()
-                .map(|session| session.key)
-                .collect()
-        })
-        .unwrap_or_default();
-    let intake: Vec<_> = sessions
+    let mut intake: Vec<_> = sessions
         .iter()
         .copied()
-        .filter(|session| session.key.is_some_and(|key| intake_keys.contains(&key)))
+        .filter(|session| {
+            is_intake_session(session.key, session.awaiting_organization, topology.inbox)
+        })
         .collect();
-    sessions.retain(|session| !session.key.is_some_and(|key| intake_keys.contains(&key)));
+    intake.sort_by_key(|session| session.key != topology.inbox);
+    sessions.retain(|session| {
+        !is_intake_session(session.key, session.awaiting_organization, topology.inbox)
+    });
     let home = desk.session.as_str();
     sessions.sort_by(|left, right| {
         (left.name != home)
             .cmp(&(right.name != home))
             .then_with(|| left.name.cmp(&right.name))
     });
-    let panes = link.connection.panes();
-    let host_of = |session: u32| {
-        let mut hosts: Vec<String> = panes
-            .iter()
-            .filter(|pane| pane.session_id == session)
-            .filter_map(|pane| place::terminal_host(Some(&pane.terminal_id.to_string())))
-            .collect();
-        hosts.dedup();
-        // A session spread over several hosts belongs to none of them.
-        if hosts.len() == 1 { hosts.pop() } else { None }
+    let mut rows = Vec::new();
+    if !intake.is_empty() {
+        rows.push(section_label("Intake sessions", colors).into_any_element());
+        rows.push(
+            div()
+                .px(px(10.))
+                .py(px(4.))
+                .text_xs()
+                .text_color(from_hex(&colors.muted))
+                .child("Unorganized work and imported sessions. Moving work never restarts it.")
+                .into_any_element(),
+        );
+        for session in intake {
+            rows.push(session_block(desk, session.id, &session.name, colors, cx));
+        }
+    }
+    rows.extend(named_session_rows(desk, &sessions, colors, cx));
+    rows
+}
+
+fn named_session_rows(
+    desk: &Desk,
+    sessions: &[&SessionDescriptor],
+    colors: &Palette,
+    cx: &mut Context<Desk>,
+) -> Vec<AnyElement> {
+    let Some(link) = desk.link.as_ref() else {
+        return Vec::new();
     };
+    let panes = link.connection.panes();
     let lines: Vec<SessionLine> = sessions
         .iter()
         .map(|session| SessionLine {
             name: session.name.clone(),
-            host: host_of(session.id),
+            host: session_host(panes, session.id),
             project: link.connection.projects.get(&session.id).cloned(),
         })
         .collect();
     let grouped =
         !link.connection.projects.is_empty() || lines.iter().any(|line| line.host.is_some());
     let mut rows = Vec::new();
-    if !intake.is_empty() {
-        rows.push(section_label("Inbox", colors).into_any_element());
-        for session in intake {
-            rows.push(session_block(desk, session.id, &session.name, colors, cx));
-        }
-    }
     if !grouped && !sessions.is_empty() {
         rows.push(section_label("Sessions", colors).into_any_element());
     }
     for group in place::group_by_project(&lines) {
         if grouped {
             // Ungrouped sessions sort last; "Sessions" keeps them out of the group above.
-            let title = match (&group.project, &group.host) {
-                (Some(project), Some(host)) => format!("{project} · {host}"),
-                (Some(project), None) => project.clone(),
-                (None, Some(host)) => host.clone(),
-                (None, None) => "Sessions".to_owned(),
-            };
+            let title = session_group_title(group.project.as_deref(), group.host.as_deref());
             rows.push(section_label(&title, colors).into_any_element());
         }
         for line in group.sessions {
@@ -875,6 +877,44 @@ fn session_groups(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> Vec<
         }
     }
     rows
+}
+
+fn session_group_title(project: Option<&str>, host: Option<&str>) -> String {
+    match (project, host) {
+        (Some(project), Some(host)) => format!("{project} · {host}"),
+        (Some(project), None) => project.to_owned(),
+        (None, Some(host)) => host.to_owned(),
+        (None, None) => "Sessions".to_owned(),
+    }
+}
+
+fn session_host(panes: &[PaneDescriptor], session: u32) -> Option<String> {
+    let mut hosts: Vec<String> = panes
+        .iter()
+        .filter(|pane| pane.session_id == session)
+        .filter_map(|pane| place::terminal_host(Some(&pane.terminal_id.to_string())))
+        .collect();
+    hosts.dedup();
+    // A session spread over several hosts belongs to none of them.
+    if hosts.len() == 1 { hosts.pop() } else { None }
+}
+
+fn is_intake_session(
+    key: Option<SessionKey>,
+    awaiting_organization: bool,
+    designated: Option<SessionKey>,
+) -> bool {
+    key.is_some_and(|key| Some(key) == designated) || awaiting_organization
+}
+
+fn intake_badge(designated: bool, awaiting_organization: bool) -> Option<&'static str> {
+    if designated {
+        Some("intake")
+    } else if awaiting_organization {
+        Some("imported")
+    } else {
+        None
+    }
 }
 
 fn session_block(
@@ -901,28 +941,29 @@ fn session_block(
         .and_then(|_| link.connection.directories.get(&id))
         .map(PathBuf::from);
     let collapsed = desk.collapsed.contains(name);
-    let intake = link
+    let session = link
         .connection
         .topology
         .as_ref()
-        .and_then(|topology| topology.sessions.iter().find(|session| session.id == id))
-        .filter(|session| session.awaiting_organization)
-        .and_then(|session| session.key);
-    let destination = link
-        .connection
-        .topology
-        .as_ref()
-        .and_then(|topology| topology.sessions.iter().find(|session| session.id == id))
+        .and_then(|topology| topology.sessions.iter().find(|session| session.id == id));
+    let destination = session.and_then(|session| session.key);
+    let designated = link.connection.is_intake_session(id);
+    let awaiting = session.is_some_and(|session| session.awaiting_organization);
+    let intake = session
+        .filter(|_| awaiting && !designated)
         .and_then(|session| session.key);
     let organizing = link.connection.organization();
+    let rename_target = desk.rename_session_target(id);
     let handle = cx.weak_entity();
     let menu = move |name: String| {
         let handle = handle.clone();
+        let rename_target = rename_target.clone();
         move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
             let rename = handle.clone();
             let kill = handle.clone();
             let select = handle.clone();
             let (rename_name, kill_name) = (name.clone(), name.clone());
+            let rename_target = rename_target.clone();
             let menu = if organizing {
                 menu.item(PopupMenuItem::new("Select All").on_click(move |_, _, cx| {
                     let _ = select.update(cx, |desk, cx| desk.select_session_work(id, cx));
@@ -938,6 +979,7 @@ fn session_block(
                             Modal::Session {
                                 create: false,
                                 current,
+                                target: rename_target.clone(),
                             },
                             window,
                             cx,
@@ -949,7 +991,7 @@ fn session_block(
                 let organized = handle.clone();
                 let intake_name = name.clone();
                 menu.item(
-                    PopupMenuItem::new("Move out of Inbox").on_click(move |_, _, cx| {
+                    PopupMenuItem::new("Mark session organized").on_click(move |_, _, cx| {
                         let name = intake_name.clone();
                         let _ = organized.update(cx, |desk, cx| desk.resolve_intake(key, name, cx));
                     }),
@@ -957,14 +999,16 @@ fn session_block(
             } else {
                 menu
             }
-            .item(PopupMenuItem::new("Kill Session…").on_click(
-                move |_, window, cx| {
-                    let name = kill_name.clone();
-                    let _ = kill.update(cx, |desk, cx| {
-                        desk.open_modal(Modal::KillSession { name, session: id }, window, cx)
-                    });
-                },
-            ))
+            .when(!designated, |menu| {
+                menu.item(
+                    PopupMenuItem::new("Kill Session…").on_click(move |_, window, cx| {
+                        let name = kill_name.clone();
+                        let _ = kill.update(cx, |desk, cx| {
+                            desk.open_modal(Modal::KillSession { name, session: id }, window, cx)
+                        });
+                    }),
+                )
+            })
         }
     };
     let toggle_name = name.to_owned();
@@ -1012,6 +1056,9 @@ fn session_block(
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .child(name.to_owned()),
         )
+        .when_some(intake_badge(designated, awaiting), |row, badge| {
+            row.child(pill(badge, &colors.accent_wash, &colors.theme.accent))
+        })
         .child(
             div()
                 .text_xs()
@@ -1073,6 +1120,15 @@ fn session_block(
         .flex_col()
         .gap(px(1.))
         .child(header)
+        .when(designated, |block| {
+            block.child(
+                div()
+                    .px(px(10.))
+                    .text_xs()
+                    .text_color(from_hex(&colors.muted))
+                    .child("Designated home for unorganized work"),
+            )
+        })
         .when(!collapsed, |block| {
             block
                 .children(
@@ -2233,7 +2289,7 @@ fn bell(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl IntoEleme
         .child(icon_button(
             "notifications",
             IconName::Bell,
-            "Notifications",
+            "Inbox & notifications · badge counts unread alerts",
             desk.shown_chord("notifications"),
             cx.listener(|desk, _, window, cx| desk.execute("notifications", window, cx)),
         ))
@@ -2307,7 +2363,7 @@ fn peek_card(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> Option<im
                             div()
                                 .text_xs()
                                 .text_color(from_hex(&colors.subtext))
-                                .child(format!("+{more} more in Notifications")),
+                                .child(format!("+{more} unread alerts")),
                         )
                     }),
             )
@@ -2405,5 +2461,33 @@ pub(super) fn agent_swatch(state: AgentState) -> &'static str {
         AgentState::Done => "#94e2d5",
         AgentState::Idle => "#a6e3a1",
         AgentState::Unknown => "#7f849c",
+    }
+}
+
+#[cfg(test)]
+mod intake_tests {
+    use super::{intake_badge, is_intake_session};
+    use phux_protocol::ids::SessionKey;
+
+    #[test]
+    fn designated_intake_is_grouped_even_when_not_imported() {
+        let intake = SessionKey::new([1; 16]).unwrap();
+        let named = SessionKey::new([2; 16]).unwrap();
+        assert!(is_intake_session(Some(intake), false, Some(intake)));
+        assert!(is_intake_session(Some(named), true, Some(intake)));
+        assert!(!is_intake_session(Some(named), false, Some(intake)));
+        assert!(!is_intake_session(None, false, None));
+        assert!(!is_intake_session(Some(named), false, None));
+    }
+
+    #[test]
+    fn badges_distinguish_designated_intake_from_imported_sessions() {
+        assert_eq!(intake_badge(true, false), Some("intake"));
+        assert_eq!(intake_badge(true, true), Some("intake"));
+        assert_eq!(intake_badge(false, true), Some("imported"));
+        assert_eq!(intake_badge(false, false), None);
+        for badge in [intake_badge(true, false), intake_badge(false, true)] {
+            assert!(badge.unwrap().len() <= 8);
+        }
     }
 }

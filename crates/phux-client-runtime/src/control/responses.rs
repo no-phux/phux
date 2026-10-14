@@ -95,6 +95,11 @@ impl ControlPlane {
     /// Session numbers are local to a server incarnation. Recover the same
     /// logical session by its last authoritative name, never by a recycled ID.
     fn requalify_attach_target(&mut self, server_id: &[u8]) -> Result<(), ControlError> {
+        // Manual embedders select their own next attach after negotiation; an
+        // old target must not refuse a connection they intend to retarget.
+        if !self.options.automatic_lifecycle {
+            return Ok(());
+        }
         let Some(AttachTarget::ById(id)) = &self.attach_target else {
             return Ok(());
         };
@@ -238,6 +243,10 @@ impl ControlPlane {
         self.attach_terminals = seen;
         self.attached_session = Some(snapshot.focused_session.get());
         self.selected_session = self.attached_session;
+        // Names are lookup hints, not identities: a rename may free the old
+        // name for another session before this socket reconnects. Numeric IDs
+        // are stable within an incarnation and requalified on a server change.
+        self.attach_target = Some(AttachTarget::ById(snapshot.focused_session));
         self.topology = Some(self.project_topology(snapshot));
         self.error = None;
         self.apply_engine(EngineEvent::AttachStarted {

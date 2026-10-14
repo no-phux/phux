@@ -9,13 +9,13 @@
 //! [`OrgError::OutcomeUnknown`] with that id, so the caller can resend the
 //! same id on a new connection or reconcile from [`fetch`].
 //!
-//! Compare-and-swap edits (moves, relaunch, Inbox resolve, arrangement
+//! Compare-and-swap edits (moves, relaunch, Intake resolve, arrangement
 //! replace) re-read the records they name and retry when the server answers
 //! `CONFLICT`, at most [`MAX_CAS_ATTEMPTS`] times. Removes, deletes,
 //! renames, and lifetime changes carry no revision: one round trip each.
 //!
 //! These are the operations behind `phux rm`, `relaunch`, `restore`, `mv`,
-//! bulk move, undo, and Inbox resolve; the CLI and MCP adapters own
+//! bulk move, undo, and Intake resolve; the CLI and MCP adapters own
 //! selector parsing and rendering.
 
 use phux_protocol::ResourceId;
@@ -211,7 +211,7 @@ fn outcome_error(outcome: OrgOutcome) -> OrgError {
 pub struct OrgInventory {
     /// The authority the records belong to.
     pub authority: AuthorityId,
-    /// The designated Inbox session, when the caller observes it.
+    /// The designated Intake session (legacy public field name retained).
     pub inbox: Option<SessionKey>,
     /// Session records, in page order.
     pub sessions: Vec<SessionRecord>,
@@ -228,6 +228,12 @@ pub struct OrgInventory {
 }
 
 impl OrgInventory {
+    /// The designated Intake session; the public `inbox` field is a legacy name.
+    #[must_use]
+    pub const fn intake(&self) -> Option<SessionKey> {
+        self.inbox
+    }
+
     fn from_page(page: &OrganizationPage) -> Self {
         Self {
             authority: page.authority,
@@ -585,7 +591,7 @@ enum Edit<'a> {
         resources: &'a [ResourceKey],
         to: SessionKey,
     },
-    InboxResolve(SessionKey),
+    IntakeResolve(SessionKey),
     ReplaceArrangement(SessionKey, &'a ArrangementDoc),
 }
 
@@ -602,13 +608,9 @@ async fn build(conn: &mut Connection, edit: Edit<'_>) -> Result<Command, OrgErro
                 expected: record.revision,
             }
         }
-        Edit::InboxResolve(session) => {
+        Edit::IntakeResolve(session) => {
             let record = session_in(&session_view(conn, session).await?, &session)?;
-            Command::InboxResolve {
-                operation,
-                session,
-                expected: record.revision,
-            }
+            Command::intake_resolve(operation, session, record.revision)
         }
         Edit::Move { resource, to } => {
             let (from_view, record) = resource_view(conn, resource).await?;
@@ -903,16 +905,28 @@ pub async fn undo(conn: &mut Connection, receipt: &Committed) -> Result<Committe
     commit(conn, FIRST_REQUEST_ID, command).await
 }
 
-/// Clear a session's Inbox intake mark; members and execution are untouched.
+/// Clear a session's Intake mark; members and execution are untouched.
 ///
 /// # Errors
 ///
 /// The refusal; transport failures.
+pub async fn intake_resolve(
+    conn: &mut Connection,
+    session: SessionKey,
+) -> Result<Committed, OrgError> {
+    run_cas(conn, Edit::IntakeResolve(session)).await
+}
+
+/// Legacy alias for [`intake_resolve`].
+///
+/// # Errors
+///
+/// The same transport and compare-and-swap refusals as [`intake_resolve`].
 pub async fn inbox_resolve(
     conn: &mut Connection,
     session: SessionKey,
 ) -> Result<Committed, OrgError> {
-    run_cas(conn, Edit::InboxResolve(session)).await
+    intake_resolve(conn, session).await
 }
 
 /// Rename (or, with `None`, unname) a resource record.

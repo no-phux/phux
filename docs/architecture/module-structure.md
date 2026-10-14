@@ -59,7 +59,7 @@ src/
   arrangement.rs  — LayoutNode<L> split tree, Arrangement, Group, EntryRef,
                     validation against members
   org.rs          — Org snapshot, Command, Refusal, Transition, Effect,
-                    Authority (with its Inbox session), Receipt
+                    Authority (with its Intake session), Receipt
   apply.rs        — apply(org, command, actor, now, fresh): the organization
                     rules, returning a transition and effects or a refusal
   terminal.rs     — TerminalFacet (dims/cwd/title; no PTY, no libghostty)
@@ -269,7 +269,7 @@ features: `dhat-heap` here, `tokio-console` via `phux-server`.
   journal events in sequence, refetched on a gap; it retries pending
   operations with the same operation id after reconnect, reports the
   outcome as unknown past the receipt horizon, maps keys to handles, and
-  projects the owner-local Inbox.
+  projects the owner-local Intake, separately from attention Inbox.
 - **`phux-client-ffi`** — the one binding crate (ADR-0135). `projection/`
   derives the product vocabulary from the runtime once; `c/` (feature
   `c-abi`, default) is the C ABI in `include/phux/client.h` that Cockpit

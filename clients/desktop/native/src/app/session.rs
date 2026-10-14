@@ -1,6 +1,8 @@
 //! Process-wide windows, native menus, and the quick-terminal hotkey.
 
 #[cfg(test)]
+mod journey_tests;
+#[cfg(test)]
 mod tests;
 
 use std::path::PathBuf;
@@ -18,6 +20,7 @@ use crate::hotkeys::GlobalHotkeys;
 use crate::settings::{self, DisplayPrefs, GhosttyConfig};
 use crate::workspace::persist::{self, FileLayoutStore};
 use phux_protocol::ResourceId;
+use phux_protocol::ids::SessionKey;
 
 use super::AppOptions;
 use super::actions::{OpenPathDirectory, Quit, Run};
@@ -37,6 +40,7 @@ pub struct Desktop {
     phux: PathBuf,
     socket: PathBuf,
     home_session: String,
+    home_key: Option<SessionKey>,
     layout: PathBuf,
     /// The launch named its layout file; rehoming keeps it.
     explicit_layout: bool,
@@ -74,6 +78,7 @@ impl Desktop {
             phux: PathBuf::new(),
             socket: PathBuf::new(),
             home_session: String::new(),
+            home_key: None,
             layout: PathBuf::new(),
             explicit_layout: false,
             quick_layout: PathBuf::new(),
@@ -115,6 +120,7 @@ impl Desktop {
         self.phux = options.phux;
         self.socket = options.socket;
         self.home_session = options.session.clone();
+        self.home_key = None;
         let socket = self.socket.display().to_string();
         let paths = crate::workspace::layout_paths(&socket, &options.session);
         // An explicit layout file is used as given: no legacy import beside it.
@@ -146,10 +152,12 @@ impl Desktop {
                     WindowRole::Main
                 },
                 session: options.session,
+                home_key: None,
                 fresh: options.fresh,
                 initial_terminal: options.initial_terminal,
                 layout_path: self.layout.clone(),
                 legacy_layout: self.legacy_layout.clone(),
+                stable_layout: !explicit,
                 startup_error: options.startup_error,
                 main_display: None,
                 remote: None,
@@ -167,6 +175,7 @@ impl Desktop {
     /// a session: the home session and the layout files follow it.
     pub fn rehome(&mut self, old: EntityId, session: String, cx: &mut Context<Self>) {
         self.home_session = session.clone();
+        self.home_key = None;
         if !self.explicit_layout {
             let paths =
                 crate::workspace::layout_paths(&self.socket.display().to_string(), &session);
@@ -185,10 +194,12 @@ impl Desktop {
             OpenRequest {
                 role: WindowRole::Main,
                 session,
+                home_key: None,
                 fresh: false,
                 initial_terminal: None,
                 layout_path: self.layout.clone(),
                 legacy_layout: self.legacy_layout.clone(),
+                stable_layout: !self.explicit_layout,
                 startup_error: None,
                 main_display: None,
                 remote: None,
@@ -218,10 +229,12 @@ impl Desktop {
         let request = OpenRequest {
             role: WindowRole::Fresh,
             session,
+            home_key: None,
             fresh: true,
             initial_terminal: None,
             layout_path: self.layout.clone(),
             legacy_layout: None,
+            stable_layout: false,
             startup_error: None,
             main_display: None,
             remote,
@@ -254,16 +267,33 @@ impl Desktop {
         let request = OpenRequest {
             role: WindowRole::Main,
             session,
+            home_key: None,
             fresh: false,
             initial_terminal: Some(terminal),
             layout_path: paths.layout,
             legacy_layout: None,
+            stable_layout: true,
             startup_error: None,
             main_display: None,
             remote: None,
         };
         self.open_window(request, true, false, cx)?;
         Ok(())
+    }
+
+    /// Any remaining window can keep the singleton home current after its own
+    /// window closes. Once learned, the key prevents adopting a reused name.
+    pub(crate) fn observe_topology(&mut self, topology: &phux_client_runtime::control::Topology) {
+        let previous = self.home_key;
+        crate::connection::sync_home_name(topology, &mut self.home_session, &mut self.home_key);
+        if !self.explicit_layout
+            && self.home_key != previous
+            && let Some(key) = self.home_key
+        {
+            let paths = persist::session_layout_paths(&self.socket.display().to_string(), key);
+            self.legacy_layout = Some(std::mem::replace(&mut self.layout, paths.layout));
+            self.legacy_quick = Some(std::mem::replace(&mut self.quick_layout, paths.quick));
+        }
     }
 
     pub fn open_moved(
@@ -276,10 +306,12 @@ impl Desktop {
         let request = OpenRequest {
             role: WindowRole::Fresh,
             session,
+            home_key: None,
             fresh: true,
             initial_terminal: Some(terminal),
             layout_path: self.layout.clone(),
             legacy_layout: None,
+            stable_layout: false,
             startup_error: None,
             main_display: None,
             remote,
@@ -318,10 +350,12 @@ impl Desktop {
                     let request = OpenRequest {
                         role: WindowRole::Main,
                         session,
+                        home_key: None,
                         fresh: false,
                         initial_terminal: None,
                         layout_path: paths.layout,
                         legacy_layout: None,
+                        stable_layout: true,
                         startup_error: None,
                         main_display: None,
                         remote: Some(name),
@@ -349,8 +383,41 @@ impl Desktop {
                 .update(cx, |_, window, _| window.remove_window());
             return;
         }
+        if let Err(error) = self.resolve_quick_home(cx) {
+            if let Some(opened) = self.windows.first() {
+                opened.desk.update(cx, |desk, cx| {
+                    desk.post(
+                        super::notifications::Kind::Error,
+                        "Could not open quick terminal",
+                        Some(error),
+                    );
+                    cx.notify();
+                });
+            }
+            return;
+        }
         let request = self.quick_request(cx);
         let _ = self.open_window(request, true, true, cx);
+    }
+
+    fn resolve_quick_home(&mut self, cx: &App) -> Result<(), String> {
+        let Some(key) = self.home_key else {
+            return Ok(());
+        };
+        for opened in &self.windows {
+            if opened.remote.is_some() {
+                continue;
+            }
+            let desk = opened.desk.read(cx);
+            let Some(link) = &desk.link else { continue };
+            let replica = link.connection.client.organization();
+            if replica.is_live() {
+                let session = replica.session(&key).ok_or_else(|| "The original home session no longer exists. Open an existing session instead.".to_owned())?;
+                self.home_session.clone_from(&session.name);
+                return Ok(());
+            }
+        }
+        Err("The home session's identity is unavailable. Reconnect a window before opening the quick terminal.".to_owned())
     }
 
     /// The quick window restores its own layout and spawns a fresh terminal only
@@ -359,10 +426,12 @@ impl Desktop {
         OpenRequest {
             role: WindowRole::Quick,
             session: self.home_session.clone(),
+            home_key: self.home_key,
             fresh: true,
             initial_terminal: None,
             layout_path: self.quick_layout.clone(),
             legacy_layout: self.legacy_quick.clone(),
+            stable_layout: !self.explicit_layout,
             startup_error: None,
             main_display: self.main_display(cx),
             remote: None,

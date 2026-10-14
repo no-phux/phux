@@ -131,7 +131,7 @@ pub struct MetadataBlob {
 /// does not have them (an in-memory store) still has every record.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OrgBlob {
-    /// The authority and its designated Inbox.
+    /// The authority and its designated Intake (legacy serialized field retained).
     pub authority: phux_core::Authority,
     /// Every session record.
     pub sessions: Vec<phux_core::Session>,

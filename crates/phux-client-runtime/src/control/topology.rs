@@ -41,7 +41,7 @@ pub struct SessionDescriptor {
     pub members: u32,
     /// Its arrangement, from the organization replica.
     pub arrangement: Option<ArrangementKey>,
-    /// Whether it is imported work awaiting organization (the Inbox).
+    /// Whether it is imported work awaiting organization (Intake).
     pub awaiting_organization: bool,
 }
 
@@ -107,13 +107,19 @@ pub struct Topology {
     pub focused_pane: ResourceId,
     /// The authority the records belong to, from the organization replica.
     pub authority: Option<AuthorityId>,
-    /// The designated Inbox session, from the organization replica.
+    /// The designated Intake session; legacy field name retained for consumers.
     pub inbox: Option<SessionKey>,
     /// Resource keys to live handles, from the organization replica.
     pub handles: HandleMap,
 }
 
 impl Topology {
+    /// The designated Intake session; the legacy public field remains compatible.
+    #[must_use]
+    pub const fn intake(&self) -> Option<SessionKey> {
+        self.inbox
+    }
+
     /// Project a wire snapshot.
     #[must_use]
     pub fn from_snapshot(snapshot: &SessionSnapshot) -> Self {
@@ -202,7 +208,7 @@ impl Topology {
             return self;
         }
         self.authority = replica.authority();
-        self.inbox = replica.inbox();
+        self.inbox = replica.intake();
         self.handles = replica.handles().clone();
         for session in &mut self.sessions {
             let record = session
@@ -210,6 +216,7 @@ impl Topology {
                 .and_then(|key| replica.session(&key))
                 .or_else(|| replica.session_by_live(SessionId::new(session.id)));
             if let Some(record) = record {
+                session.name.clone_from(&record.name);
                 session.key = Some(record.key);
                 session.lifetime = Some(record.lifetime);
                 session.keep_empty = record.lifetime == SessionLifetime::Persistent;

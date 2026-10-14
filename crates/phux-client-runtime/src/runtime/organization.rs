@@ -9,7 +9,9 @@ use phux_protocol::ids::{ArrangementKey, OperationId, ResourceKey, SessionKey};
 use phux_protocol::wire::frame::{Command, Committed, SessionLifetime, TerminateMode};
 
 use super::Client;
-use crate::control::{ArrangementSubmitError, ControlPlane, InboxView, OrganizationReplica};
+use crate::control::{
+    ArrangementSubmitError, ControlPlane, InboxView, IntakeView, OrganizationReplica,
+};
 
 impl Client {
     /// A copy of the organization replica.
@@ -18,11 +20,17 @@ impl Client {
         self.inner.with(|control| control.organization().clone())
     }
 
-    /// The owner-local Inbox.
+    /// Legacy alias for [`Self::intake`].
     #[must_use]
     pub fn inbox(&self) -> InboxView {
+        self.intake()
+    }
+
+    /// The owner-local Intake, distinct from attention notifications.
+    #[must_use]
+    pub fn intake(&self) -> IntakeView {
         self.inner
-            .with(|control| control.organization().inbox_view())
+            .with(|control| control.organization().intake_view())
     }
 
     /// Reseed the replica; `None` without `ORGANIZATION`.
@@ -96,13 +104,22 @@ impl Client {
         self.inner.with(|control| control.delete_session(session))
     }
 
-    /// Clear a session's Inbox intake mark.
+    /// Legacy alias for [`Self::intake_resolve`].
     ///
     /// # Errors
     ///
     /// [`SubmitError`].
     pub fn inbox_resolve(&self, session: SessionKey) -> Result<OperationId, SubmitError> {
-        self.inner.with(|control| control.inbox_resolve(session))
+        self.intake_resolve(session)
+    }
+
+    /// Clear a session's Intake mark; members and execution remain unchanged.
+    ///
+    /// # Errors
+    ///
+    /// [`SubmitError`].
+    pub fn intake_resolve(&self, session: SessionKey) -> Result<OperationId, SubmitError> {
+        self.inner.with(|control| control.intake_resolve(session))
     }
 
     /// Move one resource into `to`.

@@ -69,10 +69,9 @@ fn project_error(error: String) -> String {
     }
 }
 
-/// Start the server the launch used, then name the session to open: `session`
-/// (created persistent when missing), or with no session, the Inbox or the
-/// most recent session. A demo supervisor is not restarted.
-pub fn ensure_server(phux: &Path, socket: &Path, session: &str) -> Result<String, String> {
+/// Start only the server. Reconnecting must never create a missing session.
+/// A demo supervisor is not restarted.
+pub fn start_server(phux: &Path, socket: &Path) -> Result<(), String> {
     if std::env::var_os("PHUX_DESKTOP_DEMO").is_some() {
         return Err(
             "The private demo server stopped. Relaunch the demo to start a new sandbox.".into(),
@@ -84,22 +83,12 @@ pub fn ensure_server(phux: &Path, socket: &Path, session: &str) -> Result<String
                 .into(),
         );
     }
-    restart(phux, socket)?;
-    let requested = Some(session).filter(|name| !name.trim().is_empty());
-    crate::connection::home::open_home(phux, socket, requested)
+    restart(phux, socket)
 }
 
 fn restart(phux: &Path, socket: &Path) -> Result<(), String> {
-    let explicit = std::env::var("PHUX_SOCKET")
-        .ok()
-        .filter(|value| !value.is_empty());
-    let ensure_socket = explicit.as_deref().map(Path::new).unwrap_or(socket);
-    run(phux, socket_args(ensure_socket, &["server", "--ensure"]))?;
-    let listening = if explicit.is_some() {
-        ensure_socket.to_path_buf()
-    } else {
-        server_socket(phux)?
-    };
+    run(phux, socket_args(socket, &["server", "--ensure"]))?;
+    let listening = server_socket(phux, socket)?;
     if listening != socket {
         return Err(format!(
             "The server listens on {}, not {}. Relaunch Phux to use it.",
@@ -328,9 +317,9 @@ fn run_output(phux: &Path, args: Vec<String>) -> Result<Vec<u8>, String> {
     })
 }
 
-fn server_socket(phux: &Path) -> Result<PathBuf, String> {
+fn server_socket(phux: &Path, socket: &Path) -> Result<PathBuf, String> {
     let output = Command::new(phux)
-        .args(["status", "--json"])
+        .args(socket_args(socket, &["status", "--json"]))
         .output()
         .map_err(|error| error.to_string())?;
     let text = String::from_utf8_lossy(&output.stdout);

@@ -75,7 +75,7 @@ impl ControlPlane {
     // ----- observation ----------------------------------------------------
 
     /// The organization replica: sessions, resources, arrangements, and the
-    /// Inbox, current through [`super::organization::OrganizationReplica::journal_seq`].
+    /// Intake, current through [`super::organization::OrganizationReplica::journal_seq`].
     #[must_use]
     pub const fn organization(&self) -> &super::organization::OrganizationReplica {
         &self.organization
@@ -658,26 +658,31 @@ impl ControlPlane {
         })
     }
 
-    /// Clear a session's Inbox intake mark.
+    /// Legacy alias for [`Self::intake_resolve`].
     ///
     /// # Errors
     ///
     /// [`SubmitError::NotAnOperation`] when the replica does not hold the
     /// session; [`Self::submit_organization`]'s errors.
     pub fn inbox_resolve(&mut self, session: SessionKey) -> Result<OperationId, SubmitError> {
+        self.intake_resolve(session)
+    }
+
+    /// Clear a session's Intake mark using the legacy-compatible wire command.
+    ///
+    /// # Errors
+    ///
+    /// Session absent from the replica or submission refused.
+    pub fn intake_resolve(&mut self, session: SessionKey) -> Result<OperationId, SubmitError> {
         let expected = self.session_record(&session)?.revision;
-        self.submit_organization(Command::InboxResolve {
-            operation: mint_operation(),
-            session,
-            expected,
-        })
+        self.submit_organization(Command::intake_resolve(mint_operation(), session, expected))
     }
 
     /// Move one resource into `to` (membership only; it keeps running).
     ///
     /// # Errors
     ///
-    /// As [`Self::inbox_resolve`], for the resource or either session.
+    /// As [`Self::intake_resolve`], for the resource or either session.
     pub fn move_resource(
         &mut self,
         resource: ResourceKey,
@@ -708,7 +713,7 @@ impl ControlPlane {
     ///
     /// # Errors
     ///
-    /// As [`Self::inbox_resolve`]; nothing is submitted when any resource
+    /// As [`Self::intake_resolve`]; nothing is submitted when any resource
     /// or session is unknown, a resource is duplicated, or capacity is full.
     pub fn move_resources(
         &mut self,
@@ -796,7 +801,7 @@ impl ControlPlane {
     ///
     /// # Errors
     ///
-    /// As [`Self::inbox_resolve`].
+    /// As [`Self::intake_resolve`].
     pub fn relaunch_resource(&mut self, resource: ResourceKey) -> Result<OperationId, SubmitError> {
         let expected = self
             .organization
