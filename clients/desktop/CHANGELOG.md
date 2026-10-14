@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.0-alpha.17](https://github.com/no-phux/phux/compare/desktop-v0.1.0-alpha.16...desktop-v0.1.0-alpha.17) (2026-10-13)
+
+
+### Features
+
+* **desktop:** organize inbox work with atomic moves and undo ([7103ad1](https://github.com/no-phux/phux/commit/7103ad1748d744a77324fdddd08db9b14b6506cf))
+* **org:** kill a session server-side with SESSION_KILL ([c859088](https://github.com/no-phux/phux/commit/c859088f12b4aaf13f2c3977c510616a05957801))
+
+
+### Refactors
+
+* **server:** take OSC 7501, 133 and 9;4 from the engine, not byte scanners ([#1226](https://github.com/no-phux/phux/issues/1226)) ([d0d0867](https://github.com/no-phux/phux/commit/d0d0867eb751d761880be84160bc3a7d4e24b36e))
+
 ## [0.1.0-alpha.16](https://github.com/no-phux/phux/compare/desktop-v0.1.0-alpha.15...desktop-v0.1.0-alpha.16) (2026-10-13)
 
 
