@@ -31,6 +31,12 @@ const desktop = {
   assetNames: ["phux-desktop-0.1.0-macos-arm64.zip", "SHA256SUMS"],
 };
 assert.deepEqual(desktopReleaseProblems(desktop), []);
+const desktopAlpha = {
+  tag: "desktop-v0.1.0-alpha.17", draft: false, prerelease: true,
+  assetNames: ["phux-desktop-0.1.0-alpha.17-macos-arm64.zip", "SHA256SUMS"],
+};
+// The prerelease train is retired, not stuck: no installer resolves it.
+assert.deepEqual(desktopReleaseProblems(desktopAlpha), []);
 assert.deepEqual(desktopReleaseProblems({ ...desktop, prerelease: true }), [
   "desktop-v0.1.0 must not be marked prerelease",
 ]);
