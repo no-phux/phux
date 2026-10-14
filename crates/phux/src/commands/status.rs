@@ -44,7 +44,7 @@ pub(crate) struct StatusReport {
     protocol: (u16, u16, u16),
     /// The additive server features `HELLO_OK` advertised, as their
     /// `snake_case` names — the capability probe for callers that cannot speak
-    /// the wire themselves (the Claude hook shim branches on it).
+    /// the wire themselves.
     features: Vec<&'static str>,
     /// Hub-local sessions, name-sorted (the `phux ls` order).
     sessions: Vec<SessionInfo>,

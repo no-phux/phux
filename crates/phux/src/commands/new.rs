@@ -4,8 +4,7 @@ use std::process::ExitCode;
 
 use phux_client::attach::connection::Connection;
 use phux_client::session::{
-    AtomicPreflightOutcome, CreateEmptyOutcome, CreateOutcome, CreateSessionError,
-    CreateSessionRequest,
+    CreateEmptyOutcome, CreateOutcome, CreateSessionError, CreateSessionRequest,
 };
 use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::IdempotencyKey;
@@ -278,7 +277,6 @@ fn run_new_attached(
             BTreeMap::new(),
             None,
             false,
-            false,
             None,
             lifetime,
         )) {
@@ -400,7 +398,6 @@ pub(crate) fn run_new_json(
         cwd,
         env,
         None,
-        false,
         true,
         idempotency_key,
         lifetime,
@@ -543,50 +540,10 @@ fn report_create_failed_with(json: bool, detail: impl std::fmt::Display, remedy:
     )
 }
 
-/// Ask the connected server whether it supports atomic agent-session
-/// restore, via [`phux_client::session::atomic_agent_session_preflight`].
-async fn require_atomic_agent_session_create(
-    conn: &mut Connection,
-    server: &ServerTarget,
-    json: bool,
-) -> Result<(), ExitCode> {
-    let mut notices = Vec::new();
-    // Native restore must be atomic with session creation; the preflight
-    // detects servers that cannot install `agent_session` in the create.
-    let result = phux_client::session::atomic_agent_session_preflight(conn, &mut notices).await;
-    // Printed before the error is reported, in encounter order: a notice
-    // collected before a later transport failure must not be dropped.
-    warn_partial_results(&notices);
-    let outcome = result.map_err(|err| server.report_unreachable(json, &err, "new"))?;
-    match outcome {
-        AtomicPreflightOutcome::Supported => Ok(()),
-        AtomicPreflightOutcome::Unsupported => Err(report_create_failed(
-            json,
-            "server does not support atomic agent-session restore",
-        )),
-        AtomicPreflightOutcome::Refused(refusal) => Err(report_create_failed(
-            json,
-            format!("server refused the agent-session capability probe: {refusal}"),
-        )),
-    }
-}
-
-pub(crate) async fn preflight_atomic_agent_session_create(
-    socket_path: &Path,
-) -> Result<(), ExitCode> {
-    let server = ServerTarget::local(socket_path);
-    let mut conn = server
-        .connect()
-        .await
-        .map_err(|err| server.report_unreachable(false, &err, "workspace restore"))?;
-    require_atomic_agent_session_create(&mut conn, &server, false).await
-}
-
 /// Create a named session without attaching via
 /// [`phux_client::session::create_session`] and map the typed outcome to this
-/// verb's stderr diagnostics. `agent_session_preflighted` is true when a batch
-/// caller already ran [`preflight_atomic_agent_session_create`]. Returns the
-/// seed pane's id, or the (already reported) failure code.
+/// verb's stderr diagnostics. Returns the seed pane's id, or the (already
+/// reported) failure code.
 #[allow(
     clippy::too_many_arguments,
     reason = "the shared create-without-attach path keeps the complete operation explicit"
@@ -598,13 +555,10 @@ pub(crate) async fn create_session_via_metadata(
     cwd: Option<String>,
     env: BTreeMap<String, String>,
     agent_session: Option<Vec<u8>>,
-    agent_session_preflighted: bool,
     json: bool,
     idempotency_key: Option<IdempotencyKey>,
     lifetime: SessionLifetime,
 ) -> Result<u64, ExitCode> {
-    let allow_legacy_result = agent_session.is_none();
-
     let mut conn = server
         .connect()
         .await
@@ -628,14 +582,7 @@ pub(crate) async fn create_session_via_metadata(
         lifetime,
     };
     let mut notices = Vec::new();
-    let result = phux_client::session::create_session(
-        &mut conn,
-        &request,
-        allow_legacy_result,
-        agent_session_preflighted,
-        &mut notices,
-    )
-    .await;
+    let result = phux_client::session::create_session(&mut conn, &request, &mut notices).await;
     drop(conn);
     // Printed before the error is reported, in encounter order: a notice
     // collected before a later transport failure must not be dropped.
@@ -643,21 +590,9 @@ pub(crate) async fn create_session_via_metadata(
     let outcome = result.map_err(|err| report_create_session_error(server, json, err))?;
     match outcome {
         CreateOutcome::Created(id) => Ok(id),
-        CreateOutcome::AtomicRestoreUnsupported => Err(report_create_failed(
-            json,
-            "server does not support atomic agent-session restore",
-        )),
-        CreateOutcome::ProbeRefused(refusal) => Err(report_create_failed(
-            json,
-            format!("server refused the agent-session capability probe: {refusal}"),
-        )),
         CreateOutcome::ReadRefused(refusal) => Err(report_create_failed(
             json,
             format!("server refused the read-back: {refusal}"),
-        )),
-        CreateOutcome::LegacyReadRefused(refusal) => Err(report_create_failed(
-            json,
-            format!("server refused legacy read-back: {refusal}"),
         )),
         CreateOutcome::NotRegistered if idempotency_key.is_some() => {
             Err(report_keyed_session_not_registered(json, name))

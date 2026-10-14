@@ -1,7 +1,7 @@
 ---
 audience: humans, agents, consumers, contributors
 stability: evolving
-last-reviewed: 2026-10-09
+last-reviewed: 2026-10-13
 ---
 
 # Claude Code integration
@@ -96,35 +96,29 @@ AgentSession records through `phux agent session` / `phux agent emit`, plus
 the transcript entries below; schema 5 emits the same records without them.
 The older schema-4 released shim omits `PreToolUse` and `PostToolUse`, feeds
 the detector with `phux agent report-state`, and emits no records. The plugin
-minimum above does not imply schema-5 hooks. Check the running server with
-`phux status --json` for `RESOURCE_KINDS` before relying on the event stream.
+minimum above does not imply schema-5 hooks.
 
-On a server advertising `RESOURCE_KINDS`, the shim opens an AgentSession
-parented to Claude's pane and appends one JSON record per hook event
-([agent CLI guide](./agents.md)). Each `--phux-hook` arm reads stdin JSON
-and acts only when `PHUX_TERMINAL_ID` names Claude's own pane:
+The shim opens an AgentSession parented to Claude's pane and appends one
+JSON record per hook event ([agent CLI guide](./agents.md)). Each
+`--phux-hook` arm reads stdin JSON and acts only when `PHUX_TERMINAL_ID`
+names Claude's own pane:
 
-| Hook | Emits | On every server | Fallback only (no `RESOURCE_KINDS`) |
-|---|---|---|---|
-| `SessionStart` | `phux agent session open @$PHUX_TERMINAL_ID --provider claude --native-id <session_id>`, then `session_start` | `phux agent set --name claude --kind claude` | |
-| `UserPromptSubmit` | `prompt` with `{"chars": N}`, then a `user` transcript entry | | `phux agent report-state working` |
-| `PreToolUse` | `tool_start` with `{"tool_name": "..."}`; `tool_input` is never sent | | (new registration; nothing) |
-| `PostToolUse` | `tool_end` with `{"tool_name": "..."}`, then a `tool` transcript entry | | (new registration; nothing) |
-| `PostToolUseFailure` | `tool_end` with `{"tool_name": "...", "ok": false}`, then a `tool` transcript entry with status `error` | | (new registration; nothing) |
-| `PermissionRequest` | `ask` | `phux ask`, so the TUI and fleet chrome keep their exact timing | `phux agent report-state blocked` |
-| `Notification` (the permission, idle-prompt, and elicitation matchers) | `notification` with the hook's `kind` | `phux ask` | `phux agent report-state blocked` |
-| `Stop` | the reply as an `assistant` transcript entry, then `stop` | | `phux agent report-state done` |
-| `SessionEnd` | `session_end`, then `phux agent session close` | `phux agent clear` | |
+| Hook | Emits | Also |
+|---|---|---|
+| `SessionStart` | `phux agent session open @$PHUX_TERMINAL_ID --provider claude --native-id <session_id>`, then `session_start` | `phux agent set --name claude --kind claude` |
+| `UserPromptSubmit` | `prompt` with `{"chars": N}`, then a `user` transcript entry | |
+| `PreToolUse` | `tool_start` with `{"tool_name": "..."}`; `tool_input` is never sent | |
+| `PostToolUse` | `tool_end` with `{"tool_name": "..."}`, then a `tool` transcript entry | |
+| `PostToolUseFailure` | `tool_end` with `{"tool_name": "...", "ok": false}`, then a `tool` transcript entry with status `error` | |
+| `PermissionRequest` | `ask` | `phux ask`, so the TUI and fleet chrome keep their exact timing |
+| `Notification` (the permission, idle-prompt, and elicitation matchers) | `notification` with the hook's `kind` | `phux ask` |
+| `Stop` | the reply as an `assistant` transcript entry, then `stop` | |
+| `SessionEnd` | `session_end`, then `phux agent session close` | `phux agent clear` |
 
 The server derives pane state from that stream before consulting other
 sources: working on `prompt` / `tool_start`, blocked on `ask` or permission /
 elicitation `notification`, done on `stop`, and retracted on `session_end`.
 `phux agent wait --until done` and the sidebar state glyph use this derived state.
-
-**Fallback.** Against a server without `RESOURCE_KINDS` (an older server, or
-a hub relaying a pane it does not own), `session open` refuses with
-`unsupported_server` and the per-turn arms fall back to
-`phux agent report-state`, as the table shows.
 
 **Privacy.** Typed records carry no conversation text: `prompt` carries a
 character count, and tool records carry the tool's name. The conversation

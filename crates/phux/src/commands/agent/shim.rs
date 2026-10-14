@@ -348,11 +348,10 @@ fn read_manifest(path: &Path) -> Result<Option<serde_json::Value>, String> {
 /// Every `--phux-hook` arm reads Claude's stdin payload through
 /// `phux agent hook-payload`, then: `start` writes identity once (never a
 /// `--state`, which would outrank the server's derivation, L3.md §3.7);
-/// the lifecycle arms feed a session stream with `agent emit` when
-/// `phux status --json` lists `resource_kinds` (probed once per process),
-/// else `report-state` (ADR-0085); `blocked` always calls `phux ask` and
-/// `clear` always deletes the record. A session is opened at most once per
-/// process and never for a `compact`-sourced `SessionStart`.
+/// the lifecycle arms feed the pane's `AgentSession` stream with
+/// `agent emit`; `blocked` also calls `phux ask` and `clear` deletes the
+/// record. A session is opened at most once per process and never for a
+/// `compact`-sourced `SessionStart`.
 ///
 /// Payload text never reaches a command line: only the tokens `hook-payload`
 /// prints (never prompt text, `tool_input`, `tool_response`, or the
@@ -389,21 +388,6 @@ settings={settings}
 
 run_phux() {{
   "$phux" "$@" >/dev/null 2>&1 || true
-}}
-
-# Does the server serve AgentSession resources? `phux status --json` lists
-# `resource_kinds` under `features` when it does. Probed at most once per
-# wrapper process: the launching wrapper lives for the whole Claude session,
-# and each hook is its own short process.
-streams=
-server_streams() {{
-  if [ -z "$streams" ]; then
-    streams=no
-    case $("$phux" status --json 2>/dev/null) in
-      *'"resource_kinds"'*) streams=yes ;;
-    esac
-  fi
-  [ "$streams" = yes ]
 }}
 
 # Fields of the hook payload on stdin, exactly as `phux agent hook-payload`
@@ -539,28 +523,15 @@ stream_state() {{
   esac
 }}
 
-# Servers without AgentSession resources: the per-turn arms feed the
-# detector directly (ADR-0085), and the tool arms have nothing to report.
-legacy_state() {{
-  case "$1" in
-    working|done) run_phux agent report-state "$target" "$1" ;;
-    blocked) run_phux agent report-state "$target" blocked ;;
-  esac
-}}
-
 set_state() {{
   [ -n "${{PHUX_TERMINAL_ID:-}}" ] || return 0
   target="@$PHUX_TERMINAL_ID"
-  # Identity is written once, at start, on every server.
+  # Identity is written once, at start.
   case "$1" in
     start) run_phux agent set "$target" --name claude --kind claude ;;
   esac
-  if server_streams; then
-    stream_state "$1"
-  else
-    legacy_state "$1"
-  fi
-  # The attention ladder and the record cleanup run on every server.
+  stream_state "$1"
+  # The attention ladder and the record cleanup.
   case "$1" in
     blocked) run_phux ask "$target" "Claude needs attention" ;;
     clear) run_phux agent clear "$target" ;;
@@ -798,8 +769,7 @@ mod tests {
         .unwrap()
     }
 
-    /// A fake `phux` that logs every argv line to `$FAKE_LOG`, answers the
-    /// capability probe from `$FAKE_FEATURES`, stands in for
+    /// A fake `phux` that logs every argv line to `$FAKE_LOG`, stands in for
     /// `agent hook-payload` with the canned `$FAKE_FIELDS` line (the real
     /// helper is pinned by `hook_payload.rs`), and logs whatever an
     /// `emit --data -` fed it on stdin — so a test can see exactly which
@@ -808,7 +778,6 @@ mod tests {
         "#!/bin/sh\n",
         "printf '%s\\n' \"$*\" >> \"$FAKE_LOG\"\n",
         "case \"$1 ${2:-}\" in\n",
-        "  \"status --json\") printf '{\"running\":true,\"features\":%s}\\n' \"$FAKE_FEATURES\"; exit 0 ;;\n",
         "  \"agent hook-payload\") cat > /dev/null; printf '%s\\n' \"$FAKE_FIELDS\"; exit 0 ;;\n",
         "  \"agent hook-transcript\") cat > /dev/null; [ -z \"${FAKE_TRANSCRIPT:-}\" ] || printf '%s\\n' \"$FAKE_TRANSCRIPT\"; exit 0 ;;\n",
         "esac\n",
@@ -842,18 +811,11 @@ mod tests {
             }
         }
 
-        /// Run `<wrapper> --phux-hook <arm>` with `payload` on stdin, the
-        /// probe answering `features`, the helper answering `fields`, and
-        /// return every `phux` argv line the fake logged, in order.
-        fn hook(
-            &self,
-            arm: &str,
-            payload: &str,
-            features: &str,
-            fields: &str,
-            raw: bool,
-        ) -> Vec<String> {
-            self.hook_env(arm, payload, features, fields, raw, &[])
+        /// Run `<wrapper> --phux-hook <arm>` with `payload` on stdin and the
+        /// helper answering `fields`, and return every `phux` argv line the
+        /// fake logged, in order.
+        fn hook(&self, arm: &str, payload: &str, fields: &str, raw: bool) -> Vec<String> {
+            self.hook_env(arm, payload, fields, raw, &[])
         }
 
         /// [`Self::hook`] with extra environment: `FAKE_TRANSCRIPT` is the
@@ -863,7 +825,6 @@ mod tests {
             &self,
             arm: &str,
             payload: &str,
-            features: &str,
             fields: &str,
             raw: bool,
             env: &[(&str, &str)],
@@ -877,7 +838,6 @@ mod tests {
                 .env_remove("PHUX_AGENT_PHUX_BIN")
                 .env("PHUX_TERMINAL_ID", "42")
                 .env("FAKE_LOG", &self.log)
-                .env("FAKE_FEATURES", features)
                 .env("FAKE_FIELDS", fields)
                 .env_remove("FAKE_TRANSCRIPT")
                 .env_remove("PHUX_AGENT_TRANSCRIPT")
@@ -921,9 +881,6 @@ mod tests {
         fake_phux.with_file_name("fake-phux.log")
     }
 
-    const STREAMING: &str = "[\"report_agent_state\",\"resource_kinds\"]";
-    const LEGACY: &str = "[\"report_agent_state\"]";
-
     #[test]
     fn rc_block_removal_preserves_every_user_owned_byte() {
         let input = format!("before\n{BLOCK_BEGIN}\nexport PATH=x\n{BLOCK_END}\nafter\n");
@@ -947,23 +904,19 @@ mod tests {
     }
 
     /// Every hook the installer registers has an arm in the wrapper's stream
-    /// path, and the legacy path keeps its arms; identity, ask, and clear sit
-    /// outside both lifecycle paths.
+    /// path; identity, ask, and clear sit outside it.
     #[test]
     fn every_registered_hook_arm_is_handled_and_vice_versa() {
         let wrapper = rendered();
-        let stream = section(&wrapper, "stream_state() {", "legacy_state() {");
-        let fallback_only = section(&wrapper, "legacy_state() {", "set_state() {");
+        let stream = section(&wrapper, "stream_state() {", "set_state() {");
         for (event, _, arm) in HOOKS {
             assert!(
                 stream.contains(&format!("{arm})")),
                 "{event} is registered as `--phux-hook {arm}` but stream_state has no `{arm})` arm",
             );
         }
-        for body in [stream, fallback_only] {
-            assert!(!body.contains("agent set") && !body.contains("agent clear"));
-        }
-        assert!(!fallback_only.contains("run_phux ask"));
+        assert!(!stream.contains("agent set") && !stream.contains("agent clear"));
+        assert!(!stream.contains("run_phux ask"));
     }
 
     /// The text of `wrapper` between the first occurrence of `from` and
@@ -978,11 +931,10 @@ mod tests {
         &wrapper[start..start + end]
     }
 
-    /// Against a server that serves `AgentSession` resources, each arm's
-    /// exact `phux` command lines: the session is opened once with Claude's
-    /// own session id, records carry only counts, tool names, and kinds,
-    /// `blocked` still feeds the attention ladder, and `clear` ends and
-    /// closes the session. Pinned as argv so a change here is a change to
+    /// Each arm's exact `phux` command lines: the session is opened once
+    /// with Claude's own session id, records carry only counts, tool names,
+    /// and kinds, `blocked` still feeds the attention ladder, and `clear`
+    /// ends and closes the session. Pinned as argv so a change here is a change to
     /// the producer contract, visibly.
     #[test]
     #[allow(
@@ -1002,7 +954,6 @@ mod tests {
                 vec![
                     "agent hook-payload",
                     "agent set @42 --name claude --kind claude",
-                    "status --json",
                     "agent session open @42 --provider claude --native-id=sess-1",
                     "agent emit @42 --type session_start",
                 ],
@@ -1012,7 +963,6 @@ mod tests {
                 fields("UserPromptSubmit", "-", "-", "18", "-", "-"),
                 vec![
                     "agent hook-payload",
-                    "status --json",
                     "agent emit @42 --type prompt --data {\"chars\":18}",
                     "agent hook-transcript",
                 ],
@@ -1022,7 +972,6 @@ mod tests {
                 fields("PreToolUse", "Bash", "-", "0", "-", "-"),
                 vec![
                     "agent hook-payload",
-                    "status --json",
                     "agent emit @42 --type tool_start --data {\"tool_name\":\"Bash\"}",
                 ],
             ),
@@ -1031,7 +980,6 @@ mod tests {
                 fields("PostToolUse", "mcp__phux__phux_ls", "-", "0", "-", "-"),
                 vec![
                     "agent hook-payload",
-                    "status --json",
                     "agent emit @42 --type tool_end --data {\"tool_name\":\"mcp__phux__phux_ls\"}",
                     "agent hook-transcript",
                 ],
@@ -1041,7 +989,6 @@ mod tests {
                 fields("PostToolUseFailure", "Bash", "-", "0", "-", "-"),
                 vec![
                     "agent hook-payload",
-                    "status --json",
                     "agent emit @42 --type tool_end --data {\"tool_name\":\"Bash\",\"ok\":false}",
                     "agent hook-transcript",
                 ],
@@ -1051,7 +998,6 @@ mod tests {
                 fields("PermissionRequest", "Bash", "-", "0", "-", "-"),
                 vec![
                     "agent hook-payload",
-                    "status --json",
                     "agent emit @42 --type ask",
                     "ask @42 Claude needs attention",
                 ],
@@ -1061,7 +1007,6 @@ mod tests {
                 fields("Notification", "-", "permission_prompt", "0", "-", "-"),
                 vec![
                     "agent hook-payload",
-                    "status --json",
                     "agent emit @42 --type notification --data {\"kind\":\"permission\"}",
                     "ask @42 Claude needs attention",
                 ],
@@ -1071,7 +1016,6 @@ mod tests {
                 fields("Notification", "-", "elicitation_dialog", "0", "-", "-"),
                 vec![
                     "agent hook-payload",
-                    "status --json",
                     "agent emit @42 --type notification --data {\"kind\":\"elicitation\"}",
                     "ask @42 Claude needs attention",
                 ],
@@ -1081,7 +1025,6 @@ mod tests {
                 fields("Notification", "-", "idle_prompt", "0", "-", "-"),
                 vec![
                     "agent hook-payload",
-                    "status --json",
                     "agent emit @42 --type notification --data {\"kind\":\"idle\"}",
                     "ask @42 Claude needs attention",
                 ],
@@ -1091,7 +1034,6 @@ mod tests {
                 fields("Stop", "-", "-", "0", "-", "-"),
                 vec![
                     "agent hook-payload",
-                    "status --json",
                     "agent hook-transcript",
                     "agent emit @42 --type stop",
                 ],
@@ -1101,7 +1043,6 @@ mod tests {
                 fields("SessionEnd", "-", "-", "0", "prompt_input_exit", "-"),
                 vec![
                     "agent hook-payload",
-                    "status --json",
                     "agent emit @42 --type session_end --data {\"reason\":\"prompt_input_exit\"}",
                     "agent session close @42",
                     "agent clear @42",
@@ -1109,7 +1050,7 @@ mod tests {
             ),
         ];
         for (arm, fields, want) in cases {
-            let log = h.hook(arm, "{}", STREAMING, &fields, false);
+            let log = h.hook(arm, "{}", &fields, false);
             assert_eq!(log, want, "arm `{arm}` with fields `{fields}`");
         }
 
@@ -1117,39 +1058,30 @@ mod tests {
         // not parse), `start` writes identity and opens nothing: the native
         // id is the join key, and a second open would create a second
         // session.
-        let log = h.hook("start", "", STREAMING, "- - - - 0 - -", false);
+        let log = h.hook("start", "", "- - - - 0 - -", false);
         assert_eq!(
             log,
             [
                 "agent hook-payload",
                 "agent set @42 --name claude --kind claude",
-                "status --json",
             ]
         );
         // A `compact`-sourced SessionStart arrives with no SessionEnd before
         // it, so opening here would leave two live sessions under the pane.
-        let log = h.hook(
-            "start",
-            "",
-            STREAMING,
-            "sess-1 SessionStart - - 0 - compact",
-            false,
-        );
+        let log = h.hook("start", "", "sess-1 SessionStart - - 0 - compact", false);
         assert_eq!(
             log,
             [
                 "agent hook-payload",
                 "agent set @42 --name claude --kind claude",
-                "status --json",
             ]
         );
         // `clear` still ends, closes, and clears without a reason.
-        let log = h.hook("clear", "", STREAMING, "- - - - 0 - -", false);
+        let log = h.hook("clear", "", "- - - - 0 - -", false);
         assert_eq!(
             log,
             [
                 "agent hook-payload",
-                "status --json",
                 "agent emit @42 --type session_end",
                 "agent session close @42",
                 "agent clear @42",
@@ -1157,76 +1089,11 @@ mod tests {
         );
     }
 
-    /// Against a server without `resource_kinds`, every arm runs exactly the
-    /// schema-4 command lines — identity once, detector evidence per turn,
-    /// `ask` on blocked, `clear` at the end — and the tool arms run nothing.
-    /// The fallback is today's behavior, not an approximation of it.
-    #[test]
-    fn legacy_arms_are_the_schema_four_command_lines() {
-        let h = Harness::new();
-        let cases: &[(&str, &[&str])] = &[
-            (
-                "start",
-                &[
-                    "agent hook-payload",
-                    "agent set @42 --name claude --kind claude",
-                    "status --json",
-                ],
-            ),
-            (
-                "working",
-                &[
-                    "agent hook-payload",
-                    "status --json",
-                    "agent report-state @42 working",
-                ],
-            ),
-            ("tool-start", &["agent hook-payload", "status --json"]),
-            ("tool-end", &["agent hook-payload", "status --json"]),
-            (
-                "blocked",
-                &[
-                    "agent hook-payload",
-                    "status --json",
-                    "agent report-state @42 blocked",
-                    "ask @42 Claude needs attention",
-                ],
-            ),
-            (
-                "done",
-                &[
-                    "agent hook-payload",
-                    "status --json",
-                    "agent report-state @42 done",
-                ],
-            ),
-            (
-                "clear",
-                &["agent hook-payload", "status --json", "agent clear @42"],
-            ),
-        ];
-        for (arm, want) in cases {
-            let log = h.hook(
-                arm,
-                "{}",
-                LEGACY,
-                "sess-1 X Bash permission_prompt 9 clear startup",
-                false,
-            );
-            assert_eq!(log, *want, "legacy arm `{arm}`");
-            assert!(
-                log.iter()
-                    .all(|line| !line.contains("emit") && !line.contains("session")),
-                "the legacy path must never touch the stream verbs: {log:?}"
-            );
-        }
-    }
-
     /// No byte of the hook payload reaches a `phux` command line except
     /// through the helper's six tokens: the prompt text, `tool_input`, and
-    /// `tool_response` markers never appear in any argv, on either path, and
-    /// the whole payload is forwarded only under `PHUX_AGENT_EMIT_RAW=1`, only
-    /// on stdin of a `provider_raw` emit. (Transcript entries also travel on
+    /// `tool_response` markers never appear in any argv, and the whole
+    /// payload is forwarded only under `PHUX_AGENT_EMIT_RAW=1`, only on stdin
+    /// of a `provider_raw` emit. (Transcript entries also travel on
     /// stdin only; `transcript_entries_ride_provider_raw_on_stdin_by_default`.)
     #[test]
     fn payload_text_never_reaches_a_command_line_unless_raw_is_opted_in() {
@@ -1246,34 +1113,25 @@ mod tests {
 
         let h = Harness::new();
         let payload = r#"{"session_id":"sess-1","hook_event_name":"PreToolUse","tool_name":"Bash","prompt":"PROMPT-MARKER","tool_input":{"command":"INPUT-MARKER"}}"#;
-        for features in [STREAMING, LEGACY] {
-            for arm in [
-                "start",
-                "working",
-                "tool-start",
-                "tool-end",
-                "blocked",
-                "done",
-                "clear",
-            ] {
-                let log = h.hook(
-                    arm,
-                    payload,
-                    features,
-                    "sess-1 PreToolUse Bash - 13 - -",
-                    false,
-                );
-                assert!(
-                    log.iter().all(|line| !line.contains("MARKER")),
-                    "arm `{arm}` leaked payload text: {log:?}"
-                );
-            }
+        for arm in [
+            "start",
+            "working",
+            "tool-start",
+            "tool-end",
+            "blocked",
+            "done",
+            "clear",
+        ] {
+            let log = h.hook(arm, payload, "sess-1 PreToolUse Bash - 13 - -", false);
+            assert!(
+                log.iter().all(|line| !line.contains("MARKER")),
+                "arm `{arm}` leaked payload text: {log:?}"
+            );
         }
 
         let log = h.hook(
             "tool-start",
             payload,
-            STREAMING,
             "sess-1 PreToolUse Bash - 13 - -",
             true,
         );
@@ -1281,7 +1139,6 @@ mod tests {
             log,
             [
                 "agent hook-payload",
-                "status --json",
                 "agent emit @42 --type tool_start --data {\"tool_name\":\"Bash\"}",
                 "agent emit @42 --type provider_raw --data -",
                 &format!("stdin:{payload}"),
@@ -1289,18 +1146,11 @@ mod tests {
             "raw opt-in forwards the payload once, on stdin, after the typed record"
         );
         // `session_end` is terminal, so on `clear` the raw record goes first.
-        let log = h.hook(
-            "clear",
-            payload,
-            STREAMING,
-            "sess-1 SessionEnd - - 0 other -",
-            true,
-        );
+        let log = h.hook("clear", payload, "sess-1 SessionEnd - - 0 other -", true);
         assert_eq!(
             log,
             [
                 "agent hook-payload",
-                "status --json",
                 "agent emit @42 --type provider_raw --data -",
                 &format!("stdin:{payload}"),
                 "agent emit @42 --type session_end --data {\"reason\":\"other\"}",
@@ -1309,48 +1159,35 @@ mod tests {
             ],
             "nothing may be emitted after session_end"
         );
-        let log = h.hook(
-            "tool-start",
-            payload,
-            LEGACY,
-            "sess-1 PreToolUse Bash - 13 - -",
-            true,
-        );
-        assert!(
-            !log.iter().any(|line| line.contains("provider_raw")),
-            "raw opt-in has nowhere to go without a session stream: {log:?}"
-        );
     }
 
     /// Transcript entries are on by default (ADR-0156): the `working`,
     /// `tool-end`, and `done` arms feed what `agent hook-transcript` prints to
     /// a `provider_raw` emit on stdin, `done` before its terminal-for-the-turn
     /// `stop`. `PHUX_AGENT_TRANSCRIPT=0` turns them off, an empty helper
-    /// answer emits nothing, and the legacy path never asks.
+    /// answer emits nothing.
     #[test]
     fn transcript_entries_ride_provider_raw_on_stdin_by_default() {
         let h = Harness::new();
         let entry = r#"{"provider":"claude","schema":"phux.transcript/v1","entry":{"id":"user-1","role":"user","text":"hi","truncated":false,"final":true}}"#;
         let on = [("FAKE_TRANSCRIPT", entry)];
         let fields = "sess-1 UserPromptSubmit - - 2 - -";
-        let log = h.hook_env("working", "{}", STREAMING, fields, false, &on);
+        let log = h.hook_env("working", "{}", fields, false, &on);
         assert_eq!(
             log,
             [
                 "agent hook-payload",
-                "status --json",
                 "agent emit @42 --type prompt --data {\"chars\":2}",
                 "agent hook-transcript",
                 "agent emit @42 --type provider_raw --data -",
                 &format!("stdin:{entry}"),
             ]
         );
-        let log = h.hook_env("done", "{}", STREAMING, "sess-1 Stop - - 0 - -", false, &on);
+        let log = h.hook_env("done", "{}", "sess-1 Stop - - 0 - -", false, &on);
         assert_eq!(
             log,
             [
                 "agent hook-payload",
-                "status --json",
                 "agent hook-transcript",
                 "agent emit @42 --type provider_raw --data -",
                 &format!("stdin:{entry}"),
@@ -1358,7 +1195,7 @@ mod tests {
             ]
         );
         for arm in ["start", "tool-start", "blocked", "clear"] {
-            let log = h.hook_env(arm, "{}", STREAMING, fields, false, &on);
+            let log = h.hook_env(arm, "{}", fields, false, &on);
             assert!(
                 !log.iter().any(|line| line.contains("hook-transcript")),
                 "arm `{arm}` has no transcript entry: {log:?}"
@@ -1366,19 +1203,14 @@ mod tests {
         }
         let off = [("FAKE_TRANSCRIPT", entry), ("PHUX_AGENT_TRANSCRIPT", "0")];
         for arm in ["working", "tool-end", "done"] {
-            let log = h.hook_env(arm, "{}", STREAMING, fields, false, &off);
+            let log = h.hook_env(arm, "{}", fields, false, &off);
             assert!(
                 !log.iter()
                     .any(|line| line.contains("transcript") || line.contains("provider_raw")),
                 "opted out, arm `{arm}` must not read or emit a transcript: {log:?}"
             );
-            let legacy = h.hook_env(arm, "{}", LEGACY, fields, false, &on);
-            assert!(
-                !legacy.iter().any(|line| line.contains("transcript")),
-                "no stream, no transcript: {legacy:?}"
-            );
         }
-        let silent = h.hook_env("tool-end", "{}", STREAMING, fields, false, &[]);
+        let silent = h.hook_env("tool-end", "{}", fields, false, &[]);
         assert!(
             !silent.iter().any(|line| line.contains("provider_raw")),
             "an empty helper answer emits nothing: {silent:?}"
@@ -1391,7 +1223,6 @@ mod tests {
             let log = h.hook_env(
                 arm,
                 "{}",
-                STREAMING,
                 fields,
                 false,
                 &[("FAKE_TRANSCRIPT", entry), ("TMPDIR", tmpdir)],

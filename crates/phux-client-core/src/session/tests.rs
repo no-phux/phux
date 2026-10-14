@@ -235,7 +235,7 @@ impl EngineAdapter for RecordingNativeAdapter {
         if !matches!(
             profile,
             BootstrapStreamProfile::NativeState {
-                codec: EngineCodec::LibghosttyCheckpointV2,
+                codec: EngineCodec::LibghosttySnapshotV1,
             }
         ) {
             return Err(FakeError::UnsupportedProfile);
@@ -2359,7 +2359,7 @@ fn host_boundary_rejects_profile_and_pre_ready_data_with_typed_errors() {
 #[allow(clippy::too_many_lines)]
 fn selected_native_host_preserves_opaque_bytes_and_lifecycle_order() {
     let advertised = BootstrapCapabilities::new().with_native(
-        EngineCodec::LibghosttyCheckpointV2,
+        EngineCodec::LibghosttySnapshotV1,
         EngineFeatureSet::required_native(),
     );
     let client = ClientCapabilities::new().with_bootstrap(advertised);
@@ -2367,12 +2367,12 @@ fn selected_native_host_preserves_opaque_bytes_and_lifecycle_order() {
     assert_eq!(
         selected,
         BootstrapProfile::NativeState {
-            codec: EngineCodec::LibghosttyCheckpointV2,
+            codec: EngineCodec::LibghosttySnapshotV1,
             features: EngineFeatureSet::required_native(),
         }
     );
     let profile = BootstrapStreamProfile::NativeState {
-        codec: EngineCodec::LibghosttyCheckpointV2,
+        codec: EngineCodec::LibghosttySnapshotV1,
     };
     let terminal_id = terminal(80);
     let stream_id = stream(81);
@@ -2486,7 +2486,7 @@ fn published_recording_native(
     let mut kernel = SessionKernel::new(
         RecordingNativeAdapter,
         BootstrapProfile::NativeState {
-            codec: EngineCodec::LibghosttyCheckpointV2,
+            codec: EngineCodec::LibghosttySnapshotV1,
             features: EngineFeatureSet::required_native(),
         },
     );
@@ -2498,7 +2498,7 @@ fn published_recording_native(
                 stream_id,
                 bootstrap_id,
                 BootstrapStreamProfile::NativeState {
-                    codec: EngineCodec::LibghosttyCheckpointV2,
+                    codec: EngineCodec::LibghosttySnapshotV1,
                 },
                 geometry(),
                 10,
