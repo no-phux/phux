@@ -43,8 +43,13 @@ jobs:
           PHUX_ALLOWED_ORIGIN: https://phux.sh
           PHUX_SYNTHETIC_TOKEN: ${{ secrets.PHUX_SYNTHETIC_TOKEN }}
         run: |
+          # Native is parked unless the repository variable turns it back on
+          # (infra/demo.run.ts): the parked backstop asserts the honest edge
+          # path instead of a native shell that admission will refuse.
           if [[ "${{ inputs.exercise_fallback || false }}" == "true" ]]; then
             bun run scripts/smoke-native.ts --exercise-fallback
-          else
+          elif [[ "${{ vars.PHUX_NATIVE_ENABLED }}" == "true" ]]; then
             bun run scripts/smoke-native.ts
+          else
+            bun run scripts/smoke-native.ts --expect-edge
           fi

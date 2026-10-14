@@ -102,9 +102,18 @@ jobs:
           # A newly attached custom domain can lag the Worker deployment in
           # public DNS. Do not mistake that propagation window for a runtime
           # or WebSocket failure.
+          verify() {
+            # Native is parked unless the repository variable turns it back on
+            # (infra/demo.run.ts); assert the state this deploy actually set.
+            if [[ "${{ vars.PHUX_NATIVE_ENABLED }}" == "true" ]]; then
+              bun run worker:smoke-fallback
+            else
+              bun run scripts/smoke-native.ts --expect-edge
+            fi
+          }
           for attempt in {1..30}; do
             if curl --fail --silent --show-error https://shell.phux.sh/healthz >/dev/null; then
-              bun run worker:smoke-fallback
+              verify
               exit 0
             fi
             echo "Waiting for custom-domain DNS (${attempt}/30)"
