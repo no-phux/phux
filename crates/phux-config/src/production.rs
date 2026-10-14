@@ -121,14 +121,6 @@ fn current_layout() -> Layout {
     })
 }
 
-/// Whether `path` is (inside) the day-to-day installation's state, config,
-/// data, or service unit. Classification only; see
-/// [`refuse_dev_on_production_state`] for the guard.
-#[must_use]
-pub fn is_production_state(path: &Path) -> bool {
-    current_layout().root_containing(path).is_some()
-}
-
 /// Refuse to let a development build write production phux state, or read
 /// a production secret.
 ///

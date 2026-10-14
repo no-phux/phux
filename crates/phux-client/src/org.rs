@@ -27,12 +27,11 @@ use phux_protocol::ids::{
 use phux_protocol::wire::frame::{
     ArrangementDoc, ArrangementValue, Command, CommandValue, Committed, ErrorCode, ExecState,
     ExitPolicy, LaunchMode, LaunchSpec, MAX_ORG_BATCH, MoveItem, OrgFilter, OrganizationPage,
-    Outcome, Refusal, ResourceRecord, SessionLifetime, SessionRecord, TerminateMode,
+    Outcome, Refusal, ResourceRecord, SessionRecord, TerminateMode,
 };
 
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
-use crate::layout::wire::HandleMap;
 use crate::state::Degradation;
 
 pub use phux_client_core::org_ops::{OrgOutcome, is_inactive, live_target, refusal_sentence};
@@ -293,16 +292,6 @@ impl OrgInventory {
         self.resources
             .iter()
             .filter(move |resource| resource.session == *session)
-    }
-
-    /// The key-to-handle map of every resource that executes here.
-    #[must_use]
-    pub fn handle_map(&self) -> HandleMap {
-        HandleMap::from_pairs(
-            self.resources
-                .iter()
-                .map(|resource| (resource.key, resource.live.clone())),
-        )
     }
 
     /// The one session or resource whose key starts with `prefix`
@@ -915,25 +904,6 @@ pub async fn inbox_resolve(
     run_cas(conn, Edit::InboxResolve(session)).await
 }
 
-/// Make a session persistent or ephemeral. An empty session made ephemeral
-/// is deleted.
-///
-/// # Errors
-///
-/// The refusal; transport failures.
-pub async fn set_lifetime(
-    conn: &mut Connection,
-    session: SessionKey,
-    lifetime: SessionLifetime,
-) -> Result<Committed, OrgError> {
-    let command = Command::SessionSetLifetime {
-        operation: mint_operation(),
-        session,
-        lifetime,
-    };
-    commit(conn, FIRST_REQUEST_ID, command).await
-}
-
 /// Rename (or, with `None`, unname) a resource record.
 ///
 /// # Errors
@@ -981,6 +951,7 @@ pub async fn terminate(
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 mod tests {
     use phux_protocol::caps::ServerFeatureExtSet;
+    use phux_protocol::wire::frame::SessionLifetime;
 
     use super::*;
     use crate::testkit::{OrgFixture, ScriptSpec, serve_one};

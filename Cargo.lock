@@ -2422,7 +2422,6 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
- "unicode-segmentation",
  "uniffi",
  "uuid",
 ]

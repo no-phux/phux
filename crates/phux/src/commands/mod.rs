@@ -3409,6 +3409,14 @@ pub(crate) enum WorkspaceAction {
     },
 }
 
+/// Quote one word for a POSIX shell, unconditionally (`'` becomes `'\''`).
+/// No "looks safe" fast path: paths and native session ids may carry
+/// spaces, `$(...)`, or `;`. [`ssh_bootstrap::shell_quote`] is the variant
+/// that leaves an already-safe word bare.
+pub(crate) fn sh_quote(word: &str) -> String {
+    format!("'{}'", word.replace('\'', r"'\''"))
+}
+
 /// Fail fast when `socket_path` cannot fit in a `sockaddr_un` (phux-iwuc).
 ///
 /// A too-long path can never bind or connect, so naming the platform's
@@ -3805,8 +3813,21 @@ mod tests {
 
     use phux_client::attach::AttachError;
 
-    use crate::commands::{attach_error_lines, no_server_lines, parse_selector};
+    use crate::commands::{attach_error_lines, no_server_lines, parse_selector, sh_quote};
     use phux_client::selector::Selector;
+
+    /// Every word is quoted, and an embedded single quote is escaped rather
+    /// than terminating the quoting.
+    #[test]
+    fn sh_quote_is_unconditional_and_closes_over_single_quotes() {
+        assert_eq!(sh_quote("claude"), "'claude'");
+        assert_eq!(sh_quote("/opt/my agent/claude"), "'/opt/my agent/claude'");
+        assert_eq!(sh_quote("it's"), r"'it'\''s'");
+        assert_eq!(sh_quote(""), "''");
+        // The injection this exists to stop: nothing escapes the quotes.
+        assert_eq!(sh_quote("; rm -rf /"), "'; rm -rf /'");
+        assert_eq!(sh_quote("$(whoami)"), "'$(whoami)'");
+    }
 
     fn refused_io() -> AttachError {
         AttachError::Io(std::io::Error::from(std::io::ErrorKind::ConnectionRefused))

@@ -21,6 +21,7 @@ use serde_json::json;
 use usage::{Subcommands, ValueEnum};
 
 use super::json_err::{self, CliError, codes};
+use super::update::apply::hex_lower;
 
 /// Default credential lifetime: 90 days.
 const DEFAULT_EXPIRY_SECONDS: i64 = 90 * 24 * 60 * 60;
@@ -557,7 +558,10 @@ fn credential_lines(credential: &WorkloadCredential, now: i64, public_keys: bool
         lines.push(format!("  revoked: {}", timestamp(revoked_at)));
     }
     if public_keys {
-        lines.push(format!("  public key: {}", hex(&credential.public_key)));
+        lines.push(format!(
+            "  public key: {}",
+            hex_lower(&credential.public_key)
+        ));
     }
     lines
 }
@@ -576,7 +580,7 @@ fn credential_document(
         "revoked_at": credential.revoked_at,
     });
     if public_keys {
-        document["public_key"] = json!(hex(&credential.public_key));
+        document["public_key"] = json!(hex_lower(&credential.public_key));
     }
     document
 }
@@ -642,14 +646,4 @@ fn timestamp(seconds: i64) -> String {
         || seconds.to_string(),
         |at: DateTime<Utc>| at.to_rfc3339_opts(SecondsFormat::Secs, true),
     )
-}
-
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes
-        .iter()
-        .fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
-            let _ = write!(out, "{byte:02x}");
-            out
-        })
 }
