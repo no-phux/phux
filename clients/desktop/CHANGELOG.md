@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/no-phux/phux/compare/desktop-v0.4.0...desktop-v0.4.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* finish the 2026-10-13 landing seams (org store, import, upload lane, docs) ([#1318](https://github.com/no-phux/phux/issues/1318)) ([2aff3b7](https://github.com/no-phux/phux/commit/2aff3b7ddbc22ba56ac656d55fa437557f59dd10))
+
 ## [0.4.0](https://github.com/no-phux/phux/compare/desktop-v0.3.2...desktop-v0.4.0) (2026-10-14)
 
 
