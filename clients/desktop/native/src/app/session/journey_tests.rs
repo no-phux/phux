@@ -222,6 +222,9 @@ fn explicit_reconnect_after_offline_rename_never_creates_the_old_name(cx: &mut T
         attached(&desk, cx) && desk.read_with(cx, |desk, _| desk.session == "renamed-A")
     });
     assert_eq!(home_key(&desk, cx), Some(key));
+    desktop.read_with(cx, |desktop, _| {
+        assert_eq!(desktop.windows[0].session, "renamed-A");
+    });
     desk.read_with(cx, |desk, _| {
         let topology = desk
             .link
@@ -243,6 +246,58 @@ fn explicit_reconnect_after_offline_rename_never_creates_the_old_name(cx: &mut T
         server.root.join("layout.json").exists(),
         "explicit layout path is retained"
     );
+}
+
+#[gpui::test]
+#[ignore = "requires PHUX_DESKTOP_JOURNEY_TEST_BIN pointing at a checkout-built CLI"]
+fn project_window_reuse_follows_rename_without_adopting_the_reused_old_name(
+    cx: &mut TestAppContext,
+) {
+    let server = Server::new();
+    let desktop = desktop(cx);
+    server.launch(&desktop, cx);
+    let original = desktop.read_with(cx, |desktop, _| desktop.windows[0].desk.clone());
+    wait_for(cx, |cx| {
+        attached(&original, cx) && home_key(&original, cx).is_some()
+    });
+    let key = home_key(&original, cx).unwrap();
+    server.run(&["rename", "journey-A", "renamed-A"]);
+    server.run(&["new", "--json", "--empty", "-s", "journey-A"]);
+    original.update(cx, |desk, _| {
+        let _ = desk.link.as_ref().unwrap().connection.refresh_topology();
+    });
+    wait_for(cx, |cx| {
+        original.read_with(cx, |desk, _| desk.session == "renamed-A")
+    });
+    desktop.update(cx, |desktop, cx| {
+        desktop
+            .open_project("renamed-A".into(), phux_protocol::ResourceId::local(1), cx)
+            .unwrap();
+        assert_eq!(
+            desktop.windows.len(),
+            1,
+            "the renamed project reuses its window"
+        );
+        assert_eq!(desktop.windows[0].session, "renamed-A");
+        assert_eq!(desktop.windows[0].desk.entity_id(), original.entity_id());
+        desktop
+            .open_project("journey-A".into(), phux_protocol::ResourceId::local(1), cx)
+            .unwrap();
+        assert_eq!(
+            desktop.windows.len(),
+            2,
+            "a reused old name needs its own window"
+        );
+        assert_ne!(desktop.windows[1].desk.entity_id(), original.entity_id());
+    });
+    let replacement = desktop.read_with(cx, |desktop, _| desktop.windows[1].desk.clone());
+    wait_for(cx, |cx| {
+        attached(&replacement, cx) && home_key(&replacement, cx).is_some()
+    });
+    assert_eq!(home_key(&original, cx), Some(key));
+    assert_ne!(home_key(&replacement, cx), Some(key));
+    original.update(cx, |desk, cx| desk.prepare_close(cx));
+    replacement.update(cx, |desk, cx| desk.prepare_close(cx));
 }
 
 #[gpui::test]

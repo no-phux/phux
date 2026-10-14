@@ -273,6 +273,19 @@ impl Desktop {
         Ok(())
     }
 
+    /// Update reuse metadata without reading the desk while it is leased.
+    pub(crate) fn sync_window_session(&mut self, desk: gpui::EntityId, name: &str) {
+        if let Some(opened) = self
+            .windows
+            .iter_mut()
+            .chain(self.quick.as_mut())
+            .find(|opened| opened.desk.entity_id() == desk)
+            && opened.session != name
+        {
+            name.clone_into(&mut opened.session);
+        }
+    }
+
     /// Any remaining window can keep the singleton home current after its own
     /// window closes. Once learned, the key prevents adopting a reused name.
     pub(crate) fn observe_topology(&mut self, topology: &phux_client_runtime::control::Topology) {
