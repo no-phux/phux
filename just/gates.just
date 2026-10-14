@@ -40,12 +40,13 @@ binding-uniffi-test:
 integration-check PACKAGE:
     #!/usr/bin/env bash
     set -euo pipefail
-    case "{{PACKAGE}}" in runtime|opencode-v2|omp|pi|claude) ;; *) echo 'choose runtime, opencode-v2, omp, pi, or claude' >&2; exit 2 ;; esac
+    case "{{PACKAGE}}" in runtime|opencode-v2|omp|pi|claude|grok) ;; *) echo 'choose runtime, opencode-v2, omp, pi, claude, or grok' >&2; exit 2 ;; esac
     bash scripts/doctor.sh integrations
     # Incidental install audits are off; the explicit audit in gates still runs.
     export npm_config_audit=false npm_config_fund=false
     case "{{PACKAGE}}" in
         omp|opencode-v2) cd "integrations/{{PACKAGE}}"; bun install --frozen-lockfile; bun run gates ;;
+        grok) node --test integrations/grok/test/package.test.mjs ;;
         pi)
             npm --prefix integrations/runtime ci
             npm --prefix integrations/runtime run build
