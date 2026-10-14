@@ -12,8 +12,6 @@
 //! The native desktop app is Rust, so it needs no encoder: it builds this crate
 //! with default features off and reads [`projection`] directly.
 
-#![cfg_attr(target_arch = "wasm32", allow(dead_code))]
-
 #[cfg(target_arch = "wasm32")]
 compile_error!("phux-client-ffi is a native-only libghostty bridge");
 

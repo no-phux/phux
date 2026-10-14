@@ -6,7 +6,6 @@
 //! shape, including the `phux.transcript/v1` entries `provider_raw` records
 //! carry (ADR-0156).
 
-use phux_client_core::session::AgentStreamInfo;
 use phux_client_core::session::agent_stream::{
     AgentEventRecord, AgentPublication, AgentRecordMode,
 };
@@ -14,7 +13,6 @@ use phux_client_core::session::agent_stream::{
 /// One representation-neutral foreign record batch.
 pub(crate) struct RecordBatch {
     pub mode: AgentRecordMode,
-    pub stream: AgentStreamInfo,
     pub jsonl: String,
     pub seq: u64,
 }
@@ -26,7 +24,6 @@ pub(crate) fn project(publication: &AgentPublication) -> Option<RecordBatch> {
     }
     Some(RecordBatch {
         mode: publication.mode,
-        stream: publication.stream,
         seq: publication.records.last().map_or(0, |record| record.seq),
         jsonl: jsonl(&publication.records),
     })
@@ -42,7 +39,7 @@ pub(crate) fn project(publication: &AgentPublication) -> Option<RecordBatch> {
     clippy::expect_used,
     reason = "borrowed JSON values serialize infallibly into a Vec and the serializer emits UTF-8"
 )]
-pub fn jsonl(records: &[AgentEventRecord]) -> String {
+fn jsonl(records: &[AgentEventRecord]) -> String {
     let mut lines = Vec::new();
     for record in records {
         lines.extend_from_slice(b"{\"data\":");
