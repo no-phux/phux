@@ -72,6 +72,7 @@ pub use events::{
 use hub_state::HubState;
 pub use id_space::IdSpace;
 pub use journal::EventRecord;
+pub(crate) use journal::now_unix_ms;
 pub use leases::{LeaseEvidence, LeaseInterval};
 pub(crate) use retained::Retention;
 pub use retained::{RetainPolicy, close_reason_name, process_exit};

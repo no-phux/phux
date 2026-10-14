@@ -136,7 +136,7 @@ fn retain_exited_pane(
     exit: ExitOutcome,
     events: Option<&mut PaneEvents>,
 ) -> Option<RetainedExit> {
-    let retention = s.retain_exited(pane, exit, unix_now_ms())?;
+    let retention = s.retain_exited(pane, exit, crate::state::now_unix_ms())?;
     // The record keeps its outcome (`ExitPolicy::Retain`).
     s.activation_ended(pane, exit, false);
     let wire_terminal_id = s.intern_terminal_wire(pane);
@@ -232,15 +232,6 @@ fn journal_held_event(
     }
     state.with_mut(|s| journal_source_gap(s, &wire, dropped));
     *events = None;
-}
-
-/// Wall-clock now in Unix milliseconds; `0` for a clock before the epoch.
-fn unix_now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|since| u64::try_from(since.as_millis()).ok())
-        .unwrap_or(0)
 }
 
 /// Close a pane whose process exited (or whose retention ended) in one
