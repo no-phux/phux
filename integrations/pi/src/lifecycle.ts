@@ -30,7 +30,7 @@ import {
   type AgentStateList,
 } from "./schemas.js";
 import type { PhuxTargetSelection, PhuxTargetStore } from "./target-store.js";
-import { PiTranscript } from "./transcript.js";
+import { MessageTranscript } from "@phux/integration-runtime/message-transcript";
 import { normalizeTerminalIdentity } from "./awareness.js";
 
 export interface LifecycleCommandOptions {
@@ -70,7 +70,7 @@ export interface PhuxLifecycleOptions {
   /** Include tool output in tool entries (`PHUX_AGENT_TRANSCRIPT=full`); off by default. */
   readonly transcriptToolOutput?: boolean;
   /** The transcript mapper; injectable so tests control its clock. */
-  readonly transcriptMapper?: PiTranscript;
+  readonly transcriptMapper?: MessageTranscript;
 }
 
 export class PhuxLifecycleShutdownError extends Error {
@@ -397,7 +397,7 @@ export function registerPhuxLifecycle(
   // Per-turn events feed the AgentSession stream and never write `state`.
   // Transcript entries ride `provider_raw` beside the typed records.
   const transcript = options.transcript === false ? null : options.transcriptMapper ??
-    new PiTranscript(undefined, options.transcriptToolOutput === true);
+    new MessageTranscript("pi", undefined, options.transcriptToolOutput === true);
   const emitTranscript = (records: readonly Readonly<Record<string, unknown>>[]): void => {
     for (const data of records) lifecycle.emit("provider_raw", data);
   };

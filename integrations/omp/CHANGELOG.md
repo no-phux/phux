@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* Stream bounded native conversations from terminal-started OMP, including replies,
+  visible thinking and tool progress, through the existing AgentSession transport.
+* Replay the selected branch on startup and replace the stream on idle tree
+  navigation so native clients do not retain abandoned replies.
+* Honor `PHUX_AGENT_TRANSCRIPT=0` and opt-in `full` tool output using the shared
+  Pi/OMP transcript mapper.
+
 ## 0.1.0 (2026-10-14)
 
 

@@ -1,16 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { TranscriptGate } from "@phux/integration-runtime/transcript";
-
-import { PiTranscript, messageEntries, toolOutput } from "../src/transcript.js";
+import { TranscriptGate, type TranscriptData } from "../src/transcript.js";
+import { MessageTranscript, messageEntries, toolOutput } from "../src/message-transcript.js";
 
 const assistantMessage = (content: unknown[], extra: Record<string, unknown> = {}) => ({
   role: "assistant", content, timestamp: 42, ...extra,
 });
 
-function mapper(clock: { now: number }): PiTranscript {
-  return new PiTranscript(new TranscriptGate(() => clock.now));
+function mapper(clock: { now: number }): MessageTranscript {
+  return new MessageTranscript("pi", new TranscriptGate(() => clock.now));
 }
 
 test("a user message becomes one final user entry", () => {
@@ -49,7 +48,7 @@ test("streaming partials are throttled, grow, and give way to the final", () => 
   const clock = { now: 0 };
   const transcript = mapper(clock);
   const partial = (text: string) => assistantMessage([{ type: "text", text }]);
-  const sent = (records: ReturnType<PiTranscript["messageEnd"]>) =>
+  const sent = (records: TranscriptData[]) =>
     records.map((data) => `${data.entry.id}:${data.entry.final ? "final" : "partial"}:${data.entry.text}`);
 
   assert.deepEqual(sent(transcript.messageUpdate(partial("He"), "text_delta")), ["assistant-42:partial:He"]);
@@ -69,7 +68,7 @@ test("streaming partials are throttled, grow, and give way to the final", () => 
 });
 
 test("a tool call is one id: running with its summary, then its result", () => {
-  const transcript = new PiTranscript(new TranscriptGate(() => 0), true);
+  const transcript = new MessageTranscript("pi", new TranscriptGate(() => 0), true);
   const [running] = transcript.toolStart({ toolCallId: "call-1", toolName: "bash", args: { command: "ls\n -la" } });
   assert.deepEqual(running, {
     provider: "pi",
@@ -116,7 +115,7 @@ test("by default a tool entry carries no output; full mode adds it", () => {
   const [ended] = mapper({ now: 0 }).toolEnd({ toolCallId: "c", toolName: "read", isError: false, result });
   assert.equal(ended?.entry.tool?.output, "");
   assert.equal(ended?.entry.tool?.status, "ok");
-  const [full] = new PiTranscript(new TranscriptGate(() => 0), true)
+  const [full] = new MessageTranscript("pi", new TranscriptGate(() => 0), true)
     .toolEnd({ toolCallId: "c", toolName: "read", isError: false, result });
   assert.equal(full?.entry.tool?.output, "API_KEY=SECRET");
   const [read] = mapper({ now: 0 }).toolStart({ toolCallId: "r", toolName: "read", args: { path: "/repo/.env" } });

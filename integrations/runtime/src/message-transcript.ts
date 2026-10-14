@@ -4,10 +4,7 @@ import {
   transcriptData,
   type TranscriptData,
   type TranscriptEntry,
-} from "@phux/integration-runtime/transcript";
-
-/** The provider word on every Pi transcript record. */
-export const PI_TRANSCRIPT_PROVIDER = "pi";
+} from "./transcript.js";
 
 interface ContentBlock {
   readonly type?: unknown;
@@ -16,21 +13,24 @@ interface ContentBlock {
   readonly redacted?: unknown;
 }
 
-/** The fields of a Pi agent message this mapping reads. */
-export interface PiMessageLike {
+/** The message fields shared by the Pi and OMP extension event contracts. */
+export interface TranscriptMessage {
   readonly role?: unknown;
   readonly content?: unknown;
   readonly timestamp?: unknown;
   readonly errorMessage?: unknown;
+  readonly toolCallId?: unknown;
+  readonly toolName?: unknown;
+  readonly isError?: unknown;
 }
 
-export interface PiToolStartLike {
+export interface TranscriptToolStart {
   readonly toolCallId: string;
   readonly toolName: string;
   readonly args?: unknown;
 }
 
-export interface PiToolEndLike {
+export interface TranscriptToolEnd {
   readonly toolCallId: string;
   readonly toolName: string;
   readonly result?: unknown;
@@ -60,7 +60,7 @@ export function thinkingText(content: unknown): string {
     .join("\n\n");
 }
 
-function stamp(message: PiMessageLike): string {
+function stamp(message: TranscriptMessage): string {
   return typeof message.timestamp === "number" && Number.isFinite(message.timestamp)
     ? String(message.timestamp)
     : "0";
@@ -71,13 +71,13 @@ function textEntry(id: string, role: TranscriptEntry["role"], text: string, fina
 }
 
 /**
- * The entries one Pi message contributes, in order: for an assistant
- * message its visible thinking, then its reply text (or, with neither and a
- * provider error, a system entry); for a user message its text. Ids derive
- * from the role and the message timestamp, which Pi fixes at message start,
- * so a partial and its final share an id.
+ * The entries one message contributes, in order: for an assistant message
+ * its visible thinking, then its reply text (or, with neither and a provider
+ * error, a system entry); for a user message its text. IDs derive from the
+ * role and timestamp, which both harnesses fix at message start, so a partial
+ * and its final share an id.
  */
-export function messageEntries(message: PiMessageLike, final: boolean): TranscriptEntry[] {
+export function messageEntries(message: TranscriptMessage, final: boolean): TranscriptEntry[] {
   const at = stamp(message);
   if (message.role === "user") {
     const text = contentText(message.content);
@@ -98,13 +98,13 @@ export function messageEntries(message: PiMessageLike, final: boolean): Transcri
 }
 
 /** Thinking for the current message, final once its block ended. */
-export function thinkingEntry(message: PiMessageLike): TranscriptEntry | null {
+export function thinkingEntry(message: TranscriptMessage): TranscriptEntry | null {
   const thinking = thinkingText(message.content);
   return thinking.length > 0 ? textEntry(`thinking-${stamp(message)}`, "thinking", thinking, true) : null;
 }
 
-/** Turns Pi events into bounded, gated `provider_raw` transcript data. */
-export class PiTranscript {
+/** Maps Pi and OMP message/tool events to bounded provider-neutral records. */
+export class MessageTranscript {
   private readonly gate: TranscriptGate;
   private readonly summaries = new Map<string, string>();
   private readonly saturated = new Set<string>();
@@ -114,6 +114,7 @@ export class PiTranscript {
    * entry carries its name, summary, and status, and `output` stays empty.
    */
   constructor(
+    private readonly provider: string,
     gate: TranscriptGate = new TranscriptGate(),
     private readonly includeToolOutput = false,
   ) {
@@ -121,7 +122,7 @@ export class PiTranscript {
   }
 
   /** A streaming assistant update: a throttled partial, or thinking once its block ends. */
-  messageUpdate(message: PiMessageLike, kind: string | undefined): TranscriptData[] {
+  messageUpdate(message: TranscriptMessage, kind: string | undefined): TranscriptData[] {
     if (message.role !== "assistant") return [];
     const entries: TranscriptEntry[] = [];
     if (kind === "thinking_end") {
@@ -132,11 +133,18 @@ export class PiTranscript {
     return this.admit(entries);
   }
 
-  messageEnd(message: PiMessageLike): TranscriptData[] {
+  messageEnd(message: TranscriptMessage): TranscriptData[] {
+    if (message.role === "toolResult" && typeof message.toolCallId === "string" &&
+      typeof message.toolName === "string" && typeof message.isError === "boolean") {
+      return this.toolEnd({
+        toolCallId: message.toolCallId, toolName: message.toolName,
+        isError: message.isError, result: message,
+      });
+    }
     return this.admit(messageEntries(message, true));
   }
 
-  toolStart(event: PiToolStartLike): TranscriptData[] {
+  toolStart(event: TranscriptToolStart): TranscriptData[] {
     const summary = summarizeArgs(event.args);
     this.summaries.set(event.toolCallId, summary);
     if (this.summaries.size > 256) {
@@ -149,7 +157,7 @@ export class PiTranscript {
     }]);
   }
 
-  toolEnd(event: PiToolEndLike): TranscriptData[] {
+  toolEnd(event: TranscriptToolEnd): TranscriptData[] {
     const summary = this.summaries.get(event.toolCallId) ?? "";
     this.summaries.delete(event.toolCallId);
     return this.admit([{
@@ -174,7 +182,7 @@ export class PiTranscript {
     for (const entry of entries) {
       if (!entry.final && this.saturated.has(entry.id)) continue;
       if (!this.gate.admit(entry)) continue;
-      const data = transcriptData(PI_TRANSCRIPT_PROVIDER, entry);
+      const data = transcriptData(this.provider, entry);
       if (!entry.final && data.entry.truncated) this.remember(this.saturated, entry.id);
       if (entry.final) this.saturated.delete(entry.id);
       admitted.push(data);
@@ -191,7 +199,7 @@ export class PiTranscript {
   }
 }
 
-/** The readable text of a Pi tool result: its text blocks when it has content, else its JSON form. */
+/** A tool result's text blocks when it has content, else its JSON form. */
 export function toolOutput(result: unknown): string {
   if (typeof result === "string") return result;
   if (result === null || typeof result !== "object") return result === undefined ? "" : String(result);
