@@ -67,9 +67,11 @@ preference before paint and Astro document swaps.
 The landing carries a short top bar: wordmark plus Docs, Try, and Source. There is
 no visible tagline. The install targets, command, and copy action float as type on
 the canvas — no card, panel, or fill behind them, and hover changes color rather
-than background. The quiet footer keeps Demos, More, Privacy, and Support instead
-of repeating the top bar. The landing canvas is `#0b0b0d`, with `#ededee` text and
-neutral accents.
+than background. The three targets are CLI, Desktop, and Mobile; Mobile swaps the
+command line for the TestFlight address request inside the same reserved slot, so
+the landing carries no separate beta band. The quiet footer keeps Demos, More,
+Privacy, and Support instead of repeating the top bar. The landing canvas is
+`#0b0b0d`, with `#ededee` text and neutral accents.
 
 The hero tour shows a server, clients, and signals travelling along connections.
 It autoplays only while on screen, with pause and chapter controls; reduced motion

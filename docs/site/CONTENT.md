@@ -122,8 +122,9 @@ methodology link. Do not hide conditions behind tooltips.
 ## Product landing and demo
 
 The landing at `src/pages/index.astro` stays minimal: a short top bar, headline,
-one product tour, three capabilities, floating installation, and the iPhone beta
-and release-update signups. Add a section only when it replaces one.
+one product tour, three capabilities, and the floating CLI / Desktop / Mobile
+install switcher. Mobile is the iPhone TestFlight request; the release-update
+signup lives on `/more`. Add a section only when it replaces one.
 
 `<HeroDemo client:load>` renders the product tour and owns the hosted
 terminal dialog. The tour (`src/components/tour/`) is a scripted
