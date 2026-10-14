@@ -138,9 +138,19 @@ def _decide_dispatch(parsed, candidates, ci_state, tag, result):
 
 
 def _decide_event(candidates, ci_state, sha, result):
+    """Ship every draft whose own commit's ci is green, not only the event's.
+
+    The event names the commit that just finished, but GitHub keeps a single
+    pending run per concurrency group and cancels the older one, so the publish
+    run a draft is waiting for can be replaced before it ever starts. Sweeping
+    every candidate is what lets a later event recover it; without that, a
+    stranded draft sits until the daily reconcile while installers have nothing
+    to resolve. The evidence guard is unchanged: a tag still ships only on a
+    green ci run for its own commit.
+    """
     mine = [row for row in candidates if row["sha"] == sha]
     if not mine:
-        return result
+        return _decide_reconcile(candidates, ci_state, result)
     state = ci_state(sha)
     if state in PENDING:
         result["wait"] = True
@@ -149,8 +159,7 @@ def _decide_event(candidates, ci_state, sha, result):
         tags = ", ".join(row["tag"] for row in mine)
         result["fail"] = f"ci.yml is {state} for {sha}; not publishing {tags}"
         return result
-    result["publish"] = [row["tag"] for row in mine]
-    return result
+    return _decide_reconcile(candidates, ci_state, result)
 
 
 def _decide_reconcile(candidates, ci_state, result):
