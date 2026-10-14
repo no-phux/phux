@@ -9,6 +9,19 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.64.0](https://github.com/no-phux/phux/compare/v0.63.0...v0.64.0) (2026-10-14)
+
+
+### Features
+
+* **desktop:** add automatic stable and next updates ([#1313](https://github.com/no-phux/phux/issues/1313)) ([e850563](https://github.com/no-phux/phux/commit/e8505635fd34adc7cb4e6e1e95598ab49380acbb))
+* **site:** draw a desktop terminal split in the link preview ([#1316](https://github.com/no-phux/phux/issues/1316)) ([3615a36](https://github.com/no-phux/phux/commit/3615a36dada73919f7415b9862093b0415f49950))
+
+
+### Bug Fixes
+
+* **cockpit:** cull duplicate lists, internals and chatter from the chrome ([#1312](https://github.com/no-phux/phux/issues/1312)) ([e12f418](https://github.com/no-phux/phux/commit/e12f41898caa38c64e2fe67d2062a6815a9cf345))
+
 ## [0.63.0](https://github.com/no-phux/phux/compare/v0.62.1...v0.63.0) (2026-10-14)
 
 
