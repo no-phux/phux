@@ -34,6 +34,8 @@ pub enum SettingSection {
     Sidebar,
     /// `[chrome]`.
     Chrome,
+    /// `[notifications]`.
+    Notifications,
     /// `[theme]`.
     Theme,
     /// `[experimental]`.
@@ -52,6 +54,7 @@ impl SettingSection {
         Self::Status,
         Self::Sidebar,
         Self::Chrome,
+        Self::Notifications,
         Self::Theme,
         Self::Experimental,
         Self::Voice,
@@ -67,6 +70,7 @@ impl SettingSection {
             Self::Status => "Status bar",
             Self::Sidebar => "Sidebar",
             Self::Chrome => "Chrome",
+            Self::Notifications => "Notifications",
             Self::Theme => "Theme",
             Self::Experimental => "Experimental",
             Self::Voice => "Voice",
@@ -83,6 +87,7 @@ impl SettingSection {
             Self::Status => "status",
             Self::Sidebar => "sidebar",
             Self::Chrome => "chrome",
+            Self::Notifications => "notifications",
             Self::Theme => "theme",
             Self::Experimental => "experimental",
             Self::Voice => "voice",
@@ -206,6 +211,8 @@ const CWD_INHERITANCE: &[&str] = &[
 const WINDOW_SIZE: &[&str] = &["smallest", "largest", "latest", "manual"];
 const STATUS_POSITION: &[&str] = &["bottom", "top"];
 const SIDEBAR_POSITION: &[&str] = &["left", "right"];
+const NOTIFY_MODE: &[&str] = &["terminal", "system", "bell", "off"];
+const NOTIFY_PROTOCOL: &[&str] = &["auto", "osc9", "osc777", "osc99"];
 
 /// Every scalar setting of the schema, in section then field order.
 pub const CATALOG: &[SettingSpec] = &[
@@ -616,6 +623,65 @@ pub const CATALOG: &[SettingSpec] = &[
         detail: "The sidebar strip is not reserved below sidebar.width + this many columns, \
                  so lowering it keeps the strip on a narrower terminal. 0 means the sidebar \
                  never yields.",
+        applies: Applies::LiveReload,
+    },
+    // -- [notifications] ----------------------------------------------------
+    SettingSpec {
+        key: "notifications.mode",
+        section: SettingSection::Notifications,
+        kind: SettingKind::Choice(NOTIFY_MODE),
+        summary: "Where agent notifications go",
+        detail: "terminal writes an OSC notification to the outer terminal, so it works \
+                 over SSH. system uses the desktop notifier of the machine the TUI runs on \
+                 (osascript on macOS, notify-send elsewhere). bell rings the terminal bell. \
+                 off posts nothing.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "notifications.terminal-protocol",
+        section: SettingSection::Notifications,
+        kind: SettingKind::Choice(NOTIFY_PROTOCOL),
+        summary: "The OSC dialect terminal mode writes",
+        detail: "auto picks OSC 99 for kitty, OSC 777 for Ghostty, WezTerm, and foot, \
+                 and OSC 9 otherwise. Over SSH the environment may not name the \
+                 terminal; pin the dialect your terminal speaks.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "notifications.blocked",
+        section: SettingSection::Notifications,
+        kind: SettingKind::Bool,
+        summary: "Notify when an agent is blocked or asks for you",
+        detail: "Fires on the edge into blocked, or when an agent raises an ask. An agent \
+                 already blocked when you attach does not fire.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "notifications.done",
+        section: SettingSection::Notifications,
+        kind: SettingKind::Bool,
+        summary: "Notify when a working agent finishes",
+        detail: "Fires once per working-to-done or working-to-idle edge. Looking at the \
+                 pane before the notification is posted cancels it.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "notifications.suppress-focused",
+        section: SettingSection::Notifications,
+        kind: SettingKind::Bool,
+        summary: "Stay quiet about the pane you are looking at",
+        detail: "When true, an agent in the focused pane does not notify while the \
+                 terminal window has focus. A terminal that never reports focus counts as \
+                 focused.",
+        applies: Applies::LiveReload,
+    },
+    SettingSpec {
+        key: "notifications.sound",
+        section: SettingSection::Notifications,
+        kind: SettingKind::Bool,
+        summary: "Add a sound to each notification",
+        detail: "terminal mode also rings the bell; system mode asks the desktop notifier \
+                 for its default sound. bell mode always rings.",
         applies: Applies::LiveReload,
     },
     // -- [experimental] -----------------------------------------------------

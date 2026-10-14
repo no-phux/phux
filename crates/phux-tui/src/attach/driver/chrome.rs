@@ -8,6 +8,7 @@ use phux_protocol::wire::frame::ResourceLifecycle;
 
 use crate::attach::agent_rows::AgentSessionRows;
 use crate::attach::chrome_ctx::{ChromeCtx, PaneScene};
+use crate::attach::notify::{NotifyRow, Phase};
 use crate::attach::pane_state::{ExitMark, PaneSlot, VcsIndex};
 use crate::attach::review::ReviewIndex;
 use crate::attach::server_frame::AgentMetaIndex;
@@ -124,6 +125,10 @@ fn no_peers() -> crate::attach::sidebar_zones::PeerInputs<'static> {
 /// Refresh all chrome inputs from one coherent view: window tabs, supervisory
 /// badges, agent rows and host-qualified session navigation. Returns whether
 /// any painter input changed, so unchanged metadata bursts need no paint.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the chokepoint's inputs are independent loop-owned views; agents_out hands the projected agent list to the notifier"
+)]
 pub(super) fn refresh_window_chrome(
     chrome: &mut ChromeCtx<'_>,
     scene: PaneScene<'_>,
@@ -139,6 +144,9 @@ pub(super) fn refresh_window_chrome(
     agent_sessions: &AgentSessionRows,
     // The peer-wide state the sidebar zones project from.
     peers: crate::attach::sidebar_zones::PeerInputs<'_>,
+    // Receives the full agent list (local, peer, satellite) the Agents zone
+    // paints, for the notifier; filled whether or not the sidebar shows.
+    agents_out: &mut Vec<AgentEntry>,
 ) -> bool {
     let PaneScene {
         workspace,
@@ -153,6 +161,7 @@ pub(super) fn refresh_window_chrome(
         .as_deref()
         .map_or(chrome.theme, SidebarPainter::theme);
     badge_windows(&mut windows, workspace, &local, badge_theme);
+    let agents = agent_queue(local.clone(), workspace, &peers);
     let mut changed = false;
     if let Some(sb) = chrome.status_bar.as_deref_mut() {
         changed |= feed_status_bar(sb, windows.clone(), scene, own_client_id);
@@ -167,8 +176,9 @@ pub(super) fn refresh_window_chrome(
             &agent_meta.records,
         );
         changed |= sidebar_painter.set_plugin_sections(sections);
-        changed |= feed_sidebar(sidebar_painter, windows, local, workspace, &peers);
+        changed |= feed_sidebar(sidebar_painter, windows, &local, agents.clone(), &peers);
     }
+    *agents_out = agents;
     changed
 }
 
@@ -195,15 +205,25 @@ fn feed_status_bar(
 fn feed_sidebar(
     sidebar_painter: &mut SidebarPainter,
     windows: Vec<phux_config::widget::WindowInfo>,
-    local: Vec<AgentEntry>,
-    workspace: &ArrangementDoc,
+    local: &[AgentEntry],
+    agents: Vec<AgentEntry>,
     peers: &crate::attach::sidebar_zones::PeerInputs<'_>,
 ) -> bool {
     let mut changed = sidebar_painter.set_windows(windows);
     changed |=
-        sidebar_painter.set_roster(crate::attach::sidebar_zones::session_roster(peers, &local));
-    // Stable navigation order; lifecycle changes only restyle existing rows.
-    // Satellite agents append after that order, grouped by name then host.
+        sidebar_painter.set_roster(crate::attach::sidebar_zones::session_roster(peers, local));
+    changed |= sidebar_painter.set_needs_you(agents);
+    changed
+}
+
+/// The full agent list in the Agents zone's order: stable navigation order
+/// for local and peer rows (lifecycle changes only restyle existing rows),
+/// then satellite agents not already open, grouped by name then host.
+pub(super) fn agent_queue(
+    local: Vec<AgentEntry>,
+    workspace: &ArrangementDoc,
+    peers: &crate::attach::sidebar_zones::PeerInputs<'_>,
+) -> Vec<AgentEntry> {
     let mut agents = crate::attach::sidebar_zones::needs_you_queue(local, peers);
     let mut open = HashSet::new();
     for window in &workspace.groups {
@@ -214,8 +234,7 @@ fn feed_sidebar(
     agents.extend(crate::attach::sidebar_zones::satellite_agent_rows(
         peers, &open,
     ));
-    changed |= sidebar_painter.set_needs_you(agents);
-    changed
+    agents
 }
 
 /// Give each window the badge of the agent in its focused pane, from the
@@ -422,6 +441,92 @@ pub(super) fn agent_entries(
         }
     }
     rows
+}
+
+/// The notifier's view of the agent list: one row per agent-running pane,
+/// keyed by the pane's identity. Local rows resolve their leaf from the
+/// attached layout; a pane with several `AgentSession`s reads as its most
+/// urgent one (blocked, then working, then settled). A local pane that
+/// asked (ADR-0035) without any agent identity still gets a row.
+pub(super) fn notify_rows(
+    agents: &[AgentEntry],
+    workspace: &ArrangementDoc,
+    panes: &HashMap<ResourceId, PaneSlot>,
+    focused: Option<&ResourceId>,
+    session_name: &str,
+) -> Vec<NotifyRow> {
+    let local_leaf = |window: usize, pane: Option<usize>| -> Option<ResourceId> {
+        let tree = workspace.groups.get(window)?.state.tree.as_ref()?;
+        crate::layout::leaves(tree).get(pane?).cloned()
+    };
+    let mut rows: Vec<NotifyRow> = Vec::with_capacity(agents.len());
+    for entry in agents {
+        let key = match (&entry.resource, &entry.session) {
+            (Some(id), _) => id.clone(),
+            (None, None) => match local_leaf(entry.window, entry.pane) {
+                Some(id) => id,
+                None => continue,
+            },
+            (None, Some(_)) => continue,
+        };
+        let row = NotifyRow {
+            viewing: focused == Some(&key),
+            key,
+            name: if entry.name.is_empty() {
+                "agent".to_owned()
+            } else {
+                entry.name.clone()
+            },
+            phase: Phase::of(entry.state, entry.attention),
+            asking: entry.attention && entry.state != AgentMetaState::Blocked,
+            session: entry
+                .session
+                .clone()
+                .unwrap_or_else(|| session_name.to_owned()),
+            place: entry.window_name.clone(),
+            host: entry.host.clone(),
+        };
+        match rows.iter_mut().find(|existing| existing.key == row.key) {
+            Some(existing) if urgency(row.phase) > urgency(existing.phase) => *existing = row,
+            Some(_) => {}
+            None => rows.push(row),
+        }
+    }
+    for window in &workspace.groups {
+        let Some(tree) = window.state.tree.as_ref() else {
+            continue;
+        };
+        for id in crate::layout::leaves(tree) {
+            let Some(slot) = panes.get(&id).filter(|slot| slot.attention) else {
+                continue;
+            };
+            if rows.iter().any(|row| row.key == id) {
+                continue;
+            }
+            let title = slot.last_title.trim();
+            rows.push(NotifyRow {
+                viewing: focused == Some(&id),
+                name: if title.is_empty() { "agent" } else { title }.to_owned(),
+                phase: Phase::Blocked,
+                asking: true,
+                session: session_name.to_owned(),
+                place: agent_locator(&window.name, Some(slot)),
+                host: id.host().map(|host| host.as_str().to_owned()),
+                key: id,
+            });
+        }
+    }
+    rows
+}
+
+/// Which of a pane's agents speaks for it.
+const fn urgency(phase: Phase) -> u8 {
+    match phase {
+        Phase::Blocked => 3,
+        Phase::Working => 2,
+        Phase::Settled => 1,
+        Phase::Unknown => 0,
+    }
 }
 
 /// Fill identity from advisory metadata.
@@ -875,6 +980,7 @@ mod tests {
                 &mut vcs,
                 &HashMap::new(),
                 no_peers(),
+                &mut Vec::new(),
             )
         };
         refresh(&mut sidebar_painter, &panes);
@@ -1044,6 +1150,55 @@ mod tests {
             &ReviewIndex::new(),
         );
         assert!(entries[0].attention);
+    }
+
+    /// The notifier keys a local row by its pane, names the attached session,
+    /// marks the focused pane as viewed, and still sees an ask on a pane with
+    /// no agent identity.
+    #[test]
+    fn notify_rows_key_local_rows_by_pane_and_keep_bare_asks() {
+        use crate::attach::notify::Phase;
+        let agent = ResourceId::local(1);
+        let shell = ResourceId::local(2);
+        let mut workspace = ArrangementDoc::single(agent.clone());
+        workspace
+            .groups
+            .push(ArrangementDoc::single(shell.clone()).groups.remove(0));
+        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
+        panes.insert(
+            agent.clone(),
+            PaneSlot::new_with_size(80, 24).expect("slot"),
+        );
+        let mut asking = PaneSlot::new_with_size(80, 24).expect("slot");
+        asking.attention = true;
+        panes.insert(shell.clone(), asking);
+        let mut records: HashMap<ResourceId, AgentRecord> = HashMap::new();
+        records.insert(
+            agent.clone(),
+            AgentRecord {
+                name: "reviewer".to_owned(),
+                state: AgentMetaState::Working,
+                ..AgentRecord::default()
+            },
+        );
+        let entries = agent_entries(
+            &workspace,
+            &panes,
+            &meta_index(records),
+            &HashMap::new(),
+            &ReviewIndex::new(),
+        );
+        let rows = notify_rows(&entries, &workspace, &panes, Some(&agent), "dev");
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert_eq!(rows[0].key, agent);
+        assert_eq!(rows[0].name, "reviewer");
+        assert_eq!(rows[0].phase, Phase::Working);
+        assert_eq!(rows[0].session, "dev");
+        assert!(rows[0].viewing);
+        assert_eq!(rows[1].key, shell);
+        assert_eq!(rows[1].phase, Phase::Blocked);
+        assert!(rows[1].asking);
+        assert!(!rows[1].viewing);
     }
 
     /// A bound `AgentSession` stream's state outranks the record, which still

@@ -425,6 +425,18 @@ adapts to 28–40 columns), and `position` (`left` or `right`)
 are read at attach — `phux config reload` does not apply `[sidebar]`.
 Detach and re-attach. `prefix-b` toggles it for the life of that attach.
 
+**Notifications.** `[notifications]` decides how the TUI tells you an
+agent is blocked or finished: `mode` (`terminal`, `system`, `bell`, or
+`off`), `terminal-protocol`, the `blocked` and `done` toggles,
+`suppress-focused`, and `sound`. All are live on reload. Behavior is in
+[the TUI guide](consumers/tui.md#notifications).
+
+```toml
+[notifications]
+mode = "system"   # desktop notifier instead of an OSC to the terminal
+done = false      # only tell me when an agent needs me
+```
+
 **Federation and remotes.** `[[satellites]]`, `[[remote]]`, and
 `[[connector]]` are in the generated schema. Tokens stay in owner-only
 files, never inline. Enroll a host with the commands in

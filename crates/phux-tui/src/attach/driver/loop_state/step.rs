@@ -151,6 +151,8 @@ impl super::SessionLoop {
         self.arm_satellite_probe(tokio::time::Instant::now());
         let satellite_probe = sleep_until_or_pending(self.satellite_probe_at);
         let origin_fade = sleep_until_or_pending(self.next_input_origin_wake());
+        // A coalesced agent notification comes due.
+        let notify_due = sleep_until_or_pending(self.notifier.deadline());
 
         tokio::select! {
             biased;
@@ -211,6 +213,12 @@ impl super::SessionLoop {
             // Dim, then clear, a transient input-origin badge.
             () = origin_fade => {
                 self.on_input_origin_phase(out, sidebar);
+                Ok(Step::Continue)
+            }
+
+            // Post the agent notifications that waited out the coalesce window.
+            () = notify_due => {
+                self.on_notify_due(out);
                 Ok(Step::Continue)
             }
 

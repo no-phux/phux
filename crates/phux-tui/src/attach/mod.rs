@@ -33,6 +33,7 @@ mod path_picker;
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 mod ghost_stress_tests;
 pub mod input_dispatch;
+mod notify;
 mod onboarding;
 pub mod paint;
 // `PaneSlot` and the client-local indices built over it. Shared

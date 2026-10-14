@@ -69,6 +69,7 @@ impl super::SessionLoop {
             self.input_events = events;
             return Ok(Step::Continue);
         }
+        self.note_host_focus(&events);
         // Computed before dispatch drains `events`; armed after, so it keys to
         // the pane focus landed on.
         let expects_reply = events.iter().any(input_expects_a_reply);
