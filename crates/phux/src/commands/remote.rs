@@ -117,8 +117,8 @@ impl RemoteEntry {
             .unwrap_or_else(PoisonError::into_inner)
             .insert(self.name.clone());
         if first {
-            eprintln!(
-                "phux: warning: {}: the workload client certificate {detail}; renew it with `phux host renew {}`",
+            warn!(
+                "{}: the workload client certificate {detail}; renew it with `phux host renew {}`",
                 self.name, self.name
             );
         }
@@ -236,8 +236,8 @@ pub(crate) fn pin_authority(
     if let Err(err) =
         phux_config::known_authorities::record(&known_authorities(), leaf, route, authority)
     {
-        eprintln!(
-            "phux: warning: {name}: could not pin its certificate authority ({err}); \
+        warn!(
+            "{name}: could not pin its certificate authority ({err}); \
              the first connection pins it instead"
         );
     }

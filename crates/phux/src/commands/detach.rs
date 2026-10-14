@@ -45,26 +45,26 @@ pub(crate) fn run_detach(session: Option<String>, yes: bool, server: ServerSpec)
             Ok((DetachOutcome::NoSuchSession, degradation)) => {
                 warn_interleaved_degradation(&degradation);
                 let name = session.as_deref().unwrap_or_default();
-                eprintln!("phux: no such session: {name}");
-                eprintln!("  run `phux ls` to see live sessions");
+                error!("no such session: {name}");
+                hint!("run `phux ls` to see live sessions");
                 ExitCode::FAILURE
             }
             Ok((DetachOutcome::Malformed(count), degradation)) => {
                 warn_interleaved_degradation(&degradation);
-                eprintln!("phux: malformed detach reply (expected a count): {count:?}");
+                error!("malformed detach reply (expected a count): {count:?}");
                 ExitCode::from(2)
             }
             Ok((DetachOutcome::Refused(message), degradation)) => {
                 warn_interleaved_degradation(&degradation);
-                eprintln!("phux: detach refused: {message}");
+                error!("detach refused: {message}");
                 ExitCode::from(2)
             }
             // The reply contract is `OkWith(Json(count))`; a bare `Ok` (or any
             // other shape) means we cannot confirm what happened.
             Ok((DetachOutcome::Unexpected(other), degradation)) => {
                 warn_interleaved_degradation(&degradation);
-                eprintln!(
-                    "phux: {}",
+                error!(
+                    "{}",
                     phux_client::explain::explain_unexpected("detach", &other)
                 );
                 ExitCode::from(2)
@@ -73,7 +73,7 @@ pub(crate) fn run_detach(session: Option<String>, yes: bool, server: ServerSpec)
             // detached), so a disconnect before the reply is a failure to
             // confirm, not an implicit success.
             Err(AttachError::Disconnected) => {
-                eprintln!("phux: connection closed before the detach reply");
+                error!("connection closed before the detach reply");
                 ExitCode::FAILURE
             }
             Err(err) => target.report_unreachable(false, &err, "detach"),

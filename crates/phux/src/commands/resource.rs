@@ -114,7 +114,7 @@ fn run_wait(
             Some(Ok(id)) => id,
             Some(Err(code)) => return code,
             None => {
-                eprintln!("phux: resource wait timed out resolving {target}");
+                error!("resource wait timed out resolving {target}");
                 return ExitCode::from(EXIT_WAIT_TIMEOUT);
             }
         };
@@ -143,8 +143,8 @@ pub(crate) fn invalid_cursor(json: bool, err: &dyn std::fmt::Display) -> ExitCod
 
 fn report_wait(wait: &ResourceWait, json: bool) -> ExitCode {
     if wait.cursor_void {
-        eprintln!(
-            "phux: resource wait: the --after cursor belongs to another server run; \
+        warn!(
+            "resource wait: the --after cursor belongs to another server run; \
              answered from the resource's current state instead"
         );
     }
@@ -177,17 +177,17 @@ fn print_wait_human(wait: &ResourceWait) -> ExitCode {
     match wait.outcome {
         WaitOutcome::Exited => outln!("{resource} exited: {}", describe_exit(wait)),
         WaitOutcome::Gone => {
-            eprintln!(
-                "phux: {resource} is gone: it is not in the inventory and no event reported \
+            error!(
+                "{resource} is gone: it is not in the inventory and no event reported \
                  how it ended"
             );
-            eprintln!(
-                "  spawn with `phux spawn --retain` to keep an exited pane inspectable, or \
+            hint!(
+                "spawn with `phux spawn --retain` to keep an exited pane inspectable, or \
                  pass --after with an earlier cursor to replay a close the server still holds"
             );
         }
-        WaitOutcome::TimedOut => eprintln!(
-            "phux: resource wait timed out after {}s{resume}",
+        WaitOutcome::TimedOut => error!(
+            "resource wait timed out after {}s{resume}",
             wait.waited.as_secs()
         ),
     }
@@ -276,7 +276,7 @@ fn print_methods(report: &ResourceMethods, json: bool) -> ExitCode {
 
 fn warn_unreachable(notices: &[String]) {
     for message in notices {
-        eprintln!("phux: warning: partial results — {message}");
+        warn!("partial results — {message}");
     }
 }
 

@@ -708,7 +708,7 @@ fn run_add_over_ssh(raw_target: &str, opts: &AddOpts) -> ExitCode {
             warnings.push(event.describe());
         }
         if !json {
-            eprintln!("{name}: {}", event.describe());
+            event.report_progress(&name);
         }
     };
 
@@ -1326,7 +1326,7 @@ fn report_local_hub(hub: Option<&service::LocalHub>, reload: Option<&HubReload>)
             outln!("  local hub service installed with --hub");
         }
         Some(service::LocalHub::Skipped(reason)) => {
-            eprintln!("phux host add: warning: could not enable local --hub: {reason}");
+            warn!("host add: could not enable local --hub: {reason}");
             outln!("  Hub route ready once this host runs `phux service install --hub`.");
         }
         None => {
@@ -1624,7 +1624,7 @@ fn run_renew(name: &str, remote_phux: &str, json: bool) -> ExitCode {
             warnings.push(event.describe());
         }
         if !json {
-            eprintln!("{name}: {}", event.describe());
+            event.report_progress(name);
         }
     };
 

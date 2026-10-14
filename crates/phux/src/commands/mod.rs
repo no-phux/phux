@@ -3339,7 +3339,7 @@ pub(crate) fn sh_quote(word: &str) -> String {
 /// Prints the diagnostic and returns the failure exit code to bubble.
 pub(crate) fn ensure_socket_path_fits(socket_path: &Path) -> Result<(), ExitCode> {
     phux_server::runtime::validate_socket_path_len(socket_path).map_err(|err| {
-        eprintln!("phux: {err}");
+        error!("{err}");
         ExitCode::FAILURE
     })
 }
@@ -3351,7 +3351,7 @@ pub(crate) fn cli_runtime() -> Result<tokio::runtime::Runtime, ExitCode> {
         .enable_all()
         .build()
         .map_err(|err| {
-            eprintln!("failed to build runtime: {err}");
+            error!("failed to build runtime: {err}");
             ExitCode::FAILURE
         })
 }
@@ -3395,7 +3395,7 @@ pub(crate) async fn command_on(
 /// it.
 pub(crate) fn warn_interleaved_degradation(degradation: &phux_client::state::Degradation) {
     for message in degradation.notices() {
-        eprintln!("phux: warning: partial results — {message}");
+        warn!("partial results — {message}");
     }
 }
 
@@ -3416,14 +3416,16 @@ pub(crate) async fn request_command(
 /// `phux doctor` — the two places the *reason* lives when the sentence here
 /// is not enough.
 pub(crate) fn report_no_server(err: &AttachError, socket_path: &Path, verb: &str) -> ExitCode {
-    for line in no_server_lines(
-        err,
-        socket_path,
-        verb,
-        &phux_server::telemetry::server_log_path(),
-    ) {
-        eprintln!("{line}");
-    }
+    crate::output::error_block(
+        no_server_lines(
+            err,
+            socket_path,
+            verb,
+            &phux_server::telemetry::server_log_path(),
+        )
+        .iter()
+        .map(String::as_str),
+    );
     ExitCode::FAILURE
 }
 
@@ -3446,22 +3448,23 @@ fn no_server_lines(
             ) =>
         {
             vec![
-                format!("phux: no server running at {}", socket_path.display()),
-                "  start one with `phux` (attaches, auto-starting a server) or `phux server`"
+                format!("no server running at {}", socket_path.display()),
+                "start one with `phux` (attaches, auto-starting a server) or `phux server`"
                     .to_owned(),
             ]
         }
         AttachError::Disconnected => {
-            vec![format!("phux: server closed the connection during {verb}")]
+            vec![format!("server closed the connection during {verb}")]
         }
-        AttachError::Io(io_err) => vec![format!(
-            "phux: {}",
-            json_err::unreachable_socket_message(verb, io_err, socket_path)
+        AttachError::Io(io_err) => vec![json_err::unreachable_socket_message(
+            verb,
+            io_err,
+            socket_path,
         )],
-        other => vec![format!("phux: {verb} failed: {other}")],
+        other => vec![format!("{verb} failed: {other}")],
     };
-    lines.push(format!("  server log: {}", server_log.display()));
-    lines.push("  run `phux doctor` for a health check".to_owned());
+    lines.push(format!("server log: {}", server_log.display()));
+    lines.push("run `phux doctor` for a health check".to_owned());
     lines
 }
 
@@ -3474,7 +3477,7 @@ pub(crate) fn parse_selector(
 ) -> Result<phux_client::selector::Selector, ExitCode> {
     session.map_or(Ok(phux_client::selector::Selector::Current), |target| {
         phux_client::selector::parse(target).map_err(|err| {
-            eprintln!("phux: invalid target '{target}': {err}");
+            error!("invalid target '{target}': {err}");
             ExitCode::FAILURE
         })
     })
@@ -3645,14 +3648,16 @@ pub(crate) async fn resolve_targets(
 /// suggests the exact `phux server --session …` invocation, so the
 /// user can copy-paste their way out of the failure mode.
 pub(crate) fn print_attach_error(err: &AttachError, socket_path: &Path, session: &str) {
-    for line in attach_error_lines(
-        err,
-        socket_path,
-        session,
-        &phux_server::telemetry::default_client_log_path(),
-    ) {
-        eprintln!("{line}");
-    }
+    crate::output::error_block(
+        attach_error_lines(
+            err,
+            socket_path,
+            session,
+            &phux_server::telemetry::default_client_log_path(),
+        )
+        .iter()
+        .map(String::as_str),
+    );
 }
 
 /// The lines [`print_attach_error`] prints, pure so tests can pin every arm.
@@ -3680,40 +3685,37 @@ fn attach_error_lines(
             ) =>
         {
             vec![format!(
-                "phux: no server at {}. Start one with: phux server --session {session}",
+                "no server at {}. Start one with: phux server --session {session}",
                 socket_path.display()
             )]
         }
         AttachError::Refused(message) => {
-            vec![format!("phux: server refused attach: {message}")]
+            vec![format!("server refused attach: {message}")]
         }
         AttachError::Io(io_err) => vec![
-            format!(
-                "phux: {}",
-                json_err::unreachable_socket_message("attach", io_err, socket_path)
-            ),
-            "  run `phux doctor` for a health check".to_owned(),
+            json_err::unreachable_socket_message("attach", io_err, socket_path),
+            "run `phux doctor` for a health check".to_owned(),
         ],
         AttachError::NotATty => {
-            vec!["phux: attach requires an interactive terminal (stdin is not a TTY).".to_owned()]
+            vec!["attach requires an interactive terminal (stdin is not a TTY).".to_owned()]
         }
         // A mid-session disconnect outside the reconnect window (e.g. `phux
         // new`'s attach tail): the reason lives in the server log.
         AttachError::Disconnected => vec![
-            "phux: the server closed the connection unexpectedly".to_owned(),
+            "the server closed the connection unexpectedly".to_owned(),
             format!(
-                "  server log: {}",
+                "server log: {}",
                 phux_server::telemetry::server_log_path().display()
             ),
-            "  run `phux doctor` for a health check".to_owned(),
+            "run `phux doctor` for a health check".to_owned(),
         ],
         other => {
             let version = phux_protocol::PROTOCOL_VERSION;
             vec![
-                format!("phux: attach failed: {other}"),
-                format!("  client log: {}", client_log.display()),
+                format!("attach failed: {other}"),
+                format!("client log: {}", client_log.display()),
                 format!(
-                    "  run `phux doctor` for a health check (client protocol {}.{}.{})",
+                    "run `phux doctor` for a health check (client protocol {}.{}.{})",
                     version.major, version.minor, version.patch,
                 ),
             ]
@@ -3800,13 +3802,13 @@ mod tests {
         let log = Path::new("/state/phux/server.log");
 
         let lines = no_server_lines(&refused_io(), socket, "ls", log);
-        assert_eq!(lines[0], "phux: no server running at /tmp/phux-test.sock");
+        assert_eq!(lines[0], "no server running at /tmp/phux-test.sock");
         assert_eq!(
             lines[1],
-            "  start one with `phux` (attaches, auto-starting a server) or `phux server`"
+            "start one with `phux` (attaches, auto-starting a server) or `phux server`"
         );
-        assert_eq!(lines[2], "  server log: /state/phux/server.log");
-        assert_eq!(lines[3], "  run `phux doctor` for a health check");
+        assert_eq!(lines[2], "server log: /state/phux/server.log");
+        assert_eq!(lines[3], "run `phux doctor` for a health check");
         assert_eq!(lines.len(), 4);
     }
 
@@ -3822,11 +3824,11 @@ mod tests {
             Path::new("/state/phux/server.log"),
         );
         assert!(
-            lines[0].starts_with("phux: ls: cannot reach the server socket /tmp/s.sock: "),
+            lines[0].starts_with("ls: cannot reach the server socket /tmp/s.sock: "),
             "{lines:?}"
         );
         assert!(!lines[0].contains("attach loop"), "{lines:?}");
-        assert_eq!(lines[2], "  run `phux doctor` for a health check");
+        assert_eq!(lines[2], "run `phux doctor` for a health check");
 
         let json = super::json_err::no_server_error(&denied, Path::new("/tmp/s.sock"), "ls");
         assert_eq!(json.code, super::json_err::codes::TRANSPORT);
@@ -3844,9 +3846,9 @@ mod tests {
             "kill",
             Path::new("/state/phux/server.log"),
         );
-        assert_eq!(lines[0], "phux: server closed the connection during kill");
-        assert_eq!(lines[1], "  server log: /state/phux/server.log");
-        assert_eq!(lines[2], "  run `phux doctor` for a health check");
+        assert_eq!(lines[0], "server closed the connection during kill");
+        assert_eq!(lines[1], "server log: /state/phux/server.log");
+        assert_eq!(lines[2], "run `phux doctor` for a health check");
     }
 
     /// The generic arm keeps the error's own Display sentence first and still
@@ -3861,10 +3863,10 @@ mod tests {
         );
         assert_eq!(
             lines[0],
-            "phux: tag failed: server refused attach: policy said no"
+            "tag failed: server refused attach: policy said no"
         );
-        assert_eq!(lines[1], "  server log: /log/server.log");
-        assert_eq!(lines[2], "  run `phux doctor` for a health check");
+        assert_eq!(lines[1], "server log: /log/server.log");
+        assert_eq!(lines[2], "run `phux doctor` for a health check");
     }
 
     /// The three self-explaining attach arms stay single-line and keep their
@@ -3876,7 +3878,7 @@ mod tests {
 
         assert_eq!(
             attach_error_lines(&refused_io(), socket, "main", log),
-            ["phux: no server at /tmp/a.sock. Start one with: phux server --session main"]
+            ["no server at /tmp/a.sock. Start one with: phux server --session main"]
         );
         assert_eq!(
             attach_error_lines(
@@ -3885,11 +3887,11 @@ mod tests {
                 "main",
                 log,
             ),
-            ["phux: server refused attach: no such session"]
+            ["server refused attach: no such session"]
         );
         assert_eq!(
             attach_error_lines(&AttachError::NotATty, socket, "main", log),
-            ["phux: attach requires an interactive terminal (stdin is not a TTY)."]
+            ["attach requires an interactive terminal (stdin is not a TTY)."]
         );
     }
 
@@ -3905,18 +3907,15 @@ mod tests {
             "main",
             Path::new("/state/phux/client-42.log"),
         );
-        assert_eq!(
-            lines[0],
-            "phux: the server closed the connection unexpectedly"
-        );
+        assert_eq!(lines[0], "the server closed the connection unexpectedly");
         assert_eq!(
             lines[1],
             format!(
-                "  server log: {}",
+                "server log: {}",
                 phux_server::telemetry::server_log_path().display()
             )
         );
-        assert_eq!(lines[2], "  run `phux doctor` for a health check");
+        assert_eq!(lines[2], "run `phux doctor` for a health check");
         assert_eq!(lines.len(), 3);
     }
 
@@ -3933,13 +3932,13 @@ mod tests {
             "main",
             Path::new("/state/phux/client-42.log"),
         );
-        assert_eq!(lines[0], "phux: attach failed: protocol error: bad frame");
-        assert_eq!(lines[1], "  client log: /state/phux/client-42.log");
+        assert_eq!(lines[0], "attach failed: protocol error: bad frame");
+        assert_eq!(lines[1], "client log: /state/phux/client-42.log");
         let version = phux_protocol::PROTOCOL_VERSION;
         assert_eq!(
             lines[2],
             format!(
-                "  run `phux doctor` for a health check (client protocol {}.{}.{})",
+                "run `phux doctor` for a health check (client protocol {}.{}.{})",
                 version.major, version.minor, version.patch,
             )
         );

@@ -265,8 +265,8 @@ async fn report_any(socket_path: &Path, result: &FleetAgentWaitResult, json: boo
     if result.satisfied() {
         ExitCode::SUCCESS
     } else {
-        eprintln!(
-            "phux: agent wait --any timed out; {} agent(s) were tracked and no matching transition was observed",
+        error!(
+            "agent wait --any timed out; {} agent(s) were tracked and no matching transition was observed",
             result.agents,
         );
         ExitCode::from(crate::exit_codes::EXIT_WAIT_TIMEOUT)
@@ -341,8 +341,8 @@ fn report(
     }
     // A pane already resting in a target state times out by design; say so.
     if result.baseline == result.last {
-        eprintln!(
-            "phux: agent wait timed out; {label} held '{}' for the whole wait and never \
+        error!(
+            "agent wait timed out; {label} held '{}' for the whole wait and never \
              transitioned ({} pushes, {} polls). A level read is `phux agent show` — this \
              verb reports transitions, so that a crashed agent resting at 'idle' cannot \
              pass for a finished one.",
@@ -351,8 +351,8 @@ fn report(
             result.polls,
         );
     } else {
-        eprintln!(
-            "phux: agent wait timed out; {label} last observed '{}' after {} transition(s)",
+        error!(
+            "agent wait timed out; {label} last observed '{}' after {} transition(s)",
             result.last.as_str(),
             result.edges,
         );

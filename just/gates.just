@@ -81,7 +81,7 @@ lint:
 [group('gates')]
 [doc('Iteration loop: the fast gates ci would reject you on, in the order ci hits them.')]
 precommit: fmt lint docs-gen test e2e
-    @echo "precommit clean - now run 'just ci' once to confirm the remaining gates"
+    @. ./scripts/lib/output.sh; phux_ok "precommit clean - now run 'just ci' once to confirm the remaining gates"
 
 
 # Lint shell scripts with shellcheck (the harness, the boundary/docs
@@ -94,7 +94,7 @@ precommit: fmt lint docs-gen test e2e
 [group('gates')]
 [doc('Lint harness, CI, guard, and example shell scripts at warning severity.')]
 shellcheck:
-    shellcheck --severity=warning scripts/*.sh scripts/ci/*.sh \
+    shellcheck --severity=warning scripts/*.sh scripts/lib/*.sh scripts/ci/*.sh \
       examples/agents/*.sh \
       examples/agents/orchestrate-placed-fleet examples/agents/tests/*.sh \
       examples/plugins/*/scripts/*.sh
@@ -111,6 +111,7 @@ workflow-check: shellcheck
     python3 clients/cockpit/scripts/check-build-contracts.py
     python3 scripts/mutation/test_recipes.py
     bash scripts/test-dev-setup.sh
+    python3 -B scripts/test-output.py
     bash scripts/test-demo-pi-setup.sh
     node --test scripts/test-vt-wasm.mjs
     node --test scripts/test-npm-audit-gate.mjs
@@ -231,7 +232,7 @@ agent-integrations-check:
 [group('gates')]
 [doc('Full root gate set: the deterministic and unit bar.')]
 ci: ci-static test
-    @echo "ok"
+    @. ./scripts/lib/output.sh; phux_ok "root validation passed"
 
 
 # Everything in `ci` but the test suite, as two lanes that run side by side:
@@ -254,4 +255,4 @@ ci-repo-gates: docs-check workflow-check formula-check font-check e2e-lane-check
 [group('gates')]
 [doc('Full root PR bar: ci plus the real-server e2e and agent smoke lanes.')]
 ci-full: ci e2e agents-fleet-smoke
-    @echo "ok (full)"
+    @. ./scripts/lib/output.sh; phux_ok "full root validation passed"

@@ -201,7 +201,7 @@ where
 const fn root_rec_before_verb(cli: &Cli) -> Option<&'static str> {
     if cli.command.is_some() && (cli.rec.rec.is_some() || cli.rec.rec_format.is_some()) {
         Some(
-            "phux: a root `--rec` belongs to the naked `phux` attach alone; \
+            "a root `--rec` belongs to the naked `phux` attach alone; \
              use `phux attach --rec PATH` to record an attach, or \
              `phux rec TARGET -o PATH` for headless capture",
         )
@@ -219,35 +219,35 @@ const fn pair_qr_with_action(cli: &Cli) -> Option<&'static str> {
             qr: true,
             ..
         }) => Some(
-            "phux: --qr belongs to minting a credential; it cannot combine with ls, prune, rotate, or revoke",
+            "--qr belongs to minting a credential; it cannot combine with ls, prune, rotate, or revoke",
         ),
         Some(Command::Pair {
             action: Some(_),
             secret_file: Some(_),
             ..
         }) => Some(
-            "phux: --secret-file belongs to minting a credential; it cannot combine with ls, prune, rotate, or revoke",
+            "--secret-file belongs to minting a credential; it cannot combine with ls, prune, rotate, or revoke",
         ),
         Some(Command::Pair {
             action: Some(_),
             expires: Some(_),
             ..
         }) => Some(
-            "phux: --expires belongs to minting a credential; it cannot combine with ls, prune, rotate, or revoke",
+            "--expires belongs to minting a credential; it cannot combine with ls, prune, rotate, or revoke",
         ),
         Some(Command::Pair {
             action: Some(_),
             no_qr: true,
             ..
         }) => Some(
-            "phux: --no-qr belongs to minting a credential; it cannot combine with ls, prune, rotate, or revoke",
+            "--no-qr belongs to minting a credential; it cannot combine with ls, prune, rotate, or revoke",
         ),
         Some(Command::Pair {
             action: Some(_),
             relay_route: Some(_),
             ..
         }) => Some(
-            "phux: --relay-route belongs to minting a credential; it cannot combine with ls, prune, rotate, or revoke",
+            "--relay-route belongs to minting a credential; it cannot combine with ls, prune, rotate, or revoke",
         ),
         _ => None,
     }
@@ -258,7 +258,7 @@ const fn pair_qr_with_action(cli: &Cli) -> Option<&'static str> {
 const fn root_remote_before_verb(cli: &Cli) -> Option<&'static str> {
     if cli.command.is_some() && cli.remote.is_some() {
         Some(
-            "phux: a root `--remote` belongs to the naked `phux` attach alone; \
+            "a root `--remote` belongs to the naked `phux` attach alone; \
              place it after the verb instead (`phux ls --remote HOST`; `ls`, `new`, `kill`, \
              `rename`, and `detach` take it), or use `phux attach --remote HOST` to name a \
              session, a `--code`, or `--no-enroll`",
@@ -304,7 +304,7 @@ const fn dial_auth_without_transport(
         && quic.is_none()
         && ws.is_none()
     {
-        Some("phux: --token, --cert-fingerprint, and --tls-server-name need --quic or --ws")
+        Some("--token, --cert-fingerprint, and --tls-server-name need --quic or --ws")
     } else {
         None
     }
@@ -326,7 +326,7 @@ fn attach_remote_target(
     let target = match parse_target(target) {
         Ok(target) => target,
         Err(err) => {
-            eprintln!("phux: {err}");
+            error!("{err}");
             return ExitCode::from(2);
         }
     };
@@ -398,7 +398,7 @@ fn misplaced_flag_hint(err: &usage::Error<'_, '_>, words: &[String]) -> Option<S
     });
     let Some(verb) = verb else {
         return Some(format!(
-            "hint: `{flag}` is set per verb, not on `phux` itself; place it after the verb: \
+            "`{flag}` is set per verb, not on `phux` itself; place it after the verb: \
              `phux <verb> {flag} ...`"
         ));
     };
@@ -415,7 +415,7 @@ fn misplaced_flag_hint(err: &usage::Error<'_, '_>, words: &[String]) -> Option<S
         ""
     };
     Some(format!(
-        "hint: `phux {}` does not take `{flag}`; it belongs to {}{more}",
+        "`phux {}` does not take `{flag}`; it belongs to {}{more}",
         verb.name,
         shown.join(", ")
     ))
@@ -489,12 +489,36 @@ fn report_parse_error(argv: &[&std::ffi::OsStr], err: usage::Error<'_, '_>) -> E
             ExitCode::SUCCESS
         }
         err => {
-            eprint!(
-                "{}",
-                redact_long_base64(&usage::render_failure(Cli::spec(), argv, &err))
-            );
-            if let Some(hint) = misplaced_flag_hint(&err, &words) {
-                eprintln!("{hint}");
+            // usage-rs owns parse explanations and suggestions. Adapt its fixed
+            // error-header contract, never classify an arbitrary message. Keep
+            // the usage/context block plain rather than coloring argv values.
+            let rendered =
+                redact_long_base64(&usage::render_failure_plain(Cli::spec(), argv, &err));
+            let (header, context) = rendered.split_once('\n').unwrap_or((&rendered, ""));
+            let message = header.strip_prefix("error: ").unwrap_or(header);
+            let hint = misplaced_flag_hint(&err, &words);
+            if json_output_requested() {
+                return commands::json_err::emit(
+                    true,
+                    &commands::json_err::CliError::new(
+                        commands::json_err::codes::USAGE_ERROR,
+                        message,
+                        hint.as_deref().unwrap_or_else(|| {
+                            if context.trim().is_empty() {
+                                "run `phux --help` for usage"
+                            } else {
+                                context.trim()
+                            }
+                        }),
+                    ),
+                    2,
+                );
+            }
+            error!("{message}");
+            // Parser-owned usage layout and argument underlines are not diagnostics.
+            eprint!("{context}");
+            if let Some(hint) = hint {
+                hint!("{hint}");
             }
             ExitCode::from(2)
         }
@@ -515,6 +539,7 @@ fn plan_rec(opts: &commands::RecOpts) -> Result<Option<commands::rec::RecordSpec
 /// attach paths would wipe it with the alt screen, and one-shot verbs keep
 /// stderr clean for scripts.
 pub(crate) fn print_banner() {
+    // Stable foreground build banner, not a diagnostic.
     eprintln!("{BANNER}");
 }
 
@@ -564,7 +589,11 @@ fn warn_deprecated(old: &str, json: bool) {
         return;
     }
     if let Some(row) = deprecations::DEPRECATED.iter().find(|row| row.old == old) {
-        eprintln!("{}", row.note);
+        // The reference table stores the complete plain warning for docs/tests.
+        warn!(
+            "{}",
+            row.note.strip_prefix("phux: warn: ").unwrap_or(row.note)
+        );
     }
 }
 
@@ -584,10 +613,7 @@ fn preparse_endpoint(args: &[std::ffi::OsString]) -> Option<ExitCode> {
     let wants_json = args.iter().any(|arg| arg == "--json");
     if wants_capabilities && wants_json {
         if args.len() != 2 {
-            eprintln!(
-                "phux: --capabilities --json is a standalone endpoint and cannot be combined with other arguments"
-            );
-            return Some(ExitCode::from(2));
+            return Some(emit_usage_error("--capabilities --json is a standalone endpoint and cannot be combined with other arguments".to_owned()));
         }
         return Some(capabilities::run());
     }
@@ -646,12 +672,8 @@ fn help_request(args: &[std::ffi::OsString]) -> Option<ExitCode> {
         return None;
     }
     let topics: Vec<&str> = HELP_TOPICS.iter().map(|(name, _)| *name).collect();
-    eprintln!(
-        "phux: no command or help topic named `{word}`\n\
-         topics: {}\n\
-         commands: see `phux --help`",
-        topics.join(", ")
-    );
+    error!("no command or help topic named `{word}`");
+    hint!("topics: {}; commands: see `phux --help`", topics.join(", "));
     Some(ExitCode::from(2))
 }
 
@@ -706,7 +728,12 @@ fn help_word_index(args: &[std::ffi::OsString]) -> Option<usize> {
 /// bold/cyan palette.
 fn help_style() -> usage::help::Style {
     use usage::help::{Palette, Style};
-    Style::auto().palette(
+    let style = if output::color_enabled(std::io::IsTerminal::is_terminal(&std::io::stdout())) {
+        Style::COLOURED
+    } else {
+        Style::PLAIN
+    };
+    style.palette(
         Palette::DEFAULT
             .heading("bold")
             .command("cyan+bold")
@@ -751,8 +778,9 @@ pub(crate) fn render_help_page(
 /// `--remote`, and `--socket` on a verb that never dials. Each exits 2.
 fn usage_refusal(cli: &Cli) -> Option<ExitCode> {
     if cli.capabilities {
-        eprintln!("phux: --capabilities requires --json");
-        return Some(ExitCode::from(2));
+        return Some(emit_usage_error(
+            "--capabilities requires --json".to_owned(),
+        ));
     }
 
     if matches!(
@@ -763,44 +791,53 @@ fn usage_refusal(cli: &Cli) -> Option<ExitCode> {
             ..
         })
     ) {
-        eprintln!("phux: `phux server --json` requires `--ensure`");
-        return Some(ExitCode::from(2));
+        return Some(emit_usage_error(
+            "`phux server --json` requires `--ensure`".to_owned(),
+        ));
     }
 
     if let Some(message) = root_rec_before_verb(cli) {
-        eprintln!("{message}");
-        return Some(ExitCode::from(2));
+        return Some(emit_usage_error(message.to_owned()));
     }
     if let Some(message) = root_remote_before_verb(cli) {
-        eprintln!("{message}");
-        return Some(ExitCode::from(2));
+        return Some(emit_usage_error(message.to_owned()));
     }
     if let Some(message) = pair_qr_with_action(cli) {
-        eprintln!("{message}");
-        return Some(ExitCode::from(2));
+        return Some(emit_usage_error(message.to_owned()));
     }
     // A malformed `--remote` target is a usage error, so it is reported here
     // — before the interactive TTY preflight below. Otherwise a typo in a
     // script would surface as "interactive use requires a terminal", which
     // names the wrong problem entirely.
     if let Some(message) = malformed_remote_target(cli) {
-        eprintln!("phux: {message}");
-        return Some(ExitCode::from(2));
+        return Some(emit_usage_error(message));
     }
     if socket_and_remote_collide(cli) {
-        eprintln!("{}", commands::server_target::SOCKET_REMOTE_CONFLICT);
-        return Some(ExitCode::from(2));
+        return Some(emit_usage_error(
+            commands::server_target::SOCKET_REMOTE_CONFLICT.to_owned(),
+        ));
     }
     if cli.socket.is_some()
         && let Some(verb) = cli.command.as_ref().and_then(commands::socketless_verb)
     {
-        eprintln!(
-            "phux: `phux {verb}` never dials a server, so --socket has no effect here; drop it"
-        );
-        return Some(ExitCode::from(2));
+        return Some(emit_usage_error(format!(
+            "`phux {verb}` never dials a server, so --socket has no effect here; drop it"
+        )));
     }
 
     None
+}
+
+fn emit_usage_error(message: String) -> ExitCode {
+    commands::json_err::emit(
+        json_output_requested(),
+        &commands::json_err::CliError::new(
+            commands::json_err::codes::USAGE_ERROR,
+            message,
+            "run `phux --help` for usage",
+        ),
+        2,
+    )
 }
 
 /// Install the process-global tracing subscriber before any runtime starts.
@@ -816,7 +853,7 @@ fn init_tracing(cli: &Cli) -> Option<phux_server::telemetry::WorkerGuard> {
             // The client never logs to stderr, but a one-line init failure
             // on the cooked terminal (before alt screen) is acceptable and
             // beats a silent no-op subscriber.
-            eprintln!("phux: client tracing init failed (continuing): {err}");
+            warn!("client tracing init failed (continuing): {err}");
         }
         return None;
     }
@@ -829,7 +866,7 @@ fn init_noninteractive_tracing() -> Option<phux_server::telemetry::WorkerGuard> 
         Ok(guard) => guard,
         Err(err) => {
             if !json_output_requested() {
-                eprintln!("phux: tracing init failed (continuing): {err}");
+                warn!("tracing init failed (continuing): {err}");
             }
             None
         }
@@ -907,9 +944,7 @@ fn run_attach(invocation: AttachInvocation) -> ExitCode {
     // `--socket` is a local UDS path and cannot combine with the remote
     // transports; checked here because it is a root global.
     if socket.is_some() && (quic.is_some() || ws.is_some() || ssh.is_some()) {
-        eprintln!(
-            "phux: --socket dials a local UDS and cannot combine with --quic/--ws/--ssh; drop one"
-        );
+        error!("--socket dials a local UDS and cannot combine with --quic/--ws/--ssh; drop one");
         return ExitCode::from(2);
     }
     // The parser cannot say "one of --quic/--ws" (`requires` is every listed
@@ -922,7 +957,7 @@ fn run_attach(invocation: AttachInvocation) -> ExitCode {
         cert_fingerprint.as_deref(),
         tls_server_name.as_deref(),
     ) {
-        eprintln!("{message}");
+        error!("{message}");
         return ExitCode::from(exit_codes::EXIT_USAGE);
     }
     if let Some(destination) = ssh {
@@ -958,7 +993,7 @@ fn run_attach(invocation: AttachInvocation) -> ExitCode {
         ),
         (None, None) => commands::attach::run_attach_rec(session, socket, rec_spec),
         (Some(_), Some(_)) => {
-            eprintln!("phux: choose only one remote attach transport (--quic or --ws)");
+            error!("choose only one remote attach transport (--quic or --ws)");
             ExitCode::FAILURE
         }
     }
@@ -1586,21 +1621,22 @@ pub fn run() -> ExitCode {
     if let Err(refusal) =
         phux_config::production::refuse_dev_on_production_state(&phux_config::instance::state_dir())
     {
-        eprintln!("phux: {refusal}");
-        return ExitCode::from(2);
+        return emit_usage_error(refusal);
     }
     let raw: Vec<std::ffi::OsString> = std::env::args_os().collect();
     // Key material never belongs on a `phux workload` command line, and argv is
     // echoed in too many places to scrub, so that verb is refused before parsing
     // (`workload-auth.md` §8).
     if workload_argv_carries_key_material(&raw[1..]) {
-        eprintln!(
-            "phux: the command line was refused and is not echoed, because it appears to contain key material"
+        return commands::json_err::emit(
+            json_output_requested(),
+            &commands::json_err::CliError::new(
+                commands::json_err::codes::WORKLOAD,
+                "the command line was refused and is not echoed, because it appears to contain key material",
+                "pass certificates and CSRs on stdin or with --file, and keep private keys out of arguments entirely",
+            ),
+            2,
         );
-        eprintln!(
-            "hint: pass certificates and CSRs on stdin or with --file, and keep private keys out of arguments entirely"
-        );
-        return ExitCode::from(2);
     }
     if let Some(code) = preparse_endpoint(&raw[1..]) {
         return code;
@@ -1623,10 +1659,9 @@ pub fn run() -> ExitCode {
     // rather than silently ignoring the verb.
     if let Some(scope) = cli.skill {
         if cli.command.is_some() {
-            eprintln!(
-                "phux: --skill is a standalone endpoint and cannot be combined with a command"
+            return emit_usage_error(
+                "--skill is a standalone endpoint and cannot be combined with a command".to_owned(),
             );
-            return ExitCode::from(2);
         }
         // Like clap's built-in --help and --version actions, this socketless
         // endpoint exits before tracing, config, or TTY setup.
@@ -2813,7 +2848,7 @@ mod tests {
                 DeprecatedSurface::Verb => assert_eq!(
                     row.note,
                     format!(
-                        "phux: `{}` is deprecated and will be removed; use `{}`",
+                        "phux: warn: `{}` is deprecated and will be removed; use `{}`",
                         row.old, row.new
                     ),
                     "verb row {} must render its note from its own columns",
@@ -2825,7 +2860,7 @@ mod tests {
                     assert_eq!(
                         row.note,
                         format!(
-                            "phux: {flag} is deprecated and will be removed; \
+                            "phux: warn: {flag} is deprecated and will be removed; \
                              use `--split {axis}` (or `--split {short}`)",
                             short = &axis[..1]
                         ),

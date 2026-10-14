@@ -26,7 +26,7 @@ pub(crate) fn run_paste(
     let data = match payload {
         Ok(data) => data,
         Err(err) => {
-            eprintln!("phux: cannot read paste payload from stdin: {err}");
+            error!("cannot read paste payload from stdin: {err}");
             return ExitCode::FAILURE;
         }
     };
@@ -49,11 +49,11 @@ pub(crate) fn run_paste(
             Ok(()) => ExitCode::SUCCESS,
             Err(err @ AttachError::Io(_)) => report_no_server(&err, &socket_path, "paste"),
             Err(AttachError::Refused(msg)) => {
-                eprintln!("phux: cannot paste to '{target}': {msg} (try `phux ls`)");
+                error!("cannot paste to '{target}': {msg} (try `phux ls`)");
                 ExitCode::FAILURE
             }
             Err(err) => {
-                eprintln!("phux: paste failed: {err}");
+                error!("paste failed: {err}");
                 ExitCode::FAILURE
             }
         }

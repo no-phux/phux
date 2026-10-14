@@ -13,6 +13,8 @@
 # would have landed code here silently. One policy, enforced, for all of
 # them. Runs in `just workflow-check`.
 set -euo pipefail
+# shellcheck source=scripts/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 fail=0
@@ -31,7 +33,7 @@ while IFS= read -r line; do
 
   sha="${ref##*@}"
   if ! [[ "${sha}" =~ ^[0-9a-f]{40}$ ]]; then
-    printf 'error: %s:%s: action is not SHA-pinned: %s\n' "${file}" "${lineno}" "${ref}" >&2
+    phux_error "${file}:${lineno}: action is not SHA-pinned: ${ref}"
     fail=1
     continue
   fi
@@ -39,7 +41,7 @@ while IFS= read -r line; do
   # The pin must carry its tag as a trailing comment so a reader (and
   # Dependabot) can tell what the SHA means without resolving it.
   if [[ "$(sed -n "${lineno}p" "${file}")" != *"# v"* ]]; then
-    printf 'error: %s:%s: SHA pin missing trailing "# v<tag>" comment: %s\n' "${file}" "${lineno}" "${ref}" >&2
+    phux_error "${file}:${lineno}: SHA pin missing trailing \"# v<tag>\" comment: ${ref}"
     fail=1
   fi
 done < <(grep -Hn '^[[:space:]]*-\{0,1\}[[:space:]]*uses: ' \
@@ -47,8 +49,8 @@ done < <(grep -Hn '^[[:space:]]*-\{0,1\}[[:space:]]*uses: ' \
          | sed 's/^\([^:]*:[0-9]*\):[[:space:]]*-\{0,1\}[[:space:]]*uses: /\1:uses: /')
 
 if [[ "${fail}" -ne 0 ]]; then
-  printf '%s\n' 'Pin format: uses: owner/repo@<40-hex-sha> # v<tag>. Resolve with: git ls-remote https://github.com/<owner>/<repo> "refs/tags/<tag>^{}"' >&2
+  phux_hint 'Pin format: uses: owner/repo@<40-hex-sha> # v<tag>. Resolve with: git ls-remote https://github.com/<owner>/<repo> "refs/tags/<tag>^{}"'
   exit 1
 fi
 
-printf 'action pins passed\n'
+phux_ok 'action pins passed'

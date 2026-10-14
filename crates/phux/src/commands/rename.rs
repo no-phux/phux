@@ -40,10 +40,7 @@ pub(crate) async fn run_rename_on(
     let result =
         phux_client::session::rename_checked(&mut conn, session, new_name, &mut notices).await;
     for notice in &notices {
-        eprintln!(
-            "{}",
-            phux_client::state::partial_view_warning("rename", notice)
-        );
+        warn!("{} saw only part of the fleet — {notice}", "rename");
     }
     match result {
         Ok(()) => {
@@ -55,10 +52,7 @@ pub(crate) async fn run_rename_on(
             target.report_unreachable(false, &err, "rename")
         }
         Err(err) => {
-            eprintln!(
-                "phux: rename refused for session {session:?}: {}",
-                err.reason()
-            );
+            error!("rename refused for session {session:?}: {}", err.reason());
             ExitCode::from(2)
         }
     }

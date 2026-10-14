@@ -602,8 +602,8 @@ async fn revoke(conn: &mut Connection, delegation: Option<&phux_client::delegati
     )
     .await
     {
-        eprintln!(
-            "phux: warning: could not revoke the unused agent credential {}: {err}",
+        warn!(
+            "could not revoke the unused agent credential {}: {err}",
             delegation.credential_id
         );
     }
@@ -935,22 +935,22 @@ async fn rollback_bind(conn: &mut Connection, terminal: &ResourceId, expected: &
                 })
                 .await
             {
-                eprintln!("phux: warning: could not release the bound agent name: {err}");
+                warn!("could not release the bound agent name: {err}");
             }
         }
         Ok(Answer::Ok(Some(_))) => {
-            eprintln!(
-                "phux: warning: the agent record changed while the launch was being refused, \
+            warn!(
+                "the agent record changed while the launch was being refused, \
                  so the name was left bound; `phux agent show` reads it, `phux agent clear` \
                  releases it"
             );
         }
         Ok(Answer::Ok(None)) => {}
         Ok(Answer::Err(refusal)) => {
-            eprintln!("phux: warning: could not read the bound agent name back: {refusal}");
+            warn!("could not read the bound agent name back: {refusal}");
         }
         Err(err) => {
-            eprintln!("phux: warning: could not read the bound agent name back: {err}");
+            warn!("could not read the bound agent name back: {err}");
         }
     }
 }
@@ -970,7 +970,7 @@ async fn read_record(
         .await?
         .into_parts();
     for message in phux_client::state::degradation_notices(&interleaved) {
-        eprintln!("phux: warning: partial results — {message}");
+        warn!("partial results — {message}");
     }
     Ok(answer.map(|value| value.as_deref().and_then(parse_agent_record)))
 }
@@ -1206,8 +1206,8 @@ async fn report_ready(
             .emit(req.json);
         }
         KindVerdict::Unconfirmed if !req.json => {
-            eprintln!(
-                "phux: warning: {label}'s record carries no kind, so nothing confirmed the \
+            warn!(
+                "{label}'s record carries no kind, so nothing confirmed the \
                  occupant is '{}' (an explicit hook writer may own this record and stand \
                  the detector down)",
                 plan.kind

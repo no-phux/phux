@@ -283,7 +283,7 @@ fn foreign_version_coordinator_is_reused_without_reexecution() {
     }
     assert_eq!(fixture.status()["pid"], first["pid"]);
     let log = std::fs::read_to_string(state.join("server.log")).expect("log");
-    assert_eq!(log.matches("phux server listening on").count(), 1);
+    assert_eq!(log.matches("phux: info: server listening on").count(), 1);
     fixture.assert_cleaned_up();
 }
 
@@ -345,7 +345,11 @@ fn concurrent_ensures_elect_one_spawner() {
     fixture.server.capture_pid();
     let log = std::fs::read_to_string(fixture.dir.path().join("phux-ensure/server.log"))
         .expect("daemon log");
-    assert_eq!(log.matches("phux server listening on").count(), 1, "{log}");
+    assert_eq!(
+        log.matches("phux: info: server listening on").count(),
+        1,
+        "{log}"
+    );
     fixture.assert_cleaned_up();
 }
 

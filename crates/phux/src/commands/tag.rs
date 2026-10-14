@@ -52,7 +52,7 @@ pub(crate) fn run_tag(action: &TagAction, socket: Option<std::path::PathBuf>) ->
                 // the document, per the contract's warnings rule.
                 partial::warn_partial_view("tag", &outcome.view);
                 for message in outcome.interleaved {
-                    eprintln!("phux: warning: partial results — {message}");
+                    warn!("partial results — {message}");
                 }
                 print_rows(json, &outcome.rows)
             }

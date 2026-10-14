@@ -18,13 +18,15 @@
 #   PHUX_PI_PACKAGE      directory of an @phux/pi package (overrides discovery)
 #   PHUX_PI_DEMO_DIR     repo to seed (default: ~/phux-pi-demo)
 set -euo pipefail
+# shellcheck source=scripts/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SESSION=work
 DEMO_DIR="${PHUX_PI_DEMO_DIR:-${HOME:?}/phux-pi-demo}"
 
 die() {
-  echo "demo-pi-setup: $*" >&2
+  phux_error "demo-pi-setup: $*"
   exit 1
 }
 

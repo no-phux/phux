@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Fail when a public native build surface stops selecting its portable CPU floor.
 set -euo pipefail
+# shellcheck source=scripts/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 require() {
   grep -Fq -- "$2" "$1" || {
-    printf 'release CPU baseline drift: %s is missing %s\n' "$1" "$2" >&2
+    phux_error "release CPU baseline drift: $1 is missing $2"
     exit 1
   }
 }
@@ -50,8 +52,8 @@ check_target x86_64-unknown-linux-gnu '-C target-cpu=x86-64 -C link-arg=-fuse-ld
 check_target aarch64-unknown-linux-gnu '-C target-cpu=generic -C link-arg=-fuse-ld=mold' generic
 check_target aarch64-apple-darwin '-C target-cpu=apple-m1' apple-m1
 if PATH="$tmp:$PATH" bash scripts/build-release-binaries.sh x86_64-apple-darwin >/dev/null 2>&1; then
-  echo 'release CPU baseline drift: unsupported target was accepted' >&2
+  phux_error 'release CPU baseline drift: unsupported target was accepted'
   exit 1
 fi
 
-echo 'release CPU baseline contracts passed'
+phux_ok 'release CPU baseline contracts passed'

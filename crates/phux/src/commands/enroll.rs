@@ -232,6 +232,13 @@ pub(crate) enum Supervision {
 }
 
 impl Supervision {
+    pub(crate) const fn severity(&self) -> crate::output::Severity {
+        match self {
+            Self::Unsupervised { .. } => crate::output::Severity::Warn,
+            Self::Service | Self::Adopted | Self::Skipped => crate::output::Severity::Info,
+        }
+    }
+
     /// One clause for a progress line.
     pub(crate) fn describe(&self) -> String {
         match self {
@@ -345,6 +352,35 @@ impl Retired {
 }
 
 impl EnrollEvent {
+    /// Severity comes from the event, not its rendered progress text.
+    pub(crate) const fn severity(&self) -> crate::output::Severity {
+        use crate::output::Severity;
+        match self {
+            Self::ServerReady(supervision) => supervision.severity(),
+            Self::ServerStartFailed { .. }
+            | Self::ListenerRestartFailed { .. }
+            | Self::DirectUnreachable { .. }
+            | Self::CertificateNotEnrolled { .. }
+            | Self::CertificateRenewalDue { .. }
+            | Self::CertificateNotRevoked { .. }
+            | Self::CertificateNotHeld { .. }
+            | Self::PreviousCertificateUnidentified { .. } => Severity::Warn,
+            Self::LegacyStoreMigrated
+            | Self::ListenersRestarted
+            | Self::Paired
+            | Self::CredentialReused
+            | Self::CredentialReplaced
+            | Self::DirectReachable { .. }
+            | Self::CertificateEnrolled { .. }
+            | Self::CertificateRevoked { .. } => Severity::Ok,
+            Self::PhuxFound { .. } | Self::Probing { .. } => Severity::Info,
+        }
+    }
+
+    pub(crate) fn report_progress(&self, name: &str) {
+        crate::output::diagnostic(self.severity(), format_args!("{name}: {}", self.describe()));
+    }
+
     /// Whether this event leaves something for the operator to do about the
     /// client certificate: reported in `enrollment.warnings` under `--json`.
     pub(crate) const fn is_warning(&self) -> bool {
@@ -1797,6 +1833,42 @@ pub(crate) const fn default_quic_port() -> u16 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn enrollment_progress_severity_follows_typed_outcomes() {
+        use super::{EnrollEvent, Supervision};
+        use crate::output::human_line;
+        for (event, expected) in [
+            (EnrollEvent::Paired, "phux: ok: paired"),
+            (
+                EnrollEvent::Probing {
+                    endpoint: "quic://mini:8788".to_owned(),
+                },
+                "phux: info: trying quic://mini:8788",
+            ),
+            (
+                EnrollEvent::ServerStartFailed {
+                    error: "refused".to_owned(),
+                },
+                "phux: warn: could not start a server there (refused); pairing needs one with a remote listener, trying anyway",
+            ),
+            (
+                EnrollEvent::ServerReady(Supervision::Unsupervised {
+                    reason: "no service manager".to_owned(),
+                }),
+                "phux: warn: server running unsupervised (service install failed: no service manager); it will not come back by itself after a reboot",
+            ),
+        ] {
+            assert_eq!(
+                human_line(
+                    event.severity(),
+                    format_args!("{}", event.describe()),
+                    false
+                ),
+                expected
+            );
+        }
+    }
+
     use super::{
         AddKeyReply, CertificateStatus, ClientIdentityFiles, HeldIdentity, PairReport,
         RENEW_WITHIN_SECONDS, admission_ends, authority, candidate_endpoints, destination_host,

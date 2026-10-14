@@ -302,8 +302,8 @@ run_cockpit_install() {
 }
 
 COCKPIT_APPS="$TMP/cockpit-apps"
-output="$(run_cockpit_install "$COCKPIT_APPS")"
-grep -Fq "installed Phux Cockpit $COCKPIT_VERSION to $COCKPIT_APPS" <<<"$output"
+output="$(run_cockpit_install "$COCKPIT_APPS" 2>"$TMP/cockpit-status.err")"
+grep -Fq "phux: ok: installed Phux Cockpit $COCKPIT_VERSION to $COCKPIT_APPS" "$TMP/cockpit-status.err"
 grep -Fq 'next: open ' <<<"$output"
 grep -Fq "launcher: " <<<"$output"
 cmp "$FIXTURE/Phux Cockpit.app/Contents/Info.plist" "$COCKPIT_APPS/Phux Cockpit.app/Contents/Info.plist"
@@ -528,8 +528,9 @@ NEXT_DIR="$TMP/next-install"
 mkdir "$NEXT_DIR"
 PATH="$FAKE_BIN:/usr/bin:/bin" INSTALL_FIXTURE="$NEXT_FIXTURE" \
   "$INSTALLER_SH" "$ROOT/scripts/install.sh" --channel next --os linux --arch x86_64 \
-    --install-dir "$NEXT_DIR" >"$TMP/next.out"
-grep -Fq "installed phux next.${NEXT_SHA}" "$TMP/next.out"
+    --install-dir "$NEXT_DIR" >"$TMP/next.out" 2>"$TMP/next.err"
+grep -Fq "phux: ok: installed phux next.${NEXT_SHA}" "$TMP/next.err"
+! grep -Fq "installed phux" "$TMP/next.out"
 grep -Fxq next "$NEXT_DIR/.phux-channel"
 cmp "$NEXT_BINS/phux" "$NEXT_DIR/phux"
 cmp "$NEXT_BINS/phux-mcp" "$NEXT_DIR/phux-mcp"

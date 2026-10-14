@@ -132,7 +132,7 @@ fn run(operation: SpatialOp, json: bool, socket: Option<PathBuf>) -> ExitCode {
         &mut notices,
     ));
     for message in &notices {
-        eprintln!("phux: warning: partial results — {message}");
+        warn!("partial results — {message}");
     }
     match result {
         Ok(outcome) => print_success(json, &outcome),

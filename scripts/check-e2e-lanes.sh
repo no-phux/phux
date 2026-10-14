@@ -49,6 +49,8 @@
 #   1   an e2e binary carries #[ignore]d tests that no lane selects
 
 set -euo pipefail
+# shellcheck source=scripts/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -57,7 +59,7 @@ cd "$ROOT"
 shopt -s nullglob
 RECIPE_FILES=(justfile just/*.just)
 if [ ! -f justfile ]; then
-    echo "error: justfile not found" >&2
+    phux_error "justfile not found"
     exit 1
 fi
 
@@ -74,8 +76,8 @@ lanes="$(cat "${RECIPE_FILES[@]}" | awk '
 ')"
 
 if [ -z "$lanes" ]; then
-    echo "error: found no e2e/stress recipe bodies in just/test.just" >&2
-    echo "  if those recipes were renamed, update this gate to match." >&2
+    phux_error "found no e2e/stress recipe bodies in just/test.just"
+    phux_hint "if those recipes were renamed, update this gate to match."
     exit 1
 fi
 
@@ -100,8 +102,8 @@ while IFS= read -r path; do
         if [ "$relative" != "${harness}/${stem}.rs" ] ||
             [ ! -f "$entry" ] ||
             ! grep -Eq "^mod ${stem};$" "$entry"; then
-            echo "error: ${path} is not wired into a supported subsystem harness" >&2
-            echo "  expected ${entry} to declare: mod ${stem};" >&2
+            phux_error "${path} is not wired into a supported subsystem harness"
+            phux_hint "expected ${entry} to declare: mod ${stem};"
             status=1
             continue
         fi
@@ -123,27 +125,27 @@ while IFS= read -r path; do
     fi
 
     status=1
-    echo "error: ${path} has #[ignore]d tests that no lane runs" >&2
-    echo "  binary id: ${binary_id}" >&2
-    echo "  #[ignore]d tests only run where a recipe passes --run-ignored AND" >&2
-    echo "  names the binary. This one is named nowhere, so it never executes" >&2
-    echo "  in CI and will stay green no matter what it asserts." >&2
+    phux_error "${path} has #[ignore]d tests that no lane runs"
+    phux_hint "binary id: ${binary_id}"
+    phux_hint "#[ignore]d tests only run where a recipe passes --run-ignored AND"
+    phux_hint "names the binary. This one is named nowhere, so it never executes"
+    phux_hint "in CI and will stay green no matter what it asserts."
     echo "" >&2
-    echo "  Fix by adding it to the fast PR lane in ${JUSTFILE} (recipe \`e2e\`):" >&2
-    echo "    -E '... + binary_id(${binary_id})'" >&2
-    echo "  or, if it is too slow for the PR critical path, to the \`stress\`" >&2
-    echo "  recipe (which runs post-merge and nightly via stress.yml)." >&2
+    phux_hint "Fix by adding it to the fast PR lane in ${JUSTFILE} (recipe \`e2e\`):"
+    phux_hint "  -E '... + binary_id(${binary_id})'"
+    phux_hint "or, if it is too slow for the PR critical path, to the \`stress\`"
+    phux_hint "recipe (which runs post-merge and nightly via stress.yml)."
     echo "" >&2
 done < <(find crates -type f -path '*/tests/*_e2e.rs' | sort)
 
 if [ "$checked" -eq 0 ]; then
-    echo "error: no *_e2e.rs suites found under crates/*/tests/" >&2
-    echo "  the glob or the naming convention changed; update this gate." >&2
+    phux_error "no *_e2e.rs suites found under crates/*/tests/"
+    phux_hint "the glob or the naming convention changed; update this gate."
     exit 1
 fi
 
 if [ "$status" -eq 0 ]; then
-    echo "e2e lane coverage ok: ${checked} e2e suites, all reachable"
+    phux_ok "e2e lane coverage: ${checked} e2e suites, all reachable"
 fi
 
 exit "$status"

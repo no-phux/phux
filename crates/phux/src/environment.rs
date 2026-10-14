@@ -165,11 +165,28 @@ pub(crate) const ENV_VARS: &[EnvVarSpec] = &[
     },
     EnvVarSpec {
         name: "NO_COLOR",
-        lines: &["Set (non-empty) to keep colour out of help output."],
+        lines: &[
+            "Set (non-empty) to keep human output plain, including help",
+            "and diagnostics. Overrides CLICOLOR_FORCE.",
+        ],
     },
     EnvVarSpec {
         name: "CLICOLOR_FORCE",
-        lines: &["Set (not `0`) to colour help output even when piped."],
+        lines: &[
+            "Set (non-empty, not `0`) to colour human output even when",
+            "piped. NO_COLOR and TERM=dumb still win.",
+        ],
+    },
+    EnvVarSpec {
+        name: "CLICOLOR",
+        lines: &[
+            "Set to `0` to disable colour in human output unless forced.",
+            "Otherwise colour follows each destination stream's terminal.",
+        ],
+    },
+    EnvVarSpec {
+        name: "TERM",
+        lines: &["Set to `dumb` to keep human output plain, even when forced."],
     },
 ];
 

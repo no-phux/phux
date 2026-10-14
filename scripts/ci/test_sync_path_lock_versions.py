@@ -3,10 +3,14 @@
 
 from pathlib import Path
 import runpy
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
-SYNC = runpy.run_path(str(Path(__file__).resolve().parents[1] / "sync-path-lock-versions.py"))
+SCRIPTS = Path(__file__).resolve().parents[1]
+with patch.object(sys, "path", [str(SCRIPTS), *sys.path]):
+    SYNC = runpy.run_path(str(SCRIPTS / "sync-path-lock-versions.py"))
 
 
 def lock(version):

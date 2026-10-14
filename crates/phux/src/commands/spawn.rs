@@ -190,8 +190,8 @@ pub(crate) fn run_spawn(
         // `SpawnResult` is `#[non_exhaustive]`: a kind with no arm here is a
         // vocabulary this client does not have, i.e. version skew.
         Ok(_) => {
-            eprintln!(
-                "phux: {}",
+            error!(
+                "{}",
                 phux_client::explain::unexpected_reply("SPAWN_RESOURCE")
             );
             ExitCode::FAILURE
@@ -313,7 +313,7 @@ pub(crate) fn dispatch_spawn_placed(
         // error document a failure emits.
         if !json {
             for message in &notices {
-                eprintln!("phux: warning: partial results — {message}");
+                warn!("partial results — {message}");
             }
         }
         match rollback {

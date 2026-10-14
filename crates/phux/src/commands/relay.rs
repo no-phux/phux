@@ -73,7 +73,7 @@ pub(crate) fn run_relay(action: RelayAction) -> ExitCode {
         phux_relay::default_relay_tokens_path(),
     ] {
         if let Err(refusal) = phux_config::production::refuse_dev_on_production_state(&path) {
-            eprintln!("phux relay: {refusal}");
+            error!("relay: {refusal}");
             return ExitCode::FAILURE;
         }
     }
@@ -111,18 +111,18 @@ fn run_relay_run(listen: SocketAddr, max_conns: usize) -> ExitCode {
     let routes = match phux_relay::RouteTokenStore::load(&config.tokens_path) {
         Ok(store) => store.len(),
         Err(err) => {
-            eprintln!("phux relay: {err}");
+            error!("relay: {err}");
             return ExitCode::FAILURE;
         }
     };
     if let Err(err) = phux_relay::ensure_self_signed(&config.cert_path, &config.key_path) {
-        eprintln!("phux relay: could not provision certificate: {err}");
+        error!("relay: could not provision certificate: {err}");
         return ExitCode::FAILURE;
     }
     let fingerprint = match phux_relay::cert_fingerprint(&config.cert_path) {
         Ok(fingerprint) => fingerprint,
         Err(err) => {
-            eprintln!("phux relay: could not read certificate fingerprint: {err}");
+            error!("relay: could not read certificate fingerprint: {err}");
             return ExitCode::FAILURE;
         }
     };
@@ -135,12 +135,13 @@ fn run_relay_run(listen: SocketAddr, max_conns: usize) -> ExitCode {
     {
         Ok(rt) => rt,
         Err(err) => {
-            eprintln!("phux relay failed: {err}");
+            error!("relay failed: {err}");
             return ExitCode::FAILURE;
         }
     };
     let result = rt.block_on(async {
         let bound = phux_relay::RelayRuntime::new(config).bind()?;
+        // Listener banner is the foreground runtime contract.
         eprintln!("{}", banner_line(bound.local_addr(), routes, &fingerprint));
         bound
             .serve(async {
@@ -151,11 +152,11 @@ fn run_relay_run(listen: SocketAddr, max_conns: usize) -> ExitCode {
     });
     match result {
         Ok(()) => {
-            eprintln!("phux relay: shutting down cleanly");
+            info!("relay: shutting down cleanly");
             ExitCode::SUCCESS
         }
         Err(err) => {
-            eprintln!("phux relay failed: {err}");
+            error!("relay failed: {err}");
             ExitCode::FAILURE
         }
     }
@@ -167,7 +168,7 @@ fn run_relay_run(listen: SocketAddr, max_conns: usize) -> ExitCode {
 fn run_relay_pair(route: &str) -> ExitCode {
     // Reject — never normalize — before any file is touched.
     if let Err(err) = phux_relay::validate_route_name(route) {
-        eprintln!("phux relay pair: {err}");
+        error!("relay pair: {err}");
         return ExitCode::FAILURE;
     }
 
@@ -178,14 +179,14 @@ fn run_relay_pair(route: &str) -> ExitCode {
     let cert = phux_relay::default_relay_cert_path();
     let key = phux_relay::default_relay_key_path();
     if let Err(err) = phux_relay::ensure_self_signed(&cert, &key) {
-        eprintln!("phux relay pair: warning: could not provision certificate: {err}");
+        warn!("relay pair: could not provision certificate: {err}");
     }
 
     let tokens = phux_relay::default_relay_tokens_path();
     let token = match phux_relay::mint_route_token(&tokens, route) {
         Ok(token) => token,
         Err(err) => {
-            eprintln!("phux relay pair: failed to mint route token: {err}");
+            error!("relay pair: failed to mint route token: {err}");
             return ExitCode::FAILURE;
         }
     };
@@ -201,7 +202,7 @@ fn run_relay_pair(route: &str) -> ExitCode {
             outln!();
         }
         Err(err) => {
-            eprintln!("phux relay pair: warning: could not read certificate fingerprint: {err}");
+            warn!("relay pair: could not read certificate fingerprint: {err}");
         }
     }
 

@@ -101,7 +101,7 @@ fn check_unrunnable(json: bool, message: &str) -> ExitCode {
             2,
         );
     }
-    eprintln!("phux: {message}");
+    error!("{message}");
     ExitCode::from(2)
 }
 
@@ -201,7 +201,7 @@ fn run_config_show(default: bool, layers: bool, json: bool) -> ExitCode {
         Ok(s) => s,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(err) => {
-            eprintln!("phux: could not read {}: {err}", path.display());
+            error!("could not read {}: {err}", path.display());
             return ExitCode::FAILURE;
         }
     };
@@ -209,7 +209,7 @@ fn run_config_show(default: bool, layers: bool, json: bool) -> ExitCode {
         let provenance = match phux_config::merged_config_with_provenance(&user_input, &path) {
             Ok((_, provenance)) => provenance,
             Err(err) => {
-                eprintln!("phux: {err}");
+                error!("{err}");
                 return ExitCode::FAILURE;
             }
         };
@@ -221,7 +221,7 @@ fn run_config_show(default: bool, layers: bool, json: bool) -> ExitCode {
     let merged = match phux_config::merged_config_table(&user_input, &path) {
         Ok(table) => table,
         Err(err) => {
-            eprintln!("phux: {err}");
+            error!("{err}");
             return ExitCode::FAILURE;
         }
     };
@@ -231,7 +231,7 @@ fn run_config_show(default: bool, layers: bool, json: bool) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(err) => {
-            eprintln!("phux: could not render config: {err}");
+            error!("could not render config: {err}");
             ExitCode::FAILURE
         }
     }
@@ -304,14 +304,14 @@ fn run_config_init(force: bool, distro: Option<&str>) -> ExitCode {
             let layer = match phux_config::distro::resolve_distro(spec, checkout) {
                 Ok(layer) => layer,
                 Err(err) => {
-                    eprintln!("phux: {err}");
+                    error!("{err}");
                     return ExitCode::FAILURE;
                 }
             };
             let contents = phux_config::scaffold::distro_reference_config(&layer);
             if let Err(err) = phux_config::parse_with_defaults(&contents, &path) {
-                eprintln!(
-                    "phux: distro layer {} does not produce a valid config: {err}",
+                error!(
+                    "distro layer {} does not produce a valid config: {err}",
                     layer.display()
                 );
                 return ExitCode::FAILURE;
@@ -325,14 +325,14 @@ fn run_config_init(force: bool, distro: Option<&str>) -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(phux_config::scaffold::ScaffoldOutcome::Skipped(p)) => {
-            eprintln!(
-                "phux: {} already exists; refusing to overwrite (use --force)",
+            error!(
+                "{} already exists; refusing to overwrite (use --force)",
                 p.display()
             );
             ExitCode::FAILURE
         }
         Err(err) => {
-            eprintln!("phux: could not write config: {err}");
+            error!("could not write config: {err}");
             ExitCode::FAILURE
         }
     }
@@ -353,8 +353,8 @@ fn run_config_reload(socket: Option<PathBuf>) -> ExitCode {
     // 1. Validate locally with the build the clients run on reload.
     let config_path = config_loader::config_path();
     if let Some(err) = reload_refusal(&config_path) {
-        eprintln!("phux: config invalid, not signalling reload: {err}");
-        eprintln!("  run `phux config check` to list every problem");
+        error!("config invalid, not signalling reload: {err}");
+        hint!("run `phux config check` to list every problem");
         return ExitCode::FAILURE;
     }
 
@@ -373,7 +373,7 @@ fn run_config_reload(socket: Option<PathBuf>) -> ExitCode {
             super::report_no_server(&err, &socket_path, "config reload")
         }
         Err(ReloadRingError::Unconfirmed(refusal)) => {
-            eprintln!("phux: config reload could not be confirmed: {refusal}");
+            error!("config reload could not be confirmed: {refusal}");
             ExitCode::FAILURE
         }
     }
@@ -465,7 +465,7 @@ fn run_config_plugins(json: bool) -> ExitCode {
     let loaded = match load_configured_plugins() {
         Ok(loaded) => loaded,
         Err(err) => {
-            eprintln!("phux: {err}");
+            error!("{err}");
             return ExitCode::FAILURE;
         }
     };
@@ -488,7 +488,7 @@ fn run_config_agents(json: bool, socket: Option<PathBuf>) -> ExitCode {
     let loaded = match load_configured_plugins() {
         Ok(loaded) => loaded,
         Err(err) => {
-            eprintln!("phux: {err}");
+            error!("{err}");
             return ExitCode::FAILURE;
         }
     };
@@ -572,7 +572,7 @@ fn run_config_action(
     match rt.block_on(phux_plugin::run_configured_action_logged(&path, &request)) {
         Ok(output) => print_action_output(&output, json),
         Err(err) => {
-            eprintln!("phux: {err}");
+            error!("{err}");
             ExitCode::FAILURE
         }
     }
@@ -586,12 +586,13 @@ fn print_action_output(output: &phux_plugin::PluginActionOutput, json: bool) -> 
                 action_exit_code(output)
             }
             Err(err) => {
-                eprintln!("phux: could not render plugin action JSON: {err}");
+                error!("could not render plugin action JSON: {err}");
                 ExitCode::FAILURE
             }
         };
     }
     out!("{}", output.stdout);
+    // Plugin stderr is pass-through; do not rewrite another program's output.
     eprint!("{}", output.stderr);
     action_exit_code(output)
 }

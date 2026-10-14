@@ -78,7 +78,7 @@ pub(crate) fn run_new(
     // Clap enforces `--json` => `-s NAME`; this guard only keeps a future caller
     // from panicking.
     let Some(name) = requested else {
-        eprintln!("phux: `phux new --json` requires an explicit -s NAME");
+        error!("`phux new --json` requires an explicit -s NAME");
         return ExitCode::from(2);
     };
     if empty {
@@ -195,8 +195,8 @@ fn requested_session_name(
 ) -> Result<Option<String>, ExitCode> {
     match (name, session) {
         (Some(positional), Some(flag)) if positional != flag => {
-            eprintln!(
-                "phux: conflicting session names: '{positional}' (positional) vs '{flag}' (-s) — pass just one"
+            error!(
+                "conflicting session names: '{positional}' (positional) vs '{flag}' (-s) — pass just one"
             );
             Err(ExitCode::FAILURE)
         }
@@ -291,9 +291,7 @@ fn run_new_attached(
         if let Some(path) = target.socket_path()
             && let Err(err) = ensure_server(path, &name, None, false)
         {
-            eprintln!(
-                "phux: auto-spawn skipped ({err}). Start a server manually with `phux server`."
-            );
+            warn!("auto-spawn skipped ({err}). Start a server manually with `phux server`.");
         }
         new_session_target(name.clone(), command, seed_cwd(cwd, target.is_remote()))
     };
@@ -352,9 +350,7 @@ fn choose_session_name(requested: Option<String>, existing: &[String]) -> Result
         ));
     };
     if existing.contains(&requested) {
-        eprintln!(
-            "phux: session '{requested}' already exists (use `phux attach {requested}` to join it)"
-        );
+        error!("session '{requested}' already exists (use `phux attach {requested}` to join it)");
         return Err(ExitCode::FAILURE);
     }
     Ok(requested)
@@ -673,7 +669,7 @@ fn refuse_unkeyed_server(conn: &Connection, json: bool) -> Result<(), ExitCode> 
 /// collected, in encounter order.
 fn warn_partial_results(notices: &[String]) {
     for message in notices {
-        eprintln!("phux: warning: partial results — {message}");
+        warn!("partial results — {message}");
     }
 }
 

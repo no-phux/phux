@@ -11,8 +11,9 @@
 //! auto-start the server also carries the additive `error.auto_start_error`:
 //! why that start failed, the server's own bind or config error included.
 //!
-//! Without `--json` the same failure prints prose (the no-server family keeps
-//! its exact historical diagnostic). The closed `code` vocabulary lives in
+//! Without `--json` the same failure prints the shared human error label and
+//! indented hints; message values and machine documents remain unchanged.
+//! The closed `code` vocabulary lives in
 //! [`codes`]; consumers read `docs/consumers/agents.md` §5.3.
 
 use std::path::{Path, PathBuf};
@@ -27,6 +28,8 @@ pub(crate) const ERROR_SCHEMA_VERSION: u8 = 1;
 /// The closed vocabulary of stable error codes. Consumers branch on these,
 /// so renaming one is a breaking change; add new codes here.
 pub(crate) mod codes {
+    /// The command line was refused before a command could run. Exit 2.
+    pub(crate) const USAGE_ERROR: &str = "usage_error";
     /// No server is listening at the socket (connection refused / not found).
     pub(crate) const NO_SERVER: &str = "no_server";
     /// The server was there and closed the connection mid-command.
@@ -393,24 +396,27 @@ pub(crate) fn error_document(err: &CliError, exit_code: u8) -> serde_json::Value
 pub(crate) fn emit(json: bool, err: &CliError, exit_code: u8) -> ExitCode {
     if json {
         match serde_json::to_string(&error_document(err, exit_code)) {
+            // One unstyled JSON document is the stderr protocol.
             Ok(line) => eprintln!("{line}"),
             // A Value of strings and numbers cannot fail to serialize; the
             // fallback keeps the failure visible rather than silent.
-            Err(_) => eprintln!("phux: {}", err.message),
+            Err(_) => eprintln!(
+                "{{\"schema_version\":1,\"error\":{{\"code\":\"json_serialize\",\"message\":\"could not render JSON error\"}},\"remedy\":\"run phux doctor and report this bug\",\"exit_code\":{exit_code}}}"
+            ),
         }
     } else {
-        eprintln!("phux: {}", err.message);
+        error!("{}", err.message);
         if !err.remedy.is_empty() {
             for line in err.remedy.lines() {
-                eprintln!("  {line}");
+                hint!("{line}");
             }
         }
     }
     ExitCode::from(exit_code)
 }
 
-/// Json-aware [`crate::commands::report_no_server`]: prose stays
-/// byte-identical; under `json`, `no_server` for a connect failure or
+/// Json-aware [`crate::commands::report_no_server`]: shared human diagnostics
+/// otherwise; under `json`, `no_server` for a connect failure or
 /// `server_disconnected` / `transport` otherwise, always exit 1.
 pub(crate) fn report_no_server(
     json: bool,

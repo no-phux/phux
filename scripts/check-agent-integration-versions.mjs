@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
+import { status } from "./lib/output.mjs";
 import { readFile, readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -84,7 +85,7 @@ for (const relative of openCodeSource.filter((path) => path.endsWith(".ts"))) {
   );
 }
 
-process.stdout.write("agent integration versions and neutral runtime ownership are coherent\n");
+status("ok", "agent integration versions and neutral runtime ownership are coherent");
 
 async function json(path) {
   return JSON.parse(await readFile(join(root, path), "utf8"));

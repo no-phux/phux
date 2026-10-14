@@ -189,8 +189,8 @@ fn watch_exit(
     match result {
         Ok(WatchOutcome::Stopped) => ExitCode::SUCCESS,
         Ok(WatchOutcome::TimedOut) => {
-            eprintln!(
-                "phux: watch timed out after {}s{}",
+            error!(
+                "watch timed out after {}s{}",
                 deadline.map_or(0, |d| d.as_secs()),
                 describe_gate(until),
             );
@@ -214,7 +214,7 @@ fn watch_exit(
             json_err::report_no_server(json, &err, socket_path, "watch")
         }
         Err(err) => {
-            eprintln!("phux: watch failed: {err}");
+            error!("watch failed: {err}");
             ExitCode::FAILURE
         }
     }
@@ -226,6 +226,7 @@ fn report_cursor(resume: &ResumeState, json: bool) {
     let cursor = resume.cursor();
     if json {
         if cursor.is_some() || resume.cursor_void() {
+            // Resume-cursor JSON is a machine stderr contract, not a diagnostic.
             eprintln!(
                 "{}",
                 serde_json::json!({
@@ -237,13 +238,13 @@ fn report_cursor(resume: &ResumeState, json: bool) {
         return;
     }
     if resume.cursor_void() {
-        eprintln!(
-            "phux: watch: the --after cursor belongs to another server run; \
+        warn!(
+            "watch: the --after cursor belongs to another server run; \
              streamed live events only"
         );
     }
     if let Some(cursor) = cursor {
-        eprintln!("phux: watch cursor {cursor} (resume with --after {cursor})");
+        info!("watch cursor {cursor} (resume with --after {cursor})");
     }
 }
 
@@ -289,7 +290,7 @@ pub(crate) fn print_agent_state(update: &AgentStateUpdate, json: bool) {
     if json {
         match agent_state_json(update, terminal.as_deref()) {
             Ok(s) => outln!("{s}"),
-            Err(err) => eprintln!("phux: failed to serialize event: {err}"),
+            Err(err) => error!("failed to serialize event: {err}"),
         }
     } else {
         let scope = terminal.as_deref().unwrap_or("server");
@@ -390,7 +391,7 @@ pub(crate) fn print_watch_event(ev: &WatchEvent, json: bool) {
     if json {
         match watch_event_json(ev) {
             Ok(s) => outln!("{s}"),
-            Err(err) => eprintln!("phux: failed to serialize event: {err}"),
+            Err(err) => error!("failed to serialize event: {err}"),
         }
         return;
     }
