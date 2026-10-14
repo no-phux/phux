@@ -23,28 +23,28 @@ export const SITE = {
 // Shared by the visible docs landing and its searchable Markdown representation.
 export const OVERVIEW = {
   title: "Get started",
-  summary: "A quick map of servers, sessions, resources, and views. Then start a terminal and come back to it.",
+  summary: "Start a shell, detach, and return to the same live terminal. Then let an agent read or control it.",
   pitch: {
-    headline: "Your work stays on the server",
+    headline: "Leave the view. Keep the shell.",
     text:
-      "phux runs a background server that owns your work. A terminal keeps running when you detach; the TUI, desktop, browser, and agents can attach to it again. Start with the map below, then ",
-    linkLabel: "run the quickstart",
-    linkHref: "/quickstart",
+      "phux runs your terminal on a background server. Detaching closes your view; the shell keeps running. Come back from the TUI or desktop, or let an agent inspect the same terminal.",
   },
+  firstRun: [
+    { label: "Start", action: "phux", detail: "At the shell prompt, run pwd so you have output to return to." },
+    { label: "Detach", action: "Ctrl-A, then d", detail: "Press Ctrl and A together, release them, then press d. The shell keeps running." },
+    { label: "Return", action: "phux", detail: "You reattach to the live session and see the same shell output." },
+  ],
   terms: [
-    { name: "Server", text: "The background process that owns your work." },
-    { name: "Session", text: "A named group of resources on one server. Attach to it to pick up where you left off." },
-    { name: "Resource", text: "A terminal running a shell, editor, or agent; an agent conversation can also be a resource. Each belongs to one session." },
-    { name: "View", text: "How a client shows a resource: a pane in the TUI or a tile in an app." },
-    { name: "Arrangement", text: "A session's tabs and splits. It places views of resources; it does not own the resources." },
+    { name: "Server", text: "Owns the running resources." },
+    { name: "Session", text: "Groups resources on one server; Inbox is the session for unorganized work." },
+    { name: "Resource", text: "A unit of work, such as a terminal running a shell or agent. Each belongs to one session." },
+    { name: "View", text: "A client's presentation of a resource, such as a TUI pane or desktop tile." },
+    { name: "Arrangement", text: "Places resources into tabs and splits. It does not own them." },
   ],
   paths: [
-    { href: "/quickstart", title: "Quickstart", text: "Start, split, and detach." },
     { href: "/consumers/getting-started", title: "Coding agents", text: "Choose an integration and verify it." },
     { href: "/remote-access", title: "Remote access", text: "Connect hosts over SSH or QUIC." },
     { href: "/concepts/coming-from", title: "From tmux", text: "Find familiar keys and concepts." },
-    { href: "/concepts/when-to-use", title: "Compare tools", text: `${SITE.name}, tmux, Herdr, and cmux.` },
-    { href: "/troubleshooting", title: "Troubleshooting", text: "Diagnose installation, connection, and agent issues." },
   ],
 } as const;
 

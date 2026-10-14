@@ -43,6 +43,10 @@ async function verifyPublishedContent() {
   for (const { name, text } of OVERVIEW.terms) {
     assert.ok(overview.includes(`**${name}:** ${text}`), `overview Markdown explains ${name}`);
   }
+  for (const { label, action, detail } of OVERVIEW.firstRun) {
+    assert.ok(overview.includes(`**${label}:** \`${action}\` — ${detail}`), `overview Markdown shows ${label}`);
+  }
+  assert.ok(overview.includes("A server crash or reboot ends live processes"));
   assert.ok(overview.includes("**Close** a view or detach"));
   assert.ok(overview.includes("[All documentation](/docs)"));
   assert.ok(overview.includes("cannot see or control your terminals"));
@@ -115,6 +119,9 @@ try {
   for (const { name } of OVERVIEW.terms) {
     assert.ok(await page.getByRole("heading", { name, exact: true }).isVisible(), `overview explains ${name}`);
   }
+  assert.equal(await page.locator(".overview-first-run-steps li").count(), 3);
+  assert.ok(await page.getByRole("heading", { name: "Try it in a terminal" }).isVisible());
+  assert.ok(await page.getByText("A server crash or reboot ends live processes", { exact: false }).isVisible());
   assert.ok(await page.getByText("Close a view or detach", { exact: false }).isVisible());
   await page.getByRole("button", { name: "Copy agent prompt" }).click();
   await page.locator(".agent-prompt [role=status]").filter({ hasText: "Agent prompt copied." }).waitFor();
@@ -153,6 +160,7 @@ try {
   const staticContext = await browser.newContext({ javaScriptEnabled: false });
   const staticPage = await staticContext.newPage();
   await staticPage.goto(`${base}/overview`);
+  assert.ok(await staticPage.getByRole("heading", { name: "Try it in a terminal" }).isVisible());
   assert.ok(await staticPage.locator(".agent-prompt pre").isVisible());
   assert.equal(await staticPage.getByRole("link", { name: "Open Markdown" }).getAttribute("href"), "/overview.md");
   const markdown = await staticContext.request.get(`${base}/overview.md`);

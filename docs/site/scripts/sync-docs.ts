@@ -578,19 +578,31 @@ ${summary}
 
 ## ${pitch.headline}
 
-${pitch.text}[${pitch.linkLabel}](${pitch.linkHref}).
+${pitch.text}
 
-## The model at a glance
+[Install phux](/quickstart/install) · [Try in your browser](${SITE.url}/embed) · [Use with an agent](#hand-this-to-your-agent)
 
-The server owns sessions. A session groups resources, including terminals and agent conversations. The Inbox is a session for work you have not organized yet. Clients read or control resources; visual clients show them as views.
+## Try it in a terminal
 
-### Five words to know
+After installing, use an idle terminal:
+
+${OVERVIEW.firstRun.map(({ label, action, detail }, index) => `${index + 1}. **${label}:** \`${action}\` — ${detail}`).join("\n")}
+
+**The payoff:** closing a client leaves its terminal running. A server crash or reboot ends live processes; [see what survives](/quickstart#what-survives).
+
+## What you just used
+
+The server owns a session with a terminal resource. The TUI pane and desktop tile can show that same resource; an agent can read it or send input. Inbox is another session for unorganized work. The session owns the resource. An arrangement places it in tabs and splits; a view shows it. Leaving a view does not end the resource.
+
+## The five pieces
 
 ${OVERVIEW.terms.map(({ name, text }) => `- **${name}:** ${text}`).join("\n")}
 
-**Close** a view or detach to leave work running. **Kill** a resource to end it. A session can keep its resources even when no client is attached. [Read the full model](/concepts).
+**Close** a view or detach to leave work running. **Kill** a resource to end it. [Read the complete model](/concepts).
 
-[Quickstart](/quickstart) · [How phux works](/concepts)
+## Guides
+
+${OVERVIEW.paths.map(({ href, title, text }) => `- [${title}](${href}) — ${text}`).join("\n")}
 
 ## Hand this to your agent
 
@@ -618,13 +630,9 @@ ${AGENT_START.mcp}
 
 [Other MCP clients](/consumers/getting-started#let-your-agent-read-the-docs) · [Agent guide](/llms.txt) · [Skill index](https://phux.sh/.well-known/agent-skills/index.json) · [Docs MCP details](https://phux.sh/.well-known/mcp/server-card.json)
 
-## Guides
-
-${OVERVIEW.paths.map(({ href, title, text }) => `- [${title}](${href}) — ${text}`).join("\n")}
-
 ## Reference
 
-[Core concepts](/concepts) · [CLI and configuration](/reference) · [Protocol](/wire) · [Architecture](/architecture) · [All documentation](/docs)
+[Core concepts](/concepts) · [CLI and configuration](/reference) · [Protocol](/wire) · [Architecture](/architecture) · [Compare tools](/concepts/when-to-use) · [Troubleshooting](/troubleshooting) · [All documentation](/docs)
 
 [Performance](/performance) — measurements, boundaries, and raw evidence.
 `;

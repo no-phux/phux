@@ -873,11 +873,17 @@ html:has(.docs-navigation-dialog[open]) {
   font-size: 1.0625rem;
   line-height: 1.65;
 }
-.overview-pitch a {
+.overview-pitch .overview-eyebrow {
+  margin-bottom: 10px;
   color: var(--color-accent);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
-.overview-pitch a:hover {
-  text-decoration: underline;
+.docs-overview .overview-pitch h2 {
+  margin-bottom: 10px;
+  font-size: clamp(1.75rem, 4vw, 2.25rem);
 }
 .overview-actions {
   display: flex;
@@ -904,6 +910,71 @@ html:has(.docs-navigation-dialog[open]) {
 .overview-actions a:hover {
   text-decoration: underline;
 }
+.overview-first-run {
+  padding: clamp(18px, 3vw, 28px);
+  border: 1px solid var(--color-accent-soft);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+.overview-first-run-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 20px;
+}
+.overview-first-run-heading h2 { margin-bottom: 16px; }
+.overview-first-run-heading a,
+.overview-first-run-result a {
+  color: var(--color-accent);
+  font-size: 0.875rem;
+  text-decoration: underline;
+}
+.overview-first-run-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  counter-reset: overview-step;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.overview-first-run-steps li {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+}
+.overview-step-label {
+  color: var(--color-fg);
+  font-weight: 600;
+}
+.overview-step-label::before {
+  counter-increment: overview-step;
+  content: counter(overview-step) ". ";
+  color: var(--color-accent);
+}
+.overview-first-run-steps code {
+  max-width: 100%;
+  color: var(--color-accent);
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+.overview-first-run-steps li > span:last-child,
+.overview-first-run-result {
+  color: var(--color-muted);
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+.overview-first-run-result {
+  margin: 16px 0 0;
+}
+.overview-first-run-result strong { color: var(--color-fg); }
 .overview-model {
   margin: 0;
   padding: clamp(16px, 3vw, 28px);
@@ -915,10 +986,11 @@ html:has(.docs-navigation-dialog[open]) {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
-  margin: 12px 0;
+  margin-top: 12px;
 }
 .overview-model-server,
-.overview-model-sessions > div {
+.overview-model-session,
+.overview-model-inbox {
   display: flex;
   flex-direction: column;
   gap: 5px;
@@ -932,6 +1004,16 @@ html:has(.docs-navigation-dialog[open]) {
 .overview-model-sessions strong {
   font-weight: 600;
 }
+.overview-model-resource {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+  padding: 12px;
+  border-left: 3px solid var(--color-accent);
+  background: var(--color-surface);
+}
+.overview-model-resource strong { color: var(--color-accent); }
 .overview-model-server span,
 .overview-model-sessions span,
 .overview-model-clients span,
@@ -941,21 +1023,24 @@ html:has(.docs-navigation-dialog[open]) {
   line-height: 1.6;
 }
 .overview-model-clients {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 16px;
-  padding: 12px 16px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+.overview-model-clients span {
+  padding: 10px 12px;
   border: 1px solid var(--color-accent-soft);
   border-radius: var(--radius-md);
   background: var(--color-bg);
-  color: var(--color-accent);
 }
+.overview-model-clients strong { color: var(--color-accent); }
 .overview-model figcaption {
   margin-top: 16px;
 }
 .overview-term-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 16px 24px;
 }
 .overview-term-grid h3 {
@@ -984,7 +1069,7 @@ html:has(.docs-navigation-dialog[open]) {
 }
 .overview-paths {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
 }
 .overview-paths a {
@@ -1123,7 +1208,9 @@ html:has(.docs-navigation-dialog[open]) {
   }
   .overview-paths,
   .agent-routes,
-  .overview-reference {
+  .overview-reference,
+  .overview-first-run-steps,
+  .overview-model-clients {
     grid-template-columns: 1fr;
   }
 }
@@ -1131,7 +1218,9 @@ html:has(.docs-navigation-dialog[open]) {
   .overview-paths,
   .agent-routes,
   .overview-reference,
-  .overview-term-grid {
+  .overview-term-grid,
+  .overview-first-run-steps,
+  .overview-model-clients {
     grid-template-columns: 1fr;
   }
   .overview-model-sessions {
