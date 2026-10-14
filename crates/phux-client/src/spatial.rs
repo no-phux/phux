@@ -389,7 +389,7 @@ fn layout_error(err: LayoutOpsError) -> SpatialError {
         LayoutOpsError::DuplicatePane(_) => SpatialRefusal::new(
             codes::PANE_ALREADY_IN_LAYOUT,
             "the pane being inserted is already present in the persisted layout",
-            "use `phux move-pane` to relocate a pane the layout already holds",
+            "use `phux mv` to relocate a pane the layout already holds",
             2,
         ),
         LayoutOpsError::SamePane => same_pane_error(),

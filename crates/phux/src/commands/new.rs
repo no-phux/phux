@@ -218,7 +218,8 @@ fn report_invalid_session_name(
         &CliError::new(
             codes::INVALID_SESSION_NAME,
             format!("invalid session name {name:?}: {invalid}"),
-            "pick a non-empty name without a leading `@`, `#`, or `%`, and without `:` or `/@`",
+            "pick a non-empty name of at most 256 bytes, without control characters, a leading \
+             `@`, `#`, or `%`, `:`, or `/@`",
         ),
         2,
     )
@@ -756,14 +757,22 @@ fn is_taken(existing: &[String], name: &str) -> bool {
     existing.iter().any(|e| e == name)
 }
 
-/// `base` if free, else the first free `base-2`, `base-3`, ...
+/// `base` if free, else the first free `base-2`, `base-3`, ... A suffixed
+/// name shortens `base` so it stays within the session-name byte limit.
 pub(crate) fn unique_session_name(existing: &[String], base: &str) -> String {
     if !existing.iter().any(|e| e == base) {
         return base.to_owned();
     }
     let mut n: u32 = 2;
     loop {
-        let candidate = format!("{base}-{n}");
+        let suffix = format!("-{n}");
+        let mut end = base
+            .len()
+            .min(phux_client::rename::MAX_SESSION_NAME_BYTES - suffix.len());
+        while !base.is_char_boundary(end) {
+            end -= 1;
+        }
+        let candidate = format!("{}{suffix}", &base[..end]);
         if !existing.iter().any(|e| e == &candidate) {
             return candidate;
         }
@@ -857,6 +866,18 @@ mod tests {
             &mut NameRng::seeded(4),
         );
         assert_eq!(name, sequence[1]);
+    }
+
+    #[test]
+    fn a_suffixed_name_stays_within_the_byte_limit() {
+        let base = "é".repeat(128);
+        let name = unique_session_name(std::slice::from_ref(&base), &base);
+        assert!(
+            name.len() <= phux_client::rename::MAX_SESSION_NAME_BYTES,
+            "{}",
+            name.len()
+        );
+        assert!(name.ends_with("-2"));
     }
 
     /// Every attempt taken ⇒ the first pick gets the numeric suffix, so
