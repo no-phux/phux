@@ -11,7 +11,7 @@ mod write;
 
 use std::path::Path;
 
-pub(crate) use write::replace_atomically;
+pub use write::replace_atomically;
 pub use write::{Edit, EditOutcome, apply_edit, write_edit};
 
 use crate::{
