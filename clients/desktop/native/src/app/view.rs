@@ -541,6 +541,12 @@ fn sidebar_list(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl I
         .map(|since| since.as_millis() as u64)
         .unwrap_or(0);
     let sessions = session_groups(desk, colors, cx);
+    let recent_paths = &desk.recent_projects;
+    let recent: Vec<_> = recent_paths
+        .iter()
+        .enumerate()
+        .map(|(index, path)| recent_folder_row(path.clone(), index, colors, cx))
+        .collect();
     let session_count = link
         .and_then(|link| link.connection.topology.as_ref())
         .map(|topology| topology.sessions.len())
@@ -561,6 +567,11 @@ fn sidebar_list(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl I
                     agent_row(desk, pane, agents.get(&pane.terminal_id), now, colors, cx)
                         .into_any_element()
                 }))
+                .child(div().h(px(8.)))
+        })
+        .when(!recent.is_empty(), |list| {
+            list.child(section_label("Recent folders", colors))
+                .children(recent)
                 .child(div().h(px(8.)))
         })
         .when(session_count == 0, |list| {
@@ -791,6 +802,46 @@ fn organization_bar(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> An
                     })),
             )
         })
+        .into_any_element()
+}
+
+fn recent_folder_row(
+    path: PathBuf,
+    index: usize,
+    colors: &Palette,
+    cx: &mut Context<Desk>,
+) -> AnyElement {
+    let label = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+    let full_path = path.display().to_string();
+    let forgotten = path.clone();
+    div()
+        .h(px(28.))
+        .flex()
+        .items_center()
+        .child(
+            Button::new(SharedString::from(format!("recent-folder-{index}")))
+                .label(label)
+                .tooltip(full_path)
+                .ghost()
+                .small()
+                .on_click(cx.listener(move |desk, _, window, cx| {
+                    desk.open_project_path(path.clone(), window, cx);
+                })),
+        )
+        .child(
+            Button::new(SharedString::from(format!("forget-folder-{index}")))
+                .icon(IconName::Close)
+                .ghost()
+                .xsmall()
+                .tooltip("Forget folder")
+                .on_click(cx.listener(move |desk, _, _, cx| {
+                    desk.forget_recent_project(&forgotten, cx);
+                })),
+        )
+        .hover(|style| style.bg(from_hex(&colors.hover)))
         .into_any_element()
 }
 

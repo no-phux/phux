@@ -18,7 +18,7 @@ use gpui_kit::{self, AnyWindowHandle};
 
 use crate::hotkeys::GlobalHotkeys;
 use crate::settings::{self, DisplayPrefs, GhosttyConfig};
-use crate::workspace::persist::{self, FileLayoutStore};
+use crate::workspace::persist::{self, FileLayoutStore, RecentProjects};
 use phux_protocol::ResourceId;
 use phux_protocol::ids::SessionKey;
 
@@ -47,6 +47,7 @@ pub struct Desktop {
     quick_layout: PathBuf,
     legacy_layout: Option<PathBuf>,
     legacy_quick: Option<PathBuf>,
+    recent_projects: Option<RecentProjects>,
     windows: Vec<Opened>,
     quick: Option<Opened>,
     /// The keymap last installed as GPUI bindings, so an unchanged keymap is not rebound.
@@ -84,6 +85,7 @@ impl Desktop {
             quick_layout: PathBuf::new(),
             legacy_layout: None,
             legacy_quick: None,
+            recent_projects: None,
             windows: Vec::new(),
             quick: None,
             keymap: None,
@@ -122,6 +124,7 @@ impl Desktop {
         self.home_session = options.session.clone();
         self.home_key = None;
         let socket = self.socket.display().to_string();
+        self.recent_projects = Some(RecentProjects::load(&socket));
         let paths = crate::workspace::layout_paths(&socket, &options.session);
         // An explicit layout file is used as given: no legacy import beside it.
         let explicit = !options.layout_path.as_os_str().is_empty();
@@ -240,6 +243,58 @@ impl Desktop {
             remote,
         };
         let _ = self.open_window(request, true, false, cx);
+    }
+
+    pub(crate) fn recent_projects(&self) -> &[PathBuf] {
+        self.recent_projects
+            .as_ref()
+            .map_or(&[], RecentProjects::entries)
+    }
+
+    pub(crate) fn record_recent_project(
+        &mut self,
+        path: PathBuf,
+        cx: &mut Context<Self>,
+    ) -> std::io::Result<()> {
+        self.recent_projects
+            .as_mut()
+            .expect("desktop launched")
+            .record(path)?;
+        self.publish_recent_projects(cx);
+        Ok(())
+    }
+
+    pub(crate) fn forget_recent_project(
+        &mut self,
+        path: &std::path::Path,
+        cx: &mut Context<Self>,
+    ) -> std::io::Result<()> {
+        self.recent_projects
+            .as_mut()
+            .expect("desktop launched")
+            .forget(path)?;
+        self.publish_recent_projects(cx);
+        Ok(())
+    }
+
+    /// A window may render while this entity is leased by `open_window`;
+    /// publish the small snapshot after the current GPUI update completes.
+    fn publish_recent_projects(&self, cx: &mut Context<Self>) {
+        let paths = self.recent_projects().to_vec();
+        let windows: Vec<_> = self
+            .windows
+            .iter()
+            .chain(self.quick.as_ref())
+            .map(|opened| opened.desk.downgrade())
+            .collect();
+        cx.defer(move |cx| {
+            for window in windows {
+                let _ = window.update(cx, |desk, cx| {
+                    desk.recent_projects = paths.clone();
+                    cx.notify();
+                });
+            }
+        });
     }
 
     /// A folder is a durable session, not a new terminal in whichever
@@ -566,6 +621,7 @@ impl Desktop {
         let phux = self.phux.clone();
         let socket = self.socket.clone();
         let session = request.session.clone();
+        let recent_projects = self.recent_projects().to_vec();
         let role = request.role;
         let remote = request.remote.clone();
         let bounds = if quick {
@@ -596,7 +652,18 @@ impl Desktop {
             },
             cx,
             move |window, cx| {
-                cx.new(|cx| Desk::open(desktop, updates, phux, socket, request, window, cx))
+                cx.new(|cx| {
+                    Desk::open(
+                        desktop,
+                        updates,
+                        phux,
+                        socket,
+                        request,
+                        recent_projects,
+                        window,
+                        cx,
+                    )
+                })
             },
         )?;
         let handle = any

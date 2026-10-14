@@ -14,6 +14,7 @@ const MISSING_CLI: &str =
 pub struct OpenedProject {
     pub session: String,
     pub terminal: phux_protocol::ResourceId,
+    pub path: PathBuf,
 }
 
 pub fn open_project(phux: &Path, socket: &Path, path: &Path) -> Result<OpenedProject, String> {
@@ -40,9 +41,15 @@ pub fn open_project(phux: &Path, socket: &Path, path: &Path) -> Result<OpenedPro
         .and_then(serde_json::Value::as_u64)
         .and_then(|id| u32::try_from(id).ok())
         .ok_or_else(|| "Project open returned no local terminal.".to_owned())?;
+    let root = result
+        .get("path")
+        .and_then(serde_json::Value::as_str)
+        .filter(|path| Path::new(path).is_absolute())
+        .ok_or_else(|| "Project open returned no checkout path.".to_owned())?;
     Ok(OpenedProject {
         session: session.to_owned(),
         terminal: phux_protocol::ResourceId::local(terminal),
+        path: PathBuf::from(root),
     })
 }
 

@@ -148,6 +148,7 @@ pub struct Desk {
     pub find: Option<FindState>,
     pub picker: Option<paths::PickerState>,
     pub feed: Feed,
+    pub(crate) recent_projects: Vec<PathBuf>,
     pub link: Option<Link>,
     pub connect_error: Option<String>,
     pub layout_blocked: bool,
@@ -223,12 +224,17 @@ enum Drag {
 }
 
 impl Desk {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "window construction binds desktop handles, request, and its navigation snapshot"
+    )]
     pub(crate) fn open(
         desktop: Entity<Desktop>,
         updates: Entity<super::updates::Updater>,
         phux: PathBuf,
         socket: PathBuf,
         request: OpenRequest,
+        recent_projects: Vec<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -277,6 +283,7 @@ impl Desk {
             find: None,
             picker: None,
             feed: Feed::default(),
+            recent_projects,
             link: None,
             connect_error: None,
             layout_blocked: blocked,
@@ -1385,7 +1392,18 @@ impl Desk {
             // Validation, trust checks and recipe launches can block.
             let result = smol::unblock(move || host::open_project(&phux, &socket, &path)).await;
             let _ = desk.update(cx, |desk, cx| match result {
-                Ok(opened) => desk.open_project_window(opened.session, opened.terminal, cx),
+                Ok(opened) => {
+                    if let Err(error) = desk.desktop.update(cx, |desktop, cx| {
+                        desktop.record_recent_project(opened.path, cx)
+                    }) {
+                        desk.post(
+                            Kind::Error,
+                            "Could not save recent folder",
+                            Some(error.to_string()),
+                        );
+                    }
+                    desk.open_project_window(opened.session, opened.terminal, cx);
+                }
                 Err(error) => {
                     desk.post(Kind::Error, "Could not open folder", Some(error));
                     cx.notify();
@@ -1393,6 +1411,20 @@ impl Desk {
             });
         })
         .detach();
+    }
+
+    pub(crate) fn forget_recent_project(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
+        if let Err(error) = self
+            .desktop
+            .update(cx, |desktop, cx| desktop.forget_recent_project(path, cx))
+        {
+            self.post(
+                Kind::Error,
+                "Could not forget folder",
+                Some(error.to_string()),
+            );
+        }
+        cx.notify();
     }
 
     pub(crate) fn show_project_terminal(&mut self, terminal: ResourceId, cx: &mut Context<Self>) {

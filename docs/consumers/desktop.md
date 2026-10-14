@@ -104,9 +104,12 @@ sidebar groups Sessions by their recorded project label (shared across Git
 worktrees), with **Open** focusing an existing project window or restoring its
 per-session layout. A new terminal in that Session starts at its recorded
 directory; reopening after the last shell exits starts a shell there without
-rerunning the recipe. This is local-only: multi-folder or cross-host project
-references, offline remote folders, recent-project inventory, and cross-server
-Workspaces are not yet implemented.
+rerunning the recipe. **Recent folders** keeps the last eight successfully
+opened local checkout paths in socket-scoped desktop state across app restarts.
+Selecting one runs the same CLI trust and collision checks; **Forget folder**
+removes only its shortcut, not the Session, layout, or checkout. This is
+local-only: multi-folder or cross-host project references, offline remote
+folders, and cross-server Workspaces are not yet implemented.
 
 **Open Folder** reuses a matching host-qualified folder or creates a project
 for it. Worktree discovery groups checkouts without merging paths; a new
