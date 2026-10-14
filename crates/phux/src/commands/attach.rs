@@ -136,15 +136,9 @@ pub(crate) fn run_naked(socket: Option<PathBuf>, rec: Option<&RecordSpec>) -> Ex
         eprintln!("phux: auto-spawn skipped ({err}). Start a server manually with `phux server`.");
     }
 
-    let rt = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
+    let rt = match super::cli_runtime() {
         Ok(rt) => rt,
-        Err(err) => {
-            eprintln!("failed to build runtime: {err}");
-            return ExitCode::FAILURE;
-        }
+        Err(code) => return code,
     };
 
     let dial = Dial::uds(&socket_path);
@@ -1023,15 +1017,9 @@ pub(crate) fn run_attach_rec(
         eprintln!("phux: auto-spawn skipped ({err}). Start a server manually with `phux server`.");
     }
 
-    let rt = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
+    let rt = match super::cli_runtime() {
         Ok(rt) => rt,
-        Err(err) => {
-            eprintln!("failed to build runtime: {err}");
-            return ExitCode::FAILURE;
-        }
+        Err(code) => return code,
     };
 
     // A no-name attach uses server-resolved `Last` first, with one lookup-only
@@ -1227,15 +1215,9 @@ fn run_attach_quic_outcome(
         authority,
         identity,
     } = credentials;
-    let rt = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
+    let rt = match super::cli_runtime() {
         Ok(rt) => rt,
-        Err(err) => {
-            eprintln!("failed to build runtime: {err}");
-            return RemoteAttachOutcome::terminal(ExitCode::FAILURE);
-        }
+        Err(code) => return RemoteAttachOutcome::terminal(code),
     };
 
     let DialPlan { dial, loopback } =
@@ -1532,15 +1514,9 @@ fn run_attach_ws_outcome(
             }
         };
 
-    let rt = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
+    let rt = match super::cli_runtime() {
         Ok(rt) => rt,
-        Err(err) => {
-            eprintln!("failed to build runtime: {err}");
-            return RemoteAttachOutcome::terminal(ExitCode::FAILURE);
-        }
+        Err(code) => return RemoteAttachOutcome::terminal(code),
     };
 
     let predict_cfg = predictive_config_for(&dial);

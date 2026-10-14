@@ -29,8 +29,8 @@ use phux_client::agent_session_record::{AgentSessionRecord, fetch_record_index};
 
 use crate::commands::agent::{PreparedAgentSession, prepare};
 use crate::commands::new::create_session_via_metadata;
-use crate::commands::spawn::dispatch_spawn_async;
 use crate::commands::{ArchiveAction, WorkspaceAction, cli_runtime, partial, report_no_server};
+use phux_client::agent_session_record::spawn_with_agent_session_on;
 
 mod bridge;
 pub(crate) mod model;
@@ -339,7 +339,7 @@ pub(crate) fn run_import(archive_path: &Path, socket: Option<PathBuf>) -> ExitCo
         );
     }
     let any_failed = !summary.failed.is_empty();
-    let print_code = render_restore_summary(&summary);
+    let print_code = crate::output::json(&summary);
     if any_failed {
         ExitCode::FAILURE
     } else {
@@ -1218,7 +1218,7 @@ async fn spawn_owned_pane(
         },
     );
     let frame = phux_client::workspace_place::restored_spawn_frame(owner, command, cwd, env, host);
-    let spawned = match dispatch_spawn_async(socket_path, &frame, None).await {
+    let spawned = match spawn_with_agent_session_on(socket_path, &frame, None).await {
         Ok(SpawnResult::Ok(id)) => id,
         Ok(SpawnResult::Err(err)) => {
             return Err(format!(
@@ -1368,11 +1368,6 @@ async fn write_restored_layout(
     phux_client::layout_ops::write_layout_on(socket_path, session_id, &workspace, 1)
         .await
         .map_err(|err| format!("archive: could not write layout: {err}"))
-}
-
-/// Emit the restore summary document on stdout.
-fn render_restore_summary(summary: &RestoreSummary) -> ExitCode {
-    crate::output::json(summary)
 }
 
 /// [`prepare_archived_agent`]'s failure, split by whether it is a security

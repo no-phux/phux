@@ -117,7 +117,7 @@ pub(crate) fn run_signal(
         Err(code) => return code,
     };
     let wire_signal = TerminalSignal::from(signal);
-    if crate::commands::confirm::signal_is_dangerous(wire_signal)
+    if phux_client::signal::is_dangerous(wire_signal)
         && let Err(code) =
             crate::commands::confirm::confirmed(yes, &format!("signal {target} ({signal:?})"))
     {

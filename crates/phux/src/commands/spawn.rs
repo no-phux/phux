@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use phux_client::attach::AttachError;
 use phux_client::layout::SplitDir;
 use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::{GroupId, IdempotencyKey, ResourceId, SatelliteHost};
@@ -16,7 +15,7 @@ use crate::commands::{
     SpawnSplit, cli_runtime, json_err, parse_selector, request_command, resolve_targets,
 };
 use crate::exit_codes::EXIT_USAGE;
-use phux_client::agent_session_record::AgentSessionRecord;
+use phux_client::agent_session_record::{AgentSessionRecord, spawn_with_agent_session_on};
 
 /// What `phux spawn` asks the server to keep for it: the pane after its
 /// process exits (`--retain`, ADR-0124), and the answer to a retry
@@ -215,23 +214,12 @@ pub(crate) fn dispatch_spawn(
     json: bool,
 ) -> Result<SpawnResult, ExitCode> {
     let rt = cli_runtime()?;
-    rt.block_on(dispatch_spawn_async(socket_path, frame, agent_session))
-        .map_err(|err| json_err::report_no_server(json, &err, socket_path, verb))
-}
-
-/// Open a connection, send `frame`, and return the correlated outcome; the
-/// client helper prints its own degradation notices in order.
-pub(crate) async fn dispatch_spawn_async(
-    socket_path: &Path,
-    frame: &FrameKind,
-    agent_session: Option<&AgentSessionRecord>,
-) -> Result<SpawnResult, AttachError> {
-    phux_client::agent_session_record::spawn_with_agent_session_on(
+    rt.block_on(spawn_with_agent_session_on(
         socket_path,
         frame,
         agent_session,
-    )
-    .await
+    ))
+    .map_err(|err| json_err::report_no_server(json, &err, socket_path, verb))
 }
 
 /// Resolve an explicit local owner, spawn into its session, then insert the
@@ -294,7 +282,7 @@ pub(crate) fn dispatch_spawn_placed(
             ));
         };
         *owner_terminal = Some(owner.clone());
-        let spawned = dispatch_spawn_async(socket_path, &frame, agent_session)
+        let spawned = spawn_with_agent_session_on(socket_path, &frame, agent_session)
             .await
             .map_err(|err| json_err::report_no_server(json, &err, socket_path, verb))?;
         let SpawnResult::Ok(new_pane) = &spawned else {
