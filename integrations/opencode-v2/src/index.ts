@@ -39,6 +39,7 @@ export default Plugin.define({
   async setup(ctx) {
     const options = readOptions(ctx.options);
     const environment = process.env;
+    const reportLifecycle = environment.PHUX_AGENT_REPORTING !== "0" && options.serverLifecycle === true;
     const environmentTarget = readEnvironmentTarget(environment.PHUX_TARGET);
     const parent = parentPane(environment.PHUX_TERMINAL_ID);
     const cli = new PhuxCli(cliOptions(options, environment));
@@ -99,7 +100,7 @@ export default Plugin.define({
       if (emission !== null) event.system.push({ type: "text", text: emission.text });
     });
 
-    if (options.serverLifecycle === true) {
+    if (reportLifecycle) {
       await ctx.tool.hook("execute.before", async (event) => {
         await lifecycle.toolStart(event.sessionID, event.tool, event.id);
       });
@@ -117,7 +118,7 @@ export default Plugin.define({
           selectedTargets.delete(deleted);
           await terminals.release(deleted);
         }
-        if (options.serverLifecycle === true) await applyServerEvent(lifecycle, event);
+        if (reportLifecycle) await applyServerEvent(lifecycle, event);
       }
     })();
     void events.catch((error: unknown) => {
@@ -128,7 +129,7 @@ export default Plugin.define({
     return async () => {
       controller.abort();
       await events.catch(() => undefined);
-      if (options.serverLifecycle === true) await lifecycle.dispose();
+      if (reportLifecycle) await lifecycle.dispose();
       await terminals.releaseAll();
       selectedTargets.clear();
     };

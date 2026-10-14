@@ -76,14 +76,15 @@ exit 0
   return fake;
 }
 
-async function driven(env, runs) {
+async function driven(env, runs, hookScript = script) {
   const temp = await mkdtemp(join(tmpdir(), "phux-claude-hook-"));
   const log = join(temp, "argv.log");
   const fake = await fakePhux(temp);
   try {
+    await writeFile(log, "");
     const lines = [];
     for (const [action, payload, extra] of runs) {
-      const output = execFileSync("sh", [script, action], {
+      const output = execFileSync("sh", [hookScript, action], {
         cwd: root,
         env: { ...process.env, PHUX_AGENT_PHUX_BIN: fake, PHUX_TERMINAL_ID: "42", PHUX_TEST_LOG: log, ...env, ...extra },
         encoding: "utf8",
@@ -98,6 +99,27 @@ async function driven(env, runs) {
     await rm(temp, { recursive: true, force: true });
   }
 }
+
+test("SDK-owned Claude and Grok workers never publish through legacy hooks", async () => {
+  for (const provider of ["claude", "grok"]) {
+    const hookScript = fileURLToPath(new URL(`../../${provider}/scripts/phux-hook.sh`, import.meta.url));
+    const env = {
+      PHUX_AGENT_REPORTING: "0",
+      PHUX_AGENT_EMIT_RAW: "1",
+      FAKE_FEATURES: '["report_agent_state","resource_kinds"]',
+      FAKE_FIELDS: "sess-1 PreToolUse Bash permission_prompt 11 clear startup",
+      FAKE_TRANSCRIPT: '{"text":"private transcript"}',
+    };
+    const actions = [...new Set(Object.values(ARMS))];
+    const suppressed = await driven(env, actions.map(action => [action, '{"prompt":"private"}']), hookScript);
+    assert.deepEqual(suppressed, actions.map(() => [""]), `${provider} must make zero phux calls`);
+    for (const flag of ["", "1", "false"]) {
+      const [ordinary] = await driven({ ...env, PHUX_AGENT_REPORTING: flag }, [["start", "{}"]], hookScript);
+      assert.ok(ordinary.includes(`agent set @42 --name ${provider} --kind ${provider}`));
+      assert.ok(ordinary.some(line => line.startsWith(`agent session open @42 --provider ${provider}`)));
+    }
+  }
+});
 
 test("against a server without resource kinds the arms keep the identity, ask, and clear argv", async () => {
   const fields = "sess-1 PreToolUse Bash permission_prompt 11 clear startup";
