@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.59.1](https://github.com/no-phux/phux/compare/v0.59.0...v0.59.1) (2026-10-14)
+
+
+### Refactors
+
+* **hub:** rewrite satellite-routed commands in place ([#1267](https://github.com/no-phux/phux/issues/1267)) ([c1dd5f7](https://github.com/no-phux/phux/commit/c1dd5f7c375754cab1ee335cd121d9b0a2fd9744))
+
 ## [0.59.0](https://github.com/no-phux/phux/compare/v0.58.0...v0.59.0) (2026-10-14)
 
 
