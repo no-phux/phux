@@ -275,7 +275,8 @@ fn request_token(key: Option<IdempotencyKey>) -> String {
 /// Create a named session without attaching via the `SESSION_CREATE_KEY`
 /// write, then read the seed-pane id back from a nonce-correlated result key.
 ///
-/// Duplicate-name rejection is the caller's job. Interleaved degradation notices are appended to `notices`.
+/// Duplicate-name rejection is the caller's job. Interleaved degradation
+/// notices are appended to `notices`.
 ///
 /// # Errors
 ///
