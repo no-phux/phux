@@ -170,7 +170,7 @@ pub(crate) fn page() -> Page {
          Neither path exists today; a crash loses every pane's \
          scrollback. The `EVENT` stream is a separate, memory-bounded \
          journal (ADR-0123) that carries no PTY bytes. Workspace \
-         archives are written only where `phux workspace save` or \
+         archives are written only where `phux archive export` or \
          `phux server --autosave` is pointed.\n",
     );
 

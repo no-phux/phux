@@ -692,9 +692,8 @@ guarantees:
   `phux restore` relaunches the terminals the crash ended, in their
   sessions and working directories
   ([ADR-0162](./adr/0162-organization-records-persist-and-activations-reconcile.md)).
-- **Restart restore:** `phux archive export` (the old `phux workspace
-  save` spelling remains a hidden alias) writes a typed JSON archive of the
-  running server's sessions, reading each session's split tree from its
+- **Restart restore:** `phux archive export` writes a typed JSON archive of
+  the running server's sessions, reading each session's split tree from its
   shared layout (or `export --projection PREFIX`); a session with none
   falls back to its bare pane list. `phux archive import ARCHIVE` recreates
   the missing sessions on a running server, persistent, with each archived

@@ -31,7 +31,7 @@ Use the generated [CLI reference](../reference/cli.md), `phux --help`, or
 `run`, `send-keys`, `paste`, `ask`, `agent wait`, and
 `agent send-keys` neither attach nor resize, and never move an attached
 human's focus or viewport. `resize` changes the grid by design but still
-never attaches. Layout verbs (`insert-pane`, `move-pane`, `swap-pane`)
+never attaches. Layout verbs (`insert-pane`, `mv`, `swap-pane`)
 change persisted topology, not client-local focus. CLI and MCP cannot hold
 an input lease beyond the calling process, so MCP has no `take` / `give`
 ([MCP adapter](./mcp.md)); `phux take --ttl SECS` asks the server to release
@@ -970,7 +970,7 @@ per-client
 A script wanting its own arrangement uses its own key prefix
 (`app.foo.layout/v1`, [metadata protocol](../spec/L3.md) §3.5) and names it
 with `--projection <prefix>.layout/v1/<session-id>` on the spatial and
-placement verbs; a cross-session `move-pane` passes it twice or not at all.
+placement verbs; a cross-session `mv` passes it twice or not at all.
 Durability is `phux archive export` / `import`: export writes each
 session's split tree from that envelope
 ([ADR-0129](../adr/0129-projections-are-named-by-key.md)), and import

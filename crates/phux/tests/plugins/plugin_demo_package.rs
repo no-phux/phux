@@ -250,7 +250,7 @@ fn launch_bench_reports_no_server_as_action_failure() {
 
 /// ADR-0151: the template claiming each in-shell integration's `AgentSession`
 /// provider declares the source-verified resume (and, only where the provider
-/// accepts one, fresh-identity) arguments `workspace restore` rebuilds.
+/// accepts one, fresh-identity) arguments `archive import` rebuilds.
 #[test]
 fn shipped_templates_resume_the_providers_in_shell_integrations_report() {
     let dir = repo_root().join("examples/plugins/agent-tools/integrations");
