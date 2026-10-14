@@ -107,7 +107,6 @@ const MIN_PANE_CELL: u16 = 2;
 /// [`ActionError::NoFocus`] / [`ActionError::EmptyTree`] on an empty state;
 /// [`ActionError::NoResizableBoundary`] when no split along the axis
 /// encloses the focused leaf.
-#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 pub(super) fn apply_resize(
     state: &LayoutState,
     dir: Direction,
@@ -261,7 +260,6 @@ fn violates_min_cell(
 /// [`ActionError::EmptyTree`] on an empty state;
 /// [`ActionError::NoResizableBoundary`] when `node_path` no longer names a
 /// split (a stale grab) or its budget is zero.
-#[allow(clippy::cast_precision_loss)]
 pub(super) fn apply_divider_resize(
     state: &LayoutState,
     node_path: &NodePath,
