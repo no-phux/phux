@@ -13,7 +13,11 @@ import re
 import tomllib
 
 SEMVER = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
-DESKTOP_VERSION = re.compile(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-alpha\.[1-9]\d*")
+# The desktop train shipped alphas and graduated to stable. Accept both shapes
+# so a release-metadata diff across the graduation stays compile-free.
+DESKTOP_VERSION = re.compile(
+    r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-alpha\.[1-9]\d*)?"
+)
 SKILL_VERSION = re.compile(
     r'^(\s*)version:\s*"([0-9]+\.[0-9]+\.[0-9]+)"\s*#\s*x-release-please-version\s*$'
 )

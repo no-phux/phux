@@ -63,7 +63,7 @@ export function siteTools(facts: SiteFacts): ModelContextTool[] {
   return [
     {
       name: "get_install_command",
-      description: `Get the installer for the ${facts.productName} CLI, Desktop alpha, Cockpit, or agent skills.`,
+      description: `Get the installer for the ${facts.productName} CLI, Desktop, Cockpit, or agent skills.`,
       inputSchema: {
         type: "object",
         properties: {

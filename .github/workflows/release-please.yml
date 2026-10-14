@@ -267,3 +267,59 @@ jobs:
             gh pr ready "$PR_NUMBER" --repo "$GITHUB_REPOSITORY"
             echo "restored #$PR_NUMBER to ready for review"
           fi
+
+  # A release PR lands itself, always as ONE squash commit — never a rebase or
+  # merge commit. Runs after sync-lockfile, so the head is final and the hold
+  # (if any) is lifted. It discovers open release PRs by branch rather than by
+  # the action's `prs` output, because release-please returns nothing for an
+  # unchanged PR: a carried-over PR must still have auto-merge (re-)enabled
+  # after a hold re-drafts it. Auto-merge waits for the required `ci` check; a
+  # PR whose checks are already green merges immediately. release-please finds
+  # the merged PR by label and branch, so the squash commit is what it tags.
+  auto-merge:
+    name: squash auto-merge release PRs
+    needs: [release-please, sync-lockfile]
+    if: always() && needs.release-please.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          # See release-please.yml's header: never fall back to GITHUB_TOKEN.
+          client-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - name: Enable squash auto-merge
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          numbers="$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 50 \
+            --json number,headRefName \
+            --jq '.[] | select(.headRefName | startswith("release-please--")) | .number')"
+          if [ -z "$numbers" ]; then
+            echo "no open release PRs"
+            exit 0
+          fi
+          while IFS= read -r num; do
+            [ -n "$num" ] || continue
+            meta="$(gh pr view "$num" --repo "$GITHUB_REPOSITORY" --json state,isDraft --jq '[.state,(.isDraft|tostring)] | @tsv')"
+            state="${meta%%$'\t'*}"
+            draft="${meta#*$'\t'}"
+            if [ "$state" != "OPEN" ]; then
+              echo "#$num is $state; nothing to auto-merge"
+              continue
+            fi
+            if [ "$draft" = "true" ]; then
+              echo "#$num is still a draft; auto-merge resumes once the hold lifts"
+              continue
+            fi
+            # `--auto` is refused on an already-clean PR; fall back to merging
+            # the finished release in that case.
+            gh pr merge "$num" --repo "$GITHUB_REPOSITORY" --squash --auto \
+              || gh pr merge "$num" --repo "$GITHUB_REPOSITORY" --squash
+          done <<< "$numbers"

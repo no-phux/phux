@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the standalone alpha resolver and transactional macOS installation."""
+"""Exercise the standalone desktop resolver and transactional macOS installation."""
 import fcntl
 import hashlib
 import json
@@ -16,7 +16,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts/install-desktop.sh"
-VERSION = "0.1.0-alpha.1"
+VERSION = "0.1.0"
 ASSET = f"phux-desktop-{VERSION}-macos-arm64.zip"
 SHELL = shutil.which("dash") or "/bin/sh"
 
@@ -25,12 +25,12 @@ def run(*args, **kwargs):
     return subprocess.run(args, check=True, capture_output=True, text=True, **kwargs)
 
 
-class AlphaResolver(unittest.TestCase):
-    def test_alpha_is_opt_in_and_drafts_never_install(self):
+class StableResolver(unittest.TestCase):
+    def test_stable_is_default_and_drafts_and_prereleases_never_install(self):
         releases = [
-            {"tag_name": "desktop-v0.1.0-alpha.3", "draft": True, "prerelease": True},
-            {"tag_name": "desktop-v9.0.0", "draft": False, "prerelease": False},
-            {"tag_name": "v9.0.0-alpha.1", "draft": False, "prerelease": True},
+            {"tag_name": "desktop-v9.0.0", "draft": True, "prerelease": False},
+            {"tag_name": "desktop-v0.1.0", "draft": False, "prerelease": False},
+            {"tag_name": "desktop-v0.2.0", "draft": False, "prerelease": True},
             {"tag_name": "desktop-v0.1.0-alpha.2", "draft": False, "prerelease": True},
             {"tag_name": "v8.0.0", "draft": False, "prerelease": False},
         ]
@@ -39,50 +39,49 @@ class AlphaResolver(unittest.TestCase):
             fixture.write_text(json.dumps(releases))
             script = '. "$1"; release_page "$2" "$3" "$4"'
             lib = str(ROOT / "scripts/lib/install-release.sh")
-            alpha = run(SHELL, "-c", script, "sh", lib, "desktop-v", str(fixture), "alpha")
-            stable = run(SHELL, "-c", script, "sh", lib, "v", str(fixture), "stable")
-            self.assertEqual(alpha.stdout.strip(), "desktop-v0.1.0-alpha.2")
-            self.assertEqual(stable.stdout.strip(), "v8.0.0")
+            desktop = run(SHELL, "-c", script, "sh", lib, "desktop-v", str(fixture), "stable")
+            core = run(SHELL, "-c", script, "sh", lib, "v", str(fixture), "stable")
+            self.assertEqual(desktop.stdout.strip(), "desktop-v0.1.0")
+            self.assertEqual(core.stdout.strip(), "v8.0.0")
 
     @unittest.skipUnless(
         platform.system() == "Darwin" and platform.machine() == "arm64",
         "standalone desktop resolver requires macOS arm64",
     )
-    def test_standalone_selects_highest_alpha_across_pages(self):
+    def test_standalone_selects_highest_stable_across_pages(self):
         if int(run("/usr/bin/sw_vers", "-productVersion").stdout.split(".")[0]) < 27:
-            self.skipTest("desktop alpha requires macOS 27 or later")
+            self.skipTest("desktop requires macOS 27 or later")
 
         def release(version, **metadata):
-            return {"tag_name": f"desktop-v{version}", "draft": False, "prerelease": True, **metadata}
+            return {"tag_name": f"desktop-v{version}", "draft": False, "prerelease": False, **metadata}
 
         cases = [
             ([[
-                release("0.1.0-alpha.9"),
-                release("0.1.0-alpha.10"),
-                release("0.1.0-alpha.8"),
-            ]], "0.1.0-alpha.10"),
+                release("0.10.0"),
+                release("0.11.0"),
+                release("0.9.0"),
+            ]], "0.11.0"),
             ([
-                [release("0.1.0-alpha.9")],
+                [release("0.9.0")],
                 [
-                    release("0.1.0-alpha.8"),
-                    release("0.1.0-alpha.10"),
-                    release("99.0.0-alpha.99", draft=True),
-                    release("99.0.0-alpha.99", prerelease=False),
-                    release("99.0.0", prerelease=False),
-                    release("99.0.0-alpha.99", tag_name="v99.0.0-alpha.99"),
-                    release("99.0.0-alpha.99", tag_name="cockpit-v99.0.0-alpha.99"),
+                    release("0.8.0"),
+                    release("0.10.0"),
+                    release("99.0.0", draft=True),
+                    release("99.0.0", prerelease=True),
+                    release("99.0.0", tag_name="v99.0.0"),
+                    release("99.0.0", tag_name="cockpit-v99.0.0"),
                 ],
-                [release("0.1.0-alpha.7")],
-            ], "0.1.0-alpha.10"),
+                [release("0.7.0")],
+            ], "0.10.0"),
             ([[
-                release("0.1.0-alpha.999"),
-                release("0.1.1-alpha.0"),
-                release("0.1.0-alpha.1000"),
-            ]], "0.1.1-alpha.0"),
+                release("0.999.0"),
+                release("1.0.0"),
+                release("0.1000.0"),
+            ]], "1.0.0"),
             ([[
-                release("0.1.0-alpha.9007199254740992"),
-                release("0.1.0-alpha.9007199254740993"),
-            ]], "0.1.0-alpha.9007199254740993"),
+                release("0.9007199254740992.0"),
+                release("0.9007199254740993.0"),
+            ]], "0.9007199254740993.0"),
         ]
         for pages, expected in cases:
             with self.subTest(expected=expected, pages=len(pages)), tempfile.TemporaryDirectory() as directory:
@@ -234,7 +233,7 @@ esac
         self.assertEqual((self.installed / "Contents/Info.plist").read_bytes(), before)
 
     def test_version_mismatch_is_rejected_before_install(self):
-        self.plist["PhuxDesktopVersion"] = "0.1.0-alpha.2"
+        self.plist["PhuxDesktopVersion"] = "0.1.1"
         self.pack()
         result = self.install(success=False)
         self.assertIn("version does not match", result.stderr)

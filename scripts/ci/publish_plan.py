@@ -51,14 +51,15 @@ def parse_tag(tag):
     match = TAG_RE.fullmatch(tag)
     if match is None:
         return None
-    # The desktop train is alpha-only; every other lane is stable-only.
-    if (match.group("component") == "desktop") != (match.group("alpha") is not None):
+    # Every lane is stable-only. The desktop train was the one prerelease
+    # channel; it graduated to stable, so any component's `-alpha.N` tag is not
+    # a shippable version.
+    if match.group("alpha") is not None:
         return None
     return {
         "component": match.group("component") or "phux",
-        "version": (
-            *(int(match.group(name)) for name in ("major", "minor", "patch")),
-            int(match.group("alpha")) if match.group("alpha") else float("inf"),
+        "version": tuple(
+            int(match.group(name)) for name in ("major", "minor", "patch")
         ),
     }
 

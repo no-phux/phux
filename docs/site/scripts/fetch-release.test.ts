@@ -68,35 +68,34 @@ describe("latestCockpitRelease", () => {
 });
 
 describe("latestDesktopRelease", () => {
-  test("selects a published alpha, not a draft or another component's release", () => {
+  test("selects a published stable desktop release, not a draft or another stream", () => {
     expect(
       latestDesktopRelease([
-        { tag_name: "desktop-v0.1.0-alpha.9", draft: true, prerelease: true },
+        { tag_name: "desktop-v0.2.0", draft: true },
         { tag_name: "v0.54.0" },
         { tag_name: "cockpit-v0.34.0" },
-        { tag_name: "desktop-v0.1.0" },
-        { tag_name: "desktop-v0.1.0-beta.1", prerelease: true },
+        { tag_name: "desktop-v0.1.0-alpha.10", prerelease: true },
         {
-          tag_name: "desktop-v0.1.0-alpha.8",
-          prerelease: true,
-          html_url: "https://github.com/no-phux/phux/releases/tag/desktop-v0.1.0-alpha.8",
-          published_at: "2026-10-08T09:19:12Z",
+          tag_name: "desktop-v0.1.0",
+          html_url: "https://github.com/no-phux/phux/releases/tag/desktop-v0.1.0",
+          published_at: "2026-10-14T09:19:12Z",
         },
-        { tag_name: "desktop-v0.1.0-alpha.7", prerelease: true },
+        { tag_name: "desktop-v0.0.9" },
       ]),
     ).toEqual({
-      tag: "desktop-v0.1.0-alpha.8",
-      url: "https://github.com/no-phux/phux/releases/tag/desktop-v0.1.0-alpha.8",
-      publishedAt: "2026-10-08T09:19:12Z",
+      tag: "desktop-v0.1.0",
+      url: "https://github.com/no-phux/phux/releases/tag/desktop-v0.1.0",
+      publishedAt: "2026-10-14T09:19:12Z",
     });
   });
 
-  test("omits the badge when no published desktop alpha exists", () => {
+  test("omits the badge when no published stable desktop release exists", () => {
     expect(
       latestDesktopRelease([
-        { tag_name: "desktop-v0.1.0-alpha.1", draft: true },
+        { tag_name: "desktop-v0.1.0", draft: true },
+        { tag_name: "desktop-v0.1.0-alpha.1", prerelease: true },
         { tag_name: "desktop-v0.1.0-alpha.0" },
-        { tag_name: "desktop-v0.1.0-alpha.1-extra" },
+        { tag_name: "desktop-v0.1.0-extra" },
         { tag_name: "v0.54.0" },
       ]),
     ).toBeNull();
@@ -140,30 +139,28 @@ for (const [name, selector, prefix] of [
 
 describe("desktop numeric precedence", () => {
   test.each([
-    ["alpha", "0.1.0-alpha.9", "0.1.0-alpha.10"],
-    ["patch", "0.1.9-alpha.99", "0.1.10-alpha.1"],
-    ["minor", "0.9.99-alpha.99", "0.10.0-alpha.1"],
-    ["major", "9.99.99-alpha.99", "10.0.0-alpha.1"],
+    ["patch", "0.1.9", "0.1.10"],
+    ["minor", "0.9.99", "0.10.0"],
+    ["major", "9.99.99", "10.0.0"],
   ])("compares the %s numerically regardless of input order", (_component, older, newer) => {
     const releases = [
-      { tag_name: `desktop-v${older}`, prerelease: true },
-      { tag_name: `desktop-v${newer}`, prerelease: true },
+      { tag_name: `desktop-v${older}` },
+      { tag_name: `desktop-v${newer}` },
     ];
     expect(latestDesktopRelease(releases)?.tag).toBe(`desktop-v${newer}`);
     expect(latestDesktopRelease([...releases].reverse())?.tag).toBe(`desktop-v${newer}`);
   });
 
-  test("higher drafts, other channels, and other streams cannot displace an alpha", () => {
+  test("higher drafts, prereleases, and other streams cannot displace a stable release", () => {
     expect(latestDesktopRelease([
-      { tag_name: "desktop-v999.0.0-alpha.1", draft: true },
-      { tag_name: "desktop-v1000.0.0-alpha.1", prerelease: false },
-      { tag_name: "desktop-v999.0.0" },
-      { tag_name: "desktop-v999.0.0-beta.1", prerelease: true },
+      { tag_name: "desktop-v999.0.0", draft: true },
+      { tag_name: "desktop-v1000.0.0", prerelease: true },
+      { tag_name: "desktop-v999.0.0-alpha.1", prerelease: true },
       { tag_name: "v999.0.0" },
       { tag_name: "cockpit-v999.0.0" },
-      { tag_name: "desktop-v0.1.0-alpha.9", prerelease: true },
-      { tag_name: "desktop-v0.1.0-alpha.10", prerelease: true },
-    ])).toEqual({ tag: "desktop-v0.1.0-alpha.10", url: null, publishedAt: null });
+      { tag_name: "desktop-v0.1.0" },
+      { tag_name: "desktop-v0.2.0" },
+    ])).toEqual({ tag: "desktop-v0.2.0", url: null, publishedAt: null });
   });
 });
 
@@ -227,19 +224,19 @@ describe("release stamp command", () => {
     const first = [
       { tag_name: "v1.2.9" },
       { tag_name: "cockpit-v1.2.9" },
-      { tag_name: "desktop-v0.1.0-alpha.9", prerelease: true },
+      { tag_name: "desktop-v0.1.0" },
       ...Array.from({ length: 27 }, () => ({ tag_name: "other-v999.0.0" })),
     ];
     const result = await runStamp([first, [
       { tag_name: "v1.2.10" },
       { tag_name: "cockpit-v1.2.10" },
-      { tag_name: "desktop-v0.1.0-alpha.10", prerelease: true },
+      { tag_name: "desktop-v0.1.1" },
     ]]);
     expect(result.exitCode).toBe(0);
     expect(result.requestedPages).toEqual([1, 2]);
     expect(result.stamp.tag).toBe("v1.2.10");
     expect(result.stamp.cockpit.tag).toBe("cockpit-v1.2.10");
-    expect(result.stamp.desktop.tag).toBe("desktop-v0.1.0-alpha.10");
+    expect(result.stamp.desktop.tag).toBe("desktop-v0.1.1");
     expect(result.stderr).toBe("");
   });
 
@@ -265,7 +262,7 @@ describe("release stamp command", () => {
   });
 
   test("a later-page failure keeps the previous file instead of stamping a partial list", async () => {
-    const existing = '{"tag":"v0.9.0","desktop":{"tag":"desktop-v0.1.0-alpha.8"}}\n';
+    const existing = '{"tag":"v0.9.0","desktop":{"tag":"desktop-v0.1.0"}}\n';
     const result = await runStamp([
       Array.from({ length: 30 }, () => ({ tag_name: "v1.0.0" })),
     ], { existing, failedPage: 2 });
@@ -287,7 +284,7 @@ describe("release stamp command", () => {
   });
 
   test("no core release retains the existing failure policy", async () => {
-    const result = await runStamp([[{ tag_name: "desktop-v0.1.0-alpha.10", prerelease: true }]]);
+    const result = await runStamp([[{ tag_name: "desktop-v0.1.0" }]]);
     expect(result.exitCode).toBe(0);
     expect(result.requestedPages).toEqual([1]);
     expect(result.stamp.tag).toBeNull();

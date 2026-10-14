@@ -86,7 +86,7 @@ jobs:
       tag: ${{ needs.plan.outputs.cockpit_tag }}
 
   desktop:
-    name: publish desktop alpha
+    name: publish desktop
     needs: plan
     if: needs.plan.result == 'success' && needs.plan.outputs.desktop_tag != ''
     uses: ./.github/workflows/desktop-release.yml

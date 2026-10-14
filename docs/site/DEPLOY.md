@@ -118,7 +118,7 @@ secrets the form still records requests.
 `scripts/install-cockpit.sh`, which installs the Cockpit macOS app from the
 `cockpit-vX.Y.Z` release assets. `https://phux.sh/install-desktop` and
 `https://phux.sh/install-desktop.sh` serve `scripts/install-desktop.sh`, which
-installs the GPUI `Phux.app` from `desktop-vX.Y.Z-alpha.N` prereleases.
+installs the GPUI `Phux.app` from `desktop-vX.Y.Z` releases.
 `scripts/sync-docs.ts` copies all three into `public/` on every build and all
 six destinations are gitignored, so a published installer cannot drift from
 the script the release tests exercise.

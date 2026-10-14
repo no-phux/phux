@@ -1,18 +1,19 @@
 #!/bin/sh
 # Served verbatim at https://phux.sh/install-desktop (POSIX sh).
-# Installs the checksummed GPUI desktop alpha without replacing the phux CLI
+# Installs the checksummed GPUI desktop client without replacing the phux CLI
 # or stopping its server. Existing app installation rolls back on failure.
 set -eu
 
 usage() {
   cat <<'EOF'
-Usage: install-desktop.sh [--version desktop-vX.Y.Z-alpha.N] [options]
+Usage: install-desktop.sh [--version desktop-vX.Y.Z] [options]
 
-Installs the latest desktop alpha for Apple-silicon macOS. Requires an installed
-phux CLI; never upgrades it or stops a server. Releases are ad-hoc signed, not
-Apple-notarized. The installer removes quarantine after checksum/signature checks.
+Installs the latest stable desktop client for Apple-silicon macOS. Requires an
+installed phux CLI; never upgrades it or stops a server. Releases are ad-hoc
+signed, not Apple-notarized. The installer removes quarantine after
+checksum/signature checks.
 
-  --version <tag|X.Y.Z-alpha.N>  Pin a desktop alpha (default: newest published).
+  --version <tag|X.Y.Z>         Pin a desktop version (default: newest published).
   --applications-dir <dir>      Default: /Applications if writable, else ~/Applications.
   --bin-dir <dir>               phux-desktop launcher (default: ~/.local/bin).
   --dry-run                    Print release URLs and destination without installing.
@@ -385,17 +386,17 @@ case "$(uname -m)" in
   *) die "Phux desktop ships arm64 only" ;;
 esac
 os_version="$(/usr/bin/sw_vers -productVersion)"
-[ "${os_version%%.*}" -ge 27 ] || die "Phux desktop alpha requires macOS 27 or later"
+[ "${os_version%%.*}" -ge 27 ] || die "Phux desktop requires macOS 27 or later"
 
 if [ -z "$version" ]; then
-  version="$(resolve_latest_version desktop-v alpha)"
+  version="$(resolve_latest_version desktop-v stable)"
 fi
 case "$version" in
   desktop-v*) semver="${version#desktop-v}" ;;
   *) semver="$version"; version="desktop-v$semver" ;;
 esac
-valid_release_tag "$version" desktop-v alpha \
-  || die "--version must be desktop-vX.Y.Z-alpha.N (got ${version})"
+valid_release_tag "$version" desktop-v stable \
+  || die "--version must be desktop-vX.Y.Z (got ${version})"
 
 if [ -z "$applications_dir" ]; then
   if [ -d "/Applications" ] && [ -w "/Applications" ]; then

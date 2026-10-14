@@ -109,8 +109,8 @@ require_fixed docs/RELEASING.md "aarch64-unknown-linux-gnu"
 # The release flow is release-please-driven. The docs must describe THAT flow,
 # not the retired hand-typed-tag dispatch.
 require_fixed docs/RELEASING.md "release-please"
-require_fixed docs/RELEASING.md "Mark the open **release-please** PR"
-require_fixed docs/RELEASING.md "then merge it"
+require_fixed docs/RELEASING.md "The release PR squash auto-merges once \`ci\` is green"
+require_fixed docs/RELEASING.md "mark the open **release-please** PR"
 require_fixed docs/RELEASING.md "publish-crate.yml"
 # The old manual cockpit is gone; catch a doc that drifts back to it.
 forbid_fixed docs/RELEASING.md "publish_protocol"

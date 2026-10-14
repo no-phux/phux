@@ -80,10 +80,9 @@
       "include-v-in-tag": true,
       "tag-separator": "-",
       "changelog-path": "CHANGELOG.md",
-      "initial-version": "0.1.0-alpha.1",
       "versioning": "prerelease",
       "prerelease-type": "alpha.1",
-      "prerelease": true
+      "prerelease": false
     },
     "integrations/pi": {
       "release-type": "node",

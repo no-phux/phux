@@ -9,7 +9,7 @@ last-reviewed: 2026-10-09
 **TL;DR.** Install with Homebrew or the release installer on supported macOS
 and Linux hosts. Use numbered releases for stable builds or `next` for the
 moving prerelease. Update direct installs with `phux update`, package-managed
-installs with their package manager. Desktop alpha and experimental Cockpit
+installs with their package manager. Desktop and experimental Cockpit
 have separate macOS installers.
 
 ---
@@ -100,26 +100,26 @@ To pin a specific release, pass any tag from the
 curl -fsSL https://phux.sh/install | sh -s -- --version vX.Y.Z
 ```
 
-## GPUI desktop alpha (native macOS)
+## GPUI desktop (native macOS)
 
 The GPUI desktop is a separate app and release train from Cockpit. With the
-phux CLI installed, install the Apple-silicon macOS 27-or-later alpha:
+phux CLI installed, install the Apple-silicon macOS 27-or-later desktop client:
 
 ```sh
 curl -fsSL https://phux.sh/install-desktop | sh
 ```
 
-This selects the highest published `desktop-vX.Y.Z-alpha.N` version in the
+This selects the highest published `desktop-vX.Y.Z` version in the
 recent release index and verifies the
 checksum and ad-hoc app signature before replacing `Phux.app`. It does not
 upgrade the CLI or stop a server. Releases are not Apple-notarized; the
 installer clears quarantine after verification. Rerun to update, or pin a
-published alpha with `sh -s -- --version X.Y.Z-alpha.N`.
+published version with `sh -s -- --version X.Y.Z`.
 
 The app is a view of server-owned sessions: quitting or crashing the desktop
 does not intentionally end the shells. This is not a guarantee against server
 failure or reboot. See the [desktop guide](./consumers/desktop.md) for controls
-and the current alpha limitations. The installer supports alternate locations
+and the current limitations. The installer supports alternate locations
 with `--applications-dir` and `--bin-dir`. After install, open `Phux.app` or run
 `phux-desktop`.
 
@@ -174,7 +174,7 @@ print the native command.
 ## Build Desktop from source
 
 Contributors can build the same `Phux.app` locally instead of installing a
-published alpha. Install the CLI first, then follow
+published release. Install the CLI first, then follow
 [contributor setup](./SETUP.md) for the desktop build tools.
 From the repository root:
 

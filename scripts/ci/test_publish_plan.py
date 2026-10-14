@@ -23,10 +23,10 @@ class ParseTagTests(unittest.TestCase):
     def test_moving_channel_is_not_a_version(self):
         self.assertIsNone(parse_tag("next"))
 
-    def test_only_desktop_alpha_tags_are_supported_prereleases(self):
-        self.assertEqual(parse_tag("desktop-v0.1.0-alpha.1")["component"], "desktop")
+    def test_stable_desktop_is_a_version_and_prereleases_are_not(self):
+        self.assertEqual(parse_tag("desktop-v0.1.0")["component"], "desktop")
         for tag in ("v0.1.0-alpha.1", "cockpit-v0.1.0-alpha.1",
-                    "pi-extension-v0.1.0-alpha.1", "desktop-v0.1.0",
+                    "pi-extension-v0.1.0-alpha.1", "desktop-v0.1.0-alpha.1",
                     "desktop-v0.1.0-alpha.0", "desktop-v0.1.0-alpha.01",
                     "desktop-v0.1.0-beta.1", "desktop-v0.1.0-alpha.1+build"):
             with self.subTest(tag=tag):
@@ -154,38 +154,29 @@ class DecideTests(unittest.TestCase):
         self.assertEqual(lanes["cockpit"], "cockpit-v0.28.0")
         self.assertEqual(lanes["integration"], ["pi-extension-v0.3.0"])
 
-    def test_alpha_counter_order_is_numeric_and_never_an_integration(self):
+    def test_desktop_lane_takes_the_newest_stable_draft(self):
         releases = [
-            rel("desktop-v0.1.0-alpha.1", False, "old"),
-            rel("desktop-v0.1.0-alpha.9", True, "nine"),
-            rel("desktop-v0.1.0-alpha.10", True, "ten"),
+            rel("desktop-v0.1.0", False, "old"),
+            rel("desktop-v0.2.0", True, "minor"),
+            rel("desktop-v0.1.1", True, "patch"),
         ]
         plan = decide(releases, green)
-        self.assertEqual(plan["publish"], ["desktop-v0.1.0-alpha.10"])
+        self.assertEqual(plan["publish"], ["desktop-v0.2.0"])
         lanes = split_lanes(plan["publish"])
-        self.assertEqual(lanes["desktop"], "desktop-v0.1.0-alpha.10")
+        self.assertEqual(lanes["desktop"], "desktop-v0.2.0")
         self.assertEqual(lanes["integration"], [])
         self.assertEqual(lanes["phux"], "")
 
-    def test_stable_desktop_is_ignored_without_superseding_alphas(self):
-        stable = "desktop-v0.1.0"
-        alpha = "desktop-v0.1.0-alpha.10"
-        for draft in (False, True):
-            with self.subTest(draft=draft):
-                plan = decide([
-                    rel(stable, draft, "stable"),
-                    rel(alpha, True, "alpha"),
-                ], green)
-                self.assertEqual(plan["publish"], [alpha])
-                self.assertEqual(plan["delete"], [])
-        self.assertEqual(split_lanes([alpha, stable])["desktop"], alpha)
-        plan = decide([rel(stable, True, "stable")], green, dispatch_tag=stable)
+    def test_stable_desktop_supersedes_an_older_stable_draft(self):
+        stable = "desktop-v0.2.0"
+        older = "desktop-v0.1.0"
+        plan = decide([rel(stable, False, "stable"), rel(older, True, "old")], green)
         self.assertEqual(plan["publish"], [])
-        self.assertIsNotNone(plan["fail"])
+        self.assertEqual(plan["delete"], [older])
 
-    def test_alpha_dispatch_requires_its_exact_commit_ci(self):
-        tag = "desktop-v0.1.0-alpha.1"
-        rows = [rel(tag, True, "alpha")]
+    def test_desktop_dispatch_requires_its_exact_commit_ci(self):
+        tag = "desktop-v0.1.0"
+        rows = [rel(tag, True, "desktop")]
         self.assertEqual(decide(rows, green, event_sha="other")["publish"], [])
         self.assertEqual(decide(rows, green, dispatch_tag=tag)["publish"], [tag])
         self.assertIn("failure", decide(rows, lambda _: "failure", dispatch_tag=tag)["fail"])

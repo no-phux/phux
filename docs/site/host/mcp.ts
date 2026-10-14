@@ -111,7 +111,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "get_install_command",
     description:
-      "Get the one-line installer for the phux CLI, GPUI desktop alpha, Cockpit, or agent skills.",
+      "Get the one-line installer for the phux CLI, GPUI desktop, Cockpit, or agent skills.",
     inputSchema: {
       type: "object",
       properties: {

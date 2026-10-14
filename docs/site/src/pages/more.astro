@@ -54,13 +54,13 @@ const FEATURES = [
     <h2>Install</h2>
     <div class="install-row">
       <div class="install-cmd desktop-install">
-        <span>Desktop for macOS · Alpha {release.desktop?.tag && <em>{release.desktop.tag}</em>}</span>
+        <span>Desktop for macOS {release.desktop?.tag && <em>{release.desktop.tag}</em>}</span>
         <code tabindex="0">{desktopInstall}</code>
         <button type="button" data-copy={desktopInstall}>Copy</button>
         <p>
           Apple silicon · macOS 27 or later. Install the CLI below first, then open Phux.app.
           Ad-hoc signed; not Apple-notarized.{" "}
-          <a href={docsHref("/quickstart/install#gpui-desktop-alpha-native-macos")}>Desktop install details</a>
+          <a href={docsHref("/quickstart/install#gpui-desktop-native-macos")}>Desktop install details</a>
         </p>
       </div>
       <div class="install-cmd">
