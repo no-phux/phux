@@ -120,8 +120,9 @@ ownership.
   show them with counts, or users will not see why records accumulate.
 - Old clients still read one window per session. The server synthesizes
   it from the arrangement until the translation layer is deleted.
-- Killing a whole session is several commands rather than one atomic
-  cascade, and reports per-target results.
+- Killing a whole session is one `SessionKill` (§6), so it ends work that
+  joined meanwhile too; a caller that wants only the members it saw kills
+  those resources instead.
 - Workspaces are designed now but not built, so stage-1 surfaces must not
   claim cross-machine grouping.
 

@@ -184,9 +184,10 @@ The wire carries five things:
   atoms for a Terminal; appended records for an AgentSession. Both ends run
   the engine for the kinds they show; the wire is not a second screen model.
 - **Organization.** Typed commands that create, rename, move, and delete
-  sessions and resources and replace arrangements. Each carries an
-  operation id and the revision it expects, and answers with a result or a
-  typed refusal.
+  sessions and resources and replace arrangements. Each edit carries an
+  operation id, so a retry is safe; moves and arrangement replaces also
+  carry the revision they expect, while renames and deletes are last writer
+  wins. Each answers with a result or a typed refusal.
 - **Metadata.** Opaque key-value pairs the server stores without
   interpreting.
 
