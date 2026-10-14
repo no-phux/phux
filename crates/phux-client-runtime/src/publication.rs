@@ -170,8 +170,8 @@ pub struct GridFrame {
 }
 
 impl GridFrame {
-    /// The rows libghostty reported changed for this generation; every row
-    /// on a full projection.
+    /// Rows whose displayed cells changed in this generation; every row on
+    /// a full projection. Includes speculative text overlay changes.
     pub fn dirty_rows(&self) -> impl Iterator<Item = u16> + '_ {
         self.buffer
             .row_dirty
