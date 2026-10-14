@@ -146,6 +146,10 @@ pub const PhuxProvider = struct {
     /// Failure record shared with each socket worker of a remote endpoint.
     remote_status: extension.remote.Status = .{},
     local_status: extension.startup.Status = .{},
+    /// Exclusive CLI for local `ensure`. Null keeps production discovery
+    /// (`PHUX_CLI`, then PATH). Tests set this to the checkout binary so a
+    /// harness cannot launch whatever `phux` is on PATH.
+    local_cli: ?[]const u8 = null,
     /// What the catalog and status line call a remote endpoint: the registry
     /// entry's name when Connect to Host resolved one, else the target.
     remote_label: ?[]u8 = null,
@@ -317,6 +321,7 @@ pub const PhuxProvider = struct {
         self.connected_stopping.store(false, .release);
         var evidence: extension.startup.Evidence = .{};
         const options: extension.startup.Options = .{
+            .cli_path = self.local_cli,
             .evidence = &evidence,
             .status = &self.local_status,
         };
