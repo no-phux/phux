@@ -171,8 +171,10 @@ jobs:
           PHUX_CACHE_HIT: ${{ steps.setup.outputs.cache-hit }}
           PHUX_DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
         run: bash scripts/ci/summarize-job.sh
+      # Only main pushes export; on a PR this cleanup cost 50 s to 2 min of
+      # the required path for nothing (run 38523359573).
       - name: leave disk for the mbx objects export
-        if: always()
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: bash scripts/ci/mbx-export-headroom.sh
       # The action exports only from its success post step. Run 38457963019
       # compiled the test profile in 10m 37s, failed one assertion, and saved
@@ -369,8 +371,10 @@ jobs:
           PHUX_CACHE_HIT: ${{ steps.setup.outputs.cache-hit }}
           PHUX_DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
         run: bash scripts/ci/summarize-job.sh
+      # Only main pushes export; on a PR this cleanup cost 50 s to 2 min of
+      # the required path for nothing (run 38523359573).
       - name: leave disk for the mbx objects export
-        if: always()
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: bash scripts/ci/mbx-export-headroom.sh
       # The action exports only from its success post step. Run 38457963019
       # compiled the test profile in 10m 37s, failed one assertion, and saved
