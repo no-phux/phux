@@ -1451,7 +1451,6 @@ mod tests {
                 Command::SessionDelete {
                     operation,
                     session: session.key,
-                    expected: session.revision,
                 },
                 &CancellationToken::new(),
             );
@@ -1470,7 +1469,6 @@ mod tests {
                 Command::ResourceRemove {
                     operation,
                     resource: resource.key,
-                    expected: resource.revision,
                 },
                 &CancellationToken::new(),
             );
