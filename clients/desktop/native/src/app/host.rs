@@ -167,6 +167,95 @@ pub fn kill_session(phux: &Path, socket: &Path, name: &str) -> Option<String> {
     run(phux, socket_args(socket, &["kill", name.trim()])).err()
 }
 
+/// A machine `phux host add` registered for `phux attach NAME`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteHost {
+    pub name: String,
+    /// The route a dial takes: `quic://HOST:PORT`, `wss://...`, or `ssh://...`.
+    pub endpoint: String,
+}
+
+/// The remote registry, from `phux host ls`. Satellites are a hub's peers, not
+/// machines this app attaches to, so they are left out.
+pub fn list_hosts(phux: &Path) -> Result<Vec<RemoteHost>, String> {
+    if phux.as_os_str().is_empty() {
+        return Err(MISSING_CLI.into());
+    }
+    let output = run_output(
+        phux,
+        vec![
+            "host".into(),
+            "ls".into(),
+            "--role".into(),
+            "remote".into(),
+            "--json".into(),
+        ],
+    )?;
+    parse_hosts(&output)
+}
+
+fn parse_hosts(output: &[u8]) -> Result<Vec<RemoteHost>, String> {
+    let document: serde_json::Value = serde_json::from_slice(output)
+        .map_err(|_| "Host list returned an invalid response.".to_owned())?;
+    let hosts = document
+        .get("hosts")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "Host list returned no hosts.".to_owned())?;
+    let mut hosts: Vec<RemoteHost> = hosts
+        .iter()
+        .filter(|host| host.get("role").and_then(serde_json::Value::as_str) != Some("satellite"))
+        .filter_map(|host| {
+            Some(RemoteHost {
+                name: host.get("name")?.as_str()?.to_owned(),
+                endpoint: host
+                    .get("endpoint")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+            })
+        })
+        .collect();
+    hosts.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(hosts)
+}
+
+/// `phux host add TARGET` over the ssh trust the user already has. Enrollment
+/// installs the remote service and pairs, so it can take a while.
+pub fn add_host(phux: &Path, target: &str, name: &str) -> Result<(), String> {
+    if target.trim().is_empty() {
+        return Err("Enter an ssh destination such as me@mini.".into());
+    }
+    if phux.as_os_str().is_empty() {
+        return Err(MISSING_CLI.into());
+    }
+    let mut args = vec![
+        "host".to_owned(),
+        "add".to_owned(),
+        target.trim().to_owned(),
+    ];
+    if !name.trim().is_empty() {
+        args.extend(["--name".to_owned(), name.trim().to_owned()]);
+    }
+    run(phux, args)
+}
+
+/// `phux host rm NAME`. The token file stays, as the CLI leaves it.
+pub fn remove_host(phux: &Path, name: &str) -> Result<(), String> {
+    if phux.as_os_str().is_empty() {
+        return Err(MISSING_CLI.into());
+    }
+    run(
+        phux,
+        vec![
+            "host".into(),
+            "rm".into(),
+            "--role".into(),
+            "remote".into(),
+            name.to_owned(),
+        ],
+    )
+}
+
 /// A fresh private file under the temporary directory. The path is never reused.
 pub fn write_temp_file(name: &str, text: &str) -> Result<PathBuf, String> {
     let base = std::env::temp_dir().join(format!("phux-{}", std::process::id()));
@@ -256,7 +345,7 @@ fn server_socket(phux: &Path) -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::project_error;
+    use super::{RemoteHost, parse_hosts, project_error};
 
     #[test]
     fn project_refusal_shows_remedy_without_json() {
@@ -273,5 +362,28 @@ mod tests {
             project_error("server unavailable".into()),
             "server unavailable"
         );
+    }
+
+    #[test]
+    fn host_list_keeps_remotes_sorted() {
+        let json = br#"{"hosts":[
+            {"name":"mini","role":"remote","endpoint":"quic://10.0.0.2:8788"},
+            {"name":"hub-peer","role":"satellite","endpoint":"quic://10.0.0.3:8788"},
+            {"name":"box","role":"remote","endpoint":"ssh://box"}
+        ],"schema_version":1}"#;
+        assert_eq!(
+            parse_hosts(json).unwrap(),
+            vec![
+                RemoteHost {
+                    name: "box".into(),
+                    endpoint: "ssh://box".into()
+                },
+                RemoteHost {
+                    name: "mini".into(),
+                    endpoint: "quic://10.0.0.2:8788".into()
+                },
+            ]
+        );
+        assert!(parse_hosts(b"not json").is_err());
     }
 }

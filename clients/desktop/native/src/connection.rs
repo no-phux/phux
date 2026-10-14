@@ -168,11 +168,21 @@ impl Connection {
         if socket.as_os_str().is_empty() {
             anyhow::bail!("InvalidConnectOptions");
         }
+        Self::connect_target(Target::uds(socket), session)
+    }
+
+    /// Attach `session` on a host from the remote registry.
+    pub fn connect_remote(host: &str, session: String) -> anyhow::Result<Self> {
+        let target = Target::resolve(host, None).map_err(|error| anyhow::anyhow!(error))?;
+        Self::connect_target(target, session)
+    }
+
+    fn connect_target(target: Target, session: String) -> anyhow::Result<Self> {
         if session.is_empty() || session.len() > 4096 || session.contains('\0') {
             anyhow::bail!("InvalidSessionName");
         }
         let client = Runtime::connect(
-            Target::uds(socket),
+            target,
             ClientOptions {
                 control: ControlOptions {
                     client_name: "phux-desktop".to_owned(),

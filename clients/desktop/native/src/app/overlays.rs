@@ -30,6 +30,8 @@ pub enum InputSlot {
     Rename,
     SessionName,
     SessionDir,
+    HostTarget,
+    HostName,
 }
 
 /// Build the open modal's controls with fresh or prefilled values and give it the keyboard.
@@ -90,9 +92,29 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
             }
             name.update(cx, |input, cx| input.focus(window, cx));
         }
-        Modal::KillSession { .. } | Modal::Terminate { .. } | Modal::Notifications => {
-            window.focus(&desk.focus, cx)
+        Modal::AddHost => {
+            let target = modal_input(
+                desk,
+                InputSlot::HostTarget,
+                "",
+                "ssh destination, e.g. me@mini",
+                window,
+                cx,
+            );
+            modal_input(
+                desk,
+                InputSlot::HostName,
+                "",
+                "Name (optional, defaults to the host)",
+                window,
+                cx,
+            );
+            target.update(cx, |input, cx| input.focus(window, cx));
         }
+        Modal::KillSession { .. }
+        | Modal::Terminate { .. }
+        | Modal::RemoveHost { .. }
+        | Modal::Notifications => window.focus(&desk.focus, cx),
     }
 }
 
@@ -210,6 +232,11 @@ impl Desk {
                     .input_entity(InputSlot::SessionDir)
                     .map(|input| input.read(cx).value().to_string());
                 self.apply_session(name, directory, window, cx);
+            }
+            (InputSlot::HostTarget | InputSlot::HostName, Some(_)) => {
+                let target = self.input_value(InputSlot::HostTarget, cx);
+                let name = self.input_value(InputSlot::HostName, cx);
+                self.apply_add_host(target, name, window, cx);
             }
             _ => {}
         }
@@ -337,6 +364,15 @@ pub fn layer(
             colors,
             cx,
             |desk, window, cx| desk.confirm_kill_session(window, cx),
+        ),
+        Modal::AddHost => add_host_dialog(desk, colors, cx),
+        Modal::RemoveHost { name } => confirm(
+            format!("Remove {name}?"),
+            "This forgets the machine here. Its server and terminals keep running; `phux host add` registers it again.",
+            "Remove Host",
+            colors,
+            cx,
+            |desk, window, cx| desk.confirm_remove_host(window, cx),
         ),
         Modal::Terminate { title, .. } => confirm(
             format!("Terminate {title}?"),
@@ -1152,6 +1188,36 @@ fn session_dialog(
         cx,
     ))
     .into_any_element()
+}
+
+fn add_host_dialog(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> AnyElement {
+    let (Some(target), Some(name)) = (
+        desk.input_entity(InputSlot::HostTarget),
+        desk.input_entity(InputSlot::HostName),
+    ) else {
+        return div().into_any_element();
+    };
+    dialog_card("Add Host", colors)
+        .child(
+            div()
+                .text_xs()
+                .text_color(from_hex(&colors.muted))
+                .child("Uses the ssh access you already have. phux must be installed on the host; enrollment starts its server, pairs, and finds a direct route."),
+        )
+        .child(Input::new(&target))
+        .child(Input::new(&name))
+        .child(dialog_buttons(
+            Button::new("host-add-ok")
+                .label("Add Host")
+                .primary()
+                .on_click(cx.listener(|desk, _, window, cx| {
+                    let target = desk.input_value(InputSlot::HostTarget, cx);
+                    let name = desk.input_value(InputSlot::HostName, cx);
+                    desk.apply_add_host(target, name, window, cx);
+                })),
+            cx,
+        ))
+        .into_any_element()
 }
 
 fn confirm(

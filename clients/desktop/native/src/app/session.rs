@@ -29,6 +29,7 @@ struct Opened {
     desk: Entity<Desk>,
     session: String,
     role: WindowRole,
+    remote: Option<String>,
 }
 
 pub struct Desktop {
@@ -151,6 +152,7 @@ impl Desktop {
                 legacy_layout: self.legacy_layout.clone(),
                 startup_error: options.startup_error,
                 main_display: None,
+                remote: None,
             };
             self.open_window(request, focus, false, cx)?
         };
@@ -189,6 +191,7 @@ impl Desktop {
                 legacy_layout: self.legacy_layout.clone(),
                 startup_error: None,
                 main_display: None,
+                remote: None,
             }
         };
         let replaced = self
@@ -206,7 +209,12 @@ impl Desktop {
         }
     }
 
-    pub fn open_session(&mut self, session: String, cx: &mut Context<Self>) {
+    pub fn open_session(
+        &mut self,
+        session: String,
+        remote: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         let request = OpenRequest {
             role: WindowRole::Fresh,
             session,
@@ -216,6 +224,7 @@ impl Desktop {
             legacy_layout: None,
             startup_error: None,
             main_display: None,
+            remote,
         };
         let _ = self.open_window(request, true, false, cx);
     }
@@ -229,11 +238,9 @@ impl Desktop {
         terminal: ResourceId,
         cx: &mut Context<Self>,
     ) -> anyhow::Result<()> {
-        if let Some(opened) = self
-            .windows
-            .iter()
-            .find(|opened| opened.session == session && opened.role == WindowRole::Main)
-        {
+        if let Some(opened) = self.windows.iter().find(|opened| {
+            opened.session == session && opened.role == WindowRole::Main && opened.remote.is_none()
+        }) {
             cx.activate(true);
             opened
                 .handle
@@ -253,12 +260,19 @@ impl Desktop {
             legacy_layout: None,
             startup_error: None,
             main_display: None,
+            remote: None,
         };
         self.open_window(request, true, false, cx)?;
         Ok(())
     }
 
-    pub fn open_moved(&mut self, session: String, terminal: ResourceId, cx: &mut Context<Self>) {
+    pub fn open_moved(
+        &mut self,
+        session: String,
+        terminal: ResourceId,
+        remote: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         let request = OpenRequest {
             role: WindowRole::Fresh,
             session,
@@ -268,8 +282,59 @@ impl Desktop {
             legacy_layout: None,
             startup_error: None,
             main_display: None,
+            remote,
         };
         let _ = self.open_window(request, true, false, cx);
+    }
+
+    /// Show registered host `name`: raise its window, or find the session to
+    /// open there off the main thread and open one. `done` hears the refusal.
+    pub fn open_host(
+        &mut self,
+        name: String,
+        done: impl FnOnce(Result<(), String>, &mut App) + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(opened) = self
+            .windows
+            .iter()
+            .find(|opened| opened.remote.as_deref() == Some(name.as_str()))
+            && opened
+                .handle
+                .update(cx, |_, window, _| window.activate_window())
+                .is_ok()
+        {
+            cx.activate(true);
+            done(Ok(()), cx);
+            return;
+        }
+        let probe = name.clone();
+        cx.spawn(async move |this, cx| {
+            let home =
+                smol::unblock(move || crate::connection::home::open_remote_home(&probe)).await;
+            let _ = this.update(cx, |desktop, cx| {
+                let result = home.and_then(|session| {
+                    let paths = crate::workspace::layout_paths(&format!("host:{name}"), &session);
+                    let request = OpenRequest {
+                        role: WindowRole::Main,
+                        session,
+                        fresh: false,
+                        initial_terminal: None,
+                        layout_path: paths.layout,
+                        legacy_layout: None,
+                        startup_error: None,
+                        main_display: None,
+                        remote: Some(name),
+                    };
+                    desktop
+                        .open_window(request, true, false, cx)
+                        .map(|_| ())
+                        .map_err(|error| format!("{error:#}"))
+                });
+                done(result, cx);
+            });
+        })
+        .detach();
     }
 
     /// Close the quick window if it is open, or open it. A handle whose window
@@ -300,6 +365,7 @@ impl Desktop {
             legacy_layout: self.legacy_quick.clone(),
             startup_error: None,
             main_display: self.main_display(cx),
+            remote: None,
         }
     }
 
@@ -419,6 +485,7 @@ impl Desktop {
         let socket = self.socket.clone();
         let session = request.session.clone();
         let role = request.role;
+        let remote = request.remote.clone();
         let bounds = if quick {
             size(px(1100.), px(460.))
         } else {
@@ -458,6 +525,7 @@ impl Desktop {
             desk,
             session,
             role,
+            remote,
         };
         if quick {
             self.quick = Some(opened);
