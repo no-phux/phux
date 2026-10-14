@@ -10,6 +10,7 @@
 use std::io::{self, IsTerminal as _, Read as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::{Duration, Instant};
 
 use phux_server::runtime::default_socket_path;
 
@@ -232,6 +233,62 @@ fn load(project: &Project) -> Result<Option<Loaded>, String> {
 // open
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OpenDisposition {
+    Created,
+    Existing,
+    /// A concurrent creator owns the record and must finish launching its
+    /// panes; never seed a replacement shell while it is still building.
+    Joining,
+}
+
+/// Serialize opens by server socket and derived session name, including
+/// empty-session shell seeding. The lock lives beside the socket, so even
+/// clients with different config/state directories share it. Never unlink
+/// the inode while another process may still hold it.
+fn open_lock(socket: &Path, session: &str) -> Result<std::fs::File, String> {
+    let parent = socket
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)
+        .map_err(|err| format!("could not create {}: {err}", parent.display()))?;
+    let dir = parent
+        .canonicalize()
+        .map_err(|err| format!("could not resolve {}: {err}", parent.display()))?;
+    let socket_name = socket
+        .file_name()
+        .ok_or_else(|| format!("{} has no socket filename", socket.display()))?;
+    let identity = format!("{}\0{session}", socket_name.to_string_lossy());
+    let path = dir.join(format!(
+        ".phux-project-open-{}.lock",
+        trust::digest(identity.as_bytes())
+    ));
+    let file = rustix::fs::open(
+        &path,
+        rustix::fs::OFlags::CREATE
+            | rustix::fs::OFlags::RDWR
+            | rustix::fs::OFlags::CLOEXEC
+            | rustix::fs::OFlags::NOFOLLOW,
+        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+    )
+    .map(std::fs::File::from)
+    .map_err(|err| format!("could not open {}: {err}", path.display()))?;
+    if !file.metadata().is_ok_and(|metadata| metadata.is_file()) {
+        return Err(format!("{} is not a regular file", path.display()));
+    }
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+            Ok(()) => return Ok(file),
+            Err(rustix::io::Errno::WOULDBLOCK) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(err) => return Err(format!("could not lock {}: {err}", path.display())),
+        }
+    }
+}
+
 fn run_open(target: Option<&str>, json: bool, socket: Option<PathBuf>) -> ExitCode {
     if !json && let Err(code) = super::attach::interactive_tty_preflight() {
         return code;
@@ -256,14 +313,18 @@ fn run_open(target: Option<&str>, json: bool, socket: Option<PathBuf>) -> ExitCo
         return code;
     }
 
+    let lock = match open_lock(&socket_path, &session) {
+        Ok(lock) => lock,
+        Err(err) => return refuse(json, codes::WORKSPACE, &err, "retry project open"),
+    };
     // A live session is reopened without rereading its recipe. Creation
     // checks for a name collision again before relaunching any panes.
     let live = live_session_names(Some(&socket_path)).is_some_and(|names| names.contains(&session));
-    let created = if live {
-        false
+    let disposition = if live {
+        OpenDisposition::Existing
     } else {
         match create(&project, &session, &socket_path, json) {
-            Ok(created) => created,
+            Ok(disposition) => disposition,
             Err(code) => return code,
         }
     };
@@ -271,12 +332,28 @@ fn run_open(target: Option<&str>, json: bool, socket: Option<PathBuf>) -> ExitCo
         Ok(rt) => rt,
         Err(code) => return code,
     };
-    let terminal_id = match rt.block_on(phux_client::session::check_session_directory(
-        &socket_path,
-        &session,
-        &project.root,
-        true,
-    )) {
+    let terminal_id = match rt.block_on(async {
+        if disposition == OpenDisposition::Joining {
+            for _ in 0..100 {
+                if let Some(id) = phux_client::session::check_session_directory(
+                    &socket_path,
+                    &session,
+                    &project.root,
+                    false,
+                )
+                .await?
+                {
+                    return Ok(Some(id));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            return Err(format!(
+                "session {session:?} is still being built by another opener; retry"
+            ));
+        }
+        phux_client::session::check_session_directory(&socket_path, &session, &project.root, true)
+            .await
+    }) {
         Ok(Some(id)) => id,
         Ok(None) => {
             return refuse(
@@ -295,6 +372,7 @@ fn run_open(target: Option<&str>, json: bool, socket: Option<PathBuf>) -> ExitCo
             );
         }
     };
+    drop(lock);
     if !json {
         return super::attach::run_attach(Some(session), socket);
     }
@@ -303,7 +381,7 @@ fn run_open(target: Option<&str>, json: bool, socket: Option<PathBuf>) -> ExitCo
         "project": project.name,
         "path": project.root,
         "session": session,
-        "created": created,
+        "created": disposition == OpenDisposition::Created,
         "terminal_id": terminal_id,
     }))
 }
@@ -314,7 +392,7 @@ fn create(
     session: &str,
     socket_path: &Path,
     json: bool,
-) -> Result<bool, ExitCode> {
+) -> Result<OpenDisposition, ExitCode> {
     let loaded = load(project).map_err(|err| {
         refuse(
             json,
@@ -348,18 +426,28 @@ fn create(
     // R16: import the recipe's session without starting anything, then start
     // its panes, as two explicit steps.
     let built = rt.block_on(async {
-        let imported =
-            import_archive(socket_path, &archive, "project open", ImportKind::Project).await?;
+        let imported = import_archive(
+            socket_path,
+            &archive,
+            "project open",
+            ImportKind::Project {
+                directory: &project.root,
+            },
+        )
+        .await?;
         // A colliding session can appear between the first lookup and import.
         // Check before relaunching any panes or attaching to it.
         phux_client::session::check_session_directory(socket_path, session, &project.root, false)
             .await
             .map_err(RestoreError::Failed)?;
-        let created = !imported.skipped_existing(session);
-        Ok::<_, RestoreError>((relaunch_imported(socket_path, imported).await, created))
+        if imported.skipped_existing(session) || imported.name_taken(session) {
+            return Ok::<_, RestoreError>(None);
+        }
+        Ok(Some(relaunch_imported(socket_path, imported).await))
     });
-    let (summary, created) = match built {
-        Ok(result) => result,
+    let summary = match built {
+        Ok(Some(summary)) => summary,
+        Ok(None) => return Ok(OpenDisposition::Joining),
         Err(RestoreError::Reported(code)) => return Err(code),
         Err(RestoreError::Failed(err)) => {
             return Err(refuse(
@@ -384,7 +472,7 @@ fn create(
             "every pane it started was closed again; fix the cause and retry",
         ));
     }
-    Ok(created)
+    Ok(OpenDisposition::Created)
 }
 
 /// Admit `loaded` for this open: config-owned, already approved, or approved

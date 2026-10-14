@@ -184,7 +184,7 @@ pub(crate) fn compile(
         sessions: vec![WorkspaceSession {
             name: session.to_owned(),
             active: true,
-            cwd: Some(root.to_string_lossy().into_owned()),
+            cwd: None,
             host: None,
             project: Some(project.to_owned()),
             command: None,
@@ -512,7 +512,7 @@ mod tests {
         let archive = compile(None, &canonical, "demo", "Friendly").expect("default");
         let session = &archive.sessions[0];
         assert_eq!(session.name, "demo");
-        assert_eq!(session.cwd.as_deref(), canonical.to_str());
+        assert_eq!(session.cwd, None);
         assert_eq!(session.project.as_deref(), Some("Friendly"));
         assert_eq!(session.windows.len(), 1);
         let pane = &session.windows[0].panes[0];
