@@ -701,15 +701,6 @@ impl Connection {
         ))
     }
 
-    /// Dial a remote WebSocket listener and negotiate the control-plane profile.
-    ///
-    /// # Errors
-    ///
-    /// Returns transport, protocol, or server-refusal errors from negotiation.
-    pub async fn connect_ws(dial: &WsDial) -> Result<Self, AttachError> {
-        Self::connect_ws_with_hello(dial, default_client_name(), control_client_caps()).await
-    }
-
     /// Dial WebSocket and negotiate with the supplied client profile.
     ///
     /// # Errors

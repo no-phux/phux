@@ -282,10 +282,4 @@ impl ServerState {
         let id = self.delegations.minted_by(operation)?;
         self.delegations.live(id, now)
     }
-
-    /// Every live delegated credential scoped to `session`.
-    #[must_use]
-    pub fn delegations_for_session(&self, session: SessionId) -> Vec<String> {
-        self.delegations.for_session(session)
-    }
 }

@@ -69,10 +69,6 @@ impl ServerGuard {
         ServerSpawn::new(prefix)
     }
 
-    pub fn process_mut(&mut self) -> &mut ServerProcess {
-        &mut self.process
-    }
-
     pub fn pid(&self) -> u32 {
         self.process.id()
     }

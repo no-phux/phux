@@ -1022,16 +1022,6 @@ fn rotate_credential_at(
     })
 }
 
-/// Mint a generation-one credential, first revoking any live credential
-/// matching `previous_secret_hex` (`phux host add` re-enrollment), in one
-/// rewrite. The replacement does not expire.
-pub fn mint_token_replacing(
-    path: &Path,
-    previous_secret_hex: &str,
-) -> Result<MintedCredential, AuthError> {
-    mint_terminal_credential(path, Some(previous_secret_hex), None)
-}
-
 /// Mint a generation-one terminal credential.
 ///
 /// `replacing` revokes any live credential whose bearer matches that hex
@@ -2438,7 +2428,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("credentials");
         let first = mint_token(&path).unwrap();
-        let second = mint_token_replacing(&path, first.secret()).unwrap();
+        let second = mint_terminal_credential(&path, Some(first.secret()), None).unwrap();
         assert_ne!(first.id, second.id);
         assert_ne!(first.secret(), second.secret());
         let store = TokenStore::load(&path).unwrap();

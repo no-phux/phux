@@ -19,6 +19,8 @@ use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
+use crate::hermetic::{hermetic_env, prepare_dirs};
+
 /// The registry name the loopback listener is registered under.
 const REMOTE: &str = "loop";
 
@@ -33,22 +35,6 @@ impl Drop for Server {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
-}
-
-fn hermetic_env(dir: &Path) -> Vec<(&'static str, PathBuf)> {
-    vec![
-        ("XDG_CONFIG_HOME", dir.join("config")),
-        ("XDG_STATE_HOME", dir.join("state")),
-        ("XDG_RUNTIME_DIR", dir.join("run")),
-        ("PHUX_PROFILE", PathBuf::from("default")),
-        ("PHUX_SSH", dir.join("no-such-ssh")),
-        ("PHUX_TAILSCALE", dir.join("no-such-tailscale")),
-    ]
-}
-
-fn prepare_dirs(dir: &Path) {
-    std::fs::create_dir_all(dir.join("config/phux")).expect("config dir");
-    std::fs::create_dir_all(dir.join("run")).expect("runtime dir");
 }
 
 /// Run `phux ARGS` in `dir` with `stdin` piped in and `extra` environment.

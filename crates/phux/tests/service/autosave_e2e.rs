@@ -155,9 +155,7 @@ fn a_development_build_refuses_a_production_autosave_path() {
     let production = Path::new(&home).join(".local/state/phux/workspace.json");
     // Only a dev build is refused, and a sandbox whose HOME sits in the temp
     // dir has no production state; either way there is nothing to assert.
-    if phux_config::instance::build_kind() != phux_config::instance::BuildKind::Dev
-        || !phux_config::production::is_production_state(&production)
-    {
+    if phux_config::production::refuse_dev_on_production_state(&production).is_ok() {
         return;
     }
     let output = common::phux_cmd(crate::runner::phux_bin())

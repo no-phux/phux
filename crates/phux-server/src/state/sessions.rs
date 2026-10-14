@@ -169,6 +169,7 @@ impl ServerState {
 
     /// Commit an agent conversation bound to `parent` as the owner (tests
     /// and in-process tools). `None` when refused.
+    #[cfg(test)]
     pub fn new_agent_session(
         &mut self,
         parent: ResourceId,

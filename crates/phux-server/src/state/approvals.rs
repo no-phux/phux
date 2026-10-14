@@ -130,6 +130,7 @@ impl ServerState {
     }
 
     /// Every pending approval's id, in no particular order.
+    #[cfg(test)]
     #[must_use]
     pub fn pending_approval_ids(&self) -> Vec<ApprovalId> {
         self.approvals.pending.keys().copied().collect()
@@ -215,6 +216,7 @@ impl ServerState {
 
     /// How many holds and joined waiters `requester` counts against its
     /// per-connection bound.
+    #[cfg(test)]
     #[must_use]
     pub fn approvals_held_by(&self, requester: ClientId) -> u32 {
         self.held_by(requester)

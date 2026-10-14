@@ -11,6 +11,8 @@ use std::process::ExitCode;
 
 use phux_config::socket::{self, SocketState};
 
+use crate::commands::sh_quote;
+
 /// launchd's reverse-DNS job label for the default profile, and the basename
 /// of the plist it loads.
 const LAUNCHD_LABEL: &str = "com.phux.server";
@@ -2245,12 +2247,6 @@ fn systemd_quote(value: &str) -> String {
         .replace('$', "$$")
 }
 
-/// Single-quote a value for POSIX `sh`, closing and reopening the quote
-/// around any embedded single quote.
-fn sh_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-
 /// A path as a string, lossily.
 fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
@@ -2785,7 +2781,7 @@ WantedBy=default.target
             let default = manager.unit_path(None).expect("HOME is set");
             assert_eq!(
                 manager.writable_unit_path(None).is_err(),
-                phux_config::production::is_production_state(&default),
+                phux_config::production::refuse_dev_on_production_state(&default).is_err(),
                 "{}",
                 default.display()
             );

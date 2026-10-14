@@ -9,6 +9,7 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use crate::commands::sh_quote;
 use crate::companion::is_executable;
 
 const BLOCK_BEGIN: &str = "# >>> phux agent shims >>>";
@@ -172,7 +173,8 @@ fn install_claude_into(
     std::fs::create_dir_all(&shim_dir)
         .map_err(|err| format!("could not create {}: {err}", shim_dir.display()))?;
 
-    let hook_command = |arm: &str| format!("{} --phux-hook {arm}", sh_quote_path(&shim));
+    let hook_command =
+        |arm: &str| format!("{} --phux-hook {arm}", sh_quote(&shim.to_string_lossy()));
     let hooks: serde_json::Map<String, serde_json::Value> = HOOKS
         .iter()
         .map(|(event, matcher, arm)| {
@@ -277,7 +279,7 @@ fn shell_rc(shell: &str, home: &Path) -> Result<PathBuf, String> {
 }
 
 fn shell_activation(shell: &str, shim_dir: &Path) -> Result<String, String> {
-    let path = sh_quote_path(shim_dir);
+    let path = sh_quote(&shim_dir.to_string_lossy());
     match shell {
         "zsh" | "bash" => Ok(format!("export PATH={path}:\"$PATH\"")),
         "fish" => Ok(format!("fish_add_path --prepend {path}")),
@@ -651,10 +653,10 @@ exec "$real" "$@"
 "#,
         marker = SCHEMA_MARKER,
         schema = SHIM_SCHEMA,
-        real = sh_quote_path(real),
-        phux = sh_quote_path(phux),
-        shim = sh_quote_path(shim),
-        settings = sh_quote_path(settings),
+        real = sh_quote(&real.to_string_lossy()),
+        phux = sh_quote(&phux.to_string_lossy()),
+        shim = sh_quote(&shim.to_string_lossy()),
+        settings = sh_quote(&settings.to_string_lossy()),
     ))
 }
 
@@ -668,11 +670,6 @@ pub(crate) fn installed_shim_schema(shim: &Path) -> Option<u32> {
             .and_then(|value| value.trim().parse::<u32>().ok())
             .unwrap_or(1),
     )
-}
-
-fn sh_quote_path(path: &Path) -> String {
-    let value = path.as_os_str().to_string_lossy();
-    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn install_rc_block(rc: &Path, activation: &str) -> Result<(), String> {
@@ -781,8 +778,8 @@ fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
 mod tests {
     use super::{
         BLOCK_BEGIN, BLOCK_END, HOOKS, SHIM_SCHEMA, install_claude_into, install_rc_block,
-        installed_shim_schema, render_wrapper, sh_quote_path, shell_activation,
-        uninstall_claude_from, without_managed_block,
+        installed_shim_schema, render_wrapper, sh_quote, shell_activation, uninstall_claude_from,
+        without_managed_block,
     };
     use std::os::unix::fs::PermissionsExt as _;
     use std::path::Path;
@@ -1522,7 +1519,7 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&settings).unwrap()).unwrap();
         let hooks = json["hooks"].as_object().expect("hooks object");
         assert_eq!(hooks.len(), HOOKS.len());
-        let shim = sh_quote_path(&shim_dir.join("claude"));
+        let shim = sh_quote(&shim_dir.join("claude").to_string_lossy());
         for (event, matcher, arm) in HOOKS {
             let entry = &hooks[*event][0];
             assert_eq!(entry["matcher"], *matcher, "{event}");
@@ -1668,7 +1665,7 @@ mod tests {
             &real,
             &format!(
                 "#!/bin/sh\nprintf 'invoked\\n' >> {log}\nexit \"${{FAKE_CLAUDE_EXIT:-0}}\"\n",
-                log = sh_quote_path(&log),
+                log = sh_quote(&log.to_string_lossy()),
             ),
         );
         // Stands in for `phux new -c <cwd> -- <cmd...>`: either fails
@@ -1679,7 +1676,7 @@ mod tests {
             &fake_phux,
             &format!(
                 "#!/bin/sh\nset -u\nprintf '%s\\n' \"$1\" >> {phux_log}\nif [ \"${{FAKE_PHUX_LAUNCH_FAIL:-0}}\" = \"1\" ]; then\n  exit 3\nfi\nshift 4\nexec \"$@\"\n",
-                phux_log = sh_quote_path(&phux_log),
+                phux_log = sh_quote(&phux_log.to_string_lossy()),
             ),
         );
         let rendered = render_wrapper(&real, &fake_phux, &wrapper, &settings).unwrap();

@@ -187,12 +187,6 @@ impl IdSpace {
         self.windows.wire(session).copied()
     }
 
-    /// The session whose synthetic window `wire` names.
-    #[must_use]
-    pub fn session_of_window(&self, wire: WireWindowId) -> Option<SessionId> {
-        self.windows.resolve(&wire)
-    }
-
     /// Bind a synthetic window mapping from an upgrade blob.
     pub(super) fn bind_window(&mut self, session: SessionId, wire: WireWindowId) {
         self.windows.bind(session, wire);
