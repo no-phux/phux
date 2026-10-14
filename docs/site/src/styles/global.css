@@ -873,14 +873,6 @@ html:has(.docs-navigation-dialog[open]) {
   font-size: 1.0625rem;
   line-height: 1.65;
 }
-.overview-pitch .overview-eyebrow {
-  margin-bottom: 10px;
-  color: var(--color-accent);
-  font-size: 0.75rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
 .docs-overview .overview-pitch h2 {
   margin-bottom: 10px;
   font-size: clamp(1.75rem, 4vw, 2.25rem);
@@ -974,7 +966,6 @@ html:has(.docs-navigation-dialog[open]) {
 .overview-first-run-result {
   margin: 16px 0 0;
 }
-.overview-first-run-result strong { color: var(--color-fg); }
 .overview-model {
   margin: 0;
   padding: clamp(16px, 3vw, 28px);
@@ -1038,28 +1029,7 @@ html:has(.docs-navigation-dialog[open]) {
 .overview-model figcaption {
   margin-top: 16px;
 }
-.overview-term-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px 24px;
-}
-.overview-term-grid h3 {
-  margin: 0 0 4px;
-  color: var(--color-accent);
-  font-size: 1rem;
-}
-.overview-term-grid p,
-.overview-lifetime {
-  margin: 0;
-  color: var(--color-muted);
-  font-size: 0.9375rem;
-  line-height: 1.6;
-}
-.overview-lifetime {
-  margin-top: 20px;
-}
-.overview-lifetime strong { color: var(--color-fg); }
-.overview-lifetime a { color: var(--color-accent); text-decoration: underline; }
+.overview-model figcaption a { color: var(--color-accent); text-decoration: underline; }
 .docs-overview h2 {
   margin: 0 0 1.25rem;
   font-size: 1.5rem;
@@ -1130,8 +1100,7 @@ html:has(.docs-navigation-dialog[open]) {
   font-size: 0.8125rem;
 }
 .docs-page-actions a,
-.agent-discovery a,
-.agent-routes a {
+.agent-links a {
   color: var(--color-accent);
   text-decoration: underline;
   text-underline-offset: 3px;
@@ -1152,7 +1121,6 @@ html:has(.docs-navigation-dialog[open]) {
   color: var(--color-muted);
 }
 .overview-agent { min-width: 0; }
-.overview-agent p { line-height: 1.65; margin: 0 0 1rem; }
 .agent-prompt {
   padding: 20px;
   border: 1px solid var(--color-accent-soft);
@@ -1167,28 +1135,7 @@ html:has(.docs-navigation-dialog[open]) {
   line-height: 1.7;
 }
 .agent-prompt [role="status"] { display: block; margin-top: 8px; font-size: 0.8125rem; }
-.agent-routes {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 24px;
-  margin: 24px 0;
-}
-.agent-routes > div { min-width: 0; }
-.agent-routes h3 { font-size: 1rem; font-weight: 600; margin-bottom: 12px; }
-.agent-routes p { color: var(--color-muted); font-size: 0.9375rem; }
-.agent-routes pre {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  padding: 12px;
-  background: var(--color-surface);
-  border: 1px solid var(--color-rule);
-  border-radius: var(--radius-sm);
-  margin-bottom: 12px;
-  font-size: 0.8125rem;
-  line-height: 1.6;
-}
-.agent-routes a,
-.agent-discovery { font-size: 0.875rem; }
+.agent-links { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 14px 0 0; font-size: 0.875rem; }
 .docs-search-error {
   padding: 20px;
   color: var(--color-fg);
@@ -1207,7 +1154,6 @@ html:has(.docs-navigation-dialog[open]) {
     --fd-sidebar-width: 232px;
   }
   .overview-paths,
-  .agent-routes,
   .overview-reference,
   .overview-first-run-steps,
   .overview-model-clients {
@@ -1216,9 +1162,7 @@ html:has(.docs-navigation-dialog[open]) {
 }
 @media (max-width: 560px) {
   .overview-paths,
-  .agent-routes,
   .overview-reference,
-  .overview-term-grid,
   .overview-first-run-steps,
   .overview-model-clients {
     grid-template-columns: 1fr;

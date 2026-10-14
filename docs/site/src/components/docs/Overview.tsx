@@ -6,7 +6,6 @@ export function OverviewBody() {
   return (
     <div className="docs-overview">
       <section className="overview-pitch" aria-labelledby="overview-pitch-title">
-        <p className="overview-eyebrow">Your first minute with phux</p>
         <h2 id="overview-pitch-title">{pitch.headline}</h2>
         <p>{pitch.text}</p>
       </section>
@@ -19,7 +18,7 @@ export function OverviewBody() {
 
       <section className="overview-first-run" aria-labelledby="overview-first-run-title">
         <div className="overview-first-run-heading">
-          <h2 id="overview-first-run-title">Try it in a terminal</h2>
+          <h2 id="overview-first-run-title">Try it</h2>
           <a href="/quickstart">Full quickstart →</a>
         </div>
         <ol className="overview-first-run-steps">
@@ -31,41 +30,31 @@ export function OverviewBody() {
             </li>
           ))}
         </ol>
-        <p className="overview-first-run-result"><strong>The payoff:</strong> closing a client leaves its terminal running. A server crash or reboot ends live processes; <a href="/quickstart#what-survives">see what survives</a>.</p>
+        <p className="overview-first-run-result">Detach leaves it running. A server crash or reboot ends it. <a href="/quickstart#what-survives">Continuity details →</a></p>
       </section>
 
       <section aria-labelledby="overview-model-title">
-        <h2 id="overview-model-title">What you just used</h2>
+        <h2 id="overview-model-title">The model</h2>
         <figure className="overview-model" aria-labelledby="overview-model-caption">
           <div className="overview-model-server">
-            <strong>Server</strong><span>Owns the running work</span>
+            <strong>Server</strong>
             <div className="overview-model-sessions">
               <div className="overview-model-session">
-                <strong>Session · current</strong>
+                <strong>Session</strong>
                 <div className="overview-model-resource">
-                  <strong>Resource · terminal</strong><span>shell and screen output</span>
+                  <strong>Resource · terminal</strong><span>shell + output</span>
                 </div>
               </div>
-              <div className="overview-model-inbox"><strong>Inbox</strong><span>Another session for unorganized work</span></div>
+              <div className="overview-model-inbox"><strong>Inbox · session</strong><span>Unorganized resources</span></div>
             </div>
           </div>
           <div className="overview-model-clients">
-            <span><strong>TUI pane</strong> shows the terminal</span>
-            <span><strong>Desktop tile</strong> shows the same terminal</span>
-            <span><strong>Agent</strong> can read or send input</span>
+            <span><strong>View · TUI pane</strong></span>
+            <span><strong>View · desktop tile</strong></span>
+            <span><strong>Agent · read / type</strong></span>
           </div>
-          <figcaption id="overview-model-caption">The session owns the resource. An arrangement places it in tabs and splits; a view shows it. Leaving a view does not end the resource.</figcaption>
+          <figcaption id="overview-model-caption">Sessions own resources. Arrangements place them. Views show them. <a href="/concepts">Full model →</a></figcaption>
         </figure>
-      </section>
-
-      <section className="overview-terms" aria-labelledby="overview-terms-title">
-        <h2 id="overview-terms-title">The five pieces</h2>
-        <div className="overview-term-grid">
-          {OVERVIEW.terms.map(({ name, text }) => (
-            <div key={name}><h3>{name}</h3><p>{text}</p></div>
-          ))}
-        </div>
-        <p className="overview-lifetime"><strong>Close</strong> a view or detach to leave work running. <strong>Kill</strong> a resource to end it. <a href="/concepts">Read the complete model →</a></p>
       </section>
 
       <section aria-labelledby="overview-paths-title">

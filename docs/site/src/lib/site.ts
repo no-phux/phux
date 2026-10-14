@@ -23,23 +23,16 @@ export const SITE = {
 // Shared by the visible docs landing and its searchable Markdown representation.
 export const OVERVIEW = {
   title: "Get started",
-  summary: "Start a shell, detach, and return to the same live terminal. Then let an agent read or control it.",
+  summary: "Detach without stopping your shell. Return to it, or let an agent inspect it.",
   pitch: {
     headline: "Leave the view. Keep the shell.",
     text:
-      "phux runs your terminal on a background server. Detaching closes your view; the shell keeps running. Come back from the TUI or desktop, or let an agent inspect the same terminal.",
+      "A background server owns the terminal. The TUI, desktop, and agents connect to it.",
   },
   firstRun: [
-    { label: "Start", action: "phux", detail: "At the shell prompt, run pwd so you have output to return to." },
-    { label: "Detach", action: "Ctrl-A, then d", detail: "Press Ctrl and A together, release them, then press d. The shell keeps running." },
-    { label: "Return", action: "phux", detail: "You reattach to the live session and see the same shell output." },
-  ],
-  terms: [
-    { name: "Server", text: "Owns the running resources." },
-    { name: "Session", text: "Groups resources on one server; Inbox is the session for unorganized work." },
-    { name: "Resource", text: "A unit of work, such as a terminal running a shell or agent. Each belongs to one session." },
-    { name: "View", text: "A client's presentation of a resource, such as a TUI pane or desktop tile." },
-    { name: "Arrangement", text: "Places resources into tabs and splits. It does not own them." },
+    { label: "Start", action: "phux", detail: "Open a shell." },
+    { label: "Detach", action: "Ctrl-A, then d", detail: "Leave it running." },
+    { label: "Return", action: "phux", detail: "Same shell, same output." },
   ],
   paths: [
     { href: "/consumers/getting-started", title: "Coding agents", text: "Choose an integration and verify it." },
@@ -51,8 +44,6 @@ export const OVERVIEW = {
 // The visible handoff and the overview's Markdown/search representation agree.
 export const AGENT_START = {
   prompt: "Read https://docs.phux.sh/llms.txt and help me get started with phux. Choose the setup for my agent host, check my installed version, and verify a read before sending input. Use exact pane targets and bounded waits. Ask before interrupting or destroying existing work.",
-  skills: "npx skills add no-phux/skills",
-  mcp: "claude mcp add --transport http phux-docs https://phux.sh/mcp",
 } as const;
 
 /**

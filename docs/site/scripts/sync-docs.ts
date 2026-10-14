@@ -580,55 +580,31 @@ ${summary}
 
 ${pitch.text}
 
-[Install phux](/quickstart/install) · [Try in your browser](${SITE.url}/embed) · [Use with an agent](#hand-this-to-your-agent)
+[Install phux](/quickstart/install) · [Try in your browser](${SITE.url}/embed) · [Use an agent](#use-an-agent)
 
-## Try it in a terminal
-
-After installing, use an idle terminal:
+## Try it
 
 ${OVERVIEW.firstRun.map(({ label, action, detail }, index) => `${index + 1}. **${label}:** \`${action}\` — ${detail}`).join("\n")}
 
-**The payoff:** closing a client leaves its terminal running. A server crash or reboot ends live processes; [see what survives](/quickstart#what-survives).
+Detach leaves it running. A server crash or reboot ends it. [Continuity details](/quickstart#what-survives).
 
-## What you just used
+## The model
 
-The server owns a session with a terminal resource. The TUI pane and desktop tile can show that same resource; an agent can read it or send input. Inbox is another session for unorganized work. The session owns the resource. An arrangement places it in tabs and splits; a view shows it. Leaving a view does not end the resource.
+Server → session → resource (terminal). Inbox is the session for unorganized resources. TUI and desktop views show the terminal; an agent can read or type in it.
 
-## The five pieces
-
-${OVERVIEW.terms.map(({ name, text }) => `- **${name}:** ${text}`).join("\n")}
-
-**Close** a view or detach to leave work running. **Kill** a resource to end it. [Read the complete model](/concepts).
+Sessions own resources. Arrangements place them. Views show them. [Full model](/concepts).
 
 ## Guides
 
 ${OVERVIEW.paths.map(({ href, title, text }) => `- [${title}](${href}) — ${text}`).join("\n")}
 
-## Hand this to your agent
-
-Paste this into your coding agent:
+## Use an agent
 
 \`\`\`text
 ${AGENT_START.prompt}
 \`\`\`
 
-### Control your terminals
-
-Install the operating skills, then [choose your agent integration](/consumers/getting-started) to connect to your running phux server:
-
-\`\`\`sh
-${AGENT_START.skills}
-\`\`\`
-
-### Search the documentation
-
-The hosted docs MCP is read-only. It searches guides and releases; it cannot see or control your terminals.
-
-\`\`\`sh
-${AGENT_START.mcp}
-\`\`\`
-
-[Other MCP clients](/consumers/getting-started#let-your-agent-read-the-docs) · [Agent guide](/llms.txt) · [Skill index](https://phux.sh/.well-known/agent-skills/index.json) · [Docs MCP details](https://phux.sh/.well-known/mcp/server-card.json)
+[Agent integrations](/consumers/getting-started) · [Docs MCP (read-only)](/consumers/getting-started#let-your-agent-read-the-docs)
 
 ## Reference
 
