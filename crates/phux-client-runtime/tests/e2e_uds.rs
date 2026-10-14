@@ -20,8 +20,9 @@ use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 
-/// Generous, like the testkit's deadlines: these drive real PTYs under a
-/// parallel test run, and a genuine hang still fails.
+/// Idle budget, not a wall clock over the whole wait. These drive real PTYs
+/// under a parallel test run: a slow pipeline that is still publishing or
+/// delivering frames keeps going, and a genuine hang still fails.
 const DEADLINE: Duration = Duration::from_secs(20);
 
 #[cfg(feature = "engine")]
@@ -54,6 +55,8 @@ fn options() -> ClientOptions {
     }
 }
 
+/// Wall-clock poll for a predicate that has no delivery signal of its own
+/// (topology, input eligibility). [`DEADLINE`] is still the failure bound.
 async fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
     let start = Instant::now();
     while !ready() {
@@ -62,24 +65,45 @@ async fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
     }
 }
 
+/// [`DEADLINE`] is idle time since the status last moved. The attach wait
+/// must not replace a listener the caller already installed.
 async fn wait_for_status(client: &Client, status: Status) {
-    wait_until(&format!("status {status:?}"), || client.status() == status).await;
+    let what = format!("status {status:?}");
+    let mut idle = Instant::now();
+    let mut seen = client.status();
+    loop {
+        let now = client.status();
+        if now == status {
+            return;
+        }
+        if now != seen {
+            seen = now;
+            idle = Instant::now();
+        }
+        assert!(idle.elapsed() < DEADLINE, "timed out waiting for {what}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
-/// Drain events until one matches, collecting nothing else.
+/// Drain events until one matches. [`DEADLINE`] is idle time since the last
+/// event, so a slow stream of unrelated frames does not fail the wait.
 async fn wait_for_event<T>(
     client: &Client,
     what: &str,
     mut pick: impl FnMut(&Event) -> Option<T>,
 ) -> T {
-    let start = Instant::now();
+    let mut idle = Instant::now();
     loop {
-        for event in client.take_events() {
+        let events = client.take_events();
+        if !events.is_empty() {
+            idle = Instant::now();
+        }
+        for event in events {
             if let Some(found) = pick(&event) {
                 return found;
             }
         }
-        assert!(start.elapsed() < DEADLINE, "timed out waiting for {what}");
+        assert!(idle.elapsed() < DEADLINE, "timed out waiting for {what}");
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
@@ -103,31 +127,115 @@ async fn spawn_cat(client: &Client) -> ResourceId {
         _ => None,
     })
     .await;
-    wait_until("the spawned terminal to accept input", || {
-        client.input_ready(&terminal)
-    })
-    .await;
+    // `input_ready` round-trips to the engine owner. On this task that blocks
+    // the server sharing `run_local`, so poll it on the blocking pool.
+    let start = Instant::now();
+    loop {
+        let client = client.clone();
+        let terminal_id = terminal.clone();
+        let ready = tokio::task::spawn_blocking(move || client.input_ready(&terminal_id))
+            .await
+            .expect("sample input readiness");
+        if ready {
+            break;
+        }
+        assert!(
+            start.elapsed() < DEADLINE,
+            "timed out waiting for the spawned terminal to accept input"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     terminal
 }
 
+/// The published frame contains `needle`, and whether its generation moved.
+///
+/// `acquire` round-trips to the engine owner. Doing that on this task blocks
+/// the current-thread runtime the test server shares (`run_local`), so a slow
+/// owner stalls the PTY read, the output pump, and any in-flight resync until
+/// the wall clock has already run out. The blocking pool leaves that runtime
+/// free to deliver the echo.
 #[cfg(feature = "engine")]
-async fn wait_for_text(client: &Client, terminal: &ResourceId, needle: &str) {
-    wait_until(&format!("the frame to show {needle:?}"), || {
-        client
-            .acquire(terminal)
-            .is_some_and(|frame| frame.text().contains(needle))
+async fn sample_frame(client: &Client, terminal: &ResourceId, needle: &str) -> (bool, Option<u64>) {
+    let client = client.clone();
+    let terminal = terminal.clone();
+    let needle = needle.to_owned();
+    let sampled = tokio::task::spawn_blocking(move || {
+        client.acquire(&terminal).map(|frame| {
+            let hit = frame.text().contains(&needle);
+            (hit, frame.generation)
+        })
     })
-    .await;
+    .await
+    .expect("sample the published frame");
+    match sampled {
+        Some((hit, generation)) => (hit, Some(generation)),
+        None => (false, None),
+    }
 }
 
+/// Bytes the headless replica has retained since the last take.
 #[cfg(not(feature = "engine"))]
+async fn sample_output(client: &Client, terminal: &ResourceId) -> Vec<u8> {
+    let client = client.clone();
+    let terminal = terminal.clone();
+    tokio::task::spawn_blocking(move || client.take_output(&terminal))
+        .await
+        .expect("sample retained output")
+}
+
+/// Wait until published output contains `needle`.
+///
+/// [`DEADLINE`] is idle time since the published generation or retained
+/// output last moved. A slow echo that is still publishing keeps going;
+/// [`DEADLINE`] of silence is a hang.
+///
+/// Samples stay on the blocking pool: `acquire` on this task would freeze
+/// the server that shares `run_local`. The wait does not install a listener
+/// or drain inbound frames. That drain notifies the connection driver, and
+/// the driver's outbound arm cancels an in-flight read. Polling the frame
+/// leaves the read alone and still observes an echo that shows up late.
 async fn wait_for_text(client: &Client, terminal: &ResourceId, needle: &str) {
+    let what = if cfg!(feature = "engine") {
+        format!("the frame to show {needle:?}")
+    } else {
+        format!("the output to carry {needle:?}")
+    };
+    let mut idle = Instant::now();
+    #[cfg(feature = "engine")]
+    let mut generation = None;
+    #[cfg(not(feature = "engine"))]
     let mut seen = Vec::new();
-    wait_until(&format!("the output to carry {needle:?}"), || {
-        seen.extend(client.take_output(terminal));
-        String::from_utf8_lossy(&seen).contains(needle)
-    })
-    .await;
+    loop {
+        #[cfg(feature = "engine")]
+        {
+            let (hit, next) = sample_frame(client, terminal, needle).await;
+            if hit {
+                return;
+            }
+            // A missing slot is not progress: a reaped pane must still hit
+            // the idle bound.
+            if let Some(next) = next
+                && generation != Some(next)
+            {
+                generation = Some(next);
+                idle = Instant::now();
+            }
+        }
+        #[cfg(not(feature = "engine"))]
+        {
+            let more = sample_output(client, terminal).await;
+            if !more.is_empty() {
+                seen.extend(more);
+                idle = Instant::now();
+            }
+            if String::from_utf8_lossy(&seen).contains(needle) {
+                return;
+            }
+        }
+        assert!(idle.elapsed() < DEADLINE, "timed out waiting for {what}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 /// Counts wakes; the runtime must never call it while holding a lock, so
