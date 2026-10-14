@@ -23,10 +23,5 @@ libc = "0.2"
 # trait means producing that error type. `portable-pty` already pulls anyhow.
 anyhow = "1"
 
-[dev-dependencies]
-# The integration tests name these directly (open a real PTY, dup/fcntl).
-portable-pty.workspace = true
-libc = "0.2"
-
 [lints]
 workspace = true
