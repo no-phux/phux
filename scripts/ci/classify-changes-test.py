@@ -4,6 +4,7 @@
 from pathlib import Path
 import json
 import os
+import re
 import subprocess
 import tempfile
 import tomllib
@@ -28,6 +29,14 @@ class RoutingTests(unittest.TestCase):
             ([], ALL),
             (["new-product/source.xyz"], ALL),
             (["docs/RELEASING.md"], set()),
+            (["docs/spec/proto.md"], {"phux"}),
+            (["docs/spec/wire-schema.json"], {"phux"}),
+            (["docs/reference/cli.md"], {"phux"}),
+            (["docs/assets/pi-live-fleet.cast"], {"phux"}),
+            (["docs/consumers/agents.md"], {"phux"}),
+            (["docs/dsr-release-fallback.md"], {"cockpit"}),
+            (["docs/site/worker/Dockerfile"], set()),
+            (["CHANGELOG.md"], set()),
             (["clients/cockpit/README.md"], set()),
             ([".agents/skills/using-phux/SKILL.md"], {"phux", "cockpit"}),
             ([".agents/skills/using-phux-mcp/SKILL.md"], {"phux", "cockpit"}),
@@ -142,6 +151,12 @@ class RoutingTests(unittest.TestCase):
     def test_cheap_flags(self):
         for paths, docs, workflows in [
             (["docs/SETUP.md", "clients/cockpit/README.md"], "true", "false"),
+            (["docs/adr/0001-x.md", "README.md", "docs/INSTALL.md"], "true", "false"),
+            (["docs/SETUP.md", "docs/spec/proto.md"], "false", "false"),
+            (["docs/reference/cli.md"], "false", "false"),
+            (["docs/site/src/pages/index.astro"], "false", "false"),
+            (["docs/site/CONTENT.md"], "false", "false"),
+            (["CHANGELOG.md"], "false", "false"),
             ([".agents/skills/using-phux/SKILL.md"], "false", "false"),
             ([".github/workflows/ci.yml", ".github/workflows/release.yml"], "false", "true"),
             ([".github/workflows/ffi-xcframework.yml"], "false", "true"),
@@ -152,6 +167,23 @@ class RoutingTests(unittest.TestCase):
                 output = classify(paths)
                 self.assertEqual(output["docs_only"], docs)
                 self.assertEqual(output["workflow_only"], workflows)
+
+    def test_docs_read_by_crates_leave_the_docs_only_path(self):
+        # A quoted docs/ path in Rust source is a test fixture or an embedded
+        # input; editing it must run the lane that reads it.
+        literal = re.compile(r'"(?:\.\./)*(docs/[^"\s{}]+)"')
+        read = set()
+        for source in (ROOT / "crates").rglob("*.rs"):
+            for match in literal.finditer(source.read_text(encoding="utf-8")):
+                if (ROOT / match.group(1)).exists():
+                    read.add(match.group(1).rstrip("/"))
+        self.assertTrue(read)
+        for path in sorted(read):
+            probe = path if (ROOT / path).is_file() else path + "/probe"
+            with self.subTest(path=path):
+                outputs = classify([probe])
+                self.assertEqual(outputs["docs_only"], "false")
+                self.assertEqual(outputs["phux_needed"], "true")
 
     def test_affected_crate_filterset_is_fail_safe(self):
         # Empty or unmappable -> full pool. Crate-only diffs emit exact rdeps.
