@@ -315,13 +315,14 @@ fn validate(text: &str, key: &str, path: &Path) -> Result<(), ConfigError> {
 ///
 /// A symlink is followed (the link survives) and the target's permissions
 /// are copied. `before_rename` runs after the fsync and may veto the
-/// publication; the temp file is removed on any failure. Shared with the
-/// machine registries.
-#[allow(
-    clippy::redundant_pub_crate,
-    reason = "private module helper; pub would trip unreachable_pub"
-)]
-pub(crate) fn replace_atomically(
+/// publication; the temp file is removed on any failure. Every writer of a
+/// user config file goes through here: settings edits, the machine
+/// registries, and the CLI's plugin registry.
+///
+/// # Errors
+///
+/// Any filesystem failure, or the error `before_rename` returns.
+pub fn replace_atomically(
     path: &Path,
     text: &str,
     before_rename: impl FnOnce() -> std::io::Result<()>,
