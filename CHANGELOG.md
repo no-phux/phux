@@ -9,6 +9,19 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.65.0](https://github.com/no-phux/phux/compare/v0.64.0...v0.65.0) (2026-10-14)
+
+
+### Features
+
+* **site:** refine landing depth and native terminal styling ([#1317](https://github.com/no-phux/phux/issues/1317)) ([b9d58dc](https://github.com/no-phux/phux/commit/b9d58dc8c83cc19682ade126ac12c0e92c12b2ab))
+
+
+### Bug Fixes
+
+* finish the 2026-10-13 landing seams (org store, import, upload lane, docs) ([#1318](https://github.com/no-phux/phux/issues/1318)) ([2aff3b7](https://github.com/no-phux/phux/commit/2aff3b7ddbc22ba56ac656d55fa437557f59dd10))
+* **server:** close session members only after the store commit ([#1296](https://github.com/no-phux/phux/issues/1296)) ([b9eeb4c](https://github.com/no-phux/phux/commit/b9eeb4c508953d54478f9c0694ce8cfdd452506f))
+
 ## [0.64.0](https://github.com/no-phux/phux/compare/v0.63.0...v0.64.0) (2026-10-14)
 
 
