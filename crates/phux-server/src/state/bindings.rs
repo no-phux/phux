@@ -19,6 +19,33 @@ use phux_protocol::wire::frame::CloseReason;
 
 use super::ServerState;
 
+/// Targets still in the registry, then their descendants, in parent-before-child
+/// order. `reason` is the targets'; descendants are `ParentClosed`.
+fn planned_closes(
+    s: &ServerState,
+    targets: &[ResourceId],
+    reason: CloseReason,
+) -> Vec<(ResourceId, CloseReason)> {
+    let mut closing = Vec::new();
+    for target in targets {
+        if s.sessions.registry.resource(*target).is_none() {
+            continue;
+        }
+        if !closing.iter().any(|(id, _)| id == target) {
+            closing.push((*target, reason));
+        }
+    }
+    let roots: Vec<ResourceId> = closing.iter().map(|(id, _)| *id).collect();
+    for parent in roots {
+        for child in s.resource_descendants(parent) {
+            if !closing.iter().any(|(id, _)| *id == child) {
+                closing.push((child, CloseReason::ParentClosed));
+            }
+        }
+    }
+    closing
+}
+
 impl ServerState {
     /// `parent`'s descendants, breadth-first.
     #[must_use]
@@ -120,6 +147,15 @@ impl ServerState {
         u32::try_from(closing.len()).unwrap_or(u32::MAX)
     }
 
+    /// Resources a close of `targets` would claim: each target still in the
+    /// registry, then its descendants, parents before children.
+    pub(crate) fn resources_closing_with(&self, targets: &[ResourceId]) -> Vec<ResourceId> {
+        planned_closes(self, targets, CloseReason::Killed)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    }
+
     /// Record why `targets` and their descendants close and cancel their
     /// actors, without reaping. Returns every closing resource, each after
     /// its parent, so a reverse walk closes children first.
@@ -129,23 +165,7 @@ impl ServerState {
         reason: CloseReason,
         attribution: super::CloseAttribution,
     ) -> Vec<ResourceId> {
-        let mut closing: Vec<(ResourceId, CloseReason)> = Vec::new();
-        for target in targets {
-            if self.sessions.registry.resource(*target).is_none() {
-                continue;
-            }
-            if !closing.iter().any(|(id, _)| id == target) {
-                closing.push((*target, reason));
-            }
-        }
-        let roots: Vec<ResourceId> = closing.iter().map(|(id, _)| *id).collect();
-        for parent in roots {
-            for child in self.resource_descendants(parent) {
-                if !closing.iter().any(|(id, _)| *id == child) {
-                    closing.push((child, CloseReason::ParentClosed));
-                }
-            }
-        }
+        let closing = planned_closes(self, targets, reason);
         let mut closed = Vec::with_capacity(closing.len());
         for (resource, reason) in closing {
             self.mark_resource_closing(resource, reason);

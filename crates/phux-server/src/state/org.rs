@@ -11,11 +11,13 @@
 //! `ActivationLost`) commit as [`Actor::system`]; core refuses them from
 //! anyone else.
 
+use std::collections::HashSet;
+
 use phux_core::ids::{ResourceId, SessionId};
 use phux_core::{
     Actor, AgentLaunch, Applied, Command, Committed, ExecState, ExitOutcome, ExitPolicy, FreshKeys,
     InstanceId, LaunchSpec, NewResource, Op, OperationId, Org, Outcome, PrincipalId, ProcIdentity,
-    Refusal, ResourceKind, SessionLifetime, Stamp, TerminalLaunch,
+    Refusal, ResourceKey, ResourceKind, SessionLifetime, Stamp, TerminalLaunch,
 };
 
 use super::{ClientId, ServerState};
@@ -59,6 +61,10 @@ pub(super) struct OrgSide {
     /// outcome and leaves the record to its exit policy instead of removing
     /// it, as a legacy kill does.
     terminating: std::collections::HashSet<ResourceId>,
+    /// Members a `SESSION_KILL` has already deleted in the store. Reaping
+    /// their engines must not write another transition: memory still has the
+    /// records, and that write would put the rows back.
+    retirement_suppressed: HashSet<ResourceKey>,
 }
 
 impl OrgSide {
@@ -69,7 +75,25 @@ impl OrgSide {
             shutting_down: false,
             loaded: false,
             terminating: std::collections::HashSet::new(),
+            retirement_suppressed: HashSet::new(),
         }
+    }
+}
+
+/// A command whose store write has been decided, before memory mirrors it.
+#[must_use]
+pub(crate) struct PersistedCommit {
+    applied: Applied,
+    now: Stamp,
+    /// `false` for a replay: the store was not written and memory must stay
+    /// as it is.
+    stored: bool,
+}
+
+impl PersistedCommit {
+    /// Whether the store accepted a new transition. A replay is `false`.
+    pub(crate) const fn stored(&self) -> bool {
+        self.stored
     }
 }
 
@@ -235,6 +259,25 @@ impl ServerState {
         actor: &Actor,
         client: Option<ClientId>,
     ) -> Result<OrgCommit, Refusal> {
+        let persisted = self.persist_command_from(cmd, actor, 0)?;
+        Ok(self.mirror_persisted(persisted, actor, client))
+    }
+
+    /// Apply `cmd` and commit it to the store, without mirroring it into
+    /// memory. `leading_journal` is how many journal records the caller will
+    /// write before this transition's own events (a `SESSION_KILL` journals
+    /// each closed engine's `pane_closed` first); the stored position
+    /// includes them.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::commit`]. A store failure leaves memory unchanged.
+    pub(crate) fn persist_command_from(
+        &mut self,
+        cmd: &Command,
+        actor: &Actor,
+        leading_journal: u64,
+    ) -> Result<PersistedCommit, Refusal> {
         let now = now_stamp();
         let applied = phux_core::apply(
             self.sessions.registry.org(),
@@ -244,12 +287,14 @@ impl ServerState {
             &mut self.org.keys,
         )?;
         if applied.replayed {
-            return Ok(OrgCommit {
+            return Ok(PersistedCommit {
                 applied,
-                handles: Committed::default(),
+                now,
+                stored: false,
             });
         }
-        // The journal position after this commit's events are recorded.
+        // The journal position after this commit's events are recorded,
+        // counting records the caller journals ahead of them.
         let journaled = applied
             .transition
             .events
@@ -259,11 +304,34 @@ impl ServerState {
         let journal_seq = self
             .journal
             .head()
-            .saturating_add(u64::try_from(journaled).unwrap_or(u64::MAX));
+            .saturating_add(u64::try_from(journaled).unwrap_or(u64::MAX))
+            .saturating_add(leading_journal);
         if let Err(error) = self.org.store.commit(&applied.transition, journal_seq, now) {
             tracing::error!(%error, operation = %cmd.operation, "org store commit failed; refused");
             return Err(store_refusal(&error));
         }
+        Ok(PersistedCommit {
+            applied,
+            now,
+            stored: true,
+        })
+    }
+
+    /// Mirror a [`Self::persist_command_from`] result into the registry and
+    /// the journal. A replay changes nothing.
+    pub(crate) fn mirror_persisted(
+        &mut self,
+        persisted: PersistedCommit,
+        actor: &Actor,
+        client: Option<ClientId>,
+    ) -> OrgCommit {
+        if !persisted.stored {
+            return OrgCommit {
+                applied: persisted.applied,
+                handles: Committed::default(),
+            };
+        }
+        let PersistedCommit { applied, now, .. } = persisted;
         let handles = self.sessions.registry.commit(&applied.transition);
         if applied.transition.receipt.is_some() {
             let floor = Stamp(now.as_millis().saturating_sub(RECEIPT_HORIZON_MS));
@@ -271,7 +339,19 @@ impl ServerState {
         }
         self.after_commit(&applied.transition, &handles);
         self.journal_org_events(&applied, actor, client);
-        Ok(OrgCommit { applied, handles })
+        OrgCommit { applied, handles }
+    }
+
+    /// Hold `retire_record` off these keys until
+    /// [`Self::clear_retirement_suppression`].
+    pub(crate) fn suppress_retirement(&mut self, keys: &[ResourceKey]) {
+        self.org.retirement_suppressed.clear();
+        self.org.retirement_suppressed.extend(keys.iter().copied());
+    }
+
+    /// Let [`Self::retire_record`] write again.
+    pub(crate) fn clear_retirement_suppression(&mut self) {
+        self.org.retirement_suppressed.clear();
     }
 
     /// Journal a committed transition's events (ADR-0123), stamped with the
@@ -543,6 +623,16 @@ impl ServerState {
     /// leaves records for the next start to reconcile.
     pub(crate) fn retire_record(&mut self, resource: ResourceId, outcome: ExitOutcome) {
         if self.org.shutting_down {
+            return;
+        }
+        // The key's removal is already durable. Writing it again would apply
+        // against memory that still has the row.
+        if self
+            .sessions
+            .registry
+            .resource_key(resource)
+            .is_some_and(|key| self.org.retirement_suppressed.contains(&key))
+        {
             return;
         }
         self.activation_ended(resource, outcome, false);
