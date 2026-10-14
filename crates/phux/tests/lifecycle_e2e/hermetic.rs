@@ -1,7 +1,10 @@
 //! The private environment the remote-dial lifecycle suites run under:
 //! their own config, state, and runtime dirs, and no ssh or overlay probe.
 
-#![allow(unreachable_pub, reason = "shared by sibling suites in this test binary")]
+#![allow(
+    unreachable_pub,
+    reason = "shared by sibling suites in this test binary"
+)]
 #![allow(clippy::expect_used, reason = "tests")]
 
 use std::path::{Path, PathBuf};
