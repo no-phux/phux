@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.0](https://github.com/no-phux/phux/compare/desktop-v0.1.0...desktop-v0.2.0) (2026-10-14)
+
+
+### Features
+
+* **desktop:** glass chrome, headerless panes, pane motion and image paste ([#1249](https://github.com/no-phux/phux/issues/1249)) ([43d2133](https://github.com/no-phux/phux/commit/43d21332aaf421fe7fe9ffed39dd0735caf6c60b))
+
+
+### Bug Fixes
+
+* **desktop:** preserve terminal Tab input before focus traversal ([#1255](https://github.com/no-phux/phux/issues/1255)) ([d02aa56](https://github.com/no-phux/phux/commit/d02aa5631033c292ea046c77c0f3ea00de5f06ce))
+* **desktop:** retain explicit Tab shortcuts in terminal context ([#1261](https://github.com/no-phux/phux/issues/1261)) ([03556d4](https://github.com/no-phux/phux/commit/03556d4627fadf631e109d42b6ab239923fbab63))
+
 ## [0.1.0](https://github.com/no-phux/phux/compare/desktop-v0.1.0-alpha.17...desktop-v0.1.0) (2026-10-14)
 
 
