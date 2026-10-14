@@ -3,14 +3,13 @@
 //! Deliberately a SEPARATE binary target (`required-features =
 //! ["dhat-heap"]` in Cargo.toml) rather than a `#[cfg(feature =
 //! "dhat-heap")]` branch inside the `phux` binary's own `main`. See
-//! `src/lib.rs`'s module doc ("Why this is a library crate") for the full
-//! story: dhat's `Profiler` guard unconditionally `eprintln!`s a shutdown
-//! summary with no way to silence it through dhat's public API, so having
-//! this allocator swap live inside the `phux` binary meant `cargo test -p
-//! phux --all-features` built the exact binary integration tests spawn via
-//! `CARGO_BIN_EXE_phux` with a profiler wired in — and every test asserting
-//! clean stderr would flake. Keeping it in a separate binary means the
-//! `dhat-heap` feature no longer touches the `phux` binary AT ALL, so
+//! `src/lib.rs`'s module doc: dhat's `Profiler` guard unconditionally
+//! `eprintln!`s a shutdown summary with no way to silence it through dhat's
+//! public API. Inside the `phux` binary, `cargo test -p phux --all-features`
+//! would build the exact binary integration tests spawn via
+//! `CARGO_BIN_EXE_phux` with a profiler wired in, and every test asserting
+//! clean stderr would flake. As a separate binary, the `dhat-heap` feature
+//! never touches the `phux` binary, so
 //! `--all-features` is safe to combine with `cargo test` regardless of
 //! which features are on.
 //!
