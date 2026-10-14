@@ -177,6 +177,11 @@ unlabelled or double-labelled bead exits 1.
   argued in [`docs/adr/0061`](./docs/adr/0061-capabilities-add-versions-break.md).
   The `ServerFeature` u32 is closed; the next bit is the trailing word in
   [`docs/adr/0137`](./docs/adr/0137-server-feature-word-extends.md).
+  The desktop app and Cockpit link the protocol, so a `major.minor` bump also
+  updates `clients/desktop/phux-protocol` and `clients/cockpit/phux-protocol`
+  in the same commit. A test enforces it, and that edit is what makes
+  release-please ship both apps with the new protocol, so their in-app
+  updaters have a compatible build to offer.
 - **Do not document what you did not build.** In `docs/spec/` and
   `docs/consumers/`, a surface the reference implementation does not provide
   carries an `impl-status` marker naming a code symbol, and `just docs-check`
