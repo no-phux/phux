@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/no-phux/phux/compare/desktop-v0.2.0...desktop-v0.3.0) (2026-10-14)
+
+
+### Features
+
+* **desktop:** one notification feed behind a titlebar bell ([#1279](https://github.com/no-phux/phux/issues/1279)) ([7732e1d](https://github.com/no-phux/phux/commit/7732e1db279f849e66bda3ebde9e8f548e0e3f4c))
+
 ## [0.2.0](https://github.com/no-phux/phux/compare/desktop-v0.1.0...desktop-v0.2.0) (2026-10-14)
 
 
