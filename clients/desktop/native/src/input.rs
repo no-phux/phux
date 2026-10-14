@@ -728,7 +728,7 @@ impl EntityInputHandler for TerminalInput {
     }
 
     fn paste(&mut self, item: ClipboardItem, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = item.text() {
+        if let Some(text) = crate::attach::clipboard_paste(&item) {
             let result = self.paste_text(&text, window, cx).map(|_| ());
             self.record(result);
         }

@@ -13,6 +13,10 @@ pub struct Settings {
     pub line_height: f32,
     pub foreground: Option<Hsla>,
     pub background: Option<Hsla>,
+    /// The host already paints [`Self::background`] behind the whole pane, so
+    /// the painter leaves default-background cells unfilled. A different
+    /// default (reverse video, OSC 11) is still filled.
+    pub host_fills_background: bool,
     pub selection_foreground: Hsla,
     /// The theme's 16 ANSI colours; `None` keeps the terminal's own palette.
     pub palette: Option<[Hsla; 16]>,
@@ -40,6 +44,7 @@ impl Default for Settings {
             line_height: 1.25,
             foreground: None,
             background: None,
+            host_fills_background: false,
             selection_foreground: rgb(0xffffff).into(),
             palette: None,
             cell_width_scale: 1.,
@@ -67,6 +72,7 @@ impl Settings {
             && self.cell_height_scale == other.cell_height_scale
             && self.foreground == other.foreground
             && self.background == other.background
+            && self.host_fills_background == other.host_fills_background
             && self.selection_foreground == other.selection_foreground
             && self.selection_background == other.selection_background
             && self.palette == other.palette

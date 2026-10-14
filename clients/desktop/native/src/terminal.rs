@@ -11,15 +11,14 @@ mod paint;
 pub mod settings;
 
 use std::cell::RefCell;
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use crate::presentation::{self, Ticket};
 use gpui::{
-    Context, EventEmitter, ExternalPaths, FocusHandle, MouseButton, Render, SharedString, Window,
-    canvas, div, prelude::*,
+    Context, EventEmitter, FocusHandle, MouseButton, Render, SharedString, Window, canvas, div,
+    prelude::*,
 };
 use phux_client_runtime::{Client, ViewId, publication::GridFrame};
 use phux_protocol::ResourceId;
@@ -31,10 +30,8 @@ pub use settings::Settings;
 /// Shell-facing signals that are not input. Pointer delivery stays native.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TerminalEvent {
-    /// A primary click chose this pane.
+    /// A primary click chose this pane. File drops are the pane's, not the surface's.
     Activated,
-    /// The OS dropped these paths on the surface.
-    PathsDropped(Vec<PathBuf>),
 }
 
 /// A terminal view bound to one runtime publication.
@@ -292,9 +289,6 @@ impl Render for Terminal {
                     cx.stop_propagation();
                 }
             })
-            .on_drop(cx.listener(|_this, paths: &ExternalPaths, _window, cx| {
-                cx.emit(TerminalEvent::PathsDropped(paths.paths().to_vec()));
-            }))
             .child(
                 canvas(
                     move |bounds, window, cx| paint::prepare(frame, settings, bounds, &scene, window, cx),

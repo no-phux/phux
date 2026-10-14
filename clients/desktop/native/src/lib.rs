@@ -6,6 +6,7 @@
 //! - [`launch`]: process entry. CLI options, installed-CLI resolution, log
 //!   file, platform and Kit initialization, evidence and perf sinks.
 //! - [`app`]: windows, commands, chrome and overlays.
+//! - [`attach`]: dropped files and clipboard images as pasteable paths.
 //! - [`workspace`] / [`settings`]: tabs, splits, persistence and preferences,
 //!   with no GPUI types so they test without a window.
 //! - [`connection`]: one runtime [`phux_client_runtime::Client`] per window and
@@ -16,6 +17,7 @@
 //!   drawable-presented evidence for qualification runs.
 
 pub mod app;
+pub mod attach;
 pub mod chrome;
 pub mod connection;
 pub mod diag;

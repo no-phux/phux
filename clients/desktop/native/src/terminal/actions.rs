@@ -40,7 +40,7 @@ pub(super) fn run(action: HostAction, input: &gpui::Entity<TerminalInput>, cx: &
         HostAction::Paste => {
             let text = cx
                 .read_from_clipboard()
-                .and_then(|item| item.text())
+                .and_then(|item| crate::attach::clipboard_paste(&item))
                 .unwrap_or_default();
             if !text.is_empty() {
                 input.update(cx, |state, _| {

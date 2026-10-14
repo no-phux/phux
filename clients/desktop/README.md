@@ -130,10 +130,18 @@ would leave input encoding and every other client on the old state, so it
 waits for a protocol request. `vt` and `html` copy and write formats are
 another.
 
-Drag split dividers, the sidebar edge, or tabs to rearrange; double-click a tab
-to rename it and a pane header to zoom. Cycling panes, directional navigation,
-and revealing a terminal keep the zoom on the pane receiving keyboard input.
-Dropping files onto a terminal pastes their shell-quoted paths. **Insert Path**
+The window is one sheet of glass over the desktop blur; panes float on it as
+cards with no header. Move the pointer to a pane's top edge for its controls
+(split, zoom, close; double-click the capsule to zoom). Drag the gap between
+panes, the sidebar edge, or tabs to rearrange; double-click a tab to rename it.
+Splits grow in and closed panes fold away; the PTY is resized once, when the
+motion settles. Cycling panes, directional navigation, and revealing a
+terminal keep the zoom on the pane receiving keyboard input.
+Dropping files onto a pane pastes their shell-quoted paths, and Command-V of a
+copied file pastes its path rather than its name. Command-V of a clipboard
+image (a screenshot, a copied picture) saves it under the temporary directory
+and pastes that path, which Claude Code, Codex and similar agents read as an
+image attachment. These are this Mac's paths, also for a remote pane. **Insert Path**
 lists paths on the host that runs
 the focused terminal (a satellite's own disk for a satellite pane), never this
 Mac's; it needs a server that advertises `PATH_QUERY`. Enter types the chosen
