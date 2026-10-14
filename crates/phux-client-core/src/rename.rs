@@ -1,10 +1,10 @@
-//! One session-rename policy for every frontend.
+//! Shared session-rename planning and framing.
 //!
 //! Against a server that advertises `ORGANIZATION`, a rename is one
 //! `SESSION_RENAME` naming the session's key ([`org_rename_command`]); the
-//! last writer wins, and its `COMMITTED` or `REFUSED` reply is the
-//! outcome ([`org_rename_verdict`]), and a resend after a lost reply reuses
-//! the operation id.
+//! last writer wins, its `COMMITTED` or `REFUSED` reply is the outcome, and a
+//! resend after a lost reply reuses the operation id. Each caller classifies
+//! that reply through its own organization outcome path.
 //!
 //! Against an older server, a rename is a `SET_METADATA` of
 //! `phux.session.name/v1` (`current\0new`). The server applies it and
@@ -25,8 +25,7 @@
 
 use phux_protocol::ids::{OperationId, SessionId, SessionKey};
 use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, FrameKind, Refusal, SESSION_NAME_KEY, Scope, StateScope,
-    encode_session_rename,
+    Command, FrameKind, SESSION_NAME_KEY, Scope, StateScope, encode_session_rename,
 };
 
 /// A session the rename policy can see: its stable id and its current name.
@@ -222,23 +221,6 @@ pub fn org_rename_command(operation: OperationId, session: SessionKey, new_name:
     }
 }
 
-/// What a `SESSION_RENAME` reply says, as a [`BarrierVerdict`] plus the
-/// refusal when there was one: `COMMITTED` applied; `NOT_FOUND` is gone;
-/// any other refusal (a taken name, a conflicting revision) did not apply.
-#[must_use]
-pub fn org_rename_verdict(result: &CommandResult) -> (BarrierVerdict, Option<Refusal>) {
-    match result {
-        CommandResult::OkWith(CommandValue::Committed(_)) | CommandResult::Ok => {
-            (BarrierVerdict::Applied, None)
-        }
-        CommandResult::Refused(Refusal::NotFound) => {
-            (BarrierVerdict::Gone, Some(Refusal::NotFound))
-        }
-        CommandResult::Refused(refusal) => (BarrierVerdict::NotApplied, Some(refusal.clone())),
-        _ => (BarrierVerdict::NotApplied, None),
-    }
-}
-
 /// What the barrier snapshot says about the session that was renamed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BarrierVerdict {
@@ -422,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn org_rename_names_the_key_and_reads_the_reply() {
+    fn org_rename_names_the_key() {
         let operation = OperationId::new([1; 16]).unwrap();
         let session = SessionKey::new([2; 16]).unwrap();
         assert_eq!(
@@ -432,24 +414,6 @@ mod tests {
                 session,
                 name: "notes".to_owned(),
             }
-        );
-        let committed = CommandResult::OkWith(CommandValue::Committed(Box::new(
-            phux_protocol::wire::frame::Committed::new(
-                operation,
-                phux_protocol::ids::Revision::new(5),
-            ),
-        )));
-        assert_eq!(
-            org_rename_verdict(&committed),
-            (BarrierVerdict::Applied, None)
-        );
-        assert_eq!(
-            org_rename_verdict(&CommandResult::Refused(Refusal::NameTaken)),
-            (BarrierVerdict::NotApplied, Some(Refusal::NameTaken))
-        );
-        assert_eq!(
-            org_rename_verdict(&CommandResult::Refused(Refusal::NotFound)).0,
-            BarrierVerdict::Gone
         );
     }
 
