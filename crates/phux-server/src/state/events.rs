@@ -520,11 +520,8 @@ impl ServerState {
         Some(entry.seq())
     }
 
-    /// Stamp and deliver an event a hub relays from a satellite (L1 §7.3),
-    /// with this server's `seq`, to that satellite Terminal's subscribers.
-    /// The satellite's actor does not cross (it names a satellite
-    /// connection) unless [`Self::record_relayed_event_as`] knows the
-    /// consumer. Not retained: satellite cursors are answered with a gap.
+    /// [`Self::record_relayed_event_as`] with no known consumer.
+    #[cfg(test)]
     pub fn record_relayed_event(
         &mut self,
         terminal: WireResourceId,
@@ -534,9 +531,13 @@ impl ServerState {
         self.record_relayed_event_as(terminal, event, satellite, None)
     }
 
-    /// [`Self::record_relayed_event`] attributed to `actor` (the consumer
-    /// whose keyed operation caused it, L1 §9.1). A relayed
-    /// `RESOURCE_CLOSED` first withdraws holds on that Terminal (ADR-0128).
+    /// Stamp and deliver an event a hub relays from a satellite (L1 §7.3),
+    /// with this server's `seq`, to that satellite Terminal's subscribers.
+    /// The satellite's actor does not cross (it names a satellite
+    /// connection); `actor` is the consumer whose keyed operation caused it
+    /// (L1 §9.1), when known. A relayed `RESOURCE_CLOSED` first withdraws
+    /// holds on that Terminal (ADR-0128). Not retained: satellite cursors are
+    /// answered with a gap.
     pub fn record_relayed_event_as(
         &mut self,
         terminal: WireResourceId,

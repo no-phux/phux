@@ -153,8 +153,8 @@ impl ServerState {
         Ok(())
     }
 
-    /// Swap in another store, keeping the records. Tests use it to inject
-    /// write failures.
+    /// Swap in another store, keeping the records, to inject write failures.
+    #[cfg(test)]
     pub fn set_org_store(&mut self, store: Box<dyn OrgStore>) {
         self.org.store = store;
     }
