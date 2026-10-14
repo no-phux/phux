@@ -8,6 +8,24 @@ import release from "../lib/release.json";
 const cliInstall = "curl -fsSL https://phux.sh/install | sh";
 const desktopInstall = "curl -fsSL https://phux.sh/install-desktop | sh";
 const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
+// Build-time snapshot; site-deploy.yml rebuilds on every published release.
+const day = new Intl.DateTimeFormat("en", { month: "short", day: "numeric", timeZone: "UTC" });
+const latest = [
+  { name: "CLI", release },
+  { name: "Desktop", release: release.desktop },
+  { name: "Cockpit", release: release.cockpit },
+].flatMap(({ name, release: r }) => r?.tag && r.url ? [{
+  name,
+  version: r.tag.replace(/^[a-z]+-/, ""),
+  url: r.url,
+  date: r.publishedAt ? day.format(new Date(r.publishedAt)) : "",
+}] : []);
+const projectLinks = [
+  { label: "Releases", href: `${SITE.github}/releases` },
+  { label: "Changelog", href: `${SITE.github}/blob/main/CHANGELOG.md` },
+  { label: "Pull requests", href: `${SITE.github}/pulls?q=is%3Apr+sort%3Aupdated-desc` },
+  { label: "Commits", href: `${SITE.github}/commits/main` },
+];
 const features = [
   { href: "/concepts", title: "Keep work running.", text: "Detach, close the window, come back. Your shells stay alive." },
   { href: "/consumers/getting-started", title: "Let agents work.", text: "Read output, send input, and wait for events through the CLI or MCP." },
@@ -26,11 +44,32 @@ const features = [
         <code>{cliInstall}</code>
         <button type="button" data-copy={cliInstall} aria-label="Copy install command">Copy</button>
       </div>
-      <p class="release">
-        macOS &amp; Linux{release.tag && <> · <a href={release.url}>{release.tag}</a></>}
+      <div class="release">
+        macOS &amp; Linux
+        <span aria-hidden="true"> · </span>
+        <details class="latest">
+          <summary>{release.tag ?? "Latest"}<span aria-hidden="true"> ▾</span></summary>
+          <div class="latest-panel">
+            {latest.length > 0 && (
+              <ul>
+                {latest.map((item) => (
+                  <li>
+                    <a href={item.url}>{item.name} <b>{item.version}</b></a>
+                    {item.date && <time>{item.date}</time>}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p>
+              {projectLinks.map((link, i) => (
+                <>{i > 0 && <span aria-hidden="true"> · </span>}<a href={link.href}>{link.label}</a></>
+              ))}
+            </p>
+          </div>
+        </details>
         <span aria-hidden="true"> · </span>
         <a href={docsHref("/quickstart/install")}>Other installs</a>
-      </p>
+      </div>
       <p class="copy-status" role="status" aria-live="polite"></p>
     </section>
 
@@ -65,6 +104,17 @@ const features = [
       releaseUrl: facts.dataset.releaseUrl ?? "",
     });
   }
+  // The latest-releases popover closes on Escape or a click outside it.
+  const latest = document.querySelector<HTMLDetailsElement>("details.latest");
+  document.addEventListener("click", (event) => {
+    if (latest?.open && !latest.contains(event.target as Node)) latest.open = false;
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && latest?.open) {
+      latest.open = false;
+      latest.querySelector("summary")?.focus();
+    }
+  });
   const button = document.querySelector<HTMLButtonElement>("[data-copy]");
   const status = document.querySelector<HTMLElement>(".copy-status");
   button?.addEventListener("click", async () => {
@@ -91,6 +141,18 @@ const features = [
   .install button:hover { color: var(--color-fg); }
   .release { margin: 12px 0 0; color: var(--color-dim); font-size: 12px; }
   .release a:hover, .terminal-note a:hover { text-decoration: underline; }
+  .latest { position: relative; display: inline-block; }
+  .latest summary { display: inline; list-style: none; cursor: pointer; color: var(--color-muted); }
+  .latest summary::-webkit-details-marker { display: none; }
+  .latest summary:hover, .latest[open] summary { color: var(--color-fg); }
+  .latest-panel { position: absolute; z-index: 10; top: calc(100% + 8px); left: 50%; transform: translateX(-50%); width: max-content; max-width: min(320px, calc(100vw - 32px)); padding: 12px 14px; border: 1px solid var(--color-rule); background: var(--color-surface); text-align: left; }
+  .latest-panel ul { margin: 0 0 10px; padding: 0; list-style: none; display: grid; gap: 6px; }
+  .latest-panel li { display: flex; justify-content: space-between; gap: 24px; font-size: 13px; }
+  .latest-panel li a { color: var(--color-fg); }
+  .latest-panel b { font-family: var(--font-code); font-weight: 500; }
+  .latest-panel time { color: var(--color-dim); }
+  .latest-panel p { margin: 0; padding-top: 10px; border-top: 1px solid var(--color-rule); }
+  .latest-panel p a { color: var(--color-muted); }
   .copy-status { min-height: 20px; margin: 4px 0 0; color: var(--color-muted); font-size: 12px; }
   .terminal { margin-top: 28px; }
   .terminal-note { margin: 12px 0 0; text-align: center; color: var(--color-dim); font-size: 12px; }
