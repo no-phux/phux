@@ -2265,10 +2265,11 @@ fn header_button(
 fn status_bar(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl IntoElement {
     let (label, tone) = desk.connection_label();
     let unhealthy = desk.unhealthy();
-    let scrolled = desk
-        .focused_view()
-        .and_then(|view| desk.client().and_then(|client| client.acquire_view(view)))
-        .is_some_and(|frame| !frame.scrollbar.at_tail());
+    let scrolled = desk.session_is_attached()
+        && desk
+            .focused_view()
+            .and_then(|view| desk.client().and_then(|client| client.acquire_view(view)))
+            .is_some_and(|frame| !frame.scrollbar.at_tail());
     let pending = desk
         .link
         .as_ref()

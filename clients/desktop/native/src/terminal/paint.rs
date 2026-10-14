@@ -233,14 +233,24 @@ pub(super) fn prepare(
             prepared.scene = Some(scene);
         }
         Err(error) => {
-            // Nothing left to repaint: release the last frame and its scene.
-            cache.borrow_mut().take();
+            // A rejected reacquire is not a blank. The last scene stays while
+            // its bounds still match, so a reconnect does not flash the pane.
             prepared.report.error = Some(error);
+            if let Some(scene) = scene_at(cache, bounds) {
+                prepared.layers = opacity_layers(&scene, window, cx);
+                prepared.scene = Some(scene);
+            }
         }
     }
     prepared.report.prepare_micros = started.elapsed().as_micros();
     crate::perf::PREPARE.record_elapsed(started);
     prepared
+}
+
+/// The cached scene when a reacquire failed but the pane has not moved.
+fn scene_at(cache: &SceneCache, bounds: Bounds<Pixels>) -> Option<Rc<Scene>> {
+    let scene = Rc::clone(cache.borrow().as_ref()?);
+    (scene.bounds == bounds).then_some(scene)
 }
 
 /// The cached scene when it still paints these inputs, else a new one.

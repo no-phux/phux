@@ -451,7 +451,11 @@ impl Desk {
         };
         crate::diag::DRAIN_EVENTS.add(events.len() as u64);
         if answers.is_empty() && paint_batch(&events) {
-            self.repaint_terminals(&events, cx);
+            // Output while the socket is down would reacquire, fail, and
+            // blank the pane. The cached view keeps the last frame.
+            if self.session_is_attached() {
+                self.repaint_terminals(&events, cx);
+            }
             return;
         }
         self.adopt_session_layout(cx);
@@ -502,6 +506,9 @@ impl Desk {
         }
         self.persist_if_changed();
         self.ensure_clock(cx);
+        if events.iter().any(crate::connection::session_attached) {
+            self.panes.notify_all(cx);
+        }
         cx.notify();
     }
 
@@ -2687,6 +2694,13 @@ impl Desk {
             Status::Failed => ("Not connected".into(), Tone::Bad),
             Status::Closed => ("Disconnected".into(), Tone::Bad),
         }
+    }
+
+    /// The session is attached, so a terminal reacquire can paint.
+    pub(crate) fn session_is_attached(&self) -> bool {
+        self.link
+            .as_ref()
+            .is_some_and(|link| link.connection.status == Status::Attached)
     }
 
     /// Whether the connection needs the user to reconnect.

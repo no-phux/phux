@@ -46,8 +46,12 @@ cursor's old and new rows. A frame that is that screen scrolled by whole rows
 moves the kept rows and reshapes only the rows that entered. That search runs
 when most rows would otherwise be reshaped. The terminal is a cached GPUI
 view, so a chrome refresh reuses that paint until the terminal itself is
-notified. An ASCII run is one shaped line on the cell grid, not one paint
-call per glyph. Missing slots and a dropped client clear the canvas.
+notified. The desk withholds that notification until the session is
+attached, then notifies the placed terminals once. A rejected reacquire
+keeps the last scene while the bounds still match, so a reconnect does not
+blank the pane. A missing scene, or bounds that no longer match, clears
+the canvas. An ASCII run is one shaped line on the cell grid, not one paint
+call per glyph.
 Projection acknowledgement belongs to [PRESENTATION.md](PRESENTATION.md).
 
 ## Geometry and text

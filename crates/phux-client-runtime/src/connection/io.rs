@@ -70,6 +70,22 @@ impl Io {
         }
     }
 
+    /// Write a batch. A byte stream is one `write_all` of the same bytes in
+    /// order (one syscall). WebSocket stays one message per frame.
+    pub(super) async fn write_frames(
+        &mut self,
+        name: &str,
+        frames: &[Vec<u8>],
+    ) -> Result<(), String> {
+        if let Self::Stream { writer, .. } = self {
+            return write_stream_batch(writer.as_mut(), name, frames).await;
+        }
+        for frame in frames {
+            self.write_frame(name, frame).await?;
+        }
+        Ok(())
+    }
+
     /// A liveness probe: a WebSocket ping, or a protocol `PING` the server
     /// answers with `PONG` on the byte-stream lanes.
     pub(super) async fn probe(&mut self, name: &str) -> Result<(), String> {
@@ -117,6 +133,32 @@ impl Io {
             endpoint.close(quinn::VarInt::from_u32(0), b"");
         }
     }
+}
+
+async fn write_stream_batch(
+    writer: &mut (dyn AsyncWrite + Unpin + Send),
+    name: &str,
+    frames: &[Vec<u8>],
+) -> Result<(), String> {
+    let failed = |error| format!("{name}: send failed: {error}");
+    match frames {
+        [] => Ok(()),
+        [frame] => writer.write_all(frame).await.map_err(failed),
+        many => writer.write_all(&join_frames(many)).await.map_err(failed),
+    }
+}
+
+/// Several frames, in order, as one buffer.
+fn join_frames(frames: &[Vec<u8>]) -> Vec<u8> {
+    let mut len = 0;
+    for frame in frames {
+        len += frame.len();
+    }
+    let mut out = Vec::with_capacity(len);
+    for frame in frames {
+        out.extend_from_slice(frame);
+    }
+    out
 }
 
 /// The unspecified address of `addr`'s family, port 0: what a fresh
@@ -384,5 +426,11 @@ mod tests {
             FrameKind::decode(second.last().expect("last frame")).expect("frame decodes");
         assert!(tail.is_empty());
         assert!(matches!(last_frame, FrameKind::Ping { nonce: 299 }));
+    }
+
+    #[test]
+    fn joined_frames_keep_order() {
+        assert_eq!(join_frames(&[]), Vec::<u8>::new());
+        assert_eq!(join_frames(&[vec![1, 2], vec![], vec![3]]), vec![1, 2, 3]);
     }
 }
