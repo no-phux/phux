@@ -2,9 +2,9 @@
 source: crates/phux-tui/src/attach/driver/tests.rs
 expression: all
 ---
- Sessions        1 ├────────────────────────────────────────────────────────────
- ○ probe-sess      │PANE-BASE
-   ● w1-agent      │
+ Agents            ├────────────────────────────────────────────────────────────
+   none need you   │PANE-BASE
+                   │
                    │
                    │
                    │
@@ -14,9 +14,9 @@ expression: all
                    ││ detach                                                   │
                    ││ new-window                                               │
                    ││                                                          │
-                   ││                                                          │
-                   ││                                                          │
-                   ││                                                          │
+ Sessions        1 ││                                                          │
+ ○ probe-sess      ││                                                          │
+   ● w1-agent      ││                                                          │
                    ││                                                          │
                    ││                                                          │
                    │╰──────────────────────────────────────────────────────────╯

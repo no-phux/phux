@@ -134,6 +134,8 @@ struct HeadlessChrome {
     /// The configured `[theme]`: the sidebar strip and the dividers paint
     /// with it, as on the glass.
     theme: crate::render::Theme,
+    /// The configured `[sidebar] agents-share` percent the strip reserves.
+    agents_share: u8,
     /// The status-bar painter, absent when the config disables it.
     status_bar: Option<StatusBarPainter>,
 }
@@ -153,6 +155,7 @@ fn headless_chrome(viewport_dims: (u16, u16)) -> HeadlessChrome {
     HeadlessChrome {
         sidebar,
         theme: settings.theme,
+        agents_share: settings.sidebar.agents_share,
         status_bar: settings.status_bar,
     }
 }
@@ -172,6 +175,8 @@ struct HeadlessSession {
     sidebar: Option<SidebarReservation>,
     /// The configured `[theme]` the chrome paints with.
     theme: crate::render::Theme,
+    /// The configured `[sidebar] agents-share` percent the strip reserves.
+    agents_share: u8,
     /// The caller-supplied viewport; there is no TTY to ask.
     viewport_dims: (u16, u16),
     /// Pane cwd + branch memo so the composited sidebar carries
@@ -197,6 +202,7 @@ impl HeadlessSession {
             status_bar: chrome.status_bar,
             sidebar: chrome.sidebar,
             theme: chrome.theme,
+            agents_share: chrome.agents_share,
             viewport_dims,
             vcs: VcsIndex::default(),
         }
@@ -276,7 +282,8 @@ impl HeadlessSession {
         }
         // Feed the same window list into the strip painter so the
         // composited frame shows the sidebar tabs when `[sidebar]` is enabled.
-        let mut sidebar_painter = SidebarPainter::new(self.theme);
+        let mut sidebar_painter =
+            SidebarPainter::new(self.theme).with_agents_share(self.agents_share);
         sidebar_painter.set_windows(windows);
         let mut session = crate::render::chrome::sidebar::SessionRosterEntry {
             name: mirror.session_name.clone(),
@@ -765,6 +772,7 @@ mod sidebar_tests {
                 width: 32,
             }),
             theme: crate::render::Theme::default(),
+            agents_share: crate::render::chrome::sidebar::DEFAULT_AGENTS_SHARE,
             status_bar: None,
         };
         let mut session = HeadlessSession::new(kernel, chrome, (100, 24));
@@ -791,18 +799,29 @@ mod sidebar_tests {
             })
             .collect();
         // The blocked agent shows once, as its tab's badge; the session row
-        // counts it and no Agents section repeats it.
-        assert!(
-            rows[1].contains("work") && rows[1].contains("●1"),
-            "{rows:?}"
-        );
-        assert!(rows[2].contains("● reviewer"), "{rows:?}");
+        // counts it and the (empty) Agents panel does not repeat it.
+        let work_row = rows
+            .iter()
+            .position(|row| row.contains("work"))
+            .expect("session row");
+        assert!(rows[work_row].contains("●1"), "{rows:?}");
+        let tab_row = rows
+            .iter()
+            .position(|row| row.contains("reviewer"))
+            .expect("tab row");
+        assert!(rows[tab_row].contains("● reviewer"), "{rows:?}");
         assert_eq!(
             rows.iter().filter(|row| row.contains("reviewer")).count(),
             1,
             "{rows:?}"
         );
-        assert!(!rows.iter().any(|row| row.contains("Agents")), "{rows:?}");
+        // ADR-0112: the Agents panel keeps its header and quiet placeholder.
+        assert!(rows.iter().any(|row| row.contains("Agents")), "{rows:?}");
+        assert!(
+            rows.iter()
+                .any(|row| row.contains(crate::render::chrome::sidebar::AGENTS_EMPTY_LABEL)),
+            "{rows:?}"
+        );
     }
 
     /// The composite's dividers paint with the configured theme, as the
@@ -823,6 +842,7 @@ mod sidebar_tests {
         let chrome = HeadlessChrome {
             sidebar: None,
             theme,
+            agents_share: crate::render::chrome::sidebar::DEFAULT_AGENTS_SHARE,
             status_bar: None,
         };
         let mut session = HeadlessSession::new(kernel, chrome, (80, 24));

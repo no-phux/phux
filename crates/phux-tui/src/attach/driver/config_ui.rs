@@ -74,7 +74,8 @@ pub(super) fn adopt_config_reload(
             overlays.set_theme(&settings.theme);
             // A fresh painter carries the new theme and repaints everything.
             *sidebar_painter = SidebarPainter::new(settings.theme)
-                .with_plugin_specs(settings.plugin_sidebar.clone());
+                .with_plugin_specs(settings.plugin_sidebar.clone())
+                .with_agents_share(settings.sidebar.agents_share);
             true
         }
         Err(msg) => {

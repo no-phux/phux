@@ -77,6 +77,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `notifications.suppress-focused` | `true` |
 | `notifications.terminal-protocol` | `"auto"` |
 | `policy.mode` | unset — transitional: every admitted connection holds the owner's full grant, and a remote listener is warned about at startup. `local` admits the owner socket only; `paired` requires an enrolled workload certificate on every TLS connection |
+| `sidebar.agents-share` | `50` |
 | `sidebar.enabled` | `true` |
 | `sidebar.hosts` | `true` |
 | `sidebar.hosts-refresh-secs` | `10` |
@@ -703,10 +704,18 @@ right = [
 # and the agents dashboard (`prefix A`, or the status bar's `agents` chip)
 # is the navigation surface — it opens full-screen there.
 #
+# Agents on top and Sessions below share the body at a fixed line (ADR-0112):
+# `agents-share` is the Agents panel's percent of the body, half (50) by
+# default, whatever the agent population. Gaining or resolving an agent never
+# moves Sessions; an empty Agents panel keeps its header and a quiet
+# placeholder. Set `agents-share = 0` to drop the panel and give Sessions the
+# whole strip.
+#
 # [sidebar]
 # enabled = true
 # width = 20
 # position = "left"
+# agents-share = 50
 
 # Responsive-chrome breakpoints. The chrome adapts to small terminals
 # around three thresholds; these move them without moving the behaviour.

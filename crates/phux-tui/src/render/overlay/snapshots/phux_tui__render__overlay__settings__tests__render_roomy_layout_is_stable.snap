@@ -12,9 +12,9 @@ expression: "render_text(&page, 100, 30)"
                │  Defaults         │   enabled                        true  default │
                │  Keybindings      │ • width                            40      you │
                │  Status bar       │   position                       left  default │
-               │ ▸Sidebar        1 │   hosts                          true  default │
-               │  Chrome           │   hosts-refresh-secs               10  default │
-               │  Notifications    │                                                │
+               │ ▸Sidebar        1 │   agents-share                     50  default │
+               │  Chrome           │   hosts                          true  default │
+               │  Notifications    │   hosts-refresh-secs               10  default │
                │  Theme            │                                                │
                │  Experimental     │                                                │
                │  Voice            │                                                │
