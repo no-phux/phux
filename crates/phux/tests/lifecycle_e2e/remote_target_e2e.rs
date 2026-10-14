@@ -349,6 +349,33 @@ fn code_rung_registers_from_a_connect_link_without_ssh() {
     );
 }
 
+/// A link that also carries `quic=` keeps that route beside its `wss://`
+/// url, so the attach (and every later one) promotes it once it answers.
+/// Nothing answers on TEST-NET, so the entry stays on WebSocket here.
+#[test]
+#[ignore = "spawns a PTY-backed binary; runs in the e2e lane"]
+fn code_rung_keeps_the_links_quic_route_for_promotion() {
+    let home = RemoteHome::new();
+    let no_ssh = home.dir.path().join("no-such-ssh");
+    let link = format!(
+        "https://phux.sh/connect?url=wss://{OVERLAY}:8787&quic=quic://{OVERLAY}:8788\
+         &fp={FINGERPRINT}&token={TOKEN}"
+    );
+
+    home.run_until(
+        &["attach", "--remote", "mini", "--code", &link],
+        &no_ssh,
+        "needs no code",
+    );
+
+    let config = home.config();
+    assert!(
+        config.contains(&format!("endpoint = \"wss://{OVERLAY}:8787\""))
+            && config.contains(&format!("direct = \"quic://{OVERLAY}:8788\"")),
+        "an unanswered QUIC route is kept beside the url; config={config}"
+    );
+}
+
 /// A malformed code is refused before anything is written. A half-registered
 /// host with an orphaned bearer token would be worse than a clean failure.
 #[test]

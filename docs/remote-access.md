@@ -145,13 +145,14 @@ phux host ls                         # remotes and satellites together
 phux host show mini                  # inspect its route and auth references
 phux host attach mini                # same repair-aware path as phux attach mini
 phux host renew mini                 # replace its workload client certificate
+phux host upgrade                    # move every wss:// remote whose QUIC answers onto QUIC
 phux host rename mini desk           # rename the local label, keep credentials
 phux host disable edge               # pause a satellite without forgetting it
 phux host enable edge                # resume it
 phux host rm desk                    # forget the entry; token file stays put
 ```
 
-`ls`, `show`, `rename`, `renew`, `enable`, `disable`, and `rm` accept `--json`.
+`ls`, `show`, `rename`, `renew`, `upgrade`, `enable`, `disable`, and `rm` accept `--json`.
 `attach` is interactive. `show`, `rename`, and `rm` accept
 `--role remote|satellite` when the same name exists in both registries;
 without it they refuse to guess. Enable/disable apply only to satellites.
@@ -178,8 +179,9 @@ A deliberate `phux kill --server` on `mini` leaves its service stopped.
 The next `phux attach mini` (or `phux --remote mini`) tries these recovery
 steps:
 
-1. Dial the saved route. An `ssh://` entry tries its retained `direct` route
-   first and promotes it if reachable.
+1. Dial the saved route. An `ssh://` or `wss://` entry first tries its QUIC
+   route and promotes it if reachable
+   ([Moving a host onto QUIC](#moving-a-host-onto-quic)).
 2. If unreachable, start the server over `ssh me@mini` and retry with the
    saved credentials.
 3. If still refused, re-pair over SSH and rewrite the entry.
@@ -214,10 +216,41 @@ On a terminal `phux pair` also renders the same link as a QR for phones
 (`--no-qr` leaves it out; `phux pair --qr` shows the QR alone, for filming).
 When the live QUIC listener
 is reachable from a device, the link adds `quic=quic://HOST:PORT`; `url=` stays
-as the WSS fallback for old app builds and is what the CLI currently registers.
-The mobile app prefers `quic` when present. `--code` also accepts
+as the WSS fallback for old app builds. The CLI registers `url=` with the
+`quic=` route kept beside it, and moves the entry onto QUIC as soon as that
+route answers, normally on the attach that follows the paste. The mobile app
+dials `quic` when present. `--code` also accepts
 `phux://connect?...`, the spelling printed for older app builds. The link
 registers the target's name; later attaches need no code.
+
+### Moving a host onto QUIC
+
+QUIC is the preferred transport: it survives roaming and network changes,
+and WebSocket remains for networks that filter UDP. A server binds both
+listeners with one certificate and one token store, so a `wss://` entry's
+credentials work over QUIC unchanged. Hosts paired before the CLI kept the
+QUIC route (or by hand with `wss://`) move over on their own:
+
+- **On attach.** `phux attach NAME` tries the entry's QUIC route first: its
+  kept `direct` route, else the same host on `8788` (guessed only beside the
+  default `8787` and never for a loopback address). If the route answers
+  within about 1.5 seconds, the entry is rewritten to `quic://` and the attach
+  goes over QUIC. Otherwise the attach dials the saved `wss://` route as
+  before. A typed `--remote HOST:PORT` skips this: the port is for that dial.
+- **On demand.** `phux host upgrade [NAME]` does the same with the full probe
+  wait and reports each host: `upgraded`, `already_quic`, `no_route` (a
+  relay route, plaintext `ws://`, a loopback or non-default-port `wss://`
+  with no kept route, an `ssh://` entry with no paired route, or no readable
+  token file), `unreachable`, or `not_saved`. It exits 1 when a route failed. `--json`
+  emits `{"schema_version":1,"hosts":[{name, status, previous_endpoint,
+  endpoint, candidate, error}]}`.
+
+To see what a host uses, read the scheme in the `ENDPOINT` column of
+`phux host ls`. To see what a live connection used, run
+`phux whoami --remote NAME`: `auth_route` is `bearer-quic` or `bearer-wss`.
+An entry that stays on WebSocket after `host upgrade` usually means UDP 8788
+is filtered between the machines, or the server has no QUIC listener;
+`phux doctor` on the host reports its listeners.
 
 `PORT` on a `--remote` target defaults to `8788`, the port a server auto-binds
 on its overlay address

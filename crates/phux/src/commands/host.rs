@@ -44,6 +44,10 @@
 //! `phux host renew NAME` enrolls a fresh workload client certificate for a
 //! registered remote over ssh; like a re-enrolling `host add`, it records
 //! the new pair before revoking the old credential ([`enroll::settle_identity`]).
+//! `phux host upgrade [NAME]` moves remotes whose QUIC route answers onto
+//! it ([`super::remote_target::upgrade_to_quic`]); `--json` emits
+//! `{"schema_version":1,"hosts":[{"name","status","previous_endpoint",
+//! "endpoint","candidate","error"}]}`.
 //! Failures follow the shared JSON error contract in [`super::json_err`].
 
 use std::path::{Path, PathBuf};
@@ -59,7 +63,7 @@ use super::enroll::{
 };
 use super::json_err::{self, CliError, codes};
 use super::remote::{self, Endpoint, RemoteEntry};
-use super::remote_target::{RemoteTarget, endpoint_host};
+use super::remote_target::{QuicUpgrade, RemoteTarget, endpoint_host, upgrade_to_quic};
 use super::satellite as satellite_registry;
 use super::service;
 
@@ -273,6 +277,24 @@ pub(crate) enum HostAction {
         json: JsonOpt,
     },
 
+    /// Move registered remotes from `wss://` (or ssh) onto QUIC.
+    ///
+    /// For each remote, or just NAME, dials its QUIC route with the saved
+    /// token and pin: a kept direct route, else (beside the default
+    /// `wss://HOST:8787`, not on loopback) the same host on port 8788, where
+    /// the server binds QUIC beside WebSocket with the same certificate and
+    /// tokens. When it answers, the entry is rewritten to
+    /// `quic://`; otherwise it is left as it was. An attach does the same
+    /// automatically, with a shorter wait; this verb is the explicit,
+    /// reported form. `phux host ls` shows each entry's transport.
+    Upgrade {
+        /// Registered remote name. Omitted: every remote.
+        name: Option<String>,
+
+        #[usage(flatten)]
+        json: JsonOpt,
+    },
+
     /// Attach to a registered remote host (same as `phux attach NAME`).
     Attach {
         /// Registered remote name.
@@ -317,6 +339,7 @@ pub(crate) fn run_host(action: &HostAction) -> ExitCode {
             remote_phux,
             json,
         } => run_renew(name, remote_phux, json.json),
+        HostAction::Upgrade { name, json } => run_upgrade(name.as_deref(), json.json),
         HostAction::Attach { name } => run_attach(name),
         HostAction::Enable { name, json } => run_enabled(name, true, json.json),
         HostAction::Disable { name, json } => run_enabled(name, false, json.json),
@@ -342,7 +365,8 @@ struct HostRow {
     session: Option<String>,
     /// Remote only: the ssh destination the entry was enrolled through.
     ssh: Option<String>,
-    /// Remote only: a paired direct route kept beside an `ssh://` endpoint.
+    /// Remote only: a paired direct route kept beside an `ssh://` or `wss://`
+    /// endpoint.
     direct: Option<String>,
     /// Remote only: the enrolled workload client certificate chain.
     client_cert: Option<PathBuf>,
@@ -1564,7 +1588,7 @@ fn run_show(name: &str, role: Option<HostRole>, json: bool) -> ExitCode {
         outln!("  SSH: {ssh}");
     }
     if let Some(direct) = row.direct {
-        outln!("  Direct fallback: {direct}");
+        outln!("  Direct route (tried first): {direct}");
     }
     if let Some(cert) = row.client_cert {
         outln!("  Client certificate: {}", cert.display());
@@ -1757,6 +1781,116 @@ fn report_renewed(row: &HostRow, enrollment: &EnrollmentReport, json: bool) -> E
         row.name
     );
     ExitCode::SUCCESS
+}
+
+/// `phux host upgrade [NAME]`: move every remote (or NAME) whose QUIC route
+/// answers onto it, and report each one. Exits nonzero when a route that
+/// should have answered did not, or its rewrite failed.
+fn run_upgrade(name: Option<&str>, json: bool) -> ExitCode {
+    let entries = match remote::load_registry() {
+        Ok(entries) => entries,
+        Err(err) => return json_err::emit(json, &registry_failure(err), 1),
+    };
+    let mut picked = entries;
+    if let Some(name) = name {
+        picked.retain(|entry| entry.name == name);
+        if picked.is_empty() {
+            let err = CliError::new(
+                codes::REGISTRY,
+                format!("no remote host named {name:?}"),
+                "`phux host ls --role remote` lists remotes",
+            );
+            return json_err::emit(json, &err, 1);
+        }
+    }
+    let deadline = enroll::probe_deadline();
+    let results: Vec<(RemoteEntry, QuicUpgrade)> = picked
+        .into_iter()
+        .map(|entry| {
+            let outcome = upgrade_to_quic(&entry, deadline);
+            (entry, outcome)
+        })
+        .collect();
+    let failed = results.iter().any(|(_, outcome)| {
+        matches!(
+            outcome,
+            QuicUpgrade::Unreachable { .. } | QuicUpgrade::NotSaved { .. }
+        )
+    });
+    if json {
+        let hosts: Vec<_> = results
+            .iter()
+            .map(|(entry, outcome)| upgrade_json(entry, outcome))
+            .collect();
+        let written = crate::output::json(&serde_json::json!({"schema_version": 1, "hosts": hosts}));
+        return if failed { ExitCode::FAILURE } else { written };
+    }
+    if results.is_empty() {
+        outln!("no remote hosts registered; `phux host add HOST` adds one");
+    } else {
+        for (entry, outcome) in &results {
+            outln!("{}", upgrade_line(entry, outcome));
+        }
+    }
+    if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// One `host upgrade` result as a stable JSON object: `status` is
+/// `upgraded`, `already_quic`, `no_route`, `unreachable`, or `not_saved`,
+/// and `endpoint` is what the entry dials now.
+fn upgrade_json(entry: &RemoteEntry, outcome: &QuicUpgrade) -> serde_json::Value {
+    let (status, endpoint, candidate, error) = match outcome {
+        QuicUpgrade::AlreadyQuic => ("already_quic", entry.endpoint.as_str(), None, None),
+        QuicUpgrade::NoRoute => ("no_route", entry.endpoint.as_str(), None, None),
+        QuicUpgrade::Unreachable { candidate, error } => (
+            "unreachable",
+            entry.endpoint.as_str(),
+            Some(candidate),
+            Some(error),
+        ),
+        QuicUpgrade::NotSaved { candidate, error } => (
+            "not_saved",
+            entry.endpoint.as_str(),
+            Some(candidate),
+            Some(error),
+        ),
+        QuicUpgrade::Upgraded { to, .. } => ("upgraded", to.as_str(), Some(to), None),
+    };
+    serde_json::json!({
+        "name": entry.name,
+        "status": status,
+        "previous_endpoint": entry.endpoint,
+        "endpoint": endpoint,
+        "candidate": candidate,
+        "error": error,
+    })
+}
+
+/// One `host upgrade` result for a person.
+fn upgrade_line(entry: &RemoteEntry, outcome: &QuicUpgrade) -> String {
+    let name = &entry.name;
+    let endpoint = &entry.endpoint;
+    match outcome {
+        QuicUpgrade::Upgraded { from, to } => format!("{name}: upgraded {from} -> {to}"),
+        QuicUpgrade::AlreadyQuic => format!("{name}: already on QUIC ({endpoint})"),
+        QuicUpgrade::NoRoute => format!(
+            "{name}: no QUIC route to try from {endpoint}; `phux host add {name}` over ssh \
+             pairs one"
+        ),
+        QuicUpgrade::Unreachable { candidate, error } => format!(
+            "{name}: staying on {endpoint}; QUIC at {candidate} failed ({error}). \
+             Check UDP {} is open to the host and that its server binds QUIC \
+             (`phux doctor` there)",
+            candidate.rsplit(':').next().unwrap_or("8788")
+        ),
+        QuicUpgrade::NotSaved { candidate, error } => format!(
+            "{name}: QUIC at {candidate} answers, but the entry could not be rewritten: {error}"
+        ),
+    }
 }
 
 fn run_attach(name: &str) -> ExitCode {

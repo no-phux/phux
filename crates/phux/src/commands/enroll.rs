@@ -1727,7 +1727,7 @@ pub(crate) fn authority(host: &str, port: u16) -> String {
 }
 
 /// How long one probe dial may take: [`PROBE_DEADLINE`], or the test seam.
-fn probe_deadline() -> Duration {
+pub(crate) fn probe_deadline() -> Duration {
     std::env::var(PROBE_DEADLINE_ENV)
         .ok()
         .and_then(|raw| raw.trim().parse::<u64>().ok())
@@ -1744,6 +1744,26 @@ pub(crate) fn probe(
     authority: &phux_client_runtime::target::AuthorityPin,
     identity: Option<TlsClientIdentity>,
 ) -> Result<(), String> {
+    probe_within(
+        target,
+        token,
+        cert_fingerprint,
+        authority,
+        identity,
+        probe_deadline(),
+    )
+}
+
+/// [`probe`] with its own deadline, for a dial that must not hold an attach
+/// up for long.
+pub(crate) fn probe_within(
+    target: &str,
+    token: &str,
+    cert_fingerprint: Option<&str>,
+    authority: &phux_client_runtime::target::AuthorityPin,
+    identity: Option<TlsClientIdentity>,
+    deadline: Duration,
+) -> Result<(), String> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1758,7 +1778,6 @@ pub(crate) fn probe(
     .map_err(|refusal| format!("{refusal:?}"))?
     .with_identity(identity)
     .with_authority(authority);
-    let deadline = probe_deadline();
     rt.block_on(async {
         match tokio::time::timeout(deadline, Connection::connect_dial(&plan.dial)).await {
             Ok(Ok(_connection)) => Ok(()),

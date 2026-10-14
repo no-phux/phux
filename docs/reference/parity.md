@@ -103,6 +103,7 @@ Agent-facing verbs in the JSON index of `docs/consumers/agents.md` that have no 
 - `phux host add`: operator host-registry enrollment, not an agent action.
 - `phux host ls`: operator inventory of the host registry, not an agent action.
 - `phux host renew`: operator host-registry certificate renewal, not an agent action.
+- `phux host upgrade`: operator host-registry transport upgrade, not an agent action.
 - `phux pair`: mints a pairing secret; credential handling stays outside the model-facing set.
 - `phux mcp`: launches this adapter itself.
 - `phux deny`: `phux_approve` decides both ways: `decision: deny` is `phux deny` (ADR-0128).

@@ -328,10 +328,12 @@ impl NewRemote {
         self
     }
 
-    /// Keep a paired direct endpoint beside an `ssh://` route. Validated
-    /// like an endpoint, and dropped when the entry's own endpoint is
-    /// already direct: it would only duplicate it.
+    /// Keep a paired direct endpoint beside an `ssh://` route, or a paired
+    /// `quic://` one beside a `wss://` route; an attach tries it first and
+    /// promotes it once it answers. Validated like an endpoint, and dropped
+    /// where it could only duplicate or downgrade the entry's own endpoint.
     pub(crate) fn with_direct(mut self, direct: Option<&str>) -> Result<Self, String> {
+        let over_wss = self.endpoint.starts_with("wss://");
         self.direct = match direct.map(str::trim).filter(|s| !s.is_empty()) {
             Some(direct) if self.endpoint.starts_with("ssh://") => match Endpoint::parse(direct)? {
                 Endpoint::Quic(_) | Endpoint::Ws(_) => Some(direct.to_owned()),
@@ -340,6 +342,10 @@ impl NewRemote {
                         "direct endpoint {direct} must be quic:// or wss://, not ssh://"
                     ));
                 }
+            },
+            Some(direct) if over_wss => match Endpoint::parse(direct)? {
+                Endpoint::Quic(_) => Some(direct.to_owned()),
+                Endpoint::Ws(_) | Endpoint::Ssh(_) => None,
             },
             _ => None,
         };
@@ -636,6 +642,24 @@ mod tests {
                 .is_err(),
             "a candidate is validated like an endpoint"
         );
+    }
+
+    /// Beside a `wss://` route, only a `quic://` candidate is kept: it is the
+    /// upgrade a later attach promotes, and anything else is no upgrade.
+    #[test]
+    fn a_wss_route_keeps_only_a_quic_candidate() {
+        let fp = "ab".repeat(32);
+        let wss = || NewRemote::new("mini", "wss://100.64.0.7:8787", None, Some(&fp), None);
+        let kept = wss()
+            .expect("wss entry")
+            .with_direct(Some("quic://100.64.0.7:8788"))
+            .expect("a quic candidate is valid");
+        assert_eq!(kept.direct.as_deref(), Some("quic://100.64.0.7:8788"));
+        let sideways = wss()
+            .expect("wss entry")
+            .with_direct(Some("wss://100.64.0.7:9999"))
+            .expect("dropped, not refused");
+        assert_eq!(sideways.direct, None);
     }
 
     /// The destination a repair sshes to: the enrolled one first, then the
