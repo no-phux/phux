@@ -492,13 +492,17 @@ impl Desk {
         let Some(link) = self.link.as_mut() else {
             return;
         };
-        if self.remote.is_none()
-            && let Some(topology) = &link.connection.topology
-        {
-            self.desktop
-                .update(cx, |desktop, _| desktop.observe_topology(topology));
-        }
         let name = link.connection.session_name().to_owned();
+        if let Some(topology) = &link.connection.topology {
+            let desk = cx.entity_id();
+            let local = self.remote.is_none();
+            self.desktop.update(cx, |desktop, _| {
+                if local {
+                    desktop.observe_topology(topology);
+                }
+                desktop.sync_window_session(desk, &name);
+            });
+        }
         if self.session == name {
             return;
         }
