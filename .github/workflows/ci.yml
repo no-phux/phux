@@ -196,7 +196,8 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 30
+    # The objects export copies a multi-gigabyte store after the tests.
+    timeout-minutes: 45
     needs: changes
     if: needs.changes.outputs.phux_needed == 'true' && needs.changes.outputs.validated != 'true' && (github.event_name == 'push' || needs.changes.outputs.unit_mode != 'skip' || needs.changes.outputs.e2e_needed == 'true')
     steps:
