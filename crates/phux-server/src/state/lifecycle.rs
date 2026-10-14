@@ -2,7 +2,7 @@ use super::ServerState;
 
 impl ServerState {
     /// Record an accepted connection (disarms the idle clock).
-    pub fn note_connection_opened(&mut self) {
+    pub const fn note_connection_opened(&mut self) {
         self.lifecycle.note_connection_opened();
     }
 

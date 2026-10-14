@@ -25,10 +25,11 @@ use super::client::ClientId;
 use super::journal::{EventRecord, Journal, JournalEntry, NextEntry, now_unix_ms};
 use crate::mailbox::Outbound;
 
-/// Scope of an agent-event subscription: [`Self::Server`] (every local
-/// event) or [`Self::Terminal`] (that Terminal and its children's
-/// lifecycle edges, ADR-0104 §2). A satellite Terminal is only ever a
-/// Terminal scope.
+/// Scope of an agent-event subscription.
+///
+/// [`Self::Server`] is every local event; [`Self::Terminal`] is that
+/// Terminal and its children's lifecycle edges (ADR-0104 §2). A satellite
+/// Terminal is only ever a Terminal scope.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EventScope {
     /// Every event the server emits for a local resource.
@@ -339,7 +340,7 @@ impl EventSubscription {
         }
     }
 
-    fn advance_replay(&mut self, cursor: u64) {
+    const fn advance_replay(&mut self, cursor: u64) {
         if let Some(replay) = self.replay.as_mut() {
             replay.cursor = cursor;
         }
@@ -406,17 +407,17 @@ impl EventSubscription {
         let Some((cursor, leading_gap)) = start else {
             return;
         };
-        self.replay = Some(match self.replay {
-            // An already-pending replay keeps its (later) position.
-            Some(pending) => PendingReplay {
-                leading_gap: merge_gap(pending.leading_gap, leading_gap),
-                ..pending
-            },
-            None => PendingReplay {
+        // An already-pending replay keeps its (later) position.
+        self.replay = Some(self.replay.map_or(
+            PendingReplay {
                 cursor,
                 leading_gap,
             },
-        });
+            |pending| PendingReplay {
+                leading_gap: merge_gap(pending.leading_gap, leading_gap),
+                ..pending
+            },
+        ));
     }
 }
 
@@ -490,7 +491,7 @@ fn scope_covers_terminal(scope: &EventScope, terminal: &WireResourceId) -> bool 
 
 /// The per-subscription `journal_gap` notice (never journaled).
 #[must_use]
-pub fn journal_gap_frame(first_missing: u64, last_missing: u64) -> FrameKind {
+pub const fn journal_gap_frame(first_missing: u64, last_missing: u64) -> FrameKind {
     FrameKind::Event {
         terminal: None,
         event: AgentEvent::JournalGap {
