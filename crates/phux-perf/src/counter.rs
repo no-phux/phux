@@ -67,11 +67,6 @@ impl Gauge {
     pub fn get(&self) -> u64 {
         self.0.load(Relaxed)
     }
-
-    /// Return to zero.
-    pub fn reset(&self) {
-        self.0.store(0, Relaxed);
-    }
 }
 
 impl Default for Gauge {

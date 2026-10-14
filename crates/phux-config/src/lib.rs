@@ -55,8 +55,8 @@ pub use schema::{
     SidebarPosition, StatusCfg, StatusPosition, ThemeCfg, VoiceCfg, Widget, WidgetSpec, WindowSize,
 };
 pub use session_name::{
-    NameRng, RANDOM_NAME_PLACEHOLDER, random_name, render_session_name_template,
-    render_session_name_template_with, template_has_random_name,
+    NameRng, RANDOM_NAME_PLACEHOLDER, random_name, render_session_name_template_with,
+    template_has_random_name,
 };
 pub use settings::{
     Applies, CATALOG, Edit, EditOutcome, SettingKind, SettingSection, SettingSpec, SettingsSnapshot,

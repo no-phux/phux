@@ -180,7 +180,7 @@ fn now_unix_ms() -> u64 {
 /// Keep the last `limit` bytes of `text` (on a char boundary), prefixed by
 /// a marker naming how much was dropped.
 #[must_use]
-pub fn truncate_tail(text: &str, limit: usize) -> String {
+fn truncate_tail(text: &str, limit: usize) -> String {
     if text.len() <= limit {
         return text.to_owned();
     }
@@ -195,16 +195,6 @@ pub fn truncate_tail(text: &str, limit: usize) -> String {
 #[must_use]
 pub fn default_path() -> PathBuf {
     phux_config::instance::state_dir().join(RUN_LOG_FILE)
-}
-
-/// Append `record` to the current profile's log ([`default_path`]); see
-/// [`record_at`].
-///
-/// # Errors
-///
-/// As [`record_at`].
-pub fn record(record: &RunRecord) -> Result<(), String> {
-    record_at(&default_path(), record)
 }
 
 /// Append `record` to the log at `path`, refusing production state from a
@@ -229,7 +219,7 @@ pub async fn record_async(path: PathBuf, run: RunRecord) {
 /// # Errors
 ///
 /// When the file cannot be created, locked, written, or compacted.
-pub fn append(path: &Path, record: &RunRecord) -> io::Result<()> {
+fn append(path: &Path, record: &RunRecord) -> io::Result<()> {
     append_bounded(path, record, RUN_LOG_CAPACITY, COMPACT_AT_BYTES)
 }
 
