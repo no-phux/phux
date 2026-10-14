@@ -109,7 +109,7 @@ pub(super) fn dummy_outbound() -> (mpsc::Sender<Outbound>, mpsc::Receiver<Outbou
 pub(super) fn render_viewport(t: &GhosttyTerminal<'_, '_>) -> Vec<String> {
     use libghostty_vt::render::{CellIterator, RowIterator};
     use libghostty_vt::screen::CellWide;
-    let mut rs = RenderState::new().expect("RenderState::new");
+    let mut rs = libghostty_vt::RenderState::new().expect("RenderState::new");
     let snap = rs.update(t).expect("update");
     let rows_n = snap.rows().expect("rows");
     let mut rows = RowIterator::new().expect("RowIterator::new");

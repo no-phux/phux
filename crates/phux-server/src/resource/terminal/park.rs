@@ -424,12 +424,10 @@ enum Gathered {
     },
 }
 
-/// One `read(2)` and a probe that must not wait. Tests supply a script; the
-/// master uses `poll(2)` with a zero timeout.
+/// One nonblocking `read(2)`: `WouldBlock` when nothing is waiting. Tests
+/// supply a script.
 trait PtySource {
     fn pull(&mut self, dst: &mut [u8]) -> io::Result<usize>;
-    /// `true` when the next [`Self::pull`] returns without waiting.
-    fn ready_now(&mut self) -> bool;
 }
 
 struct MasterFile<'a> {
@@ -443,15 +441,6 @@ impl PtySource for MasterFile<'_> {
             note_read(n);
         }
         Ok(n)
-    }
-
-    fn ready_now(&mut self) -> bool {
-        // Hung up with no `POLLIN` still completes a read (EOF or `EIO`).
-        // Treating it as ready folds that tail into this wake.
-        matches!(
-            poll_readable(self.file, Duration::ZERO),
-            PollRead::Ready | PollRead::Hungup
-        )
     }
 }
 
@@ -502,9 +491,10 @@ fn pull_some<S: PtySource>(source: &mut S, scratch: &mut [u8], batch: &mut Bytes
 
 /// Drain until the next read would block or the batch cap is full.
 ///
-/// The first read is the one that woke the caller and may block. Every later
-/// read is taken only when [`PtySource::ready_now`] says it will not wait, so
-/// one short write is handed off with no timer.
+/// The master is `O_NONBLOCK`, so a read with nothing waiting returns
+/// `EAGAIN` at once: one short write is handed off with no timer, and a
+/// burst costs one syscall per read rather than a `poll(2)` before each.
+/// A hangup surfaces as EOF or `EIO` from the read itself.
 fn gather_wake<S: PtySource>(source: &mut S, scratch: &mut [u8], batch: &mut BytesMut) -> Gathered {
     prepare_batch(batch);
     match pull_some(source, scratch, batch) {
@@ -512,14 +502,13 @@ fn gather_wake<S: PtySource>(source: &mut S, scratch: &mut [u8], batch: &mut Byt
         Pull::Ended => return Gathered::Eof,
         Pull::Data => {}
     }
-    while readable_room(batch) > 0 && source.ready_now() {
+    loop {
         match pull_some(source, scratch, batch) {
             Pull::Data => {}
-            Pull::Blocked => break,
+            Pull::Blocked => return Gathered::Bytes { eof: false },
             Pull::Ended => return Gathered::Bytes { eof: true },
         }
     }
-    Gathered::Bytes { eof: false }
 }
 
 fn read_once(file: &mut File, tx: &mpsc::Sender<PtyEvent>) -> ReadStep {
@@ -1098,8 +1087,6 @@ mod coalesce_tests {
         Eof,
         Interrupted,
         Error(std::io::ErrorKind),
-        /// Parking here means the wake waited for another byte.
-        Hang,
     }
 
     struct Script {
@@ -1124,18 +1111,7 @@ mod coalesce_tests {
                     Err(std::io::Error::from(std::io::ErrorKind::Interrupted))
                 }
                 Some(Step::Error(kind)) => Err(std::io::Error::new(kind, "scripted read")),
-                Some(Step::Hang) => {
-                    std::thread::park();
-                    Err(std::io::Error::from(std::io::ErrorKind::WouldBlock))
-                }
                 None => Err(std::io::Error::from(std::io::ErrorKind::WouldBlock)),
-            }
-        }
-
-        fn ready_now(&mut self) -> bool {
-            match self.steps.front() {
-                Some(Step::Hang) | None => false,
-                Some(_) => true,
             }
         }
     }
@@ -1146,10 +1122,11 @@ mod coalesce_tests {
         chunk: usize,
     }
 
+    /// A writer that stays open: once drained, reads would block.
     impl PtySource for Pattern {
         fn pull(&mut self, dst: &mut [u8]) -> std::io::Result<usize> {
             if self.next >= self.end {
-                return Ok(0);
+                return Err(std::io::Error::from(std::io::ErrorKind::WouldBlock));
             }
             let n = dst.len().min(self.chunk).min(self.end - self.next);
             for (offset, byte) in dst[..n].iter_mut().enumerate() {
@@ -1157,10 +1134,6 @@ mod coalesce_tests {
             }
             self.next += n;
             Ok(n)
-        }
-
-        fn ready_now(&mut self) -> bool {
-            self.next < self.end
         }
     }
 
@@ -1184,8 +1157,8 @@ mod coalesce_tests {
         assert_eq!(gathered, Gathered::Bytes { eof: false });
         assert_eq!(&batch[..], b"one-two-three");
         assert_eq!(
-            script.pulls, 3,
-            "the wake must stop when the next read would block"
+            script.pulls, 4,
+            "the wake must stop at the first read that would block"
         );
 
         script.steps.push_back(Step::Data(b"-four".to_vec()));
@@ -1198,7 +1171,7 @@ mod coalesce_tests {
     fn a_single_small_read_is_handed_off_without_waiting() {
         let (gathered, bytes, pulls, elapsed) = within(Duration::from_secs(1), || {
             let mut script = Script {
-                steps: VecDeque::from([Step::Data(b"Z".to_vec()), Step::Hang]),
+                steps: VecDeque::from([Step::Data(b"Z".to_vec())]),
                 pulls: 0,
             };
             let mut batch = BytesMut::with_capacity(PTY_READ_BATCH);
@@ -1213,7 +1186,7 @@ mod coalesce_tests {
         });
         assert_eq!(gathered, Gathered::Bytes { eof: false });
         assert_eq!(bytes, b"Z");
-        assert_eq!(pulls, 1, "a second read would have waited for more input");
+        assert_eq!(pulls, 2, "the second read finds nothing and ends the wake");
         assert!(
             elapsed < Duration::from_millis(200),
             "a single byte must not sit on a coalesce timer, waited {elapsed:?}"
@@ -1244,7 +1217,7 @@ mod coalesce_tests {
                     got.extend_from_slice(&batch);
                     let _ = batch.split();
                 }
-                Gathered::Eof => break,
+                Gathered::Pending => break,
                 other => panic!("unexpected {other:?} after {} bytes", got.len()),
             }
         }
@@ -1298,9 +1271,12 @@ mod coalesce_tests {
         assert_eq!(&batch[..], b"xy");
     }
 
+    /// A pipe whose read end is nonblocking, as the PTY master is.
     fn pipe_pair() -> (File, File) {
         let (read, write) = nix::unistd::pipe().expect("pipe");
-        (File::from(read), File::from(write))
+        let read = File::from(read);
+        super::set_nonblock(&read).expect("nonblocking read end");
+        (read, File::from(write))
     }
 
     #[test]
@@ -1317,7 +1293,7 @@ mod coalesce_tests {
         assert_eq!(bytes, b"Z");
         assert!(
             elapsed < Duration::from_millis(200),
-            "poll-after-read must not wait, waited {elapsed:?}"
+            "the follow-up read must not wait, waited {elapsed:?}"
         );
     }
 

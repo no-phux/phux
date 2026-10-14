@@ -625,17 +625,6 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
             .collect())
     }
 
-    /// Refresh informational metadata through the same render cache as ticks.
-    /// A separate `RenderState` would consume canonical dirty bits and leave this
-    /// pool's row bodies stale when an ACK arrives between PTY output and a tick.
-    pub(crate) fn metadata_snapshot(
-        &mut self,
-        terminal: &GhosttyTerminal<'alloc, '_>,
-    ) -> Result<Snapshot<'alloc, '_>, SynthesisError> {
-        let generation = self.pool_walk_generation();
-        Ok(self.pool.begin(terminal, generation)?.snapshot)
-    }
-
     /// The generation every pooled walk passes to [`RenderPool::begin`],
     /// bumped first (forcing a rebuild) if a foreign walk drained the
     /// terminal's dirty bits since the last pooled walk. Every pooled reader
@@ -2846,8 +2835,7 @@ mod tests {
     }
 
     /// A tick after a one-row write re-renders that row only, and a clean
-    /// terminal re-renders nothing, while the metadata reader sharing the
-    /// pool leaves the row flags for the tick.
+    /// terminal re-renders nothing.
     #[test]
     fn prepare_tick_renders_only_rows_the_pool_rebuilt() {
         let mut t = fresh(10, 4);
@@ -2861,7 +2849,6 @@ mod tests {
         assert_eq!(synth.last_rendered_rows, 0, "a clean tick renders nothing");
 
         t.vt_write(b"TWO");
-        let _ = synth.metadata_snapshot(&t).expect("metadata read");
         synth.prepare_tick(&t).expect("partial tick");
         assert_eq!(synth.last_rendered_rows, 1, "only the written row");
         assert!(synth.tick_rows[1].starts_with(b"\x1b[0mTWO"));

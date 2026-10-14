@@ -1336,7 +1336,7 @@ mod input_snapshot_fast_path_tests {
 
     /// Plain echo bytes must not republish the snapshot. A CSI split across
     /// chunks still publishes on the chunk that completes it, and the next
-    /// letter goes quiet again.
+    /// letter goes quiet again. Only a changed snapshot is published.
     #[allow(
         clippy::future_not_send,
         reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
@@ -1366,9 +1366,9 @@ mod input_snapshot_fast_path_tests {
         feed(&mut actor, b"a").await;
         assert!(!snapshots.has_changed().expect("publisher alive"));
 
+        // An open sequence recaptures, but publishes only a real change.
         feed(&mut actor, b"\x1b").await;
-        assert!(snapshots.has_changed().expect("publisher alive"));
-        snapshots.borrow_and_update();
+        assert!(!snapshots.has_changed().expect("publisher alive"));
         assert!(snapshots.borrow().bracketed_paste);
 
         feed(&mut actor, b"[?2004l").await;
