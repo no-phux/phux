@@ -2835,7 +2835,7 @@ capturing anything. --speed-marked and --marker-labels apply when rendering a
 GIF or APNG; the .cast keeps original timing and asciicast `m` markers.
 
 `phux rec mark LABEL` posts a marker to every recording in progress (the same
-event as C-a M during `phux --rec`).
+event as the `rec-mark` action during `phux --rec`).
 
 Examples:
 phux rec -o demo.gif

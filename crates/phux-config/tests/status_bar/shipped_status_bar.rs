@@ -76,7 +76,7 @@ fn a_roomy_terminal_shows_the_whole_lineup() {
     assert!(!text.contains("S Settings"), "{text:?}");
     assert!(text.contains("phux"), "{text:?}");
     // The `switch` chip is for narrow terminals only.
-    assert!(!text.contains("switch"), "{text:?}");
+    assert!(!text.contains("agents"), "{text:?}");
 }
 
 /// Inactive tabs are dim text with no fill; the active tab is the lime
@@ -143,7 +143,7 @@ fn a_narrow_terminal_trades_context_for_an_affordance() {
     ];
     let text = shipped_text(46, "phux", &windows);
 
-    assert!(text.contains(" switch "), "{text:?}");
+    assert!(text.contains(" agents "), "{text:?}");
     assert!(!text.contains("C-a"), "no teaching strip: {text:?}");
     // The active tab is always visible, whole.
     assert!(text.contains("1 nvim"), "{text:?}");
@@ -164,7 +164,7 @@ fn the_switch_chip_is_clickable_across_its_padding() {
         .map(|(i, _)| i)
         .collect();
 
-    // " switch " is 8 cells, flush against the right edge.
+    // " agents " is 8 cells, flush against the right edge.
     assert_eq!(switch_cols.len(), 8, "{switch_cols:?}");
     assert_eq!(*switch_cols.last().expect("non-empty"), 45);
     // Contiguous: no inert gap inside the target.
@@ -180,7 +180,7 @@ fn the_two_right_slot_shapes_never_overlap() {
     let windows = [win("nvim", true)];
     for width in 20u16..=120 {
         let text = shipped_text(width, "sess", &windows);
-        let has_chip = text.contains(" switch ");
+        let has_chip = text.contains(" agents ");
         let has_clock = text.contains(':') && text.contains("sess");
         assert!(
             !(has_chip && has_clock),

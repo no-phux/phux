@@ -1,4 +1,4 @@
-//! Context-menu contents (ADR-0058): the pane, window, and session menus.
+//! Context-menu contents (ADR-0058): the pane, tab, and session menus.
 //! [`crate::render::overlay::menu`] owns how a menu looks. Every row commits
 //! a [`ResolvedAction`] through `run_action` (a test holds the names in
 //! lockstep) and shows its bound chord when there is one.
@@ -12,7 +12,7 @@ use crate::render::overlay::MenuRow;
 
 /// A menu's border title and its rows.
 pub(super) struct MenuSpec {
-    /// Border title — the target the menu acts on (`"pane"`, a window
+    /// Border title — the target the menu acts on (`"pane"`, a tab
     /// name, a session name).
     pub title: String,
     /// Rows, top to bottom.
@@ -31,7 +31,7 @@ pub(super) fn pane_menu(keybindings: Option<&KeybindingsCfg>, zoomed: bool) -> M
         ),
         row(
             keybindings,
-            "split down",
+            "split below",
             "split-pane",
             &[("direction", "horizontal")],
         ),
@@ -44,9 +44,7 @@ pub(super) fn pane_menu(keybindings: Option<&KeybindingsCfg>, zoomed: bool) -> M
         ),
         row(keybindings, "copy", "copy-mode", &[]),
         MenuRow::Separator,
-        row(keybindings, "commands", "command-palette", &[]),
-        MenuRow::Separator,
-        row(keybindings, "close view", "close-view", &[]),
+        row(keybindings, "hide (keeps running)", "close-view", &[]),
         row(keybindings, "kill", "kill-pane", &[]),
     ];
     MenuSpec {
@@ -55,24 +53,21 @@ pub(super) fn pane_menu(keybindings: Option<&KeybindingsCfg>, zoomed: bool) -> M
     }
 }
 
-/// The menu for a window. The caller has already made `name`'s window
-/// active (a right-click on a tab selects it first, exactly as a left
-/// click does), so the rows act on the active window with no target arg.
+/// The menu for a tab. The caller has already made `name`'s tab active (a
+/// right-click on a tab selects it first, exactly as a left click does), so
+/// the rows act on the active tab with no target arg.
 pub(super) fn window_menu(keybindings: Option<&KeybindingsCfg>, name: &str) -> MenuSpec {
     let rows = vec![
-        row(keybindings, "new window", "new-window", &[]),
+        row(keybindings, "new tab", "new-window", &[]),
         row(keybindings, "rename…", "rename-window", &[]),
-        row(keybindings, "windows", "window-picker", &[]),
         int_row(keybindings, "move left", "move-window", ("delta", -1)),
         int_row(keybindings, "move right", "move-window", ("delta", 1)),
-        MenuRow::Separator,
-        row(keybindings, "commands", "command-palette", &[]),
         MenuRow::Separator,
         row(keybindings, "kill…", "kill-window", &[]),
     ];
     MenuSpec {
         title: if name.is_empty() {
-            "window".to_owned()
+            "tab".to_owned()
         } else {
             name.to_owned()
         },
@@ -84,8 +79,7 @@ pub(super) fn window_menu(keybindings: Option<&KeybindingsCfg>, name: &str) -> M
 /// status bar outside the tabs. The broad "what can I do here" menu.
 pub(super) fn session_menu(keybindings: Option<&KeybindingsCfg>, session: &str) -> MenuSpec {
     let rows = vec![
-        row(keybindings, "new window", "new-window", &[]),
-        row(keybindings, "windows", "window-picker", &[]),
+        row(keybindings, "new tab", "new-window", &[]),
         row(keybindings, "sessions", "session-picker", &[]),
         row(keybindings, "rename…", "rename-session", &[]),
         row(keybindings, "kill session…", "kill-session", &[]),
@@ -96,9 +90,9 @@ pub(super) fn session_menu(keybindings: Option<&KeybindingsCfg>, session: &str) 
             &[],
         ),
         MenuRow::Separator,
-        row(keybindings, "fleet", "agent-fleet", &[]),
+        row(keybindings, "agents", "agent-fleet", &[]),
         row(keybindings, "settings", "settings", &[]),
-        row(keybindings, "commands", "show-help", &[]),
+        row(keybindings, "commands", "command-palette", &[]),
         row(keybindings, "sidebar", "toggle-sidebar", &[]),
         row(keybindings, "report", "report-bug", &[]),
         MenuRow::Separator,
@@ -218,9 +212,9 @@ mod tests {
             ("sessions", "session-picker"),
             ("kill session…", "kill-session"),
             ("delete empty session…", "delete-empty-session"),
-            ("fleet", "agent-fleet"),
+            ("agents", "agent-fleet"),
             ("settings", "settings"),
-            ("commands", "show-help"),
+            ("commands", "command-palette"),
         ] {
             assert!(rows.contains(&destination), "missing {destination:?}");
         }
@@ -263,7 +257,7 @@ mod tests {
         // `direction` names the divider, not the split axis: a vertical
         // divider puts the new pane on the right.
         assert_eq!(dir("split right"), "vertical");
-        assert_eq!(dir("split down"), "horizontal");
+        assert_eq!(dir("split below"), "horizontal");
     }
 
     #[test]
@@ -313,7 +307,7 @@ mod tests {
 
     #[test]
     fn a_nameless_target_still_gets_a_title() {
-        assert_eq!(window_menu(None, "").title, "window");
+        assert_eq!(window_menu(None, "").title, "tab");
         assert_eq!(session_menu(None, "").title, "session");
     }
 }

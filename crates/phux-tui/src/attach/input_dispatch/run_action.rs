@@ -36,13 +36,17 @@ use super::pickers::{
 
 /// Open the single fuzzy discovery surface. `show-help` and
 /// `command-palette` are entry aliases so users never have to choose between
-/// a reference modal and an executable finder.
+/// a reference modal and an executable finder. The recording marker row
+/// shows only while a recording is live.
 pub(super) fn push_action_finder(ctx: &mut DispatchCtx<'_>) {
-    let items = crate::attach::action_registry::palette_items(
+    let mut items = crate::attach::action_registry::palette_items(
         ctx.keybindings,
         ctx.plugin_actions,
         ctx.plugin_panes,
     );
+    if !phux_record::recording_live() {
+        items.retain(|item| item.action.action != "rec-mark");
+    }
     ctx.overlays
         .push(Box::new(SelectList::new("Commands", items, ctx.theme)));
 }
@@ -829,7 +833,7 @@ fn shown_elsewhere(ctx: &DispatchCtx<'_>, active: usize, leaf: &ResourceId) -> V
                     .as_ref()
                     .is_some_and(|tree| crate::layout::leaves(tree).contains(leaf))
         })
-        .map(|(_, group)| format!("window {}", group.name))
+        .map(|(_, group)| format!("tab {}", group.name))
         .collect();
     let mut sessions: Vec<String> = ctx
         .peers
@@ -1104,15 +1108,10 @@ fn report_bug(
     };
     match crate::report::write_bundle(&draft) {
         Ok(written) => {
-            let path = written.dir.display().to_string();
-            effects.clipboard = Some(path.clone());
+            effects.clipboard = Some(written.dir.display().to_string());
             ctx.overlays.push(Box::new(ToastOverlay::passthrough(
                 "bug report",
-                vec![
-                    format!("saved {}", written.id),
-                    path,
-                    "copied — phux report show".to_owned(),
-                ],
+                vec!["Bug report saved (path copied)".to_owned()],
                 ctx.theme,
             )));
         }

@@ -792,7 +792,7 @@ async fn attach_negotiation_rejects_non_hello_ok_reply() {
 const PROBE_SIDEBAR_W: u16 = 20;
 /// Distinctive sidebar window label and host; neither appears in pane text.
 const PROBE_WINDOW: &str = "w1-agent";
-const PROBE_HOST: &str = "probe-host";
+const PROBE_SESSION: &str = "probe-sess";
 const PROBE_PANE_TEXT: &str = "PANE-BASE";
 
 /// Replay `bytes` into a fresh terminal and project it to trimmed rows.
@@ -837,8 +837,8 @@ fn probe_window(name: &str, active: bool) -> WindowInfo {
 fn probe_sidebar(windows: &[WindowInfo]) -> SidebarPainter {
     let mut painter = SidebarPainter::new(crate::render::theme::Theme::default());
     painter.set_roster(vec![crate::render::chrome::sidebar::SessionRosterEntry {
-        name: "probe".to_owned(),
-        host: PROBE_HOST.to_owned(),
+        name: PROBE_SESSION.to_owned(),
+        host: "probe-host".to_owned(),
         active: true,
         selectable: true,
         ..Default::default()
@@ -905,7 +905,7 @@ fn shipped_frame_bar_degrades_gracefully_with_width() {
     let roomy = shipped_frame_rows((100, 12), &windows[..3], None);
     let bar = &roomy[0];
     assert!(bar.contains(" 1 nvim ") && bar.contains("phux"), "{bar:?}");
-    for absent in ["s Sessions", "S Settings", "switch"] {
+    for absent in ["s Sessions", "S Settings", "agents"] {
         assert!(!bar.contains(absent), "{bar:?}");
     }
     assert!(roomy.join("\n").contains(PROBE_PANE_TEXT));
@@ -914,7 +914,7 @@ fn shipped_frame_bar_degrades_gracefully_with_width() {
         let rows = shipped_frame_rows(view, &windows, None);
         let bar = &rows[0];
         assert!(bar.contains(" 1 nvim "), "active tab whole: {bar:?}");
-        assert!(bar.contains("switch"), "{bar:?}");
+        assert!(bar.contains("agents"), "{bar:?}");
         assert!(!bar.contains("Space palette"), "{bar:?}");
         assert!(bar.chars().count() <= usize::from(view.0), "{bar:?}");
         if collapsed {
@@ -950,7 +950,7 @@ fn shipped_frame_yields_the_sidebar_on_a_narrow_terminal() {
         rows.iter().any(|r| r.starts_with(PROBE_PANE_TEXT)),
         "{frame}"
     );
-    assert!(!frame.contains(PROBE_HOST), "{frame}");
+    assert!(!frame.contains(PROBE_SESSION), "{frame}");
     let rail = rows.iter().find(|r| r.contains('─')).expect("pane rail");
     assert!(
         rail.starts_with('─') && rail.chars().count() == usize::from(view.0),
@@ -1078,14 +1078,14 @@ fn palette_overlay() -> Box<dyn RenderOverlay> {
 fn command_palette_keeps_sidebar_visible() {
     let (_, blank) = overlay_frame(palette_overlay(), false);
     assert!(
-        !blank.contains(PROBE_WINDOW) && !blank.contains(PROBE_HOST),
+        !blank.contains(PROBE_WINDOW) && !blank.contains(PROBE_SESSION),
         "{blank}"
     );
 
     let (rows, strip) = overlay_frame(palette_overlay(), true);
     let all = rows.join("\n");
     assert!(
-        strip.contains(PROBE_WINDOW) && strip.contains(PROBE_HOST),
+        strip.contains(PROBE_WINDOW) && strip.contains(PROBE_SESSION),
         "{all}"
     );
     assert!(
@@ -1142,7 +1142,7 @@ fn all_floating_overlays_keep_sidebar_visible() {
         (
             "prompt",
             Box::new(crate::render::overlay::PromptOverlay::new(
-                "rename window",
+                "rename tab",
                 "rename-window",
                 "name",
                 "1",
@@ -1161,7 +1161,7 @@ fn all_floating_overlays_keep_sidebar_visible() {
     for (label, overlay) in overlays {
         let (rows, strip) = overlay_frame(overlay, true);
         assert!(
-            strip.contains(PROBE_WINDOW) && strip.contains(PROBE_HOST),
+            strip.contains(PROBE_WINDOW) && strip.contains(PROBE_SESSION),
             "{label}:\n{}",
             rows.join("\n")
         );

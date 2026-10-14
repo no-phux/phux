@@ -22,11 +22,11 @@ use crate::render::overlay::select_list::SelectItem;
 pub enum Category {
     /// Pane-level actions: split, kill, focus, resize, zoom, cycle.
     Pane,
-    /// Window ("tab") actions: new/kill/cycle/rename/pick.
+    /// Tab actions: new/kill/cycle/rename/pick.
     Window,
     /// Session actions: new/rename/pick.
     Session,
-    /// View / chrome actions: sidebar, help, detach.
+    /// phux's own chrome: sidebar, help, detach.
     View,
 }
 
@@ -40,9 +40,9 @@ impl Category {
     pub const fn header(self) -> &'static str {
         match self {
             Self::Pane => "Pane",
-            Self::Window => "Window",
+            Self::Window => "Tab",
             Self::Session => "Session",
-            Self::View => "View",
+            Self::View => "phux",
         }
     }
 }
@@ -131,9 +131,9 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "close-view",
-        title: "Close view",
+        title: "Hide pane (keeps running)",
         category: Category::Pane,
-        description: "Close the focused view; its terminal keeps running",
+        description: "Hide the focused pane; its terminal keeps running",
         params: "",
         args: &[],
     },
@@ -141,7 +141,7 @@ pub const REGISTRY: &[ActionSpec] = &[
         name: "reopen-views",
         title: "Reopen hidden terminals",
         category: Category::Window,
-        description: "Show terminals that run with no view, one window each",
+        description: "Show hidden terminals, one tab each",
         params: "",
         args: &[],
     },
@@ -174,7 +174,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "next-attention",
-        title: "Next pane waiting on you",
+        title: "Next waiting pane",
         category: Category::Pane,
         description: "Jump to the next pane waiting for an answer",
         params: "",
@@ -182,7 +182,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "return-from-attention",
-        title: "Back to where you were",
+        title: "Back where you were",
         category: Category::Pane,
         description: "Return to where attention navigation started",
         params: "",
@@ -208,7 +208,7 @@ pub const REGISTRY: &[ActionSpec] = &[
         name: "toggle-zoom",
         title: "Zoom pane",
         category: Category::Pane,
-        description: "Zoom the focused pane to fill the window (toggle)",
+        description: "Zoom the focused pane to fill the tab (toggle)",
         params: "",
         args: &[],
     },
@@ -222,17 +222,17 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "new-window",
-        title: "New window",
+        title: "New tab",
         category: Category::Window,
-        description: "Open a new window",
+        description: "Open a new tab",
         params: "`cwd?` (working directory on the attached server's host)",
         args: &[],
     },
     ActionSpec {
         name: "go-to-directory",
-        title: "New window in directory…",
+        title: "New tab in folder…",
         category: Category::Window,
-        description: "Browse directories on the attached server's host and open a new window in one",
+        description: "Browse directories on the attached server's host and open a new tab in one",
         params: "`path?` (absolute, `~`, or `~/...`; bare starts at the focused pane's directory)",
         args: &[],
     },
@@ -254,41 +254,41 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "kill-window",
-        title: "Kill window…",
+        title: "Kill tab…",
         category: Category::Window,
-        description: "Kill the active window's terminals…",
+        description: "Kill the active tab's terminals…",
         params: "`terminals?` (selectors the confirm committed; omitted opens the confirm)",
         args: &[],
     },
     ActionSpec {
         name: "next-window",
-        title: "Next window",
+        title: "Next tab",
         category: Category::Window,
-        description: "Switch to the next window",
+        description: "Switch to the next tab",
         params: "",
         args: &[],
     },
     ActionSpec {
         name: "previous-window",
-        title: "Previous window",
+        title: "Previous tab",
         category: Category::Window,
-        description: "Switch to the previous window",
+        description: "Switch to the previous tab",
         params: "",
         args: &[],
     },
     ActionSpec {
         name: "window-picker",
-        title: "Go to window…",
+        title: "Go to tab…",
         category: Category::Window,
-        description: "Pick a window from all sessions (grouped)",
+        description: "Pick a tab from all sessions (grouped)",
         params: "",
         args: &[],
     },
     ActionSpec {
         name: "rename-window",
-        title: "Rename window…",
+        title: "Rename tab…",
         category: Category::Window,
-        description: "Rename the active window (interactive prompt)",
+        description: "Rename the active tab (interactive prompt)",
         params: "`name?` (bare opens an interactive prompt)",
         args: &[],
     },
@@ -360,15 +360,15 @@ pub const REGISTRY: &[ActionSpec] = &[
         name: "toggle-sidebar",
         title: "Toggle sidebar",
         category: Category::View,
-        description: "Show or hide the window sidebar (toggle)",
+        description: "Show or hide the sidebar (toggle)",
         params: "",
         args: &[],
     },
     ActionSpec {
         name: "agent-fleet",
-        title: "Agent fleet",
+        title: "Agents",
         category: Category::View,
-        description: "Agent fleet: every pane's agent, state, and attention",
+        description: "Every agent, its state, and whether it needs you",
         params: "",
         args: &[],
     },
@@ -487,20 +487,20 @@ pub const NON_PALETTE_ACTIONS: &[NonPaletteAction] = &[
     },
     NonPaletteAction {
         name: "select-window",
-        description: "Focus the window at a given index",
-        params: "`index` (0-based window position)",
+        description: "Focus the tab at a given index",
+        params: "`index` (0-based tab position)",
         reason: "parameterized by `index`, which the palette has no UI to \
-                 collect; the window picker is the surface for \"jump to \
-                 window N\"",
+                 collect; the tab picker is the surface for \"jump to \
+                 tab N\"",
     },
     NonPaletteAction {
         name: "move-window",
-        description: "Move the active window to another position in the window order",
+        description: "Move the active tab to another position in the tab order",
         params: "`index` (0-based destination) or `delta` (signed slots, e.g. `-1`); \
                  clamped to the ends",
         reason: "parameterized by direction; bound to `<` and `>` under the leader, \
-                 offered in the window context menu, and done by dragging a tab \
-                 or a sidebar window row",
+                 offered in the tab context menu, and done by dragging a tab \
+                 or a sidebar tab row",
     },
     NonPaletteAction {
         name: "session-actions",
@@ -642,16 +642,9 @@ fn bound_chord(cfg: &KeybindingsCfg, target: &ResolvedAction) -> Option<String> 
     scan(cfg, target, false)
 }
 
-/// Canonical chords shown ahead of a shipped compatibility alias, unless the
-/// user removed or rebound them.
-const PRIMARY_PREFIX_BINDINGS: &[(&str, &str)] = &[("session-picker", "s")];
-
 /// Scan the prefix table then globals for a binding to `target`'s action.
 /// With `exact`, the binding's args must also equal `target.args`.
 fn scan(cfg: &KeybindingsCfg, target: &ResolvedAction, exact: bool) -> Option<String> {
-    if let Some(chord) = primary_prefix_chord(cfg, target, exact) {
-        return Some(format!("{} {chord}", cfg.prefix));
-    }
     for (chord, action) in &cfg.prefix_table {
         if binding_matches(action, target, exact) {
             return Some(format!("{} {chord}", cfg.prefix));
@@ -663,18 +656,6 @@ fn scan(cfg: &KeybindingsCfg, target: &ResolvedAction, exact: bool) -> Option<St
         }
     }
     None
-}
-
-fn primary_prefix_chord(
-    cfg: &KeybindingsCfg,
-    target: &ResolvedAction,
-    exact: bool,
-) -> Option<&'static str> {
-    let chord = PRIMARY_PREFIX_BINDINGS
-        .iter()
-        .find_map(|(action, chord)| (*action == target.action).then_some(*chord))?;
-    let action = cfg.prefix_table.get(chord)?;
-    binding_matches(action, target, exact).then_some(chord)
 }
 
 /// `true` when `action` names `target.action` (and, when `exact`, its
@@ -841,26 +822,6 @@ mod tests {
     }
 
     #[test]
-    fn session_picker_prefers_the_documented_chord_over_its_legacy_alias() {
-        let mut cfg =
-            phux_config::parse_with_defaults("", std::path::Path::new("<embedded default.toml>"))
-                .expect("defaults parse")
-                .keybindings;
-        let target = ResolvedAction {
-            action: "session-picker".to_owned(),
-            args: BTreeMap::new(),
-        };
-        assert_eq!(bound_chord(&cfg, &target).as_deref(), Some("C-a s"));
-
-        cfg.prefix_table.remove("s");
-        assert_eq!(
-            bound_chord(&cfg, &target).as_deref(),
-            Some("C-a a"),
-            "the compatibility alias remains discoverable when it is the binding"
-        );
-    }
-
-    #[test]
     fn palette_items_group_under_category_headers() {
         let items = palette_items(None, &[], &[]);
         // Every category with members contributes exactly one header, in
@@ -870,7 +831,7 @@ mod tests {
             .filter(|i| i.is_header())
             .map(|i| i.label.as_str())
             .collect();
-        assert_eq!(headers, vec!["Pane", "Window", "Session", "View"]);
+        assert_eq!(headers, vec!["Pane", "Tab", "Session", "phux"]);
 
         // Selectable rows are indented (nested under their header); headers
         // are not.
@@ -907,7 +868,7 @@ mod tests {
             .filter(|i| i.is_header())
             .map(|i| i.label.as_str())
             .collect();
-        assert_eq!(headers, vec!["Pane", "Window", "Session", "View", "Plugin"]);
+        assert_eq!(headers, vec!["Pane", "Tab", "Session", "phux", "Plugin"]);
 
         let row = items
             .iter()
@@ -964,7 +925,7 @@ mod tests {
             .filter(|i| i.is_header())
             .map(|i| i.label.as_str())
             .collect();
-        assert_eq!(headers, vec!["Pane", "Window", "Session", "View", "Plugin"]);
+        assert_eq!(headers, vec!["Pane", "Tab", "Session", "phux", "Plugin"]);
 
         let row = items
             .iter()

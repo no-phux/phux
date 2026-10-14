@@ -54,9 +54,10 @@ scratch: empty, ephemeral
   trip per 64 terminals rather than one each. It skips the layout reads
   that only the window counts of `-l` need.
 
-The TUI session picker uses the same rules: the current session, then the
-sessions that need you with their count, then the rest by name. Lifetime
-reads `ephemeral` or nothing. The sidebar keeps its three zones.
+The TUI session picker uses the same order: the current session, then the
+sessions that need you with their count, then the rest by name. A picker
+row shows only that count. The sidebar's Agents section lists only the
+agents that need you and disappears when none do.
 
 ## Session
 

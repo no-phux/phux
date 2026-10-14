@@ -147,10 +147,7 @@ pub(super) fn unreachable_row_explains(
 
 /// Held `SatelliteUnreachable` diagnostics as status notices.
 pub(super) fn federation_notices(messages: Vec<String>) -> Vec<Notice> {
-    messages
-        .into_iter()
-        .map(|message| Notice::warn(format!("federation degraded: {message}")))
-        .collect()
+    messages.into_iter().map(Notice::warn).collect()
 }
 
 /// What one host inventory said about each satellite.

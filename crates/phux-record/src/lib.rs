@@ -50,7 +50,7 @@ mod replay;
 
 pub use cast::{CastEvent, CastHeader, CastTheme, CastVersion, CastWriter, EventCode, read_cast};
 pub use error::RecordError;
-pub use markers::{MarkInbox, post_mark, post_mark_in};
+pub use markers::{MarkInbox, post_mark, post_mark_in, recording_live};
 pub use playback::{Speed, due_at, pass_duration};
 pub use timeline::{clamp_idle, compress_marked};
 
