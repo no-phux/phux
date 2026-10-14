@@ -9,6 +9,18 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.69.0](https://github.com/no-phux/phux/compare/v0.68.0...v0.69.0) (2026-10-14)
+
+
+### Features
+
+* **cli:** standardize human output across CLI and native scripts ([#1330](https://github.com/no-phux/phux/issues/1330)) ([94b9325](https://github.com/no-phux/phux/commit/94b932599701e000511f788ddb72d3ccc0ba108e))
+
+
+### Bug Fixes
+
+* **desktop:** isolate stable resolver test from next qualification ([#1335](https://github.com/no-phux/phux/issues/1335)) ([d5d7912](https://github.com/no-phux/phux/commit/d5d7912ae363600d4e3665aa0201b31a3f514a92))
+
 ## [0.68.0](https://github.com/no-phux/phux/compare/v0.67.0...v0.68.0) (2026-10-14)
 
 
