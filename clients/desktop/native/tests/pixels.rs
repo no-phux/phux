@@ -853,10 +853,12 @@ const FIXTURES: &[(&str, fn(), bool)] = &[
     (
         "terminal::pixels::nerd_symbols_are_not_missing_glyph_boxes_in_any_face",
         nerd_symbols_are_not_missing_glyph_boxes_in_any_face,
+        false,
     ),
     (
         "terminal::pixels::solid_blocks_cover_shared_row_edges_with_extra_line_height",
         solid_blocks_cover_shared_row_edges_with_extra_line_height,
+        false,
     ),
 ];
 
