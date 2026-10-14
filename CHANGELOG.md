@@ -9,6 +9,18 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.73.0](https://github.com/no-phux/phux/compare/v0.72.1...v0.73.0) (2026-10-14)
+
+
+### Features
+
+* **site:** pin the install dock and quiet the landing TestFlight band ([#1367](https://github.com/no-phux/phux/issues/1367)) ([a0d37aa](https://github.com/no-phux/phux/commit/a0d37aa20b2bb60adc4d765f47176cd233002f52))
+
+
+### Performance
+
+* **runtime:** redial a settled session before sleeping ([#1368](https://github.com/no-phux/phux/issues/1368)) ([cfd65d6](https://github.com/no-phux/phux/commit/cfd65d610cabcb81ad99f216febc775fd4a1e84a))
+
 ## [0.72.1](https://github.com/no-phux/phux/compare/v0.72.0...v0.72.1) (2026-10-14)
 
 
