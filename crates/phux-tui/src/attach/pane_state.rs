@@ -518,12 +518,24 @@ pub(super) fn pane_satellite_down(
     panes.get(pane).is_some_and(|slot| slot.satellite_down)
 }
 
-/// The host a hub `SatelliteUnreachable` diagnostic names (`satellite {host}
-/// is unreachable: {why}`, L1 §9.1, or the shorter `... unreachable`).
+/// What follows `satellite {host} ` in every `SatelliteUnreachable`
+/// diagnostic the hub emits (`phux-server` `hub::relay`): the link-teardown
+/// push, the fail-fast mailbox refusal, the dropped or silent reply, and the
+/// cancelled proxy withdrawal. `ERROR` carries no host field, so this prose
+/// is the only place the host appears.
+const UNREACHABLE_TAILS: [&str; 5] = [
+    "is unreachable",
+    "link is down",
+    "link dropped before ",
+    "did not answer ",
+    "proxy withdrawal cancelled ",
+];
+
+/// The host a hub `SatelliteUnreachable` diagnostic names (L1 §9.1), or
+/// `None` when the message is not one of the shapes the hub emits.
 pub(super) fn satellite_host_in_unreachable(message: &str) -> Option<&str> {
-    let rest = message.strip_prefix("satellite ")?;
-    let host = rest.split_whitespace().next()?;
-    (!host.is_empty() && rest.contains("unreachable")).then_some(host)
+    let (host, tail) = message.strip_prefix("satellite ")?.split_once(' ')?;
+    (!host.is_empty() && UNREACHABLE_TAILS.iter().any(|t| tail.starts_with(t))).then_some(host)
 }
 
 /// Mark every pane on `host` down. The layout is not touched. Returns
@@ -585,10 +597,6 @@ mod tests {
             satellite_host_in_unreachable("satellite edge is unreachable: link is down"),
             Some("edge")
         );
-        assert_eq!(
-            satellite_host_in_unreachable("satellite gpubox unreachable"),
-            Some("gpubox")
-        );
         assert!(satellite_host_in_unreachable("the link dropped").is_none());
         assert!(note_satellite_unreachable(
             &mut panes,
@@ -602,6 +610,39 @@ mod tests {
             vec![edge.clone()]
         );
         assert!(!pane_satellite_down(&panes, &edge));
+    }
+
+    /// Every `SatelliteUnreachable` wording the hub emits names its host;
+    /// other prose names none.
+    #[test]
+    fn every_hub_unreachable_shape_names_its_host() {
+        for message in [
+            "satellite edge is unreachable: link is down",
+            "satellite edge is unreachable",
+            "satellite edge link is down",
+            "satellite edge link dropped before the reply",
+            "satellite edge link dropped before the spawn reply",
+            "satellite edge did not answer within 30s",
+            "satellite edge did not answer the spawn within 30s",
+            "satellite edge proxy withdrawal cancelled before application after 30s; \
+             subscription preserved",
+        ] {
+            assert_eq!(
+                satellite_host_in_unreachable(message),
+                Some("edge"),
+                "{message}"
+            );
+        }
+        for message in [
+            "the link dropped",
+            "satellite edge",
+            "satellite  is unreachable",
+            "satellite edge link is saturated; retry",
+            "satellite edge has no such terminal",
+            "offline",
+        ] {
+            assert_eq!(satellite_host_in_unreachable(message), None, "{message}");
+        }
     }
 
     #[test]
