@@ -35,6 +35,7 @@ use crate::attach::connection::Connection;
 use crate::state::Degradation;
 
 pub use phux_client_core::org_ops::{OrgOutcome, is_inactive, live_target, refusal_sentence};
+pub use phux_client_runtime::control::mint_operation;
 
 /// Most attempts a compare-and-swap edit makes before reporting the
 /// conflict.
@@ -130,16 +131,6 @@ fn require(conn: &Connection) -> Result<(), OrgError> {
         Ok(())
     } else {
         Err(OrgError::Unsupported)
-    }
-}
-
-/// A fresh random operation id.
-#[must_use]
-pub fn mint_operation() -> OperationId {
-    loop {
-        if let Some(id) = OperationId::new(*uuid::Uuid::new_v4().as_bytes()) {
-            return id;
-        }
     }
 }
 
