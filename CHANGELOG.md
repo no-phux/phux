@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.62.0](https://github.com/no-phux/phux/compare/v0.61.0...v0.62.0) (2026-10-14)
+
+
+### Features
+
+* **tui:** post agent notifications when an agent blocks or finishes ([#1291](https://github.com/no-phux/phux/issues/1291)) ([8dd6f74](https://github.com/no-phux/phux/commit/8dd6f741f199a4eb3853048c6c9e5469b4eb3f96))
+
 ## [0.61.0](https://github.com/no-phux/phux/compare/v0.60.3...v0.61.0) (2026-10-14)
 
 
