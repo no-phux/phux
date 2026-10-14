@@ -146,7 +146,7 @@ mod tests {
     }
 
     /// EOF is reported exactly once and every later read parks; the timeout
-    /// is the assertion (the old code returned `Ok(0)` immediately: the spin).
+    /// is the assertion (a second `Ok(0)` would spin the read loop).
     #[tokio::test]
     async fn eof_is_reported_once_and_then_parks_forever() {
         // A closed pipe is a fd that is readable and at EOF, which is exactly

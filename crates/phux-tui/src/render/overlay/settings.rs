@@ -1861,7 +1861,7 @@ mod tests {
 
     #[test]
     fn letters_never_write_the_file() {
-        // The regression the review caught: `h`/`l` used to step the value.
+        // `h`/`l` are letters here, not value steps.
         let (dir, mut page) = page_over("");
         page.focus("sidebar.enabled");
         for ch in ['h', 'l', 'j', 'k', ' '] {

@@ -146,8 +146,8 @@ impl<W: Write> Write for FrameBlock<'_, W> {
 /// Memoized pane tiling for the hot path.
 ///
 /// `compute_layout_in` walks the tree, allocates rects, and rasterizes
-/// dividers; the output path used to run it three times a frame for a layout
-/// that almost never changes. The key is the whole tiling input (layout with
+/// dividers, and the output path asks for it three times a frame for a
+/// layout that almost never changes. The key is the whole tiling input (layout with
 /// its focus, content rect, viewport) checked by structural equality, so a
 /// hit is exact.
 #[derive(Debug, Default)]
