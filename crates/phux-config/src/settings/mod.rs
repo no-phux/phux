@@ -967,7 +967,7 @@ mod tests {
             }
             assert!(parse("not-a-real-variant").is_err(), "{}", spec.key);
         }
-        assert_eq!(seen, 5);
+        assert_eq!(seen, 7);
     }
 
     #[test]
