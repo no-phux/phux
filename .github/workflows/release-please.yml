@@ -48,10 +48,12 @@ jobs:
     name: release PR / github release
     runs-on: ubuntu-24.04
     outputs:
-      prs_created: ${{ steps.rp.outputs.prs_created }}
+      # A candidate with no code changes comes back as PR number 0; see the
+      # filter step. Anything downstream needs only real, existing PRs.
+      prs_created: ${{ steps.prs.outputs.created }}
       # `pr` contains only the first PR. Desktop releases can be separate,
       # so synchronize every returned branch, including the root release PR.
-      prs: ${{ steps.rp.outputs.prs || '[]' }}
+      prs: ${{ steps.prs.outputs.prs }}
       # Ready PRs returned to draft until sync-lockfile pushes. Empty when
       # nothing was updated, or the hold step did not run.
       held_prs: ${{ steps.hold.outputs.held_prs || '[]' }}
@@ -85,15 +87,33 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
+      # release-please returns a synthetic PR number 0 when a candidate has no
+      # code changes — a hidden-only commit, for one. It has no branch to check
+      # out and no PR to undraft, and it made the hold step's `gh pr view 0`
+      # fail the whole run. Drop it before the hold and the sync matrix see it.
+      - name: Drop change-less candidate PRs
+        id: prs
+        env:
+          PRS: ${{ steps.rp.outputs.prs }}
+        run: |
+          set -euo pipefail
+          filtered="$(printf '%s' "${PRS:-[]}" | jq -c '[.[] | select(.number > 0)]')"
+          echo "prs=$filtered" >> "$GITHUB_OUTPUT"
+          if [ "$filtered" = "[]" ]; then
+            echo "created=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "created=true" >> "$GITHUB_OUTPUT"
+          fi
+
       # Same job as the force-push, before this job exits. A later job is too
       # late: the unsynced head is mergeable for as long as a runner takes to
       # start, and main's ruleset accepts the previous head's green ci.
       - name: Hold ready release PRs until lockfiles sync
         id: hold
-        if: steps.rp.outputs.prs_created == 'true'
+        if: steps.prs.outputs.created == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          PRS: ${{ steps.rp.outputs.prs }}
+          PRS: ${{ steps.prs.outputs.prs }}
         run: |
           set -euo pipefail
           held='[]'
@@ -272,14 +292,22 @@ jobs:
   # merge commit. Runs after sync-lockfile, so the head is final and the hold
   # (if any) is lifted. It discovers open release PRs by branch rather than by
   # the action's `prs` output, because release-please returns nothing for an
-  # unchanged PR: a carried-over PR must still have auto-merge (re-)enabled
-  # after a hold re-drafts it. Auto-merge waits for the required `ci` check; a
-  # PR whose checks are already green merges immediately. release-please finds
-  # the merged PR by label and branch, so the squash commit is what it tags.
+  # unchanged PR: a carried-over PR must still be undrafted and armed. It also
+  # undrafts the PR, because release-please creates it as a draft
+  # (`draft-pull-request`); the lockfile is synced by now, so that is safe, and
+  # undrafting runs `ci`, which auto-merge then waits for. A PR whose checks are
+  # already green merges immediately. release-please finds the merged PR by
+  # label and branch, so the squash commit is what it tags.
   auto-merge:
     name: squash auto-merge release PRs
     needs: [release-please, sync-lockfile]
-    if: always() && needs.release-please.result == 'success'
+    # Sync can be skipped (no PR was created or updated) or can fail. Never
+    # undraft onto an unsynced head: only run when sync succeeded or was not
+    # needed.
+    if: >-
+      always()
+      && needs.release-please.result == 'success'
+      && (needs.sync-lockfile.result == 'success' || needs.sync-lockfile.result == 'skipped')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -293,7 +321,7 @@ jobs:
           client-id: ${{ vars.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
-      - name: Enable squash auto-merge
+      - name: Undraft and enable squash auto-merge
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
@@ -315,8 +343,9 @@ jobs:
               continue
             fi
             if [ "$draft" = "true" ]; then
-              echo "#$num is still a draft; auto-merge resumes once the hold lifts"
-              continue
+              # Safe here: sync-lockfile already finished or was not needed.
+              echo "#$num is a draft; marking it ready for review"
+              gh pr ready "$num" --repo "$GITHUB_REPOSITORY"
             fi
             # `--auto` is refused on an already-clean PR; fall back to merging
             # the finished release in that case.
