@@ -22,10 +22,7 @@ use phux_client_core::input_replay::operation_id_hex;
 use phux_protocol::ids::{InputOperationId, ResourceId};
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
-use phux_protocol::wire::frame::{
-    Command, CommandResult, ErrorCode, FrameKind, MAX_APPLY_INPUT_COMMAND_BODY,
-    MAX_APPLY_INPUT_EVENTS, Scope,
-};
+use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind, Scope};
 
 use crate::agent_meta::{AgentMetaState, AgentRecord, RESOURCE_AGENT_KEY, parse_agent_record};
 use crate::agent_wait::{
@@ -311,48 +308,31 @@ pub fn validate_prompt_text(text: &str) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// Conservative upper bound on the encoded `APPLY_INPUT` command body.
-fn encoded_body_bound(events: &[InputEvent]) -> usize {
-    /// Tag byte, 16-byte operation id, a worst-case satellite terminal id,
-    /// and the `u16` event count.
-    const HEADER: usize = 1 + 16 + 264 + 2;
-    /// Per-event tag plus length prefix plus the widest fixed key/mouse body.
-    const PER_EVENT: usize = 32;
-    events.iter().fold(HEADER, |total, event| {
-        let payload = match event {
-            InputEvent::Paste(paste) => paste.data.len(),
-            _ => 0,
-        };
-        total.saturating_add(PER_EVENT).saturating_add(payload)
-    })
-}
-
-/// Refuse a batch over [`MAX_APPLY_INPUT_EVENTS`] or
-/// [`MAX_APPLY_INPUT_COMMAND_BODY`] as a local usage error, never splitting
-/// it (`docs/spec/input.md`).
+/// Refuse a batch over either `APPLY_INPUT` wire cap as a local usage error,
+/// never splitting it (`docs/spec/input.md`).
+///
+/// The rule is
+/// [`phux_client_core::input_replay::validate_apply_input_batch`], the same
+/// one the replay journal applies.
 ///
 /// # Errors
 ///
 /// Returns [`Refusal::TooLarge`] with `wire: true` for either cap.
 pub fn validate_batch(events: &[InputEvent]) -> Result<(), Refusal> {
-    if events.len() > MAX_APPLY_INPUT_EVENTS {
-        return Err(Refusal::TooLarge {
-            unit: "events",
-            measured: events.len(),
-            limit: MAX_APPLY_INPUT_EVENTS,
+    use phux_client_core::input_replay::{BatchTooLarge, validate_apply_input_batch};
+
+    validate_apply_input_batch(events).map_err(|too_large| {
+        let (unit, measured, limit) = match too_large {
+            BatchTooLarge::Events { measured, limit } => ("events", measured, limit),
+            BatchTooLarge::Bytes { measured, limit } => ("bytes", measured, limit),
+        };
+        Refusal::TooLarge {
+            unit,
+            measured,
+            limit,
             wire: true,
-        });
-    }
-    let bound = encoded_body_bound(events);
-    if bound > MAX_APPLY_INPUT_COMMAND_BODY {
-        return Err(Refusal::TooLarge {
-            unit: "bytes",
-            measured: bound,
-            limit: MAX_APPLY_INPUT_COMMAND_BODY,
-            wire: true,
-        });
-    }
-    Ok(())
+        }
+    })
 }
 
 /// Whether `conn`'s server advertised `ACKNOWLEDGED_INPUT` (`false` when
@@ -861,6 +841,8 @@ mod tests {
 
     use crate::testkit::{EndOfScript, ScriptSpec, ScriptedServer};
 
+    use phux_protocol::wire::frame::{MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS};
+
     use super::*;
 
     fn op_id(fill: u8) -> InputOperationId {
@@ -916,6 +898,43 @@ mod tests {
                 measured: MAX_PROMPT_BYTES + 1,
                 limit: MAX_PROMPT_BYTES,
                 wire: false,
+            })
+        );
+    }
+
+    /// Key-event text counts toward the body cap, as on the server: a batch
+    /// whose paste alone fits is refused locally once key text tips it over.
+    #[test]
+    fn key_text_counts_toward_the_wire_body_cap() {
+        use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
+
+        let batch = |key_text: Option<&str>| {
+            // Header (283) plus two 32-byte per-event allowances.
+            let paste_len = MAX_APPLY_INPUT_COMMAND_BODY - (1 + 16 + 264 + 2) - 2 * 32;
+            vec![
+                InputEvent::Paste(PasteEvent {
+                    trust: PasteTrust::Trusted,
+                    data: vec![b'x'; paste_len],
+                }),
+                InputEvent::Key(KeyEvent {
+                    action: KeyAction::Press,
+                    key: PhysicalKey::A,
+                    mods: ModSet::empty(),
+                    consumed_mods: ModSet::empty(),
+                    composing: false,
+                    text: key_text.map(str::to_owned),
+                    unshifted_codepoint: None,
+                }),
+            ]
+        };
+        assert_eq!(validate_batch(&batch(None)), Ok(()));
+        assert_eq!(
+            validate_batch(&batch(Some("a"))),
+            Err(Refusal::TooLarge {
+                unit: "bytes",
+                measured: MAX_APPLY_INPUT_COMMAND_BODY + 1,
+                limit: MAX_APPLY_INPUT_COMMAND_BODY,
+                wire: true,
             })
         );
     }
