@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.70.0](https://github.com/no-phux/phux/compare/v0.69.1...v0.70.0) (2026-10-14)
+
+
+### Features
+
+* **organization:** distinguish Intake from the attention Inbox ([#1344](https://github.com/no-phux/phux/issues/1344)) ([d18a547](https://github.com/no-phux/phux/commit/d18a547fb709ea08c4b6a56772bb4d0c21e3185c))
+
 ## [0.69.1](https://github.com/no-phux/phux/compare/v0.69.0...v0.69.1) (2026-10-14)
 
 
