@@ -1,0 +1,15 @@
+⠀⠀⠀⠀⠀⣴⣾⣶⡄⠀⠀⠀⠀
+⠀⣴⣾⣶⡾⠛⠿⠟⠃⣴⣾⣶⡄  Devin CLI
+⠀⠛⠿⠟⠃⣴⣾⣶⡾⠛⠿⠟⠃  v2026.5.26-8
+⠀⣤⣶⣦⡄⠻⢿⠿⢷⣤⣶⣦⡄
+⠀⠻⢿⠿⢷⣤⣶⣦⡄⠻⢿⠿⠃  Hybrid
+⠀⠀⠀⠀⠀⠻⢿⠿⠃⠀⠀⠀⠀
+
+───────────────────────────
+❭ Ask Devin to build
+  features, fix bugs, or
+  work on your code
+───────────────────────────
+Claude Opus Looking for
+4.6 Thinkingplan mode? /
+            plan

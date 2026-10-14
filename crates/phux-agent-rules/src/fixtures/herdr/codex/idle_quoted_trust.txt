@@ -1,0 +1,4 @@
+› > You are in C:\Users\user\project
+
+Do you trust the contents of this
+directory? Working with untrusted contents comes with higher risk.

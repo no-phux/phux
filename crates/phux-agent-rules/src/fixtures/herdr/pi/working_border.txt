@@ -1,0 +1,4 @@
+Reading the build script.
+
+── ⠋ Working ──────────────────────────────
+>

@@ -318,7 +318,10 @@ mod tests {
                 "prompt-box",
                 "after-last-rule",
                 "bottom-lines",
-                "viewport"
+                "viewport",
+                // The windows claude.toml's own rules name, in rule order.
+                "bottom-lines(12)",
+                "bottom-lines(16)",
             ],
         );
         let title = got

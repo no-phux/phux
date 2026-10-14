@@ -57,7 +57,12 @@ id = "title-busy-spinner"
 state = "working"
 priority = 100
 region = "title"
-match = { line-regex = "^[⠀-⣿] " }
+match = { any = [
+  { line-regex = "^[⠀-⣿] " },
+  # herdr (see the adopted section below) records later releases placing the
+  # ten-frame spinner as a title WORD rather than a prefix.
+  { line-regex = '(?:^| )[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏](?: |$)' },
+] }
 
 # --- Screen rules -----------------------------------------------------------
 
@@ -134,6 +139,90 @@ match = { all = [
   { regex = 'Working \(\d+s' },
   { contains = "esc to interrupt" },
 ] }
+
+# --- Patterns adopted from herdr ----------------------------------------------
+#
+# The rules in this section are adapted from herdr's codex manifest, version
+# 2026.10.11.1 (https://github.com/ogulcancelik/herdr, Apache-2.0; see
+# THIRD-PARTY-NOTICES.md), which tracks Codex releases after 0.145.0. They are
+# NOT verified against a phux capture; the screens that pin them live under
+# `src/fixtures/herdr/codex/` and are herdr's test excerpts. herdr reads
+# several of them from a Codex-specific "after the last `›` prompt" region
+# phux does not have; the bottom windows below stand in for it.
+
+# Later releases put "Action Required" in the title while an approval waits,
+# e.g. "[ . ] Action Required | llm-proxy". It outranks the spinner rule.
+[[rules]]
+id = "title-action-required"
+state = "blocked"
+priority = 110
+region = "title"
+match = { contains = "action required" }
+
+# The startup folder-trust chooser, anchored at the top of the screen: the
+# "> You are in <dir>" banner (or a "Folder access" heading) and the trust
+# question, in its legacy or 0.159+ wording.
+[[rules]]
+id = "folder-trust-dialog"
+state = "blocked"
+priority = 95
+region = "top-non-empty-lines(20)"
+match = { all = [
+  { any = [
+    { regex = '\A> You are in [^\r\n]+(?:\r?\n|$)' },
+    { contains = "Folder access" },
+  ] },
+  { any = [
+    { regex = '(?s)Do\s+you\s+trust\s+the\s+contents\s+of\s+this\s+directory\?' },
+    { all = [
+      { contains = "Trust this folder?" },
+      { contains = "Codex can read, edit, and run files here" },
+      { any = [{ contains = "Trust and continue" }, { contains = "enter continue" }] },
+    ] },
+  ] },
+] }
+
+# The startup update chooser, legacy and 0.159+. Both gates must be on screen;
+# the passive "update available" history notice has neither picker footer.
+[[rules]]
+id = "startup-update"
+state = "blocked"
+priority = 95
+region = "bottom-lines(20)"
+match = { any = [
+  { all = [
+    { contains = "Update available!" },
+    { contains = "Update now" },
+    { regex = 'Skip\s+until\s+next\s+version' },
+    { regex = 'Press enter to continue\s*\z' },
+  ] },
+  { all = [
+    { regex = '(?m)^\s*Update\s+available\s+·' },
+    { regex = 'enter\s+continue\s+·\s+esc\s+skip\s*\z' },
+  ] },
+] }
+
+# The request-user-input question form and the newer command prompt.
+[[rules]]
+id = "prompt-question-form"
+state = "blocked"
+priority = 80
+region = "bottom-lines(8)"
+match = { any = [
+  { contains = "enter to submit answer" },
+  { contains = "enter to submit all" },
+  { contains = "allow command?" },
+] }
+
+# The working footer with a dynamic activity label and a minutes/hours timer:
+# "• Running tests (1m 05s • esc to interrupt)". The interrupt key can be
+# remapped, so any "<key> to interrupt" is accepted.
+[[rules]]
+id = "screen-timer-footer"
+state = "working"
+priority = 59
+region = "bottom-lines"
+match = { line-regex = '\((?:[0-9]+[hm] )*[0-9]+s • [^)]*to interrupt\)' }
 
 # --- Rules deliberately NOT written ------------------------------------------
 #

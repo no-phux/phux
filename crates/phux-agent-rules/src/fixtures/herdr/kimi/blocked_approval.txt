@@ -1,0 +1,12 @@
+────────────────────────────────────────────────────
+  ▶ Run this command?
+
+  $ git status --short
+
+  ▶ 1. Approve once
+    2. Approve for this session
+    3. Reject
+    4. Reject with feedback
+
+  ↑/↓ select · 1/2/3/4 choose · ↵ confirm
+────────────────────────────────────────────────────

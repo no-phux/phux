@@ -1,0 +1,5 @@
+──────────
+  1. Yes
+  2. No
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

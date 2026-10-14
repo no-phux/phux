@@ -59,6 +59,25 @@ are listed in that crate's Cargo.toml header.
 
 ---
 
+## herdr agent-detection patterns (Apache-2.0)
+
+Agent-state detection patterns in `crates/phux-agent-rules/rules/*.toml`
+and the golden screens under `crates/phux-agent-rules/src/fixtures/herdr/`
+are adapted from herdr's detection manifests (`src/detect/manifests/`) and
+its detection tests.
+
+    herdr, https://github.com/ogulcancelik/herdr
+    Copyright Ogulcan Celik and the herdr contributors
+    Licensed under the Apache License, Version 2.0
+
+herdr ships no NOTICE file. phux is licensed under the same Apache License,
+Version 2.0 (see LICENSE). The patterns are translated into phux's manifest
+schema (ADR-0046) rather than copied: regions, combinators, and rule
+priorities are rewritten, and some rules are dropped. Each adapted manifest
+says so in its header comment, as section 4(b) of the license requires.
+
+---
+
 ## libghostty-vt (MIT)
 
 Terminal emulation is consumed from the `libghostty-rs` git dependency

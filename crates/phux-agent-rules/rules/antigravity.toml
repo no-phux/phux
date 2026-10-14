@@ -1,0 +1,97 @@
+# Agent-state detection manifest for Antigravity CLI (ADR-0046).
+#
+# Detection patterns adapted from herdr (https://github.com/ogulcancelik/herdr),
+# Apache-2.0: `src/detect/manifests/antigravity.toml`, manifest version
+# 2026.10.05.1, translated into phux's schema. See THIRD-PARTY-NOTICES.md.
+#
+# Provenance: herdr records these patterns as read from Antigravity CLI 1.2.17
+# live panes plus reporter captures from 1.1.28 through 1.2.16. They are NOT
+# verified against a phux capture; the CLI is not installed on the phux capture
+# machine. The golden screens under `src/fixtures/herdr/antigravity/` are
+# herdr's own test excerpts. Re-capture when the CLI is available.
+#
+# Translation notes. herdr's `bottom_non_empty_lines(N)` is phux's
+# `bottom-lines(N)` and `whole_recent` is `viewport`. Priorities keep herdr's
+# values so the two manifests diff cleanly. herdr's rules carry no idle rule
+# here, so nothing was dropped.
+#
+# The governing doctrine (ADR-0046 §D): a MISSED signal is cheap, a FALSE
+# `blocked` is not.
+
+kind = "antigravity"
+name = "antigravity"
+
+# `agy` is the CLI's argv[0]; the long names are herdr's process aliases.
+binaries = ["agy", "antigravity", "antigravity-cli"]
+
+# --- Blocked: dialogs that replace the prompt box ----------------------------
+#
+# Each dialog ends with a key-hint row directly above the "esc to cancel"
+# footer, so the bottom two non-empty rows carry the whole signature:
+#
+#     permission: "↑/↓ Navigate · tab Amend · ctrl+g edit/expand command"
+#     question:   "↑/↓ Navigate · enter Select · esc Skip"
+#     trust:      "↑/↓ Navigate · enter Confirm"
+#
+# The slash menu ("↑/↓ Navigate · enter Select · tab Complete") is idle and
+# matches none of the pairs below.
+
+[[rules]]
+id = "permission-dialog-footer"
+state = "blocked"
+priority = 300
+region = "bottom-lines(2)"
+match = { all = [{ contains = "navigate" }, { contains = "tab amend" }] }
+
+[[rules]]
+id = "question-dialog-footer"
+state = "blocked"
+priority = 290
+region = "bottom-lines(2)"
+match = { all = [{ contains = "navigate" }, { contains = "esc skip" }] }
+
+[[rules]]
+id = "folder-trust-dialog"
+state = "blocked"
+priority = 280
+region = "bottom-lines(8)"
+match = { all = [
+  { contains = "do you trust the contents of this project?" },
+  { contains = "yes, i trust this folder" },
+  { contains = "enter confirm" },
+] }
+
+# The pre-1.1.28 permission dialog.
+[[rules]]
+id = "legacy-permission-dialog"
+state = "blocked"
+priority = 270
+region = "viewport"
+match = { all = [
+  { contains = "requesting permission for:" },
+  { any = [
+    { contains = "do you want to proceed?" },
+    { all = [{ contains = "tab amend" }, { contains = "edit command" }] },
+  ] },
+] }
+
+# --- Working -----------------------------------------------------------------
+#
+# A live turn prints "esc to cancel" directly under the prompt box's bottom
+# border, and a braille spinner ahead of an -ing word or thought summary above
+# the box. Background tasks ("· N task(s)" in the footer) do not count as
+# working once the agent is back at its prompt.
+
+[[rules]]
+id = "esc-cancel-footer"
+state = "working"
+priority = 110
+region = "bottom-lines(2)"
+match = { regex = '(?m)^\s*─{3,}\s*esc to cancel\b' }
+
+[[rules]]
+id = "spinner-status"
+state = "working"
+priority = 100
+region = "bottom-lines(12)"
+match = { line-regex = '^\s*[\x{2801}-\x{28FF}]+\s+\S' }

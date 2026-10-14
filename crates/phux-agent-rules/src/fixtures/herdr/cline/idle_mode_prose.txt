@@ -1,0 +1,2 @@
+[act mode]
+Previous answer was yes.

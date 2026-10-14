@@ -1,0 +1,9 @@
+network: example.com:443 https
+requested by:
+$ curl -fsS https://example.com
+
+› 1. Yes, proceed (y)
+  2. Yes, don't ask again this session (p)  example.com:443 (https)
+  3. No, and tell Muse Code what to do differently (esc)
+────────────────
+gpt-5.4 · minimal · /workspace

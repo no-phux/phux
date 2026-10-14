@@ -1,0 +1,2 @@
+  I will ask before I run this command? Approve it if you agree.
+╰──────────────────────────────────── /tmp/ws ─╯

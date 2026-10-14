@@ -1,0 +1,17 @@
+○ Plan ready for review - Create a 200-word inspirational poem. - Fi…
+
+╭───────────────────────────────────────────────────────────────────╮
+│ Plan Ready for Review                                             │
+│ ───────────────────────────────────────────────────────────────── │
+│  - Create a 200-word inspirational poem.                          │
+│  - Files/changes: none (deliver poem in chat).                    │
+│  - Steps: draft poem, verify ~200 words, offer up to 2 revisions. │
+│  - Decision: Inspirational tone, exact length target ~200 words.  │
+│                                                                   │
+│ ❯ 1. Accept plan and build on default permissions (recommended)   │
+│   2. Exit plan mode and I will prompt myself                      │
+│   3. Suggest changes                                              │
+│                                                                   │
+│ ↑/↓ to navigate · enter to select · ctrl+e to show full plan ·    │
+│ esc to cancel                                                     │
+╰───────────────────────────────────────────────────────────────────╯

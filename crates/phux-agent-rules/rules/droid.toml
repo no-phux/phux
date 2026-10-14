@@ -1,0 +1,69 @@
+# Agent-state detection manifest for Factory Droid (ADR-0046).
+#
+# Detection patterns adapted from herdr (https://github.com/ogulcancelik/herdr),
+# Apache-2.0: `src/detect/manifests/droid.toml`, manifest version
+# 2026.06.10.1, translated into phux's schema. See THIRD-PARTY-NOTICES.md.
+#
+# Provenance: NOT verified against a phux capture; the CLI is not installed on
+# the phux capture machine. The golden screens under `src/fixtures/herdr/droid/`
+# are herdr's test excerpts. Re-capture when the CLI is available.
+#
+# Translation notes. `bottom_non_empty_lines(N)` is `bottom-lines(N)` and
+# `whole_recent` is `viewport`; priorities keep herdr's values. herdr's
+# `spinner_stop_working` only outranks `stop_hint_working` (both assert
+# working on the same "esc to stop" hint), so it is folded into one rule, and
+# that rule reads `bottom-lines(8)` rather than the whole screen so a quoted
+# hint in scrollback does not read as a live turn.
+#
+# The governing doctrine (ADR-0046 §D): a MISSED signal is cheap, a FALSE
+# `blocked` is not.
+
+kind = "droid"
+name = "droid"
+
+binaries = ["droid"]
+
+# --- Blocked -----------------------------------------------------------------
+
+# The EXECUTE approval box:
+#
+#     │ > Yes, allow        │
+#     │   Yes, always allow │
+#     │   No, cancel        │
+#        Use ↑↓ to navigate, Enter to select, Esc to cancel
+#
+# The footer alone is generic picker chrome; requiring an allow/cancel option
+# keeps a quoted "> Yes, allow" in prose from reading as a dialog.
+[[rules]]
+id = "execute-approval"
+state = "blocked"
+priority = 300
+region = "viewport"
+match = { all = [
+  { contains = "enter to select" },
+  { contains = "esc to cancel" },
+  { contains = "↑↓ to navigate" },
+  { any = [{ contains = "> yes, allow" }, { contains = "> no, cancel" }] },
+] }
+
+# The compact selection menu footer.
+[[rules]]
+id = "selection-menu"
+state = "blocked"
+priority = 290
+region = "bottom-lines(8)"
+match = { all = [
+  { contains = "enter select" },
+  { contains = "esc cancel" },
+  { any = [{ contains = "↑/↓ navigate" }, { contains = "↑↓ navigate" }] },
+] }
+
+# --- Working -----------------------------------------------------------------
+
+# "⠴ Thinking...  (Press ESC to stop)" while a turn runs.
+[[rules]]
+id = "esc-to-stop-hint"
+state = "working"
+priority = 100
+region = "bottom-lines(8)"
+match = { contains = "esc to stop" }

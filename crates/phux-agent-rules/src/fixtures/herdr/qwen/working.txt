@@ -1,0 +1,8 @@
+> Explain the build script
+
+⠋ Reading the build script (5s · esc to cancel)
+
+╭──────────────────────────────────────────────╮
+│ >   Type your message or @path/to/file       │
+╰──────────────────────────────────────────────╯
+~/work                       qwen3-coder-plus

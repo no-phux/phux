@@ -1,0 +1,75 @@
+# Agent-state detection manifest for Qoder CLI (ADR-0046).
+#
+# Detection patterns adapted from herdr (https://github.com/ogulcancelik/herdr),
+# Apache-2.0: `src/detect/manifests/qodercli.toml`, manifest version
+# 2026.06.10.1, translated into phux's schema. See THIRD-PARTY-NOTICES.md.
+#
+# Provenance: NOT verified against a phux capture; the CLI is not installed on
+# the phux capture machine. The golden screens under
+# `src/fixtures/herdr/qodercli/` are herdr's test excerpts. Re-capture when the
+# CLI is available.
+#
+# Translation notes. herdr reads every rule from the whole screen; here each
+# reads the bottom of it (`bottom-lines(16)` for dialogs, `bottom-lines(8)`
+# for the status row), because several of the blocked phrases ("permission
+# required", "asking user") are short enough to occur in a transcript above
+# the live UI. Priorities keep herdr's values.
+#
+# The governing doctrine (ADR-0046 §D): a MISSED signal is cheap, a FALSE
+# `blocked` is not.
+
+kind = "qodercli"
+name = "qodercli"
+
+# `qodercli` and the China-region `qoderclicn` build; herdr also matches the
+# `qoder`/`qodercn` launchers.
+binaries = ["qodercli", "qoderclicn", "qoder", "qodercn"]
+
+# --- Blocked -----------------------------------------------------------------
+#
+# The "Permission Required" dialog ("Allow once or always?"), the ask-user
+# forms ("Asking User", "Enter your response", "Review your answers:"), and an
+# interactive shell waiting for focus ("! Shell awaiting input (Tab to
+# focus)"). A bare "Waiting for user confirmation..." needs an answer choice
+# next to it.
+[[rules]]
+id = "confirmation-or-input-dialog"
+state = "blocked"
+priority = 300
+region = "bottom-lines(16)"
+match = { any = [
+  { all = [
+    { contains = "waiting for user confirmation" },
+    { any = [{ contains = "yes" }, { contains = "no" }, { contains = "allow" }, { contains = "reject" }] },
+  ] },
+  { all = [
+    { contains = "awaiting approval" },
+    { any = [{ contains = "allow" }, { contains = "reject" }] },
+  ] },
+  { contains = "permission required" },
+  { contains = "allow once or always?" },
+  { contains = "asking user" },
+  { contains = "enter your response" },
+  { contains = "review your answers:" },
+  { contains = "shell awaiting input" },
+] }
+
+# --- Working -----------------------------------------------------------------
+
+# "Thinking... (esc to cancel, 5s)": the explicit working marker, present even
+# when a hook icon replaces the spinner glyph.
+[[rules]]
+id = "esc-cancel-hint"
+state = "working"
+priority = 100
+region = "bottom-lines(8)"
+match = { contains = "(esc to cancel," }
+
+# A spinner row: a braille glyph, a space, then words. A stray glyph alone on
+# a row is not a spinner.
+[[rules]]
+id = "spinner-row"
+state = "working"
+priority = 90
+region = "bottom-lines(8)"
+match = { line-regex = '^\s*[\x{2800}-\x{28FF}]\s+.*\p{Alphabetic}' }

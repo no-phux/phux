@@ -1,0 +1,3 @@
+│ > Yes, allow │
+│   No, cancel │
+   Use ↑↓ to navigate, Enter to select, Esc to cancel

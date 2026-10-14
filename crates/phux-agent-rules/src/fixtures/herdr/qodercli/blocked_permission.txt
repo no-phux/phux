@@ -1,0 +1,7 @@
+Permission Required
+Caller: test
+Command: mkdir -p /root/example
+Allow once or always?
+  ❯ 1. Allow Once - allow `mkdir` for one
+    2. Always allow `mkdir` for future sessions
+    3. Reject and tell qodercli something

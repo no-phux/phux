@@ -1,0 +1,6 @@
+✦ The build script compiles the parser first.
+
+╭──────────────────────────────────────────────╮
+│ >   Type your message or @path/to/file       │
+╰──────────────────────────────────────────────╯
+~/work                       qwen3-coder-plus

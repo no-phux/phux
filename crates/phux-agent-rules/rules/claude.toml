@@ -59,12 +59,17 @@ binaries = ["claude", "claude-code"]
 # `idle` from it would outrank (title beats screen) the permission-dialog
 # `blocked` rule below and mask every permission prompt. "Not busy" is already
 # the detector's fail-safe default, so the absence of a match says it for us.
+#
+# The set was widened to the whole Braille Patterns block plus all four half
+# circles U+25D0..U+25D3, adopting herdr's claude manifest 2026.10.11.1
+# (https://github.com/ogulcancelik/herdr, Apache-2.0), which tracks later
+# releases than the captures above. Neither block begins an ordinary title.
 [[rules]]
 id = "title-busy-spinner"
 state = "working"
 priority = 100
 region = "title"
-match = { line-regex = "^[⠂⠐◐◑]" }
+match = { line-regex = "^[⠀-⣿◐-◓]" }
 
 # Claude Code 2.1.227/228 emits OSC 9;4 independently of OSC 0 titles: `4;3;`
 # when a turn starts and `4;0;` when it ends, including when
@@ -112,6 +117,102 @@ state = "working"
 priority = 60
 region = "bottom-lines"
 match = { line-regex = '^\S+\s+\S*…\s+\(\d+s' }
+
+# --- Patterns adopted from herdr ----------------------------------------------
+#
+# The rules in this section are adapted from herdr's claude manifest, version
+# 2026.10.11.1 (https://github.com/ogulcancelik/herdr, Apache-2.0; see
+# THIRD-PARTY-NOTICES.md). herdr records them against Claude Code releases
+# after the 2.1.228 capture above. They are NOT verified against a phux
+# capture; the screens that pin them live under `src/fixtures/herdr/claude/`
+# and are herdr's test excerpts. Each sits below the captured rule of the same
+# state, so a captured rule still names the match when both fire.
+
+# The live-turn footer and status row, in the two shapes herdr records:
+#
+#       ⏵⏵ auto mode on · 1 shell · esc to interrupt
+#     ✻ Writing…
+#
+# The status glyph set is Claude's rotating spinner (`*·✢✳✶✻✽`); an elapsed
+# parenthetical in minutes or hours ("(2m") is accepted as well as seconds.
+[[rules]]
+id = "live-turn-footer"
+state = "working"
+priority = 58
+region = "bottom-lines(12)"
+match = { any = [
+  { line-regex = '^\s*[⏸⏵].*esc to interrupt(?:\s|·|$)' },
+  { line-regex = '^\s*[*·✢✳✶✻✽]\s+\S.*…(?:\s+\(\d+[smh](?:\s|·)|\s*$)' },
+] }
+
+# The main turn has ended but subagents are still running:
+#
+#     ✻ Waiting for 2 background agents to finish
+[[rules]]
+id = "background-agents"
+state = "working"
+priority = 57
+region = "bottom-lines(12)"
+match = { line-regex = '^\s*[*·✢✶✻✽]\s+Waiting for [1-9]\d* background agents? to finish\s*$' }
+
+# A live form below the last rule (AskUserQuestion, plan approval): a cancel
+# footer paired with a confirm key, or a select key plus a navigation hint.
+# The permission dialog above has no Enter hint, so this does not shadow it.
+[[rules]]
+id = "live-form"
+state = "blocked"
+priority = 85
+region = "after-last-rule"
+match = { all = [
+  { contains = "esc to cancel" },
+  { any = [
+    { contains = "enter to confirm" },
+    { all = [
+      { contains = "enter to select" },
+      { any = [
+        { contains = "tab/arrow keys to navigate" },
+        { contains = "arrow keys to navigate" },
+        { contains = "arrows to navigate" },
+        { contains = "↑/↓ to navigate" },
+        { contains = "↑↓ to navigate" },
+      ] },
+    ] },
+  ] },
+] }
+
+# An MCP elicitation dialog: the invariant header, an Accept/Decline control
+# row, and the cancel footer. It has no Enter hint, so `live-form` misses it.
+[[rules]]
+id = "mcp-elicitation"
+state = "blocked"
+priority = 85
+region = "bottom-lines(16)"
+match = { all = [
+  { contains = "esc to cancel" },
+  { line-regex = '(?i)^\s*MCP server ["\x{201C}].+["\x{201D}] requests your input\s*$' },
+  { any = [{ line-regex = '^\s*\x{276F}?\s*Accept\b' }, { line-regex = '^\s*\x{276F}?\s*Decline\b' }] },
+] }
+
+[[rules]]
+id = "dynamic-workflow-prompt"
+state = "blocked"
+priority = 85
+region = "bottom-lines(12)"
+match = { all = [{ contains = "run a dynamic workflow?" }, { contains = "esc to cancel" }] }
+
+# The model picker is a user-opened menu that hides the live chrome: freeze,
+# as for the transcript viewer below.
+[[rules]]
+id = "model-picker"
+priority = 190
+region = "viewport"
+skip-state-update = true
+match = { all = [
+  { contains = "select model" },
+  { contains = "enter to set as default" },
+  { contains = "esc to cancel" },
+  { not = { any = [{ contains = "do you want to proceed?" }, { contains = "enter to select" }] } },
+] }
 
 # A permission prompt: the question stem plus a numbered option list, with a
 # U+276F caret on the selected row.

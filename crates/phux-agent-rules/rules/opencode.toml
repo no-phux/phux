@@ -85,6 +85,36 @@ match = { all = [
   { line-regex = '^\s*.*Allow once\s+Allow always\s+Reject\b' },
 ] }
 
+# --- Patterns adopted from herdr ----------------------------------------------
+#
+# Adapted from herdr's opencode manifest, version 2026.06.10.1
+# (https://github.com/ogulcancelik/herdr, Apache-2.0; see
+# THIRD-PARTY-NOTICES.md). NOT verified against a phux capture; the screen
+# that pins the question rule is herdr's Kilo test excerpt (Kilo's UI is an
+# OpenCode fork), under `src/fixtures/herdr/kilo/`.
+
+# The question tool's picker, which replaces the input like the permission
+# dialog: a dismiss key, an accept key, and a navigation key in its footer,
+# "↑↓ select  enter submit  esc dismiss".
+[[rules]]
+id = "question-dialog"
+state = "blocked"
+priority = 100
+region = "bottom-lines(8)"
+match = { all = [
+  { contains = "esc dismiss" },
+  { any = [{ contains = "enter confirm" }, { contains = "enter submit" }, { contains = "enter toggle" }] },
+  { any = [{ contains = "↑↓ select" }, { contains = "⇆ tab" }] },
+] }
+
+# A second Esc press arms the interrupt: "esc again to interrupt".
+[[rules]]
+id = "footer-interrupt-armed"
+state = "working"
+priority = 89
+region = "bottom-lines"
+match = { contains = "esc again to interrupt" }
+
 # --- Rules deliberately NOT written ------------------------------------------
 #
 # No `idle` rule. The composer and its placeholder are painted identically

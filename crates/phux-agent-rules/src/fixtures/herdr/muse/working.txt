@@ -1,0 +1,8 @@
+⟩ hello
+
+◆ Working (0s · esc to interrupt)
+
+────────────────
+⟩
+────────────────
+gpt-5.4 · minimal · /workspace

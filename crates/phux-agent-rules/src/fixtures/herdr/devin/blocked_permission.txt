@@ -1,0 +1,8 @@
+⏺ Running command
+  └ $ sleep 30
+
+❭ 1 Yes  (Approve once)
+· 2 Yes, allow `sleep` commands
+· 3 Yes, always allow `sleep` commands
+· 4 No
+↑↓ select · ↵ confirm · esc cancel

@@ -1,0 +1,70 @@
+# Agent-state detection manifest for Maki (ADR-0046).
+#
+# Detection patterns adapted from herdr (https://github.com/ogulcancelik/herdr),
+# Apache-2.0: `src/detect/manifests/maki.toml`, manifest version 2026.07.09.2,
+# translated into phux's schema. See THIRD-PARTY-NOTICES.md.
+#
+# Provenance: NOT verified against a phux capture; the CLI is not installed on
+# the phux capture machine, and herdr ships no test screens for it. The golden
+# screens under `src/fixtures/herdr/maki/` are assembled from the strings the
+# herdr manifest names, so they pin the translation, not the CLI. Re-capture
+# when the CLI is available.
+#
+# Maki renders a persistent one-line status bar on the bottom row. It starts
+# with the mode label "[BUILD]", "[PLAN]", or "[BASH]" when idle and gets a
+# leading braille spinner cell while the agent is streaming. Permission
+# requests and the plan-complete form replace the input box above the status
+# bar. Maki sets no OSC title or OSC 9;4 progress.
+#
+# Translation notes. `bottom_non_empty_lines(N)` is `bottom-lines(N)` and
+# `whole_recent` is `viewport`; priorities keep herdr's values. Dropped:
+# herdr's visible-idle `status_bar_idle` and `prompt_box_idle` (idle is phux's
+# fail-safe, docs/spec/L3.md §3.7).
+#
+# The governing doctrine (ADR-0046 §D): a MISSED signal is cheap, a FALSE
+# `blocked` is not.
+
+kind = "maki"
+name = "maki"
+
+binaries = ["maki"]
+
+# --- Blocked -----------------------------------------------------------------
+
+# The "Permission Required" panel with its key hints ("y Allow", "n Deny", or
+# a focused "confirm allow"/"confirm deny" button).
+[[rules]]
+id = "permission-dialog"
+state = "blocked"
+priority = 980
+region = "viewport"
+match = { all = [
+  { contains = "permission required" },
+  { any = [
+    { all = [{ contains = "y allow" }, { contains = "n deny" }] },
+    { contains = "confirm allow" },
+    { contains = "confirm deny" },
+    { all = [{ contains = "enter deny" }, { contains = "esc cancel" }] },
+  ] },
+] }
+
+[[rules]]
+id = "plan-complete-form"
+state = "blocked"
+priority = 970
+region = "viewport"
+match = { all = [
+  { contains = "plan complete" },
+  { contains = "enter confirm" },
+  { any = [{ contains = "space toggle parallel" }, { contains = "edit plan" }] },
+] }
+
+# --- Working -----------------------------------------------------------------
+
+# " ⠋ [BUILD] ..." on the status bar while streaming (one or two spinner cells).
+[[rules]]
+id = "status-bar-spinner"
+state = "working"
+priority = 900
+region = "bottom-lines(1)"
+match = { line-regex = '^( [\x{2800}-\x{28FF}]){1,2} \[(BUILD|PLAN|BASH)\]' }

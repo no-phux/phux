@@ -1,0 +1,6 @@
+● Reading src/main.rs
+
+────────────────────────────────────────
+❯ queue another prompt
+────────────────────────────────────────
+ ⠋ [BUILD] claude-sonnet-4.5 · 12k tokens

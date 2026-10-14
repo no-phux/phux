@@ -81,11 +81,108 @@ match = { all = [
   { not = { contains = "Shift+Tab:mode" } },
 ] }
 
+# --- Patterns adopted from herdr ----------------------------------------------
+#
+# Adapted from herdr's grok manifest, version 2026.10.05.1
+# (https://github.com/ogulcancelik/herdr, Apache-2.0; see
+# THIRD-PARTY-NOTICES.md), which tracks Grok releases after 1.0.30. NOT
+# verified against a phux capture; the screens that pin them are under
+# `src/fixtures/herdr/grok/` and are herdr's test excerpts or are assembled
+# from the strings the herdr manifest names. Each working rule sits below the
+# captured backstop above, so the captured rule still names its own matches.
+
+# "⚠ Action Required - project" while a dialog waits. Outranks the spinner.
+[[rules]]
+id = "title-action-required"
+state = "blocked"
+priority = 110
+region = "title"
+match = { contains = "Action Required" }
+
+# Later titles carry the spinner as a word anywhere ("project - ⠹ - session"),
+# not only as the prefix the captured rule above anchors on.
+[[rules]]
+id = "title-spinner-word"
+state = "working"
+priority = 90
+region = "title"
+match = { line-regex = '(?:^|\s)[\x{2801}-\x{28FF}](?:\s|$)' }
+
+# OSC 9;4 indeterminate progress while a turn runs.
+[[rules]]
+id = "osc-progress-working"
+state = "working"
+priority = 55
+region = "osc-progress"
+match = { line-regex = '^4;1;-1$' }
+
+# An option dialog: heavy-bar rows with a key and a radio mark,
+# "┃ y (●) Yes, proceed".
+[[rules]]
+id = "option-dialog"
+state = "blocked"
+priority = 85
+region = "viewport"
+match = { line-regex = '^\s*┃\s+[0-9a-z]+\s+\([●○]\)\s' }
+
+# The permission prompt's key-hint footer ("↑↓:select │ Ctrl+o:yolo │
+# Ctrl+c:cancel") and the question dialog's ("Tab:scrollback │
+# Shift+x:dismiss").
+[[rules]]
+id = "permission-hints"
+state = "blocked"
+priority = 85
+region = "bottom-lines(2)"
+match = { any = [
+  { all = [{ contains = ":select" }, { contains = "ctrl+o:yolo" }, { contains = "ctrl+c:cancel" }] },
+  { all = [{ contains = "tab:scrollback" }, { contains = "shift+x:dismiss" }] },
+] }
+
+# The permission-scope selector.
+[[rules]]
+id = "permission-scope-selector"
+state = "blocked"
+priority = 85
+region = "viewport"
+match = { all = [
+  { contains = "yes, proceed" },
+  { contains = "no, reject" },
+  { any = [
+    { contains = "use ← → to choose permission whitelist scope" },
+    { contains = "←/→:scope" },
+  ] },
+] }
+
+# A spinner status row ending in its "[stop]" control, or a spinner ahead of a
+# tool verb.
+[[rules]]
+id = "spinner-status"
+state = "working"
+priority = 55
+region = "bottom-lines(14)"
+match = { any = [
+  { line-regex = '^\s*[\x{2801}-\x{28FF}]\s.*\[stop\]\s*$' },
+  { line-regex = '^\s*[\x{2801}-\x{28FF}]\s+(Run|Read|Search|List)\b' },
+] }
+
+# The composer's key hints while a turn runs gain a cancel key:
+# "Shift+Tab:mode │ Ctrl+c:cancel │ Ctrl+.:shortcuts".
+[[rules]]
+id = "cancel-hints"
+state = "working"
+priority = 54
+region = "bottom-lines(2)"
+match = { all = [
+  { contains = "ctrl+.:shortcuts" },
+  { any = [{ contains = "esc:cancel" }, { contains = "ctrl+c:cancel" }] },
+] }
+
 # --- Rules deliberately NOT written ------------------------------------------
 #
 # No `idle` rule. The composer and the opt-in banner are painted identically
 # whether or not a turn is running. `idle` is the detector's fail-safe
-# default (ADR-0046 §D).
+# default (ADR-0046 §D). herdr's `osc_title_idle`, `osc_progress_idle` and
+# `prompt_hints_idle` are dropped for the same reason.
 #
-# No tool-permission rule. This installation ran tool calls without painting
-# one, so matching its embedded strings would still be an unverified guess.
+# No captured tool-permission rule. This installation ran tool calls without
+# painting one; the blocked rules above come from herdr.

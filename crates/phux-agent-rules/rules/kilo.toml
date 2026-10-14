@@ -1,0 +1,54 @@
+# Agent-state detection manifest for Kilo Code CLI (ADR-0046).
+#
+# Detection patterns adapted from herdr (https://github.com/ogulcancelik/herdr),
+# Apache-2.0: `src/detect/manifests/kilo.toml`, manifest version 2026.06.10.1,
+# translated into phux's schema. See THIRD-PARTY-NOTICES.md.
+#
+# Provenance: NOT verified against a phux capture; the CLI is not installed on
+# the phux capture machine. The golden screens under `src/fixtures/herdr/kilo/`
+# are herdr's test excerpts. Re-capture when the CLI is available.
+#
+# Kilo's terminal UI is an OpenCode fork, so its signals mirror
+# `opencode.toml`: an "esc interrupt" footer while a turn runs and OpenCode's
+# permission and question dialogs.
+#
+# Translation notes. `whole_recent` is `viewport`; priorities keep herdr's
+# values. The working footer reads `bottom-lines(8)`, as `opencode.toml`'s
+# captured footer rule does, rather than the whole screen.
+#
+# The governing doctrine (ADR-0046 §D): a MISSED signal is cheap, a FALSE
+# `blocked` is not.
+
+kind = "kilo"
+name = "kilo"
+
+binaries = ["kilo", "kilo-code"]
+
+# --- Blocked -----------------------------------------------------------------
+#
+# OpenCode's "△ Permission required" dialog, or a question picker whose footer
+# pairs a dismiss key, an accept key and a navigation key:
+#
+#     ↑↓ select  enter submit  esc dismiss
+[[rules]]
+id = "permission-or-question-dialog"
+state = "blocked"
+priority = 300
+region = "viewport"
+match = { any = [
+  { contains = "△ Permission required" },
+  { all = [
+    { contains = "esc dismiss" },
+    { any = [{ contains = "enter confirm" }, { contains = "enter submit" }, { contains = "enter toggle" }] },
+    { any = [{ contains = "↑↓ select" }, { contains = "⇆ tab" }] },
+  ] },
+] }
+
+# --- Working -----------------------------------------------------------------
+
+[[rules]]
+id = "esc-interrupt-footer"
+state = "working"
+priority = 100
+region = "bottom-lines(8)"
+match = { contains = "esc interrupt" }

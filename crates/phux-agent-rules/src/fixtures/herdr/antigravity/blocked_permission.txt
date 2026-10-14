@@ -1,0 +1,4 @@
+Requesting permission for: git log -n 50
+Do you want to proceed?
+> 1. Yes
+↑/↓ Navigate · tab Amend · e edit command

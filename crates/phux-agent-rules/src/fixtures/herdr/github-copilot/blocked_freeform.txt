@@ -1,0 +1,11 @@
+○ Asking user Enter the name for the new branch:
+
+╭───────────────────────────────────────────────────────────────────╮
+│ Question                                                          │
+│ ───────────────────────────────────────────────────────────────── │
+│ Enter the name for the new branch:                                │
+│                                                                   │
+│ ❯ Type your answer...                                             │
+│                                                                   │
+│ enter to submit · esc to cancel                                   │
+╰───────────────────────────────────────────────────────────────────╯

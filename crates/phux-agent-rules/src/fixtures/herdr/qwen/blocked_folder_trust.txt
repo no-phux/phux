@@ -1,0 +1,5 @@
+Do you trust this folder?
+
+● 1. Trust folder (work)
+  2. Trust parent folder (code)
+  3. Don't trust (esc)

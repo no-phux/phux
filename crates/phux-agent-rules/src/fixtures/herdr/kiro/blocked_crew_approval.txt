@@ -1,0 +1,14 @@
+  Please delegate to a sub-agent to search the web
+
+● Orchestrating (1 agent)
+  esc to cancel
+  ctrl+g open agent monitor
+  ● web-research kiro_default ⚠ tool approval needed
+
+ ◐ Tasks · 1 done · 2 remaining                                                                                                                                              ctrl+x to expand
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ⚠ 3 tool approvals pending from subagents
+ ❯ (a) Approve all pending
+   (f) Approve all pending and auto-approve all future requests
+   (c) Configure individually (agent monitor)
+   (x) Exit (cancel subagents)                                 %

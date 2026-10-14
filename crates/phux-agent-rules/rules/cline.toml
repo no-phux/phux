@@ -1,0 +1,83 @@
+# Agent-state detection manifest for Cline CLI (ADR-0046).
+#
+# Detection patterns adapted from herdr (https://github.com/ogulcancelik/herdr),
+# Apache-2.0: `src/detect/manifests/cline.toml`, manifest version
+# 2026.09.11.1, translated into phux's schema. See THIRD-PARTY-NOTICES.md.
+#
+# Provenance: NOT verified against a phux capture; the CLI is not installed on
+# the phux capture machine. The golden screens under `src/fixtures/herdr/cline/`
+# are herdr's test excerpts, plus a working screen assembled from the status
+# string the herdr rule names. Re-capture when the CLI is available.
+#
+# Translation notes. `bottom_non_empty_lines(N)` is `bottom-lines(N)` and
+# `whole_recent` is `viewport`; priorities keep herdr's values. Two herdr
+# rules are dropped on purpose:
+#
+#   - `composer_idle` (a visible-idle rule): idle is phux's fail-safe and
+#     positive idle evidence is held to a higher bar (docs/spec/L3.md §3.7).
+#   - `default_cline_working`, which asserts `working` for ANY screen. In
+#     phux that would make an unmatched Cline pane read as busy forever; the
+#     fail-safe is idle.
+#
+# The governing doctrine (ADR-0046 §D): a MISSED signal is cheap, a FALSE
+# `blocked` is not.
+
+kind = "cline"
+name = "cline"
+
+binaries = ["cline"]
+
+# --- Blocked -----------------------------------------------------------------
+
+# The tool-permission prompt, in both the full-screen and the plan/act mode
+# spellings. Each mode branch needs the question and an answer together.
+[[rules]]
+id = "tool-permission"
+state = "blocked"
+priority = 300
+region = "viewport"
+match = { any = [
+  { contains = "let cline use this tool" },
+  { all = [{ contains = "[act mode]" }, { contains = "execute command?" }, { contains = "yes" }] },
+  { all = [{ contains = "[act mode]" }, { contains = "use this tool?" }, { contains = "yes" }] },
+  { all = [{ contains = "[plan mode]" }, { contains = "execute command?" }, { contains = "yes" }] },
+  { all = [{ contains = "[plan mode]" }, { contains = "use this tool?" }, { contains = "yes" }] },
+] }
+
+# The inline approval card.
+[[rules]]
+id = "inline-tool-permission"
+state = "blocked"
+priority = 300
+region = "bottom-lines(16)"
+match = { all = [
+  { contains = "Cline needs permission" },
+  { contains = "Approve tool call?" },
+  { contains = "[y] Approve" },
+  { contains = "[n] Deny" },
+] }
+
+# An inline question with its answer composer and mode-switch hints.
+[[rules]]
+id = "inline-question"
+state = "blocked"
+priority = 300
+region = "bottom-lines(24)"
+match = { all = [
+  { line-regex = '^\s*Cline is asking a question\s*$' },
+  { line-regex = '^\s*>\s+\S' },
+  { contains = "(Tab)" },
+  { contains = "Shift+Tab" },
+] }
+
+# --- Working -----------------------------------------------------------------
+
+[[rules]]
+id = "active-turn"
+state = "working"
+priority = 200
+region = "bottom-lines(20)"
+match = { any = [
+  { line-regex = '^\s*[\x{2801}-\x{28FF}]\s+\S' },
+  { contains = "Thinking... (esc to cancel)" },
+] }

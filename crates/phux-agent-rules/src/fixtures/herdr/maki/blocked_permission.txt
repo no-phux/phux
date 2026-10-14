@@ -1,0 +1,5 @@
+Permission Required
+  bash: rm -rf build/
+  y Allow   n Deny
+────────────────────────────────────────
+ [BUILD] claude-sonnet-4.5 · 12k tokens

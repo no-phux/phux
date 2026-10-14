@@ -57,10 +57,57 @@ priority = 60
 region = "bottom-lines"
 match = { line-regex = '╰ [∼≈] ' }
 
+# --- Patterns adopted from herdr ----------------------------------------------
+#
+# Adapted from herdr's amp manifest, version 2026.07.09.1
+# (https://github.com/ogulcancelik/herdr, Apache-2.0; see
+# THIRD-PARTY-NOTICES.md). NOT verified against a phux capture; the screen
+# that pins the approval rule is under `src/fixtures/herdr/amp/` and is
+# assembled from the strings the herdr manifest names.
+
+# Amp titles a pane "Plugin confirmation needed" while a plugin waits on the
+# user. It outranks the title spinner.
+[[rules]]
+id = "title-plugin-confirmation"
+state = "blocked"
+priority = 110
+region = "title"
+match = { contains = "Plugin confirmation needed" }
+
+# A tool approval. Its header varies by kind ("Invoke tool ...?", "Run this
+# command?", "Allow editing file:", ...) above a shared option footer:
+# "Approve", "Allow All for This Session", ..., "Deny with feedback". The
+# rule needs a header AND the footer, as herdr's original detector did; its
+# current manifest accepts any single header phrase alone anywhere on screen,
+# which is ordinary transcript text.
+[[rules]]
+id = "approval-dialog"
+state = "blocked"
+priority = 80
+region = "bottom-lines(12)"
+match = { all = [
+  { any = [
+    { contains = "waiting for approval" },
+    { contains = "invoke tool" },
+    { contains = "run this command?" },
+    { contains = "allow editing file:" },
+    { contains = "allow creating file:" },
+    { contains = "confirm tool call" },
+  ] },
+  { contains = "approve" },
+  { any = [
+    { contains = "allow all for this session" },
+    { contains = "allow all for every session" },
+    { contains = "allow file for every session" },
+    { contains = "deny with feedback" },
+  ] },
+] }
+
 # --- Rules deliberately NOT written ------------------------------------------
 #
 # No `idle` rule. The composer is painted identically idle vs working; only
 # the footer marker and the title spinner distinguish them. `idle` is the
 # detector's fail-safe default (ADR-0046 §D).
 #
-# No `blocked` rule. A permission prompt was not captured on this install.
+# No captured `blocked` rule. A permission prompt was not captured on this
+# install; the blocked rules above come from herdr.

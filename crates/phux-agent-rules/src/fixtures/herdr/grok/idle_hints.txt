@@ -1,0 +1,2 @@
+Worked for 3.9s
+Shift+Tab:mode │ Ctrl+.:shortcuts

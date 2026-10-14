@@ -1,0 +1,6 @@
+◔ Reading shell 91b655
+  │ Timeout: 35s
+
+⠀⡆ Running tools · 27s (esc to interrupt)
+─────────────────────────────────────────────────────
+❭ Guide Devin while it works

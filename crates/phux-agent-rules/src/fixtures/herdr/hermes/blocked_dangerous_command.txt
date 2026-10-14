@@ -1,0 +1,11 @@
+╭────────────────────────────────────────────────────────────╮
+│ ⚠️  Dangerous Command                                      │
+│ mkdir -p /tmp/herdr-hermes-block-test/subdir && touch      │
+│ ❯ 1. Allow once                                            │
+│   2. Allow for this session                                │
+│   3. Add to permanent allowlist                            │
+│   4. Deny                                                  │
+│   5. Show full command                                     │
+╰────────────────────────────────────────────────────────────╯
+  ↑/↓ to select, Enter to confirm
+⚠ ❯

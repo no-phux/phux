@@ -1,0 +1,4 @@
+Welcome to Kimi Code CLI!
+── input ─
+────────────────
+agent (Kimi-k2.6 ●)  ~/Projects/herdr

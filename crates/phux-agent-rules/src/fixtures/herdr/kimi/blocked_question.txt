@@ -1,0 +1,13 @@
+────────────────────────────────────────────────────
+ question
+
+ (○) Destination   Submit
+
+ ? Which destination should I use?
+
+  → [1] Local checkout
+    [2] Remote branch
+    [3] Other
+
+  ↑↓ select  1-3 / ↵ choose  ←/→/tab switch  esc cancel
+────────────────────────────────────────────────────

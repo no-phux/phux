@@ -1,0 +1,2 @@
+[act mode] execute command?
+yes

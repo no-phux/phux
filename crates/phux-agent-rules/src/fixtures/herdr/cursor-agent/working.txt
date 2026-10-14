@@ -1,0 +1,4 @@
+  ⬢ Generating
+
+  → Add a follow-up
+  ctrl+c to stop

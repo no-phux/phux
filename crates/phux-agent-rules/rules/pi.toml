@@ -20,6 +20,26 @@ priority = 60
 region = "bottom-lines"
 match = { line-regex = '^\s*[⠀-⣿]\s+Working\.\.\.\s*$' }
 
+# Later Pi releases drop the ellipsis and may draw the status into a rule:
+#
+#     ── ⠋ Working ──────────────
+#     ⠋ Working
+#
+# Adapted from herdr's pi manifest, version 2026.10.01.1
+# (https://github.com/ogulcancelik/herdr, Apache-2.0; see
+# THIRD-PARTY-NOTICES.md). NOT verified against a phux capture; the screen
+# that pins it is under `src/fixtures/herdr/pi/`, assembled from herdr's
+# pattern.
+[[rules]]
+id = "bottom-working-border"
+state = "working"
+priority = 59
+region = "bottom-lines(12)"
+match = { any = [
+  { line-regex = '^── [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Working ─+$' },
+  { line-regex = '^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Working$' },
+] }
+
 # VERIFIED: before an untrusted project starts, Pi replaces the editor with a
 # trust chooser. The destructive choice plus the chooser's exact key hint are
 # both among the six trailing non-empty lines only while that chooser is live.

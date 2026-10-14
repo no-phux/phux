@@ -1,0 +1,137 @@
+# Agent-state detection manifest for Qwen Code (ADR-0046).
+#
+# Detection patterns adapted from herdr (https://github.com/ogulcancelik/herdr),
+# Apache-2.0: `src/detect/manifests/qwen.toml`, manifest version 2026.08.14.1,
+# translated into phux's schema. See THIRD-PARTY-NOTICES.md.
+#
+# Provenance: NOT verified against a phux capture; the CLI is not installed on
+# the phux capture machine, and herdr ships no test screens for it. The golden
+# screens under `src/fixtures/herdr/qwen/` are assembled from the strings the
+# herdr manifest names, so they pin the translation, not the CLI. Re-capture
+# when the CLI is available.
+#
+# Qwen Code keeps its composer visible while responding, so the prompt box is
+# not idle evidence. With `ui.showStatusInTitle` enabled its status-prefixed
+# titles are the primary, locale-independent signal; the screen rules cover
+# built-in locales and narrow terminals. OSC 9;4 is emitted only while a tool
+# executes, and only in terminals that advertise progress support.
+#
+# Translation notes. `osc_title` is `title`, `osc_progress` is `osc-progress`
+# and `bottom_non_empty_lines(N)` is `bottom-lines(N)`; priorities keep
+# herdr's values. Dropped: herdr's visible-idle `composer_idle` (idle is
+# phux's fail-safe, docs/spec/L3.md §3.7). Note the title glyphs mean the
+# OPPOSITE of Claude Code's: in Qwen U+2733 is "waiting on you".
+#
+# The governing doctrine (ADR-0046 §D): a MISSED signal is cheap, a FALSE
+# `blocked` is not.
+
+kind = "qwen"
+name = "qwen"
+
+# `qwen` is the CLI's argv[0]; `qwen-code` is also the npm package directory
+# (`.../@qwen-code/qwen-code/cli.js`) under a `node` wrapper.
+binaries = ["qwen", "qwen-code"]
+
+# --- Title and progress rules ------------------------------------------------
+
+[[rules]]
+id = "title-blocked"
+state = "blocked"
+priority = 1200
+region = "title"
+match = { regex = '^\x{2733}\x{FE0E}? ' }
+
+[[rules]]
+id = "title-working"
+state = "working"
+priority = 1100
+region = "title"
+match = { regex = '^\x{25D0}\x{FE0E}? ' }
+
+[[rules]]
+id = "osc-progress-tool"
+state = "working"
+priority = 850
+region = "osc-progress"
+match = { regex = '^4;3(?:;|$)' }
+
+# --- Blocked -----------------------------------------------------------------
+
+# The frozen spinner row Qwen paints while it waits for a confirmation, in
+# every built-in locale.
+[[rules]]
+id = "waiting-for-confirmation"
+state = "blocked"
+priority = 1000
+region = "bottom-lines(20)"
+match = { all = [
+  { line-regex = '^\s*⠏\s+.*\.\.\.\s*$' },
+  { any = [
+    { contains = "Waiting for user confirmation..." },
+    { contains = "等待用户确认..." },
+    { contains = "等待用戶確認..." },
+    { contains = "Warten auf Benutzerbestätigung..." },
+    { contains = "En attente de la confirmation de l'utilisateur..." },
+    { contains = "ユーザーの確認を待っています..." },
+    { contains = "Aguardando confirmação do usuário..." },
+    { contains = "Ожидание подтверждения от пользователя..." },
+    { contains = "Esperant la confirmació de l'usuari..." },
+  ] },
+] }
+
+[[rules]]
+id = "tool-confirmation"
+state = "blocked"
+priority = 990
+region = "bottom-lines(20)"
+match = { all = [
+  { contains = "yes, allow once" },
+  { any = [
+    { contains = "apply this change?" },
+    { contains = "allow execution of:" },
+    { contains = "allow execution of mcp tool" },
+    { contains = "do you want to proceed?" },
+    { contains = "shell command execution" },
+  ] },
+] }
+
+# A question dialog: a selected numbered option (or checkbox) and the
+# "↑/↓: … Enter: …" key legend.
+[[rules]]
+id = "question-dialog"
+state = "blocked"
+priority = 980
+region = "bottom-lines(20)"
+match = { all = [
+  { line-regex = '^\s*[❯›]\s*(?:\[(?: |✓)\]\s*)?\d+\.\s+' },
+  { line-regex = '^\s*↑/↓\s*:.*(?:Enter|Return)\s*:' },
+] }
+
+[[rules]]
+id = "folder-trust-dialog"
+state = "blocked"
+priority = 970
+region = "bottom-lines(20)"
+match = { all = [
+  { contains = "do you trust this folder?" },
+  { contains = "trust folder (" },
+  { contains = "don't trust (esc)" },
+] }
+
+# --- Working -----------------------------------------------------------------
+
+# "⠋ Thinking... (5s · esc to cancel)"; the reduced-motion spinner is dots.
+[[rules]]
+id = "cancel-hint"
+state = "working"
+priority = 900
+region = "bottom-lines(8)"
+match = { line-regex = '^\s*(?:[⠁-⣿]|\.{1,2})\s+.*\(\d+(?:m(?:\s+\d+s)?|s).*\s·\sesc to cancel\)\s*$' }
+
+# On a narrow pane the phrase wraps and the timer row stands alone.
+[[rules]]
+id = "narrow-cancel-hint"
+state = "working"
+priority = 890
+region = "bottom-lines(8)"
+match = { line-regex = '^\s*\(\d+(?:m(?:\s+\d+s)?|s)\s·\sesc to cancel\)\s*$' }

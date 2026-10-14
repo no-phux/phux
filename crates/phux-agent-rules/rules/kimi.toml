@@ -1,0 +1,107 @@
+# Agent-state detection manifest for Kimi Code CLI (ADR-0046).
+#
+# Detection patterns adapted from herdr (https://github.com/ogulcancelik/herdr),
+# Apache-2.0: `src/detect/manifests/kimi.toml`, manifest version 2026.06.10.1,
+# translated into phux's schema. See THIRD-PARTY-NOTICES.md.
+#
+# Provenance: NOT verified against a phux capture; the CLI is not installed on
+# the phux capture machine. The golden screens under `src/fixtures/herdr/kimi/`
+# are herdr's test excerpts. Re-capture when the CLI is available.
+#
+# Translation notes. `bottom_non_empty_lines(N)` is `bottom-lines(N)` and
+# `whole_recent` is `viewport`; priorities keep herdr's values.
+#
+# The governing doctrine (ADR-0046 §D): a MISSED signal is cheap, a FALSE
+# `blocked` is not.
+
+kind = "kimi"
+name = "kimi"
+
+# `kimi` is the CLI's argv[0]; `kimi-code` is also the npm package directory
+# (`.../@moonshot-ai/kimi-code/dist/main.mjs`) under a `node` wrapper.
+binaries = ["kimi", "kimi-code"]
+
+# --- Blocked -----------------------------------------------------------------
+
+# The current approval panel:
+#
+#       ▶ Run this command?
+#       ▶ 1. Approve once
+#         3. Reject
+#       ↑/↓ select · 1/2/3/4 choose · ↵ confirm
+#
+# A known question title (or an "Approve …?" line), the numeric choose hint,
+# the confirm key, and an approve/reject/revise option must all be present.
+[[rules]]
+id = "approval-panel"
+state = "blocked"
+priority = 400
+region = "viewport"
+match = { all = [
+  { contains = "↵ confirm" },
+  { any = [
+    { contains = "run this command?" },
+    { contains = "write this file?" },
+    { contains = "apply these edits?" },
+    { contains = "stop this task?" },
+    { contains = "ready to build with this plan?" },
+    { line-regex = '(?i)^\s*▶?\s*approve .*\?$' },
+  ] },
+  { contains = " choose" },
+  { any = [{ contains = "approve" }, { contains = "reject" }, { contains = "revise" }] },
+] }
+
+# The question panel: a bare "question" heading, a "? " prompt line, and its
+# picker footer ("↑↓ select  1-3 / ↵ choose  ←/→/tab switch  esc cancel").
+[[rules]]
+id = "question-panel"
+state = "blocked"
+priority = 390
+region = "viewport"
+match = { all = [
+  { contains = "↑↓ select" },
+  { contains = "esc cancel" },
+  { line-regex = '^\s*question\s*$' },
+  { line-regex = '^\s*\? ' },
+  { any = [{ contains = "↵ choose" }, { contains = "↵ toggle" }, { contains = "↵ save" }] },
+] }
+
+# The older approval box ("Shell is requesting approval to run command:").
+[[rules]]
+id = "legacy-approval-panel"
+state = "blocked"
+priority = 300
+region = "viewport"
+match = { all = [
+  { contains = "requesting approval" },
+  { contains = "reject" },
+  { any = [{ contains = "approve once" }, { contains = "approve for this session" }] },
+  { any = [{ contains = "1/2/3/4 choose" }, { contains = "↵ confirm" }] },
+] }
+
+# --- Working -----------------------------------------------------------------
+
+# The status row while background agents run.
+[[rules]]
+id = "background-agents-status"
+state = "working"
+priority = 120
+region = "bottom-lines(3)"
+match = { line-regex = '(?i)\bkimi[-\w.]*\s+thinking\b.*\[[1-9][0-9]*\s+agents?\s+running\]' }
+
+# A moon-phase spinner alone on its row while the model thinks.
+[[rules]]
+id = "moon-spinner"
+state = "working"
+priority = 100
+region = "viewport"
+match = { line-regex = '^\s*(🌕|🌖|🌗|🌘|🌑|🌒|🌓|🌔)\s*$' }
+
+# A braille spinner ahead of "Thinking...", "Working..." or "Using <tool>".
+# Finished tool rows read "Used <tool>", so they never match.
+[[rules]]
+id = "braille-spinner"
+state = "working"
+priority = 90
+region = "viewport"
+match = { line-regex = '(?i)^\s*[\x{2800}-\x{28FF}]+\s*(thinking\.\.\.|working\.\.\.|using )' }

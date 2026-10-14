@@ -1,0 +1,9 @@
+↓ Shell mkdir -p /tmp/test-kiro-{a,b,c} && ls /tmp/test-kiro-*
+
+─────────────────────────────────────────────────────────────────────────────────────────
+ shell requires approval
+ ❯ Yes, single permission
+   Trust, always allow in this session
+   No (Tab to edit)
+─────────────────────────────────────────────────────────────────────────────────────────
+ ESC to close · ↑↓ to navigate · enter to select · Tab to edit

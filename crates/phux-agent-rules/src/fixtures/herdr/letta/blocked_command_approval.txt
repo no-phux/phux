@@ -1,0 +1,11 @@
+✻ Thinking…
+
+────────────────────────────────────────────────────────────────
+Run this command?
+
+  $ rm -f /var/tmp/herdr-blocked-capture-never-created
+
+❯ 1. Yes
+  2. No, and tell Letta Code what to do differently
+
+Enter to select · Esc to cancel

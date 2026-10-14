@@ -1,0 +1,5 @@
+Write the following joke to ~/joke.md?
+1. Yes, write it
+2. No, thanks
+3. Type your own answer
+↑↓ select  enter submit  esc dismiss

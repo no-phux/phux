@@ -1,0 +1,93 @@
+# Agent-state detection manifest for Devin CLI (ADR-0046).
+#
+# Detection patterns adapted from herdr (https://github.com/ogulcancelik/herdr),
+# Apache-2.0: `src/detect/manifests/devin.toml`, manifest version
+# 2026.06.15.1, translated into phux's schema. See THIRD-PARTY-NOTICES.md.
+#
+# Provenance: NOT verified against a phux capture; the CLI is not installed on
+# the phux capture machine. The golden screens under `src/fixtures/herdr/devin/`
+# are herdr's test excerpts (Devin CLI v2026.5.26-8 banner). Re-capture when
+# the CLI is available.
+#
+# Translation notes. `bottom_non_empty_lines(N)` is `bottom-lines(N)`;
+# priorities keep herdr's values. herdr's `welcome_prompt_footer` and
+# `live_prompt_footer` are visible-idle rules and are dropped: idle is phux's
+# fail-safe (docs/spec/L3.md §3.7).
+#
+# The governing doctrine (ADR-0046 §D): a MISSED signal is cheap, a FALSE
+# `blocked` is not.
+
+kind = "devin"
+name = "devin"
+
+binaries = ["devin", "devin-cli"]
+
+# --- Blocked -----------------------------------------------------------------
+
+# First launch in an untrusted directory:
+#
+#     Do you trust the authors of this directory?
+#     For security, devin should not be run in directories
+#     with untrusted content.
+#     ❭ 1 Yes, trust /private/tmp/devin-hook-probe
+[[rules]]
+id = "workspace-trust-dialog"
+state = "blocked"
+priority = 300
+region = "bottom-lines(8)"
+match = { all = [
+  { contains = "do you trust the authors of this directory?" },
+  { contains = "with untrusted content." },
+  { contains = "yes, trust " },
+] }
+
+# A tool permission picker; its footer reads
+# "↑↓ select · ↵ confirm · esc cancel" under "❭ 1 Yes  (Approve once)".
+[[rules]]
+id = "permission-dialog"
+state = "blocked"
+priority = 290
+region = "bottom-lines(8)"
+match = { all = [
+  { contains = "approve once" },
+  { contains = "select" },
+  { contains = "confirm" },
+  { contains = "esc cancel" },
+] }
+
+# --- Working -----------------------------------------------------------------
+#
+# Each working rule refuses a screen that also shows the permission picker,
+# so a dialog painted over a running footer still reads as blocked.
+
+[[rules]]
+id = "running-tools-footer"
+state = "working"
+priority = 200
+region = "bottom-lines(8)"
+match = { all = [
+  { contains = "running tools" },
+  { contains = "esc to interrupt" },
+  { not = { all = [{ contains = "approve once" }, { contains = "esc cancel" }] } },
+] }
+
+[[rules]]
+id = "guide-while-working"
+state = "working"
+priority = 190
+region = "bottom-lines(6)"
+match = { all = [
+  { contains = "guide devin while it works" },
+  { not = { all = [{ contains = "approve once" }, { contains = "esc cancel" }] } },
+] }
+
+[[rules]]
+id = "tool-reading-timeout"
+state = "working"
+priority = 180
+region = "bottom-lines(8)"
+match = { all = [
+  { contains = "reading shell " },
+  { contains = "timeout:" },
+  { not = { all = [{ contains = "approve once" }, { contains = "esc cancel" }] } },
+] }

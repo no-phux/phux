@@ -1,0 +1,10 @@
+╭──────────────────────────────────────────────╮
+│ Shell  rm -rf build/                          │
+│                                              │
+│ Allow execution of: 'rm'?                    │
+│                                              │
+│ ● 1. Yes, allow once                         │
+│   2. Yes, allow always ...                   │
+│   3. No, suggest changes (esc)               │
+╰──────────────────────────────────────────────╯
+⠏ Waiting for user confirmation...

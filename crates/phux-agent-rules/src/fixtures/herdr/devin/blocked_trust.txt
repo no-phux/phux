@@ -1,0 +1,5 @@
+Do you trust the authors of this directory?
+For security, devin should not be run in directories
+with untrusted content.
+❭ 1 Yes, trust /private/tmp/devin-hook-probe
+· 2 No, exit

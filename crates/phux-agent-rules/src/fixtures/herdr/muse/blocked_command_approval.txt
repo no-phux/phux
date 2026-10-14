@@ -1,0 +1,9 @@
+Would you like to run the following command?
+
+$ printf muse-safe-probe
+
+› 1. Allow this stage once (y)
+  2. Always allow in this workspace: printf muse-safe-probe ... (p)
+  3. Abort the entire command (esc)
+────────────────
+gpt-5.4 · minimal · /workspace

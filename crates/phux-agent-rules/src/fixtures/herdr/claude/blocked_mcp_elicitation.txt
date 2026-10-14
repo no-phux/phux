@@ -1,0 +1,7 @@
+MCP server “my-server” requests your input
+
+Grant temporary access to the demo gateway for 15 minutes?
+
+❯ Accept    Decline
+
+Esc to cancel · ↑/↓ to navigate

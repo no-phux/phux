@@ -1,0 +1,5 @@
+› Run the tests
+
+• Running tests (1m 05s • esc to interrupt)
+
+› Find and fix a bug in @filename

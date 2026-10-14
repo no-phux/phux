@@ -1,0 +1,6 @@
+Theme
+
+⟩ Default (active)
+  Dynamic
+
+↑↓ move · enter save · esc go back

@@ -1,0 +1,10 @@
+⛬  I'll create some folders.
+
+   EXECUTE  (mkdir -p /tmp/test, impact: medium)
+
+╭────────────────────╮
+│ > Yes, allow        │
+│   Yes, always allow │
+│   No, cancel        │
+╰────────────────────╯
+   Use ↑↓ to navigate, Enter to select, Esc to cancel

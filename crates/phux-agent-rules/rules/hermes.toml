@@ -1,0 +1,149 @@
+# Agent-state detection manifest for Hermes Agent (ADR-0046).
+#
+# Detection patterns adapted from herdr (https://github.com/ogulcancelik/herdr),
+# Apache-2.0: `src/detect/manifests/hermes.toml`, manifest version
+# 2026.07.24.1, translated into phux's schema. See THIRD-PARTY-NOTICES.md.
+#
+# Provenance: NOT verified against a phux capture; the CLI is not installed on
+# the phux capture machine. The golden screens under `src/fixtures/herdr/hermes/`
+# are herdr's test excerpts. Re-capture when the CLI is available.
+#
+# Translation notes. `osc_title` is `title` and `bottom_non_empty_lines(N)` is
+# `bottom-lines(N)`; priorities keep herdr's values, and herdr already ranks
+# both title rules above every screen rule, as phux's title-first evaluation
+# does. herdr's `osc_title_idle` (a visible-idle `✓` title) is dropped: idle
+# is phux's fail-safe (docs/spec/L3.md §3.7). herdr also refuses Hermes's
+# installer helper processes by argv shape; phux identifies by name only, so
+# an installer run under a `hermes` argv[0] reads as a quiet Hermes pane.
+#
+# The governing doctrine (ADR-0046 §D): a MISSED signal is cheap, a FALSE
+# `blocked` is not.
+
+kind = "hermes"
+name = "hermes"
+
+binaries = ["hermes", "hermes-agent"]
+
+# --- Title rules -------------------------------------------------------------
+#
+# Hermes prefixes its title with a status glyph: ⚠ waiting on the user, ⏳
+# working, ✓ done. A text-presentation or emoji-presentation selector may
+# follow the glyph.
+
+[[rules]]
+id = "title-attention"
+state = "blocked"
+priority = 1100
+region = "title"
+match = { regex = '^⚠[\x{FE0E}\x{FE0F}]?(?:\s|$)' }
+
+[[rules]]
+id = "title-working"
+state = "working"
+priority = 1050
+region = "title"
+match = { regex = '^⏳[\x{FE0E}\x{FE0F}]?(?:\s|$)' }
+
+# --- Screen rules ------------------------------------------------------------
+#
+# Every blocked rule pairs what the dialog is about with its control hint, so
+# a transcript that mentions "approval" or "deny" does not read as a dialog.
+
+# The dangerous-command picker:
+#
+#     │ ⚠️  Dangerous Command                                      │
+#     │ ❯ 1. Allow once                                            │
+#     │   4. Deny                                                  │
+#       ↑/↓ to select, Enter to confirm
+[[rules]]
+id = "dangerous-command-approval"
+state = "blocked"
+priority = 900
+region = "bottom-lines(14)"
+match = { all = [
+  { any = [
+    { contains = "dangerous" },
+    { contains = "approval" },
+    { all = [{ contains = "allow once" }, { contains = "deny" }] },
+    { line-regex = '(?i)^\s*[▸>]?\s*1\.\s*allow' },
+  ] },
+  { any = [
+    { contains = "enter confirm" },
+    { contains = "enter to confirm" },
+    { contains = "↑/↓ to select" },
+    { contains = "show full command" },
+  ] },
+] }
+
+[[rules]]
+id = "clarification-prompt"
+state = "blocked"
+priority = 900
+region = "bottom-lines(14)"
+match = { all = [
+  { any = [
+    { contains = "hermes needs your" },
+    { line-regex = '^\s*ask\s+\S' },
+    { contains = "type your answer" },
+  ] },
+  { any = [
+    { contains = "enter confirm" },
+    { contains = "enter to confirm" },
+    { contains = "enter send" },
+    { contains = "press enter" },
+    { contains = "↑/↓ select" },
+    { contains = "↑/↓ to select" },
+    { contains = "other (type" },
+  ] },
+] }
+
+# A sudo password or skill-setup credential prompt.
+[[rules]]
+id = "credential-prompt"
+state = "blocked"
+priority = 900
+region = "bottom-lines(14)"
+match = { any = [
+  { contains = "sudo password" },
+  { contains = "skill setup" },
+  { all = [{ contains = "🔑" }, { contains = "for " }] },
+] }
+
+[[rules]]
+id = "confirmation-prompt"
+state = "blocked"
+priority = 900
+region = "bottom-lines(14)"
+match = { all = [
+  { any = [
+    { all = [{ contains = "approve once" }, { contains = "cancel" }] },
+    { all = [{ contains = "start a new session" }, { contains = "keep going" }] },
+  ] },
+  { any = [
+    { contains = "enter to confirm" },
+    { contains = "enter confirm" },
+    { contains = "type 1/2/3" },
+    { contains = "y/n quick" },
+  ] },
+] }
+
+# The live footer while a turn runs:
+#
+#     ⚕ ❯ msg=interrupt · /queue · /bg · /steer · Ctrl+C cancel
+#
+# herdr ranks this above the dialogs: the footer is replaced while a dialog is
+# up, so when it is present the turn is still running.
+[[rules]]
+id = "interrupt-footer"
+state = "working"
+priority = 950
+region = "bottom-lines(5)"
+match = { any = [{ contains = "msg=interrupt" }, { contains = "ctrl+c to interrupt" }] }
+
+# The classic-UI footer.
+[[rules]]
+id = "classic-cancel-footer"
+state = "working"
+priority = 500
+region = "bottom-lines(5)"
+match = { contains = "ctrl+c cancel" }

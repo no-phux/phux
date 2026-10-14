@@ -1,0 +1,6 @@
+Plan complete
+  1. Add the parser
+  2. Wire the CLI
+  enter confirm · space toggle parallel · e edit plan
+────────────────────────────────────────
+ [PLAN] claude-sonnet-4.5 · 12k tokens

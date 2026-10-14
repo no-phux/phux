@@ -1,0 +1,14 @@
+○ Asking user Choose a database for the project:
+
+╭───────────────────────────────────────────────────────────────────╮
+│ Question                                                          │
+│ ───────────────────────────────────────────────────────────────── │
+│ Choose a database for the project:                                │
+│                                                                   │
+│ ❯ 1. PostgreSQL (Recommended)                                     │
+│   2. SQLite                                                       │
+│   3. MySQL                                                        │
+│   4. MongoDB                                                      │
+│                                                                   │
+│ ↑/↓ to select · enter to confirm · esc to cancel                  │
+╰───────────────────────────────────────────────────────────────────╯

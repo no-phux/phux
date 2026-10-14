@@ -1,0 +1,7 @@
+Update available! 0.153.0 -> 9.8.7
+Run bun add -g @openai/codex to update.
+
+› 1. Update now
+  2. Skip until next version
+
+Press enter to continue

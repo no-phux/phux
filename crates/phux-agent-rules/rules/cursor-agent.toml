@@ -6,9 +6,10 @@
 # for the rule contract rather than pinning incidental viewport chrome.
 #
 # No working or blocked screen was observed. This environment's CLI stopped
-# at "Press any key to log in..." / a browser sign-in URL, so those states are
-# not guessed. Identity still publishes: an identified pane whose manifest
-# matches nothing is idle, never blocked (ADR-0046 §D).
+# at "Press any key to log in..." / a browser sign-in URL. The working and
+# blocked rules at the end of this file are adapted from herdr instead.
+# Identity still publishes: an identified pane whose manifest matches nothing
+# is idle, never blocked (ADR-0046 §D).
 
 kind = "cursor-agent"
 name = "cursor-agent"
@@ -35,8 +36,72 @@ match = { any = [
   { contains = "signing in with the browser" },
 ] }
 
-# --- Rules deliberately NOT written ------------------------------------------
+# --- Patterns adopted from herdr ----------------------------------------------
 #
-# No `working` or `blocked` rule. The CLI required an interactive browser
-# login, so those screens were not captured. A rule matching a screen
-# nobody has seen is a guess.
+# Adapted from herdr's cursor manifest, version 2026.08.03.1
+# (https://github.com/ogulcancelik/herdr, Apache-2.0; see
+# THIRD-PARTY-NOTICES.md). They are NOT verified against a phux capture: the
+# CLI here stopped at its login splash. The screens that pin them are under
+# `src/fixtures/herdr/cursor-agent/`, assembled from the strings the herdr
+# manifest names. herdr reads the command approval from the whole screen;
+# here it reads the last 12 non-empty rows.
+
+# The file-write approval: "Write to this file?" with its "Proceed (y)" option
+# and one of its reject/keep hints.
+[[rules]]
+id = "write-file-approval"
+state = "blocked"
+priority = 80
+region = "bottom-lines(8)"
+match = { all = [
+  { contains = "write to this file?" },
+  { contains = "proceed (y)" },
+  { any = [
+    { contains = "reject & propose changes" },
+    { contains = "esc or n or p" },
+    { contains = "add write(" },
+  ] },
+] }
+
+# A command approval and its key-labelled options ("Run (once) (y)", "Skip
+# (esc or n)", "Allow … (y)").
+[[rules]]
+id = "command-approval"
+state = "blocked"
+priority = 75
+region = "bottom-lines(12)"
+match = { any = [
+  { all = [
+    { contains = "waiting for approval" },
+    { contains = "run this command?" },
+    { any = [{ contains = "run (once) (y)" }, { contains = "skip (esc or n)" }] },
+  ] },
+  { contains = "(y) (enter)" },
+  { line-regex = '(?i)^\s*allow .*\(y\)' },
+  { contains = "keep (n)" },
+  { contains = "skip (esc or n)" },
+  { line-regex = '(?i)^\s*(?:→\s*)?run .*\(y\)' },
+] }
+
+# "ctrl+c to stop" under a live turn.
+[[rules]]
+id = "stop-hint"
+state = "working"
+priority = 60
+region = "bottom-lines(6)"
+match = { contains = "ctrl+c to stop" }
+
+[[rules]]
+id = "background-tasks"
+state = "working"
+priority = 55
+region = "bottom-lines(5)"
+match = { line-regex = '(?i)\b[1-9][0-9]*\s+background\s+tasks?\b' }
+
+# A hexagon or braille spinner ahead of an -ing word: "⬢ Generating".
+[[rules]]
+id = "spinner-status"
+state = "working"
+priority = 50
+region = "bottom-lines(8)"
+match = { line-regex = '^\s*(⬡|⬢|[\x{2800}-\x{28FF}]+)\s+\p{Alphabetic}+\w*ing\b' }

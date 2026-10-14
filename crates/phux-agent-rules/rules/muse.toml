@@ -1,0 +1,101 @@
+# Agent-state detection manifest for Muse Code (ADR-0046).
+#
+# Detection patterns adapted from herdr (https://github.com/ogulcancelik/herdr),
+# Apache-2.0: `src/detect/manifests/muse.toml`, manifest version
+# 2026.08.26.1, translated into phux's schema. See THIRD-PARTY-NOTICES.md.
+#
+# Provenance: herdr records these patterns as live bottom-buffer captures from
+# Muse Code 0.2.1 against a local deterministic provider. They are NOT verified
+# against a phux capture; the CLI is not installed on the phux capture
+# machine. The golden screens under `src/fixtures/herdr/muse/` are herdr's
+# test excerpts. Re-capture when the CLI is available.
+#
+# Idle has a `⟩` prompt and a `model · effort · cwd` footer. Active turns show
+# `◆ Working (... · esc to interrupt)` or another activity label with the same
+# interrupt hint. Every approval rule requires a PAIR of phrases, because Muse
+# can print any one of them as ordinary assistant text after a turn.
+#
+# Translation notes. `bottom_non_empty_lines(N)` is `bottom-lines(N)`;
+# priorities keep herdr's values. herdr's `menu_overlay` (state `unknown` plus
+# `skip_state_update`) becomes a freeze rule. Dropped: the visible-idle
+# `idle_prompt` and `idle_status_fallback` (idle is phux's fail-safe,
+# docs/spec/L3.md §3.7). herdr also matches the release launcher's
+# `muse-bin-<version>` process; phux matches exact names only, so a pane whose
+# argv[0] is the versioned binary is not identified.
+#
+# The governing doctrine (ADR-0046 §D): a MISSED signal is cheap, a FALSE
+# `blocked` is not.
+
+kind = "muse"
+name = "muse"
+
+binaries = ["muse", "muse-code", "muse-cli"]
+
+# --- Blocked -----------------------------------------------------------------
+
+[[rules]]
+id = "workspace-trust-dialog"
+state = "blocked"
+priority = 970
+region = "bottom-lines(12)"
+match = { all = [
+  { contains = "Do you trust this workspace?" },
+  { any = [{ contains = "Trust and continue" }, { contains = "Use Up/Down" }] },
+] }
+
+# A structured question's footer, single- or multi-select:
+#
+#     Enter to select · ↑/↓ to move · Tab for an optional note · Esc to interrupt
+[[rules]]
+id = "pick-request"
+state = "blocked"
+priority = 950
+region = "bottom-lines(8)"
+match = { any = [
+  { all = [{ contains = "Enter to select" }, { contains = "Tab for an optional note" }] },
+  { all = [{ contains = "Enter to toggle" }, { contains = "Esc to interrupt" }] },
+] }
+
+# Command (0.2.1 and 0.1) and network approvals.
+[[rules]]
+id = "approval-dialog"
+state = "blocked"
+priority = 850
+region = "bottom-lines(8)"
+match = { any = [
+  { all = [{ contains = "Allow this stage once" }, { contains = "Always allow in this workspace" }] },
+  { all = [{ contains = "Allow once" }, { contains = "Allow for this session" }] },
+  { all = [{ contains = "Yes, proceed" }, { contains = "Yes, don't ask again this session" }] },
+] }
+
+# --- Freeze ------------------------------------------------------------------
+
+# User-opened `/theme` and `/skills` menus are overlays, not blockers. They
+# hide the live chrome, so keep the last derivation.
+[[rules]]
+id = "menu-overlay"
+priority = 940
+region = "bottom-lines(8)"
+skip-state-update = true
+match = { any = [
+  { all = [{ contains = "enter confirm" }, { contains = "esc go back" }] },
+  { all = [{ contains = "enter save" }, { contains = "esc go back" }] },
+  { all = [{ contains = "space toggle" }, { contains = "esc close" }, { contains = "type filter" }] },
+] }
+
+# --- Working -----------------------------------------------------------------
+
+# "◆ Working (0s · esc to interrupt)". The pick footer also ends in "Esc to
+# interrupt" (matching is case-insensitive), so it is excluded.
+[[rules]]
+id = "esc-interrupt-status"
+state = "working"
+priority = 900
+region = "bottom-lines(8)"
+match = { all = [
+  { contains = "esc to interrupt" },
+  { not = { any = [
+    { all = [{ contains = "Enter to select" }, { contains = "Tab for an optional note" }] },
+    { all = [{ contains = "Enter to toggle" }, { contains = "Esc to interrupt" }] },
+  ] } },
+] }

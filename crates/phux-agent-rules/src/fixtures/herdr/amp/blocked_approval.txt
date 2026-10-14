@@ -1,0 +1,7 @@
+  Run this command?
+  $ rm -rf build/
+
+  > Approve
+    Allow All for This Session
+    Allow All for Every Session
+    Deny with feedback

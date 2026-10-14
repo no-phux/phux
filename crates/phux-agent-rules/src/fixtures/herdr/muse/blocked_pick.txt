@@ -1,0 +1,11 @@
+Which option should I use?
+
+› 1. Alpha
+  2. Beta
+
+Enter to select · ↑/↓ to move · Tab for an optional note · Esc to interrupt
+
+────────────────
+⟩
+────────────────
+gpt-5.4 · minimal · /workspace

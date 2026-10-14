@@ -1,0 +1,89 @@
+# Agent-state detection manifest for Letta Code (ADR-0046).
+#
+# Detection patterns adapted from herdr (https://github.com/ogulcancelik/herdr),
+# Apache-2.0: `src/detect/manifests/letta.toml`, manifest version
+# 2026.08.24.1, translated into phux's schema. See THIRD-PARTY-NOTICES.md.
+#
+# Provenance: NOT verified against a phux capture; the CLI is not installed on
+# the phux capture machine. The golden screens under `src/fixtures/herdr/letta/`
+# are herdr's test excerpts. Re-capture when the CLI is available.
+#
+# Letta keeps completed tool rows and spinners in the transcript, so a lone
+# screen spinner proves nothing. Its live OSC title and progress signals come
+# first, with the status row and running tool rows as screen fallbacks.
+#
+# Translation notes. `osc_title` is `title`, `osc_progress` is `osc-progress`
+# and `bottom_non_empty_lines(N)` is `bottom-lines(N)`; priorities keep
+# herdr's values. Dropped: herdr's visible-idle `composer_idle`, and its three
+# `unknown`-state rules (`profile_selector`, `composer_input`,
+# `no_live_state_evidence`). phux has no `unknown` state to assert: a screen
+# carrying no evidence already publishes nothing beyond the idle fail-safe.
+# herdr also skips non-interactive `letta` processes by argv; phux identifies
+# by name only, so a scripted `letta` run reads as a quiet Letta pane.
+#
+# The governing doctrine (ADR-0046 §D): a MISSED signal is cheap, a FALSE
+# `blocked` is not.
+
+kind = "letta"
+name = "letta"
+
+binaries = ["letta", "letta-code"]
+
+# --- Title and progress rules ------------------------------------------------
+
+# "[ ! ] Action Required | Tutor" (the bracket glyph blinks between ! and .).
+[[rules]]
+id = "title-action-required"
+state = "blocked"
+priority = 1300
+region = "title"
+match = { regex = '^\[ [!.] \] Action Required(?: \| |$)' }
+
+# A braille spinner frame as a title word: "⠋ Tutor", "project | ⠏ Tutor".
+[[rules]]
+id = "title-working-spinner"
+state = "working"
+priority = 900
+region = "title"
+match = { regex = '(?:^| )[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏](?: |$)' }
+
+# Letta reports a pending approval as OSC 9;4 state 3. herdr pins this to
+# blocked; it is NOT Claude Code's working use of the same state.
+[[rules]]
+id = "osc-progress-blocked"
+state = "blocked"
+priority = 1400
+region = "osc-progress"
+match = { regex = '^4;3(?:;|$)' }
+
+# --- Screen rules ------------------------------------------------------------
+
+# The command approval:
+#
+#     Run this command?
+#       $ rm -f /var/tmp/...
+#     ❯ 1. Yes
+#       2. No, and tell Letta Code what to do differently
+#     Enter to select · Esc to cancel
+[[rules]]
+id = "command-approval"
+state = "blocked"
+priority = 1200
+region = "bottom-lines(20)"
+match = { all = [{ contains = "Run this command?" }, { contains = "Enter to select · Esc to cancel" }] }
+
+# "Tutor is reflecting… (esc to interrupt · 2m 3s)" or "(interrupting)".
+[[rules]]
+id = "active-status"
+state = "working"
+priority = 850
+region = "bottom-lines(8)"
+match = { line-regex = '^\s*(?:\S+\s+)+is(?: \S+)*… \((?:esc to interrupt(?: · .*)?|interrupting)\)\s*$' }
+
+# "└ Running... (1s)" under a live tool row.
+[[rules]]
+id = "running-tool"
+state = "working"
+priority = 800
+region = "bottom-lines(8)"
+match = { line-regex = '^\s*(?:└\s*)?Running\.\.\.\s*(?:\(.*\))?$' }

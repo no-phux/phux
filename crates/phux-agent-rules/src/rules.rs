@@ -19,8 +19,9 @@ use super::DetectedState;
 use super::explain::{EvaluatedRule, PredicateEvidence};
 use super::regions::{Region, Screen, extract};
 
-/// Built-in manifests, each pinned by captured-screen tests below.
-const BUILTIN_MANIFESTS: [(&str, &str); 11] = [
+/// Built-in manifests, each pinned by golden-screen tests below. The last
+/// fourteen are adapted from herdr and pinned by herdr-derived screens.
+const BUILTIN_MANIFESTS: [(&str, &str); 25] = [
     ("claude", include_str!("../rules/claude.toml")),
     ("codex", include_str!("../rules/codex.toml")),
     ("opencode", include_str!("../rules/opencode.toml")),
@@ -32,6 +33,23 @@ const BUILTIN_MANIFESTS: [(&str, &str); 11] = [
     ("gemini", include_str!("../rules/gemini.toml")),
     ("goose", include_str!("../rules/goose.toml")),
     ("aider", include_str!("../rules/aider.toml")),
+    ("antigravity", include_str!("../rules/antigravity.toml")),
+    ("cline", include_str!("../rules/cline.toml")),
+    ("devin", include_str!("../rules/devin.toml")),
+    ("droid", include_str!("../rules/droid.toml")),
+    (
+        "github-copilot",
+        include_str!("../rules/github-copilot.toml"),
+    ),
+    ("hermes", include_str!("../rules/hermes.toml")),
+    ("kilo", include_str!("../rules/kilo.toml")),
+    ("kimi", include_str!("../rules/kimi.toml")),
+    ("kiro", include_str!("../rules/kiro.toml")),
+    ("letta", include_str!("../rules/letta.toml")),
+    ("maki", include_str!("../rules/maki.toml")),
+    ("muse", include_str!("../rules/muse.toml")),
+    ("qodercli", include_str!("../rules/qodercli.toml")),
+    ("qwen", include_str!("../rules/qwen.toml")),
 ];
 
 /// `PHUX_AGENT_DETECT=0` disables the detector (an empty rule set).
@@ -1175,7 +1193,32 @@ match = { contains = "thinking" }
             ("gemini", &["gemini"][..]),
             ("goose", &["goose"][..]),
             ("aider", &["aider"][..]),
+            (
+                "antigravity",
+                &["agy", "antigravity", "antigravity-cli"][..],
+            ),
+            ("cline", &["cline"][..]),
+            ("devin", &["devin", "devin-cli"][..]),
+            ("droid", &["droid"][..]),
+            ("github-copilot", &["copilot", "github-copilot", "ghcs"][..]),
+            ("hermes", &["hermes", "hermes-agent"][..]),
+            ("kilo", &["kilo", "kilo-code"][..]),
+            ("kimi", &["kimi", "kimi-code"][..]),
+            ("kiro", &["kiro-cli", "kiro"][..]),
+            ("letta", &["letta", "letta-code"][..]),
+            ("maki", &["maki"][..]),
+            ("muse", &["muse", "muse-code", "muse-cli"][..]),
+            (
+                "qodercli",
+                &["qodercli", "qoderclicn", "qoder", "qodercn"][..],
+            ),
+            ("qwen", &["qwen", "qwen-code"][..]),
         ];
+        assert_eq!(
+            expected.len(),
+            super::BUILTIN_MANIFESTS.len(),
+            "every built-in"
+        );
         for (kind, binaries) in expected {
             let spec: ManifestSpec = toml::from_str(builtin(kind)).expect("builtin parses");
             assert!(
@@ -1204,15 +1247,30 @@ match = { contains = "thinking" }
     // gemini, goose, and aider captures drove the real CLI against a localhost
     // model stand-in, so their transcript text is synthetic and their chrome
     // is not; each manifest header records how.
+    //
+    // `src/fixtures/herdr/` is the exception, and the directory name says so:
+    // those screens are NOT phux captures. They pin the rules adapted from
+    // herdr (Apache-2.0, see THIRD-PARTY-NOTICES.md). Most are herdr's own
+    // test excerpts; the maki, qwen, amp, cursor-agent and pi screens, the
+    // grok tool-verb row, the codex timer footer, the github-copilot idle
+    // transcript, the cline working row, the kiro working and tool-approval
+    // footers, and the claude minutes and
+    // background-agents status rows are assembled from the strings herdr's
+    // manifests name, because herdr ships no screen for them. They test the
+    // translation, not the CLI: replace each with a real capture when the
+    // CLI is available here.
 
     /// Claude titles: an animated prefix while busy (braille in 2.1.207,
-    /// half circles in 2.1.228), a static U+2733 otherwise. The quiet title
-    /// covers idle AND a permission dialog, so it must assert nothing.
-    const CLAUDE_BUSY: [&str; 4] = [
+    /// half circles in 2.1.228, and the other two half circles herdr records
+    /// for later releases), a static U+2733 otherwise. The quiet title covers
+    /// idle AND a permission dialog, so it must assert nothing.
+    const CLAUDE_BUSY: [&str; 6] = [
         "\u{2802} phux",
         "\u{2810} phux",
         "\u{25D0} phux",
         "\u{25D1} phux",
+        "\u{25D2} phux",
+        "\u{25D3} phux",
     ];
     const CLAUDE_QUIET: &str = "\u{2733} phux";
 
@@ -1327,6 +1385,120 @@ omp |  |  | omp/v18_field_blocked_tool_approval.txt | blocked tool-approval-dial
 omp |  |  | omp/v18_blocked_ask.txt | nothing
 omp | \u{3c0} > Run sleep and echo finished |  | @omp18-dialog-above-idle | not-blocked
 omp |  |  | @omp18-dialog-above-idle | not-blocked
+claude |  |  | herdr/claude/working_live_footer.txt | working live-turn-footer
+claude |  |  | herdr/claude/working_status_minutes.txt | working live-turn-footer
+claude |  |  | herdr/claude/working_background_agents.txt | working background-agents
+claude | \u{2733} phux |  | herdr/claude/idle_background_shell.txt | nothing
+claude | \u{2733} phux |  | herdr/claude/blocked_live_form.txt | blocked live-form
+claude | \u{2733} phux |  | herdr/claude/blocked_mcp_elicitation.txt | blocked mcp-elicitation
+codex | project |  | herdr/codex/blocked_trust.txt | blocked folder-trust-dialog
+codex | project |  | herdr/codex/idle_quoted_trust.txt | nothing
+codex | project |  | herdr/codex/blocked_update.txt | blocked startup-update
+codex | [ . ] Action Required | llm-proxy |  | codex/idle_prompt.txt | blocked title-action-required
+codex | tmp \u{280b} |  | codex/idle_prompt.txt | working title-busy-spinner
+codex | tmp |  | herdr/codex/working_timer.txt | working screen-timer-footer
+amp | Plugin confirmation needed - amp - /tmp/ws |  | @amp-idle | blocked title-plugin-confirmation
+amp |  |  | herdr/amp/blocked_approval.txt | blocked approval-dialog
+amp |  |  | herdr/amp/idle_transcript.txt | nothing
+cursor-agent |  |  | herdr/cursor-agent/blocked_command.txt | blocked command-approval
+cursor-agent |  |  | herdr/cursor-agent/working.txt | working stop-hint
+cursor-agent |  |  | herdr/cursor-agent/idle_transcript.txt | nothing
+grok | \u{26a0} Action Required - grok | 4;1;-1 | grok/idle_prompt.txt | blocked title-action-required
+grok | project - \u{2839} - session |  | grok/idle_prompt.txt | working title-spinner-word
+grok | project \u{b7} session \u{b7} id | 4;1;-1 | grok/idle_prompt.txt | working osc-progress-working
+grok | grok |  | herdr/grok/working_stop.txt | working screen-status-elapsed-backstop
+grok | grok |  | herdr/grok/working_tool_verb.txt | working spinner-status
+grok | grok |  | herdr/grok/working_cancel_hints.txt | working cancel-hints
+grok | grok |  | herdr/grok/idle_hints.txt | nothing
+opencode | OpenCode |  | herdr/kilo/blocked_question.txt | blocked question-dialog
+pi |  |  | herdr/pi/working_border.txt | working bottom-working-border
+antigravity |  |  | herdr/antigravity/blocked_permission.txt | blocked permission-dialog-footer
+antigravity |  |  | herdr/antigravity/working.txt | working spinner-status
+antigravity |  |  | herdr/antigravity/idle_prompt.txt | nothing
+antigravity |  |  | herdr/antigravity/idle_question_text.txt | nothing
+cline |  |  | herdr/cline/blocked_tool_permission.txt | blocked tool-permission
+cline |  |  | herdr/cline/blocked_act_mode.txt | blocked tool-permission
+cline |  |  | herdr/cline/working.txt | working active-turn
+cline |  |  | herdr/cline/idle_ready.txt | nothing
+cline |  |  | herdr/cline/idle_mode_prose.txt | nothing
+devin |  |  | herdr/devin/working.txt | working running-tools-footer
+devin |  |  | herdr/devin/blocked_trust.txt | blocked workspace-trust-dialog
+devin |  |  | herdr/devin/blocked_permission.txt | blocked permission-dialog
+devin |  |  | herdr/devin/idle_welcome.txt | nothing
+devin |  |  | herdr/devin/idle_prompt.txt | nothing
+droid |  |  | herdr/droid/working.txt | working esc-to-stop-hint
+droid |  |  | herdr/droid/blocked_execute.txt | blocked execute-approval
+droid |  |  | herdr/droid/blocked_selection.txt | blocked execute-approval
+droid |  |  | herdr/droid/idle_prompt.txt | nothing
+droid |  |  | herdr/droid/idle_after_response.txt | nothing
+droid |  |  | herdr/droid/idle_quoted_option.txt | nothing
+github-copilot |  |  | herdr/github-copilot/blocked_fetch.txt | blocked dialog-footer
+github-copilot |  |  | herdr/github-copilot/blocked_question.txt | blocked dialog-footer
+github-copilot |  |  | herdr/github-copilot/blocked_freeform.txt | blocked dialog-footer
+github-copilot |  |  | herdr/github-copilot/blocked_plan_review.txt | blocked dialog-footer
+github-copilot |  |  | herdr/github-copilot/working.txt | working cancel-hint
+github-copilot |  |  | herdr/github-copilot/idle_transcript.txt | nothing
+hermes |  |  | herdr/hermes/working.txt | working interrupt-footer
+hermes |  |  | herdr/hermes/blocked_dangerous_command.txt | blocked dangerous-command-approval
+hermes |  |  | herdr/hermes/idle_prompt.txt | nothing
+hermes |  |  | herdr/hermes/idle_after_denial.txt | nothing
+hermes |  |  | herdr/hermes/idle_stale_initializing.txt | nothing
+hermes | \u{26a0}\u{fe0f} Hermes |  | herdr/hermes/idle_prompt.txt | blocked title-attention
+hermes | \u{23f3} Hermes |  | herdr/hermes/idle_prompt.txt | working title-working
+hermes | \u{2713} Hermes |  | herdr/hermes/idle_prompt.txt | nothing
+kilo |  |  | herdr/kilo/blocked_question.txt | blocked permission-or-question-dialog
+kilo |  |  | herdr/kilo/working.txt | working esc-interrupt-footer
+kilo |  |  | herdr/kilo/idle_prompt.txt | nothing
+kimi |  |  | herdr/kimi/blocked_approval.txt | blocked approval-panel
+kimi |  |  | herdr/kimi/blocked_question.txt | blocked question-panel
+kimi |  |  | herdr/kimi/blocked_legacy_approval.txt | blocked legacy-approval-panel
+kimi |  |  | herdr/kimi/working_thinking.txt | working braille-spinner
+kimi |  |  | herdr/kimi/working_tool.txt | working braille-spinner
+kimi |  |  | herdr/kimi/working_moon.txt | working moon-spinner
+kimi |  |  | herdr/kimi/idle_welcome.txt | nothing
+kimi |  |  | herdr/kimi/idle_editor.txt | nothing
+kimi |  |  | herdr/kimi/idle_transcript.txt | nothing
+kiro |  |  | herdr/kiro/blocked_crew_approval.txt | blocked crew-approval
+kiro |  |  | herdr/kiro/blocked_tool_approval.txt | blocked tool-approval
+kiro |  |  | herdr/kiro/working.txt | working live-working-footer
+kiro |  |  | herdr/kiro/idle_prompt.txt | nothing
+letta |  |  | herdr/letta/working_reflecting.txt | working active-status
+letta |  |  | herdr/letta/working_interrupting.txt | working active-status
+letta |  |  | herdr/letta/working_tool.txt | working running-tool
+letta |  |  | herdr/letta/blocked_command_approval.txt | blocked command-approval
+letta |  |  | herdr/letta/idle_prompt.txt | nothing
+letta |  |  | herdr/letta/idle_quoted_question.txt | nothing
+letta | \u{280b} Tutor |  | herdr/letta/idle_prompt.txt | working title-working-spinner
+letta | project | \u{280f} Tutor |  | herdr/letta/idle_prompt.txt | working title-working-spinner
+letta | [ ! ] Action Required | Tutor |  | herdr/letta/idle_prompt.txt | blocked title-action-required
+letta | [ . ] Action Required | Tutor |  | herdr/letta/idle_prompt.txt | blocked title-action-required
+letta | Tutor | 4;3;0 | herdr/letta/idle_prompt.txt | blocked osc-progress-blocked
+letta | Tutor |  | herdr/letta/idle_prompt.txt | nothing
+maki |  |  | herdr/maki/working.txt | working status-bar-spinner
+maki |  |  | herdr/maki/blocked_permission.txt | blocked permission-dialog
+maki |  |  | herdr/maki/blocked_plan_complete.txt | blocked plan-complete-form
+maki |  |  | herdr/maki/idle_prompt.txt | nothing
+muse |  |  | herdr/muse/working.txt | working esc-interrupt-status
+muse |  |  | herdr/muse/blocked_pick.txt | blocked pick-request
+muse |  |  | herdr/muse/blocked_command_approval.txt | blocked approval-dialog
+muse |  |  | herdr/muse/blocked_network_approval.txt | blocked approval-dialog
+muse |  |  | herdr/muse/menu_theme.txt | freeze
+muse |  |  | herdr/muse/idle_after_reply.txt | nothing
+qodercli |  |  | herdr/qodercli/blocked_permission.txt | blocked confirmation-or-input-dialog
+qodercli |  |  | herdr/qodercli/blocked_ask_user.txt | blocked confirmation-or-input-dialog
+qodercli |  |  | herdr/qodercli/blocked_shell_input.txt | blocked confirmation-or-input-dialog
+qodercli |  |  | herdr/qodercli/working_spinner.txt | working spinner-row
+qodercli |  |  | herdr/qodercli/working_cancel_hint.txt | working esc-cancel-hint
+qodercli |  |  | herdr/qodercli/idle_prompt.txt | nothing
+qodercli |  |  | herdr/qodercli/idle_prose.txt | nothing
+qodercli |  |  | herdr/qodercli/idle_stale_glyph.txt | nothing
+qwen |  |  | herdr/qwen/working.txt | working cancel-hint
+qwen |  |  | herdr/qwen/blocked_tool_confirmation.txt | blocked waiting-for-confirmation
+qwen |  |  | herdr/qwen/blocked_folder_trust.txt | blocked folder-trust-dialog
+qwen |  |  | herdr/qwen/idle_prompt.txt | nothing
+qwen | \u{2733} work |  | herdr/qwen/idle_prompt.txt | blocked title-blocked
+qwen | \u{25d0} work |  | herdr/qwen/idle_prompt.txt | working title-working
+qwen |  | 4;3; | herdr/qwen/idle_prompt.txt | working osc-progress-tool
 ";
 
     /// `(kind, title, progress, screen, want)`.

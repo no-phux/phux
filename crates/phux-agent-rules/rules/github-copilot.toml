@@ -1,0 +1,72 @@
+# Agent-state detection manifest for GitHub Copilot CLI (ADR-0046).
+#
+# Detection patterns adapted from herdr (https://github.com/ogulcancelik/herdr),
+# Apache-2.0: `src/detect/manifests/github-copilot.toml`, manifest version
+# 2026.08.29.1, translated into phux's schema. See THIRD-PARTY-NOTICES.md.
+#
+# Provenance: NOT verified against a phux capture; the CLI is not installed on
+# the phux capture machine. The golden screens under
+# `src/fixtures/herdr/github-copilot/` are herdr's test excerpts. Re-capture
+# when the CLI is available.
+#
+# Translation notes. `bottom_non_empty_lines(N)` is `bottom-lines(N)`;
+# priorities keep herdr's values. herdr reads the dialog and the cancel hint
+# from the whole screen; here the dialog reads the last 24 non-empty rows (a
+# full dialog plus its "Asking user" header) and the hint the last 8, so a
+# quoted footer in scrollback cannot assert either state.
+#
+# The governing doctrine (ADR-0046 §D): a MISSED signal is cheap, a FALSE
+# `blocked` is not.
+
+kind = "github-copilot"
+name = "github-copilot"
+
+# `copilot` is the CLI's argv[0], and the npm package directory
+# (`.../@github/copilot/...`) under a `node` wrapper. `ghcs` is the legacy
+# `gh copilot suggest` alias herdr also matches.
+binaries = ["copilot", "github-copilot", "ghcs"]
+
+# --- Blocked -----------------------------------------------------------------
+#
+# Every Copilot dialog (URL fetch, directory access, questions, plan review,
+# autopilot) ends with a footer pairing a cancel key and an accept key:
+#
+#     │ ↑/↓ to navigate · enter to select · esc to cancel                 │
+#     │ ↑/↓ to select · enter to confirm · esc to cancel                  │
+#     │ enter to submit · esc to cancel                                   │
+[[rules]]
+id = "dialog-footer"
+state = "blocked"
+priority = 300
+region = "bottom-lines(24)"
+match = { all = [
+  { any = [{ contains = "esc to cancel" }, { contains = "esc cancel" }] },
+  { any = [
+    { contains = "enter to select" },
+    { contains = "enter to confirm" },
+    { contains = "enter to submit" },
+    { contains = "enter accept" },
+  ] },
+] }
+
+# --- Working -----------------------------------------------------------------
+
+[[rules]]
+id = "background-agents"
+state = "working"
+priority = 110
+region = "bottom-lines(6)"
+match = { line-regex = '^\s*◎\s+Waiting for background agents(?:\s|·|$)' }
+
+# "○ Thinking esc cancel" (the glyph cycles ○ ◎ ◉) while a turn runs.
+[[rules]]
+id = "cancel-hint"
+state = "working"
+priority = 100
+region = "bottom-lines(8)"
+match = { any = [
+  { contains = "esc to cancel" },
+  { contains = "esc cancel" },
+  { contains = "esc again to cancel" },
+  { contains = "esc interrupt" },
+] }

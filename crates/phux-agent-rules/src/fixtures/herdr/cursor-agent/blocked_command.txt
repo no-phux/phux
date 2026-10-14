@@ -1,0 +1,7 @@
+  Waiting for approval...
+
+  Run this command?
+  $ rm -rf build/
+
+  → Run (once) (y)
+    Skip (esc or n)

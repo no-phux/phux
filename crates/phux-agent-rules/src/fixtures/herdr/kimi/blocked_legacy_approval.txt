@@ -1,0 +1,9 @@
+⠋ Using Shell (git log --oneline -10)
+╭─ approval ─╮
+Shell is requesting approval to run command:
+git log --oneline -10
+→ [1] Approve once
+[2] Approve for this session
+[3] Reject
+[4] Reject, tell the model what to do instead
+▲/▼ select  1/2/3/4 choose  ↵ confirm

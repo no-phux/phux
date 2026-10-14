@@ -1,0 +1,121 @@
+# Agent-state detection manifest for Kiro CLI (ADR-0046).
+#
+# Detection patterns adapted from herdr (https://github.com/ogulcancelik/herdr),
+# Apache-2.0: `src/detect/manifests/kiro.toml`, manifest version 2026.09.19.1,
+# translated into phux's schema. See THIRD-PARTY-NOTICES.md.
+#
+# Provenance: NOT verified against a phux capture; the CLI is not installed on
+# the phux capture machine. The golden screens under `src/fixtures/herdr/kiro/`
+# are herdr's test excerpts, plus a working screen assembled from the footer
+# strings the herdr rule names. Re-capture when the CLI is available.
+#
+# Translation notes. `bottom_non_empty_lines(N)` is `bottom-lines(N)` and
+# `whole_recent` is `viewport`; priorities keep herdr's values. Three herdr
+# rules are dropped:
+#
+#   - `live_prompt_idle`, a visible-idle rule: idle is phux's fail-safe
+#     (docs/spec/L3.md §3.7).
+#   - `osc_title_working` and `osc_progress_working`. herdr ranks both BELOW
+#     the screen's approval dialogs and below the idle prompt, i.e. Kiro's
+#     title spinner and OSC 9;4 progress can outlive a turn or run under a
+#     pending approval. phux evaluates the title ahead of every screen rule
+#     and a rule reads one region, so neither can be gated on the screen
+#     here; shipping them would mask the approval dialogs.
+#
+# The governing doctrine (ADR-0046 §D): a MISSED signal is cheap, a FALSE
+# `blocked` is not.
+
+kind = "kiro"
+name = "kiro"
+
+# `kiro-cli` is the CLI's argv[0]; herdr also matches a bare `kiro`.
+binaries = ["kiro-cli", "kiro"]
+
+# --- Blocked -----------------------------------------------------------------
+
+# The tool approval panel. Its last row is the "esc to close" key-hint row
+# (with "to navigate", or "to navigate … to select … tab to edit", or "enter
+# to see more options"), and the panel lists one of three option sets. Each
+# `line-regex` in a set must find its own row: the selected option plus every
+# option of that set.
+[[rules]]
+id = "tool-approval"
+state = "blocked"
+priority = 1050
+region = "bottom-lines(8)"
+match = { all = [
+  { regex = '(?is)(?:^|\n)\s*esc\s+to\s+close\b(?:[^\n]*\bto\s+navigate\b[^\n]*|.*\bto\s+navigate\b.*\bto\s+select\b.*\btab\s+to\s+edit|[^\n]*\benter\s+to\s+see\s+more\s+options)\s*\z' },
+  { any = [
+    { all = [
+      { line-regex = '(?i)^\s*[>❯]\s*(?:allow|always allow|deny|always deny)\s*$' },
+      { line-regex = '(?i)^\s*(?:[>❯]\s*)?allow\s*$' },
+      { line-regex = '(?i)^\s*(?:[>❯]\s*)?always allow\s*$' },
+      { line-regex = '(?i)^\s*(?:[>❯]\s*)?deny\s*$' },
+      { line-regex = '(?i)^\s*(?:[>❯]\s*)?always deny\s*$' },
+    ] },
+    { all = [
+      { line-regex = '(?i)^\s*[>❯]\s*(?:yes, single permission|trust, always allow in this session|no \(tab to edit\))\s*$' },
+      { line-regex = '(?i)^\s*(?:[>❯]\s*)?yes, single permission\s*$' },
+      { line-regex = '(?i)^\s*(?:[>❯]\s*)?trust, always allow in this session\s*$' },
+      { line-regex = '(?i)^\s*(?:[>❯]\s*)?no \(tab to edit\)\s*$' },
+    ] },
+    { all = [
+      { line-regex = '(?i)^\s*[>❯]\s*(?:trust\b.*|entire tool)\s*$' },
+      { line-regex = '(?i)^\s*(?:[>❯]\s*)?(?:trust )?entire tool(?:\s+\([^\n]*\))?(?:\s+(?:session|workspace|always))?\s*$' },
+    ] },
+  ] },
+] }
+
+# The approval panel in "modify request" mode: a rule-fenced block headed
+# "requires approval · modify request" with a `>` input row, closed by a rule
+# and a final "esc to close" row.
+[[rules]]
+id = "tool-approval-edit"
+state = "blocked"
+priority = 1045
+region = "viewport"
+match = { regex = '(?im)(?:^|\n)[ \t]*[-─]+[ \t]*\n[^\n]*requires\s+approval\s*[·.]\s*modify\s+request[ \t]*\n(?:[ \t]*\n|[^\n]*[^\s─-][^\n]*\n)*?[ \t]*[>›][ \t]*[^\n]*\n(?:[ \t]*\n|[^\n]*[^\s─-][^\n]*\n)*[ \t]*[-─]+[ \t]*\n[ \t]*esc[ \t]+to[ \t]+close[ \t]*\n?\z' }
+
+# Subagent ("crew") approvals pending:
+#
+#      ⚠ 3 tool approvals pending from subagents
+#      ❯ (a) Approve all pending
+#        (c) Configure individually (agent monitor)
+#        (x) Exit (cancel subagents)
+[[rules]]
+id = "crew-approval"
+state = "blocked"
+priority = 1040
+region = "bottom-lines(8)"
+match = { all = [
+  { contains = "tool approval" },
+  { contains = "approve all pending" },
+  { contains = "configure individually (agent monitor)" },
+  { contains = "exit (cancel subagents)" },
+] }
+
+[[rules]]
+id = "question-panel"
+state = "blocked"
+priority = 1030
+region = "bottom-lines(8)"
+match = { all = [
+  { contains = "to navigate" },
+  { contains = "to submit" },
+  { contains = "esc to cancel" },
+] }
+
+# --- Working -----------------------------------------------------------------
+
+# The live footer while a turn runs: "Kiro is working · type to steer ·
+# ctrl+s to queue".
+[[rules]]
+id = "live-working-footer"
+state = "working"
+priority = 950
+region = "bottom-lines(4)"
+match = { all = [
+  { contains = "kiro is working" },
+  { contains = "type to steer" },
+  { contains = "ctrl+s to queue" },
+] }
