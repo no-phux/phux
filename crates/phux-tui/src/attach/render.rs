@@ -1841,7 +1841,7 @@ const fn apply_mark(style: &mut Style, mark: CellMark) {
 /// Write `\x1b[0m` followed by the SGR set for `(style, fg, bg)`.
 fn emit_sgr_set(out: &mut Vec<u8>, style: &Style, fg: Option<RgbColor>, bg: Option<RgbColor>) {
     // Encode via the shared server/client SGR emitter (phux-protocol) so the
-    // two ends cannot drift — they previously both dropped underline/overline.
+    // two ends cannot drift.
     // It appends straight to the row buffer, so a style run costs no scratch
     // allocation of its own.
     write_reset_and_sgr(out, style, fg, bg);
