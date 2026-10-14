@@ -1,0 +1,58 @@
+# TEMPORARY experiment: compile-time shape of the test profile. Removed before merge.
+name: zz-timing-experiment
+
+on:
+  pull_request:
+
+concurrency:
+  group: mini-v1-zz-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: timing ${{ matrix.leg }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - leg: all-d0
+            debug: "0"
+          - leg: all-lt
+            debug: line-tables-only
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: phux
+      - name: expose devshell rustc
+        run: |
+          nix develop -c bash -c 'dirname "$(command -v rustc)" > "$1"' _ "$RUNNER_TEMP/p"
+          cat "$RUNNER_TEMP/p" >> "$GITHUB_PATH"
+          nproc; free -g; df -h /
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: zz-exp-${{ matrix.leg }}
+          save-if: "true"
+      - name: build tests with timings
+        env:
+          CARGO_INCREMENTAL: "0"
+          CARGO_PROFILE_DEV_DEBUG: ${{ matrix.debug }}
+        run: |
+          nix develop -c bash -euo pipefail <<'EOF'
+          start=$(date +%s)
+          cargo test --workspace --no-run --timings 2>&1 | tail -5
+          echo "build seconds: $(( $(date +%s) - start ))"
+          du -sh target/debug target/debug/deps target/debug/build target/debug/incremental 2>/dev/null || true
+          EOF
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: timings-${{ matrix.leg }}
+          path: target/cargo-timings/cargo-timing.html
+          retention-days: 3
