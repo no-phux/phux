@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.67.0](https://github.com/no-phux/phux/compare/v0.66.0...v0.67.0) (2026-10-14)
+
+
+### Features
+
+* **site:** open the tour with a quick pass before the walkthrough ([#1327](https://github.com/no-phux/phux/issues/1327)) ([cd12cda](https://github.com/no-phux/phux/commit/cd12cdad40fdc8194a1336ef4cc5c3e777b7bdb6))
+
 ## [0.66.0](https://github.com/no-phux/phux/compare/v0.65.0...v0.66.0) (2026-10-14)
 
 
