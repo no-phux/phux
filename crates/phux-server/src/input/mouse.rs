@@ -199,4 +199,66 @@ mod tests {
             assert_eq!(got, want, "{button:?} at ({x}, {y}) with {cell_px:?}");
         }
     }
+
+    /// phux-hjn4: a fractional painted pitch (10.25 x 19.4) rounds to a 10x19
+    /// server cell. A point 0.25 cell past column 2 is index 2.95; the raw
+    /// painted pixel divided by 10 or by the 8px default is the next cell.
+    /// Pixels mapped onto the reported grid encode the painted cell for a
+    /// left click, a right click, and a wheel notch.
+    #[test]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn fractional_pitch_pixel_maps_to_the_painted_cell() {
+        let painted_w: f64 = 10.25;
+        let painted_h: f64 = 19.4;
+        let cell: (u16, u16) = (10, 19);
+        let index_x = 2.95_f64;
+        let index_y = 0.25_f64;
+        let painted_x = index_x * painted_w;
+        let painted_y = index_y * painted_h;
+        let painted_cell_x = index_x.floor() as u16;
+        let painted_cell_y = index_y.floor() as u16;
+        assert_ne!(
+            painted_cell_x,
+            (painted_x / f64::from(cell.0)).floor() as u16
+        );
+        assert_ne!(painted_cell_x, (painted_x / 8.0).floor() as u16);
+
+        let mapped_x = (index_x * f64::from(cell.0)).floor();
+        let mapped_y = (index_y * f64::from(cell.1)).floor();
+        assert_eq!(
+            (mapped_x / f64::from(cell.0)).floor() as u16,
+            painted_cell_x
+        );
+        assert_eq!(
+            (mapped_y / f64::from(cell.1)).floor() as u16,
+            painted_cell_y
+        );
+
+        let mut terminal = GhosttyTerminal::new(80, 24).expect("Terminal::new");
+        terminal.vt_write(b"\x1b[?1000h\x1b[?1006h");
+        let encode = |button, x: f64, y: f64, cell_px| {
+            let event = MouseEvent {
+                action: MouseAction::Press,
+                button,
+                mods: ModSet::empty(),
+                x,
+                y,
+            };
+            let mut enc = PerTerminalMouseEncoder::new().expect("encoder");
+            enc.encode(&event, &terminal, cell_px)
+                .expect("encode")
+                .to_vec()
+        };
+        let left = encode(MouseButton::Left, mapped_x, mapped_y, cell);
+        let right = encode(MouseButton::Right, mapped_x, mapped_y, cell);
+        let wheel = encode(MouseButton::Four, mapped_x, mapped_y, cell);
+        // 0-based cell (2, 0) is 1-based SGR (3, 1).
+        assert_eq!(left, b"\x1b[<0;3;1M");
+        assert_eq!(right, b"\x1b[<2;3;1M");
+        assert_eq!(wheel, b"\x1b[<64;3;1M");
+        let raw_at_default = encode(MouseButton::Left, painted_x, painted_y, (8, 16));
+        let raw_at_reported = encode(MouseButton::Left, painted_x, painted_y, cell);
+        assert_ne!(raw_at_default, left);
+        assert_ne!(raw_at_reported, left);
+    }
 }

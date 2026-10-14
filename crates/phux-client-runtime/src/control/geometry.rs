@@ -101,6 +101,20 @@ impl ControlPlane {
         cols: u32,
         rows: u32,
     ) -> TerminalResizeOutcome {
+        self.resize_terminal_with_cell(terminal_id, cols, rows, None)
+    }
+
+    /// Same as [`Self::resize_terminal`]. A positive `cell_px` pair is the
+    /// integer cell `RESIZE_TERMINAL` reports, which is what the server
+    /// divides `INPUT_MOUSE` pixels by. A missing or non-positive pair is
+    /// omitted, so the server keeps its current cell size.
+    pub fn resize_terminal_with_cell(
+        &mut self,
+        terminal_id: &ResourceId,
+        cols: u32,
+        rows: u32,
+        cell_px: Option<(u16, u16)>,
+    ) -> TerminalResizeOutcome {
         let (Ok(cols), Ok(rows)) = (u16::try_from(cols), u16::try_from(rows)) else {
             return TerminalResizeOutcome::InvalidSize;
         };
@@ -113,11 +127,12 @@ impl ControlPlane {
         if !self.geometry_ready(terminal_id) {
             return TerminalResizeOutcome::NotReady;
         }
+        let cell_px = cell_px.filter(|&(width, height)| width > 0 && height > 0);
         self.queue_frame(&FrameKind::ResizeTerminal {
             terminal_id: terminal_id.clone(),
             cols,
             rows,
-            cell_px: None,
+            cell_px,
         });
         TerminalResizeOutcome::Queued
     }

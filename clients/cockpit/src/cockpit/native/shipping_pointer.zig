@@ -14,6 +14,8 @@ const Point = sdk.geometry.PointF;
 const Rect = sdk.geometry.RectF;
 const Owner = contract.ReplicaOwner;
 
+const WirePixel = struct { x: f64, y: f64 };
+
 const Capture = struct {
     owner: Owner,
     retired: bool = false,
@@ -23,7 +25,8 @@ const Capture = struct {
     button: i32,
     reporting: bool,
     point: Point,
-    pixel: Point,
+    /// `INPUT_MOUSE` position actually queued, so release matches press.
+    pixel: WirePixel,
     cell: contract.DocumentPoint,
     gesture_handle: u64,
     modifiers: contract.ModifierMask,
@@ -129,6 +132,7 @@ pub const State = struct {
             if (model.selectedTree()) |tree| _ = tree.focusTerminal(owner.terminal_ref);
         }
         const cell = coordinate(model, owner, point, frame) orelse return true;
+        const pixel = wirePixel(model, owner, point, frame) orelse return true;
         const index = self.freeIndex() orelse return false;
         const tracking = tracksMouse(model, owner) and !raw.modifiers.shift;
         if (!startGesture(model, raw, owner, frame, cell, tracking, clicks)) return true;
@@ -140,7 +144,7 @@ pub const State = struct {
             .button = raw.button,
             .reporting = tracking,
             .point = point,
-            .pixel = pixelInFrame(point, frame),
+            .pixel = pixel,
             .cell = cell,
             .gesture_handle = if (interaction.stateForOwner(model, owner)) |state| state.gesture_handle else 0,
             .modifiers = modifiers(raw),
@@ -163,7 +167,7 @@ pub const State = struct {
         const point: Point = .{ .x = raw.x, .y = raw.y };
         const cell = coordinate(model, captured.owner, point, frame) orelse return true;
         self.captures[index].?.point = point;
-        self.captures[index].?.pixel = pixelInFrame(point, frame);
+        if (wirePixel(model, captured.owner, point, frame)) |pixel| self.captures[index].?.pixel = pixel;
         self.captures[index].?.cell = cell;
         self.captures[index].?.modifiers = modifiers(raw);
         if (captured.reporting) {
@@ -321,11 +325,25 @@ fn tracksMouse(model: *Model, owner: Owner) bool {
 }
 
 fn report(model: *Model, owner: Owner, action: contract.MouseAction, button: contract.MouseButton, mods: contract.ModifierMask, point: Point, frame: Rect) bool {
-    _ = coordinate(model, owner, point, frame) orelse return false;
-    // The Phux mouse encoder divides surface pixels by its cell extent. Sending
-    // the already-divided DocumentPoint here collapses clicks toward (0, 0).
-    const pixel = pixelInFrame(point, frame);
+    // The server divides INPUT_MOUSE pixels by its integer cell. Sending the
+    // painted pixel, or the already-divided cell index, lands on a different
+    // cell once the painted pitch is not that integer.
+    const pixel = wirePixel(model, owner, point, frame) orelse return false;
     return sendPixel(model, owner, action, button, mods, pixel.x, pixel.y);
+}
+
+fn wirePixel(model: *const Model, owner: Owner, point: Point, frame: Rect) ?WirePixel {
+    if (!validGeometry(point, frame)) return null;
+    const presentation = interaction.presentationForOwner(model, owner) orelse return null;
+    if (presentation.cols == 0 or presentation.rows == 0) return null;
+    const measured = presentation.measured_cell orelse return null;
+    if (!validCellExtent(measured.width) or !validCellExtent(measured.height)) return null;
+    const local = pixelInFrame(point, frame);
+    const cell = presentation.server_cell_px orelse contract.default_server_cell_px;
+    return .{
+        .x = contract.surfacePixel(local.x, measured.width, cell.width, presentation.cols),
+        .y = contract.surfacePixel(local.y, measured.height, cell.height, presentation.rows),
+    };
 }
 
 fn pixelInFrame(point: Point, frame: Rect) Point {
@@ -333,7 +351,7 @@ fn pixelInFrame(point: Point, frame: Rect) Point {
         .y = std.math.clamp(point.y - frame.y, 0, frame.height) };
 }
 
-fn sendPixel(model: *Model, owner: Owner, action: contract.MouseAction, button: contract.MouseButton, mods: contract.ModifierMask, x: f32, y: f32) bool {
+fn sendPixel(model: *Model, owner: Owner, action: contract.MouseAction, button: contract.MouseButton, mods: contract.ModifierMask, x: f64, y: f64) bool {
     if (!ready(model, owner)) return false;
     const remote = model.phuxForOwner(owner) orelse return false;
     const mode = remote.mouseMode(owner) catch return false;
