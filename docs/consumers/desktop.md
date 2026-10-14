@@ -49,7 +49,7 @@ surface.
 Untargeted startup opens the owner's Intake: a real designated persistent
 Session for work created without a destination. The sidebar puts that Session
 and separate imported Sessions awaiting organization under **Intake sessions**,
-preserving their existing grouping. **Mark Organized** in an imported
+preserving their existing grouping. **Mark session organized** in an imported
 Session's menu clears only its import mark, removing it from that section
 without moving, renaming, or restarting its work. The attention **Inbox**
 lists agent attention alerts; it is not a Session or a move destination.

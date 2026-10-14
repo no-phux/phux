@@ -154,7 +154,7 @@ and window geometry stay local to the client and are never shared.
 Resources created without a session land in the server's Intake: a real,
 designated persistent session, not a virtual collection. Sessions brought
 over from an older server keep their members and tabs and appear separately
-under Intake while awaiting organization. **Mark Organized** clears only
+under Intake while awaiting organization. **Mark session organized** clears only
 that import mark; it does not move, restart, or rename their work.
 Moving work to another session changes membership only and can be undone
 while the state it changed is unchanged. The attention **Inbox** answers

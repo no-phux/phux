@@ -2132,7 +2132,7 @@ mod tests {
                     session_names(&state),
                     vec![
                         "already-here".to_owned(),
-                        "inbox".to_owned(),
+                        phux_core::INTAKE_NAME.to_owned(),
                         "main".to_owned()
                     ]
                 );
@@ -2148,7 +2148,7 @@ mod tests {
                     .map(|session| session.name.as_str())
                     .collect();
                 names.sort_unstable();
-                assert_eq!(names, ["already-here", "inbox", "main"]);
+                assert_eq!(names, ["already-here", phux_core::INTAKE_NAME, "main"]);
                 let main = stored
                     .sessions
                     .iter()

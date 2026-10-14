@@ -80,7 +80,7 @@ resources.
    sessions keep their membership and arrangement and carry an
    `awaiting_organization` mark until someone resolves it. The Intake view
    is a permission-filtered projection over designated Intake sessions and
-   separate marked sessions across connected authorities. Mark Organized
+   separate marked sessions across connected authorities. Mark session organized
    clears only the import mark. Attention Inbox is a different projection.
    The wire `INBOX_RESOLVE` and raw `inbox` field retain their spellings
    for compatibility; neither names attention Inbox.
