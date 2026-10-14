@@ -275,7 +275,7 @@ impl FrameWriter for QuicWriter {
     /// One `write_all` for the whole batch: a byte stream whose frames carry
     /// their own length prefix, so the bytes are identical and a burst costs
     /// one write instead of one per frame.
-    async fn write_frames(&mut self, batch: &[u8], _ends: &[usize]) -> io::Result<()> {
+    async fn write_frames(&mut self, batch: &mut BytesMut, _ends: &[usize]) -> io::Result<()> {
         let _write = self.diagnostics.tracker().begin_write();
         self.send.write_all(batch).await
     }

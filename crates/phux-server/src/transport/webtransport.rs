@@ -336,7 +336,7 @@ impl FrameWriter for WtWriter {
     }
 
     /// One write for the whole batch, as `QuicWriter::write_frames`.
-    async fn write_frames(&mut self, batch: &[u8], _ends: &[usize]) -> io::Result<()> {
+    async fn write_frames(&mut self, batch: &mut BytesMut, _ends: &[usize]) -> io::Result<()> {
         self.write_frame(batch).await
     }
 

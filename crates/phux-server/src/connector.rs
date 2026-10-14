@@ -258,7 +258,11 @@ impl crate::transport::FrameWriter for BridgedWriter {
         }
     }
 
-    async fn write_frames(&mut self, batch: &[u8], ends: &[usize]) -> io::Result<()> {
+    async fn write_frames(
+        &mut self,
+        batch: &mut bytes::BytesMut,
+        ends: &[usize],
+    ) -> io::Result<()> {
         match self {
             Self::Plain(writer) => writer.write_frames(batch, ends).await,
             Self::Inner(writer) => writer.write_all(batch).await,

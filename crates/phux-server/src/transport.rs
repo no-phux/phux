@@ -23,7 +23,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use futures_util::future::LocalBoxFuture;
 use futures_util::stream::FuturesUnordered;
 use futures_util::{SinkExt, StreamExt};
@@ -140,9 +140,11 @@ pub(crate) trait FrameWriter {
 
     /// Write back-to-back encoded frames; `ends` holds each frame's exclusive
     /// end offset. The default writes one frame per call, which a
-    /// message-oriented transport (WebSocket) requires; byte-stream
-    /// transports override it with one write of the whole batch.
-    async fn write_frames(&mut self, batch: &[u8], ends: &[usize]) -> io::Result<()> {
+    /// message-oriented transport requires; byte-stream transports override
+    /// it with one write of the whole batch. A writer may take the batch's
+    /// bytes rather than copy them (WebSocket does), so callers clear it
+    /// before reuse.
+    async fn write_frames(&mut self, batch: &mut BytesMut, ends: &[usize]) -> io::Result<()> {
         let mut start = 0;
         for &end in ends {
             self.write_frame(&batch[start..end]).await?;
@@ -304,7 +306,7 @@ impl FrameWriter for UdsWriter {
     }
 
     /// One `write_all` for the whole batch: identical bytes, one syscall.
-    async fn write_frames(&mut self, batch: &[u8], _ends: &[usize]) -> io::Result<()> {
+    async fn write_frames(&mut self, batch: &mut BytesMut, _ends: &[usize]) -> io::Result<()> {
         self.writer.write_all(batch).await
     }
 
@@ -541,15 +543,33 @@ pub(crate) struct WsWriter {
     tx: futures_util::stream::SplitSink<Ws, Message>,
 }
 
+impl WsWriter {
+    async fn feed(&mut self, frame: Bytes) -> io::Result<()> {
+        self.tx
+            .feed(Message::Binary(frame))
+            .await
+            .map_err(io::Error::other)
+    }
+}
+
 impl FrameWriter for WsWriter {
     /// Queue one frame as one binary message without flushing; the writer
     /// task flushes once per mailbox drain, so a burst leaves as full TCP
     /// segments instead of one partial segment per frame.
     async fn write_frame(&mut self, frame: &[u8]) -> io::Result<()> {
-        self.tx
-            .feed(Message::Binary(frame.to_vec().into()))
-            .await
-            .map_err(io::Error::other)
+        self.feed(Bytes::copy_from_slice(frame)).await
+    }
+
+    /// One message per frame, each a zero-copy slice of the batch. The
+    /// batch's allocation comes back to it once the sink has written them.
+    async fn write_frames(&mut self, batch: &mut BytesMut, ends: &[usize]) -> io::Result<()> {
+        let mut frames = batch.split().freeze();
+        let mut start = 0;
+        for &end in ends {
+            self.feed(frames.split_to(end - start)).await?;
+            start = end;
+        }
+        Ok(())
     }
 
     async fn flush(&mut self) -> io::Result<()> {
