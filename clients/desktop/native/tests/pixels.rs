@@ -15,6 +15,7 @@
 use std::panic::catch_unwind;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Instant;
 
 use gpui::{AppContext, HeadlessAppContext, Pixels, px, size};
 use image::RgbaImage;
@@ -74,11 +75,16 @@ fn terminal() -> ResourceId {
     ResourceId::local(7)
 }
 
-/// An attached embedded runtime whose viewport is exactly `payload`.
+/// An attached embedded runtime with a four-row fixture viewport.
 fn publish(payload: &[u8]) -> (Arc<Client>, ViewId) {
+    publish_at(payload, 20, 4)
+}
+
+/// Publish the payload at the requested terminal geometry.
+fn publish_at(payload: &[u8], cols: u16, rows: u16) -> (Arc<Client>, ViewId) {
     let client = Runtime::embedded(ControlOptions {
         attach: Some(AttachTarget::ByName("pixels".into())),
-        viewport: (20, 4),
+        viewport: (cols, rows),
         ..ControlOptions::default()
     });
     client.with_control(ControlPlane::connection_opened);
@@ -112,7 +118,12 @@ fn publish(payload: &[u8]) -> (Arc<Client>, ViewId) {
             SessionId::new(1),
             "shell",
         )])
-        .with_resources(vec![ResourceInfo::new(terminal(), WindowId::new(1), 20, 4)]);
+        .with_resources(vec![ResourceInfo::new(
+            terminal(),
+            WindowId::new(1),
+            cols,
+            rows,
+        )]);
     for frame in [
         FrameKind::Attached {
             attach_id,
@@ -124,8 +135,8 @@ fn publish(payload: &[u8]) -> (Arc<Client>, ViewId) {
             stream_id,
             bootstrap_id,
             profile: BootstrapStreamProfile::SynthesizedVtRaw,
-            cols: 20,
-            rows: 4,
+            cols,
+            rows,
             base_seq: 0,
         },
         FrameKind::BootstrapChunk {
@@ -151,7 +162,7 @@ fn publish(payload: &[u8]) -> (Arc<Client>, ViewId) {
     let frame = client.acquire_view(view).expect("publication");
     assert_eq!(
         (frame.cols, frame.rows),
-        (20, 4),
+        (cols, rows),
         "viewport {}",
         frame.text()
     );
@@ -635,6 +646,140 @@ fn sparse_output_repaints_a_row_without_disturbing_its_neighbor() {
     drop(client);
 }
 
+/// An opt-in, in-process render benchmark. It reuses the pixel fixture's
+/// embedded runtime and main-thread GPUI renderer; screenshots are outside
+/// the timed path but prove that draws reach a real offscreen surface.
+fn headless_perf() {
+    const FRAMES: usize = 128;
+    const FILL: &str = "terminal workload terminal workload terminal workload terminal workload ";
+    let payload = (0..24)
+        .map(|row| format!("{row:02} {FILL}"))
+        .collect::<Vec<_>>()
+        .join("\r\n");
+    let (client, view) = publish_at(payload.as_bytes(), 80, 24);
+    let mut cx = gpu();
+    let in_view = Arc::clone(&client);
+    let window = cx
+        .open_window(size(px(960.), px(600.)), move |window, cx| {
+            cx.new(|cx| Terminal::new(in_view, view, terminal(), settings(false), window, cx))
+        })
+        .expect("offscreen benchmark window");
+    cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+        .expect("first draw");
+    let before = cx
+        .capture_screenshot(window.into())
+        .expect("initial pixels");
+
+    let mut draw = || {
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .expect("draw");
+    };
+    bench_phase("cached", FRAMES, |_| draw());
+    let mut seq = 0_u64;
+    bench_phase("sparse", FRAMES, |index| {
+        seq += 1;
+        let letter = if index % 2 == 0 { b'X' } else { b'Y' };
+        client
+            .feed(FrameKind::ResourceOutput {
+                terminal_id: terminal(),
+                stream_id: StreamId::new(1).unwrap(),
+                bootstrap_id: BootstrapId::new(1).unwrap(),
+                seq,
+                bytes: [b"\x1b[13;1H".as_slice(), &[letter]].concat().into(),
+            })
+            .expect("sparse output");
+        draw();
+    });
+    bench_phase("scroll", FRAMES, |index| {
+        seq += 1;
+        client
+            .feed(FrameKind::ResourceOutput {
+                terminal_id: terminal(),
+                stream_id: StreamId::new(1).unwrap(),
+                bootstrap_id: BootstrapId::new(1).unwrap(),
+                seq,
+                bytes: format!("\x1b[24;1H{index:04} {FILL}\r\n")
+                    .into_bytes()
+                    .into(),
+            })
+            .expect("scroll output");
+        draw();
+    });
+    drop(draw);
+    let after = cx.capture_screenshot(window.into()).expect("final pixels");
+    assert_ne!(
+        before.as_raw(),
+        after.as_raw(),
+        "output must change visible pixels"
+    );
+    drop(cx);
+    drop(client);
+}
+
+fn bench_phase(name: &str, frames: usize, mut tick: impl FnMut(usize)) {
+    let before = phux_perf::snapshot(
+        "desktop",
+        phux_desktop::perf::TABLE,
+        phux_desktop::perf::uptime(),
+    );
+    let mut elapsed = Vec::with_capacity(frames);
+    for index in 0..frames {
+        let started = Instant::now();
+        tick(index);
+        elapsed.push(started.elapsed().as_secs_f64() * 1_000_000.);
+    }
+    elapsed.sort_by(f64::total_cmp);
+    let delta = phux_perf::snapshot(
+        "desktop",
+        phux_desktop::perf::TABLE,
+        phux_desktop::perf::uptime(),
+    )
+    .delta(&before);
+    let renders = delta.metric("desktop.render").expect("render counter");
+    assert_eq!(
+        renders.value,
+        phux_perf::MetricValue::Counter(frames as u64),
+        "{name}: every measured tick must paint"
+    );
+    let histogram = |name| match &delta.metric(name).expect("stage metric").value {
+        phux_perf::MetricValue::Histogram(value) => serde_json::json!({
+            "count": value.count,
+            "mean_us": value.mean(),
+            "p50_us": value.percentile(50),
+            "p99_us": value.percentile(99),
+        }),
+        _ => panic!("{name} is not a histogram"),
+    };
+    let counter = |name| match &delta.metric(name).expect("counter metric").value {
+        phux_perf::MetricValue::Counter(value) => *value,
+        _ => panic!("{name} is not a counter"),
+    };
+    println!(
+        "{}",
+        serde_json::json!({
+            "phase": name,
+            "frames": frames,
+            "tick_us": {
+                "mean": elapsed.iter().sum::<f64>() / frames as f64,
+                "p50": elapsed[frames / 2],
+                "p99": elapsed[frames * 99 / 100],
+            },
+            "stages": {
+                "acquire": histogram("desktop.acquire"),
+                "prepare": histogram("desktop.prepare"),
+                "paint": histogram("desktop.paint"),
+                "present": histogram("desktop.present"),
+            },
+            "scene": {
+                "reused": counter("desktop.prepare_reused"),
+                "patched": counter("desktop.prepare_patched"),
+                "shaped_lines": counter("desktop.shaped"),
+            },
+            "process": delta.process,
+        })
+    );
+}
+
 /// Qualified the way the old `#[cfg(test)]` module reported them, so
 /// `cargo test terminal::pixels` and `--skip terminal::pixels` still select
 /// this binary's fixtures.
@@ -750,6 +895,10 @@ where
 }
 
 fn main() -> ExitCode {
+    if std::env::args().any(|arg| arg == "--headless-perf") {
+        headless_perf();
+        return ExitCode::SUCCESS;
+    }
     let args = Args::from_env();
     let selected: Vec<_> = FIXTURES
         .iter()
