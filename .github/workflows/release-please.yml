@@ -292,14 +292,22 @@ jobs:
   # merge commit. Runs after sync-lockfile, so the head is final and the hold
   # (if any) is lifted. It discovers open release PRs by branch rather than by
   # the action's `prs` output, because release-please returns nothing for an
-  # unchanged PR: a carried-over PR must still have auto-merge (re-)enabled
-  # after a hold re-drafts it. Auto-merge waits for the required `ci` check; a
-  # PR whose checks are already green merges immediately. release-please finds
-  # the merged PR by label and branch, so the squash commit is what it tags.
+  # unchanged PR: a carried-over PR must still be undrafted and armed. It also
+  # undrafts the PR, because release-please creates it as a draft
+  # (`draft-pull-request`); the lockfile is synced by now, so that is safe, and
+  # undrafting runs `ci`, which auto-merge then waits for. A PR whose checks are
+  # already green merges immediately. release-please finds the merged PR by
+  # label and branch, so the squash commit is what it tags.
   auto-merge:
     name: squash auto-merge release PRs
     needs: [release-please, sync-lockfile]
-    if: always() && needs.release-please.result == 'success'
+    # Sync can be skipped (no PR was created or updated) or can fail. Never
+    # undraft onto an unsynced head: only run when sync succeeded or was not
+    # needed.
+    if: >-
+      always()
+      && needs.release-please.result == 'success'
+      && (needs.sync-lockfile.result == 'success' || needs.sync-lockfile.result == 'skipped')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -313,7 +321,7 @@ jobs:
           client-id: ${{ vars.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
-      - name: Enable squash auto-merge
+      - name: Undraft and enable squash auto-merge
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
@@ -335,8 +343,9 @@ jobs:
               continue
             fi
             if [ "$draft" = "true" ]; then
-              echo "#$num is still a draft; auto-merge resumes once the hold lifts"
-              continue
+              # Safe here: sync-lockfile already finished or was not needed.
+              echo "#$num is a draft; marking it ready for review"
+              gh pr ready "$num" --repo "$GITHUB_REPOSITORY"
             fi
             # `--auto` is refused on an already-clean PR; fall back to merging
             # the finished release in that case.
