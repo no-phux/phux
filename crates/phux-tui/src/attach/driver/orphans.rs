@@ -25,6 +25,7 @@ use phux_protocol::ids::{SatelliteHost, ServerInstance};
 use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind, SpawnError};
 
 use crate::attach::actions::SpawnedPane;
+use crate::attach::pane_state::satellite_host_in_unreachable;
 
 /// At most this many strays are remembered; recording another forgets the
 /// oldest.
@@ -194,7 +195,8 @@ impl OrphanKills {
         let Some(message) = unreachable_message(frame) else {
             return;
         };
-        match named_host(message) {
+        // `None` (a shape the hub does not emit) forgets every satellite.
+        match satellite_host_in_unreachable(message) {
             Some(host) => {
                 self.forget_unreachable_where(|pane| {
                     pane.host().is_some_and(|h| h.as_str() == host)
@@ -394,13 +396,6 @@ const fn unreachable_message(frame: &FrameKind) -> Option<&String> {
         } => Some(message),
         _ => None,
     }
-}
-
-/// The satellite an unreachable message names (`satellite {host} ...`), or
-/// `None`, which the caller treats as every satellite.
-fn named_host(message: &str) -> Option<&str> {
-    let (host, _) = message.strip_prefix("satellite ")?.split_once(' ')?;
-    Some(host)
 }
 
 /// The request id a reply frame answers, if it is a reply.
