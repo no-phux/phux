@@ -9,6 +9,7 @@ mod color;
 mod desk;
 mod host;
 mod keys;
+mod motion;
 mod organization;
 mod overlays;
 mod panes;

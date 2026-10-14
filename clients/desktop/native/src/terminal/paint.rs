@@ -166,8 +166,9 @@ pub(super) type SceneCache = Rc<RefCell<Option<Rc<Scene>>>>;
 
 pub(super) struct Prepared {
     report: Observation,
-    /// Painted when there is no scene (no frame, or a stale one).
-    fallback: Hsla,
+    /// Painted when there is no scene (no frame, or a stale one), unless the
+    /// host paints the background.
+    fallback: Option<Hsla>,
     scene: Option<Rc<Scene>>,
     /// One per translucent glyph ink, in ink order. They wrap per-draw GPUI
     /// elements, so they are rebuilt even for a reused scene.
@@ -188,7 +189,8 @@ pub(super) fn prepare(
             view_id: None,
             ..Default::default()
         },
-        fallback: settings.background.unwrap_or_else(gpui::black),
+        fallback: (!settings.host_fills_background)
+            .then(|| settings.background.unwrap_or_else(gpui::black)),
         scene: None,
         layers: Vec::new(),
     };
@@ -664,13 +666,19 @@ impl Prepared {
         let started = Instant::now();
         let Some(scene) = self.scene.take() else {
             window.with_content_mask(Some(ContentMask { bounds }), |window| {
-                window.paint_quad(fill(bounds, self.fallback));
+                if let Some(fallback) = self.fallback {
+                    window.paint_quad(fill(bounds, fallback));
+                }
             });
             return self.finish(started);
         };
         let mut layers = std::mem::take(&mut self.layers).into_iter();
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            window.paint_quad(fill(bounds, scene.background));
+            let hosted = scene.settings.host_fills_background
+                && scene.settings.background == Some(scene.background);
+            if !hosted {
+                window.paint_quad(fill(bounds, scene.background));
+            }
             for (bounds, color) in &scene.backgrounds {
                 window.paint_quad(fill(*bounds, *color));
             }

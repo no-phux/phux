@@ -1,12 +1,17 @@
 //! Terminal-first chrome: titlebar, sidebar, split tree, status, overlays.
+//!
+//! The window is one sheet of glass over the desktop blur. Titlebar, sidebar
+//! and status sit on it unframed; panes float on it as rounded cards with no
+//! header. A pane's controls appear when the pointer reaches its top edge.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, ClickEvent, Context, CursorStyle, DispatchPhase, Hsla, IntoElement, Keystroke,
-    MouseButton, MouseMoveEvent, MouseUpEvent, ParentElement, SharedString, Styled, Window, canvas,
-    div, px, relative,
+    AnyElement, App, BoxShadow, ClickEvent, Context, CursorStyle, DispatchPhase, DragMoveEvent,
+    ExternalPaths, FileDropEvent, Hsla, IntoElement, Keystroke, MouseButton, MouseMoveEvent,
+    MouseUpEvent, ParentElement, SharedString, Styled, Window, canvas, div, linear_color_stop,
+    linear_gradient, point, px, relative,
 };
 use gpui_kit::base::Disableable;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -27,13 +32,65 @@ use super::actions::{OpenPathDirectory, Run};
 use super::color::from_hex;
 use super::desk::{self, Desk, Modal, ToastKind, Tone};
 use super::keys::gpui_stroke;
+use super::motion;
 use super::overlays;
 
 const TITLEBAR: f32 = 40.;
-const STATUS: f32 = 28.;
-const DIVIDER: f32 = 5.;
+const STATUS: f32 = 26.;
+/// The glass between panes, which is also the split's grab area.
+const GAP: f32 = 8.;
+/// The glass around the pane canvas.
+const GUTTER: f32 = 10.;
+const RADIUS: f32 = 12.;
+/// How far down a pane the pointer reveals its controls.
+const CONTROLS_EDGE: f32 = 36.;
 /// Left inset that clears the traffic lights.
 const TRAFFIC_LIGHTS: f32 = 78.;
+
+/// Paint values for the glass sheet and the cards on it, from the theme.
+struct Glass {
+    /// The window sheet over the desktop blur.
+    sheet: Hsla,
+    /// Light falling from the top edge of the sheet.
+    sheen: Hsla,
+    /// A pane card: the terminal background at the terminal opacity.
+    card: Hsla,
+    /// A card's hairline, and a focused card's brighter one.
+    edge: Hsla,
+    lit: Hsla,
+    shadow: Hsla,
+}
+
+impl Glass {
+    fn of(colors: &Palette, terminal_opacity: f64) -> Self {
+        let light = colors.theme.appearance == "light";
+        let ink = from_hex(&colors.theme.foreground);
+        Self {
+            sheet: from_hex(&colors.theme.background).opacity(if light { 0.58 } else { 0.44 }),
+            sheen: ink.opacity(if light { 0.07 } else { 0.05 }),
+            card: from_hex(&crate::settings::theme::with_alpha(
+                &colors.theme.background,
+                terminal_opacity,
+            )),
+            edge: ink.opacity(0.08),
+            lit: ink.opacity(0.22),
+            shadow: gpui::black().opacity(if light { 0.14 } else { 0.34 }),
+        }
+    }
+}
+
+/// The palette with translucent washes and hairlines, so hovered and
+/// selected chrome tints the glass instead of covering it.
+fn chrome_palette(desk: &Desk) -> Palette {
+    let mut colors = desk.palette();
+    let ink = colors.theme.foreground.clone();
+    let alpha = crate::settings::theme::with_alpha;
+    colors.hover = alpha(&ink, 0.06);
+    colors.active = alpha(&ink, 0.11);
+    colors.border = alpha(&ink, 0.08);
+    colors.divider = alpha(&ink, 0.08);
+    colors
+}
 
 #[derive(Clone)]
 struct ResourceDrag {
@@ -56,7 +113,8 @@ impl gpui::Render for ResourceDrag {
 
 pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> impl IntoElement {
     let _frame = crate::diag::FRAME.timer();
-    let colors = desk.palette();
+    let colors = chrome_palette(desk);
+    let glass = Glass::of(&colors, desk.prefs.terminal_opacity);
     let sidebar = desk.prefs.sidebar_visible && desk.role != desk::WindowRole::Quick;
     desk.set_viewport(window.viewport_size());
     desk.sync_title(window);
@@ -75,6 +133,10 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
         );
     }
     let cursor = desk.drag_cursor();
+    if !cx.has_active_drag() {
+        desk.drop_target = None;
+    }
+    observe_motion(desk, window);
 
     div()
         .id("desk")
@@ -84,10 +146,20 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
         .relative()
         .flex()
         .flex_col()
-        .bg(from_hex(&crate::settings::theme::with_alpha(
-            &colors.theme.background,
-            desk.prefs.terminal_opacity,
-        )))
+        .bg(glass.sheet)
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .h(px(220.))
+                .bg(linear_gradient(
+                    180.,
+                    linear_color_stop(glass.sheen, 0.),
+                    linear_color_stop(glass.sheen.opacity(0.), 1.),
+                )),
+        )
         .text_color(from_hex(&colors.theme.foreground))
         .on_action(cx.listener(|desk, action: &Run, window, cx| {
             desk.execute(&action.id, window, cx);
@@ -109,6 +181,26 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
         )
         .child(overlays::layer(desk, &colors, window, cx))
         .children(cursor.map(|cursor| drag_capture(cursor, cx)))
+}
+
+/// Feed this frame's placements to the motion clock, and keep frames coming
+/// while a pane is still growing in or folding away.
+fn observe_motion(desk: &mut Desk, window: &mut Window) {
+    let now = Instant::now();
+    let (tab, placements) = desk
+        .active_tab()
+        .map(|tab| {
+            let ids = layout::placements(&tab.root)
+                .into_iter()
+                .map(|placement| placement.id.clone())
+                .collect::<Vec<_>>();
+            (Some(tab.id.clone()), ids)
+        })
+        .unwrap_or_default();
+    desk.motion.observe(tab.as_deref(), &placements, now);
+    if desk.motion.active(now) {
+        window.request_animation_frame();
+    }
 }
 
 /// While a divider, the sidebar edge or a tab is dragged, follow the pointer
@@ -174,9 +266,6 @@ fn titlebar(
         .flex()
         .items_center()
         .flex_shrink_0()
-        .bg(from_hex(&colors.theme.surface))
-        .border_b_1()
-        .border_color(from_hex(&colors.border))
         .child(div().absolute().inset_0().child(region))
         .child(
             div()
@@ -295,13 +384,7 @@ fn tab_button(
         .flex()
         .items_center()
         .gap(px(6.))
-        .rounded(px(7.))
-        .border_1()
-        .border_color(if selected {
-            from_hex(&colors.border)
-        } else {
-            gpui::transparent_black()
-        })
+        .rounded(px(9.))
         .bg(if selected {
             from_hex(&colors.active)
         } else {
@@ -344,7 +427,7 @@ fn tab_button(
                 .id(SharedString::from(format!("tab-close-{id}")))
                 .flex_shrink_0()
                 .size(px(18.))
-                .rounded(px(4.))
+                .rounded_full()
                 .flex()
                 .items_center()
                 .justify_center()
@@ -401,9 +484,6 @@ fn sidebar_column(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl
         .relative()
         .flex()
         .flex_col()
-        .bg(from_hex(&colors.theme.surface))
-        .border_r_1()
-        .border_color(from_hex(&colors.border))
         .child(sidebar_list(desk, colors, cx))
         .child(sidebar_resize(desk, colors, cx))
 }
@@ -1138,15 +1218,14 @@ fn workspace_body(
 ) -> impl IntoElement {
     let zoomed = desk.active_tab().and_then(|tab| tab.zoomed_id.clone());
     let root = desk.active_tab().map(|tab| tab.root.clone());
-    let split = root
-        .as_ref()
-        .is_some_and(|root| matches!(root, LayoutNode::Split { .. }))
-        && zoomed.is_none();
+    let sidebar = desk.prefs.sidebar_visible && desk.role != desk::WindowRole::Quick;
     div()
         .flex_grow(1.)
         .min_h(px(0.))
         .relative()
-        .when(split, |body| body.p(px(4.)))
+        .pt(px(2.))
+        .pr(px(GUTTER))
+        .pl(px(if sidebar { 2. } else { GUTTER }))
         .child(if let Some(id) = zoomed {
             zoomed_pane(desk, &id, window, cx).into_any_element()
         } else if let Some(root) = root {
@@ -1288,10 +1367,19 @@ fn zoomed_pane(
     window: &mut Window,
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
+    let presence = desk.motion.presence(id, Instant::now());
     desk.placement(id)
         .cloned()
-        .map(|placement| pane_view(desk, &placement, window, cx))
+        .map(|placement| pane_view(desk, &placement, presence, window, cx))
         .unwrap_or_else(|| div().into_any_element())
+}
+
+/// How present a split child is: a leaf follows its motion, a subtree is settled.
+fn node_presence(desk: &Desk, node: &LayoutNode, now: Instant) -> f32 {
+    match node {
+        LayoutNode::Leaf { placement } => desk.motion.presence(&placement.id, now),
+        LayoutNode::Split { .. } => 1.,
+    }
 }
 
 fn split_tree(
@@ -1302,7 +1390,10 @@ fn split_tree(
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
     match node {
-        LayoutNode::Leaf { placement } => pane_view(desk, placement, window, cx).into_any_element(),
+        LayoutNode::Leaf { placement } => {
+            let presence = desk.motion.presence(&placement.id, Instant::now());
+            pane_view(desk, placement, presence, window, cx).into_any_element()
+        }
         LayoutNode::Split {
             id,
             axis,
@@ -1313,6 +1404,13 @@ fn split_tree(
             let horizontal = matches!(axis, Axis::Row);
             let bounds = desk.split_bounds.clone();
             let key = id.clone();
+            let now = Instant::now();
+            let (lead, trail) = (
+                node_presence(desk, first, now),
+                node_presence(desk, second, now),
+            );
+            let painted = motion::ratio(*ratio, lead, trail);
+            let gap = GAP * lead.min(trail);
             div()
                 .size_full()
                 .flex()
@@ -1320,12 +1418,12 @@ fn split_tree(
                 .when(!horizontal, |column| column.flex_col())
                 .child(
                     div()
-                        .when(horizontal, |side| side.w(relative(*ratio)).h_full())
-                        .when(!horizontal, |side| side.h(relative(*ratio)).w_full())
+                        .when(horizontal, |side| side.w(relative(painted)).h_full())
+                        .when(!horizontal, |side| side.h(relative(painted)).w_full())
                         .flex_shrink_0()
                         .child(split_tree(desk, first, colors, window, cx)),
                 )
-                .child(split_divider(desk, id.clone(), *axis, colors, cx))
+                .child(split_divider(desk, id.clone(), *axis, gap, colors, cx))
                 .child(
                     div()
                         .flex_1()
@@ -1343,22 +1441,20 @@ fn split_tree(
     }
 }
 
-/// A 5 px grab area with a 1 px hairline in the theme's divider colour, accent while dragged.
+/// The glass between two panes is the grab area. A short pill appears on
+/// hover, in the accent while dragged.
 fn split_divider(
     desk: &Desk,
     id: String,
     axis: Axis,
+    gap: f32,
     colors: &Palette,
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
     let horizontal = matches!(axis, Axis::Row);
     let active = desk.dragging_split() == Some(id.as_str());
-    let line = if active {
-        from_hex(&colors.theme.accent)
-    } else {
-        from_hex(&colors.divider)
-    };
-    let hover = from_hex(&colors.theme.accent).opacity(0.6);
+    let accent = from_hex(&colors.theme.accent);
+    let grip = from_hex(&colors.theme.foreground).opacity(0.28);
     div()
         .id(SharedString::from(format!("split-{id}")))
         .group("divider")
@@ -1367,17 +1463,20 @@ fn split_divider(
         .items_center()
         .justify_center()
         .when(horizontal, |bar| {
-            bar.w(px(DIVIDER)).h_full().cursor_col_resize()
+            bar.w(px(gap)).h_full().cursor_col_resize()
         })
         .when(!horizontal, |bar| {
-            bar.h(px(DIVIDER)).w_full().cursor_row_resize()
+            bar.h(px(gap)).w_full().cursor_row_resize()
         })
         .child(
             div()
-                .bg(line)
-                .group_hover("divider", move |style| style.bg(hover))
-                .when(horizontal, |hairline| hairline.w(px(1.)).h_full())
-                .when(!horizontal, |hairline| hairline.h(px(1.)).w_full()),
+                .rounded_full()
+                .when(active, |pill| pill.bg(accent))
+                .when(!active, |pill| {
+                    pill.group_hover("divider", move |style| style.bg(grip))
+                })
+                .when(horizontal, |pill| pill.w(px(3.)).h(px(44.)))
+                .when(!horizontal, |pill| pill.h(px(3.)).w(px(44.))),
         )
         .on_mouse_down(
             MouseButton::Left,
@@ -1388,15 +1487,20 @@ fn split_divider(
         )
 }
 
+/// One pane: a rounded card on the glass, with no header. Its controls float
+/// in when the pointer reaches the top edge, and a file dragged over it shows
+/// where the drop will paste.
 fn pane_view(
     desk: &mut Desk,
     placement: &Placement,
+    presence: f32,
     window: &mut Window,
     cx: &mut Context<Desk>,
 ) -> AnyElement {
     let focused =
         desk.focused_placement().map(|item| item.id.as_str()) == Some(placement.id.as_str());
-    let colors = desk.palette();
+    let colors = chrome_palette(desk);
+    let glass = Glass::of(&colors, desk.prefs.terminal_opacity);
     let placement_id = placement.id.clone();
     let terminal = placement.terminal_id.clone();
     let view = placement.view_id;
@@ -1435,7 +1539,6 @@ fn pane_view(
     let leaves = tab
         .map(|tab| layout::placements(&tab.root).len())
         .unwrap_or(1);
-    let chrome = leaves > 1 || zoomed;
     let find = desk
         .find
         .as_ref()
@@ -1446,23 +1549,94 @@ fn pane_view(
         .then_some(1. - desk.prefs.unfocused_opacity as f32)
         .filter(|amount| *amount > 0.);
     let fade = from_hex(&colors.theme.background);
-    let header = chrome.then(|| placement_header(desk, placement, focused, zoomed, &colors, cx));
+    let agent = placement
+        .terminal_id
+        .as_ref()
+        .and_then(|id| desk.agent(id))
+        .cloned();
+    let urgent = agent.as_ref().is_some_and(|info| info.attention == "high");
+    let fenced = placement.terminal_id.as_ref().is_some_and(|id| {
+        desk.link
+            .as_ref()
+            .is_some_and(|link| link.connection.fenced(id))
+    });
+    let id = placement.id.clone();
+    let dropping = desk.drop_target.as_deref() == Some(id.as_str());
+    let leaving = desk.motion.is_leaving(&id);
+    let controls = find.is_none()
+        && !dropping
+        && !leaving
+        && desk.dragging_split().is_none()
+        && (desk.chrome_hover.as_deref() == Some(id.as_str())
+            || desk.controls_hover.as_deref() == Some(id.as_str()));
+    let accent = from_hex(&colors.theme.accent);
+    let edge = if dropping {
+        accent
+    } else if urgent {
+        agent
+            .as_ref()
+            .map(|info| from_hex(agent_swatch(&info.state)).opacity(0.75))
+            .unwrap_or(glass.lit)
+    } else if focused && leaves > 1 && !zoomed {
+        glass.lit
+    } else {
+        glass.edge
+    };
+    let controls_bar = if controls {
+        Some(pane_controls(desk, placement, zoomed, &colors, cx).into_any_element())
+    } else {
+        None
+    };
+    let drag_id = id.clone();
+    let drop_id = id.clone();
+    let exit_id = id.clone();
+    let hover_id = id.clone();
     div()
+        .id(SharedString::from(format!("pane-card-{id}")))
         .size_full()
+        .relative()
         .flex()
         .flex_col()
+        .when(presence < 1., |card| card.opacity(presence.max(0.)))
+        .rounded(px(RADIUS))
+        .bg(glass.card)
+        .border_1()
+        .border_color(edge)
+        .shadow(vec![BoxShadow {
+            color: glass.shadow,
+            offset: point(px(0.), px(10.)),
+            blur_radius: px(30.),
+            spread_radius: px(-8.),
+            inset: false,
+        }])
         .overflow_hidden()
-        .when(chrome, |pane| {
-            pane.rounded(px(6.))
-                .border_1()
-                .border_color(from_hex(if focused {
-                    &colors.theme.accent
-                } else {
-                    &colors.border
-                }))
-        })
         .block_mouse_except_scroll()
-        .children(header)
+        .on_drag_move::<ExternalPaths>(cx.listener(
+            move |desk, event: &DragMoveEvent<ExternalPaths>, _, cx| {
+                let inside = event.bounds.contains(&event.event.position);
+                let here = desk.drop_target.as_deref() == Some(drag_id.as_str());
+                if inside && !here {
+                    desk.drop_target = Some(drag_id.clone());
+                    cx.notify();
+                } else if !inside && here {
+                    desk.drop_target = None;
+                    cx.notify();
+                }
+            },
+        ))
+        .on_drop(cx.listener(move |desk, paths: &ExternalPaths, window, cx| {
+            if let Some(tab) = desk.active_tab_id() {
+                desk.focus_placement(&tab, &drop_id, window, cx);
+            }
+            desk.drop_paths(&drop_id, paths.paths());
+            desk.after_command(window, cx);
+        }))
+        .on_file_drop_exit(cx.listener(move |desk, _: &FileDropEvent, _, cx| {
+            if desk.drop_target.as_deref() == Some(exit_id.as_str()) {
+                desk.drop_target = None;
+                cx.notify();
+            }
+        }))
         .child(
             div()
                 .flex_grow(1.)
@@ -1473,16 +1647,45 @@ fn pane_view(
                 .child(body)
                 .children(
                     dim.map(|amount| div().absolute().inset_0().bg(Hsla { a: amount, ..fade })),
-                )
-                .children(find_bar),
+                ),
         )
+        .child(
+            // Reveals the controls. It holds no other listener, so presses and
+            // drags still reach the terminal under it.
+            div()
+                .id(SharedString::from(format!("pane-edge-{id}")))
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .h(px(CONTROLS_EDGE))
+                .on_hover(cx.listener(move |desk, hovered: &bool, _, cx| {
+                    if *hovered {
+                        desk.chrome_hover = Some(hover_id.clone());
+                    } else if desk.chrome_hover.as_deref() == Some(hover_id.as_str()) {
+                        desk.chrome_hover = None;
+                    }
+                    cx.notify();
+                })),
+        )
+        .when(fenced && !controls, |card| {
+            card.child(div().absolute().top(px(8.)).right(px(10.)).child(pill(
+                "⚡ delivery unknown",
+                &format!("{}22", colors.theme.warning),
+                &colors.theme.warning,
+            )))
+        })
+        .children(controls_bar)
+        .when(dropping, |card| card.child(drop_hint(&colors)))
+        .children(find_bar)
         .into_any_element()
 }
 
-fn placement_header(
+/// The floating capsule a pane shows at its top edge: what runs there, then
+/// split, zoom and close.
+fn pane_controls(
     desk: &Desk,
     placement: &Placement,
-    focused: bool,
     zoomed: bool,
     colors: &Palette,
     cx: &mut Context<Desk>,
@@ -1503,73 +1706,77 @@ fn placement_header(
         .as_ref()
         .and_then(|id| desk.link.as_ref().map(|link| link.workspace.views_of(id)))
         .unwrap_or(0);
-    let fenced = placement.terminal_id.as_ref().is_some_and(|id| {
-        desk.link
-            .as_ref()
-            .is_some_and(|link| link.connection.fenced(id))
-    });
     let id = placement.id.clone();
+    let hover_id = placement.id.clone();
     let focus_id = placement.id.clone();
     div()
-        .id(SharedString::from(format!("header-{id}")))
+        .id(SharedString::from(format!("pane-controls-{id}")))
+        .absolute()
+        .top(px(7.))
+        .right(px(8.))
+        .max_w(relative(0.9))
         .h(px(28.))
         .pl(px(10.))
-        .pr(px(4.))
+        .pr(px(3.))
         .flex()
-        .flex_shrink_0()
         .items_center()
-        .gap(px(8.))
-        .bg(from_hex(if focused {
-            &colors.raised
-        } else {
-            &colors.theme.surface
-        }))
-        .border_b_1()
+        .gap(px(6.))
+        .rounded_full()
+        .bg(from_hex(&colors.raised).opacity(0.9))
+        .border_1()
         .border_color(from_hex(&colors.border))
+        .shadow(vec![BoxShadow {
+            color: gpui::black().opacity(0.22),
+            offset: point(px(0.), px(4.)),
+            blur_radius: px(14.),
+            spread_radius: px(-2.),
+            inset: false,
+        }])
+        .occlude()
+        .text_xs()
+        .on_hover(cx.listener(move |desk, hovered: &bool, _, cx| {
+            if *hovered {
+                desk.controls_hover = Some(hover_id.clone());
+            } else if desk.controls_hover.as_deref() == Some(hover_id.as_str()) {
+                desk.controls_hover = None;
+            }
+            cx.notify();
+        }))
+        .children(agent.as_ref().map(|info| {
+            div()
+                .flex_shrink_0()
+                .size(px(7.))
+                .rounded_full()
+                .bg(from_hex(agent_swatch(&info.state)))
+        }))
         .child(
             div()
                 .flex_shrink_0()
-                .text_sm()
                 .font_weight(gpui::FontWeight::MEDIUM)
-                .text_color(from_hex(if focused {
-                    &colors.theme.foreground
-                } else {
-                    &colors.muted
-                }))
-                .child(title),
+                .text_color(from_hex(&colors.theme.foreground))
+                .child(match agent.as_ref() {
+                    Some(info) => format!("{} · {}", info.name, info.state),
+                    None => title,
+                }),
         )
         .when(!cwd.is_empty(), |row| {
             row.child(
                 div()
                     .min_w_0()
                     .truncate()
-                    .text_xs()
                     .text_color(from_hex(&colors.faint))
                     .child(cwd),
             )
         })
-        .children(agent.map(|info| {
-            pill(
-                &format!("{} · {}", info.name, info.state),
-                &format!("{}22", agent_swatch(&info.state)),
-                agent_swatch(&info.state),
-            )
-        }))
         .when(views > 1, |row| {
-            row.child(pill(
-                &format!("{views} views"),
-                &colors.hover,
-                &colors.muted,
-            ))
+            row.child(
+                div()
+                    .flex_shrink_0()
+                    .text_color(from_hex(&colors.muted))
+                    .child(format!("{views} views")),
+            )
         })
-        .when(fenced, |row| {
-            row.child(pill(
-                "⚡ delivery unknown",
-                &format!("{}22", colors.theme.warning),
-                &colors.theme.warning,
-            ))
-        })
-        .child(div().flex_1())
+        .child(div().w(px(2.)))
         .child(header_button(
             &id,
             "split-right",
@@ -1614,6 +1821,48 @@ fn placement_header(
                 desk.execute("zoom", window, cx);
             }
         }))
+}
+
+/// Shown over the pane a file drag from the OS is above.
+fn drop_hint(colors: &Palette) -> impl IntoElement {
+    let accent = from_hex(&colors.theme.accent);
+    div()
+        .absolute()
+        .inset_0()
+        .rounded(px(RADIUS))
+        .bg(accent.opacity(0.1))
+        .border_2()
+        .border_color(accent.opacity(0.8))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .px(px(16.))
+                .py(px(10.))
+                .rounded(px(12.))
+                .bg(from_hex(&colors.raised).opacity(0.92))
+                .border_1()
+                .border_color(from_hex(&colors.border))
+                .shadow_lg()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(2.))
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(from_hex(&colors.theme.foreground))
+                        .child("Drop to attach"),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(from_hex(&colors.muted))
+                        .child("Paths paste here, ready for your agent"),
+                ),
+        )
 }
 
 /// Focus this pane, then run `command` on it.
@@ -1705,9 +1954,6 @@ fn status_bar(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl Int
         .flex()
         .items_center()
         .gap(px(12.))
-        .bg(from_hex(&colors.theme.surface))
-        .border_t_1()
-        .border_color(from_hex(&colors.border))
         .text_xs()
         .text_color(from_hex(&colors.muted))
         .child(
@@ -1823,8 +2069,8 @@ fn toast_stack(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> impl In
                 .id(("toast", id as usize))
                 .p(px(10.))
                 .pl(px(12.))
-                .rounded(px(8.))
-                .bg(from_hex(&colors.raised))
+                .rounded(px(12.))
+                .bg(from_hex(&colors.raised).opacity(0.94))
                 .border_1()
                 .border_l_4()
                 .border_color(from_hex(&edge))

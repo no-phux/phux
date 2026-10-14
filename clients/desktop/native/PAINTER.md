@@ -20,13 +20,15 @@ Terminal::focus_handle(&self) -> &FocusHandle
 ```
 
 `Settings` is ordinary public fields: font, size, line height, cell scales,
-theme colours, cursor and blink visibility, focus, Option-as-Alt, size
+theme colours, whether the host already fills the default background
+(`host_fills_background`), cursor and blink visibility, focus, Option-as-Alt, size
 ownership and non-Command `app_chords`. `configure` and `new` clamp font size
 to 6–96, line height to 1–3 and cell scales to 0.5–2. Identity is not a
 setting. A replaced view or client is a new entity.
 
-The shell subscribes to `TerminalEvent::Activated` (primary click) and
-`TerminalEvent::PathsDropped`. Command-click opens an allowlisted link.
+The shell subscribes to `TerminalEvent::Activated` (primary click). File
+drops belong to the pane card around the view, not to the view. Command-click
+opens an allowlisted link.
 Non-Command `app_chords` bubble to the window; Command chords are platform
 keystrokes and are not sent to the PTY.
 

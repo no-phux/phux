@@ -17,7 +17,7 @@ use phux_client_runtime::Client;
 use phux_client_runtime::control::{DeliveryOutcome, Event, PathAnswer, Status};
 use phux_client_runtime::engine::{Scroll, TextRegion};
 use phux_protocol::ResourceId;
-use phux_protocol::ids::{OperationId, ResourceKey, SatelliteHost};
+use phux_protocol::ids::{OperationId, SatelliteHost};
 
 use crate::connection::path::{self as paths};
 use crate::connection::{AgentInfo, Connection};
@@ -30,6 +30,7 @@ use crate::workspace::{Workspace, WorkspaceOptions};
 use super::actions::Run;
 use super::host;
 use super::keys::{gpui_stroke, shell_chord};
+use super::motion::{self, Motion};
 use super::overlays::InputSlot;
 use super::panes::Panes;
 use super::session::Desktop;
@@ -173,6 +174,13 @@ pub struct Desk {
     /// Session kills awaiting their outcome, by operation, with the name.
     kills: HashMap<OperationId, String>,
     pub(crate) organization: super::organization::Organization,
+    /// Panes growing in and folding away.
+    pub(crate) motion: Motion,
+    /// The placement whose top edge, or whose pane controls, the pointer is over.
+    pub(crate) chrome_hover: Option<String>,
+    pub(crate) controls_hover: Option<String>,
+    /// The placement a file drag from the OS is over.
+    pub(crate) drop_target: Option<String>,
 }
 
 pub struct Link {
@@ -273,6 +281,10 @@ impl Desk {
             creates: HashMap::new(),
             kills: HashMap::new(),
             organization: Default::default(),
+            motion: Motion::default(),
+            chrome_hover: None,
+            controls_hover: None,
+            drop_target: None,
         };
         if let Some(error) = request.startup_error {
             desk.toast(
@@ -658,9 +670,7 @@ impl Desk {
             "split-up" => self
                 .workspace_call(|link| link.workspace.split(&link.connection, Axis::Column, true)),
             "view" => self.workspace_call(|link| link.workspace.duplicate_view(&link.connection)),
-            "close" => {
-                self.workspace_call(|link| link.workspace.close_pane(&link.connection, None))
-            }
+            "close" => self.fold_pane(window, cx),
             "close-tab" => {
                 if let Some(id) = self.active_tab_id() {
                     self.workspace_mut(|link| link.workspace.close_tab(&link.connection, &id));
@@ -1601,11 +1611,35 @@ impl Desk {
     fn paste_cwd(&mut self) {
         let cwd = self.focused_pane().and_then(|pane| pane.cwd.clone());
         let Some(cwd) = cwd else { return };
-        self.paste_text(&host::quote_dropped_paths(&[PathBuf::from(cwd)]));
+        self.paste_text(&crate::attach::quote_paths(&[PathBuf::from(cwd)]));
+    }
+
+    /// Fold the focused pane away, then release it. A second close of a pane
+    /// already folding does nothing.
+    fn fold_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self
+            .focused_placement()
+            .map(|placement| placement.id.clone())
+        else {
+            return;
+        };
+        if !self.motion.leave(&id, Instant::now()) {
+            return;
+        }
+        cx.spawn_in(window, async move |this, cx| {
+            smol::Timer::after(motion::LEAVE).await;
+            let _ = this.update_in(cx, |desk, window, cx| {
+                desk.motion.left(&id);
+                desk.workspace_call(|link| link.workspace.close_pane(&link.connection, Some(&id)));
+                desk.after_command(window, cx);
+            });
+        })
+        .detach();
     }
 
     /// Paste dropped paths into the pane they were dropped on.
     pub fn drop_paths(&mut self, placement_id: &str, paths: &[PathBuf]) {
+        self.drop_target = None;
         if paths.is_empty() {
             return;
         }
@@ -1615,7 +1649,7 @@ impl Desk {
         else {
             return;
         };
-        self.paste_text_to(&terminal, &host::quote_dropped_paths(paths));
+        self.paste_text_to(&terminal, &crate::attach::quote_paths(paths));
     }
 
     fn paste_text(&mut self, text: &str) -> bool {
@@ -1692,7 +1726,7 @@ impl Desk {
         let shown = path.display().to_string();
         match mode {
             "paste" => {
-                self.paste_text(&host::quote_dropped_paths(&[path]));
+                self.paste_text(&crate::attach::quote_paths(&[path]));
             }
             "copy" => self.host_action(HostAction::CopyText(shown), cx),
             _ => self.host_action(HostAction::Open(shown), cx),
@@ -2078,6 +2112,7 @@ impl Desk {
             cell_height_scale: self.prefs.cell_height as f32,
             foreground: Some(super::color::from_hex(&colors.theme.foreground)),
             background: Some(super::color::from_hex(&opacity)),
+            host_fills_background: true,
             cursor: Some(super::color::from_hex(&colors.theme.cursor)),
             selection_background: super::color::from_hex(&colors.theme.selection),
             selection_foreground: super::color::from_hex(
@@ -2547,8 +2582,7 @@ impl Desk {
         self.after_command(window, cx);
     }
 
-    /// A terminal reports a click (focus its placement) or an OS file drop
-    /// (paste into that pane).
+    /// A terminal reports a click: focus its placement.
     pub(crate) fn on_terminal_event(
         &mut self,
         placement_id: &str,
@@ -2561,9 +2595,6 @@ impl Desk {
                 if let Some(tab) = self.active_tab_id() {
                     self.focus_placement(&tab, placement_id, window, cx);
                 }
-            }
-            crate::terminal::TerminalEvent::PathsDropped(paths) => {
-                self.drop_paths(placement_id, paths)
             }
         }
         cx.notify();
