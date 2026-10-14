@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.6](https://github.com/no-phux/phux/compare/desktop-v0.8.5...desktop-v0.8.6) (2026-10-14)
+
+
+### Performance
+
+* **desktop:** use sparse damage for pane redraws ([#1372](https://github.com/no-phux/phux/issues/1372)) ([9856e15](https://github.com/no-phux/phux/commit/9856e15315a433590c81ce3127f6856701acd516))
+
 ## [0.8.5](https://github.com/no-phux/phux/compare/desktop-v0.8.4...desktop-v0.8.5) (2026-10-14)
 
 
