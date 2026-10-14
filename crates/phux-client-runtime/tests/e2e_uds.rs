@@ -127,10 +127,24 @@ async fn spawn_cat(client: &Client) -> ResourceId {
         _ => None,
     })
     .await;
-    wait_until("the spawned terminal to accept input", || {
-        client.input_ready(&terminal)
-    })
-    .await;
+    // `input_ready` round-trips to the engine owner. On this task that blocks
+    // the server sharing `run_local`, so poll it on the blocking pool.
+    let start = Instant::now();
+    loop {
+        let client = client.clone();
+        let terminal_id = terminal.clone();
+        let ready = tokio::task::spawn_blocking(move || client.input_ready(&terminal_id))
+            .await
+            .expect("sample input readiness");
+        if ready {
+            break;
+        }
+        assert!(
+            start.elapsed() < DEADLINE,
+            "timed out waiting for the spawned terminal to accept input"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     terminal
 }
 
@@ -172,46 +186,35 @@ async fn sample_output(client: &Client, terminal: &ResourceId) -> Vec<u8> {
 
 /// Wait until published output contains `needle`.
 ///
-/// [`DEADLINE`] is idle time since the last queued feed, published
-/// generation, or output byte. A slow echo that is still moving the frame
-/// keeps going; [`DEADLINE`] of silence is a hang.
+/// [`DEADLINE`] is idle time since the published generation or retained
+/// output last moved. A slow echo that is still publishing keeps going;
+/// [`DEADLINE`] of silence is a hang.
 ///
-/// The listener is edge-triggered (`wake_pending`). [`Client::set_listener`]
-/// arms it once, and a later batch does not call back until a drain clears
-/// the flag. [`feed_queued`] does that drain. On the default fed delivery
-/// the queue is empty, so this only re-arms. The notify ends the sleep; it
-/// is not itself progress, or the registration wake would refresh the idle
-/// clock with no frame behind it. This replaces whatever listener the
-/// caller installed; assert that listener before calling.
+/// Samples stay on the blocking pool: `acquire` on this task would freeze
+/// the server that shares `run_local`. The wait does not install a listener
+/// or drain inbound frames. That drain notifies the connection driver, and
+/// the driver's outbound arm cancels an in-flight read. Polling the frame
+/// leaves the read alone and still observes an echo that shows up late.
 async fn wait_for_text(client: &Client, terminal: &ResourceId, needle: &str) {
     let what = if cfg!(feature = "engine") {
         format!("the frame to show {needle:?}")
     } else {
         format!("the output to carry {needle:?}")
     };
-    let gate = Arc::new(FloodGate {
-        notify: tokio::sync::Notify::new(),
-    });
-    client.set_listener(gate.clone());
     let mut idle = Instant::now();
     #[cfg(feature = "engine")]
     let mut generation = None;
     #[cfg(not(feature = "engine"))]
     let mut seen = Vec::new();
     loop {
-        // Re-arm before the sample so a batch that lands during `acquire`
-        // can wake the next wait. A missing slot (`None`) is not progress:
-        // a reaped pane must still hit the idle bound.
-        let fed = feed_queued(client);
-        if fed {
-            idle = Instant::now();
-        }
         #[cfg(feature = "engine")]
         {
             let (hit, next) = sample_frame(client, terminal, needle).await;
             if hit {
                 return;
             }
+            // A missing slot is not progress: a reaped pane must still hit
+            // the idle bound.
             if let Some(next) = next
                 && generation != Some(next)
             {
@@ -230,9 +233,8 @@ async fn wait_for_text(client: &Client, terminal: &ResourceId, needle: &str) {
                 return;
             }
         }
-        let remaining = DEADLINE.saturating_sub(idle.elapsed());
-        assert!(!remaining.is_zero(), "timed out waiting for {what}");
-        let _ = tokio::time::timeout(remaining, gate.notify.notified()).await;
+        assert!(idle.elapsed() < DEADLINE, "timed out waiting for {what}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
 
