@@ -63,6 +63,7 @@ export class AmpTranscript {
 /** This SDK has no interactive approval callback. Default policy remains active;
  * permission_denials are reported, never converted into implicit approval. */
 export async function createAdapter(context: AdapterContext): Promise<NativeAdapter> {
+  if (context.command.length !== 1 || context.command[0] !== 'node') throw new Error('Amp in-process SDK requires command ["node"]; additional CLI arguments are unsupported and were not applied');
   // SDK loading must follow the isolated-runtime hook and sanitized process env.
   const { execute, createUserMessage } = await import('@ampcode/sdk');
   const require = createRequire(join(context.runtime, 'package.json'));
@@ -88,7 +89,7 @@ export async function createAdapter(context: AdapterContext): Promise<NativeAdap
   let closed = false;
   context.emit({ type: 'notice', level: 'info', text: `Amp SDK ${SDK_VERSION}: interactive permission replies and provider-confirmed input/cancel acknowledgments are unavailable. Cancellation terminates the current SDK execution; later prompts continue its actual thread ID.` });
   return {
-    capabilities: { prompt: true, interrupt: true, questions: false, follow_up: true },
+    capabilities: { prompt: true, interrupt: true, questions: false, follow_up: false },
     get providerSessionId() { return projection.confirmed ? projection.sessionId : undefined; },
     async prompt(text, operationId) {
       if (closed) return { disposition: 'refused', detail: 'Amp adapter is closed' };

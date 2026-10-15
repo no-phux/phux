@@ -1,12 +1,38 @@
 import { createHash } from 'node:crypto';
-import { transcriptData, transcriptMode } from '../../runtime/src/transcript.js';
+import { keepHead, keepTail, transcriptData, transcriptMode, type TranscriptData, type TranscriptMode } from '../../runtime/src/transcript.js';
 import { QuestionRegistry } from './questions.js';
 import type { AdapterContext, AdapterModule, Json, NativeAdapter, NativeCapabilities, NativeCommand, NativeCommandResult, NativeIntent, NativeUpdate } from './types.js';
 
 export interface Startup { provider: string; activation: string; cwd: string; runtime: string; command: string[]; resumeSessionId?: string }
-export type OutputPacket = { type: 'ready'; provider_session_id?: string; capabilities: NativeCapabilities } | { type: 'update'; update: NativeUpdate } | { type: 'result'; result: NativeCommandResult } | { type: 'failed'; message: string };
+export type WireUpdate = Exclude<NativeUpdate, { type: 'transcript' }> | { type: 'transcript'; entry: TranscriptData };
+export type OutputPacket = { type: 'ready'; provider_session_id?: string; capabilities: NativeCapabilities } | { type: 'update'; update: WireUpdate } | { type: 'result'; result: NativeCommandResult } | { type: 'failed'; message: string };
 const MAX_PACKET_BYTES = 16 * 1024;
 const MAX_BUFFER_BYTES = 8 * 1024 * 1024;
+
+/** Match Rust Sink::update, including the complete provider_raw data envelope. */
+export function nativeUpdate(provider: string, update: NativeUpdate, mode: TranscriptMode): WireUpdate | undefined {
+  if (update.type === 'view') return { ...update, view: { ...update.view, backend: 'node' } };
+  if (update.type !== 'transcript') return update;
+  if (mode === 'off') return undefined;
+  const source = update.entry.tool && mode !== 'full'
+    ? { ...update.entry, tool: { ...update.entry.tool, output: '' } } : update.entry;
+  let data = transcriptData(provider, source);
+  for (;;) {
+    const wire = { type: 'transcript' as const, entry: data };
+    const over = Buffer.byteLength(JSON.stringify(wire)) - 14 * 1024;
+    if (over <= 0) return wire;
+    const entry = data.entry;
+    // Measure serialized JSON, not just text: quotes, backslashes and lone
+    // surrogates expand on the wire. UTF-8 helpers preserve code points.
+    if (entry.text.length) {
+      data = { ...data, entry: { ...entry, truncated: true, text: keepHead(entry.text, Math.max(0, Buffer.byteLength(entry.text) - over)) } };
+    } else if (entry.tool?.output.length) {
+      data = { ...data, entry: { ...entry, truncated: true, tool: { ...entry.tool, output: keepTail(entry.tool.output, Math.max(0, Buffer.byteLength(entry.tool.output) - over)) } } };
+    } else {
+      throw new Error('Native transcript metadata exceeds update bounds');
+    }
+  }
+}
 
 export function parseCommand(value: unknown): NativeCommand | { type: 'shutdown' } {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('Packet must be an object');
@@ -15,7 +41,7 @@ export function parseCommand(value: unknown): NativeCommand | { type: 'shutdown'
   if (packet.type !== 'command' || typeof packet.operation_id !== 'string' || !/^(0|[1-9][0-9]{0,19})$/.test(packet.operation_id) || BigInt(packet.operation_id) > 18446744073709551615n || typeof packet.activation !== 'string' || packet.activation.length > 256 || packet.intent === null || typeof packet.intent !== 'object' || Array.isArray(packet.intent)) throw new Error('Invalid native command envelope');
   const input = packet.intent as Record<string, unknown>;
   let intent: NativeIntent;
-  if (input.type === 'prompt' && typeof input.text === 'string' && input.text.trim().length > 0 && Buffer.byteLength(input.text) <= 12 * 1024) intent = { type: 'prompt', text: input.text };
+  if (input.type === 'prompt' && typeof input.text === 'string' && input.text.trim().length > 0) intent = { type: 'prompt', text: input.text };
   else if (input.type === 'interrupt' && typeof input.turn_id === 'string' && input.turn_id.length > 0 && input.turn_id.length <= 256) intent = { type: 'interrupt', turn_id: input.turn_id };
   else if (input.type === 'answer' && typeof input.question_id === 'string' && input.question_id.length > 0 && input.question_id.length <= 256 && input.response !== undefined) intent = { type: 'answer', question_id: input.question_id, response: input.response as Json };
   else throw new Error('Invalid native intent');
@@ -63,16 +89,12 @@ export async function runBridge(startup: Startup, writeProtocol: (packet: string
     bufferedBytes += bytes;
     flush();
   };
-  const publishView = (): void => send({ type: 'update', update: { type: 'view', view: { activation: startup.activation, backend: startup.provider, capabilities, connected: connected && available, ...(turnId ? { turn_id: turnId } : {}), ...(providerId ? { provider_session_id: providerId } : {}), questions: [...questions.pending.values()].map(item => item.question) } } });
+  const publishView = (): void => send({ type: 'update', update: { type: 'view', view: { activation: startup.activation, backend: 'node', capabilities, connected: connected && available, ...(turnId ? { turn_id: turnId } : {}), ...(providerId ? { provider_session_id: providerId } : {}), questions: [...questions.pending.values()].map(item => item.question) } } });
   const emit = (update: NativeUpdate): void => {
     if (update.type === 'question_closed') questions.closed(update.id);
-    if (update.type === 'transcript') {
-      const mode = transcriptMode(process.env.PHUX_AGENT_TRANSCRIPT);
-      if (mode === 'off') return;
-      const entry = update.entry.tool && mode !== 'full' ? { ...update.entry, tool: { ...update.entry.tool, output: '' } } : update.entry;
-      update = { type: 'transcript', entry: transcriptData(startup.provider, entry).entry };
-    }
-    send({ type: 'update', update });
+    const wire = nativeUpdate(startup.provider, update, transcriptMode(process.env.PHUX_AGENT_TRANSCRIPT));
+    if (!wire) return;
+    send({ type: 'update', update: wire });
     if (update.type === 'question_closed') publishView();
   };
   const questions = new QuestionRegistry(schema => ajv.compile(schema), question => {
@@ -97,6 +119,7 @@ export async function runBridge(startup: Startup, writeProtocol: (packet: string
     if (command.activation !== startup.activation) return { operation_id: command.operation_id, disposition: 'refused', detail: 'Native activation is stale' };
     if (!connected || !available) return { operation_id: command.operation_id, disposition: 'refused', detail: 'SDK source is unavailable' };
     const intent = command.intent;
+    if (intent.type === 'prompt' && Buffer.byteLength(intent.text) > 12 * 1024) return { operation_id: command.operation_id, disposition: 'refused', detail: 'Prompt exceeds the native SDK 12288-byte supported limit; input was not dispatched' };
     if (intent.type === 'answer') {
       const answer = questions.answer(intent.question_id, intent.response);
       return { operation_id: command.operation_id, disposition: answer.accepted ? 'queued' : 'refused', detail: answer.detail };
@@ -171,6 +194,10 @@ export async function runBridge(startup: Startup, writeProtocol: (packet: string
   process.on('SIGTERM', terminated);
   process.on('SIGINT', terminated);
   try {
+    if ((startup.provider === 'pi' || startup.provider === 'amp') && (startup.command.length !== 1 || startup.command[0] !== 'node')) {
+      fatal('In-process Pi/Amp SDK requires command ["node"]; additional CLI arguments are unsupported and were not applied');
+      return;
+    }
     let module: AdapterModule;
     // Runtime-selected provider; each SDK is loaded only inside createAdapter.
     switch (startup.provider) {

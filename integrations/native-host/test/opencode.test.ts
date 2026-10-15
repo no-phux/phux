@@ -164,6 +164,10 @@ test('real V2 snapshots retain IDs/tool rows and permission promises never block
   await until(() => h.connections.includes(true));
   assert.deepEqual(h.identities, [sessionID]);
   assert.equal(h.turns.at(-1), 'execution_real');
+  const views = h.updates.flatMap(update => update.type === 'view' ? [update.view] : []);
+  assert.ok(views.length > 0);
+  assert.ok(views.every(view => view.backend === 'node' && view.activation === h.context.activation));
+  assert.ok(views.some(view => view.provider_session_id === sessionID));
   assert.deepEqual(server.calls.find((call) => call.path === '/api/session' && call.method === 'POST')?.body, { location: { directory: '/project' } });
   assert.ok(h.updates.some((update) => update.type === 'transcript' && update.entry.id === 'call_real' && update.entry.tool?.call_id === 'call_real' && update.entry.tool.status === 'running'));
   assert.deepEqual(h.questions.get(permission.id)?.question.options, [{ id: 'once', label: 'Allow once' }, { id: 'always', label: 'Always allow' }, { id: 'reject', label: 'Reject' }]);

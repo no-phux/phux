@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 import test, { type TestContext } from 'node:test';
 import { CODEX_VERSION, createAdapter, questionId } from '../src/codex.js';
+import { runBridge, type OutputPacket } from '../src/bridge.js';
 import type { AdapterContext, Json, NativeQuestion, NativeUpdate } from '../src/types.js';
 import type { ServerRequest } from '../src/codex-protocol/generated/ServerRequest.js';
 import type { ServerNotification } from '../src/codex-protocol/generated/ServerNotification.js';
@@ -137,6 +138,35 @@ async function observedReply(updates: NativeUpdate[]): Promise<Record<string, un
   }
   throw new Error('Fixture did not observe a provider reply');
 }
+
+test('bridge refuses an oversized prompt without closing stdin or the owned provider', async (t) => {
+  const fixture = await openFixture(t);
+  const packets: OutputPacket[] = [];
+  await runBridge({ provider: 'codex', activation: fixture.context.activation, cwd: fixture.context.cwd, runtime: fixture.context.runtime, command: fixture.context.command },
+    line => { packets.push(JSON.parse(line)); return true; });
+  const result = async (id: string) => {
+    for (let attempt = 0; attempt < 600; attempt++) {
+      const packet = packets.find(p => p.type === 'result' && p.result.operation_id === id);
+      if (packet?.type === 'result') return packet.result;
+      await delay(5);
+    }
+    throw new Error('Bridge did not return the exact operation receipt');
+  };
+  try {
+    process.stdin.emit('data', Buffer.from(JSON.stringify({ type: 'command', operation_id: '18446744073709551614', activation: fixture.context.activation, intent: { type: 'prompt', text: 'x'.repeat(13000) } }) + '\n'));
+    assert.equal((await result('18446744073709551614')).disposition, 'refused');
+    process.stdin.emit('data', Buffer.from(JSON.stringify({ type: 'command', operation_id: '18446744073709551615', activation: fixture.context.activation, intent: { type: 'prompt', text: 'next valid input' } }) + '\n'));
+    assert.equal((await result('18446744073709551615')).disposition, 'admitted');
+    assert.ok(!packets.some(p => p.type === 'failed'));
+    const views = packets.flatMap(p => p.type === 'update' && p.update.type === 'view' ? [p.update.view] : []);
+    assert.ok(views.length > 0);
+    assert.ok(views.every(view => view.backend === 'node' && view.activation === fixture.context.activation));
+    assert.ok(views.some(view => view.provider_session_id === thread.id));
+  } finally {
+    process.stdin.emit('data', Buffer.from('{"type":"shutdown"}\n'));
+    for (let attempt = 0; attempt < 600 && process.stdin.listenerCount('data') > 0; attempt++) await delay(5);
+  }
+});
 
 test('protocol provenance and typed RPC question IDs remain exact', () => {
   assert.equal(protocolSource.version, CODEX_VERSION);

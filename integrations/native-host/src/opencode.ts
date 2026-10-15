@@ -145,7 +145,7 @@ export class OpenCodeAdapter implements NativeAdapter {
   private view(): void {
     this.context.connection(this.connected && !this.closed);
     this.context.emit({ type: 'view', view: {
-      activation: this.context.activation, backend: this.context.provider,
+      activation: this.context.activation, backend: 'node',
       capabilities, connected: this.connected && !this.closed,
       provider_session_id: this.providerSessionId, turn_id: this.turnId,
       questions: [...this.pending.values()].map((item) => item.question),

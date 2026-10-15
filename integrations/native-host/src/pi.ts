@@ -11,6 +11,7 @@ import type { AdapterContext, Json, NativeAdapter, NativeQuestion, TranscriptEnt
 // this module: Pi's in-process SDK has no per-session environment override.
 // No CLI, RpcClient/private response writer, global settings mutation or update.
 export async function createAdapter(context: AdapterContext): Promise<NativeAdapter> {
+  if (context.command.length !== 1 || context.command[0] !== 'node') throw new Error('Pi in-process SDK requires command ["node"]; additional CLI arguments are unsupported and were not applied');
   if (Object.keys(process.env).some(key => process.env[key] !== context.env[key]) ||
       Object.keys(context.env).some(key => context.env[key] !== process.env[key])) {
     throw new Error('Pi requires the dedicated worker environment to match AdapterContext.env');
