@@ -1090,6 +1090,8 @@ pub struct SessionKernel<E: EngineAdapter> {
     kinds: HashMap<ResourceId, ResourceKind>,
     /// `AgentSession` resources: record streams without replicas.
     agents: HashMap<ResourceId, AgentStream>,
+    /// Last controller views for closed native sources, readable but unavailable.
+    closed_native_views: HashMap<ResourceId, phux_protocol::native_agent::NativeView>,
     closed: HashSet<ResourceId>,
     /// Terminals whose [`KernelStatus::Exited`] was already emitted: a retained
     /// resource reports its exit via `TerminalControl` and again at purge.
@@ -1151,6 +1153,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
             retain_replica_on_close: HashSet::new(),
             kinds: HashMap::new(),
             agents: HashMap::new(),
+            closed_native_views: HashMap::new(),
             closed: HashSet::new(),
             exit_reported: HashSet::new(),
             attach: None,
@@ -1325,6 +1328,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         self.closed_replicas.remove(terminal_id);
         self.retain_replica_on_close.remove(terminal_id);
         self.agents.remove(terminal_id);
+        self.closed_native_views.remove(terminal_id);
         self.kinds.remove(terminal_id);
         self.closed.remove(terminal_id);
         self.exit_reported.remove(terminal_id);
@@ -1360,6 +1364,34 @@ impl<E: EngineAdapter> SessionKernel<E> {
     pub fn agent_session(&self, terminal_id: &ResourceId) -> Option<AgentSessionView<'_>> {
         let (terminal_id, stream) = self.agents.get_key_value(terminal_id)?;
         Some(Self::agent_view(terminal_id, stream))
+    }
+
+    /// The committed SDK controller view for this exact `AgentSession`.
+    ///
+    /// Only reserved `phux.native-agent/v1` full-view records establish
+    /// native controls; provider names and terminal declarations never do.
+    /// The folded view survives record-log eviction and is replaced atomically
+    /// with a new bootstrap generation.
+    /// Resource or parent closure makes it disconnected; the last source view
+    /// remains readable until explicit release or incarnation replacement.
+    #[must_use]
+    pub fn native_agent_view(
+        &self,
+        agent_session_id: &ResourceId,
+    ) -> Option<phux_protocol::native_agent::NativeView> {
+        let Some(stream) = self.agents.get(agent_session_id) else {
+            return self.closed_native_views.get(agent_session_id).cloned();
+        };
+        let mut view = stream.native_view()?.clone();
+        if stream
+            .parent()
+            .is_some_and(|parent| self.closed.contains(parent))
+        {
+            view.connected = false;
+            view.questions.clear();
+            view.turn_id = None;
+        }
+        Some(view)
     }
 
     /// Identity and sequence cursor of an agent's committed generation.
@@ -3192,7 +3224,14 @@ impl<E: EngineAdapter> SessionKernel<E> {
         // Only tracked Terminals get a process-exit status: agent sessions report
         // via `AgentSessionStatus`, and a forgotten id has nothing new to say.
         let was_tracked_terminal = self.terminals.contains_key(terminal_id);
-        self.agents.remove(terminal_id);
+        if let Some(stream) = self.agents.remove(terminal_id)
+            && let Some(mut view) = stream.native_view().cloned()
+        {
+            view.connected = false;
+            view.questions.clear();
+            view.turn_id = None;
+            self.closed_native_views.insert(terminal_id.clone(), view);
+        }
         let damage_blocked = self.attach_blocks(terminal_id);
         let published = self
             .terminals

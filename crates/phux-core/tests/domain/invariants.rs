@@ -297,6 +297,7 @@ impl World {
                     Op::ResourceRelaunch {
                         resource: r,
                         expected: self.rrev(r),
+                        launch: None,
                     },
                 )
             }

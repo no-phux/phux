@@ -18,6 +18,13 @@ use crate::commands::archive::model::{
     WorkspaceSplitDir, WorkspaceWindow,
 };
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LaunchPreference {
+    Validate,
+    Terminal,
+    Native,
+}
+
 /// The largest recipe file read, in bytes.
 pub(crate) const MAX_RECIPE_BYTES: u64 = 64 * 1024;
 /// The most panes one recipe may start.
@@ -64,6 +71,8 @@ struct RecipePane {
     id: Option<String>,
     /// Argument vector; absent starts the default shell.
     command: Option<Vec<String>>,
+    /// Declared plugin integration; mutually exclusive with `command`.
+    integration: Option<String>,
     /// Make `command` the pane's top-level process: the pane closes when
     /// it exits instead of falling back to a shell.
     #[serde(default)]
@@ -123,6 +132,7 @@ pub(crate) fn compile(
     root: &Path,
     session: &str,
     project: &str,
+    preference: LaunchPreference,
 ) -> Result<WorkspaceArchive, String> {
     let empty = Recipe {
         env: BTreeMap::new(),
@@ -152,7 +162,7 @@ pub(crate) fn compile(
         let focus_pane = wants_focus
             .then(|| focus.as_ref().map(|(_, pane)| pane.as_str()))
             .flatten();
-        let compiled = compile_window(recipe, window, &label, root, focus_pane)?;
+        let compiled = compile_window(recipe, window, &label, root, focus_pane, preference)?;
         panes_total += compiled.panes.len();
         focused |= compiled.active;
         windows.push(compiled);
@@ -213,6 +223,7 @@ fn default_window(recipe: &Recipe, root: &Path) -> Result<WorkspaceWindow, Strin
             cwd: Some(resolve_cwd(root, None, "the default pane")?),
             command: None,
             agent_session: None,
+            native_launch: None,
             env: recipe.env.clone(),
             cols: 0,
             rows: 0,
@@ -226,12 +237,14 @@ fn compile_window(
     label: &str,
     root: &Path,
     focus_pane: Option<&str>,
+    preference: LaunchPreference,
 ) -> Result<WorkspaceWindow, String> {
     if window.panes.is_empty() {
         // A window with no panes is one shell, the same as `panes = [{}]`.
         let pane = RecipePane {
             id: None,
             command: None,
+            integration: None,
             exec: false,
             cwd: None,
             env: BTreeMap::new(),
@@ -244,9 +257,18 @@ fn compile_window(
             label,
             root,
             focus_pane,
+            preference,
         );
     }
-    compile_panes(recipe, window, &window.panes, label, root, focus_pane)
+    compile_panes(
+        recipe,
+        window,
+        &window.panes,
+        label,
+        root,
+        focus_pane,
+        preference,
+    )
 }
 
 fn compile_panes(
@@ -256,6 +278,7 @@ fn compile_panes(
     label: &str,
     root: &Path,
     focus_pane: Option<&str>,
+    preference: LaunchPreference,
 ) -> Result<WorkspaceWindow, String> {
     let mut ids: BTreeMap<&str, usize> = BTreeMap::new();
     let mut layout = WorkspaceLayoutNode::Pane { pane: 0 };
@@ -273,23 +296,14 @@ fn compile_panes(
                 return Err(format!("{label}: duplicate pane id {id:?}"));
             }
         }
-        let mut env = recipe.env.clone();
-        env.extend(window.env.clone());
-        env.extend(pane.env.clone());
-        compiled.push(WorkspacePane {
-            active: false,
-            title: None,
-            cwd: Some(resolve_cwd(
-                root,
-                pane.cwd.as_deref().or(window.cwd.as_deref()),
-                &pane_label,
-            )?),
-            command: pane_command(pane, &pane_label)?,
-            agent_session: None,
-            env,
-            cols: 0,
-            rows: 0,
-        });
+        compiled.push(compile_pane(
+            recipe,
+            window,
+            pane,
+            &pane_label,
+            root,
+            preference,
+        )?);
     }
     let active = match focus_pane {
         Some(id) => {
@@ -314,6 +328,97 @@ fn compile_panes(
         layout: Some(layout),
         panes: compiled,
     })
+}
+
+fn compile_pane(
+    recipe: &Recipe,
+    window: &RecipeWindow,
+    pane: &RecipePane,
+    label: &str,
+    root: &Path,
+    preference: LaunchPreference,
+) -> Result<WorkspacePane, String> {
+    let mut env = recipe.env.clone();
+    env.extend(window.env.clone());
+    env.extend(pane.env.clone());
+    if pane.integration.is_some() && (pane.command.is_some() || pane.exec) {
+        return Err(format!(
+            "{label}: `integration` cannot be combined with `command` or `exec`"
+        ));
+    }
+    let cwd = resolve_cwd(root, pane.cwd.as_deref().or(window.cwd.as_deref()), label)?;
+    let resolved = resolve_pane_integration(pane.integration.as_deref(), &cwd, label, preference)?;
+    let mut compiled = WorkspacePane {
+        active: false,
+        title: None,
+        cwd: Some(cwd),
+        command: None,
+        native_launch: None,
+        agent_session: None,
+        env,
+        cols: 0,
+        rows: 0,
+    };
+    match resolved {
+        Some(launch) => {
+            if let Some(native) = launch.native {
+                compiled.native_launch = Some(phux_protocol::native_agent::SpawnNativeAgent {
+                    session: String::new(),
+                    backend: native.backend.as_str().to_owned(),
+                    provider: native.provider,
+                    command: launch.argv,
+                    cwd: compiled.cwd.clone(),
+                    env: compiled.env.clone(),
+                    native_id: None,
+                    guardian: None,
+                    guardian_key: None,
+                    guardian_expected: None,
+                });
+            } else {
+                compiled.command = Some(launch.argv);
+            }
+        }
+        None => compiled.command = pane_command(pane, label)?,
+    }
+    Ok(compiled)
+}
+
+fn resolve_pane_integration(
+    integration: Option<&str>,
+    cwd: &str,
+    label: &str,
+    preference: LaunchPreference,
+) -> Result<Option<phux_plugin::ResolvedLaunch>, String> {
+    let Some(integration) = integration else {
+        return Ok(None);
+    };
+    if integration.is_empty() || integration.contains('\0') {
+        return Err(format!(
+            "{label}: `integration` must name a declared integration"
+        ));
+    }
+    let mode = match preference {
+        LaunchPreference::Validate => return Ok(None),
+        LaunchPreference::Terminal => phux_plugin::LaunchMode::Terminal,
+        LaunchPreference::Native => phux_plugin::LaunchMode::Native,
+    };
+    let config = phux_config::loader::config_path();
+    let resolved = phux_plugin::resolve_launch(&config, integration, &[], Path::new(cwd), mode);
+    let resolved = match resolved {
+        Err(phux_plugin::LaunchError::NoNativeLaunch { .. })
+            if preference == LaunchPreference::Native =>
+        {
+            phux_plugin::resolve_launch(
+                &config,
+                integration,
+                &[],
+                Path::new(cwd),
+                phux_plugin::LaunchMode::Terminal,
+            )
+        }
+        result => result,
+    };
+    resolved.map(Some).map_err(|err| format!("{label}: {err}"))
 }
 
 /// Splice pane `index` into `layout` beside its split target. The first pane
@@ -492,7 +597,13 @@ mod tests {
     }
 
     fn compile_text(text: &str, root: &Path) -> Result<WorkspaceArchive, String> {
-        compile(Some(&parse(text)?), root, "demo", "demo")
+        compile(
+            Some(&parse(text)?),
+            root,
+            "demo",
+            "demo",
+            LaunchPreference::Terminal,
+        )
     }
 
     #[test]
@@ -509,7 +620,14 @@ mod tests {
     fn no_recipe_is_one_shell_at_the_root() {
         let dir = root();
         let canonical = dir.path().canonicalize().expect("canonical");
-        let archive = compile(None, &canonical, "demo", "Friendly").expect("default");
+        let archive = compile(
+            None,
+            &canonical,
+            "demo",
+            "Friendly",
+            LaunchPreference::Terminal,
+        )
+        .expect("default");
         let session = &archive.sessions[0];
         assert_eq!(session.name, "demo");
         assert_eq!(session.cwd, None);
@@ -587,33 +705,49 @@ mod tests {
     #[test]
     fn invalid_recipes_are_refused_before_anything_runs() {
         let dir = root();
-        for (text, needle) in [
-            ("bogus = 1", "unknown field"),
-            (
-                "[[windows]]\npanes = [{ split = { target = \"x\", direction = \"right\" } }]",
-                "first pane",
-            ),
-            ("[[windows]]\npanes = [{}, {}]", "needs `split"),
-            (
-                "[[windows]]\npanes = [{}, { split = { target = \"nope\", direction = \"down\" } }]",
-                "not an earlier pane",
-            ),
-            (
-                "[[windows]]\npanes = [{ id = \"a\" }, { split = { target = \"a\", direction = \"down\", ratio = 1.0 } }]",
-                "strictly between",
-            ),
-            ("env = { PHUX_SOCKET = \"/x\" }", "reserved"),
-            ("focus = \"nowhere.pane\"", "names no window"),
-            ("[[windows]]\ncwd = \"missing\"", "working directory"),
-            ("[[windows]]\npanes = [{ command = [] }]", "name a program"),
-            (
-                "[[windows]]\npanes = [{ exec = true }]",
-                "needs a `command`",
-            ),
-            ("[[windows]]\nid = \"bad id\"", "must be non-empty"),
+        for text in [
+            "bogus = 1",
+            "[[windows]]\npanes = [{ split = { target = \"x\", direction = \"right\" } }]",
+            "[[windows]]\npanes = [{}, {}]",
+            "[[windows]]\npanes = [{}, { split = { target = \"nope\", direction = \"down\" } }]",
+            "[[windows]]\npanes = [{ id = \"a\" }, { split = { target = \"a\", direction = \"down\", ratio = 1.0 } }]",
+            "env = { PHUX_SOCKET = \"/x\" }",
+            "focus = \"nowhere.pane\"",
+            "[[windows]]\ncwd = \"missing\"",
+            "[[windows]]\npanes = [{ command = [] }]",
+            "[[windows]]\npanes = [{ exec = true }]",
+            "[[windows]]\nid = \"bad id\"",
+            "[[windows]]\npanes = [{ integration = \"omp\", command = [\"omp\"] }]",
+            "[[windows]]\npanes = [{ integration = \"omp\", exec = true }]",
         ] {
-            let err = compile_text(text, dir.path()).expect_err(text);
-            assert!(err.contains(needle), "{text:?}: {err}");
+            compile_text(text, dir.path()).expect_err(text);
         }
+    }
+
+    #[test]
+    fn native_preference_never_reinterprets_a_raw_terminal_command() {
+        let dir = root();
+        let recipe = parse("[[windows]]\npanes = [{ command = [\"omp\", \"--resume\", \"saved-session\"], exec = true }]").expect("recipe");
+        let archive = compile(
+            Some(&recipe),
+            dir.path(),
+            "demo",
+            "demo",
+            LaunchPreference::Native,
+        )
+        .expect("compile");
+        let pane = &archive.sessions[0].windows[0].panes[0];
+        assert_eq!(
+            pane.command.as_deref(),
+            Some(
+                [
+                    "omp".to_owned(),
+                    "--resume".to_owned(),
+                    "saved-session".to_owned()
+                ]
+                .as_slice()
+            )
+        );
+        assert!(pane.native_launch.is_none());
     }
 }

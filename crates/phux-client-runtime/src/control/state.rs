@@ -58,6 +58,19 @@ impl ControlPlane {
                         error: Some(message.to_owned()),
                     });
                 }
+                Pending::NativeAgent {
+                    agent_session_id,
+                    operation_id,
+                } => {
+                    // The daemon may have dispatched before the reply was lost.
+                    // Never turn a socket failure into a second model prompt.
+                    self.push_event(Event::NativeAgentResult {
+                        agent_session_id,
+                        operation_id,
+                        disposition: phux_protocol::native_agent::NativeDisposition::Unknown,
+                        detail: Some(message.to_owned()),
+                    });
+                }
                 // Refreshes and agent subscriptions need no receipt: the next
                 // attach reads and subscribes again. Durable uploads retain
                 // their id and acknowledged offset for the next connection;

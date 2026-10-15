@@ -90,6 +90,13 @@ pub enum DecodeError {
     #[error("APPEND_RESOURCE_OUTPUT payload exceeds protocol limits")]
     AppendResourceOutputLimitExceeded,
 
+    /// A native request exceeded its JSON byte bound before deserialization.
+    #[error("NATIVE_AGENT payload exceeds protocol limits")]
+    NativeAgentLimitExceeded,
+    /// A native request was not valid JSON matching the typed DTO.
+    #[error("invalid NATIVE_AGENT JSON payload")]
+    InvalidNativeAgentPayload,
+
     /// A `SPAWN_RESOURCE` body broke its kind's field rules
     /// (`docs/spec/L1.md` §3.1).
     #[error(

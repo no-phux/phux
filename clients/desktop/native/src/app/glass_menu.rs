@@ -315,6 +315,7 @@ impl GlassMenu {
             Page::Commands => {
                 let mut entries = vec![
                     self.command("new", IconName::SquareTerminal),
+                    self.command("native-agent", IconName::Bot),
                     self.command("new-session", IconName::Folder),
                     self.command("folder", IconName::FolderOpen),
                     self.command("new-window", IconName::AppWindow),

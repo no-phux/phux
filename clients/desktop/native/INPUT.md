@@ -52,6 +52,12 @@ There is no string registry and no second listener.
   `APPLY_INPUT` is acknowledged; a larger one, or one for a satellite pane,
   goes as one atomic `INPUT_PASTE` and is never split. Outcomes stay with the
   connection's event drain.
+- SDK conversation controls do **not** enter this terminal input path.
+  `ControlPlane::native_agent_command` targets the exact AgentSession/activation,
+  current turn or current question. Kit owns its text fields and dialogs;
+  dedicated native receipts distinguish queued submission from admission.
+  Disconnected/stale SDK controls never fall back to a paste, Return or Escape.
+  Explicit **Attached TUI** mode retains terminal input semantics.
 
 ## Admission and semantics
 
