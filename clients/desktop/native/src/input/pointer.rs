@@ -52,12 +52,42 @@ impl TerminalInput {
         .ok_or(InputError::StalePresentation)
     }
 
-    /// The link under a Command-click, resolved against the live frame.
+    /// The link under a Command-click, read from the frame last painted.
+    /// A newer publication stays invisible until it is painted.
     pub fn link_at(&self, position: Point<Pixels>) -> Option<String> {
         let (row, col) = self.cell_at(position)?;
-        let client = self.client().ok()?;
-        let frame = client.with_control(|control| control.publication().acquire_view(self.view))?;
-        super::link::link_in(&frame, row, col)
+        self.painted_links.link_at(row, col)
+    }
+
+    /// Capture the painted link under a Command-press. Opening waits for
+    /// [`Self::release_link`].
+    pub fn press_link(&mut self, position: Point<Pixels>) -> bool {
+        let Some((row, col)) = self.cell_at(position) else {
+            self.painted_links.cancel();
+            return false;
+        };
+        self.painted_links.press(row, col)
+    }
+
+    /// The URL to open when this release is still on the pressed link.
+    /// Releasing the Command key, or missing the grid, cancels the gesture.
+    pub fn release_link(&mut self, position: Point<Pixels>, modifier: bool) -> Option<String> {
+        if !self.painted_links.is_held() {
+            return None;
+        }
+        if !modifier {
+            self.painted_links.cancel();
+            return None;
+        }
+        let Some((row, col)) = self.cell_at(position) else {
+            self.painted_links.cancel();
+            return None;
+        };
+        self.painted_links.release(row, col)
+    }
+
+    pub fn cancel_link(&mut self) {
+        self.painted_links.cancel();
     }
 
     pub fn mouse_down(
@@ -98,6 +128,11 @@ impl TerminalInput {
         if self.repeated_motion(event.position) {
             return Ok(true);
         }
+        // A Command-click is local until release. Motion must not report the
+        // mouse or start a selection while that gesture is held.
+        if self.painted_links.is_held() {
+            return Ok(true);
+        }
         self.current(window, cx)?;
         if self.gesture != 0 {
             self.select(1, 1, event.position, event.modifiers)?;
@@ -124,23 +159,75 @@ impl TerminalInput {
         window: &Window,
         cx: &App,
     ) -> Result<bool, InputError> {
-        self.current(window, cx)?;
         if self.gesture != 0 {
+            self.current(window, cx)?;
             let result = self.select(2, 1, event.position, event.modifiers);
             self.gesture = 0;
             result?;
             return Ok(true);
         }
+        // Take the captured application button before admission. `current`
+        // rejects a temporary frame or geometry gap, and dropping the release
+        // first would leave that button down.
         let Some(button) = self.reported_button.take() else {
+            self.current(window, cx)?;
             return Ok(false);
         };
-        self.send_captured_mouse(
-            MouseAction::Release,
-            button,
-            event.position,
-            event.modifiers,
-        )?;
+        if !self.focused(window, cx) {
+            return Err(InputError::WrongFocus);
+        }
+        self.send_captured_release(button, event.position, event.modifiers)?;
         Ok(true)
+    }
+
+    fn send_captured_release(
+        &self,
+        button: WireButton,
+        position: Point<Pixels>,
+        modifiers: Modifiers,
+    ) -> Result<(), InputError> {
+        let surface = self.surface(position, true)?;
+        let client = self.client()?;
+        client.with_control(|control| {
+            if let Some(error) = refuse_captured_release(self.release_facts(control)) {
+                return Err(error);
+            }
+            queued(control.send_mouse(
+                &self.terminal,
+                mouse_at(MouseAction::Release, button, modifiers, surface),
+            ))
+        })
+    }
+
+    fn release_facts(&self, control: &ControlPlane) -> ReleaseFacts {
+        let validation = match self.validate(control, true) {
+            Ok(()) => ReleaseValidation::Ready,
+            Err(InputError::StalePresentation) => ReleaseValidation::Stale,
+            Err(InputError::NotReady) => ReleaseValidation::NotReady,
+            Err(_) => ReleaseValidation::Other,
+        };
+        let epoch_matches = self
+            .identity
+            .is_some_and(|identity| control.connection_epoch() == identity.epoch);
+        let frame = control
+            .publication()
+            .acquire_view(self.view)
+            .map(|frame| ReleaseFrame {
+                terminal_matches: frame.terminal_id == self.terminal,
+                replica_matches: self.identity.is_some_and(|identity| {
+                    (frame.stream_id, frame.bootstrap_id) == (identity.stream, identity.bootstrap)
+                }) && control.engine().is_some_and(|engine| {
+                    engine.view_replica_info(self.view).is_ok_and(|info| {
+                        (info.stream_id, info.bootstrap_id) == (frame.stream_id, frame.bootstrap_id)
+                    })
+                }),
+            });
+        ReleaseFacts {
+            validation,
+            epoch_matches,
+            frame,
+            input_ready: input_ready(control, &self.terminal),
+        }
     }
 
     fn send_captured_mouse(
@@ -271,6 +358,57 @@ impl TerminalInput {
     }
 }
 
+/// Why `validate` rejected or accepted a captured application-mouse release.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReleaseValidation {
+    Ready,
+    Stale,
+    NotReady,
+    Other,
+}
+
+/// The live publication, when one exists, compared with the painted identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ReleaseFrame {
+    terminal_matches: bool,
+    replica_matches: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ReleaseFacts {
+    validation: ReleaseValidation,
+    epoch_matches: bool,
+    /// `None` when the view has no published frame.
+    frame: Option<ReleaseFrame>,
+    input_ready: bool,
+}
+
+/// `None` means send the release.
+///
+/// A geometry gap (the live frame is this replica, but its size is not the
+/// painted one yet) and an unpublished frame still belong to the captured
+/// button. A replaced connection or an unknown-delivery fence does not.
+fn refuse_captured_release(facts: ReleaseFacts) -> Option<InputError> {
+    match facts.validation {
+        ReleaseValidation::Ready => None,
+        ReleaseValidation::NotReady => Some(InputError::NotReady),
+        ReleaseValidation::Other => Some(InputError::StalePresentation),
+        ReleaseValidation::Stale => {
+            let same_target = facts.epoch_matches
+                && facts
+                    .frame
+                    .is_none_or(|frame| frame.terminal_matches && frame.replica_matches);
+            if same_target && facts.input_ready {
+                None
+            } else if same_target {
+                Some(InputError::NotReady)
+            } else {
+                Some(InputError::StalePresentation)
+            }
+        }
+    }
+}
+
 /// A motion event the last one already covered. Leaving the grid is not a repeat.
 fn repeats_cell(last: Option<(u16, u16)>, next: Option<(u16, u16)>) -> bool {
     next.is_some() && next == last
@@ -318,7 +456,10 @@ fn reporting(
 
 #[cfg(test)]
 mod tests {
-    use super::repeats_cell;
+    use super::{
+        InputError, ReleaseFacts, ReleaseFrame, ReleaseValidation, refuse_captured_release,
+        repeats_cell,
+    };
 
     #[test]
     fn motion_in_the_same_cell_is_one_event() {
@@ -327,5 +468,95 @@ mod tests {
         assert!(!repeats_cell(Some((0, 0)), Some((0, 1))));
         assert!(!repeats_cell(Some((1, 0)), Some((0, 0))));
         assert!(!repeats_cell(Some((0, 0)), None));
+    }
+
+    fn facts(
+        validation: ReleaseValidation,
+        epoch_matches: bool,
+        frame: Option<ReleaseFrame>,
+        input_ready: bool,
+    ) -> ReleaseFacts {
+        ReleaseFacts {
+            validation,
+            epoch_matches,
+            frame,
+            input_ready,
+        }
+    }
+
+    #[test]
+    fn a_captured_release_survives_a_geometry_or_frame_gap() {
+        let same = ReleaseFrame {
+            terminal_matches: true,
+            replica_matches: true,
+        };
+        assert_eq!(
+            refuse_captured_release(facts(ReleaseValidation::Stale, true, Some(same), true)),
+            None,
+            "painted size behind the live frame"
+        );
+        assert_eq!(
+            refuse_captured_release(facts(ReleaseValidation::Stale, true, None, true)),
+            None,
+            "no published frame"
+        );
+        assert_eq!(
+            refuse_captured_release(facts(ReleaseValidation::Ready, true, Some(same), true)),
+            None
+        );
+    }
+
+    #[test]
+    fn a_captured_release_stops_for_replacement_or_a_fence() {
+        let same = ReleaseFrame {
+            terminal_matches: true,
+            replica_matches: true,
+        };
+        let other_replica = ReleaseFrame {
+            terminal_matches: true,
+            replica_matches: false,
+        };
+        let other_terminal = ReleaseFrame {
+            terminal_matches: false,
+            replica_matches: true,
+        };
+        assert_eq!(
+            refuse_captured_release(facts(ReleaseValidation::Stale, false, Some(same), true)),
+            Some(InputError::StalePresentation)
+        );
+        assert_eq!(
+            refuse_captured_release(facts(
+                ReleaseValidation::Stale,
+                true,
+                Some(other_replica),
+                true
+            )),
+            Some(InputError::StalePresentation)
+        );
+        assert_eq!(
+            refuse_captured_release(facts(
+                ReleaseValidation::Stale,
+                true,
+                Some(other_terminal),
+                true
+            )),
+            Some(InputError::StalePresentation)
+        );
+        assert_eq!(
+            refuse_captured_release(facts(ReleaseValidation::Stale, true, Some(same), false)),
+            Some(InputError::NotReady)
+        );
+        assert_eq!(
+            refuse_captured_release(facts(ReleaseValidation::Stale, true, None, false)),
+            Some(InputError::NotReady)
+        );
+        assert_eq!(
+            refuse_captured_release(facts(ReleaseValidation::NotReady, true, Some(same), false)),
+            Some(InputError::NotReady)
+        );
+        assert_eq!(
+            refuse_captured_release(facts(ReleaseValidation::Other, true, None, true)),
+            Some(InputError::StalePresentation)
+        );
     }
 }

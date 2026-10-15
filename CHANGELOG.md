@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.79.1](https://github.com/no-phux/phux/compare/v0.79.0...v0.79.1) (2026-10-15)
+
+
+### Documentation
+
+* **architecture:** add interactive resource atlas ([#1422](https://github.com/no-phux/phux/issues/1422)) ([1f23278](https://github.com/no-phux/phux/commit/1f23278019145d8cfb44b4be218036db0cd968e9))
+
 ## [0.79.0](https://github.com/no-phux/phux/compare/v0.78.1...v0.79.0) (2026-10-15)
 
 

@@ -4,11 +4,11 @@
 
 ### Features
 
-- Add an explicit configured native-agent launch picker, server-owned SDK
-  conversation commands and native provider dialogs. Keep terminal-attached
-  conversations explicitly labeled, with independent draft/scroll preservation.
-- Surface SDK runtime/license setup and queued/admitted/refused/unknown outcomes
-  without silent installs, automatic approvals or terminal-key fallback.
+- Add an explicit configured ACP-agent launch picker, server-owned conversation
+  commands and native permission dialogs. Keep terminal-attached conversations
+  explicitly labeled, with independent draft/scroll preservation.
+- Surface executing-host prerequisites and queued/completed/refused/unknown
+  outcomes without silent installs, automatic approvals or terminal-key fallback.
 
 ### Bug Fixes
 
@@ -24,6 +24,25 @@
   require the exact returned AgentSession and activation.
 - Restore the focused SDK guardian after a daemon handoff even when it is not
   the session's home terminal, retaining the original editor and draft.
+
+## [0.13.1](https://github.com/no-phux/phux/compare/desktop-v0.13.0...desktop-v0.13.1) (2026-10-15)
+
+
+### Bug Fixes
+
+* **desktop:** bind terminal links to the painted frame ([#1427](https://github.com/no-phux/phux/issues/1427)) ([d51583d](https://github.com/no-phux/phux/commit/d51583d3f774ddcef197f0327fef7e9da3641cc0))
+
+## [0.13.0](https://github.com/no-phux/phux/compare/desktop-v0.12.2...desktop-v0.13.0) (2026-10-15)
+
+
+### Features
+
+* **desktop:** modernize native command palette ([#1421](https://github.com/no-phux/phux/issues/1421)) ([60976bd](https://github.com/no-phux/phux/commit/60976bd1fb335e37210bd2b4cbb8ec352109ef03))
+
+
+### Bug Fixes
+
+* **desktop:** admit delayed fits only for the visible size owner ([#1423](https://github.com/no-phux/phux/issues/1423)) ([90416a7](https://github.com/no-phux/phux/commit/90416a7e0c6bb9ea5499fd45434c5e13e558174b))
 
 ## [0.12.2](https://github.com/no-phux/phux/compare/desktop-v0.12.1...desktop-v0.12.2) (2026-10-15)
 
