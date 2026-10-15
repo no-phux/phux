@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/no-phux/phux/compare/desktop-v0.15.0...desktop-v0.16.0) (2026-10-15)
+
+
+### Features
+
+* **desktop:** show metadata facts for the highlighted Go To row ([#1444](https://github.com/no-phux/phux/issues/1444)) ([01ddef3](https://github.com/no-phux/phux/commit/01ddef32d530acf6fa552ad53d75709859164540))
+
 ## [0.15.0](https://github.com/no-phux/phux/compare/desktop-v0.14.2...desktop-v0.15.0) (2026-10-15)
 
 
