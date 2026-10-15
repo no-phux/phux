@@ -115,7 +115,8 @@ An attached session with no inbound bytes for 10 seconds sends that same
 probe. On a byte stream, a send that cannot place another 16 KiB within 15
 seconds is a drop, so a shut window cannot park the driver ahead of the
 probe, and a slow link that keeps accepting data stays up. A WebSocket
-message uses that same 15 seconds for the whole message.
+message gets 15 seconds per 16 KiB, capped at 60 seconds, because that
+message is one send.
 Every acknowledged submission (`apply_line`, `apply_paste`,
 `apply_tab_completion`) that waits on the wire nudges too, so a half-open
 link is dropped within `probe_timeout` and its receipt follows the
