@@ -249,7 +249,7 @@ class RunnerPolicyTests(unittest.TestCase):
         )
         recipe = (ROOT / "just/test.just").read_text()
         self.assertIn("lib) targets=(--lib --bins) ;;", recipe)
-        self.assertIn("integration) targets=(--test '*') ;;", recipe)
+        self.assertIn('select(((."required-features" // []) - $default) == [])', recipe)
         self.assertIn("--workspace ${targets[@]+", recipe)
 
     def test_failed_main_lane_saves_the_objects_archive(self):
