@@ -26,6 +26,20 @@
 - Restore the focused ACP guardian after a daemon handoff even when it is not
   the session's home terminal, retaining the original editor and draft.
 
+## [0.15.0](https://github.com/no-phux/phux/compare/desktop-v0.14.2...desktop-v0.15.0) (2026-10-15)
+
+
+### Features
+
+* **desktop:** filter Go To by agent state ([#1438](https://github.com/no-phux/phux/issues/1438)) ([24180f2](https://github.com/no-phux/phux/commit/24180f28f18201d0cb48507666524014e3810565))
+
+## [0.14.2](https://github.com/no-phux/phux/compare/desktop-v0.14.1...desktop-v0.14.2) (2026-10-15)
+
+
+### Bug Fixes
+
+* **desktop:** keep remote terminals from pasting local file paths ([#1437](https://github.com/no-phux/phux/issues/1437)) ([2f31362](https://github.com/no-phux/phux/commit/2f3136264d67e69764f934feded3bd9bddbc3860))
+
 ## [0.14.1](https://github.com/no-phux/phux/compare/desktop-v0.14.0...desktop-v0.14.1) (2026-10-15)
 
 

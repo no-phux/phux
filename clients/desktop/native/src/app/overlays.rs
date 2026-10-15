@@ -16,13 +16,17 @@ use gpui_kit::component::{ActiveTheme, Icon, IconName, IndexPath, Sizable};
 use phux_protocol::ResourceId;
 use phux_protocol::ids::SessionKey;
 
+use crate::connection::AgentInfo;
 use crate::connection::path::{self as paths};
 use crate::settings::theme::Palette;
 
 use super::color::from_hex;
 use super::desk::{self, Desk, Modal};
 
+mod goto_filter;
 mod launcher;
+
+pub(crate) use goto_filter::GotoPalette;
 
 #[cfg(test)]
 mod palette_tests;
@@ -277,6 +281,76 @@ impl Desk {
         cx.notify();
     }
 
+    /// Narrow Go To by agent state. The typed query stays, and the highlight
+    /// follows the same entry when it is still listed. This does not open,
+    /// resize, focus, or acknowledge a terminal.
+    pub(crate) fn set_goto_filter(
+        &mut self,
+        filter: goto_filter::GotoFilter,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.modal != Modal::Goto || self.goto.filter == filter {
+            return;
+        }
+        let Some(state) = self.palette_state.clone() else {
+            return;
+        };
+        let query = state.read(cx).query(cx).to_string();
+        let unfiltered = goto_sections(self);
+        let entries = goto_candidates(&unfiltered);
+        let visible = rank_sections(filter_sections(unfiltered, self.goto.filter), &query);
+        let index = state.read(cx).selected_index();
+        self.goto.selected = index.and_then(|index| {
+            visible
+                .get(index.section)
+                .and_then(|section| section.rows.get(index.row))
+                .and_then(goto_id)
+        });
+        let mut cursor = goto_filter::GotoCursor {
+            query,
+            selected: self.goto.selected.clone(),
+        };
+        goto_filter::apply_filter(&mut cursor, &entries, filter);
+        self.goto.filter = filter;
+        self.goto.selected = cursor.selected;
+        self.goto.align = true;
+        state.update(cx, |state, cx| state.focus(window, cx));
+        cx.notify();
+    }
+
+    /// Move the Go To highlight onto the entry a filter change kept.
+    fn align_goto_highlight(
+        &mut self,
+        sections: &[Section],
+        state: &Entity<CommandState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.modal != Modal::Goto || !self.goto.align {
+            return;
+        }
+        let ids = section_ids(sections);
+        let path = goto_filter::selection_path(&ids, self.goto.selected.as_ref());
+        self.goto.selected = path.and_then(|(section, row)| ids.get(section)?.get(row).cloned());
+        let desired = path.map(|(section, row)| IndexPath::new(row).section(section));
+        if state.read(cx).selected_index() == desired {
+            self.goto.align = false;
+            return;
+        }
+        let state = state.clone();
+        let desk = cx.weak_entity();
+        window.defer(cx, move |window, cx| {
+            let applied = state.update(cx, |state, cx| {
+                state.set_selected_index(desired, window, cx);
+                state.selected_index() == desired
+            });
+            if applied {
+                let _ = desk.update(cx, |desk, _| desk.goto.align = false);
+            }
+        });
+    }
+
     /// Run a confirmed palette row. Commands already ran through their [`Run`] action.
     fn pick(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
         match target {
@@ -529,6 +603,8 @@ struct Row {
     command: Option<&'static str>,
     category: &'static str,
     chord: Option<String>,
+    /// Agent badge, when this row is one. State chips read its predicates.
+    agent: Option<AgentInfo>,
 }
 
 fn command_sections(desk: &Desk, cx: &App) -> Vec<Section> {
@@ -565,6 +641,7 @@ fn command_sections(desk: &Desk, cx: &App) -> Vec<Section> {
                 .iter()
                 .find(|(id, _)| id == command.id)
                 .map(|(_, chord)| crate::settings::display_chord(chord)),
+            agent: None,
         };
         let label = if ESSENTIALS.contains(&command.id) {
             "Essentials"
@@ -631,6 +708,7 @@ fn goto_sections(desk: &Desk) -> Vec<Section> {
                 "Terminals"
             },
             chord: None,
+            agent: agent.cloned(),
         };
         if agent.is_some() {
             agents.push(row)
@@ -658,6 +736,7 @@ fn goto_sections(desk: &Desk) -> Vec<Section> {
                 command: None,
                 category: "Tabs",
                 chord: None,
+                agent: None,
             })
         })
         .collect::<Vec<_>>();
@@ -707,6 +786,7 @@ fn session_sections(desk: &Desk) -> Vec<Section> {
                 command: None,
                 category: "Sessions",
                 chord: None,
+                agent: None,
             }
         })
         .collect();
@@ -785,7 +865,49 @@ fn move_destination_row(
         command: None,
         category: "Organization",
         chord: None,
+        agent: None,
     }
+}
+
+fn filter_sections(mut sections: Vec<Section>, filter: goto_filter::GotoFilter) -> Vec<Section> {
+    if filter == goto_filter::GotoFilter::All {
+        return sections;
+    }
+    for section in &mut sections {
+        section
+            .rows
+            .retain(|row| filter.matches(row.agent.as_ref()));
+    }
+    sections.retain(|section| !section.rows.is_empty());
+    sections
+}
+
+fn goto_id(row: &Row) -> Option<goto_filter::GotoId> {
+    match &row.target {
+        Target::Pane(id) => Some(goto_filter::GotoId::Pane(id.clone())),
+        Target::Tab(id) => Some(goto_filter::GotoId::Tab(id.clone())),
+        _ => None,
+    }
+}
+
+fn goto_candidates(sections: &[Section]) -> Vec<goto_filter::GotoCandidate> {
+    sections
+        .iter()
+        .flat_map(|section| section.rows.iter())
+        .filter_map(|row| {
+            Some(goto_filter::GotoCandidate {
+                id: goto_id(row)?,
+                agent: row.agent.clone(),
+            })
+        })
+        .collect()
+}
+
+fn section_ids(sections: &[Section]) -> Vec<Vec<goto_filter::GotoId>> {
+    sections
+        .iter()
+        .map(|section| section.rows.iter().filter_map(goto_id).collect())
+        .collect()
 }
 
 /// Rank every row against `query` as one flat list; an empty query keeps the sections.
@@ -1304,7 +1426,11 @@ fn confirm(
 
 #[cfg(test)]
 mod tests {
-    use super::{Row, Section, Target, move_destination_sections, rank_sections};
+    use super::goto_filter::{GotoCursor, GotoFilter, GotoId, apply_filter, selection_path};
+    use super::{
+        AgentInfo, Row, Section, Target, filter_sections, goto_candidates,
+        move_destination_sections, rank_sections, section_ids,
+    };
     use phux_protocol::ids::{Revision, SessionKey};
     use phux_protocol::wire::frame::SessionRecord;
 
@@ -1348,6 +1474,7 @@ mod tests {
                 command: None,
                 category: "",
                 chord: None,
+                agent: None,
             })
             .collect();
         rank_sections(vec![Section { label: None, rows }], query)
@@ -1376,5 +1503,105 @@ mod tests {
             vec!["Split Right"]
         );
         assert!(ranked(&["Zoom"], "qq").is_empty());
+    }
+
+    fn agent(state: crate::connection::AgentState) -> AgentInfo {
+        use crate::connection::AgentAttention;
+        let attention = match state {
+            crate::connection::AgentState::Blocked => AgentAttention::High,
+            crate::connection::AgentState::Working => AgentAttention::Normal,
+            crate::connection::AgentState::Idle => AgentAttention::None,
+            crate::connection::AgentState::Done | crate::connection::AgentState::Unknown => {
+                AgentAttention::Low
+            }
+        };
+        AgentInfo {
+            name: "agent".into(),
+            kind: None,
+            state,
+            attention,
+            changed_at_ms: 0,
+        }
+    }
+
+    fn goto_row(title: &str, state: Option<crate::connection::AgentState>, id: u32) -> Row {
+        Row {
+            title: title.into(),
+            detail: None,
+            keywords: String::new(),
+            target: Target::Pane(phux_protocol::ResourceId::local(id)),
+            command: None,
+            category: "Agents",
+            chord: None,
+            agent: state.map(agent),
+        }
+    }
+
+    #[test]
+    fn state_filter_then_rank_keeps_the_query_and_identity() {
+        use crate::connection::AgentState;
+
+        let sections = vec![Section {
+            label: Some("Agents"),
+            rows: vec![
+                goto_row("Blocked", Some(AgentState::Blocked), 1),
+                goto_row("Worker", Some(AgentState::Working), 2),
+                goto_row("Other worker", Some(AgentState::Working), 5),
+                goto_row("Idle", Some(AgentState::Idle), 3),
+            ],
+        }];
+        let entries = goto_candidates(&sections);
+        let worker = GotoId::Pane(phux_protocol::ResourceId::local(5));
+        let mut cursor = GotoCursor {
+            query: "other".into(),
+            selected: Some(worker.clone()),
+        };
+        apply_filter(&mut cursor, &entries, GotoFilter::Working);
+        assert_eq!(cursor.query, "other");
+        assert_eq!(cursor.selected.as_ref(), Some(&worker));
+        let ranked = rank_sections(
+            filter_sections(sections, GotoFilter::Working),
+            &cursor.query,
+        );
+        let ids = section_ids(&ranked);
+        assert_eq!(ids, vec![vec![worker.clone()]]);
+        assert_eq!(selection_path(&ids, cursor.selected.as_ref()), Some((0, 0)));
+
+        let idle_row = || goto_row("Idle", Some(AgentState::Idle), 3);
+        let idle_only = || {
+            vec![Section {
+                label: Some("Agents"),
+                rows: vec![idle_row()],
+            }]
+        };
+        let mut dropped = GotoCursor {
+            query: "other".into(),
+            selected: Some(worker),
+        };
+        apply_filter(
+            &mut dropped,
+            &goto_candidates(&idle_only()),
+            GotoFilter::Idle,
+        );
+        assert_eq!(dropped.query, "other");
+        assert!(dropped.selected.is_none());
+        let hidden = rank_sections(
+            filter_sections(idle_only(), GotoFilter::Idle),
+            &dropped.query,
+        );
+        assert_eq!(
+            selection_path(&section_ids(&hidden), dropped.selected.as_ref()),
+            None,
+            "a query that matches nothing leaves no row to highlight"
+        );
+        let shown = rank_sections(filter_sections(idle_only(), GotoFilter::Idle), "");
+        assert_eq!(
+            selection_path(&section_ids(&shown), dropped.selected.as_ref()),
+            Some((0, 0))
+        );
+        assert!(matches!(
+            &shown[0].rows[0].target,
+            Target::Pane(id) if *id == phux_protocol::ResourceId::local(3)
+        ));
     }
 }
