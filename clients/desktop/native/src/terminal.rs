@@ -39,6 +39,9 @@ pub enum TerminalEvent {
         /// Notification body.
         body: String,
     },
+    /// Local files or image bytes to upload into this terminal.
+    /// The shell pastes the server path only after the receipt.
+    Upload(crate::attach::UploadBatch),
 }
 
 /// A terminal view bound to one runtime publication.
@@ -224,12 +227,18 @@ fn subscribe_notices(
     input: &gpui::Entity<crate::input::TerminalInput>,
     cx: &mut Context<Terminal>,
 ) -> Subscription {
-    cx.subscribe(input, |_, _, notice: &crate::input::InputNotice, cx| {
-        cx.emit(TerminalEvent::Notice {
-            title: notice.title,
-            body: notice.body.clone(),
-        });
-    })
+    cx.subscribe(
+        input,
+        |_, _, event: &crate::input::InputEvent, cx| match event {
+            crate::input::InputEvent::Notice(notice) => cx.emit(TerminalEvent::Notice {
+                title: notice.title,
+                body: notice.body.clone(),
+            }),
+            crate::input::InputEvent::Upload(batch) => {
+                cx.emit(TerminalEvent::Upload(batch.clone()));
+            }
+        },
+    )
 }
 
 impl Render for Terminal {

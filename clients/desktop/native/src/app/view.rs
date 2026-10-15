@@ -2072,7 +2072,7 @@ fn pane_view(
             if let Some(tab) = desk.active_tab_id() {
                 desk.focus_placement(&tab, &drop_id, window, cx);
             }
-            desk.drop_paths(&drop_id, paths.paths());
+            desk.drop_paths(&drop_id, paths.paths(), cx);
             desk.after_command(window, cx);
         }))
         .on_file_drop_exit(cx.listener(move |desk, _: &FileDropEvent, _, cx| {
@@ -2319,7 +2319,7 @@ fn drop_hint(colors: &Palette, remote: bool) -> impl IntoElement {
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(from_hex(&colors.theme.foreground))
                         .child(if remote {
-                            "Can't attach local files"
+                            "Drop to upload"
                         } else {
                             "Drop to attach"
                         }),
@@ -2329,7 +2329,7 @@ fn drop_hint(colors: &Palette, remote: bool) -> impl IntoElement {
                         .text_xs()
                         .text_color(from_hex(&colors.muted))
                         .child(if remote {
-                            "This terminal is on another machine"
+                            "Sent to that machine, then its path is pasted"
                         } else {
                             "Paths paste here, ready for your agent"
                         }),

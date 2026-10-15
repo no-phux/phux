@@ -6,7 +6,8 @@
 //! - [`launch`]: process entry. CLI options, installed-CLI resolution, log
 //!   file, platform and Kit initialization, evidence and perf sinks.
 //! - [`app`]: windows, commands, chrome and overlays.
-//! - [`attach`]: dropped files and clipboard images as pasteable paths.
+//! - [`attach`]: dropped files and clipboard images. A local terminal pastes
+//!   shell-quoted paths. A remote terminal uploads, then pastes the server path.
 //! - [`workspace`] / [`settings`]: tabs, splits, persistence and preferences,
 //!   with no GPUI types so they test without a window.
 //! - [`connection`]: one runtime [`phux_client_runtime::Client`] per window and
