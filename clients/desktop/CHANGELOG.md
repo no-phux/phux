@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.2](https://github.com/no-phux/phux/compare/desktop-v0.9.1...desktop-v0.9.2) (2026-10-15)
+
+
+### Performance
+
+* **runtime:** probe quiet links and echo keys before the round trip ([#1385](https://github.com/no-phux/phux/issues/1385)) ([ec9a265](https://github.com/no-phux/phux/commit/ec9a265e63322b12de8f39b441a9577d4892e72f))
+
 ## [0.9.1](https://github.com/no-phux/phux/compare/desktop-v0.9.0...desktop-v0.9.1) (2026-10-15)
 
 
