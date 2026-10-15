@@ -5287,23 +5287,37 @@ fn controller_view() -> phux_protocol::native_agent::NativeView {
     NativeView {
         activation: "host-activation".into(),
         backend: "omp-rpc".into(),
-        capabilities: NativeCapabilities { prompt: true, interrupt: true, questions: true, follow_up: true },
+        capabilities: NativeCapabilities {
+            prompt: true,
+            interrupt: true,
+            questions: true,
+            follow_up: true,
+        },
         connected: true,
         turn_id: Some("actual-turn".into()),
         provider_session_id: Some("actual-provider-session".into()),
         questions: vec![NativeQuestion {
-            id: "actual-question".into(), kind: "confirm".into(),
-            title: "Confirm".into(), message: "Proceed?".into(),
-            options: vec![], questions: vec![], fields: serde_json::json!({"provider_request": 17}),
+            id: "actual-question".into(),
+            kind: "confirm".into(),
+            title: "Confirm".into(),
+            message: "Proceed?".into(),
+            options: vec![],
+            questions: vec![],
+            fields: serde_json::json!({"provider_request": 17}),
         }],
     }
 }
 
 fn native_view_line(seq: u64, view: &phux_protocol::native_agent::NativeView) -> String {
-    agent_line(seq, "provider_raw", &serde_json::json!({
-        "schema": phux_protocol::native_agent::NATIVE_SCHEMA,
-        "update": {"type": "view", "view": view}
-    }).to_string())
+    agent_line(
+        seq,
+        "provider_raw",
+        &serde_json::json!({
+            "schema": phux_protocol::native_agent::NATIVE_SCHEMA,
+            "update": {"type": "view", "view": view}
+        })
+        .to_string(),
+    )
 }
 
 #[test]
@@ -5316,13 +5330,32 @@ fn native_controls_require_a_full_controller_view_and_survive_log_eviction() {
     assert_eq!(kernel.native_agent_view(&agent), None);
     let view = controller_view();
     let payload = native_view_line(1, &view);
-    kernel.update(output(&agent, stream(3), bootstrap(4), 1, payload.as_bytes()), &mut effects).unwrap();
+    kernel
+        .update(
+            output(&agent, stream(3), bootstrap(4), 1, payload.as_bytes()),
+            &mut effects,
+        )
+        .unwrap();
     assert_eq!(kernel.native_agent_view(&agent), Some(view.clone()));
     assert_eq!(kernel.native_agent_view(&terminal(1)), None);
     let last = super::agent_stream::DEFAULT_LOG_CAPACITY as u64 + 2;
-    let payload: String = (2..=last).map(|seq| agent_line(seq, "provider_raw", "{}")).collect();
-    kernel.update(output(&agent, stream(3), bootstrap(4), last, payload.as_bytes()), &mut effects).unwrap();
-    assert!(kernel.agent_session(&agent).unwrap().log.records().all(|record| record.seq != 1));
+    let payload: String = (2..=last)
+        .map(|seq| agent_line(seq, "provider_raw", "{}"))
+        .collect();
+    kernel
+        .update(
+            output(&agent, stream(3), bootstrap(4), last, payload.as_bytes()),
+            &mut effects,
+        )
+        .unwrap();
+    assert!(
+        kernel
+            .agent_session(&agent)
+            .unwrap()
+            .log
+            .records()
+            .all(|record| record.seq != 1)
+    );
     assert_eq!(kernel.native_agent_view(&agent), Some(view));
 }
 
@@ -5333,22 +5366,52 @@ fn native_view_replacement_publishes_atomically_and_never_infers_a_lost_activati
     let mut effects = EffectBuffer::new();
     let original = controller_view();
     let payload = native_view_line(1, &original);
-    kernel.update(output(&agent, stream(3), bootstrap(4), 1, payload.as_bytes()), &mut effects).unwrap();
+    kernel
+        .update(
+            output(&agent, stream(3), bootstrap(4), 1, payload.as_bytes()),
+            &mut effects,
+        )
+        .unwrap();
     let mut replacement = original.clone();
     replacement.activation = "replacement-activation".into();
     replacement.questions.clear();
     replacement.turn_id = None;
     replacement.connected = false;
-    agent_begin(&mut kernel, &agent, stream(5), bootstrap(6), 2, &mut effects).unwrap();
+    agent_begin(
+        &mut kernel,
+        &agent,
+        stream(5),
+        bootstrap(6),
+        2,
+        &mut effects,
+    )
+    .unwrap();
     let payload = native_view_line(2, &replacement);
-    kernel.update(chunk(&agent, stream(5), bootstrap(6), 0, payload.as_bytes()), &mut effects).unwrap();
+    kernel
+        .update(
+            chunk(&agent, stream(5), bootstrap(6), 0, payload.as_bytes()),
+            &mut effects,
+        )
+        .unwrap();
     assert_eq!(kernel.native_agent_view(&agent), Some(original));
-    kernel.update(ready(&agent, stream(5), bootstrap(6), None), &mut effects).unwrap();
+    kernel
+        .update(ready(&agent, stream(5), bootstrap(6), None), &mut effects)
+        .unwrap();
     assert_eq!(kernel.native_agent_view(&agent), Some(replacement));
     // A fresh retained generation with no controller view must not preserve
     // the old activation, even when its resource/provider identity matches.
-    agent_begin(&mut kernel, &agent, stream(7), bootstrap(8), 2, &mut effects).unwrap();
-    kernel.update(ready(&agent, stream(7), bootstrap(8), None), &mut effects).unwrap();
+    agent_begin(
+        &mut kernel,
+        &agent,
+        stream(7),
+        bootstrap(8),
+        2,
+        &mut effects,
+    )
+    .unwrap();
+    kernel
+        .update(ready(&agent, stream(7), bootstrap(8), None), &mut effects)
+        .unwrap();
     assert_eq!(kernel.native_agent_view(&agent), None);
 }
 
@@ -5359,12 +5422,35 @@ fn malformed_reserved_native_view_retracts_controls_but_unrelated_raw_does_not()
     let mut effects = EffectBuffer::new();
     let view = controller_view();
     let payload = native_view_line(1, &view);
-    kernel.update(output(&agent, stream(3), bootstrap(4), 1, payload.as_bytes()), &mut effects).unwrap();
-    let unrelated = agent_line(2, "provider_raw", r#"{"schema":"phux.transcript/v1","entry":{"text":"hi"}}"#);
-    kernel.update(output(&agent, stream(3), bootstrap(4), 2, unrelated.as_bytes()), &mut effects).unwrap();
+    kernel
+        .update(
+            output(&agent, stream(3), bootstrap(4), 1, payload.as_bytes()),
+            &mut effects,
+        )
+        .unwrap();
+    let unrelated = agent_line(
+        2,
+        "provider_raw",
+        r#"{"schema":"phux.transcript/v1","entry":{"text":"hi"}}"#,
+    );
+    kernel
+        .update(
+            output(&agent, stream(3), bootstrap(4), 2, unrelated.as_bytes()),
+            &mut effects,
+        )
+        .unwrap();
     assert_eq!(kernel.native_agent_view(&agent), Some(view));
-    let malformed = agent_line(3, "provider_raw", r#"{"schema":"phux.native-agent/v1","update":{"type":"view","view":{"activation":"bogus"}}}"#);
-    kernel.update(output(&agent, stream(3), bootstrap(4), 3, malformed.as_bytes()), &mut effects).unwrap();
+    let malformed = agent_line(
+        3,
+        "provider_raw",
+        r#"{"schema":"phux.native-agent/v1","update":{"type":"view","view":{"activation":"bogus"}}}"#,
+    );
+    kernel
+        .update(
+            output(&agent, stream(3), bootstrap(4), 3, malformed.as_bytes()),
+            &mut effects,
+        )
+        .unwrap();
     assert_eq!(kernel.native_agent_view(&agent), None);
 }
 
@@ -5376,7 +5462,12 @@ fn closing_native_source_or_parent_retains_a_readable_but_disconnected_view() {
         let mut effects = EffectBuffer::new();
         let view = controller_view();
         let payload = native_view_line(1, &view);
-        kernel.update(output(&agent, stream(3), bootstrap(4), 1, payload.as_bytes()), &mut effects).unwrap();
+        kernel
+            .update(
+                output(&agent, stream(3), bootstrap(4), 1, payload.as_bytes()),
+                &mut effects,
+            )
+            .unwrap();
         kernel.update(closed(&source), &mut effects).unwrap();
         let retained = kernel.native_agent_view(&agent).unwrap();
         assert_eq!(retained.activation, view.activation);
@@ -5388,4 +5479,3 @@ fn closing_native_source_or_parent_retains_a_readable_but_disconnected_view() {
         assert_eq!(kernel.native_agent_view(&agent), None);
     }
 }
-

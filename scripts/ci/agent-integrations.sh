@@ -39,3 +39,6 @@ for package in pi claude; do
     npm --prefix "integrations/$package" ci
     npm --prefix "integrations/$package" run gates
 done
+
+# Private SDK packages and npm cache are never uploaded or released.
+node integrations/native-host/scripts/check.mjs

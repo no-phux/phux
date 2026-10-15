@@ -344,16 +344,31 @@ impl AgentSessionActor {
     /// Records share the append's timestamp and ship in one
     /// [`PaneOutput::Live`] sequenced by the last record.
     fn handle_append(&mut self, request: AppendRequest) {
-        let AppendRequest { bytes, reply, publication } = request;
+        let AppendRequest {
+            bytes,
+            reply,
+            publication,
+        } = request;
         if let Some(identity) = &publication {
-            if let Some(prior) = self.native_publications.iter().find(|prior| prior.identity.id == identity.id) {
-                let result = if prior.identity == *identity { Ok(prior.accepted.clone()) }
-                    else { Err(AppendRejection::Overflow("native publication identity conflicts with its payload".into())) };
+            if let Some(prior) = self
+                .native_publications
+                .iter()
+                .find(|prior| prior.identity.id == identity.id)
+            {
+                let result = if prior.identity == *identity {
+                    Ok(prior.accepted.clone())
+                } else {
+                    Err(AppendRejection::Overflow(
+                        "native publication identity conflicts with its payload".into(),
+                    ))
+                };
                 let _ = reply.send(result);
                 return;
             }
             if identity.id <= self.native_publication_high_water {
-                let _ = reply.send(Err(AppendRejection::Overflow("native publication receipt expired; identity cannot be replayed".into())));
+                let _ = reply.send(Err(AppendRejection::Overflow(
+                    "native publication receipt expired; identity cannot be replayed".into(),
+                )));
                 return;
             }
         }
@@ -422,11 +437,22 @@ impl AgentSessionActor {
             bytes: payload,
             at: std::time::Instant::now(),
         });
-        let accepted = AppendAccepted { first_seq, last_seq, ts_ms, evidence, ask };
+        let accepted = AppendAccepted {
+            first_seq,
+            last_seq,
+            ts_ms,
+            evidence,
+            ask,
+        };
         if let Some(identity) = publication {
             self.native_publication_high_water = identity.id;
-            self.native_publications.push_back(NativeAppendAccepted { identity, accepted: accepted.clone() });
-            while self.native_publications.len() > phux_protocol::native_agent::MAX_NATIVE_OPERATIONS {
+            self.native_publications.push_back(NativeAppendAccepted {
+                identity,
+                accepted: accepted.clone(),
+            });
+            while self.native_publications.len()
+                > phux_protocol::native_agent::MAX_NATIVE_OPERATIONS
+            {
                 self.native_publications.pop_front();
             }
         }
@@ -481,7 +507,11 @@ pub fn icount_actor() -> AgentSessionActor {
 #[must_use]
 pub fn icount_append_and_replay(actor: &mut AgentSessionActor, bytes: Bytes) -> Option<usize> {
     let (reply, rx) = oneshot::channel();
-    actor.handle_append(AppendRequest { bytes, reply, publication: None });
+    actor.handle_append(AppendRequest {
+        bytes,
+        reply,
+        publication: None,
+    });
     rx.blocking_recv().ok()?.ok()?;
     let cut = actor.bootstrap(None);
     Some(cut.records.iter().map(Bytes::len).sum())

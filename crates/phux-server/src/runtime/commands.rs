@@ -154,7 +154,15 @@ pub(super) fn launch_pane_actor(
     attribution: SpawnAttribution,
 ) -> Result<phux_protocol::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
     launch_pane_actor_with_failure_policy(
-        state, terminal, cmd, (cols, rows), scrollback, root_token, default_colors, attribution, false,
+        state,
+        terminal,
+        cmd,
+        (cols, rows),
+        scrollback,
+        root_token,
+        default_colors,
+        attribution,
+        false,
     )
 }
 
@@ -188,7 +196,9 @@ pub(super) fn launch_pane_actor_with_failure_policy(
             state.with_mut(|s| {
                 if honor_exit_policy_on_failure {
                     s.activation_ended(terminal, phux_core::ExitOutcome::UNKNOWN, true);
-                } else { s.reap_terminal(terminal); }
+                } else {
+                    s.reap_terminal(terminal);
+                }
             });
             return Err(err);
         }
@@ -906,8 +916,14 @@ async fn route_command(
     // answer with their own result shapes; they never route to a satellite
     // or take the keyed-command record (core keeps their receipts).
     if command.is_organization() {
-        if let Command::ResourceRelaunch { operation, resource, expected } = &command {
-            match state.with(|s| super::organization::native_relaunch_spec(s, resource, *expected)) {
+        if let Command::ResourceRelaunch {
+            operation,
+            resource,
+            expected,
+        } = &command
+        {
+            match state.with(|s| super::organization::native_relaunch_spec(s, resource, *expected))
+            {
                 Ok(Some(spec)) => {
                     let result = super::native_agent::spawn_relaunch(ctx, spec, *operation).await;
                     send_result(out_tx, request_id, result).await;
@@ -3949,7 +3965,8 @@ pub(crate) fn with_route_input_destination<R>(
         if s.native_owned_terminal(pane) {
             return Err(CommandResult::Error {
                 code: ErrorCode::InputNotWritten,
-                message: "SDK-owned guardian input is diagnostics-only; use native agent commands".to_owned(),
+                message: "SDK-owned guardian input is diagnostics-only; use native agent commands"
+                    .to_owned(),
             });
         }
         if s.retained_exit(pane).is_some() {
@@ -4387,8 +4404,14 @@ pub(crate) async fn handle_report_agent_state(
     terminal_id: &phux_protocol::ids::ResourceId,
     reported: phux_protocol::wire::frame::ReportedAgentState,
 ) -> CommandResult {
-    if state.with(|s| s.terminal_from_wire(terminal_id).is_some_and(|core| s.native_owned_terminal(core))) {
-        return CommandResult::Error { code: ErrorCode::NotProducer, message: "SDK-owned lifecycle requires its native controller".to_owned() };
+    if state.with(|s| {
+        s.terminal_from_wire(terminal_id)
+            .is_some_and(|core| s.native_owned_terminal(core))
+    }) {
+        return CommandResult::Error {
+            code: ErrorCode::NotProducer,
+            message: "SDK-owned lifecycle requires its native controller".to_owned(),
+        };
     }
     // One borrow, so a `session_end` cannot land between the two reads.
     let (resolved, live_session) = state.with(|server| {
@@ -4469,7 +4492,10 @@ pub(crate) fn handle_report_asked(
         Err(refusal) => return refusal,
     };
     if state.with(|s| s.native_owned_terminal(terminal)) {
-        return CommandResult::Error { code: ErrorCode::NotProducer, message: "SDK-owned questions require its native controller".to_owned() };
+        return CommandResult::Error {
+            code: ErrorCode::NotProducer,
+            message: "SDK-owned questions require its native controller".to_owned(),
+        };
     }
     if let Some(message) = validate_asked_payload(&id, &question, &suggestions) {
         return CommandResult::Error {
@@ -4690,7 +4716,8 @@ pub(crate) fn with_attached_input_destination<R>(
             let error = Outbound::Frame(FrameKind::Error {
                 request_id: None,
                 code: ErrorCode::InputNotWritten,
-                message: "SDK-owned guardian refuses terminal input; use native agent commands".to_owned(),
+                message: "SDK-owned guardian refuses terminal input; use native agent commands"
+                    .to_owned(),
             });
             if let Some(out) = s.client_mailbox(client_id) {
                 let _ = out.try_send(error);

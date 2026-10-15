@@ -290,10 +290,17 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
             Command::NativeAgent {
                 request: Box::new(crate::native_agent::NativeRequest::Spawn {
                     spec: crate::native_agent::SpawnNativeAgent {
-                        session: "session".into(), backend: "omp-rpc".into(),
-                        provider: "omp".into(), command: vec!["omp".into()],
-                        cwd: None, env: Default::default(), sdk_runtime: None,
-                        node_bridge: None, native_id: None, guardian: None, guardian_key: None,
+                        session: "session".into(),
+                        backend: "omp-rpc".into(),
+                        provider: "omp".into(),
+                        command: vec!["omp".into()],
+                        cwd: None,
+                        env: Default::default(),
+                        sdk_runtime: None,
+                        node_bridge: None,
+                        native_id: None,
+                        guardian: None,
+                        guardian_key: None,
                         guardian_expected: None,
                     },
                 }),
@@ -305,8 +312,11 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
                 request: Box::new(crate::native_agent::NativeRequest::Command {
                     agent_session_id: terminal(),
                     command: crate::native_agent::NativeCommand {
-                        operation_id: 1, activation: "activation".into(),
-                        intent: crate::native_agent::NativeIntent::Prompt { text: "hello".into() },
+                        operation_id: 1,
+                        activation: "activation".into(),
+                        intent: crate::native_agent::NativeIntent::Prompt {
+                            text: "hello".into(),
+                        },
                     },
                 }),
             },
@@ -1021,14 +1031,19 @@ fn command_frame(command: Command) -> BytesMut {
     out
 }
 
-/// The nested tag of an encoded `COMMAND`. The envelope fields before the
-/// command do not depend on it, so the tag sits where `UPGRADE`'s does: the
-/// last byte of that bodyless frame.
+/// Read the nested tag through the public TLV decoder. Command field lengths
+/// use varints, so a larger native JSON body changes its tag's byte offset.
 fn encoded_command_tag(command: &Command) -> u8 {
-    let upgrade = command_frame(Command::Upgrade);
-    let offset = upgrade.len() - 1;
-    assert_eq!(upgrade[offset], 0x0e, "UPGRADE's tag closes its frame");
-    command_frame(command.clone())[offset]
+    let bytes = command_frame(command.clone());
+    let mut decoder = crate::wire::decode::Decoder::new(&bytes);
+    decoder.read_u32_be().unwrap();
+    decoder.read_u8().unwrap();
+    while let Some((field_id, value)) = decoder.read_field().unwrap() {
+        if field_id == 2 {
+            return *value.first().unwrap();
+        }
+    }
+    panic!("COMMAND field missing from encoded frame");
 }
 
 fn names_row(method: &MethodSpec, rule: &Rule) -> bool {

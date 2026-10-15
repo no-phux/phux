@@ -58,7 +58,10 @@ impl ControlPlane {
                         error: Some(message.to_owned()),
                     });
                 }
-                Pending::NativeAgent { agent_session_id, operation_id } => {
+                Pending::NativeAgent {
+                    agent_session_id,
+                    operation_id,
+                } => {
                     // The daemon may have dispatched before the reply was lost.
                     // Never turn a socket failure into a second model prompt.
                     self.push_event(Event::NativeAgentResult {

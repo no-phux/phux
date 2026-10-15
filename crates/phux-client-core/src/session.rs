@@ -1383,7 +1383,10 @@ impl<E: EngineAdapter> SessionKernel<E> {
             return self.closed_native_views.get(agent_session_id).cloned();
         };
         let mut view = stream.native_view()?.clone();
-        if stream.parent().is_some_and(|parent| self.closed.contains(parent)) {
+        if stream
+            .parent()
+            .is_some_and(|parent| self.closed.contains(parent))
+        {
             view.connected = false;
             view.questions.clear();
             view.turn_id = None;

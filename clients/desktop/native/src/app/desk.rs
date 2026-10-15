@@ -2871,8 +2871,10 @@ impl Desk {
             })
             .unwrap_or_default();
         self.panes.retain(&live);
-        self.conversation_faces
-            .retain(|placement, _| live.contains(placement));
+        let connection = self.link.as_ref().map(|link| &link.connection);
+        self.conversation_faces.retain(|placement, face| {
+            face.retain_for_placement(live.contains(placement), connection)
+        });
     }
 
     pub fn panes(&self) -> &Panes {

@@ -1,15 +1,15 @@
 //! Official ACP v1 connection, with optional surfaces explicitly unadvertised.
 //! Cursor blocking extensions follow https://cursor.com/docs/cli/acp, not text
 //! inference. Filesystem/terminal/auth callbacks are never implicitly approved.
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc, time::Duration};
+use crate::{HostError, HostSpec, Sink, common};
 use agent_client_protocol::{self as sdk, Agent as _};
-use phux_client_core::session::agent_transcript::{TranscriptRole, ToolStatus};
+use phux_client_core::session::agent_transcript::{ToolStatus, TranscriptRole};
 use phux_protocol::native_agent::*;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
+use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
-use crate::{common, HostError, HostSpec, Sink};
 
 #[derive(Default)]
 struct Rows {
@@ -19,7 +19,8 @@ struct Rows {
     tools: BTreeMap<String, (String, String, String, ToolStatus)>,
 }
 struct Callback {
-    sink: Sink, provider: String,
+    sink: Sink,
+    provider: String,
     waiting: RefCell<BTreeMap<String, oneshot::Sender<Value>>>,
     rows: RefCell<Rows>,
 }
@@ -27,26 +28,45 @@ impl Callback {
     async fn ask(&self, question: NativeQuestion) -> sdk::Result<Value> {
         common_bounds(&question)?;
         if !self.sink.view().connected {
-            let mut view = self.sink.view(); view.connected = true; view.capabilities.questions = true;
-            self.sink.update(NativeUpdate::View { view }).map_err(host_to_acp)?;
+            let mut view = self.sink.view();
+            view.connected = true;
+            view.capabilities.questions = true;
+            self.sink
+                .update(NativeUpdate::View { view })
+                .map_err(host_to_acp)?;
         }
         let id = question.id.clone();
         let (tx, rx) = oneshot::channel();
-        if self.waiting.borrow().contains_key(&id) { return Err(sdk::Error::invalid_params()); }
+        if self.waiting.borrow().contains_key(&id) {
+            return Err(sdk::Error::invalid_params());
+        }
         self.waiting.borrow_mut().insert(id.clone(), tx);
-        if let Err(error) = self.sink.update(NativeUpdate::QuestionOpened { question }).and_then(|()| self.sink.state(NativeState::Blocked)) {
+        if let Err(error) = self
+            .sink
+            .update(NativeUpdate::QuestionOpened { question })
+            .and_then(|()| self.sink.state(NativeState::Blocked))
+        {
             self.waiting.borrow_mut().remove(&id);
             return Err(sdk::Error::internal_error().data(json!({"message":error.to_string()})));
         }
         let answer = rx.await.unwrap_or_else(|_| json!({"cancelled":true}));
         self.waiting.borrow_mut().remove(&id);
-        self.sink.update(NativeUpdate::QuestionClosed { id, reason: "ACP callback returned explicit response".into() }).map_err(host_to_acp)?;
-        if self.waiting.borrow().is_empty() && self.sink.view().turn_id.is_some() { self.sink.state(NativeState::Working).map_err(host_to_acp)?; }
+        self.sink
+            .update(NativeUpdate::QuestionClosed {
+                id,
+                reason: "ACP callback returned explicit response".into(),
+            })
+            .map_err(host_to_acp)?;
+        if self.waiting.borrow().is_empty() && self.sink.view().turn_id.is_some() {
+            self.sink.state(NativeState::Working).map_err(host_to_acp)?;
+        }
         Ok(answer)
     }
     fn cancel_questions(&self) {
         let waiting = std::mem::take(&mut *self.waiting.borrow_mut());
-        for (_, sender) in waiting { let _ = sender.send(json!({"cancelled":true})); }
+        for (_, sender) in waiting {
+            let _ = sender.send(json!({"cancelled":true}));
+        }
     }
     fn finish_prompt(&self, id: u64) -> Result<(), HostError> {
         self.cancel_questions();
@@ -56,24 +76,42 @@ impl Callback {
         self.sink.state(NativeState::Done)
     }
     fn flush_text(&self) -> Result<(), HostError> {
-        if let Some((id, role, text)) = self.rows.borrow_mut().current.take() { common::text(&self.sink, &self.provider, id, role, text, true)?; }
+        if let Some((id, role, text)) = self.rows.borrow_mut().current.take() {
+            common::text(&self.sink, &self.provider, id, role, text, true)?;
+        }
         Ok(())
     }
     fn chunk(&self, role: TranscriptRole, content: sdk::ContentBlock) -> Result<(), HostError> {
-        let text = match content {
-            sdk::ContentBlock::Text(text) => text.text,
-            sdk::ContentBlock::ResourceLink(resource) => resource.uri,
-            _ => return self.sink.notice("Provider emitted non-text content; native attachment rendering unavailable".into()),
-        };
-        if self.sink.view().turn_id.is_some() && self.waiting.borrow().is_empty() { self.sink.state(NativeState::Working)?; }
+        let text =
+            match content {
+                sdk::ContentBlock::Text(text) => text.text,
+                sdk::ContentBlock::ResourceLink(resource) => resource.uri,
+                _ => return self.sink.notice(
+                    "Provider emitted non-text content; native attachment rendering unavailable"
+                        .into(),
+                ),
+            };
+        if self.sink.view().turn_id.is_some() && self.waiting.borrow().is_empty() {
+            self.sink.state(NativeState::Working)?;
+        }
         let mut rows = self.rows.borrow_mut();
-        if rows.current.as_ref().is_some_and(|(_, previous, _)| *previous != role) {
+        if rows
+            .current
+            .as_ref()
+            .is_some_and(|(_, previous, _)| *previous != role)
+        {
             let (id, previous, text) = rows.current.take().expect("current row");
             common::text(&self.sink, &self.provider, id, previous, text, true)?;
         }
         if rows.current.is_none() {
             rows.serial += 1;
-            let id = if role == TranscriptRole::User { rows.prompt_user_id.clone().unwrap_or_else(|| format!("acp-message:{}", rows.serial)) } else { format!("acp-message:{}", rows.serial) };
+            let id = if role == TranscriptRole::User {
+                rows.prompt_user_id
+                    .clone()
+                    .unwrap_or_else(|| format!("acp-message:{}", rows.serial))
+            } else {
+                format!("acp-message:{}", rows.serial)
+            };
             rows.current = Some((id, role, String::new()));
         }
         let (id, role, current) = rows.current.as_mut().expect("current row");
@@ -81,103 +119,303 @@ impl Callback {
         // remains truthful, without retaining an unbounded provider response.
         let room = (12 * 1024 + 4_usize).saturating_sub(current.len());
         current.push_str(&common::head(&text, room));
-        common::text(&self.sink, &self.provider, id.clone(), *role, current.clone(), false)
+        common::text(
+            &self.sink,
+            &self.provider,
+            id.clone(),
+            *role,
+            current.clone(),
+            false,
+        )
     }
-    fn tool(&self, id: String, title: Option<String>, input: Option<Value>, output: Option<Value>, status: Option<sdk::ToolCallStatus>) -> Result<(), HostError> {
+    fn tool(
+        &self,
+        id: String,
+        title: Option<String>,
+        input: Option<Value>,
+        output: Option<Value>,
+        status: Option<sdk::ToolCallStatus>,
+    ) -> Result<(), HostError> {
         self.flush_text()?;
         let mut rows = self.rows.borrow_mut();
         if !rows.tools.contains_key(&id) && rows.tools.len() >= 128 {
-            let retired = rows.tools.iter().find_map(|(id, (_, _, _, status))| (*status != ToolStatus::Running).then(|| id.clone()));
-            if let Some(retired) = retired { rows.tools.remove(&retired); }
-            else { return Err(HostError::Sdk("too many active ACP tool calls".into())); }
+            let retired = rows.tools.iter().find_map(|(id, (_, _, _, status))| {
+                (*status != ToolStatus::Running).then(|| id.clone())
+            });
+            if let Some(retired) = retired {
+                rows.tools.remove(&retired);
+            } else {
+                return Err(HostError::Sdk("too many active ACP tool calls".into()));
+            }
         }
-        let row = rows.tools.entry(id.clone()).or_insert_with(|| (String::new(), String::new(), String::new(), ToolStatus::Running));
-        if let Some(title) = title { row.0 = common::head(&title, 256); }
-        if let Some(input) = input { row.1 = common::summarize_args(&input); }
+        let row = rows.tools.entry(id.clone()).or_insert_with(|| {
+            (
+                String::new(),
+                String::new(),
+                String::new(),
+                ToolStatus::Running,
+            )
+        });
+        if let Some(title) = title {
+            row.0 = common::head(&title, 256);
+        }
+        if let Some(input) = input {
+            row.1 = common::summarize_args(&input);
+        }
         if self.sink.0.transcript_mode == common::TranscriptMode::Full {
-            if let Some(output) = output { row.2 = common::head(&output.to_string(), 4096); }
+            if let Some(output) = output {
+                row.2 = common::head(&output.to_string(), 4096);
+            }
         }
-        if let Some(status) = status { row.3 = match status { sdk::ToolCallStatus::Completed => ToolStatus::Ok, sdk::ToolCallStatus::Failed => ToolStatus::Error, _ => ToolStatus::Running }; }
-        if status == Some(sdk::ToolCallStatus::InProgress) && self.waiting.borrow().is_empty() { self.sink.state(NativeState::Working)?; }
-        common::tool(&self.sink, &self.provider, id, row.0.clone(), row.1.clone(), row.2.clone(), row.3)
+        if let Some(status) = status {
+            row.3 = match status {
+                sdk::ToolCallStatus::Completed => ToolStatus::Ok,
+                sdk::ToolCallStatus::Failed => ToolStatus::Error,
+                _ => ToolStatus::Running,
+            };
+        }
+        if status == Some(sdk::ToolCallStatus::InProgress) && self.waiting.borrow().is_empty() {
+            self.sink.state(NativeState::Working)?;
+        }
+        common::tool(
+            &self.sink,
+            &self.provider,
+            id,
+            row.0.clone(),
+            row.1.clone(),
+            row.2.clone(),
+            row.3,
+        )
     }
 }
-fn host_to_acp(error: HostError) -> sdk::Error { sdk::Error::internal_error().data(json!({"message":error.to_string()})) }
-fn common_bounds(question: &NativeQuestion) -> sdk::Result<()> { validate_payload(question).map_err(|_| sdk::Error::invalid_params()) }
+fn host_to_acp(error: HostError) -> sdk::Error {
+    sdk::Error::internal_error().data(json!({"message":error.to_string()}))
+}
+fn common_bounds(question: &NativeQuestion) -> sdk::Result<()> {
+    validate_payload(question).map_err(|_| sdk::Error::invalid_params())
+}
 #[async_trait::async_trait(?Send)]
 impl sdk::Client for Callback {
-    async fn request_permission(&self, request: sdk::RequestPermissionRequest) -> sdk::Result<sdk::RequestPermissionResponse> {
+    async fn request_permission(
+        &self,
+        request: sdk::RequestPermissionRequest,
+    ) -> sdk::Result<sdk::RequestPermissionResponse> {
         let fields = serde_json::to_value(&request).map_err(|_| sdk::Error::invalid_params())?;
-        let question = NativeQuestion { id: request.tool_call.tool_call_id.to_string(), kind: "permission".into(), title: request.tool_call.fields.title.clone().unwrap_or_else(|| "Tool permission".into()), message: String::new(),
-            options: request.options.iter().map(|option| NativeOption { id: option.option_id.to_string(), label: option.name.clone(), description: None }).collect(), questions: Vec::new(), fields };
+        let question = NativeQuestion {
+            id: request.tool_call.tool_call_id.to_string(),
+            kind: "permission".into(),
+            title: request
+                .tool_call
+                .fields
+                .title
+                .clone()
+                .unwrap_or_else(|| "Tool permission".into()),
+            message: String::new(),
+            options: request
+                .options
+                .iter()
+                .map(|option| NativeOption {
+                    id: option.option_id.to_string(),
+                    label: option.name.clone(),
+                    description: None,
+                })
+                .collect(),
+            questions: Vec::new(),
+            fields,
+        };
         let response = self.ask(question).await?;
-        let outcome = if response["cancelled"].as_bool() == Some(true) { sdk::RequestPermissionOutcome::Cancelled }
-        else {
-            let id = response["option_id"].as_str().ok_or_else(sdk::Error::invalid_params)?;
-            let option = request.options.iter().find(|option| option.option_id.to_string() == id).ok_or_else(sdk::Error::invalid_params)?;
-            sdk::RequestPermissionOutcome::Selected(sdk::SelectedPermissionOutcome::new(option.option_id.clone()))
+        let outcome = if response["cancelled"].as_bool() == Some(true) {
+            sdk::RequestPermissionOutcome::Cancelled
+        } else {
+            let id = response["option_id"]
+                .as_str()
+                .ok_or_else(sdk::Error::invalid_params)?;
+            let option = request
+                .options
+                .iter()
+                .find(|option| option.option_id.to_string() == id)
+                .ok_or_else(sdk::Error::invalid_params)?;
+            sdk::RequestPermissionOutcome::Selected(sdk::SelectedPermissionOutcome::new(
+                option.option_id.clone(),
+            ))
         };
         Ok(sdk::RequestPermissionResponse::new(outcome))
     }
-    async fn session_notification(&self, notification: sdk::SessionNotification) -> sdk::Result<()> {
-        if self.sink.view().provider_session_id.as_deref().is_some_and(|id| id != notification.session_id.to_string()) { return Err(sdk::Error::invalid_params()); }
+    async fn session_notification(
+        &self,
+        notification: sdk::SessionNotification,
+    ) -> sdk::Result<()> {
+        if self
+            .sink
+            .view()
+            .provider_session_id
+            .as_deref()
+            .is_some_and(|id| id != notification.session_id.to_string())
+        {
+            return Err(sdk::Error::invalid_params());
+        }
         let result = match notification.update {
-            sdk::SessionUpdate::UserMessageChunk(chunk) => self.chunk(TranscriptRole::User, chunk.content),
-            sdk::SessionUpdate::AgentMessageChunk(chunk) => self.chunk(TranscriptRole::Assistant, chunk.content),
-            sdk::SessionUpdate::AgentThoughtChunk(chunk) => self.chunk(TranscriptRole::Thinking, chunk.content),
-            sdk::SessionUpdate::ToolCall(tool) => self.tool(tool.tool_call_id.to_string(), Some(tool.title), tool.raw_input, tool.raw_output.or_else(|| serde_json::to_value(tool.content).ok()), Some(tool.status)),
-            sdk::SessionUpdate::ToolCallUpdate(tool) => self.tool(tool.tool_call_id.to_string(), tool.fields.title, tool.fields.raw_input, tool.fields.raw_output.or_else(|| tool.fields.content.and_then(|content| serde_json::to_value(content).ok())), tool.fields.status),
-            sdk::SessionUpdate::Plan(plan) => self.sink.notice(serde_json::to_string(&plan).map_err(|_| sdk::Error::invalid_params())?),
+            sdk::SessionUpdate::UserMessageChunk(chunk) => {
+                self.chunk(TranscriptRole::User, chunk.content)
+            }
+            sdk::SessionUpdate::AgentMessageChunk(chunk) => {
+                self.chunk(TranscriptRole::Assistant, chunk.content)
+            }
+            sdk::SessionUpdate::AgentThoughtChunk(chunk) => {
+                self.chunk(TranscriptRole::Thinking, chunk.content)
+            }
+            sdk::SessionUpdate::ToolCall(tool) => self.tool(
+                tool.tool_call_id.to_string(),
+                Some(tool.title),
+                tool.raw_input,
+                tool.raw_output
+                    .or_else(|| serde_json::to_value(tool.content).ok()),
+                Some(tool.status),
+            ),
+            sdk::SessionUpdate::ToolCallUpdate(tool) => self.tool(
+                tool.tool_call_id.to_string(),
+                tool.fields.title,
+                tool.fields.raw_input,
+                tool.fields.raw_output.or_else(|| {
+                    tool.fields
+                        .content
+                        .and_then(|content| serde_json::to_value(content).ok())
+                }),
+                tool.fields.status,
+            ),
+            sdk::SessionUpdate::Plan(plan) => self
+                .sink
+                .notice(serde_json::to_string(&plan).map_err(|_| sdk::Error::invalid_params())?),
             _ => Ok(()),
         };
         result.map_err(host_to_acp)
     }
     async fn ext_method(&self, request: sdk::ExtRequest) -> sdk::Result<sdk::ExtResponse> {
-        if self.provider != "cursor-agent" && self.provider != "cursor" { return Err(sdk::Error::method_not_found()); }
-        let mut fields: Value = serde_json::from_str(request.params.get()).map_err(|_| sdk::Error::invalid_params())?;
+        if self.provider != "cursor-agent" && self.provider != "cursor" {
+            return Err(sdk::Error::method_not_found());
+        }
+        let mut fields: Value =
+            serde_json::from_str(request.params.get()).map_err(|_| sdk::Error::invalid_params())?;
         let response = match request.method.as_ref() {
             "cursor/ask_question" => {
-                let ask: CursorAsk = serde_json::from_value(fields.clone()).map_err(|_| sdk::Error::invalid_params())?;
+                let ask: CursorAsk = serde_json::from_value(fields.clone())
+                    .map_err(|_| sdk::Error::invalid_params())?;
                 fields["allow_custom_input"] = Value::Bool(false);
-                let question = NativeQuestion { id: ask.tool_call_id, kind: "ask".into(), title: ask.title.unwrap_or_default(), message: String::new(), options: Vec::new(),
-                    questions: ask.questions.into_iter().map(|question| NativeQuestionItem { id: question.id, question: question.prompt, header: String::new(), options: question.options.into_iter().map(|option| NativeOption { id: option.id, label: option.label, description: None }).collect(), multi: question.allow_multiple, recommended: None }).collect(), fields };
+                let question = NativeQuestion {
+                    id: ask.tool_call_id,
+                    kind: "ask".into(),
+                    title: ask.title.unwrap_or_default(),
+                    message: String::new(),
+                    options: Vec::new(),
+                    questions: ask
+                        .questions
+                        .into_iter()
+                        .map(|question| NativeQuestionItem {
+                            id: question.id,
+                            question: question.prompt,
+                            header: String::new(),
+                            options: question
+                                .options
+                                .into_iter()
+                                .map(|option| NativeOption {
+                                    id: option.id,
+                                    label: option.label,
+                                    description: None,
+                                })
+                                .collect(),
+                            multi: question.allow_multiple,
+                            recommended: None,
+                        })
+                        .collect(),
+                    fields,
+                };
                 let answer = self.ask(question).await?;
-                if answer["cancelled"].as_bool() == Some(true) { json!({"outcome":{"outcome":"cancelled"}}) }
-                else { json!({"outcome":{"outcome":"answered","answers":answer["answers"].as_array().ok_or_else(sdk::Error::invalid_params)?.iter().map(|answer| json!({"questionId":answer["id"],"selectedOptionIds":answer["selected_options"]})).collect::<Vec<_>>()}}) }
+                if answer["cancelled"].as_bool() == Some(true) {
+                    json!({"outcome":{"outcome":"cancelled"}})
+                } else {
+                    json!({"outcome":{"outcome":"answered","answers":answer["answers"].as_array().ok_or_else(sdk::Error::invalid_params)?.iter().map(|answer| json!({"questionId":answer["id"],"selectedOptionIds":answer["selected_options"]})).collect::<Vec<_>>()}})
+                }
             }
             "cursor/create_plan" => {
-                let plan: CursorPlan = serde_json::from_value(fields.clone()).map_err(|_| sdk::Error::invalid_params())?;
-                let question = NativeQuestion { id: plan.tool_call_id, kind: "confirm".into(), title: plan.name.unwrap_or_else(|| "Approve provider plan".into()), message: plan.plan, options: Vec::new(), questions: Vec::new(), fields };
+                let plan: CursorPlan = serde_json::from_value(fields.clone())
+                    .map_err(|_| sdk::Error::invalid_params())?;
+                let question = NativeQuestion {
+                    id: plan.tool_call_id,
+                    kind: "confirm".into(),
+                    title: plan.name.unwrap_or_else(|| "Approve provider plan".into()),
+                    message: plan.plan,
+                    options: Vec::new(),
+                    questions: Vec::new(),
+                    fields,
+                };
                 let answer = self.ask(question).await?;
-                let outcome = if answer["cancelled"].as_bool() == Some(true) { "cancelled" } else if answer["confirmed"].as_bool() == Some(true) { "accepted" } else { "rejected" };
+                let outcome = if answer["cancelled"].as_bool() == Some(true) {
+                    "cancelled"
+                } else if answer["confirmed"].as_bool() == Some(true) {
+                    "accepted"
+                } else {
+                    "rejected"
+                };
                 json!({"outcome":{"outcome":outcome}})
             }
             _ => return Err(sdk::Error::method_not_found()),
         };
-        let raw = serde_json::value::to_raw_value(&response).map_err(|_| sdk::Error::internal_error())?;
+        let raw =
+            serde_json::value::to_raw_value(&response).map_err(|_| sdk::Error::internal_error())?;
         Ok(sdk::ExtResponse::new(raw.into()))
     }
     async fn ext_notification(&self, notification: sdk::ExtNotification) -> sdk::Result<()> {
         match notification.method.as_ref() {
-            "cursor/update_todos" | "cursor/task" | "cursor/generate_image" => self.sink.notice(format!("{}: {}", notification.method, notification.params.get())).map_err(host_to_acp),
+            "cursor/update_todos" | "cursor/task" | "cursor/generate_image" => self
+                .sink
+                .notice(format!(
+                    "{}: {}",
+                    notification.method,
+                    notification.params.get()
+                ))
+                .map_err(host_to_acp),
             _ => Err(sdk::Error::method_not_found()),
         }
     }
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct CursorAsk { tool_call_id: String, title: Option<String>, questions: Vec<CursorQuestion> }
+struct CursorAsk {
+    tool_call_id: String,
+    title: Option<String>,
+    questions: Vec<CursorQuestion>,
+}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct CursorQuestion { id: String, prompt: String, options: Vec<CursorOption>, #[serde(default)] allow_multiple: bool }
+struct CursorQuestion {
+    id: String,
+    prompt: String,
+    options: Vec<CursorOption>,
+    #[serde(default)]
+    allow_multiple: bool,
+}
 #[derive(Deserialize)]
-struct CursorOption { id: String, label: String }
+struct CursorOption {
+    id: String,
+    label: String,
+}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct CursorPlan { tool_call_id: String, name: Option<String>, plan: String }
+struct CursorPlan {
+    tool_call_id: String,
+    name: Option<String>,
+    plan: String,
+}
 
-pub(super) fn run(spec: HostSpec, sink: Sink, mut commands: mpsc::Receiver<NativeCommand>, mut shutdown: watch::Receiver<bool>) -> Result<(), HostError> {
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+pub(super) fn run(
+    spec: HostSpec,
+    sink: Sink,
+    mut commands: mpsc::Receiver<NativeCommand>,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<(), HostError> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
     let local = tokio::task::LocalSet::new();
     runtime.block_on(local.run_until(async move {
         let mut process = std::process::Command::new(&spec.command[0]); process.args(&spec.command[1..]); common::configure(&mut process, &spec);
@@ -296,12 +534,20 @@ mod tests {
     #[test]
     fn ended_prompt_releases_turn_and_callbacks_without_disconnect() {
         let sink = crate::tests::sink();
-        let mut view = sink.view(); view.connected = true; view.turn_id = Some("acp:7".into());
+        let mut view = sink.view();
+        view.connected = true;
+        view.turn_id = Some("acp:7".into());
         sink.update(NativeUpdate::View { view }).unwrap();
         let (sender, mut receiver) = oneshot::channel();
-        let callback = Callback { sink: sink.clone(), provider: "cursor".into(),
+        let callback = Callback {
+            sink: sink.clone(),
+            provider: "cursor".into(),
             waiting: RefCell::new(BTreeMap::from([("permission".into(), sender)])),
-            rows: RefCell::new(Rows { prompt_user_id: Some("acp-prompt:7".into()), ..Rows::default() }) };
+            rows: RefCell::new(Rows {
+                prompt_user_id: Some("acp-prompt:7".into()),
+                ..Rows::default()
+            }),
+        };
         callback.finish_prompt(7).unwrap();
         assert!(sink.view().connected);
         assert!(sink.view().turn_id.is_none());

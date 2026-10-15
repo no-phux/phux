@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-10-13
+last-reviewed: 2026-10-15
 ---
 
 # The phux agent CLI
@@ -337,8 +337,61 @@ nothing: `not_producer`, `record_invalid`, `overflow`,
 `wrong_resource_kind`. `log` reads the retained ring; `--follow` is a
 stream with no `--timeout` (run it under a child-process deadline).
 
-Producers control record privacy. The [Claude shim](./claude.md#what-the-hook-shim-emits)
-omits prompt text and tool input/output; raw hook JSON requires explicit opt-in.
+Producers control record privacy. Lifecycle records omit prompt and tool
+bodies. Structured transcripts include prompts, replies, visible thinking,
+and tool name/summary/status by default, without tool output or raw write/edit
+bodies. `PHUX_AGENT_TRANSCRIPT=full` opts tool output in;
+`PHUX_AGENT_TRANSCRIPT=0` disables transcripts without disabling lifecycle.
+Raw provider payloads remain separate and explicitly opt-in.
+
+### SDK-owned native sessions
+
+`phux launch --list --native --json` reports configured integrations and
+their actual host prerequisites. `phux launch --native omp --session main
+--json` starts one server-owned `phux agent host`, one headless SDK worker,
+and one AgentSession. It does not start a second interactive OMP terminal.
+The launch document has `schema_version: 1`, `terminal_id`,
+`agent_session_id`, `activation`, `native: true`, and `ready: false`.
+Read the stream's `phux.native-agent/v1` view for real connectivity,
+capabilities, current questions, and the provider's actual session ID.
+
+Native profiles use the official OMP Rust SDK; ACP for Grok, Gemini CLI,
+Cursor Agent, and Goose; and host-only Node SDK/protocol adapters for Pi,
+Claude Code, OpenCode, Codex, and Amp. Aider remains terminal-only.
+Missing prerequisites and unsupported provider UI fail explicitly, never
+silently falling back to terminal parsing or key injection.
+
+The Node runtime needs Node 22.19 or newer and explicit setup on the executing
+host. Read [Anthropic's commercial terms](https://www.anthropic.com/legal/commercial-terms)
+and [Amp's terms](https://ampcode.com/terms) before opting in:
+
+```sh
+phux agent sdk-setup --accept-claude-terms --accept-amp-terms --json
+```
+
+Setup installs locked dependencies into a private versioned runtime, with
+package lifecycle scripts and unreviewed optional binaries disabled. Commercial
+SDK code and provider executables are not bundled into phux releases; Claude,
+OpenCode, and Codex use explicitly resolved compatible host installations.
+Rust/ACP native profiles do not require this Node runtime.
+
+`phux agent native-command @AGENT --activation ACTIVATION --operation-id ID
+--intent '{"type":"prompt","text":"hello"}' --json` targets that exact
+AgentSession and activation. `interrupt` requires the actual `turn_id`;
+`answer` requires the actual `question_id` and the provider's structured
+response shape. Answers are human-only and first-responder reserved across
+desktop and mobile. Native control obeys the guardian's input lease; raw PTY
+input to an SDK-owned guardian is refused.
+
+The result's `operation_id` is an exact unsigned 64-bit value. Preserve it
+without floating-point conversion. `queued` is submission, `admitted` is
+provider admission, and `completed` is a factual operation outcome, not a
+blanket claim that a model turn finished. `refused` and `unknown` exit 2
+while still printing the native result document on stdout. `unknown` after
+transport loss MUST NOT trigger a replacement prompt. Pre-submission failures
+use the usual structured stderr error document and leave stdout empty.
+The provider's later events resolve questions and turns. Closing a viewer
+detaches; graceful daemon upgrade keeps the same host-owned SDK session.
 
 ## 7. JSON index
 
@@ -839,12 +892,16 @@ declared record state outranks the ask.
 is `null` when the OS provides none or phux kills the child on timeout.
 
 Workspace inspect is repo-local git porcelain. Detached worktrees have
-`branch: null` and `detached: true`. Archive schema 2 copies
-`agent_session` as inert provenance — restore re-resolves the current
-integration, requires the same `plugin_id`, and never replays archived
-argv. `command` is nullable. Restore starts fresh PTYs; existing session
-names are skipped (`restored` / `skipped_existing`). Schema-1 archives
-remain readable.
+`branch: null` and `detached: true`. Current archive schema 3 keeps terminal
+`agent_session` provenance inert: restore re-resolves the current integration,
+requires the same `plugin_id`, and never replays that archived argv. A separate
+`native_launch` recipe resumes the exact known provider session when available,
+with a fresh local guardian binding; it excludes source resource identities,
+controller proofs, SDK runtime paths, and provider credential environment.
+Raw commands are never inferred to be native integrations. Restore starts fresh
+resources, skips existing session names, and explicitly refuses unsupported
+satellite SDK restoration. Schema-1 and schema-2 archives remain readable;
+the restore summary independently retains `schema_version: 2`.
 
 `host ls`: `enabled` is `null` for `role: "remote"`; `session` is `null`
 for satellites; `tls_server_name` is `null` unless a remote is reached
@@ -938,6 +995,10 @@ Spawn: `spawn_failed` (the server refused the command or working
 directory, or a `--target` placement could not land).
 Local I/O: `io` (a bug-report bundle could not be written under the
 state directory), `json_serialize`.
+Native SDK setup: `sdk_runtime` (Node prerequisites, installation, integrity,
+or private-cache preparation failed). Missing explicit commercial-term flags
+are `usage_error`; setup never starts a provider session. Installer diagnostics
+stay on stderr on success and inside the structured error message on failure.
 Agent lifecycle: `no_agent_record`, `satellite_target`,
 `agent_departed`, `agent_mismatch`, `invalid_key_spec`. Acknowledged
 input: `input_busy` (retry safe), `input_not_written` (proven not

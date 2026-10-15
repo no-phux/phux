@@ -53,6 +53,9 @@ mod views;
 #[path = "support/agent_sessions.rs"]
 mod agent_sessions;
 
+#[path = "support/native_agent.rs"]
+mod native_agent;
+
 #[cfg(feature = "engine")]
 #[test]
 fn replacing_an_engine_synchronously_retires_all_outgoing_view_slots() {

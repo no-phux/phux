@@ -553,12 +553,24 @@ fn command_terminal(command: &Command) -> Option<&WireResourceId> {
     match command {
         Command::NativeAgent { request } => match request.as_ref() {
             phux_protocol::native_agent::NativeRequest::Spawn { .. } => None,
-            phux_protocol::native_agent::NativeRequest::Command { agent_session_id, .. }
-            | phux_protocol::native_agent::NativeRequest::Register { agent_session_id, .. }
-            | phux_protocol::native_agent::NativeRequest::Receive { agent_session_id, .. }
-            | phux_protocol::native_agent::NativeRequest::Complete { agent_session_id, .. }
-            | phux_protocol::native_agent::NativeRequest::Publish { agent_session_id, .. }
-            | phux_protocol::native_agent::NativeRequest::Close { agent_session_id, .. } => Some(agent_session_id),
+            phux_protocol::native_agent::NativeRequest::Command {
+                agent_session_id, ..
+            }
+            | phux_protocol::native_agent::NativeRequest::Register {
+                agent_session_id, ..
+            }
+            | phux_protocol::native_agent::NativeRequest::Receive {
+                agent_session_id, ..
+            }
+            | phux_protocol::native_agent::NativeRequest::Complete {
+                agent_session_id, ..
+            }
+            | phux_protocol::native_agent::NativeRequest::Publish {
+                agent_session_id, ..
+            }
+            | phux_protocol::native_agent::NativeRequest::Close {
+                agent_session_id, ..
+            } => Some(agent_session_id),
         },
         Command::AttachResource { terminal_id, .. }
         | Command::DetachResource { terminal_id }
@@ -606,9 +618,9 @@ fn keyed_session(s: &ServerState, request: Request<'_>) -> Option<Point> {
     };
     match command {
         Command::NativeAgent { request } => match request.as_ref() {
-            phux_protocol::native_agent::NativeRequest::Spawn { spec } => {
-                s.find_session_by_name(&spec.session).map(|session| session_point(s, Some(session)))
-            }
+            phux_protocol::native_agent::NativeRequest::Spawn { spec } => s
+                .find_session_by_name(&spec.session)
+                .map(|session| session_point(s, Some(session))),
             _ => None,
         },
         Command::SessionRename { session, .. }

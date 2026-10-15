@@ -721,7 +721,9 @@ impl Connection {
                         {
                             let resource = &publication.resource_id;
                             let native = self.client.with_control(|control| {
-                                control.engine().and_then(|engine| engine.native_agent_view(resource))
+                                control
+                                    .engine()
+                                    .and_then(|engine| engine.native_agent_view(resource))
                             });
                             if !self.conversations.contains_key(resource)
                                 && let Some(conversation) =

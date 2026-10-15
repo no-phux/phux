@@ -152,6 +152,21 @@ fn world() -> World {
     }
 }
 
+fn agent_child(world: &mut World) -> WireResourceId {
+    let child = world
+        .state
+        .new_agent_session(
+            world.alpha_core,
+            &phux_core::resource::AgentFacet {
+                provider: "claude".to_owned(),
+                native_id: None,
+                state: None,
+            },
+        )
+        .unwrap();
+    world.state.intern_terminal_wire(child)
+}
+
 fn local_id(wire: &WireResourceId) -> u32 {
     match wire {
         WireResourceId::Local { id } | WireResourceId::Satellite { id, .. } => *id,
@@ -239,7 +254,7 @@ fn command(command: Command) -> FrameKind {
     clippy::too_many_lines,
     reason = "one sample per reachable row, kept as one flat table"
 )]
-fn samples(world: &World) -> Vec<FrameKind> {
+fn samples(world: &World, agent: &WireResourceId) -> Vec<FrameKind> {
     let t = world.alpha.clone();
     let upload = FileUploadId::new([1; 16]).unwrap();
     let stream_id = StreamId::new(1).unwrap();
@@ -503,7 +518,53 @@ fn samples(world: &World) -> Vec<FrameKind> {
     .into_iter()
     .chain(organization_samples(world, &t))
     .chain(delegation_samples(world))
+    .chain(native_samples(agent))
     .collect()
+}
+
+fn native_samples(agent: &WireResourceId) -> [FrameKind; 3] {
+    use phux_protocol::native_agent::{
+        NativeCommand, NativeIntent, NativeRequest, SpawnNativeAgent,
+    };
+    [
+        command(Command::NativeAgent {
+            request: Box::new(NativeRequest::Spawn {
+                spec: SpawnNativeAgent {
+                    session: "alpha".into(),
+                    backend: "omp-rpc".into(),
+                    provider: "omp".into(),
+                    command: vec!["omp".into(), "--mode".into(), "rpc-ui".into()],
+                    cwd: None,
+                    env: Default::default(),
+                    sdk_runtime: None,
+                    node_bridge: None,
+                    native_id: None,
+                    guardian: None,
+                    guardian_key: None,
+                    guardian_expected: None,
+                },
+            }),
+        }),
+        command(Command::NativeAgent {
+            request: Box::new(NativeRequest::Command {
+                agent_session_id: agent.clone(),
+                command: NativeCommand {
+                    operation_id: 1,
+                    activation: "activation".into(),
+                    intent: NativeIntent::Prompt {
+                        text: "human prompt".into(),
+                    },
+                },
+            }),
+        }),
+        command(Command::NativeAgent {
+            request: Box::new(NativeRequest::Register {
+                agent_session_id: agent.clone(),
+                activation: "activation".into(),
+                binding_proof: "proof".into(),
+            }),
+        }),
+    ]
 }
 
 /// `DELEGATE_AGENT` on `alpha`, then `REVOKE_DELEGATION` (ADR-0163).
@@ -651,10 +712,11 @@ const UNREACHABLE: [&str; 6] = [
 ];
 
 fn verb_only_connection_matrix(verb: Verb) {
-    let world = world();
+    let mut world = world();
+    let agent = agent_child(&mut world);
     let name = phux_protocol::scope::verb_name(verb);
     let grant = scoped(&[&format!("{name}@global")]);
-    let samples = samples(&world);
+    let samples = samples(&world, &agent);
     for frame in &samples {
         assert_eq!(
             admits(&world, &grant, frame),
@@ -705,9 +767,10 @@ fn signal_only_connection_matrix() {
 
 #[test]
 fn the_owner_grant_admits_every_sample() {
-    let world = world();
+    let mut world = world();
+    let agent = agent_child(&mut world);
     let owner = ConnectionGrant::owner();
-    for frame in &samples(&world) {
+    for frame in &samples(&world, &agent) {
         assert!(admits(&world, &owner, frame), "{frame:?}");
     }
 }
@@ -775,18 +838,8 @@ fn admits_set(world: &World, set: &[String], frame: &FrameKind) -> bool {
     reason = "one entry per spec row, kept as one flat table"
 )]
 fn rows(world: &mut World) -> Vec<Row> {
-    let child = world
-        .state
-        .new_agent_session(
-            world.alpha_core,
-            &phux_core::resource::AgentFacet {
-                provider: "claude".to_owned(),
-                native_id: None,
-                state: None,
-            },
-        )
-        .unwrap();
-    let child = world.state.intern_terminal_wire(child);
+    let child = agent_child(world);
+    let native = native_samples(&child);
     let t = world.alpha.clone();
     let beta_group = world
         .state
@@ -832,7 +885,7 @@ fn rows(world: &mut World) -> Vec<Row> {
     let stream_id = StreamId::new(1).unwrap();
     let bootstrap_id = BootstrapId::new(1).unwrap();
     let mut rows = vec![
-        denied(samples(world)[0].clone()),
+        denied(samples(world, &child)[0].clone()),
         exempt(FrameKind::Ping { nonce: 1 }),
         exempt(FrameKind::Detach),
         row(
@@ -1282,6 +1335,24 @@ fn rows(world: &mut World) -> Vec<Row> {
     // Owner-socket only: no scoped grant mints or
     // withdraws a delegation.
     rows.extend(delegation_samples(world).into_iter().map(denied));
+    rows.extend([
+        row(
+            native[0].clone(),
+            &[&[&s("create,bind", &ga)], &[&s("create,bind", "host")]],
+            &[&[&s("create,bind", &gb)], &[&s("create,bind", &ta)]],
+        ),
+        row(
+            native[1].clone(),
+            &[
+                &[&s("input", &tc)],
+                &[&s("input", &ta)],
+                &[&s("input", &ga)],
+                &[&s("input", "host")],
+            ],
+            &[&[&s("input", &tb)], &[&s("input", &gb)]],
+        ),
+        on_terminal(native[2].clone(), "bind"),
+    ]);
     rows
 }
 

@@ -22,7 +22,7 @@ use std::collections::HashMap;
 mod questions;
 use super::color::from_hex;
 use super::desk::{Desk, Modal};
-use crate::connection::ConnectionIdentity;
+use crate::connection::{Connection, ConnectionIdentity};
 use crate::settings::theme::Palette;
 
 #[derive(Clone)]
@@ -36,7 +36,9 @@ pub(crate) struct Binding {
 
 impl PartialEq for Binding {
     fn eq(&self, other: &Self) -> bool {
-        self.server == other.server
+        // SDK activation survives daemon incarnation changes; endpoint and
+        // exact parent/session/activation still identify the same owner.
+        (self.server == other.server || self.activation.is_some())
             && self.terminal == other.terminal
             && self.session == other.session
             && self.activation == other.activation
@@ -46,15 +48,16 @@ impl PartialEq for Binding {
 
 impl Eq for Binding {}
 
-struct WriteIdentity {
+struct WriteIdentity<'a> {
     connection: ConnectionIdentity,
     stream: AgentStreamInfo,
     state: AgentSessionStatus,
-    native: Option<NativeView>,
+    native: Option<&'a NativeView>,
 }
 
 pub(crate) struct Face {
     binding: Binding,
+    orphaned: bool,
     pub visible: bool,
     pub(super) input: Entity<TextareaState>,
     _subscription: Subscription,
@@ -62,6 +65,7 @@ pub(crate) struct Face {
     follow: bool,
     revision: u64,
     pending: Option<(u64, String)>,
+    draft_changed_after_submit: bool,
     error: Option<String>,
     delivered: Option<String>,
     notice: Option<String>,
@@ -71,11 +75,85 @@ pub(crate) struct Face {
     questions: HashMap<String, questions::Draft>,
 }
 
+impl Face {
+    pub(super) fn retain_for_placement(
+        &mut self,
+        live: bool,
+        connection: Option<&Connection>,
+    ) -> bool {
+        self.orphaned = !live;
+        if live {
+            return true;
+        }
+        let (Some(activation), Some(connection)) = (&self.binding.activation, connection) else {
+            return false;
+        };
+        if !std::ptr::eq(
+            self.binding.client.as_ptr(),
+            std::sync::Arc::as_ptr(&connection.client),
+        ) {
+            return false;
+        }
+        if let Some(current) = connection.conversation(&self.binding.terminal)
+            && current.epoch == connection.connection_epoch()
+        {
+            return current.resource == self.binding.session
+                && !current.closed
+                && current
+                    .native
+                    .as_ref()
+                    .is_none_or(|view| &view.activation == activation);
+        }
+        connection.status != Status::Attached
+            || connection.topology.as_ref().is_none_or(|topology| {
+                topology.agent_sessions.iter().any(|session| {
+                    session.id == self.binding.session
+                        && session.parent.as_ref() == Some(&self.binding.terminal)
+                })
+            })
+    }
+}
+
+fn subscribe_input(
+    input: &Entity<TextareaState>,
+    placement: &str,
+    window: &mut Window,
+    cx: &mut Context<Desk>,
+) -> Subscription {
+    let id = placement.to_owned();
+    cx.subscribe_in(input, window, move |desk, _, event: &InputEvent, _, cx| {
+        if let InputEvent::PressEnter { shift: false, .. } = event {
+            desk.send_conversation(&id, cx);
+        }
+        if matches!(event, InputEvent::Change) {
+            if let Some(face) = desk.conversation_faces.get_mut(&id)
+                && (face.pending.is_some() || face.delivered.is_some())
+            {
+                face.draft_changed_after_submit = true;
+                face.delivered = None;
+            }
+            cx.notify();
+        }
+    })
+}
+
 impl Desk {
     pub(crate) fn conversation_visible(&self, placement: &str) -> bool {
-        self.conversation_faces
-            .get(placement)
-            .is_some_and(|face| face.visible)
+        if let Some(face) = self.conversation_faces.get(placement) {
+            return face.visible;
+        }
+        if !self
+            .conversation_faces
+            .values()
+            .any(|face| face.orphaned && face.visible)
+        {
+            return false;
+        }
+        self.conversation_binding(placement).is_some_and(|binding| {
+            self.conversation_faces
+                .values()
+                .any(|face| face.orphaned && face.visible && face.binding == binding)
+        })
     }
 
     pub(crate) fn conversation_eligible(&self, placement: &str) -> bool {
@@ -92,7 +170,11 @@ impl Desk {
             server: connection.server_id()?,
             terminal: terminal.clone(),
             session: connection.conversation(terminal)?.resource.clone(),
-            activation: connection.conversation(terminal)?.native.as_ref().map(|view| view.activation.clone()),
+            activation: connection
+                .conversation(terminal)?
+                .native
+                .as_ref()
+                .map(|view| view.activation.clone()),
             client: std::sync::Arc::downgrade(&connection.client),
         })
     }
@@ -114,6 +196,20 @@ impl Desk {
             questions::prepare(self, placement, window, cx);
             return;
         }
+        // A daemon reexec recreates layout placements, not the SDK owner.
+        // Move the original editor, receipts, and question drafts together.
+        if let Some((_, mut face)) = self
+            .conversation_faces
+            .extract_if(|_, face| face.orphaned && face.binding == binding)
+            .next()
+        {
+            face.binding = binding;
+            face.orphaned = false;
+            face._subscription = subscribe_input(&face.input, placement, window, cx);
+            self.conversation_faces.insert(placement.to_owned(), face);
+            questions::prepare(self, placement, window, cx);
+            return;
+        }
         // Navigation to another AgentSession creates another draft and scroll scope.
         let visible = self.conversation_visible(placement);
         let input = cx.new(|cx| {
@@ -122,20 +218,12 @@ impl Desk {
                 .auto_grow(2, 6)
                 .submit_on_enter(true)
         });
-        let id = placement.to_owned();
-        let subscription =
-            cx.subscribe_in(&input, window, move |desk, _, event: &InputEvent, _, cx| {
-                if let InputEvent::PressEnter { shift: false, .. } = event {
-                    desk.send_conversation(&id, cx);
-                }
-                if matches!(event, InputEvent::Change) {
-                    cx.notify();
-                }
-            });
+        let subscription = subscribe_input(&input, placement, window, cx);
         self.conversation_faces.insert(
             placement.to_owned(),
             Face {
                 binding,
+                orphaned: false,
                 visible,
                 input,
                 _subscription: subscription,
@@ -143,6 +231,7 @@ impl Desk {
                 follow: true,
                 revision: 0,
                 pending: None,
+                draft_changed_after_submit: false,
                 error: None,
                 delivered: None,
                 notice: None,
@@ -184,8 +273,13 @@ impl Desk {
         else {
             return false;
         };
-        let view = self.link.as_ref().and_then(|link| link.connection.conversations.get(&face.binding.session))
-            .filter(|conversation| !conversation.closed && conversation.state.status != AgentSessionStatus::Ended)
+        let view = self
+            .link
+            .as_ref()
+            .and_then(|link| link.connection.conversations.get(&face.binding.session))
+            .filter(|conversation| {
+                !conversation.closed && conversation.state.status != AgentSessionStatus::Ended
+            })
             .and_then(|conversation| conversation.native.as_ref());
         if questions::focus(face, view, window, cx) {
             return true;
@@ -204,29 +298,51 @@ impl Desk {
         let mut changed = false;
         for event in events {
             if matches!(event, Event::StatusChanged(status) if *status != Status::Attached) {
-                for face in self.conversation_faces.values_mut().filter(|face| face.binding.activation.is_some()) {
+                for face in self
+                    .conversation_faces
+                    .values_mut()
+                    .filter(|face| face.binding.activation.is_some())
+                {
                     if !face.native_commands.is_empty() {
-                        let unknown = receipt_message(NativeDisposition::Unknown, Some("Connection changed before receipt."));
-                        for (_, question) in face.native_commands.drain() {
-                            if let Some(question) = question { face.question_status.insert(question, unknown.clone()); }
+                        let unknown = receipt_message(
+                            NativeDisposition::Unknown,
+                            Some("Connection changed before receipt."),
+                        );
+                        for question in face.native_commands.values().flatten() {
+                            if let Some(status) = face.question_status.get_mut(question) {
+                                status.clone_from(&unknown);
+                            }
                         }
-                        face.pending = None;
                         face.notice = Some(unknown);
                         changed = true;
                     }
                 }
             }
-            if let Event::NativeAgentResult { agent_session_id, operation_id, disposition, detail } = event {
+            if let Event::NativeAgentResult {
+                agent_session_id,
+                operation_id,
+                disposition,
+                detail,
+            } = event
+            {
                 for face in self.conversation_faces.values_mut() {
                     if &face.binding.session != agent_session_id
-                        || current_client.as_ref().is_none_or(|client| !client.ptr_eq(&face.binding.client))
+                        || current_client
+                            .as_ref()
+                            .is_none_or(|client| !client.ptr_eq(&face.binding.client))
                     {
                         continue;
                     }
-                    let Some(question) = face.native_commands.remove(operation_id) else { continue };
+                    let Some(question) = face.native_commands.get(operation_id) else {
+                        continue;
+                    };
                     changed = true;
                     let message = receipt_message(*disposition, detail.as_deref());
-                    if question.is_none() && !face.pending.as_ref().is_some_and(|(id, _)| id == operation_id)
+                    if question.is_none()
+                        && !face
+                            .pending
+                            .as_ref()
+                            .is_some_and(|(id, _)| id == operation_id)
                         && *disposition == NativeDisposition::Refused
                     {
                         face.interrupted_turn = None;
@@ -234,12 +350,28 @@ impl Desk {
                     if let Some(question) = question {
                         // Do not optimistically close SDK UI: queued is not provider consumption.
                         if matches!(disposition, NativeDisposition::Refused) {
-                            face.question_status.remove(&question);
-                        } else {
-                            face.question_status.insert(question, message.clone());
+                            face.question_status.remove(question);
+                        } else if let Some(status) = face.question_status.get_mut(question) {
+                            status.clone_from(&message);
                         }
                     }
-                    resolve_prompt_receipt(&mut face.pending, &mut face.delivered, *operation_id, *disposition);
+                    resolve_prompt_receipt(
+                        &mut face.pending,
+                        &mut face.delivered,
+                        *operation_id,
+                        *disposition,
+                    );
+                    if face.draft_changed_after_submit {
+                        face.delivered = None;
+                    }
+                    if matches!(
+                        disposition,
+                        NativeDisposition::Admitted
+                            | NativeDisposition::Completed
+                            | NativeDisposition::Refused
+                    ) {
+                        face.native_commands.remove(operation_id);
+                    }
                     face.notice = Some(message);
                 }
                 continue;
@@ -279,7 +411,9 @@ impl Desk {
                 changed = true;
                 match outcome {
                     DeliveryOutcome::Delivered => {
-                        face.delivered = Some(submitted);
+                        if !face.draft_changed_after_submit {
+                            face.delivered = Some(submitted);
+                        }
                         face.error = None;
                     }
                     DeliveryOutcome::Refused => {
@@ -302,13 +436,13 @@ impl Desk {
         &self,
         binding: &Binding,
         stop: bool,
-    ) -> Result<WriteIdentity, String> {
+    ) -> Result<WriteIdentity<'_>, String> {
         let connection = &self.link.as_ref().ok_or("Not connected")?.connection;
         let identity = connection.identity().ok_or("Not connected")?;
         let conversation = connection
             .conversation(&binding.terminal)
             .ok_or("The agent session is no longer available")?;
-        if binding.server != identity.server_id
+        if (binding.activation.is_none() && binding.server != identity.server_id)
             || binding.session != conversation.resource
             || !binding
                 .client
@@ -325,15 +459,21 @@ impl Desk {
         }
         if let Some(native) = native {
             if !native.connected {
-                return Err("SDK controller disconnected. Controls remain disabled; no terminal fallback.".into());
+                return Err(
+                    "SDK controller disconnected. Controls remain disabled; no terminal fallback."
+                        .into(),
+                );
             }
             if stop && (!native.capabilities.interrupt || native.turn_id.is_none()) {
                 return Err("This provider has no interruptible turn.".into());
             }
         } else if conversation.state.status == AgentSessionStatus::Blocked {
-            return Err("Attached-mode agent needs you. Open Terminal to answer its request.".into());
+            return Err(
+                "Attached-mode agent needs you. Open Terminal to answer its request.".into(),
+            );
         }
-        if identity.connection_epoch != conversation.epoch || connection.status != Status::Attached
+        if identity.connection_epoch != conversation.epoch
+            || connection.status != Status::Attached
             || (native.is_none() && !connection.ready(&binding.terminal))
         {
             return Err(
@@ -341,7 +481,7 @@ impl Desk {
                     .into(),
             );
         }
-        if stop && conversation.state.status != AgentSessionStatus::Working {
+        if stop && native.is_none() && conversation.state.status != AgentSessionStatus::Working {
             return Err("Stop is available only while the agent is working.".into());
         }
         if stop && native.is_none() && conversation.stop_requested {
@@ -351,18 +491,30 @@ impl Desk {
             connection: identity,
             stream: conversation.stream,
             state: conversation.state.status,
-            native: conversation.native.clone(),
+            native,
         })
     }
 
     pub(crate) fn conversation_writable(&self, placement: &str, stop: bool) -> bool {
         self.conversation_faces.get(placement).is_some_and(|face| {
             (face.pending.is_none() || (stop && face.binding.activation.is_some()))
-                && (!stop || self.link.as_ref().and_then(|link| link.connection.conversations.get(&face.binding.session))
-                    .and_then(|conversation| conversation.native.as_ref())
-                    .is_none_or(|view| face.interrupted_turn.as_ref() != view.turn_id.as_ref()))
-                && (stop || self.link.as_ref().and_then(|link| link.connection.conversations.get(&face.binding.session))
-                    .is_none_or(|conversation| conversation.native.as_ref().is_none_or(|view| prompt_available(view, conversation.state.status))))
+                && (!stop
+                    || self
+                        .link
+                        .as_ref()
+                        .and_then(|link| link.connection.conversations.get(&face.binding.session))
+                        .and_then(|conversation| conversation.native.as_ref())
+                        .is_none_or(|view| face.interrupted_turn.as_ref() != view.turn_id.as_ref()))
+                && (stop
+                    || self
+                        .link
+                        .as_ref()
+                        .and_then(|link| link.connection.conversations.get(&face.binding.session))
+                        .is_none_or(|conversation| {
+                            conversation.native.as_ref().is_none_or(|view| {
+                                prompt_available(view, conversation.state.status)
+                            })
+                        }))
                 && self
                     .conversation_write_identity(&face.binding, stop)
                     .is_ok()
@@ -387,7 +539,7 @@ impl Desk {
                 let client = self.client().ok_or("Not connected")?;
                 let result = client.with_control(|control| {
                     gate(control, &binding, &identity, false)?;
-                    if let Some(native) = identity.native.as_ref() {
+                    if let Some(native) = identity.native {
                         if !prompt_available(native, identity.state) {
                             return Err("This SDK does not accept a prompt in its current turn. Draft preserved.".into());
                         }
@@ -404,6 +556,7 @@ impl Desk {
             match result {
                 Ok(delivery) => {
                     face.pending = Some((delivery, text));
+                    face.draft_changed_after_submit = false;
                     if binding.activation.is_some() {
                         face.native_commands.insert(delivery, None);
                         face.notice = Some("Submitting to the SDK controller…".into());
@@ -430,10 +583,18 @@ impl Desk {
                 let client = self.client().ok_or("Not connected")?;
                 let result = client.with_control(|control| {
                     gate(control, &binding, &identity, true)?;
-                    if let Some(native) = identity.native.as_ref() {
+                    if let Some(native) = identity.native {
                         let turn_id = native.turn_id.clone().ok_or("The working turn changed")?;
-                        return control.native_agent_command(&binding.session, &native.activation, NativeIntent::Interrupt { turn_id: turn_id.clone() })
-                            .map(|operation| Some((operation, turn_id))).ok_or_else(|| "Native interrupt was not scheduled.".to_owned());
+                        return control
+                            .native_agent_command(
+                                &binding.session,
+                                &native.activation,
+                                NativeIntent::Interrupt {
+                                    turn_id: turn_id.clone(),
+                                },
+                            )
+                            .map(|operation| Some((operation, turn_id)))
+                            .ok_or_else(|| "Native interrupt was not scheduled.".to_owned());
                     }
                     if control.send_key(
                         &binding.terminal,
@@ -494,7 +655,9 @@ fn receipt_message(disposition: NativeDisposition, detail: Option<&str>) -> Stri
         NativeDisposition::Queued => "Queued — not yet confirmed consumed by provider",
         NativeDisposition::Completed => "Completed",
         NativeDisposition::Refused => "Refused — nothing retried; draft preserved",
-        NativeDisposition::Unknown => "Outcome unknown — inspect the conversation before resending; never retried automatically",
+        NativeDisposition::Unknown => {
+            "Outcome unknown — inspect the conversation before resending; never retried automatically"
+        }
     };
     match detail.filter(|detail| !detail.is_empty()) {
         Some(detail) => format!("{stage}: {detail}"),
@@ -503,7 +666,9 @@ fn receipt_message(disposition: NativeDisposition, detail: Option<&str>) -> Stri
 }
 
 fn prompt_available(view: &NativeView, state: AgentSessionStatus) -> bool {
-    view.connected && view.capabilities.prompt && view.questions.is_empty()
+    view.connected
+        && view.capabilities.prompt
+        && view.questions.is_empty()
         && (state != AgentSessionStatus::Working || view.capabilities.follow_up)
 }
 
@@ -513,9 +678,18 @@ fn resolve_prompt_receipt(
     operation: u64,
     disposition: NativeDisposition,
 ) {
+    if matches!(
+        disposition,
+        NativeDisposition::Queued | NativeDisposition::Unknown
+    ) {
+        return;
+    }
     if pending.as_ref().is_some_and(|(id, _)| *id == operation)
         && let Some((_, text)) = pending.take()
-        && matches!(disposition, NativeDisposition::Admitted | NativeDisposition::Completed)
+        && matches!(
+            disposition,
+            NativeDisposition::Admitted | NativeDisposition::Completed
+        )
     {
         *delivered = Some(text);
     }
@@ -524,7 +698,7 @@ fn resolve_prompt_receipt(
 fn gate(
     control: &phux_client_runtime::control::ControlPlane,
     binding: &Binding,
-    identity: &WriteIdentity,
+    identity: &WriteIdentity<'_>,
     stop: bool,
 ) -> Result<(), String> {
     let server = control
@@ -541,20 +715,29 @@ fn gate(
         topology.agent_sessions.iter().any(|session| {
             session.id == binding.session && session.parent.as_ref() == Some(&binding.terminal)
         })
-    })
-    {
+    }) {
         return Err("The agent session changed. Nothing was sent; wait for current records or open Terminal.".into());
     }
     if identity.native.is_some() {
-        let current = control.engine().and_then(|engine| engine.native_agent_view(&binding.session));
-        if current.as_ref() != identity.native.as_ref() || !current.as_ref().is_some_and(|view| view.connected) {
+        let current = control
+            .engine()
+            .and_then(|engine| engine.native_agent_view(&binding.session));
+        if current.as_ref() != identity.native
+            || !current.as_ref().is_some_and(|view| view.connected)
+        {
             return Err("SDK state changed. Nothing was sent; wait for current controls.".into());
         }
         return Ok(());
     }
     // Attached-mode lifecycle has no native activation/turn/question fencing.
-    if control.engine().and_then(|engine| engine.agent_stream_info(&binding.session)) != Some(identity.stream) {
-        return Err("The attached agent changed. Wait for current records or open Terminal.".into());
+    if control
+        .engine()
+        .and_then(|engine| engine.agent_stream_info(&binding.session))
+        != Some(identity.stream)
+    {
+        return Err(
+            "The attached agent changed. Wait for current records or open Terminal.".into(),
+        );
     }
     if identity.state == AgentSessionStatus::Blocked {
         return Err(
@@ -613,7 +796,11 @@ pub(crate) fn render(
     }
     let state = if conversation.closed {
         "closed · read-only"
-    } else if conversation.native.as_ref().is_some_and(|view| !view.connected) {
+    } else if conversation
+        .native
+        .as_ref()
+        .is_some_and(|view| !view.connected)
+    {
         "SDK disconnected · read-only"
     } else {
         match conversation.state.status {
@@ -628,13 +815,22 @@ pub(crate) fn render(
     let title = format!(
         "{} · {} · {state}",
         conversation.state.provider.as_deref().unwrap_or("Agent"),
-        if conversation.native.is_some() { "Native SDK" } else { "Attached TUI" },
+        if conversation.native.is_some() {
+            "Native SDK"
+        } else {
+            "Attached TUI"
+        },
     );
-    let native_identity = conversation.native.as_ref().map(|view| format!(
-        "{} · AgentSession {} · provider session {}",
-        view.backend, conversation.resource,
-        view.provider_session_id.as_deref().unwrap_or("not yet reported by SDK"),
-    ));
+    let native_identity = conversation.native.as_ref().map(|view| {
+        format!(
+            "{} · AgentSession {} · provider session {}",
+            view.backend,
+            conversation.resource,
+            view.provider_session_id
+                .as_deref()
+                .unwrap_or("not yet reported by SDK"),
+        )
+    });
     let rows = conversation
         .entries
         .iter()
@@ -647,11 +843,28 @@ pub(crate) fn render(
     let pending = face.pending.is_some();
     let error = face.error.clone();
     let notice = face.notice.clone();
-    let question_rows = questions::render(face, conversation.native.as_ref().filter(|_| !conversation.closed
-        && conversation.state.status != AgentSessionStatus::Ended), !conversation.closed
-        && desk.link.as_ref().is_some_and(|link| link.connection.status == Status::Attached
-            && conversation.epoch == link.connection.connection_epoch()), placement, colors, cx);
+    let question_rows = questions::render(
+        face,
+        conversation.native.as_ref().filter(|_| {
+            !conversation.closed && conversation.state.status != AgentSessionStatus::Ended
+        }),
+        !conversation.closed
+            && desk.link.as_ref().is_some_and(|link| {
+                link.connection.status == Status::Attached
+                    && conversation.epoch == link.connection.connection_epoch()
+            }),
+        placement,
+        colors,
+        cx,
+    );
     let native = conversation.native.is_some();
+    // SDK drafts are local: a provider question or delivery fence blocks Send,
+    // not composing the next message.
+    let editable = if native {
+        !conversation.closed && conversation.state.status != AgentSessionStatus::Ended
+    } else {
+        !pending && writable
+    };
     let following = face.follow;
     let terminal_id = placement.to_owned();
     let send_id = placement.to_owned();
@@ -694,7 +907,7 @@ pub(crate) fn render(
             }))))
         .children(error.map(|error| div().text_sm().text_color(from_hex(&colors.theme.warning)).child(error)))
         .children(notice.map(|notice| div().text_xs().text_color(from_hex(&colors.muted)).child(notice)))
-        .child(Textarea::new(&input).w_full().disabled(pending || !writable))
+        .child(Textarea::new(&input).w_full().disabled(!editable))
         .child(div().flex().items_center().gap(px(8.))
             .child(Button::new(SharedString::from(format!("conversation-send-{placement}"))).label(if pending { "Sending…" } else { "Send" }).primary().small().disabled(!writable || empty)
                 .on_click(cx.listener(move |desk, _, _, cx| desk.send_conversation(&send_id, cx))))
@@ -814,35 +1027,99 @@ mod tests {
     use phux_protocol::native_agent::{NativeCapabilities, NativeQuestion};
 
     #[test]
-    fn only_correlated_provider_admission_clears_a_prompt_draft() {
-        for disposition in [NativeDisposition::Queued, NativeDisposition::Unknown, NativeDisposition::Refused] {
-            let mut pending = Some((42, "draft".into()));
-            let mut delivered = None;
-            resolve_prompt_receipt(&mut pending, &mut delivered, 42, disposition);
-            assert!(delivered.is_none(), "{disposition:?} is not provider admission");
-            assert!(pending.is_none());
-        }
+    fn native_binding_survives_daemon_rotation_not_resource_or_activation_replacement() {
+        let binding = Binding {
+            server: "first-incarnation".into(),
+            terminal: ResourceId::local(1),
+            session: ResourceId::local(2),
+            activation: Some("durable-sdk-activation".into()),
+            client: std::sync::Weak::new(),
+        };
+        let mut resumed = binding.clone();
+        resumed.server = "next-incarnation".into();
+        assert!(binding == resumed);
+        resumed.activation = Some("replacement-sdk-activation".into());
+        assert!(binding != resumed);
+        resumed.activation.clone_from(&binding.activation);
+        resumed.session = ResourceId::local(3);
+        assert!(binding != resumed);
+        resumed.session = binding.session.clone();
+        resumed.terminal = ResourceId::local(4);
+        assert!(binding != resumed);
+        let mut attached = binding;
+        attached.activation = None;
+        resumed = attached.clone();
+        resumed.server = "next-incarnation".into();
+        assert!(
+            attached != resumed,
+            "an unowned TUI has no durable SDK identity"
+        );
+    }
+
+    #[test]
+    fn queued_and_unknown_prompt_waits_for_correlated_provider_admission() {
         let mut pending = Some((42, "draft".into()));
         let mut delivered = None;
-        resolve_prompt_receipt(&mut pending, &mut delivered, 41, NativeDisposition::Admitted);
-        assert!(pending.is_some(), "another operation cannot clear this draft");
-        resolve_prompt_receipt(&mut pending, &mut delivered, 42, NativeDisposition::Admitted);
+        for disposition in [NativeDisposition::Queued, NativeDisposition::Unknown] {
+            resolve_prompt_receipt(&mut pending, &mut delivered, 42, disposition);
+            assert!(
+                pending.is_some(),
+                "an unresolved SDK input must not become resubmittable"
+            );
+            assert!(
+                delivered.is_none(),
+                "queueing or ambiguity cannot consume the draft"
+            );
+        }
+        resolve_prompt_receipt(
+            &mut pending,
+            &mut delivered,
+            41,
+            NativeDisposition::Admitted,
+        );
+        assert!(
+            pending.is_some(),
+            "another operation cannot consume this draft"
+        );
+        resolve_prompt_receipt(
+            &mut pending,
+            &mut delivered,
+            42,
+            NativeDisposition::Admitted,
+        );
+        assert!(pending.is_none());
         assert_eq!(delivered.as_deref(), Some("draft"));
     }
 
     #[test]
     fn native_prompts_obey_actual_capabilities_and_open_questions() {
         let mut view = NativeView {
-            activation: "actual-activation".into(), backend: "omp-rpc".into(), connected: true,
-            capabilities: NativeCapabilities { prompt: true, interrupt: true, questions: true, follow_up: false },
-            turn_id: None, provider_session_id: None, questions: vec![],
+            activation: "actual-activation".into(),
+            backend: "omp-rpc".into(),
+            connected: true,
+            capabilities: NativeCapabilities {
+                prompt: true,
+                interrupt: true,
+                questions: true,
+                follow_up: false,
+            },
+            turn_id: None,
+            provider_session_id: None,
+            questions: vec![],
         };
         assert!(prompt_available(&view, AgentSessionStatus::Idle));
         assert!(!prompt_available(&view, AgentSessionStatus::Working));
         view.capabilities.follow_up = true;
         assert!(prompt_available(&view, AgentSessionStatus::Working));
-        view.questions.push(NativeQuestion { id: "real-question".into(), kind: "permission".into(), title: "Permission".into(),
-            message: "Tool call".into(), options: vec![], questions: vec![], fields: serde_json::json!({}) });
+        view.questions.push(NativeQuestion {
+            id: "real-question".into(),
+            kind: "permission".into(),
+            title: "Permission".into(),
+            message: "Tool call".into(),
+            options: vec![],
+            questions: vec![],
+            fields: serde_json::json!({}),
+        });
         assert!(!prompt_available(&view, AgentSessionStatus::Blocked));
         view.questions.clear();
         view.connected = false;

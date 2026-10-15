@@ -13,7 +13,7 @@ use phux_protocol::wire::frame::{Command, FrameKind, TerminalSignal};
 use phux_protocol::wire::frame::{AttachTarget, InputMode, ReportedAgentState};
 
 use super::{
-    ConnectionGrant, World, admits, admits_command, attach, command, get_screen,
+    ConnectionGrant, World, admits, admits_command, agent_child, attach, command, get_screen,
     organization_samples, samples, scoped, world,
 };
 use crate::delegation::{AGENT_VERBS, DelegatedCredential, DelegationError, DelegationRequest};
@@ -81,9 +81,10 @@ fn a_delegated_agent_is_a_credential_acting_for_the_owner() {
 #[test]
 fn a_delegated_agent_is_admitted_only_rows_needing_agent_verbs() {
     let mut world = world();
+    let child = agent_child(&mut world);
     let grant = agent(&mut world);
     let mut admitted = 0;
-    for frame in &samples(&world) {
+    for frame in &samples(&world, &child) {
         if !admits(&world, &grant, frame) {
             continue;
         }

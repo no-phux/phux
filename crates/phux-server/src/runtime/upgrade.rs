@@ -80,7 +80,9 @@ pub(super) enum UpgradeError {
     /// SDK-owned streams are part of a durable provider session, so unlike
     /// optional attached streams they may never be dropped at an upgrade cut.
     #[error("native agent {agent:?} did not provide its mandatory upgrade cut")]
-    NativeAgentHandoff { agent: phux_protocol::ids::ResourceId },
+    NativeAgentHandoff {
+        agent: phux_protocol::ids::ResourceId,
+    },
 }
 
 /// A private executable snapshot copied from one opened source inode, so the
@@ -230,18 +232,24 @@ impl NativeBrokerSeal {
     fn new(state: &SharedState) -> Result<Self, UpgradeError> {
         let admitted = state.with_mut(|s| {
             let broker = s.native_agents_mut();
-            if broker.sealed { return false; }
+            if broker.sealed {
+                return false;
+            }
             broker.sealed = true;
             true
         });
-        admitted.then(|| Self(state.clone())).ok_or(UpgradeError::TreeChanged)
+        admitted
+            .then(|| Self(state.clone()))
+            .ok_or(UpgradeError::TreeChanged)
     }
 }
 impl Drop for NativeBrokerSeal {
     fn drop(&mut self) {
         self.0.with_mut(|s| {
             s.native_agents_mut().sealed = false;
-            for wake in s.native_agents().wakes.values() { wake.notify_waiters(); }
+            for wake in s.native_agents().wakes.values() {
+                wake.notify_waiters();
+            }
         });
     }
 }
@@ -271,10 +279,17 @@ pub(super) async fn prepare_upgrade(state: &SharedState) -> Result<UpgradePlan, 
             panes: panes?,
             agent_sessions,
         };
-        if let Some(agent) = state.with(|s| s.native_agents().bindings.values()
-            .filter(|binding| !binding.closed)
-            .find(|binding| s.terminal_from_wire(&binding.agent).is_none_or(|id| !handoffs.agent_sessions.contains_key(&id)))
-            .map(|binding| binding.agent.clone())) {
+        if let Some(agent) = state.with(|s| {
+            s.native_agents()
+                .bindings
+                .values()
+                .filter(|binding| !binding.closed)
+                .find(|binding| {
+                    s.terminal_from_wire(&binding.agent)
+                        .is_none_or(|id| !handoffs.agent_sessions.contains_key(&id))
+                })
+                .map(|binding| binding.agent.clone())
+        }) {
             return Err(UpgradeError::NativeAgentHandoff { agent });
         }
         let blob = reassemble_unchanged_tree(

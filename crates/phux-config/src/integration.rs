@@ -1,8 +1,8 @@
 //! Agent integration templates (`integrations/<id>.toml`, ADR-0042): the
 //! launchable agents a plugin ships.
 //!
-//! Only what the launcher needs is modeled (`id`, `display_name`, `kind`,
-//! `[launch]`, `[session_identity]`, `[agent_identity]`); other keys are
+//! What the launcher needs is modeled (`id`, `display_name`, `kind`,
+//! `[launch]`, `[native]`, `[session_identity]`, `[agent_identity]`); other keys are
 //! ignored, not rejected, so the package format can grow.
 
 use std::path::{Path, PathBuf};
@@ -38,6 +38,8 @@ pub struct IntegrationTemplate {
     pub kind: Option<String>,
     /// The `[launch]` command; without one the template is not launchable.
     pub launch: Option<IntegrationLaunch>,
+    /// Explicit SDK/API execution, never inferred from terminal argv or kind.
+    pub native: Option<IntegrationNativeLaunch>,
     /// Canonical path the template was loaded from.
     pub template_path: PathBuf,
     /// Provider-native session identity and restore policy, when declared.
@@ -69,6 +71,42 @@ pub struct IntegrationLaunch {
     pub required_executables: Vec<String>,
     /// Directory the launched program runs in.
     pub working_directory: LaunchWorkingDirectory,
+}
+
+/// Provider transport used by a declared native launch.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum NativeBackend {
+    /// Official OMP Rust RPC SDK.
+    OmpRpc,
+    /// Official Agent Client Protocol Rust SDK.
+    Acp,
+    /// Official provider SDK or version-matched app-server client in Node.
+    Node,
+}
+
+impl NativeBackend {
+    /// Stable transport name used by the native host.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::OmpRpc => "omp-rpc",
+            Self::Acp => "acp",
+            Self::Node => "node",
+        }
+    }
+}
+
+/// A template's `[native]` declaration. It selects actual API execution;
+/// terminal launch settings do not establish native control capabilities.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntegrationNativeLaunch {
+    /// SDK transport, selected explicitly by the template.
+    pub backend: NativeBackend,
+    /// Harness slug carried by the structured AgentSession.
+    pub provider: String,
+    /// Native executable argv, prerequisites, and working-directory policy.
+    pub launch: IntegrationLaunch,
 }
 
 /// A template's `[session_identity]` policy; natively restorable only with
@@ -252,6 +290,8 @@ struct RawTemplate {
     #[serde(default)]
     launch: Option<RawLaunch>,
     #[serde(default)]
+    native: Option<RawNativeLaunch>,
+    #[serde(default)]
     session_identity: Option<RawSessionIdentity>,
     #[serde(default)]
     agent_identity: Option<RawAgentIdentity>,
@@ -273,6 +313,14 @@ struct RawLaunch {
     required_executables: Vec<String>,
     #[serde(default)]
     working_directory: LaunchWorkingDirectory,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawNativeLaunch {
+    backend: NativeBackend,
+    provider: String,
+    #[serde(flatten)]
+    launch: RawLaunch,
 }
 
 #[derive(Debug, Deserialize)]
@@ -325,6 +373,29 @@ pub fn parse_integration_template(
         .launch
         .map(|raw_launch| build_launch(&id, path, raw_launch))
         .transpose()?;
+    let native = raw
+        .native
+        .map(|native| {
+            let provider = native.provider.trim().to_owned();
+            if provider.is_empty()
+                || provider.len() > 32
+                || !provider
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+            {
+                return Err(invalid(
+                    path,
+                    &id,
+                    "`[native] provider` must be a harness slug",
+                ));
+            }
+            Ok(IntegrationNativeLaunch {
+                backend: native.backend,
+                provider,
+                launch: build_launch(&id, path, native.launch)?,
+            })
+        })
+        .transpose()?;
     let session_identity = raw
         .session_identity
         .map(|raw_session| build_session_identity(&id, path, raw_session))
@@ -338,6 +409,7 @@ pub fn parse_integration_template(
         display_name: raw.display_name.as_deref().and_then(trim_optional),
         kind: raw.kind.as_deref().and_then(trim_optional),
         launch,
+        native,
         session_identity,
         template_path: path.to_path_buf(),
         agent_identity: raw

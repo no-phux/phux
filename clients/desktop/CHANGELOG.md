@@ -10,6 +10,15 @@
 - Surface SDK runtime/license setup and queued/admitted/refused/unknown outcomes
   without silent installs, automatic approvals or terminal-key fallback.
 
+### Bug Fixes
+
+- Preserve an SDK conversation's editor, pending receipts and question drafts
+  when a graceful server handoff recreates desktop layout placements. Rebind
+  only to the same endpoint, parent, AgentSession and SDK activation; a
+  replacement owner never inherits the old draft.
+- Keep native draft editing and Stop available while a provider question blocks
+  another prompt. Queued or ambiguous delivery never consumes or resends a draft.
+
 ## [0.8.6](https://github.com/no-phux/phux/compare/desktop-v0.8.5...desktop-v0.8.6) (2026-10-14)
 
 

@@ -38,10 +38,16 @@ impl ControlPlane {
         self.observe_roster_event(&event);
         let event = match event {
             AgentEvent::NativeAgentResult {
-                agent_session_id, operation_id, disposition, detail,
+                agent_session_id,
+                operation_id,
+                disposition,
+                detail,
             } => {
                 self.push_event(Event::NativeAgentResult {
-                    agent_session_id, operation_id, disposition, detail,
+                    agent_session_id,
+                    operation_id,
+                    disposition,
+                    detail,
                 });
                 return Ok(());
             }

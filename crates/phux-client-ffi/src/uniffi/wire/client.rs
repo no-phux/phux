@@ -721,7 +721,8 @@ impl RemoteClient {
             serde_json::from_str(&intent_json).ok()?;
         intent.validate().ok()?;
         let id = id::parse(&agent_session_id)?;
-        self.runtime_client()?.native_agent_command(&id, &activation, intent)
+        self.runtime_client()?
+            .native_agent_command(&id, &activation, intent)
     }
 
     pub fn apply_line(&self, terminal_id: String, text: String) -> u64 {
@@ -1096,7 +1097,10 @@ impl RemoteClient {
                 .into(),
             ),
             Event::NativeAgentResult {
-                agent_session_id, operation_id, disposition, detail,
+                agent_session_id,
+                operation_id,
+                disposition,
+                detail,
             } => projected.push(WireEvent::NativeAgentResult {
                 agent_session_id: id::encode(&agent_session_id),
                 operation_id,
@@ -1106,7 +1110,8 @@ impl RemoteClient {
                     phux_protocol::native_agent::NativeDisposition::Completed => "completed",
                     phux_protocol::native_agent::NativeDisposition::Refused => "refused",
                     phux_protocol::native_agent::NativeDisposition::Unknown => "unknown",
-                }.into(),
+                }
+                .into(),
                 detail,
             }),
             Event::AgentMetadata { terminal_id, value } => {
@@ -1195,24 +1200,25 @@ mod tests {
         use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ServerCapabilities};
         use phux_protocol::native_agent::{NativeDisposition, NativeRequest};
         let mut remote = RemoteClient::new("unused".into(), 0, 0, None, None);
-        let runtime = phux_client_runtime::Runtime::embedded(
-            phux_client_runtime::control::ControlOptions {
+        let runtime =
+            phux_client_runtime::Runtime::embedded(phux_client_runtime::control::ControlOptions {
                 automatic_lifecycle: false,
                 ..phux_client_runtime::control::ControlOptions::default()
-            },
-        );
+            });
         *Arc::get_mut(&mut remote).unwrap().client.get_mut().unwrap() = Some(runtime.clone());
         runtime.with_control(phux_client_runtime::control::ControlPlane::connection_opened);
         runtime.take_outbound();
-        runtime.feed(FrameKind::HelloOk {
-            protocol_major: phux_protocol::PROTOCOL_VERSION.major,
-            protocol_minor: phux_protocol::PROTOCOL_VERSION.minor,
-            protocol_patch: phux_protocol::PROTOCOL_VERSION.patch,
-            server_caps: ServerCapabilities::new(),
-            server_id: vec![0xAB; 16],
-            selected_profile: BootstrapProfile::SynthesizedVtRaw,
-            bootstrap_limits: BootstrapLimits::default(),
-        }).unwrap();
+        runtime
+            .feed(FrameKind::HelloOk {
+                protocol_major: phux_protocol::PROTOCOL_VERSION.major,
+                protocol_minor: phux_protocol::PROTOCOL_VERSION.minor,
+                protocol_patch: phux_protocol::PROTOCOL_VERSION.patch,
+                server_caps: ServerCapabilities::new(),
+                server_id: vec![0xAB; 16],
+                selected_profile: BootstrapProfile::SynthesizedVtRaw,
+                bootstrap_limits: BootstrapLimits::default(),
+            })
+            .unwrap();
         runtime.take_outbound();
         for json in [
             r#"{"type":"prompt","text":" "}"#.to_owned(),
@@ -1221,13 +1227,27 @@ mod tests {
             r#"{"type":"prompt","text":"ok","unexpected":true}"#.to_owned(),
             "x".repeat(phux_protocol::native_agent::MAX_NATIVE_PAYLOAD_BYTES + 1),
         ] {
-            assert_eq!(remote.native_agent_command("local:22".into(), "activation-A".into(), json), None);
+            assert_eq!(
+                remote.native_agent_command("local:22".into(), "activation-A".into(), json),
+                None
+            );
         }
-        assert_eq!(remote.native_agent_command("not-an-id".into(), "activation-A".into(), r#"{"type":"prompt","text":"ok"}"#.into()), None);
+        assert_eq!(
+            remote.native_agent_command(
+                "not-an-id".into(),
+                "activation-A".into(),
+                r#"{"type":"prompt","text":"ok"}"#.into()
+            ),
+            None
+        );
         assert!(runtime.take_outbound().is_empty());
-        let operation_id = remote.native_agent_command(
-            "local:22".into(), "activation-A".into(), r#"{"type":"prompt","text":"ok"}"#.into(),
-        ).unwrap();
+        let operation_id = remote
+            .native_agent_command(
+                "local:22".into(),
+                "activation-A".into(),
+                r#"{"type":"prompt","text":"ok"}"#.into(),
+            )
+            .unwrap();
         let outbound = runtime.take_outbound();
         assert_eq!(outbound.len(), 1);
         let (frame, rest) = FrameKind::decode(&outbound[0]).unwrap();
@@ -1244,14 +1264,24 @@ mod tests {
             (NativeDisposition::Refused, "refused"),
             (NativeDisposition::Unknown, "unknown"),
         ] {
-            remote.project_event(Event::NativeAgentResult {
-                agent_session_id: ResourceId::local(22), operation_id,
-                disposition, detail: Some("SDK UI submission only".into()),
-            }, &mut projected);
-            assert_eq!(projected.last(), Some(&WireEvent::NativeAgentResult {
-                agent_session_id: "local:22".into(), operation_id,
-                disposition: word.into(), detail: Some("SDK UI submission only".into()),
-            }));
+            remote.project_event(
+                Event::NativeAgentResult {
+                    agent_session_id: ResourceId::local(22),
+                    operation_id,
+                    disposition,
+                    detail: Some("SDK UI submission only".into()),
+                },
+                &mut projected,
+            );
+            assert_eq!(
+                projected.last(),
+                Some(&WireEvent::NativeAgentResult {
+                    agent_session_id: "local:22".into(),
+                    operation_id,
+                    disposition: word.into(),
+                    detail: Some("SDK UI submission only".into()),
+                })
+            );
         }
         assert!(remote.take_input_deliveries().is_empty());
     }

@@ -15,9 +15,9 @@ impl Client {
         activation: &str,
         intent: phux_protocol::native_agent::NativeIntent,
     ) -> Option<u64> {
-        let operation = self.inner.with(|control| {
-            control.native_agent_command(agent_session_id, activation, intent)
-        });
+        let operation = self
+            .inner
+            .with(|control| control.native_agent_command(agent_session_id, activation, intent));
         if operation.is_some() {
             self.nudge();
         }

@@ -884,6 +884,7 @@ impl ControlPlane {
         self.input_replay.connection_lost();
         self.org_connection_lost();
         self.reset_extension_correlations("the connection ended before the server answered");
+        self.fail_native_pending("the connection ended before the server answered");
         if let Some(message) = &message {
             self.error = Some(message.clone());
         }

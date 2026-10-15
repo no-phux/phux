@@ -396,9 +396,16 @@ fn titlebar(
                 .items_center()
                 .gap(px(2.))
                 .pr(px(8.))
-                .child(Button::new("launch-native-agent").label("New Agent").ghost().small()
-                    .tooltip("Launch a server-owned native SDK conversation")
-                    .on_click(cx.listener(|desk, _, window, cx| desk.execute("native-agent", window, cx))))
+                .child(
+                    Button::new("launch-native-agent")
+                        .label("New Agent")
+                        .ghost()
+                        .small()
+                        .tooltip("Launch a server-owned native SDK conversation")
+                        .on_click(cx.listener(|desk, _, window, cx| {
+                            desk.execute("native-agent", window, cx)
+                        })),
+                )
                 .child(icon_button(
                     "new-tab",
                     IconName::Plus,

@@ -92,7 +92,8 @@ impl Conversation {
             if let Some(entry) = record.transcript_entry() {
                 if !self.has_transcript {
                     // SDK setup/auth/capability notices must not disappear when prose starts.
-                    self.entries.retain(|entry| entry.id.starts_with("notification:"));
+                    self.entries
+                        .retain(|entry| entry.id.starts_with("notification:"));
                     self.bytes = self.entries.iter().map(entry_bytes).sum();
                     self.omitted = false;
                     self.has_transcript = true;
@@ -173,7 +174,15 @@ fn timeline(record: &AgentEventRecord) -> Option<TranscriptEntry> {
         AgentEventKind::ProviderRaw | AgentEventKind::Unknown(_) => return None,
     };
     Some(TranscriptEntry {
-        id: format!("{}:{}", if record.kind == AgentEventKind::Notification { "notification" } else { "timeline" }, record.seq),
+        id: format!(
+            "{}:{}",
+            if record.kind == AgentEventKind::Notification {
+                "notification"
+            } else {
+                "timeline"
+            },
+            record.seq
+        ),
         role: TranscriptRole::System,
         text,
         truncated: false,
@@ -456,23 +465,50 @@ mod tests {
 
     #[test]
     fn sdk_auth_and_capability_notices_remain_visible_alongside_prose() {
-        let info = AgentSessionInfo { parent: Some(ResourceId::local(1)), ..Default::default() };
+        let info = AgentSessionInfo {
+            parent: Some(ResourceId::local(1)),
+            ..Default::default()
+        };
         let notice = |seq, message| AgentEventRecord {
-            seq, ts_ms: 0, kind: AgentEventKind::Notification,
+            seq,
+            ts_ms: 0,
+            kind: AgentEventKind::Notification,
             data: json!({"level":"warning","message":message}),
         };
-        let first = publication(AgentRecordMode::Replace, 2, vec![
-            notice(1, "Authenticate on the executing host"), row(2, "reply", "Existing transcript"),
-        ]);
+        let first = publication(
+            AgentRecordMode::Replace,
+            2,
+            vec![
+                notice(1, "Authenticate on the executing host"),
+                row(2, "reply", "Existing transcript"),
+            ],
+        );
         let mut conversation = Conversation::new(&first, &info, 1).unwrap();
         conversation.apply(&first, &info, 1);
-        conversation.apply(&publication(AgentRecordMode::Append, 3, vec![
-            notice(3, "Native capability unavailable; no terminal fallback"),
-        ]), &info, 1);
-        let text = conversation.entries.iter().map(|entry| entry.text.as_str()).collect::<Vec<_>>();
-        assert_eq!(text, vec![
-            "warning: Authenticate on the executing host", "Existing transcript",
-            "warning: Native capability unavailable; no terminal fallback",
-        ]);
+        conversation.apply(
+            &publication(
+                AgentRecordMode::Append,
+                3,
+                vec![notice(
+                    3,
+                    "Native capability unavailable; no terminal fallback",
+                )],
+            ),
+            &info,
+            1,
+        );
+        let text = conversation
+            .entries
+            .iter()
+            .map(|entry| entry.text.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            text,
+            vec![
+                "warning: Authenticate on the executing host",
+                "Existing transcript",
+                "warning: Native capability unavailable; no terminal fallback",
+            ]
+        );
     }
 }

@@ -286,6 +286,8 @@ pub(crate) mod codes {
     pub(crate) const JSON_SERIALIZE: &str = "json_serialize";
     /// A local state-directory write failed (a bug-report bundle).
     pub(crate) const IO: &str = "io";
+    /// Isolated provider SDK runtime setup or a host prerequisite failed.
+    pub(crate) const SDK_RUNTIME: &str = "sdk_runtime";
     /// A client-side invariant this binary should never break.
     pub(crate) const INTERNAL_ERROR: &str = "internal_error";
     /// `snapshot --format html|vt` got an `Ok` reply with no rendered

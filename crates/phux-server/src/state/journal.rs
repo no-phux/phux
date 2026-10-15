@@ -402,8 +402,11 @@ fn event_body_bytes(event: &AgentEvent) -> usize {
             ..
         } => id.len() + question.len() + suggestions.iter().map(|s| s.len() + 4).sum::<usize>(),
         AgentEvent::Unknown { body, .. } => body.len(),
-        AgentEvent::NativeAgentResult { agent_session_id, detail, .. } =>
-            resource_id_bytes(Some(agent_session_id)) + detail.as_ref().map_or(0, String::len),
+        AgentEvent::NativeAgentResult {
+            agent_session_id,
+            detail,
+            ..
+        } => resource_id_bytes(Some(agent_session_id)) + detail.as_ref().map_or(0, String::len),
         _ => 0,
     };
     16 + variable

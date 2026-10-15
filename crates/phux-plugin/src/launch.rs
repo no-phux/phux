@@ -8,12 +8,31 @@ use std::path::{Path, PathBuf};
 
 use phux_config::integration::{
     self, IntegrationAgentIdentity, IntegrationError, IntegrationLaunch,
-    IntegrationSessionIdentity, IntegrationTemplate, LaunchWorkingDirectory, SessionResumeError,
+    IntegrationSessionIdentity, IntegrationTemplate, LaunchWorkingDirectory, NativeBackend,
+    SessionResumeError,
 };
 use phux_config::loader as config_loader;
 
 /// Where a plugin ships its integration templates, relative to its root.
 const INTEGRATIONS_DIR: &str = "integrations";
+
+/// Select terminal execution or an explicitly declared native SDK transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchMode {
+    /// Existing interactive terminal integration.
+    Terminal,
+    /// Native SDK/API host; absence is an error, never a terminal fallback.
+    Native,
+}
+
+/// The actual SDK transport selected for a native launch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeExecution {
+    /// Declared SDK transport.
+    pub backend: NativeBackend,
+    /// Declared structured harness identity.
+    pub provider: String,
+}
 
 /// A fully resolved launch: the argv to spawn, where, and from which plugin.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +55,8 @@ pub struct ResolvedLaunch {
     pub session_identity: Option<IntegrationSessionIdentity>,
     /// The launched agent's self-declared identity, when declared.
     pub agent_identity: Option<IntegrationAgentIdentity>,
+    /// Native SDK transport, only when explicitly selected.
+    pub native: Option<NativeExecution>,
 }
 
 impl ResolvedLaunch {
@@ -77,6 +98,10 @@ pub struct LaunchableIntegration {
     pub kind: Option<String>,
     /// The launched agent's self-declared identity (its detection kind).
     pub agent_identity: Option<IntegrationAgentIdentity>,
+    /// Declared native transport, independently of terminal prerequisites.
+    pub native: Option<NativeExecution>,
+    /// Missing prerequisites for the selected execution mode.
+    pub missing_executables: Vec<String>,
 }
 
 /// Failure resolving a launch before a spawnable argv exists.
@@ -148,6 +173,12 @@ pub enum LaunchError {
         /// Requested integration id.
         name: String,
     },
+    /// No supported native SDK/API launch was declared.
+    #[error("integration {name:?} is terminal-only; it declares no `[native]` SDK launch")]
+    NoNativeLaunch {
+        /// Requested integration id.
+        name: String,
+    },
     /// The integration is valid but one or more external programs it needs
     /// are not executable on the launcher's `PATH`.
     #[error(
@@ -182,12 +213,14 @@ pub fn resolve_launch(
     integration_id: &str,
     extra_args: &[String],
     workspace_cwd: &Path,
+    mode: LaunchMode,
 ) -> Result<ResolvedLaunch, LaunchError> {
     resolve_loaded(
         load_templates(config_path)?,
         integration_id,
         extra_args,
         workspace_cwd,
+        mode,
     )
 }
 
@@ -197,6 +230,7 @@ fn resolve_loaded(
     integration_id: &str,
     extra_args: &[String],
     workspace_cwd: &Path,
+    mode: LaunchMode,
 ) -> Result<ResolvedLaunch, LaunchError> {
     let mut available: Vec<String> = Vec::new();
     // The plugin owning the requested id, and the launch its template
@@ -214,12 +248,9 @@ fn resolve_loaded(
             // A broken sibling must not block a healthy launch.
             Err(_) => continue,
         };
-        let missing = template
-            .launch
-            .as_ref()
-            .map(missing_executables)
-            .unwrap_or_default();
-        if template.launch.is_some() && missing.is_empty() {
+        let launch = selected_launch(&template, mode);
+        let missing = launch.map(missing_executables).unwrap_or_default();
+        if launch.is_some() && missing.is_empty() {
             available.push(template.id.clone());
         }
         if template.id != integration_id {
@@ -233,7 +264,7 @@ fn resolve_loaded(
             });
         }
         let name = integration_id.to_owned();
-        let outcome = match (&template.launch, missing.is_empty()) {
+        let outcome = match (launch, missing.is_empty()) {
             (Some(launch), true) => Ok(build_resolved(
                 &entry.plugin_id,
                 &entry.plugin_root,
@@ -241,8 +272,10 @@ fn resolve_loaded(
                 launch,
                 extra_args,
                 workspace_cwd,
+                mode,
             )),
             (_, false) => Err(LaunchError::MissingExecutables { name, missing }),
+            (None, true) if mode == LaunchMode::Native => Err(LaunchError::NoNativeLaunch { name }),
             (None, true) => Err(LaunchError::NoLaunchCommand { name }),
         };
         matched = Some((entry.plugin_id, outcome));
@@ -255,6 +288,20 @@ fn resolve_loaded(
     Err(LaunchError::NotFound {
         name: integration_id.to_owned(),
         available,
+    })
+}
+
+fn selected_launch(template: &IntegrationTemplate, mode: LaunchMode) -> Option<&IntegrationLaunch> {
+    match mode {
+        LaunchMode::Terminal => template.launch.as_ref(),
+        LaunchMode::Native => template.native.as_ref().map(|native| &native.launch),
+    }
+}
+
+fn native_execution(template: &IntegrationTemplate) -> Option<NativeExecution> {
+    template.native.as_ref().map(|native| NativeExecution {
+        backend: native.backend,
+        provider: native.provider.clone(),
     })
 }
 
@@ -280,6 +327,7 @@ pub fn resolve_launch_for_kind(
     kind: &str,
     extra_args: &[String],
     workspace_cwd: &Path,
+    mode: LaunchMode,
 ) -> Result<ResolvedLaunch, KindLaunchError> {
     let loaded = match load_templates(config_path) {
         Ok(loaded) => loaded,
@@ -292,7 +340,7 @@ pub fn resolve_launch_for_kind(
     };
     let integration_id = match explicit_id {
         Some(explicit) => explicit.to_owned(),
-        None => match integration_for_kind(kind, &launchable(&loaded)) {
+        None => match integration_for_kind(kind, &launchable(&loaded, mode)) {
             KindClaim::Unique(id) => id,
             KindClaim::Unclaimed => kind.to_owned(),
             KindClaim::Ambiguous(claimants) => {
@@ -303,7 +351,7 @@ pub fn resolve_launch_for_kind(
             }
         },
     };
-    resolve_loaded(loaded, &integration_id, extra_args, workspace_cwd).map_err(|source| {
+    resolve_loaded(loaded, &integration_id, extra_args, workspace_cwd, mode).map_err(|source| {
         KindLaunchError::Resolve {
             integration_id,
             source,
@@ -383,18 +431,22 @@ pub fn integration_for_kind(kind: &str, launchable: &[LaunchableIntegration]) ->
 /// # Errors
 ///
 /// When the config, a manifest, or an `integrations/` directory fails.
-pub fn list_launchable(config_path: &Path) -> Result<Vec<LaunchableIntegration>, LaunchError> {
-    Ok(launchable(&load_templates(config_path)?))
+pub fn list_launchable(
+    config_path: &Path,
+    mode: LaunchMode,
+) -> Result<Vec<LaunchableIntegration>, LaunchError> {
+    Ok(launchable(&load_templates(config_path)?, mode))
 }
 
 /// [`list_launchable`] over an already-walked plugin tree.
-fn launchable(loaded: &[LoadedTemplate]) -> Vec<LaunchableIntegration> {
+fn launchable(loaded: &[LoadedTemplate], mode: LaunchMode) -> Vec<LaunchableIntegration> {
     loaded
         .iter()
         .filter_map(|entry| {
             let template = entry.template.as_ref().ok()?;
-            let launch = template.launch.as_ref()?;
-            if !missing_executables(launch).is_empty() {
+            let launch = selected_launch(template, mode)?;
+            let missing_executables = missing_executables(launch);
+            if mode == LaunchMode::Terminal && !missing_executables.is_empty() {
                 return None;
             }
             Some(LaunchableIntegration {
@@ -403,6 +455,8 @@ fn launchable(loaded: &[LoadedTemplate]) -> Vec<LaunchableIntegration> {
                 display_name: template.display_name.clone(),
                 kind: template.kind.clone(),
                 agent_identity: template.agent_identity.clone(),
+                native: native_execution(template),
+                missing_executables,
             })
         })
         .collect()
@@ -413,17 +467,28 @@ fn missing_executables(launch: &IntegrationLaunch) -> Vec<String> {
     launch
         .required_executables
         .iter()
-        .filter(|name| !executable_on_path(name, path.as_deref()))
+        .filter(|name| executable_at_path(name, path.as_deref()).is_none())
         .cloned()
         .collect()
 }
 
-fn executable_on_path(name: &str, path: Option<&OsStr>) -> bool {
-    path.is_some_and(|value| {
-        std::env::split_paths(value)
-            .map(|dir| dir.join(name))
-            .any(|candidate| is_executable(&candidate))
-    })
+/// Resolve the executable that will actually run on this host.
+#[must_use]
+pub fn executable_path(name: &str) -> Option<PathBuf> {
+    executable_at_path(name, std::env::var_os("PATH").as_deref())
+}
+
+fn executable_at_path(name: &str, path: Option<&OsStr>) -> Option<PathBuf> {
+    let direct = Path::new(name);
+    if direct.components().count() > 1 {
+        return is_executable(direct)
+            .then(|| direct.canonicalize().ok())
+            .flatten();
+    }
+    std::env::split_paths(path?)
+        .map(|dir| dir.join(name))
+        .find(|candidate| is_executable(candidate))
+        .and_then(|candidate| candidate.canonicalize().ok())
 }
 
 fn is_executable(path: &Path) -> bool {
@@ -451,6 +516,7 @@ fn build_resolved(
     launch: &IntegrationLaunch,
     extra_args: &[String],
     workspace_cwd: &Path,
+    mode: LaunchMode,
 ) -> ResolvedLaunch {
     let argv = integration::expand_launch_argv(&launch.command, plugin_root, extra_args);
     let cwd = match launch.working_directory {
@@ -467,6 +533,11 @@ fn build_resolved(
         plugin_root: plugin_root.to_path_buf(),
         session_identity: template.session_identity.clone(),
         agent_identity: template.agent_identity.clone(),
+        native: if mode == LaunchMode::Native {
+            native_execution(template)
+        } else {
+            None
+        },
     }
 }
 
@@ -565,6 +636,8 @@ mod tests {
                     kind: Some(kind.to_owned()),
                 }
             }),
+            native: None,
+            missing_executables: Vec::new(),
         }
     }
 

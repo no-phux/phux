@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use phux_protocol::ResourceId;
 use phux_protocol::native_agent::{
-    MAX_NATIVE_PENDING, NativeCommand, NativeCommandResult, NativePublicationReceipt, NativeRequest,
-    NativeUpdate, validate_payload,
+    MAX_NATIVE_PENDING, NativeCommand, NativeCommandResult, NativePublicationReceipt,
+    NativeRequest, NativeUpdate, validate_payload,
 };
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode};
 use serde::Deserialize;
@@ -114,7 +114,8 @@ pub struct NativeController {
 
 impl std::fmt::Debug for NativeController {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("NativeController")
+        formatter
+            .debug_struct("NativeController")
             .field("agent", &self.agent)
             .field("activation", &self.activation)
             .field("generation", &*self.generation.borrow())
@@ -141,7 +142,9 @@ impl NativeController {
         binding_proof: String,
     ) -> Result<Self, ClientError> {
         if activation.is_empty() || binding_proof.is_empty() {
-            return Err(ClientError::Invalid("activation and binding proof are required".into()));
+            return Err(ClientError::Invalid(
+                "activation and binding proof are required".into(),
+            ));
         }
         let request = NativeRequest::Register {
             agent_session_id: precreated_agent.clone(),
@@ -149,10 +152,15 @@ impl NativeController {
             binding_proof: binding_proof.clone(),
         };
         validate_payload(&request).map_err(ClientError::Invalid)?;
-        let mut connection = Connection::connect(socket.as_ref()).await.map_err(transport_error)?;
-        let registration: Registration = json_reply(round_trip(&mut connection, 1, request).await?)?;
+        let mut connection = Connection::connect(socket.as_ref())
+            .await
+            .map_err(transport_error)?;
+        let registration: Registration =
+            json_reply(round_trip(&mut connection, 1, request).await?)?;
         if registration.generation == 0 {
-            return Err(ClientError::Protocol("registration returned a zero generation".into()));
+            return Err(ClientError::Protocol(
+                "registration returned a zero generation".into(),
+            ));
         }
         let (generation, _) = watch::channel(registration.generation);
         Ok(Self {
@@ -162,8 +170,10 @@ impl NativeController {
             binding_proof,
             generation,
             control: Mutex::new(ControlLane {
-                connection: Some(connection), next_request: 2,
-                next_publication: Some(1), pending: VecDeque::new(),
+                connection: Some(connection),
+                next_request: 2,
+                next_publication: Some(1),
+                pending: VecDeque::new(),
             }),
             receive: Mutex::new(ReceiveLane::default()),
             closed: AtomicBool::new(false),
@@ -208,8 +218,10 @@ impl NativeController {
             let request_id = lane.next_request.max(1);
             lane.next_request = request_id.wrapping_add(1).max(1);
             let request = NativeRequest::Receive {
-                agent_session_id: self.agent.clone(), activation: self.activation.clone(),
-                binding_proof: self.binding_proof.clone(), generation,
+                agent_session_id: self.agent.clone(),
+                activation: self.activation.clone(),
+                binding_proof: self.binding_proof.clone(),
+                generation,
             };
             // A control reconnect fences this held receive. Cancel its socket
             // before asking the broker under the new generation.
@@ -225,7 +237,9 @@ impl NativeController {
                     }
                     let command: NativeCommand = json_reply(result)?;
                     if command.activation != self.activation || command.operation_id == 0 {
-                        return Err(ClientError::Protocol("received command identity does not match the binding".into()));
+                        return Err(ClientError::Protocol(
+                            "received command identity does not match the binding".into(),
+                        ));
                     }
                     command.intent.validate().map_err(ClientError::Protocol)?;
                     lane.connection = Some(connection);
@@ -236,7 +250,13 @@ impl NativeController {
                     self.reconnect_generation(generation).await?;
                 }
                 Err(error) => {
-                    if matches!(error, ClientError::Refused { code: ErrorCode::PreconditionFailed, .. }) {
+                    if matches!(
+                        error,
+                        ClientError::Refused {
+                            code: ErrorCode::PreconditionFailed,
+                            ..
+                        }
+                    ) {
                         // The broker can fence Receive before Register's reply
                         // reaches the other socket. Wait for that registration,
                         // not for a replay or an unauthorized new binding.
@@ -278,16 +298,24 @@ impl NativeController {
     /// a broker refusal is explicit and never represented as acceptance.
     /// Actor-seal/capacity Overflow is Busy: the pending identity and healthy
     /// connection are retained for a caller's backoff retry.
-    pub async fn publish(&self, update: NativeUpdate) -> Result<NativePublicationReceipt, ClientError> {
+    pub async fn publish(
+        &self,
+        update: NativeUpdate,
+    ) -> Result<NativePublicationReceipt, ClientError> {
         let mut lane = self.control.lock().await;
         self.ensure_open()?;
-        let id = if let Some(pending) = lane.pending.iter().find(|pending| pending.update == update) {
+        let id = if let Some(pending) = lane.pending.iter().find(|pending| pending.update == update)
+        {
             pending.id
         } else {
             if lane.pending.len() >= MAX_NATIVE_PENDING {
-                return Err(ClientError::Invalid("pending native publication queue is full".into()));
+                return Err(ClientError::Invalid(
+                    "pending native publication queue is full".into(),
+                ));
             }
-            let id = lane.next_publication.ok_or_else(|| ClientError::Invalid("publication ids exhausted".into()))?;
+            let id = lane
+                .next_publication
+                .ok_or_else(|| ClientError::Invalid("publication ids exhausted".into()))?;
             let request = self.publish_request(id, update);
             validate_payload(&request).map_err(ClientError::Invalid)?;
             let NativeRequest::Publish { update, .. } = request else {
@@ -298,12 +326,18 @@ impl NativeController {
             id
         };
         loop {
-            let pending = lane.pending.front().ok_or_else(|| ClientError::Protocol("pending publication disappeared".into()))?;
+            let pending = lane
+                .pending
+                .front()
+                .ok_or_else(|| ClientError::Protocol("pending publication disappeared".into()))?;
             let expected_id = pending.id;
             let request = self.publish_request(expected_id, pending.update.clone());
-            let receipt: NativePublicationReceipt = json_reply(self.control_request(&mut lane, request).await?)?;
+            let receipt: NativePublicationReceipt =
+                json_reply(self.control_request(&mut lane, request).await?)?;
             if receipt.publication_id != expected_id || receipt.first_seq > receipt.last_seq {
-                return Err(ClientError::Protocol("publication acknowledgement has invalid identity or sequence range".into()));
+                return Err(ClientError::Protocol(
+                    "publication acknowledgement has invalid identity or sequence range".into(),
+                ));
             }
             lane.pending.pop_front();
             if expected_id == id {
@@ -324,8 +358,10 @@ impl NativeController {
             return Ok(());
         }
         let request = NativeRequest::Close {
-            agent_session_id: self.agent.clone(), activation: self.activation.clone(),
-            binding_proof: self.binding_proof.clone(), generation: *self.generation.borrow(),
+            agent_session_id: self.agent.clone(),
+            activation: self.activation.clone(),
+            binding_proof: self.binding_proof.clone(),
+            generation: *self.generation.borrow(),
         };
         ok_reply(self.control_request(&mut lane, request).await?)?;
         self.closed.store(true, Ordering::Release);
@@ -336,7 +372,9 @@ impl NativeController {
 
     fn ensure_open(&self) -> Result<(), ClientError> {
         if self.closed.load(Ordering::Acquire) {
-            Err(ClientError::Closed { message: "binding is closed".into() })
+            Err(ClientError::Closed {
+                message: "binding is closed".into(),
+            })
         } else {
             Ok(())
         }
@@ -361,17 +399,23 @@ impl NativeController {
     async fn register(&self, lane: &mut ControlLane) -> Result<(), ClientError> {
         self.ensure_open()?;
         lane.connection = None;
-        let mut connection = Connection::connect(&self.socket).await.map_err(transport_error)?;
+        let mut connection = Connection::connect(&self.socket)
+            .await
+            .map_err(transport_error)?;
         let request = NativeRequest::Register {
-            agent_session_id: self.agent.clone(), activation: self.activation.clone(),
+            agent_session_id: self.agent.clone(),
+            activation: self.activation.clone(),
             binding_proof: self.binding_proof.clone(),
         };
         let registration: Registration = json_reply(
-            round_trip(&mut connection, lane.request_id(), request).await
-                .map_err(|error| self.record_error(error))?
+            round_trip(&mut connection, lane.request_id(), request)
+                .await
+                .map_err(|error| self.record_error(error))?,
         )?;
         if registration.generation == 0 {
-            return Err(ClientError::Protocol("registration returned a zero generation".into()));
+            return Err(ClientError::Protocol(
+                "registration returned a zero generation".into(),
+            ));
         }
         lane.connection = Some(connection);
         self.generation.send_replace(registration.generation);
@@ -386,7 +430,11 @@ impl NativeController {
         Ok(())
     }
 
-    async fn control_request(&self, lane: &mut ControlLane, mut request: NativeRequest) -> Result<CommandResult, ClientError> {
+    async fn control_request(
+        &self,
+        lane: &mut ControlLane,
+        mut request: NativeRequest,
+    ) -> Result<CommandResult, ClientError> {
         self.ensure_connected(lane).await?;
         set_generation(&mut request, *self.generation.borrow());
         match self.control_once(lane, request.clone()).await {
@@ -399,12 +447,19 @@ impl NativeController {
         }
     }
 
-    async fn control_once(&self, lane: &mut ControlLane, request: NativeRequest) -> Result<CommandResult, ClientError> {
+    async fn control_once(
+        &self,
+        lane: &mut ControlLane,
+        request: NativeRequest,
+    ) -> Result<CommandResult, ClientError> {
         validate_payload(&request).map_err(ClientError::Invalid)?;
         let request_id = lane.request_id();
         // Taking ownership before awaiting makes cancellation safe: the
         // socket is dropped rather than reused with an unread acknowledgement.
-        let mut connection = lane.connection.take().ok_or_else(|| ClientError::Protocol("control connection unavailable".into()))?;
+        let mut connection = lane
+            .connection
+            .take()
+            .ok_or_else(|| ClientError::Protocol("control connection unavailable".into()))?;
         match round_trip(&mut connection, request_id, request).await {
             Ok(result) => {
                 lane.connection = Some(connection);
@@ -423,23 +478,30 @@ impl NativeController {
 
     fn complete_request(&self, result: NativeCommandResult) -> NativeRequest {
         NativeRequest::Complete {
-            agent_session_id: self.agent.clone(), activation: self.activation.clone(),
-            binding_proof: self.binding_proof.clone(), generation: *self.generation.borrow(), result,
+            agent_session_id: self.agent.clone(),
+            activation: self.activation.clone(),
+            binding_proof: self.binding_proof.clone(),
+            generation: *self.generation.borrow(),
+            result,
         }
     }
 
     fn publish_request(&self, publication_id: u64, update: NativeUpdate) -> NativeRequest {
         NativeRequest::Publish {
-            agent_session_id: self.agent.clone(), activation: self.activation.clone(),
-            binding_proof: self.binding_proof.clone(), generation: *self.generation.borrow(),
-            publication_id, update,
+            agent_session_id: self.agent.clone(),
+            activation: self.activation.clone(),
+            binding_proof: self.binding_proof.clone(),
+            generation: *self.generation.borrow(),
+            publication_id,
+            update,
         }
     }
 }
 
 fn set_generation(request: &mut NativeRequest, current: u64) {
     match request {
-        NativeRequest::Complete { generation, .. } | NativeRequest::Publish { generation, .. }
+        NativeRequest::Complete { generation, .. }
+        | NativeRequest::Publish { generation, .. }
         | NativeRequest::Close { generation, .. } => *generation = current,
         _ => {}
     }
@@ -447,14 +509,23 @@ fn set_generation(request: &mut NativeRequest, current: u64) {
 
 fn transport_error(error: AttachError) -> ClientError {
     if error.is_fatal_refusal() {
-        return ClientError::Refused { code: ErrorCode::PermissionDenied, message: error.to_string() };
+        return ClientError::Refused {
+            code: ErrorCode::PermissionDenied,
+            message: error.to_string(),
+        };
     }
     match error {
         AttachError::Protocol(message) => ClientError::Protocol(message),
         AttachError::Framing(error) => ClientError::Protocol(error.to_string()),
-        AttachError::Refused(message) => ClientError::Refused { code: ErrorCode::PermissionDenied, message },
+        AttachError::Refused(message) => ClientError::Refused {
+            code: ErrorCode::PermissionDenied,
+            message,
+        },
         AttachError::Io(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-            ClientError::Refused { code: ErrorCode::PermissionDenied, message: error.to_string() }
+            ClientError::Refused {
+                code: ErrorCode::PermissionDenied,
+                message: error.to_string(),
+            }
         }
         AttachError::Io(error) if error.kind() == std::io::ErrorKind::InvalidInput => {
             ClientError::Invalid(error.to_string())
@@ -463,18 +534,38 @@ fn transport_error(error: AttachError) -> ClientError {
     }
 }
 
-async fn round_trip(connection: &mut Connection, request_id: u32, request: NativeRequest) -> Result<CommandResult, ClientError> {
-    let mutation = matches!(&request, NativeRequest::Publish { .. }
-        | NativeRequest::Complete { .. } | NativeRequest::Close { .. });
-    let (result, _interleaved) = connection.request(request_id, Command::NativeAgent { request: Box::new(request) })
-        .await.map_err(transport_error)?.into_parts();
+async fn round_trip(
+    connection: &mut Connection,
+    request_id: u32,
+    request: NativeRequest,
+) -> Result<CommandResult, ClientError> {
+    let mutation = matches!(
+        &request,
+        NativeRequest::Publish { .. }
+            | NativeRequest::Complete { .. }
+            | NativeRequest::Close { .. }
+    );
+    let (result, _interleaved) = connection
+        .request(
+            request_id,
+            Command::NativeAgent {
+                request: Box::new(request),
+            },
+        )
+        .await
+        .map_err(transport_error)?
+        .into_parts();
     // These connections subscribe to no resource output. Their only owned lane
     // is the correlated native reply; no transcript evidence is discarded here.
     match result {
-        CommandResult::Error { code: ErrorCode::TerminalNotFound, message } => Err(ClientError::Closed { message }),
-        CommandResult::Error { code: ErrorCode::Overflow, message } if mutation => {
-            Err(ClientError::Busy { message })
-        }
+        CommandResult::Error {
+            code: ErrorCode::TerminalNotFound,
+            message,
+        } => Err(ClientError::Closed { message }),
+        CommandResult::Error {
+            code: ErrorCode::Overflow,
+            message,
+        } if mutation => Err(ClientError::Busy { message }),
         CommandResult::Error { code, message } => Err(ClientError::Refused { code, message }),
         result => Ok(result),
     }
@@ -491,6 +582,8 @@ fn json_reply<T: DeserializeOwned>(result: CommandResult) -> Result<T, ClientErr
 fn ok_reply(result: CommandResult) -> Result<(), ClientError> {
     match result {
         CommandResult::Ok => Ok(()),
-        _ => Err(ClientError::Protocol("expected a native completion acknowledgement".into())),
+        _ => Err(ClientError::Protocol(
+            "expected a native completion acknowledgement".into(),
+        )),
     }
 }

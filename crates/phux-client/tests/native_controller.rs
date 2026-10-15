@@ -1,15 +1,23 @@
 //! Wire-level host consumer regressions, with no provider process or production socket.
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, reason = "test assertions")]
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "test assertions"
+)]
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use bytes::BytesMut;
 use phux_client::native_agent::{ClientError, NativeController};
 use phux_protocol::caps::{BootstrapCapabilities, ServerCapabilities, select_bootstrap_profile};
-use phux_protocol::native_agent::{MAX_NATIVE_PENDING, NativeCommand, NativeCommandResult, NativeDisposition, NativeIntent, NativePublicationReceipt, NativeRequest, NativeUpdate};
+use phux_protocol::native_agent::{
+    MAX_NATIVE_PENDING, NativeCommand, NativeCommandResult, NativeDisposition, NativeIntent,
+    NativePublicationReceipt, NativeRequest, NativeUpdate,
+};
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode, FrameKind};
 use phux_protocol::{PROTOCOL_VERSION, ResourceId};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -68,12 +76,21 @@ impl Fixture {
     }
 
     async fn controller(&self) -> NativeController {
-        NativeController::connect(self.dir.path().join("native.sock"), ResourceId::local(22), "activation-A".into(), "private-binding".into()).await.unwrap()
+        NativeController::connect(
+            self.dir.path().join("native.sock"),
+            ResourceId::local(22),
+            "activation-A".into(),
+            "private-binding".into(),
+        )
+        .await
+        .unwrap()
     }
 }
 
 impl Drop for Fixture {
-    fn drop(&mut self) { self.task.abort(); }
+    fn drop(&mut self) {
+        self.task.abort();
+    }
 }
 
 async fn read_frame(stream: &mut UnixStream) -> Option<FrameKind> {
@@ -99,19 +116,38 @@ fn json<T: serde::Serialize>(value: &T) -> CommandResult {
 }
 
 async fn serve(mut stream: UnixStream, broker: Arc<Broker>) {
-    let Some(FrameKind::Hello { client_caps, .. }) = read_frame(&mut stream).await else { panic!("HELLO required") };
-    let (selected_profile, bootstrap_limits) = select_bootstrap_profile(&client_caps, &BootstrapCapabilities::new()).unwrap();
-    send(&mut stream, FrameKind::HelloOk {
-        protocol_major: PROTOCOL_VERSION.major, protocol_minor: PROTOCOL_VERSION.minor,
-        protocol_patch: PROTOCOL_VERSION.patch, server_caps: ServerCapabilities::new(),
-        server_id: vec![], selected_profile, bootstrap_limits,
-    }).await;
+    let Some(FrameKind::Hello { client_caps, .. }) = read_frame(&mut stream).await else {
+        panic!("HELLO required")
+    };
+    let (selected_profile, bootstrap_limits) =
+        select_bootstrap_profile(&client_caps, &BootstrapCapabilities::new()).unwrap();
+    send(
+        &mut stream,
+        FrameKind::HelloOk {
+            protocol_major: PROTOCOL_VERSION.major,
+            protocol_minor: PROTOCOL_VERSION.minor,
+            protocol_patch: PROTOCOL_VERSION.patch,
+            server_caps: ServerCapabilities::new(),
+            server_id: vec![],
+            selected_profile,
+            bootstrap_limits,
+        },
+    )
+    .await;
     while let Some(frame) = read_frame(&mut stream).await {
-        let FrameKind::Command { request_id, command: Command::NativeAgent { request } } = frame else {
+        let FrameKind::Command {
+            request_id,
+            command: Command::NativeAgent { request },
+        } = frame
+        else {
             panic!("controller must use only dedicated native requests");
         };
         let result = match *request {
-            NativeRequest::Register { agent_session_id, activation, binding_proof } => {
+            NativeRequest::Register {
+                agent_session_id,
+                activation,
+                binding_proof,
+            } => {
                 assert_binding(&agent_session_id, &activation, &binding_proof);
                 let generation = broker.generation.fetch_add(1, Ordering::AcqRel) + 1;
                 broker.fenced.notify_waiters();
@@ -122,7 +158,12 @@ async fn serve(mut stream: UnixStream, broker: Arc<Broker>) {
                 }
                 json(&serde_json::json!({"generation": generation}))
             }
-            NativeRequest::Receive { agent_session_id, activation, binding_proof, generation } => {
+            NativeRequest::Receive {
+                agent_session_id,
+                activation,
+                binding_proof,
+                generation,
+            } => {
                 assert_binding(&agent_session_id, &activation, &binding_proof);
                 assert_eq!(generation, broker.generation.load(Ordering::Acquire));
                 broker.receive_started.notify_one();
@@ -140,46 +181,100 @@ async fn serve(mut stream: UnixStream, broker: Arc<Broker>) {
                         continue;
                     }
                 }
-                json(&NativeCommand { operation_id: 91, activation, intent: NativeIntent::Prompt { text: "one actual prompt".into() } })
+                json(&NativeCommand {
+                    operation_id: 91,
+                    activation,
+                    intent: NativeIntent::Prompt {
+                        text: "one actual prompt".into(),
+                    },
+                })
             }
-            NativeRequest::Publish { agent_session_id, activation, binding_proof, generation, publication_id, update } => {
+            NativeRequest::Publish {
+                agent_session_id,
+                activation,
+                binding_proof,
+                generation,
+                publication_id,
+                update,
+            } => {
                 assert_binding(&agent_session_id, &activation, &binding_proof);
                 assert_eq!(generation, broker.generation.load(Ordering::Acquire));
-                broker.publishes.lock().await.push((generation, publication_id, update.clone()));
+                broker
+                    .publishes
+                    .lock()
+                    .await
+                    .push((generation, publication_id, update.clone()));
                 let refusal = *broker.refuse_publish.lock().await;
                 if let Some(code) = refusal {
-                    CommandResult::Error { code, message: "native source unavailable".into() }
+                    CommandResult::Error {
+                        code,
+                        message: "native source unavailable".into(),
+                    }
                 } else {
                     let receipt = {
                         let mut accepted = broker.accepted.lock().await;
                         let seq = accepted.len() as u64 + 1;
-                        let (original, receipt) = accepted.entry(publication_id).or_insert_with(|| (
-                            update.clone(), NativePublicationReceipt { publication_id, first_seq: seq, last_seq: seq }
-                        ));
-                        assert_eq!(&update, original, "changed payload must not reuse an identity");
+                        let (original, receipt) =
+                            accepted.entry(publication_id).or_insert_with(|| {
+                                (
+                                    update.clone(),
+                                    NativePublicationReceipt {
+                                        publication_id,
+                                        first_seq: seq,
+                                        last_seq: seq,
+                                    },
+                                )
+                            });
+                        assert_eq!(
+                            &update, original,
+                            "changed payload must not reuse an identity"
+                        );
                         receipt.clone()
                     };
-                    if broker.lose_acks.fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| remaining.checked_sub(1)).is_ok() {
+                    if broker
+                        .lose_acks
+                        .try_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                            remaining.checked_sub(1)
+                        })
+                        .is_ok()
+                    {
                         return; // Acceptance happened; only its acknowledgement was lost.
                     }
                     json(&receipt)
                 }
             }
-            NativeRequest::Complete { agent_session_id, activation, binding_proof, generation, result } => {
+            NativeRequest::Complete {
+                agent_session_id,
+                activation,
+                binding_proof,
+                generation,
+                result,
+            } => {
                 assert_binding(&agent_session_id, &activation, &binding_proof);
                 assert_eq!(generation, broker.generation.load(Ordering::Acquire));
                 broker.completions.lock().await.push(result);
                 match *broker.refuse_complete.lock().await {
-                    Some(code) => CommandResult::Error { code, message: "server upgrading; retry completion".into() },
+                    Some(code) => CommandResult::Error {
+                        code,
+                        message: "server upgrading; retry completion".into(),
+                    },
                     None => CommandResult::Ok,
                 }
             }
-            NativeRequest::Close { agent_session_id, activation, binding_proof, generation } => {
+            NativeRequest::Close {
+                agent_session_id,
+                activation,
+                binding_proof,
+                generation,
+            } => {
                 assert_binding(&agent_session_id, &activation, &binding_proof);
                 assert_eq!(generation, broker.generation.load(Ordering::Acquire));
                 broker.closes.fetch_add(1, Ordering::AcqRel);
                 match *broker.refuse_close.lock().await {
-                    Some(code) => CommandResult::Error { code, message: "server upgrading; retry close".into() },
+                    Some(code) => CommandResult::Error {
+                        code,
+                        message: "server upgrading; retry close".into(),
+                    },
                     None => CommandResult::Ok,
                 }
             }
@@ -196,7 +291,10 @@ fn assert_binding(agent: &ResourceId, activation: &str, proof: &str) {
 }
 
 fn notice(text: &str) -> NativeUpdate {
-    NativeUpdate::Notice { level: "info".into(), text: text.into() }
+    NativeUpdate::Notice {
+        level: "info".into(),
+        text: text.into(),
+    }
 }
 
 #[tokio::test]
@@ -207,12 +305,27 @@ async fn held_receive_does_not_block_publish_complete_or_close() {
         let controller = Arc::clone(&controller);
         tokio::spawn(async move { controller.receive().await })
     };
-    timeout(DEADLINE, fixture.broker.receive_started.notified()).await.unwrap();
-    let receipt = timeout(DEADLINE, controller.publish(notice("draining SDK output"))).await.unwrap().unwrap();
+    timeout(DEADLINE, fixture.broker.receive_started.notified())
+        .await
+        .unwrap();
+    let receipt = timeout(DEADLINE, controller.publish(notice("draining SDK output")))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(receipt.publication_id, 1);
-    let result = NativeCommandResult { operation_id: 91, disposition: NativeDisposition::Queued, detail: Some("UI sent only".into()) };
-    timeout(DEADLINE, controller.complete(result.clone())).await.unwrap().unwrap();
-    assert_eq!(fixture.broker.completions.lock().await.as_slice(), &[result]);
+    let result = NativeCommandResult {
+        operation_id: 91,
+        disposition: NativeDisposition::Queued,
+        detail: Some("UI sent only".into()),
+    };
+    timeout(DEADLINE, controller.complete(result.clone()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        fixture.broker.completions.lock().await.as_slice(),
+        &[result]
+    );
     fixture.broker.release_receive.notify_one();
     let command = timeout(DEADLINE, receiver).await.unwrap().unwrap().unwrap();
     assert_eq!(command.operation_id, 91);
@@ -220,9 +333,17 @@ async fn held_receive_does_not_block_publish_complete_or_close() {
         let controller = Arc::clone(&controller);
         tokio::spawn(async move { controller.receive().await })
     };
-    timeout(DEADLINE, fixture.broker.receive_started.notified()).await.unwrap();
-    timeout(DEADLINE, controller.close()).await.unwrap().unwrap();
-    assert!(matches!(timeout(DEADLINE, receiver).await.unwrap().unwrap(), Err(ClientError::Closed { .. })));
+    timeout(DEADLINE, fixture.broker.receive_started.notified())
+        .await
+        .unwrap();
+    timeout(DEADLINE, controller.close())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        timeout(DEADLINE, receiver).await.unwrap().unwrap(),
+        Err(ClientError::Closed { .. })
+    ));
 }
 
 #[tokio::test]
@@ -230,12 +351,32 @@ async fn lost_publication_ack_reuses_payload_id_and_original_stamped_sequences()
     let fixture = Fixture::start(1).await;
     let controller = fixture.controller().await;
     let update = notice("one transcript projection");
-    let receipt = timeout(DEADLINE, controller.publish(update.clone())).await.unwrap().unwrap();
-    assert_eq!(receipt, NativePublicationReceipt { publication_id: 1, first_seq: 1, last_seq: 1 });
+    let receipt = timeout(DEADLINE, controller.publish(update.clone()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        receipt,
+        NativePublicationReceipt {
+            publication_id: 1,
+            first_seq: 1,
+            last_seq: 1
+        }
+    );
     assert_eq!(fixture.broker.generation.load(Ordering::Acquire), 2);
-    assert_eq!(fixture.broker.publishes.lock().await.as_slice(), &[(1, 1, update.clone()), (2, 1, update)]);
+    assert_eq!(
+        fixture.broker.publishes.lock().await.as_slice(),
+        &[(1, 1, update.clone()), (2, 1, update)]
+    );
     let next = controller.publish(notice("next output")).await.unwrap();
-    assert_eq!(next, NativePublicationReceipt { publication_id: 2, first_seq: 2, last_seq: 2 });
+    assert_eq!(
+        next,
+        NativePublicationReceipt {
+            publication_id: 2,
+            first_seq: 2,
+            last_seq: 2
+        }
+    );
     assert_eq!(fixture.broker.accepted.lock().await.len(), 2);
 }
 
@@ -244,13 +385,29 @@ async fn pending_output_is_bounded_and_failed_calls_keep_their_first_identity() 
     let fixture = Fixture::start(usize::MAX).await;
     let controller = fixture.controller().await;
     for index in 0..MAX_NATIVE_PENDING {
-        let error = timeout(DEADLINE, controller.publish(notice(&format!("output {index}")))).await.unwrap().unwrap_err();
+        let error = timeout(
+            DEADLINE,
+            controller.publish(notice(&format!("output {index}"))),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
         assert!(error.is_retryable());
     }
     let before = fixture.broker.publishes.lock().await.len();
-    assert!(matches!(controller.publish(notice("one beyond the bound")).await, Err(ClientError::Invalid(message)) if message.contains("queue is full")));
+    assert!(
+        matches!(controller.publish(notice("one beyond the bound")).await, Err(ClientError::Invalid(message)) if message.contains("queue is full"))
+    );
     assert_eq!(fixture.broker.publishes.lock().await.len(), before);
-    assert!(fixture.broker.publishes.lock().await.iter().all(|(_, id, update)| *id == 1 && *update == notice("output 0")));
+    assert!(
+        fixture
+            .broker
+            .publishes
+            .lock()
+            .await
+            .iter()
+            .all(|(_, id, update)| *id == 1 && *update == notice("output 0"))
+    );
     fixture.broker.lose_acks.store(0, Ordering::Release);
     let receipt = controller.publish(notice("output 0")).await.unwrap();
     assert_eq!(receipt.publication_id, 1);
@@ -262,14 +419,22 @@ async fn closed_resource_and_refusal_are_not_reconnected_as_transport_failures()
         let fixture = Fixture::start(0).await;
         *fixture.broker.refuse_publish.lock().await = Some(code);
         let controller = fixture.controller().await;
-        let error = controller.publish(notice("not accepted")).await.unwrap_err();
+        let error = controller
+            .publish(notice("not accepted"))
+            .await
+            .unwrap_err();
         assert!(!error.is_retryable());
         match code {
             ErrorCode::TerminalNotFound => {
                 assert!(matches!(error, ClientError::Closed { .. }));
-                assert!(matches!(controller.receive().await, Err(ClientError::Closed { .. })));
+                assert!(matches!(
+                    controller.receive().await,
+                    Err(ClientError::Closed { .. })
+                ));
             }
-            _ => assert!(matches!(error, ClientError::Refused { code: actual, .. } if actual == code)),
+            _ => assert!(
+                matches!(error, ClientError::Refused { code: actual, .. } if actual == code)
+            ),
         }
         assert_eq!(fixture.broker.generation.load(Ordering::Acquire), 1);
         assert_eq!(fixture.broker.publishes.lock().await.len(), 1);
@@ -279,16 +444,29 @@ async fn closed_resource_and_refusal_are_not_reconnected_as_transport_failures()
 #[tokio::test]
 async fn publication_reconnect_fences_receive_even_when_its_refusal_precedes_register_ack() {
     let fixture = Fixture::start(1).await;
-    fixture.broker.delay_registration_for_fence.store(true, Ordering::Release);
+    fixture
+        .broker
+        .delay_registration_for_fence
+        .store(true, Ordering::Release);
     let controller = Arc::new(fixture.controller().await);
     let receiver = {
         let controller = Arc::clone(&controller);
         tokio::spawn(async move { controller.receive().await })
     };
-    timeout(DEADLINE, fixture.broker.receive_started.notified()).await.unwrap();
-    let receipt = timeout(DEADLINE, controller.publish(notice("ack lost while receiving"))).await.unwrap().unwrap();
+    timeout(DEADLINE, fixture.broker.receive_started.notified())
+        .await
+        .unwrap();
+    let receipt = timeout(
+        DEADLINE,
+        controller.publish(notice("ack lost while receiving")),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert_eq!(receipt.publication_id, 1);
-    timeout(DEADLINE, fixture.broker.receive_started.notified()).await.unwrap();
+    timeout(DEADLINE, fixture.broker.receive_started.notified())
+        .await
+        .unwrap();
     fixture.broker.release_receive.notify_one();
     let command = timeout(DEADLINE, receiver).await.unwrap().unwrap().unwrap();
     assert_eq!(command.operation_id, 91);
@@ -303,14 +481,26 @@ async fn sealed_actor_backpressure_retries_the_same_publication_without_rebindin
     let update = notice("output retained across actor seal");
     let error = controller.publish(update.clone()).await.unwrap_err();
     assert!(error.is_retryable());
-    assert!(matches!(error, ClientError::Busy { message } if message == "native source unavailable"));
+    assert!(
+        matches!(error, ClientError::Busy { message } if message == "native source unavailable")
+    );
     assert_eq!(fixture.broker.generation.load(Ordering::Acquire), 1);
     assert!(fixture.broker.accepted.lock().await.is_empty());
     *fixture.broker.refuse_publish.lock().await = None;
     let receipt = controller.publish(update.clone()).await.unwrap();
-    assert_eq!(receipt, NativePublicationReceipt { publication_id: 1, first_seq: 1, last_seq: 1 });
+    assert_eq!(
+        receipt,
+        NativePublicationReceipt {
+            publication_id: 1,
+            first_seq: 1,
+            last_seq: 1
+        }
+    );
     assert_eq!(fixture.broker.generation.load(Ordering::Acquire), 1);
-    assert_eq!(fixture.broker.publishes.lock().await.as_slice(), &[(1, 1, update.clone()), (1, 1, update)]);
+    assert_eq!(
+        fixture.broker.publishes.lock().await.as_slice(),
+        &[(1, 1, update.clone()), (1, 1, update)]
+    );
 }
 
 #[tokio::test]
@@ -318,7 +508,8 @@ async fn sealed_cut_keeps_completion_identity_and_does_not_claim_busy_close_succ
     let fixture = Fixture::start(0).await;
     let controller = fixture.controller().await;
     let result = NativeCommandResult {
-        operation_id: 91, disposition: NativeDisposition::Completed,
+        operation_id: 91,
+        disposition: NativeDisposition::Completed,
         detail: Some("actual provider completion".into()),
     };
     *fixture.broker.refuse_complete.lock().await = Some(ErrorCode::Overflow);
@@ -327,7 +518,10 @@ async fn sealed_cut_keeps_completion_identity_and_does_not_claim_busy_close_succ
     assert!(error.is_retryable());
     *fixture.broker.refuse_complete.lock().await = None;
     controller.complete(result.clone()).await.unwrap();
-    assert_eq!(fixture.broker.completions.lock().await.as_slice(), &[result.clone(), result]);
+    assert_eq!(
+        fixture.broker.completions.lock().await.as_slice(),
+        &[result.clone(), result]
+    );
     assert_eq!(fixture.broker.generation.load(Ordering::Acquire), 1);
     *fixture.broker.refuse_close.lock().await = Some(ErrorCode::Overflow);
     let error = controller.close().await.unwrap_err();
@@ -340,4 +534,3 @@ async fn sealed_cut_keeps_completion_identity_and_does_not_claim_busy_close_succ
     assert_eq!(fixture.broker.closes.load(Ordering::Acquire), 2);
     assert_eq!(fixture.broker.generation.load(Ordering::Acquire), 1);
 }
-

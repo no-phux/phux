@@ -346,9 +346,11 @@ pub(in crate::wire) fn decode_command(dec: &mut Decoder<'_>) -> Result<Command, 
         if bytes.len() > crate::native_agent::MAX_NATIVE_PAYLOAD_BYTES {
             return Err(DecodeError::NativeAgentLimitExceeded);
         }
-        let request = serde_json::from_slice(bytes)
-            .map_err(|_| DecodeError::InvalidNativeAgentPayload)?;
-        return Ok(Command::NativeAgent { request: Box::new(request) });
+        let request =
+            serde_json::from_slice(bytes).map_err(|_| DecodeError::InvalidNativeAgentPayload)?;
+        return Ok(Command::NativeAgent {
+            request: Box::new(request),
+        });
     }
     // Each family claims a disjoint tag set and returns `None` (reading
     // nothing) for the rest.
@@ -978,7 +980,12 @@ pub(in crate::wire) fn encode_agent_event(event: &AgentEvent, enc: &mut Encoder<
     let tag = {
         let mut body_enc = Encoder::new(&mut body);
         match event {
-            AgentEvent::NativeAgentResult { agent_session_id, operation_id, disposition, detail } => {
+            AgentEvent::NativeAgentResult {
+                agent_session_id,
+                operation_id,
+                disposition,
+                detail,
+            } => {
                 let value = NativeResultEventRef {
                     agent_session_id,
                     operation_id: *operation_id,

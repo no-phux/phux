@@ -143,7 +143,9 @@ impl ServerState {
         // The retired wire id keys the metadata scope and the arbiter.
         if let Some(wire) = self.idspace.retire_terminal(pane) {
             if self.native_agents.bindings.remove(&wire).is_some() {
-                if let Some(wake) = self.native_agents.wakes.remove(&wire) { wake.notify_waiters(); }
+                if let Some(wake) = self.native_agents.wakes.remove(&wire) {
+                    wake.notify_waiters();
+                }
             }
             self.metadata.forget_terminal(&wire);
             // A viewer mark (ADR-0127) must not outlive the Terminal it names.

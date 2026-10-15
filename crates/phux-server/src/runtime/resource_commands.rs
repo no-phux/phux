@@ -280,17 +280,26 @@ pub(crate) async fn handle_append_resource_output(
     }
     // A non-native producer cannot masquerade as a registered SDK controller
     // merely by emitting the reserved provider_raw schema on an attached stream.
-    let forged = std::str::from_utf8(&bytes).ok().is_some_and(|text| text.lines().any(|line| {
-        serde_json::from_str::<serde_json::Value>(line).ok().is_some_and(|record| {
-            record["data"]["schema"].as_str() == Some(phux_protocol::native_agent::NATIVE_SCHEMA)
+    let forged = std::str::from_utf8(&bytes).ok().is_some_and(|text| {
+        text.lines().any(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .ok()
+                .is_some_and(|record| {
+                    record["data"]["schema"].as_str()
+                        == Some(phux_protocol::native_agent::NATIVE_SCHEMA)
+                })
         })
-    }));
+    });
     if forged {
-        return CommandResult::Error { code: ErrorCode::NotProducer, message: "native controller schema is reserved".to_owned() };
+        return CommandResult::Error {
+            code: ErrorCode::NotProducer,
+            message: "native controller schema is reserved".to_owned(),
+        };
     }
     match append_native_output(state, terminal_id, bytes).await {
         Ok(accepted) => CommandResult::OkWith(CommandValue::Json(format!(
-            "{{\"seq\":{},\"ts_ms\":{}}}", accepted.first_seq, accepted.ts_ms
+            "{{\"seq\":{},\"ts_ms\":{}}}",
+            accepted.first_seq, accepted.ts_ms
         ))),
         Err(error) => error,
     }
@@ -321,48 +330,75 @@ async fn append_output(
     bytes: Bytes,
     publication: Option<crate::resource::agent_session::NativeAppendIdentity>,
 ) -> Result<crate::resource::agent_session::AppendAccepted, CommandResult> {
-    let (core, handle) = state.with(|s| {
-        s.terminal_from_wire(terminal_id)
-            .and_then(|core| s.resource_handle(core).cloned().map(|handle| (core, handle)))
-    }).ok_or_else(|| CommandResult::Error {
-        code: ErrorCode::TerminalNotFound,
-        message: format!("no such resource: {terminal_id:?}"),
-    })?;
-    let session = handle.agent_session().map_err(crate::runtime::commands::wrong_resource_kind)?;
+    let native_publication = publication.is_some();
+    let (core, handle) = state
+        .with(|s| {
+            s.terminal_from_wire(terminal_id).and_then(|core| {
+                s.resource_handle(core)
+                    .cloned()
+                    .map(|handle| (core, handle))
+            })
+        })
+        .ok_or_else(|| CommandResult::Error {
+            code: ErrorCode::TerminalNotFound,
+            message: format!("no such resource: {terminal_id:?}"),
+        })?;
+    let session = handle
+        .agent_session()
+        .map_err(crate::runtime::commands::wrong_resource_kind)?;
     let (reply, rx) = oneshot::channel();
-    session.append.try_send(AppendRequest { bytes, reply, publication }).map_err(|_| CommandResult::Error {
-        code: ErrorCode::Overflow,
-        message: "the session's append queue is full".to_owned(),
-    })?;
-    let accepted = rx.await.map_err(|_| CommandResult::Error {
-        code: ErrorCode::TerminalNotFound,
-        message: "the session closed before the append landed".to_owned(),
-    })?.map_err(|rejection| match rejection {
-        AppendRejection::Invalid(error) => CommandResult::Error {
-            code: ErrorCode::RecordInvalid, message: error.to_string(),
-        },
-        AppendRejection::Overflow(message) => CommandResult::Error {
-            code: ErrorCode::Overflow, message,
-        },
-        AppendRejection::Closed => CommandResult::Error {
+    session
+        .append
+        .try_send(AppendRequest {
+            bytes,
+            reply,
+            publication,
+        })
+        .map_err(|_| CommandResult::Error {
+            code: ErrorCode::Overflow,
+            message: "the session's append queue is full".to_owned(),
+        })?;
+    let accepted = rx
+        .await
+        .map_err(|_| CommandResult::Error {
             code: ErrorCode::TerminalNotFound,
             message: "the session closed before the append landed".to_owned(),
-        },
-    })?;
+        })?
+        .map_err(|rejection| match rejection {
+            AppendRejection::Invalid(error) => CommandResult::Error {
+                code: ErrorCode::RecordInvalid,
+                message: error.to_string(),
+            },
+            AppendRejection::Overflow(message) => CommandResult::Error {
+                code: ErrorCode::Overflow,
+                message,
+            },
+            AppendRejection::Closed => CommandResult::Error {
+                code: ErrorCode::TerminalNotFound,
+                message: "the session closed before the append landed".to_owned(),
+            },
+        })?;
     if let Some(evidence) = accepted.evidence {
         publish_stream_evidence(state, core, handle.parent, evidence).await;
     }
-    publish_stream_ask(state, handle.parent, accepted.ask.clone(), accepted.evidence);
+    publish_stream_ask(
+        state,
+        handle.parent,
+        accepted.ask.clone(),
+        accepted.evidence,
+        native_publication,
+    );
     Ok(accepted)
 }
 
-/// Feed a streamed question into the parent's ask ledger (ADR-0036), and
-/// retract the stream's ask when the turn ends.
+/// Feed a streamed question into the parent's ask ledger (ADR-0036).
+/// Legacy turn completion withdraws asks; SDK questions outlive the turn.
 fn publish_stream_ask(
     state: &SharedState,
     parent: Option<phux_core::ids::ResourceId>,
     ask: Option<crate::resource::agent_session::StreamAsk>,
     evidence: Option<StreamEvidence>,
+    native_publication: bool,
 ) {
     let Some(parent) = parent else {
         return;
@@ -381,10 +417,9 @@ fn publish_stream_ask(
             )
             .emit_payload()
         } else {
-            if matches!(
-                evidence,
-                Some(StreamEvidence::Done | StreamEvidence::Retract)
-            ) {
+            if matches!(evidence, Some(StreamEvidence::Retract))
+                || (!native_publication && matches!(evidence, Some(StreamEvidence::Done)))
+            {
                 s.retract_agent_asked(parent, crate::agent_asked::AskedSource::Stream);
             }
             None

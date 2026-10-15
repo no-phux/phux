@@ -529,7 +529,10 @@ enum Query {
     HasProjection(ResourceId, Sender<bool>),
     IsClosed(ResourceId, Sender<bool>),
     AgentStreamInfo(ResourceId, Sender<Option<AgentStreamInfo>>),
-    NativeAgentView(ResourceId, Sender<Option<phux_protocol::native_agent::NativeView>>),
+    NativeAgentView(
+        ResourceId,
+        Sender<Option<phux_protocol::native_agent::NativeView>>,
+    ),
     InputEligibility(ResourceId, Sender<InputEligibility>),
     InputReady(ResourceId, Sender<bool>),
     #[cfg(feature = "engine")]
@@ -730,9 +733,11 @@ impl EngineHandle {
         &self,
         agent_session_id: &ResourceId,
     ) -> Option<phux_protocol::native_agent::NativeView> {
-        self.request(|reply| Command::Query(Query::NativeAgentView(agent_session_id.clone(), reply)))
-            .ok()
-            .flatten()
+        self.request(|reply| {
+            Command::Query(Query::NativeAgentView(agent_session_id.clone(), reply))
+        })
+        .ok()
+        .flatten()
     }
 
     /// The kernel's current input eligibility for one terminal.

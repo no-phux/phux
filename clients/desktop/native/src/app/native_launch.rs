@@ -34,17 +34,23 @@ impl Desk {
     pub(crate) fn open_native_launch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.modal = Modal::NativeLaunch;
         if let Some(remote) = self.remote.as_deref() {
-            self.native_launch.error = Some(format!("This window is on {remote}. Native launch must run on that executing host: phux launch --native INTEGRATION --json --session {}. The desktop never starts an SDK locally for a remote session.", self.session));
+            self.native_launch.error = Some(format!(
+                "This window is on {remote}. Native launch must run on that executing host: phux launch --native INTEGRATION --json --session {}. The desktop never starts an SDK locally for a remote session.",
+                self.session
+            ));
         } else {
             self.refresh_native_integrations(window, cx);
         }
     }
 
     fn refresh_native_integrations(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.native_launch.loading || self.native_launch.launching.is_some() { return; }
+        if self.native_launch.loading || self.native_launch.launching.is_some() {
+            return;
+        }
         self.native_launch.loading = true;
         self.native_launch.error = None;
-        let phux = self.phux.clone(); let socket = self.socket.clone();
+        let phux = self.phux.clone();
+        let socket = self.socket.clone();
         cx.spawn_in(window, async move |this, cx| {
             let result = smol::unblock(move || host::native_integrations(&phux, &socket)).await;
             let _ = this.update(cx, |desk, cx| {
@@ -55,18 +61,44 @@ impl Desk {
                 }
                 cx.notify();
             });
-        }).detach();
+        })
+        .detach();
     }
 
-    fn launch_native_integration(&mut self, integration: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if self.native_launch.launching.is_some() || self.remote.is_some() { return; }
-        if !self.native_launch.integrations.iter().any(|item| item.integration == integration && item.native_available) { return; }
-        let Some(server) = self.link.as_ref().filter(|link| link.connection.status == phux_client_runtime::control::Status::Attached).and_then(|link| link.connection.server_id()) else {
-            self.native_launch.error = Some("Reconnect to this session before launching a native agent.".into()); cx.notify(); return;
+    fn launch_native_integration(
+        &mut self,
+        integration: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.native_launch.launching.is_some() || self.remote.is_some() {
+            return;
+        }
+        if !self
+            .native_launch
+            .integrations
+            .iter()
+            .any(|item| item.integration == integration && item.native_available)
+        {
+            return;
+        }
+        let Some(server) = self
+            .link
+            .as_ref()
+            .filter(|link| link.connection.status == phux_client_runtime::control::Status::Attached)
+            .and_then(|link| link.connection.server_id())
+        else {
+            self.native_launch.error =
+                Some("Reconnect to this session before launching a native agent.".into());
+            cx.notify();
+            return;
         };
         let session = self.session.clone();
-        let phux = self.phux.clone(); let socket = self.socket.clone(); let integration = integration.to_owned();
-        self.native_launch.launching = Some(integration.clone()); self.native_launch.error = None;
+        let phux = self.phux.clone();
+        let socket = self.socket.clone();
+        let integration = integration.to_owned();
+        self.native_launch.launching = Some(integration.clone());
+        self.native_launch.error = None;
         cx.spawn_in(window, async move |this, cx| {
             let destination = session.clone();
             let result = smol::unblock(move || host::launch_native(&phux, &socket, &integration, &destination)).await;
@@ -92,20 +124,42 @@ impl Desk {
     }
 
     pub(crate) fn reveal_pending_native(&mut self, cx: &mut Context<Self>) {
-        let Some(pending) = self.native_launch.pending.as_ref() else { return };
-        if pending.revealed { return; }
-        if !pending_matches(self, pending) { return; }
+        let Some(pending) = self.native_launch.pending.as_ref() else {
+            return;
+        };
+        if pending.revealed {
+            return;
+        }
+        if !pending_matches(self, pending) {
+            return;
+        }
         let terminal = pending.terminal.clone();
-        if let Some(pending) = self.native_launch.pending.as_mut() { pending.revealed = true; }
+        if let Some(pending) = self.native_launch.pending.as_mut() {
+            pending.revealed = true;
+        }
         self.reveal_terminal(&terminal);
         cx.notify();
     }
 
-    pub(crate) fn prepare_pending_native(&mut self, placement: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(pending) = self.native_launch.pending.as_ref() else { return };
-        if !pending.revealed || !pending_matches(self, pending)
+    pub(crate) fn prepare_pending_native(
+        &mut self,
+        placement: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(pending) = self.native_launch.pending.as_ref() else {
+            return;
+        };
+        if !pending.revealed
+            || !pending_matches(self, pending)
             || self.focused_placement().map(|item| item.id.as_str()) != Some(placement)
-            || self.placement(placement).and_then(|item| item.terminal_id.as_ref()) != Some(&pending.terminal) { return; }
+            || self
+                .placement(placement)
+                .and_then(|item| item.terminal_id.as_ref())
+                != Some(&pending.terminal)
+        {
+            return;
+        }
         self.prepare_conversation(placement, window, cx);
         if let Some(face) = self.conversation_faces.get_mut(placement) {
             face.visible = true;
@@ -116,13 +170,20 @@ impl Desk {
 }
 
 fn pending_matches(desk: &Desk, pending: &Pending) -> bool {
-    desk.session == pending.session && desk.link.as_ref().is_some_and(|link| {
-        link.connection.server_id().as_deref() == Some(pending.server.as_str())
-            && link.connection.conversation(&pending.terminal).is_some_and(|conversation| {
-                conversation.resource.to_string() == pending.agent
-                    && conversation.native.as_ref().is_some_and(|view| view.activation == pending.activation)
-            })
-    })
+    desk.session == pending.session
+        && desk.link.as_ref().is_some_and(|link| {
+            link.connection.server_id().as_deref() == Some(pending.server.as_str())
+                && link
+                    .connection
+                    .conversation(&pending.terminal)
+                    .is_some_and(|conversation| {
+                        conversation.resource.to_string() == pending.agent
+                            && conversation
+                                .native
+                                .as_ref()
+                                .is_some_and(|view| view.activation == pending.activation)
+                    })
+        })
 }
 
 pub(crate) fn panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> AnyElement {
@@ -130,16 +191,48 @@ pub(crate) fn panel(desk: &Desk, colors: &Palette, cx: &mut Context<Desk>) -> An
     let busy = state.loading || state.launching.is_some();
     let rows = state.integrations.iter().map(|item| {
         let integration = item.integration.clone();
-        let title = item.display_name.as_deref().unwrap_or(&item.integration).to_owned();
+        let title = item
+            .display_name
+            .as_deref()
+            .unwrap_or(&item.integration)
+            .to_owned();
         let launching = state.launching.as_deref() == Some(item.integration.as_str());
-        div().flex().flex_col().gap(px(4.)).p(px(10.)).rounded(px(8.)).bg(from_hex(&colors.theme.background))
-            .child(div().flex().items_center().justify_between().gap(px(12.))
-                .child(div().text_sm().child(title))
-                .child(Button::new(SharedString::from(format!("launch-native-{}", item.integration)))
-                    .label(if launching { "Launching…" } else { "Launch" }).small().primary()
-                    .disabled(busy || !item.native_available || desk.remote.is_some())
-                    .on_click(cx.listener(move |desk, _, window, cx| desk.launch_native_integration(&integration, window, cx)))))
-            .children(item.native_detail.as_ref().map(|detail| div().text_xs().text_color(from_hex(&colors.muted)).child(detail.clone())))
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .p(px(10.))
+            .rounded(px(8.))
+            .bg(from_hex(&colors.theme.background))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(12.))
+                    .child(div().text_sm().child(title))
+                    .child(
+                        Button::new(SharedString::from(format!(
+                            "launch-native-{}",
+                            item.integration
+                        )))
+                        .label(if launching { "Launching…" } else { "Launch" })
+                        .small()
+                        .primary()
+                        .disabled(busy || !item.native_available || desk.remote.is_some())
+                        .on_click(cx.listener(
+                            move |desk, _, window, cx| {
+                                desk.launch_native_integration(&integration, window, cx)
+                            },
+                        )),
+                    ),
+            )
+            .children(item.native_detail.as_ref().map(|detail| {
+                div()
+                    .text_xs()
+                    .text_color(from_hex(&colors.muted))
+                    .child(detail.clone())
+            }))
     });
     div().w(px(560.)).max_h(px(620.)).p(px(18.)).rounded(px(12.)).bg(from_hex(&colors.raised)).border_1().border_color(from_hex(&colors.border)).shadow_lg().occlude()
         .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
