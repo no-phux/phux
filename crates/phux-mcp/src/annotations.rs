@@ -256,6 +256,7 @@ mod tests {
             "phux_rename",
             "phux_insert_pane",
             "phux_relaunch",
+            "phux_organize",
         ] {
             let hints = annotation(tool);
             assert!(

@@ -1,6 +1,7 @@
-//! `phux_rm` and `phux_relaunch`: the organization edits `phux rm` and
-//! `phux relaunch` make, over [`phux_client::org`]. Each returns the document
-//! the CLI prints under `--json`.
+//! `phux_rm`, `phux_relaunch`, and `phux_organize`: the organization edits
+//! `phux rm`, `phux relaunch`, and `phux organize` make, over
+//! [`phux_client::org`] and [`phux_client::organize`]. Each returns the
+//! document the CLI prints under `--json`.
 //!
 //! A target is a key prefix (`^ab23cd`) resolved against the records, a
 //! session name, or any other selector resolved against a fresh snapshot to
@@ -16,17 +17,18 @@ use crate::cli_tools::{schema, string_schema};
 use crate::tools::{ToolError, parse_selector, socket_arg, strict_object};
 
 pub(crate) fn schemas() -> Vec<Value> {
-    vec![rm_schema(), relaunch_schema()]
+    vec![rm_schema(), relaunch_schema(), organize_schema()]
 }
 
 pub(crate) fn owns(name: &str) -> bool {
-    matches!(name, "phux_rm" | "phux_relaunch")
+    matches!(name, "phux_rm" | "phux_relaunch" | "phux_organize")
 }
 
 pub(crate) async fn call(name: &str, args: &Value) -> Result<Value, ToolError> {
     match name {
         "phux_rm" => rm(args).await,
         "phux_relaunch" => relaunch(args).await,
+        "phux_organize" => organize(args).await,
         other => Err(ToolError::new(format!(
             "unknown organization tool: {other}"
         ))),
@@ -59,6 +61,91 @@ fn relaunch_schema() -> Value {
         }),
         &["target"],
     )
+}
+
+fn organize_schema() -> Value {
+    schema(
+        "phux_organize",
+        "Put every pane in the session it belongs in: panes join the session for their \
+         repository, a repository with no session gets one, and a numbered session holding one \
+         repository takes its name. Membership only; every process keeps running. With \
+         TYPESAFE_API_KEY set, TypeSafe's Jev judges each pane from its name, title, directory, \
+         and repository (never screen contents); otherwise repository matching decides. Use \
+         dry_run to see the plan first; `phux organize --undo` reverses a run.",
+        json!({
+            "session": { "type": "string", "description": "Only this session's panes may move." },
+            "dry_run": { "type": "boolean", "description": "Return the plan without changing anything." },
+            "offline": { "type": "boolean", "description": "Repository matching only; send nothing off the machine." },
+            "min_confidence": { "type": "number", "minimum": 0, "maximum": 1, "description": "Confidence a judgment needs to move a pane (default 0.6)." },
+            "socket": string_schema(),
+        }),
+        &[],
+    )
+}
+
+/// `phux_organize`'s arguments, validated before any dial.
+struct OrganizeArgs {
+    session: Option<String>,
+    dry_run: bool,
+    offline: bool,
+    min_confidence: f64,
+}
+
+fn organize_args(args: &Value) -> Result<OrganizeArgs, ToolError> {
+    strict_object(
+        args,
+        &["session", "dry_run", "offline", "min_confidence", "socket"],
+        &[],
+    )?;
+    let min_confidence = match args.get("min_confidence") {
+        None => phux_client::organize::DEFAULT_MIN_CONFIDENCE,
+        Some(value) => value
+            .as_f64()
+            .filter(|p| (0.0..=1.0).contains(p))
+            .ok_or_else(|| ToolError::new("`min_confidence` must be a number from 0 to 1"))?,
+    };
+    Ok(OrganizeArgs {
+        session: crate::cli_adapter::bounded_string(args, "session", false)?,
+        dry_run: bool_arg(args, "dry_run")?,
+        offline: bool_arg(args, "offline")?,
+        min_confidence,
+    })
+}
+
+fn bool_arg(args: &Value, name: &str) -> Result<bool, ToolError> {
+    match args.get(name) {
+        None => Ok(false),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => Err(ToolError::new(format!("`{name}` must be a boolean"))),
+    }
+}
+
+/// `phux_organize`: what `phux organize --json` prints.
+async fn organize(args: &Value) -> Result<Value, ToolError> {
+    use phux_client::organize::{self, Judge, Options};
+    let parsed = organize_args(args)?;
+    let socket = socket_arg(args)?;
+    let mut conn = Connection::connect(&socket).await?;
+    let config = phux_config::loader::load().unwrap_or_default();
+    let (judge, key_error) = Judge::configured(&config.organize, parsed.offline).await;
+    let options = Options {
+        session: parsed.session,
+        judge,
+        min_confidence: parsed.min_confidence,
+        jev_timeout: organize::JEV_TIMEOUT,
+    };
+    let host = phux_config::instance::local_host_name();
+    let mut outcome = organize::run(&mut conn, Some(&host), &options, parsed.dry_run)
+        .await
+        .map_err(|err| ToolError::new(format!("organize: {err} ({})", err.code())))?;
+    drop(conn);
+    outcome.judge_error = outcome.judge_error.or(key_error);
+    Ok(organize::document(
+        &outcome.plan,
+        outcome.applied.as_ref(),
+        outcome.judge_error.as_deref(),
+        parsed.dry_run,
+    ))
 }
 
 /// What a target names.
@@ -202,6 +289,9 @@ mod tests {
                 json!({ "target": "@1", "confirm": true, "extra": 1 }),
             ),
             ("phux_relaunch", json!({})),
+            ("phux_organize", json!({ "dry_run": "yes" })),
+            ("phux_organize", json!({ "min_confidence": 2 })),
+            ("phux_organize", json!({ "extra": 1 })),
             ("phux_relaunch", json!({ "target": 3 })),
         ] {
             assert!(call(name, &args).await.is_err(), "{name} accepted {args}");

@@ -106,6 +106,7 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
     ))
     .await;
     super::session_management::apply(effects.session_management, ctx).await;
+    super::organize::apply(effects.organize, ctx).await;
     // Hand a `reload-config` up to the driver, which owns the
     // config-derived state (resolver, theme, keybindings snapshot, status
     // bar) this batch is still borrowing.
@@ -614,6 +615,8 @@ pub(super) struct ActionEffects {
     pub(super) move_pane: Option<PaneMoveIntent>,
     /// A session management request, prepared or confirmed on a control connection.
     pub(super) session_management: Option<phux_config::keybind::ResolvedAction>,
+    /// An organize request (ADR-0170), run on a control connection.
+    pub(super) organize: Option<super::organize::Intent>,
     /// A `go-to-directory` action built a `LIST_DIRECTORY` request. The
     /// async caller records it (id and listed host) as the pending listing,
     /// then sends it; the reply opens the directory picker.

@@ -270,6 +270,7 @@ pub(crate) mod ls;
 pub(crate) mod mcp;
 pub(crate) mod new;
 pub(crate) mod org;
+pub(crate) mod organize;
 pub(crate) mod pair;
 pub(crate) mod partial;
 pub(crate) mod paste;
@@ -1518,6 +1519,48 @@ pub(crate) enum Command {
         /// Print one line per pane, not a summary.
         #[usage(short = 'v', long)]
         verbose: bool,
+        /// Emit a schema-versioned JSON result or error.
+        #[usage(long)]
+        json: bool,
+    },
+
+    /// Put every pane in the session it belongs in
+    ///
+    /// Groups panes into sessions by repository and task: panes in Intake
+    /// or a catch-all session join the session for their repository, a
+    /// repository with no session gets one, and a numbered session holding
+    /// one repository takes its name. With `SESSION`, only that session's
+    /// panes move. The Jev model judges each pane when `TYPESAFE_API_KEY`
+    /// is set or `organize.jev-key-command` prints a key (only names,
+    /// titles, directories, and repositories are sent, never screen
+    /// contents); otherwise, or with `--offline`, repository matching
+    /// decides. A pane already in its repository's session never
+    /// leaves it, and a judgment below `--min-confidence` moves nothing.
+    /// Moves change membership only; every process keeps running.
+    /// `--undo` reverses the last run.
+    #[usage(help_heading = "Sessions", display_order = 20)]
+    Organize {
+        /// Only this session's panes may move.
+        session: Option<String>,
+        /// Print the plan without changing anything.
+        #[usage(short = 'n', long)]
+        dry_run: bool,
+        /// Decide by repository matching only; send nothing off the machine.
+        #[usage(long)]
+        offline: bool,
+        /// Confidence (0 to 1) a judgment needs to move a pane.
+        #[usage(
+            long,
+            value_name = "P",
+            default = "0.6",
+            default_value_t = 0.6,
+            validate = "float(value) >= 0 && float(value) <= 1",
+            validate_error = "confidence must be between 0 and 1"
+        )]
+        min_confidence: f64,
+        /// Reverse the last organize run.
+        #[usage(long, conflicts("--dry-run", "--offline"))]
+        undo: bool,
         /// Emit a schema-versioned JSON result or error.
         #[usage(long)]
         json: bool,

@@ -90,6 +90,9 @@ pub(super) fn run_action(
         "kill-session" | "delete-empty-session" => {
             super::session_management::queue(resolved, ctx, e);
         }
+        "organize" | "organize-session" | "organize-undo" => {
+            super::organize::queue(resolved, ctx, e);
+        }
         "focus-direction" => focus_direction(resolved, ctx, e),
         "resize-pane" => resize_pane(resolved, ctx, e),
         "reload-config" => reload_config(e),

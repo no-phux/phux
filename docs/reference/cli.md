@@ -37,6 +37,7 @@ Sessions:
   rm            Remove a stopped pane, or delete an empty session
   relaunch      Start a stopped pane again
   restore       Relaunch every pane a server restart ended
+  organize      Put every pane in the session it belongs in
 
 Panes:
   spawn         Create a pane without attaching
@@ -2052,6 +2053,41 @@ Flags:
 Global flags:
       --socket <PATH>             Server socket to dial (default:
                                   `$PHUX_SOCKET`)
+```
+
+## `phux organize`
+
+```text
+Put every pane in the session it belongs in
+
+Groups panes into sessions by repository and task: panes in Intake or a
+catch-all session join the session for their repository, a repository with no
+session gets one, and a numbered session holding one repository takes its name.
+With `SESSION`, only that session's panes move. The Jev model judges each pane
+when `TYPESAFE_API_KEY` is set or `organize.jev-key-command` prints a key (only
+names, titles, directories, and repositories are sent, never screen contents);
+otherwise, or with `--offline`, repository matching decides. A pane already in
+its repository's session never leaves it, and a judgment below
+`--min-confidence` moves nothing. Moves change membership only; every process
+keeps running. `--undo` reverses the last run.
+
+Usage: phux organize [FLAGS] [SESSION]
+
+Arguments:
+  [SESSION]  Only this session's panes may move.
+
+Flags:
+  -n, --dry-run             Print the plan without changing anything.
+      --offline             Decide by repository matching only; send nothing off
+                            the machine.
+      --min-confidence <P>  Confidence (0 to 1) a judgment needs to move a pane.
+                            (default: 0.6)
+      --undo                Reverse the last organize run.
+      --json                Emit a schema-versioned JSON result or error.
+  -h, --help                Print help
+
+Global flags:
+      --socket <PATH>       Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux pair`

@@ -53,6 +53,8 @@ pub struct Config {
     pub policy: PolicyCfg,
     /// `[voice]`: the server-side transcriber behind `TRANSCRIBE`.
     pub voice: VoiceCfg,
+    /// `[organize]`: the judge behind `phux organize`.
+    pub organize: OrganizeCfg,
     /// `[limits]`: server-enforced ceilings that are not per-pane defaults.
     pub limits: LimitsCfg,
 }
@@ -687,6 +689,18 @@ pub enum PolicyMode {
     Local,
     /// Every TLS connection must present an enrolled workload certificate.
     Paired,
+}
+
+/// `[organize]` table: who judges where panes belong for `phux organize`
+/// (ADR-0170). Read by the client that runs it, never by the server.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+pub struct OrganizeCfg {
+    /// Argv whose trimmed stdout is the `TypeSafe` API key, run when
+    /// `TYPESAFE_API_KEY` is unset. Unset means the environment only.
+    pub jev_key_command: Option<Vec<String>>,
+    /// Decide by repository matching only and send nothing off the machine.
+    pub offline: bool,
 }
 
 /// `[voice]`: the server-side transcriber behind `TRANSCRIBE`. The server

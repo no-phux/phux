@@ -176,6 +176,7 @@ by a newer one, the newer line is the operative reading.
 - [0121](./0121-cli-parser-is-usage-rs.md) The `phux` CLI parses with usage-rs 6.9; one declaration drives parse, help, completions, and the generated CLI reference.
 - [0065](./0065-one-cli-grammar.md) `--socket` is one root-level global; alias parity, one `--split`, one JSON error shape.
 - [0058](./0058-right-click-context-menus.md) Right-click opens anchored pane, window, or session menus committed through `run_action`.
+- [0170](./0170-organize-asks-a-judge-and-code-decides.md) `phux organize` moves panes to the sessions they belong in: a judge (Jev with a key, else repository matching) picks among known sessions, code gates it by confidence and never pulls a pane from its own repository's session, and a local journal undoes it.
 - [0168](./0168-project-identity-is-a-session-attribute.md) A session made in a git checkout carries a project identity keyed by its normalized `origin` URL, as typed session attributes set at `SESSION_CREATE`; pickers, the sidebar, and `phux ls` group by it, across machines.
 - [0152](./0152-project-recipes-run-only-approved-bytes.md) `phux project open` builds a missing session from `.phux/project.toml` through the restore engine, only after its exact bytes are approved per repository.
 - [0054](./0054-worktree-bound-sessions.md) `phux worktree` derives a session name from the worktree path; no stored state.

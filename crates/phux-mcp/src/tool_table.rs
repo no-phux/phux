@@ -176,6 +176,18 @@ pub(crate) const TOOLS: &[Row] = &[
         "relaunch",
         Touches::Wire(&[RESOLVE, "GET_ORGANIZATION", "RESOURCE_RELAUNCH"]),
     ),
+    cli(
+        "phux_organize",
+        "organize",
+        Touches::Wire(&[
+            RESOLVE,
+            "GET_METADATA",
+            "GET_ORGANIZATION",
+            "SESSION_CREATE",
+            "RESOURCE_MOVE_MANY",
+            "SESSION_RENAME",
+        ]),
+    ),
     cli("phux_detach", "detach", Touches::Wire(&["DETACH_CLIENTS"])),
     cli(
         "phux_watch",

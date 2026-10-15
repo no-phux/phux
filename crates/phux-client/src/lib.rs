@@ -45,6 +45,7 @@ pub mod layout_ops;
 // Organization commands behind `ORGANIZATION` (`rm`, `relaunch`, `restore`,
 // `mv`, bulk move, undo, Intake resolve).
 pub mod org;
+pub mod organize;
 pub mod pane_move;
 pub mod perf;
 // Project identity (ADR-0168): discovery, the stored document, grouping.

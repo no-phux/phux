@@ -36,6 +36,7 @@ The configuration surface of `~/.config/phux/config.toml`. The loader layers you
 | `[experimental]` | Opt-in unstable knobs; anything here may change or disappear without notice. |
 | `[policy]` | The authorization posture read at server start: `local` (owner socket only) or `paired` (workload mTLS, scope ceilings enforced at dispatch). |
 | `[voice]` | The server-side transcriber behind `TRANSCRIBE`: an argv that turns an uploaded clip into text for a paste. |
+| `[organize]` | Who judges where panes belong for `phux organize`: `TypeSafe`'s Jev with a key, else repository matching. |
 | `[limits]` | Server-enforced ceilings that are not a per-pane spawn default: the largest L3 metadata value the server stores at one key. |
 
 ## Scalar keys
@@ -76,6 +77,8 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `notifications.sound` | `false` |
 | `notifications.suppress-focused` | `true` |
 | `notifications.terminal-protocol` | `"auto"` |
+| `organize.jev-key-command` | unset — `TYPESAFE_API_KEY` only. An argv whose trimmed stdout is the key, run when the variable is unset |
+| `organize.offline` | `false` |
 | `policy.mode` | unset — transitional: every admitted connection holds the owner's full grant, and a remote listener is warned about at startup. `local` admits the owner socket only; `paired` requires an enrolled workload certificate on every TLS connection |
 | `sidebar.agents-share` | `50` |
 | `sidebar.enabled` | `true` |
@@ -379,6 +382,12 @@ which-key-delay-ms = 400
 #       once attached). The rows refresh live as agent events arrive.
 "A" = "agent-fleet"
 "S" = "settings"
+
+# Organize: put every pane in the session it belongs in (`phux organize`).
+# Panes join their repository's session, a repository with no session gets
+# one, and a numbered session holding one repository takes its name. Moves
+# change membership only; nothing is killed. `organize-undo` reverses it.
+"O" = "organize"
 
 # Bug report: write a local bundle (session, pane, log tails, screen) an
 # agent can open with `phux report show`. B for Bug; lowercase b is the

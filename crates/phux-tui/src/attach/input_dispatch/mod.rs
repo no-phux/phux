@@ -12,6 +12,7 @@ mod chrome_drag;
 mod ctx;
 mod dispatch;
 mod effects;
+mod organize;
 mod pickers;
 mod run_action;
 mod session_management;

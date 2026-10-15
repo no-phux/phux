@@ -286,6 +286,12 @@ which-key-delay-ms = 400
 "A" = "agent-fleet"
 "S" = "settings"
 
+# Organize: put every pane in the session it belongs in (`phux organize`).
+# Panes join their repository's session, a repository with no session gets
+# one, and a numbered session holding one repository takes its name. Moves
+# change membership only; nothing is killed. `organize-undo` reverses it.
+"O" = "organize"
+
 # Bug report: write a local bundle (session, pane, log tails, screen) an
 # agent can open with `phux report show`. B for Bug; lowercase b is the
 # sidebar.
