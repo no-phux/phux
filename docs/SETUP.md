@@ -75,11 +75,12 @@ newer compiler than this repository's Rust pin. Install the
 build-observability tools are Nix-or-native; `mise.toml` lists them under
 "deliberately absent".
 
-The runner-policy storage-collapse regression also needs `hardlink`. On macOS,
-install the keg-only utility with `brew install util-linux`, then append
-`/opt/homebrew/opt/util-linux/bin` to the gate shell's `PATH`. The Darwin build
-uses hardlinks without Linux's `--reflink` option; the regression verifies shared
-storage and preserved target metadata rather than accepting an unchanged copy.
+The runner-policy storage-collapse regression uses `hardlink` when that
+binary is on `PATH`. Darwin's util-linux build is keg-only and has no
+`--reflink` option, so a shell without it still collapses copies with
+`os.link` (and `clonefile` if a hard link is refused). The regression
+verifies shared storage and preserved target metadata rather than accepting
+an unchanged copy.
 
 ## Binary cache
 
