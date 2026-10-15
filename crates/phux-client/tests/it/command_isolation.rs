@@ -9,8 +9,6 @@
 #![allow(clippy::panic, reason = "tests")]
 #![allow(clippy::future_not_send, reason = "ServerRuntime owns LocalSet actors")]
 
-mod support;
-
 use std::path::Path;
 use std::time::Duration;
 
@@ -23,9 +21,10 @@ use phux_protocol::wire::frame::{
 };
 use phux_server::DEFAULT_GROUP_ID;
 use sha2::{Digest, Sha256};
-use support::{STEP_DEADLINE, Server, dial, quic_env, seeded_config};
 use tempfile::TempDir;
 use tokio::time::{Instant, sleep, timeout};
+
+use crate::support::{STEP_DEADLINE, Server, dial, quic_env, seeded_config};
 
 const CONTROL_DEADLINE: Duration = Duration::from_secs(1);
 const MINIMUM_TRANSCRIBE_HOLD: Duration = Duration::from_secs(2);

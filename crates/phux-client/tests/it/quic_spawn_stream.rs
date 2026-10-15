@@ -11,8 +11,6 @@
 #![allow(clippy::panic, reason = "tests")]
 #![allow(clippy::future_not_send, reason = "ServerRuntime owns LocalSet actors")]
 
-mod support;
-
 use std::time::Duration;
 
 use phux_client::attach::connection::Connection;
@@ -20,9 +18,10 @@ use phux_protocol::ids::ResourceId;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, SpawnResult, ViewportInfo};
 use phux_server::DEFAULT_GROUP_ID;
-use support::{STEP_DEADLINE, Server, dial, quic_env, seeded_config};
 use tempfile::TempDir;
 use tokio::time::{Instant, timeout};
+
+use crate::support::{STEP_DEADLINE, Server, dial, quic_env, seeded_config};
 
 const SESSION: &str = "quic-spawn";
 const SPAWN_REQUEST: u32 = 7;

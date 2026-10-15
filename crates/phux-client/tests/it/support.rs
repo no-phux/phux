@@ -1,6 +1,13 @@
 //! A real `ServerRuntime` listening on QUIC, for the production-path tests.
 
-#![allow(unreachable_pub, reason = "items shared by several test binaries")]
+#![allow(unreachable_pub, reason = "items shared by several test modules")]
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "shared test support"
+)]
+#![allow(clippy::future_not_send, reason = "ServerRuntime owns LocalSet actors")]
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
