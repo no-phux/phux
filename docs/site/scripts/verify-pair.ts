@@ -2,6 +2,8 @@
 /**
  * Browser acceptance for the demo pairing link, against a live site.
  * Usage: bun run verify:pair [https://phux.sh]
+ * Before deployment: PHUX_SITE_STATIC_ORIGIN=http://127.0.0.1:4337 bun run verify:pair
+ * Substitutes local built HTTP assets only; real WebSockets keep the allowed origin.
  *
  * Drives the real thing: one screen opens the hosted shell, the dialog hands out
  * its pairing link, a second (phone-shaped) browser opens that link, and the two
@@ -85,8 +87,19 @@ async function openHostedShell(page: Page) {
   await liveTerminal(page);
 }
 
+async function useLocalAssets(context: BrowserContext) {
+  const local = process.env.PHUX_SITE_STATIC_ORIGIN;
+  if (!local) return;
+  await context.route(`${BASE}/**`, async (route) => {
+    const url = new URL(route.request().url());
+    const response = await route.fetch({ url: `${local}${url.pathname}${url.search}` });
+    await route.fulfill({ response });
+  });
+}
+
 try {
   const desktop: BrowserContext = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  await useLocalAssets(desktop);
   await desktop.grantPermissions(["clipboard-read", "clipboard-write"], { origin: BASE });
   const wide = await desktop.newPage();
   const desktopText = trackedOutput(wide);
@@ -106,9 +119,14 @@ try {
   await wide.getByRole("button", { name: /Copy link/ }).click();
   const link = await wide.evaluate(() => navigator.clipboard.readText());
   const expectedPrefix = `${BASE}/phone#`;
-  report("desktop: the pairing link points at the phone page", link.startsWith(expectedPrefix), link);
+  report("desktop: the pairing link points at the phone page", link.startsWith(expectedPrefix));
   if (!link.startsWith(expectedPrefix)) throw new Error("no usable pairing link");
   report("desktop: the code rides in the fragment, never the query", !link.includes("?"));
+  const originalQr = await qr.innerHTML();
+  await wide.locator(".mux-mode-row").getByRole("button", { name: "Demo", exact: true }).click();
+  report("desktop: reselecting the active runtime preserves pairing",
+    await wide.locator(".mux-pair-toggle").getAttribute("aria-expanded") === "true" &&
+    await qr.innerHTML() === originalQr);
 
   // The phone: a coarse pointer, a small viewport, no install and no sign-in.
   const phone = await browser.newContext({
@@ -116,6 +134,7 @@ try {
     hasTouch: true,
     isMobile: true,
   });
+  await useLocalAssets(phone);
   const handset = await phone.newPage();
   const phoneText = trackedOutput(handset);
   await handset.goto(link);
@@ -153,6 +172,17 @@ try {
   );
 
   await phone.close();
+  await wide.locator('summary[aria-label="Info & shortcuts"]').click();
+  await wide.getByRole("button", { name: "Release session", exact: true }).click();
+  report("desktop: releasing a session retires its pairing code", await wide.locator(".mux-pair").count() === 0);
+  await wide.getByRole("button", { name: "Launch edge WASM shell", exact: true }).click();
+  await liveTerminal(wide);
+  report("desktop: a new session starts with a collapsed, fresh pairing panel",
+    await wide.getByRole("button", { name: /Pair your phone/ }).getAttribute("aria-expanded") === "false");
+  await wide.getByRole("button", { name: /Pair your phone/ }).click();
+  await wide.getByRole("button", { name: /Copy link/ }).click();
+  const freshLink = await wide.evaluate(() => navigator.clipboard.readText());
+  report("desktop: the replacement session cannot reuse the spent link", freshLink.startsWith(expectedPrefix) && freshLink !== link);
   await desktop.close();
 } finally {
   await browser.close();

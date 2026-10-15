@@ -76,10 +76,11 @@ Privacy, and Support instead of repeating the top bar. The landing canvas is
 The hero tour shows a server, clients, and signals travelling along connections.
 It autoplays only while on screen, with pause and chapter controls; reduced motion
 shows settled chapters. Faint background hosts are decorative, hidden from
-assistive technology, and do not claim live status. Hovering or keyboard-focusing
-the scene link fades a full-bleed overlay over the reel with the shell invitation;
-touch devices show the invitation as a bottom chip so the story stays visible.
-Activating the scene opens the live shell. `/more` retains its opt-in, pausable,
+assistive technology, and do not claim live status. The scene's live-demo invitation is always visible as a bottom chip, for mouse,
+keyboard, and touch alike. Hover and focus emphasize that invitation without
+covering or blurring the product. Chapter headings and client emphasis follow
+the story; output enters briefly rather than flashing. Opening the live shell
+suspends the illustration, and closing it resumes the same position. `/more` retains its opt-in, pausable,
 scrubbable explainer.
 
 The live shell's dialog offers one more thing: **Pair your phone**, a single line

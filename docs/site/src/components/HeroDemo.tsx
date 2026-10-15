@@ -30,6 +30,14 @@ function TerminalDownload({ failed, retry }: { failed: boolean; retry: () => voi
   </div>;
 }
 
+function DemoGuide({ mode }: { mode: Mode }) {
+  if (mode !== "demo") return null;
+  return <p className="mux-demo-guide">
+    <strong>Make it yours.</strong> Type <code>help</code> to explore, use <strong>Split pane</strong> below the terminal,
+    then <strong>Pair your phone</strong> to share this session. This sandbox has curated commands, not a Linux OS.
+  </p>;
+}
+
 /** Where the demo Worker answers about one pairing code. */
 function pairStatusUrl(wsUrl: string): string | null {
   try {
@@ -46,8 +54,8 @@ function pairStatusUrl(wsUrl: string): string | null {
 
 /**
  * Pair a phone with this session: the same shell on a second screen, no install
- * and no sign-in on the phone. The link goes in the URL fragment so the code
- * never reaches a server log or a referrer, and it is single-use.
+ * and no sign-in on the phone. The page fragment keeps the single-use code
+ * out of page requests and referrers; the WebSocket upgrade still carries it.
  */
 function PairPanel({ wsUrl, pair }: { wsUrl: string; pair: SessionPair }) {
   const [open, setOpen] = useState(false);
@@ -179,7 +187,15 @@ export default function HeroDemo({ wsUrl = "" }: { wsUrl?: string }) {
     }
   }
 
+  function changeMode(next: Mode) {
+    if (next === mode) return;
+    setAuthError("");
+    setPair(null);
+    setMode(next);
+  }
+
   function launch() {
+    setPair(null);
     opener.current =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
@@ -236,7 +252,15 @@ export default function HeroDemo({ wsUrl = "" }: { wsUrl?: string }) {
 
   return (
     <div className="hero-demo">
-      <Tour prepare={loadTerminal} />
+      <Tour prepare={loadTerminal} suspended={open} />
+      <div className="live-invitation">
+        <div>
+          <h3>Not a video. Your session.</h3>
+          <p>Open the sandbox. Split a pane. Scan the code and drive it from your phone.</p>
+          <small>Real phux multiplexing · curated commands · no OS or network access</small>
+        </div>
+        <a href="/embed" data-demo-launch>Try it in your browser <span aria-hidden="true">↗</span></a>
+      </div>
       <noscript>
         <p>
           <a href="/embed">Open the hosted shell</a> or{" "}
@@ -256,7 +280,7 @@ export default function HeroDemo({ wsUrl = "" }: { wsUrl?: string }) {
       >
         <h2 className="mux-sr-only" id={`${id}-title`}>{SITE.name} terminal</h2>
         {!Terminal && <header className="mux-dialog-head">
-          <HeroTerminalActions mode={mode} changeMode={(next) => { setAuthError(""); setMode(next); }} close={() => setOpen(false)} />
+          <HeroTerminalActions mode={mode} changeMode={changeMode} close={() => setOpen(false)} />
         </header>}
         {authError && (
           <p className="mux-dialog-description" role="alert">
@@ -280,13 +304,14 @@ export default function HeroDemo({ wsUrl = "" }: { wsUrl?: string }) {
               rows={24}
               autoStart
               focusOnStart
-              headerActions={<HeroTerminalActions mode={mode} changeMode={(next) => { setAuthError(""); setMode(next); }} close={() => setOpen(false)} />}
-              onSession={(session) => setPair(session.pair ?? null)}
+              headerActions={<HeroTerminalActions mode={mode} changeMode={changeMode} close={() => setOpen(false)} />}
+              onSession={(session) => setPair(session?.pair ?? null)}
             />
           ) : (
             <TerminalDownload failed={loadFailed} retry={loadTerminal} />
           ))}
-        {open && pair && <PairPanel wsUrl={wsUrl} pair={pair} />}
+        <DemoGuide mode={mode} />
+        {open && pair && <PairPanel key={pair.code} wsUrl={wsUrl} pair={pair} />}
       </dialog>
     </div>
   );

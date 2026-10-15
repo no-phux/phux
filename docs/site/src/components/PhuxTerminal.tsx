@@ -42,8 +42,8 @@ interface Props {
   focusOnStart?: boolean;
   statusParentOrigin?: string;
   headerActions?: ReactNode;
-  /** Fires on the session envelope, so a host can offer the pairing link. */
-  onSession?: (session: SessionView) => void;
+  /** Session envelope, or null when stopped so hosts retire pairing links. */
+  onSession?: (session: SessionView | null) => void;
 }
 
 interface Identity {
@@ -187,6 +187,7 @@ export default function PhuxTerminal({
     attempt.current = null;
     current?.abort.abort();
     current?.client?.close();
+    onSession?.(null);
   }
 
   function paneAction(action: (client: PhuxController) => void) {
